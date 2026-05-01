@@ -5,15 +5,15 @@ import {
   type SessionConfig,
   loadAgentConfig,
   isDirectExecution,
-} from "../../src/index";
+} from "@thenvoi/sdk";
 import {
   createLinearClient,
   createLinearTools,
   createSqliteSessionRoomStore,
   type LinearActivityClient,
   type SessionRoomStore,
-} from "../../src/linear";
-import type { Logger } from "../../src/core";
+} from "@thenvoi/sdk/linear";
+import type { Logger } from "@thenvoi/sdk/core";
 
 interface LinearThenvoiBridgeAgentOptions {
   agentId?: string;

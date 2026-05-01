@@ -18,7 +18,7 @@ import {
   isDirectExecution,
   loadAgentConfig,
 } from "@thenvoi/sdk";
-import type { CustomToolDef } from "@thenvoi/sdk/runtime";
+import type { CustomToolDef } from "@thenvoi/sdk";
 
 const calculatorTool: CustomToolDef = {
   name: "calculator",
