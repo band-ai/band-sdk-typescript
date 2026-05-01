@@ -1,7 +1,22 @@
-import { Agent, AnthropicAdapter, loadAgentConfig, isDirectExecution } from "../../src/index";
+/**
+ * Anthropic (Claude) tool-calling agent.
+ *
+ * Same shape as the OpenAI example: Thenvoi platform tools become Anthropic
+ * tool definitions, Claude picks one per turn, the adapter executes it.
+ * Switch this for `OpenAIAdapter` or `GeminiAdapter` and the rest of your
+ * agent code stays the same.
+ */
+import {
+  Agent,
+  AnthropicAdapter,
+  isDirectExecution,
+  loadAgentConfig,
+} from "@thenvoi/sdk";
 
 interface AnthropicExampleOptions {
+  /** Override the default model. */
   model?: string;
+  /** Anthropic API key — if omitted, the adapter reads `ANTHROPIC_API_KEY` itself. */
   apiKey?: string;
 }
 
@@ -27,6 +42,11 @@ export function createAnthropicAgent(
 }
 
 if (isDirectExecution(import.meta.url)) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    throw new Error("Set ANTHROPIC_API_KEY to run this example.");
+  }
+
   const config = loadAgentConfig("anthropic_agent");
-  void createAnthropicAgent({}, config).run();
+  void createAnthropicAgent({ apiKey }, config).run();
 }

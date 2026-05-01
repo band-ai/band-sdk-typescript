@@ -7,8 +7,9 @@ import {
   type PlatformMessage,
   isDirectExecution,
   loadAgentConfig,
-} from "../../src/index";
-import { ConsoleLogger, type Logger } from "../../src/core";
+  loadAgentConfigFromEnv,
+} from "@thenvoi/sdk";
+import { ConsoleLogger, type Logger } from "@thenvoi/sdk/core";
 import {
   createSqliteSessionRoomStore,
   createLinearClient,
@@ -255,6 +256,36 @@ function resolveBridgeApiKey(logger: Logger): string {
 
 function resolveEmbeddedBridgeRuntimeConfigKey(): string {
   return process.env.LINEAR_THENVOI_BRIDGE_RUNTIME_CONFIG_KEY?.trim() ?? "linear_thenvoi_bridge";
+}
+
+function resolveEmbeddedBridgeRuntimeConfig(logger: Logger): AgentConfigResult {
+  const envApiKey = process.env.THENVOI_BRIDGE_API_KEY?.trim() ?? process.env.THENVOI_API_KEY?.trim();
+  const envAgentId = process.env.THENVOI_BRIDGE_AGENT_ID?.trim() ?? process.env.THENVOI_AGENT_ID?.trim();
+
+  if (envApiKey && envAgentId) {
+    logger.info("linear_thenvoi_bridge.using_embedded_env_credentials", {
+      agentIdSource: process.env.THENVOI_BRIDGE_AGENT_ID?.trim() ? "THENVOI_BRIDGE_AGENT_ID" : "THENVOI_AGENT_ID",
+      apiKeySource: process.env.THENVOI_BRIDGE_API_KEY?.trim() ? "THENVOI_BRIDGE_API_KEY" : "THENVOI_API_KEY",
+    });
+
+    const envConfig = loadAgentConfigFromEnv({
+      env: {
+        THENVOI_AGENT_ID: envAgentId,
+        THENVOI_API_KEY: envApiKey,
+        THENVOI_WS_URL: process.env.THENVOI_WS_URL,
+        THENVOI_REST_URL: process.env.THENVOI_REST_URL,
+      },
+    });
+
+    return {
+      agentId: envConfig.agentId,
+      apiKey: envConfig.apiKey,
+      ...(envConfig.wsUrl ? { wsUrl: envConfig.wsUrl } : {}),
+      ...(envConfig.restUrl ? { restUrl: envConfig.restUrl } : {}),
+    };
+  }
+
+  return loadAgentConfig(resolveEmbeddedBridgeRuntimeConfigKey());
 }
 
 export function resolveRestApiKeyForMode(input: {
@@ -592,7 +623,7 @@ async function runLinearThenvoiBridgeServer(): Promise<void> {
   );
   const embeddedBridgeRuntimeConfigKey = resolveEmbeddedBridgeRuntimeConfigKey();
   const embeddedBridgeConfig = embedBridgeAgent
-    ? loadAgentConfig(embeddedBridgeRuntimeConfigKey)
+    ? resolveEmbeddedBridgeRuntimeConfig(logger)
     : null;
   const bridgeApiKey = resolveRestApiKeyForMode({
     logger,
@@ -621,7 +652,7 @@ async function runLinearThenvoiBridgeServer(): Promise<void> {
   let embeddedAgentStartPromise: Promise<void> | null = null;
 
   if (embedBridgeAgent) {
-    const bridgeConfig = embeddedBridgeConfig ?? loadAgentConfig(embeddedBridgeRuntimeConfigKey);
+    const bridgeConfig = embeddedBridgeConfig ?? resolveEmbeddedBridgeRuntimeConfig(logger);
     embeddedAgent = createLinearThenvoiBridgeAgent({
       ...bridgeConfig,
       linearAccessToken,
