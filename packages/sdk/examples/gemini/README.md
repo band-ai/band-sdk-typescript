@@ -12,7 +12,8 @@ A Thenvoi agent backed by Google's Gemini API. Thenvoi platform tools become Gem
 
 | File | What it does |
 |------|--------------|
-| `gemini-agent.ts` | Adapter + agent + CLI runner. ~50 lines. |
+| `gemini-agent.ts` | Plain Gemini agent — minimal, ~50 lines |
+| `02-custom-tools.ts` | Calculator + weather tools wired in via `customTools` |
 
 ## Prerequisites
 

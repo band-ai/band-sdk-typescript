@@ -12,7 +12,8 @@ A Thenvoi agent backed by OpenAI's chat-completions API. The model receives Then
 
 | File | What it does |
 |------|--------------|
-| `openai-agent.ts` | Adapter + agent + CLI runner. ~50 lines. |
+| `openai-agent.ts` | Plain OpenAI agent — minimal, ~50 lines |
+| `02-custom-tools.ts` | Calculator + weather tools wired in via `customTools` |
 
 ## Prerequisites
 
@@ -60,7 +61,18 @@ The example uses defaults for everything but model + key. The full set of `OpenA
 new OpenAIAdapter({
   openAIModel: "gpt-4o",
   apiKey: process.env.OPENAI_API_KEY,
-  customSection: "Be terse. Always greet the user by name.",  // appended to system prompt
-  maxHistoryMessages: 30,                                      // shorter history
+  systemPrompt: "Be terse. Always greet the user by name.",
+  customTools: [...],     // see 02-custom-tools.ts
 });
+```
+
+## Yaml entries
+
+```yaml
+openai_agent:        # 01-openai-agent.ts
+  agent_id: ...
+  api_key: ...
+openai_tools_agent:  # 02-custom-tools.ts
+  agent_id: ...
+  api_key: ...
 ```

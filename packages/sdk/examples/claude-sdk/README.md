@@ -15,7 +15,7 @@ Use this when the agent should actually *do work in a repo* (read files, run com
 | File | What it does |
 |------|--------------|
 | `claude-sdk-agent.ts` | Plain Claude SDK agent — minimal, ~50 lines |
-| `02-extended-thinking.ts` | Same agent with `maxThinkingTokens` enabled and reasoning streamed back as Thenvoi events |
+| `02-extended-thinking.ts` | Same agent with `effort: "high"` and reasoning streamed back as Thenvoi events |
 | `03-tom-agent.ts` | Tom the cat — character agent backed by the Claude Agent SDK |
 | `04-jerry-agent.ts` | Jerry the mouse — counterpart to Tom |
 | `characters.ts` | Tom + Jerry character prompts (used by 03 and 04) |

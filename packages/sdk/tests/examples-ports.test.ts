@@ -295,6 +295,37 @@ describe("anthropic numbered scenarios", () => {
     expect(agent).toBeDefined();
     expect(typeof agent.run).toBe("function");
   });
+
+  it("06-custom-tools builds the tools agent (Anthropic)", async () => {
+    const { createToolsAgent } = await import(
+      "../examples/anthropic/06-custom-tools"
+    );
+    const agent = createToolsAgent();
+    expect(agent).toBeDefined();
+    expect(typeof agent.run).toBe("function");
+  });
+});
+
+// ── openai + gemini custom-tools scenarios ────────────────────────────────
+
+describe("openai/gemini custom-tools scenarios", () => {
+  it("openai 02-custom-tools builds the tools agent", async () => {
+    const { createToolsAgent } = await import(
+      "../examples/openai/02-custom-tools"
+    );
+    const agent = createToolsAgent();
+    expect(agent).toBeDefined();
+    expect(typeof agent.run).toBe("function");
+  });
+
+  it("gemini 02-custom-tools builds the tools agent", async () => {
+    const { createToolsAgent } = await import(
+      "../examples/gemini/02-custom-tools"
+    );
+    const agent = createToolsAgent();
+    expect(agent).toBeDefined();
+    expect(typeof agent.run).toBe("function");
+  });
 });
 
 // ── claude-sdk numbered scenarios ─────────────────────────────────────────

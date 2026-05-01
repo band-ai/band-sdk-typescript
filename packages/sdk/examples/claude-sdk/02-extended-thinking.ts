@@ -1,19 +1,25 @@
 /**
- * 02 — Claude SDK with extended thinking.
+ * 02 — Claude SDK with extended thinking effort.
  *
- * Turns on Claude's "extended thinking" mode (`maxThinkingTokens > 0`) so
- * the model is allowed to reason through hard problems before replying.
- * `enableExecutionReporting: true` surfaces tool calls and thinking
- * progress as Thenvoi `task` events, so the room can watch the agent
- * work — not just its final answer.
+ * Sets `effort: "high"` so the underlying Claude Agent SDK is allowed to
+ * reason through hard problems before replying. `enableExecutionReporting:
+ * true` surfaces tool calls and thinking progress as Thenvoi `task`
+ * events, so the room can watch the agent work — not just its final
+ * answer.
+ *
+ * Effort levels:
+ *   - "low"    — minimal thinking, fastest responses
+ *   - "medium" — moderate thinking
+ *   - "high"   — deep reasoning (default for non-trivial work)
+ *   - "max"    — maximum effort, Opus-only
  *
  * Use this when the task is genuinely hard (multi-step reasoning, code
- * analysis, planning). For simple lookups, leave thinking off — it costs
- * tokens.
+ * analysis, planning). For simple lookups, leave `effort` unset.
  */
 import {
   Agent,
   ClaudeSDKAdapter,
+  type ClaudeEffortLevel,
   isDirectExecution,
   loadAgentConfig,
 } from "@thenvoi/sdk";
@@ -28,8 +34,8 @@ When faced with challenging questions:
 interface ThinkingAgentOptions {
   model?: string;
   cwd?: string;
-  /** How many tokens Claude is allowed to use for internal reasoning. */
-  maxThinkingTokens?: number;
+  /** Reasoning effort: "low" / "medium" / "high" / "max" (Opus-only). */
+  effort?: ClaudeEffortLevel;
 }
 
 export function createThinkingAgent(
@@ -45,7 +51,7 @@ export function createThinkingAgent(
     permissionMode: "acceptEdits",
     enableMcpTools: true,
     customSection: THOUGHTFUL_INSTRUCTIONS,
-    maxThinkingTokens: options.maxThinkingTokens ?? 10_000,
+    effort: options.effort ?? "high",
     // Stream thinking + tool calls back into the Thenvoi room as events.
     enableExecutionReporting: true,
   });
@@ -64,7 +70,6 @@ export function createThinkingAgent(
 
 if (isDirectExecution(import.meta.url)) {
   const config = loadAgentConfig("claude_sdk_agent");
-  console.log("Starting Claude SDK agent with extended thinking…");
-  console.log("Max thinking tokens: 10000");
+  console.log("Starting Claude SDK agent with effort=high…");
   void createThinkingAgent({}, config).run();
 }

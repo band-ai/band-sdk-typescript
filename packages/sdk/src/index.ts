@@ -88,6 +88,7 @@ export type {
   OpencodeApprovalReply,
   OpencodeQuestionMode,
   ClaudeSDKAdapterOptions,
+  ClaudeEffortLevel,
   ClaudePermissionMode,
   CodexAdapterConfig,
   CodexApprovalPolicy,
