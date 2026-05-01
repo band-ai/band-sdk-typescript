@@ -15,7 +15,7 @@ If you just want Gemini's tool-calling API, the lighter-weight `gemini/` example
 | File | What it does |
 |------|--------------|
 | `google-adk-agent.ts` | Plain ADK agent — minimal |
-| `02-custom-instructions.ts` | Research persona on `gemini-2.5-pro` with execution reporting |
+| `02-custom-instructions.ts` | Research persona on `gemini-3-pro` with execution reporting |
 | `03-custom-tools.ts` | Calculator + weather tools wired in via `additionalTools` |
 
 ## Prerequisites
@@ -37,7 +37,7 @@ If you just want Gemini's tool-calling API, the lighter-weight `gemini/` example
    - `GOOGLE_GENAI_API_KEY` env var
 6. Optional model override:
    ```bash
-   export GOOGLE_ADK_MODEL=gemini-2.5-flash
+   export GOOGLE_ADK_MODEL=gemini-3-flash
    ```
 
 ## Run
@@ -66,7 +66,7 @@ pnpm --dir packages/sdk exec tsx examples/google-adk/google-adk-agent.ts
 
 ```ts
 new GoogleADKAdapter({
-  model: "gemini-2.5-pro",
+  model: "gemini-3-pro",
   customSection: "You are an internal devops bot. Always cite which runbook you used.",
 });
 ```

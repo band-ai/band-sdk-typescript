@@ -40,10 +40,10 @@ async function loadChatOpenAI(model: string): Promise<ChatModel> {
  */
 export async function createLLM(): Promise<ChatModel> {
   if (process.env.ANTHROPIC_API_KEY) {
-    return loadChatAnthropic("claude-sonnet-4-5-20250929");
+    return loadChatAnthropic("claude-sonnet-4-7");
   }
   if (process.env.OPENAI_API_KEY) {
-    return loadChatOpenAI("gpt-5.2");
+    return loadChatOpenAI("gpt-5.5");
   }
   throw new Error("Either ANTHROPIC_API_KEY or OPENAI_API_KEY must be set");
 }

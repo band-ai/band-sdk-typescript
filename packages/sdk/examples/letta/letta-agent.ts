@@ -28,7 +28,7 @@ export function createLettaAgent(
   overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
   const adapter = new LettaAdapter({
-    model: options.model ?? "openai/gpt-4o",
+    model: options.model ?? "openai/gpt-5.5",
     lettaApiKey: options.lettaApiKey,
     lettaBaseUrl: options.lettaBaseUrl,
     logger: new ConsoleLogger(),
@@ -61,7 +61,7 @@ if (isDirectExecution(import.meta.url)) {
 
   const config = loadAgentConfig("letta_agent");
   console.log("[letta-agent] Starting agent:", config.agentId);
-  console.log("[letta-agent] Model:", process.env.LETTA_MODEL ?? "openai/gpt-4o");
+  console.log("[letta-agent] Model:", process.env.LETTA_MODEL ?? "openai/gpt-5.5");
   console.log("[letta-agent] Letta target:", lettaBaseUrl ?? "cloud");
   void createLettaAgent(
     {

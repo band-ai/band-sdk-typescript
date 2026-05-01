@@ -40,7 +40,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 pnpm --dir packages/sdk exec tsx examples/anthropic/anthropic-agent.ts
 ```
 
-Default model is `claude-sonnet-4-6`. Override by editing `anthropicModel` in the file.
+Default model is `claude-sonnet-4-7`. Override by editing `anthropicModel` in the file.
 
 ## What "working" looks like
 
@@ -63,7 +63,7 @@ The example uses defaults for everything but model + key. Common knobs:
 
 ```ts
 new AnthropicAdapter({
-  anthropicModel: "claude-opus-4-6",
+  anthropicModel: "claude-opus-4-7",
   apiKey: process.env.ANTHROPIC_API_KEY,
   systemPrompt: "Always reply in bullet points.",
 });

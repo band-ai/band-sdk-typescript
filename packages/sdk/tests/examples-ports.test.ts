@@ -39,6 +39,10 @@ vi.mock("parlant-client", () => {
   return { ParlantClient };
 });
 
+vi.mock("@ai-sdk/openai", () => ({
+  openai: (id: string) => ({ id, provider: "openai" }),
+}));
+
 // ── langgraph 01–08 ───────────────────────────────────────────────────────
 
 describe("langgraph numbered scenarios", () => {
@@ -431,6 +435,19 @@ describe("triage-coordinator", () => {
       "../examples/triage-coordinator/security-specialist"
     );
     const agent = createSecurityAgent();
+    expect(agent).toBeDefined();
+    expect(typeof agent.run).toBe("function");
+  });
+});
+
+// ── vercel-ai-sdk ────────────────────────────────────────────────────────
+
+describe("vercel-ai-sdk example", () => {
+  it("builds a Vercel AI SDK-backed agent", async () => {
+    const { createVercelAgent } = await import(
+      "../examples/vercel-ai-sdk/vercel-ai-agent"
+    );
+    const agent = await createVercelAgent();
     expect(agent).toBeDefined();
     expect(typeof agent.run).toBe("function");
   });

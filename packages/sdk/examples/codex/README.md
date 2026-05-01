@@ -50,7 +50,7 @@ By default Codex uses `process.cwd()` as its working directory and is sandboxed 
 
 | Option | Default | Why you'd change it |
 |--------|---------|---------------------|
-| `model` | (Codex picks) | Pin to e.g. `"gpt-5.3-codex"` |
+| `model` | (Codex picks) | Pin to e.g. `"gpt-5.5-codex"` |
 | `approvalPolicy` | `"never"` | `"on-request"` if you want to gate shell commands |
 | `sandboxMode` | `"workspace-write"` | `"read-only"` for a non-destructive code reviewer |
 | `reasoningEffort` | (Codex default) | `"high"` / `"xhigh"` for harder tasks; costs more |

@@ -43,7 +43,7 @@ export function createSupportAgent(
   overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
   const adapter = new AnthropicAdapter({
-    anthropicModel: options.model ?? "claude-sonnet-4-6",
+    anthropicModel: options.model ?? "claude-sonnet-4-7",
     apiKey: options.apiKey,
     systemPrompt: SUPPORT_INSTRUCTIONS,
   });

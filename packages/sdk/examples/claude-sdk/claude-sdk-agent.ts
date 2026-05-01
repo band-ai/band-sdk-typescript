@@ -28,7 +28,7 @@ export function createClaudeSdkAgent(
   overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
   const adapter = new ClaudeSDKAdapter({
-    model: options.model ?? "claude-sonnet-4-6",
+    model: options.model ?? "claude-sonnet-4-7",
     cwd: options.cwd,
     // `acceptEdits` lets the SDK apply file edits without prompting. Use
     // `default` (interactive) or `bypassPermissions` if you want different

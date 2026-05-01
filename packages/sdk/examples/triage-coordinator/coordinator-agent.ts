@@ -78,7 +78,7 @@ export function createCoordinatorAgent(
   overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
   const adapter = new ClaudeSDKAdapter({
-    model: options.model ?? "claude-sonnet-4-6",
+    model: options.model ?? "claude-sonnet-4-7",
     permissionMode: "acceptEdits",
     enableMcpTools: true,
     customSection: COORDINATOR_PROMPT,

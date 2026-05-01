@@ -69,7 +69,7 @@ export function createSkepticAgent(
 ): Agent {
   const adapter = new CodexAdapter({
     config: {
-      model: options.model ?? process.env.SKEPTIC_MODEL ?? "gpt-5.3-codex",
+      model: options.model ?? process.env.SKEPTIC_MODEL ?? "gpt-5.5-codex",
       // Skeptic reasoning matters more than file ops; bump the effort.
       reasoningEffort: options.reasoningEffort
         ?? (process.env.SKEPTIC_REASONING_EFFORT as CodexAdapterConfig["reasoningEffort"])

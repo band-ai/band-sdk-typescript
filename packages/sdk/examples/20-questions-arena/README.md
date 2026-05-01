@@ -61,7 +61,7 @@ arena_guesser_4:
 ```bash
 pnpm --dir packages/sdk exec tsx examples/20-questions-arena/thinker-agent.ts
 # Pin a model if you want:
-pnpm --dir packages/sdk exec tsx examples/20-questions-arena/thinker-agent.ts --model claude-sonnet-4-6
+pnpm --dir packages/sdk exec tsx examples/20-questions-arena/thinker-agent.ts --model claude-sonnet-4-7
 ```
 
 The Thinker prints a startup banner, connects to Thenvoi, and idles until invited to a room.
@@ -70,8 +70,8 @@ The Thinker prints a startup banner, connects to Thenvoi, and idles until invite
 
 ```bash
 pnpm --dir packages/sdk exec tsx examples/20-questions-arena/guesser-agent.ts
-pnpm --dir packages/sdk exec tsx examples/20-questions-arena/guesser-agent.ts --config arena_guesser_2 --model gpt-4o
-pnpm --dir packages/sdk exec tsx examples/20-questions-arena/guesser-agent.ts --config arena_guesser_3 --model claude-opus-4-6
+pnpm --dir packages/sdk exec tsx examples/20-questions-arena/guesser-agent.ts --config arena_guesser_2 --model gpt-5.5
+pnpm --dir packages/sdk exec tsx examples/20-questions-arena/guesser-agent.ts --config arena_guesser_3 --model claude-opus-4-7
 ```
 
 Each guesser uses its own yaml key so they get different identities on the platform.

@@ -54,7 +54,7 @@ export async function createPlannerAgent(
   const customSection = await loadPlannerPrompt(workspace);
 
   const adapter = new ClaudeSDKAdapter({
-    model: options.model ?? "claude-sonnet-4-6",
+    model: options.model ?? "claude-sonnet-4-7",
     cwd: workspace,
     permissionMode: "acceptEdits",
     enableMcpTools: true,

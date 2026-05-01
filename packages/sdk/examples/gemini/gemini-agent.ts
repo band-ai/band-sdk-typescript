@@ -24,7 +24,7 @@ export function createGeminiAgent(
   overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
   const adapter = new GeminiAdapter({
-    geminiModel: options.model ?? "gemini-3-flash-preview",
+    geminiModel: options.model ?? "gemini-3-flash",
     apiKey: options.apiKey,
   });
 

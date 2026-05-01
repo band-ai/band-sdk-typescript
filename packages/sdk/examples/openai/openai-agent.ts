@@ -30,7 +30,7 @@ export function createOpenAIAgent(
   // function-call→platform-action mapping, and retries. You configure
   // model + key; everything else has sane defaults.
   const adapter = new OpenAIAdapter({
-    openAIModel: options.model ?? "gpt-5.2",
+    openAIModel: options.model ?? "gpt-5.5",
     apiKey: options.apiKey,
   });
 

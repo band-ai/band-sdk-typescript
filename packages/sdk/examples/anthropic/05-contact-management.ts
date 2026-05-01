@@ -61,7 +61,7 @@ export function createContactAgent(
   overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
   const adapter = new AnthropicAdapter({
-    anthropicModel: options.model ?? "claude-sonnet-4-6",
+    anthropicModel: options.model ?? "claude-sonnet-4-7",
     apiKey: options.apiKey,
     systemPrompt: [
       "You are a helpful assistant with contact management capabilities.",

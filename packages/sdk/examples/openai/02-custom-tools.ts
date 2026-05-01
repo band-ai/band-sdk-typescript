@@ -63,7 +63,7 @@ export function createToolsAgent(
   overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
   const adapter = new OpenAIAdapter({
-    openAIModel: options.model ?? "gpt-5.2",
+    openAIModel: options.model ?? "gpt-5.5",
     apiKey: options.apiKey,
     customTools: [calculatorTool, weatherTool],
     enableExecutionReporting: true,

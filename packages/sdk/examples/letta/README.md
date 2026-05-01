@@ -8,7 +8,7 @@ Works against Letta Cloud (managed) or a self-hosted Letta server.
 
 - Wiring `LettaAdapter` into `Agent.create`
 - Configuring cloud-vs-self-hosted via env (`LETTA_API_KEY` or `LETTA_BASE_URL`)
-- Provider-prefixed model IDs Letta uses (`openai/gpt-4o`, `anthropic/claude-...`)
+- Provider-prefixed model IDs Letta uses (`openai/gpt-5.5`, `anthropic/claude-...`)
 
 ## Files
 
@@ -34,13 +34,13 @@ letta_agent:
 **Letta Cloud:**
 ```bash
 export LETTA_API_KEY=...
-export LETTA_MODEL=openai/gpt-4o   # optional
+export LETTA_MODEL=openai/gpt-5.5   # optional
 ```
 
 **Self-hosted:**
 ```bash
 export LETTA_BASE_URL=http://localhost:8283
-export LETTA_MODEL=openai/gpt-4o   # optional
+export LETTA_MODEL=openai/gpt-5.5   # optional
 ```
 
 ## Run

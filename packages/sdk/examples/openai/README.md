@@ -35,7 +35,7 @@ export OPENAI_API_KEY=sk-...
 pnpm --dir packages/sdk exec tsx examples/openai/openai-agent.ts
 ```
 
-Override the model with the `OPENAI_MODEL` argument inside `createOpenAIAgent({ model: "gpt-4o-mini" })` or by editing `openAIModel` in the file. The default is `gpt-5.2`.
+Override the model with the `OPENAI_MODEL` argument inside `createOpenAIAgent({ model: "gpt-5.5-mini" })` or by editing `openAIModel` in the file. The default is `gpt-5.5`.
 
 ## What "working" looks like
 
@@ -59,7 +59,7 @@ The example uses defaults for everything but model + key. The full set of `OpenA
 
 ```ts
 new OpenAIAdapter({
-  openAIModel: "gpt-4o",
+  openAIModel: "gpt-5.5",
   apiKey: process.env.OPENAI_API_KEY,
   systemPrompt: "Be terse. Always greet the user by name.",
   customTools: [...],     // see 02-custom-tools.ts

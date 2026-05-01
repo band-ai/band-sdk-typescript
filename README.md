@@ -333,6 +333,7 @@ Working examples live in `packages/sdk/examples/`. Every folder is self-containe
 | `langgraph/` | LangGraph | Echo graph + 8 numbered scenarios (custom tools, personality, calculator/RAG/SQL subgraphs, Tom & Jerry) |
 | `letta/` | Letta | Persistent-memory agent |
 | `parlant/` | Parlant | Guideline-based behavior + 5 numbered scenarios |
+| `vercel-ai-sdk/` | Vercel AI SDK | Provider-agnostic via `@ai-sdk/*` (OpenAI, Anthropic, Google, …) |
 | `acp/` | ACP | Thenvoi as ACP agent (server) or wrap ACP binaries (client) |
 | `custom-adapter/` | SimpleAdapter | Write your own adapter from scratch |
 | `a2a-bridge/` | A2A | Bridge to external A2A agents |

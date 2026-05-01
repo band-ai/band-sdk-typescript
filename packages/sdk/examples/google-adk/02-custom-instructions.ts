@@ -30,8 +30,8 @@ export function createResearchAgent(
   overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
   const adapter = new GoogleADKAdapter({
-    // gemini-2.5-pro: heavier, better for research-style tasks.
-    model: options.model ?? "gemini-2.5-pro",
+    // gemini-3-pro: heavier, better for research-style tasks.
+    model: options.model ?? "gemini-3-pro",
     customSection: RESEARCH_INSTRUCTIONS,
     enableExecutionReporting: true,
   });

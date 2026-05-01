@@ -22,7 +22,7 @@ The original `langgraph-agent.ts` (an in-memory `EchoLangGraph` with no LLM) sta
 - Node 20+, pnpm.
 - Provider package(s):
   ```bash
-  pnpm add @langchain/openai            # required for 01–08 (default model is gpt-4o)
+  pnpm add @langchain/openai            # required for 01–08 (default model is gpt-5.5)
   pnpm add @langchain/anthropic         # only if you want to use Claude models
   ```
   `@langchain/langgraph` is already a dependency of this SDK.

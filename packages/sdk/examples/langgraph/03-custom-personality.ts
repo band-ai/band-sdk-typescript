@@ -19,7 +19,7 @@ export async function createPirateAgent(
   options: { model?: string } = {},
   overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Promise<Agent> {
-  const llm = await loadChatOpenAI(options.model ?? "gpt-4o");
+  const llm = await loadChatOpenAI(options.model ?? "gpt-5.5");
   const checkpointer = await loadMemorySaver();
 
   const adapter = new LangGraphAdapter({

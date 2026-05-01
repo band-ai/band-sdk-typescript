@@ -44,7 +44,7 @@ export function createThinkingAgent(
 ): Agent {
   const adapter = new ClaudeSDKAdapter({
     // `opus` is a family alias the Claude CLI resolves to the latest Opus
-    // at runtime. Pin a specific version (`claude-opus-4-6`) if you need
+    // at runtime. Pin a specific version (`claude-opus-4-7`) if you need
     // determinism across releases.
     model: options.model ?? "opus",
     cwd: options.cwd,

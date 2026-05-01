@@ -18,6 +18,7 @@ Each subfolder is intentionally standalone so you can copy a single folder out a
 | `langgraph/` | LangGraph echo graph + 8 numbered scenarios (custom tools, personality, calculator/RAG/SQL subgraphs, Tom & Jerry) |
 | `letta/` | Letta-backed agent (`LETTA_API_KEY` or `LETTA_BASE_URL`) |
 | `parlant/` | Parlant adapter + 5 numbered scenarios (basic, guidelines, support, Tom, Jerry) |
+| `vercel-ai-sdk/` | Vercel AI SDK adapter — provider-agnostic via `@ai-sdk/*` |
 | `a2a-bridge/` | Bridge to a remote A2A agent (`A2A_AGENT_URL`) |
 | `a2a-gateway/` | Expose Thenvoi peers as A2A endpoints |
 | `acp/` | Agent Client Protocol: Thenvoi as an ACP agent (server) or wrapping an ACP agent (client) |

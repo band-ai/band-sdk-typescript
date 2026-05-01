@@ -49,7 +49,7 @@ export async function createReviewerAgent(
 
   const adapter = new CodexAdapter({
     config: {
-      model: options.model ?? process.env.REVIEWER_MODEL ?? "gpt-5.3-codex",
+      model: options.model ?? process.env.REVIEWER_MODEL ?? "gpt-5.5-codex",
       cwd: workspace,
       // Reviewer is non-destructive in spirit but needs to write to
       // `notes/review.md`; keep `workspace-write`. Set approvalPolicy
