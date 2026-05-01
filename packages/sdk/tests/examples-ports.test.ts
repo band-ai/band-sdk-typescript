@@ -382,3 +382,56 @@ describe("acp examples", () => {
     expect(typeof agent.run).toBe("function");
   });
 });
+
+// ── debate-agents (Claude advocate + Codex skeptic) ───────────────────────
+
+describe("debate-agents", () => {
+  it("advocate-agent builds the Claude advocate", async () => {
+    const { createAdvocateAgent } = await import(
+      "../examples/debate-agents/advocate-agent"
+    );
+    const agent = createAdvocateAgent();
+    expect(agent).toBeDefined();
+    expect(typeof agent.run).toBe("function");
+  });
+
+  it("skeptic-agent builds the Codex skeptic", async () => {
+    const { createSkepticAgent } = await import(
+      "../examples/debate-agents/skeptic-agent"
+    );
+    const agent = createSkepticAgent();
+    expect(agent).toBeDefined();
+    expect(typeof agent.run).toBe("function");
+  });
+});
+
+// ── triage-coordinator (router + specialists) ────────────────────────────
+
+describe("triage-coordinator", () => {
+  it("coordinator-agent builds the routing coordinator", async () => {
+    const { createCoordinatorAgent } = await import(
+      "../examples/triage-coordinator/coordinator-agent"
+    );
+    const agent = createCoordinatorAgent();
+    expect(agent).toBeDefined();
+    expect(typeof agent.run).toBe("function");
+  });
+
+  it("frontend-specialist builds the frontend specialist", async () => {
+    const { createFrontendAgent } = await import(
+      "../examples/triage-coordinator/frontend-specialist"
+    );
+    const agent = createFrontendAgent();
+    expect(agent).toBeDefined();
+    expect(typeof agent.run).toBe("function");
+  });
+
+  it("security-specialist builds the security specialist", async () => {
+    const { createSecurityAgent } = await import(
+      "../examples/triage-coordinator/security-specialist"
+    );
+    const agent = createSecurityAgent();
+    expect(agent).toBeDefined();
+    expect(typeof agent.run).toBe("function");
+  });
+});

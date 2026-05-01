@@ -23,6 +23,8 @@ Each subfolder is intentionally standalone so you can copy a single folder out a
 | `acp/` | Agent Client Protocol: Thenvoi as an ACP agent (server) or wrapping an ACP agent (client) |
 | `20-questions-arena/` | Multi-agent 20 Questions game (one Thinker vs. N Guessers, LangGraph-backed) |
 | `coding-agents/` | Claude planner + Codex reviewer pair sharing a workspace |
+| `debate-agents/` | Claude advocate vs Codex skeptic — structured debate via mentions |
+| `triage-coordinator/` | Coordinator that routes user questions to specialist agents via `lookup_peers` |
 | `linear-thenvoi/` | Linear webhook bridge and embedded bridge agent |
 
 ## Common setup

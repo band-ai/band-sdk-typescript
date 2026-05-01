@@ -339,6 +339,8 @@ Working examples live in `packages/sdk/examples/`. Every folder is self-containe
 | `a2a-gateway/` | A2A Gateway | Expose Thenvoi peers as A2A endpoints |
 | `20-questions-arena/` | LangGraph | Multi-agent 20 Questions game |
 | `coding-agents/` | Claude SDK + Codex | Planner + reviewer pair sharing a workspace |
+| `debate-agents/` | Claude SDK + Codex | Advocate vs skeptic — structured debate via mentions |
+| `triage-coordinator/` | Multi-adapter | Coordinator routes questions to specialists via `lookup_peers` |
 | `linear-thenvoi/` | Linear | Webhook bridge + embedded bridge agent |
 
 ```bash
