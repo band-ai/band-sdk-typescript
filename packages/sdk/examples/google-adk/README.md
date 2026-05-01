@@ -14,7 +14,9 @@ If you just want Gemini's tool-calling API, the lighter-weight `gemini/` example
 
 | File | What it does |
 |------|--------------|
-| `google-adk-agent.ts` | Adapter + agent + CLI runner. ~50 lines. |
+| `google-adk-agent.ts` | Plain ADK agent — minimal |
+| `02-custom-instructions.ts` | Research persona on `gemini-2.5-pro` with execution reporting |
+| `03-custom-tools.ts` | Calculator + weather tools wired in via `additionalTools` |
 
 ## Prerequisites
 

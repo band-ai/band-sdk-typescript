@@ -12,7 +12,12 @@ A Thenvoi agent backed by Anthropic's Messages API. Thenvoi platform tools becom
 
 | File | What it does |
 |------|--------------|
-| `anthropic-agent.ts` | Adapter + agent + CLI runner. ~50 lines. |
+| `anthropic-agent.ts` | Plain Anthropic agent — minimal, ~50 lines |
+| `02-custom-instructions.ts` | Specialized "support agent" persona via `systemPrompt` |
+| `03-tom-agent.ts` | Tom the cat — character agent that pursues Jerry |
+| `04-jerry-agent.ts` | Jerry the mouse — counterpart to Tom |
+| `05-contact-management.ts` | Auto-approve incoming contact requests via `ContactEventConfig` callback |
+| `characters.ts` | Tom + Jerry character prompts (used by 03 and 04) |
 
 ## Prerequisites
 
@@ -53,11 +58,29 @@ Default model is `claude-sonnet-4-6`. Override by editing `anthropicModel` in th
 
 ## Customizing
 
+The example uses defaults for everything but model + key. Common knobs:
+
 ```ts
 new AnthropicAdapter({
   anthropicModel: "claude-opus-4-6",
   apiKey: process.env.ANTHROPIC_API_KEY,
-  customSection: "Always reply in bullet points.",
-  maxHistoryMessages: 50,
+  systemPrompt: "Always reply in bullet points.",
 });
+```
+
+## Yaml entries used by the numbered scenarios
+
+```yaml
+anthropic_agent:    # 01-anthropic-agent.ts (the plain runner) and 05
+  agent_id: ...
+  api_key: ...
+support_agent:      # 02-custom-instructions.ts
+  agent_id: ...
+  api_key: ...
+tom_agent:          # 03-tom-agent.ts
+  agent_id: ...
+  api_key: ...
+jerry_agent:        # 04-jerry-agent.ts
+  agent_id: ...
+  api_key: ...
 ```

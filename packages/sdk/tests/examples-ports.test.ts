@@ -237,6 +237,95 @@ describe("opencode + google-adk examples", () => {
     expect(agent).toBeDefined();
     expect(typeof agent.run).toBe("function");
   });
+
+  it("google-adk 02-custom-instructions builds the research agent", async () => {
+    const { createResearchAgent } = await import(
+      "../examples/google-adk/02-custom-instructions"
+    );
+    const agent = createResearchAgent();
+    expect(agent).toBeDefined();
+    expect(typeof agent.run).toBe("function");
+  });
+
+  it("google-adk 03-custom-tools builds the tools agent", async () => {
+    const { createToolsAgent } = await import(
+      "../examples/google-adk/03-custom-tools"
+    );
+    const agent = createToolsAgent();
+    expect(agent).toBeDefined();
+    expect(typeof agent.run).toBe("function");
+  });
+});
+
+// ── anthropic numbered scenarios ──────────────────────────────────────────
+
+describe("anthropic numbered scenarios", () => {
+  it("02-custom-instructions builds the support agent", async () => {
+    const { createSupportAgent } = await import(
+      "../examples/anthropic/02-custom-instructions"
+    );
+    const agent = createSupportAgent();
+    expect(agent).toBeDefined();
+    expect(typeof agent.run).toBe("function");
+  });
+
+  it("03-tom-agent builds Tom (Anthropic)", async () => {
+    const { createTomAgent } = await import(
+      "../examples/anthropic/03-tom-agent"
+    );
+    const agent = createTomAgent();
+    expect(agent).toBeDefined();
+    expect(typeof agent.run).toBe("function");
+  });
+
+  it("04-jerry-agent builds Jerry (Anthropic)", async () => {
+    const { createJerryAgent } = await import(
+      "../examples/anthropic/04-jerry-agent"
+    );
+    const agent = createJerryAgent();
+    expect(agent).toBeDefined();
+    expect(typeof agent.run).toBe("function");
+  });
+
+  it("05-contact-management builds the contact-managed agent", async () => {
+    const { createContactAgent } = await import(
+      "../examples/anthropic/05-contact-management"
+    );
+    const agent = createContactAgent();
+    expect(agent).toBeDefined();
+    expect(typeof agent.run).toBe("function");
+  });
+});
+
+// ── claude-sdk numbered scenarios ─────────────────────────────────────────
+
+describe("claude-sdk numbered scenarios", () => {
+  it("02-extended-thinking builds the thinking agent", async () => {
+    const { createThinkingAgent } = await import(
+      "../examples/claude-sdk/02-extended-thinking"
+    );
+    const agent = createThinkingAgent();
+    expect(agent).toBeDefined();
+    expect(typeof agent.run).toBe("function");
+  });
+
+  it("03-tom-agent builds Tom (Claude SDK)", async () => {
+    const { createTomAgent } = await import(
+      "../examples/claude-sdk/03-tom-agent"
+    );
+    const agent = createTomAgent();
+    expect(agent).toBeDefined();
+    expect(typeof agent.run).toBe("function");
+  });
+
+  it("04-jerry-agent builds Jerry (Claude SDK)", async () => {
+    const { createJerryAgent } = await import(
+      "../examples/claude-sdk/04-jerry-agent"
+    );
+    const agent = createJerryAgent();
+    expect(agent).toBeDefined();
+    expect(typeof agent.run).toBe("function");
+  });
 });
 
 // ── acp (server + client) ─────────────────────────────────────────────────
