@@ -18,7 +18,7 @@ export function createTomAgent(
   overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
   const adapter = new ClaudeSDKAdapter({
-    model: options.model ?? "claude-sonnet-4-7",
+    model: options.model ?? "claude-sonnet-4-6",
     cwd: options.cwd,
     permissionMode: "acceptEdits",
     enableMcpTools: true,

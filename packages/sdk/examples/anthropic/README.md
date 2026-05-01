@@ -40,7 +40,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 pnpm --dir packages/sdk exec tsx examples/anthropic/anthropic-agent.ts
 ```
 
-Default model is `claude-sonnet-4-7`. Override by editing `anthropicModel` in the file.
+Default model is `claude-sonnet-4-6`. Override by editing `anthropicModel` in the file.
 
 ## What "working" looks like
 

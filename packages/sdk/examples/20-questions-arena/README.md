@@ -61,7 +61,7 @@ arena_guesser_4:
 ```bash
 pnpm --dir packages/sdk exec tsx examples/20-questions-arena/thinker-agent.ts
 # Pin a model if you want:
-pnpm --dir packages/sdk exec tsx examples/20-questions-arena/thinker-agent.ts --model claude-sonnet-4-7
+pnpm --dir packages/sdk exec tsx examples/20-questions-arena/thinker-agent.ts --model claude-sonnet-4-6
 ```
 
 The Thinker prints a startup banner, connects to Thenvoi, and idles until invited to a room.

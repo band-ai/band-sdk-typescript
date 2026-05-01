@@ -19,7 +19,7 @@ export function createJerryAgent(
   overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
   const adapter = new AnthropicAdapter({
-    anthropicModel: options.model ?? "claude-sonnet-4-7",
+    anthropicModel: options.model ?? "claude-sonnet-4-6",
     apiKey: options.apiKey,
     systemPrompt: generateJerryPrompt("Jerry"),
   });

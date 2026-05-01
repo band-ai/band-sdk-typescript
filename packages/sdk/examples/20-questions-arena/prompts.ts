@@ -40,7 +40,7 @@ async function loadChatOpenAI(model: string): Promise<ChatModel> {
  */
 export async function createLLM(): Promise<ChatModel> {
   if (process.env.ANTHROPIC_API_KEY) {
-    return loadChatAnthropic("claude-sonnet-4-7");
+    return loadChatAnthropic("claude-sonnet-4-6");
   }
   if (process.env.OPENAI_API_KEY) {
     return loadChatOpenAI("gpt-5.5");

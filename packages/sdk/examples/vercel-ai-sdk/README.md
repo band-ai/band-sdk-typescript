@@ -61,7 +61,7 @@ The example is intentionally minimal. To use Anthropic instead:
 ```ts
 async function loadDefaultModel(modelId: string) {
   const mod = await import("@ai-sdk/anthropic");
-  return mod.anthropic(modelId);  // e.g. "claude-sonnet-4-7"
+  return mod.anthropic(modelId);  // e.g. "claude-sonnet-4-6"
 }
 ```
 
@@ -69,7 +69,7 @@ async function loadDefaultModel(modelId: string) {
 
 ```ts
 import { anthropic } from "@ai-sdk/anthropic";
-await createVercelAgent({ model: anthropic("claude-sonnet-4-7") }, config);
+await createVercelAgent({ model: anthropic("claude-sonnet-4-6") }, config);
 ```
 
 The Thenvoi-side wiring doesn't change.
