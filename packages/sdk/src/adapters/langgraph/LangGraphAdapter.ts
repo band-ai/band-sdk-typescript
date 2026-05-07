@@ -248,7 +248,11 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     config: Record<string, unknown>,
     tools: AdapterToolsProtocol,
   ): Promise<string | null> {
-    const stream = graph.streamEvents?.(input, config, { version: "v2" });
+    // LangChain core 1.x reads `version` from the second arg (options),
+    // not the third (streamOptions). Older 0.x core accepted it as the
+    // third arg; merging into both keeps both versions of @langchain/core
+    // working without forcing a peer-dep bump on consumers.
+    const stream = graph.streamEvents?.(input, { ...config, version: "v2" }, { version: "v2" });
     if (!stream) {
       return null;
     }
@@ -358,8 +362,17 @@ function stringifyToolResult(
 }
 
 function extractAssistantText(result: unknown): string | null {
-  if (typeof result === "string" && result.trim().length > 0) {
-    return result.trim();
+  if (typeof result === "string") {
+    const trimmed = result.trim();
+    if (trimmed.length === 0) return null;
+    // LangGraph on_chain_end events fire for every node in the graph, and
+    // condition/branch/end nodes hand back the *next state name* (e.g.
+    // "__end__", "__start__", "agent") as their output. Those are routing
+    // tokens, not assistant content — skip them.
+    if (trimmed === "__end__" || trimmed === "__start__" || /^__[a-z]+__$/i.test(trimmed)) {
+      return null;
+    }
+    return trimmed;
   }
 
   const record = asOptionalRecord(result) ?? {};

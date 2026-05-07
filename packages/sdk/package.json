@@ -171,6 +171,8 @@
     "@agentclientprotocol/sdk": "^0.16.1",
     "@ai-sdk/openai": "^3.0.62",
     "@anthropic-ai/claude-agent-sdk": "^0.2.63",
+    "@langchain/anthropic": "^1.3.29",
+    "@langchain/openai": "^1.4.5",
     "@linear/sdk": "^76.0.0",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@openai/codex-sdk": "^0.107.0",

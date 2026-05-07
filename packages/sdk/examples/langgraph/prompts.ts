@@ -10,7 +10,6 @@ export type ChatModel = unknown;
 export async function loadChatOpenAI(model: string): Promise<ChatModel> {
   let mod: { ChatOpenAI: new (opts: { model: string }) => unknown };
   try {
-    // @ts-expect-error optional peer dep
     mod = await import("@langchain/openai");
   } catch {
     throw new Error(
@@ -23,7 +22,6 @@ export async function loadChatOpenAI(model: string): Promise<ChatModel> {
 export async function loadChatAnthropic(model: string): Promise<ChatModel> {
   let mod: { ChatAnthropic: new (opts: { model: string }) => unknown };
   try {
-    // @ts-expect-error optional peer dep
     mod = await import("@langchain/anthropic");
   } catch {
     throw new Error(

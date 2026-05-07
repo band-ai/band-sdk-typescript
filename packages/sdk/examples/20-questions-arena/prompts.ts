@@ -11,7 +11,6 @@ export type ChatModel = unknown;
 async function loadChatAnthropic(model: string): Promise<ChatModel> {
   let mod: { ChatAnthropic: new (opts: { model: string }) => unknown };
   try {
-    // @ts-expect-error optional peer dep — install @langchain/anthropic to use this provider
     mod = await import("@langchain/anthropic");
   } catch {
     throw new Error(
@@ -24,7 +23,6 @@ async function loadChatAnthropic(model: string): Promise<ChatModel> {
 async function loadChatOpenAI(model: string): Promise<ChatModel> {
   let mod: { ChatOpenAI: new (opts: { model: string }) => unknown };
   try {
-    // @ts-expect-error optional peer dep — install @langchain/openai to use this provider
     mod = await import("@langchain/openai");
   } catch {
     throw new Error(
