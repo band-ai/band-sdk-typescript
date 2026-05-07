@@ -719,6 +719,7 @@ async function loadDefaultA2AClientFactory(): Promise<A2AClientFactory> {
 
   const ClientFactoryCtor = module.ClientFactory as
     | (new (options?: Record<string, unknown>) => {
+        createFromAgentCard(agentCard: unknown): Promise<A2AClientLike>;
         createFromUrl(url: string): Promise<A2AClientLike>;
       })
     | undefined;
@@ -741,6 +742,22 @@ async function loadDefaultA2AClientFactory(): Promise<A2AClientFactory> {
         new RestTransportFactoryCtor({ fetchImpl }),
       ],
     });
+    // When auth headers are configured, fetch the agent card ourselves so the
+    // discovery request carries them. Without this, @a2a-js/sdk's internal
+    // DefaultAgentCardResolver fires an unauthenticated GET to
+    // <remoteUrl>/.well-known/agent-card.json and 401s before any transport
+    // gets a chance to attach Authorization headers.
+    if (Object.keys(authHeaders).length > 0) {
+      const cardUrl = new URL(".well-known/agent-card.json", remoteUrl).toString();
+      const cardResponse = await fetchImpl(cardUrl, { method: "GET" });
+      if (!cardResponse.ok) {
+        throw new Error(
+          `Failed to fetch authenticated A2A agent card from ${cardUrl}: ${cardResponse.status}`,
+        );
+      }
+      const agentCard = (await cardResponse.json()) as unknown;
+      return factory.createFromAgentCard(agentCard);
+    }
     return factory.createFromUrl(remoteUrl);
   };
 }

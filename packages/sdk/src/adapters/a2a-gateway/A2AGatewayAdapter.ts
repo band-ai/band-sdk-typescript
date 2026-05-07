@@ -265,13 +265,6 @@ export class A2AGatewayAdapter
       await this.thenvoiRest.createChatMessage(roomId, {
         content: buildMentionedContent(peer.name, content),
         mentions: buildMentions(peer),
-        metadata: {
-          gateway_context_id: contextId,
-          gateway_room_id: roomId,
-          gateway_task_id: request.taskId,
-          gateway_peer_id: peer.id,
-          gateway_peer_slug: peer.slug,
-        },
       });
     } catch (error) {
       this.removePending(pending);
@@ -425,9 +418,10 @@ export class A2AGatewayAdapter
     }
 
     const normalizedContextId = contextId && contextId.length > 0 ? contextId : randomUUID();
-    const created = await this.thenvoiRest.createChat(
-      `a2a:gateway:${normalizedContextId}`,
-    );
+    // Thenvoi's createChat task_id field is validated as a UUID. A2A contexts
+    // aren't Thenvoi tasks, so don't masquerade the context id as one — leave
+    // task_id unset and track context↔room mapping in memory below.
+    const created = await this.thenvoiRest.createChat();
     const roomId = created.id;
 
     await this.thenvoiRest.addChatParticipant(roomId, {
