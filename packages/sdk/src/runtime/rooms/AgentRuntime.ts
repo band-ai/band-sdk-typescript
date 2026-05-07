@@ -227,10 +227,12 @@ export class AgentRuntime {
           trackedRooms: this.subscribedRooms,
           roomFilter: this.roomFilter,
           onJoined: async (roomId) => {
-            // `room_added` from the platform: same fresh-room argument as
-            // the bulk hydrate path — no in-flight processing state to
-            // recover, so skip the startup REST polls.
-            this.getOrCreateExecution(roomId, { skipStartupCatchup: true });
+            // `room_added` from the platform: another participant just added
+            // us to a chat. There may already be a message in the chat that
+            // arrived before our channel-join completes, so we still need
+            // the one-shot REST catch-up here to avoid losing it. (Only the
+            // startup bulk-rehydrate path skips the catch-up.)
+            this.getOrCreateExecution(roomId);
             await this.onRoomJoined?.(roomId, event.payload as MetadataMap);
           },
         });

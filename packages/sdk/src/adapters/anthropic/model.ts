@@ -81,7 +81,11 @@ function toAnthropicMessages(
 
   const rounds = request.toolRounds ?? [];
   if (rounds.length === 0) {
-    return messages;
+    // Anthropic rejects conversations that end with an assistant turn unless
+    // we're explicitly prefilling. In multi-agent rooms the most recent turn
+    // is often a peer-agent message (which the runtime tags `assistant`); add
+    // a tiny continuation user turn so the API has something to respond to.
+    return ensureEndsWithUser(messages);
   }
 
   for (const round of rounds) {
@@ -107,6 +111,22 @@ function toAnthropicMessages(
   }
 
   return messages;
+}
+
+function ensureEndsWithUser(
+  messages: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== "assistant") {
+    return messages;
+  }
+  return [
+    ...messages,
+    {
+      role: "user",
+      content: "Continue.",
+    },
+  ];
 }
 
 function toAnthropicMessageWithSystemAsUser(
