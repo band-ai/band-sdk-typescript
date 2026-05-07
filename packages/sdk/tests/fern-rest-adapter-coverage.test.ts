@@ -258,6 +258,40 @@ describe("FernRestAdapter coverage", () => {
     expect(createChatMessage).toHaveBeenCalledTimes(2);
   });
 
+  it("retries listMessages on 429 instead of letting the polling loop crash", async () => {
+    const listMessages = vi.fn()
+      .mockRejectedValueOnce(rateLimitError())
+      .mockResolvedValueOnce({
+        data: [
+          {
+            id: "m-1",
+            content: "hi",
+            messageType: "text",
+            senderId: "u1",
+            senderType: "User",
+            insertedAt: "2026-03-10T00:00:00.000Z",
+            updatedAt: null,
+          },
+        ],
+        metadata: { page: 1, page_size: 50, total_count: 1, total_pages: 1 },
+      });
+    const adapter = new FernRestAdapter({
+      chatMessages: {
+        listMessages,
+      },
+    });
+
+    const result = await adapter.listMessages({
+      chatId: "room-1",
+      page: 1,
+      pageSize: 50,
+      status: "processing",
+    });
+
+    expect(listMessages).toHaveBeenCalledTimes(2);
+    expect(result.data.map((m) => m.id)).toEqual(["m-1"]);
+  });
+
   it("falls back from createChatEvent to createChatMessage when the event endpoint is unavailable", async () => {
     const createMyChatMessage = vi.fn(async () => ({ data: { ok: true } }));
     const adapter = new FernRestAdapter({

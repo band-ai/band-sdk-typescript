@@ -894,7 +894,10 @@ export class FernRestAdapter implements RestApi {
     const listMessagesApi = this.client.chatMessages?.listMessages?.bind(this.client.chatMessages);
     if (listMessagesApi) {
       return normalizeFernPaginatedResponse<PlatformChatMessage>(
-        await listMessagesApi(request.chatId, listRequest, requestOptions),
+        await withRateLimitRetry(
+          () => listMessagesApi(request.chatId, listRequest, requestOptions),
+          { retryLimit: MESSAGE_SEND_RETRY_LIMIT, baseDelayMs: MESSAGE_SEND_RETRY_BASE_DELAY_MS },
+        ),
         normalizePlatformMessageRecord,
       );
     }
@@ -905,7 +908,10 @@ export class FernRestAdapter implements RestApi {
     }
 
     return normalizeFernPaginatedResponse<PlatformChatMessage>(
-      await listAgentMessagesApi(request.chatId, listRequest, requestOptions),
+      await withRateLimitRetry(
+        () => listAgentMessagesApi(request.chatId, listRequest, requestOptions),
+        { retryLimit: MESSAGE_SEND_RETRY_LIMIT, baseDelayMs: MESSAGE_SEND_RETRY_BASE_DELAY_MS },
+      ),
       normalizePlatformMessageRecord,
     );
   }
