@@ -28,25 +28,35 @@ export interface VercelAISDKToolCallingModelOptions {
   model: unknown;
   generateText?: VercelAISDKGenerateText;
   toolFactory?: VercelAISDKToolFactory;
+  jsonSchema?: VercelAISDKJsonSchemaFactory;
 }
 
 export class VercelAISDKToolCallingModel implements ToolCallingModel {
   private readonly model: unknown;
   private readonly generateTextOverride?: VercelAISDKGenerateText;
   private readonly toolFactoryOverride?: VercelAISDKToolFactory;
+  private readonly jsonSchemaOverride?: VercelAISDKJsonSchemaFactory;
   private readonly runtimeLoader: LazyAsyncValue<VercelAISDKRuntime>;
 
   public constructor(options: VercelAISDKToolCallingModelOptions) {
     this.model = options.model;
     this.generateTextOverride = options.generateText;
     this.toolFactoryOverride = options.toolFactory;
+    this.jsonSchemaOverride = options.jsonSchema;
     this.runtimeLoader = new LazyAsyncValue({
       load: async () => {
+        if (this.generateTextOverride && this.toolFactoryOverride) {
+          return {
+            generateText: this.generateTextOverride,
+            tool: this.toolFactoryOverride,
+            jsonSchema: this.jsonSchemaOverride ?? ((schema) => schema),
+          };
+        }
         const runtime = await loadVercelAISDKRuntime();
         return {
           generateText: this.generateTextOverride ?? runtime.generateText,
           tool: this.toolFactoryOverride ?? runtime.tool,
-          jsonSchema: runtime.jsonSchema,
+          jsonSchema: this.jsonSchemaOverride ?? runtime.jsonSchema,
         };
       },
     });

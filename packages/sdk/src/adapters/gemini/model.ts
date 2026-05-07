@@ -257,7 +257,7 @@ export class GeminiToolCallingModel implements ToolCallingModel {
           id,
           name: fc.name,
           input: fc.args && typeof fc.args === "object" && !Array.isArray(fc.args)
-            ? fc.args as Record<string, unknown>
+            ? fc.args
             : {},
           ...(typeof sig === "string" && sig.length > 0
             ? { providerMetadata: { thoughtSignature: sig } }

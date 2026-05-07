@@ -207,7 +207,7 @@ describe("OpencodeAdapter", () => {
     ]);
     expect(client.promptCalls[0]?.payload.parts).toEqual([{
       type: "text",
-      text: "[System]: Participants update\n[System]: Contacts update\n[User]: Help with this bug",
+      text: "[System]: The Thenvoi room_id for every thenvoi_* tool call this turn is \"room-1\". Pass it as the room_id argument exactly as written; do not invent or substitute another id.\n[System]: Participants update\n[System]: Contacts update\n[User]: Help with this bug",
     }]);
     expect(tools.events[0]).toMatchObject({
       messageType: "task",
@@ -321,7 +321,7 @@ describe("OpencodeAdapter", () => {
 
     expect(client.promptCalls[0]?.payload.parts).toEqual([{
       type: "text",
-      text: "Previous OpenCode session state was missing. Recovered room history:\n[Jane]: previous context\n[User]: Recover this session",
+      text: "[System]: The Thenvoi room_id for every thenvoi_* tool call this turn is \"room-3\". Pass it as the room_id argument exactly as written; do not invent or substitute another id.\nPrevious OpenCode session state was missing. Recovered room history:\n[Jane]: previous context\n[User]: Recover this session",
     }]);
     expect(tools.messages).toContain("OpenCode completed the turn without a text reply.");
   });
