@@ -425,7 +425,14 @@ describe("PlatformRuntime", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(seenMessages).toEqual([
-      "recover me first",
+      // Auto-subscribed existing rooms no longer pre-poll /messages/next at
+      // startup (skipStartupCatchup=true on the rehydrate path), so the
+      // backlog "m-backlog" / "recover me first" returned by the mocked
+      // getStaleProcessingMessages stays untouched. The two messages still
+      // delivered ("m-sync" and "m-live") are both live WebSocket
+      // notifications that bypass the startup REST polls. Crash-recovery
+      // for in-flight `processing` messages still runs separately via the
+      // explicit bootstrapMessage / room_added paths.
       "recover me second",
       "live only",
     ]);
