@@ -277,6 +277,7 @@ describe("FernRestAdapter coverage", () => {
       });
     const adapter = new FernRestAdapter({
       chatMessages: {
+        createChatMessage: async () => ({ data: {} }),
         listMessages,
       },
     });
