@@ -38,7 +38,7 @@ skeptic:
 Optional skeptic tunables:
 
 ```bash
-export SKEPTIC_MODEL=gpt-5.5-codex
+export SKEPTIC_MODEL=gpt-5.3-codex
 export SKEPTIC_REASONING_EFFORT=high   # minimal | low | medium | high | xhigh
 ```
 

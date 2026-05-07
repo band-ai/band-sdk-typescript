@@ -260,6 +260,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       try {
         await client.promptAsync(sessionId, {
           parts: this.buildPromptParts(message, participantsMessage, contactsMessage, {
+            roomId: roomState.roomId,
             replayMessages: restoredMissingSession ? history.replayMessages : null,
           }),
           system: this.systemPrompt,
@@ -999,9 +1000,14 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     message: PlatformMessage,
     participantsMessage: string | null,
     contactsMessage: string | null,
-    options?: { replayMessages?: string[] | null },
+    options?: { roomId?: string; replayMessages?: string[] | null },
   ): Array<Record<string, unknown>> {
     const lines: string[] = [];
+    if (options?.roomId) {
+      lines.push(
+        `[System]: The Thenvoi room_id for every thenvoi_* tool call this turn is "${options.roomId}". Pass it as the room_id argument exactly as written; do not invent or substitute another id.`,
+      );
+    }
     if (options?.replayMessages && options.replayMessages.length > 0) {
       lines.push("Previous OpenCode session state was missing. Recovered room history:");
       lines.push(...options.replayMessages);

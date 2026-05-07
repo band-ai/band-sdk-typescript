@@ -31,8 +31,6 @@ import {
 async function loadDefaultModel(modelId: string): Promise<unknown> {
   let mod: { openai: (id: string) => unknown };
   try {
-    // @ts-expect-error optional peer dep — install @ai-sdk/openai (or
-    // any other @ai-sdk provider) and swap this import to use it.
     mod = await import("@ai-sdk/openai");
   } catch {
     throw new Error(

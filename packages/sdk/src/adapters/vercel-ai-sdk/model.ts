@@ -7,19 +7,21 @@ import type {
 import { UnsupportedFeatureError } from "../../core/errors";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { toDisplayText } from "../shared/coercion";
-import { mapConversationMessages, normalizeConversationRole } from "../tool-calling/valueUtils";
+import { normalizeConversationRole } from "../tool-calling/valueUtils";
 
 interface VercelAISDKToolDefinition {
   description?: string;
-  inputSchema: Record<string, unknown>;
+  inputSchema: unknown;
 }
 
 type VercelAISDKGenerateText = (params: Record<string, unknown>) => Promise<Record<string, unknown>>;
 type VercelAISDKToolFactory = (definition: VercelAISDKToolDefinition) => unknown;
+type VercelAISDKJsonSchemaFactory = (schema: Record<string, unknown>) => unknown;
 
 interface VercelAISDKRuntime {
   generateText: VercelAISDKGenerateText;
   tool: VercelAISDKToolFactory;
+  jsonSchema: VercelAISDKJsonSchemaFactory;
 }
 
 export interface VercelAISDKToolCallingModelOptions {
@@ -40,17 +42,11 @@ export class VercelAISDKToolCallingModel implements ToolCallingModel {
     this.toolFactoryOverride = options.toolFactory;
     this.runtimeLoader = new LazyAsyncValue({
       load: async () => {
-        if (this.generateTextOverride && this.toolFactoryOverride) {
-          return {
-            generateText: this.generateTextOverride,
-            tool: this.toolFactoryOverride,
-          };
-        }
-
         const runtime = await loadVercelAISDKRuntime();
         return {
           generateText: this.generateTextOverride ?? runtime.generateText,
           tool: this.toolFactoryOverride ?? runtime.tool,
+          jsonSchema: runtime.jsonSchema,
         };
       },
     });
@@ -58,12 +54,19 @@ export class VercelAISDKToolCallingModel implements ToolCallingModel {
 
   public async complete(request: ToolCallingModelRequest): Promise<ToolCallingResponse> {
     const runtime = await this.runtimeLoader.get();
-    const tools = toVercelAISDKTools(request.tools, runtime.tool);
+    const tools = toVercelAISDKTools(request.tools, runtime.tool, runtime.jsonSchema);
+
+    const { messages, extraSystem } = toVercelAISDKMessages(request);
+    const baseSystem = request.systemPrompt?.trim() ?? "";
+    const fullSystem = [baseSystem, ...extraSystem]
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+      .join("\n\n");
 
     const response = await runtime.generateText({
       model: this.model,
-      ...(request.systemPrompt?.trim() ? { system: request.systemPrompt.trim() } : {}),
-      messages: toVercelAISDKMessages(request),
+      ...(fullSystem ? { system: fullSystem } : {}),
+      messages,
       ...(Object.keys(tools).length > 0 ? { tools } : {}),
     });
 
@@ -71,8 +74,31 @@ export class VercelAISDKToolCallingModel implements ToolCallingModel {
   }
 }
 
-function toVercelAISDKMessages(request: ToolCallingModelRequest): Array<Record<string, unknown>> {
-  const messages = mapConversationMessages(request, toVercelAISDKMessage);
+function toVercelAISDKMessages(request: ToolCallingModelRequest): {
+  messages: Array<Record<string, unknown>>;
+  extraSystem: string[];
+} {
+  const messages: Array<Record<string, unknown>> = [];
+  const extraSystem: string[] = [];
+
+  for (const entry of request.messages) {
+    const rawRole = typeof entry.role === "string" ? entry.role : "user";
+    const content = toDisplayText((entry as Record<string, unknown>).content);
+
+    if (rawRole === "system") {
+      if (content) {
+        extraSystem.push(content);
+      }
+      continue;
+    }
+
+    const role = normalizeConversationRole(rawRole);
+    if (!role) {
+      continue;
+    }
+
+    messages.push({ role, content });
+  }
 
   for (const round of request.toolRounds ?? []) {
     messages.push({
@@ -91,29 +117,32 @@ function toVercelAISDKMessages(request: ToolCallingModelRequest): Array<Record<s
         type: "tool-result",
         toolCallId: result.toolCallId,
         toolName: result.name,
-        output: result.output,
+        output: toVercelToolResultOutput(result.output, result.isError === true),
       })),
     });
   }
 
-  return messages;
-}
-
-function toVercelAISDKMessage(entry: Record<string, unknown>): Record<string, unknown> | null {
-  const role = normalizeConversationRole(entry.role);
-  if (!role) {
-    return null;
+  if (messages.length === 0) {
+    messages.push({ role: "user", content: "" });
   }
 
-  return {
-    role,
-    content: toDisplayText(entry.content),
-  };
+  return { messages, extraSystem };
+}
+
+function toVercelToolResultOutput(value: unknown, isError: boolean): Record<string, unknown> {
+  if (typeof value === "string") {
+    return { type: isError ? "error-text" : "text", value };
+  }
+  if (value === null || typeof value === "undefined") {
+    return { type: isError ? "error-text" : "text", value: "" };
+  }
+  return { type: isError ? "error-json" : "json", value: value as Record<string, unknown> };
 }
 
 function toVercelAISDKTools(
   schemas: Array<Record<string, unknown>>,
   toolFactory: VercelAISDKToolFactory,
+  jsonSchemaFactory: VercelAISDKJsonSchemaFactory,
 ): Record<string, unknown> {
   const tools: Record<string, unknown> = {};
 
@@ -134,11 +163,13 @@ function toVercelAISDKTools(
       : undefined;
     const parameters = functionRecord.parameters;
 
+    const rawSchema = parameters && typeof parameters === "object" && !Array.isArray(parameters)
+      ? parameters as Record<string, unknown>
+      : { type: "object", properties: {}, required: [] };
+
     tools[name] = toolFactory({
       ...(description ? { description } : {}),
-      inputSchema: parameters && typeof parameters === "object" && !Array.isArray(parameters)
-        ? parameters as Record<string, unknown>
-        : { type: "object", properties: {}, required: [] },
+      inputSchema: jsonSchemaFactory(rawSchema),
     });
   }
 
@@ -200,16 +231,18 @@ async function loadVercelAISDKRuntime(): Promise<VercelAISDKRuntime> {
   })) as {
     generateText?: VercelAISDKGenerateText;
     tool?: VercelAISDKToolFactory;
+    jsonSchema?: VercelAISDKJsonSchemaFactory;
   };
 
-  if (!module.generateText || !module.tool) {
+  if (!module.generateText || !module.tool || !module.jsonSchema) {
     throw new UnsupportedFeatureError(
-      'VercelAISDKAdapter requires optional dependency "ai". Install it with "pnpm add ai".',
+      'VercelAISDKAdapter requires optional dependency "ai" (>=4.0). Install it with "pnpm add ai".',
     );
   }
 
   return {
     generateText: module.generateText,
     tool: module.tool,
+    jsonSchema: module.jsonSchema,
   };
 }

@@ -35,7 +35,7 @@ export GEMINI_API_KEY=...
 pnpm --dir packages/sdk exec tsx examples/gemini/gemini-agent.ts
 ```
 
-Default model is `gemini-3-flash`. Override by editing `geminiModel` in the file.
+Default model is `gemini-3-flash-preview`. Override by editing `geminiModel` in the file.
 
 ## What "working" looks like
 

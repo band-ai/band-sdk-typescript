@@ -56,7 +56,7 @@ function createLinearThenvoiBridgeAgentWithStore(
 
   const adapter = new CodexAdapter({
     config: {
-      model: options?.codexModel ?? process.env.CODEX_MODEL ?? "gpt-5.5-mini",
+      model: options?.codexModel ?? process.env.CODEX_MODEL ?? "gpt-5.4-mini",
       approvalPolicy: "never",
       sandboxMode: "workspace-write",
       enableExecutionReporting: true,

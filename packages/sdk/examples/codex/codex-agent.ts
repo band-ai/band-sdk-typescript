@@ -23,7 +23,7 @@ interface CodexExampleOptions {
   approvalPolicy?: CodexAdapterConfig["approvalPolicy"];
   /** Sandboxing for shell commands; `workspace-write` allows edits in cwd only. */
   sandboxMode?: CodexAdapterConfig["sandboxMode"];
-  /** `minimal` / `low` / `medium` / `high` / `xhigh`. Higher costs more, thinks more. */
+  /** `low` / `medium` / `high` / `xhigh`. Higher costs more, thinks more. */
   reasoningEffort?: CodexAdapterConfig["reasoningEffort"];
 }
 

@@ -60,7 +60,7 @@ export function createToolsAgent(
   overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
   const adapter = new GoogleADKAdapter({
-    model: options.model ?? "gemini-3-flash",
+    model: options.model ?? "gemini-3-flash-preview",
     customSection: [
       "You are a helpful assistant with access to platform tools, a calculator, and a weather tool.",
       "When users ask math questions, use the calculator.",

@@ -43,6 +43,21 @@ interface GeminiGenerateResponseLike {
     name?: string;
     args?: Record<string, unknown>;
   }>;
+  candidates?: Array<{
+    content?: {
+      role?: string;
+      parts?: Array<{
+        text?: string;
+        thought?: boolean;
+        thoughtSignature?: string;
+        functionCall?: {
+          id?: string;
+          name?: string;
+          args?: Record<string, unknown>;
+        };
+      }>;
+    };
+  }>;
 }
 
 interface GeminiClientLike {
@@ -132,7 +147,7 @@ export class GeminiToolCallingModel implements ToolCallingModel {
 
     return {
       text: (response.text ?? "").trim() || undefined,
-      toolCalls: this.toToolCalls(response.functionCalls),
+      toolCalls: this.toToolCalls(response),
     };
   }
 
@@ -176,7 +191,16 @@ export class GeminiToolCallingModel implements ToolCallingModel {
     for (const round of rounds) {
       merged.push({
         role: "model",
-        parts: round.toolCalls.map((call) => partFromCall(call.name, call.input)),
+        parts: round.toolCalls.map((call) => {
+          const part = partFromCall(call.name, call.input) as Record<string, unknown>;
+          // Echo thoughtSignature back to the model for Gemini 3+ models that
+          // require it on every replayed functionCall part.
+          const sig = call.providerMetadata?.thoughtSignature;
+          if (typeof sig === "string" && sig.length > 0) {
+            return { ...part, thoughtSignature: sig };
+          }
+          return part;
+        }),
       });
 
       merged.push({
@@ -213,8 +237,40 @@ export class GeminiToolCallingModel implements ToolCallingModel {
   }
 
   private toToolCalls(
-    functionCalls: GeminiGenerateResponseLike["functionCalls"],
+    response: GeminiGenerateResponseLike,
   ): ToolCall[] | undefined {
+    // Prefer the raw candidate parts because they carry `thoughtSignature`,
+    // which Gemini 3+ rejects requests without when echoing prior tool calls.
+    const parts = response.candidates?.[0]?.content?.parts;
+    if (Array.isArray(parts)) {
+      const fromParts: ToolCall[] = [];
+      let i = 0;
+      for (const part of parts) {
+        const fc = part?.functionCall;
+        if (!fc || typeof fc.name !== "string" || !fc.name) {
+          continue;
+        }
+        i += 1;
+        const id = typeof fc.id === "string" && fc.id ? fc.id : `gemini_call_${i}`;
+        const sig = part?.thoughtSignature;
+        fromParts.push({
+          id,
+          name: fc.name,
+          input: fc.args && typeof fc.args === "object" && !Array.isArray(fc.args)
+            ? fc.args as Record<string, unknown>
+            : {},
+          ...(typeof sig === "string" && sig.length > 0
+            ? { providerMetadata: { thoughtSignature: sig } }
+            : {}),
+        });
+      }
+      if (fromParts.length > 0) {
+        return fromParts;
+      }
+    }
+
+    // Fallback: response.functionCalls convenience path (no signature available).
+    const functionCalls = response.functionCalls;
     if (!Array.isArray(functionCalls) || functionCalls.length === 0) {
       return undefined;
     }

@@ -60,7 +60,7 @@ Optional reviewer tuning:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `REVIEWER_MODEL` | `gpt-5.5-codex` | OpenAI Codex model |
+| `REVIEWER_MODEL` | `gpt-5.3-codex` | OpenAI Codex model |
 | `REVIEWER_REASONING_EFFORT` | `high` | One of `minimal`, `low`, `medium`, `high`, `xhigh` |
 | `REVIEWER_AGENT_KEY` | `reviewer` | `agent_config.yaml` key to load |
 

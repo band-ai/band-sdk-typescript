@@ -28,7 +28,7 @@ export function createGoogleADKAgent(
   overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
   const adapter = new GoogleADKAdapter({
-    model: options.model ?? "gemini-3-flash",
+    model: options.model ?? "gemini-3-flash-preview",
     customSection:
       options.customSection ?? "You are a helpful assistant. Be concise and friendly.",
   });
