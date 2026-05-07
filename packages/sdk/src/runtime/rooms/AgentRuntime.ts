@@ -177,7 +177,7 @@ export class AgentRuntime {
 
     await this.link.disconnect();
     if (this.fatalError) {
-      throw this.fatalError instanceof Error ? this.fatalError : new Error(String(this.fatalError));
+      throw asThrowableError(this.fatalError);
     }
     return graceful;
   }
@@ -194,7 +194,7 @@ export class AgentRuntime {
     }
 
     if (this.fatalError) {
-      throw this.fatalError instanceof Error ? this.fatalError : new Error(String(this.fatalError));
+      throw asThrowableError(this.fatalError);
     }
   }
 
@@ -445,4 +445,21 @@ export class AgentRuntime {
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled platform event: ${JSON.stringify(value)}`);
+}
+
+function asThrowableError(value: unknown): Error {
+  if (value instanceof Error) return value;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const message = typeof record.message === "string"
+      ? record.message
+      : (() => { try { return JSON.stringify(record); } catch { return Object.prototype.toString.call(record); } })();
+    const err = new Error(message);
+    if (record.stack && typeof record.stack === "string") {
+      err.stack = record.stack;
+    }
+    (err as Error & { cause?: unknown }).cause = value;
+    return err;
+  }
+  return new Error(String(value));
 }
