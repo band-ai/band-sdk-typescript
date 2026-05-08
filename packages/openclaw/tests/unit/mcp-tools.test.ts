@@ -3,6 +3,7 @@
  * Mocks getLink() to return a mock ThenvoiLink with a mock rest API.
  */
 
+import { readFileSync } from "node:fs";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   mcpTools,
@@ -84,6 +85,19 @@ describe("MCP Tools", () => {
       mcpTools.forEach((tool) => {
         expect(tool.description.length).toBeGreaterThan(10);
       });
+    });
+
+    it("should declare all runtime tools in the plugin manifest", () => {
+      const manifest = JSON.parse(
+        readFileSync(new URL("../../openclaw.plugin.json", import.meta.url), "utf-8"),
+      ) as {
+        contracts?: { tools?: string[] };
+        capabilities?: { mcp?: { tools?: string[] } };
+      };
+      const runtimeToolNames = getMcpToolSchemas().map((tool) => tool.name).sort();
+
+      expect([...(manifest.contracts?.tools ?? [])].sort()).toEqual(runtimeToolNames);
+      expect([...(manifest.capabilities?.mcp?.tools ?? [])].sort()).toEqual(runtimeToolNames);
     });
   });
 
