@@ -85,7 +85,7 @@
     "start:linear": "tsx examples/linear-thenvoi/linear-thenvoi-bridge-server.ts"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12"
   },
   "dependencies": {
     "@thenvoi/rest-client": "0.0.113",
