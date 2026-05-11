@@ -85,6 +85,20 @@ The setup script prints the exact command. It has this shape:
 nemoclaw onboard --from /absolute/path/to/packages/openclaw/dist/nemoclaw-integration/band-integration/Dockerfile --name band-integration
 ```
 
+If you run onboarding non-interactively with NemoClaw's **Other OpenAI-compatible endpoint** provider, set the endpoint and credential before `nemoclaw onboard`:
+
+```sh
+export NEMOCLAW_PROVIDER=custom
+export NEMOCLAW_ENDPOINT_URL=https://your-openai-compatible-endpoint.example/v1
+export NEMOCLAW_MODEL=<model-id>
+export COMPATIBLE_API_KEY=<endpoint-api-key-or-placeholder>
+nemoclaw onboard --non-interactive --yes \
+  --from /absolute/path/to/packages/openclaw/dist/nemoclaw-integration/band-integration/Dockerfile \
+  --name band-integration
+```
+
+NemoClaw's current CLI accepts `NEMOCLAW_ENDPOINT_URL` for this provider. Without it, non-interactive onboarding exits with `Endpoint URL is required for Other OpenAI-compatible endpoint`, and an existing sandbox status can only report `Endpoint URL is not known; skipping reachability check.`
+
 ## Apply Band egress policy
 
 After onboarding, apply the generated Band policy preset:
