@@ -15,6 +15,43 @@ import {
   requireValue,
 } from "./nemoclaw-integration-common.js";
 
+const DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b";
+const DEFAULT_PROVIDER_KEY = "inference";
+const DEFAULT_PRIMARY_MODEL_REF = `${DEFAULT_PROVIDER_KEY}/${DEFAULT_MODEL}`;
+const DEFAULT_INFERENCE_BASE_URL = "https://inference.local/v1";
+const DEFAULT_CHAT_UI_URL = "http://127.0.0.1:18789";
+const OPENCLAW_CONFIG_PATH = "/sandbox/.openclaw/openclaw.json";
+const OPENCLAW_CONFIG_DIR = "/sandbox/.openclaw";
+const PLUGIN_PATH = "/sandbox/.openclaw/extensions/openclaw-channel-thenvoi";
+const PLUGIN_CONFIG_PATCH_PATH = "/tmp/openclaw-channel-thenvoi.openclaw-config.json";
+
+const PLUGIN_PACKAGE_JSON = JSON.stringify({
+  name: "openclaw-channel-thenvoi-nemoclaw",
+  version: "0.0.0",
+  type: "module",
+  private: true,
+  openclaw: {
+    extensions: ["./dist/index.js"],
+  },
+}, null, 2);
+
+const DOCKER_ARG_DEFAULTS = [
+  ["NEMOCLAW_MODEL", DEFAULT_MODEL],
+  ["NEMOCLAW_PROVIDER_KEY", DEFAULT_PROVIDER_KEY],
+  ["NEMOCLAW_PRIMARY_MODEL_REF", DEFAULT_PRIMARY_MODEL_REF],
+  ["NEMOCLAW_INFERENCE_BASE_URL", DEFAULT_INFERENCE_BASE_URL],
+  ["NEMOCLAW_INFERENCE_API", "openai-completions"],
+  ["NEMOCLAW_CONTEXT_WINDOW", "131072"],
+  ["NEMOCLAW_MAX_TOKENS", "4096"],
+  ["NEMOCLAW_REASONING", "false"],
+  ["NEMOCLAW_INFERENCE_INPUTS", "text"],
+  ["NEMOCLAW_AGENT_TIMEOUT", "600"],
+  ["NEMOCLAW_AGENT_HEARTBEAT_EVERY", ""],
+  ["NEMOCLAW_INFERENCE_COMPAT_B64", "e30="],
+  ["CHAT_UI_URL", DEFAULT_CHAT_UI_URL],
+  ["NEMOCLAW_DISABLE_DEVICE_AUTH", "0"],
+];
+
 function parseArgs(argv) {
   const opts = {
     sandbox: DEFAULT_SANDBOX,
@@ -57,8 +94,123 @@ function assertBuildOutput() {
   }
 }
 
+function dockerArgs() {
+  return DOCKER_ARG_DEFAULTS.map(([name, value]) => `ARG ${name}=${value}`).join("\n");
+}
+
+function openClawConfigPatchScript() {
+  return [
+    "const fs = require(\"node:fs\");",
+    `const cfgPath = ${JSON.stringify(OPENCLAW_CONFIG_PATH)};`,
+    `const cfgDir = ${JSON.stringify(OPENCLAW_CONFIG_DIR)};`,
+    `const pluginPath = ${JSON.stringify(PLUGIN_PATH)};`,
+    `const patchPath = ${JSON.stringify(PLUGIN_CONFIG_PATCH_PATH)};`,
+    `const defaultModel = ${JSON.stringify(DEFAULT_MODEL)};`,
+    `const defaultProviderKey = ${JSON.stringify(DEFAULT_PROVIDER_KEY)};`,
+    `const defaultPrimaryModelRef = ${JSON.stringify(DEFAULT_PRIMARY_MODEL_REF)};`,
+    `const defaultInferenceBaseUrl = ${JSON.stringify(DEFAULT_INFERENCE_BASE_URL)};`,
+    `const defaultChatUiUrl = ${JSON.stringify(DEFAULT_CHAT_UI_URL)};`,
+    "const env = process.env;",
+    "function readJson(path, fallback) {",
+    "try { return JSON.parse(fs.readFileSync(path, \"utf8\")); }",
+    "catch { return fallback; }",
+    "}",
+    "function asInt(value, fallback) {",
+    "const parsed = Number(value);",
+    "return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;",
+    "}",
+    "function asBool(value) {",
+    "return String(value || \"\").toLowerCase() === \"true\";",
+    "}",
+    "function readCompat() {",
+    "try {",
+    "return JSON.parse(Buffer.from(env.NEMOCLAW_INFERENCE_COMPAT_B64 || \"e30=\", \"base64\").toString(\"utf8\") || \"{}\");",
+    "} catch { return {}; }",
+    "}",
+    "const cfg = readJson(cfgPath, {});",
+    "const patch = readJson(patchPath, {});",
+    "const compat = readCompat();",
+    "const providerKey = env.NEMOCLAW_PROVIDER_KEY || defaultProviderKey;",
+    "const model = env.NEMOCLAW_MODEL || defaultModel;",
+    "const primary = env.NEMOCLAW_PRIMARY_MODEL_REF || providerKey + \"/\" + model;",
+    "const provider = {",
+    "baseUrl: env.NEMOCLAW_INFERENCE_BASE_URL || defaultInferenceBaseUrl,",
+    "apiKey: \"unused\",",
+    "api: env.NEMOCLAW_INFERENCE_API || \"openai-completions\",",
+    "models: [{",
+    "...(Object.keys(compat).length ? { compat } : {}),",
+    "id: model,",
+    "name: primary,",
+    "reasoning: asBool(env.NEMOCLAW_REASONING),",
+    "input: String(env.NEMOCLAW_INFERENCE_INPUTS || \"text\").split(\",\").map(function (value) { return value.trim(); }).filter(Boolean),",
+    "cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },",
+    "contextWindow: asInt(env.NEMOCLAW_CONTEXT_WINDOW, 131072),",
+    "maxTokens: asInt(env.NEMOCLAW_MAX_TOKENS, 4096),",
+    "}]",
+    "};",
+    "const currentModels = cfg.models || {};",
+    "cfg.models = {",
+    "...currentModels,",
+    "mode: \"merge\",",
+    "providers: { ...(currentModels.providers || {}), [providerKey]: provider },",
+    "};",
+    "const currentAgents = cfg.agents || {};",
+    "cfg.agents = {",
+    "...currentAgents,",
+    "defaults: {",
+    "...(currentAgents.defaults || {}),",
+    "model: { primary },",
+    "timeoutSeconds: asInt(env.NEMOCLAW_AGENT_TIMEOUT, 600),",
+    "skipBootstrap: true,",
+    "thinkingDefault: \"off\",",
+    "},",
+    "};",
+    "const currentPlugins = cfg.plugins || {};",
+    "const currentPluginLoad = currentPlugins.load || {};",
+    "const patchPlugins = patch.plugins || {};",
+    "const entries = {",
+    "acpx: { enabled: false },",
+    "bonjour: { enabled: false },",
+    "qqbot: { enabled: false },",
+    "...(currentPlugins.entries || {}),",
+    "...(patchPlugins.entries || {}),",
+    "};",
+    "const loadPaths = [...new Set([...(currentPluginLoad.paths || []), pluginPath])];",
+    "cfg.plugins = {",
+    "...currentPlugins,",
+    "load: { ...currentPluginLoad, paths: loadPaths },",
+    "entries,",
+    "};",
+    "const currentGateway = cfg.gateway || {};",
+    "const currentControlUi = currentGateway.controlUi || {};",
+    "cfg.gateway = {",
+    "...currentGateway,",
+    "mode: \"local\",",
+    "controlUi: {",
+    "...currentControlUi,",
+    "allowInsecureAuth: String(env.CHAT_UI_URL || \"\").startsWith(\"http://\"),",
+    "dangerouslyDisableDeviceAuth: String(env.NEMOCLAW_DISABLE_DEVICE_AUTH || \"\") === \"1\",",
+    "allowedOrigins: [defaultChatUiUrl],",
+    "},",
+    "trustedProxies: [\"127.0.0.1\", \"::1\"],",
+    "auth: { ...(currentGateway.auth || {}), token: \"\" },",
+    "};",
+    "cfg.update = { ...(cfg.update || {}), checkOnStart: false };",
+    "fs.mkdirSync(cfgDir, { recursive: true });",
+    "fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));",
+  ].join(" ");
+}
+
 function pluginDockerfileLayer(prefix = "") {
-  return `${prefix}RUN mkdir -p /sandbox/.openclaw/extensions\nCOPY openclaw-channel-thenvoi /sandbox/.openclaw/extensions/openclaw-channel-thenvoi\nRUN openclaw doctor --fix\nCOPY openclaw-channel-thenvoi.config.example.json /sandbox/.openclaw/openclaw-channel-thenvoi.config.example.json\nCOPY openclaw-channel-thenvoi.openclaw-config.json /tmp/openclaw-channel-thenvoi.openclaw-config.json\nRUN node -e 'const fs=require("node:fs"); const cfgPath="/sandbox/.openclaw/openclaw.json"; const cfg=JSON.parse(fs.readFileSync(cfgPath,"utf8")); const patch=JSON.parse(fs.readFileSync("/tmp/openclaw-channel-thenvoi.openclaw-config.json","utf8")); cfg.plugins={...(cfg.plugins||{}), entries:{...((cfg.plugins||{}).entries||{}), ...patch.plugins.entries}}; fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));'\n`;
+  return `${prefix}${dockerArgs()}
+
+RUN mkdir -p /sandbox/.openclaw/extensions
+COPY openclaw-channel-thenvoi /sandbox/.openclaw/extensions/openclaw-channel-thenvoi
+RUN openclaw doctor --fix || true
+COPY openclaw-channel-thenvoi.config.example.json /sandbox/.openclaw/openclaw-channel-thenvoi.config.example.json
+COPY openclaw-channel-thenvoi.openclaw-config.json ${PLUGIN_CONFIG_PATCH_PATH}
+RUN node -e ${JSON.stringify(openClawConfigPatchScript())}
+`;
 }
 
 function dockerfile(opts) {
@@ -98,6 +250,7 @@ function configJson(opts, { includeCredentialPlaceholders, includeCredentialValu
     plugins: {
       entries: {
         "openclaw-channel-thenvoi": {
+          enabled: true,
           config: {
             accounts: {
               default: account,
@@ -146,6 +299,7 @@ function main() {
       includeCredentialValues: opts.embedCredentialsFromEnv,
     }),
     "band-egress-policy.yaml": policyYaml(restEndpoint, wsEndpoint),
+    [`${PLUGIN_CONTEXT_DIR}/package.json`]: PLUGIN_PACKAGE_JSON,
   };
 
   console.log(`Band/NemoClaw integration setup for sandbox: ${opts.sandbox}`);
@@ -155,7 +309,7 @@ function main() {
 
   if (opts.dryRun) {
     console.log("Dry run: would write files:");
-    for (const name of [...Object.keys(files), ...PLUGIN_FILES.map((name) => `${PLUGIN_CONTEXT_DIR}/${name}`)]) console.log(`- ${name}`);
+    for (const name of [...Object.keys(files), `${PLUGIN_CONTEXT_DIR}/openclaw.plugin.json`, `${PLUGIN_CONTEXT_DIR}/dist/*`]) console.log(`- ${name}`);
     console.log(`Next: nemoclaw onboard --from ${resolve(out, "Dockerfile")} --name ${opts.sandbox}`);
     return;
   }
@@ -168,12 +322,17 @@ function main() {
 
   mkdirSync(resolve(out, PLUGIN_CONTEXT_DIR), { recursive: true });
   writeFileSync(resolve(out, GENERATED_CONTEXT_MARKER), "generated by nemoclaw:integration:setup\n");
-  for (const [name, content] of Object.entries(files)) writeFileSync(resolve(out, name), content);
-  for (const file of PLUGIN_FILES) {
-    const source = resolve(packageRoot, file);
-    const target = resolve(out, PLUGIN_CONTEXT_DIR, file);
+  for (const [name, content] of Object.entries(files)) {
+    const target = resolve(out, name);
     mkdirSync(dirname(target), { recursive: true });
-    copyFileSync(source, target);
+    writeFileSync(target, content);
+  }
+  copyFileSync(resolve(packageRoot, "openclaw.plugin.json"), resolve(out, PLUGIN_CONTEXT_DIR, "openclaw.plugin.json"));
+  for (const entry of readdirSync(resolve(packageRoot, "dist"), { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const target = resolve(out, PLUGIN_CONTEXT_DIR, "dist", entry.name);
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(resolve(packageRoot, "dist", entry.name), target);
   }
 
   console.log(`Wrote ${readdirSync(out).length} top-level entries.`);

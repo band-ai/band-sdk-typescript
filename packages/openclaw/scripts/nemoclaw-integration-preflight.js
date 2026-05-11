@@ -47,7 +47,12 @@ function checkTools(opts) {
   if (!existsSync(resolve(dir, "openclaw-channel-thenvoi", manifest.entry))) {
     throw new Error(`plugin manifest entry does not exist in generated context: ${manifest.entry}`);
   }
-  return { ...evidence, entry: manifest.entry };
+  const packageJson = readJson(resolve(dir, "openclaw-channel-thenvoi/package.json"));
+  const extensions = packageJson.openclaw?.extensions ?? [];
+  if (!Array.isArray(extensions) || !extensions.includes(`./${manifest.entry}`)) {
+    throw new Error(`plugin package.json must declare openclaw.extensions entry ./${manifest.entry}`);
+  }
+  return { ...evidence, entry: manifest.entry, packageExtensions: extensions.length };
 }
 
 function checkPolicy(opts) {
@@ -74,7 +79,7 @@ function checkConfigTemplate(opts) {
   const config = readFileSync(resolve(dir, "openclaw-channel-thenvoi.config.example.json"), "utf-8");
   if (!config.includes("${THENVOI_API_KEY}")) throw new Error("config template missing THENVOI_API_KEY placeholder");
   if (!config.includes("${THENVOI_AGENT_ID}")) throw new Error("config template missing THENVOI_AGENT_ID placeholder");
-  if (/tv_[A-Za-z0-9_-]{8,}/.test(config)) throw new Error("config template contains a real-looking Band API key");
+  if (/(?:tv_|band_a_)[A-Za-z0-9_-]{8,}/.test(config)) throw new Error("config template contains a real-looking Band API key");
 
   const runtimeConfig = readJson(resolve(dir, "openclaw-channel-thenvoi.openclaw-config.json"));
   const account = runtimeConfig.plugins?.entries?.["openclaw-channel-thenvoi"]?.config?.accounts?.default;

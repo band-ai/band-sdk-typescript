@@ -18,6 +18,7 @@ export const GENERATED_CONTEXT_FILES = [
   "band-egress-policy.yaml",
   "openclaw-channel-thenvoi.config.example.json",
   "openclaw-channel-thenvoi.openclaw-config.json",
+  `${PLUGIN_CONTEXT_DIR}/package.json`,
   ...PLUGIN_FILES.map((file) => `${PLUGIN_CONTEXT_DIR}/${file}`),
 ];
 
@@ -33,6 +34,7 @@ const PREFIXED_REDACTION_PATTERNS = [
 
 const TOKEN_REDACTION_PATTERNS = [
   /\btv_[A-Za-z0-9_-]{8,}\b/g,
+  /\bband_a_[A-Za-z0-9_-]{8,}\b/g,
   /\bsk-[A-Za-z0-9_-]{8,}\b/g,
   /\bnvapi-[A-Za-z0-9_-]{8,}\b/g,
   /\bhf_[A-Za-z0-9_-]{8,}\b/g,
