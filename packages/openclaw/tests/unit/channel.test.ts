@@ -70,7 +70,7 @@ describe("Channel Module", () => {
     it("should have correct metadata", () => {
       expect(thenvoiChannel.id).toBe("openclaw-channel-thenvoi");
       expect(thenvoiChannel.meta.id).toBe("openclaw-channel-thenvoi");
-      expect(thenvoiChannel.meta.label).toBe("Thenvoi");
+      expect(thenvoiChannel.meta.label).toBe("Band");
       expect(thenvoiChannel.meta.aliases).toContain("thenvoi");
     });
 
@@ -79,7 +79,7 @@ describe("Channel Module", () => {
     });
 
     it("should have selection label", () => {
-      expect(thenvoiChannel.meta.selectionLabel).toContain("Thenvoi");
+      expect(thenvoiChannel.meta.selectionLabel).toContain("Band");
     });
   });
 
@@ -180,6 +180,31 @@ describe("Channel Module", () => {
         expect(result.errors).toBeUndefined();
       });
 
+      it("should resolve credential placeholders from environment variables", async () => {
+        const originalApiKey = process.env.THENVOI_API_KEY;
+        const originalAgentId = process.env.THENVOI_AGENT_ID;
+        process.env.THENVOI_API_KEY = "test-api-key-12345";
+        process.env.THENVOI_AGENT_ID = "agent-env-123";
+        fetchMock = createMockFetch({ response: mockAgentMetadata });
+        globalThis.fetch = fetchMock;
+
+        try {
+          const result = await thenvoiChannel.setup!.validateConfig!({
+            apiKey: "${THENVOI_API_KEY}",
+            agentId: "${THENVOI_AGENT_ID}",
+            restUrl: mockAccountConfig.restUrl,
+            wsUrl: mockAccountConfig.wsUrl,
+          });
+
+          expect(result.valid).toBe(true);
+        } finally {
+          if (originalApiKey === undefined) delete process.env.THENVOI_API_KEY;
+          else process.env.THENVOI_API_KEY = originalApiKey;
+          if (originalAgentId === undefined) delete process.env.THENVOI_AGENT_ID;
+          else process.env.THENVOI_AGENT_ID = originalAgentId;
+        }
+      });
+
       it("should fail for missing API key", async () => {
         const result = await thenvoiChannel.setup!.validateConfig!({});
 
@@ -224,7 +249,7 @@ describe("Channel Module", () => {
       const context = thenvoiChannel.threading!.formatThreadContext!("room-123");
 
       expect(context).toContain("room-123");
-      expect(context).toContain("Thenvoi");
+      expect(context).toContain("Band");
     });
   });
 

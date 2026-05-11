@@ -1,8 +1,8 @@
 /**
- * Thenvoi Channel Plugin for OpenClaw.
+ * Band Channel Plugin for OpenClaw.
  *
- * Registers the Thenvoi channel with OpenClaw Gateway,
- * enabling bidirectional communication with the Thenvoi platform.
+ * Registers the Band channel with OpenClaw Gateway,
+ * enabling bidirectional communication with Band.
  *
  * Uses @thenvoi/sdk for all platform communication (WebSocket + REST).
  */
@@ -10,6 +10,8 @@
 import { ThenvoiLink } from "@thenvoi/sdk";
 import { RoomPresence, ContactEventHandler } from "@thenvoi/sdk/runtime";
 import type { ContactEventConfig, ContactEvent, PlatformEvent } from "@thenvoi/sdk";
+import { resolveOpenClawRuntimeDispatch, type OpenClawRuntimeDispatch } from "./openclaw-runtime.js";
+import { redactSecrets } from "./redaction.js";
 
 // =============================================================================
 // OpenClaw-Specific Types
@@ -157,25 +159,6 @@ interface PluginConfig {
 }
 
 // =============================================================================
-// Minimal type for the OpenClaw runtime methods we access
-// =============================================================================
-
-interface OpenClawRuntimeRef {
-  channel?: {
-    reply?: {
-      dispatchReplyFromConfig?: (args: {
-        ctx: Record<string, unknown>;
-        cfg: unknown;
-        dispatcher: Record<string, unknown>;
-      }) => Promise<void>;
-    };
-  };
-  config?: {
-    loadConfig: () => unknown;
-  };
-}
-
-// =============================================================================
 // Virtual thread ID for contact events (dispatched to LLM for evaluation)
 // =============================================================================
 
@@ -217,7 +200,7 @@ interface GatewayRegistry {
   startingAccounts: Set<string>;
   lastSenderByThread: Map<string, { senderId: string; senderName: string }>;
   deliverInbound: ((message: OpenClawInboundMessage) => void) | null;
-  openclawRuntime: OpenClawRuntimeRef | null;
+  openclawRuntime: OpenClawRuntimeDispatch | null;
 }
 
 function getGatewayRegistry(): GatewayRegistry {
@@ -247,9 +230,9 @@ export function resetGatewayRegistry(): void {
 // Convenience accessors that always read from the current registry.
 // These MUST be functions (not module-level consts) so that
 // resetGatewayRegistry() properly invalidates cached state.
-function registry() { return getGatewayRegistry(); }
-function links() { return getGatewayRegistry().links; }
-function presences() { return getGatewayRegistry().presences; }
+function registry(): GatewayRegistry { return getGatewayRegistry(); }
+function links(): Map<string, ThenvoiLink> { return getGatewayRegistry().links; }
+function presences(): Map<string, RoomPresence> { return getGatewayRegistry().presences; }
 
 // Track last sender per thread for auto-mention fallback
 // Key: threadId, Value: { senderId, senderName }
@@ -269,45 +252,17 @@ function trackSender(accountId: string, threadId: string, senderId: string, send
 }
 
 /**
- * Check if a value has the shape of an OpenClawRuntimeRef.
- */
-function isOpenClawRuntimeRef(value: unknown): value is OpenClawRuntimeRef {
-  if (value == null || typeof value !== "object") return false;
-  const obj = value as Record<string, unknown>;
-
-  const hasLoadConfig =
-    obj.config != null &&
-    typeof obj.config === "object" &&
-    typeof (obj.config as Record<string, unknown>).loadConfig === "function";
-
-  const hasDispatch =
-    obj.channel != null &&
-    typeof obj.channel === "object" &&
-    (obj.channel as Record<string, unknown>).reply != null &&
-    typeof (obj.channel as Record<string, unknown>).reply === "object" &&
-    typeof ((obj.channel as Record<string, unknown>).reply as Record<string, unknown>).dispatchReplyFromConfig === "function";
-
-  if (hasLoadConfig || hasDispatch) {
-    if (hasLoadConfig && !hasDispatch) {
-      console.warn("[thenvoi] Runtime has config.loadConfig but missing channel.reply.dispatchReplyFromConfig — message dispatch will fall back to deliverMessage");
-    }
-    return true;
-  }
-  return false;
-}
-
-/**
  * Set the OpenClaw runtime reference for message dispatch.
  * Called by the plugin entry point.
  */
 export function setOpenClawRuntime(runtime: unknown): void {
-  if (!isOpenClawRuntimeRef(runtime)) {
-    console.warn("[thenvoi] setOpenClawRuntime called with invalid runtime object, ignoring");
-    return;
-  }
-  registry().openclawRuntime = runtime;
-  if (runtime.channel?.reply) {
+  const resolution = resolveOpenClawRuntimeDispatch(runtime);
+  registry().openclawRuntime = resolution.dispatch;
+
+  if (resolution.dispatch) {
     console.log("[thenvoi] OpenClaw dispatch methods available");
+  } else {
+    console.warn(`[thenvoi] OpenClaw dispatch unavailable: ${resolution.reason ?? "unknown runtime shape"}`);
   }
 }
 
@@ -343,11 +298,15 @@ export function deliverMessage(message: OpenClawInboundMessage, accountId: strin
 // Configuration Helpers
 // =============================================================================
 
+function resolveEnvBackedValue(value: string | undefined, envName: string): string | undefined {
+  return value && value !== `\${${envName}}` ? value : process.env[envName];
+}
+
 function resolveConfig(account: ThenvoiAccountConfig): { apiKey: string; agentId: string; wsUrl: string; restUrl: string } {
-  const apiKey = account.apiKey ?? process.env.THENVOI_API_KEY;
-  const agentId = account.agentId ?? process.env.THENVOI_AGENT_ID;
-  const wsUrl = account.wsUrl ?? process.env.THENVOI_WS_URL ?? "wss://app.thenvoi.com/api/v1/socket";
-  const restUrl = account.restUrl ?? process.env.THENVOI_REST_URL ?? "https://app.thenvoi.com";
+  const apiKey = resolveEnvBackedValue(account.apiKey, "THENVOI_API_KEY");
+  const agentId = resolveEnvBackedValue(account.agentId, "THENVOI_AGENT_ID");
+  const wsUrl = resolveEnvBackedValue(account.wsUrl, "THENVOI_WS_URL") ?? "wss://app.band.ai/api/v1/socket";
+  const restUrl = resolveEnvBackedValue(account.restUrl, "THENVOI_REST_URL") ?? "https://app.band.ai";
 
   if (!apiKey) {
     throw new Error("THENVOI_API_KEY is required");
@@ -413,7 +372,7 @@ async function resolveMentions(
 // =============================================================================
 
 /**
- * Send a reply back to Thenvoi using the SDK's REST API.
+ * Send a reply back to Band using the SDK's REST API.
  * Throws on failure so callers (e.g. the dispatcher) can track and surface delivery errors.
  */
 async function sendReplyToThenvoi(rest: ThenvoiLink["rest"], agentId: string, accountId: string, roomId: string, payload: unknown): Promise<void> {
@@ -425,11 +384,66 @@ async function sendReplyToThenvoi(rest: ThenvoiLink["rest"], agentId: string, ac
   const resolved = await resolveMentions(rest, agentId, accountId, roomId, text);
   if (!resolved) {
     throw new Error(
-      `[thenvoi] Reply dropped: no other participants in room to mention (room=${roomId}, text=${text.substring(0, 80)})`,
+      `[thenvoi] Reply dropped: no other participants in room to mention (room=${roomId}, textLength=${text.length})`,
     );
   }
   await rest.createChatMessage(roomId, { content: text, mentions: resolved.mentions });
-  console.log(`[thenvoi] Reply sent: ${text.length > 50 ? text.substring(0, 50) + "..." : text}`);
+  console.log(`[thenvoi] Reply sent (room=${roomId}, textLength=${text.length})`);
+}
+
+interface ReplyDispatcher extends Record<string, unknown> {
+  sendToolResult: (payload: unknown) => boolean;
+  sendBlockReply: (payload: unknown) => boolean;
+  sendFinalReply: (payload: unknown) => boolean;
+  waitForIdle: () => Promise<void>;
+  getQueuedCounts: () => { tool: number; block: number; final: number };
+}
+
+function createNoopReplyDispatcher(): ReplyDispatcher {
+  function sendReply(): boolean {
+    return true;
+  }
+
+  return {
+    sendToolResult: sendReply,
+    sendBlockReply: sendReply,
+    sendFinalReply: sendReply,
+    waitForIdle: async (): Promise<void> => {},
+    getQueuedCounts: () => ({ tool: 0, block: 0, final: 0 }),
+  };
+}
+
+function createBandReplyDispatcher(link: ThenvoiLink, agentId: string, accountId: string, roomId: string): ReplyDispatcher {
+  const pendingReplies: Promise<void>[] = [];
+  const deliveryErrors: Error[] = [];
+
+  function enqueueReply(payload: unknown): void {
+    pendingReplies.push(
+      sendReplyToThenvoi(link.rest, agentId, accountId, roomId, payload).catch((err: unknown) => {
+        const error = err instanceof Error ? err : new Error(String(err));
+        deliveryErrors.push(error);
+        console.error(`[thenvoi:${accountId}] Reply delivery failed (room=${roomId}, error=${error.name || "Error"})`);
+      }),
+    );
+  }
+
+  function sendReply(payload: unknown): boolean {
+    enqueueReply(payload);
+    return true;
+  }
+
+  return {
+    sendToolResult: sendReply,
+    sendBlockReply: sendReply,
+    sendFinalReply: sendReply,
+    waitForIdle: async (): Promise<void> => {
+      await Promise.allSettled(pendingReplies);
+      if (deliveryErrors.length > 0) {
+        console.error(`[thenvoi:${accountId}] ${deliveryErrors.length}/${pendingReplies.length} replies failed to deliver (room=${roomId})`);
+      }
+    },
+    getQueuedCounts: () => ({ tool: 0, block: 0, final: 0 }),
+  };
 }
 
 // =============================================================================
@@ -472,7 +486,7 @@ function platformEventToInboundMessage(event: PlatformEvent): OpenClawInboundMes
 // =============================================================================
 
 /**
- * Shared logic for sending an outbound message (text or media) to Thenvoi.
+ * Shared logic for sending an outbound message (text or media) to Band.
  */
 async function sendOutbound(ctx: OutboundContext): Promise<OutboundDeliveryResult> {
   const { text, to, accountId } = ctx;
@@ -484,7 +498,7 @@ async function sendOutbound(ctx: OutboundContext): Promise<OutboundDeliveryResul
 
   const link = links().get(accountId ?? "default");
   if (!link) {
-    throw new Error("Thenvoi link not initialized");
+    throw new Error("Band link not initialized");
   }
 
   const resolved = await resolveMentions(link.rest, link.agentId, accountId ?? "default", roomId, text);
@@ -510,10 +524,10 @@ export const thenvoiChannel: OpenClawChannel = {
 
   meta: {
     id: "openclaw-channel-thenvoi",
-    label: "Thenvoi",
-    selectionLabel: "Thenvoi (AI Collaboration)",
+    label: "Band",
+    selectionLabel: "Band (AI Collaboration)",
     docsPath: "/channels/thenvoi",
-    blurb: "Connect to the Thenvoi AI agent collaboration platform.",
+    blurb: "Connect to the Band AI agent collaboration platform.",
     aliases: ["thenvoi", "openclaw-channel-thenvoi"],
   },
 
@@ -552,7 +566,7 @@ export const thenvoiChannel: OpenClawChannel = {
     resolveTarget: (params: { to?: string; allowFrom?: string[]; mode?: string }) => {
       const target = params.to?.trim() ?? "";
       if (!target) {
-        return { ok: false, error: new Error("Thenvoi requires a room_id as target") };
+        return { ok: false, error: new Error("Band requires a room_id as target") };
       }
       return { ok: true, to: target };
     },
@@ -586,8 +600,7 @@ export const thenvoiChannel: OpenClawChannel = {
 
         return { valid: true };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return { valid: false, errors: [message] };
+        return { valid: false, errors: [redactSecrets(error)] };
       } finally {
         if (testLink) {
           try { await testLink.disconnect(); } catch { /* ignore cleanup errors */ }
@@ -669,9 +682,8 @@ export const thenvoiChannel: OpenClawChannel = {
           if (!message) return;
 
           // Try OpenClaw dispatch first
-          const rt = registry().openclawRuntime;
-          const dispatchFn = rt?.channel?.reply?.dispatchReplyFromConfig;
-          if (rt?.config && dispatchFn) {
+          const dispatch = registry().openclawRuntime;
+          if (dispatch) {
             try {
               // Track sender before dispatch — needed for auto-mention fallback
               // in sendReplyToThenvoi (deliverMessage owns tracking for the other path)
@@ -697,66 +709,20 @@ export const thenvoiChannel: OpenClawChannel = {
                 CommandAuthorized: true,
               };
 
-              // Contact events use a virtual thread — don't try to send to Thenvoi
-              const isContactThread = message.threadId === CONTACTS_THREAD_ID;
-
-              const threadId = message.threadId;
-
-              // For contact threads, use a no-op dispatcher — no replies to send
-              const noopSend = (): boolean => true;
-              const dispatcher = isContactThread
-                ? {
-                    sendToolResult: noopSend,
-                    sendBlockReply: noopSend,
-                    sendFinalReply: noopSend,
-                    waitForIdle: async (): Promise<void> => {},
-                    getQueuedCounts: () => ({ tool: 0, block: 0, final: 0 }),
-                  }
-                : (() => {
-                    // Track pending reply promises so waitForIdle can await them
-                    const pendingReplies: Promise<void>[] = [];
-                    const deliveryErrors: Error[] = [];
-
-                    function enqueueReply(payload: unknown): void {
-                      pendingReplies.push(
-                        sendReplyToThenvoi(link.rest, config.agentId, accountId, threadId, payload).catch((err: unknown) => {
-                          const error = err instanceof Error ? err : new Error(String(err));
-                          deliveryErrors.push(error);
-                          console.error(`[thenvoi:${accountId}] Reply delivery failed (room=${threadId}):`, error.message);
-                        }),
-                      );
-                    }
-
-                    return {
-                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                      sendToolResult: (payload: any): boolean => { enqueueReply(payload); return true; },
-                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                      sendBlockReply: (payload: any): boolean => { enqueueReply(payload); return true; },
-                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                      sendFinalReply: (payload: any): boolean => { enqueueReply(payload); return true; },
-                      waitForIdle: async (): Promise<void> => {
-                        await Promise.allSettled(pendingReplies);
-                        if (deliveryErrors.length > 0) {
-                          const summary = deliveryErrors.map((e) => e.message).join("; ");
-                          console.error(
-                            `[thenvoi:${accountId}] ${deliveryErrors.length}/${pendingReplies.length} replies failed to deliver (room=${message.threadId}): ${summary}`,
-                          );
-                        }
-                      },
-                      getQueuedCounts: () => ({ tool: 0, block: 0, final: 0 }),
-                    };
-                  })();
+              const dispatcher = message.threadId === CONTACTS_THREAD_ID
+                ? createNoopReplyDispatcher()
+                : createBandReplyDispatcher(link, config.agentId, accountId, message.threadId);
 
               console.log(`[thenvoi:${accountId}] Dispatching message to OpenClaw agent...`);
-              const cfg = rt.config.loadConfig();
-              await dispatchFn({
+              const cfg = dispatch.loadConfig();
+              await dispatch.dispatchReplyFromConfig({
                 ctx: inboundCtx,
                 cfg,
                 dispatcher,
               });
               console.log(`[thenvoi:${accountId}] Message dispatched successfully`);
             } catch (error) {
-              console.error(`[thenvoi:${accountId}] Failed to dispatch message:`, error);
+              console.error(`[thenvoi:${accountId}] Failed to dispatch message: ${redactSecrets(error)}`);
             }
           } else {
             // deliverMessage handles sender tracking and warns if no callback is set
@@ -791,7 +757,7 @@ export const thenvoiChannel: OpenClawChannel = {
             console.log(`[thenvoi:${accountId}] Contact event: ${event.type}`);
             await contactHandler.handle(event);
           } catch (error) {
-            console.error(`[thenvoi:${accountId}] Failed to handle contact event:`, error);
+            console.error(`[thenvoi:${accountId}] Failed to handle contact event: ${redactSecrets(error)}`);
           }
         };
 
@@ -800,7 +766,7 @@ export const thenvoiChannel: OpenClawChannel = {
         // Start the event loop
         await presence.start();
 
-        console.log(`[thenvoi:${accountId}] Connected to Thenvoi platform`);
+        console.log(`[thenvoi:${accountId}] Connected to Band platform`);
 
         // Block until OpenClaw signals shutdown — startAccount must stay
         // alive for the lifetime of the connection, otherwise OpenClaw
@@ -833,7 +799,7 @@ export const thenvoiChannel: OpenClawChannel = {
         links().delete(accountId);
       }
 
-      console.log(`[thenvoi:${accountId}] Disconnected from Thenvoi platform`);
+      console.log(`[thenvoi:${accountId}] Disconnected from Band platform`);
     },
   },
 
@@ -843,18 +809,18 @@ export const thenvoiChannel: OpenClawChannel = {
     },
 
     formatThreadContext: (threadId: string): string => {
-      return `[Thenvoi Room: ${threadId}]`;
+      return `[Band Room: ${threadId}]`;
     },
   },
 
   messaging: {
     targetResolver: {
-      // UUID pattern for Thenvoi room IDs
+      // UUID pattern for Band room IDs
       looksLikeId: (raw: string): boolean => {
         const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
         return uuidPattern.test(raw.trim());
       },
-      hint: "Provide a Thenvoi room_id (UUID format)",
+      hint: "Provide a Band room_id (UUID format)",
     },
   },
 };
@@ -864,7 +830,7 @@ export const thenvoiChannel: OpenClawChannel = {
 // =============================================================================
 
 /**
- * Register the Thenvoi channel with OpenClaw.
+ * Register the Band channel with OpenClaw.
  */
 export function registerChannel(api: OpenClawChannelApi): void {
   api.registerChannel({ plugin: thenvoiChannel });

@@ -1,7 +1,7 @@
 /**
- * OpenClaw Channel Plugin for Thenvoi.
+ * OpenClaw Channel Plugin for Band.
  *
- * This plugin enables OpenClaw agents to connect to the Thenvoi platform,
+ * This plugin enables OpenClaw agents to connect to Band,
  * using @thenvoi/sdk for all platform communication.
  *
  * @packageDocumentation
@@ -10,6 +10,7 @@
 import { registerChannel, thenvoiChannel, setInboundCallback, setOpenClawRuntime } from "./channel.js";
 import { getMcpToolSchemas, executeMcpTool } from "./mcp-tools.js";
 import { BASE_INSTRUCTIONS } from "./prompts.js";
+import { redactSecrets } from "./redaction.js";
 
 // =============================================================================
 // Plugin Entry Point
@@ -93,7 +94,7 @@ export default function plugin(api: OpenClawPluginApi): void {
               details: result,
             };
           } catch (error) {
-            console.error(`[thenvoi] Tool ${tool.name} error:`, error);
+            console.error(`[thenvoi] Tool ${tool.name} error: ${redactSecrets(error)}`);
             throw error;
           }
         },
@@ -105,7 +106,7 @@ export default function plugin(api: OpenClawPluginApi): void {
     console.warn("[thenvoi] Available API methods:", Object.keys(api));
   }
 
-  // Register before_agent_start hook to inject Thenvoi instructions + room context
+  // Register before_agent_start hook to inject Band room context
   if (api.on) {
     api.on("before_agent_start", (_event, ctx) => {
       console.log(`[thenvoi] before_agent_start hook called (messageProvider=${ctx.messageProvider}, sessionKey=${ctx.sessionKey})`);
@@ -115,7 +116,7 @@ export default function plugin(api: OpenClawPluginApi): void {
 
       let prependContext = BASE_INSTRUCTIONS;
       if (roomId) {
-        prependContext += `\n\n## Current Thenvoi Room\n\n**Your current room_id is: \`${roomId}\`**\nUse this value for any tool parameter that asks for \`room_id\`. Do NOT use any other UUID.`;
+        prependContext += `\n\n## Current Band Room\n\n**Your current room_id is: \`${roomId}\`**\nUse this value for any tool parameter that asks for \`room_id\`. Do NOT use any other UUID.`;
       }
 
       return { prependContext };

@@ -1,7 +1,7 @@
 {
   "name": "@thenvoi/openclaw-channel-thenvoi",
   "version": "0.1.5",
-  "description": "OpenClaw channel plugin to connect with the Thenvoi AI agent collaboration platform",
+  "description": "OpenClaw channel plugin to connect with the Band AI agent collaboration platform",
   "author": "Thenvoi <hello@thenvoi.com>",
   "license": "MIT",
   "repository": {
@@ -20,7 +20,10 @@
   },
   "files": [
     "dist",
-    "openclaw.plugin.json"
+    "!dist/nemoclaw-integration/**",
+    "openclaw.plugin.json",
+    "examples/nemoclaw/README.md",
+    "scripts/nemoclaw-integration-*.js"
   ],
   "scripts": {
     "build": "tsup && node scripts/sync-plugin-version.js",
@@ -31,10 +34,14 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "node --env-file=.env node_modules/vitest/vitest.mjs run --config vitest.config.e2e.ts",
+    "nemoclaw:integration:setup": "node scripts/nemoclaw-integration-setup.js",
+    "nemoclaw:integration:configure": "node scripts/nemoclaw-integration-configure.js",
+    "nemoclaw:integration:preflight": "node scripts/nemoclaw-integration-preflight.js",
+    "nemoclaw:integration:verify": "node scripts/nemoclaw-integration-verify.js",
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@thenvoi/sdk": "workspace:*"
+    "@thenvoi/sdk": "^0.1.6"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
