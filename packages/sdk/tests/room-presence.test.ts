@@ -68,8 +68,21 @@ class FlakyTransport extends FakeTransport {
   }
 }
 
+class RejectingTransport extends FakeTransport {
+  public constructor(private readonly rejectedTopic: string) {
+    super();
+  }
+
+  public override async join(topic: string, handlers: TopicHandlers): Promise<void> {
+    if (topic === this.rejectedTopic) {
+      throw new Error(`Cannot join ${topic}`);
+    }
+    await super.join(topic, handlers);
+  }
+}
+
 async function waitFor(check: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 300; attempt += 1) {
+  for (let attempt = 0; attempt < 600; attempt += 1) {
     if (check()) {
       return;
     }
@@ -158,6 +171,7 @@ describe("RoomPresence", () => {
       inserted_at: new Date().toISOString(),
     });
 
+    await waitFor(() => contactEvents.length === 1);
     expect(contactEvents).toEqual(["contact_added"]);
 
     await presence.stop();
@@ -268,8 +282,87 @@ describe("RoomPresence", () => {
     await presence.stop();
   });
 
+  it("does not let one room's slow handler block other rooms", async () => {
+    const transport = new FakeTransport();
+    const joined: string[] = [];
+    let releaseSlowRoom!: () => void;
+    const slowRoom = new Promise<void>((resolve) => {
+      releaseSlowRoom = resolve;
+    });
+
+    const presence = new RoomPresence({
+      link: new ThenvoiLink({
+        agentId: "agent-1",
+        apiKey: "key",
+        transport,
+        restApi: new FakeRestApi({ listChats: async () => ({ data: [] }) }),
+      }),
+    });
+    presence.onRoomJoined = async (roomId) => {
+      if (roomId === "room-slow") {
+        await slowRoom;
+      }
+      joined.push(roomId);
+    };
+
+    await presence.start();
+    await transport.emit("agent_rooms:agent-1", "room_added", {
+      id: "room-slow",
+      status: "active",
+      type: "direct",
+      title: "Slow Room",
+      removed_at: "",
+    });
+    await transport.emit("agent_rooms:agent-1", "room_added", {
+      id: "room-fast",
+      status: "active",
+      type: "direct",
+      title: "Fast Room",
+      removed_at: "",
+    });
+
+    await waitFor(() => joined.includes("room-fast"));
+    expect(joined).not.toContain("room-slow");
+
+    releaseSlowRoom();
+    await waitFor(() => joined.includes("room-slow"));
+    await presence.stop();
+  });
+
+  it("prunes rooms missing from recovery discovery", async () => {
+    const transport = new FakeTransport();
+    const left: string[] = [];
+    let listCall = 0;
+
+    const presence = new RoomPresence({
+      link: new ThenvoiLink({
+        agentId: "agent-1",
+        apiKey: "key",
+        transport,
+        restApi: new FakeRestApi({
+          listChats: async () => {
+            listCall += 1;
+            return listCall === 1
+              ? { data: [{ id: "room-deleted", title: "Deleted Room" }] }
+              : { data: [] };
+          },
+        }),
+      }),
+      recoverySweepIntervalMs: 10,
+    });
+    presence.onRoomLeft = async (roomId) => {
+      left.push(roomId);
+    };
+
+    await presence.start();
+    await waitFor(() => presence.rooms.has("room-deleted"));
+    await waitFor(() => left.includes("room-deleted") && !presence.rooms.has("room-deleted"));
+
+    await presence.stop();
+  });
+
   it("keeps consuming events after a room join failure", async () => {
-    const transport = new FlakyTransport({ "chat_room:room-bad": 2 });
+    const transport = new RejectingTransport("chat_room:room-bad");
     const logger = {
       debug: vi.fn(),
       info: vi.fn(),
@@ -310,6 +403,7 @@ describe("RoomPresence", () => {
     await waitFor(() => joined.includes("room-good"));
 
     expect(joined).not.toContain("room-bad");
+    await waitFor(() => logger.warn.mock.calls.length > 0);
     expect(logger.warn).toHaveBeenCalledWith(
       "RoomPresence dropped event after handler failure",
       expect.objectContaining({

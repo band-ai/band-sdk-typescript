@@ -193,9 +193,27 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
       return;
     }
 
-    await this.transport.leave(`chat_room:${roomId}`);
-    await this.transport.leave(`room_participants:${roomId}`);
+    // Always release the room from local tracking, even if `transport.leave`
+    // throws. When the room is deleted server-side, the Phoenix topic is
+    // already gone and the leave call can reject — leaving the room ID in
+    // `subscribedRooms` would prevent any future re-subscription and hide a
+    // permanently dead room.
     this.subscribedRooms.delete(roomId);
+
+    const errors: unknown[] = [];
+    for (const topic of [`chat_room:${roomId}`, `room_participants:${roomId}`]) {
+      try {
+        await this.transport.leave(topic);
+      } catch (error) {
+        errors.push(error);
+        this.logger.warn("Failed to leave room topic", { topic, error });
+      }
+    }
+
+    if (errors.length === 2) {
+      // Both topic leaves failed — surface the first error so callers can decide.
+      throw errors[0];
+    }
   }
 
   public async subscribeAgentContacts(): Promise<void> {

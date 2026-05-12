@@ -170,6 +170,8 @@ interface PluginConfig {
 // =============================================================================
 
 const CONTACTS_THREAD_ID = "__thenvoi_contacts__";
+const ROOM_RECOVERY_SWEEP_INTERVAL_MS = 10_000;
+const STARTUP_MESSAGE_GRACE_MS = 5_000;
 
 // =============================================================================
 // Channel State
@@ -205,13 +207,15 @@ const toolEventContext = new AsyncLocalStorage<BandToolEventContext>();
 export interface BandToolEventContext {
   accountId: string;
   roomId: string;
+  sentMessage?: boolean;
 }
 
 interface GatewayRegistry {
   links: Map<string, ThenvoiLink>;
   presences: Map<string, RoomPresence>;
   startingAccounts: Set<string>;
-  lastSenderByThread: Map<string, { senderId: string; senderName: string }>;
+  lastSenderByThread: Map<string, { senderId: string; senderName: string; senderType?: string }>;
+  replyOwnerByThread: Map<string, { senderId: string; senderName: string }>;
   processedMessageIds: Set<string>;
   deliverInbound: ((message: OpenClawInboundMessage) => void) | null;
   openclawRuntime: OpenClawRuntimeDispatch | null;
@@ -225,6 +229,7 @@ function getGatewayRegistry(): GatewayRegistry {
       presences: new Map(),
       startingAccounts: new Set(),
       lastSenderByThread: new Map(),
+      replyOwnerByThread: new Map(),
       processedMessageIds: new Set(),
       deliverInbound: null,
       openclawRuntime: null,
@@ -253,15 +258,46 @@ export function getBandToolEventContext(): BandToolEventContext | undefined {
   return toolEventContext.getStore();
 }
 
+export function recordBandMessageSentForCurrentTurn(): void {
+  const context = toolEventContext.getStore();
+  if (context) context.sentMessage = true;
+}
+
 function runWithBandToolEventContext<T>(context: BandToolEventContext, fn: () => Promise<T>): Promise<T> {
   return toolEventContext.run(context, fn);
+}
+
+function formatLogContext(context?: Record<string, unknown>): string {
+  if (!context) return "";
+  try {
+    return ` ${redactSecrets(JSON.stringify(context))}`;
+  } catch {
+    return ` ${redactSecrets(context)}`;
+  }
+}
+
+function createChannelLogger(accountId: string) {
+  return {
+    debug: (message: string, context?: Record<string, unknown>): void => {
+      console.debug(`[thenvoi:${accountId}] ${message}${formatLogContext(context)}`);
+    },
+    info: (message: string, context?: Record<string, unknown>): void => {
+      console.log(`[thenvoi:${accountId}] ${message}${formatLogContext(context)}`);
+    },
+    warn: (message: string, context?: Record<string, unknown>): void => {
+      console.warn(`[thenvoi:${accountId}] ${message}${formatLogContext(context)}`);
+    },
+    error: (message: string, context?: Record<string, unknown>): void => {
+      console.error(`[thenvoi:${accountId}] ${message}${formatLogContext(context)}`);
+    },
+  };
 }
 
 // Track last sender per thread for auto-mention fallback
 // Key: threadId, Value: { senderId, senderName }
 const MAX_SENDER_CACHE = 500;
 
-function trackSender(accountId: string, threadId: string, senderId: string, senderName: string): void {
+function trackSender(accountId: string, threadId: string, senderId: string, senderName: string, senderType?: string): void {
   const lastSenderByThread = registry().lastSenderByThread;
   const cacheKey = `${accountId}:${threadId}`;
   // Delete-and-reinsert to move the entry to the end (LRU eviction order)
@@ -271,7 +307,17 @@ function trackSender(accountId: string, threadId: string, senderId: string, send
     const oldest = lastSenderByThread.keys().next().value;
     if (oldest) lastSenderByThread.delete(oldest);
   }
-  lastSenderByThread.set(cacheKey, { senderId, senderName });
+  lastSenderByThread.set(cacheKey, { senderId, senderName, senderType });
+
+  if (senderType?.toLowerCase() !== "agent") {
+    const replyOwnerByThread = registry().replyOwnerByThread;
+    replyOwnerByThread.delete(cacheKey);
+    if (replyOwnerByThread.size >= MAX_SENDER_CACHE) {
+      const oldest = replyOwnerByThread.keys().next().value;
+      if (oldest) replyOwnerByThread.delete(oldest);
+    }
+    replyOwnerByThread.set(cacheKey, { senderId, senderName });
+  }
 }
 
 /**
@@ -306,7 +352,7 @@ export function setInboundCallback(
 export function deliverMessage(message: OpenClawInboundMessage, accountId: string = "default"): void {
   // Track the sender for auto-mention fallback when responding
   if (message.threadId && message.senderId && message.senderName) {
-    trackSender(accountId, message.threadId, message.senderId, message.senderName);
+    trackSender(accountId, message.threadId, message.senderId, message.senderName, message.senderType);
   }
 
   const deliver = registry().deliverInbound;
@@ -402,20 +448,24 @@ function replyPayloadText(payload: unknown): string | undefined {
   return typeof payload === "string" ? payload : (payload as { text?: string })?.text;
 }
 
-async function sendReplyToThenvoi(rest: ThenvoiLink["rest"], agentId: string, accountId: string, roomId: string, payload: unknown): Promise<void> {
-  const text = replyPayloadText(payload);
-  if (!text) {
-    throw new Error(`[thenvoi] No text in reply payload (room=${roomId})`);
-  }
+function extractUserFacingFinalText(text: string): string {
+  const messageToUserMatch = text.match(/<message to user>([\s\S]*?)<\/message>/i);
+  return (messageToUserMatch?.[1] ?? text).trim();
+}
 
-  const resolved = await resolveMentions(rest, agentId, accountId, roomId, text);
-  if (!resolved) {
-    throw new Error(
-      `[thenvoi] Reply dropped: no other participants in room to mention (room=${roomId}, textLength=${text.length})`,
-    );
-  }
-  await rest.createChatMessage(roomId, { content: text, mentions: resolved.mentions });
-  console.log(`[thenvoi] Reply sent (room=${roomId}, textLength=${text.length})`);
+function hasExplicitUserFacingFinalText(text: string): boolean {
+  return /<message to user>[\s\S]*?<\/message>/i.test(text);
+}
+
+function buildOpenClawBody(message: OpenClawInboundMessage): string {
+  if (message.senderType?.toLowerCase() !== "agent") return message.text;
+
+  return [
+    `[Band worker agent reply from ${message.senderName} (${message.senderId})]`,
+    "This message is from another agent in the room, not from the human requester. If you delegated work to this agent and a critique, improvement request, validation question, challenge, counterargument, or follow-up would improve the result, reply to this same worker with thenvoi_send_message instead of finaling back to the room owner. For debate, review, or compare/contrast tasks, the first worker answer is not enough; challenge it or add your own counterpoint before declaring consensus.",
+    "",
+    message.text,
+  ].join("\n");
 }
 
 interface ReplyDispatcher extends Record<string, unknown> {
@@ -457,7 +507,49 @@ function selectFinalReplyText(texts: string[]): string | undefined {
   return normalized.length > 1 ? normalized.join("") : undefined;
 }
 
-function createBandReplyDispatcher(link: ThenvoiLink, agentId: string, accountId: string, roomId: string): ReplyDispatcher {
+async function resolveFinalReplyMentions(
+  rest: ThenvoiLink["rest"],
+  agentId: string,
+  accountId: string,
+  roomId: string,
+): Promise<Mention[]> {
+  const participants = await rest.listChatParticipants(roomId);
+  const cacheKey = `${accountId}:${roomId}`;
+
+  const replyOwner = registry().replyOwnerByThread.get(cacheKey);
+  if (replyOwner) {
+    const participant = participants.find((p) => p.id === replyOwner.senderId && p.id !== agentId);
+    if (participant) return [{ id: participant.id, name: participant.name }];
+  }
+
+  const ownerLikeParticipant = participants.find((p) => p.id !== agentId && p.type?.toLowerCase() !== "agent");
+  if (ownerLikeParticipant) return [{ id: ownerLikeParticipant.id, name: ownerLikeParticipant.name }];
+
+  const lastSender = registry().lastSenderByThread.get(cacheKey);
+  if (lastSender) {
+    const participant = participants.find((p) => p.id === lastSender.senderId && p.id !== agentId);
+    if (participant) return [{ id: participant.id, name: participant.name }];
+  }
+
+  const otherParticipant = participants.find((p) => p.id !== agentId);
+  if (otherParticipant) return [{ id: otherParticipant.id, name: otherParticipant.name }];
+
+  throw new Error("Cannot send final reply: no other participant is available to mention");
+}
+
+async function sendFinalReplyToThenvoi(
+  rest: ThenvoiLink["rest"],
+  agentId: string,
+  accountId: string,
+  roomId: string,
+  text: string,
+): Promise<void> {
+  const mentions = await resolveFinalReplyMentions(rest, agentId, accountId, roomId);
+  await rest.createChatMessage(roomId, { content: text, mentions });
+  console.log(`[thenvoi] Final reply sent (room=${roomId}, textLength=${text.length})`);
+}
+
+function createBandReplyDispatcher(link: ThenvoiLink, accountId: string, roomId: string, turnContext?: BandToolEventContext): ReplyDispatcher {
   const pendingReplies: Promise<void>[] = [];
   const deliveryErrors: Error[] = [];
   const queuedCounts = { tool: 0, block: 0, final: 0 };
@@ -506,10 +598,16 @@ function createBandReplyDispatcher(link: ThenvoiLink, agentId: string, accountId
       return true;
     },
     waitForIdle: async (): Promise<void> => {
-      const finalReplyText = finalReplySent ? undefined : selectFinalReplyText(finalReplyTexts);
+      const candidateFinalTexts = turnContext?.sentMessage
+        ? finalReplyTexts.filter(hasExplicitUserFacingFinalText)
+        : finalReplyTexts;
+      const finalReplyText = finalReplySent ? undefined : selectFinalReplyText(candidateFinalTexts);
       if (finalReplyText) {
         finalReplySent = true;
-        enqueueDelivery("final", sendReplyToThenvoi(link.rest, agentId, accountId, roomId, finalReplyText));
+        enqueueDelivery("final", sendFinalReplyToThenvoi(link.rest, link.agentId, accountId, roomId, extractUserFacingFinalText(finalReplyText)));
+      } else if (!finalReplySent && turnContext?.sentMessage && finalReplyTexts.length > 0) {
+        finalReplySent = true;
+        console.log(`[thenvoi] Dropped non-explicit final reply after thenvoi_send_message (room=${roomId})`);
       }
       await Promise.allSettled(pendingReplies);
       if (deliveryErrors.length > 0) {
@@ -732,6 +830,7 @@ export const thenvoiChannel: OpenClawChannel = {
         }
 
         const config = resolveConfig(accountConfig);
+        const logger = createChannelLogger(accountId);
 
         // Create ThenvoiLink (combines WebSocket + REST)
         const link = new ThenvoiLink({
@@ -739,6 +838,7 @@ export const thenvoiChannel: OpenClawChannel = {
           apiKey: config.apiKey,
           wsUrl: config.wsUrl,
           restUrl: config.restUrl,
+          logger,
         });
         links().set(accountId, link);
         console.log(`[thenvoi:${accountId}] Link created`);
@@ -751,6 +851,8 @@ export const thenvoiChannel: OpenClawChannel = {
         const presence = new RoomPresence({
           link,
           autoSubscribeExistingRooms: true,
+          recoverySweepIntervalMs: ROOM_RECOVERY_SWEEP_INTERVAL_MS,
+          logger,
         });
 
         async function handleMessageEvent(event: PlatformEvent): Promise<void> {
@@ -778,17 +880,19 @@ export const thenvoiChannel: OpenClawChannel = {
           if (dispatch) {
             try {
               if (message.threadId && message.senderId && message.senderName) {
-                trackSender(accountId, message.threadId, message.senderId, message.senderName);
+                trackSender(accountId, message.threadId, message.senderId, message.senderName, message.senderType);
               }
 
+              const body = buildOpenClawBody(message);
               const inboundCtx = {
-                Body: message.text,
-                RawBody: message.text,
-                BodyForCommands: message.text,
-                CommandBody: message.text,
+                Body: body,
+                RawBody: body,
+                BodyForCommands: body,
+                CommandBody: body,
                 From: message.senderId,
                 SenderId: message.senderId,
                 SenderName: message.senderName,
+                SenderType: message.senderType,
                 To: message.threadId,
                 SessionKey: `thenvoi:${message.threadId}`,
                 Surface: "thenvoi",
@@ -800,13 +904,14 @@ export const thenvoiChannel: OpenClawChannel = {
                 BandOperatorId: accountConfig.operatorId,
               };
 
+              const bandTurnContext: BandToolEventContext = { accountId, roomId: message.threadId };
               const dispatcher = message.threadId === CONTACTS_THREAD_ID
                 ? createNoopReplyDispatcher()
-                : createBandReplyDispatcher(link, config.agentId, accountId, message.threadId);
+                : createBandReplyDispatcher(link, accountId, message.threadId, bandTurnContext);
 
               console.log(`[thenvoi:${accountId}] Dispatching message to OpenClaw agent...`);
               const cfg = dispatch.loadConfig();
-              await runWithBandToolEventContext({ accountId, roomId: message.threadId }, async () => dispatch.dispatchReplyFromConfig({
+              await runWithBandToolEventContext(bandTurnContext, async () => dispatch.dispatchReplyFromConfig({
                 ctx: inboundCtx,
                 cfg,
                 dispatcher,
@@ -831,11 +936,41 @@ export const thenvoiChannel: OpenClawChannel = {
 
         async function catchUpMentionedMessages(roomId: string): Promise<void> {
           if (typeof link.rest.getNextMessage === "function") {
+            const seenPendingIds = new Set<string>();
             for (let drained = 0; drained < 25; drained += 1) {
-              const next = await link.rest.getNextMessage({ chatId: roomId });
+              let next;
+              try {
+                next = await link.rest.getNextMessage({ chatId: roomId });
+              } catch (error) {
+                console.warn(`[thenvoi:${accountId}] Failed to fetch pending message for room ${roomId}; pruning room from local tracking: ${redactSecrets(error)}`);
+                presence.rooms.delete(roomId);
+                try { await link.unsubscribeRoom(roomId); } catch { /* best effort */ }
+                return;
+              }
               if (!next) break;
-              if (next.sender_id === config.agentId) continue;
-              if (next.message_type !== "text") continue;
+              if (seenPendingIds.has(next.id)) {
+                console.warn(`[thenvoi:${accountId}] Pending message ${next.id} repeated for room ${roomId}; stopping catch-up drain`);
+                break;
+              }
+              seenPendingIds.add(next.id);
+
+              const insertedAt = messageInsertedAt(next as unknown as Record<string, unknown>);
+              if (!insertedAt || insertedAt < accountStartedAt - STARTUP_MESSAGE_GRACE_MS) {
+                console.log(`[thenvoi:${accountId}] Skipping stale pending message in room ${roomId}`);
+                try { await link.markProcessing(roomId, next.id, { bestEffort: true }); } catch { /* best effort */ }
+                try { await link.markProcessed(roomId, next.id, { bestEffort: true }); } catch { /* best effort */ }
+                continue;
+              }
+              if (next.sender_id === config.agentId) {
+                try { await link.markProcessing(roomId, next.id, { bestEffort: true }); } catch { /* best effort */ }
+                try { await link.markProcessed(roomId, next.id, { bestEffort: true }); } catch { /* best effort */ }
+                continue;
+              }
+              if (next.message_type !== "text") {
+                try { await link.markProcessing(roomId, next.id, { bestEffort: true }); } catch { /* best effort */ }
+                try { await link.markProcessed(roomId, next.id, { bestEffort: true }); } catch { /* best effort */ }
+                continue;
+              }
               console.log(`[thenvoi:${accountId}] Catching up pending mentioned message in room ${roomId}`);
               await handleMessageEvent({
                 type: "message_created",
@@ -863,7 +998,7 @@ export const thenvoiChannel: OpenClawChannel = {
             if (payload.sender_id === config.agentId) continue;
             if (payload.message_type !== "text") continue;
             const insertedAt = messageInsertedAt(payload);
-            if (!insertedAt || insertedAt < accountStartedAt - 5_000) continue;
+            if (!insertedAt || insertedAt < accountStartedAt - STARTUP_MESSAGE_GRACE_MS) continue;
             if (!messageMentionsAgent(payload, config.agentId)) continue;
             console.log(`[thenvoi:${accountId}] Catching up mentioned message in room ${roomId}`);
             await handleMessageEvent({ type: "message_created", roomId, payload } as PlatformEvent);
@@ -916,7 +1051,7 @@ export const thenvoiChannel: OpenClawChannel = {
                 return;
               }
 
-              const dispatcher = createBandReplyDispatcher(link, config.agentId, accountId, hubRoomId);
+              const dispatcher = createBandReplyDispatcher(link, accountId, hubRoomId);
               const cfg = dispatch.loadConfig();
               await runWithBandToolEventContext({ accountId, roomId: hubRoomId }, async () => dispatch.dispatchReplyFromConfig({
                 ctx: {

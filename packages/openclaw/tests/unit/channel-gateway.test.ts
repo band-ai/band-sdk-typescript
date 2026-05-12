@@ -16,7 +16,7 @@ vi.mock("@thenvoi/sdk", () => ({
       rest: {
         getAgentMe: vi.fn().mockResolvedValue({ id: opts.agentId }),
         listChatParticipants: vi.fn().mockResolvedValue([
-          { id: "user-789", name: "John Doe", type: "User" },
+          { id: "user-789", name: "John Doe", type: "Owner" },
           { id: opts.agentId, name: "Test Agent", type: "Agent" },
         ]),
         createChatMessage: vi.fn().mockResolvedValue({ ok: true, id: "msg-001" }),
@@ -65,6 +65,7 @@ import {
   setOpenClawRuntime,
   getLink,
   getAgentId,
+  recordBandMessageSentForCurrentTurn,
   resetGatewayRegistry,
 } from "../../src/channel.js";
 import { mockAccountConfig } from "../fixtures/configs.js";
@@ -498,14 +499,64 @@ describe("Channel Gateway Lifecycle", () => {
       );
     });
 
-    it("should send tool results as Band events and only send one stable final reply as a chat message", async () => {
+    it("should mark worker replies in all OpenClaw body fields", async () => {
+      const dispatchFn = vi.fn().mockResolvedValue(undefined);
+      setOpenClawRuntime({
+        channel: {
+          reply: {
+            dispatchReplyFromConfig: dispatchFn,
+          },
+        },
+        config: {
+          loadConfig: () => ({}),
+        },
+      });
+
+      const ctx = createGatewayContext("default", mockAccountConfig, { aborted: true });
+      await thenvoiChannel.gateway!.startAccount(ctx);
+
+      const onRoomEvent = capturedPresenceInstance.onRoomEvent as (
+        roomId: string,
+        event: Record<string, unknown>,
+      ) => Promise<void>;
+
+      await onRoomEvent("room-123", {
+        type: "message_created",
+        roomId: "room-123",
+        payload: {
+          id: "msg-001",
+          chat_room_id: "room-123",
+          sender_id: "agent-456",
+          sender_type: "Agent",
+          sender_name: "Codex",
+          content: "I think dogs win.",
+          message_type: "text",
+          inserted_at: "2025-01-15T10:00:00Z",
+          metadata: {},
+        },
+      });
+
+      expect(dispatchFn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          ctx: expect.objectContaining({
+            Body: expect.stringContaining("Band worker agent reply from Codex"),
+            RawBody: expect.stringContaining("Band worker agent reply from Codex"),
+            BodyForCommands: expect.stringContaining("Band worker agent reply from Codex"),
+            CommandBody: expect.stringContaining("Band worker agent reply from Codex"),
+            SenderType: "Agent",
+          }),
+        }),
+      );
+    });
+
+    it("should send tool results as Band events and route one stable final reply to the room owner", async () => {
       const dispatchFn = vi.fn().mockImplementation(async ({ dispatcher }) => {
         dispatcher.sendToolResult({ text: "tool output" });
         dispatcher.sendBlockReply({ text: "partial block" });
         dispatcher.sendFinalReply({ text: "I" });
         dispatcher.waitForIdle();
         dispatcher.sendFinalReply({ text: "'ll help you get started with that." });
-        dispatcher.sendFinalReply({ text: "Done. I pulled Codex into the room and asked them to help." });
+        dispatcher.sendFinalReply({ text: "<message to user>Done. I pulled Codex into the room and asked them to help.</message>" });
         await dispatcher.waitForIdle();
         dispatcher.sendFinalReply({ text: "I" });
         dispatcher.sendFinalReply({ text: "'ll help you pull in Codex and build out a project about NVIDIA!" });
@@ -537,7 +588,7 @@ describe("Channel Gateway Lifecycle", () => {
           id: "msg-001",
           chat_room_id: "room-123",
           sender_id: "user-789",
-          sender_type: "User",
+          sender_type: "Owner",
           sender_name: "John Doe",
           content: "Hello!",
           message_type: "text",
@@ -554,8 +605,55 @@ describe("Channel Gateway Lifecycle", () => {
       expect(mockLinkInstance.rest.createChatMessage).toHaveBeenCalledTimes(1);
       expect(mockLinkInstance.rest.createChatMessage).toHaveBeenCalledWith(
         "room-123",
-        expect.objectContaining({ content: "Done. I pulled Codex into the room and asked them to help." }),
+        expect.objectContaining({
+          content: "Done. I pulled Codex into the room and asked them to help.",
+          mentions: [{ id: "user-789", name: "John Doe" }],
+        }),
       );
+    });
+
+    it("should drop non-explicit final replies after sending a Band message to another participant", async () => {
+      const dispatchFn = vi.fn().mockImplementation(async ({ dispatcher }) => {
+        recordBandMessageSentForCurrentTurn();
+        dispatcher.sendFinalReply({ text: "I asked Codex to revise that list." });
+        await dispatcher.waitForIdle();
+      });
+      setOpenClawRuntime({
+        channel: {
+          reply: {
+            dispatchReplyFromConfig: dispatchFn,
+          },
+        },
+        config: {
+          loadConfig: () => ({}),
+        },
+      });
+
+      const ctx = createGatewayContext("default", mockAccountConfig, { aborted: true });
+      await thenvoiChannel.gateway!.startAccount(ctx);
+
+      const onRoomEvent = capturedPresenceInstance.onRoomEvent as (
+        roomId: string,
+        event: Record<string, unknown>,
+      ) => Promise<void>;
+
+      await onRoomEvent("room-123", {
+        type: "message_created",
+        roomId: "room-123",
+        payload: {
+          id: "msg-001",
+          chat_room_id: "room-123",
+          sender_id: "agent-456",
+          sender_type: "Agent",
+          sender_name: "Codex",
+          content: "Here is the draft.",
+          message_type: "text",
+          inserted_at: "2025-01-15T10:00:00Z",
+          metadata: {},
+        },
+      });
+
+      expect(mockLinkInstance.rest.createChatMessage).not.toHaveBeenCalled();
     });
 
     it("should drain pending mentioned messages when joining existing rooms", async () => {
@@ -570,7 +668,7 @@ describe("Channel Gateway Lifecycle", () => {
         sender_name: "John Doe",
         message_type: "text",
         metadata: {},
-        inserted_at: "2025-01-15T10:00:00Z",
+        inserted_at: new Date().toISOString(),
       };
 
       const ctx = createGatewayContext("default", mockAccountConfig, { aborted: true });

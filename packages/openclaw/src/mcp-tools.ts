@@ -5,7 +5,7 @@
  * for use by OpenClaw agents. Uses @thenvoi/sdk REST API.
  */
 
-import { getLink, getAgentId } from "./channel.js";
+import { getLink, getAgentId, recordBandMessageSentForCurrentTurn } from "./channel.js";
 
 // =============================================================================
 // MCP Tool Types (local to this module)
@@ -461,6 +461,7 @@ const sendMessageTool: McpTool = {
       content,
       mentions: resolvedMentions,
     });
+    recordBandMessageSentForCurrentTurn();
 
     return {
       success: true,

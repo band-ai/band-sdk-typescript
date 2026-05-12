@@ -17,6 +17,7 @@ interface TrackRoomLeaveOptions {
   roomId: string | null;
   trackedRooms: Set<string>;
   onLeft?: (roomId: string) => Promise<void>;
+  onError?: (error: unknown) => Promise<void> | void;
 }
 
 interface HydrateTrackedRoomsOptions {
@@ -24,6 +25,8 @@ interface HydrateTrackedRoomsOptions {
   trackedRooms: Set<string>;
   roomFilter?: (room: MetadataMap) => boolean;
   onJoined?: (roomId: string, payload: MetadataMap) => Promise<void>;
+  onLeft?: (roomId: string) => Promise<void>;
+  pruneMissing?: boolean;
   pageSize?: number;
   maxPages?: number;
   requestOptions?: RestRequestOptions;
@@ -34,14 +37,37 @@ function hasRoomId(roomId: string | null): roomId is string {
   return typeof roomId === "string" && roomId.length > 0;
 }
 
-const ROOM_JOIN_RETRY_DELAYS_MS = [0, 2_000];
+const ROOM_JOIN_RETRY_DELAYS_MS = [0, 500, 2_000];
+const HYDRATE_CONCURRENCY = 6;
 
 function isRetryableRoomJoinError(error: unknown): boolean {
-  return error instanceof TransportError && /Timeout joining topic/.test(error.message);
+  if (!(error instanceof TransportError)) return false;
+  // Phoenix timeouts and transient join errors are safe to retry — the topic
+  // either failed to confirm or the socket was mid-reconnect. Permanent errors
+  // (auth, missing room) will continue to fail on retry and be surfaced.
+  return /Timeout joining topic|Failed to join topic/.test(error.message);
 }
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  if (items.length === 0) return;
+  const limit = Math.max(1, concurrency);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      await worker(items[index] as T);
+    }
+  });
+  await Promise.all(runners);
 }
 
 async function subscribeRoomWithRetry(link: ThenvoiLink, roomId: string): Promise<void> {
@@ -93,8 +119,22 @@ export async function trackRoomLeave(options: TrackRoomLeaveOptions): Promise<bo
     return false;
   }
 
-  await options.link.unsubscribeRoom(options.roomId);
+  // Drop the room from tracking up front. If the server already deleted the
+  // room, the underlying Phoenix topic is gone and `unsubscribeRoom` may throw
+  // — but the room is no longer reachable, which is the goal state, so the
+  // tracking set must reflect that regardless of how the leave call resolves.
   options.trackedRooms.delete(options.roomId);
+
+  try {
+    await options.link.unsubscribeRoom(options.roomId);
+  } catch (error) {
+    // Treat leave failures as "already gone" so consumers still fire `onLeft`
+    // and so retries don't deadlock on a topic the server has discarded.
+    if (options.onError) {
+      await options.onError(error);
+    }
+  }
+
   if (options.onLeft) {
     await options.onLeft(options.roomId);
   }
@@ -112,16 +152,22 @@ export async function hydrateTrackedRooms(options: HydrateTrackedRoomsOptions): 
       options.requestOptions,
     );
 
-    await Promise.all(
-      rooms.map(async (room) => {
+    const currentRoomIds = new Set(
+      rooms
+        .map((room) => (typeof room.id === "string" ? room.id : null))
+        .filter((roomId): roomId is string => roomId !== null),
+    );
+
+    if (options.pruneMissing) {
+      const stale = [...options.trackedRooms].filter((roomId) => !currentRoomIds.has(roomId));
+      await runWithConcurrency(stale, HYDRATE_CONCURRENCY, async (roomId) => {
         try {
-          await trackRoomJoin({
+          await trackRoomLeave({
             link: options.link,
-            roomId: typeof room.id === "string" ? room.id : null,
-            payload: room,
+            roomId,
             trackedRooms: options.trackedRooms,
-            roomFilter: options.roomFilter,
-            onJoined: options.onJoined,
+            onLeft: options.onLeft,
+            onError: options.onError,
           });
         } catch (error) {
           if (options.onError) {
@@ -130,8 +176,27 @@ export async function hydrateTrackedRooms(options: HydrateTrackedRoomsOptions): 
           }
           throw error;
         }
-      }),
-    );
+      });
+    }
+
+    await runWithConcurrency(rooms, HYDRATE_CONCURRENCY, async (room) => {
+      try {
+        await trackRoomJoin({
+          link: options.link,
+          roomId: typeof room.id === "string" ? room.id : null,
+          payload: room,
+          trackedRooms: options.trackedRooms,
+          roomFilter: options.roomFilter,
+          onJoined: options.onJoined,
+        });
+      } catch (error) {
+        if (options.onError) {
+          await options.onError(error);
+          return;
+        }
+        throw error;
+      }
+    });
   } catch (error) {
     if (error instanceof UnsupportedFeatureError) {
       return;
