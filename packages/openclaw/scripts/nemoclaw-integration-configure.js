@@ -38,7 +38,7 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`Usage: pnpm run nemoclaw:integration:configure -- --sandbox band-integration [--no-restart]\n\nReads THENVOI_API_KEY and THENVOI_AGENT_ID from the environment and writes them into the running NemoClaw sandbox OpenClaw config with nemoclaw <sandbox> config set.`);
+  console.log(`Usage: pnpm run nemoclaw:integration:configure -- --sandbox band-integration [--no-restart]\n\nReads THENVOI_API_KEY, THENVOI_AGENT_ID, and optional THENVOI_OPERATOR_ID / THENVOI_CONTACT_* settings from the environment and writes them into the running NemoClaw sandbox OpenClaw config with nemoclaw <sandbox> config set.`);
 }
 
 function requireEnv(name) {
@@ -82,6 +82,27 @@ function main() {
     ["plugins.entries.openclaw-channel-thenvoi.config.accounts.default.agentId", requireEnv("THENVOI_AGENT_ID")],
     ["plugins.entries.openclaw-channel-thenvoi.config.accounts.default.apiKey", requireEnv("THENVOI_API_KEY")],
   ];
+
+  if (process.env.THENVOI_OPERATOR_ID) {
+    values.push(["plugins.entries.openclaw-channel-thenvoi.config.accounts.default.operatorId", process.env.THENVOI_OPERATOR_ID]);
+  }
+
+  if (process.env.THENVOI_CONTACT_STRATEGY) {
+    values.push([
+      "plugins.entries.openclaw-channel-thenvoi.config.accounts.default.contactConfig.strategy",
+      process.env.THENVOI_CONTACT_STRATEGY,
+    ]);
+    values.push([
+      "plugins.entries.openclaw-channel-thenvoi.config.accounts.default.contactConfig.broadcastChanges",
+      "true",
+    ]);
+    if (process.env.THENVOI_CONTACT_HUB_TASK_ID) {
+      values.push([
+        "plugins.entries.openclaw-channel-thenvoi.config.accounts.default.contactConfig.hubTaskId",
+        process.env.THENVOI_CONTACT_HUB_TASK_ID,
+      ]);
+    }
+  }
 
   values.forEach(([key, value], index) => {
     runConfigSet(configSetArgs(opts.sandbox, key, value, opts.restart && index === values.length - 1));

@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Capture RoomPresence instances so we can invoke event handlers in tests
 let capturedPresenceInstance: Record<string, unknown>;
 let mockLinkInstance: Record<string, unknown>;
+let capturedContactHandlerOptions: Record<string, unknown> | undefined;
 
 vi.mock("@thenvoi/sdk", () => ({
   ThenvoiLink: vi.fn().mockImplementation((opts: Record<string, unknown>) => {
@@ -41,9 +42,12 @@ vi.mock("@thenvoi/sdk/runtime", () => ({
     };
     return capturedPresenceInstance;
   }),
-  ContactEventHandler: vi.fn().mockImplementation(() => ({
-    handle: vi.fn().mockResolvedValue(undefined),
-  })),
+  ContactEventHandler: vi.fn().mockImplementation((options: Record<string, unknown>) => {
+    capturedContactHandlerOptions = options;
+    return {
+      handle: vi.fn().mockResolvedValue(undefined),
+    };
+  }),
 }));
 
 vi.mock("@thenvoi/sdk/rest", () => ({}));
@@ -83,6 +87,7 @@ function createGatewayContext(
 describe("Channel Gateway Lifecycle", () => {
   beforeEach(() => {
     resetGatewayRegistry();
+    capturedContactHandlerOptions = undefined;
   });
 
   describe("deliverMessage", () => {
@@ -157,6 +162,32 @@ describe("Channel Gateway Lifecycle", () => {
       expect(getAgentId("default")).toBe("agent-123");
       expect(mockLinkInstance.connect).toHaveBeenCalled();
       expect(capturedPresenceInstance.start).toHaveBeenCalled();
+    });
+
+    it("should leave contact events disabled unless account config opts in", async () => {
+      const ctx = createGatewayContext("default", mockAccountConfig, { aborted: true });
+
+      await thenvoiChannel.gateway!.startAccount(ctx);
+
+      expect(capturedContactHandlerOptions).toBeUndefined();
+    });
+
+    it("should configure contact hub handling when hub room config is provided", async () => {
+      const ctx = createGatewayContext("default", {
+        ...mockAccountConfig,
+        operatorId: "operator-123",
+        contactConfig: { strategy: "hub_room", hubTaskId: "task-123", broadcastChanges: true },
+      }, { aborted: true });
+
+      await thenvoiChannel.gateway!.startAccount(ctx);
+
+      expect(capturedContactHandlerOptions?.config).toEqual({
+        strategy: "hub_room",
+        hubTaskId: "task-123",
+        broadcastChanges: true,
+      });
+      expect(capturedContactHandlerOptions?.onHubEvent).toEqual(expect.any(Function));
+      expect(capturedContactHandlerOptions?.onHubInit).toEqual(expect.any(Function));
     });
 
     it("should skip when startAccount is already in progress for same account", async () => {

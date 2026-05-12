@@ -242,9 +242,18 @@ function configJson(opts, { includeCredentialPlaceholders, includeCredentialValu
   if (includeCredentialValues) {
     account.apiKey = requireEnv("THENVOI_API_KEY");
     account.agentId = requireEnv("THENVOI_AGENT_ID");
+    if (process.env.THENVOI_OPERATOR_ID) account.operatorId = process.env.THENVOI_OPERATOR_ID;
+    if (process.env.THENVOI_CONTACT_STRATEGY) {
+      account.contactConfig = {
+        strategy: process.env.THENVOI_CONTACT_STRATEGY,
+        ...(process.env.THENVOI_CONTACT_HUB_TASK_ID ? { hubTaskId: process.env.THENVOI_CONTACT_HUB_TASK_ID } : {}),
+        broadcastChanges: true,
+      };
+    }
   } else if (includeCredentialPlaceholders) {
     account.apiKey = "${THENVOI_API_KEY}";
     account.agentId = "${THENVOI_AGENT_ID}";
+    account.operatorId = "${THENVOI_OPERATOR_ID}";
   }
   return JSON.stringify({
     plugins: {

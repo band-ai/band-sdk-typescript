@@ -8,7 +8,12 @@
  */
 
 import { ThenvoiLink } from "@thenvoi/sdk";
-import { RoomPresence, ContactEventHandler } from "@thenvoi/sdk/runtime";
+import {
+  RoomPresence,
+  ContactEventHandler,
+  HUB_ROOM_SYSTEM_PROMPT,
+  SYNTHETIC_CONTACT_EVENTS_SENDER_ID,
+} from "@thenvoi/sdk/runtime";
 import type { ContactEventConfig, ContactEvent, PlatformEvent } from "@thenvoi/sdk";
 import { resolveOpenClawRuntimeDispatch, type OpenClawRuntimeDispatch } from "./openclaw-runtime.js";
 import { redactSecrets } from "./redaction.js";
@@ -24,6 +29,7 @@ export interface ThenvoiAccountConfig {
   wsUrl?: string;
   restUrl?: string;
   contactConfig?: ContactEventConfig;
+  operatorId?: string;
 }
 
 export interface OpenClawInboundMessage {
@@ -491,8 +497,10 @@ function platformEventToInboundMessage(event: PlatformEvent): OpenClawInboundMes
   const roomId = event.roomId ?? payload.chat_room_id;
   if (!roomId) return null;
 
-  // Only process text messages, not events
-  if (payload.message_type !== "text") {
+  const isTextMessage = payload.message_type === "text";
+  const isSyntheticContactEvent =
+    payload.message_type === "contact_event" && payload.sender_id === SYNTHETIC_CONTACT_EVENTS_SENDER_ID;
+  if (!isTextMessage && !isSyntheticContactEvent) {
     console.log(`[thenvoi] Skipping non-text message (type=${payload.message_type}, room=${roomId})`);
     return null;
   }
@@ -509,6 +517,7 @@ function platformEventToInboundMessage(event: PlatformEvent): OpenClawInboundMes
       messageId: payload.id,
       messageType: payload.message_type,
       mentions: payload.metadata?.mentions,
+      contactEvent: isSyntheticContactEvent,
     },
   };
 }
@@ -744,6 +753,7 @@ export const thenvoiChannel: OpenClawChannel = {
                 Timestamp: message.timestamp ? new Date(message.timestamp).getTime() : Date.now(),
                 ChatType: "group",
                 CommandAuthorized: true,
+                BandOperatorId: accountConfig.operatorId,
               };
 
               const dispatcher = message.threadId === CONTACTS_THREAD_ID
@@ -806,18 +816,69 @@ export const thenvoiChannel: OpenClawChannel = {
           await handleMessageEvent(event);
         };
 
-        // Create a singleton ContactEventHandler for this account
-        // (maintains dedup state, hub room ID, and request cache across events)
-        const contactHandler = new ContactEventHandler({
-          config: { strategy: "hub_room", broadcastChanges: true },
-          rest: link.rest,
-          onBroadcast: (msg: string) => {
-            console.log(`[thenvoi:${accountId}] Contact broadcast: ${msg}`);
-          },
-        });
+        const contactConfig = accountConfig.contactConfig ?? { strategy: "disabled" };
 
-        // Handle contact events
+        // Create a singleton ContactEventHandler for this account when contact
+        // event handling is enabled. Hub-room mode stays plugin-owned: contact
+        // events become synthetic OpenClaw messages in the hub room, without
+        // changing normal Band-room threading or OpenClaw routing semantics.
+        const contactHandler = contactConfig.strategy && contactConfig.strategy !== "disabled"
+          ? new ContactEventHandler({
+            config: contactConfig,
+            rest: link.rest,
+            onBroadcast: (msg: string) => {
+              console.log(`[thenvoi:${accountId}] Contact broadcast: ${msg}`);
+            },
+            onHubInit: async (hubRoomId: string, systemPrompt: string) => {
+              await link.rest.createChatEvent(hubRoomId, {
+                content: systemPrompt,
+                messageType: "system",
+                metadata: { source: "openclaw", prompt: HUB_ROOM_SYSTEM_PROMPT },
+              });
+            },
+            onHubEvent: async (hubRoomId: string, event: PlatformEvent) => {
+              const message = platformEventToInboundMessage({ ...event, roomId: hubRoomId } as PlatformEvent);
+              if (!message) return;
+
+              const dispatch = registry().openclawRuntime;
+              if (!dispatch) {
+                deliverMessage(message, accountId);
+                return;
+              }
+
+              const dispatcher = createBandReplyDispatcher(link, config.agentId, accountId, hubRoomId);
+              const cfg = dispatch.loadConfig();
+              await dispatch.dispatchReplyFromConfig({
+                ctx: {
+                  Body: message.text,
+                  RawBody: message.text,
+                  BodyForCommands: message.text,
+                  CommandBody: message.text,
+                  From: message.senderId,
+                  SenderId: message.senderId,
+                  SenderName: message.senderName,
+                  To: hubRoomId,
+                  SessionKey: `thenvoi:${hubRoomId}`,
+                  Surface: "thenvoi",
+                  Provider: "thenvoi",
+                  MessageSid: (message.metadata as Record<string, unknown>)?.messageId,
+                  Timestamp: message.timestamp ? new Date(message.timestamp).getTime() : Date.now(),
+                  ChatType: "group",
+                  CommandAuthorized: true,
+                  BandContactHub: true,
+                  BandOperatorId: accountConfig.operatorId,
+                },
+                cfg,
+                dispatcher,
+              });
+              await dispatcher.waitForIdle();
+            },
+          })
+          : null;
+
+        // Handle contact events when explicitly configured for this account.
         presence.onContactEvent = async (event: ContactEvent) => {
+          if (!contactHandler) return;
           try {
             console.log(`[thenvoi:${accountId}] Contact event: ${event.type}`);
             await contactHandler.handle(event);

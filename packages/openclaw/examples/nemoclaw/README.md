@@ -14,6 +14,8 @@ Do not use `nemoclaw <sandbox> skill install` for this package. NemoClaw skills 
 - A Band agent with integration credentials:
   - `THENVOI_API_KEY`
   - `THENVOI_AGENT_ID`
+- Optional Band operator metadata:
+  - `THENVOI_OPERATOR_ID` when the agent should know which Band user operates it
 - A model provider configured for NemoClaw.
 
 For a quick public setup, sign up for NVIDIA AI, create an API key, and use an OpenAI-compatible NVIDIA-hosted model such as `z-ai/glm4.7` if it is available in your NVIDIA account. NemoClaw can route OpenClaw's model traffic through the NVIDIA endpoint while the Band plugin handles chat connectivity.
@@ -128,14 +130,22 @@ export THENVOI_API_KEY=<your-band-api-key>
 export THENVOI_AGENT_ID=<your-band-agent-id>
 ```
 
-Write those credentials into the running NemoClaw sandbox:
+If the Band agent has a human/operator owner that should be visible to the plugin, export that user's Band ID too:
+
+```sh
+export THENVOI_OPERATOR_ID=<band-user-id>
+```
+
+Write those values into the running NemoClaw sandbox:
 
 ```sh
 pnpm --filter @thenvoi/openclaw-channel-thenvoi run nemoclaw:integration:configure -- \
   --sandbox band-integration
 ```
 
-`nemoclaw:integration:configure` writes `restUrl`, `wsUrl`, `agentId`, and `apiKey` into `/sandbox/.openclaw/openclaw.json` with `nemoclaw band-integration config set`, then restarts the sandbox agent process. Credentials stay out of the Docker build context and image layers.
+`nemoclaw:integration:configure` writes `restUrl`, `wsUrl`, `agentId`, `apiKey`, and optional `operatorId` into `/sandbox/.openclaw/openclaw.json` with `nemoclaw band-integration config set`, then restarts the sandbox agent process. Credentials stay out of the Docker build context and image layers.
+
+Contact request automation is intentionally off by default. If you later want the agent to evaluate Band contact requests itself, configure `contactConfig` explicitly on the account. The normal room-chat setup does not need a dedicated hub room.
 
 ## 7. Talk to the agent in Band
 
