@@ -1,36 +1,24 @@
-# Band on NemoClaw integration setup
+# Set up Band on NemoClaw
 
-This runbook is for setting up Band on a NemoClaw instance through OpenClaw. It uses the `@thenvoi/openclaw-channel-thenvoi` OpenClaw channel package and generates a NemoClaw custom-image build context that bakes the plugin into the sandbox.
+This guide walks through running a Band-connected OpenClaw agent inside a NemoClaw sandbox. After setup, you add the Band agent to a Band chat room and talk to it like any other Band participant.
 
-The goal is a visible Band room round trip: a Band room message reaches the OpenClaw agent inside NemoClaw, and the reply appears back in Band.
+The integration uses the `@thenvoi/openclaw-channel-thenvoi` OpenClaw channel package. The setup script generates a NemoClaw custom-image build context that installs the plugin at `/sandbox/.openclaw/extensions/openclaw-channel-thenvoi`, adds the OpenClaw plugin config, and writes a Band egress policy for the configured Band host.
 
-## What this setup does
+Do not use `nemoclaw <sandbox> skill install` for this package. NemoClaw skills and OpenClaw plugins are different install surfaces; this package must be installed as an OpenClaw plugin inside the NemoClaw image.
 
-The integration setup script:
-
-1. verifies the OpenClaw channel package has been built;
-2. copies `dist/index.js`, `dist/index.d.ts`, and `openclaw.plugin.json` into a narrow build context;
-3. generates a Dockerfile that copies the plugin into `/sandbox/.openclaw/extensions/openclaw-channel-thenvoi`;
-4. runs `openclaw doctor --fix` in the image after the plugin is copied;
-5. merges a Band account entry into `/sandbox/.openclaw/openclaw.json` so OpenClaw starts the plugin account;
-6. writes a Band config template with placeholders only;
-7. writes a Band egress policy for the configured Band REST/WebSocket host;
-8. ships a configure command that writes Band credentials into the running sandbox config without baking them into the image;
-9. prints the `nemoclaw onboard --from <Dockerfile>` command.
-
-Do not use `nemoclaw <sandbox> skill install` for this plugin. NemoClaw documents that command for agent skills, not OpenClaw plugin packages.
-
-## Prerequisites
+## What you need
 
 - Node and pnpm installed for this repo.
-- NemoClaw CLI installed and on `PATH` for real sandbox onboarding.
+- NemoClaw CLI installed and on `PATH`.
 - A NemoClaw-compatible sandbox base image or Dockerfile.
-- Low-privilege Band integration credentials:
+- A Band agent with integration credentials:
   - `THENVOI_API_KEY`
   - `THENVOI_AGENT_ID`
-- A Band integration room ID for the final room round trip.
+- A model provider configured for NemoClaw.
 
-## Build the Band OpenClaw channel
+For a quick public setup, sign up for NVIDIA AI, create an API key, and use an OpenAI-compatible NVIDIA-hosted model such as `z-ai/glm4.7` if it is available in your NVIDIA account. NemoClaw can route OpenClaw's model traffic through the NVIDIA endpoint while the Band plugin handles chat connectivity.
+
+## 1. Build the Band OpenClaw channel
 
 From the TypeScript SDK workspace:
 
@@ -41,9 +29,11 @@ pnpm --filter @thenvoi/openclaw-channel-thenvoi typecheck
 pnpm --filter @thenvoi/openclaw-channel-thenvoi lint
 ```
 
-## Generate the NemoClaw integration context
+The setup command copies the built `dist/index.js`, `dist/index.d.ts`, and `openclaw.plugin.json` files into the generated NemoClaw build context.
 
-Use a known NemoClaw/OpenClaw sandbox base image:
+## 2. Generate the NemoClaw build context
+
+Use a NemoClaw/OpenClaw sandbox base image:
 
 ```sh
 pnpm --filter @thenvoi/openclaw-channel-thenvoi run nemoclaw:integration:setup -- \
@@ -52,9 +42,7 @@ pnpm --filter @thenvoi/openclaw-channel-thenvoi run nemoclaw:integration:setup -
   --yes
 ```
 
-Do not put Band credentials in the generated image unless you need a disposable local build. The supported path below writes credentials into the running sandbox config after onboarding.
-
-Or use a local NemoClaw-compatible Dockerfile as the source:
+Or use your own NemoClaw-compatible Dockerfile:
 
 ```sh
 pnpm --filter @thenvoi/openclaw-channel-thenvoi run nemoclaw:integration:setup -- \
@@ -69,7 +57,7 @@ The generated context is written to:
 packages/openclaw/dist/nemoclaw-integration/band-integration/
 ```
 
-Review these files before onboarding:
+Review these generated files before onboarding:
 
 - `Dockerfile`
 - `band-egress-policy.yaml`
@@ -77,7 +65,26 @@ Review these files before onboarding:
 - `openclaw-channel-thenvoi.config.example.json`
 - `openclaw-channel-thenvoi/openclaw.plugin.json`
 
-## Onboard the sandbox
+Do not bake real Band credentials into the image unless you are creating a disposable local sandbox. The supported path writes credentials into the running sandbox after onboarding.
+
+## 3. Configure a NemoClaw model provider
+
+NemoClaw needs a model before OpenClaw can answer Band messages. If you use NVIDIA AI, create an NVIDIA API key and choose an OpenAI-compatible model, for example `z-ai/glm4.7` when available.
+
+For non-interactive onboarding with NemoClaw's OpenAI-compatible provider, set the provider endpoint and credential before `nemoclaw onboard`:
+
+```sh
+export NEMOCLAW_PROVIDER=custom
+export NEMOCLAW_ENDPOINT_URL=https://integrate.api.nvidia.com/v1
+export NEMOCLAW_MODEL=z-ai/glm4.7
+export COMPATIBLE_API_KEY=<your-nvidia-api-key>
+```
+
+If your NemoClaw version has a named NVIDIA provider, use the equivalent provider option from `nemoclaw onboard` and keep the same model intent: a hosted OpenAI-compatible chat model reachable from inside the sandbox.
+
+NemoClaw's current non-interactive OpenAI-compatible flow requires `NEMOCLAW_ENDPOINT_URL`. Without it, onboarding exits with `Endpoint URL is required for Other OpenAI-compatible endpoint`, and sandbox status can only report `Endpoint URL is not known; skipping reachability check.`
+
+## 4. Onboard the sandbox
 
 The setup script prints the exact command. It has this shape:
 
@@ -85,21 +92,24 @@ The setup script prints the exact command. It has this shape:
 nemoclaw onboard --from /absolute/path/to/packages/openclaw/dist/nemoclaw-integration/band-integration/Dockerfile --name band-integration
 ```
 
-If you run onboarding non-interactively with NemoClaw's **Other OpenAI-compatible endpoint** provider, set the endpoint and credential before `nemoclaw onboard`:
+For non-interactive onboarding with the environment variables above:
 
 ```sh
-export NEMOCLAW_PROVIDER=custom
-export NEMOCLAW_ENDPOINT_URL=https://your-openai-compatible-endpoint.example/v1
-export NEMOCLAW_MODEL=<model-id>
-export COMPATIBLE_API_KEY=<endpoint-api-key-or-placeholder>
 nemoclaw onboard --non-interactive --yes \
   --from /absolute/path/to/packages/openclaw/dist/nemoclaw-integration/band-integration/Dockerfile \
   --name band-integration
 ```
 
-NemoClaw's current CLI accepts `NEMOCLAW_ENDPOINT_URL` for this provider. Without it, non-interactive onboarding exits with `Endpoint URL is required for Other OpenAI-compatible endpoint`, and an existing sandbox status can only report `Endpoint URL is not known; skipping reachability check.`
+After onboarding, confirm NemoClaw sees the sandbox and model:
 
-## Apply Band egress policy
+```sh
+nemoclaw list --json
+nemoclaw band-integration status
+```
+
+`nemoclaw band-integration status` should show the sandbox as ready and should not report missing model endpoint configuration.
+
+## 5. Apply the Band egress policy
 
 After onboarding, apply the generated Band policy preset:
 
@@ -107,11 +117,45 @@ After onboarding, apply the generated Band policy preset:
 nemoclaw band-integration policy-add --from-file /absolute/path/to/packages/openclaw/dist/nemoclaw-integration/band-integration/band-egress-policy.yaml --yes
 ```
 
-The policy allows only the configured Band REST/WebSocket host. Review it against the installed NemoClaw policy schema before applying it.
+The policy allows the sandbox to reach the configured Band REST and WebSocket host. By default that host is `app.band.ai`.
 
-## Preflight without Band credentials
+## 6. Configure Band credentials
 
-Run context-only preflight if NemoClaw is not installed yet:
+Create or choose a Band agent, then get its integration API key and agent ID from Band. Export them locally without committing them:
+
+```sh
+export THENVOI_API_KEY=<your-band-api-key>
+export THENVOI_AGENT_ID=<your-band-agent-id>
+```
+
+Write those credentials into the running NemoClaw sandbox:
+
+```sh
+pnpm --filter @thenvoi/openclaw-channel-thenvoi run nemoclaw:integration:configure -- \
+  --sandbox band-integration
+```
+
+`nemoclaw:integration:configure` writes `restUrl`, `wsUrl`, `agentId`, and `apiKey` into `/sandbox/.openclaw/openclaw.json` with `nemoclaw band-integration config set`, then restarts the sandbox agent process. Credentials stay out of the Docker build context and image layers.
+
+## 7. Talk to the agent in Band
+
+Open Band, add the configured Band agent to a chat room, and send it a message. If the room has multiple participants, mention the agent so the Band channel knows the message is intended for it.
+
+The expected user experience is simple: the message appears in Band, OpenClaw inside NemoClaw receives it, the configured model generates an answer, and the Band agent replies in the same room.
+
+Use the verifier when you want a scripted smoke test, not as the normal product flow:
+
+```sh
+pnpm --filter @thenvoi/openclaw-channel-thenvoi run nemoclaw:integration:verify -- \
+  --sandbox band-integration \
+  --room <room-id>
+```
+
+The verifier checks generated files, `nemoclaw list --json`, `nemoclaw <sandbox> status`, Band REST `getAgentMe`, Band WebSocket presence, and whether the configured agent can reply in a Band room. Normal users do not need to run it after every setup.
+
+## Optional preflight checks
+
+Run context-only preflight before NemoClaw is installed or before the sandbox exists:
 
 ```sh
 pnpm --filter @thenvoi/openclaw-channel-thenvoi run nemoclaw:integration:preflight -- \
@@ -126,57 +170,20 @@ pnpm --filter @thenvoi/openclaw-channel-thenvoi run nemoclaw:integration:preflig
   --sandbox band-integration
 ```
 
-This checks the generated context, manifest tool declarations, `nemoclaw list --json`, and documented sandbox readiness through `nemoclaw band-integration status`.
+This checks the generated context, plugin manifest tool declarations, Band policy/config templates, `nemoclaw list --json`, and `nemoclaw band-integration status`.
 
-## Configure Band credentials
-
-Use integration-scoped credentials. Do not commit real values.
-
-```sh
-export THENVOI_API_KEY=<redacted>
-export THENVOI_AGENT_ID=<agent-id>
-pnpm --filter @thenvoi/openclaw-channel-thenvoi run nemoclaw:integration:configure -- \
-  --sandbox band-integration
-```
-
-The generated OpenClaw config enables the Band account without baking credentials into the image. `nemoclaw:integration:configure` reads the environment variables, writes them into `/sandbox/.openclaw/openclaw.json` with `nemoclaw band-integration config set`, and restarts the sandbox agent process. This is better than `--embed-credentials-from-env` for a running instance because credentials stay out of the Docker build context and image layers.
-
-## Live integration verification
-
-After preflight passes and Band credentials are exported, run the live verifier while the sandbox is connected:
-
-```sh
-pnpm --filter @thenvoi/openclaw-channel-thenvoi run nemoclaw:integration:verify -- \
-  --sandbox band-integration \
-  --room <room-id>
-```
-
-The verifier checks the generated context, documented NemoClaw readiness commands (`nemoclaw list --json` and `nemoclaw <sandbox> status`), Band REST `getAgentMe`, Band WebSocket presence, and the room reply proof. For the final layer, keep the command running, send the exact nonce prompt printed by the verifier in the integration Band room, and wait for the verifier to observe a new Band-visible reply from `THENVOI_AGENT_ID` that includes that nonce.
-
-Use `--skip-room` only for a credential/connectivity smoke. That mode is not a complete integration proof because it does not prove the visible room round trip.
-
-## Integration success criteria
-
-A complete integration is only successful when all of these are true:
-
-1. NemoClaw sandbox builds from the generated Dockerfile.
-2. OpenClaw discovers `openclaw-channel-thenvoi`.
-3. OpenClaw sees all 12 `thenvoi_*` tools.
-4. Band REST validation succeeds with `getAgentMe`.
-5. Band WebSocket presence starts.
-6. A nonce prompt in the integration Band room reaches the NemoClaw/OpenClaw agent.
-7. `nemoclaw:integration:verify -- --room <room-id>` observes a new Band-visible reply from the configured agent that includes the nonce.
-
-## Failure map
+## Troubleshooting
 
 | Symptom | Likely layer | First check |
 |---|---|---|
 | `nemoclaw` not found | Host setup | Install NemoClaw CLI and rerun preflight |
-| Docker build cannot find plugin files | Generated context | Rerun `nemoclaw:integration:setup -- --yes` after `pnpm build` |
-| OpenClaw does not list contact tools | Plugin manifest | Check `openclaw.plugin.json` contains all 12 tools |
-| REST/WebSocket cannot reach Band | NemoClaw policy | Review/apply `band-egress-policy.yaml` |
-| Credential error | Band config | Verify integration `THENVOI_API_KEY` and `THENVOI_AGENT_ID` |
-| Message reaches sandbox but no reply returns | Runtime dispatch | Check logs for `OpenClaw dispatch unavailable` |
+| Docker build cannot find plugin files | Generated context | Rerun `pnpm build`, then `nemoclaw:integration:setup -- --yes` |
+| NemoClaw reports missing endpoint URL | Model setup | Set `NEMOCLAW_ENDPOINT_URL` before non-interactive onboarding |
+| NemoClaw inference is unhealthy | Model setup | Check the model ID, provider endpoint, and provider API key |
+| OpenClaw does not list Band tools | Plugin install | Check `openclaw.plugin.json` contains all 12 `thenvoi_*` tools |
+| REST/WebSocket cannot reach Band | NemoClaw policy | Apply or review `band-egress-policy.yaml` |
+| Credential error | Band config | Verify `THENVOI_API_KEY` and `THENVOI_AGENT_ID` |
+| Agent is in the room but does not answer | Runtime dispatch | Check `nemoclaw band-integration logs` for Band/OpenClaw dispatch errors |
 | Reply exists in logs but not in Band | Band REST reply path | Check `createChatMessage` errors and redacted gateway logs |
 
 ## Support artifact
@@ -185,7 +192,8 @@ When validating a new environment or reporting setup issues, capture:
 
 - generated context directory listing;
 - `nemoclaw:integration:preflight` JSON output;
+- `nemoclaw band-integration status` output;
 - OpenClaw tool list showing all 12 `thenvoi_*` tools;
-- Band room transcript showing the integration message and reply.
+- a Band room transcript showing a normal message to the agent and its reply.
 
 Keep credentials out of screenshots and logs.
