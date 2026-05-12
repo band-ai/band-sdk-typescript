@@ -497,8 +497,13 @@ describe("Channel Gateway Lifecycle", () => {
         dispatcher.sendToolResult({ text: "tool output" });
         dispatcher.sendBlockReply({ text: "partial block" });
         dispatcher.sendFinalReply({ text: "I" });
+        dispatcher.waitForIdle();
         dispatcher.sendFinalReply({ text: "'ll help you get started with that." });
         dispatcher.sendFinalReply({ text: "Done. I pulled Codex into the room and asked them to help." });
+        await dispatcher.waitForIdle();
+        dispatcher.sendFinalReply({ text: "I" });
+        dispatcher.sendFinalReply({ text: "'ll help you pull in Codex and build out a project about NVIDIA!" });
+        await dispatcher.waitForIdle();
       });
       setOpenClawRuntime({
         channel: {

@@ -448,14 +448,13 @@ function isLikelyPartialFinalReply(text: string): boolean {
 function selectFinalReplyText(texts: string[]): string | undefined {
   const normalized = texts.map((text) => text.trim()).filter(Boolean);
   if (normalized.length === 0) return undefined;
-  if (normalized.length === 1) return normalized[0];
 
   for (let index = normalized.length - 1; index >= 0; index -= 1) {
     const text = normalized[index];
     if (text && !isLikelyPartialFinalReply(text)) return text;
   }
 
-  return normalized.join("");
+  return normalized.length > 1 ? normalized.join("") : undefined;
 }
 
 function createBandReplyDispatcher(link: ThenvoiLink, agentId: string, accountId: string, roomId: string): ReplyDispatcher {
@@ -463,6 +462,7 @@ function createBandReplyDispatcher(link: ThenvoiLink, agentId: string, accountId
   const deliveryErrors: Error[] = [];
   const queuedCounts = { tool: 0, block: 0, final: 0 };
   const finalReplyTexts: string[] = [];
+  let finalReplySent = false;
 
   function enqueueDelivery(kind: "final" | "tool", delivery: Promise<void>): void {
     pendingReplies.push(
@@ -487,6 +487,7 @@ function createBandReplyDispatcher(link: ThenvoiLink, agentId: string, accountId
 
   function queueFinalReply(payload: unknown): void {
     queuedCounts.final += 1;
+    if (finalReplySent) return;
     const text = replyPayloadText(payload);
     if (text) finalReplyTexts.push(text);
   }
@@ -505,8 +506,9 @@ function createBandReplyDispatcher(link: ThenvoiLink, agentId: string, accountId
       return true;
     },
     waitForIdle: async (): Promise<void> => {
-      const finalReplyText = selectFinalReplyText(finalReplyTexts);
+      const finalReplyText = finalReplySent ? undefined : selectFinalReplyText(finalReplyTexts);
       if (finalReplyText) {
+        finalReplySent = true;
         enqueueDelivery("final", sendReplyToThenvoi(link.rest, agentId, accountId, roomId, finalReplyText));
       }
       await Promise.allSettled(pendingReplies);
