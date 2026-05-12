@@ -15,7 +15,7 @@ import {
   requireValue,
 } from "./nemoclaw-integration-common.js";
 
-const DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b";
+const DEFAULT_MODEL = "nvidia/nvidia-nemotron-nano-9b-v2";
 const DEFAULT_PROVIDER_KEY = "inference";
 const DEFAULT_PRIMARY_MODEL_REF = `${DEFAULT_PROVIDER_KEY}/${DEFAULT_MODEL}`;
 const DEFAULT_INFERENCE_BASE_URL = "https://inference.local/v1";

@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { TransportError } from "../src/core/errors";
 import type { TopicHandlers, StreamingTransport } from "../src/platform/streaming/transport";
 import { RoomPresence } from "../src/runtime/rooms/RoomPresence";
 import { ThenvoiLink } from "../src/platform/ThenvoiLink";
 import { FakeRestApi } from "./testUtils";
 
 class FakeTransport implements StreamingTransport {
-  private readonly handlers = new Map<string, TopicHandlers>();
+  protected readonly handlers = new Map<string, TopicHandlers>();
   private connected = false;
 
   public async connect(): Promise<void> {
@@ -47,12 +48,32 @@ class FakeTransport implements StreamingTransport {
   }
 }
 
+class FlakyTransport extends FakeTransport {
+  private readonly remainingFailures = new Map<string, number>();
+
+  public constructor(failures: Record<string, number>) {
+    super();
+    for (const [topic, count] of Object.entries(failures)) {
+      this.remainingFailures.set(topic, count);
+    }
+  }
+
+  public override async join(topic: string, handlers: TopicHandlers): Promise<void> {
+    const remaining = this.remainingFailures.get(topic) ?? 0;
+    if (remaining > 0) {
+      this.remainingFailures.set(topic, remaining - 1);
+      throw new TransportError(`Timeout joining topic ${topic}`);
+    }
+    await super.join(topic, handlers);
+  }
+}
+
 async function waitFor(check: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  for (let attempt = 0; attempt < 300; attempt += 1) {
     if (check()) {
       return;
     }
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }
 
   throw new Error("Condition was not met in time");
@@ -174,8 +195,40 @@ describe("RoomPresence", () => {
 
     await presence.start();
 
-    expect(joined).toEqual(["room-1", "room-2"]);
-    expect([...presence.rooms]).toEqual(["room-1", "room-2"]);
+    expect([...joined].sort()).toEqual(["room-1", "room-2"]);
+    expect([...presence.rooms].sort()).toEqual(["room-1", "room-2"]);
+
+    await presence.stop();
+  });
+
+  it("retries transient room join timeouts before giving up", async () => {
+    const transport = new FlakyTransport({ "chat_room:room-retry": 1 });
+    const joined: string[] = [];
+
+    const presence = new RoomPresence({
+      link: new ThenvoiLink({
+        agentId: "agent-1",
+        apiKey: "key",
+        transport,
+        restApi: new FakeRestApi({
+          listChats: async () => ({ data: [] }),
+        }),
+      }),
+    });
+    presence.onRoomJoined = async (roomId) => {
+      joined.push(roomId);
+    };
+
+    await presence.start();
+    await transport.emit("agent_rooms:agent-1", "room_added", {
+      id: "room-retry",
+      status: "active",
+      type: "direct",
+      title: "Retry Room",
+      removed_at: "",
+    });
+
+    await waitFor(() => joined.includes("room-retry") && presence.rooms.has("room-retry"));
 
     await presence.stop();
   });
@@ -209,6 +262,59 @@ describe("RoomPresence", () => {
       "RoomPresence failed to subscribe existing rooms",
       expect.objectContaining({
         error: expect.any(Error),
+      }),
+    );
+
+    await presence.stop();
+  });
+
+  it("keeps consuming events after a room join failure", async () => {
+    const transport = new FlakyTransport({ "chat_room:room-bad": 2 });
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const joined: string[] = [];
+
+    const presence = new RoomPresence({
+      link: new ThenvoiLink({
+        agentId: "agent-1",
+        apiKey: "key",
+        transport,
+        restApi: new FakeRestApi({ listChats: async () => ({ data: [] }) }),
+      }),
+      logger,
+    });
+    presence.onRoomJoined = async (roomId) => {
+      joined.push(roomId);
+    };
+
+    await presence.start();
+    await transport.emit("agent_rooms:agent-1", "room_added", {
+      id: "room-bad",
+      status: "active",
+      type: "direct",
+      title: "Bad Room",
+      removed_at: "",
+    });
+    await transport.emit("agent_rooms:agent-1", "room_added", {
+      id: "room-good",
+      status: "active",
+      type: "direct",
+      title: "Good Room",
+      removed_at: "",
+    });
+
+    await waitFor(() => joined.includes("room-good"));
+
+    expect(joined).not.toContain("room-bad");
+    expect(logger.warn).toHaveBeenCalledWith(
+      "RoomPresence dropped event after handler failure",
+      expect.objectContaining({
+        eventType: "room_added",
+        roomId: "room-bad",
       }),
     );
 

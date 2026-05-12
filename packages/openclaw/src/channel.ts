@@ -830,6 +830,32 @@ export const thenvoiChannel: OpenClawChannel = {
         }
 
         async function catchUpMentionedMessages(roomId: string): Promise<void> {
+          if (typeof link.rest.getNextMessage === "function") {
+            for (let drained = 0; drained < 25; drained += 1) {
+              const next = await link.rest.getNextMessage({ chatId: roomId });
+              if (!next) break;
+              if (next.sender_id === config.agentId) continue;
+              if (next.message_type !== "text") continue;
+              console.log(`[thenvoi:${accountId}] Catching up pending mentioned message in room ${roomId}`);
+              await handleMessageEvent({
+                type: "message_created",
+                roomId,
+                payload: {
+                  id: next.id,
+                  chat_room_id: roomId,
+                  sender_id: next.sender_id,
+                  sender_type: next.sender_type,
+                  sender_name: next.sender_name,
+                  content: next.content,
+                  message_type: next.message_type,
+                  inserted_at: next.inserted_at,
+                  metadata: next.metadata ?? {},
+                },
+              } as PlatformEvent);
+            }
+            return;
+          }
+
           if (typeof link.rest.listMessages !== "function") return;
           const response = await link.rest.listMessages({ chatId: roomId, page: 1, pageSize: 10 });
           const messages = Array.isArray(response.data) ? response.data : [];

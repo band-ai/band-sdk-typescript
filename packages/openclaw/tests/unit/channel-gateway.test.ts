@@ -21,9 +21,14 @@ vi.mock("@thenvoi/sdk", () => ({
         ]),
         createChatMessage: vi.fn().mockResolvedValue({ ok: true, id: "msg-001" }),
         createChatEvent: vi.fn().mockResolvedValue({ ok: true, id: "event-001" }),
+        getNextMessage: vi.fn().mockResolvedValue(null),
       },
       connect: vi.fn().mockResolvedValue(undefined),
       disconnect: vi.fn().mockResolvedValue(undefined),
+      subscribeRoom: vi.fn().mockResolvedValue(undefined),
+      unsubscribeRoom: vi.fn().mockResolvedValue(undefined),
+      listAllChats: vi.fn().mockResolvedValue([]),
+      markProcessing: vi.fn().mockResolvedValue(undefined),
       markProcessed: vi.fn().mockResolvedValue(undefined),
     };
     return mockLinkInstance;
@@ -33,6 +38,7 @@ vi.mock("@thenvoi/sdk", () => ({
 vi.mock("@thenvoi/sdk/runtime", () => ({
   RoomPresence: vi.fn().mockImplementation(() => {
     capturedPresenceInstance = {
+      rooms: new Set<string>(),
       onRoomJoined: null,
       onRoomLeft: null,
       onRoomEvent: null,
@@ -550,6 +556,44 @@ describe("Channel Gateway Lifecycle", () => {
         "room-123",
         expect.objectContaining({ content: "Done. I pulled Codex into the room and asked them to help." }),
       );
+    });
+
+    it("should drain pending mentioned messages when joining existing rooms", async () => {
+      const callback = vi.fn();
+      setInboundCallback(callback);
+
+      const pendingMessage = {
+        id: "msg-pending-001",
+        content: "@Test Agent are you there?",
+        sender_id: "user-789",
+        sender_type: "User",
+        sender_name: "John Doe",
+        message_type: "text",
+        metadata: {},
+        inserted_at: "2025-01-15T10:00:00Z",
+      };
+
+      const ctx = createGatewayContext("default", mockAccountConfig, { aborted: true });
+      await thenvoiChannel.gateway!.startAccount(ctx);
+      vi.mocked(mockLinkInstance.rest.getNextMessage as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce(pendingMessage)
+        .mockResolvedValueOnce(null);
+
+      const onRoomJoined = capturedPresenceInstance.onRoomJoined as (
+        roomId: string,
+        payload: Record<string, unknown>,
+      ) => Promise<void>;
+      await onRoomJoined("room-123", { title: "Existing Room" });
+
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          threadId: "room-123",
+          senderId: "user-789",
+          text: "@Test Agent are you there?",
+        }),
+      );
+      expect(mockLinkInstance.markProcessing).toHaveBeenCalledWith("room-123", "msg-pending-001", { bestEffort: true });
+      expect(mockLinkInstance.markProcessed).toHaveBeenCalledWith("room-123", "msg-pending-001", { bestEffort: true });
     });
 
     it("should mark message as processed after handling", async () => {

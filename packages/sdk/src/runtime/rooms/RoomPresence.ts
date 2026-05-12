@@ -95,25 +95,33 @@ export class RoomPresence {
         return;
       }
 
-      switch (event.type) {
-        case "room_added":
-          await this.handleRoomAdded(event.roomId, event.payload as MetadataMap);
-          break;
-        case "room_removed":
-        case "room_deleted":
-          await this.handleRoomRemoved(event.roomId);
-          break;
-        case "contact_request_received":
-        case "contact_request_updated":
-        case "contact_added":
-        case "contact_removed":
-          await this.onContactEvent?.(event);
-          break;
-        default:
-          if (event.roomId && this.rooms.has(event.roomId)) {
-            await this.onRoomEvent?.(event.roomId, event);
-          }
-          break;
+      try {
+        switch (event.type) {
+          case "room_added":
+            await this.handleRoomAdded(event.roomId, event.payload as MetadataMap);
+            break;
+          case "room_removed":
+          case "room_deleted":
+            await this.handleRoomRemoved(event.roomId);
+            break;
+          case "contact_request_received":
+          case "contact_request_updated":
+          case "contact_added":
+          case "contact_removed":
+            await this.onContactEvent?.(event);
+            break;
+          default:
+            if (event.roomId && this.rooms.has(event.roomId)) {
+              await this.onRoomEvent?.(event.roomId, event);
+            }
+            break;
+        }
+      } catch (error) {
+        this.logger.warn("RoomPresence dropped event after handler failure", {
+          eventType: event.type,
+          roomId: event.roomId,
+          error,
+        });
       }
     }
   }

@@ -13,7 +13,10 @@ interface PhoenixChannelsTransportOptions {
   heartbeatIntervalMs?: number;
   reconnectAfterMs?: (tries: number) => number;
   websocketFactory?: typeof WebSocket;
+  joinTimeoutMs?: number;
 }
+
+const DEFAULT_TOPIC_JOIN_TIMEOUT_MS = 5_000;
 
 export class PhoenixChannelsTransport implements StreamingTransport {
   private readonly socket: Socket;
@@ -21,6 +24,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private readonly channelRefs = new Map<string, Array<[string, number]>>();
   private readonly pendingJoins = new Map<string, Promise<void>>();
   private readonly logger: Logger;
+  private readonly joinTimeoutMs: number;
   private onHandlerError?: (error: unknown) => void;
   private connected = false;
   private connectPromise: Promise<void> | null = null;
@@ -28,6 +32,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
 
   public constructor(options: PhoenixChannelsTransportOptions) {
     this.logger = options.logger ?? new NoopLogger();
+    this.joinTimeoutMs = options.joinTimeoutMs ?? DEFAULT_TOPIC_JOIN_TIMEOUT_MS;
 
     // The phoenix JS library appends /websocket to the endpoint URL.
     // Strip it if the user-provided URL already includes it.
@@ -135,6 +140,11 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private async doJoin(topic: string, handlers: TopicHandlers): Promise<void> {
     const channel = this.socket.channel(topic, {});
 
+    this.logger.debug("Joining topic", {
+      topic,
+      timeoutMs: this.joinTimeoutMs,
+    });
+
     const refs: Array<[string, number]> = [];
 
     for (const [event, handler] of Object.entries(handlers)) {
@@ -153,8 +163,12 @@ export class PhoenixChannelsTransport implements StreamingTransport {
 
     try {
       await new Promise<void>((resolve, reject) => {
-        channel
-          .join()
+        const joinPush: {
+          receive: (status: string, cb: (payload?: unknown) => void) => typeof joinPush;
+        } = (channel.join as unknown as (timeout?: number) => {
+          receive: (status: string, cb: (payload?: unknown) => void) => typeof joinPush;
+        })(this.joinTimeoutMs);
+        joinPush
           .receive("ok", () => resolve())
           .receive("error", (error: unknown) =>
             reject(new TransportError(`Failed to join topic ${topic}`, error)),
@@ -162,6 +176,11 @@ export class PhoenixChannelsTransport implements StreamingTransport {
           .receive("timeout", () => reject(new TransportError(`Timeout joining topic ${topic}`)));
       });
     } catch (error) {
+      this.logger.warn("Failed to join topic", {
+        topic,
+        timeoutMs: this.joinTimeoutMs,
+        error,
+      });
       for (const [event, ref] of refs) {
         channel.off(event, ref);
       }

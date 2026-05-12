@@ -220,22 +220,29 @@ export class AgentRuntime {
   private async handleEvent(event: PlatformEvent): Promise<void> {
     switch (event.type) {
       case "room_added":
-        await trackRoomJoin({
-          link: this.link,
-          roomId: event.roomId,
-          payload: event.payload as MetadataMap,
-          trackedRooms: this.subscribedRooms,
-          roomFilter: this.roomFilter,
-          onJoined: async (roomId) => {
-            // `room_added` from the platform: another participant just added
-            // us to a chat. There may already be a message in the chat that
-            // arrived before our channel-join completes, so we still need
-            // the one-shot REST catch-up here to avoid losing it. (Only the
-            // startup bulk-rehydrate path skips the catch-up.)
-            this.getOrCreateExecution(roomId);
-            await this.onRoomJoined?.(roomId, event.payload as MetadataMap);
-          },
-        });
+        try {
+          await trackRoomJoin({
+            link: this.link,
+            roomId: event.roomId,
+            payload: event.payload as MetadataMap,
+            trackedRooms: this.subscribedRooms,
+            roomFilter: this.roomFilter,
+            onJoined: async (roomId) => {
+              // `room_added` from the platform: another participant just added
+              // us to a chat. There may already be a message in the chat that
+              // arrived before our channel-join completes, so we still need
+              // the one-shot REST catch-up here to avoid losing it. (Only the
+              // startup bulk-rehydrate path skips the catch-up.)
+              this.getOrCreateExecution(roomId);
+              await this.onRoomJoined?.(roomId, event.payload as MetadataMap);
+            },
+          });
+        } catch (error) {
+          this.logger.warn("AgentRuntime failed to join room_added topic", {
+            roomId: event.roomId,
+            error,
+          });
+        }
         return;
       case "room_removed":
       case "room_deleted":

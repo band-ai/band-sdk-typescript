@@ -18,7 +18,7 @@ Do not use `nemoclaw <sandbox> skill install` for this package. NemoClaw skills 
 - Optional Band operator metadata if your workflow needs it:
   - `THENVOI_OPERATOR_ID` when the agent should know which Band user operates it
 
-For a quick public setup, sign up for NVIDIA AI, create an API key, and use an OpenAI-compatible NVIDIA-hosted model such as `z-ai/glm4.7` if it is available in your NVIDIA account. NemoClaw can route OpenClaw's model traffic through the NVIDIA endpoint while the Band plugin handles chat connectivity.
+For a quick public setup, sign up for NVIDIA AI, create an API key, and use an NVIDIA-hosted model such as `nvidia/nvidia-nemotron-nano-9b-v2`. NemoClaw can route OpenClaw's model traffic through the NVIDIA endpoint while the Band plugin handles chat connectivity.
 
 ## 1. Build the Band OpenClaw channel
 
@@ -71,20 +71,26 @@ Do not bake real Band credentials into the image unless you are creating a dispo
 
 ## 3. Configure a NemoClaw model provider
 
-NemoClaw needs a model before OpenClaw can answer Band messages. If you use NVIDIA AI, create an NVIDIA API key and choose an OpenAI-compatible model, for example `z-ai/glm4.7` when available.
+NemoClaw needs a model before OpenClaw can answer Band messages. If you use NVIDIA AI, create an NVIDIA API key and use `nvidia/nvidia-nemotron-nano-9b-v2`.
 
-For non-interactive onboarding with NemoClaw's OpenAI-compatible provider, set the provider endpoint and credential before `nemoclaw onboard`:
+For non-interactive onboarding with NemoClaw's NVIDIA Build path, set the provider and credential before `nemoclaw onboard`:
+
+```sh
+export NEMOCLAW_PROVIDER=build
+export NEMOCLAW_MODEL=nvidia/nvidia-nemotron-nano-9b-v2
+export NVIDIA_API_KEY=<your-nvidia-api-key>
+```
+
+If you intentionally use the generic OpenAI-compatible provider instead, keep the NVIDIA Build endpoint and credential explicit:
 
 ```sh
 export NEMOCLAW_PROVIDER=custom
 export NEMOCLAW_ENDPOINT_URL=https://integrate.api.nvidia.com/v1
-export NEMOCLAW_MODEL=z-ai/glm4.7
+export NEMOCLAW_MODEL=nvidia/nvidia-nemotron-nano-9b-v2
 export COMPATIBLE_API_KEY=<your-nvidia-api-key>
 ```
 
-If your NemoClaw version has a named NVIDIA provider, use the equivalent provider option from `nemoclaw onboard` and keep the same model intent: a hosted OpenAI-compatible chat model reachable from inside the sandbox.
-
-NemoClaw's current non-interactive OpenAI-compatible flow requires `NEMOCLAW_ENDPOINT_URL`. Without it, onboarding exits with `Endpoint URL is required for Other OpenAI-compatible endpoint`, and sandbox status can only report `Endpoint URL is not known; skipping reachability check.`
+NemoClaw's current `custom` non-interactive path requires `NEMOCLAW_ENDPOINT_URL`. Without it, onboarding exits with `Endpoint URL is required for Other OpenAI-compatible endpoint`, and sandbox status can only report `Endpoint URL is not known; skipping reachability check.` The `build` provider path is the preferred one for this integration.
 
 ## 4. Onboard the sandbox
 

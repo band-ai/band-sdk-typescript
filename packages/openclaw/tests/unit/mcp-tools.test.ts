@@ -430,14 +430,14 @@ describe("MCP Tools", () => {
   });
 
   describe("thenvoi_send_message", () => {
-    it("should send message with mentions", async () => {
+    it("should send message with participant UUID mentions", async () => {
       mockRest.listChatParticipants.mockResolvedValue(mockParticipants);
       mockRest.createChatMessage.mockResolvedValue(mockSendMessageResponse);
 
       const result = await executeMcpTool("thenvoi_send_message", {
         room_id: "room-001",
         content: "Hello!",
-        mentions: ["John Doe"],
+        mentions: ["user-789"],
       });
 
       expect(mockRest.listChatParticipants).toHaveBeenCalledWith("room-001");
@@ -451,16 +451,28 @@ describe("MCP Tools", () => {
       expect(result).toHaveProperty("success", true);
     });
 
-    it("should throw error if mention not found", async () => {
+    it("should throw error if mention UUID not found", async () => {
       mockRest.listChatParticipants.mockResolvedValue(mockParticipants);
 
       await expect(
         executeMcpTool("thenvoi_send_message", {
           room_id: "room-001",
           content: "Hello!",
-          mentions: ["Unknown Person"],
+          mentions: ["missing-user-id"],
         }),
-      ).rejects.toThrow('Participant "Unknown Person" not found in room');
+      ).rejects.toThrow('Participant ID "missing-user-id" not found in room');
+    });
+
+    it("should throw if message mentions self", async () => {
+      mockRest.listChatParticipants.mockResolvedValue(mockParticipants);
+
+      await expect(
+        executeMcpTool("thenvoi_send_message", {
+          room_id: "room-001",
+          content: "Hello!",
+          mentions: ["agent-123"],
+        }),
+      ).rejects.toThrow("You cannot mention yourself");
     });
 
     it("should throw error if no mentions provided", async () => {

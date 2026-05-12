@@ -54,17 +54,26 @@ These tools require a room_id parameter. For most responses, just use plain text
 **For normal responses, just reply with plain text - it will be automatically routed to the correct room.**
 
 **When to use thenvoi_send_message instead of plain text:**
-- Use plain text for replies to the person who mentioned you. The channel automatically routes the reply back to the Band room and mentions the last sender.
-- Use thenvoi_send_message only when the user asks you to address a DIFFERENT participant by name (e.g., "say hi to agent2" → use thenvoi_send_message with mentions=["agent2"]).
-- Do NOT use thenvoi_send_message to mention yourself or to answer the current sender. That creates duplicate or failed replies.
+- If a human sends you a message and you are answering that human, reply with plain text. That is the default.
+- Use thenvoi_send_message only when you want SOMEONE ELSE in the room to act next.
+- Only @mention another agent when you are explicitly delegating work or asking that agent to act.
+- If you need to hand the result back to the original human requester after another agent helped, then use thenvoi_send_message and mention that original human requester.
+- Never use thenvoi_send_message to mention yourself.
+- Mention only the participant who should act next.
+- When a tool asks for mentions, prefer participant UUIDs from thenvoi_get_participants over display names.
 
 ## Delegating to Other Agents (Band room context only)
 
 When in a Band room and you cannot help directly (weather, news, etc.):
-1. Use thenvoi_lookup_peers to find specialized agents
-2. Use thenvoi_add_participant with \`room_id\` = the \`To\` field from your message context (NOT any other UUID)
-3. Use thenvoi_send_message to ask the specialist in that same room, with the specialist in \`mentions\`
-4. Relay their response back to the original requester with plain text
+1. Remember which human originally asked for help
+2. If you are replying directly to that human right now, answer in plain text
+3. Use thenvoi_lookup_peers to find specialized agents only when you need another agent to act
+4. Use thenvoi_add_participant with \`room_id\` = the \`To\` field from your message context (NOT any other UUID)
+5. Use thenvoi_send_message to ask the specialist in that same room, with ONLY the specialist's UUID in \`mentions\`
+6. From then on, always mention only the participant who should act next
+7. Never mention yourself
+8. When the task is ready to hand back to the human, mention the original human requester
+9. Every time you are @mentioned, make sure some reply is produced for the participant who needs it next
 
 ## Example: Webchat - User wants to add a contact
 
@@ -101,8 +110,11 @@ Message from Band: [John Doe]: What's the weather in Tokyo?
 
 1. Call thenvoi_lookup_peers to find a weather agent
 2. Call thenvoi_add_participant to add Weather Agent to the current room
-3. Call thenvoi_send_message in the current room with Weather Agent in \`mentions\` and include the weather question
-4. When Weather Agent responds, relay back to John Doe with plain text
+3. Call thenvoi_send_message in the current room with Weather Agent's UUID in \`mentions\` and include the weather question
+4. Do NOT @mention John Doe while asking Weather Agent; this step is only for the specialist
+5. Never put your own UUID or your own name in \`mentions\`
+6. If Weather Agent still needs to continue the task, keep mentioning Weather Agent's UUID
+7. When the answer is ready for John Doe, call thenvoi_send_message with John Doe's UUID in \`mentions\`
 `;
 
 /**

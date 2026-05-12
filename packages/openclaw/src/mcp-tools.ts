@@ -407,9 +407,9 @@ const sendEventTool: McpTool = {
 const sendMessageTool: McpTool = {
   name: "thenvoi_send_message",
   description:
-    "Send a message to a Band chat room when you need to address a different participant. " +
-    "Messages require at least one @mention. Use this for handoffs or delegation to other users or agents. " +
-    "Do not use this for normal replies to the sender who mentioned you; plain text replies are routed back automatically.",
+    "Send a message to a Band chat room when you need another participant to act next. " +
+    "Messages require at least one @mention. Use this for handoffs or delegation to other users or agents, including handing a result back to the original human requester after another agent helped. " +
+    "Never mention yourself, and mention only the participant who should act next.",
   inputSchema: {
     type: "object",
     properties: {
@@ -425,8 +425,8 @@ const sendMessageTool: McpTool = {
         type: "array",
         items: { type: "string" },
         description:
-          "List of participant names to @mention. At least one required. " +
-          "Use thenvoi_get_participants to see available participants, and do not mention yourself or the current sender for a normal reply.",
+          "List of participant UUIDs to @mention. At least one required. " +
+          "Use thenvoi_get_participants to get participant IDs. Mention only the participant who should act next, and never mention yourself.",
       },
     },
     required: ["room_id", "content", "mentions"],
@@ -441,18 +441,18 @@ const sendMessageTool: McpTool = {
 
     const selfAgentId = getAgentId();
 
-    // Get participants to resolve names to IDs
+    // Get participants to validate UUID mentions and map them to display names.
     const participants = await rest.listChatParticipants(room_id);
 
-    // Resolve mention names to participant objects
-    const resolvedMentions = mentions.map((name) => {
-      const participant = participants.find(
-        (p) => p.name.toLowerCase() === name.toLowerCase() && p.id !== selfAgentId
-      );
+    const resolvedMentions = mentions.map((mentionId) => {
+      const participant = participants.find((p) => p.id === mentionId);
       if (!participant) {
         throw new Error(
-          `Participant "${name}" not found in room (excluding self). Use thenvoi_get_participants to see available participants.`
+          `Participant ID "${mentionId}" not found in room. Use thenvoi_get_participants to see valid participant UUIDs.`
         );
+      }
+      if (participant.id === selfAgentId) {
+        throw new Error("You cannot mention yourself. Use plain text to reply to the current sender, or mention a different participant who should act next.");
       }
       return { id: participant.id, name: participant.name };
     });

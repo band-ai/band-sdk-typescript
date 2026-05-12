@@ -37,6 +37,11 @@ describe("Prompts", () => {
       expect(BASE_INSTRUCTIONS).toContain("Delegating to Other Agents");
       expect(BASE_INSTRUCTIONS).toContain("lookup_peers");
       expect(BASE_INSTRUCTIONS).toContain("add_participant");
+      expect(BASE_INSTRUCTIONS).toContain("original human requester");
+      expect(BASE_INSTRUCTIONS).toContain("Only @mention another agent");
+      expect(BASE_INSTRUCTIONS).toContain("Never mention yourself");
+      expect(BASE_INSTRUCTIONS).toContain("participant UUIDs");
+      expect(BASE_INSTRUCTIONS).toContain("Every time you are @mentioned");
     });
 
     it("should contain examples", () => {
