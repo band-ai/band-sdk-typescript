@@ -52,7 +52,7 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`Usage: pnpm run nemoclaw:integration:verify -- --sandbox band-integration --room <room-id> [--skip-room]\n\nVerifies the credentialed Band/NemoClaw integration path. For full room proof, start this command, send the printed nonce prompt in the Band room, and wait for the verifier to observe an agent reply that includes the nonce.`);
+  console.log(`Usage: pnpm run nemoclaw:integration:verify -- --sandbox band-integration --room <room-id> [--skip-room]\n\nVerifies the credentialed Band/NemoClaw integration path. For full room proof, start this command, send the printed nonce prompt in the Band room with an explicit @mention of the configured agent, and wait for the verifier to observe an agent reply that includes the nonce.`);
 }
 
 async function layer(name, fn) {
@@ -95,7 +95,7 @@ function createLink(opts) {
 
 async function checkRest(link) {
   const agent = await link.rest.getAgentMe();
-  return { agentId: agent.id, agentName: agent.name ?? null };
+  return { agentId: agent.id, agentName: agent.name ?? null, agentHandle: agent.handle ?? null };
 }
 
 async function checkPresence(opts) {
@@ -112,7 +112,7 @@ async function checkPresence(opts) {
   }
 }
 
-async function checkRoomReply(opts, agentId) {
+async function checkRoomReply(opts, agent) {
   if (opts.skipRoom) return { skipped: true, reason: "--skip-room" };
   if (!opts.room) throw new Error("--room is required unless --skip-room is set");
 
@@ -120,21 +120,26 @@ async function checkRoomReply(opts, agentId) {
   const seenBefore = await listMessageIds(link, opts.room);
   const nonce = `band-nemoclaw-integration-${Date.now()}`;
   const deadline = Date.now() + opts.timeoutMs;
+  const mention = agent.agentHandle ? `@${String(agent.agentHandle).replace(/^@/, "")}` : "<mention the configured Band agent>";
 
-  console.error(`Waiting for a new Band-visible agent reply in room ${opts.room}. Send this exact prompt in Band: Reply with ${nonce}`);
+  console.error(
+    `Waiting for a new Band-visible agent reply in room ${opts.room}. In Band, send a message that mentions the agent, for example: ${mention} Reply with ${nonce}`,
+  );
   while (Date.now() < deadline) {
     const messages = await listMessages(link, opts.room);
     const reply = messages.find((message) => {
       const id = String(message.id ?? "");
       const senderId = String(message.sender_id ?? message.senderId ?? "");
       const content = String(message.content ?? "");
-      return id && !seenBefore.has(id) && senderId === agentId && content.includes(nonce);
+      return id && !seenBefore.has(id) && senderId === agent.agentId && content.includes(nonce);
     });
-    if (reply) return { room: opts.room, replyMessageId: reply.id, senderId: agentId, nonceMatched: true };
+    if (reply) return { room: opts.room, replyMessageId: reply.id, senderId: agent.agentId, nonceMatched: true };
     await delay(opts.intervalMs);
   }
 
-  throw new Error(`timed out after ${opts.timeoutMs}ms waiting for a new agent reply in room ${opts.room} containing the nonce ${nonce}`);
+  throw new Error(
+    `timed out after ${opts.timeoutMs}ms waiting for a new agent reply in room ${opts.room} containing the nonce ${nonce}; make sure the Band message explicitly @mentions the configured agent`,
+  );
 }
 
 async function listMessageIds(link, room) {
@@ -163,16 +168,11 @@ async function main() {
   results.push(credentialResult);
   if (credentialResult.status === "pass") {
     const link = createLink(opts);
-    let agentId;
-    const restResult = await layer("band_rest_getAgentMe", async () => {
-      const evidence = await checkRest(link);
-      agentId = evidence.agentId;
-      return evidence;
-    });
+    const restResult = await layer("band_rest_getAgentMe", () => checkRest(link));
     results.push(restResult);
     results.push(await layer("band_websocket_presence", () => checkPresence(opts)));
     if (restResult.status === "pass") {
-      results.push(await layer("band_room_reply", () => checkRoomReply(opts, agentId)));
+      results.push(await layer("band_room_reply", () => checkRoomReply(opts, restResult.evidence)));
     } else {
       results.push(blockedLayer("band_room_reply", "Band agent identity is required before the room reply check can run"));
     }

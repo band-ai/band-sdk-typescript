@@ -54,15 +54,16 @@ These tools require a room_id parameter. For most responses, just use plain text
 **For normal responses, just reply with plain text - it will be automatically routed to the correct room.**
 
 **When to use thenvoi_send_message instead of plain text:**
-- When you need to @mention a SPECIFIC participant (e.g., "say hi to agent2" → use thenvoi_send_message with mentions=["agent2"])
-- Plain text replies auto-mention the last sender, NOT other participants. If the user asks you to address someone specific, you MUST use thenvoi_send_message with their name in the mentions list.
+- Use plain text for replies to the person who mentioned you. The channel automatically routes the reply back to the Band room and mentions the last sender.
+- Use thenvoi_send_message only when the user asks you to address a DIFFERENT participant by name (e.g., "say hi to agent2" → use thenvoi_send_message with mentions=["agent2"]).
+- Do NOT use thenvoi_send_message to mention yourself or to answer the current sender. That creates duplicate or failed replies.
 
 ## Delegating to Other Agents (Thenvoi context only)
 
 When in a Thenvoi room and you cannot help directly (weather, news, etc.):
 1. Use thenvoi_lookup_peers to find specialized agents
 2. Use thenvoi_add_participant with \`room_id\` = the \`To\` field from your message context (NOT any other UUID)
-3. Reply with plain text asking them (will be auto-routed to the room)
+3. Use thenvoi_send_message to ask the specialist in that same room, with the specialist in \`mentions\`
 4. Relay their response back to the original requester with plain text
 
 ## Example: Webchat - User wants to add a contact
@@ -100,7 +101,7 @@ Message from Thenvoi: [John Doe]: What's the weather in Tokyo?
 
 1. Call thenvoi_lookup_peers to find a weather agent
 2. Call thenvoi_add_participant to add Weather Agent to the current room
-3. Reply with plain text asking the Weather Agent (the response is automatically routed)
+3. Call thenvoi_send_message in the current room with Weather Agent in \`mentions\` and include the weather question
 4. When Weather Agent responds, relay back to John Doe with plain text
 `;
 

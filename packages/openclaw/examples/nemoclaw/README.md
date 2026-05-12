@@ -14,9 +14,9 @@ Do not use `nemoclaw <sandbox> skill install` for this package. NemoClaw skills 
 - A Band agent with integration credentials:
   - `THENVOI_API_KEY`
   - `THENVOI_AGENT_ID`
-- Optional Band operator metadata:
-  - `THENVOI_OPERATOR_ID` when the agent should know which Band user operates it
 - A model provider configured for NemoClaw.
+- Optional Band operator metadata if your workflow needs it:
+  - `THENVOI_OPERATOR_ID` when the agent should know which Band user operates it
 
 For a quick public setup, sign up for NVIDIA AI, create an API key, and use an OpenAI-compatible NVIDIA-hosted model such as `z-ai/glm4.7` if it is available in your NVIDIA account. NemoClaw can route OpenClaw's model traffic through the NVIDIA endpoint while the Band plugin handles chat connectivity.
 
@@ -67,7 +67,7 @@ Review these generated files before onboarding:
 - `openclaw-channel-thenvoi.config.example.json`
 - `openclaw-channel-thenvoi/openclaw.plugin.json`
 
-Do not bake real Band credentials into the image unless you are creating a disposable local sandbox. The supported path writes credentials into the running sandbox after onboarding.
+Do not bake real Band credentials into the image unless you are creating a disposable local sandbox. The supported path keeps the Band API key behind the `${THENVOI_API_KEY}` runtime placeholder; the post-onboard configure helper writes only non-secret account metadata with NemoClaw's host-side config command.
 
 ## 3. Configure a NemoClaw model provider
 
@@ -119,7 +119,7 @@ After onboarding, apply the generated Band policy preset:
 nemoclaw band-integration policy-add --from-file /absolute/path/to/packages/openclaw/dist/nemoclaw-integration/band-integration/band-egress-policy.yaml --yes
 ```
 
-The policy allows the sandbox to reach the configured Band REST and WebSocket host. By default that host is `app.band.ai`.
+The policy allows Node-based OpenClaw plugin traffic to reach the configured Band REST and WebSocket host. REST access is scoped to `/api/v1/**`; the WebSocket entry uses `access: full` with `tls: skip` because OpenShell's REST TLS termination does not work for WSS tunnel traffic. By default the host is `app.band.ai`.
 
 ## 6. Configure Band credentials
 
@@ -136,22 +136,31 @@ If the Band agent has a human/operator owner that should be visible to the plugi
 export THENVOI_OPERATOR_ID=<band-user-id>
 ```
 
-Write those values into the running NemoClaw sandbox:
+Optional contact handling is separate from normal room chat. If you want the agent to evaluate Band contact requests through a hub room, set these before running the configure helper:
+
+```sh
+export THENVOI_CONTACT_STRATEGY=hub_room
+export THENVOI_CONTACT_HUB_TASK_ID=<hub-room-id>
+```
+
+Write the non-secret account settings into the running NemoClaw sandbox:
 
 ```sh
 pnpm --filter @thenvoi/openclaw-channel-thenvoi run nemoclaw:integration:configure -- \
   --sandbox band-integration
 ```
 
-`nemoclaw:integration:configure` writes `restUrl`, `wsUrl`, `agentId`, `apiKey`, and optional `operatorId` into `/sandbox/.openclaw/openclaw.json` with `nemoclaw band-integration config set`, then restarts the sandbox agent process. Credentials stay out of the Docker build context and image layers.
+`nemoclaw:integration:configure` writes `restUrl`, `wsUrl`, `agentId`, and optional `operatorId` into `/sandbox/.openclaw/openclaw.json` with `nemoclaw band-integration config set`, then restarts the sandbox agent process. It deliberately leaves `apiKey` as the literal `${THENVOI_API_KEY}` placeholder instead of passing the secret through `--value`, because the current NemoClaw CLI does not offer a stdin or file-based secret setter for arbitrary plugin credentials.
 
-Contact request automation is intentionally off by default. If you later want the agent to evaluate Band contact requests itself, configure `contactConfig` explicitly on the account. The normal room-chat setup does not need a dedicated hub room.
+Make sure the OpenClaw process receives `THENVOI_API_KEY` at runtime through your NemoClaw/OpenClaw secret injection path. If that is not available in the target NemoClaw version, the setup script's `--embed-credentials-from-env` fallback is only for disposable local sandboxes because it writes the key into generated configuration/image material.
+
+Contact request automation is intentionally off by default. The normal room-chat setup does not need a dedicated hub room, `THENVOI_CONTACT_STRATEGY`, or `THENVOI_OPERATOR_ID`; those are optional knobs for workflows that need contact-request handling or operator metadata.
 
 ## 7. Talk to the agent in Band
 
-Open Band, add the configured Band agent to a chat room, and send it a message. If the room has multiple participants, mention the agent so the Band channel knows the message is intended for it.
+Open Band, add the configured Band agent to a chat room, and mention it in the message. Band rooms are mention-driven: humans can see the whole room, but an agent normally wakes up when it is explicitly mentioned as a room participant.
 
-The expected user experience is simple: the message appears in Band, OpenClaw inside NemoClaw receives it, the configured model generates an answer, and the Band agent replies in the same room.
+The expected user experience is simple: your mentioned message appears in Band, OpenClaw inside NemoClaw receives it, the configured model generates an answer, and the Band agent replies in the same room. The agent should reply with normal text; it should not call `thenvoi_send_message` unless it needs to address a different participant.
 
 Use the verifier when you want a scripted smoke test, not as the normal product flow:
 
@@ -161,7 +170,7 @@ pnpm --filter @thenvoi/openclaw-channel-thenvoi run nemoclaw:integration:verify 
   --room <room-id>
 ```
 
-The verifier checks generated files, `nemoclaw list --json`, `nemoclaw <sandbox> status`, Band REST `getAgentMe`, Band WebSocket presence, and whether the configured agent can reply in a Band room. Normal users do not need to run it after every setup.
+The verifier checks generated files, `nemoclaw list --json`, `nemoclaw <sandbox> status`, Band REST `getAgentMe`, Band WebSocket presence, and whether the configured agent can reply in a Band room. When it prints the nonce prompt, send it as a Band message that explicitly @mentions the configured agent; an unmentioned message will not wake the agent. Normal users do not need to run it after every setup.
 
 ## Optional preflight checks
 

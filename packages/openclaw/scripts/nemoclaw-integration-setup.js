@@ -84,7 +84,7 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`Usage: pnpm run nemoclaw:integration:setup -- --sandbox band-integration (--from Dockerfile | --base-image image) [--dry-run] [--embed-credentials-from-env] [--yes]\n\nGenerates a NemoClaw custom-image build context for the Band OpenClaw channel.`);
+  console.log(`Usage: pnpm run nemoclaw:integration:setup -- --sandbox band-integration (--from Dockerfile | --base-image image) [--dry-run] [--embed-credentials-from-env] [--yes]\n\nGenerates a NemoClaw custom-image build context for the Band OpenClaw channel. --embed-credentials-from-env is only for disposable local sandboxes because it writes Band credentials into generated config material.`);
 }
 
 function assertBuildOutput() {
@@ -225,12 +225,12 @@ function dockerfile(opts) {
 }
 
 function policyYaml(restEndpoint, wsEndpoint) {
-  const endpoints = [...new Map([restEndpoint, wsEndpoint].map((endpoint) => [`${endpoint.host}:${endpoint.port}`, endpoint])).values()];
-  const policies = endpoints.map(({ host, port }) => {
-    const policyName = `band-${host}-${port}`.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
-    return `  ${policyName}:\n    name: ${policyName}\n    endpoints:\n      - host: ${host}\n        port: ${port}\n        tls: skip\n        access: full\n    binaries:\n      - { path: /** }`;
-  }).join("\n");
-  return `# Generated Band egress policy preset for NemoClaw integration.\n# Apply after onboarding with: nemoclaw <sandbox> policy-add --from-file band-egress-policy.yaml --yes\npreset:\n  name: band-openclaw-channel\n  description: Allow the OpenClaw sandbox to reach the configured Band REST/WebSocket host.\n  version: "1.0.0"\n\nnetwork_policies:\n${policies}\n`;
+  const policyName = `band-${restEndpoint.host}-${restEndpoint.port}`.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
+  const endpoints = [
+    `      - host: ${restEndpoint.host}\n        port: ${restEndpoint.port}\n        protocol: rest\n        enforcement: enforce\n        rules:\n          - allow: { method: GET, path: "/api/v1/**" }\n          - allow: { method: POST, path: "/api/v1/**" }\n          - allow: { method: PUT, path: "/api/v1/**" }\n          - allow: { method: PATCH, path: "/api/v1/**" }\n          - allow: { method: DELETE, path: "/api/v1/**" }`,
+    `      # Band Phoenix WebSocket. OpenShell terminates REST TLS, but WSS needs\n      # tunnel passthrough just like Slack/Discord gateway presets.\n      - host: ${wsEndpoint.host}\n        port: ${wsEndpoint.port}\n        access: full\n        tls: skip`,
+  ].join("\n");
+  return `# Generated Band egress policy preset for NemoClaw integration.\n# Apply after onboarding with: nemoclaw <sandbox> policy-add --from-file band-egress-policy.yaml --yes\npreset:\n  name: band-openclaw-channel\n  description: Allow the OpenClaw sandbox to reach the configured Band REST API and WebSocket host.\n  version: "1.0.0"\n\nnetwork_policies:\n  ${policyName}:\n    name: ${policyName}\n    endpoints:\n${endpoints}\n    binaries:\n      - { path: /usr/local/bin/node }\n      - { path: /usr/bin/node }\n`;
 }
 
 function configJson(opts, { includeCredentialPlaceholders, includeCredentialValues }) {

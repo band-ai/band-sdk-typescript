@@ -34,7 +34,8 @@ const PREFIXED_REDACTION_PATTERNS = [
 
 const TOKEN_REDACTION_PATTERNS = [
   /\btv_[A-Za-z0-9_-]{8,}\b/g,
-  /\bband_a_[A-Za-z0-9_-]{8,}\b/g,
+  /\bthnv_(?:a_|u_)?[A-Za-z0-9_-]{8,}\b/g,
+  /\bband_(?:a_|u_)[A-Za-z0-9_-]{8,}\b/g,
   /\bsk-[A-Za-z0-9_-]{8,}\b/g,
   /\bnvapi-[A-Za-z0-9_-]{8,}\b/g,
   /\bhf_[A-Za-z0-9_-]{8,}\b/g,
@@ -61,7 +62,7 @@ export function endpointFromUrl(raw, label) {
   try {
     const url = new URL(raw);
     if (url.protocol !== "https:" && url.protocol !== "wss:") throw new Error("unsupported protocol");
-    return { host: url.hostname, port: Number(url.port || 443) };
+    return { host: url.hostname, port: Number(url.port || 443), protocol: url.protocol };
   } catch {
     throw new Error(`${label} must be an https:// or wss:// URL`);
   }

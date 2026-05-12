@@ -70,19 +70,31 @@ function checkPolicy(opts) {
     if (!policy.includes(`port: ${endpoint.port}`)) throw new Error(`policy missing ${endpoint.host}:${endpoint.port} port`);
   }
   if (policy.includes("host: *") || policy.includes("host: \"*\"")) throw new Error("policy must not use wildcard egress");
-  if (!policy.includes("access: full")) throw new Error("policy missing full Band HTTP/WebSocket access");
-  if (!policy.includes("tls: skip")) throw new Error("policy missing Band CONNECT tunnel allowance");
+  if (policy.includes("{ path: /** }")) throw new Error("policy must not allow every sandbox binary");
+  if (!policy.includes("protocol: rest") || !policy.includes("enforcement: enforce")) {
+    throw new Error("policy missing enforced REST rules for Band API access");
+  }
+  if (!policy.includes('path: "/api/v1/**"')) throw new Error("policy must scope REST access to /api/v1/**");
+  if (!policy.includes("access: full") || !policy.includes("tls: skip")) {
+    throw new Error("policy missing Band WebSocket CONNECT tunnel allowance");
+  }
+  if (!policy.includes("path: /usr/local/bin/node") || !policy.includes("path: /usr/bin/node")) {
+    throw new Error("policy must restrict Band egress to Node runtime binaries");
+  }
   return { file: "band-egress-policy.yaml", hosts: [...new Set(hosts)] };
 }
 
 function checkConfigTemplate(opts) {
   const dir = contextDir(opts);
+  const realKeyPattern = /(?:tv_|thnv_(?:a_|u_)?|band_(?:a_|u_))[A-Za-z0-9_-]{8,}/;
   const config = readFileSync(resolve(dir, "openclaw-channel-thenvoi.config.example.json"), "utf-8");
   if (!config.includes("${THENVOI_API_KEY}")) throw new Error("config template missing THENVOI_API_KEY placeholder");
   if (!config.includes("${THENVOI_AGENT_ID}")) throw new Error("config template missing THENVOI_AGENT_ID placeholder");
-  if (/(?:tv_|band_a_)[A-Za-z0-9_-]{8,}/.test(config)) throw new Error("config template contains a real-looking Band API key");
+  if (realKeyPattern.test(config)) throw new Error("config template contains a real-looking Band API key");
 
-  const runtimeConfig = readJson(resolve(dir, "openclaw-channel-thenvoi.openclaw-config.json"));
+  const runtimeConfigRaw = readFileSync(resolve(dir, "openclaw-channel-thenvoi.openclaw-config.json"), "utf-8");
+  if (realKeyPattern.test(runtimeConfigRaw)) throw new Error("runtime config contains a real-looking Band API key");
+  const runtimeConfig = JSON.parse(runtimeConfigRaw);
   const account = runtimeConfig.plugins?.entries?.["openclaw-channel-thenvoi"]?.config?.accounts?.default;
   if (account?.enabled !== true) throw new Error("runtime OpenClaw config must enable the default Band account");
   if (!account.restUrl || !account.wsUrl) throw new Error("runtime OpenClaw config missing Band REST/WebSocket URLs");

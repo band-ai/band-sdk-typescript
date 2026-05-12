@@ -10,6 +10,8 @@ const PREFIXED_REDACTION_PATTERNS: RegExp[] = [
 
 const TOKEN_REDACTION_PATTERNS: RegExp[] = [
   /\btv_[A-Za-z0-9_-]{8,}\b/g,
+  /\bthnv_(?:a_|u_)?[A-Za-z0-9_-]{8,}\b/g,
+  /\bband_(?:a_|u_)[A-Za-z0-9_-]{8,}\b/g,
   /\bsk-[A-Za-z0-9_-]{8,}\b/g,
   /\bnvapi-[A-Za-z0-9_-]{8,}\b/g,
   /\bhf_[A-Za-z0-9_-]{8,}\b/g,

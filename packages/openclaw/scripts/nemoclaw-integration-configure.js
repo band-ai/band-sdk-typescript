@@ -38,7 +38,7 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`Usage: pnpm run nemoclaw:integration:configure -- --sandbox band-integration [--no-restart]\n\nReads THENVOI_API_KEY, THENVOI_AGENT_ID, and optional THENVOI_OPERATOR_ID / THENVOI_CONTACT_* settings from the environment and writes them into the running NemoClaw sandbox OpenClaw config with nemoclaw <sandbox> config set.`);
+  console.log(`Usage: pnpm run nemoclaw:integration:configure -- --sandbox band-integration [--no-restart]\n\nWrites non-secret Band account settings into the running NemoClaw sandbox OpenClaw config with nemoclaw <sandbox> config set. The Band API key is kept as the \${THENVOI_API_KEY} runtime placeholder so it is not exposed in the config command argv.`);
 }
 
 function requireEnv(name) {
@@ -80,7 +80,7 @@ function main() {
     ["plugins.entries.openclaw-channel-thenvoi.config.accounts.default.restUrl", opts.restUrl],
     ["plugins.entries.openclaw-channel-thenvoi.config.accounts.default.wsUrl", opts.wsUrl],
     ["plugins.entries.openclaw-channel-thenvoi.config.accounts.default.agentId", requireEnv("THENVOI_AGENT_ID")],
-    ["plugins.entries.openclaw-channel-thenvoi.config.accounts.default.apiKey", requireEnv("THENVOI_API_KEY")],
+    ["plugins.entries.openclaw-channel-thenvoi.config.accounts.default.apiKey", "${THENVOI_API_KEY}"],
   ];
 
   if (process.env.THENVOI_OPERATOR_ID) {
@@ -108,7 +108,7 @@ function main() {
     runConfigSet(configSetArgs(opts.sandbox, key, value, opts.restart && index === values.length - 1));
   });
 
-  console.log(`Configured Band credentials for NemoClaw sandbox '${opts.sandbox}'.`);
+  console.log(`Configured Band account metadata for NemoClaw sandbox '${opts.sandbox}'. The apiKey config remains the \${THENVOI_API_KEY} runtime placeholder; no Band API key was passed to nemoclaw config set.`);
 }
 
 try {
