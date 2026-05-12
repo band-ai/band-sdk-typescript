@@ -7,6 +7,7 @@
  * Uses @thenvoi/sdk for all platform communication (WebSocket + REST).
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { ThenvoiLink } from "@thenvoi/sdk";
 import {
   RoomPresence,
@@ -200,6 +201,12 @@ function resolvePackageVersion(): string {
 }
 const PKG_VERSION: string = resolvePackageVersion();
 const GATEWAY_REGISTRY_KEY = `__thenvoi_gateway_registry_v${PKG_VERSION}__`;
+const toolEventContext = new AsyncLocalStorage<BandToolEventContext>();
+export interface BandToolEventContext {
+  accountId: string;
+  roomId: string;
+}
+
 interface GatewayRegistry {
   links: Map<string, ThenvoiLink>;
   presences: Map<string, RoomPresence>;
@@ -241,6 +248,14 @@ export function resetGatewayRegistry(): void {
 function registry(): GatewayRegistry { return getGatewayRegistry(); }
 function links(): Map<string, ThenvoiLink> { return getGatewayRegistry().links; }
 function presences(): Map<string, RoomPresence> { return getGatewayRegistry().presences; }
+
+export function getBandToolEventContext(): BandToolEventContext | undefined {
+  return toolEventContext.getStore();
+}
+
+function runWithBandToolEventContext<T>(context: BandToolEventContext, fn: () => Promise<T>): Promise<T> {
+  return toolEventContext.run(context, fn);
+}
 
 // Track last sender per thread for auto-mention fallback
 // Key: threadId, Value: { senderId, senderName }
@@ -762,11 +777,11 @@ export const thenvoiChannel: OpenClawChannel = {
 
               console.log(`[thenvoi:${accountId}] Dispatching message to OpenClaw agent...`);
               const cfg = dispatch.loadConfig();
-              await dispatch.dispatchReplyFromConfig({
+              await runWithBandToolEventContext({ accountId, roomId: message.threadId }, async () => dispatch.dispatchReplyFromConfig({
                 ctx: inboundCtx,
                 cfg,
                 dispatcher,
-              });
+              }));
               await dispatcher.waitForIdle();
               console.log(`[thenvoi:${accountId}] Message dispatched successfully`);
             } catch (error) {
@@ -848,7 +863,7 @@ export const thenvoiChannel: OpenClawChannel = {
 
               const dispatcher = createBandReplyDispatcher(link, config.agentId, accountId, hubRoomId);
               const cfg = dispatch.loadConfig();
-              await dispatch.dispatchReplyFromConfig({
+              await runWithBandToolEventContext({ accountId, roomId: hubRoomId }, async () => dispatch.dispatchReplyFromConfig({
                 ctx: {
                   Body: message.text,
                   RawBody: message.text,
@@ -870,7 +885,7 @@ export const thenvoiChannel: OpenClawChannel = {
                 },
                 cfg,
                 dispatcher,
-              });
+              }));
               await dispatcher.waitForIdle();
             },
           })
