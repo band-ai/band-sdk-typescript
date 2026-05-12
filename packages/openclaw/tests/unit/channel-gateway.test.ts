@@ -492,12 +492,13 @@ describe("Channel Gateway Lifecycle", () => {
       );
     });
 
-    it("should send tool results as Band events and only send final replies as chat messages", async () => {
+    it("should send tool results as Band events and only send one stable final reply as a chat message", async () => {
       const dispatchFn = vi.fn().mockImplementation(async ({ dispatcher }) => {
         dispatcher.sendToolResult({ text: "tool output" });
         dispatcher.sendBlockReply({ text: "partial block" });
-        dispatcher.sendFinalReply({ text: "final answer" });
-        dispatcher.sendFinalReply({ text: "second final block" });
+        dispatcher.sendFinalReply({ text: "I" });
+        dispatcher.sendFinalReply({ text: "'ll help you get started with that." });
+        dispatcher.sendFinalReply({ text: "Done. I pulled Codex into the room and asked them to help." });
       });
       setOpenClawRuntime({
         channel: {
@@ -542,7 +543,7 @@ describe("Channel Gateway Lifecycle", () => {
       expect(mockLinkInstance.rest.createChatMessage).toHaveBeenCalledTimes(1);
       expect(mockLinkInstance.rest.createChatMessage).toHaveBeenCalledWith(
         "room-123",
-        expect.objectContaining({ content: "final answer\n\nsecond final block" }),
+        expect.objectContaining({ content: "Done. I pulled Codex into the room and asked them to help." }),
       );
     });
 

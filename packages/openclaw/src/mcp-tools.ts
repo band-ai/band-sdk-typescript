@@ -1,7 +1,7 @@
 /**
- * MCP Tools for Thenvoi platform operations.
+ * MCP Tools for Band platform operations.
  *
- * Exposes Thenvoi platform tools via MCP (Model Context Protocol)
+ * Exposes Band platform tools via MCP (Model Context Protocol)
  * for use by OpenClaw agents. Uses @thenvoi/sdk REST API.
  */
 
@@ -93,7 +93,7 @@ function clampPagination(page: number, pageSize: number): { page: number; pageSi
 const lookupPeersTool: McpTool = {
   name: "thenvoi_lookup_peers",
   description:
-    "Find available agents and users on the Thenvoi platform. " +
+    "Find available agents and users on the Band platform. " +
     "Use this to discover who you can invite to collaborate.",
   inputSchema: {
     type: "object",
@@ -138,7 +138,7 @@ const lookupPeersTool: McpTool = {
 const addParticipantTool: McpTool = {
   name: "thenvoi_add_participant",
   description:
-    "Invite an agent or user to join a Thenvoi chat room. " +
+    "Invite an agent or user to join a Band chat room. " +
     "Use lookup_peers first to find available participants. " +
     "IMPORTANT: room_id must be the To field from your message context — do NOT use agent IDs, user IDs, or owner IDs.",
   inputSchema: {
@@ -223,7 +223,7 @@ const addParticipantTool: McpTool = {
 
 const removeParticipantTool: McpTool = {
   name: "thenvoi_remove_participant",
-  description: "Remove an agent or user from a Thenvoi chat room.",
+  description: "Remove an agent or user from a Band chat room.",
   inputSchema: {
     type: "object",
     properties: {
@@ -283,7 +283,7 @@ const removeParticipantTool: McpTool = {
 
 const getParticipantsTool: McpTool = {
   name: "thenvoi_get_participants",
-  description: "List all participants in a Thenvoi chat room.",
+  description: "List all participants in a Band chat room.",
   inputSchema: {
     type: "object",
     properties: {
@@ -318,7 +318,7 @@ const getParticipantsTool: McpTool = {
 const createChatTool: McpTool = {
   name: "thenvoi_create_chatroom",
   description:
-    "Create a new Thenvoi chat room for collaboration. " +
+    "Create a new Band chat room for collaboration. " +
     "Use this when you need a fresh space for a new task or conversation.",
   inputSchema: {
     type: "object",
@@ -350,7 +350,7 @@ const createChatTool: McpTool = {
 const sendEventTool: McpTool = {
   name: "thenvoi_send_event",
   description:
-    "Share events with other participants in a Thenvoi chat room. " +
+    "Share events with other participants in a Band chat room. " +
     "Event types: " +
     "'thought' - share your reasoning process (shows thinking indicator), " +
     "'error' - report problems or failures (shows error indicator), " +
@@ -407,9 +407,9 @@ const sendEventTool: McpTool = {
 const sendMessageTool: McpTool = {
   name: "thenvoi_send_message",
   description:
-    "Send a message to a Thenvoi chat room. " +
-    "Messages require at least one @mention. Use this to respond to users or other agents. " +
-    "IMPORTANT: You MUST use this tool to communicate - plain text responses won't reach users.",
+    "Send a message to a Band chat room when you need to address a different participant. " +
+    "Messages require at least one @mention. Use this for handoffs or delegation to other users or agents. " +
+    "Do not use this for normal replies to the sender who mentioned you; plain text replies are routed back automatically.",
   inputSchema: {
     type: "object",
     properties: {
@@ -426,7 +426,7 @@ const sendMessageTool: McpTool = {
         items: { type: "string" },
         description:
           "List of participant names to @mention. At least one required. " +
-          "Use thenvoi_get_participants to see available participants.",
+          "Use thenvoi_get_participants to see available participants, and do not mention yourself or the current sender for a normal reply.",
       },
     },
     required: ["room_id", "content", "mentions"],

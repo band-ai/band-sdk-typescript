@@ -440,6 +440,24 @@ function createNoopReplyDispatcher(): ReplyDispatcher {
   };
 }
 
+function isLikelyPartialFinalReply(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.length <= 2 || /^['’][a-z]/i.test(trimmed);
+}
+
+function selectFinalReplyText(texts: string[]): string | undefined {
+  const normalized = texts.map((text) => text.trim()).filter(Boolean);
+  if (normalized.length === 0) return undefined;
+  if (normalized.length === 1) return normalized[0];
+
+  for (let index = normalized.length - 1; index >= 0; index -= 1) {
+    const text = normalized[index];
+    if (text && !isLikelyPartialFinalReply(text)) return text;
+  }
+
+  return normalized.join("");
+}
+
 function createBandReplyDispatcher(link: ThenvoiLink, agentId: string, accountId: string, roomId: string): ReplyDispatcher {
   const pendingReplies: Promise<void>[] = [];
   const deliveryErrors: Error[] = [];
@@ -487,8 +505,9 @@ function createBandReplyDispatcher(link: ThenvoiLink, agentId: string, accountId
       return true;
     },
     waitForIdle: async (): Promise<void> => {
-      if (finalReplyTexts.length > 0) {
-        enqueueDelivery("final", sendReplyToThenvoi(link.rest, agentId, accountId, roomId, finalReplyTexts.join("\n\n")));
+      const finalReplyText = selectFinalReplyText(finalReplyTexts);
+      if (finalReplyText) {
+        enqueueDelivery("final", sendReplyToThenvoi(link.rest, agentId, accountId, roomId, finalReplyText));
       }
       await Promise.allSettled(pendingReplies);
       if (deliveryErrors.length > 0) {
@@ -744,6 +763,14 @@ export const thenvoiChannel: OpenClawChannel = {
 
           const message = platformEventToInboundMessage(event);
           if (!message) return;
+
+          if (roomId && messageId) {
+            try {
+              await link.markProcessing(roomId, messageId, { bestEffort: true });
+            } catch {
+              // Best effort - don't fail if marking fails
+            }
+          }
 
           const dispatch = registry().openclawRuntime;
           if (dispatch) {

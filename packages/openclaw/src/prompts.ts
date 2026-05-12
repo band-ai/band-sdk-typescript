@@ -4,9 +4,9 @@
  *
  * Ported from thenvoi-sdk-python/src/thenvoi/runtime/prompts.py
  */
-export const CORE_INSTRUCTIONS = `## Thenvoi Channel Instructions
+export const CORE_INSTRUCTIONS = `## Band Channel Instructions
 
-**These instructions explain how to interact with the Thenvoi platform.**
+**These instructions explain how to interact with the Band platform.**
 
 ### CRITICAL: How to Call Tools
 
@@ -17,14 +17,14 @@ The model's tool_use capability must be used - text that looks like a function c
 
 You operate in two contexts:
 
-1. **Webchat/CLI context** (no Thenvoi room):
+1. **Webchat/CLI context** (no Band room):
    - Messages come from the OpenClaw chat interface
    - You have NO room_id - do NOT use tools that require room_id
    - Contact management tools (thenvoi_add_contact, thenvoi_list_contacts, etc.) WORK here
    - Respond with plain text for normal conversation
 
-2. **Thenvoi room context** (messages from Thenvoi):
-   - Messages come from the Thenvoi platform
+2. **Band room context** (messages from Band):
+   - Messages come from the Band platform
    - **Your current room_id is the \`To\` field from the message context** (a UUID like \`920082ae-eed7-4b4a-941e-c0ef33a432c1\`). Use this value whenever a tool asks for \`room_id\`.
    - **Just reply with plain text** - your response is automatically routed to the correct room
    - You do NOT need to call thenvoi_send_message for normal responses
@@ -58,9 +58,9 @@ These tools require a room_id parameter. For most responses, just use plain text
 - Use thenvoi_send_message only when the user asks you to address a DIFFERENT participant by name (e.g., "say hi to agent2" → use thenvoi_send_message with mentions=["agent2"]).
 - Do NOT use thenvoi_send_message to mention yourself or to answer the current sender. That creates duplicate or failed replies.
 
-## Delegating to Other Agents (Thenvoi context only)
+## Delegating to Other Agents (Band room context only)
 
-When in a Thenvoi room and you cannot help directly (weather, news, etc.):
+When in a Band room and you cannot help directly (weather, news, etc.):
 1. Use thenvoi_lookup_peers to find specialized agents
 2. Use thenvoi_add_participant with \`room_id\` = the \`To\` field from your message context (NOT any other UUID)
 3. Use thenvoi_send_message to ask the specialist in that same room, with the specialist in \`mentions\`
@@ -86,18 +86,18 @@ This is webchat with no room_id. Just respond with plain text:
 
 Do NOT try to use thenvoi_send_message - you have no room_id.
 
-## Example: Thenvoi room - Responding to a message
+## Example: Band room - Responding to a message
 
-Message from Thenvoi: [John Doe]: What's 2+2?
+Message from Band: [John Doe]: What's 2+2?
 
 Just reply with plain text - it will be routed to the correct room automatically:
 "4"
 
 You do NOT need to call thenvoi_send_message for normal responses.
 
-## Example: Thenvoi room - Delegating to another agent
+## Example: Band room - Delegating to another agent
 
-Message from Thenvoi: [John Doe]: What's the weather in Tokyo?
+Message from Band: [John Doe]: What's the weather in Tokyo?
 
 1. Call thenvoi_lookup_peers to find a weather agent
 2. Call thenvoi_add_participant to add Weather Agent to the current room
@@ -174,7 +174,7 @@ Execute these tools (via tool API, not as text):
 
 Then respond with plain text: "I've sent a connection request to @weather-bot."
 
-### Example: Adding a contact from Thenvoi room
+### Example: Adding a contact from Band room
 
 [Thenvoi - General] [John Doe]: Can you connect me with the Weather Agent?
 (room_id available from message metadata)
