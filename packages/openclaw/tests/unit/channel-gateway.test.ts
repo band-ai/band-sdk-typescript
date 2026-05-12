@@ -19,6 +19,7 @@ vi.mock("@thenvoi/sdk", () => ({
           { id: opts.agentId, name: "Test Agent", type: "Agent" },
         ]),
         createChatMessage: vi.fn().mockResolvedValue({ ok: true, id: "msg-001" }),
+        createChatEvent: vi.fn().mockResolvedValue({ ok: true, id: "event-001" }),
       },
       connect: vi.fn().mockResolvedValue(undefined),
       disconnect: vi.fn().mockResolvedValue(undefined),
@@ -457,6 +458,60 @@ describe("Channel Gateway Lifecycle", () => {
             waitForIdle: expect.any(Function),
           }),
         }),
+      );
+    });
+
+    it("should send tool results as Band events and only send final replies as chat messages", async () => {
+      const dispatchFn = vi.fn().mockImplementation(async ({ dispatcher }) => {
+        dispatcher.sendToolResult({ text: "tool output" });
+        dispatcher.sendBlockReply({ text: "partial block" });
+        dispatcher.sendFinalReply({ text: "final answer" });
+        dispatcher.sendFinalReply({ text: "second final block" });
+      });
+      setOpenClawRuntime({
+        channel: {
+          reply: {
+            dispatchReplyFromConfig: dispatchFn,
+          },
+        },
+        config: {
+          loadConfig: () => ({}),
+        },
+      });
+
+      const ctx = createGatewayContext("default", mockAccountConfig, { aborted: true });
+      await thenvoiChannel.gateway!.startAccount(ctx);
+
+      const onRoomEvent = capturedPresenceInstance.onRoomEvent as (
+        roomId: string,
+        event: Record<string, unknown>,
+      ) => Promise<void>;
+
+      await onRoomEvent("room-123", {
+        type: "message_created",
+        roomId: "room-123",
+        payload: {
+          id: "msg-001",
+          chat_room_id: "room-123",
+          sender_id: "user-789",
+          sender_type: "User",
+          sender_name: "John Doe",
+          content: "Hello!",
+          message_type: "text",
+          inserted_at: "2025-01-15T10:00:00Z",
+          metadata: {},
+        },
+      });
+
+      expect(mockLinkInstance.rest.createChatEvent).toHaveBeenCalledTimes(1);
+      expect(mockLinkInstance.rest.createChatEvent).toHaveBeenCalledWith(
+        "room-123",
+        expect.objectContaining({ content: "tool output", messageType: "tool_result" }),
+      );
+      expect(mockLinkInstance.rest.createChatMessage).toHaveBeenCalledTimes(1);
+      expect(mockLinkInstance.rest.createChatMessage).toHaveBeenCalledWith(
+        "room-123",
+        expect.objectContaining({ content: "final answer\n\nsecond final block" }),
       );
     });
 

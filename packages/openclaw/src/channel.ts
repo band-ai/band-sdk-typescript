@@ -199,6 +199,7 @@ interface GatewayRegistry {
   presences: Map<string, RoomPresence>;
   startingAccounts: Set<string>;
   lastSenderByThread: Map<string, { senderId: string; senderName: string }>;
+  processedMessageIds: Set<string>;
   deliverInbound: ((message: OpenClawInboundMessage) => void) | null;
   openclawRuntime: OpenClawRuntimeDispatch | null;
 }
@@ -211,6 +212,7 @@ function getGatewayRegistry(): GatewayRegistry {
       presences: new Map(),
       startingAccounts: new Set(),
       lastSenderByThread: new Map(),
+      processedMessageIds: new Set(),
       deliverInbound: null,
       openclawRuntime: null,
     };
@@ -375,8 +377,12 @@ async function resolveMentions(
  * Send a reply back to Band using the SDK's REST API.
  * Throws on failure so callers (e.g. the dispatcher) can track and surface delivery errors.
  */
+function replyPayloadText(payload: unknown): string | undefined {
+  return typeof payload === "string" ? payload : (payload as { text?: string })?.text;
+}
+
 async function sendReplyToThenvoi(rest: ThenvoiLink["rest"], agentId: string, accountId: string, roomId: string, payload: unknown): Promise<void> {
-  const text = typeof payload === "string" ? payload : (payload as { text?: string })?.text;
+  const text = replyPayloadText(payload);
   if (!text) {
     throw new Error(`[thenvoi] No text in reply payload (room=${roomId})`);
   }
@@ -416,33 +422,59 @@ function createNoopReplyDispatcher(): ReplyDispatcher {
 function createBandReplyDispatcher(link: ThenvoiLink, agentId: string, accountId: string, roomId: string): ReplyDispatcher {
   const pendingReplies: Promise<void>[] = [];
   const deliveryErrors: Error[] = [];
+  const queuedCounts = { tool: 0, block: 0, final: 0 };
+  const finalReplyTexts: string[] = [];
 
-  function enqueueReply(payload: unknown): void {
+  function enqueueDelivery(kind: "final" | "tool", delivery: Promise<void>): void {
     pendingReplies.push(
-      sendReplyToThenvoi(link.rest, agentId, accountId, roomId, payload).catch((err: unknown) => {
+      delivery.catch((err: unknown) => {
         const error = err instanceof Error ? err : new Error(String(err));
         deliveryErrors.push(error);
-        console.error(`[thenvoi:${accountId}] Reply delivery failed (room=${roomId}, error=${error.name || "Error"})`);
+        console.error(`[thenvoi:${accountId}] ${kind} delivery failed (room=${roomId}, error=${error.name || "Error"})`);
       }),
     );
   }
 
-  function sendReply(payload: unknown): boolean {
-    enqueueReply(payload);
-    return true;
+  function enqueueToolResult(payload: unknown): void {
+    queuedCounts.tool += 1;
+    const text = replyPayloadText(payload);
+    if (!text) return;
+    enqueueDelivery("tool", link.rest.createChatEvent(roomId, {
+      content: text,
+      messageType: "tool_result",
+      metadata: { source: "openclaw" },
+    }).then(() => undefined));
+  }
+
+  function queueFinalReply(payload: unknown): void {
+    queuedCounts.final += 1;
+    const text = replyPayloadText(payload);
+    if (text) finalReplyTexts.push(text);
   }
 
   return {
-    sendToolResult: sendReply,
-    sendBlockReply: sendReply,
-    sendFinalReply: sendReply,
+    sendToolResult: (payload: unknown): boolean => {
+      enqueueToolResult(payload);
+      return true;
+    },
+    sendBlockReply: (): boolean => {
+      queuedCounts.block += 1;
+      return true;
+    },
+    sendFinalReply: (payload: unknown): boolean => {
+      queueFinalReply(payload);
+      return true;
+    },
     waitForIdle: async (): Promise<void> => {
+      if (finalReplyTexts.length > 0) {
+        enqueueDelivery("final", sendReplyToThenvoi(link.rest, agentId, accountId, roomId, finalReplyTexts.join("\n\n")));
+      }
       await Promise.allSettled(pendingReplies);
       if (deliveryErrors.length > 0) {
         console.error(`[thenvoi:${accountId}] ${deliveryErrors.length}/${pendingReplies.length} replies failed to deliver (room=${roomId})`);
       }
     },
-    getQueuedCounts: () => ({ tool: 0, block: 0, final: 0 }),
+    getQueuedCounts: () => ({ ...queuedCounts }),
   };
 }
 
@@ -479,6 +511,21 @@ function platformEventToInboundMessage(event: PlatformEvent): OpenClawInboundMes
       mentions: payload.metadata?.mentions,
     },
   };
+}
+
+function messageMentionsAgent(payload: Record<string, unknown>, agentId: string): boolean {
+  const content = typeof payload.content === "string" ? payload.content : "";
+  if (content.includes(agentId)) return true;
+
+  const mentions = (payload.metadata as { mentions?: Array<{ id?: unknown; agent_id?: unknown; participant_id?: unknown }> } | undefined)?.mentions;
+  return Array.isArray(mentions) && mentions.some((mention) =>
+    mention.id === agentId || mention.agent_id === agentId || mention.participant_id === agentId,
+  );
+}
+
+function messageInsertedAt(payload: Record<string, unknown>): number | undefined {
+  const insertedAt = typeof payload.inserted_at === "string" ? Date.parse(payload.inserted_at) : NaN;
+  return Number.isFinite(insertedAt) ? insertedAt : undefined;
 }
 
 // =============================================================================
@@ -622,6 +669,7 @@ export const thenvoiChannel: OpenClawChannel = {
 
       try {
         console.log(`[thenvoi:${accountId}] Starting gateway...`);
+        const accountStartedAt = Date.now();
 
         // Disconnect any existing connection to prevent orphaned connections on reload
         if (links().has(accountId)) {
@@ -660,33 +708,22 @@ export const thenvoiChannel: OpenClawChannel = {
           autoSubscribeExistingRooms: true,
         });
 
-        // Set up room event handlers
-        presence.onRoomJoined = async (roomId: string, payload: Record<string, unknown>) => {
-          const title = (payload.title as string) ?? roomId;
-          console.log(`[thenvoi:${accountId}] Joined room: ${title} (${roomId})`);
-        };
-
-        presence.onRoomLeft = async (roomId: string) => {
-          console.log(`[thenvoi:${accountId}] Left room: ${roomId}`);
-        };
-
-        // Handle room events (messages, participant changes)
-        presence.onRoomEvent = async (_roomId: string, event: PlatformEvent) => {
-          // Only process message_created events
+        async function handleMessageEvent(event: PlatformEvent): Promise<void> {
           if (event.type !== "message_created") return;
-
-          // Skip messages from our own agent
           if (event.payload.sender_id === config.agentId) return;
+
+          const messageId = event.payload.id;
+          const roomId = event.roomId ?? event.payload.chat_room_id;
+          const dedupeKey = roomId && messageId ? `${accountId}:${roomId}:${messageId}` : undefined;
+          if (dedupeKey && registry().processedMessageIds.has(dedupeKey)) return;
+          if (dedupeKey) registry().processedMessageIds.add(dedupeKey);
 
           const message = platformEventToInboundMessage(event);
           if (!message) return;
 
-          // Try OpenClaw dispatch first
           const dispatch = registry().openclawRuntime;
           if (dispatch) {
             try {
-              // Track sender before dispatch — needed for auto-mention fallback
-              // in sendReplyToThenvoi (deliverMessage owns tracking for the other path)
               if (message.threadId && message.senderId && message.senderName) {
                 trackSender(accountId, message.threadId, message.senderId, message.senderName);
               }
@@ -720,18 +757,15 @@ export const thenvoiChannel: OpenClawChannel = {
                 cfg,
                 dispatcher,
               });
+              await dispatcher.waitForIdle();
               console.log(`[thenvoi:${accountId}] Message dispatched successfully`);
             } catch (error) {
               console.error(`[thenvoi:${accountId}] Failed to dispatch message: ${redactSecrets(error)}`);
             }
           } else {
-            // deliverMessage handles sender tracking and warns if no callback is set
             deliverMessage(message, accountId);
           }
 
-          // Mark message as processed
-          const messageId = event.payload.id;
-          const roomId = event.roomId ?? event.payload.chat_room_id;
           if (roomId && messageId) {
             try {
               await link.markProcessed(roomId, messageId, { bestEffort: true });
@@ -739,6 +773,37 @@ export const thenvoiChannel: OpenClawChannel = {
               // Best effort - don't fail if marking fails
             }
           }
+        }
+
+        async function catchUpMentionedMessages(roomId: string): Promise<void> {
+          if (typeof link.rest.listMessages !== "function") return;
+          const response = await link.rest.listMessages({ chatId: roomId, page: 1, pageSize: 10 });
+          const messages = Array.isArray(response.data) ? response.data : [];
+          for (const payload of ([...messages].reverse() as unknown as Record<string, unknown>[])) {
+            if (payload.sender_id === config.agentId) continue;
+            if (payload.message_type !== "text") continue;
+            const insertedAt = messageInsertedAt(payload);
+            if (!insertedAt || insertedAt < accountStartedAt - 5_000) continue;
+            if (!messageMentionsAgent(payload, config.agentId)) continue;
+            console.log(`[thenvoi:${accountId}] Catching up mentioned message in room ${roomId}`);
+            await handleMessageEvent({ type: "message_created", roomId, payload } as PlatformEvent);
+          }
+        }
+
+        // Set up room event handlers
+        presence.onRoomJoined = async (roomId: string, payload: Record<string, unknown>) => {
+          const title = (payload.title as string) ?? roomId;
+          console.log(`[thenvoi:${accountId}] Joined room: ${title} (${roomId})`);
+          await catchUpMentionedMessages(roomId);
+        };
+
+        presence.onRoomLeft = async (roomId: string) => {
+          console.log(`[thenvoi:${accountId}] Left room: ${roomId}`);
+        };
+
+        // Handle room events (messages, participant changes)
+        presence.onRoomEvent = async (_roomId: string, event: PlatformEvent) => {
+          await handleMessageEvent(event);
         };
 
         // Create a singleton ContactEventHandler for this account

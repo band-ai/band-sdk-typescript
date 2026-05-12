@@ -1,6 +1,6 @@
 # Band on NemoClaw integration setup
 
-This runbook is for the NVIDIA NemoClaw integration path. It uses the existing `@thenvoi/openclaw-channel-thenvoi` OpenClaw channel package and generates a NemoClaw custom-image build context that bakes the plugin into the sandbox.
+This runbook is for setting up Band on a NemoClaw instance through OpenClaw. It uses the `@thenvoi/openclaw-channel-thenvoi` OpenClaw channel package and generates a NemoClaw custom-image build context that bakes the plugin into the sandbox.
 
 The goal is a visible Band room round trip: a Band room message reaches the OpenClaw agent inside NemoClaw, and the reply appears back in Band.
 
@@ -179,9 +179,9 @@ A complete integration is only successful when all of these are true:
 | Message reaches sandbox but no reply returns | Runtime dispatch | Check logs for `OpenClaw dispatch unavailable` |
 | Reply exists in logs but not in Band | Band REST reply path | Check `createChatMessage` errors and redacted gateway logs |
 
-## Backup integration artifact
+## Support artifact
 
-Before the NVIDIA meeting, capture a successful run if possible:
+When validating a new environment or reporting setup issues, capture:
 
 - generated context directory listing;
 - `nemoclaw:integration:preflight` JSON output;

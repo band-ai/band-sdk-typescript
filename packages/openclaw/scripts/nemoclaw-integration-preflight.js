@@ -70,7 +70,8 @@ function checkPolicy(opts) {
     if (!policy.includes(`port: ${endpoint.port}`)) throw new Error(`policy missing ${endpoint.host}:${endpoint.port} port`);
   }
   if (policy.includes("host: *") || policy.includes("host: \"*\"")) throw new Error("policy must not use wildcard egress");
-  if (!policy.includes("path: \"/**\"")) throw new Error("policy missing explicit Band REST path rules");
+  if (!policy.includes("access: full")) throw new Error("policy missing full Band HTTP/WebSocket access");
+  if (!policy.includes("tls: skip")) throw new Error("policy missing Band CONNECT tunnel allowance");
   return { file: "band-egress-policy.yaml", hosts: [...new Set(hosts)] };
 }
 

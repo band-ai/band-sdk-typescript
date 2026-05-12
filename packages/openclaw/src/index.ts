@@ -11,6 +11,7 @@ import { registerChannel, thenvoiChannel, setInboundCallback, setOpenClawRuntime
 import { getMcpToolSchemas, executeMcpTool } from "./mcp-tools.js";
 import { BASE_INSTRUCTIONS } from "./prompts.js";
 import { redactSecrets } from "./redaction.js";
+import { installWsProxyFix } from "./ws-proxy.js";
 
 // =============================================================================
 // Plugin Entry Point
@@ -62,6 +63,7 @@ interface OpenClawPluginApi {
  * OpenClaw plugin entry point.
  */
 export default function plugin(api: OpenClawPluginApi): void {
+  installWsProxyFix();
   console.log("[thenvoi] OpenClaw Plugin API keys:", Object.keys(api));
 
   // Store OpenClaw runtime for message dispatch

@@ -228,7 +228,7 @@ function policyYaml(restEndpoint, wsEndpoint) {
   const endpoints = [...new Map([restEndpoint, wsEndpoint].map((endpoint) => [`${endpoint.host}:${endpoint.port}`, endpoint])).values()];
   const policies = endpoints.map(({ host, port }) => {
     const policyName = `band-${host}-${port}`.replace(/[^a-z0-9-]/gi, "-").toLowerCase();
-    return `  ${policyName}:\n    name: ${policyName}\n    endpoints:\n      - host: ${host}\n        port: ${port}\n        protocol: rest\n        enforcement: enforce\n        rules:\n          - allow: { method: GET, path: \"/**\" }\n          - allow: { method: POST, path: \"/**\" }\n    binaries:\n      - { path: /usr/local/bin/openclaw }`;
+    return `  ${policyName}:\n    name: ${policyName}\n    endpoints:\n      - host: ${host}\n        port: ${port}\n        tls: skip\n        access: full\n    binaries:\n      - { path: /** }`;
   }).join("\n");
   return `# Generated Band egress policy preset for NemoClaw integration.\n# Apply after onboarding with: nemoclaw <sandbox> policy-add --from-file band-egress-policy.yaml --yes\npreset:\n  name: band-openclaw-channel\n  description: Allow the OpenClaw sandbox to reach the configured Band REST/WebSocket host.\n  version: "1.0.0"\n\nnetwork_policies:\n${policies}\n`;
 }
