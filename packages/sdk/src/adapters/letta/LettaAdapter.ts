@@ -1,4 +1,5 @@
 import { SimpleAdapter } from "../../core/simpleAdapter";
+import type { ToolFilterOptions } from "../../contracts/dtos";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
@@ -198,7 +199,7 @@ function extractReasoningMessages(
 // Adapter options
 // ---------------------------------------------------------------------------
 
-export interface LettaAdapterOptions {
+export interface LettaAdapterOptions extends Omit<ToolFilterOptions, "includeMemory"> {
   model?: string;
   lettaApiKey?: string;
   lettaBaseUrl?: string;
@@ -213,9 +214,6 @@ export interface LettaAdapterOptions {
   systemPrompt?: string;
   customSection?: string;
   includeBaseInstructions?: boolean;
-  includeTools?: string[];
-  excludeTools?: string[];
-  includeCategories?: string[];
   maxHistoryMessages?: number;
   emitReasoningEvents?: boolean;
   historyConverter?: LettaHistoryConverter;

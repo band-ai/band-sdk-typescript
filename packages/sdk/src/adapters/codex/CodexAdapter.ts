@@ -6,7 +6,7 @@ import {
   isToolExecutorError,
   toLegacyToolExecutorErrorMessage,
 } from "../../contracts/protocols";
-import type { MentionInput } from "../../contracts/dtos";
+import type { MentionInput, ToolFilterOptions } from "../../contracts/dtos";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
@@ -99,15 +99,12 @@ interface CodexFactory {
   (): Promise<CodexClientLike>;
 }
 
-interface CodexAdapterOptions {
+interface CodexAdapterOptions extends Omit<ToolFilterOptions, "includeMemory"> {
   config?: CodexAdapterConfig;
   customTools?: CustomToolDef[];
   includeMemoryTools?: boolean;
   factory?: CodexFactory;
   logger?: Logger;
-  includeTools?: string[];
-  excludeTools?: string[];
-  includeCategories?: string[];
 }
 
 type ToolLikeItem =
