@@ -171,7 +171,12 @@ export interface ToolSchemaRecord {
   [key: string]: unknown;
 }
 
-/** Options for filtering which platform tools are exposed to the LLM. */
+/**
+ * Options for filtering which platform tools are exposed to the LLM.
+ *
+ * If the same tool appears in both includeTools and excludeTools, excludeTools
+ * takes precedence.
+ */
 export interface ToolFilterOptions {
   includeMemory?: boolean;
   includeTools?: string[];

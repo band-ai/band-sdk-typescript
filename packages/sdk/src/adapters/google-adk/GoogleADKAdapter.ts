@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import { SimpleAdapter } from "../../core/simpleAdapter";
+import type { ToolFilterOptions } from "../../contracts/dtos";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { formatMessageForLlm } from "../../runtime/formatters";
 import { renderSystemPrompt } from "../../runtime/prompts";
@@ -77,15 +78,12 @@ interface GoogleAdkSdkLike {
   stringifyContent(event: unknown): string;
 }
 
-export interface GoogleADKAdapterOptions {
+export interface GoogleADKAdapterOptions extends Omit<ToolFilterOptions, "includeMemory"> {
   model?: string;
   systemPrompt?: string;
   customSection?: string;
   enableExecutionReporting?: boolean;
   enableMemoryTools?: boolean;
-  includeTools?: string[];
-  excludeTools?: string[];
-  includeCategories?: string[];
   historyConverter?: GoogleADKHistoryConverter;
   additionalTools?: CustomToolDef[];
   maxHistoryMessages?: number;

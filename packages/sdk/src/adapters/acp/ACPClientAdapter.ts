@@ -34,6 +34,8 @@ import { acpModule } from "./loader";
 
 type SupportedInjectedMcpTransport = Extract<ThenvoiMcpBackendKind, "http" | "sse">
 
+// ACP adapters intentionally do not extend ToolFilterOptions. They receive tools
+// through ACP/MCP backend registration rather than AgentTools.getToolSchemas().
 export interface ACPClientAdapterOptions {
   command: string | string[];
   cwd?: string;

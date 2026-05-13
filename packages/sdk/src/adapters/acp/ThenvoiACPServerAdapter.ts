@@ -27,6 +27,8 @@ const DEFAULT_MAX_SESSIONS = 100
 const DEFAULT_PROMPT_TIMEOUT_MS = 300_000
 const DEFAULT_PROMPT_COMPLETION_GRACE_MS = 250
 
+// ACP adapters intentionally do not extend ToolFilterOptions. They expose tools
+// through ACP session and MCP server registration rather than platform schemas.
 export interface ThenvoiACPServerAdapterOptions {
   thenvoiRest: RestApi;
   maxSessions?: number;

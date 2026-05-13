@@ -5,7 +5,7 @@ import {
   type ToolExecutor,
   type ToolSchemaProvider,
 } from "../../contracts/protocols";
-import type { ToolModelMessage } from "../../contracts/dtos";
+import type { ToolFilterOptions, ToolModelMessage } from "../../contracts/dtos";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
@@ -27,7 +27,7 @@ import type {
   ToolRound,
 } from "./types";
 
-export interface ToolCallingAdapterOptions {
+export interface ToolCallingAdapterOptions extends Omit<ToolFilterOptions, "includeMemory"> {
   model: ToolCallingModel;
   toolFormat: "openai" | "anthropic";
   systemPrompt?: string;
@@ -36,9 +36,6 @@ export interface ToolCallingAdapterOptions {
   enableExecutionReporting?: boolean;
   customTools?: CustomToolDef[];
   logger?: Logger;
-  includeTools?: string[];
-  excludeTools?: string[];
-  includeCategories?: string[];
 }
 
 type ToolCallingTools = MessagingTools & ToolExecutor & ToolSchemaProvider;

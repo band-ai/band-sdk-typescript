@@ -38,7 +38,7 @@ import {
   type ToolExecutorError,
 } from "../../contracts/protocols";
 import {
-  CHAT_TOOL_NAMES,
+  CONTACT_TOOL_NAMES,
   MEMORY_TOOL_NAMES,
   TOOL_CATEGORIES,
   type ToolFilterOptions,
@@ -400,7 +400,7 @@ export class AgentTools implements AgentToolsProtocol {
         }
 
         // Capability filters
-        if (!CHAT_TOOL_NAMES.has(name) && !MEMORY_TOOL_NAMES.has(name) && !this.capabilities.contacts) {
+        if (CONTACT_TOOL_NAMES.has(name) && !this.capabilities.contacts) {
           return false;
         }
 

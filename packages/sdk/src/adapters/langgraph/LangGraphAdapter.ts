@@ -2,6 +2,7 @@ import { RuntimeStateError, UnsupportedFeatureError, ValidationError } from "../
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import { SimpleAdapter } from "../../core/simpleAdapter";
+import type { ToolFilterOptions } from "../../contracts/dtos";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
@@ -43,7 +44,7 @@ interface LangGraphSdk {
   ) => unknown;
 }
 
-export interface LangGraphAdapterOptions {
+export interface LangGraphAdapterOptions extends Omit<ToolFilterOptions, "includeMemory"> {
   llm?: unknown;
   checkpointer?: unknown;
   graph?: LangGraphGraph;
@@ -56,9 +57,6 @@ export interface LangGraphAdapterOptions {
   emitExecutionEvents?: boolean;
   includeMemoryTools?: boolean;
   logger?: Logger;
-  includeTools?: string[];
-  excludeTools?: string[];
-  includeCategories?: string[];
 }
 
 export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterToolsProtocol> {
