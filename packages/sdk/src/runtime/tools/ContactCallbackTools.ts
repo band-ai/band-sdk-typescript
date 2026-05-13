@@ -6,6 +6,7 @@ import type {
   ChatRoomRestApi,
   ContactRestApi,
 } from "../../client/rest/types";
+import { deriveRemoteAlias } from "../../contracts/dtos";
 import type {
   AddContactArgs,
   ContactRecord,
@@ -43,14 +44,14 @@ function toParticipantRecord(participant: ChatParticipant): ParticipantRecord {
 }
 
 export function mapParticipantRecord(participant: Pick<ParticipantRecord, "id" | "name" | "type" | "handle" | "is_remote" | "is_external">): ParticipantRecord {
-  return {
+  return deriveRemoteAlias({
     id: participant.id,
     name: participant.name,
     type: participant.type,
     handle: participant.handle ?? null,
     ...(participant.is_remote !== undefined ? { is_remote: participant.is_remote } : {}),
     ...(participant.is_external !== undefined ? { is_external: participant.is_external } : {}),
-  };
+  });
 }
 
 function normalizePage(value: number | undefined, fallback: number): number {

@@ -386,6 +386,35 @@ describe("FernRestAdapter coverage", () => {
       }],
       metadata: {},
     });
+    const disagreeingAliasAdapter = new FernRestAdapter({
+      agentContacts: {
+        listAgentContacts: async () => ({
+          data: [{
+            id: "contact-disagree",
+            handle: "@disagree",
+            name: "Disagree",
+            type: "User",
+            description: null,
+            is_remote: true,
+            is_external: false,
+            inserted_at: "2026-03-10T00:00:00.000Z",
+          }],
+        }),
+      },
+    });
+    await expect(disagreeingAliasAdapter.listContacts({ page: 1, pageSize: 50 })).resolves.toEqual({
+      data: [{
+        id: "contact-disagree",
+        handle: "@disagree",
+        name: "Disagree",
+        type: "User",
+        description: null,
+        is_remote: true,
+        is_external: true,
+        inserted_at: "2026-03-10T00:00:00.000Z",
+      }],
+      metadata: {},
+    });
     await expect(adapter.addContact({ handle: "@jane", message: "hello" })).resolves.toEqual({
       id: "req-1",
       status: "pending",
@@ -509,6 +538,18 @@ describe("FernRestAdapter coverage", () => {
     });
     await expect(legacyParticipantAdapter.listChatParticipants("room-1")).resolves.toEqual([
       { id: "uLegacy", name: "Legacy", type: "Agent", handle: null, is_remote: true, is_external: true },
+    ]);
+    const disagreeingParticipantAdapter = new FernRestAdapter({
+      chatParticipants: {
+        listChatParticipants: async () => ({
+          data: [{ id: "uDisagree", name: "Disagree", type: "Agent", handle: null, is_remote: false, is_external: true }],
+        }),
+        addChatParticipant: async () => ({ data: {} }),
+        removeChatParticipant: async () => ({ data: {} }),
+      },
+    });
+    await expect(disagreeingParticipantAdapter.listChatParticipants("room-1")).resolves.toEqual([
+      { id: "uDisagree", name: "Disagree", type: "Agent", handle: null, is_remote: false, is_external: false },
     ]);
   });
 

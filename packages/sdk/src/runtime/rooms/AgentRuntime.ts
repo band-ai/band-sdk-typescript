@@ -2,7 +2,7 @@ import type { ThenvoiLink } from "../../platform/ThenvoiLink";
 import type { ContactEvent, PlatformEvent } from "../../platform/events";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
-import type { MetadataMap, ParticipantRecord } from "../../contracts/dtos";
+import { deriveRemoteAlias, type MetadataMap, type ParticipantRecord } from "../../contracts/dtos";
 import { Execution } from "../Execution";
 import { ExecutionContext, type ExecutionContextOptions } from "../ExecutionContext";
 import { hydrateTrackedRooms, trackRoomJoin, trackRoomLeave } from "./subscriptions";
@@ -242,14 +242,14 @@ export class AgentRuntime {
       case "participant_added":
         if (event.roomId) {
           const context = this.getOrCreateContext(event.roomId);
-          const participant = {
+          const participant = deriveRemoteAlias({
             id: event.payload.id,
             name: event.payload.name,
             type: event.payload.type,
             handle: event.payload.handle,
             is_remote: event.payload.is_remote,
             is_external: event.payload.is_external,
-          };
+          });
           context.addParticipant(participant);
           await this.onParticipantAdded?.(event.roomId, participant);
         }
@@ -263,9 +263,14 @@ export class AgentRuntime {
         return;
       case "contact_request_received":
       case "contact_request_updated":
-      case "contact_added":
       case "contact_removed":
         await this.onContactEvent?.(event);
+        return;
+      case "contact_added":
+        await this.onContactEvent?.({
+          ...event,
+          payload: deriveRemoteAlias(event.payload),
+        });
         return;
       case "message_created":
         if (!event.roomId) {

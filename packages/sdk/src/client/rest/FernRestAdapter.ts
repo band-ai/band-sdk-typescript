@@ -1,5 +1,6 @@
 import { UnsupportedFeatureError } from "../../core/errors";
 import { asNullableString, asOptionalRecord, asString } from "../../adapters/shared/coercion";
+import { deriveRemoteAlias } from "../../contracts/dtos";
 import type {
   AddContactArgs,
   ContactRecord,
@@ -258,16 +259,6 @@ function isChatParticipant(value: unknown): value is ChatParticipant {
     && (record.handle === undefined || record.handle === null || typeof record.handle === "string")
     && !hasInvalidNullableBoolean(record.is_remote)
     && !hasInvalidNullableBoolean(record.is_external);
-}
-
-function deriveRemoteAlias<T extends { is_remote?: boolean | null; is_external?: boolean | null }>(value: T): T {
-  const isRemote = value.is_remote ?? value.is_external;
-  const isExternal = value.is_external ?? value.is_remote;
-  return {
-    ...value,
-    ...(isRemote !== undefined ? { is_remote: isRemote } : {}),
-    ...(isExternal !== undefined ? { is_external: isExternal } : {}),
-  };
 }
 
 function normalizeChatParticipantsResponse(response: unknown): ChatParticipant[] {

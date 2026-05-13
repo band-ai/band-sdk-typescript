@@ -36,8 +36,17 @@ export interface ParticipantRecord {
   type: string;
   handle?: string | null;
   is_remote?: boolean | null;
+  /** @deprecated Use is_remote. */
   is_external?: boolean | null;
   role?: string;
+}
+
+export function deriveRemoteAlias<T extends { is_remote?: boolean | null; is_external?: boolean | null }>(value: T): T {
+  const isRemote = value.is_remote ?? value.is_external;
+  return {
+    ...value,
+    ...(isRemote !== undefined ? { is_remote: isRemote, is_external: isRemote } : {}),
+  };
 }
 
 export interface PeerRecord {
@@ -56,7 +65,7 @@ export interface WireContactRecord {
   type?: string;
   description?: string | null;
   is_remote?: boolean | null;
-  // Legacy alias for is_remote.
+  /** @deprecated Use is_remote. */
   is_external?: boolean | null;
   inserted_at?: string;
 }
