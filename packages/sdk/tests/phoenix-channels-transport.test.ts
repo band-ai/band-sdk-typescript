@@ -193,6 +193,51 @@ describe("PhoenixChannelsTransport", () => {
     ).rejects.toBeInstanceOf(TransportError);
   });
 
+  it("rejects connect when mandatory agent_control join fails", async () => {
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+      agentId: "agent-1",
+    });
+
+    const socket = phoenixMock.FakeSocket.instances[0];
+    if (socket) {
+      const originalChannel = socket.channel.bind(socket);
+      socket.channel = (topic: string) => {
+        const channel = originalChannel(topic);
+        if (topic === "agent_control:agent-1") {
+          channel.joinOutcome = "error";
+        }
+        return channel;
+      };
+    }
+
+    await expect(transport.connect()).rejects.toBeInstanceOf(TransportError);
+    expect(transport.isConnected()).toBe(false);
+    expect(socket?.disconnectCount).toBeGreaterThan(0);
+  });
+
+  it("does not require agent_control when no agent id is configured", async () => {
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+    });
+
+    const socket = phoenixMock.FakeSocket.instances[0];
+    if (socket) {
+      const originalChannel = socket.channel.bind(socket);
+      socket.channel = (topic: string) => {
+        const channel = originalChannel(topic);
+        channel.joinOutcome = "error";
+        return channel;
+      };
+    }
+
+    await expect(transport.connect()).resolves.toBeUndefined();
+    expect(transport.isConnected()).toBe(true);
+    expect(socket?.channels.has("agent_control:agent-1")).toBe(false);
+  });
+
   it("records agent_control supersede as terminal and disables reconnect", async () => {
     const onTerminalDisconnect = vi.fn();
     const transport = new PhoenixChannelsTransport({

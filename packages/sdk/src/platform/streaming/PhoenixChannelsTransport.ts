@@ -72,13 +72,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
 
     this.socket.onOpen(() => {
       this.connected = true;
-      this.connectResolve?.();
-      this.connectResolve = null;
-      this.connectReject = null;
-      void this.subscribeAgentControl();
-      this.logger.info("Phoenix socket opened", {
-        channels: getSocketChannelCount(this.socket),
-      });
+      void this.handleOpen();
     });
 
     this.socket.onClose((event?: { code?: number; reason?: string }) => {
@@ -269,25 +263,40 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     });
   }
 
+  private async handleOpen(): Promise<void> {
+    try {
+      await this.subscribeAgentControl();
+    } catch (error) {
+      this.connected = false;
+      this.socket.disconnect();
+      this.connectReject?.(error instanceof Error ? error : new TransportError(String(error)));
+      this.logger.warn("Failed to join mandatory agent_control channel", { error });
+      return;
+    }
+
+    this.connectResolve?.();
+    this.connectResolve = null;
+    this.connectReject = null;
+    this.logger.info("Phoenix socket opened", {
+      channels: getSocketChannelCount(this.socket),
+    });
+  }
+
   private async subscribeAgentControl(): Promise<void> {
     if (!this.agentId) {
       return;
     }
 
-    try {
-      await this.join(`agent_control:${this.agentId}`, {
-        supersede: (payload) => {
-          const reason = parseSupersedeDisconnectReason(payload);
-          if (!reason) {
-            this.logger.warn("Invalid agent_control supersede payload", { payload });
-            return;
-          }
-          this.recordTerminalDisconnect(reason);
-        },
-      });
-    } catch (error) {
-      this.logger.warn("Failed to join agent_control channel", { error });
-    }
+    await this.join(`agent_control:${this.agentId}`, {
+      supersede: (payload) => {
+        const reason = parseSupersedeDisconnectReason(payload);
+        if (!reason) {
+          this.logger.warn("Invalid agent_control supersede payload", { payload });
+          return;
+        }
+        this.recordTerminalDisconnect(reason);
+      },
+    });
   }
 
   private recordTerminalDisconnect(reason: WebSocketDisconnectReason): void {
