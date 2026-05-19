@@ -61,6 +61,10 @@ jobs:
         if: steps.release.outputs['packages/sdk--release_created'] == 'true' || steps.release.outputs['packages/openclaw--release_created'] == 'true'
         run: pnpm build
 
+      - name: Copy README into SDK package
+        if: steps.release.outputs['packages/sdk--release_created'] == 'true'
+        run: cp README.md packages/sdk/README.md
+
       - name: Publish SDK to npm (@thenvoi)
         if: steps.release.outputs['packages/sdk--release_created'] == 'true'
         run: |
