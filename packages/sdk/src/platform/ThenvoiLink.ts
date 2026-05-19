@@ -16,6 +16,7 @@ import {
 } from "./streaming/payloadSchemas";
 import { PhoenixChannelsTransport } from "./streaming/PhoenixChannelsTransport";
 import type { StreamingTransport } from "./streaming/transport";
+import type { WebSocketDisconnectReason } from "./streaming/disconnectReason";
 import {
   DEFAULT_AGENT_TOOLS_CAPABILITIES,
   type AgentToolsCapabilities,
@@ -78,6 +79,7 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
   private readonly eventQueue: PlatformEvent[] = [];
   private readonly waiters: PendingWaiter[] = [];
   private connected = false;
+  private lastDisconnectReason: WebSocketDisconnectReason | null = null;
 
   public constructor(options: ThenvoiLinkOptions) {
     this.agentId = options.agentId;
@@ -106,11 +108,18 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
         apiKey: this.apiKey,
         agentId: this.agentId,
         logger: this.logger,
+        onTerminalDisconnect: (reason) => {
+          this.recordDisconnectReason(reason);
+        },
       });
   }
 
   public isConnected(): boolean {
     return this.connected;
+  }
+
+  public getDisconnectReason(): WebSocketDisconnectReason | null {
+    return this.lastDisconnectReason ?? this.transport.getDisconnectReason?.() ?? null;
   }
 
   public async connect(): Promise<void> {
@@ -137,6 +146,15 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
 
   public async runForever(signal: AbortSignal): Promise<void> {
     await this.transport.runForever(signal);
+  }
+
+  private recordDisconnectReason(reason: WebSocketDisconnectReason): void {
+    this.connected = false;
+    this.lastDisconnectReason = reason;
+    while (this.waiters.length > 0) {
+      const waiter = this.waiters.shift();
+      waiter?.resolve(null);
+    }
   }
 
   public queueEvent(event: PlatformEvent): void {

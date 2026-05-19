@@ -1,3 +1,5 @@
+import type { WebSocketDisconnectReason } from "./disconnectReason";
+
 export interface TopicHandlers {
   [event: string]: (payload: Record<string, unknown>) => Promise<void> | void;
 }
@@ -9,4 +11,5 @@ export interface StreamingTransport {
   leave(topic: string): Promise<void>;
   runForever(signal: AbortSignal): Promise<void>;
   isConnected(): boolean;
+  getDisconnectReason?(): WebSocketDisconnectReason | null;
 }

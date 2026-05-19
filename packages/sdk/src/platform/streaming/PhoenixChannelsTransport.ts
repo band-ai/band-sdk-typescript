@@ -3,6 +3,13 @@ import { WebSocket as NodeWebSocket } from "ws";
 import { TransportError } from "../../core/errors";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
+import {
+  WebSocketDisconnectError,
+  genericCloseReason,
+  parseSupersedeDisconnectReason,
+  parseUpgradeDisconnectReason,
+  type WebSocketDisconnectReason,
+} from "./disconnectReason";
 import type { StreamingTransport, TopicHandlers } from "./transport";
 
 interface PhoenixChannelsTransportOptions {
@@ -13,21 +20,30 @@ interface PhoenixChannelsTransportOptions {
   heartbeatIntervalMs?: number;
   reconnectAfterMs?: (tries: number) => number;
   websocketFactory?: typeof WebSocket;
+  onTerminalDisconnect?: (reason: WebSocketDisconnectReason) => void;
 }
 
 export class PhoenixChannelsTransport implements StreamingTransport {
   private readonly socket: Socket;
+  private readonly agentId?: string;
   private readonly channels = new Map<string, Channel>();
   private readonly channelRefs = new Map<string, Array<[string, number]>>();
   private readonly pendingJoins = new Map<string, Promise<void>>();
   private readonly logger: Logger;
+  private readonly onTerminalDisconnect?: (reason: WebSocketDisconnectReason) => void;
   private onHandlerError?: (error: unknown) => void;
   private connected = false;
   private connectPromise: Promise<void> | null = null;
   private connectResolve: (() => void) | null = null;
+  private connectReject: ((error: Error) => void) | null = null;
+  private lastDisconnectReason: WebSocketDisconnectReason | null = null;
+  private terminalDisconnectError: WebSocketDisconnectError | null = null;
+  private runForeverRejects = new Set<(error: unknown) => void>();
 
   public constructor(options: PhoenixChannelsTransportOptions) {
     this.logger = options.logger ?? new NoopLogger();
+    this.agentId = options.agentId;
+    this.onTerminalDisconnect = options.onTerminalDisconnect;
 
     // The phoenix JS library appends /websocket to the endpoint URL.
     // Strip it if the user-provided URL already includes it.
@@ -36,14 +52,21 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       wsUrl = wsUrl.slice(0, -"/websocket".length);
     }
 
+    const reconnectAfterMs = options.reconnectAfterMs ??
+      ((tries: number) => [1_000, 2_000, 5_000, 10_000, 30_000][tries - 1] ?? 30_000);
+
     this.socket = new Socket(wsUrl, {
       params: {
         api_key: options.apiKey,
         agent_id: options.agentId,
       },
       heartbeatIntervalMs: options.heartbeatIntervalMs,
-      reconnectAfterMs: options.reconnectAfterMs ??
-        ((tries: number) => [1_000, 2_000, 5_000, 10_000, 30_000][tries - 1] ?? 30_000),
+      reconnectAfterMs: (tries: number) => {
+        if (this.terminalDisconnectError) {
+          return Number.POSITIVE_INFINITY;
+        }
+        return reconnectAfterMs(tries);
+      },
       transport: options.websocketFactory ?? resolveWebSocketFactory(),
     });
 
@@ -51,6 +74,8 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       this.connected = true;
       this.connectResolve?.();
       this.connectResolve = null;
+      this.connectReject = null;
+      void this.subscribeAgentControl();
       this.logger.info("Phoenix socket opened", {
         channels: getSocketChannelCount(this.socket),
       });
@@ -58,25 +83,44 @@ export class PhoenixChannelsTransport implements StreamingTransport {
 
     this.socket.onClose((event?: { code?: number; reason?: string }) => {
       this.connected = false;
+      if (!this.terminalDisconnectError) {
+        this.lastDisconnectReason = genericCloseReason(event);
+      }
 
       // If there are no active channels, stop reconnecting — the socket has
-      // nothing to rejoin and would just churn connections.
-      if (getSocketChannelCount(this.socket) === 0) {
+      // nothing to rejoin and would just churn connections. Terminal platform
+      // disconnects call socket.disconnect() as soon as they are recorded, so
+      // avoid re-entering disconnect from the close callback.
+      if (!this.terminalDisconnectError && getSocketChannelCount(this.socket) === 0) {
         this.socket.disconnect();
       }
 
       this.logger.info("Phoenix socket closed", {
         code: event?.code ?? null,
         reason: event?.reason ?? null,
+        platformReason: this.lastDisconnectReason,
       });
     });
 
     this.socket.onError((event) => {
+      const upgradeReason = parseUpgradeDisconnectReason(event);
+      if (upgradeReason) {
+        this.lastDisconnectReason = upgradeReason;
+        const error = new WebSocketDisconnectError(upgradeReason);
+        this.connectReject?.(error);
+        this.logger.warn("Phoenix socket upgrade failed", { reason: upgradeReason });
+        return;
+      }
+
       this.logger.warn("Phoenix socket error", { event });
     });
   }
 
   public async connect(): Promise<void> {
+    if (this.terminalDisconnectError) {
+      throw this.terminalDisconnectError;
+    }
+
     if (this.connected) {
       return;
     }
@@ -113,6 +157,10 @@ export class PhoenixChannelsTransport implements StreamingTransport {
 
   public isConnected(): boolean {
     return this.connected;
+  }
+
+  public getDisconnectReason(): WebSocketDisconnectReason | null {
+    return this.lastDisconnectReason;
   }
 
   public async join(topic: string, handlers: TopicHandlers): Promise<void> {
@@ -203,13 +251,64 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   public async runForever(signal: AbortSignal): Promise<void> {
+    if (this.terminalDisconnectError) {
+      throw this.terminalDisconnectError;
+    }
+
     if (signal.aborted) {
       return;
     }
 
-    await new Promise<void>((resolve) => {
-      signal.addEventListener("abort", () => resolve(), { once: true });
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        this.runForeverRejects.delete(reject);
+        resolve();
+      };
+      this.runForeverRejects.add(reject);
+      signal.addEventListener("abort", onAbort, { once: true });
     });
+  }
+
+  private async subscribeAgentControl(): Promise<void> {
+    if (!this.agentId) {
+      return;
+    }
+
+    try {
+      await this.join(`agent_control:${this.agentId}`, {
+        supersede: (payload) => {
+          const reason = parseSupersedeDisconnectReason(payload);
+          if (!reason) {
+            this.logger.warn("Invalid agent_control supersede payload", { payload });
+            return;
+          }
+          this.recordTerminalDisconnect(reason);
+        },
+      });
+    } catch (error) {
+      this.logger.warn("Failed to join agent_control channel", { error });
+    }
+  }
+
+  private recordTerminalDisconnect(reason: WebSocketDisconnectReason): void {
+    if (this.terminalDisconnectError) {
+      if (this.terminalDisconnectError.reason.source === "agent_control"
+        && reason.source === "agent_control"
+        && this.terminalDisconnectError.reason.correlationId
+        && this.terminalDisconnectError.reason.correlationId === reason.correlationId) {
+        return;
+      }
+    }
+
+    this.lastDisconnectReason = reason;
+    this.terminalDisconnectError = new WebSocketDisconnectError(reason);
+    this.onTerminalDisconnect?.(reason);
+    this.connectReject?.(this.terminalDisconnectError);
+    for (const reject of this.runForeverRejects) {
+      reject(this.terminalDisconnectError);
+    }
+    this.runForeverRejects.clear();
+    this.socket.disconnect();
   }
 
   private async waitForConnection(timeoutMs = 10_000): Promise<void> {
@@ -220,12 +319,20 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.connectResolve = null;
+        this.connectReject = null;
         reject(new TransportError("Timed out waiting for Phoenix socket connection"));
       }, timeoutMs);
 
       this.connectResolve = () => {
         clearTimeout(timeout);
+        this.connectReject = null;
         resolve();
+      };
+      this.connectReject = (error) => {
+        clearTimeout(timeout);
+        this.connectResolve = null;
+        this.connectReject = null;
+        reject(error instanceof Error ? error : new TransportError(String(error)));
       };
     });
   }

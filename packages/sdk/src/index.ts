@@ -3,6 +3,8 @@ export type { AgentCreateOptions } from "./agent/Agent";
 
 export { ThenvoiLink, deriveDefaultRestUrl } from "./platform/ThenvoiLink";
 export type { PlatformEvent, ContactEvent } from "./platform/events";
+export { WebSocketDisconnectError } from "./platform/streaming/disconnectReason";
+export type { WebSocketDisconnectReason } from "./platform/streaming/disconnectReason";
 export { PlatformRuntime } from "./runtime/PlatformRuntime";
 export type { PlatformRuntimeOptions } from "./runtime/PlatformRuntime";
 export { AgentRuntime } from "./runtime/rooms/AgentRuntime";
