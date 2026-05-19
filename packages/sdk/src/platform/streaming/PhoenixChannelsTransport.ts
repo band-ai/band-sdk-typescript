@@ -23,6 +23,10 @@ interface PhoenixChannelsTransportOptions {
   onTerminalDisconnect?: (reason: WebSocketDisconnectReason) => void;
 }
 
+interface PendingRunForever {
+  reject(error: Error): void;
+}
+
 export class PhoenixChannelsTransport implements StreamingTransport {
   private readonly socket: Socket;
   private readonly agentId?: string;
@@ -38,7 +42,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private connectReject: ((error: Error) => void) | null = null;
   private lastDisconnectReason: WebSocketDisconnectReason | null = null;
   private terminalDisconnectError: WebSocketDisconnectError | null = null;
-  private runForeverRejects = new Set<(error: unknown) => void>();
+  private runForeverWaiters = new Set<PendingRunForever>();
 
   public constructor(options: PhoenixChannelsTransportOptions) {
     this.logger = options.logger ?? new NoopLogger();
@@ -254,12 +258,29 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     }
 
     await new Promise<void>((resolve, reject) => {
-      const onAbort = () => {
-        this.runForeverRejects.delete(reject);
-        resolve();
+      let settled = false;
+      const abortController = new AbortController();
+      const waiter: PendingRunForever = {
+        reject: (error) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          this.runForeverWaiters.delete(waiter);
+          abortController.abort();
+          reject(error);
+        },
       };
-      this.runForeverRejects.add(reject);
-      signal.addEventListener("abort", onAbort, { once: true });
+
+      this.runForeverWaiters.add(waiter);
+      signal.addEventListener("abort", () => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.runForeverWaiters.delete(waiter);
+        resolve();
+      }, { once: true, signal: abortController.signal });
     });
   }
 
@@ -301,22 +322,18 @@ export class PhoenixChannelsTransport implements StreamingTransport {
 
   private recordTerminalDisconnect(reason: WebSocketDisconnectReason): void {
     if (this.terminalDisconnectError) {
-      if (this.terminalDisconnectError.reason.source === "agent_control"
-        && reason.source === "agent_control"
-        && this.terminalDisconnectError.reason.correlationId
-        && this.terminalDisconnectError.reason.correlationId === reason.correlationId) {
-        return;
-      }
+      return;
     }
 
+    const error = new WebSocketDisconnectError(reason);
     this.lastDisconnectReason = reason;
-    this.terminalDisconnectError = new WebSocketDisconnectError(reason);
+    this.terminalDisconnectError = error;
     this.onTerminalDisconnect?.(reason);
-    this.connectReject?.(this.terminalDisconnectError);
-    for (const reject of this.runForeverRejects) {
-      reject(this.terminalDisconnectError);
+    this.connectReject?.(error);
+    for (const waiter of this.runForeverWaiters) {
+      waiter.reject(error);
     }
-    this.runForeverRejects.clear();
+    this.runForeverWaiters.clear();
     this.socket.disconnect();
   }
 

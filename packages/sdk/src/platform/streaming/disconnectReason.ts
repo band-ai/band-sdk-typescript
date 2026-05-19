@@ -1,5 +1,7 @@
 export type WebSocketDisconnectSource = "agent_control" | "upgrade" | "websocket_close";
 
+type NestedPath = readonly string[];
+
 export interface AgentControlSupersedeDisconnectReason {
   source: "agent_control";
   code: string;
@@ -63,7 +65,11 @@ export function parseSupersedeDisconnectReason(
 }
 
 export function parseUpgradeDisconnectReason(event: unknown): WebSocketUpgradeDisconnectReason | null {
-  const status = normalizeStatus(readNested(event, ["status"]) ?? readNested(event, ["statusCode"]) ?? readNested(event, ["response", "status"]));
+  const status = normalizeStatus(readFirst(event, [
+    ["status"],
+    ["statusCode"],
+    ["response", "status"],
+  ]));
   if (status !== 400 && status !== 409 && status !== 429 && status !== 503) {
     return null;
   }
@@ -102,20 +108,22 @@ export function genericCloseReason(event?: { code?: number; reason?: string }): 
 }
 
 function parseUpgradeBody(event: unknown): Record<string, unknown> | null {
-  const directBody = readNested(event, ["body"])
-    ?? readNested(event, ["response", "body"])
-    ?? readNested(event, ["responseText"])
-    ?? readNested(event, ["response", "responseText"])
-    ?? readNested(event, ["data"])
-    ?? readNested(event, ["response", "data"]);
+  const body = readFirst(event, [
+    ["body"],
+    ["response", "body"],
+    ["responseText"],
+    ["response", "responseText"],
+    ["data"],
+    ["response", "data"],
+  ]);
 
-  if (isRecord(directBody)) {
-    return directBody;
+  if (isRecord(body)) {
+    return body;
   }
 
-  if (typeof directBody === "string") {
+  if (typeof body === "string") {
     try {
-      const parsed = JSON.parse(directBody) as unknown;
+      const parsed = JSON.parse(body) as unknown;
       return isRecord(parsed) ? parsed : null;
     } catch {
       return null;
@@ -149,7 +157,7 @@ function defaultUpgradeMessage(code: WebSocketUpgradeDisconnectReason["code"]): 
 }
 
 function readRetryAfterHeader(event: unknown): number | null {
-  const headers = readNested(event, ["headers"]) ?? readNested(event, ["response", "headers"]);
+  const headers = readFirst(event, [["headers"], ["response", "headers"]]);
   if (!headers) {
     return null;
   }
@@ -165,7 +173,17 @@ function readRetryAfterHeader(event: unknown): number | null {
   return null;
 }
 
-function readNested(value: unknown, path: string[]): unknown {
+function readFirst(value: unknown, paths: NestedPath[]): unknown {
+  for (const path of paths) {
+    const found = readNested(value, path);
+    if (found !== undefined) {
+      return found;
+    }
+  }
+  return undefined;
+}
+
+function readNested(value: unknown, path: NestedPath): unknown {
   let cursor = value;
   for (const segment of path) {
     if (!isRecord(cursor)) {

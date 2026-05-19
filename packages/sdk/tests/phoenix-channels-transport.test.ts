@@ -279,6 +279,25 @@ describe("PhoenixChannelsTransport", () => {
     await expect(transport.connect()).rejects.toBeInstanceOf(WebSocketDisconnectError);
   });
 
+  it("rejects runForever waiters on terminal supersede", async () => {
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+      agentId: "agent-1",
+    });
+
+    await transport.connect();
+    const abortController = new AbortController();
+    const runForever = transport.runForever(abortController.signal);
+    const socket = phoenixMock.FakeSocket.instances[0];
+    socket?.channels.get("agent_control:agent-1")?.emit("supersede", {
+      reason: "session.already_connected",
+      message: "This connection has been superseded by a newer session for this agent.",
+    });
+
+    await expect(runForever).rejects.toBeInstanceOf(WebSocketDisconnectError);
+  });
+
   it("keeps a close without supersede generic and retryable", async () => {
     const transport = new PhoenixChannelsTransport({
       wsUrl: "wss://example.test/socket",
