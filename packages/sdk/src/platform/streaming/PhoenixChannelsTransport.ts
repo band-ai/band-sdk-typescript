@@ -15,6 +15,16 @@ interface PhoenixChannelsTransportOptions {
   websocketFactory?: typeof WebSocket;
 }
 
+type HeaderWebSocketConstructor = new (
+  url: string | URL,
+  protocols?: string | string[],
+  options?: { headers: Record<string, string> },
+) => WebSocket;
+
+const PHOENIX_WEBSOCKET_SUFFIX = "/websocket";
+const API_KEY_PARAM = "api_key";
+const API_KEY_HEADER = "x-api-key";
+
 export class PhoenixChannelsTransport implements StreamingTransport {
   private readonly socket: Socket;
   private readonly channels = new Map<string, Channel>();
@@ -29,22 +39,12 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   public constructor(options: PhoenixChannelsTransportOptions) {
     this.logger = options.logger ?? new NoopLogger();
 
-    // The phoenix JS library appends /websocket to the endpoint URL.
-    // Strip it if the user-provided URL already includes it.
-    let wsUrl = options.wsUrl;
-    if (wsUrl.endsWith("/websocket")) {
-      wsUrl = wsUrl.slice(0, -"/websocket".length);
-    }
-
-    this.socket = new Socket(wsUrl, {
-      params: {
-        api_key: options.apiKey,
-        agent_id: options.agentId,
-      },
+    this.socket = new Socket(normalizePhoenixEndpoint(options.wsUrl), {
+      params: buildPhoenixParams(options.agentId),
       heartbeatIntervalMs: options.heartbeatIntervalMs,
       reconnectAfterMs: options.reconnectAfterMs ??
         ((tries: number) => [1_000, 2_000, 5_000, 10_000, 30_000][tries - 1] ?? 30_000),
-      transport: options.websocketFactory ?? resolveWebSocketFactory(),
+      transport: createApiKeyHeaderWebSocketFactory(options.apiKey, options.websocketFactory),
     });
 
     this.socket.onOpen(() => {
@@ -231,12 +231,60 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 }
 
-function resolveWebSocketFactory(): typeof WebSocket {
-  if (typeof process !== "undefined" && process.versions?.node) {
-    return NodeWebSocket as unknown as typeof WebSocket;
+function buildPhoenixParams(agentId: string | undefined): Record<string, string> {
+  return agentId ? { agent_id: agentId } : {};
+}
+
+function normalizePhoenixEndpoint(wsUrl: string): string {
+  try {
+    const parsed = new URL(wsUrl);
+    parsed.searchParams.delete(API_KEY_PARAM);
+    if (parsed.pathname.endsWith(PHOENIX_WEBSOCKET_SUFFIX)) {
+      parsed.pathname = parsed.pathname.slice(0, -PHOENIX_WEBSOCKET_SUFFIX.length);
+    }
+    return parsed.toString();
+  } catch {
+    const [withoutFragment, fragment = ""] = wsUrl.split("#", 2);
+    const [path, query = ""] = withoutFragment.split("?", 2);
+    const normalizedPath = path.endsWith(PHOENIX_WEBSOCKET_SUFFIX)
+      ? path.slice(0, -PHOENIX_WEBSOCKET_SUFFIX.length)
+      : path;
+    const filteredQuery = new URLSearchParams(query);
+    filteredQuery.delete(API_KEY_PARAM);
+    const queryString = filteredQuery.toString();
+    return `${normalizedPath}${queryString ? `?${queryString}` : ""}${fragment ? `#${fragment}` : ""}`;
+  }
+}
+
+function createApiKeyHeaderWebSocketFactory(
+  apiKey: string,
+  websocketFactory?: typeof WebSocket,
+): typeof WebSocket {
+  const WebSocketConstructor = websocketFactory
+    ? (websocketFactory as unknown as HeaderWebSocketConstructor)
+    : getNodeWebSocketConstructor();
+
+  class ApiKeyHeaderWebSocket {
+    public constructor(url: string | URL, protocols?: string | string[]) {
+      return new WebSocketConstructor(url, protocols, {
+        headers: {
+          [API_KEY_HEADER]: apiKey,
+        },
+      });
+    }
   }
 
-  return WebSocket;
+  return ApiKeyHeaderWebSocket as unknown as typeof WebSocket;
+}
+
+function getNodeWebSocketConstructor(): HeaderWebSocketConstructor {
+  if (!(typeof process !== "undefined" && process.versions?.node)) {
+    throw new TransportError(
+      "Phoenix WebSocket API-key auth requires a WebSocket transport that can set handshake headers.",
+    );
+  }
+
+  return NodeWebSocket as unknown as HeaderWebSocketConstructor;
 }
 
 function removeSocketChannel(socket: Socket, channel: Channel): void {
