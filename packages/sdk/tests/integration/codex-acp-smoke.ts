@@ -102,11 +102,11 @@ async function main(): Promise<void> {
     assert(sessionIds.size === 1, `expected exactly 1 reused ACP session, got ${sessionIds.size}`);
 
     const sendMessageCalls = toolCallEvents.filter((event) =>
-      (event.metadata?.raw_input as Record<string, unknown> | undefined)?.tool === "thenvoi_send_message",
+      (event.metadata?.raw_input as Record<string, unknown> | undefined)?.tool === "band_send_message",
     );
     assert(
       sendMessageCalls.length >= 2,
-      `expected thenvoi_send_message MCP calls, got ${sendMessageCalls.length}`,
+      `expected band_send_message MCP calls, got ${sendMessageCalls.length}`,
     );
 
     console.log("codex-acp smoke passed");

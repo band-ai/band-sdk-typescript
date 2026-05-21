@@ -146,7 +146,7 @@ const thenvoiMcpBridgeFactory = new LazyAsyncValue<BandMcpBridgeFactory>({
 
       return {
         serverConfig: createSdkMcpServer({
-          name: "thenvoi",
+          name: "band",
           tools: toolDefinitions,
         }),
         allowedTools: mcpToolNames(new Set(registrations.map((registration) => registration.name))),
@@ -276,7 +276,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     }
 
     const roomToolHint = this.enableMcpTools
-      ? `\n\n[Tooling note]: For any mcp__thenvoi__* tool call, pass room_id="${context.roomId}".`
+      ? `\n\n[Tooling note]: For any mcp__band__* tool call, pass room_id="${context.roomId}".`
       : "";
 
     const query = queryFn({

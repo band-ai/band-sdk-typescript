@@ -85,7 +85,7 @@ export async function handleAgentSessionEvent(
   const runtime = options?.runtime ?? createLinearBridgeRuntime();
 
   if (!action) {
-    logger.warn("linear_thenvoi_bridge.ignored_unknown_action", {
+    logger.warn("linear_band_bridge.ignored_unknown_action", {
       action: input.payload.action,
       sessionId: input.payload.agentSession.id,
     });
@@ -97,7 +97,7 @@ export async function handleAgentSessionEvent(
   const eventKey = options?.expectedEventKey ?? getAgentSessionEventKey(input.payload);
   const existingBySession = await input.deps.store.getBySessionId(sessionId);
   if (existingBySession?.lastEventKey === eventKey) {
-    logger.info("linear_thenvoi_bridge.duplicate_event_skipped", {
+    logger.info("linear_band_bridge.duplicate_event_skipped", {
       sessionId,
       issueId,
       action,
@@ -150,7 +150,7 @@ export async function handleAgentSessionEvent(
       await postThought(input.deps.linearClient, sessionId, "Received session. Setting up workspace...");
       lastLinearActivityAt = new Date().toISOString();
     } catch (ackError) {
-      logger.warn("linear_thenvoi_bridge.acknowledgment_failed", {
+      logger.warn("linear_band_bridge.acknowledgment_failed", {
         sessionId,
         error: ackError instanceof Error ? ackError.message : String(ackError),
       });
@@ -168,7 +168,7 @@ export async function handleAgentSessionEvent(
         appUserId,
         logger,
       }).catch((delegateError) => {
-        logger.warn("linear_thenvoi_bridge.auto_delegate_failed", {
+        logger.warn("linear_band_bridge.auto_delegate_failed", {
           sessionId,
           issueId,
           appUserId,
@@ -191,7 +191,7 @@ export async function handleAgentSessionEvent(
         teamId,
         logger,
       }).catch((autoStartError) => {
-        logger.warn("linear_thenvoi_bridge.auto_start_failed", {
+        logger.warn("linear_band_bridge.auto_start_failed", {
           sessionId,
           issueId,
           teamId,
@@ -232,7 +232,7 @@ export async function handleAgentSessionEvent(
         appBaseUrl: config.thenvoiAppBaseUrl,
         logger,
       }).catch((urlError) => {
-        logger.warn("linear_thenvoi_bridge.set_external_url_failed", {
+        logger.warn("linear_band_bridge.set_external_url_failed", {
           sessionId,
           roomId,
           error: urlError instanceof Error ? urlError.message : String(urlError),
@@ -396,7 +396,7 @@ export async function handleAgentSessionEvent(
     // Ensure external URL has been set before returning (already has .catch, won't throw).
     await externalUrlPromise;
 
-    logger.info("linear_thenvoi_bridge.message_forwarded", {
+    logger.info("linear_band_bridge.message_forwarded", {
       sessionId,
       issueId,
       roomId: roomRecord.thenvoiRoomId,
@@ -417,7 +417,7 @@ export async function handleAgentSessionEvent(
         `Bridge error: ${error instanceof Error ? error.message : String(error)}`,
       );
     } catch (reportError) {
-      logger.warn("linear_thenvoi_bridge.error_reporting_failed", {
+      logger.warn("linear_band_bridge.error_reporting_failed", {
         sessionId,
         error: reportError instanceof Error ? reportError.message : String(reportError),
       });
@@ -493,7 +493,7 @@ async function trySetSessionExternalUrl(input: {
   logger: Logger;
 }): Promise<void> {
   if (typeof input.linearClient.agentSessionUpdateExternalUrl !== "function") {
-    input.logger.info("linear_thenvoi_bridge.set_external_url_skipped_no_api", {
+    input.logger.info("linear_band_bridge.set_external_url_skipped_no_api", {
       sessionId: input.sessionId,
     });
     return;
@@ -505,7 +505,7 @@ async function trySetSessionExternalUrl(input: {
     externalUrls: [{ label: "View in Band", url: roomUrl }],
   });
 
-  input.logger.info("linear_thenvoi_bridge.external_url_set", {
+  input.logger.info("linear_band_bridge.external_url_set", {
     sessionId: input.sessionId,
     roomId: input.roomId,
     url: roomUrl,
@@ -539,7 +539,7 @@ async function trySetAgentAsDelegate(input: {
   const issue = await input.linearClient.issue(input.issueId);
   const existingDelegateId = issue.delegateId;
   if (existingDelegateId) {
-    input.logger.info("linear_thenvoi_bridge.delegate_already_set", {
+    input.logger.info("linear_band_bridge.delegate_already_set", {
       issueId: input.issueId,
       existingDelegateId,
     });
@@ -560,7 +560,7 @@ async function trySetAgentAsDelegate(input: {
     // Best-effort: if re-fetch fails, the caller falls back to appUserId.
   }
 
-  input.logger.info("linear_thenvoi_bridge.delegate_set", {
+  input.logger.info("linear_band_bridge.delegate_set", {
     issueId: input.issueId,
     delegateId: input.appUserId,
   });
@@ -593,7 +593,7 @@ async function tryMoveIssueToStarted(input: {
 
   const targetState = startedStates[0];
   if (!targetState?.id) {
-    input.logger.info("linear_thenvoi_bridge.auto_start_no_started_state", {
+    input.logger.info("linear_band_bridge.auto_start_no_started_state", {
       issueId: input.issueId,
       teamId: input.teamId,
     });
@@ -604,7 +604,7 @@ async function tryMoveIssueToStarted(input: {
     stateId: targetState.id,
   });
 
-  input.logger.info("linear_thenvoi_bridge.auto_start_moved", {
+  input.logger.info("linear_band_bridge.auto_start_moved", {
     issueId: input.issueId,
     stateId: targetState.id,
     stateName: targetState.name ?? null,
@@ -678,7 +678,7 @@ async function handleCanceledAction(input: {
 }): Promise<void> {
   const existing = await input.deps.store.getBySessionId(input.sessionId);
   if (!existing) {
-    input.logger.info("linear_thenvoi_bridge.session_canceled_without_room", {
+    input.logger.info("linear_band_bridge.session_canceled_without_room", {
       sessionId: input.sessionId,
       issueId: input.issueId,
       action: input.payloadAction,
@@ -706,7 +706,7 @@ async function handleCanceledAction(input: {
     });
   }
 
-  input.logger.info("linear_thenvoi_bridge.session_canceled", {
+  input.logger.info("linear_band_bridge.session_canceled", {
     sessionId: input.sessionId,
     issueId: input.issueId,
     hadRoom: Boolean(existing),
@@ -726,7 +726,7 @@ async function handlePromptedAction(input: {
   const existing = await input.deps.store.getBySessionId(input.sessionId);
 
   if (!existing) {
-    input.logger.warn("linear_thenvoi_bridge.prompted_no_room", {
+    input.logger.warn("linear_band_bridge.prompted_no_room", {
       sessionId: input.sessionId,
     });
     return;
@@ -735,7 +735,7 @@ async function handlePromptedAction(input: {
   const userResponse = extractPromptedResponseBody(input.payload);
 
   if (!userResponse) {
-    input.logger.warn("linear_thenvoi_bridge.prompted_empty_response", {
+    input.logger.warn("linear_band_bridge.prompted_empty_response", {
       sessionId: input.sessionId,
     });
     return;
@@ -787,7 +787,7 @@ async function handlePromptedAction(input: {
     updatedAt: new Date().toISOString(),
   });
 
-  input.logger.info("linear_thenvoi_bridge.prompted_forwarded", {
+  input.logger.info("linear_band_bridge.prompted_forwarded", {
     sessionId: input.sessionId,
     roomId: existing.thenvoiRoomId,
   });
@@ -887,7 +887,7 @@ async function forwardBridgeMessage(input: {
       throw error;
     }
 
-    input.logger.warn("linear_thenvoi_bridge.room_forward_recovering_with_fresh_room", {
+    input.logger.warn("linear_band_bridge.room_forward_recovering_with_fresh_room", {
       sessionId: input.sessionId,
       issueId: input.issueId,
       previousRoomId: input.roomRecord.thenvoiRoomId,
@@ -926,7 +926,7 @@ async function forwardBridgeMessage(input: {
         attempt += 1;
         const retryBaseDelayMs = input.recoveredRoomRetryBaseDelayMs ?? RECOVERED_ROOM_EVENT_RETRY_BASE_DELAY_MS;
         const delayMs = retryBaseDelayMs * attempt;
-        input.logger.warn("linear_thenvoi_bridge.room_recreated_retrying", {
+        input.logger.warn("linear_band_bridge.room_recreated_retrying", {
           sessionId: input.sessionId,
           issueId: input.issueId,
           roomId: recoveredRoom.thenvoiRoomId,
@@ -984,7 +984,7 @@ async function createFreshRoomRecord(input: {
   };
 
   await input.store.upsert(record);
-  input.logger.info("linear_thenvoi_bridge.room_recreated", {
+  input.logger.info("linear_band_bridge.room_recreated", {
     sessionId: input.sessionId,
     issueId: input.issueId,
     roomId: created.id,
@@ -1041,7 +1041,7 @@ async function resolveRoomRecordImpl(input: {
 
   await input.store.upsert(createdRecord);
 
-  input.logger.info("linear_thenvoi_bridge.room_created", {
+  input.logger.info("linear_band_bridge.room_created", {
     sessionId: input.sessionId,
     issueId: input.issueId,
     roomId: created.id,
@@ -1066,7 +1066,7 @@ async function ensureRoomParticipants(input: {
     existingParticipants = await input.thenvoiRest.listChatParticipants(input.roomId);
   } catch (error) {
     if (isRetryableRateLimitError(error)) {
-      input.logger.warn("linear_thenvoi_bridge.participant_list_rate_limited", {
+      input.logger.warn("linear_band_bridge.participant_list_rate_limited", {
         roomId: input.roomId,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -1090,7 +1090,7 @@ async function ensureRoomParticipants(input: {
     peersByHandle = await lookupPeerIdsByHandle(input.thenvoiRest, input.roomId, missingHandles);
   } catch (error) {
     if (error instanceof UnsupportedFeatureError) {
-      input.logger.warn("linear_thenvoi_bridge.peer_lookup_unavailable", {
+      input.logger.warn("linear_band_bridge.peer_lookup_unavailable", {
         roomId: input.roomId,
         missingHandles,
         reason: error.message,
@@ -1104,7 +1104,7 @@ async function ensureRoomParticipants(input: {
   for (const handle of missingHandles) {
     const participantId = peersByHandle.get(handle);
     if (!participantId) {
-      input.logger.warn("linear_thenvoi_bridge.peer_not_found", {
+      input.logger.warn("linear_band_bridge.peer_not_found", {
         roomId: input.roomId,
         handle,
       });
@@ -1120,7 +1120,7 @@ async function ensureRoomParticipants(input: {
         },
       );
     } catch (error) {
-      input.logger.warn("linear_thenvoi_bridge.add_participant_failed", {
+      input.logger.warn("linear_band_bridge.add_participant_failed", {
         roomId: input.roomId,
         handle,
         error: error instanceof Error ? error.message : String(error),
@@ -1193,7 +1193,7 @@ async function selectRelevantPeerHandles(input: {
     implementationAgentHandles: input.implementationAgentHandles,
   }).filter((handle) => handle !== input.hostAgentHandle);
   if (configuredHandles.length > 0) {
-    input.logger.info("linear_thenvoi_bridge.peer_prefetch_selected", {
+    input.logger.info("linear_band_bridge.peer_prefetch_selected", {
       roomId: input.roomId,
       intent: input.intent,
       handles: configuredHandles,
@@ -1219,7 +1219,7 @@ async function selectRelevantPeerHandles(input: {
       return [];
     }
 
-    input.logger.warn("linear_thenvoi_bridge.peer_prefetch_failed", {
+    input.logger.warn("linear_band_bridge.peer_prefetch_failed", {
       roomId: input.roomId,
       intent: input.intent,
       error: error instanceof Error ? error.message : String(error),
@@ -1245,7 +1245,7 @@ async function selectRelevantPeerHandles(input: {
 
   const selected = ranked.slice(0, 2).map((candidate) => candidate.handle);
   if (selected.length > 0) {
-    input.logger.info("linear_thenvoi_bridge.peer_prefetch_selected", {
+    input.logger.info("linear_band_bridge.peer_prefetch_selected", {
       roomId: input.roomId,
       intent: input.intent,
       handles: selected,

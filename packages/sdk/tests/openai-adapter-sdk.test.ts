@@ -19,7 +19,7 @@ class OpenAITestTools extends FakeTools {
       {
         type: "function",
         function: {
-          name: "thenvoi_get_participants",
+          name: "band_get_participants",
           description: "List participants",
           parameters: {
             type: "object",
@@ -59,7 +59,7 @@ describe("OpenAIAdapter", () => {
                   id: "call_1",
                   type: "function",
                   function: {
-                    name: "thenvoi_get_participants",
+                    name: "band_get_participants",
                     arguments: "{}",
                   },
                 },
@@ -115,7 +115,7 @@ describe("OpenAIAdapter", () => {
 
     expect(tools.executed).toEqual([
       {
-        name: "thenvoi_get_participants",
+        name: "band_get_participants",
         input: {},
       },
     ]);
@@ -164,7 +164,7 @@ describe("OpenAIAdapter", () => {
                   id: "call_bad",
                   type: "function",
                   function: {
-                    name: "thenvoi_get_participants",
+                    name: "band_get_participants",
                     arguments: "{bad json",
                   },
                 },

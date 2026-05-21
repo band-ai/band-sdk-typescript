@@ -115,7 +115,7 @@ export default function plugin(api: OpenClawPluginApi): void {
 
       let prependContext = BASE_INSTRUCTIONS;
       if (roomId) {
-        prependContext += `\n\n## Current Thenvoi Room\n\n**Your current room_id is: \`${roomId}\`**\nUse this value for any tool parameter that asks for \`room_id\`. Do NOT use any other UUID.`;
+        prependContext += `\n\n## Current Band Room\n\n**Your current room_id is: \`${roomId}\`**\nUse this value for any tool parameter that asks for \`room_id\`. Do NOT use any other UUID.`;
       }
 
       return { prependContext };

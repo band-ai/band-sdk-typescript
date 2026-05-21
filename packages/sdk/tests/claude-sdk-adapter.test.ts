@@ -111,7 +111,7 @@ describe("ClaudeSDKAdapter", () => {
       streamFrom([
         {
           type: "tool_use_summary",
-          summary: "Used thenvoi_send_message",
+          summary: "Used band_send_message",
           preceding_tool_use_ids: ["tool-1"],
           session_id: "session-2",
         } as never,
@@ -145,7 +145,7 @@ describe("ClaudeSDKAdapter", () => {
     expect(toolCallEvents).toHaveLength(1);
     const payload = JSON.parse(toolCallEvents[0]?.content ?? "{}");
     expect(payload.type).toBe("tool_use_summary");
-    expect(payload.summary).toBe("Used thenvoi_send_message");
+    expect(payload.summary).toBe("Used band_send_message");
   });
 
   it("rehydrates session id from bootstrap task metadata", async () => {

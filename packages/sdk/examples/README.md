@@ -15,5 +15,5 @@ Folders:
 - `parlant/`
 - `a2a-bridge/`
 - `a2a-gateway/`
-- `linear-thenvoi/`
+- `linear-band/`
 - `dog-landing-page/`

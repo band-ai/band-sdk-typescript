@@ -121,7 +121,7 @@ describe("ContactEventHandler", () => {
       };
       const onEvent = vi.fn(async (_event, tools) => {
         await tools.sendMessage("hello");
-        await tools.executeToolCall("thenvoi_list_contacts", {});
+        await tools.executeToolCall("band_list_contacts", {});
       });
       const config: ContactEventConfig = { strategy: "callback", onEvent };
       const handler = new ContactEventHandler({ config, rest });

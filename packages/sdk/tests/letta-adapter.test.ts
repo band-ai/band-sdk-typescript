@@ -234,7 +234,7 @@ describe("LettaAdapter", () => {
   it("handles client-side tool execution loop", async () => {
     const client = new FakeLettaClient();
     client.responseBatches.push(
-      approvalResponse("thenvoi_send_event", {
+      approvalResponse("band_send_event", {
         content: "Thinking...",
         message_type: "thought",
       }),

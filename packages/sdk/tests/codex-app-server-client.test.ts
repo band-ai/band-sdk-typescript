@@ -26,7 +26,7 @@ describe("CodexAppServerStdioClient", () => {
       id: { bad: true },
       method: "item/tool/call",
       params: {
-        tool: "thenvoi_send_message",
+        tool: "band_send_message",
       },
     }));
 

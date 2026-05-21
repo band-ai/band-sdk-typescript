@@ -56,7 +56,7 @@ interface McpProperty {
 function getRest() {
   const link = getLink();
   if (!link) {
-    throw new Error("Thenvoi client not connected");
+    throw new Error("Band client not connected");
   }
   return link.rest;
 }
@@ -87,11 +87,11 @@ function clampPagination(page: number, pageSize: number): { page: number; pageSi
 }
 
 // =============================================================================
-// Tool: thenvoi_lookup_peers
+// Tool: band_lookup_peers
 // =============================================================================
 
 const lookupPeersTool: McpTool = {
-  name: "thenvoi_lookup_peers",
+  name: "band_lookup_peers",
   description:
     "Find available agents and users on the Band platform. " +
     "Use this to discover who you can invite to collaborate.",
@@ -132,13 +132,13 @@ const lookupPeersTool: McpTool = {
 };
 
 // =============================================================================
-// Tool: thenvoi_add_participant
+// Tool: band_add_participant
 // =============================================================================
 
 const addParticipantTool: McpTool = {
-  name: "thenvoi_add_participant",
+  name: "band_add_participant",
   description:
-    "Invite an agent or user to join a Thenvoi chat room. " +
+    "Invite an agent or user to join a Band chat room. " +
     "Use lookup_peers first to find available participants. " +
     "IMPORTANT: room_id must be the To field from your message context — do NOT use agent IDs, user IDs, or owner IDs.",
   inputSchema: {
@@ -198,7 +198,7 @@ const addParticipantTool: McpTool = {
 
     if (!foundPeerId) {
       throw new Error(
-        `Peer not found: "${handle}". Use thenvoi_lookup_peers to see available peers.`
+        `Peer not found: "${handle}". Use band_lookup_peers to see available peers.`
       );
     }
 
@@ -218,12 +218,12 @@ const addParticipantTool: McpTool = {
 };
 
 // =============================================================================
-// Tool: thenvoi_remove_participant
+// Tool: band_remove_participant
 // =============================================================================
 
 const removeParticipantTool: McpTool = {
-  name: "thenvoi_remove_participant",
-  description: "Remove an agent or user from a Thenvoi chat room.",
+  name: "band_remove_participant",
+  description: "Remove an agent or user from a Band chat room.",
   inputSchema: {
     type: "object",
     properties: {
@@ -261,7 +261,7 @@ const removeParticipantTool: McpTool = {
       );
       if (!match) {
         throw new Error(
-          `Participant "${name}" not found in room. Use thenvoi_get_participants to see current participants.`
+          `Participant "${name}" not found in room. Use band_get_participants to see current participants.`
         );
       }
       resolvedId = match.id;
@@ -278,12 +278,12 @@ const removeParticipantTool: McpTool = {
 };
 
 // =============================================================================
-// Tool: thenvoi_get_participants
+// Tool: band_get_participants
 // =============================================================================
 
 const getParticipantsTool: McpTool = {
-  name: "thenvoi_get_participants",
-  description: "List all participants in a Thenvoi chat room.",
+  name: "band_get_participants",
+  description: "List all participants in a Band chat room.",
   inputSchema: {
     type: "object",
     properties: {
@@ -312,13 +312,13 @@ const getParticipantsTool: McpTool = {
 };
 
 // =============================================================================
-// Tool: thenvoi_create_chatroom
+// Tool: band_create_chatroom
 // =============================================================================
 
 const createChatTool: McpTool = {
-  name: "thenvoi_create_chatroom",
+  name: "band_create_chatroom",
   description:
-    "Create a new Thenvoi chat room for collaboration. " +
+    "Create a new Band chat room for collaboration. " +
     "Use this when you need a fresh space for a new task or conversation.",
   inputSchema: {
     type: "object",
@@ -344,13 +344,13 @@ const createChatTool: McpTool = {
 };
 
 // =============================================================================
-// Tool: thenvoi_send_event
+// Tool: band_send_event
 // =============================================================================
 
 const sendEventTool: McpTool = {
-  name: "thenvoi_send_event",
+  name: "band_send_event",
   description:
-    "Share events with other participants in a Thenvoi chat room. " +
+    "Share events with other participants in a Band chat room. " +
     "Event types: " +
     "'thought' - share your reasoning process (shows thinking indicator), " +
     "'error' - report problems or failures (shows error indicator), " +
@@ -401,13 +401,13 @@ const sendEventTool: McpTool = {
 };
 
 // =============================================================================
-// Tool: thenvoi_send_message
+// Tool: band_send_message
 // =============================================================================
 
 const sendMessageTool: McpTool = {
-  name: "thenvoi_send_message",
+  name: "band_send_message",
   description:
-    "Send a message to a Thenvoi chat room. " +
+    "Send a message to a Band chat room. " +
     "Messages require at least one @mention. Use this to respond to users or other agents. " +
     "IMPORTANT: You MUST use this tool to communicate - plain text responses won't reach users.",
   inputSchema: {
@@ -426,7 +426,7 @@ const sendMessageTool: McpTool = {
         items: { type: "string" },
         description:
           "List of participant names to @mention. At least one required. " +
-          "Use thenvoi_get_participants to see available participants.",
+          "Use band_get_participants to see available participants.",
       },
     },
     required: ["room_id", "content", "mentions"],
@@ -451,7 +451,7 @@ const sendMessageTool: McpTool = {
       );
       if (!participant) {
         throw new Error(
-          `Participant "${name}" not found in room (excluding self). Use thenvoi_get_participants to see available participants.`
+          `Participant "${name}" not found in room (excluding self). Use band_get_participants to see available participants.`
         );
       }
       return { id: participant.id, name: participant.name };
@@ -471,11 +471,11 @@ const sendMessageTool: McpTool = {
 };
 
 // =============================================================================
-// Tool: thenvoi_list_contacts
+// Tool: band_list_contacts
 // =============================================================================
 
 const listContactsTool: McpTool = {
-  name: "thenvoi_list_contacts",
+  name: "band_list_contacts",
   description: "List agent's contacts with pagination.",
   inputSchema: {
     type: "object",
@@ -512,11 +512,11 @@ const listContactsTool: McpTool = {
 };
 
 // =============================================================================
-// Tool: thenvoi_add_contact
+// Tool: band_add_contact
 // =============================================================================
 
 const addContactTool: McpTool = {
-  name: "thenvoi_add_contact",
+  name: "band_add_contact",
   description:
     "Send a contact request to add someone as a contact. " +
     "Returns 'pending' when request is created, 'approved' when auto-accepted " +
@@ -549,11 +549,11 @@ const addContactTool: McpTool = {
 };
 
 // =============================================================================
-// Tool: thenvoi_remove_contact
+// Tool: band_remove_contact
 // =============================================================================
 
 const removeContactTool: McpTool = {
-  name: "thenvoi_remove_contact",
+  name: "band_remove_contact",
   description: "Remove an existing contact by handle or ID.",
   inputSchema: {
     type: "object",
@@ -590,11 +590,11 @@ const removeContactTool: McpTool = {
 };
 
 // =============================================================================
-// Tool: thenvoi_list_contact_requests
+// Tool: band_list_contact_requests
 // =============================================================================
 
 const listContactRequestsTool: McpTool = {
-  name: "thenvoi_list_contact_requests",
+  name: "band_list_contact_requests",
   description:
     "List both received and sent contact requests. " +
     "Received requests are always filtered to pending status. " +
@@ -648,11 +648,11 @@ const listContactRequestsTool: McpTool = {
 };
 
 // =============================================================================
-// Tool: thenvoi_respond_contact_request
+// Tool: band_respond_contact_request
 // =============================================================================
 
 const respondContactRequestTool: McpTool = {
-  name: "thenvoi_respond_contact_request",
+  name: "band_respond_contact_request",
   description:
     "Respond to a contact request. " +
     "Actions: 'approve'/'reject' for requests you RECEIVED, " +

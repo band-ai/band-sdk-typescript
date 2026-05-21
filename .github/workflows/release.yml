@@ -69,7 +69,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.BAND_AI_NPM_TOKEN }}
 
-      - name: Publish OpenClaw to npm (@thenvoi)
+      - name: Publish OpenClaw to npm (@band-ai)
         if: steps.release.outputs['packages/openclaw--release_created'] == 'true'
         run: |
           cd packages/openclaw
@@ -77,15 +77,6 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Publish OpenClaw to npm (@band-ai)
-        if: steps.release.outputs['packages/openclaw--release_created'] == 'true'
-        run: |
-          cd packages/openclaw
-          sed -i 's/"@thenvoi\/openclaw-channel-band"/"@band-ai\/openclaw-channel-band"/' package.json
-          sed -i 's/"@thenvoi\/sdk"/"@band-ai\/sdk"/' package.json
-          npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.BAND_AI_NPM_TOKEN }}
 
       - name: Publish release summary
         if: steps.release.outputs['packages/sdk--release_created'] == 'true' || steps.release.outputs['packages/openclaw--release_created'] == 'true'

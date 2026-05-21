@@ -861,12 +861,12 @@ export const thenvoiChannel: OpenClawChannel = {
 
   messaging: {
     targetResolver: {
-      // UUID pattern for Thenvoi room IDs
+      // UUID pattern for Band room IDs
       looksLikeId: (raw: string): boolean => {
         const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
         return uuidPattern.test(raw.trim());
       },
-      hint: "Provide a Thenvoi room_id (UUID format)",
+      hint: "Provide a Band room_id (UUID format)",
     },
   },
 };

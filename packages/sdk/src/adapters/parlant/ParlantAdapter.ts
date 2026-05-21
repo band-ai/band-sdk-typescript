@@ -193,8 +193,8 @@ export class ParlantAdapter
           message: userMessage,
           moderation: "none",
           metadata: {
-            thenvoi_source: "thenvoi-sdk-typescript",
-            thenvoi_room_id: context.roomId,
+            band_source: "thenvoi-sdk-typescript",
+            band_room_id: context.roomId,
           },
         },
         this.requestOptions(),
@@ -286,7 +286,7 @@ export class ParlantAdapter
           customerId,
           title: `Band Room ${roomId.slice(0, 8)}`,
           metadata: {
-            thenvoi_room_id: roomId,
+            band_room_id: roomId,
           },
         },
         this.requestOptions(),
@@ -300,7 +300,7 @@ export class ParlantAdapter
             source: "system",
             message: this.systemPrompt,
             metadata: {
-              thenvoi_system_prompt: true,
+              band_system_prompt: true,
             },
           },
           this.requestOptions(),
@@ -371,7 +371,7 @@ export class ParlantAdapter
       {
         name: customerName,
         metadata: {
-          thenvoi_room_id: roomId,
+          band_room_id: roomId,
         },
       },
       this.requestOptions(),

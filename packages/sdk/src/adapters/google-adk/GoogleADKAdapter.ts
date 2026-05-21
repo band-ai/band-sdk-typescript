@@ -304,7 +304,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
     tools: AdapterToolsProtocol,
   ): unknown {
     return sdk.createAgent({
-      name: this.agentName || "thenvoi_agent",
+      name: this.agentName || "band_agent",
       model: this.model,
       instruction: this.systemPrompt,
       tools: this.buildTools(sdk, tools),

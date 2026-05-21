@@ -668,10 +668,10 @@ function toStatusUpdateEvent(
     final,
     text: message.content,
     metadata: {
-      thenvoi_message_id: message.id,
-      thenvoi_message_type: message.messageType,
-      thenvoi_sender_id: message.senderId,
-      thenvoi_room_id: message.roomId,
+      band_message_id: message.id,
+      band_message_type: message.messageType,
+      band_sender_id: message.senderId,
+      band_room_id: message.roomId,
     },
   });
 }

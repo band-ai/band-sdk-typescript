@@ -7,7 +7,7 @@ import {
   type SessionRoomRecord,
   type SessionRoomStore,
 } from "../src/linear";
-import { LinearThenvoiExampleRestApi } from "../examples/linear-thenvoi/linear-thenvoi-rest-stub";
+import { LinearBandExampleRestApi } from "../examples/linear-band/linear-band-rest-stub";
 
 class MemorySessionRoomStore implements SessionRoomStore {
   private readonly records = new Map<string, SessionRoomRecord>();
@@ -74,7 +74,7 @@ function makeActiveSession(issueId: string): SessionRoomRecord {
 
 function makeDeps(store: SessionRoomStore) {
   return {
-    thenvoiRest: new LinearThenvoiExampleRestApi(),
+    thenvoiRest: new LinearBandExampleRestApi(),
     linearClient: { createAgentActivity: vi.fn(async () => ({ ok: true })) } as never,
     store,
   };
@@ -138,7 +138,7 @@ describe("handleAppUserNotification", () => {
     );
 
     expect(logger.info).toHaveBeenCalledWith(
-      "linear_thenvoi_bridge.notification_unassigned_handled",
+      "linear_band_bridge.notification_unassigned_handled",
       expect.objectContaining({
         issueId: "issue-1",
         sessionId: "session-for-issue-1",
@@ -168,7 +168,7 @@ describe("handleAppUserNotification", () => {
 
     expect(deps.thenvoiRest.roomEvents).toHaveLength(0);
     expect(logger.info).toHaveBeenCalledWith(
-      "linear_thenvoi_bridge.notification_unassigned_no_session",
+      "linear_band_bridge.notification_unassigned_no_session",
       expect.objectContaining({ issueId: "issue-no-session" }),
     );
   });
@@ -201,7 +201,7 @@ describe("handleAppUserNotification", () => {
 
     expect(deps.thenvoiRest.roomEvents).toHaveLength(0);
     expect(logger.info).toHaveBeenCalledWith(
-      "linear_thenvoi_bridge.notification_unassigned_no_session",
+      "linear_band_bridge.notification_unassigned_no_session",
       expect.objectContaining({
         issueId: "issue-completed",
         reason: "session_status_completed",
@@ -448,7 +448,7 @@ describe("handleAppUserNotification", () => {
 
     expect(deps.thenvoiRest.roomEvents).toHaveLength(0);
     expect(logger.info).toHaveBeenCalledWith(
-      "linear_thenvoi_bridge.notification_comment_skipped",
+      "linear_band_bridge.notification_comment_skipped",
       expect.objectContaining({
         issueId: "issue-3",
         reason: "session_status_completed",
@@ -481,7 +481,7 @@ describe("handleAppUserNotification", () => {
 
     expect(deps.thenvoiRest.roomEvents).toHaveLength(0);
     expect(logger.info).toHaveBeenCalledWith(
-      "linear_thenvoi_bridge.notification_reaction",
+      "linear_band_bridge.notification_reaction",
       expect.objectContaining({
         notificationType: "IssueCommentReactionNotificationWebhookPayload",
         reactionEmoji: "\u{1F44D}",
@@ -514,7 +514,7 @@ describe("handleAppUserNotification", () => {
 
     expect(deps.thenvoiRest.roomEvents).toHaveLength(0);
     expect(logger.info).toHaveBeenCalledWith(
-      "linear_thenvoi_bridge.notification_reaction",
+      "linear_band_bridge.notification_reaction",
       expect.objectContaining({
         notificationType: "IssueEmojiReactionNotificationWebhookPayload",
         reactionEmoji: "\u{1F389}",
@@ -552,7 +552,7 @@ describe("handleAppUserNotification", () => {
 
     expect(deps.thenvoiRest.roomEvents).toHaveLength(0);
     expect(logger.info).toHaveBeenCalledWith(
-      "linear_thenvoi_bridge.notification_comment_self_skipped",
+      "linear_band_bridge.notification_comment_self_skipped",
       expect.objectContaining({
         issueId: "issue-self",
         commentId: "comment-self",
@@ -616,7 +616,7 @@ describe("handleAppUserNotification", () => {
 
     expect(deps.thenvoiRest.roomEvents).toHaveLength(0);
     expect(logger.info).toHaveBeenCalledWith(
-      "linear_thenvoi_bridge.notification_unhandled",
+      "linear_band_bridge.notification_unhandled",
       expect.objectContaining({
         notificationType: "OtherNotificationWebhookPayload",
       }),

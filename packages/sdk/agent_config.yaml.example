@@ -54,7 +54,7 @@ custom_adapter_agent:
   agent_id: "your-custom-adapter-agent-id"
   api_key: "your-api-key"
 
-linear_thenvoi_bridge:
+linear_band_bridge:
   agent_id: "your-band-linear-pm-agent-id"
   api_key: "your-api-key"
 
@@ -66,6 +66,6 @@ reviewer_agent:
   agent_id: "your-reviewer-agent-id"
   api_key: "your-api-key"
 
-linear_thenvoi_transport:
+linear_band_transport:
   agent_id: "your-linear-transport-agent-id"
   api_key: "your-api-key"

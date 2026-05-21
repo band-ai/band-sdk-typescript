@@ -45,7 +45,7 @@ export class LinearBandExampleRestApi implements RestApi {
     agentHandle?: string;
   }) {
     const agentHandle = options?.agentHandle ?? "linear-host";
-    const agentId = options?.agentId ?? "agent-linear-thenvoi";
+    const agentId = options?.agentId ?? "agent-linear-band";
     const agentName = options?.agentName ?? "Linear Band Host";
 
     this.peers = options?.peers ?? [

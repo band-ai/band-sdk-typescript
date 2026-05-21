@@ -81,8 +81,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "clean": "rm -rf dist",
-    "dev:linear": "tsx examples/linear-thenvoi/linear-thenvoi-bridge-server.ts",
-    "start:linear": "tsx examples/linear-thenvoi/linear-thenvoi-bridge-server.ts"
+    "dev:linear": "tsx examples/linear-band/linear-band-bridge-server.ts",
+    "start:linear": "tsx examples/linear-band/linear-band-bridge-server.ts"
   },
   "engines": {
     "node": ">=22.12"

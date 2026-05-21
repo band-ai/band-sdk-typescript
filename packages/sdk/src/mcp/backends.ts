@@ -43,8 +43,8 @@ export async function createThenvoiMcpBackend(
 
   // SDK builds its own registrations and allowedTools internally — delegate entirely.
   if (options.kind === "sdk") {
-    const { createThenvoiSdkMcpServer } = await import("./sdk");
-    const server = createThenvoiSdkMcpServer({
+    const { createBandSdkMcpServer } = await import("./sdk");
+    const server = createBandSdkMcpServer({
       getToolsForRoom: options.getToolsForRoom,
       multiRoom: options.multiRoom,
       enableMemoryTools: options.enableMemoryTools,

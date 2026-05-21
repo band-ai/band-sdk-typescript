@@ -20,7 +20,7 @@ class GeminiTestTools extends FakeTools {
       {
         type: "function",
         function: {
-          name: "thenvoi_lookup_peers",
+          name: "band_lookup_peers",
           description: "Lookup peers",
           parameters: {
             type: "object",
@@ -57,7 +57,7 @@ describe("GeminiAdapter", () => {
         functionCalls: [
           {
             id: "gcall_1",
-            name: "thenvoi_lookup_peers",
+            name: "band_lookup_peers",
             args: { page: 1 },
           },
         ],
@@ -115,7 +115,7 @@ describe("GeminiAdapter", () => {
 
     expect(tools.executed).toEqual([
       {
-        name: "thenvoi_lookup_peers",
+        name: "band_lookup_peers",
         input: { page: 1 },
       },
     ]);
@@ -129,7 +129,7 @@ describe("GeminiAdapter", () => {
           {
             functionDeclarations: [
               {
-                name: "thenvoi_lookup_peers",
+                name: "band_lookup_peers",
               },
             ],
           },

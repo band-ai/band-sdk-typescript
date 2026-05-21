@@ -74,7 +74,7 @@ export function buildParticipantsMessage(participants: Array<Record<string, unkn
 
   lines.push("");
   lines.push(
-    "IMPORTANT: In thenvoi_send_message mentions, always use the exact handle shown above (e.g. '@john' for users, '@john/weather-agent' for agents), NOT the display name. Handles are lowercase with no spaces.",
+    "IMPORTANT: In band_send_message mentions, always use the exact handle shown above (e.g. '@john' for users, '@john/weather-agent' for agents), NOT the display name. Handles are lowercase with no spaces.",
   );
 
   return lines.join("\n");

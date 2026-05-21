@@ -38,7 +38,7 @@ describe("renderSystemPrompt", () => {
     });
 
     expect(result).toContain("You are Bot, helper.");
-    expect(result).not.toContain("thenvoi_send_message");
+    expect(result).not.toContain("band_send_message");
   });
 
   it("falls back to default template for unknown template name", () => {

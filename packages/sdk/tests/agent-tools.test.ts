@@ -239,7 +239,7 @@ describe("AgentTools", () => {
 
     const schemas = tools.getToolSchemas("openai");
     const hasLookup = schemas.some(
-      (entry) => (entry.function as { name?: string } | undefined)?.name === "thenvoi_lookup_peers",
+      (entry) => (entry.function as { name?: string } | undefined)?.name === "band_lookup_peers",
     );
     expect(hasLookup).toBe(false);
   });
@@ -259,7 +259,7 @@ describe("AgentTools", () => {
       rest: new RestFacade({ api: new FakeRestApi() }),
     });
 
-    const result = await tools.executeToolCall("thenvoi_send_message", {
+    const result = await tools.executeToolCall("band_send_message", {
       content: "hello",
       mentions: [],
     });
@@ -267,9 +267,9 @@ describe("AgentTools", () => {
     expect(result).toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
-      toolName: "thenvoi_send_message",
+      toolName: "band_send_message",
     });
-    expect(toLegacyToolExecutorErrorMessage(result)).toContain("Invalid arguments for thenvoi_send_message");
+    expect(toLegacyToolExecutorErrorMessage(result)).toContain("Invalid arguments for band_send_message");
     expect(toLegacyToolExecutorErrorMessage(result)).toContain("mentions: At least one mention is required");
   });
 
@@ -279,16 +279,16 @@ describe("AgentTools", () => {
       rest: new RestFacade({ api: new FakeRestApi() }),
     });
 
-    const result = await tools.executeToolCall("thenvoi_send_message", {
+    const result = await tools.executeToolCall("band_send_message", {
       mentions: ["@jane"],
     });
     expect(isToolExecutorError(result)).toBe(true);
     expect(result).toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
-      toolName: "thenvoi_send_message",
+      toolName: "band_send_message",
     });
-    expect(toLegacyToolExecutorErrorMessage(result)).toContain("Invalid arguments for thenvoi_send_message");
+    expect(toLegacyToolExecutorErrorMessage(result)).toContain("Invalid arguments for band_send_message");
     expect(toLegacyToolExecutorErrorMessage(result)).toContain("content: Field required");
   });
 
@@ -298,7 +298,7 @@ describe("AgentTools", () => {
       rest: new RestFacade({ api: new FakeRestApi() }),
     });
 
-    const result = await tools.executeToolCall("thenvoi_send_event", {
+    const result = await tools.executeToolCall("band_send_event", {
       content: "hello",
       message_type: "invalid_type",
     });
@@ -306,9 +306,9 @@ describe("AgentTools", () => {
     expect(result).toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
-      toolName: "thenvoi_send_event",
+      toolName: "band_send_event",
     });
-    expect(toLegacyToolExecutorErrorMessage(result)).toContain("Invalid arguments for thenvoi_send_event");
+    expect(toLegacyToolExecutorErrorMessage(result)).toContain("Invalid arguments for band_send_event");
     expect(toLegacyToolExecutorErrorMessage(result)).toContain("message_type: Invalid value");
   });
 
@@ -319,7 +319,7 @@ describe("AgentTools", () => {
       participants: [],
     });
 
-    const result = await tools.executeToolCall("thenvoi_send_message", {
+    const result = await tools.executeToolCall("band_send_message", {
       content: "hello",
       mentions: ["@nonexistent"],
     });
@@ -327,9 +327,9 @@ describe("AgentTools", () => {
     expect(result).toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
-      toolName: "thenvoi_send_message",
+      toolName: "band_send_message",
     });
-    expect(toLegacyToolExecutorErrorMessage(result)).toContain("Invalid arguments for thenvoi_send_message");
+    expect(toLegacyToolExecutorErrorMessage(result)).toContain("Invalid arguments for band_send_message");
   });
 
   it("returns error string for unknown tools", async () => {
@@ -480,7 +480,7 @@ describe("AgentTools", () => {
     });
 
     await expect(
-      tools.executeToolCall("thenvoi_send_message", {
+      tools.executeToolCall("band_send_message", {
         content: "hello",
         mentions: [
           { id: "u1", handle: "@jane", name: "Jane", username: "jane" },
@@ -490,7 +490,7 @@ describe("AgentTools", () => {
       }),
     ).resolves.toEqual({ ok: true });
     await expect(
-      tools.executeToolCall("thenvoi_create_chatroom", {
+      tools.executeToolCall("band_create_chatroom", {
         task_id: "  task-123  ",
       }),
     ).resolves.toBe("r2");
@@ -516,12 +516,12 @@ describe("AgentTools", () => {
     const schemas = tools.getToolSchemas("anthropic", { includeMemory: true });
 
     await expect(
-      tools.executeToolCall("thenvoi_remove_contact", {
+      tools.executeToolCall("band_remove_contact", {
         handle: "  @jane  ",
       }),
     ).resolves.toEqual({ status: "removed" });
     await expect(
-      tools.executeToolCall("thenvoi_respond_contact_request", {
+      tools.executeToolCall("band_respond_contact_request", {
         action: "cancel",
         handle: "  weather  ",
       }),
@@ -530,7 +530,7 @@ describe("AgentTools", () => {
       status: "cancelled",
     });
     await expect(
-      tools.executeToolCall("thenvoi_list_memories", {
+      tools.executeToolCall("band_list_memories", {
         page_size: "7",
         scope: "all",
         system: "working",
@@ -543,7 +543,7 @@ describe("AgentTools", () => {
       metadata: { pageSize: 7 },
     });
     await expect(
-      tools.executeToolCall("thenvoi_store_memory", {
+      tools.executeToolCall("band_store_memory", {
         content: "remember",
         thought: "because",
         system: "working",
@@ -557,7 +557,7 @@ describe("AgentTools", () => {
       scope: "organization",
     });
 
-    expect(schemas.some((entry) => entry.name === "thenvoi_store_memory")).toBe(true);
+    expect(schemas.some((entry) => entry.name === "band_store_memory")).toBe(true);
     expect(api.removedContacts).toContainEqual({ target: "handle", handle: "@jane" });
     expect(api.contactRequestResponses).toContainEqual({
       action: "cancel",
@@ -592,26 +592,26 @@ describe("AgentTools", () => {
     });
 
     await expect(
-      tools.executeToolCall("thenvoi_respond_contact_request", {
+      tools.executeToolCall("band_respond_contact_request", {
         action: "wave",
         request_id: "req-1",
       }),
     ).resolves.toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
-      toolName: "thenvoi_respond_contact_request",
+      toolName: "band_respond_contact_request",
     });
     await expect(
-      tools.executeToolCall("thenvoi_list_memories", {
+      tools.executeToolCall("band_list_memories", {
         status: "bad-status",
       }),
     ).resolves.toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
-      toolName: "thenvoi_list_memories",
+      toolName: "band_list_memories",
     });
     await expect(
-      tools.executeToolCall("thenvoi_store_memory", {
+      tools.executeToolCall("band_store_memory", {
         content: "remember",
         thought: "because",
         system: "working",
@@ -622,7 +622,7 @@ describe("AgentTools", () => {
     ).resolves.toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
-      toolName: "thenvoi_store_memory",
+      toolName: "band_store_memory",
     });
   });
 });

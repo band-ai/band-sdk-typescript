@@ -4,7 +4,7 @@
   "name": "Band",
   "version": "0.1.5",
   "description": "Connect OpenClaw to the Band AI agent collaboration platform",
-  "author": "Thenvoi",
+  "author": "band.ai",
   "license": "MIT",
   "repository": "https://github.com/thenvoi/thenvoi-sdk-typescript",
   "entry": "dist/index.js",
@@ -27,18 +27,18 @@
 
   "contracts": {
     "tools": [
-      "thenvoi_lookup_peers",
-      "thenvoi_add_participant",
-      "thenvoi_remove_participant",
-      "thenvoi_get_participants",
-      "thenvoi_create_chatroom",
-      "thenvoi_send_event",
-      "thenvoi_send_message",
-      "thenvoi_list_contacts",
-      "thenvoi_add_contact",
-      "thenvoi_remove_contact",
-      "thenvoi_list_contact_requests",
-      "thenvoi_respond_contact_request"
+      "band_lookup_peers",
+      "band_add_participant",
+      "band_remove_participant",
+      "band_get_participants",
+      "band_create_chatroom",
+      "band_send_event",
+      "band_send_message",
+      "band_list_contacts",
+      "band_add_contact",
+      "band_remove_contact",
+      "band_list_contact_requests",
+      "band_respond_contact_request"
     ]
   },
 
@@ -49,18 +49,18 @@
     },
     "mcp": {
       "tools": [
-        "thenvoi_lookup_peers",
-        "thenvoi_add_participant",
-        "thenvoi_remove_participant",
-        "thenvoi_get_participants",
-        "thenvoi_create_chatroom",
-        "thenvoi_send_event",
-        "thenvoi_send_message",
-        "thenvoi_list_contacts",
-        "thenvoi_add_contact",
-        "thenvoi_remove_contact",
-        "thenvoi_list_contact_requests",
-        "thenvoi_respond_contact_request"
+        "band_lookup_peers",
+        "band_add_participant",
+        "band_remove_participant",
+        "band_get_participants",
+        "band_create_chatroom",
+        "band_send_event",
+        "band_send_message",
+        "band_list_contacts",
+        "band_add_contact",
+        "band_remove_contact",
+        "band_list_contact_requests",
+        "band_respond_contact_request"
       ]
     }
   },
@@ -97,7 +97,7 @@
             },
             "stateDir": {
               "type": "string",
-              "description": "Directory for persisted state files. Defaults to ~/.openclaw/state/thenvoi/{agentId}/. Override when home directory is not writable."
+              "description": "Directory for persisted state files. Defaults to ~/.openclaw/state/band/{agentId}/. Override when home directory is not writable."
             }
           },
           "required": []
@@ -123,21 +123,21 @@
   },
 
   "environment": {
-    "THENVOI_API_KEY": {
+    "BAND_API_KEY": {
       "description": "API key for Band platform authentication",
       "required": true,
       "sensitive": true
     },
-    "THENVOI_AGENT_ID": {
+    "BAND_AGENT_ID": {
       "description": "Agent identifier on Band platform",
       "required": true
     },
-    "THENVOI_WS_URL": {
-      "description": "Thenvoi WebSocket endpoint",
+    "BAND_WS_URL": {
+      "description": "Band WebSocket endpoint",
       "required": false,
       "default": "wss://app.band.ai/api/v1/socket"
     },
-    "THENVOI_REST_URL": {
+    "BAND_REST_URL": {
       "description": "Band REST API endpoint",
       "required": false,
       "default": "https://app.band.ai"

@@ -35,7 +35,7 @@ describe("createThenvoiMcpBackend", () => {
     backends.push(backend);
 
     expect(backend.kind).toBe("sdk");
-    expect(backend.allowedTools).toContain("mcp__thenvoi__thenvoi_send_message");
+    expect(backend.allowedTools).toContain("mcp__band__band_send_message");
 
     const context = await (backend.server as { getSystemPromptContext: (roomId: string) => Promise<string> }).getSystemPromptContext("room-1");
     expect(context).toContain("Room");
@@ -59,20 +59,20 @@ describe("createThenvoiMcpBackend", () => {
     backends.push(backend);
 
     expect(backend.kind).toBe("sdk");
-    expect(backend.allowedTools).toContain("mcp__thenvoi__thenvoi_send_message");
+    expect(backend.allowedTools).toContain("mcp__band__band_send_message");
 
     const toolDefinitions = (backend.server as { toolDefinitions: Array<{ name: string; handler: (args: Record<string, unknown>, ctx: Record<string, unknown>) => Promise<{ isError?: true }> }> }).toolDefinitions;
-    const sendMessage = toolDefinitions.find((tool) => tool.name === "thenvoi_send_message");
+    const sendMessage = toolDefinitions.find((tool) => tool.name === "band_send_message");
     expect(sendMessage).toBeDefined();
     if (!sendMessage) {
-      throw new Error("thenvoi_send_message tool definition missing");
+      throw new Error("band_send_message tool definition missing");
     }
 
     const result = await sendMessage.handler({ content: "hello" }, {});
     expect(result.isError).toBeUndefined();
     expect(calls).toEqual([
       {
-        name: "thenvoi_send_message",
+        name: "band_send_message",
         args: { content: "hello" },
       },
     ]);
@@ -87,7 +87,7 @@ describe("createThenvoiMcpBackend", () => {
     backends.push(backend);
 
     expect(backend.kind).toBe("http");
-    expect(backend.allowedTools).toContain("mcp__thenvoi__thenvoi_send_message");
+    expect(backend.allowedTools).toContain("mcp__band__band_send_message");
     expect(backend.server).toHaveProperty("url");
   });
 
@@ -100,7 +100,7 @@ describe("createThenvoiMcpBackend", () => {
     backends.push(backend);
 
     expect(backend.kind).toBe("sse");
-    expect(backend.allowedTools).toContain("mcp__thenvoi__thenvoi_send_message");
+    expect(backend.allowedTools).toContain("mcp__band__band_send_message");
     expect(backend.server).toHaveProperty("sseUrl");
   });
 });

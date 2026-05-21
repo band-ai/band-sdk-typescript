@@ -1,7 +1,7 @@
 import { CHAT_EVENT_TYPES } from "../../contracts/chatEvents";
 
 export const TOOL_MODELS = {
-  thenvoi_send_message: {
+  band_send_message: {
     description:
       "Send a message to the chat room. " +
       "Use this to respond to users or other agents. Messages require at least one @mention " +
@@ -25,7 +25,7 @@ export const TOOL_MODELS = {
     },
     required: ["content", "mentions"],
   },
-  thenvoi_send_event: {
+  band_send_event: {
     description:
       "Send an event to the chat room. No mentions required. " +
       "'thought': Share your reasoning or plan BEFORE taking actions. Explain what you're about to do and why. " +
@@ -49,17 +49,17 @@ export const TOOL_MODELS = {
     },
     required: ["content", "message_type"],
   },
-  thenvoi_add_participant: {
+  band_add_participant: {
     description:
       "Add a participant (agent or user) to the chat room by name. " +
-      "IMPORTANT: Use thenvoi_lookup_peers() first to find available agents. " +
-      "Pass the exact peer name from thenvoi_lookup_peers, not the handle. " +
+      "IMPORTANT: Use band_lookup_peers() first to find available agents. " +
+      "Pass the exact peer name from band_lookup_peers, not the handle. " +
       "For normal delegation, omit role or use 'member'.",
     properties: {
       name: {
         type: "string",
         description:
-          "Name of participant to add (must match a name from thenvoi_lookup_peers).",
+          "Name of participant to add (must match a name from band_lookup_peers).",
       },
       role: {
         type: "string",
@@ -69,7 +69,7 @@ export const TOOL_MODELS = {
     },
     required: ["name"],
   },
-  thenvoi_remove_participant: {
+  band_remove_participant: {
     description: "Remove a participant from the chat room by name.",
     properties: {
       name: {
@@ -79,12 +79,12 @@ export const TOOL_MODELS = {
     },
     required: ["name"],
   },
-  thenvoi_get_participants: {
+  band_get_participants: {
     description: "Get a list of all participants in the current chat room.",
     properties: {},
     required: [],
   },
-  thenvoi_lookup_peers: {
+  band_lookup_peers: {
     description:
       "List available peers (agents and users) that can be added to this room. " +
       "Automatically excludes peers already in the room. " +
@@ -103,7 +103,7 @@ export const TOOL_MODELS = {
     },
     required: [],
   },
-  thenvoi_create_chatroom: {
+  band_create_chatroom: {
     description:
       "Create a new chat room for a specific task or conversation.",
     properties: {
@@ -114,7 +114,7 @@ export const TOOL_MODELS = {
     },
     required: [],
   },
-  thenvoi_list_contacts: {
+  band_list_contacts: {
     description: "List agent's contacts with pagination.",
     properties: {
       page: {
@@ -131,7 +131,7 @@ export const TOOL_MODELS = {
     },
     required: [],
   },
-  thenvoi_add_contact: {
+  band_add_contact: {
     description:
       "Send a contact request to add someone as a contact. " +
       "Returns 'pending' when request is created. " +
@@ -149,7 +149,7 @@ export const TOOL_MODELS = {
     },
     required: ["handle"],
   },
-  thenvoi_remove_contact: {
+  band_remove_contact: {
     description: "Remove an existing contact by handle or ID.",
     properties: {
       handle: {
@@ -163,7 +163,7 @@ export const TOOL_MODELS = {
     },
     required: [],
   },
-  thenvoi_list_contact_requests: {
+  band_list_contact_requests: {
     description:
       "List both received and sent contact requests. " +
       "Received requests are always filtered to pending status. " +
@@ -188,7 +188,7 @@ export const TOOL_MODELS = {
     },
     required: [],
   },
-  thenvoi_respond_contact_request: {
+  band_respond_contact_request: {
     description:
       "Respond to a contact request. " +
       "'approve'/'reject': For requests you RECEIVED (handle = requester's handle). " +
@@ -210,7 +210,7 @@ export const TOOL_MODELS = {
     },
     required: ["action"],
   },
-  thenvoi_list_memories: {
+  band_list_memories: {
     description:
       "List memories accessible to the agent. " +
       "Returns memories about the specified subject (cross-agent sharing) " +
@@ -266,7 +266,7 @@ export const TOOL_MODELS = {
     },
     required: [],
   },
-  thenvoi_store_memory: {
+  band_store_memory: {
     description:
       "Store a new memory entry. The memory will be associated with the authenticated agent " +
       "as the source. For subject-scoped memories, provide a subject_id. " +
@@ -319,7 +319,7 @@ export const TOOL_MODELS = {
     },
     required: ["content", "system", "type", "segment", "thought"],
   },
-  thenvoi_get_memory: {
+  band_get_memory: {
     description: "Retrieve a specific memory by ID.",
     properties: {
       memory_id: {
@@ -329,7 +329,7 @@ export const TOOL_MODELS = {
     },
     required: ["memory_id"],
   },
-  thenvoi_supersede_memory: {
+  band_supersede_memory: {
     description:
       "Mark a memory as superseded (soft delete). " +
       "Use when information is outdated or incorrect. " +
@@ -343,7 +343,7 @@ export const TOOL_MODELS = {
     },
     required: ["memory_id"],
   },
-  thenvoi_archive_memory: {
+  band_archive_memory: {
     description:
       "Archive a memory (hide but preserve). " +
       "Use when memory is valid but not currently needed. " +
@@ -362,19 +362,19 @@ export const TOOL_MODELS = {
 export const ALL_TOOL_NAMES = new Set(Object.keys(TOOL_MODELS));
 
 export const MEMORY_TOOL_NAMES = new Set<string>([
-  "thenvoi_list_memories",
-  "thenvoi_store_memory",
-  "thenvoi_get_memory",
-  "thenvoi_supersede_memory",
-  "thenvoi_archive_memory",
+  "band_list_memories",
+  "band_store_memory",
+  "band_get_memory",
+  "band_supersede_memory",
+  "band_archive_memory",
 ]);
 
 export const CONTACT_TOOL_NAMES = new Set<string>([
-  "thenvoi_list_contacts",
-  "thenvoi_add_contact",
-  "thenvoi_remove_contact",
-  "thenvoi_list_contact_requests",
-  "thenvoi_respond_contact_request",
+  "band_list_contacts",
+  "band_add_contact",
+  "band_remove_contact",
+  "band_list_contact_requests",
+  "band_respond_contact_request",
 ]);
 
 export const BASE_TOOL_NAMES = new Set<string>(
@@ -385,7 +385,7 @@ export const CHAT_TOOL_NAMES = new Set<string>(
   [...BASE_TOOL_NAMES].filter((name) => !CONTACT_TOOL_NAMES.has(name)),
 );
 
-export const MCP_TOOL_PREFIX = "mcp__thenvoi__";
+export const MCP_TOOL_PREFIX = "mcp__band__";
 
 export function mcpToolNames(names: Set<string>): string[] {
   return [...names].sort((a, b) => a.localeCompare(b)).map((name) => `${MCP_TOOL_PREFIX}${name}`);

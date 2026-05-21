@@ -8,7 +8,7 @@ import {
   type SessionRoomRecord,
   type SessionRoomStore,
 } from "../src/linear";
-import { LinearBandExampleRestApi } from "../examples/linear-thenvoi/linear-thenvoi-rest-stub";
+import { LinearBandExampleRestApi } from "../examples/linear-band/linear-band-rest-stub";
 
 class MemorySessionRoomStore implements SessionRoomStore {
   private readonly records = new Map<string, SessionRoomRecord>();

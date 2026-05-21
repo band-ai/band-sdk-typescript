@@ -13,7 +13,7 @@ import {
   type SessionRoomRecord,
   type SessionRoomStore,
 } from "../src/linear";
-import { LinearBandExampleRestApi } from "../examples/linear-thenvoi/linear-thenvoi-rest-stub";
+import { LinearBandExampleRestApi } from "../examples/linear-band/linear-band-rest-stub";
 
 class MemorySessionRoomStore implements SessionRoomStore {
   private readonly records = new Map<string, SessionRoomRecord>();
@@ -630,7 +630,7 @@ describe("createLinearWebhookHandler", () => {
       }),
     );
     expect(logger.warn).toHaveBeenCalledWith(
-      "linear_thenvoi_bridge.async_dispatch_terminal_failure_signaled",
+      "linear_band_bridge.async_dispatch_terminal_failure_signaled",
       expect.objectContaining({
         eventKey: "session-1:created:terminal-failure",
         signal: "linear_activity_error",

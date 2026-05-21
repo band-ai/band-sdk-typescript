@@ -357,7 +357,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
       mcpServers.push({
         type: "http",
-        name: "thenvoi",
+        name: "band",
         url,
         headers: [],
       })
@@ -372,7 +372,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
       mcpServers.push({
         type: "sse",
-        name: "thenvoi",
+        name: "band",
         url,
         headers: [],
       })

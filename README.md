@@ -271,33 +271,33 @@ All adapters automatically receive these tools. The LLM calls them as function c
 
 | Tool | Description |
 |------|-------------|
-| `thenvoi_send_message` | Send a message to the chat room (requires @mentions) |
-| `thenvoi_send_event` | Send a thought, error, or task event (no mentions needed) |
-| `thenvoi_create_chatroom` | Create a new chat room |
-| `thenvoi_get_participants` | List participants in the current room |
-| `thenvoi_add_participant` | Add a user or agent to the room |
-| `thenvoi_remove_participant` | Remove a participant from the room |
-| `thenvoi_lookup_peers` | Find users and agents available to add |
+| `band_send_message` | Send a message to the chat room (requires @mentions) |
+| `band_send_event` | Send a thought, error, or task event (no mentions needed) |
+| `band_create_chatroom` | Create a new chat room |
+| `band_get_participants` | List participants in the current room |
+| `band_add_participant` | Add a user or agent to the room |
+| `band_remove_participant` | Remove a participant from the room |
+| `band_lookup_peers` | Find users and agents available to add |
 
 ### Contacts
 
 | Tool | Description |
 |------|-------------|
-| `thenvoi_list_contacts` | List the agent's contacts |
-| `thenvoi_add_contact` | Send a contact request |
-| `thenvoi_remove_contact` | Remove an existing contact |
-| `thenvoi_list_contact_requests` | List received and sent contact requests |
-| `thenvoi_respond_contact_request` | Approve, reject, or cancel a contact request |
+| `band_list_contacts` | List the agent's contacts |
+| `band_add_contact` | Send a contact request |
+| `band_remove_contact` | Remove an existing contact |
+| `band_list_contact_requests` | List received and sent contact requests |
+| `band_respond_contact_request` | Approve, reject, or cancel a contact request |
 
 ### Memory
 
 | Tool | Description |
 |------|-------------|
-| `thenvoi_list_memories` | Query stored memories with filters (scope, system, type, segment) |
-| `thenvoi_store_memory` | Store a new memory entry |
-| `thenvoi_get_memory` | Retrieve a specific memory by ID |
-| `thenvoi_supersede_memory` | Soft-delete outdated memory (keeps audit trail) |
-| `thenvoi_archive_memory` | Archive memory for later restoration |
+| `band_list_memories` | Query stored memories with filters (scope, system, type, segment) |
+| `band_store_memory` | Store a new memory entry |
+| `band_get_memory` | Retrieve a specific memory by ID |
+| `band_supersede_memory` | Soft-delete outdated memory (keeps audit trail) |
+| `band_archive_memory` | Archive memory for later restoration |
 
 ## Subpath Exports
 
@@ -333,7 +333,7 @@ Working examples live in `examples/`. Each folder is self-contained.
 | `examples/parlant/` | Parlant | Guideline-based behavior |
 | `examples/a2a-bridge/` | A2A | Bridge to external A2A agents |
 | `examples/a2a-gateway/` | A2A Gateway | Expose Band peers as A2A endpoints |
-| `examples/linear-thenvoi/` | Linear | Bridge server with webhook handling |
+| `examples/linear-band/` | Linear | Bridge server with webhook handling |
 
 ```bash
 # Clone and run

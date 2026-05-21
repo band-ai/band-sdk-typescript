@@ -267,48 +267,48 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
 
   public async executeToolCall(toolName: string, toolArgs: MetadataMap): Promise<unknown> {
     switch (toolName) {
-      case "thenvoi_send_message":
+      case "band_send_message":
         return this.sendMessage(
           String(toolArgs.content ?? ""),
           toolArgs.mentions as MentionInput | undefined,
         );
-      case "thenvoi_send_event":
+      case "band_send_event":
         return this.sendEvent(
           String(toolArgs.content ?? ""),
           String(toolArgs.message_type ?? "task"),
           toolArgs.metadata as MetadataMap | undefined,
         );
-      case "thenvoi_get_participants":
+      case "band_get_participants":
         return this.getParticipants();
-      case "thenvoi_create_chatroom":
+      case "band_create_chatroom":
         return this.createChatroom(typeof toolArgs.task_id === "string" ? toolArgs.task_id : undefined);
-      case "thenvoi_lookup_peers":
+      case "band_lookup_peers":
         return this.lookupPeers(
           typeof toolArgs.page === "number" ? toolArgs.page : undefined,
           typeof toolArgs.page_size === "number" ? toolArgs.page_size : undefined,
         );
-      case "thenvoi_list_contacts":
+      case "band_list_contacts":
         return this.listContacts({
           page: typeof toolArgs.page === "number" ? toolArgs.page : undefined,
           pageSize: typeof toolArgs.page_size === "number" ? toolArgs.page_size : undefined,
         });
-      case "thenvoi_add_contact":
+      case "band_add_contact":
         return this.addContact({
           handle: String(toolArgs.handle ?? ""),
           ...(typeof toolArgs.message === "string" ? { message: toolArgs.message } : {}),
         });
-      case "thenvoi_remove_contact":
+      case "band_remove_contact":
         if (typeof toolArgs.contact_id === "string") {
           return this.removeContact({ target: "contactId", contactId: toolArgs.contact_id });
         }
         return this.removeContact({ target: "handle", handle: String(toolArgs.handle ?? "") });
-      case "thenvoi_list_contact_requests":
+      case "band_list_contact_requests":
         return this.listContactRequests({
           page: typeof toolArgs.page === "number" ? toolArgs.page : undefined,
           pageSize: typeof toolArgs.page_size === "number" ? toolArgs.page_size : undefined,
           sentStatus: typeof toolArgs.sent_status === "string" ? toolArgs.sent_status : undefined,
         });
-      case "thenvoi_respond_contact_request":
+      case "band_respond_contact_request":
         if (typeof toolArgs.request_id === "string") {
           return this.respondContactRequest({
             action: String(toolArgs.action ?? "approve") as RespondContactRequestArgs["action"],
@@ -321,15 +321,15 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
           target: "handle",
           handle: String(toolArgs.handle ?? ""),
         });
-      case "thenvoi_list_memories":
+      case "band_list_memories":
         return this.listMemories(toolArgs as ListMemoriesArgs);
-      case "thenvoi_store_memory":
+      case "band_store_memory":
         return this.storeMemory(toolArgs as unknown as StoreMemoryArgs);
-      case "thenvoi_get_memory":
+      case "band_get_memory":
         return this.getMemory(String(toolArgs.memory_id ?? ""));
-      case "thenvoi_supersede_memory":
+      case "band_supersede_memory":
         return this.supersedeMemory(String(toolArgs.memory_id ?? ""));
-      case "thenvoi_archive_memory":
+      case "band_archive_memory":
         return this.archiveMemory(String(toolArgs.memory_id ?? ""));
       default:
         throw new UnsupportedFeatureError(`Unsupported tool call for contact callback: ${toolName}`);

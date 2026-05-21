@@ -376,7 +376,7 @@ export class AgentTools implements AgentToolsProtocol {
           return false;
         }
 
-        if (name === "thenvoi_lookup_peers" && !this.capabilities.peers) {
+        if (name === "band_lookup_peers" && !this.capabilities.peers) {
           return false;
         }
 
@@ -739,68 +739,68 @@ export class AgentTools implements AgentToolsProtocol {
 
   private buildMessagingToolHandlers(): Record<string, ToolHandler> {
     return {
-      thenvoi_send_message: async (arguments_) =>
+      band_send_message: async (arguments_) =>
         this.sendMessage(
           String(arguments_.content ?? ""),
           this.normalizeMentionInput(arguments_.mentions),
         ),
-      thenvoi_send_event: async (arguments_) =>
+      band_send_event: async (arguments_) =>
         this.sendEvent(
           String(arguments_.content ?? ""),
           String(arguments_.message_type ?? "task"),
           this.normalizeOptionalMetadata(arguments_.metadata),
         ),
-      thenvoi_add_participant: async (arguments_) =>
+      band_add_participant: async (arguments_) =>
         this.addParticipant(String(arguments_.name ?? ""), String(arguments_.role ?? "member")),
-      thenvoi_remove_participant: async (arguments_) =>
+      band_remove_participant: async (arguments_) =>
         this.removeParticipant(String(arguments_.name ?? "")),
-      thenvoi_lookup_peers: async (arguments_) =>
+      band_lookup_peers: async (arguments_) =>
         this.lookupPeers(
           coercePositiveInt(arguments_.page, 1),
           coercePositiveInt(arguments_.page_size, 50),
         ),
-      thenvoi_get_participants: async () => this.getParticipants(),
-      thenvoi_create_chatroom: async (arguments_) =>
+      band_get_participants: async () => this.getParticipants(),
+      band_create_chatroom: async (arguments_) =>
         this.createChatroom(this.normalizeOptionalString(arguments_.task_id)),
     };
   }
 
   private buildContactToolHandlers(): Record<string, ToolHandler> {
     return {
-      thenvoi_list_contacts: async (arguments_) =>
+      band_list_contacts: async (arguments_) =>
         this.listContacts({
           page: coercePositiveInt(arguments_.page, 1),
           pageSize: coercePositiveInt(arguments_.page_size, 50),
         }),
-      thenvoi_add_contact: async (arguments_) =>
+      band_add_contact: async (arguments_) =>
         this.addContact({
           handle: String(arguments_.handle ?? ""),
           ...(typeof arguments_.message === "string" ? { message: arguments_.message } : {}),
         }),
-      thenvoi_remove_contact: async (arguments_) =>
+      band_remove_contact: async (arguments_) =>
         this.removeContact(this.toRemoveContactArgs(arguments_)),
-      thenvoi_list_contact_requests: async (arguments_) =>
+      band_list_contact_requests: async (arguments_) =>
         this.listContactRequests({
           page: coercePositiveInt(arguments_.page, 1),
           pageSize: coercePositiveInt(arguments_.page_size, 50),
           sentStatus: String(arguments_.sent_status ?? "pending"),
         }),
-      thenvoi_respond_contact_request: async (arguments_) =>
+      band_respond_contact_request: async (arguments_) =>
         this.respondContactRequest(this.toRespondContactRequestArgs(arguments_)),
     };
   }
 
   private buildMemoryToolHandlers(): Record<string, ToolHandler> {
     return {
-      thenvoi_list_memories: async (arguments_) =>
+      band_list_memories: async (arguments_) =>
         this.listMemories(this.toListMemoriesArgs(arguments_)),
-      thenvoi_store_memory: async (arguments_) =>
+      band_store_memory: async (arguments_) =>
         this.storeMemory(this.toStoreMemoryArgs(arguments_)),
-      thenvoi_get_memory: async (arguments_) =>
+      band_get_memory: async (arguments_) =>
         this.getMemory(String(arguments_.memory_id ?? "")),
-      thenvoi_supersede_memory: async (arguments_) =>
+      band_supersede_memory: async (arguments_) =>
         this.supersedeMemory(String(arguments_.memory_id ?? "")),
-      thenvoi_archive_memory: async (arguments_) =>
+      band_archive_memory: async (arguments_) =>
         this.archiveMemory(String(arguments_.memory_id ?? "")),
     };
   }
@@ -1119,14 +1119,14 @@ function validateToolArgs(toolName: string, args: Record<string, unknown>): Tool
     }
   }
 
-  if (toolName === "thenvoi_send_message") {
+  if (toolName === "band_send_message") {
     const mentions = args.mentions;
     if (Array.isArray(mentions) && mentions.length === 0) {
       errors.push("mentions: At least one mention is required");
     }
   }
 
-  if (toolName === "thenvoi_send_event") {
+  if (toolName === "band_send_event") {
     const messageType = args.message_type;
     if (typeof messageType === "string" && !(CHAT_EVENT_TYPES as readonly string[]).includes(messageType)) {
       errors.push(
@@ -1135,7 +1135,7 @@ function validateToolArgs(toolName: string, args: Record<string, unknown>): Tool
     }
   }
 
-  if (toolName === "thenvoi_respond_contact_request") {
+  if (toolName === "band_respond_contact_request") {
     const action = args.action;
     const validActions = ["approve", "reject", "cancel"];
     if (typeof action === "string" && !validActions.includes(action)) {
@@ -1145,7 +1145,7 @@ function validateToolArgs(toolName: string, args: Record<string, unknown>): Tool
     }
   }
 
-  if (toolName === "thenvoi_store_memory") {
+  if (toolName === "band_store_memory") {
     const validSystems = ["sensory", "working", "long_term"];
     const validTypes = ["iconic", "echoic", "haptic", "episodic", "semantic", "procedural"];
     const validSegments = ["user", "agent", "tool", "guideline"];

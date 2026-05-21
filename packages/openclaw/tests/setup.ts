@@ -12,7 +12,7 @@ const originalFetch = globalThis.fetch;
 // channel.ts before test-level vi.mock() calls have been hoisted.
 // Read the version from package.json so we don't hardcode it in two places.
 const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf-8")) as { version: string };
-const GATEWAY_REGISTRY_KEY = `__thenvoi_gateway_registry_v${pkg.version}__`;
+const GATEWAY_REGISTRY_KEY = `__band_gateway_registry_v${pkg.version}__`;
 
 beforeEach(() => {
   // Reset all mocks before each test

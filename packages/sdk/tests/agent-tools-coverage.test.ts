@@ -150,7 +150,7 @@ describe("AgentTools coverage", () => {
       },
     });
 
-    const result = await tools.executeToolCall("thenvoi_store_memory", {
+    const result = await tools.executeToolCall("band_store_memory", {
       content: "remember this",
       thought: "reasoning",
       system: "bad-system",
@@ -161,7 +161,7 @@ describe("AgentTools coverage", () => {
     expect(result).toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
-      toolName: "thenvoi_store_memory",
+      toolName: "band_store_memory",
       details: {
         validationErrors: expect.arrayContaining([
           expect.stringContaining("system: Invalid value 'bad-system'"),
@@ -181,12 +181,12 @@ describe("AgentTools coverage", () => {
       },
     });
 
-    const result = await tools.executeToolCall("thenvoi_lookup_peers", {});
+    const result = await tools.executeToolCall("band_lookup_peers", {});
 
     expect(result).toMatchObject({
       ok: false,
       errorType: "ToolExecutionError",
-      toolName: "thenvoi_lookup_peers",
+      toolName: "band_lookup_peers",
     });
   });
 
@@ -244,11 +244,11 @@ describe("AgentTools coverage", () => {
       },
     });
 
-    const removeResult = await tools.executeToolCall("thenvoi_remove_contact", {
+    const removeResult = await tools.executeToolCall("band_remove_contact", {
       handle: "@jane",
       contact_id: "contact-1",
     });
-    const respondResult = await tools.executeToolCall("thenvoi_respond_contact_request", {
+    const respondResult = await tools.executeToolCall("band_respond_contact_request", {
       action: "approve",
       handle: "@jane",
       request_id: "request-1",
@@ -257,12 +257,12 @@ describe("AgentTools coverage", () => {
     expect(removeResult).toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
-      toolName: "thenvoi_remove_contact",
+      toolName: "band_remove_contact",
     });
     expect(respondResult).toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
-      toolName: "thenvoi_respond_contact_request",
+      toolName: "band_respond_contact_request",
     });
   });
 
@@ -286,10 +286,10 @@ describe("AgentTools coverage", () => {
     const withMemory = toolsWithMemory.getToolSchemas("openai", { includeMemory: true });
 
     expect(withoutMemory.some((entry) =>
-      (entry.function as { name?: string } | undefined)?.name === "thenvoi_store_memory"
+      (entry.function as { name?: string } | undefined)?.name === "band_store_memory"
     )).toBe(false);
     expect(withMemory.some((entry) =>
-      (entry.function as { name?: string } | undefined)?.name === "thenvoi_store_memory"
+      (entry.function as { name?: string } | undefined)?.name === "band_store_memory"
     )).toBe(true);
   });
 
@@ -300,7 +300,7 @@ describe("AgentTools coverage", () => {
       rest: createFacade(rest),
     });
 
-    await tools.executeToolCall("thenvoi_send_message", {
+    await tools.executeToolCall("band_send_message", {
       content: "hi",
       mentions: [
         { id: "peer-1", handle: "@peer/one", name: "Peer One", username: "peer.one" },
@@ -327,10 +327,10 @@ describe("AgentTools coverage", () => {
     });
 
     await expect(
-      tools.executeToolCall("thenvoi_create_chatroom", { task_id: "   " }),
+      tools.executeToolCall("band_create_chatroom", { task_id: "   " }),
     ).resolves.toBe("room-2");
     await expect(
-      tools.executeToolCall("thenvoi_create_chatroom", { task_id: " task-9 " }),
+      tools.executeToolCall("band_create_chatroom", { task_id: " task-9 " }),
     ).resolves.toBe("room-for-task-9");
 
     expect(rest.createChat).toHaveBeenNthCalledWith(1, undefined, expect.any(Object));
@@ -349,7 +349,7 @@ describe("AgentTools coverage", () => {
     });
 
     const anthropicSchemas = tools.getToolSchemas("anthropic", { includeMemory: true });
-    expect(anthropicSchemas.some((entry) => entry.name === "thenvoi_store_memory")).toBe(true);
+    expect(anthropicSchemas.some((entry) => entry.name === "band_store_memory")).toBe(true);
     expect(anthropicSchemas.every((entry) => "input_schema" in entry)).toBe(true);
 
     await tools.listContacts();
@@ -375,7 +375,7 @@ describe("AgentTools coverage", () => {
     });
 
     await expect(
-      tools.executeToolCall("thenvoi_send_event", {
+      tools.executeToolCall("band_send_event", {
         content: "status",
         message_type: "not-real",
       }),
@@ -388,7 +388,7 @@ describe("AgentTools coverage", () => {
     });
 
     await expect(
-      tools.executeToolCall("thenvoi_list_memories", {
+      tools.executeToolCall("band_list_memories", {
         scope: "bad-scope",
         status: "bad-status",
       }),
@@ -437,7 +437,7 @@ describe("AgentTools coverage", () => {
     });
 
     await expect(
-      tools.executeToolCall("thenvoi_send_message", {
+      tools.executeToolCall("band_send_message", {
         content: "hello",
         mentions: [],
       }),
@@ -501,7 +501,7 @@ describe("AgentTools coverage", () => {
       },
     });
 
-    await tools.executeToolCall("thenvoi_list_memories", {
+    await tools.executeToolCall("band_list_memories", {
       subject_id: " subject-1 ",
       scope: "all",
       system: "working",
@@ -511,7 +511,7 @@ describe("AgentTools coverage", () => {
       page_size: "12",
       status: "archived",
     });
-    await tools.executeToolCall("thenvoi_store_memory", {
+    await tools.executeToolCall("band_store_memory", {
       content: " keep this ",
       thought: " because ",
       system: "working",
@@ -521,9 +521,9 @@ describe("AgentTools coverage", () => {
       subject_id: " subject-1 ",
       metadata: { source: "test" },
     });
-    await tools.executeToolCall("thenvoi_get_memory", { memory_id: " memory-7 " });
-    await tools.executeToolCall("thenvoi_supersede_memory", { memory_id: " memory-7 " });
-    await tools.executeToolCall("thenvoi_archive_memory", { memory_id: " memory-7 " });
+    await tools.executeToolCall("band_get_memory", { memory_id: " memory-7 " });
+    await tools.executeToolCall("band_supersede_memory", { memory_id: " memory-7 " });
+    await tools.executeToolCall("band_archive_memory", { memory_id: " memory-7 " });
 
     expect(rest.listMemories).toHaveBeenCalledWith(
       {
@@ -566,7 +566,7 @@ describe("AgentTools coverage", () => {
     });
 
     await expect(
-      tools.executeToolCall("thenvoi_store_memory", {
+      tools.executeToolCall("band_store_memory", {
         content: "remember",
         thought: "reason",
         system: "working",

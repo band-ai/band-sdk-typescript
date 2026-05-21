@@ -9,7 +9,7 @@ import {
   type SessionRoomRecord,
   type SessionRoomStore,
 } from "../src/linear";
-import { LinearBandExampleRestApi } from "../examples/linear-thenvoi/linear-thenvoi-rest-stub";
+import { LinearBandExampleRestApi } from "../examples/linear-band/linear-band-rest-stub";
 
 class MemorySessionRoomStore implements SessionRoomStore {
   private readonly records = new Map<string, SessionRoomRecord>();
@@ -422,8 +422,8 @@ describe("linear bridge room strategy", () => {
   });
 
   it("retries the recreated room when the first post races room access propagation", async () => {
-    const previousDelay = process.env.LINEAR_THENVOI_RECOVERED_ROOM_RETRY_BASE_DELAY_MS;
-    process.env.LINEAR_THENVOI_RECOVERED_ROOM_RETRY_BASE_DELAY_MS = "0";
+    const previousDelay = process.env.LINEAR_BAND_RECOVERED_ROOM_RETRY_BASE_DELAY_MS;
+    process.env.LINEAR_BAND_RECOVERED_ROOM_RETRY_BASE_DELAY_MS = "0";
     try {
       const restApi = new FlakyRecoveredRoomRestApi();
       const store = new MemorySessionRoomStore();
@@ -456,16 +456,16 @@ describe("linear bridge room strategy", () => {
       });
     } finally {
       if (previousDelay === undefined) {
-        delete process.env.LINEAR_THENVOI_RECOVERED_ROOM_RETRY_BASE_DELAY_MS;
+        delete process.env.LINEAR_BAND_RECOVERED_ROOM_RETRY_BASE_DELAY_MS;
       } else {
-        process.env.LINEAR_THENVOI_RECOVERED_ROOM_RETRY_BASE_DELAY_MS = previousDelay;
+        process.env.LINEAR_BAND_RECOVERED_ROOM_RETRY_BASE_DELAY_MS = previousDelay;
       }
     }
   });
 
   it("retries recreated-room forwarding when the first post is rate limited", async () => {
-    const previousDelay = process.env.LINEAR_THENVOI_RECOVERED_ROOM_RETRY_BASE_DELAY_MS;
-    process.env.LINEAR_THENVOI_RECOVERED_ROOM_RETRY_BASE_DELAY_MS = "0";
+    const previousDelay = process.env.LINEAR_BAND_RECOVERED_ROOM_RETRY_BASE_DELAY_MS;
+    process.env.LINEAR_BAND_RECOVERED_ROOM_RETRY_BASE_DELAY_MS = "0";
     try {
       const restApi = new RateLimitedRecoveredRoomRestApi();
       const store = new MemorySessionRoomStore();
@@ -498,9 +498,9 @@ describe("linear bridge room strategy", () => {
       });
     } finally {
       if (previousDelay === undefined) {
-        delete process.env.LINEAR_THENVOI_RECOVERED_ROOM_RETRY_BASE_DELAY_MS;
+        delete process.env.LINEAR_BAND_RECOVERED_ROOM_RETRY_BASE_DELAY_MS;
       } else {
-        process.env.LINEAR_THENVOI_RECOVERED_ROOM_RETRY_BASE_DELAY_MS = previousDelay;
+        process.env.LINEAR_BAND_RECOVERED_ROOM_RETRY_BASE_DELAY_MS = previousDelay;
       }
     }
   });
