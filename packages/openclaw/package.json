@@ -1,7 +1,7 @@
 {
-  "name": "@thenvoi/openclaw-channel-thenvoi",
+  "name": "@band-ai/openclaw-channel-band",
   "version": "0.1.5",
-  "description": "OpenClaw channel plugin to connect with the Thenvoi AI agent collaboration platform",
+  "description": "OpenClaw channel plugin to connect with the Band AI agent collaboration platform",
   "author": "Thenvoi <hello@thenvoi.com>",
   "license": "MIT",
   "repository": {
@@ -23,18 +23,18 @@
     "openclaw.plugin.json"
   ],
   "scripts": {
-    "build": "pnpm --filter @thenvoi/sdk build && tsup && node scripts/sync-plugin-version.js",
+    "build": "pnpm --filter @band-ai/sdk build && tsup && node scripts/sync-plugin-version.js",
     "dev": "tsup --watch",
-    "typecheck": "pnpm --filter @thenvoi/sdk build && tsc --noEmit",
+    "typecheck": "pnpm --filter @band-ai/sdk build && tsc --noEmit",
     "lint": "eslint src/",
-    "test": "pnpm --filter @thenvoi/sdk build && vitest run",
+    "test": "pnpm --filter @band-ai/sdk build && vitest run",
     "test:watch": "vitest",
-    "test:coverage": "pnpm --filter @thenvoi/sdk build && vitest run --coverage",
-    "test:e2e": "pnpm --filter @thenvoi/sdk build && node --env-file=.env node_modules/vitest/vitest.mjs run --config vitest.config.e2e.ts",
+    "test:coverage": "pnpm --filter @band-ai/sdk build && vitest run --coverage",
+    "test:e2e": "pnpm --filter @band-ai/sdk build && node --env-file=.env node_modules/vitest/vitest.mjs run --config vitest.config.e2e.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@thenvoi/sdk": "workspace:*"
+    "@band-ai/sdk": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

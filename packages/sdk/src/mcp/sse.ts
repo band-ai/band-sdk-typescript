@@ -9,7 +9,7 @@ import {
 } from "./registrations";
 import { buildZodShape } from "./zod";
 
-export interface ThenvoiMcpSseServerOptions {
+export interface BandMcpSseServerOptions {
   tools: AdapterToolsProtocol | ((roomId: string) => AdapterToolsProtocol | undefined);
   name?: string;
   port?: number;
@@ -29,15 +29,15 @@ const PORT_RANGE_END = 60000
 const SESSION_IDLE_TTL_MS = 15 * 60 * 1000
 const SESSION_SWEEP_INTERVAL_MS = 60 * 1000
 
-export class ThenvoiMcpSseServer {
-  private readonly options: ThenvoiMcpSseServerOptions
+export class BandMcpSseServer {
+  private readonly options: BandMcpSseServerOptions
   private readonly registrations: McpToolRegistration[]
   private httpServer: import("node:http").Server | null = null
   private actualPort: number | null = null
   private readonly sessions = new Map<string, SessionRecord>()
   private sweepTimer: ReturnType<typeof setInterval> | null = null
 
-  public constructor(options: ThenvoiMcpSseServerOptions) {
+  public constructor(options: BandMcpSseServerOptions) {
     this.options = options
 
     const regOptions: BuildRegistrationsOptions = {
@@ -235,6 +235,9 @@ async function findAvailablePort(http: typeof import("node:http")): Promise<numb
 
   return 0
 }
+
+export { BandMcpSseServer as ThenvoiMcpSseServer };
+export type { BandMcpSseServerOptions as ThenvoiMcpSseServerOptions };
 
 function checkPort(http: typeof import("node:http"), port: number): Promise<boolean> {
   return new Promise((resolve) => {

@@ -9,7 +9,7 @@ import {
 } from "./registrations";
 import { buildZodShape } from "./zod";
 
-export interface ThenvoiMcpServerOptions {
+export interface BandMcpServerOptions {
   /** Single tools instance (no room scoping) or a resolver function for room-scoped tools. */
   tools: AdapterToolsProtocol | ((roomId: string) => AdapterToolsProtocol | undefined);
   /** Server name advertised to MCP clients. */
@@ -38,20 +38,20 @@ interface SessionRecord {
 }
 
 /**
- * Standalone MCP server that exposes Thenvoi agent tools over Streamable HTTP.
+ * Standalone MCP server that exposes Band agent tools over Streamable HTTP.
  *
  * Uses `@modelcontextprotocol/server` (optional peer dependency) and `express`.
  * Install with: `npm install @modelcontextprotocol/server express`
  */
-export class ThenvoiMcpServer {
-  private readonly options: ThenvoiMcpServerOptions;
+export class BandMcpServer {
+  private readonly options: BandMcpServerOptions;
   private readonly registrations: McpToolRegistration[];
   private httpServer: import("node:http").Server | null = null;
   private actualPort: number | null = null;
   private readonly sessions = new Map<string, SessionRecord>();
   private sessionSweepTimer: ReturnType<typeof setInterval> | null = null;
 
-  public constructor(options: ThenvoiMcpServerOptions) {
+  public constructor(options: BandMcpServerOptions) {
     this.options = options;
 
     const regOptions: BuildRegistrationsOptions = {
@@ -259,6 +259,9 @@ export class ThenvoiMcpServer {
     }));
   }
 }
+
+export { BandMcpServer as ThenvoiMcpServer };
+export type { BandMcpServerOptions as ThenvoiMcpServerOptions };
 
 function getSessionIdHeader(headerValue: string | string[] | undefined): string | null {
   if (typeof headerValue === "string" && headerValue.length > 0) {

@@ -37,7 +37,7 @@ importers:
 
   packages/openclaw:
     dependencies:
-      '@thenvoi/sdk':
+      '@band-ai/sdk':
         specifier: workspace:*
         version: link:../sdk
     devDependencies:

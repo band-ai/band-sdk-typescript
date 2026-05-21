@@ -145,13 +145,13 @@ ws_url: "wss://example.com"
     expect(options.wsUrl).toBe("wss://example.com");
   });
 
-  it("loads credentials from THENVOI_ env vars by default", () => {
+  it("loads credentials from BAND_ env vars by default", () => {
     const result = loadAgentConfigFromEnv({
       env: {
-        THENVOI_AGENT_ID: "agent-env",
-        THENVOI_API_KEY: "key-env",
-        THENVOI_WS_URL: "wss://ws.example.com",
-        THENVOI_REST_URL: "https://rest.example.com",
+        BAND_AGENT_ID: "agent-env",
+        BAND_API_KEY: "key-env",
+        BAND_WS_URL: "wss://ws.example.com",
+        BAND_REST_URL: "https://rest.example.com",
       },
     });
 
@@ -159,6 +159,36 @@ ws_url: "wss://example.com"
     expect(result.apiKey).toBe("key-env");
     expect(result.wsUrl).toBe("wss://ws.example.com");
     expect(result.restUrl).toBe("https://rest.example.com");
+  });
+
+  it("keeps THENVOI_ env vars as a legacy fallback", () => {
+    const result = loadAgentConfigFromEnv({
+      env: {
+        THENVOI_AGENT_ID: "legacy-agent-env",
+        THENVOI_API_KEY: "legacy-key-env",
+        THENVOI_WS_URL: "wss://legacy-ws.example.com",
+        THENVOI_REST_URL: "https://legacy-rest.example.com",
+      },
+    });
+
+    expect(result.agentId).toBe("legacy-agent-env");
+    expect(result.apiKey).toBe("legacy-key-env");
+    expect(result.wsUrl).toBe("wss://legacy-ws.example.com");
+    expect(result.restUrl).toBe("https://legacy-rest.example.com");
+  });
+
+  it("prefers BAND_ env vars over legacy THENVOI_ values", () => {
+    const result = loadAgentConfigFromEnv({
+      env: {
+        BAND_AGENT_ID: "band-agent-env",
+        BAND_API_KEY: "band-key-env",
+        THENVOI_AGENT_ID: "legacy-agent-env",
+        THENVOI_API_KEY: "legacy-key-env",
+      },
+    });
+
+    expect(result.agentId).toBe("band-agent-env");
+    expect(result.apiKey).toBe("band-key-env");
   });
 
   it("supports custom env prefixes without requiring a trailing underscore", () => {
@@ -175,8 +205,8 @@ ws_url: "wss://example.com"
   });
 
   it("throws a helpful error when required env vars are missing", () => {
-    expect(() => loadAgentConfigFromEnv({ env: {} })).toThrow("THENVOI_AGENT_ID");
-    expect(() => loadAgentConfigFromEnv({ env: {} })).toThrow("THENVOI_API_KEY");
+    expect(() => loadAgentConfigFromEnv({ env: {} })).toThrow("BAND_AGENT_ID");
+    expect(() => loadAgentConfigFromEnv({ env: {} })).toThrow("BAND_API_KEY");
     expect(() => loadAgentConfigFromEnv({ env: {} })).toThrow("loadAgentConfig()");
   });
 

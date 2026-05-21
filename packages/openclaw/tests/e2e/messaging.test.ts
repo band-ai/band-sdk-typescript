@@ -2,13 +2,13 @@
  * E2E Tests: Messaging
  *
  * Tests sending and receiving messages against a real Thenvoi environment.
- * Uses ThenvoiLink from @thenvoi/sdk and RoomPresence from @thenvoi/sdk/runtime.
+ * Uses ThenvoiLink from @band-ai/sdk and RoomPresence from @band-ai/sdk/runtime.
  */
 
 import { describe, it, expect, beforeAll, afterEach } from "vitest";
-import { ThenvoiLink } from "@thenvoi/sdk";
-import { RoomPresence } from "@thenvoi/sdk/runtime";
-import type { PlatformEvent } from "@thenvoi/sdk";
+import { ThenvoiLink } from "@band-ai/sdk";
+import { RoomPresence } from "@band-ai/sdk/runtime";
+import type { PlatformEvent } from "@band-ai/sdk";
 import {
   getE2EConfig,
   canRunE2E,

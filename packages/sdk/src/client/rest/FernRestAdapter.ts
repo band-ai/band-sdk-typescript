@@ -21,7 +21,7 @@ import { normalizePaginationMetadata } from "./pagination";
 import { normalizeContactRequestsResult } from "./responseNormalization";
 import type {
   FernUserProfile,
-  FernThenvoiClientLike,
+  FernBandClientLike,
   RestApi,
   AgentIdentity,
   ChatParticipant,
@@ -399,9 +399,9 @@ function normalizePlatformChatMessage(value: unknown): PlatformChatMessage | nul
 }
 
 export class FernRestAdapter implements RestApi {
-  private readonly client: FernThenvoiClientLike;
+  private readonly client: FernBandClientLike;
 
-  public constructor(client: FernThenvoiClientLike) {
+  public constructor(client: FernBandClientLike) {
     this.client = client;
   }
 

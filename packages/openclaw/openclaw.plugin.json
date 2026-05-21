@@ -1,9 +1,9 @@
 {
   "$schema": "https://openclaw.ai/schemas/plugin.json",
-  "id": "openclaw-channel-thenvoi",
-  "name": "Thenvoi",
+  "id": "openclaw-channel-band",
+  "name": "Band",
   "version": "0.1.5",
-  "description": "Connect OpenClaw to the Thenvoi AI agent collaboration platform",
+  "description": "Connect OpenClaw to the Band AI agent collaboration platform",
   "author": "Thenvoi",
   "license": "MIT",
   "repository": "https://github.com/thenvoi/thenvoi-sdk-typescript",
@@ -11,13 +11,13 @@
   "type": "channel",
 
   "openclaw.channel": {
-    "id": "openclaw-channel-thenvoi",
-    "label": "Thenvoi",
-    "selectionLabel": "Thenvoi (AI Collaboration)",
-    "docsPath": "/channels/thenvoi",
-    "blurb": "Connect to the Thenvoi AI agent collaboration platform.",
+    "id": "openclaw-channel-band",
+    "label": "Band",
+    "selectionLabel": "Band (AI Collaboration)",
+    "docsPath": "/channels/band",
+    "blurb": "Connect to the Band AI agent collaboration platform.",
     "order": 100,
-    "aliases": ["thenvoi"]
+    "aliases": ["band", "thenvoi"]
   },
 
   "openclaw.install": {
@@ -79,21 +79,21 @@
             },
             "apiKey": {
               "type": "string",
-              "description": "Thenvoi API key (or use THENVOI_API_KEY env var)"
+              "description": "Band API key (or use BAND_API_KEY env var, falling back to THENVOI_API_KEY)"
             },
             "agentId": {
               "type": "string",
-              "description": "Thenvoi agent ID (or use THENVOI_AGENT_ID env var)"
+              "description": "Band agent ID (or use BAND_AGENT_ID env var, falling back to THENVOI_AGENT_ID)"
             },
             "wsUrl": {
               "type": "string",
-              "default": "wss://app.thenvoi.com/api/v1/socket",
-              "description": "Thenvoi WebSocket URL"
+              "default": "wss://app.band.ai/api/v1/socket",
+              "description": "Band WebSocket URL"
             },
             "restUrl": {
               "type": "string",
-              "default": "https://app.thenvoi.com",
-              "description": "Thenvoi REST API URL"
+              "default": "https://app.band.ai",
+              "description": "Band REST API URL"
             },
             "stateDir": {
               "type": "string",
@@ -109,38 +109,38 @@
   "uiHints": {
     "apiKey": {
       "sensitive": true,
-      "placeholder": "tv_..."
+      "placeholder": "band_..."
     },
     "agentId": {
       "placeholder": "agent-uuid-here"
     },
     "wsUrl": {
-      "placeholder": "wss://app.thenvoi.com/api/v1/socket"
+      "placeholder": "wss://app.band.ai/api/v1/socket"
     },
     "restUrl": {
-      "placeholder": "https://app.thenvoi.com"
+      "placeholder": "https://app.band.ai"
     }
   },
 
   "environment": {
     "THENVOI_API_KEY": {
-      "description": "API key for Thenvoi platform authentication",
+      "description": "API key for Band platform authentication",
       "required": true,
       "sensitive": true
     },
     "THENVOI_AGENT_ID": {
-      "description": "Agent identifier on Thenvoi platform",
+      "description": "Agent identifier on Band platform",
       "required": true
     },
     "THENVOI_WS_URL": {
       "description": "Thenvoi WebSocket endpoint",
       "required": false,
-      "default": "wss://app.thenvoi.com/api/v1/socket"
+      "default": "wss://app.band.ai/api/v1/socket"
     },
     "THENVOI_REST_URL": {
-      "description": "Thenvoi REST API endpoint",
+      "description": "Band REST API endpoint",
       "required": false,
-      "default": "https://app.thenvoi.com"
+      "default": "https://app.band.ai"
     }
   }
 }

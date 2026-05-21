@@ -1,8 +1,8 @@
-# Thenvoi SDK agent configuration
+# Band SDK agent configuration
 # Copy this file to agent_config.yaml and fill in your credentials.
 #
 # Usage in code:
-#   import { loadAgentConfig } from "@thenvoi/sdk";
+#   import { loadAgentConfig } from "@band-ai/sdk";
 #   const config = loadAgentConfig("basic_agent");
 #   Agent.create({ adapter, ...config });
 

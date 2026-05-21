@@ -5,11 +5,11 @@ import { defineConfig } from "tsup";
 
 /**
  * Resolve the SDK package.json from the workspace.
- * In a pnpm workspace, the SDK is linked via node_modules/@thenvoi/sdk.
+ * In a pnpm workspace, the SDK is linked via node_modules/@band-ai/sdk.
  */
 function loadSdkPackageJson(): Record<string, unknown> {
   try {
-    return JSON.parse(readFileSync("node_modules/@thenvoi/sdk/package.json", "utf-8"));
+    return JSON.parse(readFileSync("node_modules/@band-ai/sdk/package.json", "utf-8"));
   } catch {
     // Fallback: read directly from the workspace sibling
     return JSON.parse(readFileSync("../sdk/package.json", "utf-8"));
@@ -30,7 +30,7 @@ function discoverNamedImports(peers: string[]): Map<string, Set<string>> {
   const result = new Map<string, Set<string>>();
 
   // Try workspace-linked path first, then sibling path
-  let sdkDistDir = "node_modules/@thenvoi/sdk/dist";
+  let sdkDistDir = "node_modules/@band-ai/sdk/dist";
   try {
     readdirSync(sdkDistDir);
   } catch {
@@ -83,7 +83,7 @@ const namedImportsPerPeer = discoverNamedImports(sdkOptionalPeers);
 if (sdkOptionalPeers.length > 0 && namedImportsPerPeer.size === 0) {
   throw new Error(
     `[tsup] Found ${sdkOptionalPeers.length} optional peers but discovered zero named imports. ` +
-    "The SDK must be built before building OpenClaw. Run: pnpm --filter @thenvoi/sdk build",
+    "The SDK must be built before building OpenClaw. Run: pnpm --filter @band-ai/sdk build",
   );
 }
 
@@ -135,7 +135,7 @@ export default defineConfig({
   // Keep openclaw external (host provides it)
   external: ["openclaw"],
   // Bundle the SDK and its dependencies into the plugin
-  noExternal: ["phoenix", "@thenvoi/sdk", "@thenvoi/rest-client", "zod", "zod-to-json-schema", "ws", "js-yaml"],
+  noExternal: ["phoenix", "@band-ai/sdk", "@thenvoi/rest-client", "zod", "zod-to-json-schema", "ws", "js-yaml"],
   esbuildPlugins: [stubOptionalPeers(sdkOptionalPeers)],
   define: {
     __OPENCLAW_PKG_VERSION__: JSON.stringify(openclawPkg.version),

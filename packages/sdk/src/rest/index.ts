@@ -2,7 +2,7 @@ export type {
   AgentIdentity,
   ChatMessageMention,
   ChatParticipant,
-  FernThenvoiClientLike,
+  FernBandClientLike,
   PaginatedResponse,
   PaginationMetadata,
   PlatformChatMessage,

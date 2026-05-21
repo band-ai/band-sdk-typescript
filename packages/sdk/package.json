@@ -1,7 +1,7 @@
 {
-  "name": "@thenvoi/sdk",
-  "version": "0.1.4",
-  "description": "Thenvoi TypeScript SDK core runtime",
+  "name": "@band-ai/sdk",
+  "version": "0.1.6",
+  "description": "Band TypeScript SDK core runtime",
   "license": "MIT",
   "repository": {
     "type": "git",

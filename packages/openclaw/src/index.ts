@@ -1,8 +1,8 @@
 /**
  * OpenClaw Channel Plugin for Thenvoi.
  *
- * This plugin enables OpenClaw agents to connect to the Thenvoi platform,
- * using @thenvoi/sdk for all platform communication.
+ * This plugin enables OpenClaw agents to connect to the Band platform,
+ * using @band-ai/sdk for all platform communication.
  *
  * @packageDocumentation
  */
@@ -160,13 +160,13 @@ export type {
   ContactEventCallback,
   ContactEvent,
   PlatformEvent,
-} from "@thenvoi/sdk";
+} from "@band-ai/sdk";
 
-export { ThenvoiLink } from "@thenvoi/sdk";
+export { ThenvoiLink } from "@band-ai/sdk";
 
 export type {
   AgentIdentity,
   ChatParticipant,
-} from "@thenvoi/sdk/rest";
+} from "@band-ai/sdk/rest";
 
-export { ContactEventHandler, RoomPresence } from "@thenvoi/sdk/runtime";
+export { ContactEventHandler, RoomPresence } from "@band-ai/sdk/runtime";

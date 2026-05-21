@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { ThenvoiLink } from "@thenvoi/sdk";
+import { ThenvoiLink } from "@band-ai/sdk";
 import {
   getE2EConfig,
   canRunE2E,

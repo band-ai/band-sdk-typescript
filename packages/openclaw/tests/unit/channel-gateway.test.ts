@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 let capturedPresenceInstance: Record<string, unknown>;
 let mockLinkInstance: Record<string, unknown>;
 
-vi.mock("@thenvoi/sdk", () => ({
+vi.mock("@band-ai/sdk", () => ({
   ThenvoiLink: vi.fn().mockImplementation((opts: Record<string, unknown>) => {
     mockLinkInstance = {
       agentId: opts.agentId,
@@ -28,7 +28,7 @@ vi.mock("@thenvoi/sdk", () => ({
   }),
 }));
 
-vi.mock("@thenvoi/sdk/runtime", () => ({
+vi.mock("@band-ai/sdk/runtime", () => ({
   RoomPresence: vi.fn().mockImplementation(() => {
     capturedPresenceInstance = {
       onRoomJoined: null,
@@ -45,7 +45,7 @@ vi.mock("@thenvoi/sdk/runtime", () => ({
   })),
 }));
 
-vi.mock("@thenvoi/sdk/rest", () => ({}));
+vi.mock("@band-ai/sdk/rest", () => ({}));
 
 import {
   thenvoiChannel,
@@ -189,12 +189,14 @@ describe("Channel Gateway Lifecycle", () => {
     it("should clean up race guard on error", async () => {
       const badConfig = { ...mockAccountConfig, apiKey: undefined, agentId: undefined };
       // Remove env vars so resolveConfig throws
+      delete process.env.BAND_API_KEY;
+      delete process.env.BAND_AGENT_ID;
       delete process.env.THENVOI_API_KEY;
       delete process.env.THENVOI_AGENT_ID;
 
       const ctx = createGatewayContext("failing-account", badConfig as typeof mockAccountConfig, { aborted: true });
 
-      await expect(thenvoiChannel.gateway!.startAccount(ctx)).rejects.toThrow("THENVOI_API_KEY");
+      await expect(thenvoiChannel.gateway!.startAccount(ctx)).rejects.toThrow("BAND_API_KEY");
 
       // The race guard should be cleaned up — a second call should NOT be skipped
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -202,7 +204,7 @@ describe("Channel Gateway Lifecycle", () => {
       // This should also fail (same bad config), but it should NOT say "already in progress"
       await expect(
         thenvoiChannel.gateway!.startAccount(ctx),
-      ).rejects.toThrow("THENVOI_API_KEY");
+      ).rejects.toThrow("BAND_API_KEY");
 
       expect(warnSpy).not.toHaveBeenCalledWith(
         expect.stringContaining("already in progress"),

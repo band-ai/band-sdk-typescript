@@ -45,7 +45,7 @@ export interface GatewayA2AStatusUpdateEvent {
 
 export interface GatewayRequest {
   /**
-   * Canonical Thenvoi peer id.
+   * Canonical Band peer id.
    * Legacy clients may still send a slug in this field; adapter-side normalization handles that alias.
    */
   peerId: string;
@@ -60,7 +60,7 @@ export interface GatewayRequest {
 
 export interface GatewayCancelRequest {
   /**
-   * Canonical Thenvoi peer id.
+   * Canonical Band peer id.
    * Legacy clients may still send a slug in this field; adapter-side normalization handles that alias.
    */
   peerId: string;

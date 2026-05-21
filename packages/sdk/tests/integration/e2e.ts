@@ -18,7 +18,7 @@ import type { AgentInput } from "../../src/index";
 import { ThenvoiClient } from "@thenvoi/rest-client";
 import { FernRestAdapter } from "../../src/rest";
 
-const DEFAULT_REST_URL = "https://app.thenvoi.com/";
+const DEFAULT_REST_URL = "https://app.band.ai/";
 
 // ── Test harness ───────────────────────────────────────────────────────
 

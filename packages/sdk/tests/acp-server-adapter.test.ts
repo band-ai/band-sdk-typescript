@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  ThenvoiACPServerAdapter,
+  BandACPServerAdapter,
 } from "../src/adapters/acp";
 import { FakeRestApi, FakeTools, makeMessage } from "./testUtils";
 
-describe("ThenvoiACPServerAdapter", () => {
+describe("BandACPServerAdapter", () => {
   it("creates ACP sessions, routes prompts, and streams room responses", async () => {
     const createdEvents: Array<Record<string, unknown>> = []
     const sentMessages: Array<Record<string, unknown>> = []
@@ -20,13 +20,13 @@ describe("ThenvoiACPServerAdapter", () => {
         return { ok: true }
       },
       listChatParticipants: async () => [
-        { id: "agent-1", name: "Thenvoi Agent", type: "Agent", handle: "thenvoi" },
+        { id: "agent-1", name: "Band Agent", type: "Agent", handle: "thenvoi" },
         { id: "peer-1", name: "Codex", type: "Agent", handle: "codex" },
         { id: "peer-2", name: "Claude", type: "Agent", handle: "claude" },
       ],
-    }, { id: "agent-1", name: "Thenvoi Agent", description: null })
+    }, { id: "agent-1", name: "Band Agent", description: null })
 
-    const adapter = new ThenvoiACPServerAdapter({
+    const adapter = new BandACPServerAdapter({
       thenvoiRest: rest,
       promptCompletionGraceMs: 5,
       responseTimeoutMs: 500,
@@ -34,7 +34,7 @@ describe("ThenvoiACPServerAdapter", () => {
         codex: "Codex",
       },
     })
-    await adapter.onStarted("Thenvoi Agent", "ACP server")
+    await adapter.onStarted("Band Agent", "ACP server")
 
     const updates: Array<Record<string, unknown>> = []
     adapter.bindConnection({
@@ -139,13 +139,13 @@ describe("ThenvoiACPServerAdapter", () => {
       createChatEvent: async () => {
         throw new Error("bootstrap failed")
       },
-    }, { id: "agent-1", name: "Thenvoi Agent", description: null })
+    }, { id: "agent-1", name: "Band Agent", description: null })
 
-    const adapter = new ThenvoiACPServerAdapter({
+    const adapter = new BandACPServerAdapter({
       thenvoiRest: rest,
       maxSessions: 1,
     })
-    await adapter.onStarted("Thenvoi Agent", "ACP server")
+    await adapter.onStarted("Band Agent", "ACP server")
 
     await expect(adapter.createSession({
       cwd: "/workspace",
@@ -162,7 +162,7 @@ describe("ThenvoiACPServerAdapter", () => {
 
   it("completes ACP prompts after tool-only room updates", async () => {
     const sentMessages: Array<Record<string, unknown>> = []
-    const adapter = new ThenvoiACPServerAdapter({
+    const adapter = new BandACPServerAdapter({
       thenvoiRest: new FakeRestApi({
         createChat: async () => ({ id: "room-tools" }),
         createChatMessage: async (_chatId, message) => {
@@ -170,17 +170,17 @@ describe("ThenvoiACPServerAdapter", () => {
           return { ok: true }
         },
         listChatParticipants: async () => [
-          { id: "agent-1", name: "Thenvoi Agent", type: "Agent", handle: "thenvoi" },
+          { id: "agent-1", name: "Band Agent", type: "Agent", handle: "thenvoi" },
           { id: "peer-1", name: "Codex", type: "Agent", handle: "codex" },
         ],
-      }, { id: "agent-1", name: "Thenvoi Agent", description: null }),
+      }, { id: "agent-1", name: "Band Agent", description: null }),
       promptCompletionGraceMs: 5,
       responseTimeoutMs: 100,
       slashCommands: {
         codex: "Codex",
       },
     })
-    await adapter.onStarted("Thenvoi Agent", "ACP server")
+    await adapter.onStarted("Band Agent", "ACP server")
 
     adapter.bindConnection({
       signal: new AbortController().signal,

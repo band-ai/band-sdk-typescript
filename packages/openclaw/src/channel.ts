@@ -1,15 +1,15 @@
 /**
- * Thenvoi Channel Plugin for OpenClaw.
+ * Band Channel Plugin for OpenClaw.
  *
- * Registers the Thenvoi channel with OpenClaw Gateway,
- * enabling bidirectional communication with the Thenvoi platform.
+ * Registers the Band channel with OpenClaw Gateway,
+ * enabling bidirectional communication with the Band platform.
  *
- * Uses @thenvoi/sdk for all platform communication (WebSocket + REST).
+ * Uses @band-ai/sdk for all platform communication (WebSocket + REST).
  */
 
-import { ThenvoiLink } from "@thenvoi/sdk";
-import { RoomPresence, ContactEventHandler } from "@thenvoi/sdk/runtime";
-import type { ContactEventConfig, ContactEvent, PlatformEvent } from "@thenvoi/sdk";
+import { ThenvoiLink } from "@band-ai/sdk";
+import { RoomPresence, ContactEventHandler } from "@band-ai/sdk/runtime";
+import type { ContactEventConfig, ContactEvent, PlatformEvent } from "@band-ai/sdk";
 
 // =============================================================================
 // OpenClaw-Specific Types
@@ -133,21 +133,29 @@ interface MessagingHelpers {
 
 interface PluginConfig {
   channels?: {
+    band?: {
+      accounts?: Record<string, ThenvoiAccountConfig>;
+    };
     thenvoi?: {
       accounts?: Record<string, ThenvoiAccountConfig>;
     };
-    "openclaw-channel-thenvoi"?: {
+    "openclaw-channel-band"?: {
       accounts?: Record<string, ThenvoiAccountConfig>;
     };
   };
   plugins?: {
     entries?: {
+      band?: {
+        config?: {
+          accounts?: Record<string, ThenvoiAccountConfig>;
+        };
+      };
       thenvoi?: {
         config?: {
           accounts?: Record<string, ThenvoiAccountConfig>;
         };
       };
-      "openclaw-channel-thenvoi"?: {
+      "openclaw-channel-band"?: {
         config?: {
           accounts?: Record<string, ThenvoiAccountConfig>;
         };
@@ -179,7 +187,7 @@ interface OpenClawRuntimeRef {
 // Virtual thread ID for contact events (dispatched to LLM for evaluation)
 // =============================================================================
 
-const CONTACTS_THREAD_ID = "__thenvoi_contacts__";
+const CONTACTS_THREAD_ID = "__band_contacts__";
 
 // =============================================================================
 // Channel State
@@ -210,7 +218,7 @@ function resolvePackageVersion(): string {
   }
 }
 const PKG_VERSION: string = resolvePackageVersion();
-const GATEWAY_REGISTRY_KEY = `__thenvoi_gateway_registry_v${PKG_VERSION}__`;
+const GATEWAY_REGISTRY_KEY = `__band_gateway_registry_v${PKG_VERSION}__`;
 interface GatewayRegistry {
   links: Map<string, ThenvoiLink>;
   presences: Map<string, RoomPresence>;
@@ -289,7 +297,7 @@ function isOpenClawRuntimeRef(value: unknown): value is OpenClawRuntimeRef {
 
   if (hasLoadConfig || hasDispatch) {
     if (hasLoadConfig && !hasDispatch) {
-      console.warn("[thenvoi] Runtime has config.loadConfig but missing channel.reply.dispatchReplyFromConfig — message dispatch will fall back to deliverMessage");
+      console.warn("[band] Runtime has config.loadConfig but missing channel.reply.dispatchReplyFromConfig — message dispatch will fall back to deliverMessage");
     }
     return true;
   }
@@ -302,12 +310,12 @@ function isOpenClawRuntimeRef(value: unknown): value is OpenClawRuntimeRef {
  */
 export function setOpenClawRuntime(runtime: unknown): void {
   if (!isOpenClawRuntimeRef(runtime)) {
-    console.warn("[thenvoi] setOpenClawRuntime called with invalid runtime object, ignoring");
+    console.warn("[band] setOpenClawRuntime called with invalid runtime object, ignoring");
     return;
   }
   registry().openclawRuntime = runtime;
   if (runtime.channel?.reply) {
-    console.log("[thenvoi] OpenClaw dispatch methods available");
+    console.log("[band] OpenClaw dispatch methods available");
   }
 }
 
@@ -335,7 +343,7 @@ export function deliverMessage(message: OpenClawInboundMessage, accountId: strin
   if (deliver) {
     deliver(message);
   } else {
-    console.warn("[thenvoi] Cannot deliver message: no inbound callback set");
+    console.warn("[band] Cannot deliver message: no inbound callback set");
   }
 }
 
@@ -344,16 +352,16 @@ export function deliverMessage(message: OpenClawInboundMessage, accountId: strin
 // =============================================================================
 
 function resolveConfig(account: ThenvoiAccountConfig): { apiKey: string; agentId: string; wsUrl: string; restUrl: string } {
-  const apiKey = account.apiKey ?? process.env.THENVOI_API_KEY;
-  const agentId = account.agentId ?? process.env.THENVOI_AGENT_ID;
-  const wsUrl = account.wsUrl ?? process.env.THENVOI_WS_URL ?? "wss://app.thenvoi.com/api/v1/socket";
-  const restUrl = account.restUrl ?? process.env.THENVOI_REST_URL ?? "https://app.thenvoi.com";
+  const apiKey = account.apiKey ?? process.env.BAND_API_KEY ?? process.env.THENVOI_API_KEY;
+  const agentId = account.agentId ?? process.env.BAND_AGENT_ID ?? process.env.THENVOI_AGENT_ID;
+  const wsUrl = account.wsUrl ?? process.env.BAND_WS_URL ?? process.env.THENVOI_WS_URL ?? "wss://app.band.ai/api/v1/socket";
+  const restUrl = account.restUrl ?? process.env.BAND_REST_URL ?? process.env.THENVOI_REST_URL ?? "https://app.band.ai";
 
   if (!apiKey) {
-    throw new Error("THENVOI_API_KEY is required");
+    throw new Error("BAND_API_KEY is required");
   }
   if (!agentId) {
-    throw new Error("THENVOI_AGENT_ID is required");
+    throw new Error("BAND_AGENT_ID is required");
   }
 
   return { apiKey, agentId, wsUrl, restUrl };
@@ -413,23 +421,23 @@ async function resolveMentions(
 // =============================================================================
 
 /**
- * Send a reply back to Thenvoi using the SDK's REST API.
+ * Send a reply back to Band using the SDK's REST API.
  * Throws on failure so callers (e.g. the dispatcher) can track and surface delivery errors.
  */
 async function sendReplyToThenvoi(rest: ThenvoiLink["rest"], agentId: string, accountId: string, roomId: string, payload: unknown): Promise<void> {
   const text = typeof payload === "string" ? payload : (payload as { text?: string })?.text;
   if (!text) {
-    throw new Error(`[thenvoi] No text in reply payload (room=${roomId})`);
+    throw new Error(`[band] No text in reply payload (room=${roomId})`);
   }
 
   const resolved = await resolveMentions(rest, agentId, accountId, roomId, text);
   if (!resolved) {
     throw new Error(
-      `[thenvoi] Reply dropped: no other participants in room to mention (room=${roomId}, text=${text.substring(0, 80)})`,
+      `[band] Reply dropped: no other participants in room to mention (room=${roomId}, text=${text.substring(0, 80)})`,
     );
   }
   await rest.createChatMessage(roomId, { content: text, mentions: resolved.mentions });
-  console.log(`[thenvoi] Reply sent: ${text.length > 50 ? text.substring(0, 50) + "..." : text}`);
+  console.log(`[band] Reply sent: ${text.length > 50 ? text.substring(0, 50) + "..." : text}`);
 }
 
 // =============================================================================
@@ -447,7 +455,7 @@ function platformEventToInboundMessage(event: PlatformEvent): OpenClawInboundMes
 
   // Only process text messages, not events
   if (payload.message_type !== "text") {
-    console.log(`[thenvoi] Skipping non-text message (type=${payload.message_type}, room=${roomId})`);
+    console.log(`[band] Skipping non-text message (type=${payload.message_type}, room=${roomId})`);
     return null;
   }
 
@@ -472,7 +480,7 @@ function platformEventToInboundMessage(event: PlatformEvent): OpenClawInboundMes
 // =============================================================================
 
 /**
- * Shared logic for sending an outbound message (text or media) to Thenvoi.
+ * Shared logic for sending an outbound message (text or media) to Band.
  */
 async function sendOutbound(ctx: OutboundContext): Promise<OutboundDeliveryResult> {
   const { text, to, accountId } = ctx;
@@ -484,7 +492,7 @@ async function sendOutbound(ctx: OutboundContext): Promise<OutboundDeliveryResul
 
   const link = links().get(accountId ?? "default");
   if (!link) {
-    throw new Error("Thenvoi link not initialized");
+    throw new Error("Band link not initialized");
   }
 
   const resolved = await resolveMentions(link.rest, link.agentId, accountId ?? "default", roomId, text);
@@ -506,15 +514,15 @@ async function sendOutbound(ctx: OutboundContext): Promise<OutboundDeliveryResul
 // =============================================================================
 
 export const thenvoiChannel: OpenClawChannel = {
-  id: "openclaw-channel-thenvoi",
+  id: "openclaw-channel-band",
 
   meta: {
-    id: "openclaw-channel-thenvoi",
-    label: "Thenvoi",
-    selectionLabel: "Thenvoi (AI Collaboration)",
-    docsPath: "/channels/thenvoi",
-    blurb: "Connect to the Thenvoi AI agent collaboration platform.",
-    aliases: ["thenvoi", "openclaw-channel-thenvoi"],
+    id: "openclaw-channel-band",
+    label: "Band",
+    selectionLabel: "Band (AI Collaboration)",
+    docsPath: "/channels/band",
+    blurb: "Connect to the Band AI agent collaboration platform.",
+    aliases: ["band", "thenvoi", "openclaw-channel-band"],
   },
 
   capabilities: {
@@ -524,9 +532,11 @@ export const thenvoiChannel: OpenClawChannel = {
 
   config: {
     listAccountIds: (config: PluginConfig): string[] => {
-      const pluginAccounts = config.plugins?.entries?.["openclaw-channel-thenvoi"]?.config?.accounts
+      const pluginAccounts = config.plugins?.entries?.["openclaw-channel-band"]?.config?.accounts
+        ?? config.plugins?.entries?.band?.config?.accounts
         ?? config.plugins?.entries?.thenvoi?.config?.accounts ?? {};
-      const channelAccounts = config.channels?.["openclaw-channel-thenvoi"]?.accounts
+      const channelAccounts = config.channels?.["openclaw-channel-band"]?.accounts
+        ?? config.channels?.band?.accounts
         ?? config.channels?.thenvoi?.accounts ?? {};
       const accounts = { ...pluginAccounts, ...channelAccounts };
       return Object.keys(accounts);
@@ -536,9 +546,11 @@ export const thenvoiChannel: OpenClawChannel = {
       config: PluginConfig,
       accountId?: string,
     ): ThenvoiAccountConfig => {
-      const pluginAccounts = config.plugins?.entries?.["openclaw-channel-thenvoi"]?.config?.accounts
+      const pluginAccounts = config.plugins?.entries?.["openclaw-channel-band"]?.config?.accounts
+        ?? config.plugins?.entries?.band?.config?.accounts
         ?? config.plugins?.entries?.thenvoi?.config?.accounts ?? {};
-      const channelAccounts = config.channels?.["openclaw-channel-thenvoi"]?.accounts
+      const channelAccounts = config.channels?.["openclaw-channel-band"]?.accounts
+        ?? config.channels?.band?.accounts
         ?? config.channels?.thenvoi?.accounts ?? {};
       const accounts = { ...pluginAccounts, ...channelAccounts };
       const account = accounts[accountId ?? "default"] ?? { enabled: true };
@@ -552,7 +564,7 @@ export const thenvoiChannel: OpenClawChannel = {
     resolveTarget: (params: { to?: string; allowFrom?: string[]; mode?: string }) => {
       const target = params.to?.trim() ?? "";
       if (!target) {
-        return { ok: false, error: new Error("Thenvoi requires a room_id as target") };
+        return { ok: false, error: new Error("Band requires a room_id as target") };
       }
       return { ok: true, to: target };
     },
@@ -602,17 +614,17 @@ export const thenvoiChannel: OpenClawChannel = {
 
       // Prevent concurrent startAccount calls for the same account
       if (registry().startingAccounts.has(accountId)) {
-        console.warn(`[thenvoi:${accountId}] startAccount already in progress, skipping`);
+        console.warn(`[band:${accountId}] startAccount already in progress, skipping`);
         return;
       }
       registry().startingAccounts.add(accountId);
 
       try {
-        console.log(`[thenvoi:${accountId}] Starting gateway...`);
+        console.log(`[band:${accountId}] Starting gateway...`);
 
         // Disconnect any existing connection to prevent orphaned connections on reload
         if (links().has(accountId)) {
-          console.log(`[thenvoi:${accountId}] Disconnecting previous connection before restart...`);
+          console.log(`[band:${accountId}] Disconnecting previous connection before restart...`);
           const existingPresence = presences().get(accountId);
           if (existingPresence) {
             await existingPresence.stop();
@@ -627,7 +639,7 @@ export const thenvoiChannel: OpenClawChannel = {
 
         const config = resolveConfig(accountConfig);
 
-        // Create ThenvoiLink (combines WebSocket + REST)
+        // Create Band link (combines WebSocket + REST)
         const link = new ThenvoiLink({
           agentId: config.agentId,
           apiKey: config.apiKey,
@@ -635,11 +647,11 @@ export const thenvoiChannel: OpenClawChannel = {
           restUrl: config.restUrl,
         });
         links().set(accountId, link);
-        console.log(`[thenvoi:${accountId}] Link created`);
+        console.log(`[band:${accountId}] Link created`);
 
         // Connect WebSocket
         await link.connect();
-        console.log(`[thenvoi:${accountId}] WebSocket connected`);
+        console.log(`[band:${accountId}] WebSocket connected`);
 
         // Create RoomPresence for automatic room subscription management
         const presence = new RoomPresence({
@@ -650,11 +662,11 @@ export const thenvoiChannel: OpenClawChannel = {
         // Set up room event handlers
         presence.onRoomJoined = async (roomId: string, payload: Record<string, unknown>) => {
           const title = (payload.title as string) ?? roomId;
-          console.log(`[thenvoi:${accountId}] Joined room: ${title} (${roomId})`);
+          console.log(`[band:${accountId}] Joined room: ${title} (${roomId})`);
         };
 
         presence.onRoomLeft = async (roomId: string) => {
-          console.log(`[thenvoi:${accountId}] Left room: ${roomId}`);
+          console.log(`[band:${accountId}] Left room: ${roomId}`);
         };
 
         // Handle room events (messages, participant changes)
@@ -722,7 +734,7 @@ export const thenvoiChannel: OpenClawChannel = {
                         sendReplyToThenvoi(link.rest, config.agentId, accountId, threadId, payload).catch((err: unknown) => {
                           const error = err instanceof Error ? err : new Error(String(err));
                           deliveryErrors.push(error);
-                          console.error(`[thenvoi:${accountId}] Reply delivery failed (room=${threadId}):`, error.message);
+                          console.error(`[band:${accountId}] Reply delivery failed (room=${threadId}):`, error.message);
                         }),
                       );
                     }
@@ -739,7 +751,7 @@ export const thenvoiChannel: OpenClawChannel = {
                         if (deliveryErrors.length > 0) {
                           const summary = deliveryErrors.map((e) => e.message).join("; ");
                           console.error(
-                            `[thenvoi:${accountId}] ${deliveryErrors.length}/${pendingReplies.length} replies failed to deliver (room=${message.threadId}): ${summary}`,
+                            `[band:${accountId}] ${deliveryErrors.length}/${pendingReplies.length} replies failed to deliver (room=${message.threadId}): ${summary}`,
                           );
                         }
                       },
@@ -747,16 +759,16 @@ export const thenvoiChannel: OpenClawChannel = {
                     };
                   })();
 
-              console.log(`[thenvoi:${accountId}] Dispatching message to OpenClaw agent...`);
+              console.log(`[band:${accountId}] Dispatching message to OpenClaw agent...`);
               const cfg = rt.config.loadConfig();
               await dispatchFn({
                 ctx: inboundCtx,
                 cfg,
                 dispatcher,
               });
-              console.log(`[thenvoi:${accountId}] Message dispatched successfully`);
+              console.log(`[band:${accountId}] Message dispatched successfully`);
             } catch (error) {
-              console.error(`[thenvoi:${accountId}] Failed to dispatch message:`, error);
+              console.error(`[band:${accountId}] Failed to dispatch message:`, error);
             }
           } else {
             // deliverMessage handles sender tracking and warns if no callback is set
@@ -781,17 +793,17 @@ export const thenvoiChannel: OpenClawChannel = {
           config: { strategy: "hub_room", broadcastChanges: true },
           rest: link.rest,
           onBroadcast: (msg: string) => {
-            console.log(`[thenvoi:${accountId}] Contact broadcast: ${msg}`);
+            console.log(`[band:${accountId}] Contact broadcast: ${msg}`);
           },
         });
 
         // Handle contact events
         presence.onContactEvent = async (event: ContactEvent) => {
           try {
-            console.log(`[thenvoi:${accountId}] Contact event: ${event.type}`);
+            console.log(`[band:${accountId}] Contact event: ${event.type}`);
             await contactHandler.handle(event);
           } catch (error) {
-            console.error(`[thenvoi:${accountId}] Failed to handle contact event:`, error);
+            console.error(`[band:${accountId}] Failed to handle contact event:`, error);
           }
         };
 
@@ -800,7 +812,7 @@ export const thenvoiChannel: OpenClawChannel = {
         // Start the event loop
         await presence.start();
 
-        console.log(`[thenvoi:${accountId}] Connected to Thenvoi platform`);
+        console.log(`[band:${accountId}] Connected to Band platform`);
 
         // Block until OpenClaw signals shutdown — startAccount must stay
         // alive for the lifetime of the connection, otherwise OpenClaw
@@ -811,7 +823,7 @@ export const thenvoiChannel: OpenClawChannel = {
           });
         }
 
-        console.log(`[thenvoi:${accountId}] Shutdown signal received`);
+        console.log(`[band:${accountId}] Shutdown signal received`);
       } finally {
         registry().startingAccounts.delete(accountId);
       }
@@ -833,7 +845,7 @@ export const thenvoiChannel: OpenClawChannel = {
         links().delete(accountId);
       }
 
-      console.log(`[thenvoi:${accountId}] Disconnected from Thenvoi platform`);
+      console.log(`[band:${accountId}] Disconnected from Band platform`);
     },
   },
 
@@ -868,7 +880,7 @@ export const thenvoiChannel: OpenClawChannel = {
  */
 export function registerChannel(api: OpenClawChannelApi): void {
   api.registerChannel({ plugin: thenvoiChannel });
-  console.log("[thenvoi] Channel registered");
+  console.log("[band] Channel registered");
 }
 
 // =============================================================================

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ThenvoiLink } from "../src/platform/ThenvoiLink";
+import { BandLink } from "../src/platform/BandLink";
 import type { PlatformEvent } from "../src/platform/events";
 import type { StreamingTransport } from "../src/platform/streaming/transport";
 import { UnsupportedFeatureError } from "../src/core/errors";
@@ -21,9 +21,9 @@ class FakeTransport implements StreamingTransport {
   }
 }
 
-describe("ThenvoiLink event waiting", () => {
+describe("BandLink event waiting", () => {
   it("removes abort listeners when waiter resolves from queued events", async () => {
-    const link = new ThenvoiLink({
+    const link = new BandLink({
       agentId: "agent-1",
       apiKey: "key",
       restApi: new FakeRestApi(),
@@ -64,7 +64,7 @@ describe("ThenvoiLink event waiting", () => {
   });
 
   it("rejects contact subscriptions when contact capability is disabled", async () => {
-    const link = new ThenvoiLink({
+    const link = new BandLink({
       agentId: "agent-1",
       apiKey: "key",
       restApi: new FakeRestApi(),
@@ -77,7 +77,7 @@ describe("ThenvoiLink event waiting", () => {
 
   it("allows contact subscriptions when contact capability is enabled", async () => {
     const transport = new FakeTransport();
-    const link = new ThenvoiLink({
+    const link = new BandLink({
       agentId: "agent-1",
       apiKey: "key",
       restApi: new FakeRestApi(),
@@ -90,7 +90,7 @@ describe("ThenvoiLink event waiting", () => {
   });
 
   it("propagates mark errors by default", async () => {
-    const link = new ThenvoiLink({
+    const link = new BandLink({
       agentId: "agent-1",
       apiKey: "key",
       restApi: new FakeRestApi({
@@ -105,7 +105,7 @@ describe("ThenvoiLink event waiting", () => {
   });
 
   it("supports explicit best-effort marking", async () => {
-    const link = new ThenvoiLink({
+    const link = new BandLink({
       agentId: "agent-1",
       apiKey: "key",
       restApi: new FakeRestApi({
@@ -122,7 +122,7 @@ describe("ThenvoiLink event waiting", () => {
   it("exposes request-first chat listing semantics via listChats", async () => {
     let capturedRequest: { page: number; pageSize: number } | null = null;
     let capturedOptions: { headers?: Record<string, string> } | undefined;
-    const link = new ThenvoiLink({
+    const link = new BandLink({
       agentId: "agent-1",
       apiKey: "key",
       restApi: new FakeRestApi({
@@ -154,7 +154,7 @@ describe("ThenvoiLink event waiting", () => {
 
   it("listAllChats paginates until metadata totalPages is reached", async () => {
     const requests: Array<{ page: number; pageSize: number }> = [];
-    const link = new ThenvoiLink({
+    const link = new BandLink({
       agentId: "agent-1",
       apiKey: "key",
       restApi: new FakeRestApi({

@@ -602,7 +602,7 @@ async function runLinearThenvoiBridgeServer(): Promise<void> {
   const stateDbPath = process.env.LINEAR_THENVOI_STATE_DB ?? ".linear-thenvoi-example.sqlite";
   const rawRestApi = new FernRestAdapter(new ThenvoiClient({
     apiKey: bridgeApiKey,
-    baseUrl: process.env.THENVOI_REST_URL ?? "https://app.thenvoi.com",
+    baseUrl: process.env.THENVOI_REST_URL ?? "https://app.band.ai",
   }));
   const restApi = createRateLimitedRestApi({
     api: rawRestApi,
@@ -675,7 +675,7 @@ async function runLinearThenvoiBridgeServer(): Promise<void> {
     logger.info("linear_thenvoi_bridge.server_started", {
       port,
       mode: embedBridgeAgent ? "embedded_bridge_agent" : "agent_rest_adapter",
-      thenvoiRestUrl: process.env.THENVOI_REST_URL ?? "https://app.thenvoi.com",
+      thenvoiRestUrl: process.env.THENVOI_REST_URL ?? "https://app.band.ai",
       bridgeMinRequestIntervalMs,
     });
   });

@@ -3,12 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 import {
   handleAgentSessionEvent,
   type HandleAgentSessionEventInput,
-  type LinearThenvoiBridgeConfig,
+  type LinearBandBridgeConfig,
   type PendingBootstrapRequest,
   type SessionRoomRecord,
   type SessionRoomStore,
 } from "../src/linear";
-import { LinearThenvoiExampleRestApi } from "../examples/linear-thenvoi/linear-thenvoi-rest-stub";
+import { LinearBandExampleRestApi } from "../examples/linear-thenvoi/linear-thenvoi-rest-stub";
 
 class MemorySessionRoomStore implements SessionRoomStore {
   private readonly records = new Map<string, SessionRoomRecord>();
@@ -57,13 +57,13 @@ class MemorySessionRoomStore implements SessionRoomStore {
   }
 }
 
-class PromptedConfiguredHostRestApi extends LinearThenvoiExampleRestApi {
+class PromptedConfiguredHostRestApi extends LinearBandExampleRestApi {
   public override async getAgentMe(): Promise<never> {
     throw new Error("getAgentMe should not be called when hostAgentHandle is configured");
   }
 }
 
-const config: LinearThenvoiBridgeConfig = {
+const config: LinearBandBridgeConfig = {
   linearAccessToken: "lin_api_test",
   linearWebhookSecret: "linear_webhook_secret",
   hostAgentHandle: "linear-host",
@@ -84,8 +84,8 @@ function makePayload(action: "created" | "updated" | "canceled") {
     },
     assignee: {
       id: "agent-1",
-      name: "Thenvoi",
-      displayName: "Thenvoi",
+      name: "Band",
+      displayName: "Band",
     },
     team: {
       id: "team-1",
@@ -157,8 +157,8 @@ function makeLinearClient(options?: { delegateId?: string | null }): HandleAgent
 }
 
 describe("linear bridge webhook actions", () => {
-  it("forwards created/updated events to Thenvoi room messages", async () => {
-    const restApi = new LinearThenvoiExampleRestApi({
+  it("forwards created/updated events to Band room messages", async () => {
+    const restApi = new LinearBandExampleRestApi({
       agentId: "peer-transport",
       agentName: "Transport Agent",
       agentHandle: "transport-agent",
@@ -214,7 +214,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("surfaces a relevant implementation specialist as a bridge hint without adding them to the room", async () => {
-    const restApi = new LinearThenvoiExampleRestApi({
+    const restApi = new LinearBandExampleRestApi({
       agentId: "peer-host",
       agentName: "Linear Bridge",
       agentHandle: "linear-host",
@@ -259,7 +259,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("prefetches planner and reviewer specialists for planning sessions", async () => {
-    const restApi = new LinearThenvoiExampleRestApi({
+    const restApi = new LinearBandExampleRestApi({
       agentId: "peer-host",
       agentName: "Linear Bridge",
       agentHandle: "linear-host",
@@ -319,7 +319,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("marks session canceled and emits a cancellation event", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
 
     await handleAgentSessionEvent({
@@ -356,7 +356,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("sends acknowledgment thought on created events only", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
 
@@ -379,7 +379,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("does not send acknowledgment on updated events", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
 
@@ -402,7 +402,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("reports errors back to Linear and re-throws", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
 
@@ -482,7 +482,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("skips duplicate deliveries for the same event key", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
     const payload = makePayload("created");
@@ -507,7 +507,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("treats duplicate prompted events as idempotent and does not re-forward room content", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
 
@@ -547,7 +547,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("uses configured host handle when provided", async () => {
-    const restApi = new LinearThenvoiExampleRestApi({
+    const restApi = new LinearBandExampleRestApi({
       agentId: "peer-actual-host",
       agentName: "Actual Host",
       agentHandle: "actual-host",
@@ -583,7 +583,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("sets external URL on Linear session on created event", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
 
@@ -596,13 +596,13 @@ describe("linear bridge webhook actions", () => {
     expect(linearClient.agentSessionUpdateExternalUrl).toHaveBeenCalledWith(
       "session-1",
       {
-        externalUrls: [{ label: "View in Thenvoi", url: expect.stringMatching(/^https:\/\/app\.thenvoi\.com\/rooms\//) }],
+        externalUrls: [{ label: "View in Band", url: expect.stringMatching(/^https:\/\/app\.band\.ai\/rooms\//) }],
       },
     );
   });
 
   it("uses custom thenvoiAppBaseUrl for external URL", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
 
@@ -615,13 +615,13 @@ describe("linear bridge webhook actions", () => {
     expect(linearClient.agentSessionUpdateExternalUrl).toHaveBeenCalledWith(
       "session-1",
       {
-        externalUrls: [{ label: "View in Thenvoi", url: expect.stringContaining("https://custom.example.com/rooms/") }],
+        externalUrls: [{ label: "View in Band", url: expect.stringContaining("https://custom.example.com/rooms/") }],
       },
     );
   });
 
   it("skips delegate when appUserId is absent", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
     const payload = makePayload("created");
@@ -640,7 +640,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("sets agent as delegate on created event when no delegate exists", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient({ delegateId: null });
     // First call: check existing delegate (none). Second call: re-fetch after setting delegate.
@@ -669,7 +669,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("does not overwrite existing delegate on created event", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient({ delegateId: "existing-delegate" });
 
@@ -684,7 +684,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("does not set external URL on updated events", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
 
@@ -709,7 +709,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("continues normally when setting external URL fails", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
     linearClient.agentSessionUpdateExternalUrl.mockRejectedValueOnce(new Error("API error"));
@@ -729,7 +729,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("continues normally when auto-delegate fails", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
     linearClient.issue.mockRejectedValueOnce(new Error("API rate limit"));
@@ -749,7 +749,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("skips external URL when agentSessionUpdateExternalUrl is unavailable", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
     delete (linearClient as Partial<typeof linearClient>).agentSessionUpdateExternalUrl;
@@ -765,7 +765,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("moves issue to started state on created event when state is unstarted", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
     const payload = makePayload("created");
@@ -796,7 +796,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("moves issue to started state on created event when state is backlog", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
     const payload = makePayload("created");
@@ -816,7 +816,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("moves issue to started state on created event when state is triage", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
     const payload = makePayload("created");
@@ -836,7 +836,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("does not move issue when already in started state", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
     const payload = makePayload("created");
@@ -851,7 +851,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("does not move issue when in completed state", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
     const payload = makePayload("created");
@@ -868,7 +868,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("does not move issue when in canceled state", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
     const payload = makePayload("created");
@@ -885,7 +885,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("does not attempt auto-start on updated events", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
 
@@ -910,7 +910,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("continues normally when auto-start fails", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
     linearClient.workflowStates.mockRejectedValueOnce(new Error("API rate limit"));
@@ -932,7 +932,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("moves issue to lowest-position started state when multiple exist", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
     linearClient.workflowStates.mockResolvedValueOnce({
@@ -959,7 +959,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("skips auto-start when no started workflow states exist for the team", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
     linearClient.workflowStates.mockResolvedValueOnce({ nodes: [] });
@@ -984,7 +984,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("handles malformed workflowStates response with missing nodes gracefully", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
     linearClient.workflowStates.mockResolvedValueOnce({ nodes: undefined });
@@ -1009,7 +1009,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("preserves original intent after auto-start moves issue to started", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
     const payload = makePayload("created");
@@ -1027,7 +1027,7 @@ describe("linear bridge webhook actions", () => {
   });
 
   it("skips auto-start when issue state type is missing from payload", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
     const payload = makePayload("created");

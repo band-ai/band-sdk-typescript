@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { PlatformRuntime } from "../src/runtime/PlatformRuntime";
 import { RuntimeStateError, ValidationError } from "../src/core/errors";
-import { ThenvoiLink } from "../src/platform/ThenvoiLink";
+import { BandLink } from "../src/platform/BandLink";
 import type { StreamingTransport } from "../src/platform/streaming/transport";
 import type { ContactEvent } from "../src/platform/events";
 import { AgentRuntime } from "../src/runtime/rooms/AgentRuntime";
@@ -35,7 +35,7 @@ describe("PlatformRuntime coverage", () => {
     const runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
-      link: new ThenvoiLink({
+      link: new BandLink({
         agentId: "a1",
         apiKey: "k",
         transport: new MinimalTransport(),
@@ -58,7 +58,7 @@ describe("PlatformRuntime coverage", () => {
     const runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
-      link: new ThenvoiLink({
+      link: new BandLink({
         agentId: "a1",
         apiKey: "k",
         transport: new MinimalTransport(),
@@ -85,7 +85,7 @@ describe("PlatformRuntime coverage", () => {
     const runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
-      link: new ThenvoiLink({
+      link: new BandLink({
         agentId: "a1",
         apiKey: "k",
         transport: new MinimalTransport(),
@@ -121,7 +121,7 @@ describe("PlatformRuntime coverage", () => {
     const runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
-      link: new ThenvoiLink({
+      link: new BandLink({
         agentId: "a1",
         apiKey: "k",
         transport: new MinimalTransport(),
@@ -152,7 +152,7 @@ describe("PlatformRuntime coverage", () => {
     const runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
-      link: new ThenvoiLink({
+      link: new BandLink({
         agentId: "a1",
         apiKey: "k",
         transport: new MinimalTransport(),

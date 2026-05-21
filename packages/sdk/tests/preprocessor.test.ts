@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { DefaultPreprocessor } from "../src/runtime/preprocessing/DefaultPreprocessor";
 import { ExecutionContext } from "../src/runtime/ExecutionContext";
-import { ThenvoiLink } from "../src/platform/ThenvoiLink";
+import { BandLink } from "../src/platform/BandLink";
 import type { StreamingTransport } from "../src/platform/streaming/transport";
 import { FakeRestApi } from "./testUtils";
 
@@ -35,7 +35,7 @@ function makeEvent(senderId = "user-1") {
 }
 
 function makeContext() {
-  const link = new ThenvoiLink({
+  const link = new BandLink({
     agentId: "a1",
     apiKey: "k",
     restApi: new FakeRestApi(),

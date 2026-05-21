@@ -15,7 +15,7 @@ export interface AgentCreateOptions extends Omit<PlatformRuntimeOptions, "agentI
 }
 
 /**
- * Top-level handle for a Thenvoi agent.
+ * Top-level handle for a Band agent.
  *
  * Use {@link Agent.create} to build an instance from config + adapter,
  * then call {@link Agent.run} to connect to the platform and handle messages.

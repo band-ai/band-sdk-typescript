@@ -1,8 +1,8 @@
 /**
- * MCP Tools for Thenvoi platform operations.
+ * MCP Tools for Band platform operations.
  *
- * Exposes Thenvoi platform tools via MCP (Model Context Protocol)
- * for use by OpenClaw agents. Uses @thenvoi/sdk REST API.
+ * Exposes Band platform tools via MCP (Model Context Protocol)
+ * for use by OpenClaw agents. Uses @band-ai/sdk REST API.
  */
 
 import { getLink, getAgentId } from "./channel.js";
@@ -93,7 +93,7 @@ function clampPagination(page: number, pageSize: number): { page: number; pageSi
 const lookupPeersTool: McpTool = {
   name: "thenvoi_lookup_peers",
   description:
-    "Find available agents and users on the Thenvoi platform. " +
+    "Find available agents and users on the Band platform. " +
     "Use this to discover who you can invite to collaborate.",
   inputSchema: {
     type: "object",

@@ -28,7 +28,7 @@ import type {
   Stream,
 } from "@agentclientprotocol/sdk";
 
-import { ThenvoiACPServerAdapter } from "./ThenvoiACPServerAdapter";
+import { BandACPServerAdapter } from "./BandACPServerAdapter";
 import { CursorExtensionHandler } from "./cursorExtensions";
 import type { ACPExtensionHandler } from "./extensions";
 import { acpModule } from "./loader";
@@ -41,14 +41,14 @@ export interface ACPServerOptions {
 }
 
 export class ACPServer implements Agent {
-  private readonly adapter: ThenvoiACPServerAdapter
+  private readonly adapter: BandACPServerAdapter
   private readonly authMethods: InitializeResponse["authMethods"]
   private readonly agentInfo: Partial<Implementation>
   private readonly extensionHandler: ACPExtensionHandler
   private connection: AgentSideConnection | null = null
 
   public constructor(
-    adapter: ThenvoiACPServerAdapter,
+    adapter: BandACPServerAdapter,
     options?: ACPServerOptions,
   ) {
     this.adapter = adapter
@@ -58,7 +58,7 @@ export class ACPServer implements Agent {
     this.authMethods = options?.authMethods ?? [{
       id: "api_key",
       name: "API Key",
-      description: "Authenticate with THENVOI_API_KEY.",
+      description: "Authenticate with BAND_API_KEY.",
     }]
     this.agentInfo = options?.agentInfo ?? {}
     this.extensionHandler = options?.extensionHandler ?? new CursorExtensionHandler()
@@ -128,7 +128,7 @@ export class ACPServer implements Agent {
       },
       agentInfo: {
         name: this.agentInfo.name ?? "thenvoi-agent",
-        title: this.agentInfo.title ?? this.adapter.displayName ?? "Thenvoi Agent",
+        title: this.agentInfo.title ?? this.adapter.displayName ?? "Band Agent",
         version: this.agentInfo.version ?? "0.1.0",
       },
       authMethods: this.authMethods,

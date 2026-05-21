@@ -11,7 +11,7 @@ import {
 } from "./registrations";
 import { buildZodShape } from "./zod";
 
-export interface ThenvoiMcpStdioServerOptions {
+export interface BandMcpStdioServerOptions {
   tools: AdapterToolsProtocol | ((roomId: string) => AdapterToolsProtocol | undefined);
   name?: string;
   enableMemoryTools?: boolean;
@@ -21,13 +21,13 @@ export interface ThenvoiMcpStdioServerOptions {
   stdout?: Writable;
 }
 
-export class ThenvoiMcpStdioServer {
-  private readonly options: ThenvoiMcpStdioServerOptions;
+export class BandMcpStdioServer {
+  private readonly options: BandMcpStdioServerOptions;
   private readonly registrations: McpToolRegistration[];
   private mcpServer: InstanceType<typeof import("@modelcontextprotocol/sdk/server/mcp.js").McpServer> | null = null;
   private transport: import("@modelcontextprotocol/sdk/server/stdio.js").StdioServerTransport | null = null;
 
-  public constructor(options: ThenvoiMcpStdioServerOptions) {
+  public constructor(options: BandMcpStdioServerOptions) {
     this.options = options;
 
     const regOptions: BuildRegistrationsOptions = {
@@ -76,6 +76,9 @@ export class ThenvoiMcpStdioServer {
     this.mcpServer = null;
   }
 }
+
+export { BandMcpStdioServer as ThenvoiMcpStdioServer };
+export type { BandMcpStdioServerOptions as ThenvoiMcpStdioServerOptions };
 
 function registerTools(
   mcpServer: InstanceType<typeof import("@modelcontextprotocol/sdk/server/mcp.js").McpServer>,

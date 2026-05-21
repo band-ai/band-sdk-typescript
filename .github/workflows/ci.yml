@@ -54,27 +54,27 @@ jobs:
 
       - name: Build SDK
         if: needs.changes.outputs.sdk == 'true' || needs.changes.outputs.openclaw == 'true'
-        run: pnpm --filter @thenvoi/sdk build
+        run: pnpm --filter @band-ai/sdk build
 
       - name: Build OpenClaw
         if: needs.changes.outputs.openclaw == 'true'
-        run: pnpm --filter @thenvoi/openclaw-channel-thenvoi build
+        run: pnpm --filter @band-ai/openclaw-channel-band build
 
       - name: Typecheck SDK
         if: needs.changes.outputs.sdk == 'true'
-        run: pnpm --filter @thenvoi/sdk typecheck
+        run: pnpm --filter @band-ai/sdk typecheck
 
       - name: Typecheck OpenClaw
         if: needs.changes.outputs.openclaw == 'true'
-        run: pnpm --filter @thenvoi/openclaw-channel-thenvoi typecheck
+        run: pnpm --filter @band-ai/openclaw-channel-band typecheck
 
       - name: Lint SDK
         if: needs.changes.outputs.sdk == 'true'
-        run: pnpm --filter @thenvoi/sdk lint
+        run: pnpm --filter @band-ai/sdk lint
 
       - name: Lint OpenClaw
         if: needs.changes.outputs.openclaw == 'true'
-        run: pnpm --filter @thenvoi/openclaw-channel-thenvoi lint
+        run: pnpm --filter @band-ai/openclaw-channel-band lint
 
   test:
     needs: changes
@@ -98,19 +98,19 @@ jobs:
 
       - name: Build SDK
         if: needs.changes.outputs.sdk == 'true' || needs.changes.outputs.openclaw == 'true'
-        run: pnpm --filter @thenvoi/sdk build
+        run: pnpm --filter @band-ai/sdk build
 
       - name: Build OpenClaw
         if: needs.changes.outputs.openclaw == 'true'
-        run: pnpm --filter @thenvoi/openclaw-channel-thenvoi build
+        run: pnpm --filter @band-ai/openclaw-channel-band build
 
       - name: Test SDK
         if: needs.changes.outputs.sdk == 'true'
-        run: pnpm --filter @thenvoi/sdk test
+        run: pnpm --filter @band-ai/sdk test
 
       - name: Test OpenClaw
         if: needs.changes.outputs.openclaw == 'true'
-        run: pnpm --filter @thenvoi/openclaw-channel-thenvoi test
+        run: pnpm --filter @band-ai/openclaw-channel-band test
 
   packaging:
     runs-on: ubuntu-latest

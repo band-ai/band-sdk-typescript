@@ -6,9 +6,9 @@ import {
   buildSingleContextRegistrations,
   resolveSingleRoomTools,
 } from "./registrations";
-import { ThenvoiMcpStdioServer } from "./stdio";
-import { ThenvoiMcpServer } from "./server";
-import { ThenvoiMcpSseServer } from "./sse";
+import { BandMcpStdioServer } from "./stdio";
+import { BandMcpServer } from "./server";
+import { BandMcpSseServer } from "./sse";
 import type { ThenvoiSdkMcpServer } from "./sdk";
 
 export type ThenvoiMcpBackendKind = "sdk" | "http" | "sse" | "stdio";
@@ -71,7 +71,7 @@ export async function createThenvoiMcpBackend(
   const allowedTools = mcpToolNames(new Set(registrations.map((registration) => registration.name)));
 
   if (options.kind === "stdio") {
-    const server = new ThenvoiMcpStdioServer({
+    const server = new BandMcpStdioServer({
       tools: resolvedTools,
       enableMemoryTools: options.enableMemoryTools,
       enableContactTools: true,
@@ -90,7 +90,7 @@ export async function createThenvoiMcpBackend(
   }
 
   if (options.kind === "sse") {
-    const server = new ThenvoiMcpSseServer({
+    const server = new BandMcpSseServer({
       tools: resolvedTools,
       enableMemoryTools: options.enableMemoryTools,
       enableContactTools: true,
@@ -108,7 +108,7 @@ export async function createThenvoiMcpBackend(
     };
   }
 
-  const server = new ThenvoiMcpServer({
+  const server = new BandMcpServer({
     tools: resolvedTools,
     enableMemoryTools: options.enableMemoryTools,
     enableContactTools: true,
@@ -135,3 +135,9 @@ export function getThenvoiSdkMcpServerConfig(
 
   return (backend.server as ThenvoiSdkMcpServer).serverConfig;
 }
+
+export type BandMcpBackendKind = ThenvoiMcpBackendKind;
+export type BandMcpBackend = ThenvoiMcpBackend;
+export type CreateBandMcpBackendOptions = CreateThenvoiMcpBackendOptions;
+export const createBandMcpBackend = createThenvoiMcpBackend;
+export const getBandSdkMcpServerConfig = getThenvoiSdkMcpServerConfig;

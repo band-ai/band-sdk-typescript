@@ -26,7 +26,7 @@ Create a local `.env.local` from `.env.local.example`. The agent only needs a fe
 LINEAR_ACCESS_TOKEN=lin_api_xxx
 LINEAR_WEBHOOK_SECRET=lin_wh_xxx
 THENVOI_API_KEY=thnv_a_xxx
-THENVOI_REST_URL=https://app.thenvoi.com
+THENVOI_REST_URL=https://app.band.ai
 ```
 
 Common optional settings:

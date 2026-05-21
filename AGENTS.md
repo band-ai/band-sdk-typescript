@@ -5,7 +5,7 @@ This is a TypeScript SDK that connects AI agents to the Thenvoi collaborative pl
 ## Core Features
 
 1. Multi-framework support (OpenAI, Anthropic, Gemini, Claude Agent SDK, Codex, LangGraph, Vercel AI SDK, Google ADK, Letta, OpenCode, Parlant, plus a Generic adapter)
-2. A2A protocol support: bridge to external A2A agents and expose Thenvoi peers as A2A endpoints (`A2AAdapter`, `A2AGatewayAdapter`)
+2. A2A protocol support: bridge to external A2A agents and expose Band peers as A2A endpoints (`A2AAdapter`, `A2AGatewayAdapter`)
 3. ACP integration: editor-facing server (`ACPServer` + `ThenvoiACPServerAdapter`) and subprocess client (`ACPClientAdapter`) for Cursor, Codex, Claude Code, Zed
 4. MCP support: generic MCP backends (stdio/SSE) and a Claude Agent SDK bridge under `@thenvoi/sdk/mcp` and `@thenvoi/sdk/mcp/claude`
 5. Linear integration: full PM bridge with tools, webhook handling, dispatchers, and SQLite session room store (`@thenvoi/sdk/linear`)
@@ -78,7 +78,7 @@ The full method set is the union `ThenvoiLinkRestApi = AgentProfileRestApi & Mes
 
 ## WebSocket Channels & Events
 
-WebSocket transport is Phoenix Channels (`packages/sdk/src/platform/streaming/PhoenixChannelsTransport.ts`). Default base URL: `wss://app.thenvoi.com/api/v1/socket` (the `phoenix` JS lib appends `/websocket` to form the actual WS endpoint — set `THENVOI_WS_URL` to the base URL, not the `/websocket` URL).
+WebSocket transport is Phoenix Channels (`packages/sdk/src/platform/streaming/PhoenixChannelsTransport.ts`). Default base URL: `wss://app.band.ai/api/v1/socket` (the `phoenix` JS lib appends `/websocket` to form the actual WS endpoint — set `THENVOI_WS_URL` to the base URL, not the `/websocket` URL).
 
 ### Channels (Phoenix Channels Protocol V2)
 
@@ -196,7 +196,7 @@ const adapter = new A2AAdapter({
 
 ### A2A Gateway (inbound)
 
-`A2AGatewayAdapter` exposes Thenvoi peers as A2A JSON-RPC endpoints over a built-in Express server. External A2A clients can send messages to Thenvoi agents through the gateway, with `contextId` preservation (same `contextId` = same chat room) and SSE streaming responses.
+`A2AGatewayAdapter` exposes Band peers as A2A JSON-RPC endpoints over a built-in Express server. External A2A clients can send messages to Thenvoi agents through the gateway, with `contextId` preservation (same `contextId` = same chat room) and SSE streaming responses.
 
 ```ts
 import { Agent, A2AGatewayAdapter } from "@thenvoi/sdk";
@@ -349,7 +349,7 @@ The SDK reads only the `THENVOI_*` prefix by default (override via `loadAgentCon
 
 - `THENVOI_AGENT_ID`: agent UUID (required)
 - `THENVOI_API_KEY`: agent API key (required)
-- `THENVOI_WS_URL`: WebSocket base URL (optional; default: `wss://app.thenvoi.com/api/v1/socket` — the `phoenix` lib appends `/websocket`)
+- `THENVOI_WS_URL`: WebSocket base URL (optional; default: `wss://app.band.ai/api/v1/socket` — the `phoenix` lib appends `/websocket`)
 - `THENVOI_REST_URL`: REST API URL (optional; derived from `THENVOI_WS_URL` if not set, via `deriveDefaultRestUrl`)
 
 LLM API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`/`GEMINI_API_KEY`, etc.) are read directly by the underlying provider SDKs and passed via adapter options. For Gemini, `@google/genai` accepts both `GOOGLE_API_KEY` and `GEMINI_API_KEY` (it prefers `GOOGLE_API_KEY` if both are set; verified in `@google/genai` 1.50.x `getApiKeyFromEnv`).

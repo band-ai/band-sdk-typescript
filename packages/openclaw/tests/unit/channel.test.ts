@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Mock the SDK modules before importing channel.ts
 // This prevents vitest from loading the SDK's optional peer dependencies
-vi.mock("@thenvoi/sdk", () => ({
+vi.mock("@band-ai/sdk", () => ({
   ThenvoiLink: vi.fn().mockImplementation((opts: Record<string, unknown>) => ({
     agentId: opts.agentId,
     rest: {
@@ -27,7 +27,7 @@ vi.mock("@thenvoi/sdk", () => ({
   })),
 }));
 
-vi.mock("@thenvoi/sdk/runtime", () => ({
+vi.mock("@band-ai/sdk/runtime", () => ({
   RoomPresence: vi.fn().mockImplementation(() => ({
     onRoomJoined: null,
     onRoomLeft: null,
@@ -41,7 +41,7 @@ vi.mock("@thenvoi/sdk/runtime", () => ({
   })),
 }));
 
-vi.mock("@thenvoi/sdk/rest", () => ({}));
+vi.mock("@band-ai/sdk/rest", () => ({}));
 
 import {
   thenvoiChannel,
@@ -68,18 +68,18 @@ describe("Channel Module", () => {
 
   describe("thenvoiChannel.meta", () => {
     it("should have correct metadata", () => {
-      expect(thenvoiChannel.id).toBe("openclaw-channel-thenvoi");
-      expect(thenvoiChannel.meta.id).toBe("openclaw-channel-thenvoi");
-      expect(thenvoiChannel.meta.label).toBe("Thenvoi");
-      expect(thenvoiChannel.meta.aliases).toContain("thenvoi");
+      expect(thenvoiChannel.id).toBe("openclaw-channel-band");
+      expect(thenvoiChannel.meta.id).toBe("openclaw-channel-band");
+      expect(thenvoiChannel.meta.label).toBe("Band");
+      expect(thenvoiChannel.meta.aliases).toContain("band");
     });
 
     it("should have documentation path", () => {
-      expect(thenvoiChannel.meta.docsPath).toBe("/channels/thenvoi");
+      expect(thenvoiChannel.meta.docsPath).toBe("/channels/band");
     });
 
     it("should have selection label", () => {
-      expect(thenvoiChannel.meta.selectionLabel).toContain("Thenvoi");
+      expect(thenvoiChannel.meta.selectionLabel).toContain("Band");
     });
   });
 
@@ -184,7 +184,7 @@ describe("Channel Module", () => {
         const result = await thenvoiChannel.setup!.validateConfig!({});
 
         expect(result.valid).toBe(false);
-        expect(result.errors?.[0]).toContain("THENVOI_API_KEY");
+        expect(result.errors?.[0]).toContain("BAND_API_KEY");
       });
 
       it("should fail when API returns error", async () => {

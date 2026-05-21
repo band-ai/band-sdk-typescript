@@ -82,7 +82,7 @@ export interface CodexAdapterConfig {
   customSection?: string;
   /**
    * Full system prompt override.
-   * When set, this bypasses the default Thenvoi prompt template + customSection.
+   * When set, this bypasses the default Band prompt template + customSection.
    */
   systemPrompt?: string;
   experimentalApi?: boolean;
@@ -156,7 +156,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       experimentalApi: true,
       fallbackSendAgentText: true,
       clientName: "thenvoi_codex_adapter",
-      clientTitle: "Thenvoi Codex Adapter",
+      clientTitle: "Band Codex Adapter",
       clientVersion: "0.1.0",
       turnTimeoutMs: 180_000,
       ...options?.config,
@@ -460,7 +460,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
         await client.initialize({
           clientInfo: {
             name: this.baseConfig.clientName ?? "thenvoi_codex_adapter",
-            title: this.baseConfig.clientTitle ?? "Thenvoi Codex Adapter",
+            title: this.baseConfig.clientTitle ?? "Band Codex Adapter",
             version: this.baseConfig.clientVersion ?? "0.1.0",
           },
           capabilities: {

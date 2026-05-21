@@ -9,9 +9,9 @@ export {
 } from "./ACPServer";
 
 export {
-  ThenvoiACPServerAdapter,
-  type ThenvoiACPServerAdapterOptions,
-} from "./ThenvoiACPServerAdapter";
+  BandACPServerAdapter,
+  type BandACPServerAdapterOptions,
+} from "./BandACPServerAdapter";
 
 export type { ACPExtensionHandler } from "./extensions";
 export { CursorExtensionHandler } from "./cursorExtensions";

@@ -61,19 +61,10 @@ jobs:
         if: steps.release.outputs['packages/sdk--release_created'] == 'true' || steps.release.outputs['packages/openclaw--release_created'] == 'true'
         run: pnpm build
 
-      - name: Publish SDK to npm (@thenvoi)
-        if: steps.release.outputs['packages/sdk--release_created'] == 'true'
-        run: |
-          cd packages/sdk
-          npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
       - name: Publish SDK to npm (@band-ai)
         if: steps.release.outputs['packages/sdk--release_created'] == 'true'
         run: |
           cd packages/sdk
-          sed -i 's/"@thenvoi\/sdk"/"@band-ai\/sdk"/' package.json
           npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.BAND_AI_NPM_TOKEN }}
@@ -90,7 +81,7 @@ jobs:
         if: steps.release.outputs['packages/openclaw--release_created'] == 'true'
         run: |
           cd packages/openclaw
-          sed -i 's/"@thenvoi\/openclaw-channel-thenvoi"/"@band-ai\/openclaw-channel-thenvoi"/' package.json
+          sed -i 's/"@thenvoi\/openclaw-channel-band"/"@band-ai\/openclaw-channel-band"/' package.json
           sed -i 's/"@thenvoi\/sdk"/"@band-ai\/sdk"/' package.json
           npm publish --provenance --access public
         env:
@@ -103,10 +94,9 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Packages released:" >> $GITHUB_STEP_SUMMARY
           if [ "${{ steps.release.outputs['packages/sdk--release_created'] }}" == "true" ]; then
-            echo "- **@thenvoi/sdk** v${{ steps.release.outputs['packages/sdk--version'] }}" >> $GITHUB_STEP_SUMMARY
             echo "- **@band-ai/sdk** v${{ steps.release.outputs['packages/sdk--version'] }}" >> $GITHUB_STEP_SUMMARY
           fi
           if [ "${{ steps.release.outputs['packages/openclaw--release_created'] }}" == "true" ]; then
-            echo "- **@thenvoi/openclaw-channel-thenvoi** v${{ steps.release.outputs['packages/openclaw--version'] }}" >> $GITHUB_STEP_SUMMARY
-            echo "- **@band-ai/openclaw-channel-thenvoi** v${{ steps.release.outputs['packages/openclaw--version'] }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **@band-ai/openclaw-channel-band** v${{ steps.release.outputs['packages/openclaw--version'] }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **@band-ai/openclaw-channel-band** v${{ steps.release.outputs['packages/openclaw--version'] }}" >> $GITHUB_STEP_SUMMARY
           fi

@@ -75,6 +75,9 @@ export interface LinearThenvoiBridgeDeps {
   logger?: Logger;
 }
 
+export type LinearBandBridgeConfig = LinearThenvoiBridgeConfig;
+export type LinearBandBridgeDeps = LinearThenvoiBridgeDeps;
+
 export interface HandleAgentSessionEventInput {
   payload: AgentSessionEventWebhookPayload;
   config: LinearThenvoiBridgeConfig;

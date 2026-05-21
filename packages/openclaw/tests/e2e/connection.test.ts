@@ -2,12 +2,12 @@
  * E2E Tests: WebSocket Connection
  *
  * Tests the connection flow against a real Thenvoi environment.
- * Uses ThenvoiLink from @thenvoi/sdk and RoomPresence from @thenvoi/sdk/runtime.
+ * Uses ThenvoiLink from @band-ai/sdk and RoomPresence from @band-ai/sdk/runtime.
  */
 
 import { describe, it, expect, beforeAll, afterEach } from "vitest";
-import { ThenvoiLink } from "@thenvoi/sdk";
-import { RoomPresence } from "@thenvoi/sdk/runtime";
+import { ThenvoiLink } from "@band-ai/sdk";
+import { RoomPresence } from "@band-ai/sdk/runtime";
 import {
   getE2EConfig,
   canRunE2E,

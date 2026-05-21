@@ -1,11 +1,11 @@
 import type { PlatformMessage } from "../../runtime/types";
 import { EventConverter } from "./eventConverter";
-import type { ThenvoiACPServerAdapter } from "./ThenvoiACPServerAdapter";
+import type { BandACPServerAdapter } from "./BandACPServerAdapter";
 
 export class ACPPushHandler {
-  private readonly adapter: ThenvoiACPServerAdapter
+  private readonly adapter: BandACPServerAdapter
 
-  public constructor(adapter: ThenvoiACPServerAdapter) {
+  public constructor(adapter: BandACPServerAdapter) {
     this.adapter = adapter
   }
 

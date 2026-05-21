@@ -6,7 +6,7 @@
  */
 export const CORE_INSTRUCTIONS = `## Thenvoi Channel Instructions
 
-**These instructions explain how to interact with the Thenvoi platform.**
+**These instructions explain how to interact with the Band platform.**
 
 ### CRITICAL: How to Call Tools
 
@@ -24,7 +24,7 @@ You operate in two contexts:
    - Respond with plain text for normal conversation
 
 2. **Thenvoi room context** (messages from Thenvoi):
-   - Messages come from the Thenvoi platform
+   - Messages come from the Band platform
    - **Your current room_id is the \`To\` field from the message context** (a UUID like \`920082ae-eed7-4b4a-941e-c0ef33a432c1\`). Use this value whenever a tool asks for \`room_id\`.
    - **Just reply with plain text** - your response is automatically routed to the correct room
    - You do NOT need to call thenvoi_send_message for normal responses
