@@ -11,6 +11,11 @@ describe("BandACPServerAdapter", () => {
     expect(ThenvoiACPServerAdapter).toBe(BandACPServerAdapter);
   });
 
+  it("accepts the canonical bandRest option", () => {
+    const rest = new FakeRestApi();
+    expect(() => new BandACPServerAdapter({ bandRest: rest })).not.toThrow();
+  });
+
   it("creates ACP sessions, routes prompts, and streams room responses", async () => {
     const createdEvents: Array<Record<string, unknown>> = []
     const sentMessages: Array<Record<string, unknown>> = []

@@ -72,6 +72,7 @@ describe("Channel Module", () => {
       expect(thenvoiChannel.meta.id).toBe("openclaw-channel-band");
       expect(thenvoiChannel.meta.label).toBe("Band");
       expect(thenvoiChannel.meta.aliases).toContain("band");
+      expect(thenvoiChannel.meta.aliases).toContain("openclaw-channel-thenvoi");
     });
 
     it("should have documentation path", () => {
@@ -124,6 +125,20 @@ describe("Channel Module", () => {
 
       it("should return default account when ID not specified", () => {
         const account = thenvoiChannel.config.resolveAccount(mockPluginConfig);
+
+        expect(account.apiKey).toBe("test-api-key-12345");
+      });
+
+      it("should resolve accounts from the legacy full channel id", () => {
+        const account = thenvoiChannel.config.resolveAccount({
+          channels: {
+            "openclaw-channel-thenvoi": {
+              accounts: {
+                default: mockAccountConfig,
+              },
+            },
+          },
+        });
 
         expect(account.apiKey).toBe("test-api-key-12345");
       });

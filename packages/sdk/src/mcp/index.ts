@@ -1,12 +1,17 @@
 export {
   createBandMcpBackend,
+  createThenvoiMcpBackend,
   getBandSdkMcpServerConfig,
+  getThenvoiSdkMcpServerConfig,
 } from "./backends";
 
 export type {
   CreateBandMcpBackendOptions,
+  CreateThenvoiMcpBackendOptions,
   BandMcpBackend,
   BandMcpBackendKind,
+  ThenvoiMcpBackend,
+  ThenvoiMcpBackendKind,
 } from "./backends";
 
 export {

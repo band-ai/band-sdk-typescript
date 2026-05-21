@@ -7,9 +7,20 @@ import {
   errorResult,
   type McpToolRegistration,
 } from "../src/mcp/registrations";
+import {
+  createBandMcpBackend,
+  createThenvoiMcpBackend,
+  getBandSdkMcpServerConfig,
+  getThenvoiSdkMcpServerConfig,
+} from "../src/mcp";
 import { FakeTools } from "./testUtils";
 
 describe("MCP registrations", () => {
+  it("exports legacy MCP backend aliases from the public barrel", () => {
+    expect(createThenvoiMcpBackend).toBe(createBandMcpBackend);
+    expect(getThenvoiSdkMcpServerConfig).toBe(getBandSdkMcpServerConfig);
+  });
+
   describe("buildSingleContextRegistrations", () => {
     it("builds registrations from TOOL_MODELS without room_id", () => {
       const tools = new FakeTools();

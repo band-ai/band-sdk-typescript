@@ -142,6 +142,9 @@ interface PluginConfig {
     "openclaw-channel-band"?: {
       accounts?: Record<string, ThenvoiAccountConfig>;
     };
+    "openclaw-channel-thenvoi"?: {
+      accounts?: Record<string, ThenvoiAccountConfig>;
+    };
   };
   plugins?: {
     entries?: {
@@ -156,6 +159,11 @@ interface PluginConfig {
         };
       };
       "openclaw-channel-band"?: {
+        config?: {
+          accounts?: Record<string, ThenvoiAccountConfig>;
+        };
+      };
+      "openclaw-channel-thenvoi"?: {
         config?: {
           accounts?: Record<string, ThenvoiAccountConfig>;
         };
@@ -522,7 +530,7 @@ export const thenvoiChannel: OpenClawChannel = {
     selectionLabel: "Band (AI Collaboration)",
     docsPath: "/channels/band",
     blurb: "Connect to the Band AI agent collaboration platform.",
-    aliases: ["band", "thenvoi", "openclaw-channel-band"],
+    aliases: ["band", "thenvoi", "openclaw-channel-band", "openclaw-channel-thenvoi"],
   },
 
   capabilities: {
@@ -533,9 +541,11 @@ export const thenvoiChannel: OpenClawChannel = {
   config: {
     listAccountIds: (config: PluginConfig): string[] => {
       const pluginAccounts = config.plugins?.entries?.["openclaw-channel-band"]?.config?.accounts
+        ?? config.plugins?.entries?.["openclaw-channel-thenvoi"]?.config?.accounts
         ?? config.plugins?.entries?.band?.config?.accounts
         ?? config.plugins?.entries?.thenvoi?.config?.accounts ?? {};
       const channelAccounts = config.channels?.["openclaw-channel-band"]?.accounts
+        ?? config.channels?.["openclaw-channel-thenvoi"]?.accounts
         ?? config.channels?.band?.accounts
         ?? config.channels?.thenvoi?.accounts ?? {};
       const accounts = { ...pluginAccounts, ...channelAccounts };
@@ -547,9 +557,11 @@ export const thenvoiChannel: OpenClawChannel = {
       accountId?: string,
     ): ThenvoiAccountConfig => {
       const pluginAccounts = config.plugins?.entries?.["openclaw-channel-band"]?.config?.accounts
+        ?? config.plugins?.entries?.["openclaw-channel-thenvoi"]?.config?.accounts
         ?? config.plugins?.entries?.band?.config?.accounts
         ?? config.plugins?.entries?.thenvoi?.config?.accounts ?? {};
       const channelAccounts = config.channels?.["openclaw-channel-band"]?.accounts
+        ?? config.channels?.["openclaw-channel-thenvoi"]?.accounts
         ?? config.channels?.band?.accounts
         ?? config.channels?.thenvoi?.accounts ?? {};
       const accounts = { ...pluginAccounts, ...channelAccounts };

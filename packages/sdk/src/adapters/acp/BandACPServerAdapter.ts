@@ -29,7 +29,9 @@ const DEFAULT_PROMPT_TIMEOUT_MS = 300_000
 const DEFAULT_PROMPT_COMPLETION_GRACE_MS = 250
 
 export interface BandACPServerAdapterOptions {
-  thenvoiRest: RestApi;
+  bandRest?: RestApi;
+  /** @deprecated Use bandRest. */
+  thenvoiRest?: RestApi;
   maxSessions?: number;
   responseTimeoutMs?: number;
   promptCompletionGraceMs?: number;
@@ -39,7 +41,7 @@ export interface BandACPServerAdapterOptions {
 }
 
 export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, MessagingTools> {
-  private readonly thenvoiRest: RestApi
+  private readonly bandRest: RestApi
   private readonly maxSessions: number
   private readonly responseTimeoutMs: number
   private readonly promptCompletionGraceMs: number
@@ -64,7 +66,11 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
       historyConverter: new ACPServerHistoryConverter(),
     })
 
-    this.thenvoiRest = options.thenvoiRest
+    const bandRest = options.bandRest ?? options.thenvoiRest
+    if (!bandRest) {
+      throw new Error("BandACPServerAdapter requires bandRest")
+    }
+    this.bandRest = bandRest
     this.maxSessions = options.maxSessions ?? DEFAULT_MAX_SESSIONS
     this.responseTimeoutMs = options.responseTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS
     this.promptCompletionGraceMs = options.promptCompletionGraceMs ?? DEFAULT_PROMPT_COMPLETION_GRACE_MS
@@ -148,7 +154,7 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
 
   public async verifyCredentials(): Promise<boolean> {
     try {
-      await this.thenvoiRest.getAgentMe()
+      await this.bandRest.getAgentMe()
       return true
     } catch {
       return false
@@ -162,7 +168,7 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
     await super.onStarted(agentName, agentDescription)
 
     try {
-      const identity = await this.thenvoiRest.getAgentMe()
+      const identity = await this.bandRest.getAgentMe()
       this.agentId = identity.id
     } catch {
       this.agentId = null
@@ -182,7 +188,7 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
       throw new Error(`Maximum ACP sessions (${this.maxSessions}) reached`)
     }
     try {
-      const room = await this.thenvoiRest.createChat()
+      const room = await this.bandRest.createChat()
       const sessionId = randomUUID()
       const normalizedMcpServers = normalizeMcpServers(input.mcpServers)
 
@@ -194,7 +200,7 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
       }
 
       try {
-        await this.thenvoiRest.createChatEvent(room.id, {
+        await this.bandRest.createChatEvent(room.id, {
           content: "ACP session context",
           messageType: "task",
           metadata: {
@@ -231,11 +237,11 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
 
     const resolved = this.router.resolve(text, this.sessionModeIds.get(sessionId))
     const promptText = this.prependSessionContext(sessionId, resolved.text)
-    const participants = await this.thenvoiRest.listChatParticipants(roomId)
+    const participants = await this.bandRest.listChatParticipants(roomId)
     const mentions = this.resolveMentions(participants, resolved.targetPeer)
 
     try {
-      await this.thenvoiRest.createChatMessage(roomId, {
+      await this.bandRest.createChatMessage(roomId, {
         content: promptText,
         mentions,
       })

@@ -31,7 +31,7 @@ import {
 
 const OPENCODE_SYSTEM_NOTE = [
   "Responses are relayed back into the Band room by the adapter.",
-  "Use the thenvoi_ prefixed tools (for example band_send_message) for Band platform actions when available.",
+  "Use the band_ prefixed tools (for example band_send_message) for Band platform actions when available.",
   "When you need approval or clarification, ask clearly and wait for the user's next room message.",
 ].join("\n");
 

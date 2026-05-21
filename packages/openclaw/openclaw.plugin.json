@@ -17,7 +17,7 @@
     "docsPath": "/channels/band",
     "blurb": "Connect to the Band AI agent collaboration platform.",
     "order": 100,
-    "aliases": ["band", "thenvoi"]
+    "aliases": ["band", "thenvoi", "openclaw-channel-thenvoi"]
   },
 
   "openclaw.install": {
