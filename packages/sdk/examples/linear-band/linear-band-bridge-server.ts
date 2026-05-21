@@ -47,6 +47,10 @@ const DEFAULT_THENVOI_BRIDGE_MIN_REQUEST_INTERVAL_MS = 2_000;
 const DEFAULT_THENVOI_BRIDGE_RETRY_LIMIT = 4;
 const DEFAULT_THENVOI_BRIDGE_RETRY_BASE_DELAY_MS = 2_000;
 
+function getBandEnv(primary: string, legacy: string): string | undefined {
+  return process.env[primary]?.trim() || process.env[legacy]?.trim() || undefined;
+}
+
 export function createLinearBandBridgeApp(options: LinearBandBridgeServerOptions): express.Express {
   const logger = options.logger ?? new ConsoleLogger();
   const store = options.store ?? createSqliteSessionRoomStore(options.stateDbPath);
@@ -243,13 +247,13 @@ function resolveBridgeApiKey(logger: Logger): string {
     }
   }
 
-  const fallbackEnvKey = process.env.THENVOI_API_KEY?.trim();
+  const fallbackEnvKey = getBandEnv("BAND_API_KEY", "THENVOI_API_KEY");
   if (fallbackEnvKey) {
     return fallbackEnvKey;
   }
 
   throw new Error(
-    "Missing API key. Set THENVOI_API_KEY or configure linear_band_bridge in agent_config.yaml.",
+    "Missing API key. Set BAND_API_KEY or configure linear_band_bridge in agent_config.yaml.",
   );
 }
 
@@ -600,9 +604,10 @@ async function runLinearBandBridgeServer(): Promise<void> {
     embeddedBridgeConfig,
   });
   const stateDbPath = process.env.LINEAR_BAND_STATE_DB ?? ".linear-band-example.sqlite";
+  const bandRestUrl = getBandEnv("BAND_REST_URL", "THENVOI_REST_URL") ?? "https://app.band.ai";
   const rawRestApi = new FernRestAdapter(new ThenvoiClient({
     apiKey: bridgeApiKey,
-    baseUrl: process.env.THENVOI_REST_URL ?? "https://app.band.ai",
+    baseUrl: bandRestUrl,
   }));
   const restApi = createRateLimitedRestApi({
     api: rawRestApi,
@@ -612,7 +617,7 @@ async function runLinearBandBridgeServer(): Promise<void> {
   const store = createSqliteSessionRoomStore(stateDbPath);
   const linearAccessToken = getRequiredEnv("LINEAR_ACCESS_TOKEN");
   const linearWebhookSecret = getRequiredEnv("LINEAR_WEBHOOK_SECRET");
-  const hostAgentHandle = process.env.THENVOI_HOST_AGENT_HANDLE;
+  const hostAgentHandle = getBandEnv("BAND_HOST_AGENT_HANDLE", "THENVOI_HOST_AGENT_HANDLE");
   const roomStrategy = parseRoomStrategy(process.env.LINEAR_BAND_ROOM_STRATEGY) ?? "issue";
   const writebackMode = parseWritebackMode(process.env.LINEAR_BAND_WRITEBACK_MODE) ?? "activity_stream";
 
@@ -675,7 +680,7 @@ async function runLinearBandBridgeServer(): Promise<void> {
     logger.info("linear_band_bridge.server_started", {
       port,
       mode: embedBridgeAgent ? "embedded_bridge_agent" : "agent_rest_adapter",
-      thenvoiRestUrl: process.env.THENVOI_REST_URL ?? "https://app.band.ai",
+      bandRestUrl,
       bridgeMinRequestIntervalMs,
     });
   });

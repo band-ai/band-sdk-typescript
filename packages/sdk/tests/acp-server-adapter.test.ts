@@ -2,10 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   BandACPServerAdapter,
+  ThenvoiACPServerAdapter,
 } from "../src/adapters/acp";
 import { FakeRestApi, FakeTools, makeMessage } from "./testUtils";
 
 describe("BandACPServerAdapter", () => {
+  it("exports the legacy ThenvoiACPServerAdapter alias", () => {
+    expect(ThenvoiACPServerAdapter).toBe(BandACPServerAdapter);
+  });
+
   it("creates ACP sessions, routes prompts, and streams room responses", async () => {
     const createdEvents: Array<Record<string, unknown>> = []
     const sentMessages: Array<Record<string, unknown>> = []

@@ -32,8 +32,8 @@ interface LinearBandBridgeAgentOptions {
   sessionConfig?: SessionConfig;
   /**
    * When true, the bridge agent subscribes to rooms it is added to directly
-   * (Thenvoi-initiated), not just rooms created via Linear webhooks.
-   * Defaults to false. Set to true to enable bidirectional (Thenvoi-initiated) operation.
+   * (Band-initiated), not just rooms created via Linear webhooks.
+   * Defaults to false. Set to true to enable bidirectional (Band-initiated) operation.
    */
   autoSubscribeExistingRooms?: boolean;
 }
@@ -107,9 +107,9 @@ You operate in two modes depending on how the conversation starts:
 
 ## Mode detection
 - **Linear-initiated**: The room contains a session payload with a Linear session context (session_id, issue_id, etc.). Proceed with the standard webhook-driven flow.
-- **Thenvoi-initiated**: The room has no Linear session context. You were added to the room directly or joined via autoSubscribe. Start in discovery mode.
+- **Band-initiated**: The room has no Linear session context. You were added to the room directly or joined via autoSubscribe. Start in discovery mode.
 
-## Thenvoi-initiated mode (no Linear session context)
+## Band-initiated mode (no Linear session context)
 When you are added to a room without any Linear session payload:
 - Introduce yourself briefly: you are Band Linear PM and can help create, track, or link Linear issues.
 - Listen to the conversation and understand what the participants need.
@@ -123,7 +123,7 @@ When you are added to a room without any Linear session payload:
 Your job is to:
 - read the Linear session payload
 - decide whether the current request is ticket enrichment, implementation kickoff, or finalization
-- invite the minimum useful Thenvoi specialists
+- invite the minimum useful Band specialists
 - give each specialist a bounded task
 - monitor the room and synthesize the outcome
 - keep Linear updated with meaningful milestones only

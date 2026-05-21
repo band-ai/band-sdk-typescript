@@ -4,7 +4,7 @@ This example runs the Band Linear PM agent — the Linear-facing coordinator tha
 
 1. Linear sends an `AgentSessionEvent` webhook to `/linear/webhook`
 2. the server resolves or reuses a Band room for that issue
-3. Band Linear PM coordinates real Thenvoi specialists in that room
+3. Band Linear PM coordinates real Band specialists in that room
 4. progress and the final response are written back to Linear
 
 Band Linear PM is the only Linear-aware participant. Planner, reviewer, and coder agents stay Linear-agnostic and communicate only through Band room messages.
@@ -25,8 +25,9 @@ Create a local `.env.local` from `.env.local.example`. The agent only needs a fe
 ```bash
 LINEAR_ACCESS_TOKEN=lin_api_xxx
 LINEAR_WEBHOOK_SECRET=lin_wh_xxx
-THENVOI_API_KEY=thnv_a_xxx
-THENVOI_REST_URL=https://app.band.ai
+BAND_API_KEY=band_a_xxx
+BAND_REST_URL=https://app.band.ai
+# Legacy THENVOI_API_KEY and THENVOI_REST_URL are still accepted as fallbacks.
 ```
 
 Common optional settings:
@@ -35,7 +36,7 @@ Common optional settings:
 LINEAR_BAND_STATE_DB=.linear-band-example.sqlite
 LINEAR_BAND_ROOM_STRATEGY=issue
 LINEAR_BAND_WRITEBACK_MODE=activity_stream
-THENVOI_HOST_AGENT_HANDLE=your-org/linear-orchestrator
+BAND_HOST_AGENT_HANDLE=your-org/linear-orchestrator
 CODEX_MODEL=gpt-5.3-codex
 PORT=8787
 ```
@@ -75,20 +76,20 @@ https://<your-tunnel-host>/linear/webhook
 - `.env.local` is gitignored.
 - `agent_config.yaml` is gitignored.
 - `*.sqlite` files are gitignored.
-- Do not commit real `LINEAR_ACCESS_TOKEN`, `LINEAR_WEBHOOK_SECRET`, or `THENVOI_API_KEY` values.
+- Do not commit real `LINEAR_ACCESS_TOKEN`, `LINEAR_WEBHOOK_SECRET`, or `BAND_API_KEY` values.
 
 ## Docker
 
 Build from the repository root:
 
 ```bash
-docker build -f packages/sdk/examples/linear-band/Dockerfile -t thenvoi-linear-bridge .
+docker build -f packages/sdk/examples/linear-band/Dockerfile -t band-linear-bridge .
 ```
 
 Run the container, passing the required environment variables:
 
 ```bash
-docker run --env-file .env -p 8787:8787 thenvoi-linear-bridge
+docker run --env-file .env -p 8787:8787 band-linear-bridge
 ```
 
 The SQLite state database is created inside the container at the path set by
@@ -99,7 +100,7 @@ To persist it across container restarts, mount a volume:
 docker run --env-file .env -p 8787:8787 \
   -v linear-bridge-data:/app/packages/sdk/data \
   -e LINEAR_BAND_STATE_DB=/app/packages/sdk/data/state.sqlite \
-  thenvoi-linear-bridge
+  band-linear-bridge
 ```
 
 Health check:

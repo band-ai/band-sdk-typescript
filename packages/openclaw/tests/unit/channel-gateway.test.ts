@@ -90,7 +90,7 @@ describe("Channel Gateway Lifecycle", () => {
       setInboundCallback(callback);
 
       const message = {
-        channelId: "thenvoi" as const,
+        channelId: "band" as const,
         threadId: "room-123",
         senderId: "user-1",
         senderType: "User",
@@ -108,7 +108,7 @@ describe("Channel Gateway Lifecycle", () => {
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
       const message = {
-        channelId: "thenvoi" as const,
+        channelId: "band" as const,
         threadId: "room-123",
         senderId: "user-1",
         senderType: "User",
@@ -130,7 +130,7 @@ describe("Channel Gateway Lifecycle", () => {
       setInboundCallback(callback);
 
       const message = {
-        channelId: "thenvoi" as const,
+        channelId: "band" as const,
         threadId: "room-123",
         senderId: "user-1",
         senderType: "User",
@@ -313,7 +313,7 @@ describe("Channel Gateway Lifecycle", () => {
 
       expect(callback).toHaveBeenCalledWith(
         expect.objectContaining({
-          channelId: "thenvoi",
+          channelId: "band",
           threadId: "room-123",
           senderId: "user-789",
           senderName: "John Doe",

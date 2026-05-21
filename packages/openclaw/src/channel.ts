@@ -25,7 +25,7 @@ export interface ThenvoiAccountConfig {
 }
 
 export interface OpenClawInboundMessage {
-  channelId: "thenvoi";
+  channelId: "band" | "thenvoi";
   threadId: string;
   senderId: string;
   senderType: string;
@@ -460,7 +460,7 @@ function platformEventToInboundMessage(event: PlatformEvent): OpenClawInboundMes
   }
 
   return {
-    channelId: "thenvoi",
+    channelId: "band",
     threadId: roomId,
     senderId: payload.sender_id,
     senderType: payload.sender_type,
@@ -503,8 +503,8 @@ async function sendOutbound(ctx: OutboundContext): Promise<OutboundDeliveryResul
   const result = await link.rest.createChatMessage(roomId, { content: text, mentions: resolved.mentions });
 
   return {
-    channel: "thenvoi",
-    messageId: String(result.id ?? `thenvoi-${Date.now()}`),
+    channel: "band",
+    messageId: String(result.id ?? `band-${Date.now()}`),
     roomId,
   };
 }
@@ -686,7 +686,7 @@ export const thenvoiChannel: OpenClawChannel = {
           if (rt?.config && dispatchFn) {
             try {
               // Track sender before dispatch — needed for auto-mention fallback
-              // in sendReplyToThenvoi (deliverMessage owns tracking for the other path)
+              // in sendReplyToBand (deliverMessage owns tracking for the other path)
               if (message.threadId && message.senderId && message.senderName) {
                 trackSender(accountId, message.threadId, message.senderId, message.senderName);
               }
@@ -700,9 +700,9 @@ export const thenvoiChannel: OpenClawChannel = {
                 SenderId: message.senderId,
                 SenderName: message.senderName,
                 To: message.threadId,
-                SessionKey: `thenvoi:${message.threadId}`,
-                Surface: "thenvoi",
-                Provider: "thenvoi",
+                SessionKey: `band:${message.threadId}`,
+                Surface: "band",
+                Provider: "band",
                 MessageSid: (message.metadata as Record<string, unknown>)?.messageId,
                 Timestamp: message.timestamp ? new Date(message.timestamp).getTime() : Date.now(),
                 ChatType: "group",

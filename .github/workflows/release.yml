@@ -75,7 +75,7 @@ jobs:
           cd packages/openclaw
           npm publish --provenance --access public
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.BAND_AI_NPM_TOKEN }}
 
 
       - name: Publish release summary

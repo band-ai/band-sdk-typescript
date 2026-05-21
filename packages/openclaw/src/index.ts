@@ -61,7 +61,7 @@ interface OpenClawPluginApi {
  * OpenClaw plugin entry point.
  */
 export default function plugin(api: OpenClawPluginApi): void {
-  console.log("[thenvoi] OpenClaw Plugin API keys:", Object.keys(api));
+  console.log("[band] OpenClaw Plugin API keys:", Object.keys(api));
 
   // Store OpenClaw runtime for message dispatch
   if (api.runtime) {
@@ -75,43 +75,47 @@ export default function plugin(api: OpenClawPluginApi): void {
   if (api.registerTool) {
     const registerTool = api.registerTool;
     const toolSchemas = getMcpToolSchemas();
-    console.log(`[thenvoi] Registering ${toolSchemas.length} tools:`, toolSchemas.map(t => t.name));
+    console.log(`[band] Registering ${toolSchemas.length} tools:`, toolSchemas.map(t => t.name));
     for (const tool of toolSchemas) {
       registerTool({
         name: tool.name,
         description: tool.description,
         parameters: tool.inputSchema,
         execute: async (_toolCallId: unknown, input: unknown) => {
-          console.log(`[thenvoi] Executing tool ${tool.name}`);
+          console.log(`[band] Executing tool ${tool.name}`);
           try {
             const result = await executeMcpTool(tool.name, input ?? {});
             const resultStr = JSON.stringify(result, null, 2);
-            console.log(`[thenvoi] Tool ${tool.name} completed`);
+            console.log(`[band] Tool ${tool.name} completed`);
 
             return {
               content: [{ type: "text", text: resultStr }],
               details: result,
             };
           } catch (error) {
-            console.error(`[thenvoi] Tool ${tool.name} error:`, error);
+            console.error(`[band] Tool ${tool.name} error:`, error);
             throw error;
           }
         },
       });
     }
-    console.log("[thenvoi] Tools registered successfully");
+    console.log("[band] Tools registered successfully");
   } else {
-    console.warn("[thenvoi] WARNING: api.registerTool is not available - tools will NOT be registered!");
-    console.warn("[thenvoi] Available API methods:", Object.keys(api));
+    console.warn("[band] WARNING: api.registerTool is not available - tools will NOT be registered!");
+    console.warn("[band] Available API methods:", Object.keys(api));
   }
 
-  // Register before_agent_start hook to inject Thenvoi instructions + room context
+  // Register before_agent_start hook to inject Band instructions + room context
   if (api.on) {
     api.on("before_agent_start", (_event, ctx) => {
-      console.log(`[thenvoi] before_agent_start hook called (messageProvider=${ctx.messageProvider}, sessionKey=${ctx.sessionKey})`);
+      console.log(`[band] before_agent_start hook called (messageProvider=${ctx.messageProvider}, sessionKey=${ctx.sessionKey})`);
 
-      // Extract room_id from sessionKey (format: "thenvoi:{roomId}")
-      const roomId = ctx.sessionKey?.startsWith("thenvoi:") ? ctx.sessionKey.slice("thenvoi:".length) : undefined;
+      // Extract room_id from sessionKey (format: "band:{roomId}" or legacy "thenvoi:{roomId}")
+      const roomId = ctx.sessionKey?.startsWith("band:")
+        ? ctx.sessionKey.slice("band:".length)
+        : ctx.sessionKey?.startsWith("thenvoi:")
+          ? ctx.sessionKey.slice("thenvoi:".length)
+          : undefined;
 
       let prependContext = BASE_INSTRUCTIONS;
       if (roomId) {
@@ -120,7 +124,7 @@ export default function plugin(api: OpenClawPluginApi): void {
 
       return { prependContext };
     });
-    console.log("[thenvoi] Registered before_agent_start hook for instruction injection");
+    console.log("[band] Registered before_agent_start hook for instruction injection");
   }
 
   // Set up inbound message delivery
@@ -128,7 +132,7 @@ export default function plugin(api: OpenClawPluginApi): void {
     api.onInboundMessage(setInboundCallback);
   }
 
-  console.log("[thenvoi] Plugin loaded, channel registered");
+  console.log("[band] Plugin loaded, channel registered");
 }
 
 // =============================================================================

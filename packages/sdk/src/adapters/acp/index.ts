@@ -10,7 +10,9 @@ export {
 
 export {
   BandACPServerAdapter,
+  BandACPServerAdapter as ThenvoiACPServerAdapter,
   type BandACPServerAdapterOptions,
+  type BandACPServerAdapterOptions as ThenvoiACPServerAdapterOptions,
 } from "./BandACPServerAdapter";
 
 export type { ACPExtensionHandler } from "./extensions";

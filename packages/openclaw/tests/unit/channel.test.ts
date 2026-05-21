@@ -206,7 +206,7 @@ describe("Channel Module", () => {
   describe("thenvoiChannel.threading", () => {
     it("should extract threadId from message", () => {
       const message = {
-        channelId: "thenvoi" as const,
+        channelId: "band" as const,
         threadId: "room-123",
         senderId: "user-1",
         senderType: "User",

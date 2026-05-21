@@ -3,9 +3,11 @@ export {
   ACPClientAdapter,
   ACPServer,
   BandACPServerAdapter,
+  ThenvoiACPServerAdapter,
   type ACPClientAdapterOptions,
   type ACPServerOptions,
   type BandACPServerAdapterOptions,
+  type ThenvoiACPServerAdapterOptions,
 } from "./acp";
 export {
   VercelAISDKAdapter,

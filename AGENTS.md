@@ -345,12 +345,12 @@ pnpm --filter @band-ai/sdk run dev:linear
 
 ## Environment Variables
 
-The SDK reads only the `THENVOI_*` prefix by default (override via `loadAgentConfigFromEnv({ prefix })`).
+The SDK reads the `BAND_*` prefix by default and falls back to legacy `THENVOI_*` variables.
 
-- `THENVOI_AGENT_ID`: agent UUID (required)
-- `THENVOI_API_KEY`: agent API key (required)
-- `THENVOI_WS_URL`: WebSocket base URL (optional; default: `wss://app.band.ai/api/v1/socket` — the `phoenix` lib appends `/websocket`)
-- `THENVOI_REST_URL`: REST API URL (optional; derived from `THENVOI_WS_URL` if not set, via `deriveDefaultRestUrl`)
+- `BAND_AGENT_ID` / `THENVOI_AGENT_ID`: agent UUID (required)
+- `BAND_API_KEY` / `THENVOI_API_KEY`: agent API key (required)
+- `BAND_WS_URL` / `THENVOI_WS_URL`: WebSocket base URL (optional; default: `wss://app.band.ai/api/v1/socket` — the `phoenix` lib appends `/websocket`)
+- `BAND_REST_URL` / `THENVOI_REST_URL`: REST API URL (optional; derived from the WebSocket URL if not set, via `deriveDefaultRestUrl`)
 
 LLM API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`/`GEMINI_API_KEY`, etc.) are read directly by the underlying provider SDKs and passed via adapter options. For Gemini, `@google/genai` accepts both `GOOGLE_API_KEY` and `GEMINI_API_KEY` (it prefers `GOOGLE_API_KEY` if both are set; verified in `@google/genai` 1.50.x `getApiKeyFromEnv`).
 

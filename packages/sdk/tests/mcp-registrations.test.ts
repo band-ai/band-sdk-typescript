@@ -15,10 +15,10 @@ describe("MCP registrations", () => {
       const tools = new FakeTools();
       const registrations = buildSingleContextRegistrations(tools);
 
-      expect(registrations.length).toBeGreaterThan(0);
+      const canonicalRegistrations = registrations.filter((reg) => reg.name.startsWith("band_"));
+      expect(canonicalRegistrations.length).toBeGreaterThan(0);
 
-      for (const reg of registrations) {
-        expect(reg.name).toMatch(/^band_/);
+      for (const reg of canonicalRegistrations) {
         expect(reg.description).toBeTruthy();
         expect(reg.inputSchema.type).toBe("object");
         expect(reg.inputSchema.required).not.toContain("room_id");
@@ -44,6 +44,21 @@ describe("MCP registrations", () => {
 
       expect(names).toContain("band_list_memories");
       expect(names).toContain("band_store_memory");
+    });
+
+    it("registers legacy Thenvoi tool aliases", async () => {
+      const tools = new FakeTools();
+      tools.executeToolCall = vi.fn().mockResolvedValue({ ok: true });
+
+      const registrations = buildSingleContextRegistrations(tools);
+      const sendMessage = registrations.find((r) => r.name === "thenvoi_send_message");
+      expect(sendMessage).toBeDefined();
+
+      await sendMessage!.execute({ content: "hello", mentions: ["@jane"] });
+      expect(tools.executeToolCall).toHaveBeenCalledWith("band_send_message", {
+        content: "hello",
+        mentions: ["@jane"],
+      });
     });
 
     it("delegates execute to tools.executeToolCall", async () => {

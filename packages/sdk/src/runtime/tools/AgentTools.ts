@@ -40,8 +40,9 @@ import {
 import {
   CHAT_TOOL_NAMES,
   MEMORY_TOOL_NAMES,
+  canonicalToolName,
   getToolDescription,
-  TOOL_MODELS
+  TOOL_MODELS,
 } from "./schemas";
 
 interface AgentToolsOptions {
@@ -322,12 +323,13 @@ export class AgentTools implements AgentToolsProtocol {
   }
 
   public async executeToolCall(toolName: string, arguments_: MetadataMap): Promise<unknown> {
-    const validationError = validateToolArgs(toolName, arguments_);
+    const canonicalName = canonicalToolName(toolName);
+    const validationError = validateToolArgs(canonicalName, arguments_);
     if (validationError) {
       return validationError;
     }
 
-    const handler = this.toolHandlers[toolName];
+    const handler = this.toolHandlers[canonicalName];
     if (!handler) {
       return createToolExecutorError({
         errorType: "ToolNotFoundError",
