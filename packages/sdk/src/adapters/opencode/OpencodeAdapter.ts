@@ -136,7 +136,7 @@ function withDefaults(config?: OpencodeAdapterConfig): Required<OpencodeAdapterC
     questionMode: "manual",
     questionWaitTimeoutMs: 300_000,
     sessionTitlePrefix: "Band",
-    mcpServerName: "thenvoi",
+    mcpServerName: "band",
     ...config,
   };
 }

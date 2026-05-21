@@ -18,7 +18,7 @@ describe("MCP registrations", () => {
       expect(registrations.length).toBeGreaterThan(0);
 
       for (const reg of registrations) {
-        expect(reg.name).toMatch(/^thenvoi_/);
+        expect(reg.name).toMatch(/^band_/);
         expect(reg.description).toBeTruthy();
         expect(reg.inputSchema.type).toBe("object");
         expect(reg.inputSchema.required).not.toContain("room_id");
