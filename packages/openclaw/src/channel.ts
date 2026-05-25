@@ -10,7 +10,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { ThenvoiLink } from "@thenvoi/sdk";
 import type { RoomPresence } from "@thenvoi/sdk/runtime";
-import { BoundedStringSet } from "./bounded-string-set.js";
+import { BoundedStringMap, BoundedStringSet } from "./bounded-string-set.js";
 import {
   listAccountIds,
   resolveAccount,
@@ -24,14 +24,6 @@ import { resolveOpenClawRuntimeDispatch, type OpenClawRuntimeDispatch } from "./
 import { redactSecrets } from "./redaction.js";
 
 export type { OpenClawInboundMessage } from "./message-utils.js";
-
-// =============================================================================
-// OpenClaw-Specific Types
-// =============================================================================
-
-// =============================================================================
-// Types for OpenClaw Plugin API
-// =============================================================================
 
 interface OpenClawChannelApi {
   registerChannel: (options: { plugin: OpenClawChannel }) => void;
@@ -113,10 +105,6 @@ interface MessagingHelpers {
   };
 }
 
-// =============================================================================
-// Channel State
-// =============================================================================
-
 // Global registry to track gateway state across module reloads.
 // All mutable state lives here so it survives Jiti reloading the module.
 // The key is versioned so that two different package versions loaded in
@@ -147,15 +135,14 @@ const toolEventContext = new AsyncLocalStorage<BandToolEventContext>();
 export interface BandToolEventContext {
   accountId: string;
   roomId: string;
-  sentMessage?: boolean;
 }
 
 interface GatewayRegistry {
   links: Map<string, ThenvoiLink>;
   presences: Map<string, RoomPresence>;
   startingAccounts: Set<string>;
-  lastSenderByThread: Map<string, { senderId: string; senderName: string; senderType?: string }>;
-  replyOwnerByThread: Map<string, { senderId: string; senderName: string }>;
+  lastSenderByThread: BoundedStringMap<{ senderId: string; senderName: string; senderType?: string }>;
+  replyOwnerByThread: BoundedStringMap<{ senderId: string; senderName: string }>;
   processedMessageIds: BoundedStringSet;
   deliverInbound: ((message: OpenClawInboundMessage) => void) | null;
   openclawRuntime: OpenClawRuntimeDispatch | null;
@@ -168,8 +155,8 @@ function getGatewayRegistry(): GatewayRegistry {
       links: new Map(),
       presences: new Map(),
       startingAccounts: new Set(),
-      lastSenderByThread: new Map(),
-      replyOwnerByThread: new Map(),
+      lastSenderByThread: new BoundedStringMap(MAX_SENDER_CACHE),
+      replyOwnerByThread: new BoundedStringMap(MAX_SENDER_CACHE),
       processedMessageIds: new BoundedStringSet(MAX_MESSAGE_DEDUPE_CACHE),
       deliverInbound: null,
       openclawRuntime: null,
@@ -196,11 +183,6 @@ function presences(): Map<string, RoomPresence> { return getGatewayRegistry().pr
 
 export function getBandToolEventContext(): BandToolEventContext | undefined {
   return toolEventContext.getStore();
-}
-
-export function recordBandMessageSentForCurrentTurn(): void {
-  const context = toolEventContext.getStore();
-  if (context) context.sentMessage = true;
 }
 
 function runWithBandToolEventContext<T>(context: BandToolEventContext, fn: () => Promise<T>): Promise<T> {
@@ -233,38 +215,18 @@ function createChannelLogger(accountId: string) {
   };
 }
 
-// Track last sender per thread for auto-mention fallback
-// Key: threadId, Value: { senderId, senderName }
 const MAX_SENDER_CACHE = 500;
 const MAX_MESSAGE_DEDUPE_CACHE = 2_000;
 
 function trackSender(accountId: string, threadId: string, senderId: string, senderName: string, senderType?: string): void {
-  const lastSenderByThread = registry().lastSenderByThread;
   const cacheKey = `${accountId}:${threadId}`;
-  // Delete-and-reinsert to move the entry to the end (LRU eviction order)
-  lastSenderByThread.delete(cacheKey);
-  if (lastSenderByThread.size >= MAX_SENDER_CACHE) {
-    // Evict least-recently-used entry (first key in Map insertion order)
-    const oldest = lastSenderByThread.keys().next().value;
-    if (oldest) lastSenderByThread.delete(oldest);
-  }
-  lastSenderByThread.set(cacheKey, { senderId, senderName, senderType });
+  registry().lastSenderByThread.set(cacheKey, { senderId, senderName, senderType });
 
   if (senderType?.toLowerCase() !== "agent") {
-    const replyOwnerByThread = registry().replyOwnerByThread;
-    replyOwnerByThread.delete(cacheKey);
-    if (replyOwnerByThread.size >= MAX_SENDER_CACHE) {
-      const oldest = replyOwnerByThread.keys().next().value;
-      if (oldest) replyOwnerByThread.delete(oldest);
-    }
-    replyOwnerByThread.set(cacheKey, { senderId, senderName });
+    registry().replyOwnerByThread.set(cacheKey, { senderId, senderName });
   }
 }
 
-/**
- * Set the OpenClaw runtime reference for message dispatch.
- * Called by the plugin entry point.
- */
 export function setOpenClawRuntime(runtime: unknown): void {
   const resolution = resolveOpenClawRuntimeDispatch(runtime);
   registry().openclawRuntime = resolution.dispatch;
@@ -276,22 +238,13 @@ export function setOpenClawRuntime(runtime: unknown): void {
   }
 }
 
-/**
- * Set the gateway callback for delivering inbound messages.
- * Called by OpenClaw when the channel is started.
- */
 export function setInboundCallback(
   callback: (message: OpenClawInboundMessage) => void,
 ): void {
   registry().deliverInbound = callback;
 }
 
-/**
- * Deliver an inbound message to OpenClaw.
- * Used by the service and runtime to send received messages to OpenClaw.
- */
 export function deliverMessage(message: OpenClawInboundMessage, accountId: string = "default"): void {
-  // Track the sender for auto-mention fallback when responding
   if (message.threadId && message.senderId && message.senderName) {
     trackSender(accountId, message.threadId, message.senderId, message.senderName, message.senderType);
   }
@@ -304,20 +257,8 @@ export function deliverMessage(message: OpenClawInboundMessage, accountId: strin
   }
 }
 
-// =============================================================================
-// Configuration Helpers
-// =============================================================================
-
-// =============================================================================
-// Mention Resolution
-// =============================================================================
-
 type Mention = { id: string; name?: string };
 
-/**
- * Resolve mentions for a message: find @Name in text, fall back to last sender, then any participant.
- * Returns null if no participants are available to mention (caller decides how to handle).
- */
 async function resolveMentions(
   rest: ThenvoiLink["rest"],
   agentId: string,
@@ -356,10 +297,6 @@ async function resolveMentions(
 
   return null;
 }
-
-// =============================================================================
-// Reply Helper
-// =============================================================================
 
 async function resolveFinalReplyMentions(
   rest: ThenvoiLink["rest"],
@@ -406,13 +343,6 @@ function gatewayHelpers(): GatewayHelpers {
   });
 }
 
-// =============================================================================
-// Outbound Send Helper
-// =============================================================================
-
-/**
- * Shared logic for sending an outbound message (text or media) to Band.
- */
 async function sendOutbound(ctx: OutboundContext): Promise<OutboundDeliveryResult> {
   const { text, to, accountId } = ctx;
   const roomId = to;
@@ -439,10 +369,6 @@ async function sendOutbound(ctx: OutboundContext): Promise<OutboundDeliveryResul
     roomId,
   };
 }
-
-// =============================================================================
-// Channel Definition
-// =============================================================================
 
 export const thenvoiChannel: OpenClawChannel = {
   id: "openclaw-channel-thenvoi",
@@ -532,7 +458,6 @@ export const thenvoiChannel: OpenClawChannel = {
 
   messaging: {
     targetResolver: {
-      // UUID pattern for Band room IDs
       looksLikeId: (raw: string): boolean => {
         const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
         return uuidPattern.test(raw.trim());
@@ -542,32 +467,15 @@ export const thenvoiChannel: OpenClawChannel = {
   },
 };
 
-// =============================================================================
-// Plugin Registration
-// =============================================================================
-
-/**
- * Register the Band channel with OpenClaw.
- */
 export function registerChannel(api: OpenClawChannelApi): void {
   api.registerChannel({ plugin: thenvoiChannel });
   console.log("[thenvoi] Channel registered");
 }
 
-// =============================================================================
-// Utility Exports (for MCP tools)
-// =============================================================================
-
-/**
- * Get the ThenvoiLink for an account.
- */
 export function getLink(accountId: string = "default"): ThenvoiLink | undefined {
   return links().get(accountId);
 }
 
-/**
- * Get the current agent's ID (UUID).
- */
 export function getAgentId(accountId: string = "default"): string | undefined {
   return links().get(accountId)?.agentId;
 }

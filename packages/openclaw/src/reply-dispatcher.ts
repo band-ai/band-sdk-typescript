@@ -28,19 +28,15 @@ function replyPayloadText(payload: unknown): string | undefined {
   return typeof payload === "string" ? payload : (payload as { text?: string })?.text;
 }
 
-function extractUserFacingFinalText(text: string): string {
-  const messageToUserMatch = text.match(/<message to user>([\s\S]*?)<\/message>/i);
-  return (messageToUserMatch?.[1] ?? text).trim();
-}
-
-function hasExplicitUserFacingFinalText(text: string): boolean {
-  return /<message to user>[\s\S]*?<\/message>/i.test(text);
+function extractUserFacingFinalText(text: string): string | undefined {
+  return text.match(/<message to user>([\s\S]*?)<\/message>/i)?.[1]?.trim();
 }
 
 function selectFinalReplyText(texts: string[]): string | undefined {
   for (let index = texts.length - 1; index >= 0; index -= 1) {
-    const text = texts[index]?.trim();
-    if (text && hasExplicitUserFacingFinalText(text)) return text;
+    const candidate = texts[index];
+    const text = candidate ? extractUserFacingFinalText(candidate) : undefined;
+    if (text) return text;
   }
 
   return undefined;
@@ -118,7 +114,7 @@ export function createBandReplyDispatcher(
         enqueueDelivery("final", sendFinalReplyToBand(
           link.rest,
           roomId,
-          extractUserFacingFinalText(finalReplyText),
+          finalReplyText,
           mentions,
         ));
       } else if (!finalReplySent && finalReplyTexts.length > 0) {

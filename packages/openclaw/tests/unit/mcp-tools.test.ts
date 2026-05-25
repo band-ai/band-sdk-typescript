@@ -28,7 +28,6 @@ vi.mock("../../src/channel.js", () => ({
   getLink: vi.fn(),
   getAgentId: vi.fn(),
   getBandToolEventContext: vi.fn(),
-  recordBandMessageSentForCurrentTurn: vi.fn(),
 }));
 
 describe("MCP Tools", () => {

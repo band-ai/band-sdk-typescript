@@ -66,7 +66,6 @@ import {
   setOpenClawRuntime,
   getLink,
   getAgentId,
-  recordBandMessageSentForCurrentTurn,
   resetGatewayRegistry,
 } from "../../src/channel.js";
 import { mockAccountConfig } from "../fixtures/configs.js";
@@ -198,9 +197,8 @@ describe("Channel Gateway Lifecycle", () => {
       expect(capturedContactHandlerOptions?.onHubInit).toEqual(expect.any(Function));
     });
 
-    it("should drop non-explicit hub final replies after sending a Band message", async () => {
+    it("should drop non-explicit hub final replies", async () => {
       const dispatchFn = vi.fn().mockImplementation(async ({ dispatcher }) => {
-        recordBandMessageSentForCurrentTurn();
         dispatcher.sendFinalReply({ text: "I accepted the contact request." });
         await dispatcher.waitForIdle();
       });
@@ -657,9 +655,8 @@ describe("Channel Gateway Lifecycle", () => {
       );
     });
 
-    it("should drop non-explicit final replies after sending a Band message to another participant", async () => {
+    it("should drop non-explicit final replies", async () => {
       const dispatchFn = vi.fn().mockImplementation(async ({ dispatcher }) => {
-        recordBandMessageSentForCurrentTurn();
         dispatcher.sendFinalReply({ text: "I asked Codex to revise that list." });
         await dispatcher.waitForIdle();
       });

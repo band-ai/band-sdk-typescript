@@ -37,7 +37,6 @@ export interface GatewayHelpers {
 interface BandToolEventContext {
   accountId: string;
   roomId: string;
-  sentMessage?: boolean;
 }
 
 interface GatewayRuntimeOptions {
