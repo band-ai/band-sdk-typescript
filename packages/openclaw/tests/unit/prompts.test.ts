@@ -8,17 +8,18 @@ import { BASE_INSTRUCTIONS, buildSystemPrompt } from "../../src/prompts.js";
 describe("Prompts", () => {
   describe("BASE_INSTRUCTIONS", () => {
     it("should contain channel instructions section", () => {
-      expect(BASE_INSTRUCTIONS).toContain("## Thenvoi Channel Instructions");
+      expect(BASE_INSTRUCTIONS).toContain("## Band Channel Instructions");
     });
 
     it("should explain two operating contexts", () => {
       expect(BASE_INSTRUCTIONS).toContain("Webchat/CLI context");
-      expect(BASE_INSTRUCTIONS).toContain("Thenvoi room context");
+      expect(BASE_INSTRUCTIONS).toContain("Band room context");
     });
 
-    it("should mention plain text auto-routing", () => {
-      expect(BASE_INSTRUCTIONS).toContain("automatically routed");
-      expect(BASE_INSTRUCTIONS).toContain("plain text");
+    it("should explain final-answer routing and tool-based handoffs", () => {
+      expect(BASE_INSTRUCTIONS).toContain("plain text final answers");
+      expect(BASE_INSTRUCTIONS).toContain("thenvoi_send_message only when another participant should act next");
+      expect(BASE_INSTRUCTIONS).toContain("participant UUID");
     });
 
     it("should list tools that work without room_id", () => {
@@ -31,12 +32,30 @@ describe("Prompts", () => {
       expect(BASE_INSTRUCTIONS).toContain("thenvoi_send_message");
       expect(BASE_INSTRUCTIONS).toContain("thenvoi_send_event");
       expect(BASE_INSTRUCTIONS).toContain("thenvoi_add_participant");
+      expect(BASE_INSTRUCTIONS).toContain("Do not use OpenClaw session tools");
     });
 
     it("should contain delegation instructions", () => {
       expect(BASE_INSTRUCTIONS).toContain("Delegating to Other Agents");
       expect(BASE_INSTRUCTIONS).toContain("lookup_peers");
       expect(BASE_INSTRUCTIONS).toContain("add_participant");
+      expect(BASE_INSTRUCTIONS).toContain("original requester");
+      expect(BASE_INSTRUCTIONS).toContain("Only @mention another agent");
+      expect(BASE_INSTRUCTIONS).toContain("Never mention yourself");
+      expect(BASE_INSTRUCTIONS).toContain("participant UUIDs");
+      expect(BASE_INSTRUCTIONS).toContain("do NOT reflexively summarize to the original requester");
+      expect(BASE_INSTRUCTIONS).toContain("close the loop with the original requester");
+      expect(BASE_INSTRUCTIONS).toContain("another agent's filesystem");
+      expect(BASE_INSTRUCTIONS).toContain("Plain text finals go to the room owner/requester");
+      expect(BASE_INSTRUCTIONS).toContain("responding to that agent with critique/follow-up");
+      expect(BASE_INSTRUCTIONS).toContain("Default to agent-to-agent communication until the delegated work is complete");
+      expect(BASE_INSTRUCTIONS).toContain("current message is from a worker agent");
+      expect(BASE_INSTRUCTIONS).toContain("nothing useful left to ask the worker");
+      expect(BASE_INSTRUCTIONS).toContain("make it completely empty");
+      expect(BASE_INSTRUCTIONS).toContain("final consensus draft");
+      expect(BASE_INSTRUCTIONS).toContain("state your own judgment");
+      expect(BASE_INSTRUCTIONS).toContain("concrete challenge");
+      expect(BASE_INSTRUCTIONS).toContain("needs a human decision");
     });
 
     it("should contain examples", () => {
@@ -59,7 +78,7 @@ describe("Prompts", () => {
     it("should include base instructions", () => {
       const prompt = buildSystemPrompt("Test Agent", "a test agent");
 
-      expect(prompt).toContain("## Thenvoi Channel Instructions");
+      expect(prompt).toContain("## Band Channel Instructions");
       expect(prompt).toContain("lookup_peers");
     });
 
@@ -84,7 +103,7 @@ describe("Prompts", () => {
 
       const identityIndex = prompt.indexOf("You are Test Agent");
       const customIndex = prompt.indexOf("CUSTOM_MARKER");
-      const baseIndex = prompt.indexOf("## Thenvoi Channel Instructions");
+      const baseIndex = prompt.indexOf("## Band Channel Instructions");
 
       expect(identityIndex).toBeLessThan(customIndex);
       expect(customIndex).toBeLessThan(baseIndex);
@@ -94,7 +113,7 @@ describe("Prompts", () => {
       const prompt = buildSystemPrompt("Test Agent", "a test agent");
 
       expect(prompt).toContain("You are Test Agent");
-      expect(prompt).toContain("## Thenvoi Channel Instructions");
+      expect(prompt).toContain("## Band Channel Instructions");
       expect(prompt).not.toContain("undefined");
     });
 

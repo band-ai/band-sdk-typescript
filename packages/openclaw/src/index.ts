@@ -1,15 +1,62 @@
 /**
- * OpenClaw Channel Plugin for Thenvoi.
+ * OpenClaw Channel Plugin for Band.
  *
- * This plugin enables OpenClaw agents to connect to the Thenvoi platform,
+ * This plugin enables OpenClaw agents to connect to Band,
  * using @thenvoi/sdk for all platform communication.
  *
  * @packageDocumentation
  */
 
-import { registerChannel, thenvoiChannel, setInboundCallback, setOpenClawRuntime } from "./channel.js";
+import { registerChannel, thenvoiChannel, setInboundCallback, setOpenClawRuntime, getBandToolEventContext, getLink } from "./channel.js";
 import { getMcpToolSchemas, executeMcpTool } from "./mcp-tools.js";
 import { BASE_INSTRUCTIONS } from "./prompts.js";
+import { redactSecrets } from "./redaction.js";
+
+// =============================================================================
+// Band Tool Event Reporting
+// =============================================================================
+
+function toolEventText(value: unknown): string {
+  try {
+    return redactSecrets(JSON.stringify(value, null, 2));
+  } catch {
+    return redactSecrets(value);
+  }
+}
+
+function toolCallIdText(toolCallId: unknown): string | undefined {
+  if (toolCallId === undefined || toolCallId === null) return undefined;
+  return String(toolCallId);
+}
+
+async function sendBandToolEvent(
+  messageType: "tool_call" | "tool_result",
+  toolName: string,
+  toolCallId: unknown,
+  value: unknown,
+  status?: "success" | "error",
+): Promise<void> {
+  const context = getBandToolEventContext();
+  if (!context) return;
+  const link = getLink(context.accountId);
+  if (!link) return;
+
+  const metadata: Record<string, unknown> = { source: "openclaw", toolName };
+  const id = toolCallIdText(toolCallId);
+  if (id) metadata.toolCallId = id;
+  if (status) metadata.status = status;
+
+  const label = messageType === "tool_call" ? "Tool call" : "Tool result";
+  try {
+    await link.rest.createChatEvent(context.roomId, {
+      content: `${label}: ${toolName}\n${toolEventText(value)}`,
+      messageType,
+      metadata,
+    });
+  } catch (error) {
+    console.warn(`[thenvoi] Failed to report ${messageType} for ${toolName}: ${redactSecrets(error)}`);
+  }
+}
 
 // =============================================================================
 // Plugin Entry Point
@@ -82,18 +129,22 @@ export default function plugin(api: OpenClawPluginApi): void {
         description: tool.description,
         parameters: tool.inputSchema,
         execute: async (_toolCallId: unknown, input: unknown) => {
+          const toolInput = input ?? {};
           console.log(`[thenvoi] Executing tool ${tool.name}`);
+          await sendBandToolEvent("tool_call", tool.name, _toolCallId, toolInput);
           try {
-            const result = await executeMcpTool(tool.name, input ?? {});
+            const result = await executeMcpTool(tool.name, toolInput);
             const resultStr = JSON.stringify(result, null, 2);
             console.log(`[thenvoi] Tool ${tool.name} completed`);
+            await sendBandToolEvent("tool_result", tool.name, _toolCallId, result, "success");
 
             return {
               content: [{ type: "text", text: resultStr }],
               details: result,
             };
           } catch (error) {
-            console.error(`[thenvoi] Tool ${tool.name} error:`, error);
+            console.error(`[thenvoi] Tool ${tool.name} error: ${redactSecrets(error)}`);
+            await sendBandToolEvent("tool_result", tool.name, _toolCallId, { error: redactSecrets(error) }, "error");
             throw error;
           }
         },
@@ -105,7 +156,7 @@ export default function plugin(api: OpenClawPluginApi): void {
     console.warn("[thenvoi] Available API methods:", Object.keys(api));
   }
 
-  // Register before_agent_start hook to inject Thenvoi instructions + room context
+  // Register before_agent_start hook to inject Band room context
   if (api.on) {
     api.on("before_agent_start", (_event, ctx) => {
       console.log(`[thenvoi] before_agent_start hook called (messageProvider=${ctx.messageProvider}, sessionKey=${ctx.sessionKey})`);
@@ -115,7 +166,7 @@ export default function plugin(api: OpenClawPluginApi): void {
 
       let prependContext = BASE_INSTRUCTIONS;
       if (roomId) {
-        prependContext += `\n\n## Current Thenvoi Room\n\n**Your current room_id is: \`${roomId}\`**\nUse this value for any tool parameter that asks for \`room_id\`. Do NOT use any other UUID.`;
+        prependContext += `\n\n## Current Band Room\n\n**Your current room_id is: \`${roomId}\`**\nUse this value for any tool parameter that asks for \`room_id\`. Do NOT use any other UUID.`;
       }
 
       return { prependContext };
@@ -140,7 +191,8 @@ export { thenvoiChannel, registerChannel, setInboundCallback, deliverMessage } f
 export { getLink, getAgentId, resetGatewayRegistry } from "./channel.js";
 
 // OpenClaw-specific type exports
-export type { ThenvoiAccountConfig, OpenClawInboundMessage } from "./channel.js";
+export type { OpenClawInboundMessage } from "./channel.js";
+export type { ThenvoiAccountConfig } from "./config.js";
 
 // MCP tool exports
 export { mcpTools, getMcpToolSchemas, executeMcpTool, getMcpTool } from "./mcp-tools.js";

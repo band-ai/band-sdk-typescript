@@ -1,11 +1,11 @@
 /**
- * MCP Tools for Thenvoi platform operations.
+ * MCP Tools for Band platform operations.
  *
- * Exposes Thenvoi platform tools via MCP (Model Context Protocol)
+ * Exposes Band platform tools via MCP (Model Context Protocol)
  * for use by OpenClaw agents. Uses @thenvoi/sdk REST API.
  */
 
-import { getLink, getAgentId } from "./channel.js";
+import { getLink, getAgentId, getBandToolEventContext, recordBandMessageSentForCurrentTurn } from "./channel.js";
 
 // =============================================================================
 // MCP Tool Types (local to this module)
@@ -53,12 +53,25 @@ interface McpProperty {
 // Helper: get REST API from link
 // =============================================================================
 
-function getRest() {
-  const link = getLink();
+function currentAccountId(): string {
+  return getBandToolEventContext()?.accountId ?? "default";
+}
+
+function getCurrentLink() {
+  const accountId = currentAccountId();
+  const link = getLink(accountId);
   if (!link) {
-    throw new Error("Thenvoi client not connected");
+    throw new Error(`Thenvoi client not connected for account ${accountId}`);
   }
-  return link.rest;
+  return link;
+}
+
+function getRest() {
+  return getCurrentLink().rest;
+}
+
+function getSelfAgentId(): string | undefined {
+  return getAgentId(currentAccountId());
 }
 
 /**
@@ -93,7 +106,7 @@ function clampPagination(page: number, pageSize: number): { page: number; pageSi
 const lookupPeersTool: McpTool = {
   name: "thenvoi_lookup_peers",
   description:
-    "Find available agents and users on the Thenvoi platform. " +
+    "Find available agents and users on the Band platform. " +
     "Use this to discover who you can invite to collaborate.",
   inputSchema: {
     type: "object",
@@ -138,7 +151,7 @@ const lookupPeersTool: McpTool = {
 const addParticipantTool: McpTool = {
   name: "thenvoi_add_participant",
   description:
-    "Invite an agent or user to join a Thenvoi chat room. " +
+    "Invite an agent or user to join a Band chat room. " +
     "Use lookup_peers first to find available participants. " +
     "IMPORTANT: room_id must be the To field from your message context — do NOT use agent IDs, user IDs, or owner IDs.",
   inputSchema: {
@@ -223,7 +236,7 @@ const addParticipantTool: McpTool = {
 
 const removeParticipantTool: McpTool = {
   name: "thenvoi_remove_participant",
-  description: "Remove an agent or user from a Thenvoi chat room.",
+  description: "Remove an agent or user from a Band chat room.",
   inputSchema: {
     type: "object",
     properties: {
@@ -254,7 +267,7 @@ const removeParticipantTool: McpTool = {
         throw new Error("Either name or participant_id is required");
       }
       // Resolve name to ID via the room's participant list
-      const selfAgentId = getAgentId();
+      const selfAgentId = getSelfAgentId();
       const participants = await rest.listChatParticipants(room_id);
       const match = participants.find(
         (p) => p.name.toLowerCase() === name.toLowerCase() && p.id !== selfAgentId
@@ -283,7 +296,7 @@ const removeParticipantTool: McpTool = {
 
 const getParticipantsTool: McpTool = {
   name: "thenvoi_get_participants",
-  description: "List all participants in a Thenvoi chat room.",
+  description: "List all participants in a Band chat room.",
   inputSchema: {
     type: "object",
     properties: {
@@ -318,7 +331,7 @@ const getParticipantsTool: McpTool = {
 const createChatTool: McpTool = {
   name: "thenvoi_create_chatroom",
   description:
-    "Create a new Thenvoi chat room for collaboration. " +
+    "Create a new Band chat room for collaboration. " +
     "Use this when you need a fresh space for a new task or conversation.",
   inputSchema: {
     type: "object",
@@ -350,7 +363,7 @@ const createChatTool: McpTool = {
 const sendEventTool: McpTool = {
   name: "thenvoi_send_event",
   description:
-    "Share events with other participants in a Thenvoi chat room. " +
+    "Share events with other participants in a Band chat room. " +
     "Event types: " +
     "'thought' - share your reasoning process (shows thinking indicator), " +
     "'error' - report problems or failures (shows error indicator), " +
@@ -407,9 +420,9 @@ const sendEventTool: McpTool = {
 const sendMessageTool: McpTool = {
   name: "thenvoi_send_message",
   description:
-    "Send a message to a Thenvoi chat room. " +
-    "Messages require at least one @mention. Use this to respond to users or other agents. " +
-    "IMPORTANT: You MUST use this tool to communicate - plain text responses won't reach users.",
+    "Send a message to a Band chat room when you need another participant to act next. " +
+    "Messages require at least one @mention. Use this for handoffs or delegation to other users or agents, including handing a result back to the original human requester after another agent helped. " +
+    "Never mention yourself, and mention only the participant who should act next.",
   inputSchema: {
     type: "object",
     properties: {
@@ -425,8 +438,8 @@ const sendMessageTool: McpTool = {
         type: "array",
         items: { type: "string" },
         description:
-          "List of participant names to @mention. At least one required. " +
-          "Use thenvoi_get_participants to see available participants.",
+          "List of participant UUIDs to @mention. At least one required. " +
+          "Use thenvoi_get_participants to get participant IDs. Mention only the participant who should act next, and never mention yourself.",
       },
     },
     required: ["room_id", "content", "mentions"],
@@ -439,20 +452,20 @@ const sendMessageTool: McpTool = {
       throw new Error("At least one mention is required to send a message");
     }
 
-    const selfAgentId = getAgentId();
+    const selfAgentId = getSelfAgentId();
 
-    // Get participants to resolve names to IDs
+    // Get participants to validate UUID mentions and map them to display names.
     const participants = await rest.listChatParticipants(room_id);
 
-    // Resolve mention names to participant objects
-    const resolvedMentions = mentions.map((name) => {
-      const participant = participants.find(
-        (p) => p.name.toLowerCase() === name.toLowerCase() && p.id !== selfAgentId
-      );
+    const resolvedMentions = mentions.map((mentionId) => {
+      const participant = participants.find((p) => p.id === mentionId);
       if (!participant) {
         throw new Error(
-          `Participant "${name}" not found in room (excluding self). Use thenvoi_get_participants to see available participants.`
+          `Participant ID "${mentionId}" not found in room. Use thenvoi_get_participants to see valid participant UUIDs.`
         );
+      }
+      if (participant.id === selfAgentId) {
+        throw new Error("You cannot mention yourself. Use plain text to reply to the current sender, or mention a different participant who should act next.");
       }
       return { id: participant.id, name: participant.name };
     });
@@ -461,6 +474,7 @@ const sendMessageTool: McpTool = {
       content,
       mentions: resolvedMentions,
     });
+    recordBandMessageSentForCurrentTurn();
 
     return {
       success: true,

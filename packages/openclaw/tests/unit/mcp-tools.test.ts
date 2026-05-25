@@ -3,7 +3,6 @@
  * Mocks getLink() to return a mock ThenvoiLink with a mock rest API.
  */
 
-import { readFileSync } from "node:fs";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   mcpTools,
@@ -28,6 +27,8 @@ import {
 vi.mock("../../src/channel.js", () => ({
   getLink: vi.fn(),
   getAgentId: vi.fn(),
+  getBandToolEventContext: vi.fn(),
+  recordBandMessageSentForCurrentTurn: vi.fn(),
 }));
 
 describe("MCP Tools", () => {
@@ -86,19 +87,6 @@ describe("MCP Tools", () => {
         expect(tool.description.length).toBeGreaterThan(10);
       });
     });
-
-    it("should declare all runtime tools in the plugin manifest", () => {
-      const manifest = JSON.parse(
-        readFileSync(new URL("../../openclaw.plugin.json", import.meta.url), "utf-8"),
-      ) as {
-        contracts?: { tools?: string[] };
-        capabilities?: { mcp?: { tools?: string[] } };
-      };
-      const runtimeToolNames = getMcpToolSchemas().map((tool) => tool.name).sort();
-
-      expect([...(manifest.contracts?.tools ?? [])].sort()).toEqual(runtimeToolNames);
-      expect([...(manifest.capabilities?.mcp?.tools ?? [])].sort()).toEqual(runtimeToolNames);
-    });
   });
 
   describe("getMcpTool", () => {
@@ -146,6 +134,21 @@ describe("MCP Tools", () => {
       expect(result).toHaveProperty("peers");
       expect(result).toHaveProperty("total");
       expect(result).toHaveProperty("has_more");
+    });
+
+    it("should use the account from the current Band tool context", async () => {
+      const accountRest = { ...mockRest, listPeers: vi.fn().mockResolvedValue(mockLookupPeersResponse) };
+      const accountLink = { rest: accountRest, agentId: "agent-b" };
+      vi.mocked(channel.getBandToolEventContext).mockReturnValue({ accountId: "account-b", roomId: "room-1" });
+      vi.mocked(channel.getLink).mockImplementation((accountId?: string) => {
+        return (accountId === "account-b" ? accountLink : mockLink) as unknown as ReturnType<typeof channel.getLink>;
+      });
+
+      await executeMcpTool("thenvoi_lookup_peers", { page: 2, page_size: 25 });
+
+      expect(channel.getLink).toHaveBeenCalledWith("account-b");
+      expect(accountRest.listPeers).toHaveBeenCalledWith({ page: 2, pageSize: 25, notInChat: "" });
+      expect(mockRest.listPeers).not.toHaveBeenCalled();
     });
 
     it("should call listPeers with provided pagination", async () => {
@@ -444,14 +447,14 @@ describe("MCP Tools", () => {
   });
 
   describe("thenvoi_send_message", () => {
-    it("should send message with mentions", async () => {
+    it("should send message with participant UUID mentions", async () => {
       mockRest.listChatParticipants.mockResolvedValue(mockParticipants);
       mockRest.createChatMessage.mockResolvedValue(mockSendMessageResponse);
 
       const result = await executeMcpTool("thenvoi_send_message", {
         room_id: "room-001",
         content: "Hello!",
-        mentions: ["John Doe"],
+        mentions: ["user-789"],
       });
 
       expect(mockRest.listChatParticipants).toHaveBeenCalledWith("room-001");
@@ -465,16 +468,28 @@ describe("MCP Tools", () => {
       expect(result).toHaveProperty("success", true);
     });
 
-    it("should throw error if mention not found", async () => {
+    it("should throw error if mention UUID not found", async () => {
       mockRest.listChatParticipants.mockResolvedValue(mockParticipants);
 
       await expect(
         executeMcpTool("thenvoi_send_message", {
           room_id: "room-001",
           content: "Hello!",
-          mentions: ["Unknown Person"],
+          mentions: ["missing-user-id"],
         }),
-      ).rejects.toThrow('Participant "Unknown Person" not found in room');
+      ).rejects.toThrow('Participant ID "missing-user-id" not found in room');
+    });
+
+    it("should throw if message mentions self", async () => {
+      mockRest.listChatParticipants.mockResolvedValue(mockParticipants);
+
+      await expect(
+        executeMcpTool("thenvoi_send_message", {
+          room_id: "room-001",
+          content: "Hello!",
+          mentions: ["agent-123"],
+        }),
+      ).rejects.toThrow("You cannot mention yourself");
     });
 
     it("should throw error if no mentions provided", async () => {

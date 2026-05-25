@@ -18,6 +18,12 @@ interface ExecutionOptions {
   onExecute: ExecutionHandler;
   onFailure?: (error: unknown, event: PlatformEvent) => void | Promise<void>;
   logger?: Logger;
+  /**
+   * Skip the startup `/messages/next` drain for rooms discovered during bulk
+   * auto-subscribe. Stale `processing` recovery still runs, because existing
+   * rooms may have in-flight messages left behind by a previous process.
+   */
+  skipStartupQueueSync?: boolean;
 }
 
 function toMessageEvent(message: PlatformMessage): PlatformEvent {
@@ -58,6 +64,7 @@ export class Execution {
   private syncComplete = false;
   private running = true;
   private inFlight = 0;
+  private readonly skipStartupQueueSync: boolean;
 
   public constructor(options: ExecutionOptions) {
     this.roomId = options.roomId;
@@ -66,6 +73,7 @@ export class Execution {
     this.retryTracker = this.context.getRetryTracker();
     this.onExecute = options.onExecute;
     this.onFailure = options.onFailure;
+    this.skipStartupQueueSync = options.skipStartupQueueSync ?? false;
     this.logger = options.logger ?? new NoopLogger();
     this.processTask = this.processLoop();
   }
@@ -153,7 +161,17 @@ export class Execution {
 
   private async processLoop(): Promise<void> {
     await this.recoverStaleProcessingMessages();
-    await this.synchronizeWithNext();
+
+    if (this.skipStartupQueueSync) {
+      // Bulk auto-subscribe can attach to many existing rooms at once. Avoid
+      // draining `/messages/next` for every room, but keep stale-processing
+      // recovery above so restarts do not strand messages already claimed by
+      // this agent.
+      this.syncComplete = true;
+      this.notifyIfIdle();
+    } else {
+      await this.synchronizeWithNext();
+    }
 
     while (this.running) {
       const event = await this.nextQueuedEvent();
