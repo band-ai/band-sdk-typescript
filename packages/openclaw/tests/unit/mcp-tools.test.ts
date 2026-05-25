@@ -27,6 +27,7 @@ import {
 vi.mock("../../src/channel.js", () => ({
   getLink: vi.fn(),
   getAgentId: vi.fn(),
+  getBandToolEventContext: vi.fn(),
   recordBandMessageSentForCurrentTurn: vi.fn(),
 }));
 
@@ -133,6 +134,21 @@ describe("MCP Tools", () => {
       expect(result).toHaveProperty("peers");
       expect(result).toHaveProperty("total");
       expect(result).toHaveProperty("has_more");
+    });
+
+    it("should use the account from the current Band tool context", async () => {
+      const accountRest = { ...mockRest, listPeers: vi.fn().mockResolvedValue(mockLookupPeersResponse) };
+      const accountLink = { rest: accountRest, agentId: "agent-b" };
+      vi.mocked(channel.getBandToolEventContext).mockReturnValue({ accountId: "account-b", roomId: "room-1" });
+      vi.mocked(channel.getLink).mockImplementation((accountId?: string) => {
+        return (accountId === "account-b" ? accountLink : mockLink) as unknown as ReturnType<typeof channel.getLink>;
+      });
+
+      await executeMcpTool("thenvoi_lookup_peers", { page: 2, page_size: 25 });
+
+      expect(channel.getLink).toHaveBeenCalledWith("account-b");
+      expect(accountRest.listPeers).toHaveBeenCalledWith({ page: 2, pageSize: 25, notInChat: "" });
+      expect(mockRest.listPeers).not.toHaveBeenCalled();
     });
 
     it("should call listPeers with provided pagination", async () => {

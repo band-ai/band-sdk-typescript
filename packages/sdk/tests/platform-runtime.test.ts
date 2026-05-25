@@ -338,7 +338,7 @@ describe("PlatformRuntime", () => {
     await expect(runPromise).rejects.toThrow("adapter exploded");
   });
 
-  it("synchronizes existing rooms via /messages/next and skips the sync-point websocket duplicate", async () => {
+  it("recovers stale processing messages for existing rooms without draining /messages/next", async () => {
     const transport = new FakeTransport();
     let releaseSync!: () => void;
     const syncGate = new Promise<void>((resolve) => {
@@ -372,6 +372,10 @@ describe("PlatformRuntime", () => {
       listChats: async () => ({
         data: [{ id: "room-existing", title: "Existing Room" }],
         metadata: { page: 1, pageSize: 100, totalPages: 1, totalCount: 1 },
+      }),
+      listMessages: async (request) => ({
+        data: request.status === "processing" ? [backlog[0]] : [],
+        metadata: { page: 1, pageSize: 50, totalPages: 1, totalCount: 1 },
       }),
       getNextMessage: async () => {
         await syncGate;
@@ -425,14 +429,10 @@ describe("PlatformRuntime", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(seenMessages).toEqual([
-      // Auto-subscribed existing rooms no longer pre-poll /messages/next at
-      // startup (skipStartupCatchup=true on the rehydrate path), so the
-      // backlog "m-backlog" / "recover me first" returned by the mocked
-      // getStaleProcessingMessages stays untouched. The two messages still
-      // delivered ("m-sync" and "m-live") are both live WebSocket
-      // notifications that bypass the startup REST polls. Crash-recovery
-      // for in-flight `processing` messages still runs separately via the
-      // explicit bootstrapMessage / room_added paths.
+      // Existing rooms skip the expensive /messages/next drain, but still
+      // recover stale processing messages from a prior process before live
+      // WebSocket notifications continue.
+      "recover me first",
       "recover me second",
       "live only",
     ]);

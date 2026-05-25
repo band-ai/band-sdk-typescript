@@ -19,14 +19,11 @@ interface ExecutionOptions {
   onFailure?: (error: unknown, event: PlatformEvent) => void | Promise<void>;
   logger?: Logger;
   /**
-   * When true (default), the loop runs `recoverStaleProcessingMessages` +
-   * `synchronizeWithNext` at startup to catch up after a crash/disconnect.
-   * Set to `false` for rooms we just discovered via `autoSubscribeExistingRooms`
-   * — those have no in-flight `processing` state for *this* agent yet, so the
-   * 2 REST calls per room are pure waste and burn the per-agent rate limit
-   * when the agent is subscribed to many rooms.
+   * Skip the startup `/messages/next` drain for rooms discovered during bulk
+   * auto-subscribe. Stale `processing` recovery still runs, because existing
+   * rooms may have in-flight messages left behind by a previous process.
    */
-  skipStartupCatchup?: boolean;
+  skipStartupQueueSync?: boolean;
 }
 
 function toMessageEvent(message: PlatformMessage): PlatformEvent {
@@ -67,7 +64,7 @@ export class Execution {
   private syncComplete = false;
   private running = true;
   private inFlight = 0;
-  private readonly skipStartupCatchup: boolean;
+  private readonly skipStartupQueueSync: boolean;
 
   public constructor(options: ExecutionOptions) {
     this.roomId = options.roomId;
@@ -76,7 +73,7 @@ export class Execution {
     this.retryTracker = this.context.getRetryTracker();
     this.onExecute = options.onExecute;
     this.onFailure = options.onFailure;
-    this.skipStartupCatchup = options.skipStartupCatchup ?? false;
+    this.skipStartupQueueSync = options.skipStartupQueueSync ?? false;
     this.logger = options.logger ?? new NoopLogger();
     this.processTask = this.processLoop();
   }
@@ -163,16 +160,16 @@ export class Execution {
   }
 
   private async processLoop(): Promise<void> {
-    if (this.skipStartupCatchup) {
-      // No prior `processing` state for *this* agent in this room (we just
-      // discovered the room via auto-subscribe), so the WebSocket is
-      // authoritative — skip the 2 REST polls and let the live channel push
-      // events. This is what keeps an agent subscribed to N rooms from
-      // firing 2N REST calls per startup and tripping the rate limiter.
+    await this.recoverStaleProcessingMessages();
+
+    if (this.skipStartupQueueSync) {
+      // Bulk auto-subscribe can attach to many existing rooms at once. Avoid
+      // draining `/messages/next` for every room, but keep stale-processing
+      // recovery above so restarts do not strand messages already claimed by
+      // this agent.
       this.syncComplete = true;
       this.notifyIfIdle();
     } else {
-      await this.recoverStaleProcessingMessages();
       await this.synchronizeWithNext();
     }
 

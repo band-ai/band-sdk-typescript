@@ -18,6 +18,7 @@ export const GENERATED_CONTEXT_FILES = [
   "band-egress-policy.yaml",
   "openclaw-channel-thenvoi.config.example.json",
   "openclaw-channel-thenvoi.openclaw-config.json",
+  "openclaw-channel-thenvoi.patch-openclaw-config.cjs",
   `${PLUGIN_CONTEXT_DIR}/package.json`,
   ...PLUGIN_FILES.map((file) => `${PLUGIN_CONTEXT_DIR}/${file}`),
 ];

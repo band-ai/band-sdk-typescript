@@ -76,37 +76,32 @@ function runConfigSet(args) {
 
 function main() {
   const opts = parseArgs(process.argv.slice(2));
-  const values = [
-    ["plugins.entries.openclaw-channel-thenvoi.config.accounts.default.restUrl", opts.restUrl],
-    ["plugins.entries.openclaw-channel-thenvoi.config.accounts.default.wsUrl", opts.wsUrl],
-    ["plugins.entries.openclaw-channel-thenvoi.config.accounts.default.agentId", requireEnv("THENVOI_AGENT_ID")],
-    ["plugins.entries.openclaw-channel-thenvoi.config.accounts.default.apiKey", "${THENVOI_API_KEY}"],
-  ];
+  const account = {
+    enabled: true,
+    restUrl: opts.restUrl,
+    wsUrl: opts.wsUrl,
+    agentId: requireEnv("THENVOI_AGENT_ID"),
+    apiKey: "${THENVOI_API_KEY}",
+  };
 
   if (process.env.THENVOI_OPERATOR_ID) {
-    values.push(["plugins.entries.openclaw-channel-thenvoi.config.accounts.default.operatorId", process.env.THENVOI_OPERATOR_ID]);
+    account.operatorId = process.env.THENVOI_OPERATOR_ID;
   }
 
   if (process.env.THENVOI_CONTACT_STRATEGY) {
-    values.push([
-      "plugins.entries.openclaw-channel-thenvoi.config.accounts.default.contactConfig.strategy",
-      process.env.THENVOI_CONTACT_STRATEGY,
-    ]);
-    values.push([
-      "plugins.entries.openclaw-channel-thenvoi.config.accounts.default.contactConfig.broadcastChanges",
-      "true",
-    ]);
-    if (process.env.THENVOI_CONTACT_HUB_TASK_ID) {
-      values.push([
-        "plugins.entries.openclaw-channel-thenvoi.config.accounts.default.contactConfig.hubTaskId",
-        process.env.THENVOI_CONTACT_HUB_TASK_ID,
-      ]);
-    }
+    account.contactConfig = {
+      strategy: process.env.THENVOI_CONTACT_STRATEGY,
+      broadcastChanges: true,
+      ...(process.env.THENVOI_CONTACT_HUB_TASK_ID ? { hubTaskId: process.env.THENVOI_CONTACT_HUB_TASK_ID } : {}),
+    };
   }
 
-  values.forEach(([key, value], index) => {
-    runConfigSet(configSetArgs(opts.sandbox, key, value, opts.restart && index === values.length - 1));
-  });
+  runConfigSet(configSetArgs(
+    opts.sandbox,
+    "plugins.entries.openclaw-channel-thenvoi.config.accounts.default",
+    JSON.stringify(account),
+    opts.restart,
+  ));
 
   console.log(`Configured Band account metadata for NemoClaw sandbox '${opts.sandbox}'. The apiKey config remains the \${THENVOI_API_KEY} runtime placeholder; no Band API key was passed to nemoclaw config set.`);
 }

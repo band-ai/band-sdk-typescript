@@ -39,6 +39,16 @@ function hasRoomId(roomId: string | null): roomId is string {
 
 const ROOM_JOIN_RETRY_DELAYS_MS = [0, 500, 2_000];
 const HYDRATE_CONCURRENCY = 6;
+const pendingJoinsByTrackedRooms = new WeakMap<Set<string>, Set<string>>();
+
+function pendingJoinsFor(trackedRooms: Set<string>): Set<string> {
+  let pending = pendingJoinsByTrackedRooms.get(trackedRooms);
+  if (!pending) {
+    pending = new Set<string>();
+    pendingJoinsByTrackedRooms.set(trackedRooms, pending);
+  }
+  return pending;
+}
 
 function isRetryableRoomJoinError(error: unknown): boolean {
   if (!(error instanceof TransportError)) return false;
@@ -64,7 +74,7 @@ async function runWithConcurrency<T>(
     while (cursor < items.length) {
       const index = cursor;
       cursor += 1;
-      await worker(items[index] as T);
+      await worker(items[index]);
     }
   });
   await Promise.all(runners);
@@ -101,17 +111,27 @@ export async function trackRoomJoin(options: TrackRoomJoinOptions): Promise<bool
     return false;
   }
 
-  if (options.trackedRooms.has(options.roomId)) {
+  const pendingJoins = pendingJoinsFor(options.trackedRooms);
+  if (options.trackedRooms.has(options.roomId) || pendingJoins.has(options.roomId)) {
     return false;
   }
 
-  await subscribeRoomWithRetry(options.link, options.roomId);
-  options.trackedRooms.add(options.roomId);
-  if (options.onJoined) {
-    await options.onJoined(options.roomId, options.payload);
-  }
+  pendingJoins.add(options.roomId);
+  try {
+    await subscribeRoomWithRetry(options.link, options.roomId);
+    if (options.trackedRooms.has(options.roomId)) {
+      return false;
+    }
 
-  return true;
+    options.trackedRooms.add(options.roomId);
+    if (options.onJoined) {
+      await options.onJoined(options.roomId, options.payload);
+    }
+
+    return true;
+  } finally {
+    pendingJoins.delete(options.roomId);
+  }
 }
 
 export async function trackRoomLeave(options: TrackRoomLeaveOptions): Promise<boolean> {
@@ -123,6 +143,7 @@ export async function trackRoomLeave(options: TrackRoomLeaveOptions): Promise<bo
   // room, the underlying Phoenix topic is gone and `unsubscribeRoom` may throw
   // — but the room is no longer reachable, which is the goal state, so the
   // tracking set must reflect that regardless of how the leave call resolves.
+  pendingJoinsFor(options.trackedRooms).delete(options.roomId);
   options.trackedRooms.delete(options.roomId);
 
   try {

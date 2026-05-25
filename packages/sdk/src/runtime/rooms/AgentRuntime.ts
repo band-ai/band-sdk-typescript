@@ -312,7 +312,7 @@ export class AgentRuntime {
     return graceful;
   }
 
-  private getOrCreateExecution(roomId: string, options?: { skipStartupCatchup?: boolean }): Execution {
+  private getOrCreateExecution(roomId: string, options?: { skipStartupQueueSync?: boolean }): Execution {
     const existing = this.executions.get(roomId);
     if (existing) {
       return existing;
@@ -327,7 +327,7 @@ export class AgentRuntime {
         await this.failRuntime(error, event);
       },
       logger: this.logger,
-      ...(options?.skipStartupCatchup ? { skipStartupCatchup: true } : {}),
+      ...(options?.skipStartupQueueSync ? { skipStartupQueueSync: true } : {}),
     });
     this.executions.set(roomId, execution);
     const watcher = execution.waitUntilStopped()
@@ -387,11 +387,10 @@ export class AgentRuntime {
       trackedRooms: this.subscribedRooms,
       roomFilter: this.roomFilter,
       onJoined: async (roomId, payload) => {
-        // Auto-subscribe rehydrate path: nothing in `processing` state for
-        // this agent in this room yet (we just rejoined it). Skip the
-        // startup REST catch-up to avoid 2 calls per existing room — the
-        // WebSocket pushes any new activity live.
-        this.getOrCreateExecution(roomId, { skipStartupCatchup: true });
+        // Auto-subscribe rehydrate path: skip the startup `/messages/next`
+        // drain to avoid one extra REST poll per existing room. The execution
+        // still recovers stale `processing` messages before going live.
+        this.getOrCreateExecution(roomId, { skipStartupQueueSync: true });
         await this.onRoomJoined?.(roomId, payload);
       },
       onError: async (error) => {

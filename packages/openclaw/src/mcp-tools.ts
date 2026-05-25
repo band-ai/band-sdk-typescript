@@ -5,7 +5,7 @@
  * for use by OpenClaw agents. Uses @thenvoi/sdk REST API.
  */
 
-import { getLink, getAgentId, recordBandMessageSentForCurrentTurn } from "./channel.js";
+import { getLink, getAgentId, getBandToolEventContext, recordBandMessageSentForCurrentTurn } from "./channel.js";
 
 // =============================================================================
 // MCP Tool Types (local to this module)
@@ -53,12 +53,25 @@ interface McpProperty {
 // Helper: get REST API from link
 // =============================================================================
 
-function getRest() {
-  const link = getLink();
+function currentAccountId(): string {
+  return getBandToolEventContext()?.accountId ?? "default";
+}
+
+function getCurrentLink() {
+  const accountId = currentAccountId();
+  const link = getLink(accountId);
   if (!link) {
-    throw new Error("Thenvoi client not connected");
+    throw new Error(`Thenvoi client not connected for account ${accountId}`);
   }
-  return link.rest;
+  return link;
+}
+
+function getRest() {
+  return getCurrentLink().rest;
+}
+
+function getSelfAgentId(): string | undefined {
+  return getAgentId(currentAccountId());
 }
 
 /**
@@ -254,7 +267,7 @@ const removeParticipantTool: McpTool = {
         throw new Error("Either name or participant_id is required");
       }
       // Resolve name to ID via the room's participant list
-      const selfAgentId = getAgentId();
+      const selfAgentId = getSelfAgentId();
       const participants = await rest.listChatParticipants(room_id);
       const match = participants.find(
         (p) => p.name.toLowerCase() === name.toLowerCase() && p.id !== selfAgentId
@@ -439,7 +452,7 @@ const sendMessageTool: McpTool = {
       throw new Error("At least one mention is required to send a message");
     }
 
-    const selfAgentId = getAgentId();
+    const selfAgentId = getSelfAgentId();
 
     // Get participants to validate UUID mentions and map them to display names.
     const participants = await rest.listChatParticipants(room_id);

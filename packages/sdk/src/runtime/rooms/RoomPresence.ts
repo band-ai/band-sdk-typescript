@@ -90,6 +90,7 @@ export class RoomPresence {
     await this.eventTask;
     this.eventTask = null;
     this.eventController = null;
+    await this.drainActiveTasks();
 
     if (this.contactsSubscribed) {
       await this.link.unsubscribeAgentContacts();
@@ -114,6 +115,12 @@ export class RoomPresence {
       }
 
       this.scheduleEvent(event);
+    }
+  }
+
+  private async drainActiveTasks(): Promise<void> {
+    while (this.activeTasks.size > 0) {
+      await Promise.allSettled([...this.activeTasks]);
     }
   }
 

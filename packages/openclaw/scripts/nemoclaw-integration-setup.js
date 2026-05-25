@@ -24,6 +24,8 @@ const OPENCLAW_CONFIG_PATH = "/sandbox/.openclaw/openclaw.json";
 const OPENCLAW_CONFIG_DIR = "/sandbox/.openclaw";
 const PLUGIN_PATH = "/sandbox/.openclaw/extensions/openclaw-channel-thenvoi";
 const PLUGIN_CONFIG_PATCH_PATH = "/tmp/openclaw-channel-thenvoi.openclaw-config.json";
+const PLUGIN_PATCH_SCRIPT_FILE = "openclaw-channel-thenvoi.patch-openclaw-config.cjs";
+const PLUGIN_PATCH_SCRIPT_PATH = `/tmp/${PLUGIN_PATCH_SCRIPT_FILE}`;
 
 const PLUGIN_PACKAGE_JSON = JSON.stringify({
   name: "openclaw-channel-thenvoi-nemoclaw",
@@ -183,14 +185,15 @@ function openClawConfigPatchScript() {
     "};",
     "const currentGateway = cfg.gateway || {};",
     "const currentControlUi = currentGateway.controlUi || {};",
+    "const chatUiUrl = env.CHAT_UI_URL || defaultChatUiUrl;",
     "cfg.gateway = {",
     "...currentGateway,",
     "mode: \"local\",",
     "controlUi: {",
     "...currentControlUi,",
-    "allowInsecureAuth: String(env.CHAT_UI_URL || \"\").startsWith(\"http://\"),",
+    "allowInsecureAuth: String(chatUiUrl).startsWith(\"http://\"),",
     "dangerouslyDisableDeviceAuth: String(env.NEMOCLAW_DISABLE_DEVICE_AUTH || \"\") === \"1\",",
-    "allowedOrigins: [defaultChatUiUrl],",
+    "allowedOrigins: [chatUiUrl],",
     "},",
     "trustedProxies: [\"127.0.0.1\", \"::1\"],",
     "auth: { ...(currentGateway.auth || {}), token: \"\" },",
@@ -198,7 +201,7 @@ function openClawConfigPatchScript() {
     "cfg.update = { ...(cfg.update || {}), checkOnStart: false };",
     "fs.mkdirSync(cfgDir, { recursive: true });",
     "fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));",
-  ].join(" ");
+  ].join("\n");
 }
 
 function pluginDockerfileLayer(prefix = "") {
@@ -209,7 +212,8 @@ COPY openclaw-channel-thenvoi /sandbox/.openclaw/extensions/openclaw-channel-the
 RUN openclaw doctor --fix || true
 COPY openclaw-channel-thenvoi.config.example.json /sandbox/.openclaw/openclaw-channel-thenvoi.config.example.json
 COPY openclaw-channel-thenvoi.openclaw-config.json ${PLUGIN_CONFIG_PATCH_PATH}
-RUN node -e ${JSON.stringify(openClawConfigPatchScript())}
+COPY ${PLUGIN_PATCH_SCRIPT_FILE} ${PLUGIN_PATCH_SCRIPT_PATH}
+RUN node ${PLUGIN_PATCH_SCRIPT_PATH}
 `;
 }
 
@@ -307,6 +311,7 @@ function main() {
       includeCredentialPlaceholders: false,
       includeCredentialValues: opts.embedCredentialsFromEnv,
     }),
+    [PLUGIN_PATCH_SCRIPT_FILE]: openClawConfigPatchScript(),
     "band-egress-policy.yaml": policyYaml(restEndpoint, wsEndpoint),
     [`${PLUGIN_CONTEXT_DIR}/package.json`]: PLUGIN_PACKAGE_JSON,
   };

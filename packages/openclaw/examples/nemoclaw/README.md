@@ -65,6 +65,7 @@ Review these generated files before onboarding:
 - `band-egress-policy.yaml`
 - `openclaw-channel-thenvoi.openclaw-config.json`
 - `openclaw-channel-thenvoi.config.example.json`
+- `openclaw-channel-thenvoi.patch-openclaw-config.cjs`
 - `openclaw-channel-thenvoi/openclaw.plugin.json`
 
 Do not bake real Band credentials into the image unless you are creating a disposable local sandbox. The supported path keeps the Band API key behind the `${THENVOI_API_KEY}` runtime placeholder; the post-onboard configure helper writes only non-secret account metadata with NemoClaw's host-side config command.

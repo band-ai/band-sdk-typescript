@@ -13,11 +13,21 @@ import {
   RoomPresence,
   ContactEventHandler,
   HUB_ROOM_SYSTEM_PROMPT,
-  SYNTHETIC_CONTACT_EVENTS_SENDER_ID,
 } from "@thenvoi/sdk/runtime";
 import type { ContactEventConfig, ContactEvent, PlatformEvent } from "@thenvoi/sdk";
+import { BoundedStringSet } from "./bounded-string-set.js";
+import {
+  buildOpenClawBody,
+  messageInsertedAt,
+  messageMentionsAgent,
+  platformEventToInboundMessage,
+  type OpenClawInboundMessage,
+} from "./message-utils.js";
 import { resolveOpenClawRuntimeDispatch, type OpenClawRuntimeDispatch } from "./openclaw-runtime.js";
+import { createBandReplyDispatcher, createNoopReplyDispatcher } from "./reply-dispatcher.js";
 import { redactSecrets } from "./redaction.js";
+
+export type { OpenClawInboundMessage } from "./message-utils.js";
 
 // =============================================================================
 // OpenClaw-Specific Types
@@ -31,17 +41,6 @@ export interface ThenvoiAccountConfig {
   restUrl?: string;
   contactConfig?: ContactEventConfig;
   operatorId?: string;
-}
-
-export interface OpenClawInboundMessage {
-  channelId: "thenvoi";
-  threadId: string;
-  senderId: string;
-  senderType: string;
-  senderName: string;
-  text: string;
-  timestamp: string;
-  metadata?: Record<string, unknown>;
 }
 
 // =============================================================================
@@ -216,7 +215,7 @@ interface GatewayRegistry {
   startingAccounts: Set<string>;
   lastSenderByThread: Map<string, { senderId: string; senderName: string; senderType?: string }>;
   replyOwnerByThread: Map<string, { senderId: string; senderName: string }>;
-  processedMessageIds: Set<string>;
+  processedMessageIds: BoundedStringSet;
   deliverInbound: ((message: OpenClawInboundMessage) => void) | null;
   openclawRuntime: OpenClawRuntimeDispatch | null;
 }
@@ -230,7 +229,7 @@ function getGatewayRegistry(): GatewayRegistry {
       startingAccounts: new Set(),
       lastSenderByThread: new Map(),
       replyOwnerByThread: new Map(),
-      processedMessageIds: new Set(),
+      processedMessageIds: new BoundedStringSet(MAX_MESSAGE_DEDUPE_CACHE),
       deliverInbound: null,
       openclawRuntime: null,
     };
@@ -296,6 +295,7 @@ function createChannelLogger(accountId: string) {
 // Track last sender per thread for auto-mention fallback
 // Key: threadId, Value: { senderId, senderName }
 const MAX_SENDER_CACHE = 500;
+const MAX_MESSAGE_DEDUPE_CACHE = 2_000;
 
 function trackSender(accountId: string, threadId: string, senderId: string, senderName: string, senderType?: string): void {
   const lastSenderByThread = registry().lastSenderByThread;
@@ -440,73 +440,6 @@ async function resolveMentions(
 // Reply Helper
 // =============================================================================
 
-/**
- * Send a reply back to Band using the SDK's REST API.
- * Throws on failure so callers (e.g. the dispatcher) can track and surface delivery errors.
- */
-function replyPayloadText(payload: unknown): string | undefined {
-  return typeof payload === "string" ? payload : (payload as { text?: string })?.text;
-}
-
-function extractUserFacingFinalText(text: string): string {
-  const messageToUserMatch = text.match(/<message to user>([\s\S]*?)<\/message>/i);
-  return (messageToUserMatch?.[1] ?? text).trim();
-}
-
-function hasExplicitUserFacingFinalText(text: string): boolean {
-  return /<message to user>[\s\S]*?<\/message>/i.test(text);
-}
-
-function buildOpenClawBody(message: OpenClawInboundMessage): string {
-  if (message.senderType?.toLowerCase() !== "agent") return message.text;
-
-  return [
-    `[Band worker agent reply from ${message.senderName} (${message.senderId})]`,
-    "This message is from another agent in the room, not from the human requester. If you delegated work to this agent and a critique, improvement request, validation question, challenge, counterargument, or follow-up would improve the result, reply to this same worker with thenvoi_send_message instead of finaling back to the room owner. For debate, review, or compare/contrast tasks, the first worker answer is not enough; challenge it or add your own counterpoint before declaring consensus.",
-    "",
-    message.text,
-  ].join("\n");
-}
-
-interface ReplyDispatcher extends Record<string, unknown> {
-  sendToolResult: (payload: unknown) => boolean;
-  sendBlockReply: (payload: unknown) => boolean;
-  sendFinalReply: (payload: unknown) => boolean;
-  waitForIdle: () => Promise<void>;
-  getQueuedCounts: () => { tool: number; block: number; final: number };
-}
-
-function createNoopReplyDispatcher(): ReplyDispatcher {
-  function sendReply(): boolean {
-    return true;
-  }
-
-  return {
-    sendToolResult: sendReply,
-    sendBlockReply: sendReply,
-    sendFinalReply: sendReply,
-    waitForIdle: async (): Promise<void> => {},
-    getQueuedCounts: () => ({ tool: 0, block: 0, final: 0 }),
-  };
-}
-
-function isLikelyPartialFinalReply(text: string): boolean {
-  const trimmed = text.trim();
-  return trimmed.length <= 2 || /^['’][a-z]/i.test(trimmed);
-}
-
-function selectFinalReplyText(texts: string[]): string | undefined {
-  const normalized = texts.map((text) => text.trim()).filter(Boolean);
-  if (normalized.length === 0) return undefined;
-
-  for (let index = normalized.length - 1; index >= 0; index -= 1) {
-    const text = normalized[index];
-    if (text && !isLikelyPartialFinalReply(text)) return text;
-  }
-
-  return normalized.length > 1 ? normalized.join("") : undefined;
-}
-
 async function resolveFinalReplyMentions(
   rest: ThenvoiLink["rest"],
   agentId: string,
@@ -535,140 +468,6 @@ async function resolveFinalReplyMentions(
   if (otherParticipant) return [{ id: otherParticipant.id, name: otherParticipant.name }];
 
   throw new Error("Cannot send final reply: no other participant is available to mention");
-}
-
-async function sendFinalReplyToThenvoi(
-  rest: ThenvoiLink["rest"],
-  agentId: string,
-  accountId: string,
-  roomId: string,
-  text: string,
-): Promise<void> {
-  const mentions = await resolveFinalReplyMentions(rest, agentId, accountId, roomId);
-  await rest.createChatMessage(roomId, { content: text, mentions });
-  console.log(`[thenvoi] Final reply sent (room=${roomId}, textLength=${text.length})`);
-}
-
-function createBandReplyDispatcher(link: ThenvoiLink, accountId: string, roomId: string, turnContext?: BandToolEventContext): ReplyDispatcher {
-  const pendingReplies: Promise<void>[] = [];
-  const deliveryErrors: Error[] = [];
-  const queuedCounts = { tool: 0, block: 0, final: 0 };
-  const finalReplyTexts: string[] = [];
-  let finalReplySent = false;
-
-  function enqueueDelivery(kind: "final" | "tool", delivery: Promise<void>): void {
-    pendingReplies.push(
-      delivery.catch((err: unknown) => {
-        const error = err instanceof Error ? err : new Error(String(err));
-        deliveryErrors.push(error);
-        console.error(`[thenvoi:${accountId}] ${kind} delivery failed (room=${roomId}, error=${error.name || "Error"})`);
-      }),
-    );
-  }
-
-  function enqueueToolResult(payload: unknown): void {
-    queuedCounts.tool += 1;
-    const text = replyPayloadText(payload);
-    if (!text) return;
-    enqueueDelivery("tool", link.rest.createChatEvent(roomId, {
-      content: text,
-      messageType: "tool_result",
-      metadata: { source: "openclaw" },
-    }).then(() => undefined));
-  }
-
-  function queueFinalReply(payload: unknown): void {
-    queuedCounts.final += 1;
-    if (finalReplySent) return;
-    const text = replyPayloadText(payload);
-    if (text) finalReplyTexts.push(text);
-  }
-
-  return {
-    sendToolResult: (payload: unknown): boolean => {
-      enqueueToolResult(payload);
-      return true;
-    },
-    sendBlockReply: (): boolean => {
-      queuedCounts.block += 1;
-      return true;
-    },
-    sendFinalReply: (payload: unknown): boolean => {
-      queueFinalReply(payload);
-      return true;
-    },
-    waitForIdle: async (): Promise<void> => {
-      const candidateFinalTexts = turnContext?.sentMessage
-        ? finalReplyTexts.filter(hasExplicitUserFacingFinalText)
-        : finalReplyTexts;
-      const finalReplyText = finalReplySent ? undefined : selectFinalReplyText(candidateFinalTexts);
-      if (finalReplyText) {
-        finalReplySent = true;
-        enqueueDelivery("final", sendFinalReplyToThenvoi(link.rest, link.agentId, accountId, roomId, extractUserFacingFinalText(finalReplyText)));
-      } else if (!finalReplySent && turnContext?.sentMessage && finalReplyTexts.length > 0) {
-        finalReplySent = true;
-        console.log(`[thenvoi] Dropped non-explicit final reply after thenvoi_send_message (room=${roomId})`);
-      }
-      await Promise.allSettled(pendingReplies);
-      if (deliveryErrors.length > 0) {
-        console.error(`[thenvoi:${accountId}] ${deliveryErrors.length}/${pendingReplies.length} replies failed to deliver (room=${roomId})`);
-      }
-    },
-    getQueuedCounts: () => ({ ...queuedCounts }),
-  };
-}
-
-// =============================================================================
-// Event to Message Conversion
-// =============================================================================
-
-/**
- * Convert a SDK PlatformEvent (message_created) to OpenClawInboundMessage.
- */
-function platformEventToInboundMessage(event: PlatformEvent): OpenClawInboundMessage | null {
-  if (event.type !== "message_created") return null;
-  const payload = event.payload;
-  const roomId = event.roomId ?? payload.chat_room_id;
-  if (!roomId) return null;
-
-  const isTextMessage = payload.message_type === "text";
-  const isSyntheticContactEvent =
-    payload.message_type === "contact_event" && payload.sender_id === SYNTHETIC_CONTACT_EVENTS_SENDER_ID;
-  if (!isTextMessage && !isSyntheticContactEvent) {
-    console.log(`[thenvoi] Skipping non-text message (type=${payload.message_type}, room=${roomId})`);
-    return null;
-  }
-
-  return {
-    channelId: "thenvoi",
-    threadId: roomId,
-    senderId: payload.sender_id,
-    senderType: payload.sender_type,
-    senderName: payload.sender_name ?? "Unknown",
-    text: payload.content,
-    timestamp: payload.inserted_at,
-    metadata: {
-      messageId: payload.id,
-      messageType: payload.message_type,
-      mentions: payload.metadata?.mentions,
-      contactEvent: isSyntheticContactEvent,
-    },
-  };
-}
-
-function messageMentionsAgent(payload: Record<string, unknown>, agentId: string): boolean {
-  const content = typeof payload.content === "string" ? payload.content : "";
-  if (content.includes(agentId)) return true;
-
-  const mentions = (payload.metadata as { mentions?: Array<{ id?: unknown; agent_id?: unknown; participant_id?: unknown }> } | undefined)?.mentions;
-  return Array.isArray(mentions) && mentions.some((mention) =>
-    mention.id === agentId || mention.agent_id === agentId || mention.participant_id === agentId,
-  );
-}
-
-function messageInsertedAt(payload: Record<string, unknown>): number | undefined {
-  const insertedAt = typeof payload.inserted_at === "string" ? Date.parse(payload.inserted_at) : NaN;
-  return Number.isFinite(insertedAt) ? insertedAt : undefined;
 }
 
 // =============================================================================
@@ -907,7 +706,13 @@ export const thenvoiChannel: OpenClawChannel = {
               const bandTurnContext: BandToolEventContext = { accountId, roomId: message.threadId };
               const dispatcher = message.threadId === CONTACTS_THREAD_ID
                 ? createNoopReplyDispatcher()
-                : createBandReplyDispatcher(link, accountId, message.threadId, bandTurnContext);
+                : createBandReplyDispatcher(
+                  link,
+                  accountId,
+                  message.threadId,
+                  () => resolveFinalReplyMentions(link.rest, link.agentId, accountId, message.threadId),
+                  bandTurnContext,
+                );
 
               console.log(`[thenvoi:${accountId}] Dispatching message to OpenClaw agent...`);
               const cfg = dispatch.loadConfig();
@@ -1051,7 +856,12 @@ export const thenvoiChannel: OpenClawChannel = {
                 return;
               }
 
-              const dispatcher = createBandReplyDispatcher(link, accountId, hubRoomId);
+              const dispatcher = createBandReplyDispatcher(
+                link,
+                accountId,
+                hubRoomId,
+                () => resolveFinalReplyMentions(link.rest, link.agentId, accountId, hubRoomId),
+              );
               const cfg = dispatch.loadConfig();
               await runWithBandToolEventContext({ accountId, roomId: hubRoomId }, async () => dispatch.dispatchReplyFromConfig({
                 ctx: {
