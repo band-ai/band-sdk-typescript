@@ -20,7 +20,7 @@ function createDispatcher() {
 }
 
 describe("Band reply dispatcher", () => {
-  it("coalesces fragmented final replies when no explicit user message tag is emitted", async () => {
+  it("drops non-explicit final replies", async () => {
     const { dispatcher, link } = createDispatcher();
 
     dispatcher.sendFinalReply({ text: "I" });
@@ -28,21 +28,19 @@ describe("Band reply dispatcher", () => {
     dispatcher.sendFinalReply({ text: " you." });
     await dispatcher.waitForIdle();
 
-    expect(link.rest.createChatMessage).toHaveBeenCalledWith(
-      "room-123",
-      expect.objectContaining({ content: "I'll help you." }),
-    );
+    expect(link.rest.createChatMessage).not.toHaveBeenCalled();
   });
 
-  it("does not silently drop a single short final reply", async () => {
+  it("sends explicit user-facing final replies", async () => {
     const { dispatcher, link } = createDispatcher();
 
     dispatcher.sendFinalReply({ text: "I" });
+    dispatcher.sendFinalReply({ text: "<message to user>Done.</message>" });
     await dispatcher.waitForIdle();
 
     expect(link.rest.createChatMessage).toHaveBeenCalledWith(
       "room-123",
-      expect.objectContaining({ content: "I" }),
+      expect.objectContaining({ content: "Done." }),
     );
   });
 });

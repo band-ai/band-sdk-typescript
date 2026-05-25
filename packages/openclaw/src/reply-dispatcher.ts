@@ -1,5 +1,4 @@
 import type { ThenvoiLink } from "@thenvoi/sdk";
-import type { BandToolEventContext } from "./channel.js";
 
 type Mention = { id: string; name?: string };
 
@@ -38,27 +37,13 @@ function hasExplicitUserFacingFinalText(text: string): boolean {
   return /<message to user>[\s\S]*?<\/message>/i.test(text);
 }
 
-function joinFinalReplyFragments(fragments: string[]): string {
-  return fragments.reduce((joined, fragment) => {
-    if (!joined || /^['’]/.test(fragment)) return `${joined}${fragment}`;
-    return `${joined} ${fragment}`;
-  }, "");
-}
-
 function selectFinalReplyText(texts: string[]): string | undefined {
-  const normalized = texts.map((text) => text.trim()).filter(Boolean);
-  if (normalized.length === 0) return undefined;
-
-  for (let index = normalized.length - 1; index >= 0; index -= 1) {
-    const text = normalized[index];
+  for (let index = texts.length - 1; index >= 0; index -= 1) {
+    const text = texts[index]?.trim();
     if (text && hasExplicitUserFacingFinalText(text)) return text;
   }
 
-  if (normalized.length === 1) {
-    return normalized[0];
-  }
-
-  return joinFinalReplyFragments(normalized);
+  return undefined;
 }
 
 async function sendFinalReplyToBand(
@@ -76,7 +61,6 @@ export function createBandReplyDispatcher(
   accountId: string,
   roomId: string,
   resolveFinalMentions: () => Promise<Mention[]>,
-  turnContext?: BandToolEventContext,
 ): ReplyDispatcher {
   const pendingReplies: Promise<void>[] = [];
   const deliveryErrors: Error[] = [];
@@ -127,10 +111,7 @@ export function createBandReplyDispatcher(
     },
     waitForIdle: async (): Promise<void> => {
       await Promise.resolve();
-      const candidateFinalTexts = turnContext?.sentMessage
-        ? finalReplyTexts.filter(hasExplicitUserFacingFinalText)
-        : finalReplyTexts;
-      const finalReplyText = finalReplySent ? undefined : selectFinalReplyText(candidateFinalTexts);
+      const finalReplyText = finalReplySent ? undefined : selectFinalReplyText(finalReplyTexts);
       if (finalReplyText) {
         finalReplySent = true;
         const mentions = await resolveFinalMentions();
@@ -140,9 +121,9 @@ export function createBandReplyDispatcher(
           extractUserFacingFinalText(finalReplyText),
           mentions,
         ));
-      } else if (!finalReplySent && turnContext?.sentMessage && finalReplyTexts.length > 0) {
+      } else if (!finalReplySent && finalReplyTexts.length > 0) {
         finalReplySent = true;
-        console.log(`[thenvoi] Dropped non-explicit final reply after thenvoi_send_message (room=${roomId})`);
+        console.log(`[thenvoi] Dropped non-explicit final reply (room=${roomId})`);
       }
       await Promise.allSettled(pendingReplies);
       if (deliveryErrors.length > 0) {

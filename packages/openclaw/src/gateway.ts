@@ -162,7 +162,6 @@ export function createGatewayHelpers(options: GatewayRuntimeOptions): GatewayHel
                   accountId,
                   message.threadId,
                   () => options.resolveFinalReplyMentions(link.rest, link.agentId, accountId, message.threadId),
-                  bandTurnContext,
                 );
 
               console.log(`[thenvoi:${accountId}] Dispatching message to OpenClaw agent...`);
@@ -316,7 +315,6 @@ export function createGatewayHelpers(options: GatewayRuntimeOptions): GatewayHel
                 accountId,
                 hubRoomId,
                 () => options.resolveFinalReplyMentions(link.rest, link.agentId, accountId, hubRoomId),
-                hubTurnContext,
               );
               const cfg = dispatch.loadConfig();
               await options.runWithBandToolEventContext(hubTurnContext, async () => dispatch.dispatchReplyFromConfig({
