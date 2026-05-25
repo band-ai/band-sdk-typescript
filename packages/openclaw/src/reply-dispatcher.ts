@@ -40,7 +40,14 @@ function hasExplicitUserFacingFinalText(text: string): boolean {
 
 function isLikelyPartialFinalReply(text: string): boolean {
   const trimmed = text.trim();
-  return trimmed.length <= 2 || /^['’][a-z]/i.test(trimmed);
+  return trimmed.toLowerCase() === "i" || /^['’][a-z]/i.test(trimmed);
+}
+
+function joinFinalReplyFragments(fragments: string[]): string {
+  return fragments.reduce((joined, fragment) => {
+    if (!joined || /^['’]/.test(fragment)) return `${joined}${fragment}`;
+    return `${joined} ${fragment}`;
+  }, "");
 }
 
 function selectFinalReplyText(texts: string[]): string | undefined {
@@ -49,10 +56,19 @@ function selectFinalReplyText(texts: string[]): string | undefined {
 
   for (let index = normalized.length - 1; index >= 0; index -= 1) {
     const text = normalized[index];
-    if (text && !isLikelyPartialFinalReply(text)) return text;
+    if (text && hasExplicitUserFacingFinalText(text)) return text;
   }
 
-  return normalized.length > 1 ? normalized.join("") : undefined;
+  if (normalized.length === 1) {
+    const [text] = normalized;
+    return text && isLikelyPartialFinalReply(text) ? undefined : text;
+  }
+
+  if (normalized.some(isLikelyPartialFinalReply)) {
+    return joinFinalReplyFragments(normalized);
+  }
+
+  return normalized[normalized.length - 1];
 }
 
 async function sendFinalReplyToBand(

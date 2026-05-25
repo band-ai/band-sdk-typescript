@@ -112,7 +112,6 @@ export function createGatewayHelpers(options: GatewayRuntimeOptions): GatewayHel
           const roomId = event.roomId ?? event.payload.chat_room_id;
           const dedupeKey = roomId && messageId ? `${accountId}:${roomId}:${messageId}` : undefined;
           if (dedupeKey && options.processedMessageIds.has(dedupeKey)) return;
-          if (dedupeKey) options.processedMessageIds.add(dedupeKey);
 
           const message = platformEventToInboundMessage(event);
           if (!message) return;
@@ -125,6 +124,8 @@ export function createGatewayHelpers(options: GatewayRuntimeOptions): GatewayHel
             }
           }
 
+          let handled = false;
+          let failure: unknown;
           const dispatch = options.getOpenClawRuntime();
           if (dispatch) {
             try {
@@ -172,19 +173,31 @@ export function createGatewayHelpers(options: GatewayRuntimeOptions): GatewayHel
                 dispatcher,
               }));
               await dispatcher.waitForIdle();
+              handled = true;
               console.log(`[thenvoi:${accountId}] Message dispatched successfully`);
             } catch (error) {
+              failure = error;
               console.error(`[thenvoi:${accountId}] Failed to dispatch message: ${redactSecrets(error)}`);
             }
           } else {
             options.deliverMessage(message, accountId);
+            handled = true;
           }
 
           if (roomId && messageId) {
-            try {
-              await link.markProcessed(roomId, messageId, { bestEffort: true });
-            } catch {
-              // Best effort - don't fail if marking fails
+            if (handled) {
+              try {
+                await link.markProcessed(roomId, messageId, { bestEffort: true });
+              } catch {
+                // Best effort - don't fail if marking fails
+              }
+              if (dedupeKey) options.processedMessageIds.add(dedupeKey);
+            } else {
+              try {
+                await link.markFailed(roomId, messageId, redactSecrets(failure), { bestEffort: true });
+              } catch {
+                // Best effort - don't fail if marking fails
+              }
             }
           }
         }
@@ -197,9 +210,7 @@ export function createGatewayHelpers(options: GatewayRuntimeOptions): GatewayHel
               try {
                 next = await link.rest.getNextMessage({ chatId: roomId });
               } catch (error) {
-                console.warn(`[thenvoi:${accountId}] Failed to fetch pending message for room ${roomId}; pruning room from local tracking: ${redactSecrets(error)}`);
-                presence.rooms.delete(roomId);
-                try { await link.unsubscribeRoom(roomId); } catch { /* best effort */ }
+                console.warn(`[thenvoi:${accountId}] Failed to fetch pending message for room ${roomId}; retrying on the next recovery sweep: ${redactSecrets(error)}`);
                 return;
               }
               if (!next) break;
@@ -299,14 +310,16 @@ export function createGatewayHelpers(options: GatewayRuntimeOptions): GatewayHel
                 return;
               }
 
+              const hubTurnContext: BandToolEventContext = { accountId, roomId: hubRoomId };
               const dispatcher = createBandReplyDispatcher(
                 link,
                 accountId,
                 hubRoomId,
                 () => options.resolveFinalReplyMentions(link.rest, link.agentId, accountId, hubRoomId),
+                hubTurnContext,
               );
               const cfg = dispatch.loadConfig();
-              await options.runWithBandToolEventContext({ accountId, roomId: hubRoomId }, async () => dispatch.dispatchReplyFromConfig({
+              await options.runWithBandToolEventContext(hubTurnContext, async () => dispatch.dispatchReplyFromConfig({
                 ctx: {
                   Body: message.text,
                   RawBody: message.text,

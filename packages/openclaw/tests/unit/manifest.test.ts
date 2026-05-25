@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import { getMcpToolSchemas } from "../../src/mcp-tools.js";
 
 interface PluginManifest {
+  contracts?: {
+    tools?: string[];
+  };
   capabilities?: {
     mcp?: {
       tools?: string[];
@@ -17,10 +20,13 @@ function readManifest(): PluginManifest {
 
 describe("openclaw.plugin.json", () => {
   it("declares exactly the runtime MCP tools", () => {
-    const manifestTools = readManifest().capabilities?.mcp?.tools ?? [];
+    const manifest = readManifest();
+    const manifestTools = manifest.capabilities?.mcp?.tools ?? [];
+    const contractTools = manifest.contracts?.tools ?? [];
     const runtimeTools = getMcpToolSchemas().map((tool) => tool.name);
 
     expect([...manifestTools].sort()).toEqual([...runtimeTools].sort());
+    expect([...contractTools].sort()).toEqual([...runtimeTools].sort());
   });
 
   it("does not require Band credentials for plugin discovery", () => {

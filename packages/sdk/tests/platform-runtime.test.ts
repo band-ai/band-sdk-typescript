@@ -368,6 +368,10 @@ describe("PlatformRuntime", () => {
         updated_at: new Date().toISOString(),
       },
     ];
+    const getNextMessage = vi.fn(async () => {
+      await syncGate;
+      return backlog.shift() ?? null;
+    });
     const restApi = new FakeRestApi({
       listChats: async () => ({
         data: [{ id: "room-existing", title: "Existing Room" }],
@@ -377,10 +381,7 @@ describe("PlatformRuntime", () => {
         data: request.status === "processing" ? [backlog[0]] : [],
         metadata: { page: 1, pageSize: 50, totalPages: 1, totalCount: 1 },
       }),
-      getNextMessage: async () => {
-        await syncGate;
-        return backlog.shift() ?? null;
-      },
+      getNextMessage,
     });
     const seenMessages: string[] = [];
 
@@ -428,6 +429,7 @@ describe("PlatformRuntime", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
+    expect(getNextMessage).not.toHaveBeenCalled();
     expect(seenMessages).toEqual([
       // Existing rooms skip the expensive /messages/next drain, but still
       // recover stale processing messages from a prior process before live

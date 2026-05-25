@@ -30,6 +30,7 @@ vi.mock("@thenvoi/sdk", () => ({
       listAllChats: vi.fn().mockResolvedValue([]),
       markProcessing: vi.fn().mockResolvedValue(undefined),
       markProcessed: vi.fn().mockResolvedValue(undefined),
+      markFailed: vi.fn().mockResolvedValue(undefined),
     };
     return mockLinkInstance;
   }),
@@ -195,6 +196,50 @@ describe("Channel Gateway Lifecycle", () => {
       });
       expect(capturedContactHandlerOptions?.onHubEvent).toEqual(expect.any(Function));
       expect(capturedContactHandlerOptions?.onHubInit).toEqual(expect.any(Function));
+    });
+
+    it("should drop non-explicit hub final replies after sending a Band message", async () => {
+      const dispatchFn = vi.fn().mockImplementation(async ({ dispatcher }) => {
+        recordBandMessageSentForCurrentTurn();
+        dispatcher.sendFinalReply({ text: "I accepted the contact request." });
+        await dispatcher.waitForIdle();
+      });
+      setOpenClawRuntime({
+        channel: {
+          reply: {
+            dispatchReplyFromConfig: dispatchFn,
+          },
+        },
+        config: {
+          loadConfig: () => ({}),
+        },
+      });
+      const ctx = createGatewayContext("default", {
+        ...mockAccountConfig,
+        contactConfig: { strategy: "hub_room", hubTaskId: "task-123" },
+      }, { aborted: true });
+
+      await thenvoiChannel.gateway!.startAccount(ctx);
+      const onHubEvent = capturedContactHandlerOptions?.onHubEvent as (
+        hubRoomId: string,
+        event: Record<string, unknown>,
+      ) => Promise<void>;
+      await onHubEvent("hub-room", {
+        type: "message_created",
+        payload: {
+          id: "contact-msg-1",
+          chat_room_id: "hub-room",
+          sender_id: "user-789",
+          sender_type: "User",
+          sender_name: "John Doe",
+          content: "[Contact Request] Alice wants to connect.",
+          message_type: "text",
+          inserted_at: "2025-01-15T10:00:00Z",
+          metadata: {},
+        },
+      });
+
+      expect(mockLinkInstance.rest.createChatMessage).not.toHaveBeenCalled();
     });
 
     it("should skip when startAccount is already in progress for same account", async () => {
@@ -692,6 +737,54 @@ describe("Channel Gateway Lifecycle", () => {
       );
       expect(mockLinkInstance.markProcessing).toHaveBeenCalledWith("room-123", "msg-pending-001", { bestEffort: true });
       expect(mockLinkInstance.markProcessed).toHaveBeenCalledWith("room-123", "msg-pending-001", { bestEffort: true });
+    });
+
+    it("should mark message as failed instead of processed when OpenClaw dispatch fails", async () => {
+      setOpenClawRuntime({
+        channel: {
+          reply: {
+            dispatchReplyFromConfig: vi.fn().mockRejectedValue(new Error("dispatch failed")),
+          },
+        },
+        config: {
+          loadConfig: () => ({}),
+        },
+      });
+      const ctx = createGatewayContext("default", mockAccountConfig, { aborted: true });
+      await thenvoiChannel.gateway!.startAccount(ctx);
+
+      const onRoomEvent = capturedPresenceInstance.onRoomEvent as (
+        roomId: string,
+        event: Record<string, unknown>,
+      ) => Promise<void>;
+
+      await onRoomEvent("room-123", {
+        type: "message_created",
+        roomId: "room-123",
+        payload: {
+          id: "msg-fail",
+          chat_room_id: "room-123",
+          sender_id: "user-789",
+          sender_type: "User",
+          sender_name: "John Doe",
+          content: "Hello!",
+          message_type: "text",
+          inserted_at: "2025-01-15T10:00:00Z",
+          metadata: {},
+        },
+      });
+
+      expect(mockLinkInstance.markProcessed).not.toHaveBeenCalledWith(
+        "room-123",
+        "msg-fail",
+        { bestEffort: true },
+      );
+      expect(mockLinkInstance.markFailed).toHaveBeenCalledWith(
+        "room-123",
+        "msg-fail",
+        expect.stringContaining("dispatch failed"),
+        { bestEffort: true },
+      );
     });
 
     it("should mark message as processed after handling", async () => {
