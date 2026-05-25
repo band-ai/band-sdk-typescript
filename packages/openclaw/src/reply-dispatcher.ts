@@ -38,11 +38,6 @@ function hasExplicitUserFacingFinalText(text: string): boolean {
   return /<message to user>[\s\S]*?<\/message>/i.test(text);
 }
 
-function isLikelyPartialFinalReply(text: string): boolean {
-  const trimmed = text.trim();
-  return trimmed.toLowerCase() === "i" || /^['’][a-z]/i.test(trimmed);
-}
-
 function joinFinalReplyFragments(fragments: string[]): string {
   return fragments.reduce((joined, fragment) => {
     if (!joined || /^['’]/.test(fragment)) return `${joined}${fragment}`;
@@ -60,15 +55,10 @@ function selectFinalReplyText(texts: string[]): string | undefined {
   }
 
   if (normalized.length === 1) {
-    const [text] = normalized;
-    return text && isLikelyPartialFinalReply(text) ? undefined : text;
+    return normalized[0];
   }
 
-  if (normalized.some(isLikelyPartialFinalReply)) {
-    return joinFinalReplyFragments(normalized);
-  }
-
-  return normalized[normalized.length - 1];
+  return joinFinalReplyFragments(normalized);
 }
 
 async function sendFinalReplyToBand(
@@ -136,6 +126,7 @@ export function createBandReplyDispatcher(
       return true;
     },
     waitForIdle: async (): Promise<void> => {
+      await Promise.resolve();
       const candidateFinalTexts = turnContext?.sentMessage
         ? finalReplyTexts.filter(hasExplicitUserFacingFinalText)
         : finalReplyTexts;

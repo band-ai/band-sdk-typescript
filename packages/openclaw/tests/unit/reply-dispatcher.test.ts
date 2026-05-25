@@ -37,12 +37,12 @@ describe("Band reply dispatcher", () => {
   it("does not silently drop a single short final reply", async () => {
     const { dispatcher, link } = createDispatcher();
 
-    dispatcher.sendFinalReply({ text: "OK" });
+    dispatcher.sendFinalReply({ text: "I" });
     await dispatcher.waitForIdle();
 
     expect(link.rest.createChatMessage).toHaveBeenCalledWith(
       "room-123",
-      expect.objectContaining({ content: "OK" }),
+      expect.objectContaining({ content: "I" }),
     );
   });
 });
