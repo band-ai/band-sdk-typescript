@@ -158,7 +158,11 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
       await this.transport.connect();
     } catch (error) {
       if (error instanceof WebSocketDisconnectError) {
-        this.recordDisconnectError(error);
+        if (error.reason.retryable) {
+          this.lastDisconnectReason = error.reason;
+        } else {
+          this.recordDisconnectError(error);
+        }
       }
       throw error;
     }

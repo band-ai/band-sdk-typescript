@@ -221,6 +221,20 @@ describe("PhoenixChannelsTransport", () => {
     });
   });
 
+  it("passes ThenvoiLink conflict policy into the socket params", () => {
+    new ThenvoiLink({
+      agentId: "agent-1",
+      apiKey: "key-1",
+      restApi: new FakeRestApi(),
+      wsUrl: "wss://example.test/socket",
+      conflictPolicy: "reject",
+    });
+
+    expect(phoenixMock.FakeSocket.instances[0]?.params).toMatchObject({
+      on_conflict: "reject",
+    });
+  });
+
   it("joins and leaves topics and dispatches topic handlers", async () => {
     const onMessage = vi.fn(async () => {});
     const transport = new PhoenixChannelsTransport({
@@ -439,6 +453,63 @@ describe("PhoenixChannelsTransport", () => {
       });
     },
   );
+
+  it("treats non-retryable upgrade failures as terminal", async () => {
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+      agentId: "agent-1",
+    });
+
+    const connectPromise = transport.connect();
+    const socket = phoenixMock.FakeSocket.instances[0];
+    socket?.emitError({
+      status: 409,
+      body: {
+        error: {
+          code: "connection_conflict",
+          message: "Connection already exists for this agent.",
+          request_id: null,
+        },
+      },
+    });
+
+    await expect(connectPromise).rejects.toBeInstanceOf(
+      WebSocketDisconnectError,
+    );
+    expect(socket?.disconnectCount).toBeGreaterThan(0);
+    expect(socket?.reconnectAfterMs?.(1)).toBe(Number.POSITIVE_INFINITY);
+    await expect(transport.connect()).rejects.toBeInstanceOf(
+      WebSocketDisconnectError,
+    );
+  });
+
+  it("keeps retryable upgrade failures non-terminal", async () => {
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+      agentId: "agent-1",
+    });
+
+    const connectPromise = transport.connect();
+    const socket = phoenixMock.FakeSocket.instances[0];
+    socket?.emitError({
+      status: 429,
+      body: {
+        error: {
+          code: "too_many_requests",
+          message: "Too many websocket connection attempts.",
+          retry_after: 7,
+          request_id: null,
+        },
+      },
+    });
+
+    await expect(connectPromise).rejects.toBeInstanceOf(
+      WebSocketDisconnectError,
+    );
+    expect(socket?.reconnectAfterMs?.(1)).toBe(1000);
+  });
 
   it("rejects empty 403 upgrade errors without inventing a platform reason", async () => {
     const transport = new PhoenixChannelsTransport({

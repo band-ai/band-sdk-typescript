@@ -105,9 +105,12 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       const errorEvent = unwrapErrorEvent(event);
       const upgradeReason = parseUpgradeDisconnectReason(errorEvent);
       if (upgradeReason) {
-        this.lastDisconnectReason = upgradeReason;
-        const error = new WebSocketDisconnectError(upgradeReason);
-        this.connectReject?.(error);
+        if (upgradeReason.retryable) {
+          this.lastDisconnectReason = upgradeReason;
+          this.connectReject?.(new WebSocketDisconnectError(upgradeReason));
+        } else {
+          this.recordTerminalDisconnect(upgradeReason);
+        }
         this.logger.warn("Phoenix socket upgrade failed", {
           reason: upgradeReason,
         });

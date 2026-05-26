@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import { ThenvoiLink } from "../src/platform/ThenvoiLink";
 import type { PlatformEvent } from "../src/platform/events";
+import {
+  WebSocketDisconnectError,
+  type WebSocketDisconnectReason,
+} from "../src/platform/streaming/disconnectReason";
 import type { StreamingTransport } from "../src/platform/streaming/transport";
 import { UnsupportedFeatureError } from "../src/core/errors";
 import { FakeRestApi } from "./testUtils";
@@ -21,7 +25,43 @@ class FakeTransport implements StreamingTransport {
   }
 }
 
+class RejectingTransport extends FakeTransport {
+  public constructor(private readonly reason: WebSocketDisconnectReason) {
+    super();
+  }
+
+  public override async connect() {
+    throw new WebSocketDisconnectError(this.reason);
+  }
+}
+
 describe("ThenvoiLink event waiting", () => {
+  it("does not poison runForever after a retryable websocket disconnect", async () => {
+    const retryableReason = {
+      source: "upgrade",
+      status: 429,
+      code: "too_many_requests",
+      message: "Too many websocket connection attempts.",
+      retryable: true,
+      retryAfter: 7,
+      requestId: null,
+    } satisfies WebSocketDisconnectReason;
+    const link = new ThenvoiLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      restApi: new FakeRestApi(),
+      transport: new RejectingTransport(retryableReason),
+    });
+
+    await expect(link.connect()).rejects.toBeInstanceOf(
+      WebSocketDisconnectError,
+    );
+    expect(link.getDisconnectReason()).toBe(retryableReason);
+    await expect(
+      link.runForever(new AbortController().signal),
+    ).resolves.toBeUndefined();
+  });
+
   it("removes abort listeners when waiter resolves from queued events", async () => {
     const link = new ThenvoiLink({
       agentId: "agent-1",
@@ -36,11 +76,17 @@ describe("ThenvoiLink event waiting", () => {
 
     const signal = {
       aborted: false,
-      addEventListener: (_type: string, listener: EventListenerOrEventListenerObject) => {
+      addEventListener: (
+        _type: string,
+        listener: EventListenerOrEventListenerObject,
+      ) => {
         addCalls += 1;
         listeners.add(listener);
       },
-      removeEventListener: (_type: string, listener: EventListenerOrEventListenerObject) => {
+      removeEventListener: (
+        _type: string,
+        listener: EventListenerOrEventListenerObject,
+      ) => {
         removeCalls += 1;
         listeners.delete(listener);
       },
@@ -72,7 +118,9 @@ describe("ThenvoiLink event waiting", () => {
       capabilities: { contacts: false },
     });
 
-    await expect(link.subscribeAgentContacts()).rejects.toBeInstanceOf(UnsupportedFeatureError);
+    await expect(link.subscribeAgentContacts()).rejects.toBeInstanceOf(
+      UnsupportedFeatureError,
+    );
   });
 
   it("allows contact subscriptions when contact capability is enabled", async () => {
@@ -101,7 +149,9 @@ describe("ThenvoiLink event waiting", () => {
       transport: new FakeTransport(),
     });
 
-    await expect(link.markProcessed("room-1", "message-1")).rejects.toThrow("mark failed");
+    await expect(link.markProcessed("room-1", "message-1")).rejects.toThrow(
+      "mark failed",
+    );
   });
 
   it("supports explicit best-effort marking", async () => {
@@ -116,7 +166,9 @@ describe("ThenvoiLink event waiting", () => {
       transport: new FakeTransport(),
     });
 
-    await expect(link.markProcessed("room-1", "message-1", { bestEffort: true })).resolves.toBeUndefined();
+    await expect(
+      link.markProcessed("room-1", "message-1", { bestEffort: true }),
+    ).resolves.toBeUndefined();
   });
 
   it("exposes request-first chat listing semantics via listChats", async () => {
@@ -139,10 +191,7 @@ describe("ThenvoiLink event waiting", () => {
     });
 
     await expect(
-      link.listChats(
-        { page: 2, pageSize: 25 },
-        { headers: { "x-test": "1" } },
-      ),
+      link.listChats({ page: 2, pageSize: 25 }, { headers: { "x-test": "1" } }),
     ).resolves.toEqual({
       data: [{ id: "room-1" }],
       metadata: { page: 2, pageSize: 25 },
@@ -160,12 +209,17 @@ describe("ThenvoiLink event waiting", () => {
       restApi: new FakeRestApi({
         listChats: async (request) => {
           requests.push(request);
-          const pageData = request.page === 1
-            ? [{ id: "room-1" }, { id: "room-2" }]
-            : [{ id: "room-3" }];
+          const pageData =
+            request.page === 1
+              ? [{ id: "room-1" }, { id: "room-2" }]
+              : [{ id: "room-3" }];
           return {
             data: pageData,
-            metadata: { totalPages: 2, page: request.page, pageSize: request.pageSize },
+            metadata: {
+              totalPages: 2,
+              page: request.page,
+              pageSize: request.pageSize,
+            },
           };
         },
       }),
