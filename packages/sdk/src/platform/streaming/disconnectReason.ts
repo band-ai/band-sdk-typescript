@@ -1,7 +1,5 @@
 export type WebSocketDisconnectSource = "agent_control" | "upgrade" | "websocket_close";
 
-type NestedPath = readonly string[];
-
 export interface AgentControlSupersedeDisconnectReason {
   source: "agent_control";
   code: string;
@@ -65,19 +63,13 @@ export function parseSupersedeDisconnectReason(
 }
 
 export function parseUpgradeDisconnectReason(event: unknown): WebSocketUpgradeDisconnectReason | null {
-  const status = normalizeStatus(readFirst(event, [
-    ["status"],
-    ["statusCode"],
-    ["response", "status"],
-    ["error", "status"],
-    ["error", "statusCode"],
-    ["error", "response", "status"],
-  ]));
+  const fields = collectUpgradeFields(event);
+  const status = normalizeStatus(firstDefined(fields.map((field) => field.status ?? field.statusCode)));
   if (status !== 400 && status !== 409 && status !== 429 && status !== 503) {
     return null;
   }
 
-  const body = parseUpgradeBody(event);
+  const body = parseUpgradeBody(fields);
   const error = isRecord(body?.error) ? body.error : null;
   if (!error) {
     return null;
@@ -94,7 +86,7 @@ export function parseUpgradeDisconnectReason(event: unknown): WebSocketUpgradeDi
     code,
     message: typeof error.message === "string" ? error.message : defaultUpgradeMessage(code),
     retryable: code === "too_many_requests" || code === "tracking_failed",
-    retryAfter: normalizeNumber(error.retry_after) ?? readRetryAfterHeader(event),
+    retryAfter: normalizeNumber(error.retry_after) ?? readRetryAfterHeader(fields),
     requestId: normalizeString(error.request_id),
   };
 }
@@ -110,36 +102,41 @@ export function genericCloseReason(event?: { code?: number; reason?: string }): 
   };
 }
 
-function parseUpgradeBody(event: unknown): Record<string, unknown> | null {
-  const body = readFirst(event, [
-    ["body"],
-    ["response", "body"],
-    ["responseText"],
-    ["response", "responseText"],
-    ["data"],
-    ["response", "data"],
-    ["error", "body"],
-    ["error", "response", "body"],
-    ["error", "responseText"],
-    ["error", "response", "responseText"],
-    ["error", "data"],
-    ["error", "response", "data"],
-  ]);
+function collectUpgradeFields(event: unknown): Array<Record<string, unknown>> {
+  const eventRecord = isRecord(event) ? event : null;
+  const errorRecord = isRecord(eventRecord?.error) ? eventRecord.error : null;
+  const records = [eventRecord, errorRecord];
+
+  for (const record of [...records]) {
+    if (isRecord(record?.response)) {
+      records.push(record.response);
+    }
+  }
+
+  return records.filter((record): record is Record<string, unknown> => record !== null);
+}
+
+function parseUpgradeBody(fields: Array<Record<string, unknown>>): Record<string, unknown> | null {
+  const body = firstDefined(fields.flatMap((field) => [
+    field.body,
+    field.responseText,
+    field.data,
+  ]));
 
   if (isRecord(body)) {
     return body;
   }
 
-  if (typeof body === "string") {
-    try {
-      const parsed = JSON.parse(body) as unknown;
-      return isRecord(parsed) ? parsed : null;
-    } catch {
-      return null;
-    }
+  if (typeof body !== "string") {
+    return null;
   }
 
-  return null;
+  try {
+    const parsed = JSON.parse(body) as unknown;
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function isSupportedUpgradeCode(
@@ -165,13 +162,8 @@ function defaultUpgradeMessage(code: WebSocketUpgradeDisconnectReason["code"]): 
   }
 }
 
-function readRetryAfterHeader(event: unknown): number | null {
-  const headers = readFirst(event, [
-    ["headers"],
-    ["response", "headers"],
-    ["error", "headers"],
-    ["error", "response", "headers"],
-  ]);
+function readRetryAfterHeader(fields: Array<Record<string, unknown>>): number | null {
+  const headers = firstDefined(fields.map((field) => field.headers));
   if (!headers) {
     return null;
   }
@@ -187,25 +179,8 @@ function readRetryAfterHeader(event: unknown): number | null {
   return null;
 }
 
-function readFirst(value: unknown, paths: NestedPath[]): unknown {
-  for (const path of paths) {
-    const found = readNested(value, path);
-    if (found !== undefined) {
-      return found;
-    }
-  }
-  return undefined;
-}
-
-function readNested(value: unknown, path: NestedPath): unknown {
-  let cursor = value;
-  for (const segment of path) {
-    if (!isRecord(cursor)) {
-      return undefined;
-    }
-    cursor = cursor[segment];
-  }
-  return cursor;
+function firstDefined(values: unknown[]): unknown {
+  return values.find((value) => value !== undefined);
 }
 
 function normalizeStatus(value: unknown): number | null {
