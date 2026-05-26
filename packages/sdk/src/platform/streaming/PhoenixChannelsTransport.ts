@@ -1,6 +1,4 @@
-import type { ClientRequest, IncomingMessage } from "http";
 import { Channel, Socket } from "phoenix";
-import { WebSocket as NodeWebSocket } from "ws";
 import { TransportError } from "../../core/errors";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
@@ -9,8 +7,10 @@ import {
   genericCloseReason,
   parseSupersedeDisconnectReason,
   parseUpgradeDisconnectReason,
+  type WebSocketConflictPolicy,
   type WebSocketDisconnectReason,
 } from "./disconnectReason";
+import { createNodeWebSocketFactory } from "./nodeWebSocketFactory";
 import type { StreamingTransport, TopicHandlers } from "./transport";
 
 interface PhoenixChannelsTransportOptions {
@@ -21,6 +21,7 @@ interface PhoenixChannelsTransportOptions {
   heartbeatIntervalMs?: number;
   reconnectAfterMs?: (tries: number) => number;
   websocketFactory?: typeof WebSocket;
+  conflictPolicy?: WebSocketConflictPolicy;
   onTerminalDisconnect?: (reason: WebSocketDisconnectReason) => void;
 }
 
@@ -35,7 +36,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private readonly channelRefs = new Map<string, Array<[string, number]>>();
   private readonly pendingJoins = new Map<string, Promise<void>>();
   private readonly logger: Logger;
-  private readonly onTerminalDisconnect?: (reason: WebSocketDisconnectReason) => void;
+  private readonly onTerminalDisconnect?: (
+    reason: WebSocketDisconnectReason,
+  ) => void;
   private onHandlerError?: (error: unknown) => void;
   private connected = false;
   private connectPromise: Promise<void> | null = null;
@@ -57,13 +60,18 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       wsUrl = wsUrl.slice(0, -"/websocket".length);
     }
 
-    const reconnectAfterMs = options.reconnectAfterMs ??
-      ((tries: number) => [1_000, 2_000, 5_000, 10_000, 30_000][tries - 1] ?? 30_000);
+    const reconnectAfterMs =
+      options.reconnectAfterMs ??
+      ((tries: number) =>
+        [1_000, 2_000, 5_000, 10_000, 30_000][tries - 1] ?? 30_000);
 
     this.socket = new Socket(wsUrl, {
       params: {
         api_key: options.apiKey,
         agent_id: options.agentId,
+        ...(options.conflictPolicy
+          ? { on_conflict: options.conflictPolicy }
+          : {}),
       },
       heartbeatIntervalMs: options.heartbeatIntervalMs,
       reconnectAfterMs: (tries: number) => {
@@ -100,11 +108,15 @@ export class PhoenixChannelsTransport implements StreamingTransport {
         this.lastDisconnectReason = upgradeReason;
         const error = new WebSocketDisconnectError(upgradeReason);
         this.connectReject?.(error);
-        this.logger.warn("Phoenix socket upgrade failed", { reason: upgradeReason });
+        this.logger.warn("Phoenix socket upgrade failed", {
+          reason: upgradeReason,
+        });
         return;
       }
 
-      this.connectReject?.(new TransportError("Phoenix socket connection failed", errorEvent));
+      this.connectReject?.(
+        new TransportError("Phoenix socket connection failed", errorEvent),
+      );
       this.logger.warn("Phoenix socket error", { event });
     });
   }
@@ -214,7 +226,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
           .receive("error", (error: unknown) =>
             reject(new TransportError(`Failed to join topic ${topic}`, error)),
           )
-          .receive("timeout", () => reject(new TransportError(`Timeout joining topic ${topic}`)));
+          .receive("timeout", () =>
+            reject(new TransportError(`Timeout joining topic ${topic}`)),
+          );
       });
     } catch (error) {
       for (const [event, ref] of refs) {
@@ -250,7 +264,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
         .receive("error", (error: unknown) =>
           reject(new TransportError(`Failed to leave topic ${topic}`, error)),
         )
-        .receive("timeout", () => reject(new TransportError(`Timeout leaving topic ${topic}`)));
+        .receive("timeout", () =>
+          reject(new TransportError(`Timeout leaving topic ${topic}`)),
+        );
     });
 
     this.channels.delete(topic);
@@ -282,14 +298,18 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       };
 
       this.runForeverWaiters.add(waiter);
-      signal.addEventListener("abort", () => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        this.runForeverWaiters.delete(waiter);
-        resolve();
-      }, { once: true, signal: abortController.signal });
+      signal.addEventListener(
+        "abort",
+        () => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          this.runForeverWaiters.delete(waiter);
+          resolve();
+        },
+        { once: true, signal: abortController.signal },
+      );
     });
   }
 
@@ -299,8 +319,12 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     } catch (error) {
       this.connected = false;
       this.socket.disconnect();
-      this.connectReject?.(error instanceof Error ? error : new TransportError(String(error)));
-      this.logger.warn("Failed to join mandatory agent_control channel", { error });
+      this.connectReject?.(
+        error instanceof Error ? error : new TransportError(String(error)),
+      );
+      this.logger.warn("Failed to join mandatory agent_control channel", {
+        error,
+      });
       return;
     }
 
@@ -321,7 +345,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       supersede: (payload) => {
         const reason = parseSupersedeDisconnectReason(payload);
         if (!reason) {
-          this.logger.warn("Invalid agent_control supersede payload", { payload });
+          this.logger.warn("Invalid agent_control supersede payload", {
+            payload,
+          });
           return;
         }
         this.recordTerminalDisconnect(reason);
@@ -355,7 +381,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       const timeout = setTimeout(() => {
         this.connectResolve = null;
         this.connectReject = null;
-        reject(new TransportError("Timed out waiting for Phoenix socket connection"));
+        reject(
+          new TransportError("Timed out waiting for Phoenix socket connection"),
+        );
       }, timeoutMs);
 
       this.connectResolve = () => {
@@ -367,7 +395,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
         clearTimeout(timeout);
         this.connectResolve = null;
         this.connectReject = null;
-        reject(error instanceof Error ? error : new TransportError(String(error)));
+        reject(
+          error instanceof Error ? error : new TransportError(String(error)),
+        );
       };
     });
   }
@@ -379,70 +409,6 @@ function resolveWebSocketFactory(): typeof WebSocket {
   }
 
   return WebSocket;
-}
-
-type NodeUpgradeWebSocket = InstanceType<typeof NodeWebSocket> & {
-  once(
-    event: "unexpected-response",
-    listener: (request: ClientRequest, response: IncomingMessage) => void,
-  ): NodeUpgradeWebSocket;
-  emit(event: "error", error: Error): boolean;
-  emit(event: "close", code: number, reason: Buffer): boolean;
-};
-
-function createNodeWebSocketFactory(): typeof WebSocket {
-  return class ThenvoiNodeWebSocket extends NodeWebSocket {
-    public constructor(address: string | URL, protocols?: string | string[]) {
-      super(address, protocols);
-      const socket = this as unknown as NodeUpgradeWebSocket;
-      socket.once("unexpected-response", (request, response) => {
-        void emitUpgradeError(socket, request, response);
-      });
-    }
-  } as unknown as typeof WebSocket;
-}
-
-async function emitUpgradeError(
-  websocket: NodeUpgradeWebSocket,
-  request: ClientRequest,
-  response: IncomingMessage,
-): Promise<void> {
-  const body = await readResponseBody(response);
-  const error = new Error(`Unexpected server response: ${response.statusCode ?? "unknown"}`) as Error & {
-    status?: number;
-    statusCode?: number;
-    body?: string;
-    headers?: IncomingMessage["headers"];
-    response?: {
-      status?: number;
-      statusCode?: number;
-      body?: string;
-      headers?: IncomingMessage["headers"];
-    };
-  };
-
-  error.status = response.statusCode;
-  error.statusCode = response.statusCode;
-  error.body = body;
-  error.headers = response.headers;
-  error.response = {
-    status: response.statusCode,
-    statusCode: response.statusCode,
-    body,
-    headers: response.headers,
-  };
-
-  request.destroy?.();
-  websocket.emit("error", error);
-  websocket.emit("close", 1006, Buffer.alloc(0));
-}
-
-async function readResponseBody(response: IncomingMessage): Promise<string> {
-  const chunks: Uint8Array[] = [];
-  for await (const chunk of response as AsyncIterable<Uint8Array | string>) {
-    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
-  }
-  return Buffer.concat(chunks).toString("utf8");
 }
 
 function unwrapErrorEvent(event: unknown): unknown {

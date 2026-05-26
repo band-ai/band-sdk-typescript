@@ -12,7 +12,10 @@ const phoenixMock = vi.hoisted(() => {
 
   class FakeChannel {
     public readonly topic: string;
-    public readonly handlers = new Map<string, (payload: Record<string, unknown>) => void>();
+    public readonly handlers = new Map<
+      string,
+      (payload: Record<string, unknown>) => void
+    >();
     public joinOutcome: Outcome = "ok";
     public leaveOutcome: Outcome = "ok";
     private nextRef = 1;
@@ -21,7 +24,10 @@ const phoenixMock = vi.hoisted(() => {
       this.topic = topic;
     }
 
-    public on(event: string, handler: (payload: Record<string, unknown>) => void): number {
+    public on(
+      event: string,
+      handler: (payload: Record<string, unknown>) => void,
+    ): number {
       this.handlers.set(event, handler);
       return this.nextRef++;
     }
@@ -35,24 +41,35 @@ const phoenixMock = vi.hoisted(() => {
     }
 
     public join(): {
-      receive: (kind: Outcome, callback: (payload?: unknown) => void) => unknown;
+      receive: (
+        kind: Outcome,
+        callback: (payload?: unknown) => void,
+      ) => unknown;
     } {
       return this.receiver(this.joinOutcome);
     }
 
     public leave(): {
-      receive: (kind: Outcome, callback: (payload?: unknown) => void) => unknown;
+      receive: (
+        kind: Outcome,
+        callback: (payload?: unknown) => void,
+      ) => unknown;
     } {
       return this.receiver(this.leaveOutcome);
     }
 
     private receiver(outcome: Outcome): {
-      receive: (kind: Outcome, callback: (payload?: unknown) => void) => unknown;
+      receive: (
+        kind: Outcome,
+        callback: (payload?: unknown) => void,
+      ) => unknown;
     } {
       const chain = {
         receive: (kind: Outcome, callback: (payload?: unknown) => void) => {
           if (kind === outcome) {
-            queueMicrotask(() => callback(kind === "ok" ? {} : { error: kind }));
+            queueMicrotask(() =>
+              callback(kind === "ok" ? {} : { error: kind }),
+            );
           }
           return chain;
         },
@@ -89,10 +106,18 @@ const phoenixMock = vi.hoisted(() => {
     public readonly channels = new FakeChannelList();
     public disconnectCount = 0;
     private openHandler: (() => void) | null = null;
-    private closeHandler: ((event?: { code?: number; reason?: string }) => void) | null = null;
+    private closeHandler:
+      | ((event?: { code?: number; reason?: string }) => void)
+      | null = null;
     private errorHandler: ((payload: unknown) => void) | null = null;
 
-    public constructor(url: string, options: { params: Record<string, unknown>; reconnectAfterMs?: (tries: number) => number }) {
+    public constructor(
+      url: string,
+      options: {
+        params: Record<string, unknown>;
+        reconnectAfterMs?: (tries: number) => number;
+      },
+    ) {
       this.url = url;
       this.params = options.params;
       this.reconnectAfterMs = options.reconnectAfterMs;
@@ -103,7 +128,9 @@ const phoenixMock = vi.hoisted(() => {
       this.openHandler = handler;
     }
 
-    public onClose(handler: (event?: { code?: number; reason?: string }) => void): void {
+    public onClose(
+      handler: (event?: { code?: number; reason?: string }) => void,
+    ): void {
       this.closeHandler = handler;
     }
 
@@ -171,10 +198,27 @@ describe("PhoenixChannelsTransport", () => {
 
     const socket = phoenixMock.FakeSocket.instances[0];
     expect(socket?.url).toBe("wss://example.test/socket");
+    expect(socket?.params).toMatchObject({
+      api_key: "key-1",
+      agent_id: "agent-1",
+    });
 
     await transport.connect();
     await transport.connect();
     expect(transport.isConnected()).toBe(true);
+  });
+
+  it("passes explicit conflict policy as a socket param", () => {
+    new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+      agentId: "agent-1",
+      conflictPolicy: "reject",
+    });
+
+    expect(phoenixMock.FakeSocket.instances[0]?.params).toMatchObject({
+      on_conflict: "reject",
+    });
   });
 
   it("joins and leaves topics and dispatches topic handlers", async () => {
@@ -283,7 +327,8 @@ describe("PhoenixChannelsTransport", () => {
 
     control?.emit("supersede", {
       reason: "session.already_connected",
-      message: "This connection has been superseded by a newer session for this agent.",
+      message:
+        "This connection has been superseded by a newer session for this agent.",
       retryable: false,
       retry_after: 5,
       target_socket_id: "agent_socket:agent-1",
@@ -294,7 +339,8 @@ describe("PhoenixChannelsTransport", () => {
     expect(reason).toMatchObject({
       source: "agent_control",
       code: "session.already_connected",
-      message: "This connection has been superseded by a newer session for this agent.",
+      message:
+        "This connection has been superseded by a newer session for this agent.",
       retryable: false,
       retryAfter: 5,
       targetSocketId: "agent_socket:agent-1",
@@ -303,7 +349,9 @@ describe("PhoenixChannelsTransport", () => {
     expect(onTerminalDisconnect).toHaveBeenCalledWith(reason);
     expect(socket?.disconnectCount).toBeGreaterThan(0);
     expect(socket?.reconnectAfterMs?.(1)).toBe(Number.POSITIVE_INFINITY);
-    await expect(transport.connect()).rejects.toBeInstanceOf(WebSocketDisconnectError);
+    await expect(transport.connect()).rejects.toBeInstanceOf(
+      WebSocketDisconnectError,
+    );
   });
 
   it("rejects runForever waiters on terminal supersede", async () => {
@@ -319,7 +367,8 @@ describe("PhoenixChannelsTransport", () => {
     const socket = phoenixMock.FakeSocket.instances[0];
     socket?.channels.get("agent_control:agent-1")?.emit("supersede", {
       reason: "session.already_connected",
-      message: "This connection has been superseded by a newer session for this agent.",
+      message:
+        "This connection has been superseded by a newer session for this agent.",
     });
 
     await expect(runForever).rejects.toBeInstanceOf(WebSocketDisconnectError);
@@ -348,42 +397,48 @@ describe("PhoenixChannelsTransport", () => {
   });
 
   it.each([
-    [409, "connection_conflict", null],
-    [429, "too_many_requests", 7],
-    [400, "invalid_on_conflict", null],
-    [503, "tracking_failed", null],
-  ] as const)("parses HTTP %s upgrade error %s", async (status, code, retryAfter) => {
-    const transport = new PhoenixChannelsTransport({
-      wsUrl: "wss://example.test/socket",
-      apiKey: "key-1",
-      agentId: "agent-1",
-    });
+    [409, "connection_conflict", null, null],
+    [429, "too_many_requests", 7, "req-1"],
+    [400, "invalid_on_conflict", null, "req-1"],
+    [503, "tracking_failed", null, "req-1"],
+  ] as const)(
+    "parses HTTP %s upgrade error %s",
+    async (status, code, retryAfter, requestId) => {
+      const transport = new PhoenixChannelsTransport({
+        wsUrl: "wss://example.test/socket",
+        apiKey: "key-1",
+        agentId: "agent-1",
+      });
 
-    const connectPromise = transport.connect();
-    const socket = phoenixMock.FakeSocket.instances[0];
-    socket?.emitError({
-      status,
-      body: {
-        error: {
-          code,
-          message: `upgrade failed: ${code}`,
-          request_id: "req-1",
-          ...(retryAfter === null ? {} : { retry_after: retryAfter }),
+      const connectPromise = transport.connect();
+      const socket = phoenixMock.FakeSocket.instances[0];
+      socket?.emitError({
+        status,
+        body: {
+          error: {
+            code,
+            message: `upgrade failed: ${code}`,
+            request_id: requestId,
+            retry_after: retryAfter,
+          },
         },
-      },
-      headers: retryAfter === null ? {} : { "Retry-After": String(retryAfter) },
-    });
+        headers:
+          retryAfter === null ? {} : { "Retry-After": String(retryAfter) },
+      });
 
-    await expect(connectPromise).rejects.toBeInstanceOf(WebSocketDisconnectError);
-    expect(transport.getDisconnectReason()).toMatchObject({
-      source: "upgrade",
-      status,
-      code,
-      message: `upgrade failed: ${code}`,
-      requestId: "req-1",
-      retryAfter,
-    });
-  });
+      await expect(connectPromise).rejects.toBeInstanceOf(
+        WebSocketDisconnectError,
+      );
+      expect(transport.getDisconnectReason()).toMatchObject({
+        source: "upgrade",
+        status,
+        code,
+        message: `upgrade failed: ${code}`,
+        requestId,
+        retryAfter,
+      });
+    },
+  );
 
   it("rejects empty 403 upgrade errors without inventing a platform reason", async () => {
     const transport = new PhoenixChannelsTransport({
@@ -418,7 +473,8 @@ describe("PhoenixChannelsTransport", () => {
 
     socket?.channels.get("agent_control:agent-1")?.emit("supersede", {
       reason: "session.already_connected",
-      message: "This connection has been superseded by a newer session for this agent.",
+      message:
+        "This connection has been superseded by a newer session for this agent.",
     });
 
     await expect(runForever).rejects.toBeInstanceOf(WebSocketDisconnectError);

@@ -1,4 +1,10 @@
-export type WebSocketDisconnectSource = "agent_control" | "upgrade" | "websocket_close";
+import { z } from "zod";
+
+export type WebSocketConflictPolicy = "supersede" | "reject";
+export type WebSocketDisconnectSource =
+  | "agent_control"
+  | "upgrade"
+  | "websocket_close";
 
 export interface AgentControlSupersedeDisconnectReason {
   source: "agent_control";
@@ -13,7 +19,11 @@ export interface AgentControlSupersedeDisconnectReason {
 export interface WebSocketUpgradeDisconnectReason {
   source: "upgrade";
   status: 400 | 409 | 429 | 503;
-  code: "invalid_on_conflict" | "connection_conflict" | "too_many_requests" | "tracking_failed";
+  code:
+    | "invalid_on_conflict"
+    | "connection_conflict"
+    | "too_many_requests"
+    | "tracking_failed";
   message: string;
   retryable: boolean;
   retryAfter: number | null;
@@ -34,13 +44,23 @@ export type WebSocketDisconnectReason =
   | WebSocketUpgradeDisconnectReason
   | GenericWebSocketCloseReason;
 
-type UpgradeCode = WebSocketUpgradeDisconnectReason["code"];
+const UPGRADE_CODES = [
+  "invalid_on_conflict",
+  "connection_conflict",
+  "too_many_requests",
+  "tracking_failed",
+] as const;
 
-const UPGRADE_REASONS: Record<UpgradeCode, {
-  status: WebSocketUpgradeDisconnectReason["status"];
-  message: string;
-  retryable: boolean;
-}> = {
+type UpgradeCode = (typeof UPGRADE_CODES)[number];
+
+const UPGRADE_REASONS: Record<
+  UpgradeCode,
+  {
+    status: WebSocketUpgradeDisconnectReason["status"];
+    message: string;
+    retryable: boolean;
+  }
+> = {
   invalid_on_conflict: {
     status: 400,
     message: "Invalid websocket conflict policy.",
@@ -63,6 +83,32 @@ const UPGRADE_REASONS: Record<UpgradeCode, {
   },
 };
 
+const upgradeErrorSchema = z.object({
+  status: z.number(),
+  body: z.preprocess(
+    (body) => {
+      if (typeof body !== "string") {
+        return body;
+      }
+
+      try {
+        return JSON.parse(body) as unknown;
+      } catch {
+        return null;
+      }
+    },
+    z.object({
+      error: z.object({
+        code: z.enum(UPGRADE_CODES),
+        message: z.string().optional(),
+        retry_after: z.number().nullable().optional(),
+        request_id: z.string().nullable().optional(),
+      }),
+    }),
+  ),
+  headers: z.record(z.unknown()).optional(),
+});
+
 export class WebSocketDisconnectError extends Error {
   public readonly reason: WebSocketDisconnectReason;
 
@@ -76,7 +122,10 @@ export class WebSocketDisconnectError extends Error {
 export function parseSupersedeDisconnectReason(
   payload: Record<string, unknown>,
 ): AgentControlSupersedeDisconnectReason | null {
-  if (typeof payload.reason !== "string" || typeof payload.message !== "string") {
+  if (
+    typeof payload.reason !== "string" ||
+    typeof payload.message !== "string"
+  ) {
     return null;
   }
 
@@ -85,25 +134,35 @@ export function parseSupersedeDisconnectReason(
     code: payload.reason,
     message: payload.message,
     retryable: false,
-    retryAfter: typeof payload.retry_after === "number" ? payload.retry_after : null,
-    targetSocketId: typeof payload.target_socket_id === "string" ? payload.target_socket_id : null,
-    correlationId: typeof payload.correlation_id === "string" ? payload.correlation_id : null,
+    retryAfter:
+      typeof payload.retry_after === "number" ? payload.retry_after : null,
+    targetSocketId:
+      typeof payload.target_socket_id === "string"
+        ? payload.target_socket_id
+        : null,
+    correlationId:
+      typeof payload.correlation_id === "string"
+        ? payload.correlation_id
+        : null,
   };
 }
 
-export function parseUpgradeDisconnectReason(event: unknown): WebSocketUpgradeDisconnectReason | null {
-  if (!isRecord(event)) {
+export function parseUpgradeDisconnectReason(
+  event: unknown,
+): WebSocketUpgradeDisconnectReason | null {
+  const parsed = upgradeErrorSchema.safeParse(event);
+  if (!parsed.success) {
     return null;
   }
 
-  const status = typeof event.status === "number" ? event.status : null;
-  const body = parseJsonObject(event.body);
-  const error = isRecord(body?.error) ? body.error : null;
-  if (!error || !isUpgradeCode(error.code)) {
-    return null;
-  }
-
-  const reason = UPGRADE_REASONS[error.code];
+  const { status, body, headers } = parsed.data;
+  const {
+    code,
+    message,
+    retry_after: retryAfter,
+    request_id: requestId,
+  } = body.error;
+  const reason = UPGRADE_REASONS[code];
   if (status !== reason.status) {
     return null;
   }
@@ -111,62 +170,41 @@ export function parseUpgradeDisconnectReason(event: unknown): WebSocketUpgradeDi
   return {
     source: "upgrade",
     status: reason.status,
-    code: error.code,
-    message: typeof error.message === "string" ? error.message : reason.message,
+    code,
+    message: message ?? reason.message,
     retryable: reason.retryable,
-    retryAfter: typeof error.retry_after === "number" ? error.retry_after : retryAfterFromHeaders(event.headers),
-    requestId: typeof error.request_id === "string" ? error.request_id : null,
+    retryAfter: retryAfter ?? retryAfterFromHeaders(headers),
+    requestId: requestId ?? null,
   };
 }
 
-export function genericCloseReason(event?: { code?: number; reason?: string }): GenericWebSocketCloseReason {
+export function genericCloseReason(event?: {
+  code?: number;
+  reason?: string;
+}): GenericWebSocketCloseReason {
   return {
     source: "websocket_close",
     code: "websocket.closed",
     message: "Phoenix socket closed without a platform disconnect reason.",
     retryable: true,
     closeCode: typeof event?.code === "number" ? event.code : null,
-    closeReason: typeof event?.reason === "string" && event.reason.length > 0 ? event.reason : null,
+    closeReason:
+      typeof event?.reason === "string" && event.reason.length > 0
+        ? event.reason
+        : null,
   };
 }
 
-function isUpgradeCode(value: unknown): value is UpgradeCode {
-  return typeof value === "string" && value in UPGRADE_REASONS;
-}
-
-function parseJsonObject(value: unknown): Record<string, unknown> | null {
-  if (isRecord(value)) {
+function retryAfterFromHeaders(
+  headers: Record<string, unknown> | undefined,
+): number | null {
+  const value = headers?.["retry-after"] ?? headers?.["Retry-After"];
+  if (typeof value === "number") {
     return value;
   }
-
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function retryAfterFromHeaders(headers: unknown): number | null {
-  if (!isRecord(headers)) {
-    return null;
-  }
-
-  const retryAfter = headers["retry-after"] ?? headers["Retry-After"];
-  if (typeof retryAfter === "number") {
-    return retryAfter;
-  }
-  if (typeof retryAfter === "string" && retryAfter.trim() !== "") {
-    const seconds = Number(retryAfter);
+  if (typeof value === "string" && value.trim() !== "") {
+    const seconds = Number(value);
     return Number.isFinite(seconds) ? seconds : null;
   }
   return null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }

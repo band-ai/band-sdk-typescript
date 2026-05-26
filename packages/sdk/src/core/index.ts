@@ -23,5 +23,8 @@ export {
   RuntimeStateError,
 } from "./errors";
 export { WebSocketDisconnectError } from "../platform/streaming/disconnectReason";
-export type { WebSocketDisconnectReason } from "../platform/streaming/disconnectReason";
+export type {
+  WebSocketConflictPolicy,
+  WebSocketDisconnectReason,
+} from "../platform/streaming/disconnectReason";
 export { ConsoleLogger, NoopLogger, type Logger } from "./logger";
