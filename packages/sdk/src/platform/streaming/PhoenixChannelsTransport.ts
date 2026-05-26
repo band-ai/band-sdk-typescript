@@ -94,7 +94,8 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     });
 
     this.socket.onError((event) => {
-      const upgradeReason = parseUpgradeDisconnectReason(event);
+      const errorEvent = unwrapErrorEvent(event);
+      const upgradeReason = parseUpgradeDisconnectReason(errorEvent);
       if (upgradeReason) {
         this.lastDisconnectReason = upgradeReason;
         const error = new WebSocketDisconnectError(upgradeReason);
@@ -103,7 +104,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
         return;
       }
 
-      this.connectReject?.(new TransportError("Phoenix socket connection failed", event));
+      this.connectReject?.(new TransportError("Phoenix socket connection failed", errorEvent));
       this.logger.warn("Phoenix socket error", { event });
     });
   }
@@ -442,6 +443,18 @@ async function readResponseBody(response: IncomingMessage): Promise<string> {
     chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
   }
   return Buffer.concat(chunks).toString("utf8");
+}
+
+function unwrapErrorEvent(event: unknown): unknown {
+  if (!isErrorEvent(event)) {
+    return event;
+  }
+
+  return event.error;
+}
+
+function isErrorEvent(event: unknown): event is { error: unknown } {
+  return typeof event === "object" && event !== null && "error" in event;
 }
 
 function removeSocketChannel(socket: Socket, channel: Channel): void {

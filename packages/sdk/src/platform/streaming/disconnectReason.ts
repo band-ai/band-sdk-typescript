@@ -36,12 +36,6 @@ export type WebSocketDisconnectReason =
 
 type UpgradeCode = WebSocketUpgradeDisconnectReason["code"];
 
-type UpgradeContext = {
-  status: number | null;
-  body: unknown;
-  headers: unknown;
-};
-
 const UPGRADE_REASONS: Record<UpgradeCode, {
   status: WebSocketUpgradeDisconnectReason["status"];
   message: string;
@@ -91,33 +85,37 @@ export function parseSupersedeDisconnectReason(
     code: payload.reason,
     message: payload.message,
     retryable: false,
-    retryAfter: normalizeNumber(payload.retry_after),
-    targetSocketId: normalizeString(payload.target_socket_id),
-    correlationId: normalizeString(payload.correlation_id),
+    retryAfter: numberOrNull(payload.retry_after),
+    targetSocketId: stringOrNull(payload.target_socket_id),
+    correlationId: stringOrNull(payload.correlation_id),
   };
 }
 
 export function parseUpgradeDisconnectReason(event: unknown): WebSocketUpgradeDisconnectReason | null {
-  const context = getUpgradeContext(event);
-  const body = parseBody(context.body);
+  if (!isRecord(event)) {
+    return null;
+  }
+
+  const status = numberOrNull(event.status);
+  const body = parseJsonObject(event.body);
   const error = isRecord(body?.error) ? body.error : null;
   if (!error || !isUpgradeCode(error.code)) {
     return null;
   }
 
-  const expected = UPGRADE_REASONS[error.code];
-  if (context.status !== expected.status) {
+  const reason = UPGRADE_REASONS[error.code];
+  if (status !== reason.status) {
     return null;
   }
 
   return {
     source: "upgrade",
-    status: expected.status,
+    status: reason.status,
     code: error.code,
-    message: typeof error.message === "string" ? error.message : expected.message,
-    retryable: expected.retryable,
-    retryAfter: normalizeNumber(error.retry_after) ?? readRetryAfter(context.headers),
-    requestId: normalizeString(error.request_id),
+    message: typeof error.message === "string" ? error.message : reason.message,
+    retryable: reason.retryable,
+    retryAfter: numberOrNull(error.retry_after) ?? retryAfterFromHeaders(event.headers),
+    requestId: stringOrNull(error.request_id),
   };
 }
 
@@ -136,71 +134,32 @@ function isUpgradeCode(value: unknown): value is UpgradeCode {
   return typeof value === "string" && value in UPGRADE_REASONS;
 }
 
-function getUpgradeContext(event: unknown): UpgradeContext {
-  const eventRecord = isRecord(event) ? event : null;
-  const errorRecord = isRecord(eventRecord?.error) ? eventRecord.error : null;
-  const responseRecord = isRecord(errorRecord?.response)
-    ? errorRecord.response
-    : isRecord(eventRecord?.response)
-      ? eventRecord.response
-      : null;
-
-  return {
-    status: normalizeNumber(
-      eventRecord?.status
-        ?? eventRecord?.statusCode
-        ?? errorRecord?.status
-        ?? errorRecord?.statusCode
-        ?? responseRecord?.status
-        ?? responseRecord?.statusCode,
-    ),
-    body: eventRecord?.body
-      ?? errorRecord?.body
-      ?? responseRecord?.body
-      ?? eventRecord?.responseText
-      ?? errorRecord?.responseText
-      ?? responseRecord?.responseText
-      ?? eventRecord?.data
-      ?? errorRecord?.data
-      ?? responseRecord?.data,
-    headers: eventRecord?.headers ?? errorRecord?.headers ?? responseRecord?.headers,
-  };
-}
-
-function parseBody(body: unknown): Record<string, unknown> | null {
-  if (isRecord(body)) {
-    return body;
+function parseJsonObject(value: unknown): Record<string, unknown> | null {
+  if (isRecord(value)) {
+    return value;
   }
 
-  if (typeof body !== "string") {
+  if (typeof value !== "string") {
     return null;
   }
 
   try {
-    const parsed = JSON.parse(body) as unknown;
+    const parsed = JSON.parse(value) as unknown;
     return isRecord(parsed) ? parsed : null;
   } catch {
     return null;
   }
 }
 
-function readRetryAfter(headers: unknown): number | null {
-  if (!headers) {
+function retryAfterFromHeaders(headers: unknown): number | null {
+  if (!isRecord(headers)) {
     return null;
   }
 
-  if (typeof (headers as { get?: unknown }).get === "function") {
-    return normalizeNumber((headers as { get: (name: string) => unknown }).get("Retry-After"));
-  }
-
-  if (isRecord(headers)) {
-    return normalizeNumber(headers["Retry-After"] ?? headers["retry-after"]);
-  }
-
-  return null;
+  return numberOrNull(headers["retry-after"] ?? headers["Retry-After"]);
 }
 
-function normalizeNumber(value: unknown): number | null {
+function numberOrNull(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
   }
@@ -211,7 +170,7 @@ function normalizeNumber(value: unknown): number | null {
   return null;
 }
 
-function normalizeString(value: unknown): string | null {
+function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
