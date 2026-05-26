@@ -34,6 +34,41 @@ export type WebSocketDisconnectReason =
   | WebSocketUpgradeDisconnectReason
   | GenericWebSocketCloseReason;
 
+type UpgradeCode = WebSocketUpgradeDisconnectReason["code"];
+
+type UpgradeContext = {
+  status: number | null;
+  body: unknown;
+  headers: unknown;
+};
+
+const UPGRADE_REASONS: Record<UpgradeCode, {
+  status: WebSocketUpgradeDisconnectReason["status"];
+  message: string;
+  retryable: boolean;
+}> = {
+  invalid_on_conflict: {
+    status: 400,
+    message: "Invalid websocket conflict policy.",
+    retryable: false,
+  },
+  connection_conflict: {
+    status: 409,
+    message: "Websocket connection conflict.",
+    retryable: false,
+  },
+  too_many_requests: {
+    status: 429,
+    message: "Too many websocket connection attempts.",
+    retryable: true,
+  },
+  tracking_failed: {
+    status: 503,
+    message: "Websocket connection tracking failed.",
+    retryable: true,
+  },
+};
+
 export class WebSocketDisconnectError extends Error {
   public readonly reason: WebSocketDisconnectReason;
 
@@ -63,30 +98,25 @@ export function parseSupersedeDisconnectReason(
 }
 
 export function parseUpgradeDisconnectReason(event: unknown): WebSocketUpgradeDisconnectReason | null {
-  const fields = collectUpgradeFields(event);
-  const status = normalizeStatus(firstDefined(fields.map((field) => field.status ?? field.statusCode)));
-  if (status !== 400 && status !== 409 && status !== 429 && status !== 503) {
-    return null;
-  }
-
-  const body = parseUpgradeBody(fields);
+  const context = getUpgradeContext(event);
+  const body = parseBody(context.body);
   const error = isRecord(body?.error) ? body.error : null;
-  if (!error) {
+  if (!error || !isUpgradeCode(error.code)) {
     return null;
   }
 
-  const code = typeof error.code === "string" ? error.code : null;
-  if (!isSupportedUpgradeCode(status, code)) {
+  const expected = UPGRADE_REASONS[error.code];
+  if (context.status !== expected.status) {
     return null;
   }
 
   return {
     source: "upgrade",
-    status,
-    code,
-    message: typeof error.message === "string" ? error.message : defaultUpgradeMessage(code),
-    retryable: code === "too_many_requests" || code === "tracking_failed",
-    retryAfter: normalizeNumber(error.retry_after) ?? readRetryAfterHeader(fields),
+    status: expected.status,
+    code: error.code,
+    message: typeof error.message === "string" ? error.message : expected.message,
+    retryable: expected.retryable,
+    retryAfter: normalizeNumber(error.retry_after) ?? readRetryAfter(context.headers),
     requestId: normalizeString(error.request_id),
   };
 }
@@ -102,27 +132,42 @@ export function genericCloseReason(event?: { code?: number; reason?: string }): 
   };
 }
 
-function collectUpgradeFields(event: unknown): Array<Record<string, unknown>> {
-  const eventRecord = isRecord(event) ? event : null;
-  const errorRecord = isRecord(eventRecord?.error) ? eventRecord.error : null;
-  const records = [eventRecord, errorRecord];
-
-  for (const record of [...records]) {
-    if (isRecord(record?.response)) {
-      records.push(record.response);
-    }
-  }
-
-  return records.filter((record): record is Record<string, unknown> => record !== null);
+function isUpgradeCode(value: unknown): value is UpgradeCode {
+  return typeof value === "string" && value in UPGRADE_REASONS;
 }
 
-function parseUpgradeBody(fields: Array<Record<string, unknown>>): Record<string, unknown> | null {
-  const body = firstDefined(fields.flatMap((field) => [
-    field.body,
-    field.responseText,
-    field.data,
-  ]));
+function getUpgradeContext(event: unknown): UpgradeContext {
+  const eventRecord = isRecord(event) ? event : null;
+  const errorRecord = isRecord(eventRecord?.error) ? eventRecord.error : null;
+  const responseRecord = isRecord(errorRecord?.response)
+    ? errorRecord.response
+    : isRecord(eventRecord?.response)
+      ? eventRecord.response
+      : null;
 
+  return {
+    status: normalizeNumber(
+      eventRecord?.status
+        ?? eventRecord?.statusCode
+        ?? errorRecord?.status
+        ?? errorRecord?.statusCode
+        ?? responseRecord?.status
+        ?? responseRecord?.statusCode,
+    ),
+    body: eventRecord?.body
+      ?? errorRecord?.body
+      ?? responseRecord?.body
+      ?? eventRecord?.responseText
+      ?? errorRecord?.responseText
+      ?? responseRecord?.responseText
+      ?? eventRecord?.data
+      ?? errorRecord?.data
+      ?? responseRecord?.data,
+    headers: eventRecord?.headers ?? errorRecord?.headers ?? responseRecord?.headers,
+  };
+}
+
+function parseBody(body: unknown): Record<string, unknown> | null {
   if (isRecord(body)) {
     return body;
   }
@@ -139,31 +184,7 @@ function parseUpgradeBody(fields: Array<Record<string, unknown>>): Record<string
   }
 }
 
-function isSupportedUpgradeCode(
-  status: number,
-  code: unknown,
-): code is WebSocketUpgradeDisconnectReason["code"] {
-  return (status === 400 && code === "invalid_on_conflict")
-    || (status === 409 && code === "connection_conflict")
-    || (status === 429 && code === "too_many_requests")
-    || (status === 503 && code === "tracking_failed");
-}
-
-function defaultUpgradeMessage(code: WebSocketUpgradeDisconnectReason["code"]): string {
-  switch (code) {
-    case "invalid_on_conflict":
-      return "Invalid websocket conflict policy.";
-    case "connection_conflict":
-      return "Websocket connection conflict.";
-    case "too_many_requests":
-      return "Too many websocket connection attempts.";
-    case "tracking_failed":
-      return "Websocket connection tracking failed.";
-  }
-}
-
-function readRetryAfterHeader(fields: Array<Record<string, unknown>>): number | null {
-  const headers = firstDefined(fields.map((field) => field.headers));
+function readRetryAfter(headers: unknown): number | null {
   if (!headers) {
     return null;
   }
@@ -176,21 +197,6 @@ function readRetryAfterHeader(fields: Array<Record<string, unknown>>): number | 
     return normalizeNumber(headers["Retry-After"] ?? headers["retry-after"]);
   }
 
-  return null;
-}
-
-function firstDefined(values: unknown[]): unknown {
-  return values.find((value) => value !== undefined);
-}
-
-function normalizeStatus(value: unknown): number | null {
-  if (typeof value === "number") {
-    return value;
-  }
-  if (typeof value === "string" && value.trim() !== "") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
   return null;
 }
 
