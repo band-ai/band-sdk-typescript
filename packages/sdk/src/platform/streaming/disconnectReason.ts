@@ -85,9 +85,9 @@ export function parseSupersedeDisconnectReason(
     code: payload.reason,
     message: payload.message,
     retryable: false,
-    retryAfter: numberOrNull(payload.retry_after),
-    targetSocketId: stringOrNull(payload.target_socket_id),
-    correlationId: stringOrNull(payload.correlation_id),
+    retryAfter: typeof payload.retry_after === "number" ? payload.retry_after : null,
+    targetSocketId: typeof payload.target_socket_id === "string" ? payload.target_socket_id : null,
+    correlationId: typeof payload.correlation_id === "string" ? payload.correlation_id : null,
   };
 }
 
@@ -96,7 +96,7 @@ export function parseUpgradeDisconnectReason(event: unknown): WebSocketUpgradeDi
     return null;
   }
 
-  const status = numberOrNull(event.status);
+  const status = typeof event.status === "number" ? event.status : null;
   const body = parseJsonObject(event.body);
   const error = isRecord(body?.error) ? body.error : null;
   if (!error || !isUpgradeCode(error.code)) {
@@ -114,8 +114,8 @@ export function parseUpgradeDisconnectReason(event: unknown): WebSocketUpgradeDi
     code: error.code,
     message: typeof error.message === "string" ? error.message : reason.message,
     retryable: reason.retryable,
-    retryAfter: numberOrNull(error.retry_after) ?? retryAfterFromHeaders(event.headers),
-    requestId: stringOrNull(error.request_id),
+    retryAfter: typeof error.retry_after === "number" ? error.retry_after : retryAfterFromHeaders(event.headers),
+    requestId: typeof error.request_id === "string" ? error.request_id : null,
   };
 }
 
@@ -156,22 +156,15 @@ function retryAfterFromHeaders(headers: unknown): number | null {
     return null;
   }
 
-  return numberOrNull(headers["retry-after"] ?? headers["Retry-After"]);
-}
-
-function numberOrNull(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
+  const retryAfter = headers["retry-after"] ?? headers["Retry-After"];
+  if (typeof retryAfter === "number") {
+    return retryAfter;
   }
-  if (typeof value === "string" && value.trim() !== "") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
+  if (typeof retryAfter === "string" && retryAfter.trim() !== "") {
+    const seconds = Number(retryAfter);
+    return Number.isFinite(seconds) ? seconds : null;
   }
   return null;
-}
-
-function stringOrNull(value: unknown): string | null {
-  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
