@@ -16,7 +16,10 @@ import {
 } from "./streaming/payloadSchemas";
 import { PhoenixChannelsTransport } from "./streaming/PhoenixChannelsTransport";
 import type { StreamingTransport } from "./streaming/transport";
-import type { WebSocketDisconnectReason } from "./streaming/disconnectReason";
+import {
+  WebSocketDisconnectError,
+  type WebSocketDisconnectReason,
+} from "./streaming/disconnectReason";
 import {
   DEFAULT_AGENT_TOOLS_CAPABILITIES,
   type AgentToolsCapabilities,
@@ -44,6 +47,7 @@ export function deriveDefaultRestUrl(wsUrl: string): string {
 
 interface PendingWaiter {
   resolve: (event: PlatformEvent | null) => void;
+  reject: (error: Error) => void;
   cleanup: () => void;
 }
 
@@ -80,6 +84,7 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
   private readonly waiters: PendingWaiter[] = [];
   private connected = false;
   private lastDisconnectReason: WebSocketDisconnectReason | null = null;
+  private terminalDisconnectError: WebSocketDisconnectError | null = null;
 
   public constructor(options: ThenvoiLinkOptions) {
     this.agentId = options.agentId;
@@ -145,15 +150,21 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
   }
 
   public async runForever(signal: AbortSignal): Promise<void> {
+    if (this.terminalDisconnectError) {
+      throw this.terminalDisconnectError;
+    }
+
     await this.transport.runForever(signal);
   }
 
   private recordDisconnectReason(reason: WebSocketDisconnectReason): void {
+    const error = new WebSocketDisconnectError(reason);
     this.connected = false;
     this.lastDisconnectReason = reason;
+    this.terminalDisconnectError = error;
     while (this.waiters.length > 0) {
       const waiter = this.waiters.shift();
-      waiter?.resolve(null);
+      waiter?.reject(error);
     }
   }
 
@@ -185,23 +196,31 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
       return;
     }
 
-    await this.transport.join(`chat_room:${roomId}`, {
+    const chatTopic = `chat_room:${roomId}`;
+    const participantsTopic = `room_participants:${roomId}`;
+
+    await this.transport.join(chatTopic, {
       message_created: (payload) => {
         this.emit("message_created", payload, roomId);
       },
     });
 
-    await this.transport.join(`room_participants:${roomId}`, {
-      participant_added: (payload) => {
-        this.emit("participant_added", payload, roomId);
-      },
-      participant_removed: (payload) => {
-        this.emit("participant_removed", payload, roomId);
-      },
-      room_deleted: (payload) => {
-        this.emit("room_deleted", payload, roomId);
-      },
-    });
+    try {
+      await this.transport.join(participantsTopic, {
+        participant_added: (payload) => {
+          this.emit("participant_added", payload, roomId);
+        },
+        participant_removed: (payload) => {
+          this.emit("participant_removed", payload, roomId);
+        },
+        room_deleted: (payload) => {
+          this.emit("room_deleted", payload, roomId);
+        },
+      });
+    } catch (error) {
+      await this.transport.leave(chatTopic);
+      throw error;
+    }
 
     this.subscribedRooms.add(roomId);
   }
@@ -239,6 +258,10 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
   }
 
   public async nextEvent(signal?: AbortSignal): Promise<PlatformEvent | null> {
+    if (this.terminalDisconnectError) {
+      throw this.terminalDisconnectError;
+    }
+
     if (signal?.aborted) {
       return null;
     }
@@ -248,19 +271,19 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
       return queued;
     }
 
-    return new Promise<PlatformEvent | null>((resolve) => {
+    return new Promise<PlatformEvent | null>((resolve, reject) => {
       let settled = false;
       const onAbort = () => {
         const index = this.waiters.indexOf(waiter);
         if (index >= 0) {
           this.waiters.splice(index, 1);
         }
-        finalize(null);
+        finalizeResolve(null);
       };
       const cleanup = () => {
         signal?.removeEventListener("abort", onAbort);
       };
-      const finalize = (event: PlatformEvent | null) => {
+      const finalizeResolve = (event: PlatformEvent | null) => {
         if (settled) {
           return;
         }
@@ -268,8 +291,17 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
         cleanup();
         resolve(event);
       };
+      const finalizeReject = (error: Error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        reject(error);
+      };
       const waiter: PendingWaiter = {
-        resolve: finalize,
+        resolve: finalizeResolve,
+        reject: finalizeReject,
         cleanup,
       };
 

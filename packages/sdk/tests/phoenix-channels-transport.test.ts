@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { GenericAdapter } from "../src/adapters/GenericAdapter";
 import { TransportError } from "../src/core/errors";
+import { ThenvoiLink } from "../src/platform/ThenvoiLink";
 import { WebSocketDisconnectError } from "../src/platform/streaming/disconnectReason";
+import { PlatformRuntime } from "../src/runtime/PlatformRuntime";
+import { FakeRestApi } from "./testUtils";
 
 const phoenixMock = vi.hoisted(() => {
   type Outcome = "ok" | "error" | "timeout";
@@ -57,13 +61,32 @@ const phoenixMock = vi.hoisted(() => {
     }
   }
 
+  class FakeChannelList extends Array<FakeChannel> {
+    public get(topic: string): FakeChannel | undefined {
+      return this.find((channel) => channel.topic === topic);
+    }
+
+    public has(topic: string): boolean {
+      return this.some((channel) => channel.topic === topic);
+    }
+
+    public delete(channelToDelete: FakeChannel): boolean {
+      const index = this.indexOf(channelToDelete);
+      if (index < 0) {
+        return false;
+      }
+      this.splice(index, 1);
+      return true;
+    }
+  }
+
   class FakeSocket {
     public static readonly instances: FakeSocket[] = [];
 
     public readonly url: string;
     public readonly params: Record<string, unknown>;
     public readonly reconnectAfterMs?: (tries: number) => number;
-    public readonly channels = new Map<string, FakeChannel>();
+    public readonly channels = new FakeChannelList();
     public disconnectCount = 0;
     private openHandler: (() => void) | null = null;
     private closeHandler: ((event?: { code?: number; reason?: string }) => void) | null = null;
@@ -105,8 +128,12 @@ const phoenixMock = vi.hoisted(() => {
 
     public channel(topic: string): FakeChannel {
       const channel = new FakeChannel(topic);
-      this.channels.set(topic, channel);
+      this.channels.push(channel);
       return channel;
+    }
+
+    public remove(channel: FakeChannel): void {
+      this.channels.delete(channel);
     }
 
     public emitError(payload: unknown): void {
@@ -358,17 +385,42 @@ describe("PhoenixChannelsTransport", () => {
     });
   });
 
-  it("leaves empty 403 upgrade errors generic", async () => {
+  it("rejects empty 403 upgrade errors without inventing a platform reason", async () => {
     const transport = new PhoenixChannelsTransport({
       wsUrl: "wss://example.test/socket",
       apiKey: "key-1",
       agentId: "agent-1",
     });
 
-    void transport.connect().catch(() => undefined);
+    const connectPromise = transport.connect();
     const socket = phoenixMock.FakeSocket.instances[0];
     socket?.emitError({ status: 403 });
 
+    await expect(connectPromise).rejects.toBeInstanceOf(TransportError);
     expect(transport.getDisconnectReason()).toBeNull();
+  });
+
+  it("propagates terminal supersede through the agent runtime", async () => {
+    const runtime = new PlatformRuntime({
+      agentId: "agent-1",
+      apiKey: "key-1",
+      link: new ThenvoiLink({
+        agentId: "agent-1",
+        apiKey: "key-1",
+        restApi: new FakeRestApi(),
+        wsUrl: "wss://example.test/socket",
+      }),
+    });
+
+    await runtime.start(new GenericAdapter(async () => undefined));
+    const runForever = runtime.runForever();
+    const socket = phoenixMock.FakeSocket.instances[0];
+
+    socket?.channels.get("agent_control:agent-1")?.emit("supersede", {
+      reason: "session.already_connected",
+      message: "This connection has been superseded by a newer session for this agent.",
+    });
+
+    await expect(runForever).rejects.toBeInstanceOf(WebSocketDisconnectError);
   });
 });

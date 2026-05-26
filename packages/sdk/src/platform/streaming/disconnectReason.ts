@@ -69,6 +69,9 @@ export function parseUpgradeDisconnectReason(event: unknown): WebSocketUpgradeDi
     ["status"],
     ["statusCode"],
     ["response", "status"],
+    ["error", "status"],
+    ["error", "statusCode"],
+    ["error", "response", "status"],
   ]));
   if (status !== 400 && status !== 409 && status !== 429 && status !== 503) {
     return null;
@@ -115,6 +118,12 @@ function parseUpgradeBody(event: unknown): Record<string, unknown> | null {
     ["response", "responseText"],
     ["data"],
     ["response", "data"],
+    ["error", "body"],
+    ["error", "response", "body"],
+    ["error", "responseText"],
+    ["error", "response", "responseText"],
+    ["error", "data"],
+    ["error", "response", "data"],
   ]);
 
   if (isRecord(body)) {
@@ -157,7 +166,12 @@ function defaultUpgradeMessage(code: WebSocketUpgradeDisconnectReason["code"]): 
 }
 
 function readRetryAfterHeader(event: unknown): number | null {
-  const headers = readFirst(event, [["headers"], ["response", "headers"]]);
+  const headers = readFirst(event, [
+    ["headers"],
+    ["response", "headers"],
+    ["error", "headers"],
+    ["error", "response", "headers"],
+  ]);
   if (!headers) {
     return null;
   }

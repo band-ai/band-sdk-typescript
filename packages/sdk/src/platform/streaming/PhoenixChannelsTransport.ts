@@ -1,3 +1,4 @@
+import type { ClientRequest, IncomingMessage } from "http";
 import { Channel, Socket } from "phoenix";
 import { WebSocket as NodeWebSocket } from "ws";
 import { TransportError } from "../../core/errors";
@@ -81,16 +82,8 @@ export class PhoenixChannelsTransport implements StreamingTransport {
 
     this.socket.onClose((event?: { code?: number; reason?: string }) => {
       this.connected = false;
-      if (!this.terminalDisconnectError) {
+      if (!this.terminalDisconnectError && !this.lastDisconnectReason) {
         this.lastDisconnectReason = genericCloseReason(event);
-      }
-
-      // If there are no active channels, stop reconnecting — the socket has
-      // nothing to rejoin and would just churn connections. Terminal platform
-      // disconnects call socket.disconnect() as soon as they are recorded, so
-      // avoid re-entering disconnect from the close callback.
-      if (!this.terminalDisconnectError && getSocketChannelCount(this.socket) === 0) {
-        this.socket.disconnect();
       }
 
       this.logger.info("Phoenix socket closed", {
@@ -110,6 +103,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
         return;
       }
 
+      this.connectReject?.(new TransportError("Phoenix socket connection failed", event));
       this.logger.warn("Phoenix socket error", { event });
     });
   }
@@ -145,12 +139,26 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   public async disconnect(): Promise<void> {
-    for (const topic of this.channels.keys()) {
-      await this.leave(topic);
-    }
+    const results = await Promise.allSettled(
+      [...this.channels.keys()].map((topic) => this.leave(topic)),
+    );
 
     this.socket.disconnect();
     this.connected = false;
+
+    const failures: unknown[] = [];
+    for (const result of results) {
+      if (result.status === "rejected") {
+        failures.push(result.reason);
+      }
+    }
+
+    if (failures.length > 0) {
+      throw new AggregateError(
+        failures,
+        "Failed to leave one or more Phoenix topics during disconnect",
+      );
+    }
   }
 
   public isConnected(): boolean {
@@ -366,10 +374,74 @@ export class PhoenixChannelsTransport implements StreamingTransport {
 
 function resolveWebSocketFactory(): typeof WebSocket {
   if (typeof process !== "undefined" && process.versions?.node) {
-    return NodeWebSocket as unknown as typeof WebSocket;
+    return createNodeWebSocketFactory();
   }
 
   return WebSocket;
+}
+
+type NodeUpgradeWebSocket = InstanceType<typeof NodeWebSocket> & {
+  once(
+    event: "unexpected-response",
+    listener: (request: ClientRequest, response: IncomingMessage) => void,
+  ): NodeUpgradeWebSocket;
+  emit(event: "error", error: Error): boolean;
+  emit(event: "close", code: number, reason: Buffer): boolean;
+};
+
+function createNodeWebSocketFactory(): typeof WebSocket {
+  return class ThenvoiNodeWebSocket extends NodeWebSocket {
+    public constructor(address: string | URL, protocols?: string | string[]) {
+      super(address, protocols);
+      const socket = this as unknown as NodeUpgradeWebSocket;
+      socket.once("unexpected-response", (request, response) => {
+        void emitUpgradeError(socket, request, response);
+      });
+    }
+  } as unknown as typeof WebSocket;
+}
+
+async function emitUpgradeError(
+  websocket: NodeUpgradeWebSocket,
+  request: ClientRequest,
+  response: IncomingMessage,
+): Promise<void> {
+  const body = await readResponseBody(response);
+  const error = new Error(`Unexpected server response: ${response.statusCode ?? "unknown"}`) as Error & {
+    status?: number;
+    statusCode?: number;
+    body?: string;
+    headers?: IncomingMessage["headers"];
+    response?: {
+      status?: number;
+      statusCode?: number;
+      body?: string;
+      headers?: IncomingMessage["headers"];
+    };
+  };
+
+  error.status = response.statusCode;
+  error.statusCode = response.statusCode;
+  error.body = body;
+  error.headers = response.headers;
+  error.response = {
+    status: response.statusCode,
+    statusCode: response.statusCode,
+    body,
+    headers: response.headers,
+  };
+
+  request.destroy?.();
+  websocket.emit("error", error);
+  websocket.emit("close", 1006, Buffer.alloc(0));
+}
+
+async function readResponseBody(response: IncomingMessage): Promise<string> {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of response as AsyncIterable<Uint8Array | string>) {
+    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 function removeSocketChannel(socket: Socket, channel: Channel): void {
