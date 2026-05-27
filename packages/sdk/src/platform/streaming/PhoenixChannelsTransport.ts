@@ -17,7 +17,7 @@ interface PhoenixChannelsTransportOptions {
    * x-api-key handshake header, so browser WebSocket constructors are not
    * sufficient; pass a Node-compatible constructor that accepts headers.
    */
-  websocketFactory?: typeof WebSocket;
+  websocketFactory?: HeaderWebSocketConstructor;
 }
 
 type HeaderWebSocketConstructor = new (
@@ -263,11 +263,9 @@ function normalizePhoenixEndpoint(wsUrl: string): string {
 
 function createApiKeyHeaderWebSocketFactory(
   apiKey: string,
-  websocketFactory?: typeof WebSocket,
+  websocketFactory?: HeaderWebSocketConstructor,
 ): typeof WebSocket {
-  const WebSocketConstructor = websocketFactory
-    ? (websocketFactory as unknown as HeaderWebSocketConstructor)
-    : getNodeWebSocketConstructor();
+  const WebSocketConstructor = websocketFactory ?? getNodeWebSocketConstructor();
 
   class ApiKeyHeaderWebSocket {
     public constructor(url: string | URL, protocols?: string | string[]) {
