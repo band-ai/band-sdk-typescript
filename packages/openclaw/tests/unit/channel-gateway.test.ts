@@ -184,7 +184,7 @@ describe("Channel Gateway Lifecycle", () => {
       );
     });
 
-    it("should fall back to the first other participant when no sender is tracked", async () => {
+    it("should not guess a recipient when no sender is tracked", async () => {
       const ctx = createGatewayContext("account-2", mockAccountConfig, { aborted: true });
       await thenvoiChannel.gateway!.startAccount(ctx);
 
@@ -194,20 +194,14 @@ describe("Channel Gateway Lifecycle", () => {
         { id: "agent-123", name: "Test Agent", type: "Agent" },
       ]);
 
-      await thenvoiChannel.outbound.sendText({
+      await expect(thenvoiChannel.outbound.sendText({
         cfg: {},
         accountId: "account-2",
         to: "room-123",
         text: "Following up without prior inbound context.",
-      });
+      })).rejects.toThrow("no tracked inbound sender");
 
-      expect(mockLinkInstance.rest.createChatMessage).toHaveBeenCalledWith(
-        "room-123",
-        expect.objectContaining({
-          content: "Following up without prior inbound context.",
-          mentions: [{ id: "user-789" }],
-        }),
-      );
+      expect(mockLinkInstance.rest.createChatMessage).not.toHaveBeenCalled();
     });
   });
 

@@ -366,10 +366,10 @@ function resolveConfig(account: ThenvoiAccountConfig): { apiKey: string; agentId
 type Mention = { id: string };
 
 /**
- * Resolve mentions for a message: use last sender when available, then fall back
- * to the first other participant. OpenClaw must not infer routing from @Name text
- * inside the reply body.
- * Returns null if no participants are available to mention (caller decides how to handle).
+ * Resolve mentions for a message using the last tracked sender in the thread.
+ * OpenClaw must not infer routing from @Name text inside the reply body or pick
+ * an arbitrary participant when no inbound sender has been seen.
+ * Returns null if there is no safe recipient (caller decides how to handle).
  */
 async function resolveMentions(
   rest: ThenvoiLink["rest"],
@@ -380,24 +380,19 @@ async function resolveMentions(
 ): Promise<{ mentions: Mention[]; participants: Array<{ id: string; name: string }> } | null> {
   const participants = await rest.listChatParticipants(roomId);
 
-  // 1. Fallback: last sender in this thread
   const lastSender = registry().lastSenderByThread.get(`${accountId}:${roomId}`);
-  if (lastSender) {
-    const senderParticipant = participants.find(
-      (p) => p.id === lastSender.senderId && p.id !== agentId
-    );
-    if (senderParticipant) {
-      return { mentions: [{ id: senderParticipant.id }], participants };
-    }
+  if (!lastSender) {
+    return null;
   }
 
-  // 2. Fallback: first other participant
-  const other = participants.find((p) => p.id !== agentId);
-  if (other) {
-    return { mentions: [{ id: other.id }], participants };
+  const senderParticipant = participants.find(
+    (p) => p.id === lastSender.senderId && p.id !== agentId
+  );
+  if (!senderParticipant) {
+    return null;
   }
 
-  return null;
+  return { mentions: [{ id: senderParticipant.id }], participants };
 }
 
 // =============================================================================
@@ -481,7 +476,7 @@ async function sendOutbound(ctx: OutboundContext): Promise<OutboundDeliveryResul
 
   const resolved = await resolveMentions(link.rest, link.agentId, accountId ?? "default", roomId, text);
   if (!resolved) {
-    throw new Error("Cannot send message: no other participants to mention");
+    throw new Error("Cannot send message: no tracked inbound sender to mention");
   }
 
   const result = await link.rest.createChatMessage(roomId, { content: text, mentions: resolved.mentions });
