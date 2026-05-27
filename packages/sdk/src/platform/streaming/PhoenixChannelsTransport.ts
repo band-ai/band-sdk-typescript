@@ -88,16 +88,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     });
 
     this.socket.onClose((event?: { code?: number; reason?: string }) => {
-      this.connected = false;
-      if (!this.terminalDisconnectError && !this.lastDisconnectReason) {
-        this.lastDisconnectReason = genericCloseReason(event);
-      }
-
-      this.logger.info("Phoenix socket closed", {
-        code: event?.code ?? null,
-        reason: event?.reason ?? null,
-        platformReason: this.lastDisconnectReason,
-      });
+      this.recordSocketClose(event);
     });
 
     this.socket.onError((event) => {
@@ -353,6 +344,19 @@ export class PhoenixChannelsTransport implements StreamingTransport {
         }
         this.recordTerminalDisconnect(reason);
       },
+    });
+  }
+
+  private recordSocketClose(event?: { code?: number; reason?: string }): void {
+    this.connected = false;
+    if (!this.terminalDisconnectError && !this.lastDisconnectReason) {
+      this.lastDisconnectReason = genericCloseReason(event);
+    }
+
+    this.logger.info("Phoenix socket closed", {
+      code: event?.code ?? null,
+      reason: event?.reason ?? null,
+      platformReason: this.lastDisconnectReason,
     });
   }
 
