@@ -9,7 +9,6 @@ import type { BoundedStringSet } from "./bounded-string-set.js";
 import { resolveAccountCredentials, type ThenvoiAccountConfig } from "./config.js";
 import {
   buildOpenClawBody,
-  messageInsertedAt,
   messageMentionsAgent,
   platformEventToInboundMessage,
   type OpenClawInboundMessage,
@@ -20,7 +19,6 @@ import { redactSecrets } from "./redaction.js";
 
 const CONTACTS_THREAD_ID = "__thenvoi_contacts__";
 const ROOM_RECOVERY_SWEEP_INTERVAL_MS = 10_000;
-const STARTUP_MESSAGE_GRACE_MS = 5_000;
 
 export interface GatewayContext {
   cfg: unknown;
@@ -65,7 +63,6 @@ export function createGatewayHelpers(options: GatewayRuntimeOptions): GatewayHel
 
       try {
         console.log(`[thenvoi:${accountId}] Starting gateway...`);
-        const accountStartedAt = Date.now();
 
         if (options.links.has(accountId)) {
           console.log(`[thenvoi:${accountId}] Disconnecting previous connection before restart...`);
@@ -218,13 +215,6 @@ export function createGatewayHelpers(options: GatewayRuntimeOptions): GatewayHel
               }
               seenPendingIds.add(next.id);
 
-              const insertedAt = messageInsertedAt(next as unknown as Record<string, unknown>);
-              if (!insertedAt || insertedAt < accountStartedAt - STARTUP_MESSAGE_GRACE_MS) {
-                console.log(`[thenvoi:${accountId}] Skipping stale pending message in room ${roomId}`);
-                try { await link.markProcessing(roomId, next.id, { bestEffort: true }); } catch { /* best effort */ }
-                try { await link.markProcessed(roomId, next.id, { bestEffort: true }); } catch { /* best effort */ }
-                continue;
-              }
               if (next.sender_id === config.agentId) {
                 try { await link.markProcessing(roomId, next.id, { bestEffort: true }); } catch { /* best effort */ }
                 try { await link.markProcessed(roomId, next.id, { bestEffort: true }); } catch { /* best effort */ }
@@ -261,8 +251,6 @@ export function createGatewayHelpers(options: GatewayRuntimeOptions): GatewayHel
           for (const payload of ([...messages].reverse() as unknown as Record<string, unknown>[])) {
             if (payload.sender_id === config.agentId) continue;
             if (payload.message_type !== "text") continue;
-            const insertedAt = messageInsertedAt(payload);
-            if (!insertedAt || insertedAt < accountStartedAt - STARTUP_MESSAGE_GRACE_MS) continue;
             if (!messageMentionsAgent(payload, config.agentId)) continue;
             console.log(`[thenvoi:${accountId}] Catching up mentioned message in room ${roomId}`);
             await handleMessageEvent({ type: "message_created", roomId, payload } as PlatformEvent);
