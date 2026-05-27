@@ -99,6 +99,8 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       if (upgradeReason) {
         if (upgradeReason.retryable) {
           this.lastDisconnectReason = upgradeReason;
+          this.connectReject?.(new WebSocketDisconnectError(upgradeReason));
+          this.stopReconnectIfNoChannels({ suppressCloseReason: true });
         } else {
           this.recordTerminalDisconnect(upgradeReason);
         }

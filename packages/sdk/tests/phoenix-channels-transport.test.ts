@@ -469,13 +469,9 @@ describe("PhoenixChannelsTransport", () => {
           retryAfter === null ? {} : { "Retry-After": String(retryAfter) },
       });
 
-      if (status === 429 || status === 503) {
-        await expect(connectPromise).resolves.toBeUndefined();
-      } else {
-        await expect(connectPromise).rejects.toBeInstanceOf(
-          WebSocketDisconnectError,
-        );
-      }
+      await expect(connectPromise).rejects.toBeInstanceOf(
+        WebSocketDisconnectError,
+      );
       expect(transport.getDisconnectReason()).toMatchObject({
         source: "upgrade",
         status,
@@ -538,7 +534,10 @@ describe("PhoenixChannelsTransport", () => {
       },
     });
 
-    await expect(connectPromise).resolves.toBeUndefined();
+    await expect(connectPromise).rejects.toBeInstanceOf(
+      WebSocketDisconnectError,
+    );
+    expect(socket?.disconnectCount).toBeGreaterThan(0);
     expect(socket?.reconnectAfterMs?.(1)).toBe(1000);
   });
 
