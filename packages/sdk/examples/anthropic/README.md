@@ -16,13 +16,13 @@ A Thenvoi agent backed by Anthropic's Messages API. Thenvoi platform tools becom
 | `02-custom-instructions.ts` | Specialized "support agent" persona via `systemPrompt` |
 | `03-tom-agent.ts` | Tom the cat — character agent that pursues Jerry |
 | `04-jerry-agent.ts` | Jerry the mouse — counterpart to Tom |
-| `05-contact-management.ts` | Auto-approve incoming contact requests via `ContactEventConfig` callback |
+| `05-contact-management.ts` | Handle incoming contact requests with an explicit allowlist callback |
 | `06-custom-tools.ts` | Calculator + weather tools wired in via `customTools` |
 | `characters.ts` | Tom + Jerry character prompts (used by 03 and 04) |
 
 ## Prerequisites
 
-- Node 20+, pnpm
+- Node 22+, pnpm
 - A Thenvoi agent registered in your workspace
 - `ANTHROPIC_API_KEY` env var
 - `agent_config.yaml` in the working directory:

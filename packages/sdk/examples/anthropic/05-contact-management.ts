@@ -10,14 +10,10 @@
  *   - "hub_room": contact events are routed to a designated hub room so
  *     the LLM can decide via normal tool calling
  *
- * This example uses `"callback"` to auto-approve every incoming contact
- * request. The agent's LLM still has access to the contact tools
- * (`thenvoi_list_contacts`, `thenvoi_add_contact`, etc.) for everything
- * else.
- *
- * ⚠️  Auto-approving contact requests means *anyone* can connect and start
- * triggering LLM inference. Use a real allowlist / domain check in the
- * callback for production.
+ * This example uses `"callback"` with an explicit handle allowlist. Unknown
+ * requests are left pending for a human owner to review in the Band UI. The
+ * agent's LLM still has access to the contact tools (`thenvoi_list_contacts`,
+ * `thenvoi_add_contact`, etc.) for everything else.
  */
 import {
   Agent,
@@ -29,21 +25,41 @@ import {
 } from "@thenvoi/sdk";
 import type { AdapterToolsProtocol } from "@thenvoi/sdk/core";
 
-async function autoApproveContacts(
+function allowedContactHandles(): Set<string> {
+  return new Set(
+    (process.env.THENVOI_CONTACT_ALLOWLIST ?? "")
+      .split(",")
+      .map((handle) => handle.trim())
+      .filter(Boolean),
+  );
+}
+
+async function approveAllowlistedContacts(
   event: ContactEvent,
   tools: AdapterToolsProtocol,
 ): Promise<void> {
   if (event.type !== "contact_request_received") {
     return;
   }
+
   const request = event.payload;
-  console.log("[contact] auto-approving from", request.from_handle ?? request.id);
+  const fromHandle = request.from_handle;
+  if (!fromHandle || !allowedContactHandles().has(fromHandle)) {
+    console.warn(
+      "[contact] leaving contact request pending for human review",
+      fromHandle ?? request.id,
+    );
+    return;
+  }
+
   // `respondContactRequest` is part of the optional ContactTools surface;
   // the `contacts` capability flag tells us at runtime whether it's wired.
   if (!tools.capabilities.contacts || !tools.respondContactRequest) {
     console.warn("[contact] respondContactRequest is unavailable for this agent");
     return;
   }
+
+  console.log("[contact] approving allowlisted request from", fromHandle);
   await tools.respondContactRequest({
     action: "approve",
     target: "requestId",
@@ -66,13 +82,13 @@ export function createContactAgent(
     systemPrompt: [
       "You are a helpful assistant with contact management capabilities.",
       "You can list, add, and remove contacts, and manage contact requests.",
-      "Incoming contact requests are auto-approved before you see them.",
+      "Incoming contact requests stay pending unless their handle is explicitly allowlisted.",
     ].join("\n"),
   });
 
   const contactConfig: ContactEventConfig = {
     strategy: "callback",
-    onEvent: autoApproveContacts,
+    onEvent: approveAllowlistedContacts,
     broadcastChanges: true,
   };
 
