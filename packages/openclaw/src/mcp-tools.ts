@@ -2,7 +2,7 @@
  * MCP Tools for Band platform operations.
  *
  * Exposes Band platform tools via MCP (Model Context Protocol)
- * for use by OpenClaw agents. Uses @band-ai/sdk REST API.
+ * for use by OpenClaw agents. Uses @thenvoi/sdk REST API.
  */
 
 import { getLink, getAgentId } from "./channel.js";
@@ -87,11 +87,11 @@ function clampPagination(page: number, pageSize: number): { page: number; pageSi
 }
 
 // =============================================================================
-// Tool: band_lookup_peers
+// Tool: thenvoi_lookup_peers
 // =============================================================================
 
 const lookupPeersTool: McpTool = {
-  name: "band_lookup_peers",
+  name: "thenvoi_lookup_peers",
   description:
     "Find available agents and users on the Band platform. " +
     "Use this to discover who you can invite to collaborate.",
@@ -132,11 +132,11 @@ const lookupPeersTool: McpTool = {
 };
 
 // =============================================================================
-// Tool: band_add_participant
+// Tool: thenvoi_add_participant
 // =============================================================================
 
 const addParticipantTool: McpTool = {
-  name: "band_add_participant",
+  name: "thenvoi_add_participant",
   description:
     "Invite an agent or user to join a Band chat room. " +
     "Use lookup_peers first to find available participants. " +
@@ -198,7 +198,7 @@ const addParticipantTool: McpTool = {
 
     if (!foundPeerId) {
       throw new Error(
-        `Peer not found: "${handle}". Use band_lookup_peers to see available peers.`
+        `Peer not found: "${handle}". Use thenvoi_lookup_peers to see available peers.`
       );
     }
 
@@ -218,11 +218,11 @@ const addParticipantTool: McpTool = {
 };
 
 // =============================================================================
-// Tool: band_remove_participant
+// Tool: thenvoi_remove_participant
 // =============================================================================
 
 const removeParticipantTool: McpTool = {
-  name: "band_remove_participant",
+  name: "thenvoi_remove_participant",
   description: "Remove an agent or user from a Band chat room.",
   inputSchema: {
     type: "object",
@@ -261,7 +261,7 @@ const removeParticipantTool: McpTool = {
       );
       if (!match) {
         throw new Error(
-          `Participant "${name}" not found in room. Use band_get_participants to see current participants.`
+          `Participant "${name}" not found in room. Use thenvoi_get_participants to see current participants.`
         );
       }
       resolvedId = match.id;
@@ -278,11 +278,11 @@ const removeParticipantTool: McpTool = {
 };
 
 // =============================================================================
-// Tool: band_get_participants
+// Tool: thenvoi_get_participants
 // =============================================================================
 
 const getParticipantsTool: McpTool = {
-  name: "band_get_participants",
+  name: "thenvoi_get_participants",
   description: "List all participants in a Band chat room.",
   inputSchema: {
     type: "object",
@@ -312,11 +312,11 @@ const getParticipantsTool: McpTool = {
 };
 
 // =============================================================================
-// Tool: band_create_chatroom
+// Tool: thenvoi_create_chatroom
 // =============================================================================
 
 const createChatTool: McpTool = {
-  name: "band_create_chatroom",
+  name: "thenvoi_create_chatroom",
   description:
     "Create a new Band chat room for collaboration. " +
     "Use this when you need a fresh space for a new task or conversation.",
@@ -344,11 +344,11 @@ const createChatTool: McpTool = {
 };
 
 // =============================================================================
-// Tool: band_send_event
+// Tool: thenvoi_send_event
 // =============================================================================
 
 const sendEventTool: McpTool = {
-  name: "band_send_event",
+  name: "thenvoi_send_event",
   description:
     "Share events with other participants in a Band chat room. " +
     "Event types: " +
@@ -401,11 +401,11 @@ const sendEventTool: McpTool = {
 };
 
 // =============================================================================
-// Tool: band_send_message
+// Tool: thenvoi_send_message
 // =============================================================================
 
 const sendMessageTool: McpTool = {
-  name: "band_send_message",
+  name: "thenvoi_send_message",
   description:
     "Send a message to a Band chat room. " +
     "Messages require at least one @mention. Use this to respond to users or other agents. " +
@@ -426,7 +426,7 @@ const sendMessageTool: McpTool = {
         items: { type: "string" },
         description:
           "List of participant names to @mention. At least one required. " +
-          "Use band_get_participants to see available participants.",
+          "Use thenvoi_get_participants to see available participants.",
       },
     },
     required: ["room_id", "content", "mentions"],
@@ -451,7 +451,7 @@ const sendMessageTool: McpTool = {
       );
       if (!participant) {
         throw new Error(
-          `Participant "${name}" not found in room (excluding self). Use band_get_participants to see available participants.`
+          `Participant "${name}" not found in room (excluding self). Use thenvoi_get_participants to see available participants.`
         );
       }
       return { id: participant.id, name: participant.name };
@@ -471,11 +471,11 @@ const sendMessageTool: McpTool = {
 };
 
 // =============================================================================
-// Tool: band_list_contacts
+// Tool: thenvoi_list_contacts
 // =============================================================================
 
 const listContactsTool: McpTool = {
-  name: "band_list_contacts",
+  name: "thenvoi_list_contacts",
   description: "List agent's contacts with pagination.",
   inputSchema: {
     type: "object",
@@ -512,11 +512,11 @@ const listContactsTool: McpTool = {
 };
 
 // =============================================================================
-// Tool: band_add_contact
+// Tool: thenvoi_add_contact
 // =============================================================================
 
 const addContactTool: McpTool = {
-  name: "band_add_contact",
+  name: "thenvoi_add_contact",
   description:
     "Send a contact request to add someone as a contact. " +
     "Returns 'pending' when request is created, 'approved' when auto-accepted " +
@@ -549,11 +549,11 @@ const addContactTool: McpTool = {
 };
 
 // =============================================================================
-// Tool: band_remove_contact
+// Tool: thenvoi_remove_contact
 // =============================================================================
 
 const removeContactTool: McpTool = {
-  name: "band_remove_contact",
+  name: "thenvoi_remove_contact",
   description: "Remove an existing contact by handle or ID.",
   inputSchema: {
     type: "object",
@@ -590,11 +590,11 @@ const removeContactTool: McpTool = {
 };
 
 // =============================================================================
-// Tool: band_list_contact_requests
+// Tool: thenvoi_list_contact_requests
 // =============================================================================
 
 const listContactRequestsTool: McpTool = {
-  name: "band_list_contact_requests",
+  name: "thenvoi_list_contact_requests",
   description:
     "List both received and sent contact requests. " +
     "Received requests are always filtered to pending status. " +
@@ -648,11 +648,11 @@ const listContactRequestsTool: McpTool = {
 };
 
 // =============================================================================
-// Tool: band_respond_contact_request
+// Tool: thenvoi_respond_contact_request
 // =============================================================================
 
 const respondContactRequestTool: McpTool = {
-  name: "band_respond_contact_request",
+  name: "thenvoi_respond_contact_request",
   description:
     "Respond to a contact request. " +
     "Actions: 'approve'/'reject' for requests you RECEIVED, " +

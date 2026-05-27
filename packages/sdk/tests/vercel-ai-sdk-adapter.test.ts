@@ -19,7 +19,7 @@ class VercelAISDKTestTools extends FakeTools {
       {
         type: "function",
         function: {
-          name: "band_get_participants",
+          name: "thenvoi_get_participants",
           description: "List participants",
           parameters: {
             type: "object",
@@ -53,7 +53,7 @@ describe("VercelAISDKAdapter", () => {
       {
         toolCalls: [{
           toolCallId: "call_1",
-          toolName: "band_get_participants",
+          toolName: "thenvoi_get_participants",
           input: {},
         }],
       },
@@ -90,7 +90,7 @@ describe("VercelAISDKAdapter", () => {
     );
 
     expect(tools.executed).toEqual([{
-      name: "band_get_participants",
+      name: "thenvoi_get_participants",
       input: {},
     }]);
     expect(tools.messages).toEqual(["Vercel AI SDK final response"]);
@@ -100,7 +100,7 @@ describe("VercelAISDKAdapter", () => {
       system: "You are a strict test agent.",
     });
     expect(requests[0]?.tools).toMatchObject({
-      band_get_participants: {
+      thenvoi_get_participants: {
         description: "List participants",
         inputSchema: {
           type: "object",
@@ -120,7 +120,7 @@ describe("VercelAISDKAdapter", () => {
         content: [{
           type: "tool-call",
           toolCallId: "call_1",
-          toolName: "band_get_participants",
+          toolName: "thenvoi_get_participants",
           input: {},
         }],
       },
@@ -129,7 +129,7 @@ describe("VercelAISDKAdapter", () => {
         content: [{
           type: "tool-result",
           toolCallId: "call_1",
-          toolName: "band_get_participants",
+          toolName: "thenvoi_get_participants",
           output: { ok: true },
         }],
       },

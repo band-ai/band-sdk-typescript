@@ -103,9 +103,9 @@ describe("MCP Tools", () => {
 
   describe("getMcpTool", () => {
     it("should return tool by name", () => {
-      const tool = getMcpTool("band_lookup_peers");
+      const tool = getMcpTool("thenvoi_lookup_peers");
       expect(tool).toBeDefined();
-      expect(tool?.name).toBe("band_lookup_peers");
+      expect(tool?.name).toBe("thenvoi_lookup_peers");
     });
 
     it("should return undefined for unknown tool", () => {
@@ -136,11 +136,11 @@ describe("MCP Tools", () => {
     });
   });
 
-  describe("band_lookup_peers", () => {
+  describe("thenvoi_lookup_peers", () => {
     it("should call listPeers with default pagination", async () => {
       mockRest.listPeers.mockResolvedValue(mockLookupPeersResponse);
 
-      const result = await executeMcpTool("band_lookup_peers", {});
+      const result = await executeMcpTool("thenvoi_lookup_peers", {});
 
       expect(mockRest.listPeers).toHaveBeenCalledWith({ page: 1, pageSize: 50, notInChat: "" });
       expect(result).toHaveProperty("peers");
@@ -151,7 +151,7 @@ describe("MCP Tools", () => {
     it("should call listPeers with provided pagination", async () => {
       mockRest.listPeers.mockResolvedValue(mockLookupPeersResponse);
 
-      await executeMcpTool("band_lookup_peers", { page: 2, page_size: 25 });
+      await executeMcpTool("thenvoi_lookup_peers", { page: 2, page_size: 25 });
 
       expect(mockRest.listPeers).toHaveBeenCalledWith({ page: 2, pageSize: 25, notInChat: "" });
     });
@@ -159,7 +159,7 @@ describe("MCP Tools", () => {
     it("should clamp invalid pagination to valid ranges", async () => {
       mockRest.listPeers.mockResolvedValue(mockLookupPeersResponse);
 
-      await executeMcpTool("band_lookup_peers", { page: -1, page_size: 200 });
+      await executeMcpTool("thenvoi_lookup_peers", { page: -1, page_size: 200 });
 
       expect(mockRest.listPeers).toHaveBeenCalledWith({ page: 1, pageSize: 100, notInChat: "" });
     });
@@ -167,7 +167,7 @@ describe("MCP Tools", () => {
     it("should clamp page zero to 1", async () => {
       mockRest.listPeers.mockResolvedValue(mockLookupPeersResponse);
 
-      await executeMcpTool("band_lookup_peers", { page: 0, page_size: 50 });
+      await executeMcpTool("thenvoi_lookup_peers", { page: 0, page_size: 50 });
 
       expect(mockRest.listPeers).toHaveBeenCalledWith({ page: 1, pageSize: 50, notInChat: "" });
     });
@@ -175,18 +175,18 @@ describe("MCP Tools", () => {
     it("should throw when link not connected", async () => {
       vi.mocked(channel.getLink).mockReturnValue(undefined);
 
-      await expect(executeMcpTool("band_lookup_peers", {})).rejects.toThrow(
+      await expect(executeMcpTool("thenvoi_lookup_peers", {})).rejects.toThrow(
         "Band client not connected",
       );
     });
   });
 
-  describe("band_add_participant", () => {
+  describe("thenvoi_add_participant", () => {
     it("should lookup peer and call addChatParticipant with UUID", async () => {
       mockRest.listPeers.mockResolvedValue(mockLookupPeersResponse);
       mockRest.addChatParticipant.mockResolvedValue(mockAddParticipantResponse);
 
-      const result = await executeMcpTool("band_add_participant", {
+      const result = await executeMcpTool("thenvoi_add_participant", {
         room_id: "room-001",
         handle: "Weather Agent",
       });
@@ -211,7 +211,7 @@ describe("MCP Tools", () => {
       mockRest.listPeers.mockResolvedValue(peersWithAdmin);
       mockRest.addChatParticipant.mockResolvedValue(mockAddParticipantResponse);
 
-      await executeMcpTool("band_add_participant", {
+      await executeMcpTool("thenvoi_add_participant", {
         room_id: "room-001",
         handle: "Admin User",
         role: "admin",
@@ -237,7 +237,7 @@ describe("MCP Tools", () => {
         .mockResolvedValueOnce(page2Response);
       mockRest.addChatParticipant.mockResolvedValue(mockAddParticipantResponse);
 
-      const result = await executeMcpTool("band_add_participant", {
+      const result = await executeMcpTool("thenvoi_add_participant", {
         room_id: "room-001",
         handle: "Agent B",
       });
@@ -259,7 +259,7 @@ describe("MCP Tools", () => {
       mockRest.listPeers.mockResolvedValue(noMatchPage);
 
       await expect(
-        executeMcpTool("band_add_participant", {
+        executeMcpTool("thenvoi_add_participant", {
           room_id: "room-001",
           handle: "Nonexistent User",
         }),
@@ -273,7 +273,7 @@ describe("MCP Tools", () => {
       mockRest.listPeers.mockResolvedValue(mockLookupPeersResponse);
 
       await expect(
-        executeMcpTool("band_add_participant", {
+        executeMcpTool("thenvoi_add_participant", {
           room_id: "room-001",
           handle: "Unknown User",
         }),
@@ -284,7 +284,7 @@ describe("MCP Tools", () => {
       vi.mocked(channel.getLink).mockReturnValue(undefined);
 
       await expect(
-        executeMcpTool("band_add_participant", {
+        executeMcpTool("thenvoi_add_participant", {
           room_id: "room-001",
           handle: "Test",
         }),
@@ -292,12 +292,12 @@ describe("MCP Tools", () => {
     });
   });
 
-  describe("band_remove_participant", () => {
+  describe("thenvoi_remove_participant", () => {
     it("should resolve name to ID and call removeChatParticipant", async () => {
       mockRest.listChatParticipants.mockResolvedValue(mockParticipants);
       mockRest.removeChatParticipant.mockResolvedValue({ ok: true });
 
-      const result = await executeMcpTool("band_remove_participant", {
+      const result = await executeMcpTool("thenvoi_remove_participant", {
         room_id: "room-001",
         name: "John Doe",
       });
@@ -314,7 +314,7 @@ describe("MCP Tools", () => {
     it("should use participant_id directly when provided", async () => {
       mockRest.removeChatParticipant.mockResolvedValue({ ok: true });
 
-      const result = await executeMcpTool("band_remove_participant", {
+      const result = await executeMcpTool("thenvoi_remove_participant", {
         room_id: "room-001",
         participant_id: "user-789",
       });
@@ -331,7 +331,7 @@ describe("MCP Tools", () => {
       mockRest.listChatParticipants.mockResolvedValue(mockParticipants);
 
       await expect(
-        executeMcpTool("band_remove_participant", {
+        executeMcpTool("thenvoi_remove_participant", {
           room_id: "room-001",
           name: "Unknown Person",
         }),
@@ -340,18 +340,18 @@ describe("MCP Tools", () => {
 
     it("should throw when neither name nor participant_id provided", async () => {
       await expect(
-        executeMcpTool("band_remove_participant", {
+        executeMcpTool("thenvoi_remove_participant", {
           room_id: "room-001",
         }),
       ).rejects.toThrow("Either name or participant_id is required");
     });
   });
 
-  describe("band_get_participants", () => {
+  describe("thenvoi_get_participants", () => {
     it("should return participants list with IDs", async () => {
       mockRest.listChatParticipants.mockResolvedValue(mockParticipants);
 
-      const result = (await executeMcpTool("band_get_participants", {
+      const result = (await executeMcpTool("thenvoi_get_participants", {
         room_id: "room-001",
       })) as { participants: Array<{ id: string; name: string; type: string }>; count: number };
 
@@ -366,11 +366,11 @@ describe("MCP Tools", () => {
     });
   });
 
-  describe("band_create_chatroom", () => {
+  describe("thenvoi_create_chatroom", () => {
     it("should create room without task_id", async () => {
       mockRest.createChat.mockResolvedValue(mockCreateChatroomResponse);
 
-      const result = await executeMcpTool("band_create_chatroom", {});
+      const result = await executeMcpTool("thenvoi_create_chatroom", {});
 
       expect(mockRest.createChat).toHaveBeenCalledWith(undefined);
       expect(result).toHaveProperty("success", true);
@@ -380,13 +380,13 @@ describe("MCP Tools", () => {
     it("should create room with task_id", async () => {
       mockRest.createChat.mockResolvedValue(mockCreateChatroomResponse);
 
-      await executeMcpTool("band_create_chatroom", { task_id: "task-123" });
+      await executeMcpTool("thenvoi_create_chatroom", { task_id: "task-123" });
 
       expect(mockRest.createChat).toHaveBeenCalledWith("task-123");
     });
   });
 
-  describe("band_send_event", () => {
+  describe("thenvoi_send_event", () => {
     const mockEventResponse = {
       ok: true,
       id: "event-001",
@@ -395,7 +395,7 @@ describe("MCP Tools", () => {
     it("should send thought event", async () => {
       mockRest.createChatEvent.mockResolvedValue(mockEventResponse);
 
-      const result = await executeMcpTool("band_send_event", {
+      const result = await executeMcpTool("thenvoi_send_event", {
         room_id: "room-001",
         content: "Thinking about this...",
         message_type: "thought",
@@ -423,7 +423,7 @@ describe("MCP Tools", () => {
         args: { query: "test query" },
       };
 
-      const result = await executeMcpTool("band_send_event", {
+      const result = await executeMcpTool("thenvoi_send_event", {
         room_id: "room-001",
         content: "Calling search tool...",
         message_type: "tool_call",
@@ -443,12 +443,12 @@ describe("MCP Tools", () => {
     });
   });
 
-  describe("band_send_message", () => {
+  describe("thenvoi_send_message", () => {
     it("should send message with mentions", async () => {
       mockRest.listChatParticipants.mockResolvedValue(mockParticipants);
       mockRest.createChatMessage.mockResolvedValue(mockSendMessageResponse);
 
-      const result = await executeMcpTool("band_send_message", {
+      const result = await executeMcpTool("thenvoi_send_message", {
         room_id: "room-001",
         content: "Hello!",
         mentions: ["John Doe"],
@@ -469,7 +469,7 @@ describe("MCP Tools", () => {
       mockRest.listChatParticipants.mockResolvedValue(mockParticipants);
 
       await expect(
-        executeMcpTool("band_send_message", {
+        executeMcpTool("thenvoi_send_message", {
           room_id: "room-001",
           content: "Hello!",
           mentions: ["Unknown Person"],
@@ -479,7 +479,7 @@ describe("MCP Tools", () => {
 
     it("should throw error if no mentions provided", async () => {
       await expect(
-        executeMcpTool("band_send_message", {
+        executeMcpTool("thenvoi_send_message", {
           room_id: "room-001",
           content: "Hello!",
           mentions: [],
@@ -488,11 +488,11 @@ describe("MCP Tools", () => {
     });
   });
 
-  describe("band_list_contacts", () => {
+  describe("thenvoi_list_contacts", () => {
     it("should call listContacts with default pagination", async () => {
       mockRest.listContacts.mockResolvedValue(mockListContactsResponse);
 
-      const result = await executeMcpTool("band_list_contacts", {});
+      const result = await executeMcpTool("thenvoi_list_contacts", {});
 
       expect(mockRest.listContacts).toHaveBeenCalledWith({ page: 1, pageSize: 50 });
       expect(result).toHaveProperty("contacts");
@@ -510,7 +510,7 @@ describe("MCP Tools", () => {
     it("should call listContacts with provided pagination", async () => {
       mockRest.listContacts.mockResolvedValue(mockListContactsResponse);
 
-      await executeMcpTool("band_list_contacts", { page: 3, page_size: 25 });
+      await executeMcpTool("thenvoi_list_contacts", { page: 3, page_size: 25 });
 
       expect(mockRest.listContacts).toHaveBeenCalledWith({ page: 3, pageSize: 25 });
     });
@@ -518,7 +518,7 @@ describe("MCP Tools", () => {
     it("should clamp invalid pagination to valid ranges", async () => {
       mockRest.listContacts.mockResolvedValue(mockListContactsResponse);
 
-      await executeMcpTool("band_list_contacts", { page: 0, page_size: 999 });
+      await executeMcpTool("thenvoi_list_contacts", { page: 0, page_size: 999 });
 
       expect(mockRest.listContacts).toHaveBeenCalledWith({ page: 1, pageSize: 100 });
     });
@@ -526,17 +526,17 @@ describe("MCP Tools", () => {
     it("should throw when link not connected", async () => {
       vi.mocked(channel.getLink).mockReturnValue(undefined);
 
-      await expect(executeMcpTool("band_list_contacts", {})).rejects.toThrow(
+      await expect(executeMcpTool("thenvoi_list_contacts", {})).rejects.toThrow(
         "Band client not connected",
       );
     });
   });
 
-  describe("band_add_contact", () => {
+  describe("thenvoi_add_contact", () => {
     it("should call addContact with handle", async () => {
       mockRest.addContact.mockResolvedValue(mockAddContactResponse);
 
-      const result = await executeMcpTool("band_add_contact", {
+      const result = await executeMcpTool("thenvoi_add_contact", {
         handle: "@jane",
       });
 
@@ -549,7 +549,7 @@ describe("MCP Tools", () => {
     it("should call addContact with handle and message", async () => {
       mockRest.addContact.mockResolvedValue(mockAddContactResponse);
 
-      await executeMcpTool("band_add_contact", {
+      await executeMcpTool("thenvoi_add_contact", {
         handle: "@jane",
         message: "Let's collaborate!",
       });
@@ -564,16 +564,16 @@ describe("MCP Tools", () => {
       vi.mocked(channel.getLink).mockReturnValue(undefined);
 
       await expect(
-        executeMcpTool("band_add_contact", { handle: "@jane" }),
+        executeMcpTool("thenvoi_add_contact", { handle: "@jane" }),
       ).rejects.toThrow("Band client not connected");
     });
   });
 
-  describe("band_remove_contact", () => {
+  describe("thenvoi_remove_contact", () => {
     it("should call removeContact with handle", async () => {
       mockRest.removeContact.mockResolvedValue({ ok: true });
 
-      const result = await executeMcpTool("band_remove_contact", {
+      const result = await executeMcpTool("thenvoi_remove_contact", {
         handle: "@jane",
       });
 
@@ -588,7 +588,7 @@ describe("MCP Tools", () => {
     it("should call removeContact with contact_id", async () => {
       mockRest.removeContact.mockResolvedValue({ ok: true });
 
-      const result = await executeMcpTool("band_remove_contact", {
+      const result = await executeMcpTool("thenvoi_remove_contact", {
         contact_id: "contact-001",
       });
 
@@ -601,7 +601,7 @@ describe("MCP Tools", () => {
 
     it("should throw when neither handle nor contact_id provided", async () => {
       await expect(
-        executeMcpTool("band_remove_contact", {}),
+        executeMcpTool("thenvoi_remove_contact", {}),
       ).rejects.toThrow("Either handle or contact_id is required");
     });
 
@@ -609,16 +609,16 @@ describe("MCP Tools", () => {
       vi.mocked(channel.getLink).mockReturnValue(undefined);
 
       await expect(
-        executeMcpTool("band_remove_contact", { handle: "@jane" }),
+        executeMcpTool("thenvoi_remove_contact", { handle: "@jane" }),
       ).rejects.toThrow("Band client not connected");
     });
   });
 
-  describe("band_list_contact_requests", () => {
+  describe("thenvoi_list_contact_requests", () => {
     it("should call listContactRequests with default params", async () => {
       mockRest.listContactRequests.mockResolvedValue(mockListContactRequestsResponse);
 
-      const result = await executeMcpTool("band_list_contact_requests", {});
+      const result = await executeMcpTool("thenvoi_list_contact_requests", {});
 
       expect(mockRest.listContactRequests).toHaveBeenCalledWith({
         page: 1,
@@ -650,7 +650,7 @@ describe("MCP Tools", () => {
     it("should call listContactRequests with provided params", async () => {
       mockRest.listContactRequests.mockResolvedValue(mockListContactRequestsResponse);
 
-      await executeMcpTool("band_list_contact_requests", {
+      await executeMcpTool("thenvoi_list_contact_requests", {
         page: 2,
         page_size: 10,
         sent_status: "approved",
@@ -666,7 +666,7 @@ describe("MCP Tools", () => {
     it("should clamp invalid pagination to valid ranges", async () => {
       mockRest.listContactRequests.mockResolvedValue(mockListContactRequestsResponse);
 
-      await executeMcpTool("band_list_contact_requests", {
+      await executeMcpTool("thenvoi_list_contact_requests", {
         page: -5,
         page_size: 150,
       });
@@ -682,16 +682,16 @@ describe("MCP Tools", () => {
       vi.mocked(channel.getLink).mockReturnValue(undefined);
 
       await expect(
-        executeMcpTool("band_list_contact_requests", {}),
+        executeMcpTool("thenvoi_list_contact_requests", {}),
       ).rejects.toThrow("Band client not connected");
     });
   });
 
-  describe("band_respond_contact_request", () => {
+  describe("thenvoi_respond_contact_request", () => {
     it("should approve a request by handle", async () => {
       mockRest.respondContactRequest.mockResolvedValue(mockRespondContactRequestResponse);
 
-      const result = await executeMcpTool("band_respond_contact_request", {
+      const result = await executeMcpTool("thenvoi_respond_contact_request", {
         action: "approve",
         handle: "@alice",
       });
@@ -709,7 +709,7 @@ describe("MCP Tools", () => {
     it("should reject a request by request_id", async () => {
       mockRest.respondContactRequest.mockResolvedValue({ id: "req-recv-001", status: "rejected" });
 
-      const result = await executeMcpTool("band_respond_contact_request", {
+      const result = await executeMcpTool("thenvoi_respond_contact_request", {
         action: "reject",
         request_id: "req-recv-001",
       });
@@ -726,7 +726,7 @@ describe("MCP Tools", () => {
     it("should cancel a sent request by handle", async () => {
       mockRest.respondContactRequest.mockResolvedValue({ id: "req-sent-001", status: "cancelled" });
 
-      const result = await executeMcpTool("band_respond_contact_request", {
+      const result = await executeMcpTool("thenvoi_respond_contact_request", {
         action: "cancel",
         handle: "@bob",
       });
@@ -742,7 +742,7 @@ describe("MCP Tools", () => {
 
     it("should throw when neither handle nor request_id provided", async () => {
       await expect(
-        executeMcpTool("band_respond_contact_request", { action: "approve" }),
+        executeMcpTool("thenvoi_respond_contact_request", { action: "approve" }),
       ).rejects.toThrow("Either handle or request_id is required");
     });
 
@@ -750,7 +750,7 @@ describe("MCP Tools", () => {
       vi.mocked(channel.getLink).mockReturnValue(undefined);
 
       await expect(
-        executeMcpTool("band_respond_contact_request", {
+        executeMcpTool("thenvoi_respond_contact_request", {
           action: "approve",
           handle: "@alice",
         }),

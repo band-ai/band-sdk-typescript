@@ -2,7 +2,7 @@
 # Copy this file to agent_config.yaml and fill in your credentials.
 #
 # Usage in code:
-#   import { loadAgentConfig } from "@band-ai/sdk";
+#   import { loadAgentConfig } from "@thenvoi/sdk";
 #   const config = loadAgentConfig("basic_agent");
 #   Agent.create({ adapter, ...config });
 

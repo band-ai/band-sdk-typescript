@@ -26,7 +26,7 @@ describe("MCP registrations", () => {
       const tools = new FakeTools();
       const registrations = buildSingleContextRegistrations(tools);
 
-      const canonicalRegistrations = registrations.filter((reg) => reg.name.startsWith("band_"));
+      const canonicalRegistrations = registrations.filter((reg) => reg.name.startsWith("thenvoi_"));
       expect(canonicalRegistrations.length).toBeGreaterThan(0);
 
       for (const reg of canonicalRegistrations) {
@@ -42,8 +42,8 @@ describe("MCP registrations", () => {
       const registrations = buildSingleContextRegistrations(tools);
       const names = registrations.map((r) => r.name);
 
-      expect(names).not.toContain("band_list_memories");
-      expect(names).not.toContain("band_store_memory");
+      expect(names).not.toContain("thenvoi_list_memories");
+      expect(names).not.toContain("thenvoi_store_memory");
     });
 
     it("includes memory tools when enabled", () => {
@@ -53,8 +53,8 @@ describe("MCP registrations", () => {
       });
       const names = registrations.map((r) => r.name);
 
-      expect(names).toContain("band_list_memories");
-      expect(names).toContain("band_store_memory");
+      expect(names).toContain("thenvoi_list_memories");
+      expect(names).toContain("thenvoi_store_memory");
     });
 
     it("registers legacy Thenvoi tool aliases", async () => {
@@ -66,7 +66,7 @@ describe("MCP registrations", () => {
       expect(sendMessage).toBeDefined();
 
       await sendMessage!.execute({ content: "hello", mentions: ["@jane"] });
-      expect(tools.executeToolCall).toHaveBeenCalledWith("band_send_message", {
+      expect(tools.executeToolCall).toHaveBeenCalledWith("thenvoi_send_message", {
         content: "hello",
         mentions: ["@jane"],
       });
@@ -77,11 +77,11 @@ describe("MCP registrations", () => {
       tools.executeToolCall = vi.fn().mockResolvedValue({ ok: true });
 
       const registrations = buildSingleContextRegistrations(tools);
-      const sendMessage = registrations.find((r) => r.name === "band_send_message");
+      const sendMessage = registrations.find((r) => r.name === "thenvoi_send_message");
       expect(sendMessage).toBeDefined();
 
       const result = await sendMessage!.execute({ content: "hello" });
-      expect(tools.executeToolCall).toHaveBeenCalledWith("band_send_message", { content: "hello" });
+      expect(tools.executeToolCall).toHaveBeenCalledWith("thenvoi_send_message", { content: "hello" });
       expect(result.content[0].text).toContain("ok");
       expect(result.isError).toBeUndefined();
     });
@@ -91,7 +91,7 @@ describe("MCP registrations", () => {
       tools.executeToolCall = vi.fn().mockRejectedValue(new Error("boom"));
 
       const registrations = buildSingleContextRegistrations(tools);
-      const sendMessage = registrations.find((r) => r.name === "band_send_message")!;
+      const sendMessage = registrations.find((r) => r.name === "thenvoi_send_message")!;
 
       const result = await sendMessage.execute({ content: "hello" });
       expect(result.isError).toBe(true);
@@ -116,18 +116,18 @@ describe("MCP registrations", () => {
       const resolver = vi.fn().mockReturnValue(tools);
 
       const registrations = buildRoomScopedRegistrations(resolver);
-      const sendMessage = registrations.find((r) => r.name === "band_send_message")!;
+      const sendMessage = registrations.find((r) => r.name === "thenvoi_send_message")!;
 
       await sendMessage.execute({ room_id: "room-1", content: "hello" });
 
       expect(resolver).toHaveBeenCalledWith("room-1");
-      expect(tools.executeToolCall).toHaveBeenCalledWith("band_send_message", { content: "hello" });
+      expect(tools.executeToolCall).toHaveBeenCalledWith("thenvoi_send_message", { content: "hello" });
     });
 
     it("returns error when room_id is missing", async () => {
       const resolver = vi.fn();
       const registrations = buildRoomScopedRegistrations(resolver);
-      const sendMessage = registrations.find((r) => r.name === "band_send_message")!;
+      const sendMessage = registrations.find((r) => r.name === "thenvoi_send_message")!;
 
       const result = await sendMessage.execute({ content: "hello" });
       expect(result.isError).toBe(true);
@@ -137,7 +137,7 @@ describe("MCP registrations", () => {
     it("returns error when room tools not found", async () => {
       const resolver = vi.fn().mockReturnValue(undefined);
       const registrations = buildRoomScopedRegistrations(resolver);
-      const sendMessage = registrations.find((r) => r.name === "band_send_message")!;
+      const sendMessage = registrations.find((r) => r.name === "thenvoi_send_message")!;
 
       const result = await sendMessage.execute({ room_id: "unknown", content: "hello" });
       expect(result.isError).toBe(true);
@@ -168,7 +168,7 @@ describe("MCP registrations", () => {
       const names = registrations.map((r) => r.name);
 
       expect(names).toContain("my_custom_tool");
-      expect(names).toContain("band_send_message");
+      expect(names).toContain("thenvoi_send_message");
     });
 
     it("appends additional tools to room-scoped registrations", () => {
@@ -180,7 +180,7 @@ describe("MCP registrations", () => {
       const names = registrations.map((r) => r.name);
 
       expect(names).toContain("my_custom_tool");
-      expect(names).toContain("band_send_message");
+      expect(names).toContain("thenvoi_send_message");
     });
 
     it("additional tool execute is called directly", async () => {

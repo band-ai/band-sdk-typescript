@@ -56,7 +56,7 @@ class FakeTools implements AgentToolsProtocol {
       {
         type: "function",
         function: {
-          name: "band_send_message",
+          name: "thenvoi_send_message",
           parameters: { type: "object", properties: {} },
         },
       },
@@ -112,7 +112,7 @@ class FakeTools implements AgentToolsProtocol {
   }
 
   public async executeToolCall(name: string, _arguments: MetadataMap): Promise<unknown> {
-    if (name === "band_send_message") {
+    if (name === "thenvoi_send_message") {
       return { ok: true };
     }
 
@@ -146,7 +146,7 @@ class FakeModel implements ToolCallingModel {
         toolCalls: [
           {
             id: "tc1",
-            name: "band_send_message",
+            name: "thenvoi_send_message",
             input: { content: "ignored" },
           },
         ],
@@ -228,7 +228,7 @@ describe("ToolCallingAdapter", () => {
       expect.arrayContaining([
         expect.objectContaining({
           toolCallId: "tc1",
-          name: "band_send_message",
+          name: "thenvoi_send_message",
         }),
       ]),
     );

@@ -630,7 +630,7 @@ describe("createLinearWebhookHandler", () => {
       }),
     );
     expect(logger.warn).toHaveBeenCalledWith(
-      "linear_band_bridge.async_dispatch_terminal_failure_signaled",
+      "linear_thenvoi_bridge.async_dispatch_terminal_failure_signaled",
       expect.objectContaining({
         eventKey: "session-1:created:terminal-failure",
         signal: "linear_activity_error",

@@ -4,7 +4,7 @@ describe("MCP import boundary", () => {
   it("loads the generic MCP entrypoint without importing the Claude SDK bridge", async () => {
     vi.resetModules();
     vi.doMock("@anthropic-ai/claude-agent-sdk", () => {
-      throw new Error("claude sdk should not be imported by @band-ai/sdk/mcp");
+      throw new Error("claude sdk should not be imported by @thenvoi/sdk/mcp");
     });
 
     const mcp = await import("../src/mcp/index");

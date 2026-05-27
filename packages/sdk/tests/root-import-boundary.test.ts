@@ -4,10 +4,10 @@ describe("root import boundary", () => {
   it("loads the root SDK entrypoint without importing optional ACP or Claude SDK peers", async () => {
     vi.resetModules();
     vi.doMock("@agentclientprotocol/sdk", () => {
-      throw new Error("ACP SDK should not be imported by @band-ai/sdk");
+      throw new Error("ACP SDK should not be imported by @thenvoi/sdk");
     });
     vi.doMock("@anthropic-ai/claude-agent-sdk", () => {
-      throw new Error("Claude Agent SDK should not be imported by @band-ai/sdk");
+      throw new Error("Claude Agent SDK should not be imported by @thenvoi/sdk");
     });
 
     const sdk = await import("../src/index");

@@ -1,5 +1,5 @@
 {
-  "name": "@band-ai/sdk",
+  "name": "@thenvoi/sdk",
   "version": "0.1.6",
   "description": "Band TypeScript SDK core runtime",
   "author": "band.ai",

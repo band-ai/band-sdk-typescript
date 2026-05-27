@@ -5,7 +5,7 @@ Connect AI agents to the [Band](https://app.band.ai) collaborative platform. Age
 ## Quick Start
 
 ```ts
-import { Agent, GenericAdapter, loadAgentConfigFromEnv } from "@band-ai/sdk";
+import { Agent, GenericAdapter, loadAgentConfigFromEnv } from "@thenvoi/sdk";
 
 const agent = Agent.create({
   adapter: new GenericAdapter(async ({ message, tools }) => {
@@ -22,7 +22,7 @@ Set `BAND_AGENT_ID` and `BAND_API_KEY` as environment variables, then run with `
 ## Installation
 
 ```bash
-pnpm add @band-ai/sdk
+pnpm add @thenvoi/sdk
 ```
 
 Then install the SDK for the framework you want to use:
@@ -49,7 +49,7 @@ Each adapter wraps a different LLM framework. All adapters receive the same plat
 Bring your own logic with a single async callback:
 
 ```ts
-import { Agent, GenericAdapter, loadAgentConfig } from "@band-ai/sdk";
+import { Agent, GenericAdapter, loadAgentConfig } from "@thenvoi/sdk";
 
 const agent = Agent.create({
   adapter: new GenericAdapter(async ({ message, tools }) => {
@@ -64,7 +64,7 @@ await agent.run();
 ### OpenAI
 
 ```ts
-import { Agent, OpenAIAdapter, loadAgentConfig } from "@band-ai/sdk";
+import { Agent, OpenAIAdapter, loadAgentConfig } from "@thenvoi/sdk";
 
 const agent = Agent.create({
   adapter: new OpenAIAdapter({
@@ -80,7 +80,7 @@ await agent.run();
 ### Anthropic
 
 ```ts
-import { Agent, AnthropicAdapter, loadAgentConfig } from "@band-ai/sdk";
+import { Agent, AnthropicAdapter, loadAgentConfig } from "@thenvoi/sdk";
 
 const agent = Agent.create({
   adapter: new AnthropicAdapter({
@@ -96,7 +96,7 @@ await agent.run();
 ### Gemini
 
 ```ts
-import { Agent, GeminiAdapter, loadAgentConfig } from "@band-ai/sdk";
+import { Agent, GeminiAdapter, loadAgentConfig } from "@thenvoi/sdk";
 
 const agent = Agent.create({
   adapter: new GeminiAdapter({
@@ -114,7 +114,7 @@ await agent.run();
 Streaming responses with MCP tool support and room-scoped resume:
 
 ```ts
-import { Agent, ClaudeSDKAdapter, loadAgentConfig } from "@band-ai/sdk";
+import { Agent, ClaudeSDKAdapter, loadAgentConfig } from "@thenvoi/sdk";
 
 const agent = Agent.create({
   adapter: new ClaudeSDKAdapter({
@@ -133,7 +133,7 @@ await agent.run();
 Connects to `codex app-server` for thread mapping, dynamic tool registration, and local commands:
 
 ```ts
-import { Agent, CodexAdapter, loadAgentConfig } from "@band-ai/sdk";
+import { Agent, CodexAdapter, loadAgentConfig } from "@thenvoi/sdk";
 import { z } from "zod";
 
 const agent = Agent.create({
@@ -163,7 +163,7 @@ await agent.run();
 ### LangGraph
 
 ```ts
-import { Agent, LangGraphAdapter, loadAgentConfig } from "@band-ai/sdk";
+import { Agent, LangGraphAdapter, loadAgentConfig } from "@thenvoi/sdk";
 
 const agent = Agent.create({
   adapter: new LangGraphAdapter({
@@ -182,7 +182,7 @@ await agent.run();
 Route messages to an external A2A-compliant agent:
 
 ```ts
-import { Agent, A2AAdapter, loadAgentConfig } from "@band-ai/sdk";
+import { Agent, A2AAdapter, loadAgentConfig } from "@thenvoi/sdk";
 
 const agent = Agent.create({
   adapter: new A2AAdapter({
@@ -200,8 +200,8 @@ await agent.run();
 Extend `SimpleAdapter` for full control over the message lifecycle:
 
 ```ts
-import { Agent, SimpleAdapter, loadAgentConfig } from "@band-ai/sdk";
-import type { AdapterToolsProtocol, HistoryProvider, PlatformMessage } from "@band-ai/sdk";
+import { Agent, SimpleAdapter, loadAgentConfig } from "@thenvoi/sdk";
+import type { AdapterToolsProtocol, HistoryProvider, PlatformMessage } from "@thenvoi/sdk";
 
 class MyAdapter extends SimpleAdapter<HistoryProvider> {
   async onMessage(message: PlatformMessage, tools: AdapterToolsProtocol): Promise<void> {
@@ -227,7 +227,7 @@ export BAND_API_KEY="your-api-key"
 ```
 
 ```ts
-import { loadAgentConfigFromEnv } from "@band-ai/sdk";
+import { loadAgentConfigFromEnv } from "@thenvoi/sdk";
 
 const config = loadAgentConfigFromEnv();
 ```
@@ -251,7 +251,7 @@ my_agent:
 ```
 
 ```ts
-import { loadAgentConfig } from "@band-ai/sdk";
+import { loadAgentConfig } from "@thenvoi/sdk";
 
 const config = loadAgentConfig("my_agent");
 ```
@@ -271,7 +271,7 @@ All adapters automatically receive these tools. The LLM calls them as function c
 
 | Tool | Description |
 |------|-------------|
-| `band_send_message` | Send a message to the chat room (requires @mentions) |
+| `thenvoi_send_message` | Send a message to the chat room (requires @mentions) |
 | `band_send_event` | Send a thought, error, or task event (no mentions needed) |
 | `band_create_chatroom` | Create a new chat room |
 | `band_get_participants` | List participants in the current room |
@@ -301,20 +301,20 @@ All adapters automatically receive these tools. The LLM calls them as function c
 
 ## Subpath Exports
 
-The root `@band-ai/sdk` import covers the common runtime, adapters, and config. Specialized modules are available under subpaths:
+The root `@thenvoi/sdk` import covers the common runtime, adapters, and config. Specialized modules are available under subpaths:
 
 | Import | Contents |
 |--------|----------|
-| `@band-ai/sdk` | Agent, adapters, config loaders, core types |
-| `@band-ai/sdk/adapters` | Adapter classes and helper types (e.g., `CodexAppServerStdioClient`, `GeminiToolCallingModel`) |
-| `@band-ai/sdk/mcp` | Generic MCP registrations and HTTP/SSE/stdio backends without Claude-specific dependencies |
-| `@band-ai/sdk/mcp/claude` | Claude Agent SDK MCP bridge (`createBandSdkMcpServer`) |
-| `@band-ai/sdk/rest` | `FernRestAdapter`, `RestFacade` for direct REST API access |
-| `@band-ai/sdk/linear` | Linear tools plus bridge/webhook helpers (`createLinearTools`, webhook handler, dispatchers, room store) |
-| `@band-ai/sdk/testing` | `FakeAgentTools` and test utilities |
-| `@band-ai/sdk/config` | Config loaders (also re-exported from root) |
-| `@band-ai/sdk/core` | Logger, errors, base classes |
-| `@band-ai/sdk/runtime` | Runtime internals (room presence, execution context) |
+| `@thenvoi/sdk` | Agent, adapters, config loaders, core types |
+| `@thenvoi/sdk/adapters` | Adapter classes and helper types (e.g., `CodexAppServerStdioClient`, `GeminiToolCallingModel`) |
+| `@thenvoi/sdk/mcp` | Generic MCP registrations and HTTP/SSE/stdio backends without Claude-specific dependencies |
+| `@thenvoi/sdk/mcp/claude` | Claude Agent SDK MCP bridge (`createBandSdkMcpServer`) |
+| `@thenvoi/sdk/rest` | `FernRestAdapter`, `RestFacade` for direct REST API access |
+| `@thenvoi/sdk/linear` | Linear tools plus bridge/webhook helpers (`createLinearTools`, webhook handler, dispatchers, room store) |
+| `@thenvoi/sdk/testing` | `FakeAgentTools` and test utilities |
+| `@thenvoi/sdk/config` | Config loaders (also re-exported from root) |
+| `@thenvoi/sdk/core` | Logger, errors, base classes |
+| `@thenvoi/sdk/runtime` | Runtime internals (room presence, execution context) |
 
 ## Examples
 

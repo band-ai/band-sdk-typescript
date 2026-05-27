@@ -61,21 +61,21 @@ jobs:
         if: steps.release.outputs['packages/sdk--release_created'] == 'true' || steps.release.outputs['packages/openclaw--release_created'] == 'true'
         run: pnpm build
 
-      - name: Publish SDK to npm (@band-ai)
+      - name: Publish SDK to npm (@thenvoi)
         if: steps.release.outputs['packages/sdk--release_created'] == 'true'
         run: |
           cd packages/sdk
           npm publish --provenance --access public
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.BAND_AI_NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Publish OpenClaw to npm (@band-ai)
+      - name: Publish OpenClaw to npm (@thenvoi)
         if: steps.release.outputs['packages/openclaw--release_created'] == 'true'
         run: |
           cd packages/openclaw
           npm publish --provenance --access public
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.BAND_AI_NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
 
       - name: Publish release summary
@@ -85,9 +85,8 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Packages released:" >> $GITHUB_STEP_SUMMARY
           if [ "${{ steps.release.outputs['packages/sdk--release_created'] }}" == "true" ]; then
-            echo "- **@band-ai/sdk** v${{ steps.release.outputs['packages/sdk--version'] }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **@thenvoi/sdk** v${{ steps.release.outputs['packages/sdk--version'] }}" >> $GITHUB_STEP_SUMMARY
           fi
           if [ "${{ steps.release.outputs['packages/openclaw--release_created'] }}" == "true" ]; then
-            echo "- **@band-ai/openclaw-channel-band** v${{ steps.release.outputs['packages/openclaw--version'] }}" >> $GITHUB_STEP_SUMMARY
-            echo "- **@band-ai/openclaw-channel-band** v${{ steps.release.outputs['packages/openclaw--version'] }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **@thenvoi/openclaw-channel-thenvoi** v${{ steps.release.outputs['packages/openclaw--version'] }}" >> $GITHUB_STEP_SUMMARY
           fi

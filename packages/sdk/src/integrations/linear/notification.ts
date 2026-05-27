@@ -62,7 +62,7 @@ export async function handleAppUserNotification(
       });
       return;
     default:
-      logger.info("linear_band_bridge.notification_unhandled", {
+      logger.info("linear_thenvoi_bridge.notification_unhandled", {
         notificationType: typename,
       });
   }
@@ -78,7 +78,7 @@ async function handleIssueUnassigned(input: {
   const existing = await deps.store.getByIssueId(notification.issueId);
 
   if (!existing || (existing.status !== "active" && existing.status !== "waiting")) {
-    logger.info("linear_band_bridge.notification_unassigned_no_session", {
+    logger.info("linear_thenvoi_bridge.notification_unassigned_no_session", {
       issueId: notification.issueId,
       reason: existing ? `session_status_${existing.status}` : "no_active_session",
     });
@@ -102,7 +102,7 @@ async function handleIssueUnassigned(input: {
 
   await deps.store.markCanceled(existing.linearSessionId);
 
-  logger.info("linear_band_bridge.notification_unassigned_handled", {
+  logger.info("linear_thenvoi_bridge.notification_unassigned_handled", {
     issueId: notification.issueId,
     sessionId: existing.linearSessionId,
     roomId: existing.thenvoiRoomId,
@@ -120,7 +120,7 @@ async function handleIssueNewComment(input: {
   // Skip comments authored by the app user itself to prevent feedback loops
   // (bot comments → notification → forward to room → bot may comment again).
   if (appUserId && notification.actorId === appUserId) {
-    logger.info("linear_band_bridge.notification_comment_self_skipped", {
+    logger.info("linear_thenvoi_bridge.notification_comment_self_skipped", {
       issueId: notification.issueId,
       commentId: notification.commentId,
       actorId: notification.actorId,
@@ -132,7 +132,7 @@ async function handleIssueNewComment(input: {
   const existing = await deps.store.getByIssueId(notification.issueId);
 
   if (!existing || (existing.status !== "active" && existing.status !== "waiting")) {
-    logger.info("linear_band_bridge.notification_comment_skipped", {
+    logger.info("linear_thenvoi_bridge.notification_comment_skipped", {
       issueId: notification.issueId,
       reason: existing ? `session_status_${existing.status}` : "no_active_session",
     });
@@ -152,7 +152,7 @@ async function handleIssueNewComment(input: {
   }
 
   if (!notification.actor?.name) {
-    logger.info("linear_band_bridge.notification_comment_actor_fallback", {
+    logger.info("linear_thenvoi_bridge.notification_comment_actor_fallback", {
       issueId: notification.issueId,
       commentId: notification.commentId,
       actorId: notification.actorId ?? null,
@@ -171,7 +171,7 @@ async function handleIssueNewComment(input: {
     },
   });
 
-  logger.info("linear_band_bridge.notification_comment_forwarded", {
+  logger.info("linear_thenvoi_bridge.notification_comment_forwarded", {
     issueId: notification.issueId,
     commentId: notification.commentId,
     sessionId: existing.linearSessionId,
@@ -186,7 +186,7 @@ function logReaction(input: {
   logger: Logger;
 }): void {
   const { notification, logger } = input;
-  logger.info("linear_band_bridge.notification_reaction", {
+  logger.info("linear_thenvoi_bridge.notification_reaction", {
     notificationType: notification.__typename,
     issueId: notification.issueId,
     actorId: notification.actorId ?? null,

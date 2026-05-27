@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 let capturedPresenceInstance: Record<string, unknown>;
 let mockLinkInstance: Record<string, unknown>;
 
-vi.mock("@band-ai/sdk", () => ({
+vi.mock("@thenvoi/sdk", () => ({
   ThenvoiLink: vi.fn().mockImplementation((opts: Record<string, unknown>) => {
     mockLinkInstance = {
       agentId: opts.agentId,
@@ -28,7 +28,7 @@ vi.mock("@band-ai/sdk", () => ({
   }),
 }));
 
-vi.mock("@band-ai/sdk/runtime", () => ({
+vi.mock("@thenvoi/sdk/runtime", () => ({
   RoomPresence: vi.fn().mockImplementation(() => {
     capturedPresenceInstance = {
       onRoomJoined: null,
@@ -45,7 +45,7 @@ vi.mock("@band-ai/sdk/runtime", () => ({
   })),
 }));
 
-vi.mock("@band-ai/sdk/rest", () => ({}));
+vi.mock("@thenvoi/sdk/rest", () => ({}));
 
 import {
   thenvoiChannel,

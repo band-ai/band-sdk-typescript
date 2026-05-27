@@ -17,7 +17,7 @@ class AnthropicTestTools extends FakeTools {
 
     return [
       {
-        name: "band_lookup_peers",
+        name: "thenvoi_lookup_peers",
         description: "Lookup peers",
         input_schema: {
           type: "object",
@@ -54,7 +54,7 @@ describe("AnthropicAdapter", () => {
           {
             type: "tool_use",
             id: "toolu_1",
-            name: "band_lookup_peers",
+            name: "thenvoi_lookup_peers",
             input: { page: 1 },
           },
         ],
@@ -102,7 +102,7 @@ describe("AnthropicAdapter", () => {
 
     expect(tools.executed).toEqual([
       {
-        name: "band_lookup_peers",
+        name: "thenvoi_lookup_peers",
         input: { page: 1 },
       },
     ]);
@@ -124,7 +124,7 @@ describe("AnthropicAdapter", () => {
       {
         type: "tool_use",
         id: "toolu_1",
-        name: "band_lookup_peers",
+        name: "thenvoi_lookup_peers",
         input: { page: 1 },
       },
     ]);

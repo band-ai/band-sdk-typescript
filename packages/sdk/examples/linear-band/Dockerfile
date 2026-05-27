@@ -39,4 +39,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 # tsx is required because the example imports TypeScript source (../../src/*) directly.
 # devDependencies (including tsx) are installed before NODE_ENV=production is set.
-CMD ["pnpm", "--filter", "@band-ai/sdk", "start:linear"]
+CMD ["pnpm", "--filter", "@thenvoi/sdk", "start:linear"]

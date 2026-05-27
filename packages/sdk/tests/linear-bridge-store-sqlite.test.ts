@@ -169,10 +169,10 @@ describe("sqlite session room store", () => {
     }).getDb();
 
     db.prepare(`
-      INSERT INTO linear_band_session_rooms (
+      INSERT INTO linear_thenvoi_session_rooms (
         linear_session_id,
         linear_issue_id,
-        band_room_id,
+        thenvoi_room_id,
         status,
         last_event_key,
         created_at,
@@ -189,10 +189,10 @@ describe("sqlite session room store", () => {
     );
 
     db.prepare(`
-      INSERT INTO linear_band_bootstrap_requests (
+      INSERT INTO linear_thenvoi_bootstrap_requests (
         event_key,
         linear_session_id,
-        band_room_id,
+        thenvoi_room_id,
         expected_content,
         message_type,
         metadata_json,

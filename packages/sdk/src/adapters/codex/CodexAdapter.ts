@@ -122,8 +122,8 @@ type ThoughtLikeItem =
   | ReviewModeItem;
 
 const SILENT_REPORTING_TOOLS = new Set([
-  "band_send_message",
-  "band_send_event",
+  "thenvoi_send_message",
+  "thenvoi_send_event",
 ]);
 
 export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProtocol> {
@@ -155,7 +155,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       includeBaseInstructions: true,
       experimentalApi: true,
       fallbackSendAgentText: true,
-      clientName: "band_codex_adapter",
+      clientName: "thenvoi_codex_adapter",
       clientTitle: "Band Codex Adapter",
       clientVersion: "0.1.0",
       turnTimeoutMs: 180_000,
@@ -459,7 +459,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
         await client.connect();
         await client.initialize({
           clientInfo: {
-            name: this.baseConfig.clientName ?? "band_codex_adapter",
+            name: this.baseConfig.clientName ?? "thenvoi_codex_adapter",
             title: this.baseConfig.clientTitle ?? "Band Codex Adapter",
             version: this.baseConfig.clientVersion ?? "0.1.0",
           },
@@ -813,7 +813,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
           }), "tool_result");
         }
 
-        return !isError && toolName === "band_send_message";
+        return !isError && toolName === "thenvoi_send_message";
       } catch (error) {
         const output = {
           ok: false,

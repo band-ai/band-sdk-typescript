@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { ThenvoiLink } from "@band-ai/sdk";
+import { ThenvoiLink } from "@thenvoi/sdk";
 import {
   getE2EConfig,
   canRunE2E,
@@ -39,7 +39,7 @@ describe("E2E: MCP Tools (API)", () => {
     // In a real test environment, you'd clean up test data
   });
 
-  describe("band_lookup_peers", () => {
+  describe("thenvoi_lookup_peers", () => {
     it.skipIf(!canRunE2E())(
       "should return list of peers",
       async () => {
@@ -76,7 +76,7 @@ describe("E2E: MCP Tools (API)", () => {
     );
   });
 
-  describe("band_create_chatroom", () => {
+  describe("thenvoi_create_chatroom", () => {
     it.skipIf(!canRunE2E())(
       "should create a new chatroom",
       async () => {
@@ -101,7 +101,7 @@ describe("E2E: MCP Tools (API)", () => {
     );
   });
 
-  describe("band_get_participants", () => {
+  describe("thenvoi_get_participants", () => {
     it.skipIf(!canRunE2E())(
       "should get participants in a room",
       async () => {
@@ -125,7 +125,7 @@ describe("E2E: MCP Tools (API)", () => {
     );
   });
 
-  describe("band_add_participant", () => {
+  describe("thenvoi_add_participant", () => {
     it.skipIf(!canRunE2E())(
       "should add a participant to a room",
       async () => {
@@ -154,7 +154,7 @@ describe("E2E: MCP Tools (API)", () => {
     );
   });
 
-  describe("band_remove_participant", () => {
+  describe("thenvoi_remove_participant", () => {
     it.skipIf(!canRunE2E())(
       "should remove a participant from a room",
       async () => {
@@ -184,7 +184,7 @@ describe("E2E: MCP Tools (API)", () => {
     );
   });
 
-  describe("band_send_event", () => {
+  describe("thenvoi_send_event", () => {
     it.skipIf(!canRunE2E())(
       "should send a thought event",
       async () => {

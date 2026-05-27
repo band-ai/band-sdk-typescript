@@ -83,8 +83,8 @@ export function createInlineLinearBridgeDispatcher(
         });
       }, {
         logger,
-        failureEvent: "linear_band_bridge.dispatch_failed",
-        retryEvent: "linear_band_bridge.dispatch_retrying",
+        failureEvent: "linear_thenvoi_bridge.dispatch_failed",
+        retryEvent: "linear_thenvoi_bridge.dispatch_retrying",
         eventKey: job.eventKey,
         sessionId: job.input.payload.agentSession.id,
       });
@@ -163,8 +163,8 @@ export function createInProcessLinearBridgeDispatcher(
           });
         }, {
           logger,
-          failureEvent: "linear_band_bridge.async_dispatch_failed",
-          retryEvent: "linear_band_bridge.async_dispatch_retrying",
+          failureEvent: "linear_thenvoi_bridge.async_dispatch_failed",
+          retryEvent: "linear_thenvoi_bridge.async_dispatch_retrying",
           eventKey: job.eventKey,
           sessionId: job.input.payload.agentSession.id,
         });
@@ -195,7 +195,7 @@ export function createInProcessLinearBridgeDispatcher(
 
       inFlight.add(dispatchTask);
       void dispatchTask.catch((error) => {
-        logger.error("linear_band_bridge.async_dispatch_failure_signal_crashed", {
+        logger.error("linear_thenvoi_bridge.async_dispatch_failure_signal_crashed", {
           eventKey: job.eventKey,
           sessionId: job.input.payload.agentSession.id,
           error: serializeError(error),
@@ -224,7 +224,7 @@ export function createLinearWebhookHandler(
 
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (request.method !== "POST") {
-      logger.warn("linear_band_bridge.webhook_invalid_method", {
+      logger.warn("linear_thenvoi_bridge.webhook_invalid_method", {
         method: request.method ?? null,
       });
       sendText(response, 405, "Method not allowed");
@@ -233,13 +233,13 @@ export function createLinearWebhookHandler(
 
     const signature = getHeaderValue(request, LINEAR_WEBHOOK_SIGNATURE_HEADER);
     if (!signature) {
-      logger.warn("linear_band_bridge.webhook_missing_signature", {});
+      logger.warn("linear_thenvoi_bridge.webhook_missing_signature", {});
       sendText(response, 400, "Missing webhook signature");
       return;
     }
     const timestamp = getHeaderValue(request, LINEAR_WEBHOOK_TS_HEADER);
     if (!timestamp) {
-      logger.warn("linear_band_bridge.webhook_missing_timestamp", {});
+      logger.warn("linear_thenvoi_bridge.webhook_missing_timestamp", {});
       sendText(response, 400, "Missing webhook timestamp");
       return;
     }
@@ -253,7 +253,7 @@ export function createLinearWebhookHandler(
         timestamp,
       ) as { type?: string };
     } catch (error) {
-      logger.warn("linear_band_bridge.webhook_invalid_signature", {
+      logger.warn("linear_thenvoi_bridge.webhook_invalid_signature", {
         error: error instanceof Error ? error.message : String(error),
       });
       sendText(response, 400, "Invalid webhook");
@@ -264,7 +264,7 @@ export function createLinearWebhookHandler(
       const notificationPayload = parsed as AppUserNotificationWebhookPayloadWithNotification;
 
       if (!notificationPayload.notification) {
-        logger.warn("linear_band_bridge.webhook_notification_missing_payload", {
+        logger.warn("linear_thenvoi_bridge.webhook_notification_missing_payload", {
           appUserId: notificationPayload.appUserId ?? null,
           organizationId: notificationPayload.organizationId ?? null,
         });
@@ -281,14 +281,14 @@ export function createLinearWebhookHandler(
         && notificationType !== "IssueEmojiReactionNotificationWebhookPayload";
 
       if (isDedupable && notificationId && processedNotificationIds.has(notificationId)) {
-        logger.info("linear_band_bridge.webhook_notification_duplicate_ignored", {
+        logger.info("linear_thenvoi_bridge.webhook_notification_duplicate_ignored", {
           notificationId,
         });
         sendText(response, 200, "OK");
         return;
       }
 
-      logger.info("linear_band_bridge.webhook_notification_received", {
+      logger.info("linear_thenvoi_bridge.webhook_notification_received", {
         notificationType: notificationType ?? null,
         notificationId: notificationId ?? null,
         appUserId: notificationPayload.appUserId,
@@ -312,7 +312,7 @@ export function createLinearWebhookHandler(
           }
         }
       } catch (error) {
-        logger.error("linear_band_bridge.webhook_notification_failed", {
+        logger.error("linear_thenvoi_bridge.webhook_notification_failed", {
           notificationType: notificationType ?? null,
           error: serializeError(error),
         });
@@ -326,7 +326,7 @@ export function createLinearWebhookHandler(
       const action = (parsed as { action?: string }).action;
       if (normalizeAction(action) === "teamaccesschanged") {
         const permPayload = parsed as unknown as AppUserTeamAccessChangedWebhookPayload;
-        logger.info("linear_band_bridge.team_access_changed", {
+        logger.info("linear_thenvoi_bridge.team_access_changed", {
           action: permPayload.action,
           addedTeamIds: permPayload.addedTeamIds,
           removedTeamIds: permPayload.removedTeamIds,
@@ -337,12 +337,12 @@ export function createLinearWebhookHandler(
         try {
           await options.permissionCallbacks?.onTeamAccessChanged?.(permPayload);
         } catch (error) {
-          logger.error("linear_band_bridge.team_access_changed_callback_failed", {
+          logger.error("linear_thenvoi_bridge.team_access_changed_callback_failed", {
             error: serializeError(error),
           });
         }
       } else {
-        logger.info("linear_band_bridge.permission_change_event_ignored", {
+        logger.info("linear_thenvoi_bridge.permission_change_event_ignored", {
           action,
         });
       }
@@ -354,7 +354,7 @@ export function createLinearWebhookHandler(
     if (parsed.type === "OAuthApp") {
       const oauthPayload = parsed as unknown as OAuthAppWebhookPayload;
       if (normalizeAction(oauthPayload.action) === "revoked") {
-        logger.warn("linear_band_bridge.oauth_app_revoked", {
+        logger.warn("linear_thenvoi_bridge.oauth_app_revoked", {
           oauthClientId: oauthPayload.oauthClientId,
           organizationId: oauthPayload.organizationId,
         });
@@ -362,12 +362,12 @@ export function createLinearWebhookHandler(
         try {
           await options.permissionCallbacks?.onOAuthAppRevoked?.(oauthPayload);
         } catch (error) {
-          logger.error("linear_band_bridge.oauth_app_revoked_callback_failed", {
+          logger.error("linear_thenvoi_bridge.oauth_app_revoked_callback_failed", {
             error: serializeError(error),
           });
         }
       } else {
-        logger.info("linear_band_bridge.oauth_app_event_ignored", {
+        logger.info("linear_thenvoi_bridge.oauth_app_event_ignored", {
           action: oauthPayload.action,
         });
       }
@@ -377,7 +377,7 @@ export function createLinearWebhookHandler(
     }
 
     if (parsed.type !== "AgentSessionEvent") {
-      logger.info("linear_band_bridge.webhook_ignored_event", {
+      logger.info("linear_thenvoi_bridge.webhook_ignored_event", {
         type: parsed.type,
       });
       sendText(response, 200, "OK");
@@ -387,7 +387,7 @@ export function createLinearWebhookHandler(
     const payload = parsed as unknown as AgentSessionEventWebhookPayload;
 
     const eventKey = getAgentSessionEventKey(payload);
-    logger.info("linear_band_bridge.webhook_received", {
+    logger.info("linear_thenvoi_bridge.webhook_received", {
       sessionId: payload.agentSession.id,
       issueId: payload.agentSession.issue?.id ?? null,
       action: payload.action,
@@ -396,7 +396,7 @@ export function createLinearWebhookHandler(
     const existing = await options.deps.store.getBySessionId(payload.agentSession.id);
     const alreadyInFlight = inFlightEventKeys.has(eventKey);
     if (existing?.lastEventKey === eventKey || alreadyInFlight || dispatcher.isQueued?.(eventKey)) {
-      logger.info("linear_band_bridge.webhook_duplicate_ignored", {
+      logger.info("linear_thenvoi_bridge.webhook_duplicate_ignored", {
         sessionId: payload.agentSession.id,
         eventKey,
       });
@@ -414,7 +414,7 @@ export function createLinearWebhookHandler(
             "Received session. Setting up workspace...",
           );
         } catch (error) {
-          logger.warn("linear_band_bridge.webhook_acknowledgment_failed", {
+          logger.warn("linear_thenvoi_bridge.webhook_acknowledgment_failed", {
             sessionId: payload.agentSession.id,
             error,
           });
@@ -431,7 +431,7 @@ export function createLinearWebhookHandler(
         },
       });
     } catch (error) {
-      logger.error("linear_band_bridge.webhook_dispatch_failed", {
+      logger.error("linear_thenvoi_bridge.webhook_dispatch_failed", {
         sessionId: payload.agentSession.id,
         issueId: payload.agentSession.issue?.id ?? null,
         action: payload.action,
@@ -444,7 +444,7 @@ export function createLinearWebhookHandler(
     } finally {
       inFlightEventKeys.delete(eventKey);
     }
-    logger.info("linear_band_bridge.webhook_dispatched", {
+    logger.info("linear_thenvoi_bridge.webhook_dispatched", {
       sessionId: payload.agentSession.id,
       issueId: payload.agentSession.issue?.id ?? null,
       action: payload.action,
@@ -556,7 +556,7 @@ async function markBootstrapHandoffProcessed(input: {
   try {
     await input.store.markBootstrapRequestProcessed(input.eventKey);
   } catch (error) {
-    input.logger.warn("linear_band_bridge.bootstrap_handoff_mark_processed_failed", {
+    input.logger.warn("linear_thenvoi_bridge.bootstrap_handoff_mark_processed_failed", {
       eventKey: input.eventKey,
       sessionId: input.sessionId,
       error: serializeError(error),
@@ -580,7 +580,7 @@ async function signalTerminalDispatchFailure(input: {
         lastEventKey: job.eventKey,
         updatedAt: new Date().toISOString(),
       });
-      logger.warn("linear_band_bridge.async_dispatch_terminal_failure_signaled", {
+      logger.warn("linear_thenvoi_bridge.async_dispatch_terminal_failure_signaled", {
         eventKey: failure.eventKey,
         sessionId: failure.sessionId,
         attempts: failure.attempts,
@@ -589,7 +589,7 @@ async function signalTerminalDispatchFailure(input: {
       return;
     }
   } catch (storeError) {
-    logger.error("linear_band_bridge.async_dispatch_terminal_failure_store_signal_failed", {
+    logger.error("linear_thenvoi_bridge.async_dispatch_terminal_failure_store_signal_failed", {
       eventKey: failure.eventKey,
       sessionId: failure.sessionId,
       attempts: failure.attempts,
@@ -604,14 +604,14 @@ async function signalTerminalDispatchFailure(input: {
       failure.sessionId,
       "Bridge dispatch failed and could not recover automatically. Retry this session event in Linear.",
     );
-    logger.warn("linear_band_bridge.async_dispatch_terminal_failure_signaled", {
+    logger.warn("linear_thenvoi_bridge.async_dispatch_terminal_failure_signaled", {
       eventKey: failure.eventKey,
       sessionId: failure.sessionId,
       attempts: failure.attempts,
       signal: "linear_activity_error",
     });
   } catch (signalError) {
-    logger.error("linear_band_bridge.async_dispatch_terminal_failure_signal_failed", {
+    logger.error("linear_thenvoi_bridge.async_dispatch_terminal_failure_signal_failed", {
       eventKey: failure.eventKey,
       sessionId: failure.sessionId,
       attempts: failure.attempts,

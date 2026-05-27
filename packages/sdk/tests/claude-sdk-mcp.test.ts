@@ -45,12 +45,12 @@ describe("createBandSdkMcpServer", () => {
       getToolsForRoom: (roomId: string) => (roomId === "room-1" ? roomTools : undefined),
     });
 
-    expect(bridge.allowedTools.some((name) => name === "mcp__band__band_send_message")).toBe(true);
+    expect(bridge.allowedTools.some((name) => name === "mcp__thenvoi__thenvoi_send_message")).toBe(true);
 
-    const sendMessageTool = bridge.toolDefinitions.find((entry) => entry.name === "band_send_message");
+    const sendMessageTool = bridge.toolDefinitions.find((entry) => entry.name === "thenvoi_send_message");
     expect(sendMessageTool).toBeDefined();
     if (!sendMessageTool) {
-      throw new Error("band_send_message tool definition missing");
+      throw new Error("thenvoi_send_message tool definition missing");
     }
 
     const result = await sendMessageTool.handler({
@@ -61,7 +61,7 @@ describe("createBandSdkMcpServer", () => {
 
     expect(calls).toEqual([
       {
-        name: "band_send_message",
+        name: "thenvoi_send_message",
         args: {
           content: "hello",
           mentions: ["@a"],
@@ -225,10 +225,10 @@ describe("createBandSdkMcpServer", () => {
       getToolsForRoom: () => makeTools(calls),
     });
 
-    const sendMessageTool = bridge.toolDefinitions.find((entry) => entry.name === "band_send_message");
+    const sendMessageTool = bridge.toolDefinitions.find((entry) => entry.name === "thenvoi_send_message");
     expect(sendMessageTool).toBeDefined();
     if (!sendMessageTool) {
-      throw new Error("band_send_message tool definition missing");
+      throw new Error("thenvoi_send_message tool definition missing");
     }
 
     const result = await sendMessageTool.handler({
@@ -238,7 +238,7 @@ describe("createBandSdkMcpServer", () => {
 
     expect(calls).toEqual([
       {
-        name: "band_send_message",
+        name: "thenvoi_send_message",
         args: {
           content: "hello",
           mentions: ["@b"],

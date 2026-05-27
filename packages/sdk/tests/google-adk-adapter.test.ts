@@ -13,7 +13,7 @@ class GoogleAdkTestTools extends FakeTools {
     return [{
       type: "function",
       function: {
-        name: "band_lookup_weather",
+        name: "thenvoi_lookup_weather",
         description: "Lookup the weather",
         parameters: {
           type: "object",
@@ -68,15 +68,15 @@ describe("GoogleADKAdapter", () => {
       ) {
         seenPrompts.push(request.newMessage.parts[0]?.text ?? "");
         const tool = (agent.tools as Array<Record<string, unknown>>).find(
-          (candidate) => candidate.name === "band_lookup_weather",
+          (candidate) => candidate.name === "thenvoi_lookup_weather",
         );
         const output = await (tool?.execute as (input: unknown) => Promise<unknown>)({
           city: "Vancouver",
         });
 
         yield {
-          functionCalls: [{ id: "call-1", name: "band_lookup_weather", args: { city: "Vancouver" } }],
-          functionResponses: [{ id: "call-1", name: "band_lookup_weather", response: output }],
+          functionCalls: [{ id: "call-1", name: "thenvoi_lookup_weather", args: { city: "Vancouver" } }],
+          functionResponses: [{ id: "call-1", name: "thenvoi_lookup_weather", response: output }],
         };
         yield { final: true, text: "It is 12C in Vancouver." };
       }),
@@ -96,13 +96,13 @@ describe("GoogleADKAdapter", () => {
     );
 
     expect(tools.executedCalls).toEqual([
-      { toolName: "band_lookup_weather", args: { city: "Vancouver" } },
+      { toolName: "thenvoi_lookup_weather", args: { city: "Vancouver" } },
     ]);
     expect(tools.messages).toEqual(["It is 12C in Vancouver."]);
     expect(tools.events).toEqual([
       {
         content: JSON.stringify({
-          name: "band_lookup_weather",
+          name: "thenvoi_lookup_weather",
           args: { city: "Vancouver" },
           tool_call_id: "call-1",
         }),
@@ -111,7 +111,7 @@ describe("GoogleADKAdapter", () => {
       },
       {
         content: JSON.stringify({
-          name: "band_lookup_weather",
+          name: "thenvoi_lookup_weather",
           output: "{\n  \"temperature\": \"12C\",\n  \"city\": \"Vancouver\"\n}",
           tool_call_id: "call-1",
         }),

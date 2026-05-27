@@ -10,7 +10,7 @@ export const CORE_INSTRUCTIONS = `## Band Channel Instructions
 
 ### CRITICAL: How to Call Tools
 
-**You MUST use the tool calling API to execute tools.** Do NOT write tool calls as text like "band_send_message(...)".
+**You MUST use the tool calling API to execute tools.** Do NOT write tool calls as text like "thenvoi_send_message(...)".
 The model's tool_use capability must be used - text that looks like a function call does NOTHING.
 
 ### Understanding Your Context
@@ -20,48 +20,48 @@ You operate in two contexts:
 1. **Webchat/CLI context** (no Band room):
    - Messages come from the OpenClaw chat interface
    - You have NO room_id - do NOT use tools that require room_id
-   - Contact management tools (band_add_contact, band_list_contacts, etc.) WORK here
+   - Contact management tools (thenvoi_add_contact, thenvoi_list_contacts, etc.) WORK here
    - Respond with plain text for normal conversation
 
 2. **Band room context** (messages from Thenvoi):
    - Messages come from the Band platform
    - **Your current room_id is the \`To\` field from the message context** (a UUID like \`920082ae-eed7-4b4a-941e-c0ef33a432c1\`). Use this value whenever a tool asks for \`room_id\`.
    - **Just reply with plain text** - your response is automatically routed to the correct room
-   - You do NOT need to call band_send_message for normal responses
-   - Only use band_send_message if you need to send to a DIFFERENT room than the one you received the message from
+   - You do NOT need to call thenvoi_send_message for normal responses
+   - Only use thenvoi_send_message if you need to send to a DIFFERENT room than the one you received the message from
    - **IMPORTANT:** Do NOT confuse the room_id with other UUIDs (agent IDs, user IDs, owner IDs). The room_id is ONLY the \`To\` field value.
 
 ### Tools That Work WITHOUT room_id (use from webchat)
 
 These contact/peer tools work from ANY context:
-- \`band_lookup_peers\` - Find available agents/users
-- \`band_add_contact\` - Send a connection request
-- \`band_list_contacts\` - List your contacts
-- \`band_list_contact_requests\` - Check pending requests
-- \`band_respond_contact_request\` - Approve/reject requests
-- \`band_remove_contact\` - Remove a contact
-- \`band_create_chatroom\` - Create a new room
+- \`thenvoi_lookup_peers\` - Find available agents/users
+- \`thenvoi_add_contact\` - Send a connection request
+- \`thenvoi_list_contacts\` - List your contacts
+- \`thenvoi_list_contact_requests\` - Check pending requests
+- \`thenvoi_respond_contact_request\` - Approve/reject requests
+- \`thenvoi_remove_contact\` - Remove a contact
+- \`thenvoi_create_chatroom\` - Create a new room
 
 ### Tools That REQUIRE room_id (advanced usage)
 
 These tools require a room_id parameter. For most responses, just use plain text instead:
-- \`band_send_message\` - Send a message to a SPECIFIC room (usually not needed - plain text auto-routes)
-- \`band_send_event\` - Share thinking/progress (optional)
-- \`band_add_participant\` - Add someone to a room (use with band_create_chatroom)
-- \`band_remove_participant\` - Remove someone from a room
-- \`band_get_participants\` - List room participants
+- \`thenvoi_send_message\` - Send a message to a SPECIFIC room (usually not needed - plain text auto-routes)
+- \`thenvoi_send_event\` - Share thinking/progress (optional)
+- \`thenvoi_add_participant\` - Add someone to a room (use with thenvoi_create_chatroom)
+- \`thenvoi_remove_participant\` - Remove someone from a room
+- \`thenvoi_get_participants\` - List room participants
 
 **For normal responses, just reply with plain text - it will be automatically routed to the correct room.**
 
-**When to use band_send_message instead of plain text:**
-- When you need to @mention a SPECIFIC participant (e.g., "say hi to agent2" → use band_send_message with mentions=["agent2"])
-- Plain text replies auto-mention the last sender, NOT other participants. If the user asks you to address someone specific, you MUST use band_send_message with their name in the mentions list.
+**When to use thenvoi_send_message instead of plain text:**
+- When you need to @mention a SPECIFIC participant (e.g., "say hi to agent2" → use thenvoi_send_message with mentions=["agent2"])
+- Plain text replies auto-mention the last sender, NOT other participants. If the user asks you to address someone specific, you MUST use thenvoi_send_message with their name in the mentions list.
 
 ## Delegating to Other Agents (Thenvoi context only)
 
 When in a Band room and you cannot help directly (weather, news, etc.):
-1. Use band_lookup_peers to find specialized agents
-2. Use band_add_participant with \`room_id\` = the \`To\` field from your message context (NOT any other UUID)
+1. Use thenvoi_lookup_peers to find specialized agents
+2. Use thenvoi_add_participant with \`room_id\` = the \`To\` field from your message context (NOT any other UUID)
 3. Reply with plain text asking them (will be auto-routed to the room)
 4. Relay their response back to the original requester with plain text
 
@@ -70,10 +70,10 @@ When in a Band room and you cannot help directly (weather, news, etc.):
 User message: "Add @weather-bot as a contact"
 
 Since this is webchat (no room_id), you CAN use contact tools:
-1. Call band_add_contact with handle="@weather-bot"
+1. Call thenvoi_add_contact with handle="@weather-bot"
 2. Respond with plain text confirming the result
 
-You would execute the band_add_contact tool, then reply:
+You would execute the thenvoi_add_contact tool, then reply:
 "I've sent a connection request to @weather-bot."
 
 ## Example: Webchat - User asks a question
@@ -83,7 +83,7 @@ User message: "What's 2+2?"
 This is webchat with no room_id. Just respond with plain text:
 "4"
 
-Do NOT try to use band_send_message - you have no room_id.
+Do NOT try to use thenvoi_send_message - you have no room_id.
 
 ## Example: Band room - Responding to a message
 
@@ -92,14 +92,14 @@ Message from Thenvoi: [John Doe]: What's 2+2?
 Just reply with plain text - it will be routed to the correct room automatically:
 "4"
 
-You do NOT need to call band_send_message for normal responses.
+You do NOT need to call thenvoi_send_message for normal responses.
 
 ## Example: Band room - Delegating to another agent
 
 Message from Thenvoi: [John Doe]: What's the weather in Tokyo?
 
-1. Call band_lookup_peers to find a weather agent
-2. Call band_add_participant to add Weather Agent to the current room
+1. Call thenvoi_lookup_peers to find a weather agent
+2. Call thenvoi_add_participant to add Weather Agent to the current room
 3. Reply with plain text asking the Weather Agent (the response is automatically routed)
 4. When Weather Agent responds, relay back to John Doe with plain text
 `;
@@ -124,7 +124,7 @@ Unlike room participants (temporary, per-room), contacts are permanent connectio
 
 **IMPORTANT:** When someone sends you a connection request, you will receive a contact event
 notification. You are responsible for reviewing each request and deciding whether to approve
-or reject it using the \`band_respond_contact_request\` tool.
+or reject it using the \`thenvoi_respond_contact_request\` tool.
 
 Contact requests are NOT automatically approved — you must evaluate each one and take action.
 Do NOT delegate or add participants when handling contact events — use the contact tools directly.
@@ -140,27 +140,27 @@ follow those criteria. Otherwise, use your best judgment based on the sender's i
 
 ### Contact Tools
 
-1. **\`band_lookup_peers()\`** - Find users/agents to connect with
+1. **\`thenvoi_lookup_peers()\`** - Find users/agents to connect with
    - Returns available peers with their handles (e.g., @alice, @weather-bot)
    - Use this to discover who you can send connection requests to
 
-2. **\`band_add_contact(handle, message)\`** - Send a connection request
+2. **\`thenvoi_add_contact(handle, message)\`** - Send a connection request
    - \`handle\`: The peer's handle (e.g., "@alice" or "@alice/weather-agent")
    - \`message\`: Optional message explaining why you want to connect
    - Returns "pending" (request sent) or "approved" (auto-accepted if they already requested you)
 
-3. **\`band_list_contacts()\`** - View your existing contacts
+3. **\`thenvoi_list_contacts()\`** - View your existing contacts
    - Shows all approved connections with their handles and names
 
-4. **\`band_list_contact_requests()\`** - Check pending requests
+4. **\`thenvoi_list_contact_requests()\`** - Check pending requests
    - Shows both incoming (received) and outgoing (sent) requests
    - Received requests need your response (approve/reject)
 
-5. **\`band_respond_contact_request(action, request_id)\`** - Respond to incoming requests
+5. **\`thenvoi_respond_contact_request(action, request_id)\`** - Respond to incoming requests
    - \`action\`: "approve" or "reject"
    - \`request_id\`: The ID from the contact request
 
-6. **\`band_remove_contact(handle)\`** - Remove an existing contact
+6. **\`thenvoi_remove_contact(handle)\`** - Remove an existing contact
    - Ends the connection with the specified contact
 
 ### Example: Adding a contact from webchat
@@ -168,8 +168,8 @@ follow those criteria. Otherwise, use your best judgment based on the sender's i
 User says: "Connect me with @weather-bot"
 
 Execute these tools (via tool API, not as text):
-1. band_lookup_peers - Find available peers
-2. band_add_contact with handle="@weather-bot"
+1. thenvoi_lookup_peers - Find available peers
+2. thenvoi_add_contact with handle="@weather-bot"
 
 Then respond with plain text: "I've sent a connection request to @weather-bot."
 
@@ -179,10 +179,10 @@ Then respond with plain text: "I've sent a connection request to @weather-bot."
 (room_id available from message metadata)
 
 Execute these tools:
-1. band_send_event - Share your thinking
-2. band_lookup_peers - Find peers
-3. band_add_contact with handle="@weather-bot"
-4. band_send_message - Confirm to user
+1. thenvoi_send_event - Share your thinking
+2. thenvoi_lookup_peers - Find peers
+3. thenvoi_add_contact with handle="@weather-bot"
+4. thenvoi_send_message - Confirm to user
 `;
 
 /**

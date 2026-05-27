@@ -22,15 +22,15 @@ describe("Prompts", () => {
     });
 
     it("should list tools that work without room_id", () => {
-      expect(BASE_INSTRUCTIONS).toContain("band_lookup_peers");
-      expect(BASE_INSTRUCTIONS).toContain("band_add_contact");
-      expect(BASE_INSTRUCTIONS).toContain("band_create_chatroom");
+      expect(BASE_INSTRUCTIONS).toContain("thenvoi_lookup_peers");
+      expect(BASE_INSTRUCTIONS).toContain("thenvoi_add_contact");
+      expect(BASE_INSTRUCTIONS).toContain("thenvoi_create_chatroom");
     });
 
     it("should list tools that require room_id", () => {
-      expect(BASE_INSTRUCTIONS).toContain("band_send_message");
-      expect(BASE_INSTRUCTIONS).toContain("band_send_event");
-      expect(BASE_INSTRUCTIONS).toContain("band_add_participant");
+      expect(BASE_INSTRUCTIONS).toContain("thenvoi_send_message");
+      expect(BASE_INSTRUCTIONS).toContain("thenvoi_send_event");
+      expect(BASE_INSTRUCTIONS).toContain("thenvoi_add_participant");
     });
 
     it("should contain delegation instructions", () => {

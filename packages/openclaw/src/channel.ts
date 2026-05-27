@@ -4,12 +4,12 @@
  * Registers the Band channel with OpenClaw Gateway,
  * enabling bidirectional communication with the Band platform.
  *
- * Uses @band-ai/sdk for all platform communication (WebSocket + REST).
+ * Uses @thenvoi/sdk for all platform communication (WebSocket + REST).
  */
 
-import { ThenvoiLink } from "@band-ai/sdk";
-import { RoomPresence, ContactEventHandler } from "@band-ai/sdk/runtime";
-import type { ContactEventConfig, ContactEvent, PlatformEvent } from "@band-ai/sdk";
+import { ThenvoiLink } from "@thenvoi/sdk";
+import { RoomPresence, ContactEventHandler } from "@thenvoi/sdk/runtime";
+import type { ContactEventConfig, ContactEvent, PlatformEvent } from "@thenvoi/sdk";
 
 // =============================================================================
 // OpenClaw-Specific Types
@@ -195,7 +195,7 @@ interface OpenClawRuntimeRef {
 // Virtual thread ID for contact events (dispatched to LLM for evaluation)
 // =============================================================================
 
-const CONTACTS_THREAD_ID = "__band_contacts__";
+const CONTACTS_THREAD_ID = "__thenvoi_contacts__";
 
 // =============================================================================
 // Channel State
@@ -226,7 +226,7 @@ function resolvePackageVersion(): string {
   }
 }
 const PKG_VERSION: string = resolvePackageVersion();
-const GATEWAY_REGISTRY_KEY = `__band_gateway_registry_v${PKG_VERSION}__`;
+const GATEWAY_REGISTRY_KEY = `__thenvoi_gateway_registry_v${PKG_VERSION}__`;
 interface GatewayRegistry {
   links: Map<string, ThenvoiLink>;
   presences: Map<string, RoomPresence>;

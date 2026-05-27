@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // Mock the SDK modules before importing channel.ts
 // This prevents vitest from loading the SDK's optional peer dependencies
-vi.mock("@band-ai/sdk", () => ({
+vi.mock("@thenvoi/sdk", () => ({
   ThenvoiLink: vi.fn().mockImplementation((opts: Record<string, unknown>) => ({
     agentId: opts.agentId,
     rest: {
@@ -27,7 +27,7 @@ vi.mock("@band-ai/sdk", () => ({
   })),
 }));
 
-vi.mock("@band-ai/sdk/runtime", () => ({
+vi.mock("@thenvoi/sdk/runtime", () => ({
   RoomPresence: vi.fn().mockImplementation(() => ({
     onRoomJoined: null,
     onRoomLeft: null,
@@ -41,7 +41,7 @@ vi.mock("@band-ai/sdk/runtime", () => ({
   })),
 }));
 
-vi.mock("@band-ai/sdk/rest", () => ({}));
+vi.mock("@thenvoi/sdk/rest", () => ({}));
 
 import {
   thenvoiChannel,
