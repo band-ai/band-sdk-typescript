@@ -67,7 +67,6 @@ export class PhoenixChannelsTransport implements StreamingTransport {
 
     this.socket = new Socket(wsUrl, {
       params: {
-        api_key: options.apiKey,
         agent_id: options.agentId,
         ...(options.conflictPolicy
           ? { on_conflict: options.conflictPolicy }
@@ -80,7 +79,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
         }
         return reconnectAfterMs(tries);
       },
-      transport: options.websocketFactory ?? resolveWebSocketFactory(),
+      transport: options.websocketFactory ?? resolveWebSocketFactory(options.apiKey),
     });
 
     this.socket.onOpen(() => {
@@ -107,7 +106,6 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       if (upgradeReason) {
         if (upgradeReason.retryable) {
           this.lastDisconnectReason = upgradeReason;
-          this.connectReject?.(new WebSocketDisconnectError(upgradeReason));
         } else {
           this.recordTerminalDisconnect(upgradeReason);
         }
@@ -406,12 +404,14 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 }
 
-function resolveWebSocketFactory(): typeof WebSocket {
+function resolveWebSocketFactory(apiKey: string): typeof WebSocket {
   if (typeof process !== "undefined" && process.versions?.node) {
-    return createNodeWebSocketFactory();
+    return createNodeWebSocketFactory({ "x-api-key": apiKey });
   }
 
-  return WebSocket;
+  throw new TransportError(
+    "Phoenix WebSocket API-key auth requires a WebSocket transport that can set handshake headers.",
+  );
 }
 
 function unwrapErrorEvent(event: unknown): unknown {

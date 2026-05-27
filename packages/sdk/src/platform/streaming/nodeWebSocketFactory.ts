@@ -10,16 +10,26 @@ type NodeUpgradeWebSocket = InstanceType<typeof NodeWebSocket> & {
   emit(event: "close", code: number, reason: Buffer): boolean;
 };
 
-export function createNodeWebSocketFactory(): typeof WebSocket {
-  return class ThenvoiNodeWebSocket extends NodeWebSocket {
+type NodeWebSocketConstructor = new (
+  address: string | URL,
+  protocols?: string | string[],
+  options?: { headers?: Record<string, string> },
+) => NodeUpgradeWebSocket;
+
+export function createNodeWebSocketFactory(headers?: Record<string, string>): typeof WebSocket {
+  const Constructor = NodeWebSocket as unknown as NodeWebSocketConstructor;
+
+  class ThenvoiNodeWebSocket {
     public constructor(address: string | URL, protocols?: string | string[]) {
-      super(address, protocols);
-      const socket = this as unknown as NodeUpgradeWebSocket;
+      const socket = new Constructor(address, protocols, headers ? { headers } : undefined);
       socket.once("unexpected-response", (request, response) => {
         void emitUpgradeError(socket, request, response);
       });
+      return socket;
     }
-  } as unknown as typeof WebSocket;
+  }
+
+  return ThenvoiNodeWebSocket as unknown as typeof WebSocket;
 }
 
 async function emitUpgradeError(

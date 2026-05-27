@@ -199,9 +199,9 @@ describe("PhoenixChannelsTransport", () => {
     const socket = phoenixMock.FakeSocket.instances[0];
     expect(socket?.url).toBe("wss://example.test/socket");
     expect(socket?.params).toMatchObject({
-      api_key: "key-1",
       agent_id: "agent-1",
     });
+    expect(socket?.params).not.toHaveProperty("api_key");
 
     await transport.connect();
     await transport.connect();
@@ -440,9 +440,13 @@ describe("PhoenixChannelsTransport", () => {
           retryAfter === null ? {} : { "Retry-After": String(retryAfter) },
       });
 
-      await expect(connectPromise).rejects.toBeInstanceOf(
-        WebSocketDisconnectError,
-      );
+      if (status === 429 || status === 503) {
+        await expect(connectPromise).resolves.toBeUndefined();
+      } else {
+        await expect(connectPromise).rejects.toBeInstanceOf(
+          WebSocketDisconnectError,
+        );
+      }
       expect(transport.getDisconnectReason()).toMatchObject({
         source: "upgrade",
         status,
@@ -505,9 +509,7 @@ describe("PhoenixChannelsTransport", () => {
       },
     });
 
-    await expect(connectPromise).rejects.toBeInstanceOf(
-      WebSocketDisconnectError,
-    );
+    await expect(connectPromise).resolves.toBeUndefined();
     expect(socket?.reconnectAfterMs?.(1)).toBe(1000);
   });
 
