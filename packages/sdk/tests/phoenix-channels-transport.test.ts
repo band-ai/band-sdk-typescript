@@ -554,6 +554,7 @@ describe("PhoenixChannelsTransport", () => {
     socket?.emitError({ status: 403 });
 
     await expect(connectPromise).rejects.toBeInstanceOf(TransportError);
+    expect(socket?.disconnectCount).toBeGreaterThan(0);
     expect(transport.getDisconnectReason()).toBeNull();
   });
 

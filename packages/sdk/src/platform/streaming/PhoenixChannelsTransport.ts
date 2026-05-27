@@ -47,6 +47,8 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private lastDisconnectReason: WebSocketDisconnectReason | null = null;
   private terminalDisconnectError: WebSocketDisconnectError | null = null;
   private runForeverWaiters = new Set<PendingRunForever>();
+  private stoppingReconnect = false;
+  private suppressNextCloseReason = false;
 
   public constructor(options: PhoenixChannelsTransportOptions) {
     this.logger = options.logger ?? new NoopLogger();
@@ -79,7 +81,8 @@ export class PhoenixChannelsTransport implements StreamingTransport {
         }
         return reconnectAfterMs(tries);
       },
-      transport: options.websocketFactory ?? resolveWebSocketFactory(options.apiKey),
+      transport:
+        options.websocketFactory ?? resolveWebSocketFactory(options.apiKey),
     });
 
     this.socket.onOpen(() => {
@@ -108,6 +111,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       this.connectReject?.(
         new TransportError("Phoenix socket connection failed", errorEvent),
       );
+      this.stopReconnectIfNoChannels({ suppressCloseReason: true });
       this.logger.warn("Phoenix socket error", { event });
     });
   }
@@ -328,6 +332,19 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     });
   }
 
+  private stopReconnectIfNoChannels(
+    options: { suppressCloseReason?: boolean } = {},
+  ): void {
+    if (this.stoppingReconnect || getSocketChannelCount(this.socket) !== 0) {
+      return;
+    }
+
+    this.suppressNextCloseReason = options.suppressCloseReason ?? false;
+    this.stoppingReconnect = true;
+    this.socket.disconnect();
+    this.stoppingReconnect = false;
+  }
+
   private async subscribeAgentControl(): Promise<void> {
     if (!this.agentId) {
       return;
@@ -349,7 +366,14 @@ export class PhoenixChannelsTransport implements StreamingTransport {
 
   private recordSocketClose(event?: { code?: number; reason?: string }): void {
     this.connected = false;
-    if (!this.terminalDisconnectError && !this.lastDisconnectReason) {
+    const suppressCloseReason = this.suppressNextCloseReason;
+    this.suppressNextCloseReason = false;
+    this.stopReconnectIfNoChannels();
+    if (
+      !suppressCloseReason &&
+      !this.terminalDisconnectError &&
+      !this.lastDisconnectReason
+    ) {
       this.lastDisconnectReason = genericCloseReason(event);
     }
 
