@@ -12,6 +12,11 @@ interface PhoenixChannelsTransportOptions {
   logger?: Logger;
   heartbeatIntervalMs?: number;
   reconnectAfterMs?: (tries: number) => number;
+  /**
+   * Optional WebSocket implementation. Phoenix authentication is sent in the
+   * x-api-key handshake header, so browser WebSocket constructors are not
+   * sufficient; pass a Node-compatible constructor that accepts headers.
+   */
   websocketFactory?: typeof WebSocket;
 }
 
