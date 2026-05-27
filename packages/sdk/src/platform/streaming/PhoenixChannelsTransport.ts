@@ -83,7 +83,6 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     });
 
     this.socket.onOpen(() => {
-      this.connected = true;
       void this.handleOpen();
     });
 
@@ -320,6 +319,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       return;
     }
 
+    this.connected = true;
     this.connectResolve?.();
     this.connectResolve = null;
     this.connectReject = null;

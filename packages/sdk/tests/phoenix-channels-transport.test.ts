@@ -8,7 +8,7 @@ import { PlatformRuntime } from "../src/runtime/PlatformRuntime";
 import { FakeRestApi } from "./testUtils";
 
 const phoenixMock = vi.hoisted(() => {
-  type Outcome = "ok" | "error" | "timeout";
+  type Outcome = "ok" | "error" | "timeout" | "pending";
 
   class FakeChannel {
     public readonly topic: string;
@@ -66,7 +66,7 @@ const phoenixMock = vi.hoisted(() => {
     } {
       const chain = {
         receive: (kind: Outcome, callback: (payload?: unknown) => void) => {
-          if (kind === outcome) {
+          if (kind === outcome && kind !== "pending") {
             queueMicrotask(() =>
               callback(kind === "ok" ? {} : { error: kind }),
             );
@@ -276,6 +276,35 @@ describe("PhoenixChannelsTransport", () => {
         message: async () => {},
       }),
     ).rejects.toBeInstanceOf(TransportError);
+  });
+
+  it("does not report connected while mandatory agent_control join is pending", async () => {
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+      agentId: "agent-1",
+    });
+
+    const socket = phoenixMock.FakeSocket.instances[0];
+    if (socket) {
+      const originalChannel = socket.channel.bind(socket);
+      socket.channel = (topic: string) => {
+        const channel = originalChannel(topic);
+        if (topic === "agent_control:agent-1") {
+          channel.joinOutcome = "pending";
+        }
+        return channel;
+      };
+    }
+
+    const connectPromise = transport.connect();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(transport.isConnected()).toBe(false);
+
+    socket?.emitError({ status: 403 });
+    await expect(connectPromise).rejects.toBeInstanceOf(TransportError);
   });
 
   it("rejects connect when mandatory agent_control join fails", async () => {
