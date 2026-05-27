@@ -229,59 +229,23 @@ export class A2AGatewayAdapter
       peer.id,
     );
 
-    const roomPendings = this.pendingByRoom.get(roomId);
-    const activeInRoom = roomPendings?.size ?? 0;
-    const queue = new AsyncEventQueue<GatewayA2AStatusUpdateEvent>();
-    const strictTaskMetadata = hadContext;
-    const pending: PendingTaskRecord = {
-      taskId: request.taskId,
-      contextId,
-      peerId: peer.id,
-      peerSlug: peer.slug,
+    const pending = this.createPendingTask({
+      request,
+      peer,
       roomId,
-      strictTaskMetadata,
-      requireTaskMetadata: strictTaskMetadata || activeInRoom > 0,
-      queue,
-      enqueue: (event) => {
-        queue.enqueue(event);
-      },
-    };
-
-    this.registerPending(pending);
-    this.pendingByTask.set(pending.taskId, pending);
-
-    yield buildStatusEvent({
-      taskId: pending.taskId,
-      contextId: pending.contextId,
-      state: "working",
-      final: false,
-      text: `Routed request to ${peer.name}.`,
+      contextId,
+      hadContext,
     });
 
-    try {
-      await this.emitContextEvent(roomId, contextId);
+    this.registerPending(pending);
 
-      const content = extractMessageText(request.message) ?? "";
-      await this.thenvoiRest.createChatMessage(roomId, {
-        content: buildMentionedContent(peer.name, content),
-        mentions: buildMentions(peer),
-        metadata: {
-          gateway_context_id: contextId,
-          gateway_room_id: roomId,
-          gateway_task_id: request.taskId,
-          gateway_peer_id: peer.id,
-          gateway_peer_slug: peer.slug,
-        },
-      });
+    yield this.createRoutedEvent(pending, peer);
+
+    try {
+      await this.dispatchGatewayRequestToRoom(request, peer, roomId, contextId);
     } catch (error) {
       this.removePending(pending);
-      yield buildStatusEvent({
-        taskId: pending.taskId,
-        contextId: pending.contextId,
-        state: "failed",
-        final: true,
-        text: error instanceof Error ? error.message : String(error),
-      });
+      yield this.createFailedEvent(pending, error);
       return;
     }
 
@@ -308,6 +272,81 @@ export class A2AGatewayAdapter
     }
   }
 
+  private createPendingTask(options: {
+    request: GatewayRequest;
+    peer: GatewayPeer;
+    roomId: string;
+    contextId: string;
+    hadContext: boolean;
+  }): PendingTaskRecord {
+    const roomPendings = this.pendingByRoom.get(options.roomId);
+    const activeInRoom = roomPendings?.size ?? 0;
+    const queue = new AsyncEventQueue<GatewayA2AStatusUpdateEvent>();
+    const strictTaskMetadata = options.hadContext;
+
+    return {
+      taskId: options.request.taskId,
+      contextId: options.contextId,
+      peerId: options.peer.id,
+      peerSlug: options.peer.slug,
+      roomId: options.roomId,
+      strictTaskMetadata,
+      requireTaskMetadata: strictTaskMetadata || activeInRoom > 0,
+      queue,
+      enqueue: (event) => {
+        queue.enqueue(event);
+      },
+    };
+  }
+
+  private createRoutedEvent(
+    pending: PendingTaskRecord,
+    peer: GatewayPeer,
+  ): GatewayA2AStatusUpdateEvent {
+    return buildStatusEvent({
+      taskId: pending.taskId,
+      contextId: pending.contextId,
+      state: "working",
+      final: false,
+      text: `Routed request to ${peer.name}.`,
+    });
+  }
+
+  private createFailedEvent(
+    pending: PendingTaskRecord,
+    error: unknown,
+  ): GatewayA2AStatusUpdateEvent {
+    return buildStatusEvent({
+      taskId: pending.taskId,
+      contextId: pending.contextId,
+      state: "failed",
+      final: true,
+      text: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  private async dispatchGatewayRequestToRoom(
+    request: GatewayRequest,
+    peer: GatewayPeer,
+    roomId: string,
+    contextId: string,
+  ): Promise<void> {
+    await this.emitContextEvent(roomId, contextId);
+
+    const content = extractMessageText(request.message) ?? "";
+    await this.thenvoiRest.createChatMessage(roomId, {
+      content: buildMentionedContent(peer.name, content),
+      mentions: buildMentions(peer),
+      metadata: {
+        gateway_context_id: contextId,
+        gateway_room_id: roomId,
+        gateway_task_id: request.taskId,
+        gateway_peer_id: peer.id,
+        gateway_peer_slug: peer.slug,
+      },
+    });
+  }
+
   private cancelPendingTask(taskId: string, peerId: string): void {
     const pending = this.pendingByTask.get(taskId);
     if (!pending) {
@@ -331,6 +370,7 @@ export class A2AGatewayAdapter
     const roomPendings = this.pendingByRoom.get(pending.roomId) ?? new Map<string, PendingTaskRecord>();
     roomPendings.set(pending.taskId, pending);
     this.pendingByRoom.set(pending.roomId, roomPendings);
+    this.pendingByTask.set(pending.taskId, pending);
 
     if (roomPendings.size > 1) {
       for (const entry of roomPendings.values()) {
