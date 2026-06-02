@@ -581,4 +581,77 @@ describe("PhoenixChannelsTransport", () => {
 
     await expect(runForever).rejects.toBeInstanceOf(WebSocketDisconnectError);
   });
+
+  it("cleans up in-flight executions after terminal supersede", async () => {
+    const cleanupRooms: string[] = [];
+    let resolveStarted: (() => void) | undefined;
+    let releaseExecution: (() => void) | undefined;
+    const executionStarted = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    const executionReleased = new Promise<void>((resolve) => {
+      releaseExecution = resolve;
+    });
+    const runtime = new PlatformRuntime({
+      agentId: "agent-1",
+      apiKey: "key-1",
+      link: new ThenvoiLink({
+        agentId: "agent-1",
+        apiKey: "key-1",
+        restApi: new FakeRestApi(),
+        wsUrl: "wss://example.test/socket",
+      }),
+    });
+
+    await runtime.start({
+      onStarted: vi.fn(async () => undefined),
+      onCleanup: vi.fn(async (roomId) => {
+        cleanupRooms.push(roomId);
+      }),
+      onRuntimeStop: vi.fn(async () => undefined),
+      onEvent: vi.fn(async () => {
+        resolveStarted?.();
+        await executionReleased;
+      }),
+    });
+    const runForever = runtime.runForever();
+    const socket = phoenixMock.FakeSocket.instances[0];
+
+    socket?.channels.get("agent_rooms:agent-1")?.emit("room_added", {
+      id: "room-1",
+      status: "active",
+      type: "direct",
+      title: "Room",
+      removed_at: null,
+    });
+    await vi.waitFor(() => {
+      expect(socket?.channels.has("chat_room:room-1")).toBe(true);
+    });
+
+    socket?.channels.get("chat_room:room-1")?.emit("message_created", {
+      id: "m1",
+      content: "work",
+      message_type: "text",
+      sender_id: "user-1",
+      sender_type: "User",
+      sender_name: "User",
+      metadata: {},
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    await executionStarted;
+
+    socket?.channels.get("agent_control:agent-1")?.emit("supersede", {
+      reason: "session.already_connected",
+      message:
+        "This connection has been superseded by a newer session for this agent.",
+    });
+    await expect(runForever).rejects.toBeInstanceOf(WebSocketDisconnectError);
+
+    await expect(runtime.stop(0)).rejects.toBeInstanceOf(WebSocketDisconnectError);
+    expect(cleanupRooms).toEqual(["room-1"]);
+
+    releaseExecution?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
 });
