@@ -135,7 +135,7 @@ export class AgentRuntime {
   }
 
   public async stop(timeoutMs?: number): Promise<boolean> {
-    if (!this.running || this.stopping) {
+    if (this.stopping || (!this.running && !this.fatalError)) {
       return true;
     }
 
@@ -159,7 +159,8 @@ export class AgentRuntime {
     }
 
     for (const roomId of [...this.subscribedRooms]) {
-      await this.leaveTrackedRoom(roomId);
+      const remaining = deadline === undefined ? undefined : Math.max(0, deadline - Date.now());
+      await this.leaveTrackedRoom(roomId, remaining);
     }
 
     for (const roomId of [...this.contexts.keys()]) {
@@ -204,7 +205,14 @@ export class AgentRuntime {
 
   private async consumeLoop(signal: AbortSignal): Promise<void> {
     while (!signal.aborted) {
-      const event = await this.link.nextEvent(signal);
+      let event: PlatformEvent | null;
+      try {
+        event = await this.link.nextEvent(signal);
+      } catch (error: unknown) {
+        await this.failRuntime(error, syntheticRuntimeFailureEvent(this.agentId));
+        return;
+      }
+
       if (!event) {
         return;
       }
@@ -385,13 +393,13 @@ export class AgentRuntime {
     });
   }
 
-  private async leaveTrackedRoom(roomId: string): Promise<void> {
+  private async leaveTrackedRoom(roomId: string, timeoutMs?: number): Promise<void> {
     await trackRoomLeave({
       link: this.link,
       roomId,
       trackedRooms: this.subscribedRooms,
       onLeft: async (leftRoomId) => {
-        await this.executions.get(leftRoomId)?.stop();
+        await this.executions.get(leftRoomId)?.stop(timeoutMs);
         this.contexts.delete(leftRoomId);
         this.executions.delete(leftRoomId);
         await this.onSessionCleanup(leftRoomId);
@@ -431,6 +439,24 @@ export class AgentRuntime {
       });
     }
   }
+}
+
+function syntheticRuntimeFailureEvent(agentId: string): PlatformEvent {
+  return {
+    type: "message_created",
+    roomId: null,
+    payload: {
+      id: "runtime-failed",
+      content: "",
+      sender_id: agentId,
+      sender_type: "Agent",
+      sender_name: null,
+      message_type: "text",
+      metadata: {},
+      inserted_at: new Date(0).toISOString(),
+      updated_at: new Date(0).toISOString(),
+    },
+  };
 }
 
 function assertNever(value: never): never {
