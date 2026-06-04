@@ -55,7 +55,8 @@ These tools require a room_id parameter. For most responses, just use plain text
 
 **When to use thenvoi_send_message instead of plain text:**
 - When you need to @mention a SPECIFIC participant (e.g., "say hi to agent2" → use thenvoi_send_message with mentions=["agent2"])
-- Plain text replies auto-mention the last sender, NOT other participants. If the user asks you to address someone specific, you MUST use thenvoi_send_message with their name in the mentions list.
+- Plain text replies auto-mention the last sender, NOT other participants. If the user asks you to address someone specific, you MUST use thenvoi_send_message with their handle in the mentions list.
+- IMPORTANT: Message content is plain text. You may write names naturally in content. Only handles listed in the mentions array create @mentions.
 
 ## Delegating to Other Agents (Thenvoi context only)
 

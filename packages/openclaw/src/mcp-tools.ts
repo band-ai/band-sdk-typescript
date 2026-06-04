@@ -425,8 +425,9 @@ const sendMessageTool: McpTool = {
         type: "array",
         items: { type: "string" },
         description:
-          "List of participant names to @mention. At least one required. " +
-          "Use thenvoi_get_participants to see available participants.",
+          "List of participant handles or IDs to @mention. At least one required. " +
+          "Use thenvoi_get_participants to see available participants. " +
+          "Plain names in content do not create mentions; only this list does.",
       },
     },
     required: ["room_id", "content", "mentions"],
@@ -444,17 +445,25 @@ const sendMessageTool: McpTool = {
     // Get participants to resolve names to IDs
     const participants = await rest.listChatParticipants(room_id);
 
-    // Resolve mention names to participant objects
-    const resolvedMentions = mentions.map((name) => {
-      const participant = participants.find(
-        (p) => p.name.toLowerCase() === name.toLowerCase() && p.id !== selfAgentId
-      );
+    // Resolve explicit mention references to participant IDs. Do not derive mentions
+    // from content text; writing a participant's name in the message body is plain text.
+    const resolvedMentions = mentions.map((mention) => {
+      const normalizedMention = mention.trim().replace(/^@+/, "").toLowerCase();
+      const participant = participants.find((p) => {
+        if (p.id === selfAgentId) return false;
+        const normalizedHandle = typeof p.handle === "string"
+          ? p.handle.trim().replace(/^@+/, "").toLowerCase()
+          : "";
+        return p.id === mention
+          || normalizedHandle === normalizedMention
+          || p.name.toLowerCase() === mention.trim().toLowerCase();
+      });
       if (!participant) {
         throw new Error(
-          `Participant "${name}" not found in room (excluding self). Use thenvoi_get_participants to see available participants.`
+          `Participant "${mention}" not found in room (excluding self). Use thenvoi_get_participants to see available participants.`
         );
       }
-      return { id: participant.id, name: participant.name };
+      return { id: participant.id };
     });
 
     const response = await rest.createChatMessage(room_id, {

@@ -144,6 +144,65 @@ describe("Channel Gateway Lifecycle", () => {
       // Verify callback received the message (sender tracking is internal)
       expect(callback).toHaveBeenCalledTimes(1);
     });
+
+    it("should route replies to the last sender even if another participant name or handle appears in the text", async () => {
+      const callback = vi.fn();
+      setInboundCallback(callback);
+
+      const ctx = createGatewayContext("account-1", mockAccountConfig, { aborted: true });
+      await thenvoiChannel.gateway!.startAccount(ctx);
+
+      mockLinkInstance.rest.listChatParticipants = vi.fn().mockResolvedValue([
+        { id: "user-789", name: "John Doe", type: "User", handle: "@john" },
+        { id: "user-456", name: "amit", type: "User", handle: "@amit" },
+        { id: "agent-123", name: "Test Agent", type: "Agent", handle: "@test-agent" },
+      ]);
+
+      deliverMessage({
+        channelId: "thenvoi" as const,
+        threadId: "room-123",
+        senderId: "user-789",
+        senderType: "User",
+        senderName: "John Doe",
+        text: "Hello",
+        timestamp: "2025-01-15T10:00:00Z",
+      }, "account-1");
+
+      await thenvoiChannel.outbound.sendText({
+        cfg: {},
+        accountId: "account-1",
+        to: "room-123",
+        text: "amit already finished the GitHub review.",
+      });
+
+      expect(mockLinkInstance.rest.createChatMessage).toHaveBeenCalledWith(
+        "room-123",
+        expect.objectContaining({
+          content: "amit already finished the GitHub review.",
+          mentions: [{ id: "user-789" }],
+        }),
+      );
+    });
+
+    it("should not guess a recipient when no sender is tracked", async () => {
+      const ctx = createGatewayContext("account-2", mockAccountConfig, { aborted: true });
+      await thenvoiChannel.gateway!.startAccount(ctx);
+
+      mockLinkInstance.rest.listChatParticipants = vi.fn().mockResolvedValue([
+        { id: "user-789", name: "John Doe", type: "User" },
+        { id: "user-456", name: "Jane Doe", type: "User" },
+        { id: "agent-123", name: "Test Agent", type: "Agent" },
+      ]);
+
+      await expect(thenvoiChannel.outbound.sendText({
+        cfg: {},
+        accountId: "account-2",
+        to: "room-123",
+        text: "Following up without prior inbound context.",
+      })).rejects.toThrow("no tracked inbound sender");
+
+      expect(mockLinkInstance.rest.createChatMessage).not.toHaveBeenCalled();
+    });
   });
 
   describe("startAccount", () => {

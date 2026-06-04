@@ -76,6 +76,9 @@ export function buildParticipantsMessage(participants: Array<Record<string, unkn
   lines.push(
     "IMPORTANT: In thenvoi_send_message mentions, always use the exact handle shown above (e.g. '@john' for users, '@john/weather-agent' for agents), NOT the display name. Handles are lowercase with no spaces.",
   );
+  lines.push(
+    "IMPORTANT: Message content is plain text. Writing a participant's display name or handle in content does not mention them; only entries in the thenvoi_send_message mentions array create mentions.",
+  );
 
   return lines.join("\n");
 }

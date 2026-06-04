@@ -313,7 +313,7 @@ describe("AgentTools coverage", () => {
       "room-1",
       {
         content: "hi",
-        mentions: [{ id: "peer-1", handle: "@peer/one", name: "Peer One", username: "peer.one" }],
+        mentions: [{ id: "peer-1" }],
       },
       expect.any(Object),
     );
@@ -417,9 +417,9 @@ describe("AgentTools coverage", () => {
       {
         content: "hi",
         mentions: [
-          { id: "user-1", handle: "@jane" },
-          { id: "agent-1", handle: "@team/planner" },
-          { id: "user-1", handle: "@jane" },
+          { id: "user-1" },
+          { id: "agent-1" },
+          { id: "user-1" },
         ],
       },
       expect.any(Object),

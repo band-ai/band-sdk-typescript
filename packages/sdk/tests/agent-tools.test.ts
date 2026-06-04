@@ -220,6 +220,28 @@ describe("AgentTools", () => {
     expect(resultByName).toEqual({ ok: true });
   });
 
+  it("does not infer mentions from names or handles in message content", async () => {
+    const api = new FakeRestApi();
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api }),
+      participants: [
+        { id: "u1", handle: "@jane", name: "jane", type: "User" },
+        { id: "u2", handle: "@john", name: "John", type: "User" },
+      ],
+    });
+
+    await tools.sendMessage("jane is also the GitHub handle in this example.", ["@john"]);
+
+    expect(api.chatMessages).toEqual([
+      {
+        chatId: "room-1",
+        content: "jane is also the GitHub handle in this example.",
+        mentions: [{ id: "u2" }],
+      },
+    ]);
+  });
+
   it("gates peers endpoint when disabled", async () => {
     const tools = new AgentTools({
       roomId: "room-1",
@@ -499,7 +521,7 @@ describe("AgentTools", () => {
       {
         chatId: "room-1",
         content: "hello",
-        mentions: [{ id: "u1", handle: "@jane", name: "Jane", username: "jane" }],
+        mentions: [{ id: "u1" }],
       },
     ]);
     expect(api.createdChats).toEqual(["task-123"]);

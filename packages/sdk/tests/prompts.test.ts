@@ -20,6 +20,11 @@ describe("renderSystemPrompt", () => {
     expect(result).toContain(BASE_INSTRUCTIONS);
   });
 
+  it("explains that names in content are plain text", () => {
+    expect(BASE_INSTRUCTIONS).toContain("Message content is plain text");
+    expect(BASE_INSTRUCTIONS).toContain("Only handles listed in the mentions array create @mentions");
+  });
+
   it("includes custom section", () => {
     const result = renderSystemPrompt({
       agentName: "Bot",

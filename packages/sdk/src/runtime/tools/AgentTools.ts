@@ -620,9 +620,9 @@ export class AgentTools implements AgentToolsProtocol {
     }
 
     if (typeof mentions[0] !== "string") {
-      return mentions.filter(
-        (entry): entry is MentionReference => typeof entry === "object" && entry !== null && "id" in entry,
-      );
+      return mentions
+        .filter((entry): entry is MentionReference => typeof entry === "object" && entry !== null && "id" in entry)
+        .map((entry) => ({ id: entry.id }));
     }
 
     const stringMentions = mentions.filter((entry): entry is string => typeof entry === "string");
@@ -631,10 +631,7 @@ export class AgentTools implements AgentToolsProtocol {
     const participantsById = new Map<string, MentionReference>();
     const participantsByName = new Map<string, MentionReference>();
     for (const participant of this.participants) {
-      const ref: MentionReference = {
-        id: String(participant.id),
-        handle: typeof participant.handle === "string" ? participant.handle : undefined,
-      };
+      const ref: MentionReference = { id: String(participant.id) };
       participantsById.set(ref.id, ref);
       const handle = participant.handle;
       if (typeof handle === "string") {
@@ -971,17 +968,7 @@ export class AgentTools implements AgentToolsProtocol {
         continue;
       }
 
-      const normalized: MentionReference = { id: mention.id };
-      if (typeof mention.handle === "string") {
-        normalized.handle = mention.handle;
-      }
-      if (typeof mention.name === "string") {
-        normalized.name = mention.name;
-      }
-      if (typeof mention.username === "string") {
-        normalized.username = mention.username;
-      }
-      mentions.push(normalized);
+      mentions.push({ id: mention.id });
     }
 
     return mentions;

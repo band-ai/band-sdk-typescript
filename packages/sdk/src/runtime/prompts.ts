@@ -5,6 +5,7 @@ Multi-participant chat. Messages show sender: [Name]: content.
 Messages prefixed with [System]: are platform updates (participant changes, contact updates, etc.) — not messages from users.
 Use \`thenvoi_send_message(content, mentions)\` to respond. Plain text output is not delivered.
 Mentions use handles: @<username> for users, @<username>/<agent-name> for agents.
+IMPORTANT: Message content is plain text. You may write names naturally in content. Only handles listed in the mentions array create @mentions.
 
 ## CRITICAL: Delegate When You Cannot Help Directly
 

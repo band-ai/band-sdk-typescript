@@ -43,6 +43,11 @@ describe("Prompts", () => {
       expect(BASE_INSTRUCTIONS).toContain("Example:");
       expect(BASE_INSTRUCTIONS).toContain("Webchat");
     });
+
+    it("should explain that names in content are plain text", () => {
+      expect(BASE_INSTRUCTIONS).toContain("Message content is plain text");
+      expect(BASE_INSTRUCTIONS).toContain("Only handles listed in the mentions array create @mentions");
+    });
   });
 
   describe("buildSystemPrompt", () => {

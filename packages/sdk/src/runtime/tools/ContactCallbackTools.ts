@@ -104,7 +104,7 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
     }
 
     const normalizedMentions = mentions && mentions.every((mention) => typeof mention !== "string")
-      ? mentions
+      ? mentions.map((mention) => ({ id: mention.id }))
       : undefined;
 
     return this.rest.createChatMessage(

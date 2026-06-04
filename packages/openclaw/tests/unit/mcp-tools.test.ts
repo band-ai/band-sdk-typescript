@@ -444,14 +444,14 @@ describe("MCP Tools", () => {
   });
 
   describe("thenvoi_send_message", () => {
-    it("should send message with mentions", async () => {
+    it("should send message with explicit mentions resolved to IDs only", async () => {
       mockRest.listChatParticipants.mockResolvedValue(mockParticipants);
       mockRest.createChatMessage.mockResolvedValue(mockSendMessageResponse);
 
       const result = await executeMcpTool("thenvoi_send_message", {
         room_id: "room-001",
         content: "Hello!",
-        mentions: ["John Doe"],
+        mentions: ["@john"],
       });
 
       expect(mockRest.listChatParticipants).toHaveBeenCalledWith("room-001");
@@ -459,10 +459,33 @@ describe("MCP Tools", () => {
         "room-001",
         {
           content: "Hello!",
-          mentions: [{ id: "user-789", name: "John Doe" }],
+          mentions: [{ id: "user-789" }],
         },
       );
       expect(result).toHaveProperty("success", true);
+    });
+
+    it("should not create extra mentions when content contains another participant name or handle", async () => {
+      mockRest.listChatParticipants.mockResolvedValue([
+        { id: "user-789", name: "John Doe", type: "User", handle: "@john" },
+        { id: "user-456", name: "amit", type: "User", handle: "@amit" },
+        { id: "agent-123", name: "Test Agent", type: "Agent", handle: "@test-agent" },
+      ]);
+      mockRest.createChatMessage.mockResolvedValue(mockSendMessageResponse);
+
+      await executeMcpTool("thenvoi_send_message", {
+        room_id: "room-001",
+        content: "amit is also the GitHub handle in this example.",
+        mentions: ["@john"],
+      });
+
+      expect(mockRest.createChatMessage).toHaveBeenCalledWith(
+        "room-001",
+        {
+          content: "amit is also the GitHub handle in this example.",
+          mentions: [{ id: "user-789" }],
+        },
+      );
     });
 
     it("should throw error if mention not found", async () => {

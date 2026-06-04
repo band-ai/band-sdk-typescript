@@ -50,6 +50,12 @@ describe("runtime utilities", () => {
     expect(message).toContain("@jane");
   });
 
+  it("explains that mentions only come from the mentions array", () => {
+    const message = buildParticipantsMessage([{ type: "User", name: "Jane", handle: "jane" }]);
+    expect(message).toContain("Message content is plain text");
+    expect(message).toContain("only entries in the thenvoi_send_message mentions array create mentions");
+  });
+
   it("renders system prompt", () => {
     const prompt = renderSystemPrompt({
       agentName: "Agent",

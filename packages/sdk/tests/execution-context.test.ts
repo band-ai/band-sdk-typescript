@@ -31,7 +31,7 @@ describe("ExecutionContext", () => {
 
     await context.getTools().sendMessage("hello", ["@weather-agent"]);
     expect(capturedMentions[0]).toEqual([
-      { id: "peer-weather", handle: "weather-agent" },
+      { id: "peer-weather" },
     ]);
 
     context.removeParticipant("peer-weather");
