@@ -47,6 +47,7 @@ interface ClaudeQueryOptions {
   permissionMode?: ClaudePermissionMode;
   systemPrompt?: string;
   allowDangerouslySkipPermissions?: boolean;
+  effort?: ClaudeEffortLevel;
   maxThinkingTokens?: number;
   cwd?: string;
   resume?: string;
@@ -61,10 +62,26 @@ export interface ClaudeSDKQueryParams {
 
 export type ClaudeSDKQuery = (params: ClaudeSDKQueryParams) => AsyncIterable<ClaudeSDKMessageLike>;
 
+/**
+ * Reasoning-effort level for the underlying Claude Agent SDK.
+ *
+ * - `low` — minimal thinking, fastest responses
+ * - `medium` — moderate thinking
+ * - `high` — deep reasoning (Claude default)
+ * - `max` — maximum effort (Opus only)
+ *
+ * Takes precedence over the deprecated `maxThinkingTokens` when both are
+ * set. Prefer `effort` for new code.
+ */
+export type ClaudeEffortLevel = "low" | "medium" | "high" | "max";
+
 export interface ClaudeSDKAdapterOptions {
   model?: string;
   customSection?: string;
   includeBaseInstructions?: boolean;
+  /** Reasoning-effort level (`low` / `medium` / `high` / `max`). */
+  effort?: ClaudeEffortLevel;
+  /** @deprecated Use {@link ClaudeSDKAdapterOptions.effort} instead. */
   maxThinkingTokens?: number;
   permissionMode?: ClaudePermissionMode;
   enableExecutionReporting?: boolean;
@@ -159,6 +176,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
   private readonly model: string;
   private readonly customSection?: string;
   private readonly includeBaseInstructions: boolean;
+  private readonly effort?: ClaudeEffortLevel;
   private readonly maxThinkingTokens?: number;
   private readonly permissionMode: ClaudePermissionMode;
   private readonly enableExecutionReporting: boolean;
@@ -179,6 +197,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     this.model = options?.model ?? DEFAULT_MODEL;
     this.customSection = options?.customSection;
     this.includeBaseInstructions = options?.includeBaseInstructions ?? true;
+    this.effort = options?.effort;
     this.maxThinkingTokens = options?.maxThinkingTokens;
     this.permissionMode = options?.permissionMode ?? "acceptEdits";
     this.enableExecutionReporting = options?.enableExecutionReporting ?? false;
@@ -254,6 +273,9 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     };
     if (this.permissionMode === "bypassPermissions") {
       options.allowDangerouslySkipPermissions = true;
+    }
+    if (this.effort !== undefined) {
+      options.effort = this.effort;
     }
     if (this.maxThinkingTokens !== undefined) {
       options.maxThinkingTokens = this.maxThinkingTokens;

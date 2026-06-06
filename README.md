@@ -318,33 +318,43 @@ The root `@thenvoi/sdk` import covers the common runtime, adapters, and config. 
 
 ## Examples
 
-Working examples live in `examples/`. Each folder is self-contained.
+Working examples live in `packages/sdk/examples/`. Every folder is self-contained, has its own README, and imports from the published `@thenvoi/sdk` package — copy a folder out, install peer deps, and it runs.
 
 | Folder | Framework | What it does |
 |--------|-----------|--------------|
-| `examples/basic/` | Generic | Echo agent |
-| `examples/openai/` | OpenAI | GPT with tool calling |
-| `examples/anthropic/` | Anthropic | Claude with tool calling |
-| `examples/gemini/` | Gemini | Gemini 3 Flash |
-| `examples/claude-sdk/` | Claude Agent SDK | MCP tools, room-scoped resume |
-| `examples/codex/` | Codex | Thread mapping, local commands |
-| `examples/langgraph/` | LangGraph | Graph-based agent |
-| `examples/custom-adapter/` | SimpleAdapter | Custom adapter protocol |
-| `examples/parlant/` | Parlant | Guideline-based behavior |
-| `examples/a2a-bridge/` | A2A | Bridge to external A2A agents |
-| `examples/a2a-gateway/` | A2A Gateway | Expose Thenvoi peers as A2A endpoints |
-| `examples/linear-thenvoi/` | Linear | Bridge server with webhook handling |
+| `basic/` | Generic | Smallest possible echo agent — start here |
+| `openai/` | OpenAI | GPT with tool calling |
+| `anthropic/` | Anthropic | Claude with tool calling |
+| `gemini/` | Gemini | Gemini tool-calling agent |
+| `google-adk/` | Google ADK | Gemini via the Google Agent Development Kit |
+| `claude-sdk/` | Claude Agent SDK | Filesystem + MCP tools + agentic loop |
+| `codex/` | Codex | OpenAI Codex SDK with shell + reasoning events |
+| `opencode/` | OpenCode | Self-hosted OpenCode server bridge |
+| `langgraph/` | LangGraph | Echo graph + 8 numbered scenarios (custom tools, personality, calculator/RAG/SQL subgraphs, Tom & Jerry) |
+| `letta/` | Letta | Persistent-memory agent |
+| `parlant/` | Parlant | Guideline-based behavior + 5 numbered scenarios |
+| `vercel-ai-sdk/` | Vercel AI SDK | Provider-agnostic via `@ai-sdk/*` (OpenAI, Anthropic, Google, …) |
+| `acp/` | ACP | Thenvoi as ACP agent (server) or wrap ACP binaries (client) |
+| `custom-adapter/` | SimpleAdapter | Write your own adapter from scratch |
+| `a2a-bridge/` | A2A | Bridge to external A2A agents |
+| `a2a-gateway/` | A2A Gateway | Expose Thenvoi peers as A2A endpoints |
+| `20-questions-arena/` | LangGraph | Multi-agent 20 Questions game |
+| `coding-agents/` | Claude SDK + Codex | Planner + reviewer pair sharing a workspace |
+| `debate-agents/` | Claude SDK + Codex | Advocate vs skeptic — structured debate via mentions |
+| `triage-coordinator/` | Multi-adapter | Coordinator routes questions to specialists via `lookup_peers` |
+| `linear-thenvoi/` | Linear | Webhook bridge + embedded bridge agent |
 
 ```bash
-# Clone and run
 git clone https://github.com/thenvoi/thenvoi-sdk-typescript.git
 cd thenvoi-sdk-typescript
 pnpm install
-cp agent_config.yaml.example agent_config.yaml  # add your credentials
 
-npx tsx examples/basic/basic-agent.ts
-npx tsx examples/openai/openai-agent.ts
+# Drop your Thenvoi credentials into packages/sdk/agent_config.yaml
+# Then run the smallest possible smoke test:
+pnpm --dir packages/sdk exec tsx examples/basic/basic-agent.ts
 ```
+
+Every folder has a README with prerequisites, the exact run command, and what "working" looks like. See `packages/sdk/examples/README.md` for the full index.
 
 ## Architecture
 

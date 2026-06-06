@@ -1,5 +1,24 @@
-import { Agent, LangGraphAdapter, type LangGraphGraph, loadAgentConfig, isDirectExecution } from "../../src/index";
+/**
+ * langgraph-agent — minimal LangGraph echo example.
+ *
+ * Runs a hand-written `LangGraphGraph` (no LLM) that echoes the latest
+ * user message back. Use this as a smoke test for `LangGraphAdapter`
+ * itself before reaching for a real LLM-backed graph (see the numbered
+ * scenarios `01-simple-agent.ts` … `08-jerry-agent.ts`).
+ */
+import {
+  Agent,
+  LangGraphAdapter,
+  type LangGraphGraph,
+  isDirectExecution,
+  loadAgentConfig,
+} from "@thenvoi/sdk";
 
+/**
+ * A graph that ignores everything except the most recent `user` turn and
+ * echoes its content. Implements `LangGraphGraph` so it slots straight
+ * into the adapter — no LangChain dependencies needed.
+ */
 export class EchoLangGraph implements LangGraphGraph {
   public async invoke(input: Record<string, unknown>): Promise<unknown> {
     const messages = Array.isArray(input.messages) ? input.messages : [];
@@ -9,7 +28,6 @@ export class EchoLangGraph implements LangGraphGraph {
         messages: [["assistant", `Echo from LangGraph: ${String(latest[1] ?? "")}`]],
       };
     }
-
     return {
       messages: [["assistant", "Echo from LangGraph"]],
     };

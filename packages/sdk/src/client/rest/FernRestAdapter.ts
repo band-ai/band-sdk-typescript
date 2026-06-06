@@ -651,7 +651,13 @@ export class FernRestAdapter implements RestApi {
       throw new UnsupportedFeatureError("Fern client missing next-message endpoint");
     }
 
-    const response = await api(request.chatId, mergeOptions(options));
+    const response = await withRateLimitRetry(
+      async () => api(request.chatId, mergeOptions(options)),
+      {
+        retryLimit: MESSAGE_SEND_RETRY_LIMIT,
+        baseDelayMs: MESSAGE_SEND_RETRY_BASE_DELAY_MS,
+      },
+    );
     return normalizePlatformChatMessage(extractEnvelopeData(response));
   }
 
@@ -888,7 +894,10 @@ export class FernRestAdapter implements RestApi {
     const listMessagesApi = this.client.chatMessages?.listMessages?.bind(this.client.chatMessages);
     if (listMessagesApi) {
       return normalizeFernPaginatedResponse<PlatformChatMessage>(
-        await listMessagesApi(request.chatId, listRequest, requestOptions),
+        await withRateLimitRetry(
+          () => listMessagesApi(request.chatId, listRequest, requestOptions),
+          { retryLimit: MESSAGE_SEND_RETRY_LIMIT, baseDelayMs: MESSAGE_SEND_RETRY_BASE_DELAY_MS },
+        ),
         normalizePlatformMessageRecord,
       );
     }
@@ -899,7 +908,10 @@ export class FernRestAdapter implements RestApi {
     }
 
     return normalizeFernPaginatedResponse<PlatformChatMessage>(
-      await listAgentMessagesApi(request.chatId, listRequest, requestOptions),
+      await withRateLimitRetry(
+        () => listAgentMessagesApi(request.chatId, listRequest, requestOptions),
+        { retryLimit: MESSAGE_SEND_RETRY_LIMIT, baseDelayMs: MESSAGE_SEND_RETRY_BASE_DELAY_MS },
+      ),
       normalizePlatformMessageRecord,
     );
   }

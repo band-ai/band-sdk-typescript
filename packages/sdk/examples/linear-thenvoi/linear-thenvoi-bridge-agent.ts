@@ -5,15 +5,15 @@ import {
   type SessionConfig,
   loadAgentConfig,
   isDirectExecution,
-} from "../../src/index";
+} from "@thenvoi/sdk";
 import {
   createLinearClient,
   createLinearTools,
   createSqliteSessionRoomStore,
   type LinearActivityClient,
   type SessionRoomStore,
-} from "../../src/linear";
-import type { Logger } from "../../src/core";
+} from "@thenvoi/sdk/linear";
+import type { Logger } from "@thenvoi/sdk/core";
 
 interface LinearThenvoiBridgeAgentOptions {
   agentId?: string;
@@ -56,7 +56,7 @@ function createLinearThenvoiBridgeAgentWithStore(
 
   const adapter = new CodexAdapter({
     config: {
-      model: options?.codexModel ?? process.env.CODEX_MODEL ?? "gpt-5.3-codex",
+      model: options?.codexModel ?? process.env.CODEX_MODEL ?? "gpt-5.4-mini",
       approvalPolicy: "never",
       sandboxMode: "workspace-write",
       enableExecutionReporting: true,

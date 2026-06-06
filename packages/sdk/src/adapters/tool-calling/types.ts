@@ -5,6 +5,12 @@ export interface ToolCall {
   name: string;
   input: MetadataMap;
   inputParseError?: string;
+  /**
+   * Provider-specific opaque metadata that must be echoed back when this tool
+   * call is replayed in the next request (e.g. Gemini 3's `thoughtSignature`).
+   * Adapters that don't need it can ignore the field.
+   */
+  providerMetadata?: Record<string, unknown>;
 }
 
 export interface ToolResult {

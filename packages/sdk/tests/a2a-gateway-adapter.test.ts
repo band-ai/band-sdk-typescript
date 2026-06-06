@@ -226,7 +226,7 @@ describe("A2AGatewayAdapter", () => {
       status: { state: "completed" },
     });
 
-    expect(rest.createChatCalls).toEqual(["a2a:gateway:ctx-1"]);
+    expect(rest.createChatCalls).toEqual([""]);
     expect(rest.addParticipantCalls).toEqual([
       { chatId: "room-1", participantId: "peer-weather" },
     ]);
@@ -238,14 +238,10 @@ describe("A2AGatewayAdapter", () => {
       chatId: "room-1",
       content: "@Weather Agent What is the weather in NYC?",
       mentions: [{ id: "peer-weather", handle: "weather-agent" }],
-      metadata: {
-        gateway_context_id: "ctx-1",
-        gateway_room_id: "room-1",
-        gateway_task_id: "task-1",
-        gateway_peer_id: "peer-weather",
-        gateway_peer_slug: "weather-agent",
-      },
     });
+    // The platform's chat-message endpoint no longer accepts a metadata
+    // field; gateway tracking metadata only flows through createChatEvent.
+    expect(rest.createMessageCalls[0]?.metadata).toBeUndefined();
   });
 
   it("forgets room mappings during cleanup", async () => {

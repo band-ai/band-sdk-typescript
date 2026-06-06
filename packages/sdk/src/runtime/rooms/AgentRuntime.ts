@@ -178,7 +178,7 @@ export class AgentRuntime {
 
     await this.link.disconnect();
     if (this.fatalError) {
-      throw this.fatalError instanceof Error ? this.fatalError : new Error(String(this.fatalError));
+      throw asThrowableError(this.fatalError);
     }
     return graceful;
   }
@@ -195,7 +195,7 @@ export class AgentRuntime {
     }
 
     if (this.fatalError) {
-      throw this.fatalError instanceof Error ? this.fatalError : new Error(String(this.fatalError));
+      throw asThrowableError(this.fatalError);
     }
   }
 
@@ -235,6 +235,11 @@ export class AgentRuntime {
           trackedRooms: this.subscribedRooms,
           roomFilter: this.roomFilter,
           onJoined: async (roomId) => {
+            // `room_added` from the platform: another participant just added
+            // us to a chat. There may already be a message in the chat that
+            // arrived before our channel-join completes, so we still need
+            // the one-shot REST catch-up here to avoid losing it. (Only the
+            // startup bulk-rehydrate path skips the catch-up.)
             this.getOrCreateExecution(roomId);
             await this.onRoomJoined?.(roomId, event.payload as MetadataMap);
           },
@@ -308,7 +313,7 @@ export class AgentRuntime {
     return graceful;
   }
 
-  private getOrCreateExecution(roomId: string): Execution {
+  private getOrCreateExecution(roomId: string, options?: { skipStartupCatchup?: boolean }): Execution {
     const existing = this.executions.get(roomId);
     if (existing) {
       return existing;
@@ -323,6 +328,7 @@ export class AgentRuntime {
         await this.failRuntime(error, event);
       },
       logger: this.logger,
+      ...(options?.skipStartupCatchup ? { skipStartupCatchup: true } : {}),
     });
     this.executions.set(roomId, execution);
     const watcher = execution.waitUntilStopped()
@@ -382,7 +388,11 @@ export class AgentRuntime {
       trackedRooms: this.subscribedRooms,
       roomFilter: this.roomFilter,
       onJoined: async (roomId, payload) => {
-        this.getOrCreateExecution(roomId);
+        // Auto-subscribe rehydrate path: nothing in `processing` state for
+        // this agent in this room yet (we just rejoined it). Skip the
+        // startup REST catch-up to avoid 2 calls per existing room — the
+        // WebSocket pushes any new activity live.
+        this.getOrCreateExecution(roomId, { skipStartupCatchup: true });
         await this.onRoomJoined?.(roomId, payload);
       },
       onError: async (error) => {
@@ -461,4 +471,21 @@ function syntheticRuntimeFailureEvent(agentId: string): PlatformEvent {
 
 function assertNever(value: never): never {
   throw new Error(`Unhandled platform event: ${JSON.stringify(value)}`);
+}
+
+function asThrowableError(value: unknown): Error {
+  if (value instanceof Error) return value;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const message = typeof record.message === "string"
+      ? record.message
+      : (() => { try { return JSON.stringify(record); } catch { return Object.prototype.toString.call(record); } })();
+    const err = new Error(message);
+    if (record.stack && typeof record.stack === "string") {
+      err.stack = record.stack;
+    }
+    (err as Error & { cause?: unknown }).cause = value;
+    return err;
+  }
+  return new Error(String(value));
 }

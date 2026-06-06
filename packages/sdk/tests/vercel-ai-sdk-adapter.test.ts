@@ -130,7 +130,7 @@ describe("VercelAISDKAdapter", () => {
           type: "tool-result",
           toolCallId: "call_1",
           toolName: "thenvoi_get_participants",
-          output: { ok: true },
+          output: { type: "json", value: { ok: true } },
         }],
       },
     ]);

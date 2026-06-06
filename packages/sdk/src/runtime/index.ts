@@ -66,3 +66,10 @@ export { ParticipantTracker } from "./participantTracker";
 export { MessageRetryTracker } from "./retryTracker";
 export { GracefulShutdown, runWithGracefulShutdown } from "./shutdown";
 export { DefaultPreprocessor } from "./preprocessing/DefaultPreprocessor";
+
+export {
+  CustomToolDefinitionError,
+  CustomToolValidationError,
+  CustomToolExecutionError,
+  type CustomToolDef,
+} from "./tools/customTools";

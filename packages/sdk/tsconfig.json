@@ -13,6 +13,7 @@
     "resolveJsonModule": true,
     "verbatimModuleSyntax": true,
     "types": ["node", "vitest/globals"],
+    "rootDir": ".",
     "outDir": "dist"
   },
   "include": ["src", "tests", "examples"],

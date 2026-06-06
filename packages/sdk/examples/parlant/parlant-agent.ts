@@ -1,9 +1,30 @@
-import { Agent, ParlantAdapter, loadAgentConfig, isDirectExecution } from "../../src/index";
+/**
+ * Plain Parlant agent — point at an existing Parlant agent and connect it
+ * to Thenvoi.
+ *
+ * Use this when you've already provisioned a Parlant agent (configured
+ * its description + guidelines on your Parlant server) and just want to
+ * pipe a Thenvoi room into it. Pass `PARLANT_AGENT_ID` to identify the
+ * remote Parlant agent.
+ *
+ * For provisioning a fresh Parlant agent at startup (description +
+ * guidelines defined inline in TS), see `01-basic-agent.ts` and the
+ * other numbered scenarios in this folder.
+ */
+import {
+  Agent,
+  ParlantAdapter,
+  isDirectExecution,
+  loadAgentConfig,
+} from "@thenvoi/sdk";
 
 export function createParlantAgent(
   options: {
+    /** Parlant server URL. */
     environment: string;
+    /** ID of the Parlant agent on that server. */
     agentId: string;
+    /** Optional API key if your Parlant server enforces one. */
     apiKey?: string;
   },
   overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
@@ -46,3 +67,4 @@ if (isDirectExecution(import.meta.url)) {
     config,
   ).run();
 }
+

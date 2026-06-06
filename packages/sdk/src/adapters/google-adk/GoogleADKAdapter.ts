@@ -188,7 +188,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
     const historyConverter = options.historyConverter ?? new GoogleADKHistoryConverter();
     super({ historyConverter });
 
-    this.model = options.model ?? "gemini-2.5-flash";
+    this.model = options.model ?? "gemini-3-flash-preview";
     this.systemPromptOverride = options.systemPrompt;
     this.customSection = options.customSection ?? "";
     this.enableExecutionReporting = options.enableExecutionReporting ?? false;
@@ -304,7 +304,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
     tools: AdapterToolsProtocol,
   ): unknown {
     return sdk.createAgent({
-      name: this.agentName || "thenvoi_agent",
+      name: sanitizeAdkAgentName(this.agentName) || "thenvoi_agent",
       model: this.model,
       instruction: this.systemPrompt,
       tools: this.buildTools(sdk, tools),
@@ -471,4 +471,16 @@ function trimRoomHistory(
 ): GoogleADKMessages {
   const maxEntries = maxHistoryMessages * 2;
   return history.length > maxEntries ? history.slice(-maxHistoryMessages) : history;
+}
+
+/**
+ * ADK requires agent names to match `[A-Za-z_][A-Za-z0-9_-]*`. Thenvoi agent
+ * `name` is free-form ("Claude Code", "Jira Planner"), so collapse spaces and
+ * strip disallowed characters before handing it to `createAgent`.
+ */
+function sanitizeAdkAgentName(raw: string | undefined): string {
+  if (!raw) return "";
+  const collapsed = raw.trim().replace(/\s+/g, "_").replace(/[^A-Za-z0-9_-]/g, "");
+  if (!collapsed) return "";
+  return /^[A-Za-z_]/.test(collapsed) ? collapsed : `_${collapsed}`;
 }

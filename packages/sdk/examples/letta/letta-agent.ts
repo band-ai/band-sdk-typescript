@@ -1,16 +1,34 @@
-import { Agent, LettaAdapter, loadAgentConfig, isDirectExecution } from "../../src/index";
-import { ConsoleLogger } from "../../src/core/logger";
+/**
+ * Letta-backed Thenvoi agent.
+ *
+ * Letta is a stateful agent platform with persistent memory across
+ * conversations. The adapter pipes each Thenvoi room message into a
+ * Letta agent and forwards the reply back into the room.
+ *
+ * Works with either Letta Cloud (`LETTA_API_KEY`) or a self-hosted Letta
+ * instance (`LETTA_BASE_URL`).
+ */
+import {
+  Agent,
+  LettaAdapter,
+  isDirectExecution,
+  loadAgentConfig,
+} from "@thenvoi/sdk";
+import { ConsoleLogger } from "@thenvoi/sdk/core";
 
 export function createLettaAgent(
   options: {
+    /** Override the Letta model name. Letta uses provider-prefixed IDs. */
     model?: string;
+    /** Letta Cloud API key. Set this OR `lettaBaseUrl`. */
     lettaApiKey?: string;
+    /** Self-hosted Letta server URL. Set this OR `lettaApiKey`. */
     lettaBaseUrl?: string;
   },
   overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
   const adapter = new LettaAdapter({
-    model: options.model ?? "openai/gpt-4o",
+    model: options.model ?? "openai/gpt-5.5",
     lettaApiKey: options.lettaApiKey,
     lettaBaseUrl: options.lettaBaseUrl,
     logger: new ConsoleLogger(),
@@ -34,6 +52,7 @@ if (isDirectExecution(import.meta.url)) {
   const lettaApiKey = process.env.LETTA_API_KEY;
   const lettaBaseUrl = process.env.LETTA_BASE_URL;
 
+  // One of cloud / self-hosted must be set — there's no useful default.
   if (!lettaApiKey && !lettaBaseUrl) {
     throw new Error(
       "Set LETTA_API_KEY (cloud) or LETTA_BASE_URL (self-hosted) to run this example.",
@@ -41,9 +60,9 @@ if (isDirectExecution(import.meta.url)) {
   }
 
   const config = loadAgentConfig("letta_agent");
-  console.log("[letta-agent] Starting with config:", JSON.stringify(config));
-  console.log("[letta-agent] Model:", process.env.LETTA_MODEL ?? "openai/gpt-4o");
-  console.log("[letta-agent] Base URL:", lettaBaseUrl ?? "cloud");
+  console.log("[letta-agent] Starting agent:", config.agentId);
+  console.log("[letta-agent] Model:", process.env.LETTA_MODEL ?? "openai/gpt-5.5");
+  console.log("[letta-agent] Letta target:", lettaBaseUrl ?? "cloud");
   void createLettaAgent(
     {
       model: process.env.LETTA_MODEL,
@@ -51,5 +70,7 @@ if (isDirectExecution(import.meta.url)) {
       lettaBaseUrl,
     },
     config,
-  ).run().then(() => console.log("[letta-agent] run() resolved")).catch((e) => console.error("[letta-agent] run() error:", e));
+  )
+    .run()
+    .catch((e) => console.error("[letta-agent] run() error:", e));
 }

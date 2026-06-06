@@ -36,7 +36,7 @@ LINEAR_THENVOI_STATE_DB=.linear-thenvoi-example.sqlite
 LINEAR_THENVOI_ROOM_STRATEGY=issue
 LINEAR_THENVOI_WRITEBACK_MODE=activity_stream
 THENVOI_HOST_AGENT_HANDLE=your-org/linear-orchestrator
-CODEX_MODEL=gpt-5.3-codex
+CODEX_MODEL=gpt-5.4-mini
 PORT=8787
 ```
 
