@@ -130,6 +130,10 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   shims: true,
+  splitting: false,
+  banner: {
+    js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);',
+  },
   target: "node22",
   outDir: "dist",
   // Keep openclaw external (host provides it)

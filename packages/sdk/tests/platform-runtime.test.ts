@@ -338,7 +338,7 @@ describe("PlatformRuntime", () => {
     await expect(runPromise).rejects.toThrow("adapter exploded");
   });
 
-  it("synchronizes existing rooms via /messages/next and skips the sync-point websocket duplicate", async () => {
+  it("recovers stale processing messages for existing rooms without draining /messages/next", async () => {
     const transport = new FakeTransport();
     let releaseSync!: () => void;
     const syncGate = new Promise<void>((resolve) => {
@@ -368,15 +368,20 @@ describe("PlatformRuntime", () => {
         updated_at: new Date().toISOString(),
       },
     ];
+    const getNextMessage = vi.fn(async () => {
+      await syncGate;
+      return backlog.shift() ?? null;
+    });
     const restApi = new FakeRestApi({
       listChats: async () => ({
         data: [{ id: "room-existing", title: "Existing Room" }],
         metadata: { page: 1, pageSize: 100, totalPages: 1, totalCount: 1 },
       }),
-      getNextMessage: async () => {
-        await syncGate;
-        return backlog.shift() ?? null;
-      },
+      listMessages: async (request) => ({
+        data: request.status === "processing" ? [backlog[0]] : [],
+        metadata: { page: 1, pageSize: 50, totalPages: 1, totalCount: 1 },
+      }),
+      getNextMessage,
     });
     const seenMessages: string[] = [];
 
@@ -424,7 +429,11 @@ describe("PlatformRuntime", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
+    expect(getNextMessage).not.toHaveBeenCalled();
     expect(seenMessages).toEqual([
+      // Existing rooms skip the expensive /messages/next drain, but still
+      // recover stale processing messages from a prior process before live
+      // WebSocket notifications continue.
       "recover me first",
       "recover me second",
       "live only",

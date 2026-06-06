@@ -10,6 +10,7 @@ interface RoomPresenceOptions {
   link: ThenvoiLink;
   roomFilter?: (room: MetadataMap) => boolean;
   autoSubscribeExistingRooms?: boolean;
+  recoverySweepIntervalMs?: number;
   logger?: Logger;
 }
 
@@ -17,6 +18,10 @@ type RoomPresenceJoinHandler = (roomId: string, payload: MetadataMap) => Promise
 type RoomPresenceLeaveHandler = (roomId: string) => Promise<void>;
 type RoomPresenceEventHandler = (roomId: string, event: PlatformEvent) => Promise<void>;
 type RoomPresenceContactHandler = (event: ContactEvent) => Promise<void>;
+type RoomPresenceTask = {
+  context: { eventType: string; roomId: string | null };
+  run: () => Promise<void>;
+};
 
 export class RoomPresence {
   public readonly rooms = new Set<string>();
@@ -28,15 +33,21 @@ export class RoomPresence {
   private readonly link: ThenvoiLink;
   private readonly roomFilter?: (room: MetadataMap) => boolean;
   private readonly autoSubscribeExistingRooms: boolean;
+  private readonly recoverySweepIntervalMs?: number;
   private readonly logger: Logger;
+  private readonly roomTaskQueues = new Map<string, RoomPresenceTask[]>();
+  private readonly activeTasks = new Set<Promise<void>>();
   private eventController: AbortController | null = null;
   private eventTask: Promise<void> | null = null;
+  private recoveryTimer: ReturnType<typeof setInterval> | null = null;
+  private recoverySweepInFlight = false;
   private contactsSubscribed = false;
 
   public constructor(options: RoomPresenceOptions) {
     this.link = options.link;
     this.roomFilter = options.roomFilter;
     this.autoSubscribeExistingRooms = options.autoSubscribeExistingRooms ?? true;
+    this.recoverySweepIntervalMs = options.recoverySweepIntervalMs;
     this.logger = options.logger ?? new NoopLogger();
   }
 
@@ -65,13 +76,25 @@ export class RoomPresence {
 
     this.eventController = new AbortController();
     this.eventTask = this.consumeEvents(this.eventController.signal);
+
+    if (this.recoverySweepIntervalMs && this.recoverySweepIntervalMs > 0) {
+      this.recoveryTimer = setInterval(() => {
+        void this.runRecoverySweep();
+      }, this.recoverySweepIntervalMs);
+    }
   }
 
   public async stop(): Promise<void> {
+    if (this.recoveryTimer) {
+      clearInterval(this.recoveryTimer);
+      this.recoveryTimer = null;
+    }
+
     this.eventController?.abort();
     await this.eventTask;
     this.eventTask = null;
     this.eventController = null;
+    await this.drainActiveTasks();
 
     if (this.contactsSubscribed) {
       await this.link.unsubscribeAgentContacts();
@@ -95,26 +118,84 @@ export class RoomPresence {
         return;
       }
 
-      switch (event.type) {
-        case "room_added":
-          await this.handleRoomAdded(event.roomId, event.payload as MetadataMap);
-          break;
-        case "room_removed":
-        case "room_deleted":
-          await this.handleRoomRemoved(event.roomId);
-          break;
-        case "contact_request_received":
-        case "contact_request_updated":
-        case "contact_added":
-        case "contact_removed":
-          await this.onContactEvent?.(event);
-          break;
-        default:
-          if (event.roomId && this.rooms.has(event.roomId)) {
-            await this.onRoomEvent?.(event.roomId, event);
-          }
-          break;
+      this.scheduleEvent(event);
+    }
+  }
+
+  private async drainActiveTasks(): Promise<void> {
+    while (this.activeTasks.size > 0) {
+      await Promise.allSettled([...this.activeTasks]);
+    }
+  }
+
+  private scheduleEvent(event: PlatformEvent): void {
+    this.scheduleRoomTask(
+      event.roomId ?? "__global__",
+      { eventType: event.type, roomId: event.roomId },
+      () => this.handleEvent(event),
+    );
+  }
+
+  private scheduleRoomTask(
+    roomKey: string,
+    context: { eventType: string; roomId: string | null },
+    run: () => Promise<void>,
+  ): void {
+    const task: RoomPresenceTask = { context, run };
+    const queue = this.roomTaskQueues.get(roomKey);
+    if (queue) {
+      queue.push(task);
+      return;
+    }
+
+    this.roomTaskQueues.set(roomKey, [task]);
+    const worker = this.runRoomTaskQueue(roomKey).finally(() => {
+      this.activeTasks.delete(worker);
+    });
+    this.activeTasks.add(worker);
+  }
+
+  private async runRoomTaskQueue(roomKey: string): Promise<void> {
+    const queue = this.roomTaskQueues.get(roomKey);
+    if (!queue) return;
+
+    while (queue.length > 0) {
+      const task = queue.shift();
+      if (!task) continue;
+
+      try {
+        await task.run();
+      } catch (error) {
+        this.logger.warn("RoomPresence dropped event after handler failure", {
+          ...task.context,
+          error,
+        });
       }
+    }
+
+    this.roomTaskQueues.delete(roomKey);
+  }
+
+  private async handleEvent(event: PlatformEvent): Promise<void> {
+    switch (event.type) {
+      case "room_added":
+        await this.handleRoomAdded(event.roomId, event.payload as MetadataMap);
+        break;
+      case "room_removed":
+      case "room_deleted":
+        await this.handleRoomRemoved(event.roomId);
+        break;
+      case "contact_request_received":
+      case "contact_request_updated":
+      case "contact_added":
+      case "contact_removed":
+        await this.onContactEvent?.(event);
+        break;
+      default:
+        if (event.roomId && this.rooms.has(event.roomId)) {
+          await this.onRoomEvent?.(event.roomId, event);
+        }
+        break;
     }
   }
 
@@ -125,7 +206,7 @@ export class RoomPresence {
       payload,
       trackedRooms: this.rooms,
       roomFilter: this.roomFilter,
-      onJoined: this.onRoomJoined ?? undefined,
+      onJoined: this.onRoomJoined ? this.enqueueRoomJoinedHandler() : undefined,
     });
   }
 
@@ -134,8 +215,28 @@ export class RoomPresence {
       link: this.link,
       roomId,
       trackedRooms: this.rooms,
-      onLeft: this.onRoomLeft ?? undefined,
+      onLeft: this.onRoomLeft ? this.enqueueRoomLeftHandler() : undefined,
     });
+  }
+
+  private enqueueRoomJoinedHandler(): RoomPresenceJoinHandler {
+    return async (roomId, payload) => {
+      this.scheduleRoomTask(
+        roomId,
+        { eventType: "room_joined", roomId },
+        async () => this.onRoomJoined?.(roomId, payload),
+      );
+    };
+  }
+
+  private enqueueRoomLeftHandler(): RoomPresenceLeaveHandler {
+    return async (roomId) => {
+      this.scheduleRoomTask(
+        roomId,
+        { eventType: "room_left", roomId },
+        async () => this.onRoomLeft?.(roomId),
+      );
+    };
   }
 
   private async subscribeExistingRooms(): Promise<void> {
@@ -144,12 +245,27 @@ export class RoomPresence {
       trackedRooms: this.rooms,
       requestOptions: DEFAULT_REQUEST_OPTIONS,
       roomFilter: this.roomFilter,
-      onJoined: this.onRoomJoined ?? undefined,
+      onJoined: this.onRoomJoined ? this.enqueueRoomJoinedHandler() : undefined,
+      onLeft: this.onRoomLeft ? this.enqueueRoomLeftHandler() : undefined,
+      pruneMissing: true,
       onError: async (error) => {
         this.logger.warn("RoomPresence failed to subscribe existing rooms", {
           error,
         });
       },
     });
+  }
+
+  private async runRecoverySweep(): Promise<void> {
+    if (this.recoverySweepInFlight) {
+      return;
+    }
+
+    this.recoverySweepInFlight = true;
+    try {
+      await this.subscribeExistingRooms();
+    } finally {
+      this.recoverySweepInFlight = false;
+    }
   }
 }
