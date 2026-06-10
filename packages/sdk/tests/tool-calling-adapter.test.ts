@@ -123,6 +123,7 @@ class FakeTools implements AgentToolsProtocol {
 class FakeModel implements ToolCallingModel {
   private turns = 0;
   public readonly requests: Array<{
+    systemPrompt?: string;
     toolRounds?: Array<{
       toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
       toolResults: Array<{ toolCallId: string; name: string; output: unknown; isError?: boolean }>;
@@ -131,6 +132,7 @@ class FakeModel implements ToolCallingModel {
 
   public async complete(
     request: {
+      systemPrompt?: string;
       toolRounds?: Array<{
         toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
         toolResults: Array<{ toolCallId: string; name: string; output: unknown; isError?: boolean }>;
@@ -138,6 +140,7 @@ class FakeModel implements ToolCallingModel {
     },
   ): Promise<{ text?: string; toolCalls?: Array<{ id: string; name: string; input: Record<string, unknown> }> }> {
     this.requests.push({
+      systemPrompt: request.systemPrompt,
       toolRounds: request.toolRounds,
     });
     this.turns += 1;
@@ -176,6 +179,67 @@ const fakeMessage: PlatformMessage = {
 };
 
 describe("ToolCallingAdapter", () => {
+  it("renders the default system prompt with memory guidance when memory tools are enabled", async () => {
+    class PromptModel implements ToolCallingModel {
+      public systemPrompt: string | undefined;
+
+      public async complete(
+        request: { systemPrompt?: string },
+      ): Promise<{ text?: string; toolCalls?: Array<{ id: string; name: string; input: Record<string, unknown> }> }> {
+        this.systemPrompt = request.systemPrompt;
+        return { text: "ok" };
+      }
+    }
+
+    const model = new PromptModel();
+    const adapter = new OpenAIAdapter({
+      model,
+      includeMemoryTools: true,
+      customSection: "Prefer durable memories.",
+    });
+    await adapter.onStarted("MemoryBot", "remembers useful context");
+
+    const tools = new FakeTools();
+    await adapter.onMessage(fakeMessage, tools, fakeHistory, null, null, {
+      isSessionBootstrap: false,
+      roomId: "r1",
+    });
+
+    expect(model.systemPrompt).toContain("You are MemoryBot, remembers useful context.");
+    expect(model.systemPrompt).toContain("Prefer durable memories.");
+    expect(model.systemPrompt).toContain("## Memory Tools");
+    expect(model.systemPrompt).toContain('- **system**: `"sensory"` | `"working"` | `"long_term"`');
+  });
+
+  it("preserves explicit systemPrompt overrides", async () => {
+    class PromptModel implements ToolCallingModel {
+      public systemPrompt: string | undefined;
+
+      public async complete(
+        request: { systemPrompt?: string },
+      ): Promise<{ text?: string; toolCalls?: Array<{ id: string; name: string; input: Record<string, unknown> }> }> {
+        this.systemPrompt = request.systemPrompt;
+        return { text: "ok" };
+      }
+    }
+
+    const model = new PromptModel();
+    const adapter = new OpenAIAdapter({
+      model,
+      systemPrompt: "Custom prompt only.",
+      includeMemoryTools: true,
+    });
+    await adapter.onStarted("MemoryBot", "remembers useful context");
+
+    const tools = new FakeTools();
+    await adapter.onMessage(fakeMessage, tools, fakeHistory, null, null, {
+      isSessionBootstrap: false,
+      roomId: "r1",
+    });
+
+    expect(model.systemPrompt).toBe("Custom prompt only.");
+  });
+
   it("does not duplicate the current message when history already includes it", async () => {
     class SingleTurnModel implements ToolCallingModel {
       public seenMessages: Array<Record<string, unknown>> = [];

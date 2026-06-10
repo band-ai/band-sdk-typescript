@@ -10,6 +10,7 @@ import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { formatHistoryForLlm } from "../../runtime/formatters";
+import { renderSystemPrompt } from "../../runtime/prompts";
 import {
   CustomToolExecutionError,
   CustomToolValidationError,
@@ -31,6 +32,7 @@ export interface ToolCallingAdapterOptions {
   model: ToolCallingModel;
   toolFormat: "openai" | "anthropic";
   systemPrompt?: string;
+  customSection?: string;
   includeMemoryTools?: boolean;
   maxToolRounds?: number;
   enableExecutionReporting?: boolean;
@@ -43,7 +45,8 @@ type ToolCallingTools = MessagingTools & ToolExecutor & ToolSchemaProvider;
 export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCallingTools> {
   private readonly model: ToolCallingModel;
   private readonly toolFormat: "openai" | "anthropic";
-  private readonly systemPrompt?: string;
+  private readonly systemPromptOverride?: string;
+  private readonly customSection: string;
   private readonly includeMemoryTools: boolean;
   private readonly maxToolRounds: number;
   private readonly enableExecutionReporting: boolean;
@@ -55,7 +58,8 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     super();
     this.model = options.model;
     this.toolFormat = options.toolFormat;
-    this.systemPrompt = options.systemPrompt;
+    this.systemPromptOverride = options.systemPrompt;
+    this.customSection = options.customSection ?? "";
     this.includeMemoryTools = options.includeMemoryTools ?? false;
     this.maxToolRounds = options.maxToolRounds ?? 8;
     this.enableExecutionReporting = options.enableExecutionReporting ?? false;
@@ -79,11 +83,12 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     const schemas = [...platformSchemas, ...customSchemas];
 
     const messages = this.buildMessages(history, message, participantsMessage, contactsMessage);
+    const systemPrompt = this.resolveSystemPrompt();
 
     const toolRounds: ToolRound[] = [];
 
     let response = await this.model.complete({
-      systemPrompt: this.systemPrompt,
+      systemPrompt,
       messages,
       tools: schemas,
     });
@@ -177,7 +182,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
       toolRounds.push({ toolCalls: roundToolCalls, toolResults: roundToolResults });
 
       response = await this.model.complete({
-        systemPrompt: this.systemPrompt,
+        systemPrompt,
         messages,
         tools: schemas,
         toolRounds,
@@ -222,6 +227,19 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     }
 
     return base;
+  }
+
+  private resolveSystemPrompt(): string {
+    if (this.systemPromptOverride !== undefined) {
+      return this.systemPromptOverride;
+    }
+
+    return renderSystemPrompt({
+      agentName: this.agentName || undefined,
+      agentDescription: this.agentDescription || undefined,
+      customSection: this.customSection,
+      capabilities: { memory: this.includeMemoryTools },
+    });
   }
 
   private async reportExecutionEvent(
