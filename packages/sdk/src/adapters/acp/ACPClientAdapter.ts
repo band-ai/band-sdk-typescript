@@ -14,7 +14,7 @@ import type {
 import { ACPClientHistoryConverter, type ACPClientSessionState } from "../../converters/acp-client";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
-import { renderSystemPrompt } from "../../runtime/prompts";
+import { buildMemorySection, renderSystemPrompt } from "../../runtime/prompts";
 import type { PlatformMessage } from "../../runtime/types";
 import type { McpToolRegistration } from "../../mcp/registrations";
 import { ThenvoiMcpServer } from "../../mcp/server";
@@ -107,12 +107,15 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   ): Promise<void> {
     await super.onStarted(agentName, agentDescription)
     this.started = true
-    this.systemPrompt = renderSystemPrompt({
+    const promptSections = [renderSystemPrompt({
       agentName,
       agentDescription,
       includeBaseInstructions: false,
-      capabilities: { memory: this.enableMemoryTools },
-    })
+    })]
+    if (this.enableMemoryTools) {
+      promptSections.push(buildMemorySection())
+    }
+    this.systemPrompt = promptSections.join("\n\n")
     await this.ensureConnection()
   }
 

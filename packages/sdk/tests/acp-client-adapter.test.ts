@@ -197,4 +197,66 @@ describe("ACPClientAdapter", () => {
     expect(promptTexts[1]).toContain("[System Context]")
     expect(promptTexts[2]).not.toContain("[System Context]")
   })
+
+  it("adds memory guidance to the bootstrapped ACP prompt only when memory tools are enabled", async () => {
+    async function capturePrompt(enableMemoryTools: boolean): Promise<string> {
+      const promptTexts: string[] = []
+      const adapter = new ACPClientAdapter({
+        command: ["acp-agent"],
+        enableMemoryTools,
+        enableMcpTools: false,
+        connectionFactory: async () => {
+          const controller = new AbortController()
+          return {
+            connection: {
+              signal: controller.signal,
+              closed: new Promise<void>(() => undefined),
+              initialize: vi.fn(async () => ({
+                protocolVersion: 1,
+                agentCapabilities: {},
+              })),
+              authenticate: vi.fn(async () => ({})),
+              loadSession: vi.fn(async () => ({})),
+              unstable_resumeSession: vi.fn(),
+              newSession: vi.fn(async () => ({ sessionId: "session-new" })),
+              prompt: vi.fn(async (params: { prompt: Array<{ text?: string }> }) => {
+                promptTexts.push(params.prompt[0]?.text ?? "")
+                return { stopReason: "end_turn" }
+              }),
+            } as never,
+            stop: async () => {
+              controller.abort()
+            },
+          }
+        },
+      })
+
+      await adapter.onStarted("Memory Agent", "ACP memory test")
+      await adapter.onMessage(
+        makeMessage("remember this", `room-${String(enableMemoryTools)}`),
+        new FakeTools(),
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: `room-${String(enableMemoryTools)}` },
+      )
+
+      await adapter.stop()
+      return promptTexts[0] ?? ""
+    }
+
+    const withMemory = await capturePrompt(true)
+    const withoutMemory = await capturePrompt(false)
+
+    expect(withMemory).toContain("[System Context]")
+    expect(withMemory).toContain("You are Memory Agent, ACP memory test.")
+    expect(withMemory).toContain("## Memory Tools")
+    expect(withMemory).toContain('- **system**: `"sensory"` | `"working"` | `"long_term"`')
+    expect(withMemory).toContain("## Room Context")
+
+    expect(withoutMemory).toContain("[System Context]")
+    expect(withoutMemory).toContain("You are Memory Agent, ACP memory test.")
+    expect(withoutMemory).not.toContain("## Memory Tools")
+    expect(withoutMemory).toContain("## Room Context")
+  })
 });
