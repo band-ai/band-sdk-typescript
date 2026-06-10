@@ -68,18 +68,9 @@ if (isDirectExecution(import.meta.url)) {
   const config = loadAgentConfig("openai_memory_agent");
   const logger = new ConsoleLogger();
 
-  console.log("[openai-memory-agent] Starting...");
-  console.log("[openai-memory-agent] Agent ID:", config.agentId);
-  console.log("[openai-memory-agent] REST URL:", config.restUrl ?? "(platform default)");
-  console.log("[openai-memory-agent] WS URL:", config.wsUrl ?? "(platform default)");
-  console.log("[openai-memory-agent] Model:", process.env.OPENAI_MODEL ?? "gpt-4o-mini");
-  console.log("[openai-memory-agent] Memory tools: enabled");
-  console.log(
-    "[openai-memory-agent] Listening for messages — @mention the agent in a Thenvoi chat.",
-  );
+  console.log(`[openai-memory-agent] running ${config.agentId}`);
 
   void createOpenAIMemoryAgent({ logger }, config)
     .run()
-    .then(() => console.log("[openai-memory-agent] Stopped."))
-    .catch((error: unknown) => console.error("[openai-memory-agent] Error:", error));
+    .catch((error: unknown) => console.error("[openai-memory-agent]", error));
 }
