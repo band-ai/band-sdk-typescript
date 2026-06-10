@@ -81,7 +81,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "clean": "rm -rf dist",
-    "dev:linear": "tsx examples/linear-thenvoi/linear-thenvoi-bridge-server.ts"
+    "dev:linear": "tsx examples/linear-thenvoi/linear-thenvoi-bridge-server.ts",
+    "example:openai-memory": "tsx --env-file=.env examples/openai/openai-memory-agent.ts",
+    "test:openai-memory-e2e": "RUN_OPENAI_MEMORY_E2E=1 tsx --env-file=.env tests/integration/openai-memory-e2e.ts"
   },
   "engines": {
     "node": ">=22"

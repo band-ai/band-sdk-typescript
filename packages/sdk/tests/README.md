@@ -14,3 +14,4 @@ Those files are operator-driven harnesses for real services and should be run ex
 
 Current live harnesses include:
 - `RUN_CODEX_ACP_E2E=1 npx tsx tests/integration/codex-acp-smoke.ts`
+- `pnpm test:openai-memory-e2e` (loads `packages/sdk/.env` via Node `--env-file`)
