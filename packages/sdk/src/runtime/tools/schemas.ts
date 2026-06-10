@@ -1,4 +1,5 @@
 import { CHAT_EVENT_TYPES } from "../../contracts/chatEvents";
+import type { MemorySystem, MemoryType } from "../../contracts/dtos";
 
 export const TOOL_MODELS = {
   thenvoi_send_message: {
@@ -291,7 +292,10 @@ export const TOOL_MODELS = {
           "semantic",
           "procedural",
         ],
-        description: "Memory type (must be valid for selected system).",
+        description:
+          "Memory type - must match the chosen system: " +
+          "sensory=iconic/echoic/haptic, " +
+          "working|long_term=episodic/semantic/procedural",
       },
       segment: {
         type: "string",
@@ -359,6 +363,14 @@ export const TOOL_MODELS = {
   },
 } as const;
 
+// Maps each memory system to the type values valid for that system.
+// Keep this in sync with thenvoi_store_memory's schema enums; tests enforce it.
+export const MEMORY_SYSTEM_TYPE_MAP = {
+  sensory: ["iconic", "echoic", "haptic"],
+  working: ["episodic", "semantic", "procedural"],
+  long_term: ["episodic", "semantic", "procedural"],
+} as const satisfies Record<MemorySystem, readonly MemoryType[]>;
+
 export const ALL_TOOL_NAMES = new Set(Object.keys(TOOL_MODELS));
 
 export const MEMORY_TOOL_NAMES = new Set<string>([
@@ -394,4 +406,10 @@ export function mcpToolNames(names: Set<string>): string[] {
 export function getToolDescription(name: string): string {
   const model = TOOL_MODELS[name as keyof typeof TOOL_MODELS];
   return model?.description ?? `Execute ${name}`;
+}
+
+export function getStoreMemoryPropertyEnum(
+  property: "system" | "type" | "segment",
+): readonly string[] {
+  return TOOL_MODELS.thenvoi_store_memory.properties[property].enum;
 }

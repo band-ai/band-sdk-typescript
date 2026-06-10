@@ -36,8 +36,10 @@ export {
   CONTACT_TOOL_NAMES,
   ALL_TOOL_NAMES,
   BASE_TOOL_NAMES,
+  MEMORY_SYSTEM_TYPE_MAP,
   mcpToolNames,
   getToolDescription,
+  getStoreMemoryPropertyEnum,
 } from "./tools/schemas";
 export {
   CHAT_EVENT_TYPES,
@@ -57,7 +59,9 @@ export {
 
 export {
   BASE_INSTRUCTIONS,
+  CONTACT_SECTION,
   TEMPLATES,
+  buildMemorySection,
   renderSystemPrompt,
   type RenderSystemPromptOptions,
 } from "./prompts";

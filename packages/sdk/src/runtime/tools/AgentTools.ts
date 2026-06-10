@@ -567,7 +567,21 @@ export class AgentTools implements AgentToolsProtocol {
       throw new UnsupportedFeatureError("Memory creation is not available in current REST adapter");
     }
 
-    return this.rest.storeMemory(args, DEFAULT_REQUEST_OPTIONS);
+    const request: StoreMemoryArgs = {
+      ...args,
+      scope: args.scope ?? "organization",
+    };
+
+    if (request.scope === "subject" && !request.subject_id?.trim()) {
+      throw new ValidationError(
+        'scope="subject" requires a subject_id (the UUID of the person or ' +
+        "agent the memory is about). You did not provide one. If you do not " +
+        'have a concrete subject UUID, retry with scope="organization" and ' +
+        "omit subject_id. Do not invent a UUID.",
+      );
+    }
+
+    return this.rest.storeMemory(request, DEFAULT_REQUEST_OPTIONS);
   }
 
   public async getMemory(memoryId: string): Promise<MemoryRecord> {
@@ -882,7 +896,7 @@ export class AgentTools implements AgentToolsProtocol {
     const system = this.normalizeOptionalMemorySystem(arguments_.system);
     const type = this.normalizeOptionalMemoryType(arguments_.type);
     const segment = this.normalizeOptionalMemorySegment(arguments_.segment);
-    const scope = this.normalizeOptionalStoreMemoryScope(arguments_.scope);
+    const scope = this.normalizeOptionalStoreMemoryScope(arguments_.scope) ?? "organization";
     const subjectId = this.normalizeOptionalString(arguments_.subject_id);
     const metadata = this.normalizeOptionalMetadata(arguments_.metadata);
 
@@ -898,13 +912,22 @@ export class AgentTools implements AgentToolsProtocol {
       throw new ValidationError("segment must be one of: user, agent, tool, guideline");
     }
 
+    if (scope === "subject" && !subjectId) {
+      throw new ValidationError(
+        'scope="subject" requires a subject_id (the UUID of the person or ' +
+        "agent the memory is about). You did not provide one. If you do not " +
+        'have a concrete subject UUID, retry with scope="organization" and ' +
+        "omit subject_id. Do not invent a UUID.",
+      );
+    }
+
     return {
       content,
       thought,
       system,
       type,
       segment,
-      ...(scope ? { scope } : {}),
+      scope,
       ...(subjectId ? { subject_id: subjectId } : {}),
       ...(metadata ? { metadata } : {}),
     };

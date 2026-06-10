@@ -1,3 +1,9 @@
+import type { AgentToolsCapabilities } from "../contracts/protocols";
+import {
+  MEMORY_SYSTEM_TYPE_MAP,
+  getStoreMemoryPropertyEnum,
+} from "./tools/schemas";
+
 export const BASE_INSTRUCTIONS = `
 ## Environment
 
@@ -80,12 +86,57 @@ export const TEMPLATES: Record<string, string> = {
     `You are {agent_name}, {agent_description}.\n\n{custom_section}\n` + BASE_INSTRUCTIONS,
 };
 
+export const CONTACT_SECTION = `
+## Contact Management Tools
+
+You have access to contact management tools. Use \`thenvoi_list_contacts\`
+to see your contacts, \`thenvoi_add_contact\` to send contact requests,
+and \`thenvoi_respond_contact_request\` to handle incoming requests.
+`;
+
 export interface RenderSystemPromptOptions {
   agentName?: string;
   agentDescription?: string;
   customSection?: string;
   template?: string;
   includeBaseInstructions?: boolean;
+  capabilities?: Partial<AgentToolsCapabilities>;
+}
+
+function formatValues(values: readonly string[]): string {
+  return values.map((value) => `\`"${value}"\``).join(" | ");
+}
+
+export function buildMemorySection(): string {
+  const typeLines = Object.entries(MEMORY_SYSTEM_TYPE_MAP)
+    .map(([system, types]) => `  - ${system}: ${formatValues(types)}`)
+    .join("\n");
+
+  return `## Memory Tools
+
+You have access to memory tools for storing and retrieving information
+across conversations. Use \`thenvoi_store_memory\` to persist important
+information and \`thenvoi_list_memories\` / \`thenvoi_get_memory\` to recall it.
+Use \`thenvoi_supersede_memory\` to mark outdated memories and
+\`thenvoi_archive_memory\` to hide memories that should be preserved.
+
+When calling \`thenvoi_store_memory\`, the \`system\`, \`type\`, and \`segment\` fields
+must use these exact values (case-sensitive):
+
+- **system**: ${formatValues(getStoreMemoryPropertyEnum("system"))}
+- **type** (must match the chosen system):
+${typeLines}
+- **segment**: ${formatValues(getStoreMemoryPropertyEnum("segment"))}
+
+Common patterns:
+- Facts learned about other agents/entities: \`system="long_term"\`, \`type="semantic"\`, \`segment="agent"\`
+- Events that occurred: \`system="long_term"\`, \`type="episodic"\`, \`segment="agent"\`
+- User preferences or profile info: \`system="long_term"\`, \`type="semantic"\`, \`segment="user"\`
+- How to perform a task: \`system="long_term"\`, \`type="procedural"\`, \`segment="tool"\`
+
+When storing with \`scope="subject"\`, you must pass a real \`subject_id\` UUID
+(e.g. from \`thenvoi_lookup_peers\` or the participant list). If you don't have
+one, use \`scope="organization"\` - never invent a UUID.`;
 }
 
 export function renderSystemPrompt(options?: RenderSystemPromptOptions): string {
@@ -100,8 +151,18 @@ export function renderSystemPrompt(options?: RenderSystemPromptOptions): string 
 
   const template = options?.template ?? "default";
   const templateString = TEMPLATES[template] ?? TEMPLATES.default;
-  return templateString
+  const rendered = templateString
     .replaceAll("{agent_name}", agentName)
     .replaceAll("{agent_description}", agentDescription)
     .replaceAll("{custom_section}", customSection);
+
+  const sections = [rendered];
+  if (options?.capabilities?.memory) {
+    sections.push(buildMemorySection());
+  }
+  if (options?.capabilities?.contacts) {
+    sections.push(CONTACT_SECTION.trim());
+  }
+
+  return sections.join("\n\n");
 }

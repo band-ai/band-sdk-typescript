@@ -111,6 +111,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       agentName,
       agentDescription,
       includeBaseInstructions: false,
+      capabilities: { memory: this.enableMemoryTools },
     })
     await this.ensureConnection()
   }

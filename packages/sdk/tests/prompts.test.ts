@@ -79,6 +79,53 @@ describe("renderSystemPrompt", () => {
 
     expect(result).not.toMatch(/\s$/);
   });
+
+  it("includes memory instructions when memory capability is enabled", () => {
+    const result = renderSystemPrompt({
+      agentName: "Bot",
+      agentDescription: "helper",
+      capabilities: { memory: true },
+    });
+
+    expect(result).toContain("## Memory Tools");
+    expect(result).toContain("thenvoi_store_memory");
+  });
+
+  it("documents store_memory enum values in memory instructions", () => {
+    const result = renderSystemPrompt({
+      agentName: "Bot",
+      agentDescription: "helper",
+      capabilities: { memory: true },
+    });
+
+    expect(result).toContain('- **system**: `"sensory"` | `"working"` | `"long_term"`');
+    expect(result).toContain('  - sensory: `"iconic"` | `"echoic"` | `"haptic"`');
+    expect(result).toContain('  - working: `"episodic"` | `"semantic"` | `"procedural"`');
+    expect(result).toContain('- **segment**: `"user"` | `"agent"` | `"tool"` | `"guideline"`');
+    expect(result).toContain('scope="subject"');
+    expect(result).toContain('scope="organization"');
+  });
+
+  it("omits memory instructions by default", () => {
+    const result = renderSystemPrompt({
+      agentName: "Bot",
+      agentDescription: "helper",
+    });
+
+    expect(result).not.toContain("## Memory Tools");
+  });
+
+  it("omits capability sections when base instructions are excluded", () => {
+    const result = renderSystemPrompt({
+      agentName: "Bot",
+      agentDescription: "helper",
+      includeBaseInstructions: false,
+      capabilities: { memory: true, contacts: true },
+    });
+
+    expect(result).not.toContain("## Memory Tools");
+    expect(result).not.toContain("## Contact Management Tools");
+  });
 });
 
 describe("TEMPLATES", () => {

@@ -580,4 +580,54 @@ describe("AgentTools coverage", () => {
       message: expect.stringContaining("scope must be one of: subject, organization"),
     });
   });
+
+  it("defaults store-memory scope and rejects subject scope without subject_id", async () => {
+    const rest = new CoverageRestApi();
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: createFacade(rest),
+      capabilities: {
+        memory: true,
+      },
+    });
+
+    await tools.executeToolCall("thenvoi_store_memory", {
+      content: "remember",
+      thought: "reason",
+      system: "working",
+      type: "semantic",
+      segment: "agent",
+    });
+
+    expect(rest.storeMemory).toHaveBeenCalledWith(
+      {
+        content: "remember",
+        thought: "reason",
+        system: "working",
+        type: "semantic",
+        segment: "agent",
+        scope: "organization",
+      },
+      expect.any(Object),
+    );
+
+    rest.storeMemory.mockClear();
+
+    await expect(
+      tools.executeToolCall("thenvoi_store_memory", {
+        content: "remember",
+        thought: "reason",
+        system: "working",
+        type: "semantic",
+        segment: "agent",
+        scope: "subject",
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      errorType: "ToolArgumentsValidationError",
+      message: expect.stringContaining("requires a subject_id"),
+    });
+
+    expect(rest.storeMemory).not.toHaveBeenCalled();
+  });
 });

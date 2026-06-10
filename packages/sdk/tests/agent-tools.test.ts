@@ -448,9 +448,32 @@ describe("AgentTools", () => {
         type: "semantic",
         segment: "user",
         thought: "  Important preference  ",
+        scope: "organization",
         subject_id: " user-1 ",
       },
     ]);
+  });
+
+  it("rejects subject-scoped memory without subject_id", async () => {
+    const api = new FakeRestApi();
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api }),
+      capabilities: { memory: true },
+    });
+
+    await expect(
+      tools.storeMemory({
+        content: "remember this",
+        system: "working",
+        type: "semantic",
+        segment: "user",
+        thought: "useful later",
+        scope: "subject",
+      }),
+    ).rejects.toThrow("requires a subject_id");
+
+    expect(api.storedMemories).toEqual([]);
   });
 
   it("validates required contact and memory identifiers before delegating", async () => {
