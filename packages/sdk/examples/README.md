@@ -12,8 +12,8 @@ Folders:
 - `codex/`
 - `custom-adapter/`
 - `langgraph/`
+- `letta/`
 - `parlant/`
 - `a2a-bridge/`
 - `a2a-gateway/`
 - `linear-band/`
-- `dog-landing-page/`
