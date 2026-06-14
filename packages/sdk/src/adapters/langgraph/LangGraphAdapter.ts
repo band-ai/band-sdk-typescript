@@ -216,13 +216,19 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     const messages: LangGraphTupleMessage[] = [];
 
     if (isSessionBootstrap && !this.bootstrappedRooms.has(roomId)) {
-      messages.push(["system", this.renderedSystemPrompt]);
+      if (this.graph || this.graphFactory) {
+        messages.push(["system", this.renderedSystemPrompt]);
+      }
       this.bootstrappedRooms.add(roomId);
     }
 
-    if (isSessionBootstrap && history.length > 0) {
+    const historyAlreadyContainsMessage = history.raw.some((entry) => entry.id === message.id);
+    if (history.length > 0) {
       const historical = history.raw.slice(-this.maxHistoryMessages);
       for (const item of historical) {
+        if (historyAlreadyContainsMessage && item.id === message.id) {
+          continue;
+        }
         const role = String(item.sender_type ?? "") === "Agent" ? "assistant" : "user";
         const content = String(item.content ?? "");
         if (content) {
@@ -239,7 +245,9 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
       messages.push(["user", `[System]: ${contactsMessage}`]);
     }
 
-    messages.push(["user", message.content]);
+    if (!historyAlreadyContainsMessage) {
+      messages.push(["user", message.content]);
+    }
     return messages;
   }
 
@@ -249,7 +257,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     config: Record<string, unknown>,
     tools: AdapterToolsProtocol,
   ): Promise<string | null> {
-    const stream = graph.streamEvents?.(input, config, { version: "v2" });
+    const stream = graph.streamEvents?.(input, { ...config, version: "v2" });
     if (!stream) {
       return null;
     }
@@ -278,6 +286,10 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
         );
       }
       if (eventType === "on_chain_end") {
+        const chainName = String(data.name ?? "");
+        if (chainName !== "LangGraph" && chainName !== "agent") {
+          continue;
+        }
         const output = asOptionalRecord(data.data) ?? {};
         const text = extractAssistantText(output.output);
         if (text) {
@@ -359,20 +371,29 @@ function stringifyToolResult(
 }
 
 function extractAssistantText(result: unknown): string | null {
-  if (typeof result === "string" && result.trim().length > 0) {
-    return result.trim();
+  if (typeof result === "string") {
+    const trimmed = result.trim();
+    return trimmed.length > 0 && !isInternalLangGraphMarker(trimmed) ? trimmed : null;
   }
 
   const record = asOptionalRecord(result) ?? {};
+  if (isLangChainAssistantMessage(record)) {
+    const kwargs = asOptionalRecord(record.kwargs);
+    const text = asMessageContent(kwargs?.content);
+    if (text && !isInternalLangGraphMarker(text)) {
+      return text;
+    }
+  }
+
   const directContent = asMessageContent(record.content);
-  if (directContent) {
+  if (directContent && !isInternalLangGraphMarker(directContent)) {
     return directContent;
   }
 
   const messages = Array.isArray(record.messages) ? record.messages : [];
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const text = asMessageText(messages[index]);
-    if (text) {
+    if (text && !isInternalLangGraphMarker(text)) {
       return text;
     }
   }
@@ -392,12 +413,32 @@ function asMessageText(value: unknown): string | null {
   if (!record) {
     return null;
   }
+
+  if (isLangChainAssistantMessage(record)) {
+    const kwargs = asOptionalRecord(record.kwargs);
+    return asMessageContent(kwargs?.content);
+  }
+
   const role = String(record.role ?? "");
   if (role !== "assistant") {
     return null;
   }
 
   return asMessageContent(record.content);
+}
+
+function isLangChainAssistantMessage(record: Record<string, unknown>): boolean {
+  const id = record.id;
+  if (!Array.isArray(id)) {
+    return false;
+  }
+
+  const typeName = String(id[id.length - 1] ?? "");
+  return typeName === "AIMessage" || typeName === "AIMessageChunk";
+}
+
+function isInternalLangGraphMarker(text: string): boolean {
+  return text === "__end__" || text === "__start__";
 }
 
 function asMessageContent(value: unknown): string | null {
