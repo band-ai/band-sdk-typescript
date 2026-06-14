@@ -1,4 +1,5 @@
 /** Canonical memory enums; DTOs, tool schemas, and validation derive from these constants. */
+
 /** Memory tier; constrains valid `type` values via {@link MEMORY_SYSTEM_TYPES}. */
 export const MEMORY_SYSTEMS = [
   "sensory", // Brief sensory inputs (iconic/echoic/haptic)
@@ -16,7 +17,7 @@ export const MEMORY_TYPES = [
   "semantic", // Facts, preferences, learned knowledge
   "procedural", // How to perform tasks
 ] as const;
-/** Logical subject category for a stored memory (not the same as `subject_id`). */
+/** Logical subject category (user/agent/tool/guideline); not scope `subject` or `subject_id`. */
 export const MEMORY_SEGMENTS = [
   "user", // User preferences or profile info
   "agent", // Facts or events about agents/entities
@@ -42,17 +43,12 @@ export const MEMORY_STATUSES = [
   "all", // Any status (no filter)
 ] as const;
 
-/** Memory tier label; pair with a {@link MemoryType} allowed for that tier. */
 export type MemorySystem = (typeof MEMORY_SYSTEMS)[number];
-/** Memory content kind; must match the selected {@link MemorySystem}. */
 export type MemoryType = (typeof MEMORY_TYPES)[number];
-/** Entity or context the memory content describes (not the same as `subject_id`). */
+/** Logical subject category (user/agent/tool/guideline); not scope `subject` or `subject_id`. */
 export type MemorySegment = (typeof MEMORY_SEGMENTS)[number];
-/** Sharing scope when storing (`subject` requires `subject_id`). */
 export type MemoryStoreScope = (typeof MEMORY_STORE_SCOPES)[number];
-/** Scope filter when listing memories (`all` includes every scope). */
 export type MemoryScope = (typeof MEMORY_LIST_SCOPES)[number];
-/** Lifecycle filter or stored status (`all` is list-only). */
 export type MemoryStatus = (typeof MEMORY_STATUSES)[number];
 /** Alias for {@link MemoryStoreScope} on store/write DTOs. */
 export type MemoryVisibility = MemoryStoreScope;
