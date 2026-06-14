@@ -57,6 +57,7 @@ export {
 
 export {
   BASE_INSTRUCTIONS,
+  MEMORY_SECTION,
   TEMPLATES,
   renderSystemPrompt,
   type RenderSystemPromptOptions,

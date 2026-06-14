@@ -215,6 +215,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
         agentName,
         agentDescription,
         customSection: this.customSection,
+        capabilities: { memory: this.enableMemoryTools },
       });
   }
 
