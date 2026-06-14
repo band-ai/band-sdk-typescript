@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { renderSystemPrompt, BASE_INSTRUCTIONS, MEMORY_SECTION, TEMPLATES } from "../src/runtime/prompts";
+import { renderSystemPrompt, BASE_INSTRUCTIONS, TEMPLATES } from "../src/runtime/prompts";
 
 describe("renderSystemPrompt", () => {
   it("renders default prompt with agent name and description", () => {
@@ -120,20 +120,5 @@ describe("TEMPLATES", () => {
     expect(TEMPLATES.default).toContain("{agent_name}");
     expect(TEMPLATES.default).toContain("{agent_description}");
     expect(TEMPLATES.default).toContain("{custom_section}");
-  });
-});
-
-describe("MEMORY_SECTION", () => {
-  it("documents valid store_memory enum values", () => {
-    expect(MEMORY_SECTION).toContain('"sensory"');
-    expect(MEMORY_SECTION).toContain('"long_term"');
-    expect(MEMORY_SECTION).toContain('"organization"');
-    expect(MEMORY_SECTION).toContain('"subject"');
-  });
-
-  it("warns against subject scope without a real subject_id", () => {
-    expect(MEMORY_SECTION).toContain('scope="subject"');
-    expect(MEMORY_SECTION).toContain("omit `subject_id`");
-    expect(MEMORY_SECTION).toContain("Do not invent a UUID");
   });
 });
