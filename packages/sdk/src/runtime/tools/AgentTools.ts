@@ -841,6 +841,7 @@ export class AgentTools implements AgentToolsProtocol {
     const subjectId = this.normalizeOptionalString(arguments_.subject_id);
     const contentQuery = this.normalizeOptionalString(arguments_.content_query);
 
+    // Keep combined filters within valid memory taxonomy pairs.
     if (system && type && !isMemoryTypeForSystem(system, type)) {
       throw new ValidationError(
         `type must be one of: ${expectedMemoryTypesForSystem(system)} for system "${system}"`,
@@ -877,6 +878,7 @@ export class AgentTools implements AgentToolsProtocol {
       throw new ValidationError(`type must be one of: ${expectedList(MEMORY_TYPES)}`);
     }
 
+    // Prevent storing memories with a type that belongs to a different system tier.
     if (!isMemoryTypeForSystem(system, type)) {
       throw new ValidationError(
         `type must be one of: ${expectedMemoryTypesForSystem(system)} for system "${system}"`,
@@ -1125,6 +1127,7 @@ function validateToolArgs(toolName: string, args: Record<string, unknown>): Tool
     if (typeof args.type === "string" && !isMemoryType(args.type)) {
       errors.push(`type: Invalid value '${args.type}'. Expected one of: ${expectedList(MEMORY_TYPES)}`);
     }
+    // Return a structured tool error before the normalized handler reaches REST.
     if (
       typeof args.system === "string"
       && isMemorySystem(args.system)

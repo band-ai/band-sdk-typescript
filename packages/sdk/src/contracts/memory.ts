@@ -72,6 +72,7 @@ export function isMemoryType(value: string): value is MemoryType {
   return (MEMORY_TYPES as readonly string[]).includes(value);
 }
 
+/** Guards against pairing sensory systems with cognitive types, or vice versa. */
 export function isMemoryTypeForSystem(
   system: MemorySystem,
   type: MemoryType,
