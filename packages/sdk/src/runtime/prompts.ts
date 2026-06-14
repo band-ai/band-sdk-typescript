@@ -1,3 +1,4 @@
+import { MEMORY_SYSTEM_TYPES } from "../contracts/memory";
 import type { AgentToolsCapabilities } from "../contracts/protocols";
 import { TOOL_MODELS } from "./tools/schemas";
 
@@ -78,18 +79,12 @@ This is required so users can see your reasoning process.
 -> thenvoi_send_message("London is 8°C and rainy.", mentions=["@john"])
 `;
 
-const MEMORY_SYSTEM_TYPE_MAP: Readonly<Record<string, readonly string[]>> = {
-  sensory: ["iconic", "echoic", "haptic"],
-  working: ["episodic", "semantic", "procedural"],
-  long_term: ["episodic", "semantic", "procedural"],
-};
-
 function quoteChoices(values: readonly string[]): string {
   return values.map((value) => `\`"${value}"\``).join(" | ");
 }
 
 function memoryTypeLines(): string {
-  return Object.entries(MEMORY_SYSTEM_TYPE_MAP)
+  return Object.entries(MEMORY_SYSTEM_TYPES)
     .map(([system, types]) => `  - ${system}: ${quoteChoices(types)}`)
     .join("\n");
 }

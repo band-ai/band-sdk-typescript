@@ -1,3 +1,5 @@
+import type { MemorySystem, MemoryType } from "./memory";
+
 export interface MetadataMap {
   [key: string]: unknown;
 }
@@ -113,14 +115,7 @@ export type RespondContactRequestArgs =
 
 export type MemoryScope = "subject" | "organization" | "all";
 export type MemoryVisibility = Exclude<MemoryScope, "all">;
-export type MemorySystem = "sensory" | "working" | "long_term";
-export type MemoryType =
-  | "iconic"
-  | "echoic"
-  | "haptic"
-  | "episodic"
-  | "semantic"
-  | "procedural";
+export type { MemorySystem, MemoryType };
 export type MemorySegment = "user" | "agent" | "tool" | "guideline";
 export type MemoryStatus = "active" | "superseded" | "archived" | "all";
 
