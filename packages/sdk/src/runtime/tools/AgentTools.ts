@@ -898,6 +898,14 @@ export class AgentTools implements AgentToolsProtocol {
       throw new ValidationError("segment must be one of: user, agent, tool, guideline");
     }
 
+    if (scope === "subject" && !subjectId) {
+      throw new ValidationError(
+        'scope="subject" requires a subject_id (the UUID of the person or agent the memory is about). ' +
+          'If you do not have a concrete subject UUID, retry with scope="organization" and omit subject_id. ' +
+          "Do not invent a UUID.",
+      );
+    }
+
     return {
       content,
       thought,

@@ -580,4 +580,33 @@ describe("AgentTools coverage", () => {
       message: expect.stringContaining("scope must be one of: subject, organization"),
     });
   });
+
+  it("rejects subject-scoped store_memory without subject_id", async () => {
+    const rest = new CoverageRestApi();
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: createFacade(rest),
+      capabilities: {
+        memory: true,
+      },
+    });
+
+    await expect(
+      tools.executeToolCall("thenvoi_store_memory", {
+        content: "User prefers concise updates",
+        thought: "Durable user preference",
+        system: "long_term",
+        type: "semantic",
+        segment: "user",
+        scope: "subject",
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      errorType: "ToolArgumentsValidationError",
+      toolName: "thenvoi_store_memory",
+      message: expect.stringContaining("requires a subject_id"),
+    });
+
+    expect(rest.storeMemory).not.toHaveBeenCalled();
+  });
 });
