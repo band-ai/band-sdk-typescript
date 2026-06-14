@@ -6,7 +6,7 @@ import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { formatMessageForLlm } from "../../runtime/formatters";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
+import type { PlatformMessage } from "../../runtime/types";
 import {
   customToolToOpenAISchema,
   executeCustomTool,
