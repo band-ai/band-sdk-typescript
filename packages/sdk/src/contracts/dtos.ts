@@ -1,4 +1,11 @@
-import type { MemorySystem, MemoryType } from "./memory";
+import type {
+  MemoryScope,
+  MemorySegment,
+  MemoryStatus,
+  MemorySystem,
+  MemoryType,
+  MemoryVisibility,
+} from "./memory";
 
 export interface MetadataMap {
   [key: string]: unknown;
@@ -113,11 +120,14 @@ export type RespondContactRequestArgs =
   | { action: ContactRequestAction; target: "handle"; handle: string }
   | { action: ContactRequestAction; target: "requestId"; requestId: string };
 
-export type MemoryScope = "subject" | "organization" | "all";
-export type MemoryVisibility = Exclude<MemoryScope, "all">;
-export type { MemorySystem, MemoryType };
-export type MemorySegment = "user" | "agent" | "tool" | "guideline";
-export type MemoryStatus = "active" | "superseded" | "archived" | "all";
+export type {
+  MemoryScope,
+  MemorySegment,
+  MemoryStatus,
+  MemorySystem,
+  MemoryType,
+  MemoryVisibility,
+};
 
 // Wire DTOs intentionally preserve API snake_case field names.
 export interface WireListMemoriesArgs {
