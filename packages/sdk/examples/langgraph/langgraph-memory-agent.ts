@@ -1,5 +1,16 @@
 import { Agent, LangGraphAdapter, loadAgentConfig, isDirectExecution } from "../../src/index";
 
+// Memory-enabled LangGraph agent example.
+//
+// To add memory to your own LangGraph adapter, do three things:
+// 1. Set `includeMemoryTools: true` — registers thenvoi_* memory tools with the LLM.
+// 2. Pass `customSection` with behavioural guidance (below) — tells the model when to store/recall.
+//    Field values (system/type/segment/scope) are appended automatically by the SDK.
+// 3. Optionally set `emitExecutionEvents: true` — surfaces tool calls in the chat room.
+//
+// Run: pnpm --filter @thenvoi/sdk exec tsx examples/langgraph/langgraph-memory-agent.ts
+// Config: `memory_agent` block in agent_config.yaml (Thenvoi creds + optional openai_api_key/model).
+
 // Behavioural guidance only — kept short on purpose. The valid memory field
 // values (system/type/segment/scope) and common patterns are appended
 // automatically by the SDK's type-derived "Memory Tools" section when
@@ -28,9 +39,9 @@ export function createLangGraphMemoryAgent(
 ): Agent {
   const adapter = new LangGraphAdapter({
     llm: options.llm,
-    includeMemoryTools: true,
+    includeMemoryTools: true, // exposes thenvoi_store_memory, thenvoi_list_memories, etc.
     customSection: MEMORY_CUSTOM_SECTION,
-    emitExecutionEvents: true,
+    emitExecutionEvents: true, // optional: show tool activity in chat
   });
 
   return Agent.create({
