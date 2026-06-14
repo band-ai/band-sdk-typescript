@@ -1,16 +1,20 @@
 import { Agent, LangGraphAdapter, loadAgentConfig, isDirectExecution } from "../../src/index";
 
-const MEMORY_CUSTOM_SECTION = `You are a collaborative assistant that remembers important facts across conversations.
+// Behavioural guidance only — kept short on purpose. The valid memory field
+// values (system/type/segment/scope) and common patterns are appended
+// automatically by the SDK's type-derived "Memory Tools" section when
+// `includeMemoryTools` is enabled, so they are never hardcoded here.
+const MEMORY_CUSTOM_SECTION = `You remember facts across conversations using the memory tools.
 
-When users share preferences, profile details, or recurring context:
-- Store them immediately with \`thenvoi_store_memory\` (prefer \`long_term\` / \`semantic\` / \`user\` / \`organization\`)
-- Recall relevant memories with \`thenvoi_list_memories\` before answering
-- Supersede outdated memories instead of storing duplicates
-- After storing or recalling memory, confirm what you did via \`thenvoi_send_message\`
-
-When the user asks you to store or remember something, call \`thenvoi_store_memory\` for the relevant fact, then reply with \`thenvoi_send_message\`.
-
-Use Thenvoi tools for platform side effects and final replies.`;
+- Memory is an action: the only way to remember is to call \`thenvoi_store_memory\`.
+  Never claim you remembered, stored, or noted something unless you called it this turn.
+- When the user shares a preference or fact, call \`thenvoi_store_memory\` (use the field
+  values from the Memory Tools section), then confirm with \`thenvoi_send_message\`.
+- Store selectively: only durable facts (preferences, profile details, standing
+  instructions, project facts). Skip one-off requests, transient chat context, and
+  sensitive information unless the user explicitly asks you to remember it.
+- Before answering questions about the user, call \`thenvoi_list_memories\` and answer
+  from the results; use \`thenvoi_supersede_memory\` instead of storing duplicates.`;
 
 export interface LangGraphMemoryExampleOptions {
   /** LangChain-compatible chat model (e.g. `ChatOpenAI` from `@langchain/openai`). */
