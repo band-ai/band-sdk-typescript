@@ -1,28 +1,60 @@
-// Single source of truth for the memory enums (systems, types, segments,
-// scopes, statuses) and the system -> valid types relationship. The DTO types
-// (re-exported from dtos.ts), the JSON-schema enums in tools/schemas.ts, and
-// the validation guards in tools/AgentTools.ts all derive from these constants
-// so they cannot drift.
-export const MEMORY_SYSTEMS = ["sensory", "working", "long_term"] as const;
-export const MEMORY_TYPES = [
-  "iconic",
-  "echoic",
-  "haptic",
-  "episodic",
-  "semantic",
-  "procedural",
+/** Canonical memory enums; DTOs, tool schemas, and validation derive from these constants. */
+/** Memory tier; constrains valid `type` values via {@link MEMORY_SYSTEM_TYPES}. */
+export const MEMORY_SYSTEMS = [
+  "sensory", // Brief sensory inputs (iconic/echoic/haptic)
+  "working", // Short-term session context (episodic/semantic/procedural)
+  "long_term", // Persistent cross-conversation memory (same types as working)
 ] as const;
-export const MEMORY_SEGMENTS = ["user", "agent", "tool", "guideline"] as const;
-export const MEMORY_STORE_SCOPES = ["subject", "organization"] as const;
-export const MEMORY_LIST_SCOPES = ["subject", "organization", "all"] as const;
-export const MEMORY_STATUSES = ["active", "superseded", "archived", "all"] as const;
+/** Content kind; must match the chosen {@link MemorySystem}. */
+export const MEMORY_TYPES = [
+  // sensory
+  "iconic", // Visual input
+  "echoic", // Auditory input
+  "haptic", // Tactile input
+  // working | long_term
+  "episodic", // Events that occurred
+  "semantic", // Facts, preferences, learned knowledge
+  "procedural", // How to perform tasks
+] as const;
+/** Logical subject category for a stored memory (not the same as `subject_id`). */
+export const MEMORY_SEGMENTS = [
+  "user", // User preferences or profile info
+  "agent", // Facts or events about agents/entities
+  "tool", // Tool usage or task procedures
+  "guideline", // Behavioral rules or policies
+] as const;
+/** Visibility scope for `thenvoi_store_memory`. */
+export const MEMORY_STORE_SCOPES = [
+  "subject", // About one person/agent; requires subject_id
+  "organization", // Shared org-wide
+] as const;
+/** Scope filter for `thenvoi_list_memories`. */
+export const MEMORY_LIST_SCOPES = [
+  "subject", // Subject-scoped memories only
+  "organization", // Organization-scoped memories only
+  "all", // Both scopes (no scope filter)
+] as const;
+/** Lifecycle state; list filter and set by supersede/archive tools. */
+export const MEMORY_STATUSES = [
+  "active", // Normal, visible memories
+  "superseded", // Outdated; soft-deleted via thenvoi_supersede_memory
+  "archived", // Hidden but preserved via thenvoi_archive_memory
+  "all", // Any status (no filter)
+] as const;
 
+/** Memory tier label; pair with a {@link MemoryType} allowed for that tier. */
 export type MemorySystem = (typeof MEMORY_SYSTEMS)[number];
+/** Memory content kind; must match the selected {@link MemorySystem}. */
 export type MemoryType = (typeof MEMORY_TYPES)[number];
+/** Entity or context the memory content describes (not the same as `subject_id`). */
 export type MemorySegment = (typeof MEMORY_SEGMENTS)[number];
+/** Sharing scope when storing (`subject` requires `subject_id`). */
 export type MemoryStoreScope = (typeof MEMORY_STORE_SCOPES)[number];
+/** Scope filter when listing memories (`all` includes every scope). */
 export type MemoryScope = (typeof MEMORY_LIST_SCOPES)[number];
+/** Lifecycle filter or stored status (`all` is list-only). */
 export type MemoryStatus = (typeof MEMORY_STATUSES)[number];
+/** Alias for {@link MemoryStoreScope} on store/write DTOs. */
 export type MemoryVisibility = MemoryStoreScope;
 
 // Which memory types are valid for each system. The `satisfies` clause keeps
