@@ -581,6 +581,48 @@ describe("AgentTools coverage", () => {
     });
   });
 
+  it("rejects memory type values that do not match the selected system", async () => {
+    const rest = new CoverageRestApi();
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: createFacade(rest),
+      capabilities: {
+        memory: true,
+      },
+    });
+
+    await expect(
+      tools.executeToolCall("thenvoi_store_memory", {
+        content: "User prefers concise updates",
+        thought: "Durable user preference",
+        system: "sensory",
+        type: "semantic",
+        segment: "user",
+        scope: "organization",
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      errorType: "ToolArgumentsValidationError",
+      toolName: "thenvoi_store_memory",
+      message: expect.stringContaining("Invalid value 'semantic' for system 'sensory'"),
+    });
+
+    await expect(
+      tools.executeToolCall("thenvoi_list_memories", {
+        system: "sensory",
+        type: "semantic",
+      }),
+    ).resolves.toMatchObject({
+      ok: false,
+      errorType: "ToolArgumentsValidationError",
+      toolName: "thenvoi_list_memories",
+      message: expect.stringContaining('for system "sensory"'),
+    });
+
+    expect(rest.storeMemory).not.toHaveBeenCalled();
+    expect(rest.listMemories).not.toHaveBeenCalled();
+  });
+
   it("rejects subject-scoped store_memory without subject_id", async () => {
     const rest = new CoverageRestApi();
     const tools = new AgentTools({

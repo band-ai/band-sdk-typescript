@@ -44,6 +44,7 @@ import {
   TOOL_MODELS
 } from "./schemas";
 import {
+  expectedMemoryTypesForSystem,
   expectedList,
   isMemoryListScope,
   isMemorySegment,
@@ -51,6 +52,7 @@ import {
   isMemoryStoreScope,
   isMemorySystem,
   isMemoryType,
+  isMemoryTypeForSystem,
   MEMORY_LIST_SCOPES,
   MEMORY_SEGMENTS,
   MEMORY_STATUSES,
@@ -839,6 +841,12 @@ export class AgentTools implements AgentToolsProtocol {
     const subjectId = this.normalizeOptionalString(arguments_.subject_id);
     const contentQuery = this.normalizeOptionalString(arguments_.content_query);
 
+    if (system && type && !isMemoryTypeForSystem(system, type)) {
+      throw new ValidationError(
+        `type must be one of: ${expectedMemoryTypesForSystem(system)} for system "${system}"`,
+      );
+    }
+
     return {
       ...(subjectId ? { subject_id: subjectId } : {}),
       ...(scope ? { scope } : {}),
@@ -867,6 +875,12 @@ export class AgentTools implements AgentToolsProtocol {
 
     if (!type) {
       throw new ValidationError(`type must be one of: ${expectedList(MEMORY_TYPES)}`);
+    }
+
+    if (!isMemoryTypeForSystem(system, type)) {
+      throw new ValidationError(
+        `type must be one of: ${expectedMemoryTypesForSystem(system)} for system "${system}"`,
+      );
     }
 
     if (!segment) {
@@ -1110,6 +1124,18 @@ function validateToolArgs(toolName: string, args: Record<string, unknown>): Tool
     }
     if (typeof args.type === "string" && !isMemoryType(args.type)) {
       errors.push(`type: Invalid value '${args.type}'. Expected one of: ${expectedList(MEMORY_TYPES)}`);
+    }
+    if (
+      typeof args.system === "string"
+      && isMemorySystem(args.system)
+      && typeof args.type === "string"
+      && isMemoryType(args.type)
+      && !isMemoryTypeForSystem(args.system, args.type)
+    ) {
+      errors.push(
+        `type: Invalid value '${args.type}' for system '${args.system}'. ` +
+          `Expected one of: ${expectedMemoryTypesForSystem(args.system)}`,
+      );
     }
     if (typeof args.segment === "string" && !isMemorySegment(args.segment)) {
       errors.push(`segment: Invalid value '${args.segment}'. Expected one of: ${expectedList(MEMORY_SEGMENTS)}`);

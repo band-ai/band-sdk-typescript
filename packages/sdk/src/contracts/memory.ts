@@ -72,6 +72,13 @@ export function isMemoryType(value: string): value is MemoryType {
   return (MEMORY_TYPES as readonly string[]).includes(value);
 }
 
+export function isMemoryTypeForSystem(
+  system: MemorySystem,
+  type: MemoryType,
+): boolean {
+  return (MEMORY_SYSTEM_TYPES[system] as readonly string[]).includes(type);
+}
+
 export function isMemorySegment(value: string): value is MemorySegment {
   return (MEMORY_SEGMENTS as readonly string[]).includes(value);
 }
@@ -90,4 +97,8 @@ export function isMemoryStatus(value: string): value is MemoryStatus {
 
 export function expectedList(values: readonly string[]): string {
   return values.join(", ");
+}
+
+export function expectedMemoryTypesForSystem(system: MemorySystem): string {
+  return expectedList(MEMORY_SYSTEM_TYPES[system]);
 }
