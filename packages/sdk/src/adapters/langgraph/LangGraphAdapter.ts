@@ -216,16 +216,19 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     const messages: LangGraphTupleMessage[] = [];
 
     if (isSessionBootstrap && !this.bootstrappedRooms.has(roomId)) {
+      // createReactAgent already receives the prompt; only inject for custom graphs.
       if (this.graph || this.graphFactory) {
         messages.push(["system", this.renderedSystemPrompt]);
       }
       this.bootstrappedRooms.add(roomId);
     }
 
+    // Replay history on every turn so follow-ups retain room context.
     const historyAlreadyContainsMessage = history.raw.some((entry) => entry.id === message.id);
     if (history.length > 0) {
       const historical = history.raw.slice(-this.maxHistoryMessages);
       for (const item of historical) {
+        // Platform history may already include the triggering message.
         if (historyAlreadyContainsMessage && item.id === message.id) {
           continue;
         }
@@ -246,7 +249,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     }
 
     if (!historyAlreadyContainsMessage) {
-      messages.push(["user", message.content]);
+      messages.push(["user", message.content]); // skip when already replayed above
     }
     return messages;
   }
@@ -257,6 +260,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     config: Record<string, unknown>,
     tools: AdapterToolsProtocol,
   ): Promise<string | null> {
+    // version belongs on config (arg 2), not the optional third arg.
     const stream = graph.streamEvents?.(input, { ...config, version: "v2" });
     if (!stream) {
       return null;
@@ -287,6 +291,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
       }
       if (eventType === "on_chain_end") {
         const chainName = String(data.name ?? "");
+        // Ignore intermediate chains that emit routing markers, not replies.
         if (chainName !== "LangGraph" && chainName !== "agent") {
           continue;
         }
@@ -373,10 +378,12 @@ function stringifyToolResult(
 function extractAssistantText(result: unknown): string | null {
   if (typeof result === "string") {
     const trimmed = result.trim();
+    // createReactAgent streams "__end__"/"__start__" markers as plain strings.
     return trimmed.length > 0 && !isInternalLangGraphMarker(trimmed) ? trimmed : null;
   }
 
   const record = asOptionalRecord(result) ?? {};
+  // createReactAgent returns serialized LangChain AIMessage objects, not tuples.
   if (isLangChainAssistantMessage(record)) {
     const kwargs = asOptionalRecord(record.kwargs);
     const text = asMessageContent(kwargs?.content);
