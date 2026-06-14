@@ -1,22 +1,35 @@
 /** Canonical memory enums; DTOs, tool schemas, and validation derive from these constants. */
 
-/** Memory tier; constrains valid `type` values via {@link MEMORY_SYSTEM_TYPES}. */
-export const MEMORY_SYSTEMS = [
-  "sensory", // Brief sensory inputs (iconic/echoic/haptic)
-  "working", // Short-term session context (episodic/semantic/procedural)
-  "long_term", // Persistent cross-conversation memory (same types as working)
-] as const;
-/** Content kind; must match the chosen {@link MemorySystem}. */
-export const MEMORY_TYPES = [
-  // sensory
+const SENSORY_MEMORY_TYPES = [
   "iconic", // Visual input
   "echoic", // Auditory input
   "haptic", // Tactile input
-  // working | long_term
+] as const;
+
+const COGNITIVE_MEMORY_TYPES = [
   "episodic", // Events that occurred
   "semantic", // Facts, preferences, learned knowledge
   "procedural", // How to perform tasks
 ] as const;
+
+/** Which memory types are valid for each memory tier. */
+export const MEMORY_SYSTEM_TYPES = {
+  sensory: SENSORY_MEMORY_TYPES, // Brief sensory inputs
+  working: COGNITIVE_MEMORY_TYPES, // Short-term session context
+  long_term: COGNITIVE_MEMORY_TYPES, // Persistent cross-conversation memory
+} as const;
+
+export type MemorySystem = keyof typeof MEMORY_SYSTEM_TYPES;
+export type MemoryType = (typeof MEMORY_SYSTEM_TYPES)[MemorySystem][number];
+
+/** Memory tier; constrains valid `type` values via {@link MEMORY_SYSTEM_TYPES}. */
+export const MEMORY_SYSTEMS = Object.keys(MEMORY_SYSTEM_TYPES) as readonly MemorySystem[];
+
+/** Content kind; must match the chosen {@link MemorySystem}. */
+export const MEMORY_TYPES = [
+  ...SENSORY_MEMORY_TYPES,
+  ...COGNITIVE_MEMORY_TYPES,
+] as const satisfies readonly MemoryType[];
 /** Logical subject category (user/agent/tool/guideline); not scope `subject` or `subject_id`. */
 export const MEMORY_SEGMENTS = [
   "user", // User preferences or profile info
@@ -43,8 +56,6 @@ export const MEMORY_STATUSES = [
   "all", // Any status (no filter)
 ] as const;
 
-export type MemorySystem = (typeof MEMORY_SYSTEMS)[number];
-export type MemoryType = (typeof MEMORY_TYPES)[number];
 /** Logical subject category (user/agent/tool/guideline); not scope `subject` or `subject_id`. */
 export type MemorySegment = (typeof MEMORY_SEGMENTS)[number];
 export type MemoryStoreScope = (typeof MEMORY_STORE_SCOPES)[number];
@@ -52,15 +63,6 @@ export type MemoryScope = (typeof MEMORY_LIST_SCOPES)[number];
 export type MemoryStatus = (typeof MEMORY_STATUSES)[number];
 /** Alias for {@link MemoryStoreScope} on store/write DTOs. */
 export type MemoryVisibility = MemoryStoreScope;
-
-// Which memory types are valid for each system. The `satisfies` clause keeps
-// this in lock-step with MEMORY_SYSTEMS and MEMORY_TYPES: a missing system key
-// or an unknown type becomes a compile error.
-export const MEMORY_SYSTEM_TYPES = {
-  sensory: ["iconic", "echoic", "haptic"],
-  working: ["episodic", "semantic", "procedural"],
-  long_term: ["episodic", "semantic", "procedural"],
-} as const satisfies Record<MemorySystem, readonly MemoryType[]>;
 
 export function isMemorySystem(value: string): value is MemorySystem {
   return (MEMORY_SYSTEMS as readonly string[]).includes(value);
