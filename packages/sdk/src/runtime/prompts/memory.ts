@@ -10,13 +10,16 @@ Use \`thenvoi_supersede_memory\` to mark outdated memories and
 \`thenvoi_archive_memory\` to hide memories that should be preserved.`;
 
 const MEMORY_COMMON_PATTERNS = `Common patterns:
-- Facts learned about other agents/entities: \`system="long_term"\`, \`type="semantic"\`, \`segment="agent"\`, \`scope="organization"\`
-- Events that occurred: \`system="long_term"\`, \`type="episodic"\`, \`segment="agent"\`, \`scope="organization"\`
-- User preferences or profile info: \`system="long_term"\`, \`type="semantic"\`, \`segment="user"\`, \`scope="organization"\`
-- How to perform a task: \`system="long_term"\`, \`type="procedural"\`, \`segment="tool"\`, \`scope="organization"\``;
+- Facts learned about a specific agent/entity: \`system="long_term"\`, \`type="semantic"\`, \`segment="agent"\`, \`scope="subject"\`
+- Events involving a specific person/agent: \`system="long_term"\`, \`type="episodic"\`, \`segment="agent"\`, \`scope="subject"\`
+- A user's preferences or profile info: \`system="long_term"\`, \`type="semantic"\`, \`segment="user"\`, \`scope="subject"\`
+- Org-wide knowledge or how to perform a task: \`system="long_term"\`, \`type="procedural"\`, \`segment="tool"\`, \`scope="organization"\``;
 
-const MEMORY_SCOPE_GUIDANCE = `When storing with \`scope="subject"\`, you must pass a real \`subject_id\` UUID
-(e.g. from \`thenvoi_lookup_peers\` or the participant list).`;
+const MEMORY_SCOPE_GUIDANCE = `Prefer \`scope="subject"\` whenever the memory is about a specific person or agent, so it
+stays attached to that subject rather than leaking org-wide. Storing with \`scope="subject"\` requires a
+real \`subject_id\` UUID, so resolve it first via \`thenvoi_lookup_peers\` or the participant list.
+Reserve \`scope="organization"\` for knowledge that is genuinely shared across the whole organization and
+is not about any one subject.`;
 
 function quoteChoices(values: readonly string[]): string {
   return values.map((value) => `\`"${value}"\``).join(" | ");
