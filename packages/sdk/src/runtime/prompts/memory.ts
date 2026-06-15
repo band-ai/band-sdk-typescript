@@ -16,8 +16,7 @@ const MEMORY_COMMON_PATTERNS = `Common patterns:
 - How to perform a task: \`system="long_term"\`, \`type="procedural"\`, \`segment="tool"\`, \`scope="organization"\``;
 
 const MEMORY_SCOPE_GUIDANCE = `When storing with \`scope="subject"\`, you must pass a real \`subject_id\` UUID
-(e.g. from \`thenvoi_lookup_peers\` or the participant list). If you do not have a concrete subject UUID,
-use \`scope="organization"\` and omit \`subject_id\`. Do not invent a UUID.`;
+(e.g. from \`thenvoi_lookup_peers\` or the participant list).`;
 
 function quoteChoices(values: readonly string[]): string {
   return values.map((value) => `\`"${value}"\``).join(" | ");
