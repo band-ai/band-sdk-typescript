@@ -12,6 +12,14 @@ const COGNITIVE_MEMORY_TYPES = [
   "procedural", // How to perform tasks
 ] as const;
 
+function namedValues<const Values extends readonly string[]>(
+  values: Values,
+): { readonly [Value in Values[number]]: Value } {
+  return Object.fromEntries(values.map((value) => [value, value])) as {
+    readonly [Value in Values[number]]: Value;
+  };
+}
+
 /** Which memory types are valid for each memory tier. */
 export const MEMORY_SYSTEM_TYPES = {
   sensory: SENSORY_MEMORY_TYPES, // Brief sensory inputs
@@ -63,6 +71,18 @@ export type MemoryScope = (typeof MEMORY_LIST_SCOPES)[number];
 export type MemoryStatus = (typeof MEMORY_STATUSES)[number];
 /** Alias for {@link MemoryStoreScope} on store/write DTOs. */
 export type MemoryVisibility = MemoryStoreScope;
+
+/** Named memory tier values for code that should avoid raw string literals. */
+export const MEMORY_SYSTEM = namedValues(MEMORY_SYSTEMS);
+
+/** Named memory type values for code that should avoid raw string literals. */
+export const MEMORY_TYPE = namedValues(MEMORY_TYPES);
+
+/** Named memory segment values for code that should avoid raw string literals. */
+export const MEMORY_SEGMENT = namedValues(MEMORY_SEGMENTS);
+
+/** Named store-scope values for code that should avoid raw string literals. */
+export const MEMORY_STORE_SCOPE = namedValues(MEMORY_STORE_SCOPES);
 
 export function isMemorySystem(value: string): value is MemorySystem {
   return (MEMORY_SYSTEMS as readonly string[]).includes(value);
