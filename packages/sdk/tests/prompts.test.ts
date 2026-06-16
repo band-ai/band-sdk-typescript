@@ -90,7 +90,7 @@ describe("renderSystemPrompt", () => {
     expect(result).toContain("## Memory Tools");
     expect(result).toContain("thenvoi_store_memory");
     expect(result).toContain('scope="organization"');
-    expect(result).toContain("Do not invent a UUID");
+    expect(result).toContain("real `subject_id` UUID");
   });
 
   it("excludes memory guidance by default", () => {
