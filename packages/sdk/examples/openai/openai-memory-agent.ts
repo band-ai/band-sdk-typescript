@@ -33,7 +33,7 @@ export function createOpenAIMemoryAgent(
     includeMemoryTools: true, // exposes thenvoi_store_memory, thenvoi_list_memories, etc.
     enableExecutionReporting: true, // optional: show tool activity in chat
     systemPrompt: renderSystemPrompt({
-      customSection: MEMORY_CUSTOM_SECTION,
+      customSection: CUSTOM_SECTION,
       capabilities: { memory: true }, // appends SDK Memory Tools section to the prompt
     }),
   });
