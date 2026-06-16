@@ -6,7 +6,6 @@ declare module "@anthropic-ai/sdk";
 declare module "@google/genai";
 declare module "@langchain/langgraph/prebuilt";
 declare module "@langchain/core/tools";
-declare module "@langchain/openai";
 declare module "ai";
 declare module "openai";
 declare module "parlant-client";
