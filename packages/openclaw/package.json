@@ -25,6 +25,7 @@
   "scripts": {
     "build": "pnpm --filter @thenvoi/sdk build && tsup && node scripts/sync-plugin-version.js",
     "dev": "tsup --watch",
+    "link:openclaw": "pnpm build && bash scripts/link-plugin.sh",
     "typecheck": "pnpm --filter @thenvoi/sdk build && tsc --noEmit",
     "lint": "eslint src/",
     "test": "pnpm --filter @thenvoi/sdk build && vitest run",

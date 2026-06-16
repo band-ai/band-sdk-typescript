@@ -134,6 +134,14 @@ export default defineConfig({
   outDir: "dist",
   // Keep openclaw external (host provides it)
   external: ["openclaw"],
+  // The bundle is ESM but pulls in CJS deps (ws, js-yaml) that call
+  // require() for Node builtins. ESM has no global `require`, so esbuild's
+  // __require helper throws "Dynamic require of X is not supported" at load.
+  // Inject a real require via createRequire so those calls resolve. tsup's
+  // `shims` only covers __dirname/__filename, not require.
+  banner: {
+    js: "import { createRequire as __createRequire } from 'module'; const require = __createRequire(import.meta.url);",
+  },
   // Bundle the SDK and its dependencies into the plugin
   noExternal: ["phoenix", "@thenvoi/sdk", "@thenvoi/rest-client", "zod", "zod-to-json-schema", "ws", "js-yaml"],
   esbuildPlugins: [stubOptionalPeers(sdkOptionalPeers)],
