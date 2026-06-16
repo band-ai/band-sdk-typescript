@@ -16,7 +16,7 @@ import { renderSystemPrompt } from "../../src/runtime/prompts";
 // memory in here. The "Memory Tools" section (tool overview, valid field
 // values, and scope guidance) is appended automatically by the SDK when
 // `includeMemoryTools` is enabled, so a plain persona like this works fine.
-const MEMORY_CUSTOM_SECTION = `You are a helpful assistant.`;
+const CUSTOM_SECTION = `You are a helpful assistant.`;
 
 export interface OpenAIMemoryExampleOptions {
   model?: string;
