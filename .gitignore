@@ -10,6 +10,7 @@ coverage
 .desloppify
 .claude
 .agents
+.idea
 scorecard.png
 agent_config.yaml
 .env
