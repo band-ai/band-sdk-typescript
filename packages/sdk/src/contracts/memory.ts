@@ -123,3 +123,7 @@ export function expectedList(values: readonly string[]): string {
 export function expectedMemoryTypesForSystem(system: MemorySystem): string {
   return expectedList(MEMORY_SYSTEM_TYPES[system]);
 }
+
+export function memoryTypeForSystemError(system: MemorySystem): string {
+  return `type must be one of: ${expectedMemoryTypesForSystem(system)} for system "${system}"`;
+}

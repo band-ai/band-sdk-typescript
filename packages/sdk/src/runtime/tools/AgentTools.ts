@@ -46,6 +46,7 @@ import {
 import {
   expectedMemoryTypesForSystem,
   expectedList,
+  memoryTypeForSystemError,
   isMemoryListScope,
   isMemorySegment,
   isMemoryStatus,
@@ -843,9 +844,7 @@ export class AgentTools implements AgentToolsProtocol {
 
     // Keep combined filters within valid memory taxonomy pairs.
     if (system && type && !isMemoryTypeForSystem(system, type)) {
-      throw new ValidationError(
-        `type must be one of: ${expectedMemoryTypesForSystem(system)} for system "${system}"`,
-      );
+      throw new ValidationError(memoryTypeForSystemError(system));
     }
 
     return {
@@ -880,9 +879,7 @@ export class AgentTools implements AgentToolsProtocol {
 
     // Prevent storing memories with a type that belongs to a different system tier.
     if (!isMemoryTypeForSystem(system, type)) {
-      throw new ValidationError(
-        `type must be one of: ${expectedMemoryTypesForSystem(system)} for system "${system}"`,
-      );
+      throw new ValidationError(memoryTypeForSystemError(system));
     }
 
     if (!segment) {
