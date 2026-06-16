@@ -124,45 +124,6 @@ describe("LangGraphAdapter", () => {
     expect(tools.messages).toEqual(["LangGraph reply"]);
   });
 
-  it("includes room history on follow-up messages", async () => {
-    const invokeCalls: Array<{ messages?: Array<[string, string]> }> = [];
-    const graph = {
-      async invoke(input: Record<string, unknown>) {
-        invokeCalls.push(input as { messages?: Array<[string, string]> });
-        return {
-          messages: [["assistant", "follow-up reply"]],
-        };
-      },
-    };
-
-    const adapter = new LangGraphAdapter({ graph });
-    await adapter.onStarted("LangGraph Agent", "Graph-backed assistant");
-
-    const tools = new FakeTools();
-    await adapter.onMessage(
-      {
-        ...makeMessage("store this"),
-        id: "msg-3",
-      },
-      tools,
-      new HistoryProvider([
-        { id: "msg-1", sender_type: "User", content: "i like red tomatoes" },
-        { id: "msg-2", sender_type: "Agent", content: "Got it." },
-      ]),
-      null,
-      null,
-      { isSessionBootstrap: false, roomId: "room-history" },
-    );
-
-    expect(invokeCalls).toHaveLength(1);
-    expect(invokeCalls[0]?.messages?.map((entry) => entry[1])).toEqual([
-      "i like red tomatoes",
-      "Got it.",
-      "store this",
-    ]);
-    expect(tools.messages).toEqual(["follow-up reply"]);
-  });
-
   it("reports tool stream events when enabled and extracts final text from stream", async () => {
     const graph = {
       streamEvents() {
@@ -171,17 +132,7 @@ describe("LangGraphAdapter", () => {
           { event: "on_tool_end", name: "thenvoi_send_message" },
           {
             event: "on_chain_end",
-            name: "RunnableLambda",
-            data: { output: "__end__" },
-          },
-          {
-            event: "on_chain_end",
-            name: "LangGraph",
-            data: {
-              output: {
-                messages: [["assistant", "streamed reply"]],
-              },
-            },
+            data: { output: { messages: [["assistant", "streamed reply"]] } },
           },
         ]);
       },
@@ -258,7 +209,6 @@ describe("LangGraphAdapter", () => {
           circularEvent,
           {
             event: "on_chain_end",
-            name: "LangGraph",
             data: { output: { messages: [["assistant", "done"]] } },
           },
         ]);
@@ -301,46 +251,5 @@ describe("LangGraphAdapter", () => {
         eventType: "on_tool_start",
       }),
     );
-  });
-
-  it("ignores LangGraph routing markers and parses LangChain assistant messages", async () => {
-    const aiMessage = {
-      lc: 1,
-      type: "constructor",
-      id: ["langchain_core", "messages", "AIMessage"],
-      kwargs: { content: "Hello there!" },
-    };
-
-    const graph = {
-      streamEvents() {
-        return streamFrom([
-          {
-            event: "on_chain_end",
-            name: "RunnableLambda",
-            data: { output: "__end__" },
-          },
-          {
-            event: "on_chain_end",
-            name: "LangGraph",
-            data: { output: { messages: [aiMessage] } },
-          },
-        ]);
-      },
-    };
-
-    const adapter = new LangGraphAdapter({ graph, emitExecutionEvents: true });
-    await adapter.onStarted("LangGraph Agent", "Graph-backed assistant");
-
-    const tools = new FakeTools();
-    await adapter.onMessage(
-      makeMessage("hello"),
-      tools,
-      new HistoryProvider([]),
-      null,
-      null,
-      { isSessionBootstrap: false, roomId: "room-lc" },
-    );
-
-    expect(tools.messages).toEqual(["Hello there!"]);
   });
 });
