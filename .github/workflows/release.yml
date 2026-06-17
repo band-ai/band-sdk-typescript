@@ -53,6 +53,11 @@ jobs:
           cache: pnpm
           registry-url: 'https://registry.npmjs.org'
 
+      # OIDC trusted publishing requires npm >= 11.5.1; Node 22 ships npm 10.x.
+      - name: Upgrade npm for OIDC trusted publishing
+        if: steps.release.outputs['packages/sdk--release_created'] == 'true' || steps.release.outputs['packages/openclaw--release_created'] == 'true'
+        run: npm install -g npm@latest
+
       - name: Install dependencies
         if: steps.release.outputs['packages/sdk--release_created'] == 'true' || steps.release.outputs['packages/openclaw--release_created'] == 'true'
         run: pnpm install --frozen-lockfile
@@ -70,8 +75,6 @@ jobs:
         run: |
           cd packages/sdk
           npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish SDK to npm (@band-ai)
         if: steps.release.outputs['packages/sdk--release_created'] == 'true'
@@ -79,16 +82,12 @@ jobs:
           cd packages/sdk
           sed -i 's/"@thenvoi\/sdk"/"@band-ai\/sdk"/' package.json
           npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.BAND_AI_NPM_TOKEN }}
 
       - name: Publish OpenClaw to npm (@thenvoi)
         if: steps.release.outputs['packages/openclaw--release_created'] == 'true'
         run: |
           cd packages/openclaw
           npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish OpenClaw to npm (@band-ai)
         if: steps.release.outputs['packages/openclaw--release_created'] == 'true'
@@ -97,8 +96,6 @@ jobs:
           sed -i 's/"@thenvoi\/openclaw-channel-thenvoi"/"@band-ai\/openclaw-channel-thenvoi"/' package.json
           sed -i 's/"@thenvoi\/sdk"/"@band-ai\/sdk"/' package.json
           npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.BAND_AI_NPM_TOKEN }}
 
       - name: Publish release summary
         if: steps.release.outputs['packages/sdk--release_created'] == 'true' || steps.release.outputs['packages/openclaw--release_created'] == 'true'
