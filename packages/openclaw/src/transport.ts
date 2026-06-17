@@ -166,7 +166,13 @@ export function createReplyDeliver(
     const text = typeof payload === "string" ? payload : payload?.text;
     if (!text) return;
     const account = getAccount(accountId);
-    if (!account) return;
+    if (!account) {
+      // The account can disappear between dispatch and delivery (e.g. a teardown
+      // race on restart). Log it — this function's contract is that delivery
+      // failures are observable, never silently dropped.
+      log(`[band:${accountId}] skipping reply (room=${roomId}): account not connected`);
+      return;
+    }
     try {
       await outboundSendText(
         {

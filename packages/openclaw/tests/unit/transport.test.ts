@@ -395,4 +395,12 @@ describe("createReplyDeliver (the deliver -> outbound.sendText seam)", () => {
     await expect(deliver({ text: "hi" })).resolves.toBeUndefined();
     expect(log).toHaveBeenCalledWith(expect.stringMatching(/reply delivery failed/));
   });
+
+  it("logs (does not silently drop) when the account is not connected", async () => {
+    // No setAccount — the account is absent (e.g. a teardown race).
+    const log = vi.fn();
+    const deliver = createReplyDeliver("default", "room-1", log);
+    await expect(deliver({ text: "hi" })).resolves.toBeUndefined();
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/account not connected/i));
+  });
 });
