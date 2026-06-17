@@ -6,7 +6,7 @@ export function createParlantAgent(
     agentId: string;
     apiKey?: string;
   },
-  overrides?: { agentId?: string; apiKey?: string },
+  overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
   const adapter = new ParlantAdapter({
     environment: options.environment,
@@ -19,7 +19,10 @@ export function createParlantAgent(
     config: {
       agentId: overrides?.agentId ?? "agent-parlant",
       apiKey: overrides?.apiKey ?? "api-key",
+      ...(overrides?.wsUrl ? { wsUrl: overrides.wsUrl } : {}),
+      ...(overrides?.restUrl ? { restUrl: overrides.restUrl } : {}),
     },
+    agentConfig: { autoSubscribeExistingRooms: true },
   });
 }
 

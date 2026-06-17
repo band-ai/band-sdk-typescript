@@ -7,7 +7,7 @@ interface OpenAIExampleOptions {
 
 export function createOpenAIAgent(
   options: OpenAIExampleOptions = {},
-  overrides?: { agentId?: string; apiKey?: string },
+  overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
   const adapter = new OpenAIAdapter({
     openAIModel: options.model ?? "gpt-5.2",
@@ -19,7 +19,10 @@ export function createOpenAIAgent(
     config: {
       agentId: overrides?.agentId ?? "openai-agent",
       apiKey: overrides?.apiKey ?? "api-key",
+      ...(overrides?.wsUrl ? { wsUrl: overrides.wsUrl } : {}),
+      ...(overrides?.restUrl ? { restUrl: overrides.restUrl } : {}),
     },
+    agentConfig: { autoSubscribeExistingRooms: true },
   });
 }
 

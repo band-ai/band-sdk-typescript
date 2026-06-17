@@ -30,6 +30,7 @@ export class FakeTools implements AgentToolsProtocol {
   public readonly capabilities = { ...DEFAULT_AGENT_TOOLS_CAPABILITIES };
   public readonly messages: string[] = [];
   public readonly events: CapturedToolEvent[] = [];
+  public rest?: Pick<RestApi, "getAgentMe" | "listChats">;
   private readonly failOn: Set<FakeToolMethod>;
   private readonly errorFactory: (method: FakeToolMethod) => Error;
 
@@ -249,4 +250,5 @@ export class FakeRestApi implements RestApi {
   ): Promise<PlatformChatMessage | null> {
     return this.overrides.getNextMessage?.(request, options) ?? null;
   }
+
 }

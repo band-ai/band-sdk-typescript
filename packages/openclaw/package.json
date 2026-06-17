@@ -1,8 +1,8 @@
 {
-  "name": "@thenvoi/openclaw-channel-thenvoi",
+  "name": "@band-ai/openclaw-channel-band",
   "version": "0.1.5",
-  "description": "OpenClaw channel plugin to connect with the Thenvoi AI agent collaboration platform",
-  "author": "Thenvoi <hello@thenvoi.com>",
+  "description": "OpenClaw channel plugin to connect with the Band AI agent collaboration platform",
+  "author": "Band <hello@thenvoi.com>",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -23,15 +23,17 @@
     "openclaw.plugin.json"
   ],
   "scripts": {
-    "build": "tsup && node scripts/sync-plugin-version.js",
+    "build": "pnpm --filter @thenvoi/sdk build && tsup && node scripts/sync-plugin-version.js",
     "dev": "tsup --watch",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "pnpm --filter @thenvoi/sdk build && tsc --noEmit",
     "lint": "eslint src/",
-    "test": "vitest run",
+    "test": "pnpm --filter @thenvoi/sdk build && vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage",
-    "test:e2e": "node --env-file=.env node_modules/vitest/vitest.mjs run --config vitest.config.e2e.ts",
-    "clean": "rm -rf dist"
+    "test:coverage": "pnpm --filter @thenvoi/sdk build && vitest run --coverage",
+    "test:e2e": "pnpm --filter @thenvoi/sdk build && node --env-file=.env node_modules/vitest/vitest.mjs run --config vitest.config.e2e.ts",
+    "clean": "rm -rf dist .local-link",
+    "stage:link": "node scripts/stage-link.mjs",
+    "link:local": "pnpm build && node scripts/stage-link.mjs"
   },
   "dependencies": {
     "@thenvoi/sdk": "workspace:*"
@@ -41,21 +43,27 @@
     "@vitest/coverage-v8": "^3.2.4",
     "eslint": "^9.0.0",
     "@typescript-eslint/eslint-plugin": "^8.26.0",
-    "openclaw": "^2026.4.20",
+    "openclaw": "2026.6.6",
     "tsup": "^8.0.0",
     "typescript": "^5.8.2",
     "typescript-eslint": "^8.54.0",
     "vitest": "^3.2.4"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.1.0"
+    "openclaw": ">=2026.6.0"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.14.0"
   },
   "openclaw": {
     "extensions": [
       "./dist/index.js"
-    ]
+    ],
+    "setupEntry": "./dist/setup-entry.js",
+    "channel": {
+      "id": "openclaw-channel-band",
+      "label": "Band",
+      "blurb": "Connect to the Band AI agent collaboration platform."
+    }
   }
 }

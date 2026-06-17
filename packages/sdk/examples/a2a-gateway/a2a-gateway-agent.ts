@@ -1,14 +1,25 @@
-import { A2AGatewayAdapter, Agent, loadAgentConfig, isDirectExecution } from "../../src/index";
+import {
+  A2AGatewayAdapter,
+  Agent,
+  deriveDefaultRestUrl,
+  loadAgentConfig,
+  isDirectExecution,
+} from "../../src/index";
 import { FernRestAdapter } from "../../src/rest";
 import { ThenvoiClient } from "@thenvoi/rest-client";
 
 export function createA2AGatewayAgent(
   options?: { port?: number; gatewayUrl?: string; authToken?: string },
-  overrides?: { agentId?: string; apiKey?: string },
+  overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
   const thenvoiApiKey = overrides?.apiKey ?? "api-key";
+  const resolvedRestUrl = overrides?.restUrl
+    ?? (overrides?.wsUrl ? deriveDefaultRestUrl(overrides.wsUrl) : undefined);
   const restApi = new FernRestAdapter(
-    new ThenvoiClient({ apiKey: thenvoiApiKey }),
+    new ThenvoiClient({
+      apiKey: thenvoiApiKey,
+      ...(resolvedRestUrl ? { baseUrl: resolvedRestUrl } : {}),
+    }),
   );
 
   const adapter = new A2AGatewayAdapter({
@@ -23,8 +34,11 @@ export function createA2AGatewayAgent(
     config: {
       agentId: overrides?.agentId ?? "agent-a2a-gateway",
       apiKey: thenvoiApiKey,
+      ...(overrides?.wsUrl ? { wsUrl: overrides.wsUrl } : {}),
+      ...(resolvedRestUrl ? { restUrl: resolvedRestUrl } : {}),
     },
     linkOptions: { restApi },
+    agentConfig: { autoSubscribeExistingRooms: true },
   });
 }
 

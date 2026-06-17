@@ -197,3 +197,18 @@ function serializeValue(value: unknown): string {
     return String(value);
   }
 }
+
+/**
+ * Resolves the single tools instance for single-room mode. Calls `getToolsForRoom("")`
+ * as the sentinel — callers in single-room mode must return their tools instance
+ * regardless of the room ID argument.
+ */
+export function resolveSingleRoomTools(
+  getToolsForRoom: (roomId: string) => AdapterToolsProtocol | undefined,
+): AdapterToolsProtocol {
+  const tools = getToolsForRoom("");
+  if (!tools) {
+    throw new Error("Single-room mode requires getToolsForRoom(\"\") to return a tools instance");
+  }
+  return tools;
+}

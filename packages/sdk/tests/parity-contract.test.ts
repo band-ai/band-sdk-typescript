@@ -1,12 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 
 import {
   Agent,
   ThenvoiLink,
   PlatformRuntime,
 } from "../src/index";
+import type { CustomToolDef as PublicCustomToolDef } from "../src/index";
 import { AgentTools, Execution, RoomPresence } from "../src/runtime";
 import { RestFacade, type RestApi } from "../src/rest";
+import type { CustomToolDef as InternalCustomToolDef } from "../src/runtime/tools/customTools";
 
 class ContractRestApi implements RestApi {
   public async getAgentMe() {
@@ -106,6 +108,10 @@ class ContractRestApi implements RestApi {
 }
 
 describe("sdk contract", () => {
+  it("re-exports CustomToolDef from the root SDK entrypoint", () => {
+    expectTypeOf<PublicCustomToolDef>().toEqualTypeOf<InternalCustomToolDef>();
+  });
+
   it("exposes lifecycle methods", () => {
     expect(typeof Agent.prototype.start).toBe("function");
     expect(typeof Agent.prototype.stop).toBe("function");

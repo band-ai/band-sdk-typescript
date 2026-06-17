@@ -22,6 +22,8 @@ export function buildBridgeMessage(input: {
   issueStateType: string | null | undefined;
   issueAssigneeId: string | null | undefined;
   issueAssigneeName: string | null | undefined;
+  issueDelegateId: string | null | undefined;
+  issueDelegateName: string | null | undefined;
   commentBody: string | null | undefined;
   commentId: string | null | undefined;
   sessionIntent: SessionIntent;
@@ -63,6 +65,12 @@ export function buildBridgeMessage(input: {
   const issueAssigneeIdLine = input.issueAssigneeId
     ? `issue_assignee_id: ${input.issueAssigneeId}`
     : "issue_assignee_id: none";
+  const issueDelegateLine = input.issueDelegateName
+    ? `issue_delegate: ${input.issueDelegateName}`
+    : "issue_delegate: none";
+  const issueDelegateIdLine = input.issueDelegateId
+    ? `issue_delegate_id: ${input.issueDelegateId}`
+    : "issue_delegate_id: none";
   const sessionStatusLine = input.sessionStatus ? `session_status: ${input.sessionStatus}` : "session_status: none";
   const sessionTypeLine = input.sessionType ? `session_type: ${input.sessionType}` : "session_type: none";
   const sessionCreatedLine = input.sessionCreatedAt
@@ -111,6 +119,8 @@ Linear session context:
 - ${issueStateTypeLine}
 - ${issueAssigneeLine}
 - ${issueAssigneeIdLine}
+- ${issueDelegateLine}
+- ${issueDelegateIdLine}
 - inferred_session_intent: ${input.sessionIntent}
 - writeback_mode: ${input.writebackMode}
 - ${appUserLine}
@@ -217,6 +227,12 @@ export function extractIssueStateField(issue: unknown, field: "id" | "name" | "t
 export function extractIssueAssigneeField(issue: unknown, field: "id" | "name" | "displayName"): string | null {
   const assignee = extractNestedRecord(issue, "assignee");
   const value = assignee?.[field];
+  return typeof value === "string" ? value : null;
+}
+
+export function extractIssueDelegateField(issue: unknown, field: "id" | "name" | "displayName"): string | null {
+  const delegate = extractNestedRecord(issue, "delegate");
+  const value = delegate?.[field];
   return typeof value === "string" ? value : null;
 }
 

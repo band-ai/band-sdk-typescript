@@ -431,6 +431,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       agentDescription: this.agentDescription,
       customSection,
       includeBaseInstructions: this.baseConfig.includeBaseInstructions ?? true,
+      capabilities: { memory: this.includeMemoryTools },
     }).trim();
 
     this.systemPrompt = prompt.length > 0 ? prompt : null;

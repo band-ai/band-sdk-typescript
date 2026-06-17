@@ -110,6 +110,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
         agentName,
         agentDescription,
         customSection: this.customSection,
+        capabilities: { memory: this.includeMemoryTools },
       });
   }
 

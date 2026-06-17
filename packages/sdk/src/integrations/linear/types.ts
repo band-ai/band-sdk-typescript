@@ -8,6 +8,16 @@ export type RoomStrategy = "issue" | "session";
 export type WritebackMode = "final_only" | "activity_stream";
 export type SessionStatus = "active" | "waiting" | "completed" | "canceled" | "errored";
 
+/** Default interval (ms) between stale-session keepalive checks. */
+export const STALE_SESSION_CHECK_INTERVAL_MS = 20 * 60_000;
+
+/**
+ * Maximum age (ms) of the last Linear activity before a session is considered
+ * at risk of going stale. Linear marks sessions stale after 30 minutes of
+ * inactivity; we send a keepalive well before that threshold.
+ */
+export const STALE_SESSION_THRESHOLD_MS = 25 * 60_000;
+
 export interface LinearThenvoiBridgeConfig {
   linearAccessToken: string;
   linearWebhookSecret: string;
@@ -17,6 +27,7 @@ export interface LinearThenvoiBridgeConfig {
   planningAgentHandles?: string[];
   implementationAgentHandles?: string[];
   recoveredRoomRetryBaseDelayMs?: number;
+  thenvoiAppBaseUrl?: string;
 }
 
 export interface SessionRoomRecord {
@@ -25,6 +36,8 @@ export interface SessionRoomRecord {
   thenvoiRoomId: string;
   status: SessionStatus;
   lastEventKey?: string | null;
+  /** ISO-8601 timestamp of the last activity sent to Linear for this session. */
+  lastLinearActivityAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -50,6 +63,8 @@ export interface SessionRoomStore {
   enqueueBootstrapRequest(request: PendingBootstrapRequest): Promise<void>;
   listPendingBootstrapRequests(limit?: number): Promise<PendingBootstrapRequest[]>;
   markBootstrapRequestProcessed(eventKey: string): Promise<void>;
+  /** List sessions with active or waiting status (used by stale-session keepalive). */
+  listActiveSessions?(): Promise<SessionRoomRecord[]>;
   close?(): Promise<void>;
 }
 
@@ -66,7 +81,8 @@ export interface HandleAgentSessionEventInput {
   deps: LinearThenvoiBridgeDeps;
 }
 
-export type { LinearActivityClient, PlanStep } from "./activities";
+export type { CandidateRepositoryInput, LinearActivityClient, PlanStep, RepositorySuggestion, SelectOption } from "./activities";
+export type { HandleAppUserNotificationInput } from "./notification";
 
 export type LinearSessionStatus =
   SessionStatus;

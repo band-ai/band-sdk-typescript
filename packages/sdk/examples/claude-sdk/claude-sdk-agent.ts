@@ -7,7 +7,7 @@ interface ClaudeSdkExampleOptions {
 
 export function createClaudeSdkAgent(
   options: ClaudeSdkExampleOptions = {},
-  overrides?: { agentId?: string; apiKey?: string },
+  overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
   const adapter = new ClaudeSDKAdapter({
     model: options.model ?? "claude-sonnet-4-6",
@@ -21,7 +21,10 @@ export function createClaudeSdkAgent(
     config: {
       agentId: overrides?.agentId ?? "claude-sdk-agent",
       apiKey: overrides?.apiKey ?? "api-key",
+      ...(overrides?.wsUrl ? { wsUrl: overrides.wsUrl } : {}),
+      ...(overrides?.restUrl ? { restUrl: overrides.restUrl } : {}),
     },
+    agentConfig: { autoSubscribeExistingRooms: true },
   });
 }
 

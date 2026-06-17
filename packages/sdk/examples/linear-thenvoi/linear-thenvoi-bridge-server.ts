@@ -249,7 +249,7 @@ function resolveBridgeApiKey(logger: Logger): string {
   }
 
   throw new Error(
-    "Missing bridge API key. Set THENVOI_API_KEY or configure linear_thenvoi_bridge in agent_config.yaml.",
+    "Missing API key. Set THENVOI_API_KEY or configure linear_thenvoi_bridge in agent_config.yaml.",
   );
 }
 

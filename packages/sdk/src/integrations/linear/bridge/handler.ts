@@ -13,10 +13,12 @@ import type {
 } from "../types";
 import { dedupeHandles, stripHandlePrefix } from "../handles";
 import { postThought, postError } from "../activities";
+import { sendRecoveryActivityIfStale } from "../stale-session-guard";
 import {
   buildBridgeMessage,
   detectSessionIntent,
   extractIssueAssigneeField,
+  extractIssueDelegateField,
   extractIssueStateField,
   extractIssueTeamId,
   extractIssueTeamKey,
@@ -29,13 +31,19 @@ interface NormalizedBridgeConfig {
   roomStrategy: "issue" | "session";
   writebackMode: "final_only" | "activity_stream";
   hostAgentHandle: string | null;
+  thenvoiAppBaseUrl: string;
 }
+
+const DEFAULT_THENVOI_APP_BASE_URL = "https://app.thenvoi.com";
 
 const SUPPORTED_ACTIONS = new Set(["created", "updated", "canceled", "prompted"]);
 const MAX_PEER_LOOKUP_PAGES = 25;
 const PEER_PAGE_SIZE = 100;
 const RECOVERED_ROOM_EVENT_RETRY_LIMIT = 2;
 const RECOVERED_ROOM_EVENT_RETRY_BASE_DELAY_MS = 1_000;
+
+// Issue state types eligible for auto-start.
+const AUTO_START_ELIGIBLE_TYPES: Set<string> = new Set(["backlog", "unstarted", "triage"]);
 
 export interface LinearBridgeRuntime {
   roomResolutionLocks: Map<string, Promise<SessionRoomRecord>>;
@@ -124,10 +132,23 @@ export async function handleAgentSessionEvent(
     return;
   }
 
+  // If the session already exists and may have gone stale, send a recovery
+  // activity before the main update so Linear reactivates the session.
+  if (action === "updated" && existingBySession) {
+    await sendRecoveryActivityIfStale({
+      session: existingBySession,
+      linearClient: input.deps.linearClient,
+      store: input.deps.store,
+      logger,
+    });
+  }
+
   // Acknowledge receipt to Linear before room resolution (created only).
+  let lastLinearActivityAt: string | null = null;
   if (action === "created" && !options?.skipAcknowledgment) {
     try {
       await postThought(input.deps.linearClient, sessionId, "Received session. Setting up workspace...");
+      lastLinearActivityAt = new Date().toISOString();
     } catch (ackError) {
       logger.warn("linear_thenvoi_bridge.acknowledgment_failed", {
         sessionId,
@@ -136,7 +157,53 @@ export async function handleAgentSessionEvent(
     }
   }
 
+  // Auto-delegate: fire in background, runs concurrently with room resolution (best-effort).
+  let delegatePromise: Promise<{ set: boolean; delegateName: string | null }> | undefined;
+  if (action === "created" && issueId) {
+    const appUserId = input.payload.appUserId;
+    if (appUserId) {
+      delegatePromise = trySetAgentAsDelegate({
+        linearClient: input.deps.linearClient,
+        issueId,
+        appUserId,
+        logger,
+      }).catch((delegateError) => {
+        logger.warn("linear_thenvoi_bridge.auto_delegate_failed", {
+          sessionId,
+          issueId,
+          appUserId,
+          error: delegateError instanceof Error ? delegateError.message : String(delegateError),
+        });
+        return { set: false, delegateName: null };
+      });
+    }
+  }
+
+  // Auto-start: fire in background, runs concurrently with room resolution (best-effort).
+  let autoStartPromise: Promise<AutoStartResult> | undefined;
+  if (action === "created" && issueId) {
+    const originalStateType = extractIssueStateField(input.payload.agentSession.issue, "type");
+    const teamId = extractIssueTeamId(input.payload.agentSession.issue);
+    if (teamId && originalStateType && AUTO_START_ELIGIBLE_TYPES.has(originalStateType)) {
+      autoStartPromise = tryMoveIssueToStarted({
+        linearClient: input.deps.linearClient,
+        issueId,
+        teamId,
+        logger,
+      }).catch((autoStartError) => {
+        logger.warn("linear_thenvoi_bridge.auto_start_failed", {
+          sessionId,
+          issueId,
+          teamId,
+          error: autoStartError instanceof Error ? autoStartError.message : String(autoStartError),
+        });
+        return { moved: false, stateId: null, stateName: null };
+      });
+    }
+  }
+
   let roomRecord: SessionRoomRecord | null = null;
+  let externalUrlPromise: Promise<void> | undefined;
   try {
     const hostAgentHandle = await resolveHostAgentHandle({
       thenvoiRest: input.deps.thenvoiRest,
@@ -156,7 +223,25 @@ export async function handleAgentSessionEvent(
       logger,
       runtime,
     });
+    if (action === "created") {
+      const roomId = roomRecord.thenvoiRoomId;
+      externalUrlPromise = trySetSessionExternalUrl({
+        linearClient: input.deps.linearClient,
+        sessionId,
+        roomId,
+        appBaseUrl: config.thenvoiAppBaseUrl,
+        logger,
+      }).catch((urlError) => {
+        logger.warn("linear_thenvoi_bridge.set_external_url_failed", {
+          sessionId,
+          roomId,
+          error: urlError instanceof Error ? urlError.message : String(urlError),
+        });
+      });
+    }
 
+    // Intent is computed from the *original* state type (before auto-start) so it reflects
+    // why the session was created (e.g. "planning" for backlog issues), not the state we moved it to.
     const sessionIntent = detectSessionIntent({
       issueStateType: extractIssueStateField(input.payload.agentSession.issue, "type"),
       promptContext: input.payload.promptContext,
@@ -181,6 +266,32 @@ export async function handleAgentSessionEvent(
       logger,
     });
 
+    // Await auto-delegate before building the message so delegate info is up-to-date.
+    // The promise already has a .catch() at creation that converts errors to { set: false, delegateName: null }.
+    const delegateResult = await delegatePromise;
+
+    let issueDelegateId = extractIssueDelegateField(input.payload.agentSession.issue, "id");
+    let issueDelegateName: string | null =
+      extractIssueDelegateField(input.payload.agentSession.issue, "displayName")
+      ?? extractIssueDelegateField(input.payload.agentSession.issue, "name");
+    if (delegateResult?.set && input.payload.appUserId) {
+      issueDelegateId = input.payload.appUserId;
+      issueDelegateName = delegateResult.delegateName ?? input.payload.appUserId;
+    }
+
+    // Await auto-start before building the message so issue state info is up-to-date.
+    // The promise already has a .catch() at creation that converts errors to { moved: false }.
+    const autoStartResult = await autoStartPromise;
+
+    let issueStateId = extractIssueStateField(input.payload.agentSession.issue, "id");
+    let issueStateName = extractIssueStateField(input.payload.agentSession.issue, "name");
+    let resolvedStateType = extractIssueStateField(input.payload.agentSession.issue, "type");
+    if (autoStartResult?.moved) {
+      if (autoStartResult.stateId) issueStateId = autoStartResult.stateId;
+      if (autoStartResult.stateName) issueStateName = autoStartResult.stateName;
+      resolvedStateType = "started";
+    }
+
     const message = buildBridgeMessage({
       sessionId,
       issueId,
@@ -198,13 +309,15 @@ export async function handleAgentSessionEvent(
       issueTeamKey: extractIssueTeamKey(input.payload.agentSession.issue),
       issueTeamName: extractIssueTeamName(input.payload.agentSession.issue),
       issueTeamId: extractIssueTeamId(input.payload.agentSession.issue),
-      issueStateId: extractIssueStateField(input.payload.agentSession.issue, "id"),
-      issueStateName: extractIssueStateField(input.payload.agentSession.issue, "name"),
-      issueStateType: extractIssueStateField(input.payload.agentSession.issue, "type"),
+      issueStateId,
+      issueStateName,
+      issueStateType: resolvedStateType,
       issueAssigneeId: extractIssueAssigneeField(input.payload.agentSession.issue, "id"),
       issueAssigneeName:
         extractIssueAssigneeField(input.payload.agentSession.issue, "displayName")
         ?? extractIssueAssigneeField(input.payload.agentSession.issue, "name"),
+      issueDelegateId,
+      issueDelegateName,
       commentBody: input.payload.agentSession.comment?.body,
       commentId: input.payload.agentSession.comment?.id,
       sessionIntent,
@@ -271,12 +384,17 @@ export async function handleAgentSessionEvent(
       });
     }
 
+    const now = new Date().toISOString();
     await saveSessionRecord(input.deps.store, {
       ...roomRecord,
       status: "active",
       lastEventKey: eventKey,
-      updatedAt: new Date().toISOString(),
+      lastLinearActivityAt: lastLinearActivityAt ?? roomRecord.lastLinearActivityAt ?? now,
+      updatedAt: now,
     });
+
+    // Ensure external URL has been set before returning (already has .catch, won't throw).
+    await externalUrlPromise;
 
     logger.info("linear_thenvoi_bridge.message_forwarded", {
       sessionId,
@@ -285,6 +403,12 @@ export async function handleAgentSessionEvent(
       action,
     });
   } catch (error) {
+    // Ensure background operations have settled before re-throwing
+    // (promises already have .catch, so these won't throw).
+    await externalUrlPromise;
+    await delegatePromise;
+    await autoStartPromise;
+
     // Report errors back to Linear before re-throwing.
     try {
       await postError(
@@ -351,11 +475,40 @@ export async function completeLinearSession(input: {
     return;
   }
 
+  const now = new Date().toISOString();
   await saveSessionRecord(input.store, {
     ...existing,
     status: "completed",
     lastEventKey: input.lastEventKey ?? existing.lastEventKey ?? null,
-    updatedAt: new Date().toISOString(),
+    lastLinearActivityAt: now,
+    updatedAt: now,
+  });
+}
+
+async function trySetSessionExternalUrl(input: {
+  linearClient: HandleAgentSessionEventInput["deps"]["linearClient"];
+  sessionId: string;
+  roomId: string;
+  appBaseUrl: string;
+  logger: Logger;
+}): Promise<void> {
+  if (typeof input.linearClient.agentSessionUpdateExternalUrl !== "function") {
+    input.logger.info("linear_thenvoi_bridge.set_external_url_skipped_no_api", {
+      sessionId: input.sessionId,
+    });
+    return;
+  }
+
+  const base = input.appBaseUrl.replace(/\/+$/, "");
+  const roomUrl = `${base}/rooms/${input.roomId}`;
+  await input.linearClient.agentSessionUpdateExternalUrl(input.sessionId, {
+    externalUrls: [{ label: "View in Thenvoi", url: roomUrl }],
+  });
+
+  input.logger.info("linear_thenvoi_bridge.external_url_set", {
+    sessionId: input.sessionId,
+    roomId: input.roomId,
+    url: roomUrl,
   });
 }
 
@@ -364,6 +517,7 @@ function normalizeConfig(config: LinearThenvoiBridgeConfig): NormalizedBridgeCon
     roomStrategy: config.roomStrategy ?? "issue",
     writebackMode: config.writebackMode ?? "final_only",
     hostAgentHandle: normalizeOptionalHandle(config.hostAgentHandle),
+    thenvoiAppBaseUrl: config.thenvoiAppBaseUrl ?? DEFAULT_THENVOI_APP_BASE_URL,
   };
 }
 
@@ -374,6 +528,93 @@ function normalizeOptionalHandle(handle: string | null | undefined): string | nu
 
   const normalized = stripHandlePrefix(handle);
   return normalized.length > 0 ? normalized : null;
+}
+
+async function trySetAgentAsDelegate(input: {
+  linearClient: HandleAgentSessionEventInput["deps"]["linearClient"];
+  issueId: string;
+  appUserId: string;
+  logger: Logger;
+}): Promise<{ set: boolean; delegateName: string | null }> {
+  const issue = await input.linearClient.issue(input.issueId);
+  const existingDelegateId = issue.delegateId;
+  if (existingDelegateId) {
+    input.logger.info("linear_thenvoi_bridge.delegate_already_set", {
+      issueId: input.issueId,
+      existingDelegateId,
+    });
+    return { set: false, delegateName: null };
+  }
+
+  await input.linearClient.updateIssue(input.issueId, {
+    delegateId: input.appUserId,
+  });
+
+  // Re-fetch the issue to get the delegate's display name for the bridge message.
+  let delegateName: string | null = null;
+  try {
+    const updated = await input.linearClient.issue(input.issueId);
+    const delegate = await updated.delegate;
+    delegateName = delegate?.displayName ?? delegate?.name ?? null;
+  } catch {
+    // Best-effort: if re-fetch fails, the caller falls back to appUserId.
+  }
+
+  input.logger.info("linear_thenvoi_bridge.delegate_set", {
+    issueId: input.issueId,
+    delegateId: input.appUserId,
+  });
+  return { set: true, delegateName };
+}
+
+interface AutoStartResult {
+  moved: boolean;
+  stateId: string | null;
+  stateName: string | null;
+}
+
+async function tryMoveIssueToStarted(input: {
+  linearClient: HandleAgentSessionEventInput["deps"]["linearClient"];
+  issueId: string;
+  teamId: string;
+  logger: Logger;
+}): Promise<AutoStartResult> {
+  const response = await input.linearClient.workflowStates({
+    filter: {
+      team: { id: { eq: input.teamId } },
+      type: { eq: "started" },
+    },
+  });
+
+  const nodes = Array.isArray(response.nodes) ? response.nodes : [];
+
+  // Linear paginates at 50 nodes by default — safe for workflow states (teams rarely exceed this).
+  const startedStates = [...nodes].sort((a, b) => a.position - b.position);
+
+  const targetState = startedStates[0];
+  if (!targetState?.id) {
+    input.logger.info("linear_thenvoi_bridge.auto_start_no_started_state", {
+      issueId: input.issueId,
+      teamId: input.teamId,
+    });
+    return { moved: false, stateId: null, stateName: null };
+  }
+
+  await input.linearClient.updateIssue(input.issueId, {
+    stateId: targetState.id,
+  });
+
+  input.logger.info("linear_thenvoi_bridge.auto_start_moved", {
+    issueId: input.issueId,
+    stateId: targetState.id,
+    stateName: targetState.name ?? null,
+  });
+
+  return {
+    moved: true,
+    stateId: targetState.id,
+    stateName: targetState.name ?? null,
+  };
 }
 
 async function resolveHostAgentHandle(input: {
@@ -499,6 +740,14 @@ async function handlePromptedAction(input: {
     });
     return;
   }
+
+  // Send a recovery activity if the session may have gone stale while waiting.
+  await sendRecoveryActivityIfStale({
+    session: existing,
+    linearClient: input.deps.linearClient,
+    store: input.deps.store,
+    logger: input.logger,
+  });
 
   const message = `[Linear User Response]: ${userResponse}`;
   const metadata = {

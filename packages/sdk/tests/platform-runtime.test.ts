@@ -586,4 +586,27 @@ describe("PlatformRuntime", () => {
       () => new PlatformRuntime({ agentId: "", apiKey: "valid-key" }),
     ).toThrow("loadAgentConfig()");
   });
+
+  it("forwards logger to lazily-constructed ThenvoiLink", async () => {
+    const spyLogger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const transport = new FakeTransport();
+    const restApi = new FakeRestApi();
+
+    const runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      wsUrl: "wss://example.test/socket",
+      logger: spyLogger,
+      linkOptions: { transport, restApi },
+    });
+
+    await runtime.initialize();
+
+    expect((runtime.link as unknown as { logger: unknown }).logger).toBe(spyLogger);
+  });
 });

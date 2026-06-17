@@ -81,10 +81,11 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "clean": "rm -rf dist",
-    "dev:linear": "tsx examples/linear-thenvoi/linear-thenvoi-bridge-server.ts"
+    "dev:linear": "tsx examples/linear-thenvoi/linear-thenvoi-bridge-server.ts",
+    "start:linear": "tsx examples/linear-thenvoi/linear-thenvoi-bridge-server.ts"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12"
   },
   "dependencies": {
     "@thenvoi/rest-client": "0.0.113",
@@ -95,23 +96,23 @@
     "zod-to-json-schema": "^3.25.1"
   },
   "peerDependencies": {
-    "@a2a-js/sdk": "^0.3.10",
-    "@agentclientprotocol/sdk": "^0.16.1",
-    "@anthropic-ai/claude-agent-sdk": "^0.2.63",
-    "@anthropic-ai/sdk": "^0.78.0",
-    "@google/adk": "^0.5.0",
-    "@google/genai": "^1.44.0",
-    "@langchain/core": "^1.1.31",
-    "@langchain/langgraph": "^1.2.0",
-    "@linear/sdk": "^76.0.0",
-    "@letta-ai/letta-client": "^1.7.0",
-    "@modelcontextprotocol/sdk": "^1.10.0",
-    "@openai/codex-sdk": "^0.107.0",
-    "@opencode-ai/sdk": "^1.3.0",
-    "ai": "^6.0.137",
-    "express": "^5.2.1",
-    "openai": "^6.27.0",
-    "parlant-client": "^3.2.0"
+    "@a2a-js/sdk": ">=0.3.10",
+    "@agentclientprotocol/sdk": ">=0.16.1",
+    "@anthropic-ai/claude-agent-sdk": ">=0.2.63",
+    "@anthropic-ai/sdk": ">=0.78.0",
+    "@google/adk": ">=0.5.0",
+    "@google/genai": ">=1.44.0",
+    "@langchain/core": ">=1.1.31",
+    "@langchain/langgraph": ">=1.2.0",
+    "@linear/sdk": ">=76.0.0",
+    "@letta-ai/letta-client": ">=1.7.0",
+    "@modelcontextprotocol/sdk": ">=1.10.0",
+    "@openai/codex-sdk": ">=0.107.0",
+    "@opencode-ai/sdk": ">=1.3.0",
+    "ai": ">=6.0.137",
+    "express": ">=5.2.1",
+    "openai": ">=6.27.0",
+    "parlant-client": ">=3.2.0"
   },
   "peerDependenciesMeta": {
     "@a2a-js/sdk": {

@@ -7,7 +7,7 @@ export function createLettaAgent(
     lettaApiKey?: string;
     lettaBaseUrl?: string;
   },
-  overrides?: { agentId?: string; apiKey?: string },
+  overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
   const adapter = new LettaAdapter({
     model: options.model ?? "openai/gpt-4o",
@@ -21,6 +21,8 @@ export function createLettaAgent(
     config: {
       agentId: overrides?.agentId ?? "agent-letta",
       apiKey: overrides?.apiKey ?? "api-key",
+      ...(overrides?.wsUrl ? { wsUrl: overrides.wsUrl } : {}),
+      ...(overrides?.restUrl ? { restUrl: overrides.restUrl } : {}),
     },
     agentConfig: {
       autoSubscribeExistingRooms: true,

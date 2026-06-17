@@ -11,7 +11,7 @@ function requireA2ARemoteUrl(optionsRemoteUrl?: string): string {
 
 export function createA2ABridgeAgent(
   options?: { remoteUrl?: string },
-  overrides?: { agentId?: string; apiKey?: string },
+  overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
   const remoteUrl = requireA2ARemoteUrl(options?.remoteUrl);
   const adapter = new A2AAdapter({
@@ -24,7 +24,10 @@ export function createA2ABridgeAgent(
     config: {
       agentId: overrides?.agentId ?? "agent-a2a",
       apiKey: overrides?.apiKey ?? "api-key",
+      ...(overrides?.wsUrl ? { wsUrl: overrides.wsUrl } : {}),
+      ...(overrides?.restUrl ? { restUrl: overrides.restUrl } : {}),
     },
+    agentConfig: { autoSubscribeExistingRooms: true },
   });
 }
 

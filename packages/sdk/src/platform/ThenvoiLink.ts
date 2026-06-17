@@ -3,8 +3,15 @@ import { NoopLogger } from "../core/logger";
 import { FernRestAdapter } from "../client/rest/RestFacade";
 import type { FernThenvoiClientLike } from "../client/rest/types";
 import type { RestRequestOptions } from "../client/rest/requestOptions";
-import { fetchPaginated, type PaginationOptions } from "../client/rest/pagination";
-import type { PaginatedResponse, PlatformChatMessage, ThenvoiLinkRestApi } from "../client/rest/types";
+import {
+  fetchPaginated,
+  type PaginationOptions,
+} from "../client/rest/pagination";
+import type {
+  PaginatedResponse,
+  PlatformChatMessage,
+  ThenvoiLinkRestApi,
+} from "../client/rest/types";
 import type { PlatformEvent } from "./events";
 import { UnsupportedFeatureError } from "../core/errors";
 import { assertCapability } from "../contracts/capabilities";
@@ -16,6 +23,11 @@ import {
 } from "./streaming/payloadSchemas";
 import { PhoenixChannelsTransport } from "./streaming/PhoenixChannelsTransport";
 import type { StreamingTransport } from "./streaming/transport";
+import {
+  WebSocketDisconnectError,
+  type WebSocketConflictPolicy,
+  type WebSocketDisconnectReason,
+} from "./streaming/disconnectReason";
 import {
   DEFAULT_AGENT_TOOLS_CAPABILITIES,
   type AgentToolsCapabilities,
@@ -31,11 +43,12 @@ export interface ThenvoiLinkOptions {
   transport?: StreamingTransport;
   logger?: Logger;
   capabilities?: Partial<AgentToolsCapabilities>;
+  conflictPolicy?: WebSocketConflictPolicy;
 }
 
 const DEFAULT_WS_URL = "wss://app.thenvoi.com/api/v1/socket";
 
-function deriveDefaultRestUrl(wsUrl: string): string {
+export function deriveDefaultRestUrl(wsUrl: string): string {
   const parsed = new URL(wsUrl);
   const protocol = parsed.protocol === "ws:" ? "http:" : "https:";
   return `${protocol}//${parsed.host}`;
@@ -43,6 +56,7 @@ function deriveDefaultRestUrl(wsUrl: string): string {
 
 interface PendingWaiter {
   resolve: (event: PlatformEvent | null) => void;
+  reject: (error: Error) => void;
   cleanup: () => void;
 }
 
@@ -50,7 +64,17 @@ export interface MessageMarkOptions {
   bestEffort?: boolean;
 }
 
-function toPlatformMessage(roomId: string, message: PlatformChatMessage): PlatformMessage {
+function roomTopics(roomId: string): { chat: string; participants: string } {
+  return {
+    chat: `chat_room:${roomId}`,
+    participants: `room_participants:${roomId}`,
+  };
+}
+
+function toPlatformMessage(
+  roomId: string,
+  message: PlatformChatMessage,
+): PlatformMessage {
   return {
     id: message.id,
     roomId,
@@ -78,6 +102,8 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
   private readonly eventQueue: PlatformEvent[] = [];
   private readonly waiters: PendingWaiter[] = [];
   private connected = false;
+  private lastDisconnectReason: WebSocketDisconnectReason | null = null;
+  private terminalDisconnectError: WebSocketDisconnectError | null = null;
 
   public constructor(options: ThenvoiLinkOptions) {
     this.agentId = options.agentId;
@@ -90,12 +116,14 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
       ...options.capabilities,
     };
 
-    const restApi = options.restApi ?? new FernRestAdapter(
-      new ThenvoiClient({
-        apiKey: this.apiKey,
-        baseUrl: this.restUrl,
-      }) as unknown as FernThenvoiClientLike,
-    );
+    const restApi =
+      options.restApi ??
+      new FernRestAdapter(
+        new ThenvoiClient({
+          apiKey: this.apiKey,
+          baseUrl: this.restUrl,
+        }) as unknown as FernThenvoiClientLike,
+      );
 
     this.rest = restApi;
 
@@ -106,6 +134,10 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
         apiKey: this.apiKey,
         agentId: this.agentId,
         logger: this.logger,
+        conflictPolicy: options.conflictPolicy,
+        onTerminalDisconnect: (reason) => {
+          this.recordDisconnectReason(reason);
+        },
       });
   }
 
@@ -113,12 +145,27 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
     return this.connected;
   }
 
+  public getDisconnectReason(): WebSocketDisconnectReason | null {
+    return this.lastDisconnectReason;
+  }
+
   public async connect(): Promise<void> {
     if (this.connected) {
       return;
     }
 
-    await this.transport.connect();
+    try {
+      await this.transport.connect();
+    } catch (error) {
+      if (error instanceof WebSocketDisconnectError) {
+        if (error.reason.retryable) {
+          this.lastDisconnectReason = error.reason;
+        } else {
+          this.recordDisconnectError(error);
+        }
+      }
+      throw error;
+    }
     this.connected = true;
   }
 
@@ -136,7 +183,25 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
   }
 
   public async runForever(signal: AbortSignal): Promise<void> {
+    if (this.terminalDisconnectError) {
+      throw this.terminalDisconnectError;
+    }
+
     await this.transport.runForever(signal);
+  }
+
+  private recordDisconnectReason(reason: WebSocketDisconnectReason): void {
+    this.recordDisconnectError(new WebSocketDisconnectError(reason));
+  }
+
+  private recordDisconnectError(error: WebSocketDisconnectError): void {
+    this.connected = false;
+    this.lastDisconnectReason = error.reason;
+    this.terminalDisconnectError = error;
+    while (this.waiters.length > 0) {
+      const waiter = this.waiters.shift();
+      waiter?.reject(error);
+    }
   }
 
   public queueEvent(event: PlatformEvent): void {
@@ -167,24 +232,7 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
       return;
     }
 
-    await this.transport.join(`chat_room:${roomId}`, {
-      message_created: (payload) => {
-        this.emit("message_created", payload, roomId);
-      },
-    });
-
-    await this.transport.join(`room_participants:${roomId}`, {
-      participant_added: (payload) => {
-        this.emit("participant_added", payload, roomId);
-      },
-      participant_removed: (payload) => {
-        this.emit("participant_removed", payload, roomId);
-      },
-      room_deleted: (payload) => {
-        this.emit("room_deleted", payload, roomId);
-      },
-    });
-
+    await this.joinRoomTopics(roomId);
     this.subscribedRooms.add(roomId);
   }
 
@@ -193,9 +241,37 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
       return;
     }
 
-    await this.transport.leave(`chat_room:${roomId}`);
-    await this.transport.leave(`room_participants:${roomId}`);
+    const topics = roomTopics(roomId);
+    await this.transport.leave(topics.chat);
+    await this.transport.leave(topics.participants);
     this.subscribedRooms.delete(roomId);
+  }
+
+  private async joinRoomTopics(roomId: string): Promise<void> {
+    const topics = roomTopics(roomId);
+
+    await this.transport.join(topics.chat, {
+      message_created: (payload) => {
+        this.emit("message_created", payload, roomId);
+      },
+    });
+
+    try {
+      await this.transport.join(topics.participants, {
+        participant_added: (payload) => {
+          this.emit("participant_added", payload, roomId);
+        },
+        participant_removed: (payload) => {
+          this.emit("participant_removed", payload, roomId);
+        },
+        room_deleted: (payload) => {
+          this.emit("room_deleted", payload, roomId);
+        },
+      });
+    } catch (error) {
+      await this.transport.leave(topics.chat);
+      throw error;
+    }
   }
 
   public async subscribeAgentContacts(): Promise<void> {
@@ -221,6 +297,10 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
   }
 
   public async nextEvent(signal?: AbortSignal): Promise<PlatformEvent | null> {
+    if (this.terminalDisconnectError) {
+      throw this.terminalDisconnectError;
+    }
+
     if (signal?.aborted) {
       return null;
     }
@@ -230,19 +310,19 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
       return queued;
     }
 
-    return new Promise<PlatformEvent | null>((resolve) => {
+    return new Promise<PlatformEvent | null>((resolve, reject) => {
       let settled = false;
       const onAbort = () => {
         const index = this.waiters.indexOf(waiter);
         if (index >= 0) {
           this.waiters.splice(index, 1);
         }
-        finalize(null);
+        finalizeResolve(null);
       };
       const cleanup = () => {
         signal?.removeEventListener("abort", onAbort);
       };
-      const finalize = (event: PlatformEvent | null) => {
+      const finalizeResolve = (event: PlatformEvent | null) => {
         if (settled) {
           return;
         }
@@ -250,8 +330,17 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
         cleanup();
         resolve(event);
       };
+      const finalizeReject = (error: Error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        reject(error);
+      };
       const waiter: PendingWaiter = {
-        resolve: finalize,
+        resolve: finalizeResolve,
+        reject: finalizeReject,
         cleanup,
       };
 
@@ -265,7 +354,10 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
       next: async () => {
         const value = await this.nextEvent();
         if (value === null) {
-          return { done: true, value: undefined } as IteratorReturnResult<undefined>;
+          return {
+            done: true,
+            value: undefined,
+          } as IteratorReturnResult<undefined>;
         }
         return { done: false, value };
       },
@@ -363,7 +455,9 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
     }
   }
 
-  public async getStaleProcessingMessages(roomId: string): Promise<PlatformMessage[]> {
+  public async getStaleProcessingMessages(
+    roomId: string,
+  ): Promise<PlatformMessage[]> {
     if (!this.rest.listMessages) {
       return [];
     }
@@ -383,7 +477,9 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
     requestOptions?: RestRequestOptions,
   ): Promise<PaginatedResponse> {
     if (!this.rest.listChats) {
-      throw new UnsupportedFeatureError("Chat listing is not available in current REST adapter");
+      throw new UnsupportedFeatureError(
+        "Chat listing is not available in current REST adapter",
+      );
     }
 
     return this.rest.listChats(request, requestOptions);
@@ -394,7 +490,8 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
     requestOptions?: RestRequestOptions,
   ): Promise<MetadataMap[]> {
     return fetchPaginated({
-      fetchPage: ({ page, pageSize }) => this.listChats({ page, pageSize }, requestOptions),
+      fetchPage: ({ page, pageSize }) =>
+        this.listChats({ page, pageSize }, requestOptions),
       pageSize: options?.pageSize,
       maxPages: options?.maxPages,
       strategy: options?.strategy,
@@ -402,7 +499,11 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
     });
   }
 
-  private emit(eventType: SupportedSocketEvent, payload: Record<string, unknown>, roomId: string | null): void {
+  private emit(
+    eventType: SupportedSocketEvent,
+    payload: Record<string, unknown>,
+    roomId: string | null,
+  ): void {
     const schema = payloadSchemas[eventType];
     const parsed = schema.safeParse(payload);
     if (!parsed.success) {

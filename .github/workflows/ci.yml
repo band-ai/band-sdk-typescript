@@ -182,7 +182,7 @@ jobs:
           }
           // Verify .d.ts has expected exports
           const dts = fs.readFileSync('dist/index.d.ts', 'utf8');
-          const expectedExports = ['thenvoiChannel', 'registerChannel', 'mcpTools', 'BASE_INSTRUCTIONS', 'buildSystemPrompt'];
+          const expectedExports = ['createBandChannelPlugin', 'BAND_CHANNEL_ID', 'bandTools', 'BASE_INSTRUCTIONS', 'buildSystemPrompt'];
           for (const exp of expectedExports) {
             if (!dts.includes(exp)) throw new Error('Missing export in .d.ts: ' + exp);
           }

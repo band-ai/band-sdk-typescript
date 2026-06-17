@@ -9,6 +9,7 @@ interface SessionRoomRow {
   thenvoi_room_id: string;
   status: SessionRoomRecord["status"];
   last_event_key: string | null;
+  last_linear_activity_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -53,6 +54,7 @@ class SqliteSessionRoomStore implements SessionRoomStore {
           thenvoi_room_id,
           status,
           last_event_key,
+          last_linear_activity_at,
           created_at,
           updated_at
         FROM linear_thenvoi_session_rooms
@@ -77,6 +79,7 @@ class SqliteSessionRoomStore implements SessionRoomStore {
           thenvoi_room_id,
           status,
           last_event_key,
+          last_linear_activity_at,
           created_at,
           updated_at
         FROM linear_thenvoi_session_rooms
@@ -102,15 +105,17 @@ class SqliteSessionRoomStore implements SessionRoomStore {
           thenvoi_room_id,
           status,
           last_event_key,
+          last_linear_activity_at,
           created_at,
           updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(linear_session_id)
         DO UPDATE SET
           linear_issue_id = excluded.linear_issue_id,
           thenvoi_room_id = excluded.thenvoi_room_id,
           status = excluded.status,
           last_event_key = excluded.last_event_key,
+          last_linear_activity_at = excluded.last_linear_activity_at,
           updated_at = excluded.updated_at
         `,
       )
@@ -120,6 +125,7 @@ class SqliteSessionRoomStore implements SessionRoomStore {
         record.thenvoiRoomId,
         record.status,
         record.lastEventKey ?? null,
+        record.lastLinearActivityAt ?? null,
         record.createdAt,
         record.updatedAt,
       );
@@ -227,6 +233,37 @@ class SqliteSessionRoomStore implements SessionRoomStore {
       .run(new Date().toISOString(), eventKey);
   }
 
+  public async listActiveSessions(): Promise<SessionRoomRecord[]> {
+    const db = await this.getDb();
+    const rawRows = db
+      .prepare(
+        `
+        SELECT
+          linear_session_id,
+          linear_issue_id,
+          thenvoi_room_id,
+          status,
+          last_event_key,
+          last_linear_activity_at,
+          created_at,
+          updated_at
+        FROM linear_thenvoi_session_rooms
+        WHERE status IN ('active', 'waiting')
+        ORDER BY updated_at DESC
+        `,
+      )
+      .all();
+
+    if (!Array.isArray(rawRows)) {
+      return [];
+    }
+
+    return rawRows
+      .map((raw) => parseSessionRoomRow(raw))
+      .filter((row): row is SessionRoomRow => row !== null)
+      .map((row) => this.toRecord(row));
+  }
+
   public async close(): Promise<void> {
     if (!this.dbPromise) {
       return;
@@ -319,6 +356,17 @@ class SqliteSessionRoomStore implements SessionRoomStore {
       }
     }
 
+    try {
+      db.exec(`
+        ALTER TABLE linear_thenvoi_session_rooms
+        ADD COLUMN last_linear_activity_at TEXT
+      `);
+    } catch (error) {
+      if (!isDuplicateColumnError(error)) {
+        throw error;
+      }
+    }
+
     return db;
   }
 
@@ -329,6 +377,7 @@ class SqliteSessionRoomStore implements SessionRoomStore {
       thenvoiRoomId: row.thenvoi_room_id,
       status: row.status,
       lastEventKey: row.last_event_key,
+      lastLinearActivityAt: row.last_linear_activity_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -398,6 +447,7 @@ function parseSessionRoomRow(value: unknown): SessionRoomRow | null {
   const thenvoiRoomId = asString(row.thenvoi_room_id);
   const status = asString(row.status);
   const lastEventKey = asNullableString(row.last_event_key);
+  const lastLinearActivityAt = asNullableString(row.last_linear_activity_at);
   const createdAt = asString(row.created_at);
   const updatedAt = asString(row.updated_at);
 
@@ -408,6 +458,7 @@ function parseSessionRoomRow(value: unknown): SessionRoomRow | null {
     || !status
     || !isSessionStatus(status)
     || lastEventKey === undefined
+    || lastLinearActivityAt === undefined
     || !createdAt
     || !updatedAt
   ) {
@@ -420,6 +471,7 @@ function parseSessionRoomRow(value: unknown): SessionRoomRow | null {
     thenvoi_room_id: thenvoiRoomId,
     status,
     last_event_key: lastEventKey,
+    last_linear_activity_at: lastLinearActivityAt,
     created_at: createdAt,
     updated_at: updatedAt,
   };

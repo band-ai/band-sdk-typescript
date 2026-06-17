@@ -146,6 +146,7 @@ export class PlatformRuntime {
         apiKey: this._apiKey,
         wsUrl: this._wsUrl,
         restUrl: this._restUrl,
+        logger: this.logger,
       });
     }
 

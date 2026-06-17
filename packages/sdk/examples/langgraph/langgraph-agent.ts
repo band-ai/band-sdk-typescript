@@ -18,7 +18,7 @@ export class EchoLangGraph implements LangGraphGraph {
 
 export function createLangGraphAgent(
   options?: { graph?: LangGraphGraph },
-  overrides?: { agentId?: string; apiKey?: string },
+  overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
   const adapter = new LangGraphAdapter({
     graph: options?.graph ?? new EchoLangGraph(),
@@ -31,7 +31,10 @@ export function createLangGraphAgent(
     config: {
       agentId: overrides?.agentId ?? "agent-langgraph",
       apiKey: overrides?.apiKey ?? "api-key",
+      ...(overrides?.wsUrl ? { wsUrl: overrides.wsUrl } : {}),
+      ...(overrides?.restUrl ? { restUrl: overrides.restUrl } : {}),
     },
+    agentConfig: { autoSubscribeExistingRooms: true },
   });
 }
 

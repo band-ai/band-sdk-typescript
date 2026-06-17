@@ -1,13 +1,19 @@
 export { Agent } from "./agent/Agent";
 export type { AgentCreateOptions } from "./agent/Agent";
 
-export { ThenvoiLink } from "./platform/ThenvoiLink";
+export { ThenvoiLink, deriveDefaultRestUrl } from "./platform/ThenvoiLink";
 export type { PlatformEvent, ContactEvent } from "./platform/events";
+export { WebSocketDisconnectError } from "./platform/streaming/disconnectReason";
+export type {
+  WebSocketConflictPolicy,
+  WebSocketDisconnectReason,
+} from "./platform/streaming/disconnectReason";
 export { PlatformRuntime } from "./runtime/PlatformRuntime";
 export type { PlatformRuntimeOptions } from "./runtime/PlatformRuntime";
 export { AgentRuntime } from "./runtime/rooms/AgentRuntime";
 export type { ExecutionContextOptions } from "./runtime/ExecutionContext";
 export { DefaultPreprocessor } from "./runtime/preprocessing/DefaultPreprocessor";
+export type { CustomToolDef } from "./runtime/tools/customTools";
 export type {
   AgentConfig,
   AgentInput,

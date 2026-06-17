@@ -5,9 +5,13 @@ import {
   LINEAR_WEBHOOK_SIGNATURE_HEADER,
   LINEAR_WEBHOOK_TS_HEADER,
   type AgentSessionEventWebhookPayload,
+  type AppUserNotificationWebhookPayloadWithNotification,
+  type AppUserTeamAccessChangedWebhookPayload,
+  type OAuthAppWebhookPayload,
 } from "@linear/sdk/webhooks";
 
 import { NoopLogger, type Logger } from "../../core/logger";
+import { handleAppUserNotification } from "./notification";
 import { postError, postThought } from "./activities";
 import {
   createLinearBridgeRuntime,
@@ -33,10 +37,16 @@ export interface LinearBridgeDispatcher {
   waitForIdle?(): Promise<void>;
 }
 
+export interface PermissionChangeCallbacks {
+  onTeamAccessChanged?: (payload: AppUserTeamAccessChangedWebhookPayload) => void | Promise<void>;
+  onOAuthAppRevoked?: (payload: OAuthAppWebhookPayload) => void | Promise<void>;
+}
+
 export interface CreateLinearWebhookHandlerOptions {
   config: LinearThenvoiBridgeConfig;
   deps: LinearThenvoiBridgeDeps;
   dispatcher?: LinearBridgeDispatcher;
+  permissionCallbacks?: PermissionChangeCallbacks;
 }
 
 type NodeRequestWithBody = IncomingMessage & {
@@ -207,6 +217,10 @@ export function createLinearWebhookHandler(
   const dispatcher = options.dispatcher ?? createInlineLinearBridgeDispatcher({ logger });
   const webhookClient = new LinearWebhookClient(options.config.linearWebhookSecret);
   const inFlightEventKeys = new Set<string>();
+  // Best-effort, process-scoped dedup for notification webhooks. Capped at 1 000 entries with
+  // FIFO eviction and no TTL — a process restart or a retry arriving after eviction will be
+  // reprocessed. This is acceptable because notification handlers are idempotent.
+  const processedNotificationIds = new Set<string>();
 
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     if (request.method !== "POST") {
@@ -231,13 +245,13 @@ export function createLinearWebhookHandler(
     }
 
     const rawBody = await readRawBody(request as NodeRequestWithBody);
-    let payload: AgentSessionEventWebhookPayload;
+    let parsed: { type?: string };
     try {
-      payload = webhookClient.parseData(
+      parsed = webhookClient.parseData(
         rawBody,
         signature,
         timestamp,
-      ) as AgentSessionEventWebhookPayload;
+      ) as { type?: string };
     } catch (error) {
       logger.warn("linear_thenvoi_bridge.webhook_invalid_signature", {
         error: error instanceof Error ? error.message : String(error),
@@ -246,13 +260,131 @@ export function createLinearWebhookHandler(
       return;
     }
 
-    if (payload.type !== "AgentSessionEvent") {
+    if (parsed.type === "AppUserNotification") {
+      const notificationPayload = parsed as AppUserNotificationWebhookPayloadWithNotification;
+
+      if (!notificationPayload.notification) {
+        logger.warn("linear_thenvoi_bridge.webhook_notification_missing_payload", {
+          appUserId: notificationPayload.appUserId ?? null,
+          organizationId: notificationPayload.organizationId ?? null,
+        });
+        sendText(response, 200, "OK");
+        return;
+      }
+
+      // The Linear SDK does not expose `id` on the notification union type yet; extract defensively.
+      const notificationId: string | undefined =
+        (notificationPayload.notification as { id?: string } | undefined)?.id;
+      const notificationType = notificationPayload.notification.__typename;
+      // Reactions are fire-and-forget (log-only) — don't let them evict actionable entries.
+      const isDedupable = notificationType !== "IssueCommentReactionNotificationWebhookPayload"
+        && notificationType !== "IssueEmojiReactionNotificationWebhookPayload";
+
+      if (isDedupable && notificationId && processedNotificationIds.has(notificationId)) {
+        logger.info("linear_thenvoi_bridge.webhook_notification_duplicate_ignored", {
+          notificationId,
+        });
+        sendText(response, 200, "OK");
+        return;
+      }
+
+      logger.info("linear_thenvoi_bridge.webhook_notification_received", {
+        notificationType: notificationType ?? null,
+        notificationId: notificationId ?? null,
+        appUserId: notificationPayload.appUserId,
+        organizationId: notificationPayload.organizationId,
+      });
+
+      try {
+        await handleAppUserNotification({
+          payload: notificationPayload,
+          deps: options.deps,
+          logger,
+          appUserId: notificationPayload.appUserId,
+        });
+        // Mark as processed only after the handler succeeds so that a failed notification
+        // can be retried by Linear instead of being silently deduped.
+        if (isDedupable && notificationId) {
+          processedNotificationIds.add(notificationId);
+          if (processedNotificationIds.size > 1000) {
+            const oldest = processedNotificationIds.values().next().value;
+            if (oldest) processedNotificationIds.delete(oldest);
+          }
+        }
+      } catch (error) {
+        logger.error("linear_thenvoi_bridge.webhook_notification_failed", {
+          notificationType: notificationType ?? null,
+          error: serializeError(error),
+        });
+      }
+
+      sendText(response, 200, "OK");
+      return;
+    }
+
+    if (parsed.type === "PermissionChange") {
+      const action = (parsed as { action?: string }).action;
+      if (normalizeAction(action) === "teamaccesschanged") {
+        const permPayload = parsed as unknown as AppUserTeamAccessChangedWebhookPayload;
+        logger.info("linear_thenvoi_bridge.team_access_changed", {
+          action: permPayload.action,
+          addedTeamIds: permPayload.addedTeamIds,
+          removedTeamIds: permPayload.removedTeamIds,
+          canAccessAllPublicTeams: permPayload.canAccessAllPublicTeams,
+          organizationId: permPayload.organizationId,
+        });
+
+        try {
+          await options.permissionCallbacks?.onTeamAccessChanged?.(permPayload);
+        } catch (error) {
+          logger.error("linear_thenvoi_bridge.team_access_changed_callback_failed", {
+            error: serializeError(error),
+          });
+        }
+      } else {
+        logger.info("linear_thenvoi_bridge.permission_change_event_ignored", {
+          action,
+        });
+      }
+
+      sendText(response, 200, "OK");
+      return;
+    }
+
+    if (parsed.type === "OAuthApp") {
+      const oauthPayload = parsed as unknown as OAuthAppWebhookPayload;
+      if (normalizeAction(oauthPayload.action) === "revoked") {
+        logger.warn("linear_thenvoi_bridge.oauth_app_revoked", {
+          oauthClientId: oauthPayload.oauthClientId,
+          organizationId: oauthPayload.organizationId,
+        });
+
+        try {
+          await options.permissionCallbacks?.onOAuthAppRevoked?.(oauthPayload);
+        } catch (error) {
+          logger.error("linear_thenvoi_bridge.oauth_app_revoked_callback_failed", {
+            error: serializeError(error),
+          });
+        }
+      } else {
+        logger.info("linear_thenvoi_bridge.oauth_app_event_ignored", {
+          action: oauthPayload.action,
+        });
+      }
+
+      sendText(response, 200, "OK");
+      return;
+    }
+
+    if (parsed.type !== "AgentSessionEvent") {
       logger.info("linear_thenvoi_bridge.webhook_ignored_event", {
-        type: payload.type,
+        type: parsed.type,
       });
       sendText(response, 200, "OK");
       return;
     }
+
+    const payload = parsed as unknown as AgentSessionEventWebhookPayload;
 
     const eventKey = getAgentSessionEventKey(payload);
     logger.info("linear_thenvoi_bridge.webhook_received", {

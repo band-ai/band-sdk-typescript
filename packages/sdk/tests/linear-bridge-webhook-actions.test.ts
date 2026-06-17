@@ -126,13 +126,33 @@ function makePayload(action: "created" | "updated" | "canceled") {
   return payload;
 }
 
-function makeLinearClient(): HandleAgentSessionEventInput["deps"]["linearClient"] & {
+function makeLinearClient(options?: { delegateId?: string | null }): HandleAgentSessionEventInput["deps"]["linearClient"] & {
   createAgentActivity: ReturnType<typeof vi.fn>;
+  agentSessionUpdateExternalUrl: ReturnType<typeof vi.fn>;
+  issue: ReturnType<typeof vi.fn>;
+  workflowStates: ReturnType<typeof vi.fn>;
+  updateIssue: ReturnType<typeof vi.fn>;
 } {
   return {
     createAgentActivity: vi.fn(async () => ({ ok: true })),
+    agentSessionUpdateExternalUrl: vi.fn(async () => ({ success: true })),
+    issue: vi.fn(async () => ({
+      id: "issue-1",
+      delegateId: options?.delegateId ?? null,
+    })),
+    workflowStates: vi.fn(async () => ({
+      nodes: [
+        { id: "state-started-1", name: "In Progress", type: "started", position: 1 },
+        { id: "state-started-2", name: "In Review", type: "started", position: 2 },
+      ],
+    })),
+    updateIssue: vi.fn(async () => ({ success: true })),
   } as unknown as HandleAgentSessionEventInput["deps"]["linearClient"] & {
     createAgentActivity: ReturnType<typeof vi.fn>;
+    agentSessionUpdateExternalUrl: ReturnType<typeof vi.fn>;
+    issue: ReturnType<typeof vi.fn>;
+    workflowStates: ReturnType<typeof vi.fn>;
+    updateIssue: ReturnType<typeof vi.fn>;
   };
 }
 
@@ -560,5 +580,467 @@ describe("linear bridge webhook actions", () => {
     await expect(store.listPendingBootstrapRequests()).resolves.toEqual([
       expect.objectContaining({ messageType: "task" }),
     ]);
+  });
+
+  it("sets external URL on Linear session on created event", async () => {
+    const restApi = new LinearThenvoiExampleRestApi();
+    const store = new MemorySessionRoomStore();
+    const linearClient = makeLinearClient();
+
+    await handleAgentSessionEvent({
+      payload: makePayload("created"),
+      config,
+      deps: { thenvoiRest: restApi, linearClient, store },
+    });
+
+    expect(linearClient.agentSessionUpdateExternalUrl).toHaveBeenCalledWith(
+      "session-1",
+      {
+        externalUrls: [{ label: "View in Thenvoi", url: expect.stringMatching(/^https:\/\/app\.thenvoi\.com\/rooms\//) }],
+      },
+    );
+  });
+
+  it("uses custom thenvoiAppBaseUrl for external URL", async () => {
+    const restApi = new LinearThenvoiExampleRestApi();
+    const store = new MemorySessionRoomStore();
+    const linearClient = makeLinearClient();
+
+    await handleAgentSessionEvent({
+      payload: makePayload("created"),
+      config: { ...config, thenvoiAppBaseUrl: "https://custom.example.com" },
+      deps: { thenvoiRest: restApi, linearClient, store },
+    });
+
+    expect(linearClient.agentSessionUpdateExternalUrl).toHaveBeenCalledWith(
+      "session-1",
+      {
+        externalUrls: [{ label: "View in Thenvoi", url: expect.stringContaining("https://custom.example.com/rooms/") }],
+      },
+    );
+  });
+
+  it("skips delegate when appUserId is absent", async () => {
+    const restApi = new LinearThenvoiExampleRestApi();
+    const store = new MemorySessionRoomStore();
+    const linearClient = makeLinearClient();
+    const payload = makePayload("created");
+    (payload as Record<string, unknown>).appUserId = undefined;
+
+    await handleAgentSessionEvent({
+      payload,
+      config,
+      deps: { thenvoiRest: restApi, linearClient, store },
+    });
+
+    expect(linearClient.issue).not.toHaveBeenCalled();
+    expect(linearClient.updateIssue).not.toHaveBeenCalled();
+    // Should still forward the message successfully.
+    expect(restApi.roomEvents).toHaveLength(1);
+  });
+
+  it("sets agent as delegate on created event when no delegate exists", async () => {
+    const restApi = new LinearThenvoiExampleRestApi();
+    const store = new MemorySessionRoomStore();
+    const linearClient = makeLinearClient({ delegateId: null });
+    // First call: check existing delegate (none). Second call: re-fetch after setting delegate.
+    linearClient.issue
+      .mockReset()
+      .mockResolvedValueOnce({ id: "issue-1", delegateId: null })
+      .mockResolvedValueOnce({
+        id: "issue-1",
+        delegateId: "app-user",
+        delegate: { id: "app-user", name: "Thenvoi Agent", displayName: "Thenvoi Agent" },
+      });
+
+    await handleAgentSessionEvent({
+      payload: makePayload("created"),
+      config,
+      deps: { thenvoiRest: restApi, linearClient, store },
+    });
+
+    expect(linearClient.issue).toHaveBeenCalledWith("issue-1");
+    expect(linearClient.updateIssue).toHaveBeenCalledWith("issue-1", {
+      delegateId: "app-user",
+    });
+    // Bridge message should reflect the newly-set delegate with a human-readable name.
+    expect(restApi.roomEvents[0]?.content).toContain("issue_delegate_id: app-user");
+    expect(restApi.roomEvents[0]?.content).toContain("issue_delegate: Thenvoi Agent");
+  });
+
+  it("does not overwrite existing delegate on created event", async () => {
+    const restApi = new LinearThenvoiExampleRestApi();
+    const store = new MemorySessionRoomStore();
+    const linearClient = makeLinearClient({ delegateId: "existing-delegate" });
+
+    await handleAgentSessionEvent({
+      payload: makePayload("created"),
+      config,
+      deps: { thenvoiRest: restApi, linearClient, store },
+    });
+
+    expect(linearClient.issue).toHaveBeenCalledWith("issue-1");
+    expect(linearClient.updateIssue).not.toHaveBeenCalled();
+  });
+
+  it("does not set external URL on updated events", async () => {
+    const restApi = new LinearThenvoiExampleRestApi();
+    const store = new MemorySessionRoomStore();
+    const linearClient = makeLinearClient();
+
+    // First create to set up the room.
+    await handleAgentSessionEvent({
+      payload: makePayload("created"),
+      config,
+      deps: { thenvoiRest: restApi, linearClient, store },
+    });
+
+    const updatedClient = makeLinearClient();
+    await handleAgentSessionEvent({
+      payload: makePayload("updated"),
+      config,
+      deps: { thenvoiRest: restApi, linearClient: updatedClient, store },
+    });
+
+    expect(updatedClient.agentSessionUpdateExternalUrl).not.toHaveBeenCalled();
+    // The updated client should not have fetched the issue for delegate check.
+    expect(updatedClient.issue).not.toHaveBeenCalled();
+    expect(updatedClient.updateIssue).not.toHaveBeenCalled();
+  });
+
+  it("continues normally when setting external URL fails", async () => {
+    const restApi = new LinearThenvoiExampleRestApi();
+    const store = new MemorySessionRoomStore();
+    const linearClient = makeLinearClient();
+    linearClient.agentSessionUpdateExternalUrl.mockRejectedValueOnce(new Error("API error"));
+
+    await handleAgentSessionEvent({
+      payload: makePayload("created"),
+      config,
+      deps: { thenvoiRest: restApi, linearClient, store },
+    });
+
+    // Should still forward the message successfully despite external URL failure.
+    expect(restApi.roomEvents).toHaveLength(1);
+    expect(restApi.roomEvents[0]?.metadata).toMatchObject({
+      linear_event_action: "created",
+      linear_session_id: "session-1",
+    });
+  });
+
+  it("continues normally when auto-delegate fails", async () => {
+    const restApi = new LinearThenvoiExampleRestApi();
+    const store = new MemorySessionRoomStore();
+    const linearClient = makeLinearClient();
+    linearClient.issue.mockRejectedValueOnce(new Error("API rate limit"));
+
+    await handleAgentSessionEvent({
+      payload: makePayload("created"),
+      config,
+      deps: { thenvoiRest: restApi, linearClient, store },
+    });
+
+    // Should still forward the message successfully despite delegate failure.
+    expect(restApi.roomEvents).toHaveLength(1);
+    expect(restApi.roomEvents[0]?.metadata).toMatchObject({
+      linear_event_action: "created",
+      linear_session_id: "session-1",
+    });
+  });
+
+  it("skips external URL when agentSessionUpdateExternalUrl is unavailable", async () => {
+    const restApi = new LinearThenvoiExampleRestApi();
+    const store = new MemorySessionRoomStore();
+    const linearClient = makeLinearClient();
+    delete (linearClient as Partial<typeof linearClient>).agentSessionUpdateExternalUrl;
+
+    await handleAgentSessionEvent({
+      payload: makePayload("created"),
+      config,
+      deps: { thenvoiRest: restApi, linearClient, store },
+    });
+
+    // Should still forward the message successfully.
+    expect(restApi.roomEvents).toHaveLength(1);
+  });
+
+  it("moves issue to started state on created event when state is unstarted", async () => {
+    const restApi = new LinearThenvoiExampleRestApi();
+    const store = new MemorySessionRoomStore();
+    const linearClient = makeLinearClient();
+    const payload = makePayload("created");
+    const issue = payload.agentSession.issue as Record<string, unknown>;
+    issue.state = { id: "state-backlog", name: "Backlog", type: "unstarted" };
+
+    await handleAgentSessionEvent({
+      payload,
+      config,
+      deps: { thenvoiRest: restApi, linearClient, store },
+    });
+
+    expect(linearClient.workflowStates).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filter: expect.objectContaining({
+          team: { id: { eq: "team-1" } },
+          type: { eq: "started" },
+        }),
+      }),
+    );
+    expect(linearClient.updateIssue).toHaveBeenCalledWith("issue-1", {
+      stateId: "state-started-1",
+    });
+    // Bridge message should reflect the new state.
+    expect(restApi.roomEvents[0]?.content).toContain("issue_state: In Progress");
+    expect(restApi.roomEvents[0]?.content).toContain("issue_state_id: state-started-1");
+    expect(restApi.roomEvents[0]?.content).toContain("issue_state_type: started");
+  });
+
+  it("moves issue to started state on created event when state is backlog", async () => {
+    const restApi = new LinearThenvoiExampleRestApi();
+    const store = new MemorySessionRoomStore();
+    const linearClient = makeLinearClient();
+    const payload = makePayload("created");
+    const issue = payload.agentSession.issue as Record<string, unknown>;
+    issue.state = { id: "state-bl", name: "Backlog", type: "backlog" };
+
+    await handleAgentSessionEvent({
+      payload,
+      config,
+      deps: { thenvoiRest: restApi, linearClient, store },
+    });
+
+    expect(linearClient.workflowStates).toHaveBeenCalled();
+    expect(linearClient.updateIssue).toHaveBeenCalledWith("issue-1", {
+      stateId: "state-started-1",
+    });
+  });
+
+  it("moves issue to started state on created event when state is triage", async () => {
+    const restApi = new LinearThenvoiExampleRestApi();
+    const store = new MemorySessionRoomStore();
+    const linearClient = makeLinearClient();
+    const payload = makePayload("created");
+    const issue = payload.agentSession.issue as Record<string, unknown>;
+    issue.state = { id: "state-tr", name: "Triage", type: "triage" };
+
+    await handleAgentSessionEvent({
+      payload,
+      config,
+      deps: { thenvoiRest: restApi, linearClient, store },
+    });
+
+    expect(linearClient.workflowStates).toHaveBeenCalled();
+    expect(linearClient.updateIssue).toHaveBeenCalledWith("issue-1", {
+      stateId: "state-started-1",
+    });
+  });
+
+  it("does not move issue when already in started state", async () => {
+    const restApi = new LinearThenvoiExampleRestApi();
+    const store = new MemorySessionRoomStore();
+    const linearClient = makeLinearClient();
+    const payload = makePayload("created");
+
+    await handleAgentSessionEvent({
+      payload,
+      config,
+      deps: { thenvoiRest: restApi, linearClient, store },
+    });
+
+    expect(linearClient.workflowStates).not.toHaveBeenCalled();
+  });
+
+  it("does not move issue when in completed state", async () => {
+    const restApi = new LinearThenvoiExampleRestApi();
+    const store = new MemorySessionRoomStore();
+    const linearClient = makeLinearClient();
+    const payload = makePayload("created");
+    const issue = payload.agentSession.issue as Record<string, unknown>;
+    issue.state = { id: "state-done", name: "Done", type: "completed" };
+
+    await handleAgentSessionEvent({
+      payload,
+      config,
+      deps: { thenvoiRest: restApi, linearClient, store },
+    });
+
+    expect(linearClient.workflowStates).not.toHaveBeenCalled();
+  });
+
+  it("does not move issue when in canceled state", async () => {
+    const restApi = new LinearThenvoiExampleRestApi();
+    const store = new MemorySessionRoomStore();
+    const linearClient = makeLinearClient();
+    const payload = makePayload("created");
+    const issue = payload.agentSession.issue as Record<string, unknown>;
+    issue.state = { id: "state-cancel", name: "Canceled", type: "canceled" };
+
+    await handleAgentSessionEvent({
+      payload,
+      config,
+      deps: { thenvoiRest: restApi, linearClient, store },
+    });
+
+    expect(linearClient.workflowStates).not.toHaveBeenCalled();
+  });
+
+  it("does not attempt auto-start on updated events", async () => {
+    const restApi = new LinearThenvoiExampleRestApi();
+    const store = new MemorySessionRoomStore();
+    const linearClient = makeLinearClient();
+
+    await handleAgentSessionEvent({
+      payload: makePayload("created"),
+      config,
+      deps: { thenvoiRest: restApi, linearClient, store },
+    });
+
+    const updatedClient = makeLinearClient();
+    const updatedPayload = makePayload("updated");
+    const issue = updatedPayload.agentSession.issue as Record<string, unknown>;
+    issue.state = { id: "state-backlog", name: "Backlog", type: "unstarted" };
+
+    await handleAgentSessionEvent({
+      payload: updatedPayload,
+      config,
+      deps: { thenvoiRest: restApi, linearClient: updatedClient, store },
+    });
+
+    expect(updatedClient.workflowStates).not.toHaveBeenCalled();
+  });
+
+  it("continues normally when auto-start fails", async () => {
+    const restApi = new LinearThenvoiExampleRestApi();
+    const store = new MemorySessionRoomStore();
+    const linearClient = makeLinearClient();
+    linearClient.workflowStates.mockRejectedValueOnce(new Error("API rate limit"));
+    const payload = makePayload("created");
+    const issue = payload.agentSession.issue as Record<string, unknown>;
+    issue.state = { id: "state-bl", name: "Backlog", type: "backlog" };
+
+    await handleAgentSessionEvent({
+      payload,
+      config,
+      deps: { thenvoiRest: restApi, linearClient, store },
+    });
+
+    expect(restApi.roomEvents).toHaveLength(1);
+    expect(restApi.roomEvents[0]?.metadata).toMatchObject({
+      linear_event_action: "created",
+      linear_session_id: "session-1",
+    });
+  });
+
+  it("moves issue to lowest-position started state when multiple exist", async () => {
+    const restApi = new LinearThenvoiExampleRestApi();
+    const store = new MemorySessionRoomStore();
+    const linearClient = makeLinearClient();
+    linearClient.workflowStates.mockResolvedValueOnce({
+      nodes: [
+        { id: "state-review", name: "In Review", type: "started", position: 5 },
+        { id: "state-in-progress", name: "In Progress", type: "started", position: 1 },
+        { id: "state-qa", name: "QA", type: "started", position: 3 },
+      ],
+    });
+    const payload = makePayload("created");
+    const issue = payload.agentSession.issue as Record<string, unknown>;
+    issue.state = { id: "state-bl", name: "Todo", type: "unstarted" };
+
+    await handleAgentSessionEvent({
+      payload,
+      config,
+      deps: { thenvoiRest: restApi, linearClient, store },
+    });
+
+    expect(linearClient.updateIssue).toHaveBeenCalledWith("issue-1", {
+      stateId: "state-in-progress",
+    });
+    expect(restApi.roomEvents[0]?.content).toContain("issue_state: In Progress");
+  });
+
+  it("skips auto-start when no started workflow states exist for the team", async () => {
+    const restApi = new LinearThenvoiExampleRestApi();
+    const store = new MemorySessionRoomStore();
+    const linearClient = makeLinearClient();
+    linearClient.workflowStates.mockResolvedValueOnce({ nodes: [] });
+    const payload = makePayload("created");
+    const issue = payload.agentSession.issue as Record<string, unknown>;
+    issue.state = { id: "state-bl", name: "Backlog", type: "backlog" };
+
+    await handleAgentSessionEvent({
+      payload,
+      config,
+      deps: { thenvoiRest: restApi, linearClient, store },
+    });
+
+    expect(linearClient.workflowStates).toHaveBeenCalled();
+    // updateIssue may be called by auto-delegate, but should not be called with stateId.
+    expect(linearClient.updateIssue).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ stateId: expect.anything() }),
+    );
+    expect(restApi.roomEvents).toHaveLength(1);
+    expect(restApi.roomEvents[0]?.content).toContain("issue_state: Backlog");
+  });
+
+  it("handles malformed workflowStates response with missing nodes gracefully", async () => {
+    const restApi = new LinearThenvoiExampleRestApi();
+    const store = new MemorySessionRoomStore();
+    const linearClient = makeLinearClient();
+    linearClient.workflowStates.mockResolvedValueOnce({ nodes: undefined });
+    const payload = makePayload("created");
+    const issue = payload.agentSession.issue as Record<string, unknown>;
+    issue.state = { id: "state-bl", name: "Backlog", type: "backlog" };
+
+    await handleAgentSessionEvent({
+      payload,
+      config,
+      deps: { thenvoiRest: restApi, linearClient, store },
+    });
+
+    expect(linearClient.workflowStates).toHaveBeenCalled();
+    // updateIssue may be called by auto-delegate, but should not be called with stateId.
+    expect(linearClient.updateIssue).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ stateId: expect.anything() }),
+    );
+    expect(restApi.roomEvents).toHaveLength(1);
+    expect(restApi.roomEvents[0]?.content).toContain("issue_state: Backlog");
+  });
+
+  it("preserves original intent after auto-start moves issue to started", async () => {
+    const restApi = new LinearThenvoiExampleRestApi();
+    const store = new MemorySessionRoomStore();
+    const linearClient = makeLinearClient();
+    const payload = makePayload("created");
+    const issue = payload.agentSession.issue as Record<string, unknown>;
+    issue.state = { id: "state-bl", name: "Backlog", type: "unstarted" };
+
+    await handleAgentSessionEvent({
+      payload,
+      config,
+      deps: { thenvoiRest: restApi, linearClient, store },
+    });
+
+    expect(restApi.roomEvents[0]?.content).toContain("issue_state_type: started");
+    expect(restApi.roomEvents[0]?.content).toContain("inferred_session_intent: planning");
+  });
+
+  it("skips auto-start when issue state type is missing from payload", async () => {
+    const restApi = new LinearThenvoiExampleRestApi();
+    const store = new MemorySessionRoomStore();
+    const linearClient = makeLinearClient();
+    const payload = makePayload("created");
+    const issue = payload.agentSession.issue as Record<string, unknown>;
+    issue.state = { id: "state-unknown", name: "Unknown" };
+
+    await handleAgentSessionEvent({
+      payload,
+      config,
+      deps: { thenvoiRest: restApi, linearClient, store },
+    });
+
+    expect(linearClient.workflowStates).not.toHaveBeenCalled();
+    expect(restApi.roomEvents).toHaveLength(1);
   });
 });

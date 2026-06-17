@@ -1,7 +1,11 @@
 import type { AdapterToolsProtocol } from "../contracts/protocols";
 import { mcpToolNames } from "../runtime/tools/schemas";
 import type { McpToolRegistration } from "./registrations";
-import { buildRoomScopedRegistrations } from "./registrations";
+import {
+  buildRoomScopedRegistrations,
+  buildSingleContextRegistrations,
+  resolveSingleRoomTools,
+} from "./registrations";
 import { ThenvoiMcpStdioServer } from "./stdio";
 import { ThenvoiMcpServer } from "./server";
 import { ThenvoiMcpSseServer } from "./sse";
@@ -19,29 +23,31 @@ export interface ThenvoiMcpBackend {
 export interface CreateThenvoiMcpBackendOptions {
   kind: ThenvoiMcpBackendKind;
   enableMemoryTools: boolean;
+  /**
+   * Returns the tools for a given room. In single-room mode (`multiRoom: false`),
+   * called once during init with `""` — must return the tools instance regardless of the argument.
+   */
   getToolsForRoom: (roomId: string) => AdapterToolsProtocol | undefined;
   additionalTools?: McpToolRegistration[];
+  multiRoom?: boolean;
 }
 
 export async function createThenvoiMcpBackend(
   options: CreateThenvoiMcpBackendOptions,
 ): Promise<ThenvoiMcpBackend> {
-  const registrations = buildRoomScopedRegistrations(
-    options.getToolsForRoom,
-    {
-      enableMemoryTools: options.enableMemoryTools,
-      enableContactTools: true,
-      additionalTools: options.additionalTools,
-    },
-  );
+  const registrationOptions = {
+    enableMemoryTools: options.enableMemoryTools,
+    enableContactTools: true,
+    additionalTools: options.additionalTools,
+  };
 
-  const allowedTools = mcpToolNames(new Set(registrations.map((registration) => registration.name)));
-
+  // SDK builds its own registrations and allowedTools internally — delegate entirely.
   if (options.kind === "sdk") {
     const { createThenvoiSdkMcpServer } = await import("./sdk");
     const server = createThenvoiSdkMcpServer({
-      enableMemoryTools: options.enableMemoryTools,
       getToolsForRoom: options.getToolsForRoom,
+      multiRoom: options.multiRoom,
+      enableMemoryTools: options.enableMemoryTools,
       additionalTools: options.additionalTools,
     });
 
@@ -53,9 +59,20 @@ export async function createThenvoiMcpBackend(
     };
   }
 
+  // Resolve tools once so non-SDK servers and registration building share the same instance.
+  const resolvedTools = options.multiRoom === false
+    ? resolveSingleRoomTools(options.getToolsForRoom)
+    : options.getToolsForRoom;
+
+  const registrations = options.multiRoom === false
+    ? buildSingleContextRegistrations(resolvedTools as AdapterToolsProtocol, registrationOptions)
+    : buildRoomScopedRegistrations(resolvedTools as (roomId: string) => AdapterToolsProtocol | undefined, registrationOptions);
+
+  const allowedTools = mcpToolNames(new Set(registrations.map((registration) => registration.name)));
+
   if (options.kind === "stdio") {
     const server = new ThenvoiMcpStdioServer({
-      tools: options.getToolsForRoom,
+      tools: resolvedTools,
       enableMemoryTools: options.enableMemoryTools,
       enableContactTools: true,
       additionalTools: options.additionalTools,
@@ -74,7 +91,7 @@ export async function createThenvoiMcpBackend(
 
   if (options.kind === "sse") {
     const server = new ThenvoiMcpSseServer({
-      tools: options.getToolsForRoom,
+      tools: resolvedTools,
       enableMemoryTools: options.enableMemoryTools,
       enableContactTools: true,
       additionalTools: options.additionalTools,
@@ -92,7 +109,7 @@ export async function createThenvoiMcpBackend(
   }
 
   const server = new ThenvoiMcpServer({
-    tools: options.getToolsForRoom,
+    tools: resolvedTools,
     enableMemoryTools: options.enableMemoryTools,
     enableContactTools: true,
     additionalTools: options.additionalTools,

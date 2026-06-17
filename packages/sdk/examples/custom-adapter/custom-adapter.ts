@@ -13,13 +13,18 @@ class EchoAdapter extends SimpleAdapter<HistoryProvider> {
 export function createCustomAdapterAgent(overrides?: {
   agentId?: string;
   apiKey?: string;
+  wsUrl?: string;
+  restUrl?: string;
 }): Agent {
   return Agent.create({
     adapter: new EchoAdapter(),
     config: {
       agentId: overrides?.agentId ?? "agent-1",
       apiKey: overrides?.apiKey ?? "api-key",
+      ...(overrides?.wsUrl ? { wsUrl: overrides.wsUrl } : {}),
+      ...(overrides?.restUrl ? { restUrl: overrides.restUrl } : {}),
     },
+    agentConfig: { autoSubscribeExistingRooms: true },
   });
 }
 
