@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.7](https://github.com/thenvoi/thenvoi-sdk-typescript/compare/openclaw-channel-thenvoi-v0.1.6...openclaw-channel-thenvoi-v0.1.7) (2026-06-17)
+
+
+### Bug Fixes
+
+* **openclaw:** log dropped reply when account is not connected ([#110](https://github.com/thenvoi/thenvoi-sdk-typescript/issues/110)) ([e149569](https://github.com/thenvoi/thenvoi-sdk-typescript/commit/e1495698a359cadc5dfe3072f1da31c9e13117fa))
+
 ## [0.1.6](https://github.com/thenvoi/thenvoi-sdk-typescript/compare/openclaw-channel-thenvoi-v0.1.5...openclaw-channel-thenvoi-v0.1.6) (2026-06-17)
 
 
