@@ -127,8 +127,8 @@ importers:
         specifier: ^0.2.63
         version: 0.2.84(zod@3.25.76)
       '@linear/sdk':
-        specifier: ^76.0.0
-        version: 76.0.0(graphql@16.13.2)
+        specifier: ^86.0.0
+        version: 86.0.0(graphql@16.13.2)
       '@modelcontextprotocol/sdk':
         specifier: ^1.27.1
         version: 1.28.0(@cfworker/json-schema@4.1.1)(zod@3.25.76)
@@ -866,8 +866,8 @@ packages:
   '@letta-ai/letta-client@1.10.0':
     resolution: {integrity: sha512-DKBQNUyYdXjKVu6Lxg1+uKqvUQDoBA9/hHxGH0LJSzSeMM0RUX03GSlAOOLu1/L/Mp5H0s2UoW5K3BGObKH8gQ==}
 
-  '@linear/sdk@76.0.0':
-    resolution: {integrity: sha512-Xt0x5Kl6qBoWhGFypb8ykyP+c5kT7scmRPs1uJidSPOaRgkMJ/4y41QpmZCWCBUMmZtf/O0VktgQio6rLXT94w==}
+  '@linear/sdk@86.0.0':
+    resolution: {integrity: sha512-Lr47874CGGPCDiPQoKYjcZDWyyu18N8zzEGvss86uzjZaeZrhNsuwKTARswG27VAJ3fPVJAvl/5dPl8QwndSlg==}
     engines: {node: '>=18.x'}
 
   '@lydell/node-pty-darwin-arm64@1.2.0-beta.12':
@@ -4861,7 +4861,7 @@ snapshots:
 
   '@letta-ai/letta-client@1.10.0': {}
 
-  '@linear/sdk@76.0.0(graphql@16.13.2)':
+  '@linear/sdk@86.0.0(graphql@16.13.2)':
     dependencies:
       '@graphql-typed-document-node/core': 3.2.0(graphql@16.13.2)
     transitivePeerDependencies:
