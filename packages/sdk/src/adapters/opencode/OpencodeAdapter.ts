@@ -213,6 +213,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       agentDescription,
       customSection: this.config.customSection,
       includeBaseInstructions: this.config.includeBaseInstructions,
+      capabilities: { memory: this.config.enableMemoryTools },
     }).trim();
     this.systemPrompt = `${systemPrompt}\n\n${OPENCODE_SYSTEM_NOTE}`.trim();
   }
