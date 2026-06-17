@@ -35,10 +35,8 @@
     "stage:link": "node scripts/stage-link.mjs",
     "link:local": "pnpm build && node scripts/stage-link.mjs"
   },
-  "dependencies": {
-    "@thenvoi/sdk": "workspace:*"
-  },
   "devDependencies": {
+    "@thenvoi/sdk": "workspace:*",
     "@types/node": "^22.0.0",
     "@vitest/coverage-v8": "^3.2.4",
     "eslint": "^9.0.0",

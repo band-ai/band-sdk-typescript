@@ -3,13 +3,13 @@
   "release-type": "node",
   "packages": {
     "packages/sdk": {
-      "package-name": "@thenvoi/sdk",
+      "package-name": "@band-ai/sdk",
       "changelog-path": "CHANGELOG.md",
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true
     },
     "packages/openclaw": {
-      "package-name": "@thenvoi/openclaw-channel-thenvoi",
+      "package-name": "@band-ai/openclaw-channel-band",
       "changelog-path": "CHANGELOG.md",
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
