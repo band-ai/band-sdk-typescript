@@ -81,9 +81,8 @@ jobs:
         if: steps.release.outputs['packages/openclaw--release_created'] == 'true'
         run: |
           cd packages/openclaw
-          # package.json name is already @band-ai/openclaw-channel-band; point its
-          # SDK dependency at the published @band-ai/sdk.
-          sed -i 's/"@thenvoi\/sdk"/"@band-ai\/sdk"/' package.json
+          # name is already @band-ai/openclaw-channel-band and the SDK is bundled
+          # (types inlined), so the package is self-contained — nothing to rewrite.
           npm publish --provenance --access public
 
       - name: Publish release summary

@@ -126,7 +126,11 @@ const openclawPkg = JSON.parse(readFileSync("package.json", "utf-8")) as { versi
 export default defineConfig({
   entry: ["src/index.ts", "src/setup-entry.ts"],
   format: ["esm"],
-  dts: true,
+  // Inline the bundled SDK's types into our .d.ts so the published package is
+  // fully self-contained (no `@thenvoi/sdk` type import leaking into dist/*.d.ts,
+  // hence no SDK dependency needed). openclaw stays an external type import — it's
+  // a peer the host provides.
+  dts: { resolve: ["@thenvoi/sdk", "@thenvoi/rest-client", "zod", "zod-to-json-schema"] },
   sourcemap: true,
   clean: true,
   shims: true,
