@@ -2,7 +2,7 @@
   "$schema": "https://openclaw.ai/schemas/plugin.json",
   "id": "openclaw-channel-band",
   "name": "Band",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Connect OpenClaw to the Band AI agent collaboration platform",
   "author": "Band",
   "license": "MIT",
