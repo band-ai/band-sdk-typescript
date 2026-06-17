@@ -108,8 +108,8 @@ importers:
         specifier: '>=3.2.0'
         version: 3.2.0
       phoenix:
-        specifier: ^1.8.4
-        version: 1.8.5
+        specifier: ^1.8.8
+        version: 1.8.8
       ws:
         specifier: ^8.19.0
         version: 8.20.0
@@ -3226,8 +3226,8 @@ packages:
   pgpass@1.0.5:
     resolution: {integrity: sha512-FdW9r/jQZhSeohs1Z3sI1yxFQNFvMcnmfuj4WBMUTxOrAyLMaTcE1aAMBiTlbMNaXvBCQuVi0R7hd8udDSP7ug==}
 
-  phoenix@1.8.5:
-    resolution: {integrity: sha512-Oj5nlRV/NKXkjBx8uMgCMmgMf1twd/B2qOcO30cHLH1PCGR8149o4T1lRIaqN4nq2KQJAeMqPiLdh1Asd0wQFg==}
+  phoenix@1.8.8:
+    resolution: {integrity: sha512-dHbnj+eERgKqDu1dACsJNp4JWxtWO+598STHaGPhzA5DqNG4jeq5WmkjXsaMYsDMFEsygtFovdrhVtDHTN7V+A==}
 
   picocolors@1.1.1:
     resolution: {integrity: sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==}
@@ -7525,7 +7525,7 @@ snapshots:
     dependencies:
       split2: 4.2.0
 
-  phoenix@1.8.5: {}
+  phoenix@1.8.8: {}
 
   picocolors@1.1.1: {}
 
