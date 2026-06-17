@@ -1,6 +1,6 @@
 {
   "name": "@thenvoi/sdk",
-  "version": "0.1.4",
+  "version": "0.1.6",
   "description": "Thenvoi TypeScript SDK core runtime",
   "license": "MIT",
   "repository": {
