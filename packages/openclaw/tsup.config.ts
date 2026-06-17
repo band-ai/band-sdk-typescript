@@ -124,7 +124,7 @@ function stubOptionalPeers(peers: string[]): Plugin {
 const openclawPkg = JSON.parse(readFileSync("package.json", "utf-8")) as { version: string };
 
 export default defineConfig({
-  entry: ["src/index.ts"],
+  entry: ["src/index.ts", "src/setup-entry.ts"],
   format: ["esm"],
   dts: true,
   sourcemap: true,
@@ -132,8 +132,14 @@ export default defineConfig({
   shims: true,
   target: "node22",
   outDir: "dist",
-  // Keep openclaw external (host provides it)
-  external: ["openclaw"],
+  // ESM output bundles CJS deps (phoenix/ws) that call require("events") etc.
+  // Provide a real require via createRequire so esbuild's __require shim resolves
+  // node built-ins at runtime instead of throwing "Dynamic require ... not supported".
+  banner: {
+    js: "import { createRequire as __createRequire } from 'module'; const require = __createRequire(import.meta.url);",
+  },
+  // Keep openclaw (and its plugin-sdk subpaths) external — host provides it
+  external: ["openclaw", /^openclaw\//],
   // Bundle the SDK and its dependencies into the plugin
   noExternal: ["phoenix", "@thenvoi/sdk", "@thenvoi/rest-client", "zod", "zod-to-json-schema", "ws", "js-yaml"],
   esbuildPlugins: [stubOptionalPeers(sdkOptionalPeers)],

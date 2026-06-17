@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: Apache-2.0
+# Direct egress to Anthropic API for the agent's models.json provider entry.
+# Used as a workaround when NemoClaw's routed-profile onboard doesn't seed
+# the agent's models.json with a managed-inference provider.
+preset:
+  name: anthropic-direct
+  description: "Anthropic Messages API direct access"
+
+network_policies:
+  anthropic-direct:
+    name: anthropic-direct
+    endpoints:
+      - host: api.anthropic.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow: { method: POST, path: "/v1/messages" }
+          - allow: { method: GET,  path: "/v1/models" }
+          - allow: { method: GET,  path: "/v1/models/**" }
+    binaries:
+      - { path: /usr/local/bin/node }
+      - { path: /usr/bin/node }
