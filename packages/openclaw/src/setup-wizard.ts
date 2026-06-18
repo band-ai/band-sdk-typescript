@@ -135,7 +135,7 @@ export const bandSetupWizard: ChannelSetupWizard = {
       preferredEnvVar: "BAND_API_KEY",
       envPrompt: "Use the BAND_API_KEY environment variable for the Band API key?",
       keepPrompt: "Keep the existing Band API key?",
-      inputPrompt: "Enter your Band API key (band_a_...)",
+      inputPrompt: "Enter your Band API key (tv_...)",
       allowEnv: ({ accountId }) => accountId === DEFAULT_ACCOUNT_ID,
       inspect: ({ cfg, accountId }) => {
         const account = (cfg as unknown as ConfigWithBandChannel).channels?.[BAND_CHANNEL_ID]?.accounts?.[accountId];

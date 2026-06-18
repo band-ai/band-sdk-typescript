@@ -35,11 +35,6 @@ import {
   getLastSender,
 } from "./state.js";
 import { sendText as outboundSendText } from "./outbound.js";
-import {
-  replaceUuidMentions,
-  buildParticipantsBlock,
-  type MentionParticipant,
-} from "./mentions.js";
 
 export interface BuildInboundContextOptions {
   /** The agent's own id (self-authored messages are skipped). */
@@ -48,12 +43,6 @@ export interface BuildInboundContextOptions {
   ownerUuid?: string | null;
   /** The room's type (from the onRoomJoined cache); drives ChatType. */
   roomType?: string | null;
-  /**
-   * The room's participants. Used to rewrite Band's `@[[uuid]]` tokens into
-   * readable `@handle` form and to inject a participant roster into the
-   * model-facing body so the model addresses people by handle.
-   */
-  participants?: MentionParticipant[];
 }
 
 const DIRECT_ROOM_TYPES = new Set(["direct", "dm", "individual", "one_to_one"]);
@@ -84,14 +73,7 @@ export function platformEventToInboundContext(
   if (payload.message_type !== "text") return null;
 
   const content = payload.content;
-  // Model-facing body: rewrite Band's `@[[uuid]]` tokens to `@handle`, then append
-  // a participant roster and the room marker. Command/parse fields below stay RAW.
-  const participants = opts.participants ?? [];
-  const displayContent = replaceUuidMentions(content, participants);
-  const roster = buildParticipantsBlock(participants, opts.selfAgentId);
-  const withMarker = [displayContent, roster, `[Band Room: ${roomId}]`]
-    .filter((part) => part.length > 0)
-    .join("\n\n");
+  const withMarker = `${content}\n\n[Band Room: ${roomId}]`;
 
   const ctx: MsgContext = {
     // Model-facing bodies carry the room marker as a trailing SUFFIX so it can't
@@ -130,9 +112,6 @@ interface LinkLike {
   disconnect: () => Promise<unknown>;
   rest: {
     getAgentMe: () => Promise<{ id: string; ownerUuid?: string | null }>;
-    listChatParticipants?: (
-      roomId: string,
-    ) => Promise<Array<{ id: string; name: string; handle?: string | null }>>;
     [k: string]: unknown;
   };
   markProcessed?: (roomId: string, messageId: string, opts?: { bestEffort?: boolean }) => Promise<unknown>;
@@ -300,23 +279,7 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
           log(`[band:${accountId}] room ${roomId} has no cached type; defaulting ChatType to 'group'`);
         }
 
-        // Fetch participants so the inbound body can rewrite `@[[uuid]]` tokens to
-        // handles and carry a roster. Best-effort: an empty roster on failure
-        // degrades to the prior behaviour (raw content), never blocks dispatch.
-        let participants: MentionParticipant[] = [];
-        try {
-          const list = (await link.rest.listChatParticipants?.(roomId)) ?? [];
-          participants = list.map((p) => ({ id: p.id, name: p.name, handle: p.handle }));
-        } catch (err) {
-          log(`[band:${accountId}] could not list participants (room=${roomId}): ${String(err)}`);
-        }
-
-        const msgCtx = platformEventToInboundContext(event, {
-          selfAgentId,
-          ownerUuid,
-          roomType,
-          participants,
-        });
+        const msgCtx = platformEventToInboundContext(event, { selfAgentId, ownerUuid, roomType });
         if (!msgCtx) return; // self-authored / non-text skip
 
         if (event.payload.sender_id && event.payload.sender_name) {
