@@ -43,7 +43,7 @@ jobs:
       # package outputs instead.
       - name: Install pnpm
         if: steps.release.outputs['packages/sdk--release_created'] == 'true' || steps.release.outputs['packages/openclaw--release_created'] == 'true'
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
 
       - name: Setup Node
         if: steps.release.outputs['packages/sdk--release_created'] == 'true' || steps.release.outputs['packages/openclaw--release_created'] == 'true'
