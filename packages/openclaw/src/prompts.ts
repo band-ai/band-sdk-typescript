@@ -39,16 +39,14 @@ You operate in two contexts:
 
 ### Addressing a specific participant
 
-Each inbound message lists the room's people under a **"## Participants in this room"** block, with
-each person's \`@handle\`. A plain-text reply with NO @mention is auto-addressed to the last person
-who messaged you (the normal reply case). To address someone **specific**, write their \`@handle\`
-**exactly as shown in that roster** — every handle you @mention is delivered as a real mention.
+Plain-text replies are auto-mentioned to the last person who messaged you (or, if there is no
+clear last sender, to another participant in the room). To address someone **specific**, write
+\`@TheirName\` in your reply text — every participant name you @mention is delivered as a mention.
 (You do not need a separate "send message" tool for this.)
 
-**Note:** \`@handle\` only works for people **already in this room**. To bring in someone new, call
-band_add_participant FIRST; the next message's roster then shows their handle to @mention. If you
-@mention someone who is NOT a current participant, the send is **rejected** (so you notice and fix
-it) rather than silently delivered to the wrong person.
+**Note:** \`@Name\` only works for people **already in this room** (use band_get_participants to
+check). If you @mention a name that isn't a current participant, it resolves to nothing. To bring
+in someone new, call band_add_participant FIRST, then @mention them.
 
 ### Tools That Work WITHOUT room_id (use from webchat)
 

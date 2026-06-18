@@ -54,15 +54,13 @@ describe("BASE_INSTRUCTIONS", () => {
     expect(BASE_INSTRUCTIONS).toMatch(/NOT how you send a chat message|only emits structured activity/);
   });
 
-  it("tells the agent to reply in plain text and @mention by handle to address someone", () => {
+  it("tells the agent to reply in plain text and @mention to address someone", () => {
     expect(BASE_INSTRUCTIONS).toContain("plain text");
     expect(BASE_INSTRUCTIONS).toContain("Addressing a specific participant");
-    // Mentions are now addressed by the roster @handle, not a display name.
-    expect(BASE_INSTRUCTIONS).toContain("@handle");
-    expect(BASE_INSTRUCTIONS).toContain("Participants in this room");
+    expect(BASE_INSTRUCTIONS).toContain("@TheirName");
   });
 
-  it("warns that @handle only resolves for participants already in the room", () => {
+  it("warns that @Name only resolves for participants already in the room", () => {
     expect(BASE_INSTRUCTIONS).toContain("already in this room");
     expect(BASE_INSTRUCTIONS).toContain("band_add_participant");
   });
