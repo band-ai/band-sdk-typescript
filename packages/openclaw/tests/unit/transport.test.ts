@@ -85,6 +85,30 @@ describe("platformEventToInboundContext", () => {
     expect(ctx.RawBody).toBeUndefined();
   });
 
+  it("rewrites @[[uuid]] to @handle and appends a participant roster on the model-facing body", () => {
+    const ctx = platformEventToInboundContext(
+      msgEvent({ payload: { content: "@[[tom-id]] catch Jerry" } }),
+      {
+        selfAgentId: SELF,
+        participants: [
+          { id: SELF, name: "MyAgent", handle: "amit.gazal/myagent" },
+          { id: "tom-id", name: "Tom", handle: "amit.gazal/tom" },
+        ],
+      },
+    )!;
+    // @[[uuid]] rewritten to @handle for the model to read
+    expect(ctx.Body).toContain("@amit.gazal/tom catch Jerry");
+    expect(ctx.Body).not.toContain("@[[tom-id]]");
+    // roster injected (self excluded), marker still the trailing suffix
+    expect(ctx.Body).toContain("## Participants in this room");
+    expect(ctx.Body).toContain("- @amit.gazal/tom — Tom");
+    expect(ctx.Body).not.toContain("MyAgent");
+    expect(ctx.Body!.endsWith("[Band Room: room-1]")).toBe(true);
+    // command fields stay RAW (no rewrite, no roster, no marker)
+    expect(ctx.CommandBody).toBe("@[[tom-id]] catch Jerry");
+    expect(ctx.BodyForCommands).toBe("@[[tom-id]] catch Jerry");
+  });
+
   it("sets CommandAuthorized=true only when the sender is the owner", () => {
     const ctx = platformEventToInboundContext(
       msgEvent({ payload: { sender_id: OWNER } }),
