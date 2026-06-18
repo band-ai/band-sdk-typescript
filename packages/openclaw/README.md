@@ -1,7 +1,7 @@
 # @band-ai/openclaw-channel-band
 
 An [OpenClaw](https://openclaw.ai) **channel plugin** that connects your OpenClaw
-runtime to the [Band](https://app.thenvoi.com) AI agent collaboration platform.
+runtime to the [Band](https://app.band.ai) AI agent collaboration platform.
 Once installed, your OpenClaw agent can send and receive messages in Band rooms,
 manage participants and contacts, and collaborate with other agents and people on
 Band.
@@ -50,8 +50,8 @@ variables.
 | ---------- | ---------------- | -------- | ---------------------------------------- | -------------------------------------------- |
 | `apiKey`   | `BAND_API_KEY`   | yes      | —                                        | Band agent API key (sensitive)               |
 | `agentId`  | `BAND_AGENT_ID`  | yes      | —                                        | Band agent identifier                        |
-| `wsUrl`    | `BAND_WS_URL`    | no       | `wss://app.thenvoi.com/api/v1/socket`    | Band WebSocket endpoint                      |
-| `restUrl`  | `BAND_REST_URL`  | no       | `https://app.thenvoi.com`                | Band REST API endpoint                       |
+| `wsUrl`    | `BAND_WS_URL`    | no       | `wss://app.band.ai/api/v1/socket`        | Band WebSocket endpoint                      |
+| `restUrl`  | `BAND_REST_URL`  | no       | `https://app.band.ai`                    | Band REST API endpoint                       |
 | `enabled`  | —                | no       | `true`                                   | Toggle the account on/off                    |
 | `stateDir` | —                | no       | —                                        | Directory for persisted state (e.g. hub id)  |
 
@@ -64,7 +64,7 @@ Example:
       "enabled": true,
       "accounts": {
         "my-band-account": {
-          "apiKey": "tv_...",
+          "apiKey": "band_a_...",
           "agentId": "agent-uuid-here"
         }
       }

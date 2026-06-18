@@ -70,9 +70,6 @@ export type ConnectivityProbe = (conn: ResolvedConnection) => Promise<void>;
 // Defaults
 // =============================================================================
 
-// Legacy prod host. Revisit when an app.band.ai endpoint is confirmed live as
-// part of the rebrand — the endpoint move is an infra/DNS decision owned by
-// whoever controls prod, not something to guess in a config default.
 /** The channel id (also the config key under `channels.<id>`). */
 export const BAND_CHANNEL_ID = "openclaw-channel-band";
 
