@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.9](https://github.com/thenvoi/thenvoi-sdk-typescript/compare/openclaw-channel-band-v0.1.8...openclaw-channel-band-v0.1.9) (2026-06-18)
+
+
+### Bug Fixes
+
+* **openclaw:** improve mention resolution and add Band install script ([#116](https://github.com/thenvoi/thenvoi-sdk-typescript/issues/116)) ([aee284e](https://github.com/thenvoi/thenvoi-sdk-typescript/commit/aee284ec39b88add662205b9b66865e704b734bc))
+
 ## [0.1.8](https://github.com/thenvoi/thenvoi-sdk-typescript/compare/openclaw-channel-band-v0.1.7...openclaw-channel-band-v0.1.8) (2026-06-17)
 
 
