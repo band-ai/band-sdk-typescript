@@ -1,6 +1,6 @@
 {
   "name": "@band-ai/openclaw-channel-band",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "OpenClaw channel plugin to connect with the Band AI agent collaboration platform",
   "author": "Band <hello@thenvoi.com>",
   "license": "MIT",
