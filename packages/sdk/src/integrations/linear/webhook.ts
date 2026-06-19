@@ -316,6 +316,8 @@ export function createLinearWebhookHandler(
           notificationType: notificationType ?? null,
           error: serializeError(error),
         });
+        sendText(response, 503, "Notification handling failed");
+        return;
       }
 
       sendText(response, 200, "OK");
