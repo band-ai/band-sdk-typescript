@@ -142,19 +142,17 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     const isCustomGraph = Boolean(this.graph || this.graphFactory);
     const usesCheckpointer = Boolean(this.checkpointer);
 
-    // The first bootstrap for a room — not a later reconnect/re-bootstrap of the same room.
+    // First bootstrap for a room (not a later reconnect of the same room).
     const isFirstBootstrap =
       context.isSessionBootstrap && !this.bootstrappedRooms.has(context.roomId);
 
-    // Replay room history every turn when stateless; with a checkpointer, seed only on the first
-    // bootstrap and rely on persisted state afterward (avoids re-feeding context on reconnects).
-    // The bootstrap guard is in-memory, so a durable checkpointer reused across process restarts
-    // may already contain this room's state even though this adapter instance will seed once again.
+    // Stateless graphs replay history every turn; with a checkpointer, seed once on first bootstrap
+    // and rely on persisted state after. The guard is in-memory, so a durable checkpointer reused
+    // across restarts may re-seed once.
     const replayHistory = !usesCheckpointer || isFirstBootstrap;
 
-    // createReactAgent receives the prompt via `prompt`, so only custom graphs need it injected as a
-    // message: every turn when stateless, once per room when a checkpointer persists it. Uses the
-    // same first-bootstrap signal as replay so the two stay consistent across reconnects.
+    // createReactAgent gets the prompt via `prompt`; only custom graphs need it as a message —
+    // every turn when stateless, once per room when checkpointed (same signal as replay).
     const includeSystemPrompt = isCustomGraph && (!usesCheckpointer || isFirstBootstrap);
 
     if (context.isSessionBootstrap) {

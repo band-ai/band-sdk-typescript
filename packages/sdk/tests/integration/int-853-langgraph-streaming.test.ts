@@ -1,33 +1,20 @@
 /**
  * INT-853 — LangGraph streaming adapter: live e2e test (showcases the fix).
  *
- * Drives the REAL stack end-to-end — a real Claude model wired into a real
- * LangGraph `createReactAgent`, running as a real Thenvoi agent ("tom") on the
- * dev platform, driven by a second real agent ("jery") — and asserts the correct
- * post-fix behavior. It doubles as a live regression guard for
- * `packages/sdk/src/adapters/langgraph/LangGraphAdapter.ts`.
+ * Drives the REAL stack end-to-end — a real Claude model in a real LangGraph
+ * `createReactAgent`, running as a real Thenvoi agent ("tom") on the dev platform,
+ * driven by a second agent ("jery") — asserting correct post-fix behavior. A live
+ * regression guard for src/adapters/langgraph/LangGraphAdapter.ts.
  *
- * Coverage of the six INT-853 issues:
- *   1. streamEvents version on config (arg 2)  ── asserted here (agent replies at all;
- *      the unfixed adapter throws here and the agent stays silent).
- *   3. AIMessage/AIMessageChunk parsing         ── asserted here (a non-empty reply
- *      can only surface if the streamed AIMessageChunk is parsed).
- *   4. __end__/__start__ markers filtered        ── asserted here (reply is marker-free).
- *   6. single system prompt on createReactAgent  ── asserted here (via PromptRecorder).
- *   2. on_chain_end chain filtering              ── covered deterministically by the unit
- *      test "ignores LangGraph routing markers and parses LangChain assistant messages".
- *   5. history replayed every turn               ── covered deterministically by the unit
- *      test "includes room history on follow-up messages".
- *   (Issues 2 & 5 are unit-tested rather than asserted live: the shared "tom" test agent
- *    does not reliably process a second message in a room within one session, which makes
- *    a live multi-turn assertion flaky. See packages/sdk/tests/langgraph-adapter.test.ts.)
+ * Asserts live: issue 1 (agent replies at all — the unfixed adapter throws and stays
+ * silent), issue 3 (AIMessageChunk parsed), issue 4 (reply free of __end__/__start__),
+ * issue 6 (single system prompt). Issues 2 and 5 are covered deterministically in
+ * langgraph-adapter.test.ts — a live multi-turn assertion is flaky because the shared
+ * "tom" agent doesn't reliably process a second message within one session.
  *
- * OPT-IN / skipped by default: runs only when `E2E_TESTS_ENABLED=true` is set in
- * the environment (the `pnpm test:e2e` script sets it). The normal `pnpm test`
- * run never sets it, so this suite is skipped — keeping the unit suite offline.
- *
- * Requires `.env.test` (repo root) with Anthropic + tom/jery + platform
- * credentials, and the `@langchain/anthropic` dev dependency.
+ * Opt-in: runs only when E2E_TESTS_ENABLED=true (set by `pnpm test:e2e`); the normal
+ * `pnpm test` skips it, keeping the unit suite offline. Requires .env.test (Anthropic +
+ * tom/jery + platform creds) and the @langchain/anthropic dev dependency.
  *
  * Run:  cd packages/sdk && pnpm test:e2e
  */
