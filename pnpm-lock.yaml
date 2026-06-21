@@ -125,9 +125,6 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: ^0.2.63
         version: 0.2.84(zod@3.25.76)
-      '@langchain/anthropic':
-        specifier: ^1.5.0
-        version: 1.5.0(@langchain/core@1.1.36(@opentelemetry/api@1.9.0)(@opentelemetry/sdk-trace-base@2.6.1(@opentelemetry/api@1.9.0))(openai@6.33.0(ws@8.20.0)(zod@3.25.76))(ws@8.20.0))
       '@linear/sdk':
         specifier: ^76.0.0
         version: 76.0.0(graphql@16.13.2)
@@ -232,15 +229,6 @@ packages:
 
   '@anthropic-ai/sdk@0.100.1':
     resolution: {integrity: sha512-RANcEe7LpiLczkKGOwoXOTuFdPhuubS0i4xaAKOMpcqc55YO0mukgxppV7eygx3DXNjxWT6RYOLPyOy0aIAmwg==}
-    hasBin: true
-    peerDependencies:
-      zod: ^3.25.0 || ^4.0.0
-    peerDependenciesMeta:
-      zod:
-        optional: true
-
-  '@anthropic-ai/sdk@0.103.0':
-    resolution: {integrity: sha512-1uG7RNgoHTUxzOXqSCODKt0UTVlxWiHk/2Tt2/uQJiPW7XzBeKVuJyd3Aw6T3LPyvZV/jDTnPLX7SaM70WLLjA==}
     hasBin: true
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
@@ -832,12 +820,6 @@ packages:
 
   '@js-sdsl/ordered-map@4.4.2':
     resolution: {integrity: sha512-iUKgm52T8HOE/makSxjqoWhe95ZJA1/G1sYsGev2JDKUSS14KAgg1LHb+Ba+IPow0xflbnSkOsZcO08C7w1gYw==}
-
-  '@langchain/anthropic@1.5.0':
-    resolution: {integrity: sha512-IhWeK87QRAYyhlvSE0p+Zh4oylnZoa+16XP7XgvsPsLEbW4YMueVYl7aT4EsbsM37xbr3l/P7euIRdowc8WfOA==}
-    engines: {node: '>=20'}
-    peerDependencies:
-      '@langchain/core': ^1.2.0
 
   '@langchain/core@1.1.36':
     resolution: {integrity: sha512-9NWsdzU3uZD13lJwunXK0t6SIwew+UwcbHggW5yUdaiMmzKeNkDpp1lRD6p49N8+D0Vv4qmQBEKB4Ukh2jfnvw==}
@@ -4222,13 +4204,6 @@ snapshots:
     optionalDependencies:
       zod: 4.4.3
 
-  '@anthropic-ai/sdk@0.103.0(zod@3.25.76)':
-    dependencies:
-      json-schema-to-ts: 3.1.1
-      standardwebhooks: 1.0.0
-    optionalDependencies:
-      zod: 3.25.76
-
   '@anthropic-ai/sdk@0.95.1(zod@3.25.76)':
     dependencies:
       json-schema-to-ts: 3.1.1
@@ -4832,12 +4807,6 @@ snapshots:
   '@js-joda/core@5.7.0': {}
 
   '@js-sdsl/ordered-map@4.4.2': {}
-
-  '@langchain/anthropic@1.5.0(@langchain/core@1.1.36(@opentelemetry/api@1.9.0)(@opentelemetry/sdk-trace-base@2.6.1(@opentelemetry/api@1.9.0))(openai@6.33.0(ws@8.20.0)(zod@3.25.76))(ws@8.20.0))':
-    dependencies:
-      '@anthropic-ai/sdk': 0.103.0(zod@3.25.76)
-      '@langchain/core': 1.1.36(@opentelemetry/api@1.9.0)(@opentelemetry/sdk-trace-base@2.6.1(@opentelemetry/api@1.9.0))(openai@6.33.0(ws@8.20.0)(zod@3.25.76))(ws@8.20.0)
-      zod: 3.25.76
 
   '@langchain/core@1.1.36(@opentelemetry/api@1.9.0)(@opentelemetry/sdk-trace-base@2.6.1(@opentelemetry/api@1.9.0))(openai@6.33.0(ws@8.20.0)(zod@3.25.76))(ws@8.20.0)':
     dependencies:

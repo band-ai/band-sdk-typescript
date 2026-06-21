@@ -76,7 +76,6 @@
   "scripts": {
     "build": "tsup --config tsup.config.ts",
     "test": "vitest run",
-    "test:e2e": "E2E_TESTS_ENABLED=true vitest run tests/integration/int-853-langgraph-streaming.test.ts",
     "coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
@@ -171,7 +170,6 @@
   "devDependencies": {
     "@agentclientprotocol/sdk": "^0.16.1",
     "@anthropic-ai/claude-agent-sdk": "^0.2.63",
-    "@langchain/anthropic": "^1.5.0",
     "@linear/sdk": "^76.0.0",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@openai/codex-sdk": "^0.107.0",
