@@ -148,6 +148,8 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
 
     // Replay room history every turn when stateless; with a checkpointer, seed only on the first
     // bootstrap and rely on persisted state afterward (avoids re-feeding context on reconnects).
+    // The bootstrap guard is in-memory, so a durable checkpointer reused across process restarts
+    // may already contain this room's state even though this adapter instance will seed once again.
     const replayHistory = !usesCheckpointer || isFirstBootstrap;
 
     // createReactAgent receives the prompt via `prompt`, so only custom graphs need it injected as a
