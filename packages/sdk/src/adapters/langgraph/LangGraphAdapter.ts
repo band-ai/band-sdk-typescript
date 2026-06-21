@@ -216,13 +216,22 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     const messages: LangGraphTupleMessage[] = [];
 
     if (isSessionBootstrap && !this.bootstrappedRooms.has(roomId)) {
-      messages.push(["system", this.renderedSystemPrompt]);
+      // createReactAgent already receives the prompt; only inject for custom graphs.
+      if (this.graph || this.graphFactory) {
+        messages.push(["system", this.renderedSystemPrompt]);
+      }
       this.bootstrappedRooms.add(roomId);
     }
 
-    if (isSessionBootstrap && history.length > 0) {
+    // Replay history on every turn so follow-ups retain room context.
+    const historyAlreadyContainsMessage = history.raw.some((entry) => entry.id === message.id);
+    if (history.length > 0) {
       const historical = history.raw.slice(-this.maxHistoryMessages);
       for (const item of historical) {
+        // Platform history may already include the triggering message.
+        if (historyAlreadyContainsMessage && item.id === message.id) {
+          continue;
+        }
         const role = String(item.sender_type ?? "") === "Agent" ? "assistant" : "user";
         const content = String(item.content ?? "");
         if (content) {
@@ -239,7 +248,9 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
       messages.push(["user", `[System]: ${contactsMessage}`]);
     }
 
-    messages.push(["user", message.content]);
+    if (!historyAlreadyContainsMessage) {
+      messages.push(["user", message.content]); // skip when already replayed above
+    }
     return messages;
   }
 
@@ -249,7 +260,8 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     config: Record<string, unknown>,
     tools: AdapterToolsProtocol,
   ): Promise<string | null> {
-    const stream = graph.streamEvents?.(input, config, { version: "v2" });
+    // version belongs on config (arg 2), not the optional third arg.
+    const stream = graph.streamEvents?.(input, { ...config, version: "v2" });
     if (!stream) {
       return null;
     }
@@ -278,6 +290,11 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
         );
       }
       if (eventType === "on_chain_end") {
+        const chainName = String(data.name ?? "");
+        // Ignore intermediate chains that emit routing markers, not replies.
+        if (chainName !== "LangGraph" && chainName !== "agent") {
+          continue;
+        }
         const output = asOptionalRecord(data.data) ?? {};
         const text = extractAssistantText(output.output);
         if (text) {
@@ -359,20 +376,30 @@ function stringifyToolResult(
 }
 
 function extractAssistantText(result: unknown): string | null {
-  if (typeof result === "string" && result.trim().length > 0) {
-    return result.trim();
+  if (typeof result === "string") {
+    const trimmed = result.trim();
+    // createReactAgent streams "__end__"/"__start__" markers as plain strings.
+    return trimmed.length > 0 && !isInternalLangGraphMarker(trimmed) ? trimmed : null;
   }
 
   const record = asOptionalRecord(result) ?? {};
+  // createReactAgent returns LangChain AIMessage objects, not tuples.
+  if (isLangChainAssistantMessage(record)) {
+    const text = asLangChainMessageContent(record);
+    if (text && !isInternalLangGraphMarker(text)) {
+      return text;
+    }
+  }
+
   const directContent = asMessageContent(record.content);
-  if (directContent) {
+  if (directContent && !isInternalLangGraphMarker(directContent)) {
     return directContent;
   }
 
   const messages = Array.isArray(record.messages) ? record.messages : [];
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const text = asMessageText(messages[index]);
-    if (text) {
+    if (text && !isInternalLangGraphMarker(text)) {
       return text;
     }
   }
@@ -392,12 +419,51 @@ function asMessageText(value: unknown): string | null {
   if (!record) {
     return null;
   }
+
+  if (isLangChainAssistantMessage(record)) {
+    return asLangChainMessageContent(record);
+  }
+
   const role = String(record.role ?? "");
   if (role !== "assistant") {
     return null;
   }
 
   return asMessageContent(record.content);
+}
+
+// Detects a LangChain assistant message in either shape:
+//  - serialized: { id: [..., "AIMessage" | "AIMessageChunk"], kwargs: { content } }
+//  - in-memory instance (real createReactAgent stream): getType() === "ai", content on the instance
+function isLangChainAssistantMessage(record: Record<string, unknown>): boolean {
+  const id = record.id;
+  if (Array.isArray(id)) {
+    const typeName = String(id[id.length - 1] ?? "");
+    if (typeName === "AIMessage" || typeName === "AIMessageChunk") {
+      return true;
+    }
+  }
+
+  const getType = (record as { getType?: unknown }).getType;
+  if (typeof getType === "function") {
+    try {
+      return (getType as () => unknown).call(record) === "ai";
+    } catch {
+      return false;
+    }
+  }
+
+  return false;
+}
+
+// Serialized messages carry text under kwargs.content; instances expose it directly.
+function asLangChainMessageContent(record: Record<string, unknown>): string | null {
+  const kwargs = asOptionalRecord(record.kwargs);
+  return asMessageContent(kwargs?.content ?? record.content);
+}
+
+function isInternalLangGraphMarker(text: string): boolean {
+  return text === "__end__" || text === "__start__";
 }
 
 function asMessageContent(value: unknown): string | null {
