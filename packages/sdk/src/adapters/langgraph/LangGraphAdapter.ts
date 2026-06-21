@@ -139,7 +139,6 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
 
     const graph = await this.resolveGraph(sdk, langGraphTools);
 
-    const isCustomGraph = Boolean(this.graph || this.graphFactory);
     const usesCheckpointer = Boolean(this.checkpointer);
 
     // First bootstrap for a room (not a later reconnect of the same room).
@@ -153,7 +152,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
 
     // createReactAgent gets the prompt via `prompt`; only custom graphs need it as a message —
     // every turn when stateless, once per room when checkpointed (same signal as replay).
-    const includeSystemPrompt = isCustomGraph && (!usesCheckpointer || isFirstBootstrap);
+    const includeSystemPrompt = this.usesCustomGraph && (!usesCheckpointer || isFirstBootstrap);
 
     if (context.isSessionBootstrap) {
       this.bootstrappedRooms.add(context.roomId);
@@ -192,6 +191,11 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
 
   public async onCleanup(roomId: string): Promise<void> {
     this.bootstrappedRooms.delete(roomId);
+  }
+
+  /** A caller-supplied graph rather than the built-in createReactAgent. */
+  private get usesCustomGraph(): boolean {
+    return Boolean(this.graph || this.graphFactory);
   }
 
   private resolveGraph(
@@ -301,8 +305,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
         const chainName = String(data.name ?? "");
         // For the built-in createReactAgent path, ignore intermediate chains that emit routing
         // markers rather than replies. Custom graphs use arbitrary chain names, so don't filter them.
-        const isCustomGraph = Boolean(this.graph || this.graphFactory);
-        if (!isCustomGraph && chainName !== "LangGraph" && chainName !== "agent") {
+        if (!this.usesCustomGraph && chainName !== "LangGraph" && chainName !== "agent") {
           continue;
         }
         const output = asOptionalRecord(data.data) ?? {};
