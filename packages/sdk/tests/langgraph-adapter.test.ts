@@ -124,14 +124,12 @@ describe("LangGraphAdapter", () => {
     expect(tools.messages).toEqual(["LangGraph reply"]);
   });
 
-  it("includes room history on follow-up messages", async () => {
+  it("replays history on follow-ups with the triggering message kept exactly once, last", async () => {
     const invokeCalls: Array<{ messages?: Array<[string, string]> }> = [];
     const graph = {
       async invoke(input: Record<string, unknown>) {
         invokeCalls.push(input as { messages?: Array<[string, string]> });
-        return {
-          messages: [["assistant", "follow-up reply"]],
-        };
+        return { messages: [["assistant", "ack"]] };
       },
     };
 
@@ -139,28 +137,155 @@ describe("LangGraphAdapter", () => {
     await adapter.onStarted("LangGraph Agent", "Graph-backed assistant");
 
     const tools = new FakeTools();
+    // The platform records the triggering message before snapshotting history, so on follow-up
+    // turns history.raw already contains it (id === message.id). It must not be dropped or doubled.
     await adapter.onMessage(
-      {
-        ...makeMessage("store this"),
-        id: "msg-3",
-      },
+      { ...makeMessage("what is the status?"), id: "msg-3" },
       tools,
       new HistoryProvider([
-        { id: "msg-1", sender_type: "User", content: "i like red tomatoes" },
-        { id: "msg-2", sender_type: "Agent", content: "Got it." },
+        { id: "msg-1", sender_type: "User", content: "deploy the service" },
+        { id: "msg-2", sender_type: "Agent", content: "Working on it." },
+        { id: "msg-3", sender_type: "User", content: "what is the status?" },
       ]),
       null,
       null,
-      { isSessionBootstrap: false, roomId: "room-history" },
+      { isSessionBootstrap: false, roomId: "room-dedup" },
     );
 
-    expect(invokeCalls).toHaveLength(1);
-    expect(invokeCalls[0]?.messages?.map((entry) => entry[1])).toEqual([
-      "i like red tomatoes",
-      "Got it.",
-      "store this",
-    ]);
-    expect(tools.messages).toEqual(["follow-up reply"]);
+    const messages = invokeCalls[0]?.messages ?? [];
+    // Stateless custom graph: system prompt is re-sent every turn (not just bootstrap).
+    expect(messages[0]?.[0]).toBe("system");
+    const replayed = messages.filter((e) => e[0] !== "system").map((e) => e[1]);
+    // Prior turns replayed, then the triggering message exactly once as the final entry.
+    expect(replayed).toEqual(["deploy the service", "Working on it.", "what is the status?"]);
+    expect(tools.messages).toEqual(["ack"]);
+  });
+
+  it("with a checkpointer, seeds context once on bootstrap and never re-feeds it", async () => {
+    const invokeCalls: Array<{ messages?: Array<[string, string]> }> = [];
+    const graph = {
+      async invoke(input: Record<string, unknown>) {
+        invokeCalls.push(input as { messages?: Array<[string, string]> });
+        return { messages: [["assistant", "ok"]] };
+      },
+    };
+
+    const adapter = new LangGraphAdapter({ graph, checkpointer: {} });
+    await adapter.onStarted("LangGraph Agent", "Graph-backed assistant");
+
+    const tools = new FakeTools();
+    const history = new HistoryProvider([{ id: "h1", sender_type: "User", content: "earlier turn" }]);
+    const roomId = "room-ckpt";
+    const send = (id: string, content: string, isSessionBootstrap: boolean) =>
+      adapter.onMessage({ ...makeMessage(content), id }, tools, history, null, null, {
+        isSessionBootstrap,
+        roomId,
+      });
+
+    await send("m1", "first", true); // first bootstrap → seed system prompt + history
+    await send("m2", "second", false); // follow-up → checkpoint persists; no replay
+    await send("m3", "third", true); // re-bootstrap (reconnect) → must not re-seed
+
+    const turn = (i: number) => invokeCalls[i]?.messages ?? [];
+    const nonSystem = (i: number) => turn(i).filter((e) => e[0] !== "system").map((e) => e[1]);
+
+    // Bootstrap seeds once: system prompt + replayed history + current message.
+    expect(turn(0)[0]?.[0]).toBe("system");
+    expect(nonSystem(0)).toEqual(["earlier turn", "first"]);
+    // Follow-up and re-bootstrap both rely on persisted state: no system prompt, no replayed history.
+    expect(turn(1).some((e) => e[0] === "system")).toBe(false);
+    expect(nonSystem(1)).toEqual(["second"]);
+    expect(turn(2).some((e) => e[0] === "system")).toBe(false);
+    expect(nonSystem(2)).toEqual(["third"]);
+  });
+
+  it("treats a disabled checkpointer (false) as stateless and replays history", async () => {
+    const invokeCalls: Array<{ messages?: Array<[string, string]> }> = [];
+    const graph = {
+      async invoke(input: Record<string, unknown>) {
+        invokeCalls.push(input as { messages?: Array<[string, string]> });
+        return { messages: [["assistant", "ok"]] };
+      },
+    };
+
+    const adapter = new LangGraphAdapter({ graph, checkpointer: false });
+    await adapter.onStarted("LangGraph Agent", "Graph-backed assistant");
+
+    const tools = new FakeTools();
+    // checkpointer:false disables persistence, so follow-ups must still replay room history.
+    await adapter.onMessage(
+      { ...makeMessage("now"), id: "m2" },
+      tools,
+      new HistoryProvider([{ id: "m1", sender_type: "User", content: "earlier turn" }]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-disabled-ckpt" },
+    );
+
+    const replayed = (invokeCalls[0]?.messages ?? []).filter((e) => e[0] !== "system");
+    expect(replayed.map((e) => e[1])).toEqual(["earlier turn", "now"]);
+  });
+
+  it("counts only prior turns against maxHistoryMessages, excluding the current message", async () => {
+    const invokeCalls: Array<{ messages?: Array<[string, string]> }> = [];
+    const graph = {
+      async invoke(input: Record<string, unknown>) {
+        invokeCalls.push(input as { messages?: Array<[string, string]> });
+        return { messages: [["assistant", "ok"]] };
+      },
+    };
+
+    const adapter = new LangGraphAdapter({ graph, maxHistoryMessages: 2 });
+    await adapter.onStarted("LangGraph Agent", "Graph-backed assistant");
+
+    const tools = new FakeTools();
+    // Follow-up: raw history already includes the current message (id m3). With maxHistoryMessages=2,
+    // the current message must not consume a history slot, so both prior turns survive truncation.
+    await adapter.onMessage(
+      { ...makeMessage("now"), id: "m3" },
+      tools,
+      new HistoryProvider([
+        { id: "m1", sender_type: "User", content: "one" },
+        { id: "m2", sender_type: "Agent", content: "two" },
+        { id: "m3", sender_type: "User", content: "now" },
+      ]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-truncate" },
+    );
+
+    const replayed = (invokeCalls[0]?.messages ?? []).filter((e) => e[0] !== "system");
+    expect(replayed.map((e) => e[1])).toEqual(["one", "two", "now"]);
+  });
+
+  it("extracts a reply from a custom graph whose chain name is not LangGraph/agent", async () => {
+    const graph = {
+      streamEvents() {
+        return streamFrom([
+          { event: "on_chain_end", name: "RunnableLambda", data: { output: "__end__" } },
+          {
+            event: "on_chain_end",
+            name: "my_graph",
+            data: { output: { messages: [["assistant", "custom graph reply"]] } },
+          },
+        ]);
+      },
+    };
+
+    const adapter = new LangGraphAdapter({ graph, emitExecutionEvents: true });
+    await adapter.onStarted("LangGraph Agent", "Graph-backed assistant");
+
+    const tools = new FakeTools();
+    await adapter.onMessage(
+      makeMessage("hello"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-custom-chain" },
+    );
+
+    expect(tools.messages).toEqual(["custom graph reply"]);
   });
 
   it("reports tool stream events when enabled and extracts final text from stream", async () => {
@@ -209,7 +334,7 @@ describe("LangGraphAdapter", () => {
     expect(tools.messages).toEqual(["streamed reply"]);
   });
 
-  it("re-injects system prompt after room cleanup", async () => {
+  it("re-injects the system prompt after room cleanup (checkpointed graph)", async () => {
     const invokeCalls: Array<{ messages?: Array<[string, string]> }> = [];
     const graph = {
       async invoke(input: Record<string, unknown>) {
@@ -218,31 +343,28 @@ describe("LangGraphAdapter", () => {
       },
     };
 
-    const adapter = new LangGraphAdapter({ graph });
+    // A checkpointer makes the bootstrap guard meaningful: the prompt is seeded once per room and
+    // not re-sent on a re-bootstrap, unless onCleanup resets the guard. (A stateless graph would
+    // re-send every turn, so the cleanup behavior would be untestable.)
+    const adapter = new LangGraphAdapter({ graph, checkpointer: {} });
     await adapter.onStarted("LangGraph Agent", "Graph-backed assistant");
 
     const tools = new FakeTools();
-    await adapter.onMessage(
-      makeMessage("first", "room-3"),
-      tools,
-      new HistoryProvider([]),
-      null,
-      null,
-      { isSessionBootstrap: true, roomId: "room-3" },
-    );
-    await adapter.onCleanup("room-3");
-    await adapter.onMessage(
-      makeMessage("second", "room-3"),
-      tools,
-      new HistoryProvider([]),
-      null,
-      null,
-      { isSessionBootstrap: true, roomId: "room-3" },
-    );
+    const send = () =>
+      adapter.onMessage(makeMessage("hi", "room-3"), tools, new HistoryProvider([]), null, null, {
+        isSessionBootstrap: true,
+        roomId: "room-3",
+      });
 
-    expect(invokeCalls).toHaveLength(2);
-    expect(invokeCalls[0]?.messages?.[0]?.[0]).toBe("system");
-    expect(invokeCalls[1]?.messages?.[0]?.[0]).toBe("system");
+    await send(); // first bootstrap → seed system prompt
+    await send(); // re-bootstrap, no cleanup → not re-seeded
+    await adapter.onCleanup("room-3");
+    await send(); // bootstrap after cleanup → re-seeded
+
+    const hasSystem = (i: number) => (invokeCalls[i]?.messages ?? []).some((e) => e[0] === "system");
+    expect(hasSystem(0)).toBe(true);
+    expect(hasSystem(1)).toBe(false);
+    expect(hasSystem(2)).toBe(true);
   });
 
   it("logs stream event serialization fallbacks instead of swallowing them", async () => {

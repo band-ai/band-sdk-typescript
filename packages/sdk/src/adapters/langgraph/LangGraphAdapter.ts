@@ -139,14 +139,30 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
 
     const graph = await this.resolveGraph(sdk, langGraphTools);
 
-    const messages = this.buildMessages(
-      history,
-      message,
-      participantsMessage,
-      contactsMessage,
-      context.isSessionBootstrap,
-      context.roomId,
-    );
+    const isCustomGraph = Boolean(this.graph || this.graphFactory);
+    const usesCheckpointer = Boolean(this.checkpointer);
+
+    // The first bootstrap for a room — not a later reconnect/re-bootstrap of the same room.
+    const isFirstBootstrap =
+      context.isSessionBootstrap && !this.bootstrappedRooms.has(context.roomId);
+
+    // Replay room history every turn when stateless; with a checkpointer, seed only on the first
+    // bootstrap and rely on persisted state afterward (avoids re-feeding context on reconnects).
+    const replayHistory = !usesCheckpointer || isFirstBootstrap;
+
+    // createReactAgent receives the prompt via `prompt`, so only custom graphs need it injected as a
+    // message: every turn when stateless, once per room when a checkpointer persists it. Uses the
+    // same first-bootstrap signal as replay so the two stay consistent across reconnects.
+    const includeSystemPrompt = isCustomGraph && (!usesCheckpointer || isFirstBootstrap);
+
+    if (context.isSessionBootstrap) {
+      this.bootstrappedRooms.add(context.roomId);
+    }
+
+    const messages = this.buildMessages(history, message, participantsMessage, contactsMessage, {
+      replayHistory,
+      includeSystemPrompt,
+    });
     const input = { messages };
     const graphConfig = {
       configurable: {
@@ -210,28 +226,21 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     message: PlatformMessage,
     participantsMessage: string | null,
     contactsMessage: string | null,
-    isSessionBootstrap: boolean,
-    roomId: string,
+    options: { replayHistory: boolean; includeSystemPrompt: boolean },
   ): LangGraphTupleMessage[] {
     const messages: LangGraphTupleMessage[] = [];
 
-    if (isSessionBootstrap && !this.bootstrappedRooms.has(roomId)) {
-      // createReactAgent already receives the prompt; only inject for custom graphs.
-      if (this.graph || this.graphFactory) {
-        messages.push(["system", this.renderedSystemPrompt]);
-      }
-      this.bootstrappedRooms.add(roomId);
+    if (options.includeSystemPrompt) {
+      messages.push(["system", this.renderedSystemPrompt]);
     }
 
-    // Replay history on every turn so follow-ups retain room context.
-    const historyAlreadyContainsMessage = history.raw.some((entry) => entry.id === message.id);
-    if (history.length > 0) {
-      const historical = history.raw.slice(-this.maxHistoryMessages);
+    if (options.replayHistory && history.length > 0) {
+      // Drop the triggering message before truncating so the limit counts only prior turns;
+      // the current message is appended exactly once, last.
+      const historical = history.raw
+        .filter((item) => item.id !== message.id)
+        .slice(-this.maxHistoryMessages);
       for (const item of historical) {
-        // Platform history may already include the triggering message.
-        if (historyAlreadyContainsMessage && item.id === message.id) {
-          continue;
-        }
         const role = String(item.sender_type ?? "") === "Agent" ? "assistant" : "user";
         const content = String(item.content ?? "");
         if (content) {
@@ -248,9 +257,8 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
       messages.push(["user", `[System]: ${contactsMessage}`]);
     }
 
-    if (!historyAlreadyContainsMessage) {
-      messages.push(["user", message.content]); // skip when already replayed above
-    }
+    // The current turn always appears exactly once, as the last message.
+    messages.push(["user", message.content]);
     return messages;
   }
 
@@ -291,8 +299,10 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
       }
       if (eventType === "on_chain_end") {
         const chainName = String(data.name ?? "");
-        // Ignore intermediate chains that emit routing markers, not replies.
-        if (chainName !== "LangGraph" && chainName !== "agent") {
+        // For the built-in createReactAgent path, ignore intermediate chains that emit routing
+        // markers rather than replies. Custom graphs use arbitrary chain names, so don't filter them.
+        const isCustomGraph = Boolean(this.graph || this.graphFactory);
+        if (!isCustomGraph && chainName !== "LangGraph" && chainName !== "agent") {
           continue;
         }
         const output = asOptionalRecord(data.data) ?? {};
