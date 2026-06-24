@@ -7,13 +7,13 @@ import {
   createInProcessLinearBridgeDispatcher,
   createLinearWebhookHandler,
   type LinearBridgeDispatcher,
-  type LinearThenvoiBridgeConfig,
+  type LinearBandBridgeConfig,
   type PendingBootstrapRequest,
   type PermissionChangeCallbacks,
   type SessionRoomRecord,
   type SessionRoomStore,
 } from "../src/linear";
-import { LinearThenvoiExampleRestApi } from "../examples/linear-thenvoi/linear-thenvoi-rest-stub";
+import { LinearBandExampleRestApi } from "../examples/linear-band/linear-band-rest-stub";
 
 class MemorySessionRoomStore implements SessionRoomStore {
   private readonly records = new Map<string, SessionRoomRecord>();
@@ -66,7 +66,7 @@ afterEach(async () => {
   servers.clear();
 });
 
-const config: LinearThenvoiBridgeConfig = {
+const config: LinearBandBridgeConfig = {
   linearAccessToken: "lin_api_test",
   linearWebhookSecret: "linear_webhook_secret",
   hostAgentHandle: "linear-host",
@@ -128,7 +128,7 @@ async function startServer(dispatcher?: LinearBridgeDispatcher, permissionCallba
     dispatcher,
     permissionCallbacks,
     deps: {
-      thenvoiRest: new LinearThenvoiExampleRestApi(),
+      thenvoiRest: new LinearBandExampleRestApi(),
       linearClient: linearClient as never,
       store,
     },
@@ -693,7 +693,7 @@ describe("createLinearWebhookHandler", () => {
     };
     await store.upsert(session);
 
-    const thenvoiRest = new LinearThenvoiExampleRestApi();
+    const thenvoiRest = new LinearBandExampleRestApi();
     const { url } = await startServerWithDeps({
       thenvoiRest,
       store,
@@ -906,7 +906,7 @@ describe("createLinearWebhookHandler", () => {
     };
     await store.upsert(session);
 
-    const thenvoiRest = new LinearThenvoiExampleRestApi();
+    const thenvoiRest = new LinearBandExampleRestApi();
     const { url } = await startServerWithDeps({
       thenvoiRest,
       store,

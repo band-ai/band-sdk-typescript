@@ -18,7 +18,7 @@ export const STALE_SESSION_CHECK_INTERVAL_MS = 20 * 60_000;
  */
 export const STALE_SESSION_THRESHOLD_MS = 25 * 60_000;
 
-export interface LinearThenvoiBridgeConfig {
+export interface LinearBandBridgeConfig {
   linearAccessToken: string;
   linearWebhookSecret: string;
   roomStrategy?: RoomStrategy;
@@ -68,17 +68,20 @@ export interface SessionRoomStore {
   close?(): Promise<void>;
 }
 
-export interface LinearThenvoiBridgeDeps {
+export interface LinearBandBridgeDeps {
   thenvoiRest: RestApi;
   linearClient: LinearClient;
   store: SessionRoomStore;
   logger?: Logger;
 }
 
+export type LinearThenvoiBridgeConfig = LinearBandBridgeConfig;
+export type LinearThenvoiBridgeDeps = LinearBandBridgeDeps;
+
 export interface HandleAgentSessionEventInput {
   payload: AgentSessionEventWebhookPayload;
-  config: LinearThenvoiBridgeConfig;
-  deps: LinearThenvoiBridgeDeps;
+  config: LinearBandBridgeConfig;
+  deps: LinearBandBridgeDeps;
 }
 
 export type { CandidateRepositoryInput, LinearActivityClient, PlanStep, RepositorySuggestion, SelectOption } from "./activities";

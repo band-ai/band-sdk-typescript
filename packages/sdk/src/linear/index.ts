@@ -41,6 +41,8 @@ export type {
   LinearActivityClient,
   LinearBridgeRuntime,
   LinearSessionStatus,
+  LinearBandBridgeConfig,
+  LinearBandBridgeDeps,
   LinearThenvoiBridgeConfig,
   LinearThenvoiBridgeDeps,
   PendingBootstrapRequest,

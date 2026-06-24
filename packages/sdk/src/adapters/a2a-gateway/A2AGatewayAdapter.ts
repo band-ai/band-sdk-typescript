@@ -294,7 +294,7 @@ export class A2AGatewayAdapter
           contextId: pending.contextId,
           state: "failed",
           final: true,
-          text: "Timed out waiting for a Thenvoi peer response.",
+          text: "Timed out waiting for a Band peer response.",
         });
         return;
       }
@@ -390,7 +390,7 @@ export class A2AGatewayAdapter
     request: Pick<GatewayRequest, "peerId" | "peerSlug">
       | Pick<GatewayCancelRequest, "peerId" | "peerSlug">,
   ): string | null {
-    // Canonical contract is peerId=Thenvoi peer id; keep legacy slug aliasing at this edge.
+    // Canonical contract is peerId=Band peer id; keep legacy slug aliasing at this edge.
     const byId = this.peersById.get(request.peerId);
     if (byId) {
       return byId.id;

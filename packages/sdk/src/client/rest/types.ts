@@ -211,13 +211,13 @@ export type AgentToolsRestApi =
   & ContextRestApi
   & MessageQueueRestApi;
 
-export type ThenvoiLinkRestApi =
+export type BandLinkRestApi =
   & AgentProfileRestApi
   & MessageLifecycleRestApi
   & AgentToolsRestApi
   & ChatListingRestApi;
 
-export interface RestApi extends ThenvoiLinkRestApi {}
+export interface RestApi extends BandLinkRestApi {}
 
 export interface FernUserProfile {
   id: string;
@@ -230,7 +230,7 @@ export interface FernUserProfile {
 
 // Method syntax (not property-function syntax) is used intentionally so that
 // TypeScript checks parameter types bivariantly.
-export interface FernThenvoiClientLike {
+export interface FernBandClientLike {
   agentApiIdentity?: {
     getAgentMe(options?: RestRequestOptions): Promise<unknown>;
   };

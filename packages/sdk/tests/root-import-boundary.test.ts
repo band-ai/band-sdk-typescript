@@ -15,6 +15,7 @@ describe("root import boundary", () => {
     const sdk = await import("../src/index");
 
     expect(typeof sdk.Agent).toBe("function");
+    expect(typeof sdk.BandLink).toBe("function");
     expect(typeof sdk.ThenvoiLink).toBe("function");
     expect(typeof sdk.WebSocketDisconnectError).toBe("function");
     expect(typeof sdk.AgentRuntime).toBe("function");

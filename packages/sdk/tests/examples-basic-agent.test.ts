@@ -41,8 +41,8 @@ describe("basic-agent example", () => {
     const agent = createBasicAgent({
       agentId: "a1",
       apiKey: "k",
-      wsUrl: "wss://staging.thenvoi.com/api/v1/socket",
-      restUrl: "https://staging.thenvoi.com",
+      wsUrl: "wss://staging.band.ai/api/v1/socket",
+      restUrl: "https://staging.band.ai",
     });
 
     // Stub transport + REST so initialize() does not hit the network.
@@ -53,7 +53,7 @@ describe("basic-agent example", () => {
 
     await agent.runtime.initialize();
 
-    expect(agent.runtime.link.wsUrl).toBe("wss://staging.thenvoi.com/api/v1/socket");
-    expect(agent.runtime.link.restUrl).toBe("https://staging.thenvoi.com");
+    expect(agent.runtime.link.wsUrl).toBe("wss://staging.band.ai/api/v1/socket");
+    expect(agent.runtime.link.restUrl).toBe("https://staging.band.ai");
   });
 });

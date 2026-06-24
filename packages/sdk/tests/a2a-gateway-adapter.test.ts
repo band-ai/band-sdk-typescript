@@ -157,7 +157,7 @@ describe("A2AGatewayAdapter", () => {
     ).toThrow("allowUnauthenticatedLoopback");
   });
 
-  it("routes A2A requests into Thenvoi rooms and streams completion", async () => {
+  it("routes A2A requests into Band rooms and streams completion", async () => {
     const rest = new FakeRestApi();
 
     let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;

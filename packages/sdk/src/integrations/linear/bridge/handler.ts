@@ -6,7 +6,7 @@ import type { RestApi } from "../../../client/rest/types";
 import type { PeerRecord } from "../../../contracts/dtos";
 import type {
   HandleAgentSessionEventInput,
-  LinearThenvoiBridgeConfig,
+  LinearBandBridgeConfig,
   PendingBootstrapRequest,
   SessionRoomStore,
   SessionRoomRecord,
@@ -34,7 +34,7 @@ interface NormalizedBridgeConfig {
   thenvoiAppBaseUrl: string;
 }
 
-const DEFAULT_THENVOI_APP_BASE_URL = "https://app.thenvoi.com";
+const DEFAULT_THENVOI_APP_BASE_URL = "https://app.band.ai";
 
 const SUPPORTED_ACTIONS = new Set(["created", "updated", "canceled", "prompted"]);
 const MAX_PEER_LOOKUP_PAGES = 25;
@@ -502,7 +502,7 @@ async function trySetSessionExternalUrl(input: {
   const base = input.appBaseUrl.replace(/\/+$/, "");
   const roomUrl = `${base}/rooms/${input.roomId}`;
   await input.linearClient.agentSessionUpdateExternalUrl(input.sessionId, {
-    externalUrls: [{ label: "View in Thenvoi", url: roomUrl }],
+    externalUrls: [{ label: "View in Band", url: roomUrl }],
   });
 
   input.logger.info("linear_thenvoi_bridge.external_url_set", {
@@ -512,7 +512,7 @@ async function trySetSessionExternalUrl(input: {
   });
 }
 
-function normalizeConfig(config: LinearThenvoiBridgeConfig): NormalizedBridgeConfig {
+function normalizeConfig(config: LinearBandBridgeConfig): NormalizedBridgeConfig {
   return {
     roomStrategy: config.roomStrategy ?? "issue",
     writebackMode: config.writebackMode ?? "final_only",
@@ -1025,9 +1025,9 @@ async function resolveRoomRecordImpl(input: {
   }
 
   const now = new Date().toISOString();
-  // Thenvoi validates `chat.task_id` as a Thenvoi task UUID. Linear issue/session IDs
+  // Band validates `chat.task_id` as a Band task UUID. Linear issue/session IDs
   // are external identifiers, so this bridge must omit `task_id` unless it has a real
-  // Thenvoi task to associate with the room.
+  // Band task to associate with the room.
   const created = await input.thenvoiRest.createChat();
   const createdRecord: SessionRoomRecord = {
     linearSessionId: input.sessionId,

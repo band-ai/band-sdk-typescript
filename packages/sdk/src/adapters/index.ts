@@ -2,9 +2,11 @@ export { GenericAdapter, type GenericAdapterHandler } from "./GenericAdapter";
 export {
   ACPClientAdapter,
   ACPServer,
+  BandACPServerAdapter,
   ThenvoiACPServerAdapter,
   type ACPClientAdapterOptions,
   type ACPServerOptions,
+  type BandACPServerAdapterOptions,
   type ThenvoiACPServerAdapterOptions,
 } from "./acp";
 export {

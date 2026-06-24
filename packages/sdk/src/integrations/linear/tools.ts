@@ -610,7 +610,7 @@ function addSessionCreationTools(input: {
 
   const sessionCreationBaseSchema = z.object({
     external_link: z.string().url().optional().describe("Optional URL of an external page associated with this session"),
-    room_id: z.string().min(1).optional().describe("The Thenvoi room ID to persist the session-room mapping. Pass this when creating a session from within a Thenvoi conversation."),
+    room_id: z.string().min(1).optional().describe("The Band room ID to persist the session-room mapping. Pass this when creating a session from within a Band conversation."),
   });
 
   const sessionCreationSchema = sessionCreationBaseSchema.extend({
@@ -693,7 +693,7 @@ function addSessionCreationTools(input: {
     tools.push({
       name: "linear_create_issue",
       description:
-        "Create a new Linear issue from scratch. Use this when the Thenvoi conversation produces work that should be tracked as a new Linear issue. " +
+        "Create a new Linear issue from scratch. Use this when the Band conversation produces work that should be tracked as a new Linear issue. " +
         "After creating the issue, call linear_create_session_on_issue to attach an agent session. " +
         "Never create issues without explicit human intent or clear delegation.",
       schema: z.object({

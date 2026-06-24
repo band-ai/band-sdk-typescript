@@ -7,7 +7,7 @@ import {
   type SessionRoomRecord,
   type SessionRoomStore,
 } from "../src/linear";
-import { LinearThenvoiExampleRestApi } from "../examples/linear-thenvoi/linear-thenvoi-rest-stub";
+import { LinearBandExampleRestApi } from "../examples/linear-band/linear-band-rest-stub";
 
 class MemorySessionRoomStore implements SessionRoomStore {
   private readonly records = new Map<string, SessionRoomRecord>();
@@ -74,7 +74,7 @@ function makeActiveSession(issueId: string): SessionRoomRecord {
 
 function makeDeps(store: SessionRoomStore) {
   return {
-    thenvoiRest: new LinearThenvoiExampleRestApi(),
+    thenvoiRest: new LinearBandExampleRestApi(),
     linearClient: { createAgentActivity: vi.fn(async () => ({ ok: true })) } as never,
     store,
   };

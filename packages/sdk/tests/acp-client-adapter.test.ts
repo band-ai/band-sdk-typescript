@@ -153,7 +153,7 @@ describe("ACPClientAdapter", () => {
       mcpServers: expect.arrayContaining([
         expect.objectContaining({
           type: "http",
-          name: "thenvoi",
+          name: "band",
         }),
       ]),
     }))

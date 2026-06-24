@@ -14,7 +14,8 @@ export interface AgentConfigResult extends AgentCredentials {
 }
 
 const DEFAULT_CONFIG_PATH = "./agent_config.yaml";
-const DEFAULT_ENV_PREFIX = "THENVOI_";
+const DEFAULT_ENV_PREFIX = "BAND_";
+const LEGACY_ENV_PREFIX = "THENVOI_";
 
 const REQUIRED_FIELDS = ["agent_id", "api_key"] as const;
 const UNSAFE_KEYS = new Set(["__proto__", "constructor", "prototype", "toString", "valueOf"]);
@@ -125,30 +126,43 @@ export function loadAgentConfig(
   return toAgentConfigResult(section, sourceLabel);
 }
 
-/** Load agent credentials from environment variables (prefix defaults to `THENVOI_`). */
+/** Load agent credentials from environment variables (prefix defaults to `BAND_`, with `THENVOI_` as a legacy fallback). */
 export function loadAgentConfigFromEnv(
   options?: LoadAgentConfigFromEnvOptions,
 ): AgentCredentials {
   const env = options?.env ?? process.env;
-  const prefix = options?.prefix === undefined
-    ? DEFAULT_ENV_PREFIX
-    : options.prefix === "" || options.prefix.endsWith("_")
-      ? options.prefix
-      : `${options.prefix}_`;
+  const explicitPrefix = options?.prefix !== undefined;
+  const providedPrefix = options?.prefix;
+  const prefix = explicitPrefix
+    ? providedPrefix === "" || providedPrefix?.endsWith("_")
+      ? providedPrefix ?? ""
+      : `${providedPrefix}_`
+    : DEFAULT_ENV_PREFIX;
+
+  const valueFor = (name: string): string | undefined => {
+    const canonical = env[`${prefix}${name}`];
+    if (canonical !== undefined || explicitPrefix) {
+      return canonical;
+    }
+    return env[`${LEGACY_ENV_PREFIX}${name}`];
+  };
 
   const section = normalizeKeys({
-    agent_id: env[`${prefix}AGENT_ID`],
-    api_key: env[`${prefix}API_KEY`],
-    ws_url: env[`${prefix}WS_URL`],
-    rest_url: env[`${prefix}REST_URL`],
+    agent_id: valueFor("AGENT_ID"),
+    api_key: valueFor("API_KEY"),
+    ws_url: valueFor("WS_URL"),
+    rest_url: valueFor("REST_URL"),
   });
 
   try {
     return toAgentConfigResult(section, `environment variables (${prefix}AGENT_ID, ${prefix}API_KEY)`);
   } catch (error) {
     if (error instanceof ValidationError) {
+      const legacyHint = explicitPrefix
+        ? ""
+        : ` Legacy ${LEGACY_ENV_PREFIX}AGENT_ID and ${LEGACY_ENV_PREFIX}API_KEY are still accepted as fallbacks.`;
       throw new ValidationError(
-        `${error.message}. Set ${prefix}AGENT_ID and ${prefix}API_KEY, or use loadAgentConfig() for agent_config.yaml.`,
+        `${error.message}. Set ${prefix}AGENT_ID and ${prefix}API_KEY, or use loadAgentConfig() for agent_config.yaml.${legacyHint}`,
       );
     }
     throw error;
