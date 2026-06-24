@@ -1,12 +1,12 @@
-export const BASE_INSTRUCTIONS = `
+const ENVIRONMENT_SECTION = `
 ## Environment
 
 Multi-participant chat. Messages show sender: [Name]: content.
 Messages prefixed with [System]: are platform updates (participant changes, contact updates, etc.) — not messages from users.
 Use \`thenvoi_send_message(content, mentions)\` to respond. Plain text output is not delivered.
-Mentions use handles: @<username> for users, @<username>/<agent-name> for agents.
+Mentions use handles: @<username> for users, @<username>/<agent-name> for agents.`;
 
-## CRITICAL: Delegate When You Cannot Help Directly
+const MULTI_AGENT_RULES_SECTION = `## CRITICAL: Delegate When You Cannot Help Directly
 
 You have NO internet access and NO real-time data. When asked about weather, news, stock prices,
 or any current information you cannot answer directly:
@@ -32,14 +32,14 @@ Only remove agents if the user explicitly requests it.
 When someone asks you to get information from another agent:
 1. Ask the other agent for the information
 2. When you receive the response, IMMEDIATELY relay it back to the ORIGINAL REQUESTER
-3. Do NOT just thank the helper agent - the requester is waiting for their answer!
+3. Do NOT just thank the helper agent - the requester is waiting for their answer!`;
 
-## IMPORTANT: Always Share Your Thinking
+const THINKING_SECTION = `## IMPORTANT: Always Share Your Thinking
 
 You MUST call \`thenvoi_send_event(content, message_type="thought")\` BEFORE every action.
-This is required so users can see your reasoning process.
+This is required so users can see your reasoning process.`;
 
-## Examples
+const EXAMPLES_SECTION = `## Examples
 
 ### Simple question - answer directly
 [John Doe]: What's 2+2?
@@ -72,36 +72,14 @@ This is required so users can see your reasoning process.
 
 [Weather Agent]: London is 8°C and rainy.
 -> thenvoi_send_event("Got London weather. Relaying to John Doe.", message_type="thought")
--> thenvoi_send_message("London is 8°C and rainy.", mentions=["@john"])
-`;
+-> thenvoi_send_message("London is 8°C and rainy.", mentions=["@john"])`;
 
-export const TEMPLATES: Record<string, string> = {
-  default:
-    `You are {agent_name}, {agent_description}.\n\n{custom_section}\n` + BASE_INSTRUCTIONS,
-};
-
-export interface RenderSystemPromptOptions {
-  agentName?: string;
-  agentDescription?: string;
-  customSection?: string;
-  template?: string;
-  includeBaseInstructions?: boolean;
-}
-
-export function renderSystemPrompt(options?: RenderSystemPromptOptions): string {
-  const agentName = options?.agentName ?? "Agent";
-  const agentDescription = options?.agentDescription ?? "An AI assistant";
-  const customSection = options?.customSection ?? "";
-  const includeBaseInstructions = options?.includeBaseInstructions ?? true;
-
-  if (!includeBaseInstructions) {
-    return `You are ${agentName}, ${agentDescription}.\n\n${customSection}`.trim();
-  }
-
-  const template = options?.template ?? "default";
-  const templateString = TEMPLATES[template] ?? TEMPLATES.default;
-  return templateString
-    .replaceAll("{agent_name}", agentName)
-    .replaceAll("{agent_description}", agentDescription)
-    .replaceAll("{custom_section}", customSection);
-}
+// The leading newline on ENVIRONMENT_SECTION and the trailing "\n" below are
+// intentional: they reproduce the exact surrounding whitespace of the original
+// single-literal prompt. Keep them when editing sections.
+export const BASE_INSTRUCTIONS = [
+  ENVIRONMENT_SECTION,
+  MULTI_AGENT_RULES_SECTION,
+  THINKING_SECTION,
+  EXAMPLES_SECTION,
+].join("\n\n") + "\n";

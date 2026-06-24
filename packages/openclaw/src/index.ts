@@ -1,176 +1,106 @@
 /**
- * OpenClaw Channel Plugin for Thenvoi.
+ * @band-ai/openclaw-channel-band — OpenClaw channel plugin for the Band platform.
  *
- * This plugin enables OpenClaw agents to connect to the Band platform,
- * using @thenvoi/sdk for all platform communication.
+ * Uses @thenvoi/sdk (ThenvoiLink) for all platform communication. The default
+ * export is the channel plugin entry: it registers the assembled channel plugin
+ * (with the live WS gateway) and, in full registration mode, the 12 band_*
+ * platform-management tools.
  *
  * @packageDocumentation
  */
 
-import { registerChannel, thenvoiChannel, setInboundCallback, setOpenClawRuntime } from "./channel.js";
-import { getMcpToolSchemas, executeMcpTool } from "./mcp-tools.js";
-import { BASE_INSTRUCTIONS } from "./prompts.js";
+import { defineChannelPluginEntry } from "openclaw/plugin-sdk/core";
+import { createBandChannelPlugin, BAND_CHANNEL_ID } from "./channel.js";
+import { createBandGateway } from "./transport.js";
+import { bandTools, executeBandTool, type BandToolContext } from "./tools.js";
+import { resolveAccount } from "./state.js";
 
-// =============================================================================
-// Plugin Entry Point
-// =============================================================================
-
-// Hook context types (matching OpenClaw's plugin types)
-interface PluginHookAgentContext {
-  agentId?: string;
-  sessionKey?: string;
-  workspaceDir?: string;
-  messageProvider?: string;
+/** Resolve the tool execution context (rest + self id) for the connected account. */
+function toolContext(): BandToolContext {
+  // Tools get no accountId (D6), so resolve the sole connected account rather
+  // than hardcoding "default" — the account is keyed by its configured id.
+  const resolved = resolveAccount();
+  if (!resolved) {
+    throw new Error("Band account is not connected; cannot run platform tools");
+  }
+  return { rest: resolved.state.link.rest, selfAgentId: resolved.state.selfAgentId };
 }
 
-interface PluginHookBeforeAgentStartEvent {
-  prompt: string;
-  messages?: unknown[];
-}
-
-interface PluginHookBeforeAgentStartResult {
-  systemPrompt?: string;
-  prependContext?: string;
-}
-
-interface OpenClawPluginApi {
-  registerChannel: (options: { plugin: typeof thenvoiChannel }) => void;
-  registerMcpTools?: (tools: ReturnType<typeof getMcpToolSchemas>) => void;
-  // OpenClaw provides a callback setter for inbound message delivery
-  onInboundMessage?: (setter: (cb: (message: unknown) => void) => void) => void;
-  // Hook registration for lifecycle events
-  on?: (
-    hookName: "before_agent_start",
-    handler: (
-      event: PluginHookBeforeAgentStartEvent,
-      ctx: PluginHookAgentContext
-    ) => PluginHookBeforeAgentStartResult | void
-  ) => void;
-  // OpenClaw runtime reference for dispatch (not in public API, provided dynamically)
-  runtime?: unknown;
-  // Tool registration (singular, provided dynamically by OpenClaw)
-  registerTool?: (tool: {
-    name: string;
-    description: string;
-    parameters: unknown;
-    execute: (toolCallId: unknown, input: unknown) => Promise<unknown>;
-  }) => void;
-}
+const plugin = createBandChannelPlugin(createBandGateway());
 
 /**
- * OpenClaw plugin entry point.
+ * Minimal portable type for the entry default export. `defineChannelPluginEntry`'s
+ * own return type references non-portable internal openclaw chunks (TS2742 under
+ * declaration emit); openclaw loads this entry at runtime via the manifest, so a
+ * structural annotation here is correct and portable (the runtime object keeps
+ * all its fields). The real return is assignable to this — no cast.
  */
-export default function plugin(api: OpenClawPluginApi): void {
-  console.log("[band] OpenClaw Plugin API keys:", Object.keys(api));
-
-  // Store OpenClaw runtime for message dispatch
-  if (api.runtime) {
-    setOpenClawRuntime(api.runtime);
-  }
-
-  // Register the channel (handles connection via gateway.startAccount/stopAccount)
-  registerChannel(api);
-
-  // Register MCP tools - OpenClaw uses registerTool (singular) for each tool
-  if (api.registerTool) {
-    const registerTool = api.registerTool;
-    const toolSchemas = getMcpToolSchemas();
-    console.log(`[band] Registering ${toolSchemas.length} tools:`, toolSchemas.map(t => t.name));
-    for (const tool of toolSchemas) {
-      registerTool({
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.inputSchema,
-        execute: async (_toolCallId: unknown, input: unknown) => {
-          console.log(`[band] Executing tool ${tool.name}`);
-          try {
-            const result = await executeMcpTool(tool.name, input ?? {});
-            const resultStr = JSON.stringify(result, null, 2);
-            console.log(`[band] Tool ${tool.name} completed`);
-
-            return {
-              content: [{ type: "text", text: resultStr }],
-              details: result,
-            };
-          } catch (error) {
-            console.error(`[band] Tool ${tool.name} error:`, error);
-            throw error;
-          }
-        },
-      });
-    }
-    console.log("[band] Tools registered successfully");
-  } else {
-    console.warn("[band] WARNING: api.registerTool is not available - tools will NOT be registered!");
-    console.warn("[band] Available API methods:", Object.keys(api));
-  }
-
-  // Register before_agent_start hook to inject Band instructions + room context
-  if (api.on) {
-    api.on("before_agent_start", (_event, ctx) => {
-      console.log(`[band] before_agent_start hook called (messageProvider=${ctx.messageProvider}, sessionKey=${ctx.sessionKey})`);
-
-      // Extract room_id from sessionKey (format: "band:{roomId}" or legacy "thenvoi:{roomId}")
-      const roomId = ctx.sessionKey?.startsWith("band:")
-        ? ctx.sessionKey.slice("band:".length)
-        : ctx.sessionKey?.startsWith("thenvoi:")
-          ? ctx.sessionKey.slice("thenvoi:".length)
-          : undefined;
-
-      let prependContext = BASE_INSTRUCTIONS;
-      if (roomId) {
-        prependContext += `\n\n## Current Band Room\n\n**Your current room_id is: \`${roomId}\`**\nUse this value for any tool parameter that asks for \`room_id\`. Do NOT use any other UUID.`;
-      }
-
-      return { prependContext };
-    });
-    console.log("[band] Registered before_agent_start hook for instruction injection");
-  }
-
-  // Set up inbound message delivery
-  if (api.onInboundMessage) {
-    api.onInboundMessage(setInboundCallback);
-  }
-
-  console.log("[band] Plugin loaded, channel registered");
+export interface BandPluginEntry {
+  id: string;
+  name: string;
+  description: string;
 }
 
+const entry: BandPluginEntry = defineChannelPluginEntry({
+  id: BAND_CHANNEL_ID,
+  name: "Band",
+  description: "Connect OpenClaw to the Band AI agent collaboration platform",
+  plugin,
+  registerFull(api) {
+    // Register the 12 band_* management tools. Our inputSchema is plain JSON
+    // schema; the registerTool() contract is TypeBox-typed, so the tool object
+    // crosses the documented JSON-schema -> TSchema interop boundary.
+    for (const tool of bandTools) {
+      const toolDef = {
+        name: tool.name,
+        label: tool.name,
+        description: tool.description,
+        parameters: tool.inputSchema,
+        execute: async (_toolCallId: string, params: unknown) => {
+          const result = await executeBandTool(toolContext(), tool.name, params ?? {});
+          return {
+            content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+            details: result,
+          };
+        },
+      };
+      api.registerTool(toolDef as Parameters<typeof api.registerTool>[0]);
+    }
+  },
+});
+
+export default entry;
+
 // =============================================================================
-// Named Exports
+// Named exports (public API)
 // =============================================================================
 
-// Channel exports
-export { thenvoiChannel, registerChannel, setInboundCallback, deliverMessage } from "./channel.js";
-export { getLink, getAgentId, resetGatewayRegistry } from "./channel.js";
-
-// OpenClaw-specific type exports
-export type { ThenvoiAccountConfig, OpenClawInboundMessage } from "./channel.js";
-
-// MCP tool exports
-export { mcpTools, getMcpToolSchemas, executeMcpTool, getMcpTool } from "./mcp-tools.js";
-
-// Prompt exports
+export { createBandChannelPlugin, BAND_CHANNEL_ID } from "./channel.js";
 export {
-  BASE_INSTRUCTIONS,
-  CORE_INSTRUCTIONS,
-  CONTACT_INSTRUCTIONS,
-  buildSystemPrompt,
-} from "./prompts.js";
-
-// Re-export key SDK types for consumers
-export type {
-  ContactEventConfig,
-  ContactEventStrategy,
-  ContactEventCallback,
-  ContactEvent,
-  PlatformEvent,
-} from "@thenvoi/sdk";
-
-export { ThenvoiLink } from "@thenvoi/sdk";
-
-export type {
-  AgentIdentity,
-  ChatParticipant,
-} from "@thenvoi/sdk/rest";
-
-export { ContactEventHandler, RoomPresence } from "@thenvoi/sdk/runtime";
+  createBandGateway,
+  createReplyDeliver,
+  platformEventToInboundContext,
+  roomTypeToChatType,
+} from "./transport.js";
+export {
+  bandTools,
+  getBandTool,
+  executeBandTool,
+  getBandToolSchemas,
+  type BandTool,
+  type BandToolContext,
+} from "./tools.js";
+export {
+  resolveAccount,
+  listAccountIds,
+  resolveConnectionConfig,
+  inspectAccount,
+  validateConfig,
+  DEFAULT_WS_URL,
+  DEFAULT_REST_URL,
+  type BandAccountConfig,
+  type PluginConfig,
+} from "./config.js";
+export { BASE_INSTRUCTIONS, CORE_INSTRUCTIONS, CONTACT_INSTRUCTIONS, buildSystemPrompt } from "./prompts.js";
+export { resolveMentions, extractExplicitMentions } from "./mentions.js";
+export { getLink, getAccount, setAccount, resetAccounts } from "./state.js";

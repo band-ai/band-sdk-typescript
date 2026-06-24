@@ -1,4 +1,12 @@
 import { CHAT_EVENT_TYPES } from "../../contracts/chatEvents";
+import {
+  MEMORY_LIST_SCOPES,
+  MEMORY_SEGMENTS,
+  MEMORY_STATUSES,
+  MEMORY_STORE_SCOPES,
+  MEMORY_SYSTEMS,
+  MEMORY_TYPES,
+} from "../../contracts/memory";
 
 export const TOOL_MODELS = {
   thenvoi_send_message: {
@@ -223,29 +231,22 @@ export const TOOL_MODELS = {
       },
       scope: {
         type: "string",
-        enum: ["subject", "organization", "all"],
+        enum: [...MEMORY_LIST_SCOPES],
         description: "Filter by scope.",
       },
       system: {
         type: "string",
-        enum: ["sensory", "working", "long_term"],
+        enum: [...MEMORY_SYSTEMS],
         description: "Filter by memory system.",
       },
       type: {
         type: "string",
-        enum: [
-          "iconic",
-          "echoic",
-          "haptic",
-          "episodic",
-          "semantic",
-          "procedural",
-        ],
+        enum: [...MEMORY_TYPES],
         description: "Filter by memory type.",
       },
       segment: {
         type: "string",
-        enum: ["user", "agent", "tool", "guideline"],
+        enum: [...MEMORY_SEGMENTS],
         description: "Filter by segment.",
       },
       content_query: {
@@ -260,7 +261,7 @@ export const TOOL_MODELS = {
       },
       status: {
         type: "string",
-        enum: ["active", "superseded", "archived", "all"],
+        enum: [...MEMORY_STATUSES],
         description: "Filter by status.",
       },
     },
@@ -278,24 +279,17 @@ export const TOOL_MODELS = {
       },
       system: {
         type: "string",
-        enum: ["sensory", "working", "long_term"],
+        enum: [...MEMORY_SYSTEMS],
         description: "Memory system tier.",
       },
       type: {
         type: "string",
-        enum: [
-          "iconic",
-          "echoic",
-          "haptic",
-          "episodic",
-          "semantic",
-          "procedural",
-        ],
+        enum: [...MEMORY_TYPES],
         description: "Memory type (must be valid for selected system).",
       },
       segment: {
         type: "string",
-        enum: ["user", "agent", "tool", "guideline"],
+        enum: [...MEMORY_SEGMENTS],
         description: "Logical segment.",
       },
       thought: {
@@ -304,7 +298,7 @@ export const TOOL_MODELS = {
       },
       scope: {
         type: "string",
-        enum: ["subject", "organization"],
+        enum: [...MEMORY_STORE_SCOPES],
         description: "Visibility scope.",
       },
       subject_id: {

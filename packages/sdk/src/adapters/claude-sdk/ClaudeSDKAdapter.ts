@@ -197,6 +197,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
       agentDescription,
       customSection: this.customSection,
       includeBaseInstructions: this.includeBaseInstructions,
+      capabilities: { memory: this.enableMemoryTools },
     });
 
     if (this.enableMcpTools) {

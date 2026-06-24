@@ -4,11 +4,34 @@
   "name": "Band",
   "version": "0.1.5",
   "description": "Connect OpenClaw to the Band AI agent collaboration platform",
-  "author": "band.ai",
+  "author": "Band",
   "license": "MIT",
   "repository": "https://github.com/thenvoi/thenvoi-sdk-typescript",
+  "kind": "channel",
   "entry": "dist/index.js",
-  "type": "channel",
+  "setupEntry": "dist/setup-entry.js",
+  "channels": ["openclaw-channel-band"],
+
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "accounts": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "apiKey": { "type": "string", "description": "Band API key (or use BAND_API_KEY env var)" },
+            "agentId": { "type": "string", "description": "Band agent ID (or use BAND_AGENT_ID env var)" },
+            "wsUrl": { "type": "string", "default": "wss://app.thenvoi.com/api/v1/socket", "description": "Band WebSocket URL" },
+            "restUrl": { "type": "string", "default": "https://app.thenvoi.com", "description": "Band REST API URL" },
+            "stateDir": { "type": "string", "description": "Directory for persisted state files (e.g. the main-channel hub id)." }
+          },
+          "required": []
+        }
+      }
+    }
+  },
 
   "openclaw.channel": {
     "id": "openclaw-channel-band",
@@ -17,7 +40,7 @@
     "docsPath": "/channels/band",
     "blurb": "Connect to the Band AI agent collaboration platform.",
     "order": 100,
-    "aliases": ["band", "thenvoi", "openclaw-channel-thenvoi"]
+    "aliases": ["band"]
   },
 
   "openclaw.install": {
@@ -33,7 +56,7 @@
       "band_get_participants",
       "band_create_chatroom",
       "band_send_event",
-      "thenvoi_send_message",
+      "band_list_chats",
       "band_list_contacts",
       "band_add_contact",
       "band_remove_contact",
@@ -55,7 +78,7 @@
         "band_get_participants",
         "band_create_chatroom",
         "band_send_event",
-        "thenvoi_send_message",
+        "band_list_chats",
         "band_list_contacts",
         "band_add_contact",
         "band_remove_contact",
@@ -65,82 +88,41 @@
     }
   },
 
-  "configSchema": {
-    "type": "object",
-    "properties": {
-      "accounts": {
+  "channelConfigs": {
+    "openclaw-channel-band": {
+      "schema": {
         "type": "object",
-        "additionalProperties": {
-          "type": "object",
-          "properties": {
-            "enabled": {
-              "type": "boolean",
-              "default": true
-            },
-            "apiKey": {
-              "type": "string",
-              "description": "Band API key (or use BAND_API_KEY env var, falling back to THENVOI_API_KEY)"
-            },
-            "agentId": {
-              "type": "string",
-              "description": "Band agent ID (or use BAND_AGENT_ID env var, falling back to THENVOI_AGENT_ID)"
-            },
-            "wsUrl": {
-              "type": "string",
-              "default": "wss://app.band.ai/api/v1/socket",
-              "description": "Band WebSocket URL"
-            },
-            "restUrl": {
-              "type": "string",
-              "default": "https://app.band.ai",
-              "description": "Band REST API URL"
-            },
-            "stateDir": {
-              "type": "string",
-              "description": "Directory for persisted state files. Defaults to ~/.openclaw/state/band/{agentId}/. Override when home directory is not writable."
+        "properties": {
+          "accounts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "enabled": { "type": "boolean", "default": true },
+                "apiKey": { "type": "string", "description": "Band API key (or use BAND_API_KEY env var)" },
+                "agentId": { "type": "string", "description": "Band agent ID (or use BAND_AGENT_ID env var)" },
+                "wsUrl": { "type": "string", "default": "wss://app.thenvoi.com/api/v1/socket", "description": "Band WebSocket URL" },
+                "restUrl": { "type": "string", "default": "https://app.thenvoi.com", "description": "Band REST API URL" },
+                "stateDir": { "type": "string", "description": "Directory for persisted state files (e.g. the main-channel hub id)." }
+              },
+              "required": []
             }
-          },
-          "required": []
+          }
         }
+      },
+      "uiHints": {
+        "apiKey": { "label": "API key", "sensitive": true, "placeholder": "tv_..." },
+        "agentId": { "label": "Agent ID", "placeholder": "agent-uuid-here" },
+        "wsUrl": { "label": "WebSocket URL", "placeholder": "wss://app.thenvoi.com/api/v1/socket" },
+        "restUrl": { "label": "REST URL", "placeholder": "https://app.thenvoi.com" }
       }
     }
   },
 
-  "uiHints": {
-    "apiKey": {
-      "sensitive": true,
-      "placeholder": "band_..."
-    },
-    "agentId": {
-      "placeholder": "agent-uuid-here"
-    },
-    "wsUrl": {
-      "placeholder": "wss://app.band.ai/api/v1/socket"
-    },
-    "restUrl": {
-      "placeholder": "https://app.band.ai"
-    }
-  },
-
   "environment": {
-    "BAND_API_KEY": {
-      "description": "API key for Band platform authentication",
-      "required": true,
-      "sensitive": true
-    },
-    "BAND_AGENT_ID": {
-      "description": "Agent identifier on Band platform",
-      "required": true
-    },
-    "BAND_WS_URL": {
-      "description": "Band WebSocket endpoint",
-      "required": false,
-      "default": "wss://app.band.ai/api/v1/socket"
-    },
-    "BAND_REST_URL": {
-      "description": "Band REST API endpoint",
-      "required": false,
-      "default": "https://app.band.ai"
-    }
+    "BAND_API_KEY": { "description": "API key for Band platform authentication", "required": true, "sensitive": true },
+    "BAND_AGENT_ID": { "description": "Agent identifier on the Band platform", "required": true },
+    "BAND_WS_URL": { "description": "Band WebSocket endpoint", "required": false, "default": "wss://app.thenvoi.com/api/v1/socket" },
+    "BAND_REST_URL": { "description": "Band REST API endpoint", "required": false, "default": "https://app.thenvoi.com" }
   }
 }

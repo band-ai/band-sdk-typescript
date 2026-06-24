@@ -53,6 +53,11 @@ jobs:
           cache: pnpm
           registry-url: 'https://registry.npmjs.org'
 
+      # OIDC trusted publishing requires npm >= 11.5.1; Node 22 ships npm 10.x.
+      - name: Upgrade npm for OIDC trusted publishing
+        if: steps.release.outputs['packages/sdk--release_created'] == 'true' || steps.release.outputs['packages/openclaw--release_created'] == 'true'
+        run: npm install -g npm@latest
+
       - name: Install dependencies
         if: steps.release.outputs['packages/sdk--release_created'] == 'true' || steps.release.outputs['packages/openclaw--release_created'] == 'true'
         run: pnpm install --frozen-lockfile
@@ -65,22 +70,20 @@ jobs:
         if: steps.release.outputs['packages/sdk--release_created'] == 'true'
         run: cp README.md packages/sdk/README.md
 
-      - name: Publish SDK to npm (@thenvoi)
+      - name: Publish SDK to npm (@band-ai)
         if: steps.release.outputs['packages/sdk--release_created'] == 'true'
         run: |
           cd packages/sdk
+          sed -i 's/"@thenvoi\/sdk"/"@band-ai\/sdk"/' package.json
           npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Publish OpenClaw to npm (@thenvoi)
+      - name: Publish OpenClaw to npm (@band-ai)
         if: steps.release.outputs['packages/openclaw--release_created'] == 'true'
         run: |
           cd packages/openclaw
+          # name is already @band-ai/openclaw-channel-band and the SDK is bundled
+          # (types inlined), so the package is self-contained — nothing to rewrite.
           npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
 
       - name: Publish release summary
         if: steps.release.outputs['packages/sdk--release_created'] == 'true' || steps.release.outputs['packages/openclaw--release_created'] == 'true'
@@ -89,8 +92,8 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Packages released:" >> $GITHUB_STEP_SUMMARY
           if [ "${{ steps.release.outputs['packages/sdk--release_created'] }}" == "true" ]; then
-            echo "- **@thenvoi/sdk** v${{ steps.release.outputs['packages/sdk--version'] }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **@band-ai/sdk** v${{ steps.release.outputs['packages/sdk--version'] }}" >> $GITHUB_STEP_SUMMARY
           fi
           if [ "${{ steps.release.outputs['packages/openclaw--release_created'] }}" == "true" ]; then
-            echo "- **@thenvoi/openclaw-channel-thenvoi** v${{ steps.release.outputs['packages/openclaw--version'] }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **@band-ai/openclaw-channel-band** v${{ steps.release.outputs['packages/openclaw--version'] }}" >> $GITHUB_STEP_SUMMARY
           fi

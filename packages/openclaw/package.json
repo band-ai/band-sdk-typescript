@@ -1,8 +1,8 @@
 {
-  "name": "@thenvoi/openclaw-channel-thenvoi",
+  "name": "@band-ai/openclaw-channel-band",
   "version": "0.1.5",
   "description": "OpenClaw channel plugin to connect with the Band AI agent collaboration platform",
-  "author": "band.ai",
+  "author": "Band <hello@thenvoi.com>",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -31,24 +31,24 @@
     "test:watch": "vitest",
     "test:coverage": "pnpm --filter @thenvoi/sdk build && vitest run --coverage",
     "test:e2e": "pnpm --filter @thenvoi/sdk build && node --env-file=.env node_modules/vitest/vitest.mjs run --config vitest.config.e2e.ts",
-    "clean": "rm -rf dist"
-  },
-  "dependencies": {
-    "@thenvoi/sdk": "workspace:*"
+    "clean": "rm -rf dist .local-link",
+    "stage:link": "node scripts/stage-link.mjs",
+    "link:local": "pnpm build && node scripts/stage-link.mjs"
   },
   "devDependencies": {
+    "@thenvoi/sdk": "workspace:*",
     "@types/node": "^22.0.0",
     "@vitest/coverage-v8": "^3.2.4",
     "eslint": "^9.0.0",
     "@typescript-eslint/eslint-plugin": "^8.26.0",
-    "openclaw": "^2026.4.23",
+    "openclaw": "2026.6.6",
     "tsup": "^8.0.0",
     "typescript": "^5.8.2",
     "typescript-eslint": "^8.54.0",
     "vitest": "^3.2.4"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.1.0"
+    "openclaw": ">=2026.6.0"
   },
   "engines": {
     "node": ">=22.14.0"
@@ -56,6 +56,12 @@
   "openclaw": {
     "extensions": [
       "./dist/index.js"
-    ]
+    ],
+    "setupEntry": "./dist/setup-entry.js",
+    "channel": {
+      "id": "openclaw-channel-band",
+      "label": "Band",
+      "blurb": "Connect to the Band AI agent collaboration platform."
+    }
   }
 }

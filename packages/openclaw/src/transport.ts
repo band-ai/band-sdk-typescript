@@ -1,0 +1,380 @@
+/**
+ * Band transport layer.
+ *
+ * This file owns the WebSocket connection lifecycle (ThenvoiLink + RoomPresence)
+ * and turns inbound Band platform events into OpenClaw inbound contexts that are
+ * dispatched to core. The pure event->context mapping is split out as a testable
+ * function; the live lifecycle (startAccount/stopAccount) is wired separately.
+ *
+ * Key INT-836 invariants encoded here (see REWRITE_PLAN D5/L2/F2):
+ *  - the `[Band Room: <id>]` marker is a SUFFIX on the model-visible Body only;
+ *    command fields stay RAW so stripMentions + command-parse aren't corrupted
+ *  - ChatType is derived from the (cached) room type, default 'group'
+ *  - CommandAuthorized = (senderId === ownerUuid), FAIL-CLOSED when no owner
+ *  - SessionKey is the stable `band:{roomId}` (no chat_type/platform folding)
+ */
+
+import type { PlatformEvent, ContactEvent } from "@thenvoi/sdk";
+import { ThenvoiLink } from "@thenvoi/sdk";
+import { RoomPresence, ContactEventHandler } from "@thenvoi/sdk/runtime";
+import type { MsgContext } from "openclaw/plugin-sdk/reply-runtime";
+import { dispatchInboundMessageWithBufferedDispatcher } from "openclaw/plugin-sdk/reply-runtime";
+import { runPassiveAccountLifecycle } from "openclaw/plugin-sdk/channel-lifecycle";
+import type {
+  ChannelGatewayAdapter,
+  ChannelGatewayContext,
+} from "openclaw/plugin-sdk/channel-runtime";
+import { resolveConnectionConfig, type BandAccountConfig } from "./config.js";
+import {
+  setAccount,
+  deleteAccount,
+  getAccount,
+  cacheRoomType,
+  getRoomType,
+  trackLastSender,
+  getLastSender,
+} from "./state.js";
+import { sendText as outboundSendText } from "./outbound.js";
+import {
+  replaceUuidMentions,
+  buildParticipantsBlock,
+  type MentionParticipant,
+} from "./mentions.js";
+
+export interface BuildInboundContextOptions {
+  /** The agent's own id (self-authored messages are skipped). */
+  selfAgentId: string;
+  /** The agent owner's id; commands are authorized only for the owner. */
+  ownerUuid?: string | null;
+  /** The room's type (from the onRoomJoined cache); drives ChatType. */
+  roomType?: string | null;
+  /**
+   * The room's participants. Used to rewrite Band's `@[[uuid]]` tokens into
+   * readable `@handle` form and to inject a participant roster into the
+   * model-facing body so the model addresses people by handle.
+   */
+  participants?: MentionParticipant[];
+}
+
+const DIRECT_ROOM_TYPES = new Set(["direct", "dm", "individual", "one_to_one"]);
+
+/** Map a Band room type to OpenClaw's direct/group chat type (default group). */
+export function roomTypeToChatType(roomType: string | null | undefined): "direct" | "group" {
+  if (!roomType) return "group";
+  return DIRECT_ROOM_TYPES.has(roomType.toLowerCase()) ? "direct" : "group";
+}
+
+/**
+ * Convert a Band `message_created` event into the inbound context for dispatch.
+ * Returns null for events that must not be dispatched (non-message, self-authored,
+ * non-text, or roomless).
+ */
+export function platformEventToInboundContext(
+  event: PlatformEvent,
+  opts: BuildInboundContextOptions,
+): MsgContext | null {
+  if (event.type !== "message_created") return null;
+
+  const payload = event.payload;
+  const roomId = event.roomId ?? payload.chat_room_id;
+  if (!roomId) return null;
+
+  // Skip the agent's own messages and anything that isn't a plain text message.
+  if (payload.sender_id === opts.selfAgentId) return null;
+  if (payload.message_type !== "text") return null;
+
+  const content = payload.content;
+  // Model-facing body: rewrite Band's `@[[uuid]]` tokens to `@handle`, then append
+  // a participant roster and the room marker. Command/parse fields below stay RAW.
+  const participants = opts.participants ?? [];
+  const displayContent = replaceUuidMentions(content, participants);
+  const roster = buildParticipantsBlock(participants, opts.selfAgentId);
+  const withMarker = [displayContent, roster, `[Band Room: ${roomId}]`]
+    .filter((part) => part.length > 0)
+    .join("\n\n");
+
+  const ctx: MsgContext = {
+    // Model-facing bodies carry the room marker as a trailing SUFFIX so it can't
+    // collide with leading-@agent strip or leading-/command parse.
+    Body: withMarker,
+    BodyForAgent: withMarker,
+    // Command/parse fields stay RAW (no marker) — core's stripMentions + command
+    // parser operate on these. BodyForCommands is the preferred command field;
+    // CommandBody is set too. (RawBody is deprecated — intentionally omitted.)
+    BodyForCommands: content,
+    CommandBody: content,
+    From: payload.sender_id,
+    SenderId: payload.sender_id,
+    SenderName: payload.sender_name ?? "Unknown",
+    To: roomId,
+    SessionKey: `band:${roomId}`,
+    Surface: "band",
+    Provider: "band",
+    MessageSid: payload.id,
+    Timestamp: payload.inserted_at ? new Date(payload.inserted_at).getTime() : Date.now(),
+    ChatType: roomTypeToChatType(opts.roomType),
+    // Owner-only commands; fail closed when the owner is unknown.
+    CommandAuthorized: opts.ownerUuid != null && payload.sender_id === opts.ownerUuid,
+  };
+  return ctx;
+}
+
+// =============================================================================
+// Live account lifecycle (gateway.startAccount / stopAccount)
+// =============================================================================
+
+/** Minimal structural views of the SDK objects, so the lifecycle is testable. */
+interface LinkLike {
+  agentId: string;
+  connect: () => Promise<unknown>;
+  disconnect: () => Promise<unknown>;
+  rest: {
+    getAgentMe: () => Promise<{ id: string; ownerUuid?: string | null }>;
+    listChatParticipants?: (
+      roomId: string,
+    ) => Promise<Array<{ id: string; name: string; handle?: string | null }>>;
+    [k: string]: unknown;
+  };
+  markProcessed?: (roomId: string, messageId: string, opts?: { bestEffort?: boolean }) => Promise<unknown>;
+}
+
+interface PresenceLike {
+  onRoomJoined?: (roomId: string, payload: Record<string, unknown>) => unknown;
+  onRoomLeft?: (roomId: string) => unknown;
+  onRoomEvent?: (roomId: string, event: PlatformEvent) => unknown;
+  onContactEvent?: (event: ContactEvent) => unknown;
+  start: () => Promise<unknown>;
+  stop: () => Promise<unknown>;
+}
+
+interface DispatchParams {
+  ctx: MsgContext;
+  cfg: unknown;
+  roomId: string;
+  accountId: string;
+}
+
+/** Injectable dependencies (defaults use the real SDK + openclaw runtime). */
+export interface BandGatewayDeps {
+  createLink?: (conn: { agentId: string; apiKey: string; wsUrl: string; restUrl: string }) => LinkLike;
+  createPresence?: (link: LinkLike) => PresenceLike;
+  createContactHandler?: (link: LinkLike) => { handle: (event: ContactEvent) => Promise<unknown> };
+  dispatch?: (params: DispatchParams) => Promise<void>;
+  runLifecycle?: (params: { abortSignal: AbortSignal; start: () => Promise<void>; stop: () => Promise<void> }) => Promise<void>;
+  log?: (msg: string) => void;
+}
+
+// Module-scoped race guard: which accounts are mid-start.
+const starting = new Set<string>();
+
+/** For test isolation. */
+export function resetGatewayStarting(): void {
+  starting.clear();
+}
+
+/**
+ * Build the reply `deliver` callback that routes a model reply payload to the
+ * Band room via the outbound adapter. Exported so the deliver seam (the heart
+ * of the inbound→reply round-trip) is unit-testable directly. A delivery
+ * failure is logged (observable), never thrown.
+ */
+export function createReplyDeliver(
+  accountId: string,
+  roomId: string,
+  log: (msg: string) => void,
+): (payload: { text?: string } | string) => Promise<void> {
+  return async (payload) => {
+    const text = typeof payload === "string" ? payload : payload?.text;
+    if (!text) return;
+    const account = getAccount(accountId);
+    if (!account) {
+      // The account can disappear between dispatch and delivery (e.g. a teardown
+      // race on restart). Log it — this function's contract is that delivery
+      // failures are observable, never silently dropped.
+      log(`[band:${accountId}] skipping reply (room=${roomId}): account not connected`);
+      return;
+    }
+    try {
+      await outboundSendText(
+        {
+          rest: account.link.rest as never,
+          selfAgentId: account.selfAgentId,
+          getLastSender: (r) => getLastSender(accountId, r) ?? null,
+        },
+        { to: roomId, text },
+      );
+    } catch (err) {
+      log(`[band:${accountId}] reply delivery failed (room=${roomId}): ${String(err)}`);
+    }
+  };
+}
+
+function defaultDispatch(deps: Required<Pick<BandGatewayDeps, "log">>): (p: DispatchParams) => Promise<void> {
+  return async ({ ctx, cfg, roomId, accountId }) => {
+    await dispatchInboundMessageWithBufferedDispatcher({
+      ctx,
+      cfg: cfg as Parameters<typeof dispatchInboundMessageWithBufferedDispatcher>[0]["cfg"],
+      dispatcherOptions: {
+        deliver: createReplyDeliver(accountId, roomId, deps.log),
+        // Observability: surface delivery/reply errors rather than dropping silently.
+        onError: (err: unknown) => deps.log(`[band:${accountId}] reply error (room=${roomId}): ${String(err)}`),
+      } as Parameters<typeof dispatchInboundMessageWithBufferedDispatcher>[0]["dispatcherOptions"],
+    });
+  };
+}
+
+/**
+ * Build the Band gateway adapter. Dependencies are injected (defaults use the
+ * real SDK + openclaw runtime) so the lifecycle is unit-testable with fakes.
+ */
+export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAdapter<BandAccountConfig> {
+  const log = deps.log ?? ((msg: string) => console.log(msg));
+  const createLink = deps.createLink ?? ((conn) => new ThenvoiLink(conn) as unknown as LinkLike);
+  const createPresence =
+    deps.createPresence ??
+    ((link) => new RoomPresence({ link: link as never, autoSubscribeExistingRooms: true }) as unknown as PresenceLike);
+  const createContactHandler =
+    deps.createContactHandler ??
+    ((link) =>
+      new ContactEventHandler({
+        config: { strategy: "hub_room", broadcastChanges: true },
+        rest: link.rest as never,
+      }) as unknown as { handle: (event: ContactEvent) => Promise<unknown> });
+  const dispatch = deps.dispatch ?? defaultDispatch({ log });
+
+  async function teardown(accountId: string): Promise<void> {
+    const account = getAccount(accountId);
+    if (!account) return;
+    const presence = account.presence as PresenceLike | undefined;
+    try {
+      if (presence) await presence.stop();
+    } finally {
+      try {
+        await account.link.disconnect();
+      } finally {
+        deleteAccount(accountId);
+      }
+    }
+  }
+
+  async function startAccount(ctx: ChannelGatewayContext<BandAccountConfig>): Promise<void> {
+    const accountId = ctx.accountId;
+
+    // Race guard: ignore a concurrent start for the same account.
+    if (starting.has(accountId)) {
+      log(`[band:${accountId}] startAccount already in progress; skipping`);
+      return;
+    }
+    starting.add(accountId);
+
+    try {
+      // Disconnect any prior connection before restarting.
+      if (getAccount(accountId)) {
+        log(`[band:${accountId}] disconnecting previous connection before restart`);
+        await teardown(accountId);
+      }
+
+      const conn = resolveConnectionConfig(ctx.account);
+      const link = createLink(conn);
+      await link.connect();
+
+      const me = await link.rest.getAgentMe();
+      const selfAgentId = me.id ?? link.agentId;
+      const ownerUuid = me.ownerUuid ?? null;
+
+      const presence = createPresence(link);
+      const contactHandler = createContactHandler(link);
+
+      presence.onRoomJoined = (roomId, payload) => {
+        const type = typeof payload?.type === "string" ? payload.type : undefined;
+        if (type) cacheRoomType(accountId, roomId, type);
+      };
+
+      presence.onRoomEvent = async (_roomId, event) => {
+        if (event.type !== "message_created") return;
+        const roomId = event.roomId ?? event.payload.chat_room_id;
+        if (!roomId) return;
+
+        const roomType = getRoomType(accountId, roomId);
+        if (roomType === undefined) {
+          log(`[band:${accountId}] room ${roomId} has no cached type; defaulting ChatType to 'group'`);
+        }
+
+        // Fetch participants so the inbound body can rewrite `@[[uuid]]` tokens to
+        // handles and carry a roster. Best-effort: an empty roster on failure
+        // degrades to the prior behaviour (raw content), never blocks dispatch.
+        let participants: MentionParticipant[] = [];
+        try {
+          const list = (await link.rest.listChatParticipants?.(roomId)) ?? [];
+          participants = list.map((p) => ({ id: p.id, name: p.name, handle: p.handle }));
+        } catch (err) {
+          log(`[band:${accountId}] could not list participants (room=${roomId}): ${String(err)}`);
+        }
+
+        const msgCtx = platformEventToInboundContext(event, {
+          selfAgentId,
+          ownerUuid,
+          roomType,
+          participants,
+        });
+        if (!msgCtx) return; // self-authored / non-text skip
+
+        if (event.payload.sender_id && event.payload.sender_name) {
+          trackLastSender(accountId, roomId, {
+            senderId: event.payload.sender_id,
+            senderName: event.payload.sender_name,
+          });
+        }
+
+        try {
+          await dispatch({ ctx: msgCtx, cfg: ctx.cfg, roomId, accountId });
+        } catch (err) {
+          log(`[band:${accountId}] dispatch failed (room=${roomId}): ${String(err)}`);
+        }
+
+        // Mark processed (best effort — never throw out of the handler).
+        const messageId = event.payload.id;
+        if (messageId && link.markProcessed) {
+          try {
+            await link.markProcessed(roomId, messageId, { bestEffort: true });
+          } catch {
+            /* best effort */
+          }
+        }
+      };
+
+      presence.onContactEvent = async (event) => {
+        try {
+          await contactHandler.handle(event);
+        } catch (err) {
+          log(`[band:${accountId}] contact event failed: ${String(err)}`);
+        }
+      };
+
+      setAccount(accountId, { link: link as never, selfAgentId, ownerUuid, presence: presence as never });
+
+      await presence.start();
+      log(`[band:${accountId}] connected to Band`);
+
+      // Hold the account open for its lifetime; tear down on abort.
+      const runLifecycle = deps.runLifecycle ?? runPassiveAccountLifecycle;
+      await runLifecycle({
+        abortSignal: ctx.abortSignal,
+        start: async () => {},
+        stop: async () => {
+          await teardown(accountId);
+        },
+      });
+    } finally {
+      starting.delete(accountId);
+    }
+  }
+
+  async function stopAccount(ctx: ChannelGatewayContext<BandAccountConfig>): Promise<void> {
+    starting.delete(ctx.accountId);
+    await teardown(ctx.accountId);
+    log(`[band:${ctx.accountId}] disconnected from Band`);
+  }
+
+  return { startAccount, stopAccount };
+}

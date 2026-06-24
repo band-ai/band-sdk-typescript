@@ -1,280 +1,141 @@
 /**
- * Unit tests for channel module.
+ * Unit tests for the Band channel plugin assembly (createChatChannelPlugin).
+ *
+ * Covers the factory contract + the Step-5 split condition: the outbound
+ * adapter maps our { messageId } onto an OutboundDeliveryResult (with the
+ * channel field added) at the adapter boundary.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { createBandChannelPlugin, BAND_CHANNEL_ID } from "../../src/channel.js";
+import { setAccount, resetAccounts, trackLastSender } from "../../src/state.js";
 
-// Mock the SDK modules before importing channel.ts
-// This prevents vitest from loading the SDK's optional peer dependencies
-vi.mock("@thenvoi/sdk", () => ({
-  ThenvoiLink: vi.fn().mockImplementation((opts: Record<string, unknown>) => ({
-    agentId: opts.agentId,
-    rest: {
-      // Use real fetch so validateConfig tests work with mock fetch
-      getAgentMe: vi.fn().mockImplementation(async () => {
-        const restUrl = (opts.restUrl as string || "").replace(/\/$/, "");
-        const response = await fetch(`${restUrl}/api/v1/agent/me`, {
-          headers: { "X-API-Key": opts.apiKey as string },
-        });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return response.json();
-      }),
-      listChatParticipants: vi.fn(),
-      createChatMessage: vi.fn(),
-    },
-    connect: vi.fn(),
-    disconnect: vi.fn(),
-  })),
-}));
+// Minimal stub gateway (the real lifecycle is transport.ts / a later step).
+const stubGateway = {
+  startAccount: vi.fn(),
+  stopAccount: vi.fn(),
+};
 
-vi.mock("@thenvoi/sdk/runtime", () => ({
-  RoomPresence: vi.fn().mockImplementation(() => ({
-    onRoomJoined: null,
-    onRoomLeft: null,
-    onRoomEvent: null,
-    onContactEvent: null,
-    start: vi.fn(),
-    stop: vi.fn(),
-  })),
-  ContactEventHandler: vi.fn().mockImplementation(() => ({
-    handle: vi.fn(),
-  })),
-}));
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const plugin = createBandChannelPlugin(stubGateway as any);
 
-vi.mock("@thenvoi/sdk/rest", () => ({}));
+beforeEach(() => resetAccounts());
 
-import {
-  thenvoiChannel,
-  registerChannel,
-  setInboundCallback,
-  getLink,
-  getAgentId,
-} from "../../src/channel.js";
-import {
-  mockAccountConfig,
-  mockPluginConfig,
-  mockEmptyPluginConfig,
-} from "../fixtures/configs.js";
-import { createMockFetch } from "../__mocks__/fetch.js";
-import { mockAgentMetadata } from "../fixtures/payloads.js";
-
-describe("Channel Module", () => {
-  let fetchMock: ReturnType<typeof createMockFetch>;
-
-  beforeEach(() => {
-    fetchMock = createMockFetch({ response: {} });
-    globalThis.fetch = fetchMock;
+describe("channel factory contract", () => {
+  it("has the band id, meta, and chat-type capabilities", () => {
+    expect(plugin.id).toBe(BAND_CHANNEL_ID);
+    expect(plugin.meta?.label).toBe("Band");
+    expect(plugin.capabilities?.chatTypes).toEqual(["direct", "group"]);
   });
 
-  describe("thenvoiChannel.meta", () => {
-    it("should have correct metadata", () => {
-      expect(thenvoiChannel.id).toBe("openclaw-channel-band");
-      expect(thenvoiChannel.meta.id).toBe("openclaw-channel-band");
-      expect(thenvoiChannel.meta.label).toBe("Band");
-      expect(thenvoiChannel.meta.aliases).toContain("band");
-      expect(thenvoiChannel.meta.aliases).toContain("openclaw-channel-thenvoi");
-    });
-
-    it("should have documentation path", () => {
-      expect(thenvoiChannel.meta.docsPath).toBe("/channels/band");
-    });
-
-    it("should have selection label", () => {
-      expect(thenvoiChannel.meta.selectionLabel).toContain("Band");
-    });
+  it("attaches the injected gateway and a mention adapter (F1/F3)", () => {
+    expect(plugin.gateway).toBe(stubGateway);
+    expect(typeof plugin.mentions?.stripMentions).toBe("function");
   });
 
-  describe("thenvoiChannel.capabilities", () => {
-    it("should support direct and group chats", () => {
-      expect(thenvoiChannel.capabilities.chatTypes).toContain("direct");
-      expect(thenvoiChannel.capabilities.chatTypes).toContain("group");
+  it("disables agent-side mention gating: groups.resolveRequireMention => false (L3)", () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const requireMention = plugin.groups?.resolveRequireMention?.({} as any);
+    expect(requireMention).toBe(false);
+  });
+
+  it("exposes config.resolveAccount and inspectAccount", () => {
+    expect(typeof plugin.config?.resolveAccount).toBe("function");
+    expect(typeof plugin.config?.inspectAccount).toBe("function");
+  });
+
+  it("wires security and outbound", () => {
+    expect(plugin.security).toBeDefined();
+    expect(typeof plugin.outbound?.sendText).toBe("function");
+  });
+
+  it("recognizes a Band room UUID as a direct send target (skips directory)", () => {
+    const looksLikeId = plugin.messaging?.targetResolver?.looksLikeId;
+    expect(typeof looksLikeId).toBe("function");
+    // a real Band room id (UUID) is accepted, so the shared message tool routes
+    // it straight to outbound.sendText instead of failing with "Unknown target"
+    expect(looksLikeId!("2792f9d6-7ea1-4fcf-9150-32529e336ab6")).toBe(true);
+    expect(looksLikeId!("  2792F9D6-7EA1-4FCF-9150-32529E336AB6  ")).toBe(true);
+    // non-room-id values fall through to directory resolution
+    expect(looksLikeId!("@amit.gazal")).toBe(false);
+    expect(looksLikeId!("not-a-uuid")).toBe(false);
+    expect(looksLikeId!("")).toBe(false);
+  });
+});
+
+describe("outbound adapter mapping ({ messageId } -> OutboundDeliveryResult)", () => {
+  function connectAccount(createChatMessage = vi.fn().mockResolvedValue({ id: "msg-7" })) {
+    const rest = {
+      listChatParticipants: vi.fn().mockResolvedValue([
+        { id: "agent-self", name: "AgentBot", type: "agent" },
+        { id: "u-bob", name: "Bob", type: "user" },
+      ]),
+      createChatMessage,
+    };
+    setAccount("default", {
+      link: { rest } as unknown as Parameters<typeof setAccount>[1]["link"],
+      selfAgentId: "agent-self",
+    });
+    return { rest, createChatMessage };
+  }
+
+  it("maps the messageId and adds the channel field at the adapter boundary", async () => {
+    const { createChatMessage } = connectAccount();
+    trackLastSender("default", "room-1", { senderId: "u-bob", senderName: "Bob" });
+
+    const result = await plugin.outbound!.sendText!({
+      cfg: {} as never,
+      to: "room-1",
+      text: "hello",
+      accountId: "default",
     });
 
-    it("should support threading and mentions", () => {
-      expect(thenvoiChannel.capabilities.features).toContain("threading");
-      expect(thenvoiChannel.capabilities.features).toContain("mentions");
+    expect(result).toMatchObject({ channel: BAND_CHANNEL_ID, messageId: "msg-7" });
+    expect(createChatMessage).toHaveBeenCalledWith("room-1", {
+      content: "hello",
+      mentions: [{ id: "u-bob", name: "Bob" }],
     });
   });
 
-  describe("thenvoiChannel.config", () => {
-    describe("listAccountIds", () => {
-      it("should return account IDs from config", () => {
-        const ids = thenvoiChannel.config.listAccountIds(mockPluginConfig);
-
-        expect(ids).toContain("default");
-        expect(ids).toContain("secondary");
-      });
-
-      it("should return empty array when no accounts", () => {
-        const ids = thenvoiChannel.config.listAccountIds(mockEmptyPluginConfig);
-
-        expect(ids).toEqual([]);
-      });
-    });
-
-    describe("resolveAccount", () => {
-      it("should return account config by ID", () => {
-        const account = thenvoiChannel.config.resolveAccount(
-          mockPluginConfig,
-          "default",
-        );
-
-        expect(account).toBeDefined();
-        expect(account.apiKey).toBe("test-api-key-12345");
-      });
-
-      it("should return default account when ID not specified", () => {
-        const account = thenvoiChannel.config.resolveAccount(mockPluginConfig);
-
-        expect(account.apiKey).toBe("test-api-key-12345");
-      });
-
-      it("should resolve accounts from the legacy full channel id", () => {
-        const account = thenvoiChannel.config.resolveAccount({
-          channels: {
-            "openclaw-channel-thenvoi": {
-              accounts: {
-                default: mockAccountConfig,
-              },
-            },
-          },
-        });
-
-        expect(account.apiKey).toBe("test-api-key-12345");
-      });
-
-      it("should return enabled: true for missing account", () => {
-        const account = thenvoiChannel.config.resolveAccount(
-          mockEmptyPluginConfig,
-          "unknown",
-        );
-
-        expect(account.enabled).toBe(true);
-      });
-    });
+  it("throws when the account is not connected", async () => {
+    await expect(
+      plugin.outbound!.sendText!({ cfg: {} as never, to: "room-1", text: "hi", accountId: "ghost" }),
+    ).rejects.toThrow(/not connected/i);
   });
 
-  describe("thenvoiChannel.outbound", () => {
-    it("should have direct delivery mode", () => {
-      expect(thenvoiChannel.outbound.deliveryMode).toBe("direct");
-    });
-
-    describe("sendText", () => {
-      it("should fail when target (to) not provided", async () => {
-        await expect(
-          thenvoiChannel.outbound.sendText({
-            cfg: {},
-            to: "",
-            text: "Hello",
-          })
-        ).rejects.toThrow("room_id is required");
-      });
-
-      it("should fail when link not initialized", async () => {
-        await expect(
-          thenvoiChannel.outbound.sendText({
-            cfg: {},
-            to: "room-001",
-            text: "Hello",
-          })
-        ).rejects.toThrow("not initialized");
-      });
-    });
+  it("throws (does NOT misroute) for an explicit unknown accountId even if another account is connected", async () => {
+    // Lock in the review fix: an explicit-but-unknown id must not silently fall
+    // back to the sole connected account.
+    connectAccount();
+    await expect(
+      plugin.outbound!.sendText!({ cfg: {} as never, to: "room-1", text: "hi @Bob", accountId: "ghost" }),
+    ).rejects.toThrow(/not connected/i);
   });
 
-  describe("thenvoiChannel.setup", () => {
-    describe("validateConfig", () => {
-      it("should validate correct config", async () => {
-        fetchMock = createMockFetch({ response: mockAgentMetadata });
-        globalThis.fetch = fetchMock;
-
-        const result =
-          await thenvoiChannel.setup!.validateConfig!(mockAccountConfig);
-
-        expect(result.valid).toBe(true);
-        expect(result.errors).toBeUndefined();
-      });
-
-      it("should fail for missing API key", async () => {
-        const result = await thenvoiChannel.setup!.validateConfig!({});
-
-        expect(result.valid).toBe(false);
-        expect(result.errors?.[0]).toContain("BAND_API_KEY");
-      });
-
-      it("should fail when API returns error", async () => {
-        fetchMock = createMockFetch({
-          status: 401,
-          ok: false,
-          textResponse: "Unauthorized",
-        });
-        globalThis.fetch = fetchMock;
-
-        const result =
-          await thenvoiChannel.setup!.validateConfig!(mockAccountConfig);
-
-        expect(result.valid).toBe(false);
-      });
-    });
-  });
-
-  describe("thenvoiChannel.threading", () => {
-    it("should extract threadId from message", () => {
-      const message = {
-        channelId: "band" as const,
-        threadId: "room-123",
-        senderId: "user-1",
-        senderType: "User",
-        senderName: "John",
-        text: "Hello",
-        timestamp: "2025-01-15T10:00:00Z",
-      };
-
-      const threadId = thenvoiChannel.threading!.extractThreadId(message);
-
-      expect(threadId).toBe("room-123");
+  it("falls back to the sole connected account for cross-context sends (no accountId)", async () => {
+    // Cross-context sends (e.g. from a Telegram session) carry no Band accountId;
+    // the account is keyed by its configured id, not "default" — resolve the
+    // single connected account instead of failing with 'account "default" ...'.
+    const rest = {
+      listChatParticipants: vi.fn().mockResolvedValue([
+        { id: "agent-self", name: "AgentBot", type: "agent" },
+        { id: "u-bob", name: "Bob", type: "user" },
+      ]),
+      createChatMessage: vi.fn().mockResolvedValue({ id: "msg-9" }),
+    };
+    setAccount("band-openclaw-accounr-id", {
+      link: { rest } as unknown as Parameters<typeof setAccount>[1]["link"],
+      selfAgentId: "agent-self",
     });
 
-    it("should format thread context", () => {
-      const context = thenvoiChannel.threading!.formatThreadContext!("room-123");
-
-      expect(context).toContain("room-123");
-      expect(context).toContain("Thenvoi");
-    });
-  });
-
-  describe("registerChannel", () => {
-    it("should call api.registerChannel", () => {
-      const mockApi = {
-        registerChannel: vi.fn(),
-      };
-
-      registerChannel(mockApi);
-
-      expect(mockApi.registerChannel).toHaveBeenCalledWith({
-        plugin: thenvoiChannel,
-      });
-    });
-  });
-
-  describe("setInboundCallback", () => {
-    it("should set the callback", () => {
-      const callback = vi.fn();
-
-      // Should not throw
-      expect(() => setInboundCallback(callback)).not.toThrow();
-    });
-  });
-
-  describe("getLink / getAgentId", () => {
-    it("should return undefined when not started", () => {
-      expect(getLink("nonexistent")).toBeUndefined();
-      expect(getAgentId("nonexistent")).toBeUndefined();
+    const result = await plugin.outbound!.sendText!({
+      cfg: {} as never,
+      to: "room-1",
+      text: "hi @Bob",
+      accountId: null,
     });
 
-    it("should use default account ID", () => {
-      expect(getLink()).toBeUndefined();
-      expect(getAgentId()).toBeUndefined();
-    });
+    expect(result).toMatchObject({ channel: BAND_CHANNEL_ID, messageId: "msg-9" });
+    expect(rest.createChatMessage).toHaveBeenCalled();
   });
 });
