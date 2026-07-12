@@ -29,6 +29,7 @@ import type {
   ChannelGatewayContext,
 } from "openclaw/plugin-sdk/channel-runtime";
 import { resolveConnectionConfig, type BandAccountConfig } from "./config.js";
+import { createProcessedStore as createDefaultProcessedStore, type ProcessedStore } from "./processed-store.js";
 import {
   setAccount,
   deleteAccount,
@@ -140,6 +141,12 @@ interface LinkLike {
     [k: string]: unknown;
   };
   markProcessed?: (roomId: string, messageId: string, opts?: { bestEffort?: boolean }) => Promise<unknown>;
+  /**
+   * Band's message status is a state machine (sent -> processing -> processed);
+   * `markProcessed` 422s if called directly from `sent` without first going
+   * through `processing`. Required before `markProcessed` (see onExecute).
+   */
+  markProcessing?: (roomId: string, messageId: string, opts?: { bestEffort?: boolean }) => Promise<unknown>;
 }
 
 interface RuntimeLike {
@@ -175,6 +182,12 @@ export interface BandGatewayDeps {
   dispatch?: (params: DispatchParams) => Promise<void>;
   runLifecycle?: (params: { abortSignal: AbortSignal; start: () => Promise<void>; stop: () => Promise<void> }) => Promise<void>;
   log?: (msg: string) => void;
+  /**
+   * Build the per-account dedup guard (see processed-store.ts) that stands in
+   * for Band's unreliable server-side markProcessed cursor. Injectable so
+   * tests use an in-memory fake instead of touching the real filesystem.
+   */
+  createProcessedStore?: (accountId: string, stateDir: string | undefined) => ProcessedStore;
 }
 
 /**
@@ -270,7 +283,16 @@ function defaultDispatch(deps: Required<Pick<BandGatewayDeps, "log">>): (p: Disp
  */
 export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAdapter<BandAccountConfig> {
   const log = deps.log ?? ((msg: string) => console.log(msg));
-  const createLink = deps.createLink ?? ((conn) => new ThenvoiLink(conn) as unknown as LinkLike);
+  // The SDK defaults to a NoopLogger, which silently swallows internal warnings
+  // (e.g. a best-effort markProcessed failure) that are critical to diagnosing
+  // backlog drain issues. Forward them into the plugin's own observable log.
+  const sdkLogger = {
+    debug: (msg: string, ctx?: Record<string, unknown>) => log(`[band:sdk] ${msg}${ctx ? ` ${JSON.stringify(ctx)}` : ""}`),
+    info: (msg: string, ctx?: Record<string, unknown>) => log(`[band:sdk] ${msg}${ctx ? ` ${JSON.stringify(ctx)}` : ""}`),
+    warn: (msg: string, ctx?: Record<string, unknown>) => log(`[band:sdk][warn] ${msg}${ctx ? ` ${JSON.stringify(ctx)}` : ""}`),
+    error: (msg: string, ctx?: Record<string, unknown>) => log(`[band:sdk][error] ${msg}${ctx ? ` ${JSON.stringify(ctx)}` : ""}`),
+  };
+  const createLink = deps.createLink ?? ((conn) => new ThenvoiLink({ ...conn, logger: sdkLogger }) as unknown as LinkLike);
   const createRuntime =
     deps.createRuntime ??
     ((link, opts) => new AgentRuntime(buildRuntimeOptions(link, opts) as never) as unknown as RuntimeLike);
@@ -282,6 +304,8 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
         rest: link.rest as never,
       }) as unknown as { handle: (event: ContactEvent) => Promise<unknown> });
   const dispatch = deps.dispatch ?? defaultDispatch({ log });
+  const createProcessedStore =
+    deps.createProcessedStore ?? ((accountId, stateDir) => createDefaultProcessedStore(accountId, stateDir, log));
 
   async function teardown(accountId: string): Promise<void> {
     const account = getAccount(accountId);
@@ -324,6 +348,7 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
       const ownerUuid = me.ownerUuid ?? null;
 
       const contactHandler = createContactHandler(link);
+      const processedStore = createProcessedStore(accountId, ctx.account.stateDir);
 
       // Same failure class HIGH-1 fixed for onExecute: a throw here would propagate
       // through AgentRuntime's consumeLoop and abort the whole account's live loop.
@@ -348,6 +373,30 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
         log(`[band:${accountId}] fatal runtime error (room=${event.roomId ?? "?"}): ${String(error)}`);
       };
 
+      // Band's message status is a state machine (sent -> processing -> processed);
+      // markProcessed 422s if called directly from "sent" without going through
+      // "processing" first (INT-876 root cause: onExecute previously only called
+      // markProcessed, so the ack always failed, the server-side cursor never
+      // advanced, and every reconnect's backlog drain got stuck re-redelivering
+      // the same oldest message — starving anything sent after it). Both calls
+      // are best-effort: a failure here must never block the room's next message.
+      async function markRoomMessageHandled(roomId: string, messageId: string): Promise<void> {
+        if (link.markProcessing) {
+          try {
+            await link.markProcessing(roomId, messageId, { bestEffort: true });
+          } catch (err) {
+            log(`[band:${accountId}] markProcessing failed (room=${roomId}, msg=${messageId}): ${String(err)}`);
+          }
+        }
+        if (link.markProcessed) {
+          try {
+            await link.markProcessed(roomId, messageId, { bestEffort: true });
+          } catch (err) {
+            log(`[band:${accountId}] markProcessed failed (room=${roomId}, msg=${messageId}): ${String(err)}`);
+          }
+        }
+      }
+
       // Per HIGH-1: `onExecute` must be TOTAL (never throw) — `Execution.executeEvent`
       // rethrows, which aborts the *whole account's* live-event consume loop. Everything
       // in the original `presence.onRoomEvent` body is wrapped in one top-level try/catch.
@@ -356,6 +405,19 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
           if (event.type !== "message_created") return;
           const roomId = event.roomId ?? event.payload.chat_room_id;
           if (!roomId) return;
+
+          // Guard against re-dispatching (and re-answering) a message we've
+          // already handled, using our own persisted record rather than trusting
+          // the remote ack. Still (re-)attempt the processing/processed
+          // transition: an older redelivered message may be the queue's stuck
+          // head, and unblocking it is what lets later messages in the same
+          // room surface at all.
+          const messageId = event.payload.id;
+          if (messageId && processedStore.has(messageId)) {
+            log(`[band:${accountId}] skipping already-processed message ${messageId} (room=${roomId})`);
+            await markRoomMessageHandled(roomId, messageId);
+            return;
+          }
 
           const roomType = getRoomType(accountId, roomId);
           if (roomType === undefined) {
@@ -394,15 +456,17 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
             log(`[band:${accountId}] dispatch failed (room=${roomId}): ${String(err)}`);
           }
 
-          // Mark processed (best effort, but observable — per MEDIUM: a persistently
-          // failing markProcessed means every reconnect re-drains + re-dispatches the
-          // backlog, so a stuck cursor must be logged, not silently swallowed).
-          const messageId = event.payload.id;
-          if (messageId && link.markProcessed) {
+          if (messageId) {
+            await markRoomMessageHandled(roomId, messageId);
+          }
+
+          // Record locally regardless of the remote ack's outcome — this is the
+          // guard that actually prevents redelivery-driven duplicate replies.
+          if (messageId) {
             try {
-              await link.markProcessed(roomId, messageId, { bestEffort: true });
+              await processedStore.markProcessed(messageId);
             } catch (err) {
-              log(`[band:${accountId}] markProcessed failed (room=${roomId}, msg=${messageId}): ${String(err)}`);
+              log(`[band:${accountId}] failed to persist processed marker (room=${roomId}, msg=${messageId}): ${String(err)}`);
             }
           }
         } catch (err) {

@@ -197,6 +197,7 @@ function makeLink(overrides: Record<string, unknown> = {}) {
     agentId: "agent-self",
     connect: vi.fn().mockResolvedValue(undefined),
     disconnect: vi.fn().mockResolvedValue(undefined),
+    markProcessing: vi.fn().mockResolvedValue(undefined),
     markProcessed: vi.fn().mockResolvedValue(undefined),
     rest: { getAgentMe: vi.fn().mockResolvedValue({ id: "agent-self", ownerUuid: "owner-1" }) },
     ...overrides,
@@ -239,6 +240,18 @@ function makeCtx(account: Record<string, unknown> = { apiKey: "k", agentId: "a" 
   };
 }
 
+/** In-memory fake so tests never touch the real filesystem, and each test gets
+ * an isolated store instead of sharing on-disk state across test runs. */
+function makeFakeProcessedStore() {
+  const seen = new Set<string>();
+  return {
+    has: (messageId: string) => seen.has(messageId),
+    markProcessed: async (messageId: string) => {
+      seen.add(messageId);
+    },
+  };
+}
+
 function deps(extra: Record<string, unknown> = {}) {
   const link = makeLink();
   const runtime = makeRuntime();
@@ -251,6 +264,7 @@ function deps(extra: Record<string, unknown> = {}) {
     log,
     base: {
       createLink: () => link,
+      createProcessedStore: () => makeFakeProcessedStore(),
       createRuntime: (_l: unknown, opts: typeof runtime.opts) => {
         runtime.opts = opts;
         return runtime;
@@ -340,7 +354,7 @@ describe("gateway lifecycle", () => {
     await p;
   });
 
-  it("onExecute dispatch-routing: a text message is mapped and routed to dispatch; markProcessed best-effort", async () => {
+  it("onExecute dispatch-routing: a text message is mapped and routed to dispatch; markProcessing then markProcessed, best-effort", async () => {
     const d = deps();
     const gw = createBandGateway(d.base);
     const { ctx, controller } = makeCtx();
@@ -355,7 +369,41 @@ describe("gateway lifecycle", () => {
     const arg = d.dispatch.mock.calls[0][0] as { roomId: string; ctx: { To?: string } };
     expect(arg.roomId).toBe("room-1");
     expect(arg.ctx.To).toBe("room-1");
+    // Band's message status is sent -> processing -> processed; markProcessed alone
+    // 422s (INT-876 root cause), so markProcessing must be called first.
+    expect(d.link.markProcessing).toHaveBeenCalledWith("room-1", "msg-1", { bestEffort: true });
     expect(d.link.markProcessed).toHaveBeenCalledWith("room-1", "msg-1", { bestEffort: true });
+    const processingOrder = d.link.markProcessing.mock.invocationCallOrder[0];
+    const processedOrder = d.link.markProcessed.mock.invocationCallOrder[0];
+    expect(processingOrder).toBeLessThan(processedOrder);
+
+    controller.abort();
+    await p;
+  });
+
+  it("INT-876 dedup: a redelivered already-processed message is skipped (no re-dispatch, no re-reply)", async () => {
+    const d = deps();
+    const gw = createBandGateway(d.base);
+    const { ctx, controller } = makeCtx();
+    const p = gw.startAccount!(ctx);
+    await new Promise((r) => setTimeout(r, 0));
+
+    cacheRoomType("default", "room-1", "group");
+    // First delivery: dispatched and recorded as processed.
+    await d.runtime.opts!.onExecute({}, msgEvent());
+    expect(d.dispatch).toHaveBeenCalledOnce();
+
+    // A room whose oldest message never got the processing->processed transition
+    // (e.g. an older openclaw build, or a transient failure) can redeliver the
+    // SAME message id on a later reconnect. The local dedup guard must catch it
+    // even though the remote ack "succeeded" in this fake (proving the guard
+    // doesn't depend on that ack) — but it must still (re-)attempt the mark
+    // calls, since an older/real stuck message is exactly what needs unblocking.
+    await d.runtime.opts!.onExecute({}, msgEvent());
+    expect(d.dispatch).toHaveBeenCalledOnce(); // still just once
+    expect(d.log).toHaveBeenCalledWith(expect.stringMatching(/skipping already-processed message msg-1/));
+    expect(d.link.markProcessing).toHaveBeenCalledTimes(2);
+    expect(d.link.markProcessed).toHaveBeenCalledTimes(2);
 
     controller.abort();
     await p;
@@ -563,6 +611,7 @@ describe("real AgentRuntime integration (INT-876: backlog drain on connect)", ()
     const gw = createBandGateway({
       createLink: () => link as never,
       createContactHandler: () => ({ handle: vi.fn().mockResolvedValue(undefined) }),
+      createProcessedStore: () => makeFakeProcessedStore(),
       dispatch,
       runLifecycle: ({ abortSignal, stop }) =>
         new Promise<void>((resolve) => {
