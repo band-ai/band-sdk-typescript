@@ -1,10 +1,14 @@
 /**
  * Band transport layer.
  *
- * This file owns the WebSocket connection lifecycle (ThenvoiLink + RoomPresence)
+ * This file owns the WebSocket connection lifecycle (ThenvoiLink + AgentRuntime)
  * and turns inbound Band platform events into OpenClaw inbound contexts that are
  * dispatched to core. The pure event->context mapping is split out as a testable
  * function; the live lifecycle (startAccount/stopAccount) is wired separately.
+ *
+ * Per INT-876: `AgentRuntime` (one `Execution` per room) replaces the bare
+ * `RoomPresence`, so messages sent while disconnected are drained from the REST
+ * backlog on (re)connect instead of being silently dropped — see PLAN-INT-876.md.
  *
  * Key INT-836 invariants encoded here (see REWRITE_PLAN D5/L2/F2):
  *  - the `[Band Room: <id>]` marker is a SUFFIX on the model-visible Body only;
@@ -16,7 +20,7 @@
 
 import type { PlatformEvent, ContactEvent } from "@thenvoi/sdk";
 import { ThenvoiLink } from "@thenvoi/sdk";
-import { RoomPresence, ContactEventHandler } from "@thenvoi/sdk/runtime";
+import { AgentRuntime, ContactEventHandler } from "@thenvoi/sdk/runtime";
 import type { MsgContext } from "openclaw/plugin-sdk/reply-runtime";
 import { dispatchInboundMessageWithBufferedDispatcher } from "openclaw/plugin-sdk/reply-runtime";
 import { runPassiveAccountLifecycle } from "openclaw/plugin-sdk/channel-lifecycle";
@@ -138,14 +142,14 @@ interface LinkLike {
   markProcessed?: (roomId: string, messageId: string, opts?: { bestEffort?: boolean }) => Promise<unknown>;
 }
 
-interface PresenceLike {
-  onRoomJoined?: (roomId: string, payload: Record<string, unknown>) => unknown;
-  onRoomLeft?: (roomId: string) => unknown;
-  onRoomEvent?: (roomId: string, event: PlatformEvent) => unknown;
-  onContactEvent?: (event: ContactEvent) => unknown;
+interface RuntimeLike {
   start: () => Promise<unknown>;
-  stop: () => Promise<unknown>;
+  stop: (timeoutMs?: number) => Promise<unknown>;
 }
+
+/** Finite teardown timeout for `runtime.stop()` (HIGH-2): an in-flight dispatch
+ * awaiting the model must not be able to hang shutdown/restart indefinitely. */
+const STOP_TIMEOUT_MS = 5_000;
 
 interface DispatchParams {
   ctx: MsgContext;
@@ -157,11 +161,48 @@ interface DispatchParams {
 /** Injectable dependencies (defaults use the real SDK + openclaw runtime). */
 export interface BandGatewayDeps {
   createLink?: (conn: { agentId: string; apiKey: string; wsUrl: string; restUrl: string }) => LinkLike;
-  createPresence?: (link: LinkLike) => PresenceLike;
+  createRuntime?: (
+    link: LinkLike,
+    opts: {
+      agentId: string;
+      onExecute: (context: unknown, event: PlatformEvent) => Promise<void>;
+      onRoomJoined?: (roomId: string, payload: Record<string, unknown>) => unknown;
+      onContactEvent?: (event: ContactEvent) => Promise<void>;
+      onError?: (error: unknown, event: PlatformEvent) => void;
+    },
+  ) => RuntimeLike;
   createContactHandler?: (link: LinkLike) => { handle: (event: ContactEvent) => Promise<unknown> };
   dispatch?: (params: DispatchParams) => Promise<void>;
   runLifecycle?: (params: { abortSignal: AbortSignal; start: () => Promise<void>; stop: () => Promise<void> }) => Promise<void>;
   log?: (msg: string) => void;
+}
+
+/**
+ * Build the plain options object passed to `new AgentRuntime(...)`. Pulled out
+ * as a pure, directly-testable function (mirrors `platformEventToInboundContext`/
+ * `createReplyDeliver`) so the `autoSubscribeExistingRooms` wiring (the actual
+ * INT-876 fix) and the callback plumbing can be asserted without constructing a
+ * real runtime.
+ */
+export function buildRuntimeOptions(
+  link: LinkLike,
+  opts: {
+    agentId: string;
+    onExecute: (context: unknown, event: PlatformEvent) => Promise<void>;
+    onRoomJoined?: (roomId: string, payload: Record<string, unknown>) => unknown;
+    onContactEvent?: (event: ContactEvent) => Promise<void>;
+    onError?: (error: unknown, event: PlatformEvent) => void;
+  },
+) {
+  return {
+    link: link as never,
+    agentId: opts.agentId,
+    onExecute: opts.onExecute as never,
+    onRoomJoined: opts.onRoomJoined,
+    onContactEvent: opts.onContactEvent,
+    onError: opts.onError,
+    agentConfig: { autoSubscribeExistingRooms: true },
+  };
 }
 
 // Module-scoped race guard: which accounts are mid-start.
@@ -230,9 +271,9 @@ function defaultDispatch(deps: Required<Pick<BandGatewayDeps, "log">>): (p: Disp
 export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAdapter<BandAccountConfig> {
   const log = deps.log ?? ((msg: string) => console.log(msg));
   const createLink = deps.createLink ?? ((conn) => new ThenvoiLink(conn) as unknown as LinkLike);
-  const createPresence =
-    deps.createPresence ??
-    ((link) => new RoomPresence({ link: link as never, autoSubscribeExistingRooms: true }) as unknown as PresenceLike);
+  const createRuntime =
+    deps.createRuntime ??
+    ((link, opts) => new AgentRuntime(buildRuntimeOptions(link, opts) as never) as unknown as RuntimeLike);
   const createContactHandler =
     deps.createContactHandler ??
     ((link) =>
@@ -245,9 +286,9 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
   async function teardown(accountId: string): Promise<void> {
     const account = getAccount(accountId);
     if (!account) return;
-    const presence = account.presence as PresenceLike | undefined;
+    const runtime = account.runtime as RuntimeLike | undefined;
     try {
-      if (presence) await presence.stop();
+      if (runtime) await runtime.stop(STOP_TIMEOUT_MS);
     } finally {
       try {
         await account.link.disconnect();
@@ -282,68 +323,20 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
       const selfAgentId = me.id ?? link.agentId;
       const ownerUuid = me.ownerUuid ?? null;
 
-      const presence = createPresence(link);
       const contactHandler = createContactHandler(link);
 
-      presence.onRoomJoined = (roomId, payload) => {
-        const type = typeof payload?.type === "string" ? payload.type : undefined;
-        if (type) cacheRoomType(accountId, roomId, type);
-      };
-
-      presence.onRoomEvent = async (_roomId, event) => {
-        if (event.type !== "message_created") return;
-        const roomId = event.roomId ?? event.payload.chat_room_id;
-        if (!roomId) return;
-
-        const roomType = getRoomType(accountId, roomId);
-        if (roomType === undefined) {
-          log(`[band:${accountId}] room ${roomId} has no cached type; defaulting ChatType to 'group'`);
-        }
-
-        // Fetch participants so the inbound body can rewrite `@[[uuid]]` tokens to
-        // handles and carry a roster. Best-effort: an empty roster on failure
-        // degrades to the prior behaviour (raw content), never blocks dispatch.
-        let participants: MentionParticipant[] = [];
+      // Same failure class HIGH-1 fixed for onExecute: a throw here would propagate
+      // through AgentRuntime's consumeLoop and abort the whole account's live loop.
+      const onRoomJoined = (roomId: string, payload: Record<string, unknown>) => {
         try {
-          const list = (await link.rest.listChatParticipants?.(roomId)) ?? [];
-          participants = list.map((p) => ({ id: p.id, name: p.name, handle: p.handle }));
+          const type = typeof payload?.type === "string" ? payload.type : undefined;
+          if (type) cacheRoomType(accountId, roomId, type);
         } catch (err) {
-          log(`[band:${accountId}] could not list participants (room=${roomId}): ${String(err)}`);
-        }
-
-        const msgCtx = platformEventToInboundContext(event, {
-          selfAgentId,
-          ownerUuid,
-          roomType,
-          participants,
-        });
-        if (!msgCtx) return; // self-authored / non-text skip
-
-        if (event.payload.sender_id && event.payload.sender_name) {
-          trackLastSender(accountId, roomId, {
-            senderId: event.payload.sender_id,
-            senderName: event.payload.sender_name,
-          });
-        }
-
-        try {
-          await dispatch({ ctx: msgCtx, cfg: ctx.cfg, roomId, accountId });
-        } catch (err) {
-          log(`[band:${accountId}] dispatch failed (room=${roomId}): ${String(err)}`);
-        }
-
-        // Mark processed (best effort — never throw out of the handler).
-        const messageId = event.payload.id;
-        if (messageId && link.markProcessed) {
-          try {
-            await link.markProcessed(roomId, messageId, { bestEffort: true });
-          } catch {
-            /* best effort */
-          }
+          log(`[band:${accountId}] onRoomJoined failed (room=${roomId}): ${String(err)}`);
         }
       };
 
-      presence.onContactEvent = async (event) => {
+      const onContactEvent = async (event: ContactEvent) => {
         try {
           await contactHandler.handle(event);
         } catch (err) {
@@ -351,9 +344,77 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
         }
       };
 
-      setAccount(accountId, { link: link as never, selfAgentId, ownerUuid, presence: presence as never });
+      const onError = (error: unknown, event: PlatformEvent) => {
+        log(`[band:${accountId}] fatal runtime error (room=${event.roomId ?? "?"}): ${String(error)}`);
+      };
 
-      await presence.start();
+      // Per HIGH-1: `onExecute` must be TOTAL (never throw) — `Execution.executeEvent`
+      // rethrows, which aborts the *whole account's* live-event consume loop. Everything
+      // in the original `presence.onRoomEvent` body is wrapped in one top-level try/catch.
+      async function onExecute(_context: unknown, event: PlatformEvent): Promise<void> {
+        try {
+          if (event.type !== "message_created") return;
+          const roomId = event.roomId ?? event.payload.chat_room_id;
+          if (!roomId) return;
+
+          const roomType = getRoomType(accountId, roomId);
+          if (roomType === undefined) {
+            log(`[band:${accountId}] room ${roomId} has no cached type; defaulting ChatType to 'group'`);
+          }
+
+          // Fetch participants so the inbound body can rewrite `@[[uuid]]` tokens to
+          // handles and carry a roster. Best-effort: an empty roster on failure
+          // degrades to the prior behaviour (raw content), never blocks dispatch.
+          let participants: MentionParticipant[] = [];
+          try {
+            const list = (await link.rest.listChatParticipants?.(roomId)) ?? [];
+            participants = list.map((p) => ({ id: p.id, name: p.name, handle: p.handle }));
+          } catch (err) {
+            log(`[band:${accountId}] could not list participants (room=${roomId}): ${String(err)}`);
+          }
+
+          const msgCtx = platformEventToInboundContext(event, {
+            selfAgentId,
+            ownerUuid,
+            roomType,
+            participants,
+          });
+          if (!msgCtx) return; // self-authored / non-text skip
+
+          if (event.payload.sender_id && event.payload.sender_name) {
+            trackLastSender(accountId, roomId, {
+              senderId: event.payload.sender_id,
+              senderName: event.payload.sender_name,
+            });
+          }
+
+          try {
+            await dispatch({ ctx: msgCtx, cfg: ctx.cfg, roomId, accountId });
+          } catch (err) {
+            log(`[band:${accountId}] dispatch failed (room=${roomId}): ${String(err)}`);
+          }
+
+          // Mark processed (best effort, but observable — per MEDIUM: a persistently
+          // failing markProcessed means every reconnect re-drains + re-dispatches the
+          // backlog, so a stuck cursor must be logged, not silently swallowed).
+          const messageId = event.payload.id;
+          if (messageId && link.markProcessed) {
+            try {
+              await link.markProcessed(roomId, messageId, { bestEffort: true });
+            } catch (err) {
+              log(`[band:${accountId}] markProcessed failed (room=${roomId}, msg=${messageId}): ${String(err)}`);
+            }
+          }
+        } catch (err) {
+          log(`[band:${accountId}] onExecute failed (room=${event.roomId ?? "?"}): ${String(err)}`);
+        }
+      }
+
+      const runtime = createRuntime(link, { agentId: selfAgentId, onExecute, onRoomJoined, onContactEvent, onError });
+
+      setAccount(accountId, { link: link as never, selfAgentId, ownerUuid, runtime: runtime as never });
+
+      await runtime.start();
       log(`[band:${accountId}] connected to Band`);
 
       // Hold the account open for its lifetime; tear down on abort.
