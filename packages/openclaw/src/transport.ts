@@ -285,10 +285,12 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
   const log = deps.log ?? ((msg: string) => console.log(msg));
   // The SDK defaults to a NoopLogger, which silently swallows internal warnings
   // (e.g. a best-effort markProcessed failure) that are critical to diagnosing
-  // backlog drain issues. Forward them into the plugin's own observable log.
+  // backlog drain issues. Forward warn/error into the plugin's own observable
+  // log; debug/info is per-topic-join connection chatter with no diagnostic
+  // value here, so it's dropped rather than spamming the account's log.
   const sdkLogger = {
-    debug: (msg: string, ctx?: Record<string, unknown>) => log(`[band:sdk] ${msg}${ctx ? ` ${JSON.stringify(ctx)}` : ""}`),
-    info: (msg: string, ctx?: Record<string, unknown>) => log(`[band:sdk] ${msg}${ctx ? ` ${JSON.stringify(ctx)}` : ""}`),
+    debug: () => {},
+    info: () => {},
     warn: (msg: string, ctx?: Record<string, unknown>) => log(`[band:sdk][warn] ${msg}${ctx ? ` ${JSON.stringify(ctx)}` : ""}`),
     error: (msg: string, ctx?: Record<string, unknown>) => log(`[band:sdk][error] ${msg}${ctx ? ` ${JSON.stringify(ctx)}` : ""}`),
   };
