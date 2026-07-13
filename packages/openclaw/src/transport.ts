@@ -23,7 +23,7 @@ import type {
   ChannelGatewayAdapter,
   ChannelGatewayContext,
 } from "openclaw/plugin-sdk/channel-runtime";
-import { resolveConnectionConfig, type BandAccountConfig } from "./config.js";
+import { resolveConnectionConfig, DEFAULT_STOP_TIMEOUT_MS, type BandAccountConfig } from "./config.js";
 import {
   setAccount,
   deleteAccount,
@@ -137,9 +137,6 @@ interface RuntimeLike {
   start: () => Promise<unknown>;
   stop: (timeoutMs?: number) => Promise<unknown>;
 }
-
-/** Bounds `runtime.stop()` so an in-flight dispatch can't hang shutdown/restart. */
-const STOP_TIMEOUT_MS = 5_000;
 
 interface DispatchParams {
   ctx: MsgContext;
@@ -265,7 +262,7 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
     if (!account) return;
     const runtime = account.runtime as RuntimeLike | undefined;
     try {
-      if (runtime) await runtime.stop(STOP_TIMEOUT_MS);
+      if (runtime) await runtime.stop(account.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS);
     } finally {
       try {
         await account.link.disconnect();
@@ -326,22 +323,74 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
       };
 
       // Band's message status is sent -> processing -> processed; markProcessing
-      // must be called before markProcessed. Both are best-effort: a failure here
-      // must never block the room's next message.
+      // must be called before markProcessed. Not bestEffort: we want a REST
+      // failure here to surface (via the catch below) rather than be silently
+      // swallowed by ThenvoiLink's no-op logger, since a message that never
+      // gets marked processed is redelivered from the backlog.
       async function markRoomMessageHandled(roomId: string, messageId: string): Promise<void> {
         if (link.markProcessing) {
           try {
-            await link.markProcessing(roomId, messageId, { bestEffort: true });
+            await link.markProcessing(roomId, messageId);
           } catch (err) {
             log(`[band:${accountId}] markProcessing failed (room=${roomId}, msg=${messageId}): ${String(err)}`);
           }
         }
         if (link.markProcessed) {
           try {
-            await link.markProcessed(roomId, messageId, { bestEffort: true });
+            await link.markProcessed(roomId, messageId);
           } catch (err) {
             log(`[band:${accountId}] markProcessed failed (room=${roomId}, msg=${messageId}): ${String(err)}`);
           }
+        }
+      }
+
+      /** Filter + build the inbound context for a platform event; null means skip. */
+      async function prepareInboundMessage(event: PlatformEvent): Promise<{
+        ctx: MsgContext;
+        roomId: string;
+        messageId: string | undefined;
+      } | null> {
+        if (event.type !== "message_created") return null;
+        const roomId = event.roomId ?? event.payload.chat_room_id;
+        if (!roomId) return null;
+
+        const roomType = getRoomType(accountId, roomId);
+        if (roomType === undefined) {
+          log(`[band:${accountId}] room ${roomId} has no cached type; defaulting ChatType to 'group'`);
+        }
+
+        // Best-effort: an empty roster on failure degrades to raw content.
+        let participants: MentionParticipant[] = [];
+        try {
+          const list = (await link.rest.listChatParticipants?.(roomId)) ?? [];
+          participants = list.map((p) => ({ id: p.id, name: p.name, handle: p.handle }));
+        } catch (err) {
+          log(`[band:${accountId}] could not list participants (room=${roomId}): ${String(err)}`);
+        }
+
+        const ctx = platformEventToInboundContext(event, {
+          selfAgentId,
+          ownerUuid,
+          roomType,
+          participants,
+        });
+        if (!ctx) return null; // self-authored / non-text skip
+
+        if (event.payload.sender_id && event.payload.sender_name) {
+          trackLastSender(accountId, roomId, {
+            senderId: event.payload.sender_id,
+            senderName: event.payload.sender_name,
+          });
+        }
+
+        return { ctx, roomId, messageId: event.payload.id };
+      }
+
+      async function dispatchInbound(roomId: string, msgCtx: MsgContext): Promise<void> {
+        try {
+          await dispatch({ ctx: msgCtx, cfg: ctx.cfg, roomId, accountId });
+        } catch (err) {
+          log(`[band:${accountId}] dispatch failed (room=${roomId}): ${String(err)}`);
         }
       }
 
@@ -349,48 +398,13 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
       // whole account's live-event consume loop.
       async function onExecute(_context: unknown, event: PlatformEvent): Promise<void> {
         try {
-          if (event.type !== "message_created") return;
-          const roomId = event.roomId ?? event.payload.chat_room_id;
-          if (!roomId) return;
+          const inbound = await prepareInboundMessage(event);
+          if (!inbound) return;
 
-          const messageId = event.payload.id;
-          const roomType = getRoomType(accountId, roomId);
-          if (roomType === undefined) {
-            log(`[band:${accountId}] room ${roomId} has no cached type; defaulting ChatType to 'group'`);
-          }
+          await dispatchInbound(inbound.roomId, inbound.ctx);
 
-          // Best-effort: an empty roster on failure degrades to raw content.
-          let participants: MentionParticipant[] = [];
-          try {
-            const list = (await link.rest.listChatParticipants?.(roomId)) ?? [];
-            participants = list.map((p) => ({ id: p.id, name: p.name, handle: p.handle }));
-          } catch (err) {
-            log(`[band:${accountId}] could not list participants (room=${roomId}): ${String(err)}`);
-          }
-
-          const msgCtx = platformEventToInboundContext(event, {
-            selfAgentId,
-            ownerUuid,
-            roomType,
-            participants,
-          });
-          if (!msgCtx) return; // self-authored / non-text skip
-
-          if (event.payload.sender_id && event.payload.sender_name) {
-            trackLastSender(accountId, roomId, {
-              senderId: event.payload.sender_id,
-              senderName: event.payload.sender_name,
-            });
-          }
-
-          try {
-            await dispatch({ ctx: msgCtx, cfg: ctx.cfg, roomId, accountId });
-          } catch (err) {
-            log(`[band:${accountId}] dispatch failed (room=${roomId}): ${String(err)}`);
-          }
-
-          if (messageId) {
-            await markRoomMessageHandled(roomId, messageId);
+          if (inbound.messageId) {
+            await markRoomMessageHandled(inbound.roomId, inbound.messageId);
           }
         } catch (err) {
           log(`[band:${accountId}] onExecute failed (room=${event.roomId ?? "?"}): ${String(err)}`);
@@ -399,7 +413,13 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
 
       const runtime = createRuntime(link, { agentId: selfAgentId, onExecute, onRoomJoined, onContactEvent, onError });
 
-      setAccount(accountId, { link: link as never, selfAgentId, ownerUuid, runtime: runtime as never });
+      setAccount(accountId, {
+        link: link as never,
+        selfAgentId,
+        ownerUuid,
+        runtime: runtime as never,
+        stopTimeoutMs: ctx.account.stopTimeoutMs,
+      });
 
       await runtime.start();
       log(`[band:${accountId}] connected to Band`);

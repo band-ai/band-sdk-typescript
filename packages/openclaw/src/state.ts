@@ -20,6 +20,8 @@ export interface AccountState {
   ownerUuid?: string | null;
   /** The AgentRuntime instance (opaque here), so teardown can stop it. */
   runtime?: unknown;
+  /** Bounds `runtime.stop()` on teardown/restart. */
+  stopTimeoutMs?: number;
   /** roomId -> room type (populated from onRoomJoined; drives L2 ChatType). */
   roomTypes: Map<string, string>;
   /** roomId -> last sender (LRU; auto-mention fallback). */

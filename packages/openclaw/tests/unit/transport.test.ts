@@ -340,7 +340,7 @@ describe("gateway lifecycle", () => {
     await p;
   });
 
-  it("onExecute dispatch-routing: a text message is mapped and routed to dispatch; markProcessing then markProcessed, best-effort", async () => {
+  it("onExecute dispatch-routing: a text message is mapped and routed to dispatch; markProcessing then markProcessed", async () => {
     const d = deps();
     const gw = createBandGateway(d.base);
     const { ctx, controller } = makeCtx();
@@ -357,8 +357,8 @@ describe("gateway lifecycle", () => {
     expect(arg.ctx.To).toBe("room-1");
     // Band's message status is sent -> processing -> processed; markProcessed alone
     // 422s, so markProcessing must be called first.
-    expect(d.link.markProcessing).toHaveBeenCalledWith("room-1", "msg-1", { bestEffort: true });
-    expect(d.link.markProcessed).toHaveBeenCalledWith("room-1", "msg-1", { bestEffort: true });
+    expect(d.link.markProcessing).toHaveBeenCalledWith("room-1", "msg-1");
+    expect(d.link.markProcessed).toHaveBeenCalledWith("room-1", "msg-1");
     const processingOrder = d.link.markProcessing.mock.invocationCallOrder[0];
     const processedOrder = d.link.markProcessed.mock.invocationCallOrder[0];
     expect(processingOrder).toBeLessThan(processedOrder);

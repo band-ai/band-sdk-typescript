@@ -26,7 +26,11 @@ export interface BandAccountConfig {
   restUrl?: string;
   /** Directory for persisted state (e.g. the F1 hub id). */
   stateDir?: string;
+  /** Bounds `runtime.stop()` on teardown/restart (default 30s, matching the SDK's graceful-shutdown convention). */
+  stopTimeoutMs?: number;
 }
+
+export const DEFAULT_STOP_TIMEOUT_MS = 30_000;
 
 type AccountsMap = Record<string, BandAccountConfig>;
 
