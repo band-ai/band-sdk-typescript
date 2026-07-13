@@ -1,16 +1,11 @@
 /**
- * Band transport layer.
+ * Band transport layer: owns the WebSocket connection lifecycle (ThenvoiLink +
+ * AgentRuntime) and turns inbound Band platform events into OpenClaw inbound
+ * contexts dispatched to core. `AgentRuntime` (one `Execution` per room) drains
+ * the REST backlog on (re)connect, so messages sent while disconnected aren't
+ * silently dropped.
  *
- * This file owns the WebSocket connection lifecycle (ThenvoiLink + AgentRuntime)
- * and turns inbound Band platform events into OpenClaw inbound contexts that are
- * dispatched to core. The pure event->context mapping is split out as a testable
- * function; the live lifecycle (startAccount/stopAccount) is wired separately.
- *
- * `AgentRuntime` (one `Execution` per room) replaces the bare `RoomPresence`,
- * so messages sent while disconnected are drained from the REST backlog on
- * (re)connect instead of being silently dropped.
- *
- * Key invariants encoded here:
+ * Invariants:
  *  - the `[Band Room: <id>]` marker is a SUFFIX on the model-visible Body only;
  *    command fields stay RAW so stripMentions + command-parse aren't corrupted
  *  - ChatType is derived from the (cached) room type, default 'group'
@@ -82,14 +77,10 @@ export function platformEventToInboundContext(
   const payload = event.payload;
   const roomId = event.roomId ?? payload.chat_room_id;
   if (!roomId) return null;
-
-  // Skip the agent's own messages and anything that isn't a plain text message.
   if (payload.sender_id === opts.selfAgentId) return null;
   if (payload.message_type !== "text") return null;
 
   const content = payload.content;
-  // Model-facing body: rewrite Band's `@[[uuid]]` tokens to `@handle`, then append
-  // a participant roster and the room marker. Command/parse fields below stay RAW.
   const participants = opts.participants ?? [];
   const displayContent = replaceUuidMentions(content, participants);
   const roster = buildParticipantsBlock(participants, opts.selfAgentId);
@@ -98,13 +89,12 @@ export function platformEventToInboundContext(
     .join("\n\n");
 
   const ctx: MsgContext = {
-    // Model-facing bodies carry the room marker as a trailing SUFFIX so it can't
-    // collide with leading-@agent strip or leading-/command parse.
+    // Room marker is a trailing SUFFIX so it can't collide with leading-@agent
+    // strip or leading-/command parse.
     Body: withMarker,
     BodyForAgent: withMarker,
-    // Command/parse fields stay RAW (no marker) — core's stripMentions + command
-    // parser operate on these. BodyForCommands is the preferred command field;
-    // CommandBody is set too. (RawBody is deprecated — intentionally omitted.)
+    // Command/parse fields stay RAW (no marker); RawBody is deprecated and
+    // intentionally omitted.
     BodyForCommands: content,
     CommandBody: content,
     From: payload.sender_id,
@@ -117,7 +107,7 @@ export function platformEventToInboundContext(
     MessageSid: payload.id,
     Timestamp: payload.inserted_at ? new Date(payload.inserted_at).getTime() : Date.now(),
     ChatType: roomTypeToChatType(opts.roomType),
-    // Owner-only commands; fail closed when the owner is unknown.
+    // Fail closed when the owner is unknown.
     CommandAuthorized: opts.ownerUuid != null && payload.sender_id === opts.ownerUuid,
   };
   return ctx;
@@ -140,11 +130,6 @@ interface LinkLike {
     [k: string]: unknown;
   };
   markProcessed?: (roomId: string, messageId: string, opts?: { bestEffort?: boolean }) => Promise<unknown>;
-  /**
-   * Band's message status is a state machine (sent -> processing -> processed);
-   * `markProcessed` 422s if called directly from `sent` without first going
-   * through `processing`. Required before `markProcessed` (see onExecute).
-   */
   markProcessing?: (roomId: string, messageId: string, opts?: { bestEffort?: boolean }) => Promise<unknown>;
 }
 
@@ -153,8 +138,7 @@ interface RuntimeLike {
   stop: (timeoutMs?: number) => Promise<unknown>;
 }
 
-/** Finite teardown timeout for `runtime.stop()` (HIGH-2): an in-flight dispatch
- * awaiting the model must not be able to hang shutdown/restart indefinitely. */
+/** Bounds `runtime.stop()` so an in-flight dispatch can't hang shutdown/restart. */
 const STOP_TIMEOUT_MS = 5_000;
 
 interface DispatchParams {
@@ -183,13 +167,9 @@ export interface BandGatewayDeps {
   log?: (msg: string) => void;
 }
 
-/**
- * Build the plain options object passed to `new AgentRuntime(...)`. Pulled out
- * as a pure, directly-testable function (mirrors `platformEventToInboundContext`/
- * `createReplyDeliver`) so the `autoSubscribeExistingRooms` wiring (the actual
- * backlog-drain fix) and the callback plumbing can be asserted without
- * constructing a real runtime.
- */
+/** Build the options object passed to `new AgentRuntime(...)`, pulled out as a
+ * pure function so the `autoSubscribeExistingRooms` wiring can be tested
+ * without constructing a real runtime. */
 export function buildRuntimeOptions(
   link: LinkLike,
   opts: {
@@ -219,12 +199,8 @@ export function resetGatewayStarting(): void {
   starting.clear();
 }
 
-/**
- * Build the reply `deliver` callback that routes a model reply payload to the
- * Band room via the outbound adapter. Exported so the deliver seam (the heart
- * of the inbound→reply round-trip) is unit-testable directly. A delivery
- * failure is logged (observable), never thrown.
- */
+/** Build the reply `deliver` callback that routes a model reply payload to the
+ * Band room. A delivery failure is logged, never thrown. */
 export function createReplyDeliver(
   accountId: string,
   roomId: string,
@@ -235,9 +211,7 @@ export function createReplyDeliver(
     if (!text) return;
     const account = getAccount(accountId);
     if (!account) {
-      // The account can disappear between dispatch and delivery (e.g. a teardown
-      // race on restart). Log it — this function's contract is that delivery
-      // failures are observable, never silently dropped.
+      // Can disappear between dispatch and delivery (e.g. a teardown race on restart).
       log(`[band:${accountId}] skipping reply (room=${roomId}): account not connected`);
       return;
     }
@@ -263,31 +237,17 @@ function defaultDispatch(deps: Required<Pick<BandGatewayDeps, "log">>): (p: Disp
       cfg: cfg as Parameters<typeof dispatchInboundMessageWithBufferedDispatcher>[0]["cfg"],
       dispatcherOptions: {
         deliver: createReplyDeliver(accountId, roomId, deps.log),
-        // Observability: surface delivery/reply errors rather than dropping silently.
         onError: (err: unknown) => deps.log(`[band:${accountId}] reply error (room=${roomId}): ${String(err)}`),
       } as Parameters<typeof dispatchInboundMessageWithBufferedDispatcher>[0]["dispatcherOptions"],
     });
   };
 }
 
-/**
- * Build the Band gateway adapter. Dependencies are injected (defaults use the
- * real SDK + openclaw runtime) so the lifecycle is unit-testable with fakes.
- */
+/** Build the Band gateway adapter. Dependencies are injected so the lifecycle
+ * is unit-testable with fakes. */
 export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAdapter<BandAccountConfig> {
   const log = deps.log ?? ((msg: string) => console.log(msg));
-  // The SDK defaults to a NoopLogger, which silently swallows internal warnings
-  // (e.g. a best-effort markProcessed failure) that are critical to diagnosing
-  // backlog drain issues. Forward warn/error into the plugin's own observable
-  // log; debug/info is per-topic-join connection chatter with no diagnostic
-  // value here, so it's dropped rather than spamming the account's log.
-  const sdkLogger = {
-    debug: () => {},
-    info: () => {},
-    warn: (msg: string, ctx?: Record<string, unknown>) => log(`[band:sdk][warn] ${msg}${ctx ? ` ${JSON.stringify(ctx)}` : ""}`),
-    error: (msg: string, ctx?: Record<string, unknown>) => log(`[band:sdk][error] ${msg}${ctx ? ` ${JSON.stringify(ctx)}` : ""}`),
-  };
-  const createLink = deps.createLink ?? ((conn) => new ThenvoiLink({ ...conn, logger: sdkLogger }) as unknown as LinkLike);
+  const createLink = deps.createLink ?? ((conn) => new ThenvoiLink(conn) as unknown as LinkLike);
   const createRuntime =
     deps.createRuntime ??
     ((link, opts) => new AgentRuntime(buildRuntimeOptions(link, opts) as never) as unknown as RuntimeLike);
@@ -342,8 +302,8 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
 
       const contactHandler = createContactHandler(link);
 
-      // Same failure class HIGH-1 fixed for onExecute: a throw here would propagate
-      // through AgentRuntime's consumeLoop and abort the whole account's live loop.
+      // A throw here would propagate through AgentRuntime's consumeLoop and
+      // abort the whole account's live loop, same as in onExecute below.
       const onRoomJoined = (roomId: string, payload: Record<string, unknown>) => {
         try {
           const type = typeof payload?.type === "string" ? payload.type : undefined;
@@ -365,13 +325,9 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
         log(`[band:${accountId}] fatal runtime error (room=${event.roomId ?? "?"}): ${String(error)}`);
       };
 
-      // Band's message status is a state machine (sent -> processing -> processed);
-      // markProcessed 422s if called directly from "sent" without going through
-      // "processing" first. Skipping markProcessing meant the ack always failed,
-      // the server-side cursor never advanced, and every reconnect's backlog
-      // drain got stuck re-redelivering the same oldest message — starving
-      // anything sent after it. Both calls are best-effort: a failure here must
-      // never block the room's next message.
+      // Band's message status is sent -> processing -> processed; markProcessing
+      // must be called before markProcessed. Both are best-effort: a failure here
+      // must never block the room's next message.
       async function markRoomMessageHandled(roomId: string, messageId: string): Promise<void> {
         if (link.markProcessing) {
           try {
@@ -389,9 +345,8 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
         }
       }
 
-      // Per HIGH-1: `onExecute` must be TOTAL (never throw) — `Execution.executeEvent`
-      // rethrows, which aborts the *whole account's* live-event consume loop. Everything
-      // in the original `presence.onRoomEvent` body is wrapped in one top-level try/catch.
+      // Must never throw: Execution.executeEvent rethrows, which aborts the
+      // whole account's live-event consume loop.
       async function onExecute(_context: unknown, event: PlatformEvent): Promise<void> {
         try {
           if (event.type !== "message_created") return;
@@ -404,9 +359,7 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
             log(`[band:${accountId}] room ${roomId} has no cached type; defaulting ChatType to 'group'`);
           }
 
-          // Fetch participants so the inbound body can rewrite `@[[uuid]]` tokens to
-          // handles and carry a roster. Best-effort: an empty roster on failure
-          // degrades to the prior behaviour (raw content), never blocks dispatch.
+          // Best-effort: an empty roster on failure degrades to raw content.
           let participants: MentionParticipant[] = [];
           try {
             const list = (await link.rest.listChatParticipants?.(roomId)) ?? [];

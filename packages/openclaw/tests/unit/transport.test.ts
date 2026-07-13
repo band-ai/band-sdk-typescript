@@ -294,8 +294,7 @@ describe("gateway lifecycle", () => {
     await started;
 
     expect(d.runtime.stop).toHaveBeenCalledOnce();
-    // HIGH-2: stop() must be called with a finite timeout, never undefined —
-    // an unbounded stop can hang on an in-flight dispatch awaiting the model.
+    // stop() must be called with a finite timeout, never undefined.
     expect(d.runtime.stop.mock.calls[0][0]).toEqual(expect.any(Number));
     expect(d.link.disconnect).toHaveBeenCalledOnce();
     expect(getAccount("default")).toBeUndefined();
@@ -384,7 +383,7 @@ describe("gateway lifecycle", () => {
     await p;
   });
 
-  it("markProcessed best-effort: a failing markProcessed does not throw, and is logged (MEDIUM)", async () => {
+  it("markProcessed best-effort: a failing markProcessed does not throw, and is logged", async () => {
     const link = makeLink({ markProcessed: vi.fn().mockRejectedValue(new Error("boom")) });
     const d = deps({ createLink: () => link });
     const gw = createBandGateway(d.base);
@@ -400,7 +399,7 @@ describe("gateway lifecycle", () => {
     await p;
   });
 
-  it("HIGH-1: onExecute never throws, even when ctx-building fails; a subsequent good event still dispatches", async () => {
+  it("onExecute never throws, even when ctx-building fails; a subsequent good event still dispatches", async () => {
     const d = deps();
     const gw = createBandGateway(d.base);
     const { ctx, controller } = makeCtx();
@@ -423,7 +422,7 @@ describe("gateway lifecycle", () => {
     await p;
   });
 
-  it("HIGH-1 (architect review): onRoomJoined never throws, same total-try/catch as onExecute", async () => {
+  it("onRoomJoined never throws, same total-try/catch as onExecute", async () => {
     const d = deps();
     const gw = createBandGateway(d.base);
     const { ctx, controller } = makeCtx();
@@ -449,7 +448,7 @@ describe("gateway lifecycle", () => {
     await p;
   });
 
-  it("HIGH-1: onError is wired into createRuntime and is called by the runtime on a fatal error", async () => {
+  it("onError is wired into createRuntime and is called by the runtime on a fatal error", async () => {
     const d = deps();
     const gw = createBandGateway(d.base);
     const { ctx, controller } = makeCtx();
@@ -498,14 +497,10 @@ describe("buildRuntimeOptions (autoSubscribeExistingRooms flag assertion)", () =
   });
 });
 
-/**
- * A fake `link` shaped like `ThenvoiLink` (structurally, not by import) exercising
- * the REAL `AgentRuntime` + `Execution` — no injected fakes for those two. One
- * existing room ("room-1") is seeded with a single backlog message and
- * `nextEvent` never resolves a live WS event (only on abort), so a passing test
- * proves the backlog message was drained and dispatched with NO live event ever
- * delivered — the actual backlog-drain behavior, not just the wiring flag.
- */
+/** A fake `link` exercising the REAL `AgentRuntime` + `Execution` (no injected
+ * fakes for those two). Seeds one backlog message on "room-1"; `nextEvent`
+ * never resolves a live WS event, so a passing test proves the message was
+ * drained from the backlog, not delivered live. */
 function makeIntegrationLink(overrides: Record<string, unknown> = {}) {
   const backlogMessage = {
     id: "backlog-1",
