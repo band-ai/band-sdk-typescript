@@ -1,7 +1,7 @@
 /**
  * Unit tests for the Band prompts module.
  *
- * Contract (D5 / INT-836 C1):
+ * Contract (D5 C1):
  *  - BASE_INSTRUCTIONS is STATIC (no prompt-time room_id injection)
  *  - fully rebranded thenvoi -> band (no "thenvoi" / "Thenvoi" anywhere)
  *  - room_id is sourced from the `[Band Room: <uuid>]` marker, NOT "the To field"

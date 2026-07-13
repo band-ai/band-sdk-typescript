@@ -6,11 +6,11 @@
  * dispatched to core. The pure event->context mapping is split out as a testable
  * function; the live lifecycle (startAccount/stopAccount) is wired separately.
  *
- * Per INT-876: `AgentRuntime` (one `Execution` per room) replaces the bare
- * `RoomPresence`, so messages sent while disconnected are drained from the REST
- * backlog on (re)connect instead of being silently dropped — see PLAN-INT-876.md.
+ * `AgentRuntime` (one `Execution` per room) replaces the bare `RoomPresence`,
+ * so messages sent while disconnected are drained from the REST backlog on
+ * (re)connect instead of being silently dropped.
  *
- * Key INT-836 invariants encoded here (see REWRITE_PLAN D5/L2/F2):
+ * Key invariants encoded here:
  *  - the `[Band Room: <id>]` marker is a SUFFIX on the model-visible Body only;
  *    command fields stay RAW so stripMentions + command-parse aren't corrupted
  *  - ChatType is derived from the (cached) room type, default 'group'
@@ -29,7 +29,6 @@ import type {
   ChannelGatewayContext,
 } from "openclaw/plugin-sdk/channel-runtime";
 import { resolveConnectionConfig, type BandAccountConfig } from "./config.js";
-import { createProcessedStore as createDefaultProcessedStore, type ProcessedStore } from "./processed-store.js";
 import {
   setAccount,
   deleteAccount,
@@ -182,20 +181,14 @@ export interface BandGatewayDeps {
   dispatch?: (params: DispatchParams) => Promise<void>;
   runLifecycle?: (params: { abortSignal: AbortSignal; start: () => Promise<void>; stop: () => Promise<void> }) => Promise<void>;
   log?: (msg: string) => void;
-  /**
-   * Build the per-account dedup guard (see processed-store.ts) that stands in
-   * for Band's unreliable server-side markProcessed cursor. Injectable so
-   * tests use an in-memory fake instead of touching the real filesystem.
-   */
-  createProcessedStore?: (accountId: string, stateDir: string | undefined) => ProcessedStore;
 }
 
 /**
  * Build the plain options object passed to `new AgentRuntime(...)`. Pulled out
  * as a pure, directly-testable function (mirrors `platformEventToInboundContext`/
  * `createReplyDeliver`) so the `autoSubscribeExistingRooms` wiring (the actual
- * INT-876 fix) and the callback plumbing can be asserted without constructing a
- * real runtime.
+ * backlog-drain fix) and the callback plumbing can be asserted without
+ * constructing a real runtime.
  */
 export function buildRuntimeOptions(
   link: LinkLike,
@@ -306,8 +299,6 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
         rest: link.rest as never,
       }) as unknown as { handle: (event: ContactEvent) => Promise<unknown> });
   const dispatch = deps.dispatch ?? defaultDispatch({ log });
-  const createProcessedStore =
-    deps.createProcessedStore ?? ((accountId, stateDir) => createDefaultProcessedStore(accountId, stateDir, log));
 
   async function teardown(accountId: string): Promise<void> {
     const account = getAccount(accountId);
@@ -350,7 +341,6 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
       const ownerUuid = me.ownerUuid ?? null;
 
       const contactHandler = createContactHandler(link);
-      const processedStore = createProcessedStore(accountId, ctx.account.stateDir);
 
       // Same failure class HIGH-1 fixed for onExecute: a throw here would propagate
       // through AgentRuntime's consumeLoop and abort the whole account's live loop.
@@ -377,11 +367,11 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
 
       // Band's message status is a state machine (sent -> processing -> processed);
       // markProcessed 422s if called directly from "sent" without going through
-      // "processing" first (INT-876 root cause: onExecute previously only called
-      // markProcessed, so the ack always failed, the server-side cursor never
-      // advanced, and every reconnect's backlog drain got stuck re-redelivering
-      // the same oldest message — starving anything sent after it). Both calls
-      // are best-effort: a failure here must never block the room's next message.
+      // "processing" first. Skipping markProcessing meant the ack always failed,
+      // the server-side cursor never advanced, and every reconnect's backlog
+      // drain got stuck re-redelivering the same oldest message — starving
+      // anything sent after it. Both calls are best-effort: a failure here must
+      // never block the room's next message.
       async function markRoomMessageHandled(roomId: string, messageId: string): Promise<void> {
         if (link.markProcessing) {
           try {
@@ -408,19 +398,7 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
           const roomId = event.roomId ?? event.payload.chat_room_id;
           if (!roomId) return;
 
-          // Guard against re-dispatching (and re-answering) a message we've
-          // already handled, using our own persisted record rather than trusting
-          // the remote ack. Still (re-)attempt the processing/processed
-          // transition: an older redelivered message may be the queue's stuck
-          // head, and unblocking it is what lets later messages in the same
-          // room surface at all.
           const messageId = event.payload.id;
-          if (messageId && processedStore.has(messageId)) {
-            log(`[band:${accountId}] skipping already-processed message ${messageId} (room=${roomId})`);
-            await markRoomMessageHandled(roomId, messageId);
-            return;
-          }
-
           const roomType = getRoomType(accountId, roomId);
           if (roomType === undefined) {
             log(`[band:${accountId}] room ${roomId} has no cached type; defaulting ChatType to 'group'`);
@@ -460,16 +438,6 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
 
           if (messageId) {
             await markRoomMessageHandled(roomId, messageId);
-          }
-
-          // Record locally regardless of the remote ack's outcome — this is the
-          // guard that actually prevents redelivery-driven duplicate replies.
-          if (messageId) {
-            try {
-              await processedStore.markProcessed(messageId);
-            } catch (err) {
-              log(`[band:${accountId}] failed to persist processed marker (room=${roomId}, msg=${messageId}): ${String(err)}`);
-            }
           }
         } catch (err) {
           log(`[band:${accountId}] onExecute failed (room=${event.roomId ?? "?"}): ${String(err)}`);
