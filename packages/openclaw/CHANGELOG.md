@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.10](https://github.com/thenvoi/thenvoi-sdk-typescript/compare/openclaw-channel-band-v0.1.9...openclaw-channel-band-v0.1.10) (2026-07-14)
+
+
+### Features
+
+* Int 876 agentruntime backlog drain ([#125](https://github.com/thenvoi/thenvoi-sdk-typescript/issues/125)) ([ef23247](https://github.com/thenvoi/thenvoi-sdk-typescript/commit/ef23247d522b5a18b18333ca5506487fd7596368))
+* Int 876 agentruntime backlog drain ([#125](https://github.com/thenvoi/thenvoi-sdk-typescript/issues/125)) ([6dec7ac](https://github.com/thenvoi/thenvoi-sdk-typescript/commit/6dec7ac473c7db7de931be548ea59c0d918979c5))
+
+
+### Bug Fixes
+
+* **openclaw:** address PR review feedback on backlog-drain transport ([f213724](https://github.com/thenvoi/thenvoi-sdk-typescript/commit/f2137246ee436c43f79539e8aebff9c73e25a053))
+* **openclaw:** drain Band backlog via AgentRuntime instead of RoomPresence ([7446c1b](https://github.com/thenvoi/thenvoi-sdk-typescript/commit/7446c1b0a0a7d2ec0cc7a66dbe1012cbfa1eac6e))
+* **openclaw:** drain Band backlog via AgentRuntime instead of RoomPresence ([89c67bf](https://github.com/thenvoi/thenvoi-sdk-typescript/commit/89c67bf5eb517467b9c7bdce16e0121ecbdb564c))
+* **openclaw:** drop local processed-message dedup store, ban ticket refs in code ([f0daa73](https://github.com/thenvoi/thenvoi-sdk-typescript/commit/f0daa730f67ac20bf78d03504262ba5c965352c8))
+* **openclaw:** drop noisy debug/info SDK log forwarding, keep warn/error ([3fb54b7](https://github.com/thenvoi/thenvoi-sdk-typescript/commit/3fb54b701ec45f89b8ea772a84c40c0d6a45459a))
+* **openclaw:** unblock stuck Band message backlog via markProcessing + local dedup ([9acc62c](https://github.com/thenvoi/thenvoi-sdk-typescript/commit/9acc62cf7e0743c5eb03f8770f348c457cec3ee3))
+
 ## [0.1.9](https://github.com/thenvoi/thenvoi-sdk-typescript/compare/openclaw-channel-band-v0.1.8...openclaw-channel-band-v0.1.9) (2026-06-18)
 
 
