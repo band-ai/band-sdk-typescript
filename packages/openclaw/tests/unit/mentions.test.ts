@@ -1,7 +1,7 @@
 /**
  * Unit tests for the pure mention-resolution module.
  *
- * Contract (architect consensus C2):
+ * Contract (INT-836 / architect consensus C2):
  *  - explicit @Name in text wins over any fallback
  *  - multiple @Names -> multiple mentions
  *  - case-insensitive
