@@ -18,8 +18,10 @@ export interface AccountState {
   selfAgentId: string;
   /** The agent owner's id; commands are authorized only for the owner (F2). */
   ownerUuid?: string | null;
-  /** The RoomPresence instance (opaque here), so teardown can stop it. */
-  presence?: unknown;
+  /** The AgentRuntime instance (opaque here), so teardown can stop it. */
+  runtime?: unknown;
+  /** Bounds `runtime.stop()` on teardown/restart. */
+  stopTimeoutMs?: number;
   /** roomId -> room type (populated from onRoomJoined; drives L2 ChatType). */
   roomTypes: Map<string, string>;
   /** roomId -> last sender (LRU; auto-mention fallback). */
