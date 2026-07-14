@@ -436,7 +436,6 @@ Each example is a standalone TypeScript script runnable with `tsx`. Folders incl
 - Never bundle peer dependencies — they must remain `external` in `tsup.config.ts`.
 - Async/await everywhere; do not return raw promises from non-async functions in library code.
 - Keep node compatibility at `>=22` (`engines.node` in both root and SDK package.json).
-- Never put issue-tracker references in code — no Linear issue IDs (e.g. `INT-123`), Linear URLs, or ticket numbers in comments, docstrings, or strings. Explain the *why* in plain terms instead. (Branch names, commit messages, and PR descriptions may reference issues.)
 
 ## Pre-Commit Checklist
 

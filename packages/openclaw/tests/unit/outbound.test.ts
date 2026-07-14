@@ -1,7 +1,7 @@
 /**
  * Unit tests for the Band outbound send logic.
  *
- * Contract (D2/D3):
+ * Contract (D2/D3 + INT-836 C2):
  *  - sendText resolves mentions via mentions.ts, then createChatMessage, returns { messageId }
  *  - mandatory-mention invariant: THROW when mentions resolve to empty
  *  - explicit @Name in the reply text resolves end-to-end through the adapter
