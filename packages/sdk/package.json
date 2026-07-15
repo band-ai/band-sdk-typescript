@@ -89,7 +89,7 @@
   },
   "dependencies": {
     "@thenvoi/rest-client": "0.0.113",
-    "js-yaml": "^4.1.1",
+    "js-yaml": "^5.2.1",
     "phoenix": "^1.8.4",
     "ws": "^8.19.0",
     "zod": "^3.24.2",
