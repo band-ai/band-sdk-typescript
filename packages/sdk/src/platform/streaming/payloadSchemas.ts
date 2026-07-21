@@ -56,6 +56,8 @@ export const participantAddedPayloadSchema = z.object({
   name: z.string(),
   type: z.string(),
   handle: z.string().nullish(),
+  is_remote: z.boolean().nullish(),
+  is_external: z.boolean().nullish(),
 }).passthrough();
 
 export const participantRemovedPayloadSchema = z.object({
@@ -86,6 +88,7 @@ export const contactAddedPayloadSchema = z.object({
   name: z.string(),
   type: z.string(),
   description: z.string().nullish(),
+  is_remote: z.boolean().nullish(),
   is_external: z.boolean().nullish(),
   inserted_at: z.string(),
 }).passthrough();

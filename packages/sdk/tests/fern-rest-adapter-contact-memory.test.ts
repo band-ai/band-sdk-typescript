@@ -366,6 +366,22 @@ describe("FernRestAdapter contact and memory parity", () => {
       { id: "user-1", name: "Jane", type: "User", handle: "@jane" },
     ]);
 
+    const primaryLegacyRest = new RestFacade({
+      api: new FernRestAdapter({
+        chatParticipants: {
+          listChatParticipants: async () => ({
+            data: [{ id: "user-legacy", name: "Legacy", type: "User", handle: "@legacy", is_external: true }],
+          }),
+          addChatParticipant: async () => ({ data: {} }),
+          removeChatParticipant: async () => ({ data: {} }),
+        },
+      }),
+    });
+
+    await expect(primaryLegacyRest.listChatParticipants("room-1")).resolves.toEqual([
+      { id: "user-legacy", name: "Legacy", type: "User", handle: "@legacy", is_remote: true, is_external: true },
+    ]);
+
     const fallbackRest = new RestFacade({
       api: new FernRestAdapter({
         agentApiParticipants: {
@@ -380,6 +396,22 @@ describe("FernRestAdapter contact and memory parity", () => {
 
     await expect(fallbackRest.listChatParticipants("room-2")).resolves.toEqual([
       { id: "agent-1", name: "Weather", type: "Agent", handle: "@sam/weather" },
+    ]);
+
+    const fallbackLegacyRest = new RestFacade({
+      api: new FernRestAdapter({
+        agentApiParticipants: {
+          listAgentChatParticipants: async () => ({
+            data: [{ id: "agent-legacy", name: "Legacy Agent", type: "Agent", handle: "@legacy/agent", is_external: false }],
+          }),
+          addAgentChatParticipant: async () => ({ data: {} }),
+          removeAgentChatParticipant: async () => ({ data: {} }),
+        },
+      }),
+    });
+
+    await expect(fallbackLegacyRest.listChatParticipants("room-2")).resolves.toEqual([
+      { id: "agent-legacy", name: "Legacy Agent", type: "Agent", handle: "@legacy/agent", is_remote: false, is_external: false },
     ]);
   });
 
