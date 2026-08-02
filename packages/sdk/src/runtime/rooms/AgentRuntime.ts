@@ -1,4 +1,4 @@
-import type { ThenvoiLink } from "../../platform/ThenvoiLink";
+import type { BandLink } from "../../platform/BandLink";
 import type { ContactEvent, PlatformEvent } from "../../platform/events";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
@@ -10,7 +10,7 @@ import type { AgentConfig, SessionConfig } from "../types";
 import type { PlatformMessage } from "../types";
 
 interface AgentRuntimeOptions {
-  link: ThenvoiLink;
+  link: BandLink;
   agentId: string;
   onExecute: (context: ExecutionContext, event: PlatformEvent) => Promise<void>;
   onSessionCleanup?: (roomId: string) => Promise<void>;
@@ -28,7 +28,7 @@ interface AgentRuntimeOptions {
 }
 
 export class AgentRuntime {
-  private readonly link: ThenvoiLink;
+  private readonly link: BandLink;
   private readonly agentId: string;
   private readonly onExecute: (context: ExecutionContext, event: PlatformEvent) => Promise<void>;
   private readonly onSessionCleanup: (roomId: string) => Promise<void>;

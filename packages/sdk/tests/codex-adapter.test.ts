@@ -513,7 +513,7 @@ describe("CodexAdapter", () => {
     expect(tools.events.some((event) => event.messageType === "thought" && event.content === "(reasoning)")).toBe(false);
   });
 
-  it("renders default Thenvoi prompt and appends customSection when no full override is set", async () => {
+  it("renders default Band prompt and appends customSection when no full override is set", async () => {
     const tools = new ToolSchemaFakeTools();
     const fakeClient = new FakeCodexClient({
       events: [

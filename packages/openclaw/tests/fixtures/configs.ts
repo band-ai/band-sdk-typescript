@@ -18,16 +18,16 @@ interface ThenvoiConfig {
 export const mockThenvoiConfig: ThenvoiConfig = {
   apiKey: "test-api-key-12345",
   agentId: "agent-123",
-  wsUrl: "wss://test.thenvoi.com/socket",
-  restUrl: "https://test.thenvoi.com",
+  wsUrl: "wss://test.band.ai/socket",
+  restUrl: "https://test.band.ai",
 };
 
 export const mockAccountConfig: ThenvoiAccountConfig = {
   enabled: true,
   apiKey: "test-api-key-12345",
   agentId: "agent-123",
-  wsUrl: "wss://test.thenvoi.com/socket",
-  restUrl: "https://test.thenvoi.com",
+  wsUrl: "wss://test.band.ai/socket",
+  restUrl: "https://test.band.ai",
 };
 
 export const mockMinimalAccountConfig: ThenvoiAccountConfig = {

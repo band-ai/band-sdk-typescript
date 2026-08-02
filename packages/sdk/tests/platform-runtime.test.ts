@@ -7,7 +7,7 @@ import { PlatformRuntime } from "../src/runtime/PlatformRuntime";
 import { ExecutionContext } from "../src/runtime/ExecutionContext";
 import { HUB_ROOM_SYSTEM_PROMPT } from "../src/runtime/ContactEventHandler";
 import type { StreamingTransport, TopicHandlers } from "../src/platform/streaming/transport";
-import { ThenvoiLink } from "../src/platform/ThenvoiLink";
+import { BandLink } from "../src/platform/BandLink";
 import { FakeRestApi } from "./testUtils";
 
 class FakeTransport implements StreamingTransport {
@@ -95,7 +95,7 @@ describe("PlatformRuntime", () => {
     const runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
-      link: new ThenvoiLink({
+      link: new BandLink({
         agentId: "a1",
         apiKey: "k",
         transport,
@@ -182,7 +182,7 @@ describe("PlatformRuntime", () => {
     const runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
-      link: new ThenvoiLink({
+      link: new BandLink({
         agentId: "a1",
         apiKey: "k",
         transport,
@@ -229,7 +229,7 @@ describe("PlatformRuntime", () => {
     const runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
-      link: new ThenvoiLink({
+      link: new BandLink({
         agentId: "a1",
         apiKey: "k",
         transport,
@@ -269,7 +269,7 @@ describe("PlatformRuntime", () => {
     const runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
-      link: new ThenvoiLink({
+      link: new BandLink({
         agentId: "a1",
         apiKey: "k",
         transport,
@@ -306,7 +306,7 @@ describe("PlatformRuntime", () => {
     const runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
-      link: new ThenvoiLink({
+      link: new BandLink({
         agentId: "a1",
         apiKey: "k",
         transport,
@@ -387,7 +387,7 @@ describe("PlatformRuntime", () => {
     const runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
-      link: new ThenvoiLink({
+      link: new BandLink({
         agentId: "a1",
         apiKey: "k",
         transport,
@@ -455,7 +455,7 @@ describe("PlatformRuntime", () => {
     const runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
-      link: new ThenvoiLink({
+      link: new BandLink({
         agentId: "a1",
         apiKey: "k",
         transport,
@@ -502,7 +502,7 @@ describe("PlatformRuntime", () => {
     const runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
-      link: new ThenvoiLink({
+      link: new BandLink({
         agentId: "a1",
         apiKey: "k",
         transport,
@@ -537,7 +537,7 @@ describe("PlatformRuntime", () => {
     const runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
-      link: new ThenvoiLink({
+      link: new BandLink({
         agentId: "a1",
         apiKey: "k",
         transport,

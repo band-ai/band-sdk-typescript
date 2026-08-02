@@ -16,7 +16,7 @@ export type {
   AgentToolsProtocol,
 } from "../contracts/protocols";
 export {
-  ThenvoiSdkError,
+  BandSdkError,
   UnsupportedFeatureError,
   ValidationError,
   TransportError,

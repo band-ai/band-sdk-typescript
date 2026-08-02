@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   ACPServer,
-  ThenvoiACPServerAdapter,
+  BandACPServerAdapter,
 } from "../src/adapters/acp";
 import { ClientSideConnection, ndJsonStream } from "@agentclientprotocol/sdk";
 import { FakeRestApi, FakeTools, makeMessage } from "./testUtils";
@@ -17,17 +17,17 @@ describe("ACPServer", () => {
         return { ok: true }
       },
       listChatParticipants: async () => [
-        { id: "agent-1", name: "Thenvoi Agent", type: "Agent", handle: "thenvoi" },
+        { id: "agent-1", name: "Band Agent", type: "Agent", handle: "thenvoi" },
         { id: "peer-1", name: "Codex", type: "Agent", handle: "codex" },
       ],
-    }, { id: "agent-1", name: "Thenvoi Agent", description: null })
+    }, { id: "agent-1", name: "Band Agent", description: null })
 
-    const adapter = new ThenvoiACPServerAdapter({
+    const adapter = new BandACPServerAdapter({
       thenvoiRest: rest,
       promptCompletionGraceMs: 5,
       responseTimeoutMs: 500,
     })
-    await adapter.onStarted("Thenvoi Agent", "ACP server")
+    await adapter.onStarted("Band Agent", "ACP server")
 
     const server = new ACPServer(adapter)
 
@@ -104,9 +104,9 @@ describe("ACPServer", () => {
     const rest = new FakeRestApi({
       createChat: async () => ({ id: "room-1" }),
       createChatEvent: async () => ({ ok: true }),
-    }, { id: "agent-1", name: "Thenvoi Agent", description: null })
+    }, { id: "agent-1", name: "Band Agent", description: null })
 
-    const adapter = new ThenvoiACPServerAdapter({
+    const adapter = new BandACPServerAdapter({
       thenvoiRest: rest,
       sessionModes: [{
         id: "default",
@@ -114,7 +114,7 @@ describe("ACPServer", () => {
         description: "Adapter default",
       }],
     })
-    await adapter.onStarted("Thenvoi Agent", "ACP server")
+    await adapter.onStarted("Band Agent", "ACP server")
 
     const server = new ACPServer(adapter, {
       modes: [{

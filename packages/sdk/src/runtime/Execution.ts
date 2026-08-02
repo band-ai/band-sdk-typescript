@@ -1,6 +1,6 @@
 import type { Logger } from "../core/logger";
 import { NoopLogger } from "../core/logger";
-import type { ThenvoiLink } from "../platform/ThenvoiLink";
+import type { BandLink } from "../platform/BandLink";
 import type { PlatformEvent } from "../platform/events";
 import type { PlatformMessage } from "./types";
 import type { ExecutionContext } from "./ExecutionContext";
@@ -13,7 +13,7 @@ export type ExecutionHandler = (
 
 interface ExecutionOptions {
   roomId: string;
-  link: ThenvoiLink;
+  link: BandLink;
   context: ExecutionContext;
   onExecute: ExecutionHandler;
   onFailure?: (error: unknown, event: PlatformEvent) => void | Promise<void>;
@@ -42,7 +42,7 @@ function toMessageEvent(message: PlatformMessage): PlatformEvent {
 
 export class Execution {
   private readonly roomId: string;
-  private readonly link: ThenvoiLink;
+  private readonly link: BandLink;
   private readonly context: ExecutionContext;
   private readonly retryTracker: MessageRetryTracker;
   private readonly onExecute: ExecutionHandler;

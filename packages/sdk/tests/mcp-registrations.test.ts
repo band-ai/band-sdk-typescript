@@ -7,18 +7,29 @@ import {
   errorResult,
   type McpToolRegistration,
 } from "../src/mcp/registrations";
+import {
+  createBandMcpBackend,
+  createThenvoiMcpBackend,
+  getBandSdkMcpServerConfig,
+  getThenvoiSdkMcpServerConfig,
+} from "../src/mcp";
 import { FakeTools } from "./testUtils";
 
 describe("MCP registrations", () => {
+  it("exports legacy MCP backend aliases from the public barrel", () => {
+    expect(createThenvoiMcpBackend).toBe(createBandMcpBackend);
+    expect(getThenvoiSdkMcpServerConfig).toBe(getBandSdkMcpServerConfig);
+  });
+
   describe("buildSingleContextRegistrations", () => {
     it("builds registrations from TOOL_MODELS without room_id", () => {
       const tools = new FakeTools();
       const registrations = buildSingleContextRegistrations(tools);
 
-      expect(registrations.length).toBeGreaterThan(0);
+      const canonicalRegistrations = registrations.filter((reg) => reg.name.startsWith("thenvoi_"));
+      expect(canonicalRegistrations.length).toBeGreaterThan(0);
 
-      for (const reg of registrations) {
-        expect(reg.name).toMatch(/^thenvoi_/);
+      for (const reg of canonicalRegistrations) {
         expect(reg.description).toBeTruthy();
         expect(reg.inputSchema.type).toBe("object");
         expect(reg.inputSchema.required).not.toContain("room_id");
@@ -44,6 +55,21 @@ describe("MCP registrations", () => {
 
       expect(names).toContain("thenvoi_list_memories");
       expect(names).toContain("thenvoi_store_memory");
+    });
+
+    it("registers legacy Thenvoi tool aliases", async () => {
+      const tools = new FakeTools();
+      tools.executeToolCall = vi.fn().mockResolvedValue({ ok: true });
+
+      const registrations = buildSingleContextRegistrations(tools);
+      const sendMessage = registrations.find((r) => r.name === "thenvoi_send_message");
+      expect(sendMessage).toBeDefined();
+
+      await sendMessage!.execute({ content: "hello", mentions: ["@jane"] });
+      expect(tools.executeToolCall).toHaveBeenCalledWith("thenvoi_send_message", {
+        content: "hello",
+        mentions: ["@jane"],
+      });
     });
 
     it("delegates execute to tools.executeToolCall", async () => {

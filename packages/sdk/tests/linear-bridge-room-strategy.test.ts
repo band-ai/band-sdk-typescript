@@ -4,12 +4,12 @@ import {
   createLinearBridgeRuntime,
   handleAgentSessionEvent,
   type HandleAgentSessionEventInput,
-  type LinearThenvoiBridgeConfig,
+  type LinearBandBridgeConfig,
   type PendingBootstrapRequest,
   type SessionRoomRecord,
   type SessionRoomStore,
 } from "../src/linear";
-import { LinearThenvoiExampleRestApi } from "../examples/linear-thenvoi/linear-thenvoi-rest-stub";
+import { LinearBandExampleRestApi } from "../examples/linear-band/linear-band-rest-stub";
 
 class MemorySessionRoomStore implements SessionRoomStore {
   private readonly records = new Map<string, SessionRoomRecord>();
@@ -57,7 +57,7 @@ class MemorySessionRoomStore implements SessionRoomStore {
   }
 }
 
-class FlakyRoomReuseRestApi extends LinearThenvoiExampleRestApi {
+class FlakyRoomReuseRestApi extends LinearBandExampleRestApi {
   private readonly failedRooms = new Set<string>();
 
   public override async createChatEvent(
@@ -78,7 +78,7 @@ class FlakyRoomReuseRestApi extends LinearThenvoiExampleRestApi {
   }
 }
 
-class FlakyRecoveredRoomRestApi extends LinearThenvoiExampleRestApi {
+class FlakyRecoveredRoomRestApi extends LinearBandExampleRestApi {
   private readonly failedRooms = new Set<string>();
   private readonly retriedRecoveredRooms = new Set<string>();
 
@@ -105,7 +105,7 @@ class FlakyRecoveredRoomRestApi extends LinearThenvoiExampleRestApi {
   }
 }
 
-class RateLimitedRecoveredRoomRestApi extends LinearThenvoiExampleRestApi {
+class RateLimitedRecoveredRoomRestApi extends LinearBandExampleRestApi {
   private readonly failedRooms = new Set<string>();
   private readonly retriedRecoveredRooms = new Set<string>();
 
@@ -132,7 +132,7 @@ class RateLimitedRecoveredRoomRestApi extends LinearThenvoiExampleRestApi {
   }
 }
 
-class RateLimitedParticipantsRestApi extends LinearThenvoiExampleRestApi {
+class RateLimitedParticipantsRestApi extends LinearBandExampleRestApi {
   public override async listChatParticipants(): Promise<Array<{
     id: string;
     name: string;
@@ -143,7 +143,7 @@ class RateLimitedParticipantsRestApi extends LinearThenvoiExampleRestApi {
   }
 }
 
-class FailFirstCreateChatRestApi extends LinearThenvoiExampleRestApi {
+class FailFirstCreateChatRestApi extends LinearBandExampleRestApi {
   private failed = false;
 
   public override async createChat(taskId?: string): Promise<{ id: string }> {
@@ -156,7 +156,7 @@ class FailFirstCreateChatRestApi extends LinearThenvoiExampleRestApi {
   }
 }
 
-function makeConfig(roomStrategy: "issue" | "session"): LinearThenvoiBridgeConfig {
+function makeConfig(roomStrategy: "issue" | "session"): LinearBandBridgeConfig {
   return {
     linearAccessToken: "lin_api_test",
     linearWebhookSecret: "linear_webhook_secret",
@@ -216,7 +216,7 @@ function makeLinearClient(): HandleAgentSessionEventInput["deps"]["linearClient"
 
 describe("linear bridge room strategy", () => {
   it("reuses one room per issue when roomStrategy=issue", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
 
     await handleAgentSessionEvent({
@@ -244,7 +244,7 @@ describe("linear bridge room strategy", () => {
   });
 
   it("serializes concurrent issue-room resolution with a shared runtime lock", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const runtime = createLinearBridgeRuntime();
 
@@ -311,7 +311,7 @@ describe("linear bridge room strategy", () => {
   });
 
   it("reuses the same issue room after the previous session completed", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
 
     await handleAgentSessionEvent({
@@ -362,7 +362,7 @@ describe("linear bridge room strategy", () => {
   });
 
   it("creates one room per session when roomStrategy=session", async () => {
-    const restApi = new LinearThenvoiExampleRestApi();
+    const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
 
     await handleAgentSessionEvent({
@@ -422,8 +422,8 @@ describe("linear bridge room strategy", () => {
   });
 
   it("retries the recreated room when the first post races room access propagation", async () => {
-    const previousDelay = process.env.LINEAR_THENVOI_RECOVERED_ROOM_RETRY_BASE_DELAY_MS;
-    process.env.LINEAR_THENVOI_RECOVERED_ROOM_RETRY_BASE_DELAY_MS = "0";
+    const previousDelay = process.env.LINEAR_BAND_RECOVERED_ROOM_RETRY_BASE_DELAY_MS;
+    process.env.LINEAR_BAND_RECOVERED_ROOM_RETRY_BASE_DELAY_MS = "0";
     try {
       const restApi = new FlakyRecoveredRoomRestApi();
       const store = new MemorySessionRoomStore();
@@ -456,16 +456,16 @@ describe("linear bridge room strategy", () => {
       });
     } finally {
       if (previousDelay === undefined) {
-        delete process.env.LINEAR_THENVOI_RECOVERED_ROOM_RETRY_BASE_DELAY_MS;
+        delete process.env.LINEAR_BAND_RECOVERED_ROOM_RETRY_BASE_DELAY_MS;
       } else {
-        process.env.LINEAR_THENVOI_RECOVERED_ROOM_RETRY_BASE_DELAY_MS = previousDelay;
+        process.env.LINEAR_BAND_RECOVERED_ROOM_RETRY_BASE_DELAY_MS = previousDelay;
       }
     }
   });
 
   it("retries recreated-room forwarding when the first post is rate limited", async () => {
-    const previousDelay = process.env.LINEAR_THENVOI_RECOVERED_ROOM_RETRY_BASE_DELAY_MS;
-    process.env.LINEAR_THENVOI_RECOVERED_ROOM_RETRY_BASE_DELAY_MS = "0";
+    const previousDelay = process.env.LINEAR_BAND_RECOVERED_ROOM_RETRY_BASE_DELAY_MS;
+    process.env.LINEAR_BAND_RECOVERED_ROOM_RETRY_BASE_DELAY_MS = "0";
     try {
       const restApi = new RateLimitedRecoveredRoomRestApi();
       const store = new MemorySessionRoomStore();
@@ -498,9 +498,9 @@ describe("linear bridge room strategy", () => {
       });
     } finally {
       if (previousDelay === undefined) {
-        delete process.env.LINEAR_THENVOI_RECOVERED_ROOM_RETRY_BASE_DELAY_MS;
+        delete process.env.LINEAR_BAND_RECOVERED_ROOM_RETRY_BASE_DELAY_MS;
       } else {
-        process.env.LINEAR_THENVOI_RECOVERED_ROOM_RETRY_BASE_DELAY_MS = previousDelay;
+        process.env.LINEAR_BAND_RECOVERED_ROOM_RETRY_BASE_DELAY_MS = previousDelay;
       }
     }
   });

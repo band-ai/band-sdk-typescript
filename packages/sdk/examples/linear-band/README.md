@@ -3,19 +3,19 @@
 This example runs the Band Linear PM agent — the Linear-facing coordinator that:
 
 1. Linear sends an `AgentSessionEvent` webhook to `/linear/webhook`
-2. the server resolves or reuses a Thenvoi room for that issue
-3. Band Linear PM coordinates real Thenvoi specialists in that room
+2. the server resolves or reuses a Band room for that issue
+3. Band Linear PM coordinates real Band specialists in that room
 4. progress and the final response are written back to Linear
 
-Band Linear PM is the only Linear-aware participant. Planner, reviewer, and coder agents stay Linear-agnostic and communicate only through Thenvoi room messages.
+Band Linear PM is the only Linear-aware participant. Planner, reviewer, and coder agents stay Linear-agnostic and communicate only through Band room messages.
 
 The SQLite session-room mapping uses `node:sqlite`, so this example requires Node.js 22+.
 
 ## Files
 
-- `examples/linear-thenvoi/linear-thenvoi-bridge-server.ts`
+- `examples/linear-band/linear-band-bridge-server.ts`
   Webhook server and embedded Band Linear PM runtime.
-- `examples/linear-thenvoi/linear-thenvoi-bridge-agent.ts`
+- `examples/linear-band/linear-band-bridge-agent.ts`
   Band Linear PM agent using the Codex adapter and Linear tools.
 
 ## Environment
@@ -25,24 +25,25 @@ Create a local `.env.local` from `.env.local.example`. The agent only needs a fe
 ```bash
 LINEAR_ACCESS_TOKEN=lin_api_xxx
 LINEAR_WEBHOOK_SECRET=lin_wh_xxx
-THENVOI_API_KEY=thnv_a_xxx
-THENVOI_REST_URL=https://app.thenvoi.com
+BAND_API_KEY=band_a_xxx
+BAND_REST_URL=https://app.band.ai
+# Legacy THENVOI_API_KEY and THENVOI_REST_URL are still accepted as fallbacks.
 ```
 
 Common optional settings:
 
 ```bash
-LINEAR_THENVOI_STATE_DB=.linear-thenvoi-example.sqlite
-LINEAR_THENVOI_ROOM_STRATEGY=issue
-LINEAR_THENVOI_WRITEBACK_MODE=activity_stream
-THENVOI_HOST_AGENT_HANDLE=your-org/linear-orchestrator
+LINEAR_BAND_STATE_DB=.linear-band-example.sqlite
+LINEAR_BAND_ROOM_STRATEGY=issue
+LINEAR_BAND_WRITEBACK_MODE=activity_stream
+BAND_HOST_AGENT_HANDLE=your-org/linear-orchestrator
 CODEX_MODEL=gpt-5.3-codex
 PORT=8787
 ```
 
 Recommended agent config key:
 
-- `linear_thenvoi_bridge`
+- `linear_band_bridge`
 
 ## Run
 
@@ -75,31 +76,31 @@ https://<your-tunnel-host>/linear/webhook
 - `.env.local` is gitignored.
 - `agent_config.yaml` is gitignored.
 - `*.sqlite` files are gitignored.
-- Do not commit real `LINEAR_ACCESS_TOKEN`, `LINEAR_WEBHOOK_SECRET`, or `THENVOI_API_KEY` values.
+- Do not commit real `LINEAR_ACCESS_TOKEN`, `LINEAR_WEBHOOK_SECRET`, or `BAND_API_KEY` values.
 
 ## Docker
 
 Build from the repository root:
 
 ```bash
-docker build -f packages/sdk/examples/linear-thenvoi/Dockerfile -t thenvoi-linear-bridge .
+docker build -f packages/sdk/examples/linear-band/Dockerfile -t band-linear-bridge .
 ```
 
 Run the container, passing the required environment variables:
 
 ```bash
-docker run --env-file .env -p 8787:8787 thenvoi-linear-bridge
+docker run --env-file .env -p 8787:8787 band-linear-bridge
 ```
 
 The SQLite state database is created inside the container at the path set by
-`LINEAR_THENVOI_STATE_DB` (defaults to `.linear-thenvoi-example.sqlite`).
+`LINEAR_BAND_STATE_DB` (defaults to `.linear-band-example.sqlite`).
 To persist it across container restarts, mount a volume:
 
 ```bash
 docker run --env-file .env -p 8787:8787 \
   -v linear-bridge-data:/app/packages/sdk/data \
-  -e LINEAR_THENVOI_STATE_DB=/app/packages/sdk/data/state.sqlite \
-  thenvoi-linear-bridge
+  -e LINEAR_BAND_STATE_DB=/app/packages/sdk/data/state.sqlite \
+  band-linear-bridge
 ```
 
 Health check:
@@ -110,8 +111,8 @@ curl http://127.0.0.1:8787/healthz
 
 ## Architecture Notes
 
-- `roomStrategy: "issue"` keeps one Thenvoi room per Linear issue.
-- `roomStrategy: "session"` creates a new Thenvoi room per Linear session.
+- `roomStrategy: "issue"` keeps one Band room per Linear issue.
+- `roomStrategy: "session"` creates a new Band room per Linear session.
 - `writebackMode: "activity_stream"` posts intermediate Linear activity updates.
 - `writebackMode: "final_only"` keeps writeback minimal until completion.
 - Band Linear PM uses peer discovery and room context to pick relevant external specialists at runtime.

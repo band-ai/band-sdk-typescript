@@ -1,5 +1,5 @@
 /**
- * Integration smoke test — connects to the real Thenvoi platform,
+ * Integration smoke test — connects to the real Band platform,
  * verifies agent identity, starts the basic echo agent, and shuts down.
  *
  * Run:  npx tsx tests/integration/smoke.ts
@@ -9,7 +9,7 @@ import { ThenvoiClient } from "@thenvoi/rest-client";
 import { Agent, GenericAdapter, loadAgentConfig } from "../../src/index";
 import { FernRestAdapter } from "../../src/rest";
 
-const DEFAULT_REST_URL = "https://app.thenvoi.com/";
+const DEFAULT_REST_URL = "https://app.band.ai/";
 
 async function main() {
   const config = loadAgentConfig("basic_agent");

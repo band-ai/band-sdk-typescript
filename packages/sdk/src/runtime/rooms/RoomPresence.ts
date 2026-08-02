@@ -1,13 +1,13 @@
 import type { MetadataMap } from "../../contracts/dtos";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
-import type { ThenvoiLink } from "../../platform/ThenvoiLink";
+import type { BandLink } from "../../platform/BandLink";
 import type { ContactEvent, PlatformEvent } from "../../platform/events";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import { hydrateTrackedRooms, trackRoomJoin, trackRoomLeave } from "./subscriptions";
 
 interface RoomPresenceOptions {
-  link: ThenvoiLink;
+  link: BandLink;
   roomFilter?: (room: MetadataMap) => boolean;
   autoSubscribeExistingRooms?: boolean;
   logger?: Logger;
@@ -25,7 +25,7 @@ export class RoomPresence {
   public onRoomEvent: RoomPresenceEventHandler | null = null;
   public onContactEvent: RoomPresenceContactHandler | null = null;
 
-  private readonly link: ThenvoiLink;
+  private readonly link: BandLink;
   private readonly roomFilter?: (room: MetadataMap) => boolean;
   private readonly autoSubscribeExistingRooms: boolean;
   private readonly logger: Logger;
