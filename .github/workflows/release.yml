@@ -29,6 +29,16 @@ jobs:
           client-id: ${{ secrets.APP_CLIENT_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
+      - name: Determine release mode
+        id: release_mode
+        shell: bash
+        run: |
+          if [ -f .release-hold ]; then
+            echo "skip_github_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip_github_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Release Please
         uses: googleapis/release-please-action@v4
         id: release
@@ -37,10 +47,19 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
           target-branch: main
+          skip-github-release: ${{ steps.release_mode.outputs.skip_github_release }}
 
       # Note: releases_created (plural) is broken in release-please v4 —
       # it returns true even when no release occurred.  Gate on individual
       # package outputs instead.
+      - name: Verify coordinated release outputs
+        env:
+          SDK_RELEASE_CREATED: ${{ steps.release.outputs['packages/sdk--release_created'] }}
+          SDK_RELEASE_VERSION: ${{ steps.release.outputs['packages/sdk--version'] }}
+          OPENCLAW_RELEASE_CREATED: ${{ steps.release.outputs['packages/openclaw--release_created'] }}
+          OPENCLAW_RELEASE_VERSION: ${{ steps.release.outputs['packages/openclaw--version'] }}
+        run: node scripts/assert-coordinated-release.mjs
+
       - name: Install pnpm
         if: steps.release.outputs['packages/sdk--release_created'] == 'true' || steps.release.outputs['packages/openclaw--release_created'] == 'true'
         uses: pnpm/action-setup@v4
@@ -73,6 +92,7 @@ jobs:
       - name: Publish SDK to npm (@band-ai)
         if: steps.release.outputs['packages/sdk--release_created'] == 'true'
         run: |
+          node scripts/assert-release-ready.mjs
           cd packages/sdk
           sed -i 's/"@thenvoi\/sdk"/"@band-ai\/sdk"/' package.json
           npm publish --provenance --access public
@@ -80,6 +100,7 @@ jobs:
       - name: Publish OpenClaw to npm (@band-ai)
         if: steps.release.outputs['packages/openclaw--release_created'] == 'true'
         run: |
+          node scripts/assert-release-ready.mjs
           cd packages/openclaw
           # name is already @band-ai/openclaw-channel-band and the SDK is bundled
           # (types inlined), so the package is self-contained — nothing to rewrite.

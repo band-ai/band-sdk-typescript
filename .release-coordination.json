@@ -1,0 +1,6 @@
+{
+  "packages": {
+    "@band-ai/sdk": "0.1.8",
+    "@band-ai/openclaw-channel-band": "0.1.11"
+  }
+}

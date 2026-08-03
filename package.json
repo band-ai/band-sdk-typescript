@@ -3,6 +3,7 @@
   "scripts": {
     "build": "pnpm -r build",
     "test": "pnpm -r test",
+    "test:release-hardening": "node --test scripts/release-hardening.test.mjs",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
     "clean": "pnpm -r clean"

@@ -26,11 +26,27 @@ jobs:
           filters: |
             sdk:
               - 'packages/sdk/**'
+              - '.github/**'
+              - 'scripts/**'
+              - 'package.json'
+              - 'pnpm-workspace.yaml'
               - 'pnpm-lock.yaml'
+              - 'release-please-config.json'
+              - '.release-please-manifest.json'
+              - '.release-coordination.json'
+              - '.release-hold'
             openclaw:
               - 'packages/openclaw/**'
               - 'packages/sdk/**'
+              - '.github/**'
+              - 'scripts/**'
+              - 'package.json'
+              - 'pnpm-workspace.yaml'
               - 'pnpm-lock.yaml'
+              - 'release-please-config.json'
+              - '.release-please-manifest.json'
+              - '.release-coordination.json'
+              - '.release-hold'
 
   lint:
     needs: changes
@@ -54,27 +70,27 @@ jobs:
 
       - name: Build SDK
         if: needs.changes.outputs.sdk == 'true' || needs.changes.outputs.openclaw == 'true'
-        run: pnpm --filter @thenvoi/sdk build
+        run: pnpm --fail-if-no-match --filter @thenvoi/sdk build
 
       - name: Build OpenClaw
         if: needs.changes.outputs.openclaw == 'true'
-        run: pnpm --filter @thenvoi/openclaw-channel-thenvoi build
+        run: pnpm --fail-if-no-match --filter @band-ai/openclaw-channel-band build
 
       - name: Typecheck SDK
         if: needs.changes.outputs.sdk == 'true'
-        run: pnpm --filter @thenvoi/sdk typecheck
+        run: pnpm --fail-if-no-match --filter @thenvoi/sdk typecheck
 
       - name: Typecheck OpenClaw
         if: needs.changes.outputs.openclaw == 'true'
-        run: pnpm --filter @thenvoi/openclaw-channel-thenvoi typecheck
+        run: pnpm --fail-if-no-match --filter @band-ai/openclaw-channel-band typecheck
 
       - name: Lint SDK
         if: needs.changes.outputs.sdk == 'true'
-        run: pnpm --filter @thenvoi/sdk lint
+        run: pnpm --fail-if-no-match --filter @thenvoi/sdk lint
 
       - name: Lint OpenClaw
         if: needs.changes.outputs.openclaw == 'true'
-        run: pnpm --filter @thenvoi/openclaw-channel-thenvoi lint
+        run: pnpm --fail-if-no-match --filter @band-ai/openclaw-channel-band lint
 
   test:
     needs: changes
@@ -98,19 +114,22 @@ jobs:
 
       - name: Build SDK
         if: needs.changes.outputs.sdk == 'true' || needs.changes.outputs.openclaw == 'true'
-        run: pnpm --filter @thenvoi/sdk build
+        run: pnpm --fail-if-no-match --filter @thenvoi/sdk build
 
       - name: Build OpenClaw
         if: needs.changes.outputs.openclaw == 'true'
-        run: pnpm --filter @thenvoi/openclaw-channel-thenvoi build
+        run: pnpm --fail-if-no-match --filter @band-ai/openclaw-channel-band build
 
       - name: Test SDK
         if: needs.changes.outputs.sdk == 'true'
-        run: pnpm --filter @thenvoi/sdk test
+        run: pnpm --fail-if-no-match --filter @thenvoi/sdk test
 
       - name: Test OpenClaw
         if: needs.changes.outputs.openclaw == 'true'
-        run: pnpm --filter @thenvoi/openclaw-channel-thenvoi test
+        run: pnpm --fail-if-no-match --filter @band-ai/openclaw-channel-band test
+
+      - name: Test release hardening
+        run: pnpm test:release-hardening
 
   packaging:
     runs-on: ubuntu-latest
