@@ -736,7 +736,7 @@ describe("createLinearWebhookHandler", () => {
     expect(thenvoiRest.roomEvents).toHaveLength(1);
   });
 
-  it("returns 200 even when notification handling throws", async () => {
+  it("returns 503 when notification handling throws", async () => {
     const store = new MemorySessionRoomStore();
     const thenvoiRest = {
       getAgentMe: vi.fn(async () => ({ id: "agent-1", handle: "linear-host" })),
@@ -792,8 +792,8 @@ describe("createLinearWebhookHandler", () => {
       body: rawBody,
     });
 
-    expect(response.status).toBe(200);
-    await expect(response.text()).resolves.toBe("OK");
+    expect(response.status).toBe(503);
+    await expect(response.text()).resolves.toBe("Notification handling failed");
   });
 
   it("does not dedup a notification whose handler previously failed", async () => {
@@ -850,7 +850,8 @@ describe("createLinearWebhookHandler", () => {
 
     // First attempt — handler throws (createChatEvent rejects)
     const first = await fetch(url, { method: "POST", headers, body: rawBody });
-    expect(first.status).toBe(200);
+    expect(first.status).toBe(503);
+    await expect(first.text()).resolves.toBe("Notification handling failed");
 
     // Second attempt (retry) — same notification id, should NOT be deduped
     const second = await fetch(url, { method: "POST", headers, body: rawBody });
