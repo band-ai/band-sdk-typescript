@@ -257,6 +257,8 @@ test("releases and new dependency updates target main, not the dev compatibility
   );
   assert.ok(targets.length > 0, "Dependabot must declare its target branches");
   assert.deepEqual(new Set(targets), new Set(["main"]));
+  assert.match(dependabot, /reviewers:\n {6}- ["']band-ai\/integrations["']/);
+  assert.doesNotMatch(dependabot, /thenvoi\/integrations-team/);
 });
 
 test("CI exposes one always-reporting aggregate status covering every job", async () => {

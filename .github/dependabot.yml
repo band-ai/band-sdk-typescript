@@ -14,7 +14,7 @@ updates:
       - "dependencies"
       - "javascript"
     reviewers:
-      - "thenvoi/integrations-team"
+      - "band-ai/integrations"
 
   # GitHub Actions
   - package-ecosystem: "github-actions"

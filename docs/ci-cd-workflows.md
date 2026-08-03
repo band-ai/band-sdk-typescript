@@ -167,5 +167,3 @@ Deliberately not addressed yet, recorded so they aren't rediscovered:
   since that is the workflow with publishing rights.
 - **`packages/sdk` is still named `@thenvoi/sdk` in `package.json`** and renamed
   to `@band-ai/sdk` by a `sed` at publish time. The rename belongs in the source.
-- **Dependabot's `reviewers` still points at `thenvoi/integrations-team`**, a
-  slug that no longer resolves after the move to the `band-ai` org.
