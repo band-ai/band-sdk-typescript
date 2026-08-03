@@ -1,8 +1,10 @@
 name: CI
 
+# GitHub Flow: `main` is the canonical trunk. Keep validating legacy `dev` PRs
+# during the transition so old or mistakenly targeted work is not left untested.
 on:
   pull_request:
-    branches: [dev, main]
+    branches: [main, dev]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -207,3 +209,42 @@ jobs:
           }
           console.log('OpenClaw: ' + expectedExports.length + ' key exports verified in .d.ts');
           "
+
+  # The single status branch protection should require.
+  #
+  # `lint` and `test` are skipped when the paths filter matches no watched path,
+  # and GitHub never reports a check context for a skipped job — so requiring
+  # `lint`/`test` directly would leave such a PR waiting forever on a check that
+  # can never arrive. This job always runs, so its context always reports, and it
+  # fails unless every dependency either passed or was legitimately skipped.
+  #
+  # Requiring only this context also means adding or renaming a job above never
+  # requires editing the ruleset.
+  ci-status:
+    needs: [changes, lint, test, packaging]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify every CI job passed or was skipped
+        run: |
+          set -euo pipefail
+          failed=0
+          # `changes` is listed too: when it fails, lint and test are skipped
+          # rather than failed, and treating that as a pass would hide the break.
+          for entry in \
+            "changes:${{ needs.changes.result }}" \
+            "lint:${{ needs.lint.result }}" \
+            "test:${{ needs.test.result }}" \
+            "packaging:${{ needs.packaging.result }}"; do
+            job="${entry%%:*}"
+            result="${entry#*:}"
+            case "$result" in
+              success|skipped) printf 'ok      %-10s %s\n' "$job" "$result" ;;
+              *) printf 'FAILED  %-10s %s\n' "$job" "$result"; failed=1 ;;
+            esac
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::one or more CI jobs did not pass"
+            exit 1
+          fi
+          echo "All CI jobs passed or were skipped."

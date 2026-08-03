@@ -217,6 +217,80 @@ test("release workflow enforces coordination before package work and readiness b
   assert.match(openclawPublish.body, /node scripts\/assert-release-ready\.mjs/);
 });
 
+test("release workflow pins every action to a full commit SHA", async () => {
+  const workflow = await readFile(join(root, ".github/workflows/release.yml"), "utf8");
+  const refs = [...workflow.matchAll(/^\s*uses: (\S+?)(?:\s+#.*)?$/gm)].map(
+    (match) => match[1],
+  );
+
+  assert.ok(refs.length > 0, "release workflow must use at least one action");
+  for (const ref of refs) {
+    // Local (`./.github/...`) references are already immutable with the commit.
+    if (ref.startsWith("./")) continue;
+    const [action, rev] = ref.split("@");
+    assert.match(
+      rev ?? "",
+      /^[0-9a-f]{40}$/,
+      `${action} must be pinned to a 40-character commit SHA, not "${rev}"`,
+    );
+  }
+});
+
+test("CI validates pull requests to main and the legacy dev compatibility lane", async () => {
+  const workflow = await readFile(join(root, ".github/workflows/ci.yml"), "utf8");
+
+  assert.match(workflow, /pull_request:\n {4}branches: \[main, dev\]\n/);
+});
+
+test("releases and new dependency updates target main, not the dev compatibility lane", async () => {
+  const releaseWorkflow = await readFile(
+    join(root, ".github/workflows/release.yml"),
+    "utf8",
+  );
+  const dependabot = await readFile(join(root, ".github/dependabot.yml"), "utf8");
+
+  assert.match(releaseWorkflow, /push:\n {4}branches: \[main\]\n/);
+  assert.doesNotMatch(releaseWorkflow, /branches: \[[^\]]*\bdev\b/);
+
+  const targets = [...dependabot.matchAll(/target-branch: ["']([^"']+)["']/g)].map(
+    (match) => match[1],
+  );
+  assert.ok(targets.length > 0, "Dependabot must declare its target branches");
+  assert.deepEqual(new Set(targets), new Set(["main"]));
+});
+
+test("CI exposes one always-reporting aggregate status covering every job", async () => {
+  const workflow = await readFile(join(root, ".github/workflows/ci.yml"), "utf8");
+
+  const start = workflow.indexOf("\n  ci-status:");
+  assert.notEqual(start, -1, "ci-status job must exist for branch protection");
+  const block = workflow.slice(start);
+
+  // Must always report: jobs skipped by the paths filter never produce a check
+  // context, so a conditional aggregate would hang a docs-only PR forever.
+  assert.match(block, /^    if: always\(\)$/m);
+  // A skipped dependency is a pass; anything else (failure, cancelled) is not.
+  assert.match(block, /success\|skipped\)/);
+  assert.match(block, /exit 1/);
+
+  const jobsSection = workflow.slice(workflow.indexOf("\njobs:"));
+  const jobNames = [...jobsSection.matchAll(/^ {2}([a-z][a-z0-9-]*):$/gm)].map(
+    (match) => match[1],
+  );
+  assert.ok(jobNames.includes("ci-status"));
+
+  const needs = block
+    .match(/^    needs: \[([^\]]+)\]$/m)?.[1]
+    .split(",")
+    .map((name) => name.trim());
+  assert.ok(needs, "ci-status must declare its dependencies as a list");
+  assert.deepEqual(
+    [...needs].sort(),
+    jobNames.filter((name) => name !== "ci-status").sort(),
+    "ci-status must depend on every other CI job, or a failure could slip through",
+  );
+});
+
 test("CI uses exact nonempty package filters and selects both packages for control paths", async () => {
   const workflow = await readFile(join(root, ".github/workflows/ci.yml"), "utf8");
 
