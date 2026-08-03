@@ -107,6 +107,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -119,6 +121,11 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Verify release intent
+        run: node scripts/assert-release-intent.mjs
+        env:
+          RELEASE_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
 
       - name: Build SDK
         if: needs.changes.outputs.sdk == 'true' || needs.changes.outputs.openclaw == 'true'
@@ -218,11 +225,9 @@ jobs:
 
   # The single status branch protection should require.
   #
-  # `lint` and `test` are skipped when the paths filter matches no watched path,
-  # and GitHub never reports a check context for a skipped job — so requiring
-  # `lint`/`test` directly would leave such a PR waiting forever on a check that
-  # can never arrive. This job always runs, so its context always reports, and it
-  # fails unless every dependency either passed or was legitimately skipped.
+  # `lint` and `test` are intentionally conditional and may report as skipped.
+  # `changes` and `packaging` are mandatory and must report success. This job
+  # always runs, provides one stable ruleset context, and rejects any other state.
   #
   # Requiring only this context also means adding or renaming a job above never
   # requires editing the ruleset.
@@ -238,15 +243,17 @@ jobs:
           # `changes` is listed too: when it fails, lint and test are skipped
           # rather than failed, and treating that as a pass would hide the break.
           for entry in \
-            "changes:${{ needs.changes.result }}" \
-            "lint:${{ needs.lint.result }}" \
-            "test:${{ needs.test.result }}" \
-            "packaging:${{ needs.packaging.result }}"; do
+            "changes:${{ needs.changes.result }}:success" \
+            "lint:${{ needs.lint.result }}:success|skipped" \
+            "test:${{ needs.test.result }}:success|skipped" \
+            "packaging:${{ needs.packaging.result }}:success"; do
             job="${entry%%:*}"
-            result="${entry#*:}"
-            case "$result" in
-              success|skipped) printf 'ok      %-10s %s\n' "$job" "$result" ;;
-              *) printf 'FAILED  %-10s %s\n' "$job" "$result"; failed=1 ;;
+            remainder="${entry#*:}"
+            result="${remainder%%:*}"
+            allowed="${remainder#*:}"
+            case "|$allowed|" in
+              *"|$result|"*) printf 'ok      %-10s %s\n' "$job" "$result" ;;
+              *) printf 'FAILED  %-10s %s (expected %s)\n' "$job" "$result" "$allowed"; failed=1 ;;
             esac
           done
           if [ "$failed" -ne 0 ]; then

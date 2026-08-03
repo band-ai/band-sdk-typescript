@@ -127,10 +127,16 @@ branch to promote to. Releases follow [Semantic Versioning](https://semver.org/)
 - **MINOR**: New backward-compatible features
 - **PATCH**: Bug fixes
 
-Every merge to `main` updates a standing **release PR** (the version bumps +
-changelogs) that Release Please maintains; nothing publishes until a maintainer
-merges that release PR. Merging it tags the release and triggers `release.yml`,
-which publishes both packages to npm with provenance.
+Every releasable merge to `main` updates a standing **release PR** (the version
+bumps + changelogs) that Release Please maintains; non-release commit types may
+produce no update. Nothing publishes until a maintainer merges that release PR.
+Merging it tags the release and triggers `release.yml`, which publishes both
+packages to npm with provenance.
+
+Merge release PRs with a merge commit or squash merge, never rebase merge, so
+the release remains easy to audit. The safety guard also compares the full PR or
+push range against its authoritative base SHA, so a multi-commit topology cannot
+hide an earlier version transition.
 
 ### Coordinated release guard
 
@@ -152,7 +158,18 @@ release.
 
 Creating a `.release-hold` file at the repo root puts the pipeline in PR-only
 mode: Release Please keeps the release PR current, but nothing is tagged or
-published. Use it while a rename or migration is mid-flight; delete it to resume.
+published. Use it while a rename or migration is mid-flight. **Do not merge the
+release PR while the hold exists**: CI rejects any held version transition before
+merge, and the release workflow checks the same invariant before tag creation.
+Delete the hold in the reviewed release PR only when the migration is ready.
+
+If one npm publish succeeds and the other fails, manually run the Release
+workflow from `main` with `recover-coordinated-release: true` and set
+`release-commit` to the exact 40-character SHA carrying both release tags.
+Recovery verifies that commit is reachable from `main`, checks out that exact
+commit, confirms both current release tags resolve to it, revalidates both versions against the coordination
+marker, skips an exact version already present on npm, and publishes only the
+missing version.
 
 ### Hotfixes
 

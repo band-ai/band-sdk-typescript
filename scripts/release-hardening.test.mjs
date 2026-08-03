@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,8 @@ import test from "node:test";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const coordinationScript = join(root, "scripts/assert-coordinated-release.mjs");
 const readyScript = join(root, "scripts/assert-release-ready.mjs");
+const intentScript = join(root, "scripts/assert-release-intent.mjs");
+const publishScript = join(root, "scripts/publish-if-needed.mjs");
 
 const targets = {
   "@band-ai/sdk": "0.1.8",
@@ -21,6 +23,62 @@ function run(script, cwd, env = {}) {
     encoding: "utf8",
     env: { ...process.env, ...env },
   });
+}
+
+function runCommand(command, args, cwd, env = {}) {
+  return spawnSync(command, args, {
+    cwd,
+    encoding: "utf8",
+    env: { ...process.env, ...env },
+  });
+}
+
+async function writeReleaseState(directory, { sdk, openclaw, hold = false }) {
+  await mkdir(join(directory, "packages/sdk"), { recursive: true });
+  await mkdir(join(directory, "packages/openclaw"), { recursive: true });
+  await writeFile(
+    join(directory, ".release-coordination.json"),
+    `${JSON.stringify({ packages: targets }, null, 2)}\n`,
+  );
+  await writeFile(
+    join(directory, ".release-please-manifest.json"),
+    `${JSON.stringify({ "packages/sdk": sdk, "packages/openclaw": openclaw }, null, 2)}\n`,
+  );
+  await writeFile(
+    join(directory, "packages/sdk/package.json"),
+    `${JSON.stringify({ name: "@thenvoi/sdk", version: sdk }, null, 2)}\n`,
+  );
+  await writeFile(
+    join(directory, "packages/openclaw/package.json"),
+    `${JSON.stringify({ name: "@band-ai/openclaw-channel-band", version: openclaw }, null, 2)}\n`,
+  );
+  await writeFile(
+    join(directory, "packages/openclaw/openclaw.plugin.json"),
+    `${JSON.stringify({ version: openclaw }, null, 2)}\n`,
+  );
+  if (hold) await writeFile(join(directory, ".release-hold"), "release held\n");
+}
+
+async function withReleaseHistory(callback) {
+  const directory = await mkdtemp(join(tmpdir(), "release-intent-"));
+  try {
+    assert.equal(runCommand("git", ["init", "-q"], directory).status, 0);
+    assert.equal(
+      runCommand("git", ["config", "user.email", "test@example.com"], directory)
+        .status,
+      0,
+    );
+    assert.equal(
+      runCommand("git", ["config", "user.name", "Release Test"], directory).status,
+      0,
+    );
+    await writeReleaseState(directory, { sdk: "0.1.7", openclaw: "0.1.10" });
+    assert.equal(runCommand("git", ["add", "."], directory).status, 0);
+    assert.equal(runCommand("git", ["commit", "-qm", "initial"], directory).status, 0);
+    await callback(directory);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 }
 
 async function withReleaseRoot(callback) {
@@ -163,6 +221,204 @@ test("release-ready guard passes without a hold and fails with one", async () =>
   }
 });
 
+test("release-ready guard rejects a hold added after the selected release commit", async () => {
+  await withReleaseHistory(async (directory) => {
+    const releaseCommit = runCommand("git", ["rev-parse", "HEAD"], directory).stdout.trim();
+    await writeFile(join(directory, ".release-hold"), "emergency hold\n");
+    assert.equal(runCommand("git", ["add", "."], directory).status, 0);
+    assert.equal(runCommand("git", ["commit", "-qm", "hold current main"], directory).status, 0);
+    assert.equal(runCommand("git", ["branch", "current-main"], directory).status, 0);
+    assert.equal(runCommand("git", ["checkout", "--detach", releaseCommit], directory).status, 0);
+
+    const result = run(readyScript, directory, { RELEASE_HOLD_REF: "current-main" });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /release hold/i);
+  });
+});
+
+test("release-ready guard fails closed when the authoritative hold ref is unavailable", async () => {
+  await withReleaseHistory(async (directory) => {
+    const result = run(readyScript, directory, {
+      RELEASE_HOLD_REF: "refs/remotes/origin/missing",
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /cannot resolve authoritative release-hold ref/i);
+  });
+});
+
+test("release intent accepts an ordinary commit with unchanged package versions", async () => {
+  await withReleaseHistory(async (directory) => {
+    await writeFile(join(directory, "README.md"), "ordinary change\n");
+    assert.equal(runCommand("git", ["add", "."], directory).status, 0);
+    assert.equal(runCommand("git", ["commit", "-qm", "docs"], directory).status, 0);
+    const result = run(intentScript, directory);
+    assert.equal(result.status, 0, result.stderr);
+  });
+});
+
+test("release intent rejects a version transition while release hold exists", async () => {
+  await withReleaseHistory(async (directory) => {
+    await writeReleaseState(directory, {
+      sdk: "0.1.8",
+      openclaw: "0.1.11",
+      hold: true,
+    });
+    assert.equal(runCommand("git", ["add", "."], directory).status, 0);
+    assert.equal(runCommand("git", ["commit", "-qm", "release"], directory).status, 0);
+    const result = run(intentScript, directory);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /release hold/i);
+  });
+});
+
+test("release intent rejects a partial package version transition", async () => {
+  await withReleaseHistory(async (directory) => {
+    await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.10" });
+    assert.equal(runCommand("git", ["add", "."], directory).status, 0);
+    assert.equal(runCommand("git", ["commit", "-qm", "partial release"], directory).status, 0);
+    const result = run(intentScript, directory);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /coordinated target/i);
+  });
+});
+
+test("release intent accepts the exact coordinated version transition", async () => {
+  await withReleaseHistory(async (directory) => {
+    await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.11" });
+    assert.equal(runCommand("git", ["add", "."], directory).status, 0);
+    assert.equal(runCommand("git", ["commit", "-qm", "coordinated release"], directory).status, 0);
+    const result = run(intentScript, directory);
+    assert.equal(result.status, 0, result.stderr);
+  });
+});
+
+test("release intent accepts recovery from the exact tagged release commit", async () => {
+  await withReleaseHistory(async (directory) => {
+    await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.11" });
+    assert.equal(runCommand("git", ["add", "."], directory).status, 0);
+    assert.equal(runCommand("git", ["commit", "-qm", "coordinated release"], directory).status, 0);
+    assert.equal(runCommand("git", ["tag", "sdk-v0.1.8"], directory).status, 0);
+    assert.equal(
+      runCommand("git", ["tag", "openclaw-channel-band-v0.1.11"], directory)
+        .status,
+      0,
+    );
+    const result = run(intentScript, directory, {
+      REQUIRE_COORDINATED_CURRENT: "true",
+      REQUIRE_RELEASE_TAGS: "true",
+    });
+    assert.equal(result.status, 0, result.stderr);
+  });
+});
+
+test("release intent rejects recovery from later bytes with unchanged versions", async () => {
+  await withReleaseHistory(async (directory) => {
+    await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.11" });
+    assert.equal(runCommand("git", ["add", "."], directory).status, 0);
+    assert.equal(runCommand("git", ["commit", "-qm", "coordinated release"], directory).status, 0);
+    assert.equal(runCommand("git", ["tag", "sdk-v0.1.8"], directory).status, 0);
+    assert.equal(
+      runCommand("git", ["tag", "openclaw-channel-band-v0.1.11"], directory)
+        .status,
+      0,
+    );
+    await writeFile(join(directory, "README.md"), "later bytes\n");
+    assert.equal(runCommand("git", ["add", "."], directory).status, 0);
+    assert.equal(runCommand("git", ["commit", "-qm", "later"], directory).status, 0);
+    const result = run(intentScript, directory, {
+      REQUIRE_COORDINATED_CURRENT: "true",
+      REQUIRE_RELEASE_TAGS: "true",
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /release tag/i);
+  });
+});
+
+test("release intent rejects stale current versions during manual recovery", async () => {
+  await withReleaseHistory(async (directory) => {
+    await writeFile(join(directory, "README.md"), "later commit\n");
+    assert.equal(runCommand("git", ["add", "."], directory).status, 0);
+    assert.equal(runCommand("git", ["commit", "-qm", "later"], directory).status, 0);
+    const result = run(intentScript, directory, {
+      REQUIRE_COORDINATED_CURRENT: "true",
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /coordinated target/i);
+  });
+});
+
+test("release intent uses the PR base across a multi-commit release topology", async () => {
+  await withReleaseHistory(async (directory) => {
+    const baseline = runCommand("git", ["rev-parse", "HEAD"], directory).stdout.trim();
+    await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.11" });
+    assert.equal(runCommand("git", ["add", "."], directory).status, 0);
+    assert.equal(runCommand("git", ["commit", "-qm", "release versions"], directory).status, 0);
+    await writeFile(join(directory, ".release-hold"), "release held\n");
+    assert.equal(runCommand("git", ["add", "."], directory).status, 0);
+    assert.equal(runCommand("git", ["commit", "-qm", "hold release"], directory).status, 0);
+
+    const result = run(intentScript, directory, { RELEASE_BASE_COMMIT: baseline });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /release hold/i);
+  });
+});
+
+async function withFakeNpm(viewMode, callback) {
+  const directory = await mkdtemp(join(tmpdir(), "release-publish-"));
+  const bin = join(directory, "bin");
+  const log = join(directory, "npm.log");
+  await mkdir(bin);
+  await writeFile(
+    join(directory, "package.json"),
+    `${JSON.stringify({ name: "@band-ai/example", version: "1.2.3" })}\n`,
+  );
+  await writeFile(
+    join(bin, "npm"),
+    `#!/bin/sh\necho "$*" >> "$FAKE_NPM_LOG"\nif [ "$1" = view ]; then\n  if [ "$FAKE_NPM_VIEW" = found ]; then echo '"1.2.3"'; exit 0; fi\n  if [ "$FAKE_NPM_VIEW" = missing ]; then echo 'E404 Not Found' >&2; exit 1; fi\n  echo 'network failure' >&2; exit 1\nfi\nexit 0\n`,
+  );
+  await chmod(join(bin, "npm"), 0o755);
+  try {
+    await callback(directory, {
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      FAKE_NPM_LOG: log,
+      FAKE_NPM_VIEW: viewMode,
+      PUBLISH_PACKAGE_NAME: "@band-ai/example",
+      PUBLISH_PACKAGE_VERSION: "1.2.3",
+      PUBLISH_TARBALL: "band-ai-example-1.2.3.tgz",
+    }, log);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+test("idempotent publisher skips an exact version already on npm", async () => {
+  await withFakeNpm("found", async (directory, env, log) => {
+    const result = run(publishScript, directory, env);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(await readFile(log, "utf8"), /^view /m);
+    assert.doesNotMatch(await readFile(log, "utf8"), /^publish /m);
+  });
+});
+
+test("idempotent publisher publishes only when npm confirms the version is absent", async () => {
+  await withFakeNpm("missing", async (directory, env, log) => {
+    const result = run(publishScript, directory, env);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(
+      await readFile(log, "utf8"),
+      /^publish band-ai-example-1\.2\.3\.tgz --ignore-scripts --provenance --access public$/m,
+    );
+  });
+});
+
+test("idempotent publisher fails closed when the npm lookup is inconclusive", async () => {
+  await withFakeNpm("error", async (directory, env, log) => {
+    const result = run(publishScript, directory, env);
+    assert.notEqual(result.status, 0);
+    assert.doesNotMatch(await readFile(log, "utf8"), /^publish /m);
+  });
+});
+
 function namedWorkflowSteps(workflow) {
   const starts = [...workflow.matchAll(/^      - name: (.+)$/gm)];
   return starts.map((match, index) => ({
@@ -176,11 +432,18 @@ test("release workflow enters PR-only mode before release-please when held", asy
   const workflow = await readFile(join(root, ".github/workflows/release.yml"), "utf8");
   const steps = namedWorkflowSteps(workflow);
   const releaseMode = steps.find((step) => step.name === "Determine release mode");
+  const recoverySource = steps.find((step) => step.name === "Checkout recovery source");
+  const releaseIntent = steps.find((step) => step.name === "Verify release intent");
   const releasePlease = steps.find((step) => step.name === "Release Please");
 
   assert.ok(releaseMode);
+  assert.ok(recoverySource);
+  assert.ok(releaseIntent);
   assert.ok(releasePlease);
   assert.ok(releaseMode.index < releasePlease.index);
+  assert.ok(recoverySource.index < releaseIntent.index);
+  assert.ok(releaseIntent.index < releasePlease.index);
+  assert.match(releaseIntent.body, /node scripts\/assert-release-intent\.mjs/);
   assert.match(releaseMode.body, /id: release_mode/);
   assert.match(releaseMode.body, /\[ -f \.release-hold \]/);
   assert.match(releaseMode.body, /skip_github_release=true/);
@@ -197,24 +460,42 @@ test("release workflow enforces coordination before package work and readiness b
   const steps = namedWorkflowSteps(workflow);
   const step = (name) => steps.find((candidate) => candidate.name === name);
   const releasePlease = step("Release Please");
+  const releaseState = step("Resolve release state");
   const coordination = step("Verify coordinated release outputs");
   const installPnpm = step("Install pnpm");
+  const sdkPack = step("Pack SDK (@band-ai)");
+  const openclawPack = step("Pack OpenClaw (@band-ai)");
   const sdkPublish = step("Publish SDK to npm (@band-ai)");
   const openclawPublish = step("Publish OpenClaw to npm (@band-ai)");
 
   assert.ok(releasePlease);
+  assert.ok(releaseState);
   assert.ok(coordination);
   assert.ok(installPnpm);
+  assert.ok(sdkPack);
+  assert.ok(openclawPack);
   assert.ok(sdkPublish);
   assert.ok(openclawPublish);
-  assert.ok(releasePlease.index < coordination.index);
+  assert.ok(releasePlease.index < releaseState.index);
+  assert.ok(releaseState.index < coordination.index);
   assert.ok(coordination.index < installPnpm.index);
+  assert.ok(installPnpm.index < sdkPack.index);
+  assert.ok(sdkPack.index < openclawPack.index);
   assert.ok(installPnpm.index < sdkPublish.index);
   assert.ok(sdkPublish.index < openclawPublish.index);
   assert.match(coordination.body, /node scripts\/assert-coordinated-release\.mjs/);
+  assert.match(coordination.body, /steps\.release_state\.outputs\.sdk_created/);
   assert.doesNotMatch(coordination.body, /^        if:/m);
+  assert.match(sdkPack.body, /node scripts\/assert-release-ready\.mjs/);
+  assert.match(openclawPack.body, /node scripts\/assert-release-ready\.mjs/);
   assert.match(sdkPublish.body, /node scripts\/assert-release-ready\.mjs/);
   assert.match(openclawPublish.body, /node scripts\/assert-release-ready\.mjs/);
+  assert.match(sdkPublish.body, /node scripts\/publish-if-needed\.mjs/);
+  assert.match(openclawPublish.body, /node scripts\/publish-if-needed\.mjs/);
+  assert.match(sdkPublish.body, /git fetch origin main:refs\/remotes\/origin\/main/);
+  assert.match(openclawPublish.body, /git fetch origin main:refs\/remotes\/origin\/main/);
+  assert.match(sdkPublish.body, /RELEASE_HOLD_REF: refs\/remotes\/origin\/main/);
+  assert.match(openclawPublish.body, /RELEASE_HOLD_REF: refs\/remotes\/origin\/main/);
 });
 
 test("release workflow pins every action to a full commit SHA", async () => {
@@ -236,10 +517,52 @@ test("release workflow pins every action to a full commit SHA", async () => {
   }
 });
 
+test("release workflow restricts authority and pins the npm publish toolchain", async () => {
+  const workflow = await readFile(join(root, ".github/workflows/release.yml"), "utf8");
+
+  assert.match(workflow, /^    if: github\.ref == 'refs\/heads\/main'$/m);
+  assert.match(workflow, /recover-coordinated-release:/);
+  assert.match(workflow, /release-commit:/);
+  assert.match(workflow, /git merge-base --is-ancestor/);
+  assert.match(workflow, /git checkout --detach/);
+  assert.match(workflow, /REQUIRE_COORDINATED_CURRENT:/);
+  assert.match(workflow, /REQUIRE_RELEASE_TAGS:/);
+  assert.match(workflow, /RELEASE_BASE_COMMIT: \$\{\{ github\.event\.before \}\}/);
+  assert.match(workflow, /permissions:\n {2}contents: read\n\nconcurrency:/);
+  const publishJob = workflow.slice(workflow.indexOf("\n  publish:"));
+  const releaseJob = workflow.slice(
+    workflow.indexOf("\n  release:"),
+    workflow.indexOf("\n  publish:"),
+  );
+  assert.match(publishJob, /permissions:\n {6}contents: read\n {6}id-token: write\n/);
+  assert.doesNotMatch(releaseJob, /id-token: write/);
+  assert.doesNotMatch(publishJob, /pnpm install|pnpm build|npm install/);
+  assert.match(workflow, /permission-contents: write/);
+  assert.match(workflow, /permission-pull-requests: write/);
+  assert.match(publishJob, /node-version: 24\.18\.1/);
+  assert.match(publishJob, /bundles npm 11\.16\.0/);
+  assert.doesNotMatch(workflow, /npm@latest/);
+  assert.doesNotMatch(workflow, /^\s*npm publish /m);
+  const publisher = await readFile(join(root, "scripts/publish-if-needed.mjs"), "utf8");
+  assert.match(publisher, /"--ignore-scripts"/);
+  assert.equal(
+    (workflow.match(/node scripts\/publish-if-needed\.mjs/g) ?? []).length,
+    2,
+  );
+  assert.doesNotMatch(
+    workflow.slice(workflow.indexOf("- name: Resolve release state")),
+    /if: steps\.release\.outputs/,
+  );
+});
+
 test("CI validates pull requests to main and the legacy dev compatibility lane", async () => {
   const workflow = await readFile(join(root, ".github/workflows/ci.yml"), "utf8");
 
   assert.match(workflow, /pull_request:\n {4}branches: \[main, dev\]\n/);
+  assert.match(
+    workflow,
+    /RELEASE_BASE_COMMIT: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/,
+  );
 });
 
 test("CI grants its token only the read permissions required by checkout and paths-filter", async () => {
@@ -249,7 +572,7 @@ test("CI grants its token only the read permissions required by checkout and pat
     workflow,
     /permissions:\n {2}contents: read\n {2}pull-requests: read\n/,
   );
-  assert.doesNotMatch(workflow, /^ {2}[a-z-]+: write$/m);
+  assert.doesNotMatch(workflow, /^\s+[a-z-]+: write$/m);
 });
 
 test("releases and new dependency updates target main, not the dev compatibility lane", async () => {
@@ -278,11 +601,13 @@ test("CI exposes one always-reporting aggregate status covering every job", asyn
   assert.notEqual(start, -1, "ci-status job must exist for branch protection");
   const block = workflow.slice(start);
 
-  // Must always report: jobs skipped by the paths filter never produce a check
-  // context, so a conditional aggregate would hang a docs-only PR forever.
+  // The aggregate must always report one stable context even when its
+  // intentionally conditional lint/test dependencies are skipped.
   assert.match(block, /^    if: always\(\)$/m);
-  // A skipped dependency is a pass; anything else (failure, cancelled) is not.
-  assert.match(block, /success\|skipped\)/);
+  assert.match(block, /changes:\$\{\{ needs\.changes\.result \}\}:success/);
+  assert.match(block, /packaging:\$\{\{ needs\.packaging\.result \}\}:success/);
+  assert.match(block, /lint:\$\{\{ needs\.lint\.result \}\}:success\|skipped/);
+  assert.match(block, /test:\$\{\{ needs\.test\.result \}\}:success\|skipped/);
   assert.match(block, /exit 1/);
 
   const jobsSection = workflow.slice(workflow.indexOf("\njobs:"));

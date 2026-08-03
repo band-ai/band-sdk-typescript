@@ -11,7 +11,7 @@ The repository uses **GitHub Flow** with one canonical long-lived trunk:
 feature branch ──(squash PR)──▶ main ──(merge release PR)──▶ release (npm)
 ```
 
-- `main` — the single trunk. All feature work is squash-merged here, and it is
+- `main` — the single trunk. Ordinary feature work is squash-merged here, and it is
   also the release branch.
 - There is no promotion hop. Release Please keeps a standing **release PR** up to
   date on `main`; merging that release PR is the deliberate "cut a release"
@@ -23,11 +23,12 @@ back-merge to reconcile after a release.
 > **The `dev` branch is a compatibility lane, not a trunk.** CI continues to
 > validate PRs targeting it so existing or mistakenly targeted work is not left
 > without checks. Dependabot, Release Please, publishing, and all new work target
-> `main`. Maintainers should retarget viable `dev` PRs to `main`; no release is
-> ever cut from `dev`.
+> `main`. Existing `dev` PR migration is outside this rollout; no release is ever
+> cut from `dev`.
 
-This repo is a **pnpm monorepo** publishing two packages, which is the main way
-it differs from `band-ai/band-sdk-python`'s otherwise identical flow:
+This repo is a **pnpm monorepo** publishing two packages. Its branch topology
+mirrors `band-ai/band-sdk-python`, while its release workflow remains tailored
+to this repository's coordinated multi-package release:
 
 | Path | Published as |
 |---|---|
@@ -44,6 +45,11 @@ Protection is enforced with GitHub Rulesets, not classic branch protection.
 
 `main` blocks deletion and non-fast-forward (force) pushes.
 
+Release PRs must use a merge commit or squash merge, never rebase merge. The
+release-intent check independently compares the full PR or push range against
+GitHub's authoritative base SHA, preventing an earlier commit in a multi-commit
+topology from hiding a version transition.
+
 **Intended required status check:** `ci-status` — and only that one.
 
 The workflow provides this check, but repository rulesets are external state.
@@ -56,11 +62,11 @@ is enforced by GitHub.
 job passed or was legitimately skipped. Requiring it instead of the individual
 jobs matters for two reasons:
 
-1. **Skipped jobs never report.** `lint` and `test` are gated behind a
-   `dorny/paths-filter` result and are skipped when a PR touches no watched path.
-   GitHub does not publish a check context for a skipped job, so requiring `lint`
-   directly would leave a docs-only PR blocked forever on a check that can never
-   arrive. `ci-status` always runs, so its context always arrives.
+1. **One policy distinguishes mandatory and conditional work.** GitHub reports a
+   job skipped by a job-level condition as successful. `lint` and `test` are
+   intentionally conditional and may be skipped; `changes` and `packaging` are
+   mandatory and must succeed. `ci-status` encodes that distinction and always
+   reports one stable context.
 2. **The ruleset stops tracking job names.** Adding, renaming, or splitting a CI
    job needs no ruleset edit. A test in
    `scripts/release-hardening.test.mjs` asserts `ci-status` depends on every
@@ -92,8 +98,9 @@ no write permission.
   `pnpm-workspace.yaml`, `pnpm-lock.yaml`, the release-please config/manifest,
   `.release-coordination.json`, `.release-hold`) selects **both** packages.
 - `lint` — build, typecheck, and ESLint for each selected package.
-- `test` — build and Vitest for each selected package, plus the release-hardening
-  suite (`pnpm test:release-hardening`), which always runs.
+- `test` — checks release intent before Release Please can consume a version
+  transition, then builds and runs Vitest for each selected package plus the
+  release-hardening suite (`pnpm test:release-hardening`).
 - `packaging` — builds everything and verifies the published surface: the SDK's
   ESM and CJS entrypoints both import with non-empty exports, and OpenClaw's
   `dist` artifacts exist, are non-empty, and declare the expected exports.
@@ -111,25 +118,58 @@ misfiles a changelog entry rather than breaking a build.
 ### Release — `release.yml`
 
 Triggered on push to `main` (i.e. on every merge, and again when a release PR
-merges). Runs in the `release` environment under `concurrency: release`.
+merges) or by an explicit manual recovery dispatch on `main`. The job rejects a
+selected non-main ref in workflow code. Repository administrators must also
+restrict the live `release` environment to the `main` branch; that external
+policy is a rollout requirement, not something this workflow file can enforce.
+Runs under `concurrency: release`.
+
+The build/release job's `GITHUB_TOKEN` is read-only and has no OIDC capability.
+Release Please receives a repository-scoped GitHub App token explicitly
+limited to contents and pull-request writes rather than inheriting every
+installation permission. A separate minimal publish job receives `id-token:
+write`; it never installs dependencies or runs project build code.
 
 1. **Determine release mode** — if a `.release-hold` file exists at the repo
    root, the run goes PR-only: Release Please still maintains the release PR, but
    `skip-github-release` suppresses tagging. This is the brake to pull during a
    rename or a half-finished migration.
-2. **Release Please** opens/updates the release PR, or — when a release PR merges
+2. **Verify release intent** (`scripts/assert-release-intent.mjs`) — ordinary
+   commits pass without a version transition. A release-version transition is
+   rejected while held or unless the manifest, both package versions, and the
+   OpenClaw plugin version exactly match both coordinated targets. CI runs the
+   same check so a held or partial release PR cannot merge once `ci-status` is
+   required.
+3. **Release Please** opens/updates the release PR, or — when a release PR merges
    — tags the release and updates the changelogs and versions.
-3. **Verify coordinated release outputs** (`scripts/assert-coordinated-release.mjs`)
+4. **Verify coordinated release outputs** (`scripts/assert-coordinated-release.mjs`)
    — both packages must release together, at exactly the versions pinned in
    `.release-coordination.json` while that migration guard exists. A partial
    release (one package only) or a
    version that misses its pinned target fails the run before anything reaches
    npm.
-4. **Publish** — builds all packages, then publishes each released package to npm
-   with `--provenance` via OIDC trusted publishing. Each publish re-checks
-   `scripts/assert-release-ready.mjs` (the `.release-hold` guard) immediately
-   before it runs.
-5. **Summary** — reports the versions published.
+5. **Resolve release state and build artifacts** — normal runs use Release Please's
+   package outputs. A manual run from `main` with
+   `recover-coordinated-release: true` also requires the exact 40-character
+   `release-commit`. The workflow verifies that revision is reachable from
+   `main`, checks out the commit, requires both package release tags to resolve
+   to exactly those bytes, then revalidates the manifest/package/plugin versions
+   against the marker and deliberately selects both packages for recovery.
+   With no OIDC permission, this job installs dependencies, builds both packages,
+   packs the selected package tarballs, and uploads the bundle for one run only.
+6. **Publish** — a separate environment-gated job receives OIDC permission,
+   downloads the prebuilt bundle, and runs no dependency install or project
+   build. Its exact Node 24.18.1 runtime bundles npm 11.16.0, so the job does not
+   install executable tooling after receiving OIDC authority. Tarball publication
+   also uses `--ignore-scripts`, preventing package lifecycle code from executing
+   with OIDC access. Immediately before each package's npm access, the job fetches
+   current `origin/main` and re-checks `scripts/assert-release-ready.mjs`
+   against both the selected release source and that authoritative current
+   branch, so a newly activated `.release-hold` stops pending recovery.
+   before it runs. `scripts/publish-if-needed.mjs` first queries the exact package
+   version: an already-published version is treated as successful recovery, a
+   confirmed 404 publishes, and an inconclusive lookup fails closed.
+7. **Summary** — reports the versions published.
 
 > **Why `releases_created` is never used:** the plural output is broken in
 > release-please v4 — it reports `true` even when no release occurred. Every gate
@@ -148,8 +188,9 @@ fails the build if any action in this workflow is left on a floating tag.
 Run by `test` on every PR (`pnpm test:release-hardening`). It covers the
 coordination and hold guards' behaviour, and asserts structural properties of the
 workflows themselves: the hold check precedes Release Please, the coordination
-check is unconditional and precedes any package work, every publish is preceded
-by a readiness check, every action is SHA-pinned, CI validates both canonical
+intent check precedes release creation, the output check is unconditional and
+precedes package work, every publish is recoverable and preceded by a readiness
+check, every release action and the npm version are pinned, CI validates both canonical
 `main` and compatibility `dev` PRs while release automation targets only `main`,
 and `ci-status` covers every job. These are the invariants that are easy to break
 with a well-meaning workflow edit and impossible to notice until a release.
@@ -160,13 +201,16 @@ Deliberately not addressed yet, recorded so they aren't rediscovered:
 
 - **No tag protection ruleset.** Anyone with write access can create or move an
   `sdk-v*` / `openclaw-channel-band-v*` tag. The Python SDK restricts its
-  `band-sdk-v*` namespace to the release App.
-- **npm publish is inline in `release.yml`.** A post-tag failure can strand a
-  tagged release unpublished, with no re-runnable recovery path short of a
-  workflow dispatch of the whole release. The Python SDK splits publishing into a
-  `release: published`-triggered workflow for exactly this reason; adopting that
-  here requires updating the npm trusted-publisher config in lockstep, since it
-  binds to the workflow filename.
+  `band-sdk-v*` namespace to the release App. Until administrators add equivalent
+  protection, recovery is a trusted-maintainer operation: the approver must
+  compare `release-commit` with the original release run before authorizing the
+  environment deployment; tag alignment alone is not immutable proof.
+- **npm publish remains inline in `release.yml`.** Manual dispatch on `main` with
+  `recover-coordinated-release: true` and the exact tagged `release-commit` can
+  recover a partial publish because
+  exact versions already present on npm are skipped, but release creation and publication are still coupled in one
+  workflow. The Python SDK separates them; adopting that architecture here
+  requires updating both npm trusted-publisher bindings in lockstep.
 - **`ci.yml` actions are still on floating tags.** Only `release.yml` is pinned,
   since that is the workflow with publishing rights.
 - **`packages/sdk` is still named `@thenvoi/sdk` in `package.json`** and renamed
