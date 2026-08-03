@@ -242,6 +242,16 @@ test("CI validates pull requests to main and the legacy dev compatibility lane",
   assert.match(workflow, /pull_request:\n {4}branches: \[main, dev\]\n/);
 });
 
+test("CI grants its token only the read permissions required by checkout and paths-filter", async () => {
+  const workflow = await readFile(join(root, ".github/workflows/ci.yml"), "utf8");
+
+  assert.match(
+    workflow,
+    /permissions:\n {2}contents: read\n {2}pull-requests: read\n/,
+  );
+  assert.doesNotMatch(workflow, /^ {2}[a-z-]+: write$/m);
+});
+
 test("releases and new dependency updates target main, not the dev compatibility lane", async () => {
   const releaseWorkflow = await readFile(
     join(root, ".github/workflows/release.yml"),

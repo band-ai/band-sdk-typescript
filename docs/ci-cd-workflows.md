@@ -83,6 +83,10 @@ Runs on every PR to `main` and, as a compatibility measure, every PR to `dev`.
 Passing CI on `dev` does not make that branch releasable; viable work should be
 retargeted to `main`.
 
+The workflow-level `GITHUB_TOKEN` is least-privilege: `contents: read` supports
+checkout and `pull-requests: read` supports changed-file detection. CI receives
+no write permission.
+
 - `changes` — `dorny/paths-filter` deciding which packages a PR touches. Any
   change to shared control paths (`.github/**`, `scripts/**`, `package.json`,
   `pnpm-workspace.yaml`, `pnpm-lock.yaml`, the release-please config/manifest,

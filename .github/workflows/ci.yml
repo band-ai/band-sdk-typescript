@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main, dev]
 
+# Checkout reads repository contents; paths-filter reads the PR file list.
+# No CI job needs write access to repository or pull-request state.
+permissions:
+  contents: read
+  pull-requests: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
