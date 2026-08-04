@@ -146,9 +146,11 @@ write`; it never installs dependencies or runs project build code.
    — each created flag is parsed fail-closed and each selected version must be a
    stable semantic version. Zero, one, or both packages may be selected.
 5. **Resolve release state and build artifacts** — normal runs use Release Please's
-   package outputs. A manual run from `main` with
-   one package-specific `recover-package` selection also requires the exact 40-character
-   `release-commit`. The workflow verifies that revision is reachable from
+   package outputs. Manual ordinary runs select `recover-package: automatic`;
+   push events provide an empty selector and behave identically. A manual run
+   from `main` with one package-specific `recover-package` selection also
+   requires the exact 40-character `release-commit`. The workflow verifies that
+   revision is reachable from
    `main`, checks out the commit, requires the selected package's release tag to
    resolve to exactly those bytes, validates only that package's current
    manifest/package/plugin metadata, and selects only it for recovery.

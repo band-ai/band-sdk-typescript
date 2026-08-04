@@ -9,8 +9,8 @@ on:
         description: Package to recover from its exact tagged release commit
         required: true
         type: choice
-        options: [none, sdk, openclaw]
-        default: none
+        options: [automatic, sdk, openclaw]
+        default: automatic
       release-commit:
         description: Exact 40-character commit SHA to recover (required when recovery is enabled)
         required: false
@@ -40,7 +40,7 @@ jobs:
           fetch-depth: 0
 
       - name: Checkout recovery source
-        if: inputs['recover-package'] != '' && inputs['recover-package'] != 'none'
+        if: inputs['recover-package'] == 'sdk' || inputs['recover-package'] == 'openclaw'
         env:
           RELEASE_COMMIT: ${{ inputs['release-commit'] }}
         shell: bash
@@ -79,12 +79,12 @@ jobs:
       - name: Verify release intent
         env:
           RELEASE_BASE_COMMIT: ${{ github.event.before }}
-          RECOVERY_PACKAGE: ${{ inputs['recover-package'] != '' && inputs['recover-package'] != 'none' && inputs['recover-package'] || '' }}
-          REQUIRE_RELEASE_TAG: ${{ inputs['recover-package'] != '' && inputs['recover-package'] != 'none' }}
+          RECOVERY_PACKAGE: ${{ (inputs['recover-package'] == 'sdk' || inputs['recover-package'] == 'openclaw') && inputs['recover-package'] || '' }}
+          REQUIRE_RELEASE_TAG: ${{ inputs['recover-package'] == 'sdk' || inputs['recover-package'] == 'openclaw' }}
         run: node scripts/assert-release-intent.mjs
 
       - name: Release Please
-        if: inputs['recover-package'] == 'none' || inputs['recover-package'] == ''
+        if: inputs['recover-package'] == 'automatic' || inputs['recover-package'] == ''
         # Commit-pinned so a mutable release tag can't silently change the
         # workflow that publishes to npm; Dependabot updates this SHA with each
         # v4 release. Staying on v4 is deliberate — the per-package output names
@@ -118,10 +118,10 @@ jobs:
             openclaw)
               openclaw_version=$(node -p "require('./packages/openclaw/package.json').version")
               printf 'sdk_created=false\nsdk_version=\nopenclaw_created=true\nopenclaw_version=%s\n' "$openclaw_version" >> "$GITHUB_OUTPUT" ;;
-            none|'')
+            automatic|'')
               printf 'sdk_created=%s\nsdk_version=%s\n' "$SDK_RELEASE_CREATED" "$SDK_RELEASE_VERSION" >> "$GITHUB_OUTPUT"
               printf 'openclaw_created=%s\nopenclaw_version=%s\n' "$OPENCLAW_RELEASE_CREATED" "$OPENCLAW_RELEASE_VERSION" >> "$GITHUB_OUTPUT" ;;
-            *) echo "recover-package must be none, sdk, or openclaw" >&2; exit 1 ;;
+            *) echo "recover-package must be automatic, sdk, or openclaw" >&2; exit 1 ;;
           esac
 
       - name: Verify independent release outputs

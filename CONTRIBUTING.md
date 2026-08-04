@@ -162,6 +162,10 @@ the commit is reachable from `main`, checks out those exact bytes, confirms only
 the selected package's current metadata and tag, skips an exact version already
 present on npm, and publishes only that package.
 
+For an ordinary manual Release Please run, leave `recover-package` set to
+`automatic` and leave `release-commit` empty. Push-triggered runs supply an empty
+selector and follow the same ordinary path.
+
 ### Hotfixes
 
 An urgent fix follows the same single-trunk path as any other change — there is

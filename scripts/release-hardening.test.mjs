@@ -493,8 +493,24 @@ test("release workflow restricts authority and pins the npm publish toolchain", 
 
   assert.match(workflow, /^    if: github\.ref == 'refs\/heads\/main'$/m);
   assert.match(workflow, /recover-package:/);
-  assert.match(workflow, /options: \[none, sdk, openclaw\]/);
+  assert.match(workflow, /options: \[automatic, sdk, openclaw\]/);
+  assert.match(workflow, /default: automatic/);
+  assert.match(
+    workflow,
+    /if: inputs\['recover-package'\] == 'automatic' \|\| inputs\['recover-package'\] == ''/,
+  );
+  assert.match(workflow, /automatic\|''\)/);
+  assert.match(
+    workflow,
+    /if: inputs\['recover-package'\] == 'sdk' \|\| inputs\['recover-package'\] == 'openclaw'/,
+  );
+  assert.match(
+    workflow,
+    /REQUIRE_RELEASE_TAG: \$\{\{ inputs\['recover-package'\] == 'sdk' \|\| inputs\['recover-package'\] == 'openclaw' \}\}/,
+  );
+  assert.match(workflow, /recover-package must be automatic, sdk, or openclaw/);
   assert.match(workflow, /release-commit:/);
+  assert.match(workflow, /release-commit must be an exact lowercase 40-character commit SHA/);
   assert.match(workflow, /git merge-base --is-ancestor/);
   assert.match(workflow, /git checkout --detach/);
   assert.match(workflow, /RECOVERY_PACKAGE:/);
