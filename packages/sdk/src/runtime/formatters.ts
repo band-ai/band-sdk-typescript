@@ -4,6 +4,10 @@ function isMetadataMap(value: unknown): value is MetadataMap {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function formatHandle(handle: string): string {
+  return handle.startsWith("@") ? handle : `@${handle}`;
+}
+
 export function replaceUuidMentions(
   content: string,
   participants: Array<Record<string, unknown>>,
@@ -17,7 +21,7 @@ export function replaceUuidMentions(
     const participantId = participant.id;
     const handle = participant.handle;
     if (typeof participantId === "string" && typeof handle === "string") {
-      next = next.replaceAll(`@[[${participantId}]]`, `@${handle}`);
+      next = next.replaceAll(`@[[${participantId}]]`, formatHandle(handle));
     }
   }
 
@@ -69,7 +73,7 @@ export function buildParticipantsMessage(participants: Array<Record<string, unkn
     const participantType = String(participant.type ?? "Unknown");
     const participantName = String(participant.name ?? "Unknown");
     const participantHandle = String(participant.handle ?? "Unknown");
-    lines.push(`- @${participantHandle} — ${participantName} (${participantType})`);
+    lines.push(`- ${formatHandle(participantHandle)} — ${participantName} (${participantType})`);
   }
 
   lines.push("");
