@@ -130,29 +130,21 @@ branch to promote to. Releases follow [Semantic Versioning](https://semver.org/)
 Every releasable merge to `main` updates a standing **release PR** (the version
 bumps + changelogs) that Release Please maintains; non-release commit types may
 produce no update. Nothing publishes until a maintainer merges that release PR.
-Merging it tags the release and triggers `release.yml`, which publishes both
-packages to npm with provenance.
+Merging it tags whichever package releases are ready and triggers `release.yml`,
+which publishes each selected package independently to npm with provenance.
 
 Merge release PRs with a merge commit or squash merge, never rebase merge, so
 the release remains easy to audit. The safety guard also compares the full PR or
 push range against its authoritative base SHA, so a multi-commit topology cannot
 hide an earlier version transition.
 
-### Coordinated release guard
+### Independent package releases
 
-While `.release-coordination.json` exists, `@band-ai/sdk` and
-`@band-ai/openclaw-channel-band` must release as a coordinated pair. The exact
-next version of each is pinned in that file, and
-`scripts/assert-coordinated-release.mjs` fails the release if only one package
-would publish or if either version misses its pinned target. The rename plan
-keeps this temporary migration guard through the coordinated install proof and
-removes it in a separately reviewed cleanup PR; permanent lockstep releases are
-not implied.
-
-**So: when you change the expected next versions, update
-`.release-coordination.json` in the same PR.** Its expected contents are asserted
-by `scripts/release-hardening.test.mjs`, so a mismatch fails CI rather than the
-release.
+`@band-ai/sdk` and `@band-ai/openclaw-channel-band` release independently.
+Release intent requires each selected package's manifest and package metadata to
+transition atomically; OpenClaw's plugin metadata is part of its own atomic
+transition. A release may contain neither package, either package, or both at
+unrelated stable versions.
 
 ### Holding releases
 
@@ -163,13 +155,12 @@ release PR while the hold exists**: CI rejects any held version transition befor
 merge, and the release workflow checks the same invariant before tag creation.
 Delete the hold in the reviewed release PR only when the migration is ready.
 
-If one npm publish succeeds and the other fails, manually run the Release
-workflow from `main` with `recover-coordinated-release: true` and set
-`release-commit` to the exact 40-character SHA carrying both release tags.
-Recovery verifies that commit is reachable from `main`, checks out that exact
-commit, confirms both current release tags resolve to it, revalidates both versions against the coordination
-marker, skips an exact version already present on npm, and publishes only the
-missing version.
+If an npm publish fails, manually run the Release workflow from `main`, select
+exactly one `recover-package` (`sdk` or `openclaw`), and set `release-commit` to
+the exact 40-character SHA carrying that package's release tag. Recovery verifies
+the commit is reachable from `main`, checks out those exact bytes, confirms only
+the selected package's current metadata and tag, skips an exact version already
+present on npm, and publishes only that package.
 
 ### Hotfixes
 
@@ -180,9 +171,8 @@ no separate hotfix or release branch to cherry-pick between:
    commit so Release Please scores a **PATCH** bump.
 2. Open a PR to `main`, get it reviewed and merged (squash) like normal — CI and
    branch protection still apply; don't bypass them.
-3. If `.release-coordination.json` is present, update it to the patch versions
-   for both packages.
-4. Release Please updates the standing release PR with the patch bump. To ship
+3. Release Please updates the standing release PR with the affected package's
+   patch bump. To ship
    immediately, merge that release PR right away; `release.yml` then tags and
    publishes the patch. (Leaving it unmerged just means the fix ships with the
    next release.)

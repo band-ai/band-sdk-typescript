@@ -7,15 +7,10 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const coordinationScript = join(root, "scripts/assert-coordinated-release.mjs");
+const releaseOutputsScript = join(root, "scripts/assert-release-outputs.mjs");
 const readyScript = join(root, "scripts/assert-release-ready.mjs");
 const intentScript = join(root, "scripts/assert-release-intent.mjs");
 const publishScript = join(root, "scripts/publish-if-needed.mjs");
-
-const targets = {
-  "@band-ai/sdk": "0.1.8",
-  "@band-ai/openclaw-channel-band": "0.1.11",
-};
 
 function run(script, cwd, env = {}) {
   return spawnSync(process.execPath, [script], {
@@ -36,10 +31,6 @@ function runCommand(command, args, cwd, env = {}) {
 async function writeReleaseState(directory, { sdk, openclaw, hold = false }) {
   await mkdir(join(directory, "packages/sdk"), { recursive: true });
   await mkdir(join(directory, "packages/openclaw"), { recursive: true });
-  await writeFile(
-    join(directory, ".release-coordination.json"),
-    `${JSON.stringify({ packages: targets }, null, 2)}\n`,
-  );
   await writeFile(
     join(directory, ".release-please-manifest.json"),
     `${JSON.stringify({ "packages/sdk": sdk, "packages/openclaw": openclaw }, null, 2)}\n`,
@@ -83,10 +74,6 @@ async function withReleaseHistory(callback) {
 
 async function withReleaseRoot(callback) {
   const directory = await mkdtemp(join(tmpdir(), "release-hardening-"));
-  await writeFile(
-    join(directory, ".release-coordination.json"),
-    `${JSON.stringify({ packages: targets }, null, 2)}\n`,
-  );
   try {
     await callback(directory);
   } finally {
@@ -94,119 +81,37 @@ async function withReleaseRoot(callback) {
   }
 }
 
-test("coordination manifest pins both preflight package targets", async () => {
-  const manifest = JSON.parse(
-    await readFile(join(root, ".release-coordination.json"), "utf8"),
-  );
-  assert.deepEqual(manifest, { packages: targets });
-});
-
-test("coordinated release accepts no release outputs", async () => {
-  await withReleaseRoot(async (directory) => {
-    const result = run(coordinationScript, directory, {
-      SDK_RELEASE_CREATED: "false",
-      SDK_RELEASE_VERSION: "",
-      OPENCLAW_RELEASE_CREATED: "false",
-      OPENCLAW_RELEASE_VERSION: "",
-    });
-    assert.equal(result.status, 0, result.stderr);
-  });
-});
-
-test("coordinated release accepts the exact two-package output", async () => {
-  await withReleaseRoot(async (directory) => {
-    const result = run(coordinationScript, directory, {
-      SDK_RELEASE_CREATED: "true",
-      SDK_RELEASE_VERSION: "0.1.8",
-      OPENCLAW_RELEASE_CREATED: "true",
-      OPENCLAW_RELEASE_VERSION: "0.1.11",
-    });
-    assert.equal(result.status, 0, result.stderr);
-  });
-});
-
 for (const scenario of [
-  {
-    name: "only the SDK is released",
-    env: {
-      SDK_RELEASE_CREATED: "true",
-      SDK_RELEASE_VERSION: "0.1.8",
-      OPENCLAW_RELEASE_CREATED: "false",
-      OPENCLAW_RELEASE_VERSION: "",
-    },
-  },
-  {
-    name: "only OpenClaw is released",
-    env: {
-      SDK_RELEASE_CREATED: "false",
-      SDK_RELEASE_VERSION: "",
-      OPENCLAW_RELEASE_CREATED: "true",
-      OPENCLAW_RELEASE_VERSION: "0.1.11",
-    },
-  },
-  {
-    name: "the SDK version misses its target",
-    env: {
-      SDK_RELEASE_CREATED: "true",
-      SDK_RELEASE_VERSION: "0.1.9",
-      OPENCLAW_RELEASE_CREATED: "true",
-      OPENCLAW_RELEASE_VERSION: "0.1.11",
-    },
-  },
-  {
-    name: "the OpenClaw version misses its target",
-    env: {
-      SDK_RELEASE_CREATED: "true",
-      SDK_RELEASE_VERSION: "0.1.8",
-      OPENCLAW_RELEASE_CREATED: "true",
-      OPENCLAW_RELEASE_VERSION: "0.1.12",
-    },
-  },
-  {
-    name: "a release-created output is malformed",
-    env: {
-      SDK_RELEASE_CREATED: "yes",
-      SDK_RELEASE_VERSION: "0.1.8",
-      OPENCLAW_RELEASE_CREATED: "true",
-      OPENCLAW_RELEASE_VERSION: "0.1.11",
-    },
-  },
+  ["no releases", "false", "", "false", ""],
+  ["SDK only", "true", "0.1.8", "false", ""],
+  ["OpenClaw only", "false", "", "true", "0.1.11"],
+  ["both packages independently", "true", "0.1.8", "true", "7.4.2"],
 ]) {
-  test(`coordinated release rejects when ${scenario.name}`, async () => {
+  test(`release outputs accept ${scenario[0]}`, async () => {
     await withReleaseRoot(async (directory) => {
-      const result = run(coordinationScript, directory, scenario.env);
-      assert.notEqual(result.status, 0);
+      const result = run(releaseOutputsScript, directory, {
+        SDK_RELEASE_CREATED: scenario[1], SDK_RELEASE_VERSION: scenario[2],
+        OPENCLAW_RELEASE_CREATED: scenario[3], OPENCLAW_RELEASE_VERSION: scenario[4],
+      });
+      assert.equal(result.status, 0, result.stderr);
     });
   });
 }
 
-for (const [name, manifest] of [
-  ["a missing package target", { packages: { "@band-ai/sdk": "0.1.8" } }],
-  [
-    "an unexpected package target",
-    { packages: { ...targets, "@band-ai/unexpected": "1.0.0" } },
-  ],
-  ["an empty target version", { packages: { ...targets, "@band-ai/sdk": "" } }],
-  [
-    "a non-semantic target version",
-    { packages: { ...targets, "@band-ai/sdk": "next" } },
-  ],
+for (const scenario of [
+  ["malformed SDK created flag", "yes", "0.1.8", "false", ""],
+  ["SDK missing version", "true", "", "false", ""],
+  ["OpenClaw unstable version", "false", "", "true", "1.0.0-rc.1"],
+  ["version without a created release", "false", "0.1.8", "false", ""],
 ]) {
-  test(`coordinated release rejects ${name}`, async () => {
-    const directory = await mkdtemp(join(tmpdir(), "release-hardening-manifest-"));
-    try {
-      await writeFile(
-        join(directory, ".release-coordination.json"),
-        `${JSON.stringify(manifest, null, 2)}\n`,
-      );
-      const result = run(coordinationScript, directory, {
-        SDK_RELEASE_CREATED: "false",
-        OPENCLAW_RELEASE_CREATED: "false",
+  test(`release outputs reject ${scenario[0]}`, async () => {
+    await withReleaseRoot(async (directory) => {
+      const result = run(releaseOutputsScript, directory, {
+        SDK_RELEASE_CREATED: scenario[1], SDK_RELEASE_VERSION: scenario[2],
+        OPENCLAW_RELEASE_CREATED: scenario[3], OPENCLAW_RELEASE_VERSION: scenario[4],
       });
       assert.notEqual(result.status, 0);
-    } finally {
-      await rm(directory, { recursive: true, force: true });
-    }
+    });
   });
 }
 
@@ -271,79 +176,94 @@ test("release intent rejects a version transition while release hold exists", as
   });
 });
 
-test("release intent rejects a partial package version transition", async () => {
+test("release intent accepts an atomic SDK-only version transition", async () => {
   await withReleaseHistory(async (directory) => {
     await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.10" });
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "partial release"], directory).status, 0);
     const result = run(intentScript, directory);
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /coordinated target/i);
+    assert.equal(result.status, 0, result.stderr);
   });
 });
 
-test("release intent accepts the exact coordinated version transition", async () => {
+test("release intent accepts an atomic OpenClaw-only version transition", async () => {
   await withReleaseHistory(async (directory) => {
-    await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.11" });
+    await writeReleaseState(directory, { sdk: "0.1.7", openclaw: "0.1.11" });
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
-    assert.equal(runCommand("git", ["commit", "-qm", "coordinated release"], directory).status, 0);
+    assert.equal(runCommand("git", ["commit", "-qm", "openclaw release"], directory).status, 0);
     const result = run(intentScript, directory);
     assert.equal(result.status, 0, result.stderr);
   });
 });
 
-test("release intent accepts recovery from the exact tagged release commit", async () => {
+test("release intent rejects an SDK manifest/package mismatch", async () => {
   await withReleaseHistory(async (directory) => {
-    await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.11" });
+    await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.10" });
+    const manifest = JSON.parse(await readFile(join(directory, ".release-please-manifest.json"), "utf8"));
+    manifest["packages/sdk"] = "0.1.9";
+    await writeFile(join(directory, ".release-please-manifest.json"), `${JSON.stringify(manifest)}\n`);
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
-    assert.equal(runCommand("git", ["commit", "-qm", "coordinated release"], directory).status, 0);
-    assert.equal(runCommand("git", ["tag", "sdk-v0.1.8"], directory).status, 0);
-    assert.equal(
-      runCommand("git", ["tag", "openclaw-channel-band-v0.1.11"], directory)
-        .status,
-      0,
-    );
-    const result = run(intentScript, directory, {
-      REQUIRE_COORDINATED_CURRENT: "true",
-      REQUIRE_RELEASE_TAGS: "true",
-    });
-    assert.equal(result.status, 0, result.stderr);
+    assert.equal(runCommand("git", ["commit", "-qm", "mismatch"], directory).status, 0);
+    assert.notEqual(run(intentScript, directory).status, 0);
   });
 });
 
-test("release intent rejects recovery from later bytes with unchanged versions", async () => {
+test("release intent rejects an OpenClaw manifest/package/plugin mismatch", async () => {
+  await withReleaseHistory(async (directory) => {
+    await writeReleaseState(directory, { sdk: "0.1.7", openclaw: "0.1.11" });
+    await writeFile(join(directory, "packages/openclaw/openclaw.plugin.json"), '{"version":"0.1.12"}\n');
+    assert.equal(runCommand("git", ["add", "."], directory).status, 0);
+    assert.equal(runCommand("git", ["commit", "-qm", "mismatch"], directory).status, 0);
+    assert.notEqual(run(intentScript, directory).status, 0);
+  });
+});
+
+for (const [selector, tag] of [["sdk", "sdk-v0.1.8"], ["openclaw", "openclaw-channel-band-v0.1.11"]]) {
+test(`release intent accepts ${selector} recovery only from its exact tag`, async () => {
   await withReleaseHistory(async (directory) => {
     await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.11" });
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
-    assert.equal(runCommand("git", ["commit", "-qm", "coordinated release"], directory).status, 0);
+    assert.equal(runCommand("git", ["commit", "-qm", "release"], directory).status, 0);
+    assert.equal(runCommand("git", ["tag", tag], directory).status, 0);
+    const result = run(intentScript, directory, { RECOVERY_PACKAGE: selector, REQUIRE_RELEASE_TAG: "true" });
+    assert.equal(result.status, 0, result.stderr);
+  });
+});
+}
+
+test("release intent rejects recovery when the selected package tag identifies other bytes", async () => {
+  await withReleaseHistory(async (directory) => {
+    await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.10" });
+    assert.equal(runCommand("git", ["add", "."], directory).status, 0);
+    assert.equal(runCommand("git", ["commit", "-qm", "release"], directory).status, 0);
     assert.equal(runCommand("git", ["tag", "sdk-v0.1.8"], directory).status, 0);
-    assert.equal(
-      runCommand("git", ["tag", "openclaw-channel-band-v0.1.11"], directory)
-        .status,
-      0,
-    );
     await writeFile(join(directory, "README.md"), "later bytes\n");
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "later"], directory).status, 0);
     const result = run(intentScript, directory, {
-      REQUIRE_COORDINATED_CURRENT: "true",
-      REQUIRE_RELEASE_TAGS: "true",
+      RECOVERY_PACKAGE: "sdk",
+      REQUIRE_RELEASE_TAG: "true",
     });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /release tag/i);
   });
 });
 
-test("release intent rejects stale current versions during manual recovery", async () => {
+test("release intent rejects OpenClaw recovery when its tag identifies other bytes", async () => {
   await withReleaseHistory(async (directory) => {
-    await writeFile(join(directory, "README.md"), "later commit\n");
+    await writeReleaseState(directory, { sdk: "0.1.7", openclaw: "0.1.11" });
+    assert.equal(runCommand("git", ["add", "."], directory).status, 0);
+    assert.equal(runCommand("git", ["commit", "-qm", "release"], directory).status, 0);
+    assert.equal(runCommand("git", ["tag", "openclaw-channel-band-v0.1.11"], directory).status, 0);
+    await writeFile(join(directory, "README.md"), "later bytes\n");
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "later"], directory).status, 0);
     const result = run(intentScript, directory, {
-      REQUIRE_COORDINATED_CURRENT: "true",
+      RECOVERY_PACKAGE: "openclaw",
+      REQUIRE_RELEASE_TAG: "true",
     });
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /coordinated target/i);
+    assert.match(result.stderr, /release tag/i);
   });
 });
 
@@ -455,13 +375,13 @@ test("release workflow enters PR-only mode before release-please when held", asy
   );
 });
 
-test("release workflow enforces coordination before package work and readiness before each publish", async () => {
+test("release workflow validates independent outputs before package work and readiness before each publish", async () => {
   const workflow = await readFile(join(root, ".github/workflows/release.yml"), "utf8");
   const steps = namedWorkflowSteps(workflow);
   const step = (name) => steps.find((candidate) => candidate.name === name);
   const releasePlease = step("Release Please");
   const releaseState = step("Resolve release state");
-  const coordination = step("Verify coordinated release outputs");
+  const outputValidation = step("Verify independent release outputs");
   const installPnpm = step("Install pnpm");
   const sdkPack = step("Pack SDK (@band-ai)");
   const openclawPack = step("Pack OpenClaw (@band-ai)");
@@ -470,22 +390,22 @@ test("release workflow enforces coordination before package work and readiness b
 
   assert.ok(releasePlease);
   assert.ok(releaseState);
-  assert.ok(coordination);
+  assert.ok(outputValidation);
   assert.ok(installPnpm);
   assert.ok(sdkPack);
   assert.ok(openclawPack);
   assert.ok(sdkPublish);
   assert.ok(openclawPublish);
   assert.ok(releasePlease.index < releaseState.index);
-  assert.ok(releaseState.index < coordination.index);
-  assert.ok(coordination.index < installPnpm.index);
+  assert.ok(releaseState.index < outputValidation.index);
+  assert.ok(outputValidation.index < installPnpm.index);
   assert.ok(installPnpm.index < sdkPack.index);
   assert.ok(sdkPack.index < openclawPack.index);
   assert.ok(installPnpm.index < sdkPublish.index);
   assert.ok(sdkPublish.index < openclawPublish.index);
-  assert.match(coordination.body, /node scripts\/assert-coordinated-release\.mjs/);
-  assert.match(coordination.body, /steps\.release_state\.outputs\.sdk_created/);
-  assert.doesNotMatch(coordination.body, /^        if:/m);
+  assert.match(outputValidation.body, /node scripts\/assert-release-outputs\.mjs/);
+  assert.match(outputValidation.body, /steps\.release_state\.outputs\.sdk_created/);
+  assert.doesNotMatch(outputValidation.body, /^        if:/m);
   assert.match(sdkPack.body, /node scripts\/assert-release-ready\.mjs/);
   assert.match(openclawPack.body, /node scripts\/assert-release-ready\.mjs/);
   assert.match(sdkPublish.body, /node scripts\/assert-release-ready\.mjs/);
@@ -521,12 +441,13 @@ test("release workflow restricts authority and pins the npm publish toolchain", 
   const workflow = await readFile(join(root, ".github/workflows/release.yml"), "utf8");
 
   assert.match(workflow, /^    if: github\.ref == 'refs\/heads\/main'$/m);
-  assert.match(workflow, /recover-coordinated-release:/);
+  assert.match(workflow, /recover-package:/);
+  assert.match(workflow, /options: \[none, sdk, openclaw\]/);
   assert.match(workflow, /release-commit:/);
   assert.match(workflow, /git merge-base --is-ancestor/);
   assert.match(workflow, /git checkout --detach/);
-  assert.match(workflow, /REQUIRE_COORDINATED_CURRENT:/);
-  assert.match(workflow, /REQUIRE_RELEASE_TAGS:/);
+  assert.match(workflow, /RECOVERY_PACKAGE:/);
+  assert.match(workflow, /REQUIRE_RELEASE_TAG:/);
   assert.match(workflow, /RELEASE_BASE_COMMIT: \$\{\{ github\.event\.before \}\}/);
   assert.match(workflow, /permissions:\n {2}contents: read\n\nconcurrency:/);
   const publishJob = workflow.slice(workflow.indexOf("\n  publish:"));
@@ -653,7 +574,6 @@ test("CI uses exact nonempty package filters and selects both packages for contr
     "pnpm-lock.yaml",
     "release-please-config.json",
     ".release-please-manifest.json",
-    ".release-coordination.json",
     ".release-hold",
   ]) {
     const escaped = requiredPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

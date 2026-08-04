@@ -5,11 +5,12 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      recover-coordinated-release:
-        description: Re-run guarded publishes from the exact tagged release commit
+      recover-package:
+        description: Package to recover from its exact tagged release commit
         required: true
-        type: boolean
-        default: false
+        type: choice
+        options: [none, sdk, openclaw]
+        default: none
       release-commit:
         description: Exact 40-character commit SHA to recover (required when recovery is enabled)
         required: false
@@ -39,7 +40,7 @@ jobs:
           fetch-depth: 0
 
       - name: Checkout recovery source
-        if: inputs['recover-coordinated-release'] == true
+        if: inputs['recover-package'] != '' && inputs['recover-package'] != 'none'
         env:
           RELEASE_COMMIT: ${{ inputs['release-commit'] }}
         shell: bash
@@ -78,12 +79,12 @@ jobs:
       - name: Verify release intent
         env:
           RELEASE_BASE_COMMIT: ${{ github.event.before }}
-          REQUIRE_COORDINATED_CURRENT: ${{ inputs['recover-coordinated-release'] }}
-          REQUIRE_RELEASE_TAGS: ${{ inputs['recover-coordinated-release'] }}
+          RECOVERY_PACKAGE: ${{ inputs['recover-package'] != '' && inputs['recover-package'] != 'none' && inputs['recover-package'] || '' }}
+          REQUIRE_RELEASE_TAG: ${{ inputs['recover-package'] != '' && inputs['recover-package'] != 'none' }}
         run: node scripts/assert-release-intent.mjs
 
       - name: Release Please
-        if: inputs['recover-coordinated-release'] != true
+        if: inputs['recover-package'] == 'none' || inputs['recover-package'] == ''
         # Commit-pinned so a mutable release tag can't silently change the
         # workflow that publishes to npm; Dependabot updates this SHA with each
         # v4 release. Staying on v4 is deliberate — the per-package output names
@@ -103,30 +104,33 @@ jobs:
       - name: Resolve release state
         id: release_state
         env:
-          RECOVER_COORDINATED_RELEASE: ${{ inputs['recover-coordinated-release'] }}
+          RECOVER_PACKAGE: ${{ inputs['recover-package'] }}
           SDK_RELEASE_CREATED: ${{ steps.release.outputs['packages/sdk--release_created'] }}
           SDK_RELEASE_VERSION: ${{ steps.release.outputs['packages/sdk--version'] }}
           OPENCLAW_RELEASE_CREATED: ${{ steps.release.outputs['packages/openclaw--release_created'] }}
           OPENCLAW_RELEASE_VERSION: ${{ steps.release.outputs['packages/openclaw--version'] }}
         shell: bash
         run: |
-          if [ "$RECOVER_COORDINATED_RELEASE" = "true" ]; then
-            sdk_version=$(node -p "require('./packages/sdk/package.json').version")
-            openclaw_version=$(node -p "require('./packages/openclaw/package.json').version")
-            printf 'sdk_created=true\nsdk_version=%s\n' "$sdk_version" >> "$GITHUB_OUTPUT"
-            printf 'openclaw_created=true\nopenclaw_version=%s\n' "$openclaw_version" >> "$GITHUB_OUTPUT"
-          else
-            printf 'sdk_created=%s\nsdk_version=%s\n' "$SDK_RELEASE_CREATED" "$SDK_RELEASE_VERSION" >> "$GITHUB_OUTPUT"
-            printf 'openclaw_created=%s\nopenclaw_version=%s\n' "$OPENCLAW_RELEASE_CREATED" "$OPENCLAW_RELEASE_VERSION" >> "$GITHUB_OUTPUT"
-          fi
+          case "$RECOVER_PACKAGE" in
+            sdk)
+              sdk_version=$(node -p "require('./packages/sdk/package.json').version")
+              printf 'sdk_created=true\nsdk_version=%s\nopenclaw_created=false\nopenclaw_version=\n' "$sdk_version" >> "$GITHUB_OUTPUT" ;;
+            openclaw)
+              openclaw_version=$(node -p "require('./packages/openclaw/package.json').version")
+              printf 'sdk_created=false\nsdk_version=\nopenclaw_created=true\nopenclaw_version=%s\n' "$openclaw_version" >> "$GITHUB_OUTPUT" ;;
+            none|'')
+              printf 'sdk_created=%s\nsdk_version=%s\n' "$SDK_RELEASE_CREATED" "$SDK_RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+              printf 'openclaw_created=%s\nopenclaw_version=%s\n' "$OPENCLAW_RELEASE_CREATED" "$OPENCLAW_RELEASE_VERSION" >> "$GITHUB_OUTPUT" ;;
+            *) echo "recover-package must be none, sdk, or openclaw" >&2; exit 1 ;;
+          esac
 
-      - name: Verify coordinated release outputs
+      - name: Verify independent release outputs
         env:
           SDK_RELEASE_CREATED: ${{ steps.release_state.outputs.sdk_created }}
           SDK_RELEASE_VERSION: ${{ steps.release_state.outputs.sdk_version }}
           OPENCLAW_RELEASE_CREATED: ${{ steps.release_state.outputs.openclaw_created }}
           OPENCLAW_RELEASE_VERSION: ${{ steps.release_state.outputs.openclaw_version }}
-        run: node scripts/assert-coordinated-release.mjs
+        run: node scripts/assert-release-outputs.mjs
 
       - name: Record release source
         id: source

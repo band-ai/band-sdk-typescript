@@ -41,7 +41,6 @@ jobs:
               - 'pnpm-lock.yaml'
               - 'release-please-config.json'
               - '.release-please-manifest.json'
-              - '.release-coordination.json'
               - '.release-hold'
             openclaw:
               - 'packages/openclaw/**'
@@ -53,7 +52,6 @@ jobs:
               - 'pnpm-lock.yaml'
               - 'release-please-config.json'
               - '.release-please-manifest.json'
-              - '.release-coordination.json'
               - '.release-hold'
 
   lint:

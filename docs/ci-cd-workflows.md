@@ -28,7 +28,7 @@ back-merge to reconcile after a release.
 
 This repo is a **pnpm monorepo** publishing two packages. Its branch topology
 mirrors `band-ai/band-sdk-python`, while its release workflow remains tailored
-to this repository's coordinated multi-package release:
+to this repository's independent multi-package release:
 
 | Path | Published as |
 |---|---|
@@ -96,7 +96,7 @@ no write permission.
 - `changes` — `dorny/paths-filter` deciding which packages a PR touches. Any
   change to shared control paths (`.github/**`, `scripts/**`, `package.json`,
   `pnpm-workspace.yaml`, `pnpm-lock.yaml`, the release-please config/manifest,
-  `.release-coordination.json`, `.release-hold`) selects **both** packages.
+  `.release-hold`) selects **both** packages.
 - `lint` — build, typecheck, and ESLint for each selected package.
 - `test` — checks release intent before Release Please can consume a version
   transition, then builds and runs Vitest for each selected package plus the
@@ -136,25 +136,22 @@ write`; it never installs dependencies or runs project build code.
    rename or a half-finished migration.
 2. **Verify release intent** (`scripts/assert-release-intent.mjs`) — ordinary
    commits pass without a version transition. A release-version transition is
-   rejected while held or unless the manifest, both package versions, and the
-   OpenClaw plugin version exactly match both coordinated targets. CI runs the
-   same check so a held or partial release PR cannot merge once `ci-status` is
-   required.
+   rejected while held. SDK manifest/package metadata transitions atomically and
+   independently from OpenClaw manifest/package/plugin metadata. CI runs the same
+   check so a held or inconsistent package release cannot merge once `ci-status`
+   is required.
 3. **Release Please** opens/updates the release PR, or — when a release PR merges
    — tags the release and updates the changelogs and versions.
-4. **Verify coordinated release outputs** (`scripts/assert-coordinated-release.mjs`)
-   — both packages must release together, at exactly the versions pinned in
-   `.release-coordination.json` while that migration guard exists. A partial
-   release (one package only) or a
-   version that misses its pinned target fails the run before anything reaches
-   npm.
+4. **Verify independent release outputs** (`scripts/assert-release-outputs.mjs`)
+   — each created flag is parsed fail-closed and each selected version must be a
+   stable semantic version. Zero, one, or both packages may be selected.
 5. **Resolve release state and build artifacts** — normal runs use Release Please's
    package outputs. A manual run from `main` with
-   `recover-coordinated-release: true` also requires the exact 40-character
+   one package-specific `recover-package` selection also requires the exact 40-character
    `release-commit`. The workflow verifies that revision is reachable from
-   `main`, checks out the commit, requires both package release tags to resolve
-   to exactly those bytes, then revalidates the manifest/package/plugin versions
-   against the marker and deliberately selects both packages for recovery.
+   `main`, checks out the commit, requires the selected package's release tag to
+   resolve to exactly those bytes, validates only that package's current
+   manifest/package/plugin metadata, and selects only it for recovery.
    With no OIDC permission, this job installs dependencies, builds both packages,
    packs the selected package tarballs, and uploads the bundle for one run only.
 6. **Publish** — a separate environment-gated job receives OIDC permission,
@@ -165,8 +162,8 @@ write`; it never installs dependencies or runs project build code.
    with OIDC access. Immediately before each package's npm access, the job fetches
    current `origin/main` and re-checks `scripts/assert-release-ready.mjs`
    against both the selected release source and that authoritative current
-   branch, so a newly activated `.release-hold` stops pending recovery.
-   before it runs. `scripts/publish-if-needed.mjs` first queries the exact package
+   branch, so a newly activated `.release-hold` stops pending recovery before it
+   runs. `scripts/publish-if-needed.mjs` first queries the exact package
    version: an already-published version is treated as successful recovery, a
    confirmed 404 publishes, and an inconclusive lookup fails closed.
 7. **Summary** — reports the versions published.
@@ -186,8 +183,8 @@ fails the build if any action in this workflow is left on a floating tag.
 ### Release hardening tests — `scripts/release-hardening.test.mjs`
 
 Run by `test` on every PR (`pnpm test:release-hardening`). It covers the
-coordination and hold guards' behaviour, and asserts structural properties of the
-workflows themselves: the hold check precedes Release Please, the coordination
+independent output, intent, recovery, and hold guards' behaviour, and asserts structural properties of the
+workflows themselves: the hold check precedes Release Please, the release
 intent check precedes release creation, the output check is unconditional and
 precedes package work, every publish is recoverable and preceded by a readiness
 check, every release action and the npm version are pinned, CI validates both canonical
@@ -206,11 +203,11 @@ Deliberately not addressed yet, recorded so they aren't rediscovered:
   compare `release-commit` with the original release run before authorizing the
   environment deployment; tag alignment alone is not immutable proof.
 - **npm publish remains inline in `release.yml`.** Manual dispatch on `main` with
-  `recover-coordinated-release: true` and the exact tagged `release-commit` can
-  recover a partial publish because
+  a package-specific recovery selection and the exact tagged `release-commit`
+  can recover a partial publish because
   exact versions already present on npm are skipped, but release creation and publication are still coupled in one
   workflow. The Python SDK separates them; adopting that architecture here
-  requires updating both npm trusted-publisher bindings in lockstep.
+  requires updating the affected npm trusted-publisher binding.
 - **`ci.yml` actions are still on floating tags.** Only `release.yml` is pinned,
   since that is the workflow with publishing rights.
 - **`packages/sdk` is still named `@thenvoi/sdk` in `package.json`** and renamed
