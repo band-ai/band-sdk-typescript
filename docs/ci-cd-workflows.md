@@ -218,3 +218,12 @@ Deliberately not addressed yet, recorded so they aren't rediscovered:
   since that is the workflow with publishing rights.
 - **`packages/sdk` is still named `@thenvoi/sdk` in `package.json`** and renamed
   to `@band-ai/sdk` by a `sed` at publish time. The rename belongs in the source.
+- **A manual `automatic` dispatch validates a narrower range than a push.** The
+  release-intent baseline is `github.event.before` on a push (the real
+  previously-deployed commit), but a manual dispatch has no such event field,
+  so it deliberately checks only the immediate parent commit (`HEAD^`). A
+  multi-commit range assembled entirely through manual dispatches is therefore
+  checked one commit at a time rather than against the full range a push would
+  cover. Not a silent gap — the baseline is resolved and named explicitly in
+  its own workflow step — but it is weaker, and this is that trade-off on the
+  record.

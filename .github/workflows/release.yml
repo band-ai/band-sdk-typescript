@@ -76,9 +76,24 @@ jobs:
             echo "skip_github_release=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Resolve release baseline
+        # The script only validates a baseline; this step decides which one is
+        # authoritative so a manual dispatch can't silently inherit a weaker
+        # check than a push. A push always has a real github.event.before. A
+        # manual `automatic` dispatch has none, so it deliberately checks only
+        # the parent of the commit it runs against (see Known gaps).
+        id: release_baseline
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "commit=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "commit=HEAD^" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Verify release intent
         env:
-          RELEASE_BASE_COMMIT: ${{ github.event.before }}
+          RELEASE_BASE_COMMIT: ${{ steps.release_baseline.outputs.commit }}
           RECOVERY_PACKAGE: ${{ (inputs['recover-package'] == 'sdk' || inputs['recover-package'] == 'openclaw') && inputs['recover-package'] || '' }}
           REQUIRE_RELEASE_TAG: ${{ inputs['recover-package'] == 'sdk' || inputs['recover-package'] == 'openclaw' }}
         run: node scripts/assert-release-intent.mjs

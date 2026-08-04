@@ -10,8 +10,22 @@ async function readJson(path) {
   return JSON.parse(await readFile(resolve(root, path), "utf8"));
 }
 
-function readBaselineJson(path) {
-  const baseline = process.env.RELEASE_BASE_COMMIT || "HEAD^";
+function resolveBaseline() {
+  const baseline = process.env.RELEASE_BASE_COMMIT;
+  if (!baseline) {
+    throw new Error(
+      "RELEASE_BASE_COMMIT is required to validate an ordinary release version transition",
+    );
+  }
+  if (/^0{40}$/.test(baseline)) {
+    throw new Error(
+      `release baseline ${baseline} is unusable (zero-commit sentinel); use the recover-package path instead`,
+    );
+  }
+  return baseline;
+}
+
+function readBaselineJson(baseline, path) {
   const result = spawnSync("git", ["show", `${baseline}:${path}`], { cwd: root, encoding: "utf8" });
   if (result.status !== 0) throw new Error(`cannot inspect release baseline ${baseline} for ${path}`);
   return JSON.parse(result.stdout);
@@ -68,10 +82,11 @@ try {
     }
     console.log(`Exact ${recoveryPackage} recovery intent verified.`);
   } else {
-    const parentManifest = readBaselineJson(".release-please-manifest.json");
-    const parentSdk = readBaselineJson("packages/sdk/package.json");
-    const parentOpenclaw = readBaselineJson("packages/openclaw/package.json");
-    const parentPlugin = readBaselineJson("packages/openclaw/openclaw.plugin.json");
+    const baseline = resolveBaseline();
+    const parentManifest = readBaselineJson(baseline, ".release-please-manifest.json");
+    const parentSdk = readBaselineJson(baseline, "packages/sdk/package.json");
+    const parentOpenclaw = readBaselineJson(baseline, "packages/openclaw/package.json");
+    const parentPlugin = readBaselineJson(baseline, "packages/openclaw/openclaw.plugin.json");
     const sdkChanged = assertAtomic("SDK", [manifest["packages/sdk"], sdkPackage.version], [parentManifest["packages/sdk"], parentSdk.version]);
     const openclawChanged = assertAtomic("OpenClaw", [manifest["packages/openclaw"], openclawPackage.version, openclawPlugin.version], [parentManifest["packages/openclaw"], parentOpenclaw.version, parentPlugin.version]);
     if (sdkChanged || openclawChanged) await assertNoHold();

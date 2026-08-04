@@ -156,7 +156,7 @@ test("release intent accepts an ordinary commit with unchanged package versions"
     await writeFile(join(directory, "README.md"), "ordinary change\n");
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "docs"], directory).status, 0);
-    const result = run(intentScript, directory);
+    const result = run(intentScript, directory, { RELEASE_BASE_COMMIT: "HEAD^" });
     assert.equal(result.status, 0, result.stderr);
   });
 });
@@ -170,7 +170,7 @@ test("release intent rejects a version transition while release hold exists", as
     });
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "release"], directory).status, 0);
-    const result = run(intentScript, directory);
+    const result = run(intentScript, directory, { RELEASE_BASE_COMMIT: "HEAD^" });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /release hold/i);
   });
@@ -181,7 +181,7 @@ test("release intent accepts an atomic SDK-only version transition", async () =>
     await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.10" });
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "partial release"], directory).status, 0);
-    const result = run(intentScript, directory);
+    const result = run(intentScript, directory, { RELEASE_BASE_COMMIT: "HEAD^" });
     assert.equal(result.status, 0, result.stderr);
   });
 });
@@ -191,7 +191,7 @@ test("release intent accepts an atomic OpenClaw-only version transition", async 
     await writeReleaseState(directory, { sdk: "0.1.7", openclaw: "0.1.11" });
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "openclaw release"], directory).status, 0);
-    const result = run(intentScript, directory);
+    const result = run(intentScript, directory, { RELEASE_BASE_COMMIT: "HEAD^" });
     assert.equal(result.status, 0, result.stderr);
   });
 });
@@ -204,7 +204,7 @@ test("release intent rejects an SDK manifest/package mismatch", async () => {
     await writeFile(join(directory, ".release-please-manifest.json"), `${JSON.stringify(manifest)}\n`);
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "mismatch"], directory).status, 0);
-    assert.notEqual(run(intentScript, directory).status, 0);
+    assert.notEqual(run(intentScript, directory, { RELEASE_BASE_COMMIT: "HEAD^" }).status, 0);
   });
 });
 
@@ -214,7 +214,39 @@ test("release intent rejects an OpenClaw manifest/package/plugin mismatch", asyn
     await writeFile(join(directory, "packages/openclaw/openclaw.plugin.json"), '{"version":"0.1.12"}\n');
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "mismatch"], directory).status, 0);
-    assert.notEqual(run(intentScript, directory).status, 0);
+    assert.notEqual(run(intentScript, directory, { RELEASE_BASE_COMMIT: "HEAD^" }).status, 0);
+  });
+});
+
+test("release intent fails closed when no baseline is supplied for an ordinary release check", async () => {
+  await withReleaseHistory(async (directory) => {
+    const result = run(intentScript, directory, { RELEASE_BASE_COMMIT: "" });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /RELEASE_BASE_COMMIT is required/i);
+  });
+});
+
+test("release intent rejects the zero-commit baseline sentinel", async () => {
+  await withReleaseHistory(async (directory) => {
+    const result = run(intentScript, directory, { RELEASE_BASE_COMMIT: "0".repeat(40) });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /unusable/i);
+    assert.match(result.stderr, /recover-package/i);
+  });
+});
+
+test("recovery does not require a baseline, guarding against hoisting the baseline check above it", async () => {
+  await withReleaseHistory(async (directory) => {
+    await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.10" });
+    assert.equal(runCommand("git", ["add", "."], directory).status, 0);
+    assert.equal(runCommand("git", ["commit", "-qm", "release"], directory).status, 0);
+    assert.equal(runCommand("git", ["tag", "sdk-v0.1.8"], directory).status, 0);
+    const result = run(intentScript, directory, {
+      RECOVERY_PACKAGE: "sdk",
+      REQUIRE_RELEASE_TAG: "true",
+      RELEASE_BASE_COMMIT: "",
+    });
+    assert.equal(result.status, 0, result.stderr);
   });
 });
 
@@ -533,7 +565,7 @@ test("release workflow restricts authority and pins the npm publish toolchain", 
   assert.match(workflow, /git checkout --detach/);
   assert.match(workflow, /RECOVERY_PACKAGE:/);
   assert.match(workflow, /REQUIRE_RELEASE_TAG:/);
-  assert.match(workflow, /RELEASE_BASE_COMMIT: \$\{\{ github\.event\.before \}\}/);
+  assert.match(workflow, /RELEASE_BASE_COMMIT:/);
   assert.match(workflow, /permissions:\n {2}contents: read\n\nconcurrency:/);
   const publishJob = workflow.slice(workflow.indexOf("\n  publish:"));
   const releaseJob = workflow.slice(
@@ -559,6 +591,27 @@ test("release workflow restricts authority and pins the npm publish toolchain", 
     workflow.slice(workflow.indexOf("- name: Resolve release state")),
     /if: steps\.release\.outputs/,
   );
+});
+
+test("release workflow resolves the intent baseline explicitly instead of relying on the script default", async () => {
+  const workflow = await readFile(join(root, ".github/workflows/release.yml"), "utf8");
+  const steps = namedWorkflowSteps(workflow);
+  const step = (name) => steps.find((candidate) => candidate.name === name);
+  const baseline = step("Resolve release baseline");
+  const releaseIntent = step("Verify release intent");
+
+  assert.ok(baseline, "release.yml must resolve the intent baseline in its own step");
+  assert.ok(releaseIntent);
+  assert.ok(baseline.index < releaseIntent.index);
+  assert.match(baseline.body, /id: release_baseline/);
+  assert.match(baseline.body, /github\.event_name/);
+  assert.match(baseline.body, /github\.event\.before/);
+  assert.match(baseline.body, /GITHUB_OUTPUT/);
+  assert.match(
+    releaseIntent.body,
+    /RELEASE_BASE_COMMIT: \$\{\{ steps\.release_baseline\.outputs\.commit \}\}/,
+  );
+  assert.doesNotMatch(releaseIntent.body, /github\.event\.before/);
 });
 
 test("release workflow keeps the artifact download path in sync with the publish tarball prefixes", async () => {
