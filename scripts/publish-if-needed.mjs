@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 
 function runNpm(args) {
   return spawnSync("npm", args, { encoding: "utf8" });
@@ -12,6 +13,9 @@ try {
     throw new Error(
       "PUBLISH_PACKAGE_NAME, PUBLISH_PACKAGE_VERSION, and PUBLISH_TARBALL are required",
     );
+  }
+  if (!existsSync(tarball)) {
+    throw new Error(`Tarball not found at ${tarball}; cannot publish`);
   }
 
   const spec = `${name}@${version}`;

@@ -334,7 +334,7 @@ test("release intent uses the PR base across a multi-commit release topology", a
   });
 });
 
-async function withFakeNpm(viewMode, callback) {
+async function withFakeNpm(viewMode, callback, { createTarball = true } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "release-publish-"));
   const bin = join(directory, "bin");
   const log = join(directory, "npm.log");
@@ -343,6 +343,9 @@ async function withFakeNpm(viewMode, callback) {
     join(directory, "package.json"),
     `${JSON.stringify({ name: "@band-ai/example", version: "1.2.3" })}\n`,
   );
+  if (createTarball) {
+    await writeFile(join(directory, "band-ai-example-1.2.3.tgz"), "fake tarball\n");
+  }
   await writeFile(
     join(bin, "npm"),
     `#!/bin/sh\necho "$*" >> "$FAKE_NPM_LOG"\nif [ "$1" = view ]; then\n  if [ "$FAKE_NPM_VIEW" = found ]; then echo '"1.2.3"'; exit 0; fi\n  if [ "$FAKE_NPM_VIEW" = missing ]; then echo 'E404 Not Found' >&2; exit 1; fi\n  echo 'network failure' >&2; exit 1\nfi\nexit 0\n`,
@@ -388,6 +391,17 @@ test("idempotent publisher fails closed when the npm lookup is inconclusive", as
     assert.notEqual(result.status, 0);
     assert.doesNotMatch(await readFile(log, "utf8"), /^publish /m);
   });
+});
+
+test("idempotent publisher fails fast with a named path when the tarball is missing", async () => {
+  await withFakeNpm("missing", async (directory, env, log) => {
+    const result = run(publishScript, directory, env);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /band-ai-example-1\.2\.3\.tgz/);
+    assert.match(result.stderr, /not found/i);
+    const logged = await readFile(log, "utf8").catch(() => "");
+    assert.doesNotMatch(logged, /^publish /m);
+  }, { createTarball: false });
 });
 
 function namedWorkflowSteps(workflow) {
@@ -544,6 +558,65 @@ test("release workflow restricts authority and pins the npm publish toolchain", 
   assert.doesNotMatch(
     workflow.slice(workflow.indexOf("- name: Resolve release state")),
     /if: steps\.release\.outputs/,
+  );
+});
+
+test("release workflow keeps the artifact download path in sync with the publish tarball prefixes", async () => {
+  const workflow = await readFile(join(root, ".github/workflows/release.yml"), "utf8");
+  const steps = namedWorkflowSteps(workflow);
+  const step = (name) => steps.find((candidate) => candidate.name === name);
+  const upload = step("Upload release bundle");
+  const download = step("Download verified release bundle");
+  const sdkPublish = step("Publish SDK to npm (@band-ai)");
+  const openclawPublish = step("Publish OpenClaw to npm (@band-ai)");
+
+  assert.ok(upload);
+  assert.ok(download);
+  assert.ok(sdkPublish);
+  assert.ok(openclawPublish);
+
+  const uploadName = upload.body.match(/^\s+name: (.+)$/m)?.[1];
+  const downloadName = download.body.match(/^\s+name: (.+)$/m)?.[1];
+  assert.ok(uploadName, "upload step must declare an artifact name");
+  assert.ok(downloadName, "download step must declare an artifact name");
+  // The upload step (job: release) can read `steps.source.outputs.commit`
+  // directly; the download step (job: publish) cannot see another job's
+  // steps and must instead go through that job's declared output. Confirm
+  // they still name the same artifact by following that indirection rather
+  // than requiring identical expression text.
+  assert.equal(
+    uploadName,
+    "release-bundle-${{ steps.source.outputs.commit }}",
+  );
+  assert.equal(
+    downloadName,
+    "release-bundle-${{ needs.release.outputs.source_commit }}",
+  );
+  assert.match(
+    workflow,
+    /source_commit: \$\{\{ steps\.source\.outputs\.commit \}\}/,
+    "needs.release.outputs.source_commit must be declared as steps.source.outputs.commit, so upload and download name the same artifact",
+  );
+
+  const sdkTarball = sdkPublish.body.match(/PUBLISH_TARBALL: (\S+)/)?.[1];
+  const openclawTarball = openclawPublish.body.match(/PUBLISH_TARBALL: (\S+)/)?.[1];
+  assert.ok(sdkTarball, "SDK publish step must declare PUBLISH_TARBALL");
+  assert.ok(openclawTarball, "OpenClaw publish step must declare PUBLISH_TARBALL");
+
+  const prefix = (tarball) => tarball.slice(0, tarball.lastIndexOf("/"));
+  const sdkPrefix = prefix(sdkTarball);
+  const openclawPrefix = prefix(openclawTarball);
+  assert.equal(
+    openclawPrefix,
+    sdkPrefix,
+    "both publish steps must expect their tarball under the same directory prefix",
+  );
+
+  const downloadPath = download.body.match(/^\s+path: (.+)$/m)?.[1];
+  assert.equal(
+    downloadPath,
+    sdkPrefix,
+    "download step must extract into the exact directory prefix the publish steps read from",
   );
 });
 
