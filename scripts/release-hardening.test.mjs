@@ -231,6 +231,57 @@ test(`release intent accepts ${selector} recovery only from its exact tag`, asyn
 });
 }
 
+test("SDK recovery rejects an SDK manifest/package mismatch", async () => {
+  await withReleaseHistory(async (directory) => {
+    await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.10" });
+    const manifest = JSON.parse(await readFile(join(directory, ".release-please-manifest.json"), "utf8"));
+    manifest["packages/sdk"] = "0.1.9";
+    await writeFile(join(directory, ".release-please-manifest.json"), `${JSON.stringify(manifest)}\n`);
+    assert.equal(runCommand("git", ["add", "."], directory).status, 0);
+    assert.equal(runCommand("git", ["commit", "-qm", "mismatch"], directory).status, 0);
+    const result = run(intentScript, directory, { RECOVERY_PACKAGE: "sdk" });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /sdk current manifest and package versions must match exactly/i);
+  });
+});
+
+for (const selector of ["sdk", "openclaw"]) {
+  test(`${selector} recovery rejects an active release hold`, async () => {
+    await withReleaseHistory(async (directory) => {
+      await writeFile(join(directory, ".release-hold"), "emergency hold\n");
+      const result = run(intentScript, directory, { RECOVERY_PACKAGE: selector });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /release hold/i);
+    });
+  });
+}
+
+test("SDK recovery ignores an inconsistent unselected OpenClaw tuple", async () => {
+  await withReleaseHistory(async (directory) => {
+    await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.11" });
+    await writeFile(join(directory, "packages/openclaw/openclaw.plugin.json"), '{"version":"9.9.9"}\n');
+    assert.equal(runCommand("git", ["add", "."], directory).status, 0);
+    assert.equal(runCommand("git", ["commit", "-qm", "release"], directory).status, 0);
+    assert.equal(runCommand("git", ["tag", "sdk-v0.1.8"], directory).status, 0);
+    const result = run(intentScript, directory, { RECOVERY_PACKAGE: "sdk", REQUIRE_RELEASE_TAG: "true" });
+    assert.equal(result.status, 0, result.stderr);
+  });
+});
+
+test("OpenClaw recovery ignores an inconsistent unselected SDK tuple", async () => {
+  await withReleaseHistory(async (directory) => {
+    await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.11" });
+    const manifest = JSON.parse(await readFile(join(directory, ".release-please-manifest.json"), "utf8"));
+    manifest["packages/sdk"] = "9.9.9";
+    await writeFile(join(directory, ".release-please-manifest.json"), `${JSON.stringify(manifest)}\n`);
+    assert.equal(runCommand("git", ["add", "."], directory).status, 0);
+    assert.equal(runCommand("git", ["commit", "-qm", "release"], directory).status, 0);
+    assert.equal(runCommand("git", ["tag", "openclaw-channel-band-v0.1.11"], directory).status, 0);
+    const result = run(intentScript, directory, { RECOVERY_PACKAGE: "openclaw", REQUIRE_RELEASE_TAG: "true" });
+    assert.equal(result.status, 0, result.stderr);
+  });
+});
+
 test("release intent rejects recovery when the selected package tag identifies other bytes", async () => {
   await withReleaseHistory(async (directory) => {
     await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.10" });
