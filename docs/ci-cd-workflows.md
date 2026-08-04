@@ -227,3 +227,10 @@ Deliberately not addressed yet, recorded so they aren't rediscovered:
   cover. Not a silent gap — the baseline is resolved and named explicitly in
   its own workflow step — but it is weaker, and this is that trade-off on the
   record.
+- **This pipeline is stable-releases-only, by choice.** `assert-release-intent.mjs`
+  and `assert-release-outputs.mjs` both require `^\d+\.\d+\.\d+$`, so a
+  prerelease version is rejected by the guards, not merely unsupported by
+  convention. Adding a prerelease channel is more than loosening that regex:
+  `publish-if-needed.mjs` publishes with no `--tag`, so every publish already
+  lands on npm's `latest`; a prerelease would need dist-tag routing added
+  first, or it would overwrite `latest` with an `rc`/`beta`.
