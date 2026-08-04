@@ -155,12 +155,15 @@ release PR while the hold exists**: CI rejects any held version transition befor
 merge, and the release workflow checks the same invariant before tag creation.
 Delete the hold in the reviewed release PR only when the migration is ready.
 
-If an npm publish fails, manually run the Release workflow from `main`, select
-exactly one `recover-package` (`sdk` or `openclaw`), and set `release-commit` to
-the exact 40-character SHA carrying that package's release tag. Recovery verifies
-the commit is reachable from `main`, checks out those exact bytes, confirms only
-the selected package's current metadata and tag, skips an exact version already
-present on npm, and publishes only that package.
+If an npm publish fails, don't just re-run the failed `publish` job: the
+uploaded artifact is retained for only 1 day, so a re-run after that window
+fails at the download step with nothing to recover. Instead, manually run the
+Release workflow from `main`, select exactly one `recover-package` (`sdk` or
+`openclaw`), and set `release-commit` to the exact 40-character SHA carrying
+that package's release tag. Recovery verifies the commit is reachable from
+`main`, checks out those exact bytes, confirms only the selected package's
+current metadata and tag, skips an exact version already present on npm, and
+publishes only that package.
 
 For an ordinary manual Release Please run, leave `recover-package` set to
 `automatic` and leave `release-commit` empty. Push-triggered runs supply an empty

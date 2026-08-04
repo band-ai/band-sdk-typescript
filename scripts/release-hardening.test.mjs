@@ -618,6 +618,11 @@ test("release workflow keeps the artifact download path in sync with the publish
     sdkPrefix,
     "download step must extract into the exact directory prefix the publish steps read from",
   );
+
+  // 1-day retention is a deliberate choice (docs/ci-cd-workflows.md), but it
+  // must stay a conscious one — nobody should silently extend how long
+  // publishable bytes sit in artifact storage.
+  assert.match(upload.body, /^\s+retention-days: 1$/m);
 });
 
 test("CI validates pull requests to main and the legacy dev compatibility lane", async () => {

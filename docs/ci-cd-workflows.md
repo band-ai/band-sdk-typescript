@@ -155,7 +155,11 @@ write`; it never installs dependencies or runs project build code.
    resolve to exactly those bytes, validates only that package's current
    manifest/package/plugin metadata, and selects only it for recovery.
    With no OIDC permission, this job installs dependencies, builds both packages,
-   packs the selected package tarballs, and uploads the bundle for one run only.
+   packs the selected package tarballs, and uploads the bundle with a 1-day
+   retention. Re-running the `publish` job after that window fails at the
+   download step, since the artifact is gone; the supported recovery is a
+   `recover-package` dispatch, which re-packs from the tagged release commit
+   instead of reusing the expired artifact.
 6. **Publish** — a separate environment-gated job receives OIDC permission,
    downloads the prebuilt bundle, and runs no dependency install or project
    build. Its exact Node 24.18.1 runtime bundles npm 11.16.0, so the job does not
