@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       recover-package:
-        description: Package to recover from its exact tagged release commit
+        description: Run automatic Release Please, or recover one package from its exact tagged release commit
         required: true
         type: choice
         options: [automatic, sdk, openclaw]

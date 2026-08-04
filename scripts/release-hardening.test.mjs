@@ -493,6 +493,10 @@ test("release workflow restricts authority and pins the npm publish toolchain", 
 
   assert.match(workflow, /^    if: github\.ref == 'refs\/heads\/main'$/m);
   assert.match(workflow, /recover-package:/);
+  assert.match(
+    workflow,
+    /description: Run automatic Release Please, or recover one package from its exact tagged release commit/,
+  );
   assert.match(workflow, /options: \[automatic, sdk, openclaw\]/);
   assert.match(workflow, /default: automatic/);
   assert.match(
