@@ -24,6 +24,13 @@ describe("runtime utilities", () => {
     expect(replaced).toBe("hello @john");
   });
 
+  it("preserves exactly one prefix when replacing a UUID with a prefixed handle", () => {
+    const replaced = replaceUuidMentions("hello @[[u1]]", [
+      { id: "u1", handle: "@john" },
+    ]);
+    expect(replaced).toBe("hello @john");
+  });
+
   it("formats message and history for llm", () => {
     const msg = formatMessageForLlm({
       id: "m1",
@@ -48,6 +55,14 @@ describe("runtime utilities", () => {
     const message = buildParticipantsMessage([{ type: "User", name: "Jane", handle: "jane" }]);
     expect(message).toContain("Current Participants");
     expect(message).toContain("@jane");
+  });
+
+  it("preserves exactly one prefix for a prefixed participant handle", () => {
+    const message = buildParticipantsMessage([
+      { type: "User", name: "Jane", handle: "@jane" },
+    ]);
+    expect(message).toContain("- @jane — Jane (User)");
+    expect(message).not.toContain("@@jane");
   });
 
   it("renders system prompt", () => {
