@@ -83,8 +83,3 @@ reviewer_agent:
 linear_band_transport:
   agent_id: "your-linear-transport-agent-id"
   api_key: "your-api-key"
-
-# Legacy key — accepted with a deprecation warning:
-# linear_thenvoi_transport:
-#   agent_id: "your-linear-transport-agent-id"
-#   api_key: "your-api-key"

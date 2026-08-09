@@ -21,7 +21,7 @@ import {
   type WritebackMode,
 } from "../../src/linear";
 import { FernRestAdapter, type RestApi } from "../../src/rest";
-import { createLinearBandBridgeAgent, readLinearEnv } from "./linear-band-bridge-agent";
+import { createLinearBandBridgeAgent, readLinearEnv, loadBandLinearConfig } from "./linear-band-bridge-agent";
 
 interface LinearBandBridgeServerOptions {
   restApi: RestApi;
@@ -255,8 +255,14 @@ function resolveBridgeApiKey(logger: Logger): string {
   );
 }
 
-function resolveEmbeddedBridgeRuntimeConfigKey(): string {
-  return readLinearEnv("LINEAR_BAND_BRIDGE_RUNTIME_CONFIG_KEY", "LINEAR_THENVOI_BRIDGE_RUNTIME_CONFIG_KEY") ?? "linear_band_bridge";
+function resolveEmbeddedBridgeConfig(): AgentConfigResult {
+  const explicitKey = readLinearEnv("LINEAR_BAND_BRIDGE_RUNTIME_CONFIG_KEY", "LINEAR_THENVOI_BRIDGE_RUNTIME_CONFIG_KEY");
+  if (explicitKey) {
+    // Explicitly configured — use exact key, no fallback
+    return loadAgentConfig(explicitKey);
+  }
+  // Default — use Band-first with legacy fallback
+  return loadBandLinearConfig("linear_band_bridge", "linear_thenvoi_bridge");
 }
 
 export function resolveRestApiKeyForMode(input: {
@@ -274,7 +280,7 @@ export function resolveRestApiKeyForMode(input: {
   }
 
   input.logger.warn("linear_thenvoi_bridge.embedded_mode_missing_runtime_api_key", {
-    runtimeConfigKey: resolveEmbeddedBridgeRuntimeConfigKey(),
+    runtimeConfigKey: readLinearEnv("LINEAR_BAND_BRIDGE_RUNTIME_CONFIG_KEY", "LINEAR_THENVOI_BRIDGE_RUNTIME_CONFIG_KEY") ?? "linear_band_bridge",
   });
   return resolveBridgeApiKey(input.logger);
 }
@@ -592,9 +598,8 @@ async function runLinearBandBridgeServer(): Promise<void> {
     readLinearEnv("LINEAR_BAND_BRIDGE_MIN_REQUEST_INTERVAL_MS", "LINEAR_THENVOI_BRIDGE_MIN_REQUEST_INTERVAL_MS"),
     DEFAULT_THENVOI_BRIDGE_MIN_REQUEST_INTERVAL_MS,
   );
-  const embeddedBridgeRuntimeConfigKey = resolveEmbeddedBridgeRuntimeConfigKey();
   const embeddedBridgeConfig = embedBridgeAgent
-    ? loadAgentConfig(embeddedBridgeRuntimeConfigKey)
+    ? resolveEmbeddedBridgeConfig()
     : null;
   const bridgeApiKey = resolveRestApiKeyForMode({
     logger,
@@ -623,7 +628,7 @@ async function runLinearBandBridgeServer(): Promise<void> {
   let embeddedAgentStartPromise: Promise<void> | null = null;
 
   if (embedBridgeAgent) {
-    const bridgeConfig = embeddedBridgeConfig ?? loadAgentConfig(embeddedBridgeRuntimeConfigKey);
+    const bridgeConfig = embeddedBridgeConfig!;
     embeddedAgent = createLinearBandBridgeAgent({
       ...bridgeConfig,
       linearAccessToken,
