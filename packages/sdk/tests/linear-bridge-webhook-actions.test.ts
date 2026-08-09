@@ -596,7 +596,7 @@ describe("linear bridge webhook actions", () => {
     expect(linearClient.agentSessionUpdateExternalUrl).toHaveBeenCalledWith(
       "session-1",
       {
-        externalUrls: [{ label: "View in Thenvoi", url: expect.stringMatching(/^https:\/\/app\.thenvoi\.com\/rooms\//) }],
+        externalUrls: [{ label: "View in Band", url: expect.stringMatching(/^https:\/\/app\.thenvoi\.com\/rooms\//) }],
       },
     );
   });
@@ -615,7 +615,7 @@ describe("linear bridge webhook actions", () => {
     expect(linearClient.agentSessionUpdateExternalUrl).toHaveBeenCalledWith(
       "session-1",
       {
-        externalUrls: [{ label: "View in Thenvoi", url: expect.stringContaining("https://custom.example.com/rooms/") }],
+        externalUrls: [{ label: "View in Band", url: expect.stringContaining("https://custom.example.com/rooms/") }],
       },
     );
   });

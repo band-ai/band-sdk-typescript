@@ -15,7 +15,7 @@ disposition, and the concrete missing-correlation signal to monitor.
 
 | Source | Ref / SHA | Scope | Status |
 |---|---|---|---|
-| `band-sdk-typescript` (this repo) | branch `feature/thenvoi-band-rename-c4-room-metadata`, base `ead21f5` | full `packages/sdk` source, examples, tests, docs | **searched — emitters only; no in-repo reader of the renamed keys** |
+| `band-sdk-typescript` (this repo) | branch `feature/thenvoi-band-rename-c4-room-metadata`, reviewed C4 commit `9722fe2` | full `packages/sdk` source, examples, tests, docs | **searched — emitters only; no in-repo reader of the renamed keys** |
 | `../thenvoi-platform` (backend) | `70464b737` (branch `dev`) | event/message metadata handling, A2A/Parlant/Linear consumers | **searched — no reader found** |
 | `../band-frontend-app` | `ae171b2` | UI metadata consumers | **searched — no reader found** |
 | `../platform-ui` | `a29c709` | UI metadata consumers | **searched — no reader found** |
@@ -92,31 +92,38 @@ store maps public `bandRoomId` ↔ physical `thenvoi_room_id` at its boundary.
 | External Parlant server / operators reading session & event `band_*` metadata and the `Band Room …` title | consumer-owned (external) | Same as above. |
 | External consumers of the Linear-bridge `linear_bridge` metadata value | consumer-owned (external) | Same as above. |
 
-## Missing-correlation monitors (executable signals)
+## Release validation and monitoring
 
-Each renamed key breaks correlation for a reader still matching the old name.
-Concrete signals to alert on after release:
+### Executable validation in this repository
 
-- **A2A gateway status metadata.** In the A2A client/telemetry store, count
-  status-event payloads whose `metadata` has any `thenvoi_message_id` /
-  `thenvoi_room_id` / `thenvoi_sender_id` / `thenvoi_message_type` key in a
-  rolling window:
-  `SELECT count(*) FROM a2a_status_events WHERE json_extract(metadata,'$.thenvoi_room_id') IS NOT NULL AND received_at > now() - interval '1 hour'` —
-  a nonzero result after the SDK upgrade means a producer downgrade or a reader
-  still keyed on the old name; expect this to fall to zero and `band_room_id`
-  presence to rise correspondingly.
-- **Parlant sessions.** Alert when new sessions carry neither
-  `metadata.band_source` nor `metadata.band_room_id` while session volume is
-  nonzero, or when the session-title prefix distribution still shows
-  `Thenvoi Room ` after the rollout window.
-- **Linear bridge.** Alert when forwarded bootstrap/room payloads carry
-  `linear_bridge = "thenvoi"` after upgrade (should be `"band"`).
-- **Correlation-drop backstop.** For each surface, alert on a sustained drop in
-  the join rate between emitted events and the downstream reader keyed on the new
-  names — a drop that coincides with the SDK version bump identifies an
-  unmigrated reader.
+Because the inventory found **no owned reader or store** in the searched
+repositories, there is no owned telemetry store here to query. What is
+executable and owned is the assertion that each emitted payload uses exactly the
+Band namespace. These proofs run in this repo (`pnpm --filter @thenvoi/sdk exec
+vitest run <file>`) against the actual adapter output and gate the release:
 
-The queries above are illustrative of the signal shape; authoritative per-store
-monitor definitions live with each consuming system. The in-repository inventory
-(this repo + the linked operational repositories listed under Searched sources)
-is complete and found no owned reader that blocks REL-01.
+| Surface | Executable proof (asserts the real emitted payload) |
+|---|---|
+| A2A gateway status metadata | `tests/a2a-gateway-adapter.test.ts`, `tests/a2a-gateway-status-event.test.ts` — asserts `band_message_id/band_message_type/band_sender_id/band_room_id` and that no `thenvoi_*` key is emitted; retained `gateway_*` routing keys unchanged |
+| A2A agent card | `tests/a2a-gateway-server.test.ts` — skill tags `["band","gateway"]` |
+| Parlant session/event metadata + title | `tests/parlant-adapter.test.ts` — `band_source: "band-sdk-typescript"`, `band_room_id`, `band_system_prompt`, `Band Room …` title; no `thenvoi_`/`Thenvoi` |
+| Linear bridge metadata | `tests/linear-notification-handler.test.ts` — `linear_bridge: "band"` on forwarded payloads |
+| Storage round-trip | `tests/c4-room-metadata-storage.test.ts` — public `bandRoomId` ↔ physical `thenvoi_room_id`, no schema change |
+
+A release build that emits any legacy key/value fails these proofs before ship.
+
+### External consumer monitoring (consumer-owned, unknown)
+
+The SDK does not own any downstream telemetry store, so it cannot define an
+executable monitor for one. Any third-party reader outside the inventoried
+repositories is **consumer-owned and unknown**. Release notes publish the
+old→new key/value map (above) so an affected operator can implement their own
+correlation check — for their store, the shape is: after upgrading the SDK, a
+nonzero count of payloads still carrying a legacy `thenvoi_*` key (or a sustained
+drop in the join rate against a reader keyed on the old name) identifies an
+unmigrated reader; the operator pins the last `0.x` SDK until it is migrated. No
+such store or query is fabricated here.
+
+The in-repository inventory (this repo at `9722fe2` + the linked operational
+repositories under Searched sources) is complete and found no owned reader that
+blocks REL-01.
