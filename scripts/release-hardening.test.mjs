@@ -724,6 +724,22 @@ test("releases and new dependency updates target main, not the dev compatibility
   assert.doesNotMatch(dependabot, /thenvoi\/integrations-team/);
 });
 
+test("published packages point at the repository that signs their provenance", async () => {
+  // npm validates repository.url against the provenance statement, so a stale
+  // URL (e.g. the pre-rename thenvoi remote) fails publish with a 422.
+  for (const pkg of ["packages/sdk", "packages/openclaw"]) {
+    const manifest = JSON.parse(
+      await readFile(join(root, pkg, "package.json"), "utf8"),
+    );
+    assert.equal(
+      manifest.repository?.url,
+      "git+https://github.com/band-ai/band-sdk-typescript.git",
+      `${pkg} must declare the repository that builds and signs it`,
+    );
+    assert.equal(manifest.repository?.directory, pkg);
+  }
+});
+
 test("CI exposes one always-reporting aggregate status covering every job", async () => {
   const workflow = await readFile(join(root, ".github/workflows/ci.yml"), "utf8");
 
