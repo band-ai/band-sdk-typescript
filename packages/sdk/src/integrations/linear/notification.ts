@@ -1,7 +1,7 @@
 import type { AppUserNotificationWebhookPayloadWithNotification } from "@linear/sdk/webhooks";
 
 import type { Logger } from "../../core/logger";
-import type { LinearThenvoiBridgeDeps } from "./types";
+import type { LinearBandBridgeDeps } from "./types";
 
 /** The notification union carried by AppUserNotificationWebhookPayloadWithNotification. */
 type Notification = AppUserNotificationWebhookPayloadWithNotification["notification"];
@@ -25,7 +25,7 @@ function sanitizeBodyText(text: string): string {
 
 export interface HandleAppUserNotificationInput {
   payload: AppUserNotificationWebhookPayloadWithNotification;
-  deps: LinearThenvoiBridgeDeps;
+  deps: LinearBandBridgeDeps;
   logger: Logger;
   /** The Linear app-user id from the webhook envelope; used to skip self-notifications. */
   appUserId?: string;
@@ -70,7 +70,7 @@ export async function handleAppUserNotification(
 
 async function handleIssueUnassigned(input: {
   notification: NotificationByType<"IssueUnassignedFromYouNotificationWebhookPayload">;
-  deps: LinearThenvoiBridgeDeps;
+  deps: LinearBandBridgeDeps;
   logger: Logger;
 }): Promise<void> {
   const { notification, deps, logger } = input;
@@ -88,7 +88,7 @@ async function handleIssueUnassigned(input: {
   // Send the disengagement message before canceling the session. If the message
   // fails, the session stays active so a retried notification can try again.
   // Canceling first would make retries no-ops (getByIssueId filters canceled sessions).
-  await deps.thenvoiRest.createChatEvent(existing.thenvoiRoomId, {
+  await deps.bandRest.createChatEvent(existing.thenvoiRoomId, {
     content:
       "[Linear]: Issue unassigned from agent. Disengage from active work and await reassignment.",
     messageType: "task",
@@ -111,7 +111,7 @@ async function handleIssueUnassigned(input: {
 
 async function handleIssueNewComment(input: {
   notification: NotificationByType<"IssueNewCommentNotificationWebhookPayload">;
-  deps: LinearThenvoiBridgeDeps;
+  deps: LinearBandBridgeDeps;
   logger: Logger;
   appUserId?: string;
 }): Promise<void> {
@@ -159,7 +159,7 @@ async function handleIssueNewComment(input: {
     });
   }
 
-  await deps.thenvoiRest.createChatEvent(existing.thenvoiRoomId, {
+  await deps.bandRest.createChatEvent(existing.thenvoiRoomId, {
     content: `[Linear Comment from ${actorName}]: ${commentBody}`,
     messageType: "text",
     metadata: {

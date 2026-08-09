@@ -20,7 +20,7 @@ interface CapturedRoomMessage {
   mentions?: Array<{ id: string; handle?: string; name?: string; username?: string }>;
 }
 
-export class LinearThenvoiExampleRestApi implements RestApi {
+export class LinearBandExampleRestApi implements RestApi {
   public readonly peers: ExamplePeer[];
   public readonly roomMessages: CapturedRoomMessage[] = [];
   public readonly roomEvents: CapturedRoomMessage[] = [];
@@ -45,8 +45,8 @@ export class LinearThenvoiExampleRestApi implements RestApi {
     agentHandle?: string;
   }) {
     const agentHandle = options?.agentHandle ?? "linear-host";
-    const agentId = options?.agentId ?? "agent-linear-thenvoi";
-    const agentName = options?.agentName ?? "Linear Thenvoi Host";
+    const agentId = options?.agentId ?? "agent-linear-band";
+    const agentName = options?.agentName ?? "Linear Band Host";
 
     this.peers = options?.peers ?? [
       { id: agentId, name: agentName, handle: agentHandle },

@@ -15,15 +15,28 @@ import {
   createLinearWebhookHandler,
   handleAgentSessionEvent,
   type LinearBridgeDispatcher,
-  type LinearThenvoiBridgeConfig,
+  type LinearBandBridgeConfig,
   type RoomStrategy,
   type SessionRoomStore,
   type WritebackMode,
 } from "../../src/linear";
 import { FernRestAdapter, type RestApi } from "../../src/rest";
-import { createLinearThenvoiBridgeAgent } from "./linear-thenvoi-bridge-agent";
+import { createLinearBandBridgeAgent } from "./linear-band-bridge-agent";
 
-interface LinearThenvoiBridgeServerOptions {
+// ── Band-first env with per-field legacy LINEAR_THENVOI_* fallback ──────────
+const _warnedLegacyVars = new Set<string>();
+function readLinearEnv(bandKey: string, legacyKey: string): string | undefined {
+  const bandValue = process.env[bandKey]?.trim();
+  if (bandValue) return bandValue;
+  const legacyValue = process.env[legacyKey]?.trim();
+  if (legacyValue && !_warnedLegacyVars.has(legacyKey)) {
+    _warnedLegacyVars.add(legacyKey);
+    console.warn(`[band] ${legacyKey} is deprecated; use ${bandKey} instead`);
+  }
+  return legacyValue || undefined;
+}
+
+interface LinearBandBridgeServerOptions {
   restApi: RestApi;
   linearAccessToken: string;
   linearWebhookSecret: string;
@@ -47,12 +60,12 @@ const DEFAULT_THENVOI_BRIDGE_MIN_REQUEST_INTERVAL_MS = 2_000;
 const DEFAULT_THENVOI_BRIDGE_RETRY_LIMIT = 4;
 const DEFAULT_THENVOI_BRIDGE_RETRY_BASE_DELAY_MS = 2_000;
 
-export function createLinearThenvoiBridgeApp(options: LinearThenvoiBridgeServerOptions): express.Express {
+export function createLinearBandBridgeApp(options: LinearBandBridgeServerOptions): express.Express {
   const logger = options.logger ?? new ConsoleLogger();
   const store = options.store ?? createSqliteSessionRoomStore(options.stateDbPath);
   const linearClient = createLinearClient(options.linearAccessToken);
 
-  const bridgeConfig: LinearThenvoiBridgeConfig = {
+  const bridgeConfig: LinearBandBridgeConfig = {
     linearAccessToken: options.linearAccessToken,
     linearWebhookSecret: options.linearWebhookSecret,
     hostAgentHandle: options.hostAgentHandle,
@@ -72,7 +85,7 @@ export function createLinearThenvoiBridgeApp(options: LinearThenvoiBridgeServerO
     config: bridgeConfig,
     dispatcher: options.dispatcher,
     deps: {
-      thenvoiRest: options.restApi,
+      bandRest: options.restApi,
       linearClient,
       store,
       logger,
@@ -111,7 +124,7 @@ export function createEmbeddedLinearBridgeDispatcher(options: {
   const logger = options.logger ?? new ConsoleLogger();
   const queued = new Set<string>();
   const roomResetTimeoutMs = Number(
-    process.env.LINEAR_THENVOI_ROOM_RESET_TIMEOUT_MS ?? String(DEFAULT_ROOM_RESET_TIMEOUT_MS),
+    readLinearEnv("LINEAR_BAND_ROOM_RESET_TIMEOUT_MS", "LINEAR_THENVOI_ROOM_RESET_TIMEOUT_MS") ?? String(DEFAULT_ROOM_RESET_TIMEOUT_MS),
   );
 
   return {
@@ -227,7 +240,9 @@ function getRequiredEnv(name: string): string {
 
 function resolveBridgeApiKey(logger: Logger): string {
   const configuredKeys = [
+    process.env.LINEAR_BAND_BRIDGE_AGENT_CONFIG_KEY?.trim(),
     process.env.LINEAR_THENVOI_BRIDGE_AGENT_CONFIG_KEY?.trim(),
+    "linear_band_bridge",
     "linear_thenvoi_bridge",
   ].filter((value): value is string => Boolean(value && value.length > 0));
 
@@ -254,7 +269,7 @@ function resolveBridgeApiKey(logger: Logger): string {
 }
 
 function resolveEmbeddedBridgeRuntimeConfigKey(): string {
-  return process.env.LINEAR_THENVOI_BRIDGE_RUNTIME_CONFIG_KEY?.trim() ?? "linear_thenvoi_bridge";
+  return readLinearEnv("LINEAR_BAND_BRIDGE_RUNTIME_CONFIG_KEY", "LINEAR_THENVOI_BRIDGE_RUNTIME_CONFIG_KEY") ?? "linear_band_bridge";
 }
 
 export function resolveRestApiKeyForMode(input: {
@@ -287,7 +302,7 @@ function parseRoomStrategy(value: string | undefined): RoomStrategy | undefined 
   }
 
   throw new Error(
-    `Invalid LINEAR_THENVOI_ROOM_STRATEGY: "${value}". Expected one of: issue, session.`,
+    `Invalid LINEAR_BAND_ROOM_STRATEGY: "${value}". Expected one of: issue, session.`,
   );
 }
 
@@ -301,7 +316,7 @@ function parseWritebackMode(value: string | undefined): WritebackMode | undefine
   }
 
   throw new Error(
-    `Invalid LINEAR_THENVOI_WRITEBACK_MODE: "${value}". Expected one of: final_only, activity_stream.`,
+    `Invalid LINEAR_BAND_WRITEBACK_MODE: "${value}". Expected one of: final_only, activity_stream.`,
   );
 }
 
@@ -344,9 +359,9 @@ async function runDispatchAttempt(
     sessionId: string;
   },
 ): Promise<void> {
-  const retryLimit = Number(process.env.LINEAR_THENVOI_DISPATCH_RETRY_LIMIT ?? String(DISPATCH_RETRY_LIMIT));
+  const retryLimit = Number(readLinearEnv("LINEAR_BAND_DISPATCH_RETRY_LIMIT", "LINEAR_THENVOI_DISPATCH_RETRY_LIMIT") ?? String(DISPATCH_RETRY_LIMIT));
   const retryBaseDelayMs = Number(
-    process.env.LINEAR_THENVOI_DISPATCH_RETRY_BASE_DELAY_MS ?? String(DISPATCH_RETRY_BASE_DELAY_MS),
+    readLinearEnv("LINEAR_BAND_DISPATCH_RETRY_BASE_DELAY_MS", "LINEAR_THENVOI_DISPATCH_RETRY_BASE_DELAY_MS") ?? String(DISPATCH_RETRY_BASE_DELAY_MS),
   );
   let attempt = 0;
 
@@ -582,12 +597,12 @@ export async function startEmbeddedAgentWithRetry(agent: Agent, logger: Logger):
   }
 }
 
-async function runLinearThenvoiBridgeServer(): Promise<void> {
+async function runLinearBandBridgeServer(): Promise<void> {
   const logger = new ConsoleLogger();
   const port = Number(process.env.PORT ?? "8787");
-  const embedBridgeAgent = parseBooleanEnv(process.env.LINEAR_THENVOI_EMBED_AGENT, true);
+  const embedBridgeAgent = parseBooleanEnv(readLinearEnv("LINEAR_BAND_EMBED_AGENT", "LINEAR_THENVOI_EMBED_AGENT"), true);
   const bridgeMinRequestIntervalMs = parseNonNegativeIntEnv(
-    process.env.LINEAR_THENVOI_BRIDGE_MIN_REQUEST_INTERVAL_MS,
+    readLinearEnv("LINEAR_BAND_BRIDGE_MIN_REQUEST_INTERVAL_MS", "LINEAR_THENVOI_BRIDGE_MIN_REQUEST_INTERVAL_MS"),
     DEFAULT_THENVOI_BRIDGE_MIN_REQUEST_INTERVAL_MS,
   );
   const embeddedBridgeRuntimeConfigKey = resolveEmbeddedBridgeRuntimeConfigKey();
@@ -599,7 +614,7 @@ async function runLinearThenvoiBridgeServer(): Promise<void> {
     embedBridgeAgent,
     embeddedBridgeConfig,
   });
-  const stateDbPath = process.env.LINEAR_THENVOI_STATE_DB ?? ".linear-thenvoi-example.sqlite";
+  const stateDbPath = process.env.LINEAR_BAND_STATE_DB ?? process.env.LINEAR_THENVOI_STATE_DB ?? ".linear-thenvoi-example.sqlite";
   const rawRestApi = new FernRestAdapter(new BandClient({
     apiKey: bridgeApiKey,
     baseUrl: process.env.THENVOI_REST_URL ?? "https://app.thenvoi.com",
@@ -613,8 +628,8 @@ async function runLinearThenvoiBridgeServer(): Promise<void> {
   const linearAccessToken = getRequiredEnv("LINEAR_ACCESS_TOKEN");
   const linearWebhookSecret = getRequiredEnv("LINEAR_WEBHOOK_SECRET");
   const hostAgentHandle = process.env.THENVOI_HOST_AGENT_HANDLE;
-  const roomStrategy = parseRoomStrategy(process.env.LINEAR_THENVOI_ROOM_STRATEGY) ?? "issue";
-  const writebackMode = parseWritebackMode(process.env.LINEAR_THENVOI_WRITEBACK_MODE) ?? "activity_stream";
+  const roomStrategy = parseRoomStrategy(readLinearEnv("LINEAR_BAND_ROOM_STRATEGY", "LINEAR_THENVOI_ROOM_STRATEGY")) ?? "issue";
+  const writebackMode = parseWritebackMode(readLinearEnv("LINEAR_BAND_WRITEBACK_MODE", "LINEAR_THENVOI_WRITEBACK_MODE")) ?? "activity_stream";
 
   let embeddedAgent: Agent | null = null;
   let dispatcher: LinearBridgeDispatcher | undefined;
@@ -622,7 +637,7 @@ async function runLinearThenvoiBridgeServer(): Promise<void> {
 
   if (embedBridgeAgent) {
     const bridgeConfig = embeddedBridgeConfig ?? loadAgentConfig(embeddedBridgeRuntimeConfigKey);
-    embeddedAgent = createLinearThenvoiBridgeAgent({
+    embeddedAgent = createLinearBandBridgeAgent({
       ...bridgeConfig,
       linearAccessToken,
       stateDbPath,
@@ -657,7 +672,7 @@ async function runLinearThenvoiBridgeServer(): Promise<void> {
     });
   }
 
-  const app = createLinearThenvoiBridgeApp({
+  const app = createLinearBandBridgeApp({
     restApi,
     linearAccessToken,
     linearWebhookSecret,
@@ -675,7 +690,7 @@ async function runLinearThenvoiBridgeServer(): Promise<void> {
     logger.info("linear_thenvoi_bridge.server_started", {
       port,
       mode: embedBridgeAgent ? "embedded_bridge_agent" : "agent_rest_adapter",
-      thenvoiRestUrl: process.env.THENVOI_REST_URL ?? "https://app.thenvoi.com",
+      bandRestUrl: process.env.THENVOI_REST_URL ?? "https://app.thenvoi.com",
       bridgeMinRequestIntervalMs,
     });
   });
@@ -703,7 +718,7 @@ async function runLinearThenvoiBridgeServer(): Promise<void> {
 }
 
 if (isDirectExecution(import.meta.url)) {
-  void runLinearThenvoiBridgeServer().catch((error) => {
+  void runLinearBandBridgeServer().catch((error) => {
     const logger = new ConsoleLogger();
     logger.error("linear_thenvoi_bridge.startup_failed", {
       error: error instanceof Error ? error.message : String(error),

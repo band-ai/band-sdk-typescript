@@ -13,9 +13,9 @@ The SQLite session-room mapping uses `node:sqlite`, so this example requires Nod
 
 ## Files
 
-- `examples/linear-thenvoi/linear-thenvoi-bridge-server.ts`
+- `examples/linear-band/linear-band-bridge-server.ts`
   Webhook server and embedded Band Linear PM runtime.
-- `examples/linear-thenvoi/linear-thenvoi-bridge-agent.ts`
+- `examples/linear-band/linear-band-bridge-agent.ts`
   Band Linear PM agent using the Codex adapter and Linear tools.
 
 ## Environment
@@ -32,17 +32,20 @@ THENVOI_REST_URL=https://app.thenvoi.com
 Common optional settings:
 
 ```bash
-LINEAR_THENVOI_STATE_DB=.linear-thenvoi-example.sqlite
-LINEAR_THENVOI_ROOM_STRATEGY=issue
-LINEAR_THENVOI_WRITEBACK_MODE=activity_stream
-THENVOI_HOST_AGENT_HANDLE=your-org/linear-orchestrator
+LINEAR_BAND_STATE_DB=.linear-thenvoi-example.sqlite
+LINEAR_BAND_ROOM_STRATEGY=issue
+LINEAR_BAND_WRITEBACK_MODE=activity_stream
+BAND_HOST_AGENT_HANDLE=your-org/linear-orchestrator
 CODEX_MODEL=gpt-5.3-codex
 PORT=8787
 ```
 
+Legacy `LINEAR_THENVOI_*` names are accepted as per-field fallback with a
+once-per-variable deprecation warning.
+
 Recommended agent config key:
 
-- `linear_thenvoi_bridge`
+- `linear_band_bridge` (legacy: `linear_thenvoi_bridge`)
 
 ## Run
 
@@ -82,13 +85,13 @@ https://<your-tunnel-host>/linear/webhook
 Build from the repository root:
 
 ```bash
-docker build -f packages/sdk/examples/linear-thenvoi/Dockerfile -t thenvoi-linear-bridge .
+docker build -f packages/sdk/examples/linear-band/Dockerfile -t band-linear-bridge .
 ```
 
 Run the container, passing the required environment variables:
 
 ```bash
-docker run --env-file .env -p 8787:8787 thenvoi-linear-bridge
+docker run --env-file .env -p 8787:8787 band-linear-bridge
 ```
 
 The SQLite state database is created inside the container at the path set by
@@ -99,7 +102,7 @@ To persist it across container restarts, mount a volume:
 docker run --env-file .env -p 8787:8787 \
   -v linear-bridge-data:/app/packages/sdk/data \
   -e LINEAR_THENVOI_STATE_DB=/app/packages/sdk/data/state.sqlite \
-  thenvoi-linear-bridge
+  band-linear-bridge
 ```
 
 Health check:
