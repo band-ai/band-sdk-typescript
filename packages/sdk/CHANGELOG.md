@@ -1,6 +1,13 @@
 # Changelog
 
 
+## [0.1.9](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.1.8...sdk-v0.1.9) (2026-08-09)
+
+
+### Features
+
+* fix LangGraph streaming adapter event parsing and history … ([#121](https://github.com/band-ai/band-sdk-typescript/issues/121)) ([#152](https://github.com/band-ai/band-sdk-typescript/issues/152)) ([160dd19](https://github.com/band-ai/band-sdk-typescript/commit/160dd197a9049d95700eea8bef922903327f7286))
+
 ## [0.1.8](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.1.7...sdk-v0.1.8) (2026-08-05)
 
 
