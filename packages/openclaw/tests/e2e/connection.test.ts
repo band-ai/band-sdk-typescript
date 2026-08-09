@@ -1,7 +1,7 @@
 /**
  * E2E Tests: WebSocket Connection
  *
- * Tests the connection flow against a real Thenvoi environment.
+ * Tests the connection flow against a real Band environment.
  * Uses BandLink from @band-ai/sdk and RoomPresence from @band-ai/sdk/runtime.
  */
 

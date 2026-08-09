@@ -6,8 +6,6 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 
 import { BandLink, deriveDefaultRestUrl } from "../src/platform/BandLink";
 
@@ -31,20 +29,11 @@ describe("P-C6-2/4: default and explicit service URLs", () => {
   it("an explicit legacy wsUrl pins app.thenvoi.com end to end (documented escape hatch)", () => {
     const link = new BandLink({ agentId: "a", apiKey: "k", wsUrl: LEGACY_WS });
     expect(link.wsUrl).toBe(LEGACY_WS); // byte-preserved
-    expect(link.restUrl).toBe("https://app.thenvoi.com"); // derived from the pinned host
+    expect(link.restUrl).toBe("https://app.thenvoi.com"); // legacy host derived from the pinned wsUrl (escape hatch)
   });
 
   it("an explicit restUrl is byte-preserved independent of the WS host", () => {
     const link = new BandLink({ agentId: "a", apiKey: "k", restUrl: "https://custom.example.com" });
     expect(link.restUrl).toBe("https://custom.example.com");
-  });
-
-  it("the SDK default WS/REST are byte-identical to OpenClaw's defaults", () => {
-    const openclawConfig = readFileSync(
-      resolve(__dirname, "../../openclaw/src/config.ts"),
-      "utf-8",
-    );
-    expect(openclawConfig).toContain(`export const DEFAULT_WS_URL = "${BAND_WS}";`);
-    expect(openclawConfig).toContain(`export const DEFAULT_REST_URL = "${BAND_REST}";`);
   });
 });

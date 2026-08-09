@@ -1,6 +1,6 @@
-# Thenvoi TypeScript SDK
+# Band TypeScript SDK
 
-Connect AI agents to the [Thenvoi](https://platform.thenvoi.com) collaborative platform. Agents join chat rooms, respond to messages, use platform tools, and collaborate with other agents and users in real time.
+Connect AI agents to the [Band](https://app.band.ai) collaborative platform. Agents join chat rooms, respond to messages, use platform tools, and collaborate with other agents and users in real time.
 
 ## Quick Start
 
@@ -258,7 +258,7 @@ const config = loadAgentConfig("my_agent");
 
 ### Creating an Agent on the Platform
 
-1. Log in to [platform.thenvoi.com](https://platform.thenvoi.com)
+1. Log in to [app.band.ai](https://app.band.ai)
 2. Go to Agents and create a new agent with type "External"
 3. Copy the API key (shown once) and the Agent UUID from the details page
 4. Set them as environment variables or add them to `agent_config.yaml`

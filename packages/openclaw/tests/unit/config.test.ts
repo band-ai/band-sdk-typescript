@@ -10,7 +10,7 @@
  *  - validateConfig ok/err via an injected connectivity probe (no network)
  */
 
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   resolveAccount,
   listAccountIds,
@@ -162,55 +162,78 @@ describe("validateConfig", () => {
   });
 });
 
-describe("resolveConnectionConfig legacy env warnings (P-C6-1)", () => {
-  const LEGACY = ["THENVOI_API_KEY", "THENVOI_AGENT_ID", "THENVOI_WS_URL", "THENVOI_REST_URL"];
-  const BAND = ["BAND_API_KEY", "BAND_AGENT_ID", "BAND_WS_URL", "BAND_REST_URL"];
+describe("resolveConnectionConfig legacy env warnings (P-C6-1, table-driven)", () => {
+  // account field -> BAND_* -> legacy THENVOI_* per field.
+  const FIELDS = [
+    { field: "apiKey" as const, band: "BAND_API_KEY", legacy: "THENVOI_API_KEY" },
+    { field: "agentId" as const, band: "BAND_AGENT_ID", legacy: "THENVOI_AGENT_ID" },
+    { field: "wsUrl" as const, band: "BAND_WS_URL", legacy: "THENVOI_WS_URL" },
+    { field: "restUrl" as const, band: "BAND_REST_URL", legacy: "THENVOI_REST_URL" },
+  ];
+  const ALL = FIELDS.flatMap((f) => [f.band, f.legacy]);
   const saved: Record<string, string | undefined> = {};
 
+  beforeEach(() => {
+    for (const v of ALL) { saved[v] = process.env[v]; delete process.env[v]; }
+  });
   afterEach(() => {
-    for (const v of [...LEGACY, ...BAND]) {
+    for (const v of ALL) {
       if (saved[v] === undefined) delete process.env[v];
       else process.env[v] = saved[v];
     }
     vi.restoreAllMocks();
   });
 
-  function clear(): void {
-    for (const v of [...LEGACY, ...BAND]) { saved[v] = process.env[v]; delete process.env[v]; }
-  }
-
   async function fresh() {
     vi.resetModules();
     return (await import("../../src/config.js")).resolveConnectionConfig;
   }
 
-  it("warns once per legacy variable (naming old + Band replacement, never a secret)", async () => {
-    clear();
-    process.env.THENVOI_API_KEY = "super-secret";
-    process.env.THENVOI_AGENT_ID = "legacy-agent";
-    process.env.THENVOI_WS_URL = "wss://legacy";
-    const resolve = await fresh();
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    resolve({});
-    for (const [legacy, band] of [
-      ["THENVOI_API_KEY", "BAND_API_KEY"], ["THENVOI_AGENT_ID", "BAND_AGENT_ID"], ["THENVOI_WS_URL", "BAND_WS_URL"],
-    ]) {
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining(legacy));
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining(band));
-    }
-    for (const call of warn.mock.calls) expect(String(call[0])).not.toContain("super-secret");
-    warn.mockClear();
-    resolve({}); // once per process
-    expect(warn).not.toHaveBeenCalled();
-  });
+  // Satisfy the two required fields (apiKey/agentId) via Band unless the target
+  // field under test is itself one of them, so only the target uses the legacy var.
+  function satisfyRequiredExcept(target: string): void {
+    if (target !== "apiKey") process.env.BAND_API_KEY = "band-key";
+    if (target !== "agentId") process.env.BAND_AGENT_ID = "band-agent";
+  }
 
-  it("does not warn when account fields or BAND_* satisfy every field", async () => {
-    clear();
-    process.env.THENVOI_API_KEY = "legacy-key";
-    process.env.BAND_AGENT_ID = "band-agent";
-    const resolve = await fresh();
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    resolve({ apiKey: "acct-key" }); // account apiKey + BAND agentId -> no legacy used
-    expect(warn).not.toHaveBeenCalled();
-  });
+  for (const { field, band, legacy } of FIELDS) {
+    it(`${field}: legacy ${legacy} is used, warns exactly once naming old + ${band}, never the value`, async () => {
+      satisfyRequiredExcept(field);
+      const secret = `legacy-${field}-VALUE`;
+      process.env[legacy] = secret;
+      const resolve = await fresh();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const conn = resolve({});
+      expect(conn[field]).toBe(secret);
+      const forThisVar = warn.mock.calls.filter((c) => String(c[0]).includes(legacy));
+      expect(forThisVar).toHaveLength(1);
+      expect(String(forThisVar[0][0])).toContain(band);
+      for (const c of warn.mock.calls) expect(String(c[0])).not.toContain(secret);
+      // repeated read dedupes (once per process)
+      warn.mockClear();
+      resolve({});
+      expect(warn.mock.calls.filter((c) => String(c[0]).includes(legacy))).toHaveLength(0);
+    });
+
+    it(`${field}: BAND_ wins over legacy with zero warning`, async () => {
+      satisfyRequiredExcept(field);
+      process.env[band] = `band-${field}`;
+      process.env[legacy] = `legacy-${field}`;
+      const resolve = await fresh();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const conn = resolve({});
+      expect(conn[field]).toBe(`band-${field}`);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it(`${field}: account value wins over legacy with zero warning`, async () => {
+      satisfyRequiredExcept(field);
+      process.env[legacy] = `legacy-${field}`;
+      const resolve = await fresh();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const conn = resolve({ [field]: `acct-${field}` } as Parameters<typeof resolve>[0]);
+      expect(conn[field]).toBe(`acct-${field}`);
+      expect(warn).not.toHaveBeenCalled();
+    });
+  }
 });

@@ -1,7 +1,7 @@
 /**
  * E2E Tests: Messaging
  *
- * Tests sending and receiving messages against a real Thenvoi environment.
+ * Tests sending and receiving messages against a real Band environment.
  * Uses BandLink from @band-ai/sdk and RoomPresence from @band-ai/sdk/runtime.
  */
 

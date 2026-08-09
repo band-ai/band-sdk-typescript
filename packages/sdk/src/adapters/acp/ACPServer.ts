@@ -58,7 +58,7 @@ export class ACPServer implements Agent {
     this.authMethods = options?.authMethods ?? [{
       id: "api_key",
       name: "API Key",
-      description: "Authenticate with THENVOI_API_KEY.",
+      description: "Authenticate with BAND_API_KEY (legacy THENVOI_API_KEY).",
     }]
     this.agentInfo = options?.agentInfo ?? {}
     this.extensionHandler = options?.extensionHandler ?? new CursorExtensionHandler()

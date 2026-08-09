@@ -37,6 +37,7 @@ symbols.push({ old: "LinearThenvoiBridgeDeps", new: "LinearBandBridgeDeps", subp
 const members = [
   { ownerOld: "A2AGatewayAdapterOptions", ownerNew: "A2AGatewayAdapterOptions", memberOld: "thenvoiRest", memberNew: "bandRest", subpath: "./adapters" },
   { ownerOld: "ThenvoiACPServerAdapterOptions", ownerNew: "BandACPServerAdapterOptions", memberOld: "thenvoiRest", memberNew: "bandRest", subpath: "./adapters" },
+  { ownerOld: "LinearThenvoiBridgeConfig", ownerNew: "LinearBandBridgeConfig", memberOld: "thenvoiAppBaseUrl", memberNew: "bandAppBaseUrl", subpath: "./linear" },
 ];
 
 const map = {
