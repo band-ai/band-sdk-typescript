@@ -130,7 +130,7 @@ export default defineConfig({
   // fully self-contained (no `@thenvoi/sdk` type import leaking into dist/*.d.ts,
   // hence no SDK dependency needed). openclaw stays an external type import — it's
   // a peer the host provides.
-  dts: { resolve: ["@thenvoi/sdk", "@thenvoi/rest-client", "zod", "zod-to-json-schema"] },
+  dts: { resolve: ["@thenvoi/sdk", "@band-ai/rest-client", "zod", "zod-to-json-schema"] },
   sourcemap: true,
   clean: true,
   shims: true,
@@ -145,7 +145,7 @@ export default defineConfig({
   // Keep openclaw (and its plugin-sdk subpaths) external — host provides it
   external: ["openclaw", /^openclaw\//],
   // Bundle the SDK and its dependencies into the plugin
-  noExternal: ["phoenix", "@thenvoi/sdk", "@thenvoi/rest-client", "zod", "zod-to-json-schema", "ws", "js-yaml"],
+  noExternal: ["phoenix", "@thenvoi/sdk", "@band-ai/rest-client", "zod", "zod-to-json-schema", "ws", "js-yaml"],
   esbuildPlugins: [stubOptionalPeers(sdkOptionalPeers)],
   define: {
     __OPENCLAW_PKG_VERSION__: JSON.stringify(openclawPkg.version),

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { FernRestAdapter, RestFacade } from "../src/client/rest/RestFacade";
 
 describe("FernRestAdapter contact and memory parity", () => {
-  it("normalizes published @thenvoi/rest-client namespace names", async () => {
+  it("normalizes published @band-ai/rest-client namespace names", async () => {
     const rest = new RestFacade({
       api: new FernRestAdapter({
         agentApiIdentity: {
