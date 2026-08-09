@@ -375,8 +375,12 @@ async function withFakeNpm(viewMode, callback, { createTarball = true } = {}) {
     join(directory, "package.json"),
     `${JSON.stringify({ name: "@band-ai/example", version: "1.2.3" })}\n`,
   );
+  await mkdir(join(directory, "release-artifacts"));
   if (createTarball) {
-    await writeFile(join(directory, "band-ai-example-1.2.3.tgz"), "fake tarball\n");
+    await writeFile(
+      join(directory, "release-artifacts/band-ai-example-1.2.3.tgz"),
+      "fake tarball\n",
+    );
   }
   await writeFile(
     join(bin, "npm"),
@@ -390,7 +394,8 @@ async function withFakeNpm(viewMode, callback, { createTarball = true } = {}) {
       FAKE_NPM_VIEW: viewMode,
       PUBLISH_PACKAGE_NAME: "@band-ai/example",
       PUBLISH_PACKAGE_VERSION: "1.2.3",
-      PUBLISH_TARBALL: "band-ai-example-1.2.3.tgz",
+      // Relative, nested path: exactly what the publish job passes in CI.
+      PUBLISH_TARBALL: "release-artifacts/band-ai-example-1.2.3.tgz",
     }, log);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -410,9 +415,11 @@ test("idempotent publisher publishes only when npm confirms the version is absen
   await withFakeNpm("missing", async (directory, env, log) => {
     const result = run(publishScript, directory, env);
     assert.equal(result.status, 0, result.stderr);
+    // The tarball must reach npm as an absolute path; a bare "dir/pkg.tgz" is
+    // parsed as a GitHub shorthand and publish tries to git-clone it instead.
     assert.match(
       await readFile(log, "utf8"),
-      /^publish band-ai-example-1\.2\.3\.tgz --ignore-scripts --provenance --access public$/m,
+      /^publish \/\S*\/release-artifacts\/band-ai-example-1\.2\.3\.tgz --ignore-scripts --provenance --access public$/m,
     );
   });
 });
