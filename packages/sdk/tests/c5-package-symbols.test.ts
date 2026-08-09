@@ -68,7 +68,7 @@ beforeAll(async () => {
 });
 
 interface Row { old: string; new: string; sub: string; kind: "value" | "type"; c3?: boolean }
-interface MemberRow { ownerOld: string; ownerNew: string; memberOld: string; memberNew: string; subpath: string }
+interface MemberRow { ownerOld: string; ownerNew: string; memberOld: string; memberNew: string; subpath: string; provenance: "published-0x" | "source-c4"; sourceFile?: string }
 interface MigrationMap {
   package: { old: string; new: string };
   symbols: Array<{ old: string; new: string; subpath: string; kind: "value" | "type"; c3: boolean }>;
@@ -224,6 +224,83 @@ describe("P-C5-2: consumer compile proof (values as value imports)", () => {
       expect(bad.output, `expected diagnostic for old member ${m.ownerNew}.${m.memberOld}`).toContain(m.memberOld);
     }
   });
+
+  it("cleanup", () => {
+    rmSync(tmpDir, { recursive: true, force: true });
+    expect(true).toBe(true);
+  });
+});
+
+describe("P-C5-4b: source-C4-only member provenance (C4-tip compile proof)", () => {
+  const C4_TIP = "70a2822";
+  const SOURCE_ONLY = MEMBERS.filter((m) => m.provenance === "source-c4");
+  const BUILTIN = new Set([
+    "Array", "Record", "Promise", "Partial", "Pick", "Readonly", "Required",
+    "Map", "Set", "Date", "Error", "Omit", "Exclude", "Extract", "ReturnType", "Parameters",
+  ]);
+
+  let tmpDir: string;
+  beforeAll(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "c5-c4tip-"));
+    const nm = join(tmpDir, "node_modules/@band-ai/sdk");
+    mkdirSync(nm, { recursive: true });
+    cpSync(join(SDK_ROOT, "dist"), join(nm, "dist"), { recursive: true });
+    cpSync(join(SDK_ROOT, "package.json"), join(nm, "package.json"));
+  });
+
+  function compile(filename: string, code: string): { status: number; output: string } {
+    writeFileSync(join(tmpDir, filename), code);
+    writeFileSync(join(tmpDir, "tsconfig.json"), JSON.stringify({
+      compilerOptions: {
+        strict: true, module: "nodenext", moduleResolution: "nodenext", target: "es2022",
+        noEmit: true, skipLibCheck: true, typeRoots: [join(SDK_ROOT, "node_modules/@types")],
+      },
+      include: [filename],
+    }));
+    const r = spawnSync(join(SDK_ROOT, "node_modules/.bin/tsc"), ["-p", join(tmpDir, "tsconfig.json")], { encoding: "utf8" });
+    return { status: r.status ?? 1, output: (r.stdout ?? "") + (r.stderr ?? "") };
+  }
+
+  // Extract the real C4-tip interface declaration and stub any non-builtin type
+  // references so the actual member declaration compiles standalone.
+  function c4TipInterface(sourceFile: string, owner: string): string {
+    const r = spawnSync("git", ["show", `${C4_TIP}:${sourceFile}`], { cwd: REPO_ROOT, encoding: "utf8" });
+    expect(r.status, `git show ${C4_TIP}:${sourceFile}`).toBe(0);
+    const match = r.stdout.match(new RegExp(`export interface ${owner} \\{[\\s\\S]*?\\n\\}`));
+    expect(match, `interface ${owner} not found at C4 tip ${C4_TIP}`).toBeTruthy();
+    const block = match![0];
+    const refs = new Set<string>();
+    for (const tok of block.matchAll(/(?::|\||<|,)\s*([A-Z][A-Za-z0-9_]*)/g)) refs.add(tok[1]);
+    const stubs = [...refs].filter((t) => t !== owner && !BUILTIN.has(t)).map((t) => `type ${t} = unknown;`).join("\n");
+    return `${stubs}\n${block}\n`;
+  }
+
+  it("the map declares the known source-C4-only member (reclassifying/removing it fails)", () => {
+    expect(SOURCE_ONLY.length).toBeGreaterThanOrEqual(1);
+    expect(SOURCE_ONLY.map((m) => `${m.ownerNew}.${m.memberOld}->${m.memberNew}`))
+      .toContain("LinearBandBridgeConfig.thenvoiAppBaseUrl->bandAppBaseUrl");
+  });
+
+  for (const m of SOURCE_ONLY) {
+    it(`${m.ownerNew}.${m.memberOld}: existed in C4-tip source, absent as ${m.memberNew} there`, () => {
+      expect(m.sourceFile, "source-c4 member needs a sourceFile").toBeTruthy();
+      const iface = c4TipInterface(m.sourceFile!, m.ownerNew);
+      const oldOk = compile("c4-old.mts", `${iface}\ntype _has = Pick<${m.ownerNew}, "${m.memberOld}">;\nexport const _x = 0;\n`);
+      expect(oldOk.status, oldOk.output).toBe(0);
+      const newAbsent = compile("c4-new.mts", `${iface}\ntype _no = Pick<${m.ownerNew}, "${m.memberNew}">;\nexport const _x = 0;\n`);
+      expect(newAbsent.status, "new member must not exist at C4 tip").not.toBe(0);
+      expect(newAbsent.output).toContain(m.memberNew);
+    });
+
+    it(`${m.ownerNew}.${m.memberNew}: compiles against the candidate dist, old ${m.memberOld} fails`, () => {
+      const spec = specFor(m.subpath);
+      const newOk = compile("cand-new.mts", `import type { ${m.ownerNew} } from "${spec}";\ntype _n = Pick<${m.ownerNew}, "${m.memberNew}">;\n`);
+      expect(newOk.status, newOk.output).toBe(0);
+      const oldBad = compile("cand-old.mts", `import type { ${m.ownerNew} } from "${spec}";\ntype _o = Pick<${m.ownerNew}, "${m.memberOld}">;\n`);
+      expect(oldBad.status).not.toBe(0);
+      expect(oldBad.output).toContain(m.memberOld);
+    });
+  }
 
   it("cleanup", () => {
     rmSync(tmpDir, { recursive: true, force: true });
