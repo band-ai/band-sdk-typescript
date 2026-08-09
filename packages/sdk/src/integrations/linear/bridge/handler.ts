@@ -1025,9 +1025,9 @@ async function resolveRoomRecordImpl(input: {
   }
 
   const now = new Date().toISOString();
-  // Thenvoi validates `chat.task_id` as a Thenvoi task UUID. Linear issue/session IDs
+  // Band validates `chat.task_id` as a Band task UUID. Linear issue/session IDs
   // are external identifiers, so this bridge must omit `task_id` unless it has a real
-  // Thenvoi task to associate with the room.
+  // Band task to associate with the room.
   const created = await input.bandRest.createChat();
   const createdRecord: SessionRoomRecord = {
     linearSessionId: input.sessionId,

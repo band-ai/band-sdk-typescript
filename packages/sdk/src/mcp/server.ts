@@ -39,7 +39,7 @@ interface SessionRecord {
 }
 
 /**
- * Standalone MCP server that exposes Thenvoi agent tools over Streamable HTTP.
+ * Standalone MCP server that exposes Band agent tools over Streamable HTTP.
  *
  * Uses `@modelcontextprotocol/server` (optional peer dependency) and `express`.
  * Install with: `npm install @modelcontextprotocol/server express`

@@ -83,7 +83,7 @@ export interface CodexAdapterConfig {
   customSection?: string;
   /**
    * Full system prompt override.
-   * When set, this bypasses the default Thenvoi prompt template + customSection.
+   * When set, this bypasses the default Band prompt template + customSection.
    */
   systemPrompt?: string;
   experimentalApi?: boolean;

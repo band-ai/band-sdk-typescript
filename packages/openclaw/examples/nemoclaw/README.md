@@ -1,8 +1,8 @@
-# NemoClaw + Thenvoi Demo
+# NemoClaw + Band Demo
 
 Demo setup for running the `@band-ai/openclaw-channel-band` channel plugin inside a NemoClaw sandbox on a Mac, with Anthropic Claude as the inference backend.
 
-Thenvoi credentials are stored in the sandbox's OpenClaw config (`/sandbox/.openclaw/openclaw.json`), not in host env vars.
+Band credentials are stored in the sandbox's OpenClaw config (`/sandbox/.openclaw/openclaw.json`), not in host env vars.
 
 ## Prerequisites
 
@@ -10,7 +10,7 @@ Thenvoi credentials are stored in the sandbox's OpenClaw config (`/sandbox/.open
 - Docker Desktop or Colima running
 - Xcode CLI tools: `xcode-select --install`
 - `ANTHROPIC_API_KEY` exported in your shell
-- Thenvoi agent ID + API key (provide them at step 4, not via env)
+- Band agent ID + API key (provide them at step 4, not via env)
 
 ## 1. Install NemoClaw
 
@@ -42,24 +42,24 @@ In the wizard:
 
 ## 3. Apply egress policy
 
-Replace `thenvoi-demo` with the sandbox name you chose at onboard:
+Replace `band-demo` with the sandbox name you chose at onboard:
 
 ```bash
-nemoclaw thenvoi-demo policy-add --from-file ./presets/thenvoi.yaml
+nemoclaw band-demo policy-add --from-file ./presets/band.yaml
 ```
 
-## 4. Configure the Thenvoi channel account
+## 4. Configure the Band channel account
 
 ```bash
-nemoclaw thenvoi-demo connect
+nemoclaw band-demo connect
 ```
 
-Inside the sandbox shell, paste your actual Thenvoi credentials directly into the config (these stay inside the sandbox, never in env vars or the repo):
+Inside the sandbox shell, paste your actual Band credentials directly into the config (these stay inside the sandbox, never in env vars or the repo):
 
 ```bash
 openclaw config set channels.openclaw-channel-band.accounts.primary.enabled true
-openclaw config set channels.openclaw-channel-band.accounts.primary.apiKey  '<your-thenvoi-api-key>'
-openclaw config set channels.openclaw-channel-band.accounts.primary.agentId '<your-thenvoi-agent-id>'
+openclaw config set channels.openclaw-channel-band.accounts.primary.apiKey  '<your-band-api-key>'
+openclaw config set channels.openclaw-channel-band.accounts.primary.agentId '<your-band-agent-id>'
 ```
 
 ## 5. Start the agent
@@ -72,11 +72,11 @@ openclaw agent --agent main
 
 Watch for:
 
-- `[thenvoi] Plugin loaded, channel registered`
+- `[band] Plugin loaded, channel registered`
 - Phoenix Channels join activity
 
 ## 6. Verify (M1)
 
-In the Thenvoi app, open a chat room with the agent and `@`-mention it. Expected: a Claude-generated reply appears in the room.
+In the Band app, open a chat room with the agent and `@`-mention it. Expected: a Claude-generated reply appears in the room.
 
 If nothing arrives, OpenShell's TUI will surface any blocked-egress prompts for operator approval — most likely candidate is the WSS upgrade to `app.band.ai`.

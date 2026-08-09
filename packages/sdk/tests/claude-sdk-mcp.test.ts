@@ -35,7 +35,7 @@ describe("createBandSdkMcpServer", () => {
     };
   }
 
-  it("builds thenvoi MCP tools and routes calls to room-scoped tool execution", async () => {
+  it("builds band MCP tools and routes calls to room-scoped tool execution", async () => {
     const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
 
     const roomTools = makeTools(calls);
@@ -217,7 +217,7 @@ describe("createBandSdkMcpServer", () => {
     expect(contextData.warnings).toContain("Unable to resolve agent identity: identity offline");
   });
 
-  it("builds thenvoi MCP tools without room_id when multiRoom is false", async () => {
+  it("builds band MCP tools without room_id when multiRoom is false", async () => {
     const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
     const bridge = createBandSdkMcpServer({
       multiRoom: false,

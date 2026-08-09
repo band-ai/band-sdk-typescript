@@ -1,5 +1,5 @@
 /**
- * Integration smoke test — connects to the real Thenvoi platform,
+ * Integration smoke test — connects to the real Band platform,
  * verifies agent identity, starts the basic echo agent, and shuts down.
  *
  * Run:  npx tsx tests/integration/smoke.ts

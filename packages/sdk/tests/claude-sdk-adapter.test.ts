@@ -6,6 +6,7 @@ import {
 } from "../src/adapters/claude-sdk/ClaudeSDKAdapter";
 import { HistoryProvider } from "../src/runtime/types";
 import { FakeTools, makeMessage } from "./testUtils";
+import { MCP_SERVER_NAME } from "../src/runtime/tools/schemas";
 
 function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
   return (async function* generator(): AsyncGenerator<T, void> {
@@ -98,6 +99,7 @@ describe("ClaudeSDKAdapter", () => {
     expect(calls[0]?.options?.permissionMode).toBe("acceptEdits");
     expect(calls[0]?.options?.systemPrompt).toBeTypeOf("string");
     expect(calls[0]?.options?.mcpServers).toBeTruthy();
+    expect(Object.keys(calls[0]?.options?.mcpServers ?? {})).toEqual([MCP_SERVER_NAME]);
     expect(Array.isArray(calls[0]?.options?.allowedTools)).toBe(true);
     expect(calls[0]?.prompt).toContain("[Previous conversation context]");
     expect(calls[0]?.prompt).toContain("[System]: Participants changed");

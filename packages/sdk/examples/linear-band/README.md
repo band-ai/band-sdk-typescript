@@ -3,11 +3,11 @@
 This example runs the Band Linear PM agent — the Linear-facing coordinator that:
 
 1. Linear sends an `AgentSessionEvent` webhook to `/linear/webhook`
-2. the server resolves or reuses a Thenvoi room for that issue
-3. Band Linear PM coordinates real Thenvoi specialists in that room
+2. the server resolves or reuses a Band room for that issue
+3. Band Linear PM coordinates real Band specialists in that room
 4. progress and the final response are written back to Linear
 
-Band Linear PM is the only Linear-aware participant. Planner, reviewer, and coder agents stay Linear-agnostic and communicate only through Thenvoi room messages.
+Band Linear PM is the only Linear-aware participant. Planner, reviewer, and coder agents stay Linear-agnostic and communicate only through Band room messages.
 
 The SQLite session-room mapping uses `node:sqlite`, so this example requires Node.js 22+.
 
@@ -113,8 +113,8 @@ curl http://127.0.0.1:8787/healthz
 
 ## Architecture Notes
 
-- `roomStrategy: "issue"` keeps one Thenvoi room per Linear issue.
-- `roomStrategy: "session"` creates a new Thenvoi room per Linear session.
+- `roomStrategy: "issue"` keeps one Band room per Linear issue.
+- `roomStrategy: "session"` creates a new Band room per Linear session.
 - `writebackMode: "activity_stream"` posts intermediate Linear activity updates.
 - `writebackMode: "final_only"` keeps writeback minimal until completion.
 - Band Linear PM uses peer discovery and room context to pick relevant external specialists at runtime.

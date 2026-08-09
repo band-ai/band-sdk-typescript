@@ -114,8 +114,8 @@ interface LinearBandBridgeAgentOptions {
   sessionConfig?: SessionConfig;
   /**
    * When true, the bridge agent subscribes to rooms it is added to directly
-   * (Thenvoi-initiated), not just rooms created via Linear webhooks.
-   * Defaults to false. Set to true to enable bidirectional (Thenvoi-initiated) operation.
+   * (Band-initiated), not just rooms created via Linear webhooks.
+   * Defaults to false. Set to true to enable bidirectional (Band-initiated) operation.
    */
   autoSubscribeExistingRooms?: boolean;
 }
@@ -189,14 +189,14 @@ You operate in two modes depending on how the conversation starts:
 
 ## Mode detection
 - **Linear-initiated**: The room contains a session payload with a Linear session context (session_id, issue_id, etc.). Proceed with the standard webhook-driven flow.
-- **Thenvoi-initiated**: The room has no Linear session context. You were added to the room directly or joined via autoSubscribe. Start in discovery mode.
+- **Band-initiated**: The room has no Linear session context. You were added to the room directly or joined via autoSubscribe. Start in discovery mode.
 
-## Thenvoi-initiated mode (no Linear session context)
+## Band-initiated mode (no Linear session context)
 When you are added to a room without any Linear session payload:
 - Introduce yourself briefly: you are Band Linear PM and can help create, track, or link Linear issues.
 - Listen to the conversation and understand what the participants need.
 - You may use linear_create_issue to create a new Linear issue when a participant explicitly asks for it or clearly delegates issue creation to you. Never create issues without explicit human intent or clear delegation from another agent.
-- After creating an issue, use linear_create_session_on_issue to attach an agent session to it so you can post activities, plans, and updates. Always pass room_id (the current Thenvoi room ID) so the session-room mapping is persisted.
+- After creating an issue, use linear_create_session_on_issue to attach an agent session to it so you can post activities, plans, and updates. Always pass room_id (the current Band room ID) so the session-room mapping is persisted.
 - You may use linear_create_session_on_issue to attach to an existing issue if a participant provides an issue ID. Always pass room_id.
 - Once a session is created, proceed with normal activity posting (thoughts, plans, responses).
 - If no Linear work is needed, simply participate as a coordinator and help route work to the right specialists.
@@ -205,7 +205,7 @@ When you are added to a room without any Linear session payload:
 Your job is to:
 - read the Linear session payload
 - decide whether the current request is ticket enrichment, implementation kickoff, or finalization
-- invite the minimum useful Thenvoi specialists
+- invite the minimum useful Band specialists
 - give each specialist a bounded task
 - monitor the room and synthesize the outcome
 - keep Linear updated with meaningful milestones only
@@ -238,7 +238,7 @@ Your job is to:
   - linear_post_error for failures
   - linear_post_response for the final answer and session completion
   - linear_update_plan when you have a step list worth showing (renders as a native checklist in the Linear Agent Session UI with live status indicators)
-  - linear_create_issue to create a new Linear issue from a Thenvoi conversation (requires explicit intent)
+  - linear_create_issue to create a new Linear issue from a Band conversation (requires explicit intent)
   - linear_create_session_on_issue to proactively create an agent session on an existing issue (pass room_id to persist the mapping)
   - linear_create_session_on_comment to create an agent session on a specific comment thread (pass room_id to persist the mapping)
   - linear_select to present the user with clickable options (when elicitation is enabled)

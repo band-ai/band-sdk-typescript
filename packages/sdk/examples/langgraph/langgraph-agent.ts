@@ -22,7 +22,7 @@ export function createLangGraphAgent(
 ): Agent {
   const adapter = new LangGraphAdapter({
     graph: options?.graph ?? new EchoLangGraph(),
-    customSection: "Use Thenvoi tools for side effects and final replies.",
+    customSection: "Use Band tools for side effects and final replies.",
     emitExecutionEvents: true,
   });
 

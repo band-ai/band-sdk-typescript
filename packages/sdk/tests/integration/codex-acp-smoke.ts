@@ -5,8 +5,8 @@
  * for validating that the ACP client adapter can:
  * - initialize a real ACP subprocess
  * - create and reuse a session
- * - auto-inject the Thenvoi MCP server
- * - round-trip visible room actions through Thenvoi tools
+ * - auto-inject the Band MCP server
+ * - round-trip visible room actions through Band tools
  *
  * Run:
  *   RUN_CODEX_ACP_E2E=1 npx tsx tests/integration/codex-acp-smoke.ts

@@ -57,7 +57,7 @@ export class LinearBandExampleRestApi implements RestApi {
       id: agentId,
       name: agentName,
       handle: agentHandle,
-      description: "Example host agent for Linear + Thenvoi",
+      description: "Example host agent for Linear + Band",
     };
   }
 
