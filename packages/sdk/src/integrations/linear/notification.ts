@@ -88,7 +88,7 @@ async function handleIssueUnassigned(input: {
   // Send the disengagement message before canceling the session. If the message
   // fails, the session stays active so a retried notification can try again.
   // Canceling first would make retries no-ops (getByIssueId filters canceled sessions).
-  await deps.bandRest.createChatEvent(existing.thenvoiRoomId, {
+  await deps.bandRest.createChatEvent(existing.bandRoomId, {
     content:
       "[Linear]: Issue unassigned from agent. Disengage from active work and await reassignment.",
     messageType: "task",
@@ -96,7 +96,7 @@ async function handleIssueUnassigned(input: {
       linear_notification_type: "issueUnassignedFromYou",
       linear_issue_id: notification.issueId,
       linear_actor_id: notification.actorId ?? null,
-      linear_bridge: "thenvoi",
+      linear_bridge: "band",
     },
   });
 
@@ -105,7 +105,7 @@ async function handleIssueUnassigned(input: {
   logger.info("linear_thenvoi_bridge.notification_unassigned_handled", {
     issueId: notification.issueId,
     sessionId: existing.linearSessionId,
-    roomId: existing.thenvoiRoomId,
+    roomId: existing.bandRoomId,
   });
 }
 
@@ -159,7 +159,7 @@ async function handleIssueNewComment(input: {
     });
   }
 
-  await deps.bandRest.createChatEvent(existing.thenvoiRoomId, {
+  await deps.bandRest.createChatEvent(existing.bandRoomId, {
     content: `[Linear Comment from ${actorName}]: ${commentBody}`,
     messageType: "text",
     metadata: {
@@ -167,7 +167,7 @@ async function handleIssueNewComment(input: {
       linear_issue_id: notification.issueId,
       linear_comment_id: notification.commentId,
       linear_actor_id: notification.actorId ?? null,
-      linear_bridge: "thenvoi",
+      linear_bridge: "band",
     },
   });
 
@@ -175,7 +175,7 @@ async function handleIssueNewComment(input: {
     issueId: notification.issueId,
     commentId: notification.commentId,
     sessionId: existing.linearSessionId,
-    roomId: existing.thenvoiRoomId,
+    roomId: existing.bandRoomId,
   });
 }
 

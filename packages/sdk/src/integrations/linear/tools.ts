@@ -629,7 +629,7 @@ function addSessionCreationTools(input: {
       await store.upsert({
         linearSessionId: sessionId,
         linearIssueId: issueId,
-        thenvoiRoomId: roomId,
+        bandRoomId: roomId,
         status: "active",
         createdAt: now,
         updatedAt: now,

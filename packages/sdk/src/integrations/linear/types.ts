@@ -33,7 +33,7 @@ export interface LinearBandBridgeConfig {
 export interface SessionRoomRecord {
   linearSessionId: string;
   linearIssueId: string | null;
-  thenvoiRoomId: string;
+  bandRoomId: string;
   status: SessionStatus;
   lastEventKey?: string | null;
   /** ISO-8601 timestamp of the last activity sent to Linear for this session. */
@@ -45,7 +45,7 @@ export interface SessionRoomRecord {
 export interface PendingBootstrapRequest {
   eventKey: string;
   linearSessionId: string;
-  thenvoiRoomId: string;
+  bandRoomId: string;
   expectedContent: string;
   messageType: string;
   senderId?: string | null;

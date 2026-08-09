@@ -327,7 +327,7 @@ describe("linear bridge room strategy", () => {
     await store.upsert({
       linearSessionId: "session-1",
       linearIssueId: "issue-1",
-      thenvoiRoomId: restApi.roomEvents[0]?.roomId ?? "room-1",
+      bandRoomId: restApi.roomEvents[0]?.roomId ?? "room-1",
       status: "completed",
       createdAt: "2026-03-03T00:00:00.000Z",
       updatedAt: "2026-03-03T00:05:00.000Z",
@@ -346,7 +346,7 @@ describe("linear bridge room strategy", () => {
     expect(restApi.roomEvents).toHaveLength(2);
     expect(restApi.roomEvents[0]?.roomId).toBe(restApi.roomEvents[1]?.roomId);
     await expect(store.getBySessionId("session-2")).resolves.toMatchObject({
-      thenvoiRoomId: restApi.roomEvents[0]?.roomId,
+      bandRoomId: restApi.roomEvents[0]?.roomId,
       status: "active",
     });
     await expect(store.listPendingBootstrapRequests()).resolves.toEqual(
@@ -416,7 +416,7 @@ describe("linear bridge room strategy", () => {
     expect(restApi.roomEvents).toHaveLength(2);
     expect(restApi.roomEvents[0]?.roomId).not.toBe(restApi.roomEvents[1]?.roomId);
     await expect(store.getBySessionId("session-2")).resolves.toMatchObject({
-      thenvoiRoomId: restApi.roomEvents[1]?.roomId,
+      bandRoomId: restApi.roomEvents[1]?.roomId,
       status: "active",
     });
   });
@@ -448,7 +448,7 @@ describe("linear bridge room strategy", () => {
     expect(restApi.roomEvents).toHaveLength(2);
     expect(restApi.roomEvents[0]?.roomId).not.toBe(restApi.roomEvents[1]?.roomId);
     await expect(store.getBySessionId("session-2")).resolves.toMatchObject({
-      thenvoiRoomId: restApi.roomEvents[1]?.roomId,
+      bandRoomId: restApi.roomEvents[1]?.roomId,
       status: "active",
     });
   });
@@ -480,7 +480,7 @@ describe("linear bridge room strategy", () => {
     expect(restApi.roomEvents).toHaveLength(2);
     expect(restApi.roomEvents[0]?.roomId).not.toBe(restApi.roomEvents[1]?.roomId);
     await expect(store.getBySessionId("session-2")).resolves.toMatchObject({
-      thenvoiRoomId: restApi.roomEvents[1]?.roomId,
+      bandRoomId: restApi.roomEvents[1]?.roomId,
       status: "active",
     });
   });

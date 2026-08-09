@@ -403,7 +403,7 @@ function buildAgentCard(peer: GatewayPeer, gatewayUrl: string): Record<string, u
         id: "default",
         name: peer.name,
         description: peer.description,
-        tags: ["thenvoi", "gateway"],
+        tags: ["band", "gateway"],
       },
     ],
     defaultInputModes: ["text/plain"],

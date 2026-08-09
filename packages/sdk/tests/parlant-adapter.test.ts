@@ -433,4 +433,213 @@ describe("ParlantAdapter", () => {
     );
     expect(tools.events.some((event) => event.messageType === "error")).toBe(true);
   });
+
+  it("stamps band_room_id metadata and a \"Band Room \" title on session creation", async () => {
+    const client = new FakeParlantClient();
+    client.eventPollBatches.push([
+      { kind: "message", offset: 70, data: { message: "hello" } },
+    ]);
+
+    const sessionCreateCalls: Array<{
+      agentId: string;
+      customerId?: string;
+      title?: string;
+      metadata?: Record<string, unknown>;
+    }> = [];
+    const originalCreate = client.sessions.create;
+    client.sessions.create = async (params) => {
+      sessionCreateCalls.push(params);
+      return originalCreate(params);
+    };
+
+    const adapter = new ParlantAdapter({
+      environment: "https://parlant.example",
+      agentId: "agent-1",
+      clientFactory: async () => client,
+      responseTimeoutSeconds: 1,
+    });
+
+    await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
+
+    const tools = new FakeTools();
+    await adapter.onMessage(
+      makeMessage("Hi", "room-band-meta"),
+      tools,
+      [],
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-band-meta" },
+    );
+
+    expect(sessionCreateCalls).toHaveLength(1);
+    const created = sessionCreateCalls[0]!;
+    expect(created.title?.startsWith("Band Room ")).toBe(true);
+    const sessionMetadata = created.metadata as Record<string, unknown>;
+    expect(sessionMetadata.band_room_id).toBe("room-band-meta");
+    expect(Object.keys(sessionMetadata)).not.toContain("thenvoi_room_id");
+  });
+
+  it("forwards the customer message event with band_source and band_room_id metadata (not thenvoi_room_id)", async () => {
+    const client = new FakeParlantClient();
+    client.eventPollBatches.push([
+      { kind: "message", offset: 80, data: { message: "hello" } },
+    ]);
+
+    const adapter = new ParlantAdapter({
+      environment: "https://parlant.example",
+      agentId: "agent-1",
+      clientFactory: async () => client,
+      responseTimeoutSeconds: 1,
+    });
+
+    await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
+
+    const tools = new FakeTools();
+    await adapter.onMessage(
+      makeMessage("Hi", "room-band-source"),
+      tools,
+      [],
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-band-source" },
+    );
+
+    const customerEvent = client.eventCreateCalls.find(
+      (call) => call.params.source === "customer",
+    );
+    expect(customerEvent).toBeDefined();
+    const metadata = customerEvent!.params.metadata as Record<string, unknown>;
+    expect(metadata.band_source).toBe("band-sdk-typescript");
+    expect(metadata.band_room_id).toBe("room-band-source");
+    expect(Object.keys(metadata)).not.toContain("thenvoi_room_id");
+    expect(Object.keys(metadata)).not.toContain("thenvoi_source");
+  });
+
+  it("stamps band_system_prompt on the bootstrap system-prompt event", async () => {
+    const client = new FakeParlantClient();
+    client.eventPollBatches.push([
+      { kind: "message", offset: 90, data: { message: "hello" } },
+    ]);
+
+    const adapter = new ParlantAdapter({
+      environment: "https://parlant.example",
+      agentId: "agent-1",
+      clientFactory: async () => client,
+      responseTimeoutSeconds: 1,
+    });
+
+    await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
+
+    const tools = new FakeTools();
+    await adapter.onMessage(
+      makeMessage("Hi", "room-system-prompt"),
+      tools,
+      [],
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-system-prompt" },
+    );
+
+    const systemEvent = client.eventCreateCalls.find(
+      (call) => call.params.source === "system",
+    );
+    expect(systemEvent).toBeDefined();
+    const metadata = systemEvent!.params.metadata as Record<string, unknown>;
+    expect(metadata.band_system_prompt).toBe(true);
+    expect(Object.keys(metadata)).not.toContain("thenvoi_system_prompt");
+  });
+
+  it("never emits legacy thenvoi_ keys or Thenvoi brand values in any outbound payload", async () => {
+    const client = new FakeParlantClient();
+    client.eventPollBatches.push([
+      { kind: "message", offset: 100, data: { message: "hello" } },
+    ]);
+
+    const sessionCreateCalls: Array<{
+      agentId: string;
+      customerId?: string;
+      title?: string;
+      metadata?: Record<string, unknown>;
+    }> = [];
+    const originalCreate = client.sessions.create;
+    client.sessions.create = async (params) => {
+      sessionCreateCalls.push(params);
+      return originalCreate(params);
+    };
+    const customerCreateCalls: Array<{
+      id?: string;
+      name: string;
+      metadata?: Record<string, string | undefined>;
+    }> = [];
+    const originalCustomerCreate = client.customers.create;
+    client.customers.create = async (params) => {
+      customerCreateCalls.push(params);
+      return originalCustomerCreate(params);
+    };
+
+    const adapter = new ParlantAdapter({
+      environment: "https://parlant.example",
+      agentId: "agent-1",
+      clientFactory: async () => client,
+      responseTimeoutSeconds: 1,
+    });
+
+    await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
+
+    const history = [
+      {
+        role: "user" as const,
+        content: "[User]: Earlier question",
+        sender: "User",
+        senderType: "User",
+      },
+      {
+        role: "assistant" as const,
+        content: "Earlier answer",
+        sender: "Assistant",
+        senderType: "Agent",
+      },
+    ];
+
+    const tools = new FakeTools();
+    await adapter.onMessage(
+      makeMessage("Hi", "room-no-thenvoi"),
+      tools,
+      history,
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-no-thenvoi" },
+    );
+
+    const strings: string[] = [];
+    const keys: string[] = [];
+    const collect = (metadata: Record<string, unknown> | undefined) => {
+      if (!metadata) return;
+      for (const [key, value] of Object.entries(metadata)) {
+        keys.push(key);
+        if (typeof value === "string") strings.push(value);
+      }
+    };
+    for (const call of sessionCreateCalls) {
+      if (call.title !== undefined) strings.push(call.title);
+      collect(call.metadata);
+    }
+    for (const call of customerCreateCalls) {
+      strings.push(call.name);
+      collect(call.metadata as Record<string, unknown> | undefined);
+    }
+    for (const call of client.eventCreateCalls) {
+      collect(call.params.metadata as Record<string, unknown> | undefined);
+    }
+
+    expect(sessionCreateCalls).toHaveLength(1);
+    expect(keys.length).toBeGreaterThan(0);
+    expect(keys.some((key) => key.startsWith("thenvoi_"))).toBe(false);
+    expect(
+      strings.some(
+        (value) =>
+          value.includes("Thenvoi") || value.includes("thenvoi-sdk-typescript"),
+      ),
+    ).toBe(false);
+  });
 });
