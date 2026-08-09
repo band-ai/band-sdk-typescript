@@ -68,29 +68,16 @@ beforeAll(async () => {
 });
 
 interface Row { old: string; new: string; sub: string; kind: "value" | "type"; c3?: boolean }
-const MIGRATION: Row[] = [
-  { old: "ThenvoiLink", new: "BandLink", sub: ".", kind: "value" },
-  { old: "ThenvoiSdkError", new: "BandSdkError", sub: "./core", kind: "value" },
-  { old: "FernThenvoiClientLike", new: "FernBandClientLike", sub: "./rest", kind: "type" },
-  { old: "ThenvoiACPServerAdapter", new: "BandACPServerAdapter", sub: "./adapters", kind: "value" },
-  { old: "ThenvoiACPServerAdapterOptions", new: "BandACPServerAdapterOptions", sub: "./adapters", kind: "type" },
-  { old: "ThenvoiMcpBackend", new: "BandMcpBackend", sub: "./mcp", kind: "type" },
-  { old: "ThenvoiMcpBackendKind", new: "BandMcpBackendKind", sub: "./mcp", kind: "type" },
-  { old: "CreateThenvoiMcpBackendOptions", new: "CreateBandMcpBackendOptions", sub: "./mcp", kind: "type" },
-  { old: "createThenvoiMcpBackend", new: "createBandMcpBackend", sub: "./mcp", kind: "value" },
-  { old: "getThenvoiSdkMcpServerConfig", new: "getBandSdkMcpServerConfig", sub: "./mcp", kind: "value" },
-  { old: "ThenvoiMcpServer", new: "BandMcpServer", sub: "./mcp", kind: "value" },
-  { old: "ThenvoiMcpServerOptions", new: "BandMcpServerOptions", sub: "./mcp", kind: "type" },
-  { old: "ThenvoiMcpSseServer", new: "BandMcpSseServer", sub: "./mcp", kind: "value" },
-  { old: "ThenvoiMcpSseServerOptions", new: "BandMcpSseServerOptions", sub: "./mcp", kind: "type" },
-  { old: "ThenvoiMcpStdioServer", new: "BandMcpStdioServer", sub: "./mcp", kind: "value" },
-  { old: "ThenvoiMcpStdioServerOptions", new: "BandMcpStdioServerOptions", sub: "./mcp", kind: "type" },
-  { old: "ThenvoiSdkMcpServer", new: "BandSdkMcpServer", sub: "./mcp/claude", kind: "type" },
-  { old: "CreateThenvoiSdkMcpServerOptions", new: "CreateBandSdkMcpServerOptions", sub: "./mcp/claude", kind: "type" },
-  { old: "createThenvoiSdkMcpServer", new: "createBandSdkMcpServer", sub: "./mcp/claude", kind: "value" },
-  { old: "LinearThenvoiBridgeConfig", new: "LinearBandBridgeConfig", sub: "./linear", kind: "type", c3: true },
-  { old: "LinearThenvoiBridgeDeps", new: "LinearBandBridgeDeps", sub: "./linear", kind: "type", c3: true },
-];
+interface MemberRow { ownerOld: string; ownerNew: string; memberOld: string; memberNew: string; subpath: string }
+interface MigrationMap {
+  package: { old: string; new: string };
+  symbols: Array<{ old: string; new: string; subpath: string; kind: "value" | "type"; c3: boolean }>;
+  members: MemberRow[];
+}
+// Single authoritative source, shared with the doc generator and live fixture.
+const migMap = JSON.parse(readFileSync(join(MIG_DIR, "c5-migration-map.json"), "utf8")) as MigrationMap;
+const MIGRATION: Row[] = migMap.symbols.map((s) => ({ old: s.old, new: s.new, sub: s.subpath, kind: s.kind, c3: s.c3 }));
+const MEMBERS: MemberRow[] = migMap.members;
 
 const specFor = (sub: string): string => `@band-ai/sdk${sub === "." ? "" : sub.slice(1)}`;
 const inSet = (s: Surface, sub: string, name: string, set: "runtime" | "declarations"): boolean =>
@@ -130,6 +117,18 @@ describe("P-C5-2: before/after export surface migration", () => {
       const set = row.kind === "value" ? "runtime" : "declarations";
       expect(inSet(before, row.sub, row.old, set), `${row.old} missing from before ${set}`).toBe(true);
     }
+  });
+
+  it("the shared map's C5 rows exactly equal the before-surface Thenvoi exports (deleting a row fails)", () => {
+    const beforeThenvoi = new Set<string>();
+    for (const e of Object.values(before.subpaths)) {
+      for (const n of [...e.runtime, ...e.declarations]) if (n.includes("Thenvoi")) beforeThenvoi.add(n);
+    }
+    const mapC5Old = new Set(MIGRATION.filter((r) => !r.c3).map((r) => r.old));
+    expect([...mapC5Old].sort()).toEqual([...beforeThenvoi].sort());
+    // Cardinality: 19 C5-owned + 2 C3 rows = 21 mapped exports.
+    expect(MIGRATION.length).toBe(21);
+    expect(MIGRATION.filter((r) => r.c3).length).toBe(2);
   });
 
   it("every mapped Band value is importable and callable at runtime", async () => {
@@ -204,25 +203,26 @@ describe("P-C5-2: consumer compile proof (values as value imports)", () => {
     }
   });
 
-  it("the renamed thenvoiRest -> bandRest option member: new compiles, old fails", () => {
-    const ok = compile("member-new.mts", `
-      import type { A2AGatewayAdapterOptions } from "@band-ai/sdk/adapters";
-      import type { BandACPServerAdapterOptions } from "@band-ai/sdk/adapters";
-      const _a: Pick<A2AGatewayAdapterOptions, "bandRest"> = {} as { bandRest: never };
-      const _b: Pick<BandACPServerAdapterOptions, "bandRest"> = {} as { bandRest: never };
-      void _a; void _b;
-    `);
+  it("the renamed option members (from the shared map): new compiles, old fails", () => {
+    const importsFor = (): string => {
+      const bySpec = new Map<string, string[]>();
+      for (const m of MEMBERS) {
+        const spec = `@band-ai/sdk${m.subpath === "." ? "" : m.subpath.slice(1)}`;
+        bySpec.set(spec, [...(bySpec.get(spec) ?? []), m.ownerNew]);
+      }
+      return [...bySpec.entries()].map(([spec, o]) => `import type { ${[...new Set(o)].join(", ")} } from "${spec}";`).join("\n");
+    };
+    const ok = compile("member-new.mts",
+      `${importsFor()}\n` + MEMBERS.map((m, i) => `type _n${i} = Pick<${m.ownerNew}, "${m.memberNew}">;`).join("\n") + "\n");
     expect(ok.status).toBe(0);
-    const bad = compile("member-old.mts", `
-      import type { A2AGatewayAdapterOptions, BandACPServerAdapterOptions } from "@band-ai/sdk/adapters";
-      type _OldA2A = Pick<A2AGatewayAdapterOptions, "thenvoiRest">;
-      type _OldAcp = Pick<BandACPServerAdapterOptions, "thenvoiRest">;
-      const _x: _OldA2A = {} as never; const _y: _OldAcp = {} as never; void _x; void _y;
-    `);
+
+    const bad = compile("member-old.mts",
+      `${importsFor()}\n` + MEMBERS.map((m, i) => `type _o${i} = Pick<${m.ownerNew}, "${m.memberOld}">;`).join("\n") + "\n");
     expect(bad.status).not.toBe(0);
-    // Both renamed option members are proved gone (old name no longer a key).
-    const thenvoiRestErrors = (bad.output.match(/thenvoiRest/g) ?? []).length;
-    expect(thenvoiRestErrors).toBeGreaterThanOrEqual(2);
+    // Every renamed member's old key is proved gone.
+    for (const m of MEMBERS) {
+      expect(bad.output, `expected diagnostic for old member ${m.ownerNew}.${m.memberOld}`).toContain(m.memberOld);
+    }
   });
 
   it("cleanup", () => {
@@ -348,16 +348,17 @@ describe("P-C5-2: committed inventory + migration doc cannot drift from the live
     expect(committed).toEqual(live);
   });
 
-  it("regenerating the migration doc from the surfaces produces no change (byte-identical)", () => {
-    const gen = spawnSync(process.execPath, ["scripts/generate-c5-migration-doc.mjs"], {
-      cwd: REPO_ROOT, encoding: "utf8",
-    });
-    expect(gen.status, gen.stderr).toBe(0);
+  it("regenerating the map and migration doc from live surfaces produces no change (byte-identical)", () => {
+    const genMap = spawnSync(process.execPath, ["scripts/generate-c5-migration-map.mjs"], { cwd: REPO_ROOT, encoding: "utf8" });
+    expect(genMap.status, genMap.stderr).toBe(0);
+    const genDoc = spawnSync(process.execPath, ["scripts/generate-c5-migration-doc.mjs"], { cwd: REPO_ROOT, encoding: "utf8" });
+    expect(genDoc.status, genDoc.stderr).toBe(0);
     const diff = spawnSync("git", [
       "diff", "--quiet", "--",
+      "docs/migrations/c5-migration-map.json",
       "docs/migrations/1.0-public-symbol-migration.md",
       "docs/migrations/c5-surface-after.json",
     ], { cwd: REPO_ROOT, encoding: "utf8" });
-    expect(diff.status, "committed migration doc/after-surface differ from regeneration").toBe(0);
+    expect(diff.status, "committed map/doc/after-surface differ from regeneration").toBe(0);
   });
 });

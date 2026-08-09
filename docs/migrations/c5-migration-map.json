@@ -1,0 +1,171 @@
+{
+  "package": {
+    "old": "@thenvoi/sdk",
+    "new": "@band-ai/sdk"
+  },
+  "symbols": [
+    {
+      "old": "ThenvoiLink",
+      "new": "BandLink",
+      "subpath": ".",
+      "kind": "value",
+      "c3": false
+    },
+    {
+      "old": "ThenvoiACPServerAdapter",
+      "new": "BandACPServerAdapter",
+      "subpath": "./adapters",
+      "kind": "value",
+      "c3": false
+    },
+    {
+      "old": "ThenvoiACPServerAdapterOptions",
+      "new": "BandACPServerAdapterOptions",
+      "subpath": "./adapters",
+      "kind": "type",
+      "c3": false
+    },
+    {
+      "old": "ThenvoiSdkError",
+      "new": "BandSdkError",
+      "subpath": "./core",
+      "kind": "value",
+      "c3": false
+    },
+    {
+      "old": "FernThenvoiClientLike",
+      "new": "FernBandClientLike",
+      "subpath": "./rest",
+      "kind": "type",
+      "c3": false
+    },
+    {
+      "old": "CreateThenvoiMcpBackendOptions",
+      "new": "CreateBandMcpBackendOptions",
+      "subpath": "./mcp",
+      "kind": "type",
+      "c3": false
+    },
+    {
+      "old": "ThenvoiMcpBackend",
+      "new": "BandMcpBackend",
+      "subpath": "./mcp",
+      "kind": "type",
+      "c3": false
+    },
+    {
+      "old": "ThenvoiMcpBackendKind",
+      "new": "BandMcpBackendKind",
+      "subpath": "./mcp",
+      "kind": "type",
+      "c3": false
+    },
+    {
+      "old": "ThenvoiMcpServer",
+      "new": "BandMcpServer",
+      "subpath": "./mcp",
+      "kind": "value",
+      "c3": false
+    },
+    {
+      "old": "ThenvoiMcpServerOptions",
+      "new": "BandMcpServerOptions",
+      "subpath": "./mcp",
+      "kind": "type",
+      "c3": false
+    },
+    {
+      "old": "ThenvoiMcpSseServer",
+      "new": "BandMcpSseServer",
+      "subpath": "./mcp",
+      "kind": "value",
+      "c3": false
+    },
+    {
+      "old": "ThenvoiMcpSseServerOptions",
+      "new": "BandMcpSseServerOptions",
+      "subpath": "./mcp",
+      "kind": "type",
+      "c3": false
+    },
+    {
+      "old": "ThenvoiMcpStdioServer",
+      "new": "BandMcpStdioServer",
+      "subpath": "./mcp",
+      "kind": "value",
+      "c3": false
+    },
+    {
+      "old": "ThenvoiMcpStdioServerOptions",
+      "new": "BandMcpStdioServerOptions",
+      "subpath": "./mcp",
+      "kind": "type",
+      "c3": false
+    },
+    {
+      "old": "createThenvoiMcpBackend",
+      "new": "createBandMcpBackend",
+      "subpath": "./mcp",
+      "kind": "value",
+      "c3": false
+    },
+    {
+      "old": "getThenvoiSdkMcpServerConfig",
+      "new": "getBandSdkMcpServerConfig",
+      "subpath": "./mcp",
+      "kind": "value",
+      "c3": false
+    },
+    {
+      "old": "CreateThenvoiSdkMcpServerOptions",
+      "new": "CreateBandSdkMcpServerOptions",
+      "subpath": "./mcp/claude",
+      "kind": "type",
+      "c3": false
+    },
+    {
+      "old": "ThenvoiSdkMcpServer",
+      "new": "BandSdkMcpServer",
+      "subpath": "./mcp/claude",
+      "kind": "type",
+      "c3": false
+    },
+    {
+      "old": "createThenvoiSdkMcpServer",
+      "new": "createBandSdkMcpServer",
+      "subpath": "./mcp/claude",
+      "kind": "value",
+      "c3": false
+    },
+    {
+      "old": "LinearThenvoiBridgeConfig",
+      "new": "LinearBandBridgeConfig",
+      "subpath": "./linear",
+      "kind": "type",
+      "c3": true
+    },
+    {
+      "old": "LinearThenvoiBridgeDeps",
+      "new": "LinearBandBridgeDeps",
+      "subpath": "./linear",
+      "kind": "type",
+      "c3": true
+    }
+  ],
+  "members": [
+    {
+      "ownerOld": "A2AGatewayAdapterOptions",
+      "ownerNew": "A2AGatewayAdapterOptions",
+      "memberOld": "thenvoiRest",
+      "memberNew": "bandRest",
+      "subpath": "./adapters"
+    },
+    {
+      "ownerOld": "ThenvoiACPServerAdapterOptions",
+      "ownerNew": "BandACPServerAdapterOptions",
+      "memberOld": "thenvoiRest",
+      "memberNew": "bandRest",
+      "subpath": "./adapters"
+    }
+  ]
+}
