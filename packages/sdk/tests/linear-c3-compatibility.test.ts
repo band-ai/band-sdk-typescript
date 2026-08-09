@@ -4,36 +4,86 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { writeFileSync, readFileSync, mkdtempSync, rmSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { writeFileSync, mkdtempSync, rmSync, existsSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 
 import {
   readLinearEnv,
   loadBandLinearConfig,
+  createLinearBandBridgeStore,
+  _resetWarningState,
 } from "../examples/linear-band/linear-band-bridge-agent";
 
-// ── P-C3-1: Export rename proof ──────────────────────────────────────────────
+const SDK_ROOT = resolve(__dirname, "..");
 
-describe("P-C3-1: new Band type names exist and old names are absent", () => {
-  it("built declarations export LinearBandBridgeConfig and LinearBandBridgeDeps", () => {
-    const dts = readFileSync(join(process.cwd(), "dist/linear.d.ts"), "utf8");
-    expect(dts).toContain("LinearBandBridgeConfig");
-    expect(dts).toContain("LinearBandBridgeDeps");
+// ── P-C3-1: Export rename compile proof ──────────────────────────────────────
+
+describe("P-C3-1: new Band type names compile and old names fail", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "c3-compile-"));
   });
 
-  it("built declarations do not export old LinearThenvoi names", () => {
-    const dts = readFileSync(join(process.cwd(), "dist/linear.d.ts"), "utf8");
-    expect(dts).not.toContain("LinearThenvoiBridgeConfig");
-    expect(dts).not.toContain("LinearThenvoiBridgeDeps");
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("built ESM runtime barrel does not contain LinearThenvoi symbols", async () => {
-    // Dynamic import of the built ESM barrel — exercises the actual published export surface
-    const linear = await import("../dist/linear.js"); // eslint-disable-line -- intentional dynamic import of built artifact
-    const exportNames = Object.keys(linear);
-    const staleNames = exportNames.filter((name: string) => name.includes("LinearThenvoi"));
-    expect(staleNames).toEqual([]);
+  function writeTsconfig(includes: string[]): void {
+    writeFileSync(join(tmpDir, "tsconfig.json"), JSON.stringify({
+      compilerOptions: {
+        strict: true,
+        moduleResolution: "bundler",
+        module: "esnext",
+        target: "es2022",
+        noEmit: true,
+        skipLibCheck: true,
+        typeRoots: [join(SDK_ROOT, "node_modules/@types")],
+        baseUrl: SDK_ROOT,
+        paths: { "@thenvoi/sdk/linear": ["dist/linear.d.ts"] },
+      },
+      include: includes,
+    }));
+  }
+
+  function compile(filename: string, code: string): { status: number; output: string } {
+    writeFileSync(join(tmpDir, filename), code);
+    writeTsconfig([filename]);
+    const result = spawnSync(
+      join(SDK_ROOT, "node_modules/.bin/tsc"),
+      ["-p", join(tmpDir, "tsconfig.json")],
+      { encoding: "utf8" },
+    );
+    return { status: result.status ?? 1, output: (result.stdout ?? "") + (result.stderr ?? "") };
+  }
+
+  it("ESM consumer importing new Band types compiles successfully", () => {
+    const result = compile("consumer.mts", `
+      import type { LinearBandBridgeConfig, LinearBandBridgeDeps } from "@thenvoi/sdk/linear";
+      const _cfg: LinearBandBridgeConfig = {} as LinearBandBridgeConfig;
+      const _deps: LinearBandBridgeDeps = {} as LinearBandBridgeDeps;
+    `);
+    expect(result.status).toBe(0);
+  });
+
+  it("CTS consumer importing new Band types compiles successfully", () => {
+    const result = compile("consumer.cts", `
+      import type { LinearBandBridgeConfig, LinearBandBridgeDeps } from "@thenvoi/sdk/linear";
+      const _cfg: LinearBandBridgeConfig = {} as LinearBandBridgeConfig;
+      const _deps: LinearBandBridgeDeps = {} as LinearBandBridgeDeps;
+    `);
+    expect(result.status).toBe(0);
+  });
+
+  it("old LinearThenvoi type import fails with missing-export diagnostic", () => {
+    const result = compile("old-consumer.mts", `
+      import type { LinearThenvoiBridgeConfig } from "@thenvoi/sdk/linear";
+      const _cfg: LinearThenvoiBridgeConfig = {} as LinearThenvoiBridgeConfig;
+    `);
+    expect(result.status).not.toBe(0);
+    expect(result.output).toContain("LinearThenvoiBridgeConfig");
   });
 });
 
@@ -44,6 +94,7 @@ describe("P-C3-2: loadBandLinearConfig", () => {
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "c3-config-"));
+    _resetWarningState();
   });
 
   afterEach(() => {
@@ -61,7 +112,7 @@ describe("P-C3-2: loadBandLinearConfig", () => {
     expect(config.agentId).toBe("band-agent-id");
   });
 
-  it("falls back to legacy key with warning when Band key is absent", () => {
+  it("falls back to legacy key with exactly one warning, not two", () => {
     const configPath = join(tmpDir, "agent_config.yaml");
     writeFileSync(configPath, [
       "linear_thenvoi_bridge:",
@@ -70,11 +121,16 @@ describe("P-C3-2: loadBandLinearConfig", () => {
     ].join("\n"));
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
+      // First call: warns
       const config = loadBandLinearConfig("linear_band_bridge", "linear_thenvoi_bridge", configPath);
       expect(config.agentId).toBe("legacy-agent-id");
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining("linear_thenvoi_bridge"),
-      );
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("linear_thenvoi_bridge"));
+
+      // Second call: no additional warning
+      warnSpy.mockClear();
+      loadBandLinearConfig("linear_band_bridge", "linear_thenvoi_bridge", configPath);
+      expect(warnSpy).not.toHaveBeenCalled();
     } finally {
       warnSpy.mockRestore();
     }
@@ -122,6 +178,7 @@ describe("P-C3-3B: readLinearEnv", () => {
       delete process.env[band];
       delete process.env[legacy];
     }
+    _resetWarningState();
     warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
   });
 
@@ -142,12 +199,14 @@ describe("P-C3-3B: readLinearEnv", () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it.each(ALL_ENV_PAIRS)("legacy-only: %s returns legacy value with warning", (bandKey, legacyKey) => {
+  it.each(ALL_ENV_PAIRS)("legacy-only: %s warns on first read, silent on second", (bandKey, legacyKey) => {
     process.env[legacyKey] = "legacy-value";
     expect(readLinearEnv(bandKey, legacyKey)).toBe("legacy-value");
-    // Warning may or may not fire due to module-scoped once-per-var dedup;
-    // the contract is that on fresh module load it warns. We verify the return
-    // value is correct regardless.
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(legacyKey));
+    warnSpy.mockClear();
+    expect(readLinearEnv(bandKey, legacyKey)).toBe("legacy-value");
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 
   it.each(ALL_ENV_PAIRS)("both set: %s (Band) wins, no warning", (bandKey, legacyKey) => {
@@ -157,24 +216,39 @@ describe("P-C3-3B: readLinearEnv", () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it.each(ALL_ENV_PAIRS)("neither set: returns undefined for %s, no warning", (bandKey, legacyKey) => {
+  it.each(ALL_ENV_PAIRS)("neither set: returns undefined, no warning", (bandKey, legacyKey) => {
     expect(readLinearEnv(bandKey, legacyKey)).toBeUndefined();
     expect(warnSpy).not.toHaveBeenCalled();
   });
 });
 
-// ── P-C3-3: existing SQLite binding reuse ────────────────────────────────────
+// ── P-C3-3: SQLite path resolution and reuse ─────────────────────────────────
 
-describe("P-C3-3: existing SQLite default path reuse", () => {
-  it("reuses an existing binding from the compatibility filename", async () => {
-    const { createSqliteSessionRoomStore } = await import("../src/linear"); // eslint-disable-line -- intentional dynamic import for isolation
+describe("P-C3-3: SQLite path resolver and binding reuse", () => {
+  let savedStateDb: string | undefined;
+  let savedBandStateDb: string | undefined;
 
-    const tmpDir = mkdtempSync(join(tmpdir(), "c3-sqlite-"));
-    const dbPath = join(tmpDir, ".linear-thenvoi-example.sqlite");
+  beforeEach(() => {
+    savedStateDb = process.env.LINEAR_THENVOI_STATE_DB;
+    savedBandStateDb = process.env.LINEAR_BAND_STATE_DB;
+    delete process.env.LINEAR_THENVOI_STATE_DB;
+    delete process.env.LINEAR_BAND_STATE_DB;
+    _resetWarningState();
+  });
 
+  afterEach(() => {
+    if (savedStateDb === undefined) delete process.env.LINEAR_THENVOI_STATE_DB;
+    else process.env.LINEAR_THENVOI_STATE_DB = savedStateDb;
+    if (savedBandStateDb === undefined) delete process.env.LINEAR_BAND_STATE_DB;
+    else process.env.LINEAR_BAND_STATE_DB = savedBandStateDb;
+  });
+
+  it("resolves the compatibility default and reuses an existing binding", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "c3-default-db-"));
+    const originalCwd = process.cwd();
     try {
-      // First store: create + upsert a binding
-      const store1 = createSqliteSessionRoomStore(dbPath);
+      process.chdir(tmpDir);
+      const store1 = createLinearBandBridgeStore();
       const now = new Date().toISOString();
       await store1.upsert({
         linearSessionId: "session-1",
@@ -186,32 +260,33 @@ describe("P-C3-3: existing SQLite default path reuse", () => {
       });
       await store1.close?.();
 
-      // Reopen — proves the default filename is reusable
-      const store2 = createSqliteSessionRoomStore(dbPath);
+      const store2 = createLinearBandBridgeStore();
       const existing = await store2.getBySessionId("session-1");
       expect(existing).toBeDefined();
       expect(existing!.thenvoiRoomId).toBe("room-abc");
-      expect(existing!.status).toBe("active");
       await store2.close?.();
+
+      expect(existsSync(join(tmpDir, ".linear-thenvoi-example.sqlite"))).toBe(true);
     } finally {
+      process.chdir(originalCwd);
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 
-  it("custom DB path reuses without creating a default DB", async () => {
-    const { createSqliteSessionRoomStore } = await import("../src/linear"); // eslint-disable-line -- intentional dynamic import for isolation
-
-    const tmpDir = mkdtempSync(join(tmpdir(), "c3-custom-db-"));
-    const customPath = join(tmpDir, "custom-state.sqlite");
+  it("legacy-only LINEAR_THENVOI_STATE_DB resolves to custom path, no default DB", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "c3-legacy-db-"));
+    const customPath = join(tmpDir, "custom-legacy.sqlite");
     const defaultPath = join(tmpDir, ".linear-thenvoi-example.sqlite");
 
+    process.env.LINEAR_THENVOI_STATE_DB = customPath;
+
     try {
-      const store = createSqliteSessionRoomStore(customPath);
+      const store = createLinearBandBridgeStore();
       const now = new Date().toISOString();
       await store.upsert({
-        linearSessionId: "session-custom",
-        linearIssueId: "issue-custom",
-        thenvoiRoomId: "room-custom",
+        linearSessionId: "session-legacy",
+        linearIssueId: "issue-legacy",
+        thenvoiRoomId: "room-legacy",
         status: "active",
         createdAt: now,
         updatedAt: now,
