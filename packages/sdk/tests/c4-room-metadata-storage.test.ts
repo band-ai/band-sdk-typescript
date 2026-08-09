@@ -372,7 +372,7 @@ describe("P-C4-2: public room-id field compile proof", () => {
     const base = join(tmpdir(), `c4-compile-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(base, { recursive: true });
     tmpDirPath = base;
-    const nmDir = join(base, "node_modules/@thenvoi/sdk");
+    const nmDir = join(base, "node_modules/@band-ai/sdk");
     mkdirSync(nmDir, { recursive: true });
     cpSync(join(SDK_ROOT, "dist"), join(nmDir, "dist"), { recursive: true });
     cpSync(join(SDK_ROOT, "package.json"), join(nmDir, "package.json"));
@@ -396,7 +396,7 @@ describe("P-C4-2: public room-id field compile proof", () => {
   }
 
   const record = (roomField: string) => `
-    import type { SessionRoomRecord } from "@thenvoi/sdk/linear";
+    import type { SessionRoomRecord } from "@band-ai/sdk/linear";
     const record: SessionRoomRecord = {
       linearSessionId: "s",
       linearIssueId: "i",

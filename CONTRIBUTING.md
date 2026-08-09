@@ -23,11 +23,11 @@ This is a pnpm workspace with two published packages:
 
 | Path | Workspace name (use in `--filter`) | Published as |
 |---|---|---|
-| `packages/sdk` | `@thenvoi/sdk` | `@band-ai/sdk` |
+| `packages/sdk` | `@band-ai/sdk` | `@band-ai/sdk` |
 | `packages/openclaw` | `@band-ai/openclaw-channel-band` | `@band-ai/openclaw-channel-band` |
 
-> The SDK's local name is still `@thenvoi/sdk`; `release.yml` rewrites it to
-> `@band-ai/sdk` at publish time. Use the workspace name for `pnpm --filter`.
+> Both packages publish under their workspace name; no publish-time package
+> rename is applied. Use the workspace name for `pnpm --filter`.
 
 ## Development Workflow
 
@@ -71,9 +71,9 @@ This is a pnpm workspace with two published packages:
    Useful narrower commands:
 
    ```bash
-   pnpm --filter @thenvoi/sdk test
-   pnpm --filter @thenvoi/sdk exec vitest run path/to/file.test.ts
-   pnpm --filter @thenvoi/sdk run coverage
+   pnpm --filter @band-ai/sdk test
+   pnpm --filter @band-ai/sdk exec vitest run path/to/file.test.ts
+   pnpm --filter @band-ai/sdk run coverage
    ```
 
 4. **Commit your changes**

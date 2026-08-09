@@ -37,7 +37,7 @@ async function writeReleaseState(directory, { sdk, openclaw, hold = false }) {
   );
   await writeFile(
     join(directory, "packages/sdk/package.json"),
-    `${JSON.stringify({ name: "@thenvoi/sdk", version: sdk }, null, 2)}\n`,
+    `${JSON.stringify({ name: "@band-ai/sdk", version: sdk }, null, 2)}\n`,
   );
   await writeFile(
     join(directory, "packages/openclaw/package.json"),
@@ -838,7 +838,7 @@ test("CI uses exact nonempty package filters and selects both packages for contr
   for (const command of filteredCommands) {
     assert.match(command[1], /^pnpm --fail-if-no-match --filter /);
   }
-  assert.match(workflow, /pnpm --fail-if-no-match --filter @thenvoi\/sdk/);
+  assert.match(workflow, /pnpm --fail-if-no-match --filter @band-ai\/sdk/);
   assert.match(
     workflow,
     /pnpm --fail-if-no-match --filter @band-ai\/openclaw-channel-band/,

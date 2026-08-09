@@ -1,6 +1,6 @@
-export { createThenvoiSdkMcpServer } from "./sdk";
+export { createBandSdkMcpServer } from "./sdk";
 export type {
-  ThenvoiSdkMcpServer,
-  CreateThenvoiSdkMcpServerOptions,
+  BandSdkMcpServer,
+  CreateBandSdkMcpServerOptions,
   GetSystemPromptContextResult,
 } from "./sdk";

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GenericAdapter } from "../src/adapters/GenericAdapter";
 import { TransportError } from "../src/core/errors";
-import { ThenvoiLink } from "../src/platform/ThenvoiLink";
+import { BandLink } from "../src/platform/BandLink";
 import { WebSocketDisconnectError } from "../src/platform/streaming/disconnectReason";
 import { PlatformRuntime } from "../src/runtime/PlatformRuntime";
 import { FakeRestApi } from "./testUtils";
@@ -221,8 +221,8 @@ describe("PhoenixChannelsTransport", () => {
     });
   });
 
-  it("passes ThenvoiLink conflict policy into the socket params", () => {
-    new ThenvoiLink({
+  it("passes BandLink conflict policy into the socket params", () => {
+    new BandLink({
       agentId: "agent-1",
       apiKey: "key-1",
       restApi: new FakeRestApi(),
@@ -561,7 +561,7 @@ describe("PhoenixChannelsTransport", () => {
     const runtime = new PlatformRuntime({
       agentId: "agent-1",
       apiKey: "key-1",
-      link: new ThenvoiLink({
+      link: new BandLink({
         agentId: "agent-1",
         apiKey: "key-1",
         restApi: new FakeRestApi(),
@@ -595,7 +595,7 @@ describe("PhoenixChannelsTransport", () => {
     const runtime = new PlatformRuntime({
       agentId: "agent-1",
       apiKey: "key-1",
-      link: new ThenvoiLink({
+      link: new BandLink({
         agentId: "agent-1",
         apiKey: "key-1",
         restApi: new FakeRestApi(),

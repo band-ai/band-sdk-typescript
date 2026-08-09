@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createThenvoiMcpBackend } from "../src/mcp/backends";
+import { createBandMcpBackend } from "../src/mcp/backends";
 import { FakeRestApi, FakeTools } from "./testUtils";
 
-describe("createThenvoiMcpBackend", () => {
+describe("createBandMcpBackend", () => {
   const backends: Array<{ stop(): Promise<void> }> = [];
 
   afterEach(async () => {
@@ -27,7 +27,7 @@ describe("createThenvoiMcpBackend", () => {
       { id: "agent-1", name: "Agent", type: "Agent", handle: "@owner/agent" },
     ];
 
-    const backend = await createThenvoiMcpBackend({
+    const backend = await createBandMcpBackend({
       kind: "sdk",
       enableMemoryTools: false,
       getToolsForRoom: () => tools,
@@ -50,7 +50,7 @@ describe("createThenvoiMcpBackend", () => {
       return { ok: true };
     };
 
-    const backend = await createThenvoiMcpBackend({
+    const backend = await createBandMcpBackend({
       kind: "sdk",
       multiRoom: false,
       enableMemoryTools: false,
@@ -79,7 +79,7 @@ describe("createThenvoiMcpBackend", () => {
   });
 
   it("creates an http backend and starts the local server", async () => {
-    const backend = await createThenvoiMcpBackend({
+    const backend = await createBandMcpBackend({
       kind: "http",
       enableMemoryTools: false,
       getToolsForRoom: () => new FakeTools(),
@@ -92,7 +92,7 @@ describe("createThenvoiMcpBackend", () => {
   });
 
   it("creates an sse backend and starts the local server", async () => {
-    const backend = await createThenvoiMcpBackend({
+    const backend = await createBandMcpBackend({
       kind: "sse",
       enableMemoryTools: false,
       getToolsForRoom: () => new FakeTools(),

@@ -3,7 +3,7 @@
  * every resource and method the SDK consumes, without making network calls.
  *
  * This test catches a removed or renamed generated resource that typecheck
- * alone misses (ThenvoiLink casts BandClient through `unknown`). A missing
+ * alone misses (BandLink casts BandClient through `unknown`). A missing
  * method here means the SDK would throw at runtime.
  */
 

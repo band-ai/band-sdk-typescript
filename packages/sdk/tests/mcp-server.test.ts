@@ -3,11 +3,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
-import { ThenvoiMcpServer } from "../src/mcp/server";
+import { BandMcpServer } from "../src/mcp/server";
 import { FakeTools } from "./testUtils";
 
-describe("ThenvoiMcpServer", () => {
-  const servers: ThenvoiMcpServer[] = [];
+describe("BandMcpServer", () => {
+  const servers: BandMcpServer[] = [];
 
   afterEach(async () => {
     await Promise.all(servers.map(async (server) => {
@@ -17,7 +17,7 @@ describe("ThenvoiMcpServer", () => {
   });
 
   it("handles multiple MCP requests on the same client session", async () => {
-    const server = new ThenvoiMcpServer({
+    const server = new BandMcpServer({
       tools: new FakeTools(),
     });
     servers.push(server);
@@ -42,7 +42,7 @@ describe("ThenvoiMcpServer", () => {
   });
 
   it("keeps independent MCP sessions isolated across clients", async () => {
-    const server = new ThenvoiMcpServer({
+    const server = new BandMcpServer({
       tools: new FakeTools(),
     });
     servers.push(server);
@@ -74,7 +74,7 @@ describe("ThenvoiMcpServer", () => {
   });
 
   it("rejects unknown session ids", async () => {
-    const server = new ThenvoiMcpServer({
+    const server = new BandMcpServer({
       tools: new FakeTools(),
     });
     servers.push(server);

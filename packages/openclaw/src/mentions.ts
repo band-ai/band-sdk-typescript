@@ -6,7 +6,7 @@
  * `mentions` array (tokens left in the body render as inert text). So this module
  * is the single place that turns the model's reply text into that array.
  *
- * It mirrors the @thenvoi/sdk resolver (`AgentTools.resolveMentions`):
+ * It mirrors the @band-ai/sdk resolver (`AgentTools.resolveMentions`):
  *  - a mention resolves by **id -> handle -> name** (the SDK's precedence), so the
  *    model can address someone with the authoritative `@[[uuid]]` token, a
  *    `@handle`, or a display name — whichever it has.
@@ -218,7 +218,7 @@ export function resolveMentions(params: {
 }
 
 // =============================================================================
-// Inbound display helpers (mirror @thenvoi/sdk runtime/formatters)
+// Inbound display helpers (mirror @band-ai/sdk runtime/formatters)
 // =============================================================================
 
 /**

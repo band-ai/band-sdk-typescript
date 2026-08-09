@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentToolsProtocol } from "../src/core";
-import { createThenvoiSdkMcpServer } from "../src/mcp/sdk";
+import { createBandSdkMcpServer } from "../src/mcp/sdk";
 import { FakeRestApi } from "./testUtils";
 
-describe("createThenvoiSdkMcpServer", () => {
+describe("createBandSdkMcpServer", () => {
   function makeTools(calls: Array<{ name: string; args: Record<string, unknown> }>): AgentToolsProtocol {
     return {
       capabilities: { peers: false, contacts: false, memory: false },
@@ -40,7 +40,7 @@ describe("createThenvoiSdkMcpServer", () => {
 
     const roomTools = makeTools(calls);
 
-    const bridge = createThenvoiSdkMcpServer({
+    const bridge = createBandSdkMcpServer({
       enableMemoryTools: false,
       getToolsForRoom: (roomId: string) => (roomId === "room-1" ? roomTools : undefined),
     });
@@ -122,7 +122,7 @@ describe("createThenvoiSdkMcpServer", () => {
       }),
     };
 
-    const bridge = createThenvoiSdkMcpServer({
+    const bridge = createBandSdkMcpServer({
       enableMemoryTools: false,
       getToolsForRoom: (roomId: string) => (roomId === "room-1" ? roomTools : undefined),
     });
@@ -147,7 +147,7 @@ describe("createThenvoiSdkMcpServer", () => {
   });
 
   it("falls back with warnings when room tools are unavailable", async () => {
-    const bridge = createThenvoiSdkMcpServer({
+    const bridge = createBandSdkMcpServer({
       enableMemoryTools: false,
       getToolsForRoom: () => undefined,
     });
@@ -203,7 +203,7 @@ describe("createThenvoiSdkMcpServer", () => {
       }),
     };
 
-    const bridge = createThenvoiSdkMcpServer({
+    const bridge = createBandSdkMcpServer({
       enableMemoryTools: false,
       getToolsForRoom: (roomId: string) => (roomId === "room-200" ? roomTools : undefined),
     });
@@ -219,7 +219,7 @@ describe("createThenvoiSdkMcpServer", () => {
 
   it("builds thenvoi MCP tools without room_id when multiRoom is false", async () => {
     const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
-    const bridge = createThenvoiSdkMcpServer({
+    const bridge = createBandSdkMcpServer({
       multiRoom: false,
       enableMemoryTools: false,
       getToolsForRoom: () => makeTools(calls),

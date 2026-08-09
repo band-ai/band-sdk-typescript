@@ -216,8 +216,8 @@ Deliberately not addressed yet, recorded so they aren't rediscovered:
   requires updating the affected npm trusted-publisher binding.
 - **`ci.yml` actions are still on floating tags.** Only `release.yml` is pinned,
   since that is the workflow with publishing rights.
-- **`packages/sdk` is still named `@thenvoi/sdk` in `package.json`** and renamed
-  to `@band-ai/sdk` by a `sed` at publish time. The rename belongs in the source.
+- **`packages/sdk` is named `@band-ai/sdk` in `package.json`** and publishes
+  under that name; no publish-time `sed` rename is applied.
 - **A manual `automatic` dispatch validates a narrower range than a push.** The
   release-intent baseline is `github.event.before` on a push (the real
   previously-deployed commit), but a manual dispatch has no such event field,

@@ -99,7 +99,7 @@ store maps public `bandRoomId` ↔ physical `thenvoi_room_id` at its boundary.
 Because the inventory found **no owned reader or store** in the searched
 repositories, there is no owned telemetry store here to query. What is
 executable and owned is the assertion that each emitted payload uses exactly the
-Band namespace. These proofs run in this repo (`pnpm --filter @thenvoi/sdk exec
+Band namespace. These proofs run in this repo (`pnpm --filter @band-ai/sdk exec
 vitest run <file>`) against the actual adapter output and gate the release:
 
 | Surface | Executable proof (asserts the real emitted payload) |

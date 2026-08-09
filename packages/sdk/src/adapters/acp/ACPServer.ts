@@ -28,7 +28,7 @@ import type {
   Stream,
 } from "@agentclientprotocol/sdk";
 
-import { ThenvoiACPServerAdapter } from "./ThenvoiACPServerAdapter";
+import { BandACPServerAdapter } from "./BandACPServerAdapter";
 import { CursorExtensionHandler } from "./cursorExtensions";
 import type { ACPExtensionHandler } from "./extensions";
 import { acpModule } from "./loader";
@@ -41,14 +41,14 @@ export interface ACPServerOptions {
 }
 
 export class ACPServer implements Agent {
-  private readonly adapter: ThenvoiACPServerAdapter
+  private readonly adapter: BandACPServerAdapter
   private readonly authMethods: InitializeResponse["authMethods"]
   private readonly agentInfo: Partial<Implementation>
   private readonly extensionHandler: ACPExtensionHandler
   private connection: AgentSideConnection | null = null
 
   public constructor(
-    adapter: ThenvoiACPServerAdapter,
+    adapter: BandACPServerAdapter,
     options?: ACPServerOptions,
   ) {
     this.adapter = adapter

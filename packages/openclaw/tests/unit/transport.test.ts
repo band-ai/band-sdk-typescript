@@ -16,7 +16,7 @@ import {
   platformEventToInboundContext,
   roomTypeToChatType,
 } from "../../src/transport.js";
-import type { PlatformEvent } from "@thenvoi/sdk";
+import type { PlatformEvent } from "@band-ai/sdk";
 
 const SELF = "agent-self";
 const OWNER = "user-owner";

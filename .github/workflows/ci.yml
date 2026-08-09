@@ -76,7 +76,7 @@ jobs:
 
       - name: Build SDK
         if: needs.changes.outputs.sdk == 'true' || needs.changes.outputs.openclaw == 'true'
-        run: pnpm --fail-if-no-match --filter @thenvoi/sdk build
+        run: pnpm --fail-if-no-match --filter @band-ai/sdk build
 
       - name: Build OpenClaw
         if: needs.changes.outputs.openclaw == 'true'
@@ -84,7 +84,7 @@ jobs:
 
       - name: Typecheck SDK
         if: needs.changes.outputs.sdk == 'true'
-        run: pnpm --fail-if-no-match --filter @thenvoi/sdk typecheck
+        run: pnpm --fail-if-no-match --filter @band-ai/sdk typecheck
 
       - name: Typecheck OpenClaw
         if: needs.changes.outputs.openclaw == 'true'
@@ -92,7 +92,7 @@ jobs:
 
       - name: Lint SDK
         if: needs.changes.outputs.sdk == 'true'
-        run: pnpm --fail-if-no-match --filter @thenvoi/sdk lint
+        run: pnpm --fail-if-no-match --filter @band-ai/sdk lint
 
       - name: Lint OpenClaw
         if: needs.changes.outputs.openclaw == 'true'
@@ -127,7 +127,7 @@ jobs:
 
       - name: Build SDK
         if: needs.changes.outputs.sdk == 'true' || needs.changes.outputs.openclaw == 'true'
-        run: pnpm --fail-if-no-match --filter @thenvoi/sdk build
+        run: pnpm --fail-if-no-match --filter @band-ai/sdk build
 
       - name: Build OpenClaw
         if: needs.changes.outputs.openclaw == 'true'
@@ -135,7 +135,7 @@ jobs:
 
       - name: Test SDK
         if: needs.changes.outputs.sdk == 'true'
-        run: pnpm --fail-if-no-match --filter @thenvoi/sdk test
+        run: pnpm --fail-if-no-match --filter @band-ai/sdk test
 
       - name: Test OpenClaw
         if: needs.changes.outputs.openclaw == 'true'

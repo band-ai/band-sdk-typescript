@@ -6,7 +6,7 @@
  */
 
 /**
- * Configuration shape for E2E tests, matching ThenvoiLink constructor options.
+ * Configuration shape for E2E tests, matching BandLink constructor options.
  */
 export interface E2EConfig {
   apiKey: string;

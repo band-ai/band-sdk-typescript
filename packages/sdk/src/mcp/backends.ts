@@ -6,22 +6,22 @@ import {
   buildSingleContextRegistrations,
   resolveSingleRoomTools,
 } from "./registrations";
-import { ThenvoiMcpStdioServer } from "./stdio";
-import { ThenvoiMcpServer } from "./server";
-import { ThenvoiMcpSseServer } from "./sse";
-import type { ThenvoiSdkMcpServer } from "./sdk";
+import { BandMcpStdioServer } from "./stdio";
+import { BandMcpServer } from "./server";
+import { BandMcpSseServer } from "./sse";
+import type { BandSdkMcpServer } from "./sdk";
 
-export type ThenvoiMcpBackendKind = "sdk" | "http" | "sse" | "stdio";
+export type BandMcpBackendKind = "sdk" | "http" | "sse" | "stdio";
 
-export interface ThenvoiMcpBackend {
-  kind: ThenvoiMcpBackendKind;
+export interface BandMcpBackend {
+  kind: BandMcpBackendKind;
   server: unknown;
   allowedTools: string[];
   stop(): Promise<void>;
 }
 
-export interface CreateThenvoiMcpBackendOptions {
-  kind: ThenvoiMcpBackendKind;
+export interface CreateBandMcpBackendOptions {
+  kind: BandMcpBackendKind;
   enableMemoryTools: boolean;
   /**
    * Returns the tools for a given room. In single-room mode (`multiRoom: false`),
@@ -32,9 +32,9 @@ export interface CreateThenvoiMcpBackendOptions {
   multiRoom?: boolean;
 }
 
-export async function createThenvoiMcpBackend(
-  options: CreateThenvoiMcpBackendOptions,
-): Promise<ThenvoiMcpBackend> {
+export async function createBandMcpBackend(
+  options: CreateBandMcpBackendOptions,
+): Promise<BandMcpBackend> {
   const registrationOptions = {
     enableMemoryTools: options.enableMemoryTools,
     enableContactTools: true,
@@ -43,8 +43,8 @@ export async function createThenvoiMcpBackend(
 
   // SDK builds its own registrations and allowedTools internally — delegate entirely.
   if (options.kind === "sdk") {
-    const { createThenvoiSdkMcpServer } = await import("./sdk");
-    const server = createThenvoiSdkMcpServer({
+    const { createBandSdkMcpServer } = await import("./sdk");
+    const server = createBandSdkMcpServer({
       getToolsForRoom: options.getToolsForRoom,
       multiRoom: options.multiRoom,
       enableMemoryTools: options.enableMemoryTools,
@@ -71,7 +71,7 @@ export async function createThenvoiMcpBackend(
   const allowedTools = mcpToolNames(new Set(registrations.map((registration) => registration.name)));
 
   if (options.kind === "stdio") {
-    const server = new ThenvoiMcpStdioServer({
+    const server = new BandMcpStdioServer({
       tools: resolvedTools,
       enableMemoryTools: options.enableMemoryTools,
       enableContactTools: true,
@@ -90,7 +90,7 @@ export async function createThenvoiMcpBackend(
   }
 
   if (options.kind === "sse") {
-    const server = new ThenvoiMcpSseServer({
+    const server = new BandMcpSseServer({
       tools: resolvedTools,
       enableMemoryTools: options.enableMemoryTools,
       enableContactTools: true,
@@ -108,7 +108,7 @@ export async function createThenvoiMcpBackend(
     };
   }
 
-  const server = new ThenvoiMcpServer({
+  const server = new BandMcpServer({
     tools: resolvedTools,
     enableMemoryTools: options.enableMemoryTools,
     enableContactTools: true,
@@ -126,12 +126,12 @@ export async function createThenvoiMcpBackend(
   };
 }
 
-export function getThenvoiSdkMcpServerConfig(
-  backend: ThenvoiMcpBackend,
-): ThenvoiSdkMcpServer["serverConfig"] {
+export function getBandSdkMcpServerConfig(
+  backend: BandMcpBackend,
+): BandSdkMcpServer["serverConfig"] {
   if (backend.kind !== "sdk") {
     throw new Error(`Expected sdk MCP backend, received ${backend.kind}`);
   }
 
-  return (backend.server as ThenvoiSdkMcpServer).serverConfig;
+  return (backend.server as BandSdkMcpServer).serverConfig;
 }
