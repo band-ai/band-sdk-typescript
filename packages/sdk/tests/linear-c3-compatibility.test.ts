@@ -11,24 +11,35 @@ import { spawnSync } from "node:child_process";
 import type { Logger } from "../src/core";
 
 import {
-  readLinearEnv,
-  loadBandLinearConfig,
-  createLinearBandBridgeStore,
-  _resetWarningState,
-} from "../examples/linear-band/linear-band-bridge-agent";
-
-import {
-  resolveEmbeddedBridgeConfig,
-  resolveBridgeApiKey,
-} from "../examples/linear-band/linear-band-bridge-server";
-
-import {
   handleAgentSessionEvent,
   createSqliteSessionRoomStore,
 } from "../src/linear";
 import { LinearBandExampleRestApi } from "../examples/linear-band/linear-band-rest-stub";
 
 const SDK_ROOT = resolve(__dirname, "..");
+
+// Module namespace types for the example entry modules. A top-level `typeof
+// import()` alias is the canonical way to type a dynamically-imported module;
+// it is not an inline signature annotation.
+type AgentModule = typeof import("../examples/linear-band/linear-band-bridge-agent");
+type ServerModule = typeof import("../examples/linear-band/linear-band-bridge-server");
+
+interface FreshModules {
+  agent: AgentModule;
+  server: ServerModule;
+}
+
+// The env/config compatibility helpers carry module-scoped once-per-key warning
+// dedup state. Re-import them through a reset module registry so each test sees
+// a fresh warning ledger — no production test-only reset API required. Dynamic
+// import is required here to observe fresh module state after resetModules; a
+// static import binds the singleton once and defeats the isolation.
+async function freshModules(): Promise<FreshModules> {
+  vi.resetModules();
+  const agent = await import("../examples/linear-band/linear-band-bridge-agent");
+  const server = await import("../examples/linear-band/linear-band-bridge-server");
+  return { agent, server };
+}
 
 // ── P-C3-1: Export rename compile proof ──────────────────────────────────────
 
@@ -43,42 +54,27 @@ describe("P-C3-1: new Band type names compile and old names fail", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  function compileConsumer(filename: string, code: string, useNodeNext = false): { status: number; output: string } {
-    if (useNodeNext) {
-      // Simulate real package consumer: create node_modules with SDK dist
-      const nmDir = join(tmpDir, "node_modules/@thenvoi/sdk");
-      mkdirSync(nmDir, { recursive: true });
-      cpSync(join(SDK_ROOT, "dist"), join(nmDir, "dist"), { recursive: true });
-      cpSync(join(SDK_ROOT, "package.json"), join(nmDir, "package.json"));
+  // Compile a consumer that resolves `@thenvoi/sdk/linear` through the package's
+  // real `exports` map under NodeNext — a temp node_modules link, no `paths`
+  // alias to a declaration file. `.mts` exercises ESM resolution, `.cts` CJS.
+  function compileConsumer(filename: string, code: string): { status: number; output: string } {
+    const nmDir = join(tmpDir, "node_modules/@thenvoi/sdk");
+    mkdirSync(nmDir, { recursive: true });
+    cpSync(join(SDK_ROOT, "dist"), join(nmDir, "dist"), { recursive: true });
+    cpSync(join(SDK_ROOT, "package.json"), join(nmDir, "package.json"));
 
-      writeFileSync(join(tmpDir, "tsconfig.json"), JSON.stringify({
-        compilerOptions: {
-          strict: true,
-          module: "nodenext",
-          moduleResolution: "nodenext",
-          target: "es2022",
-          noEmit: true,
-          skipLibCheck: true,
-          typeRoots: [join(SDK_ROOT, "node_modules/@types")],
-        },
-        include: [filename],
-      }));
-    } else {
-      writeFileSync(join(tmpDir, "tsconfig.json"), JSON.stringify({
-        compilerOptions: {
-          strict: true,
-          moduleResolution: "bundler",
-          module: "esnext",
-          target: "es2022",
-          noEmit: true,
-          skipLibCheck: true,
-          typeRoots: [join(SDK_ROOT, "node_modules/@types")],
-          baseUrl: SDK_ROOT,
-          paths: { "@thenvoi/sdk/linear": ["dist/linear.d.ts"] },
-        },
-        include: [filename],
-      }));
-    }
+    writeFileSync(join(tmpDir, "tsconfig.json"), JSON.stringify({
+      compilerOptions: {
+        strict: true,
+        module: "nodenext",
+        moduleResolution: "nodenext",
+        target: "es2022",
+        noEmit: true,
+        skipLibCheck: true,
+        typeRoots: [join(SDK_ROOT, "node_modules/@types")],
+      },
+      include: [filename],
+    }));
     writeFileSync(join(tmpDir, filename), code);
     const result = spawnSync(
       join(SDK_ROOT, "node_modules/.bin/tsc"),
@@ -88,7 +84,7 @@ describe("P-C3-1: new Band type names compile and old names fail", () => {
     return { status: result.status ?? 1, output: (result.stdout ?? "") + (result.stderr ?? "") };
   }
 
-  it("ESM consumer: new Band types compile via bundler resolution", () => {
+  it("ESM consumer: new Band types compile via NodeNext package exports", () => {
     const result = compileConsumer("consumer.mts", `
       import type { LinearBandBridgeConfig, LinearBandBridgeDeps } from "@thenvoi/sdk/linear";
       const _cfg = {} as LinearBandBridgeConfig;
@@ -97,7 +93,7 @@ describe("P-C3-1: new Band type names compile and old names fail", () => {
     expect(result.status).toBe(0);
   });
 
-  it("ESM consumer: old types fail with TS2724 missing-export diagnostic", () => {
+  it("ESM consumer: old types fail with missing-export diagnostic", () => {
     const result = compileConsumer("old.mts", `
       import type { LinearThenvoiBridgeConfig } from "@thenvoi/sdk/linear";
       const _cfg = {} as LinearThenvoiBridgeConfig;
@@ -106,22 +102,22 @@ describe("P-C3-1: new Band type names compile and old names fail", () => {
     expect(result.output).toMatch(/has no exported member.*LinearThenvoiBridgeConfig/);
   });
 
-  it("CJS consumer: new Band types compile via NodeNext resolution", () => {
+  it("CJS consumer: new Band types compile via NodeNext package exports", () => {
     const result = compileConsumer("consumer.cts", `
       import type { LinearBandBridgeConfig, LinearBandBridgeDeps } from "@thenvoi/sdk/linear";
       const _cfg = {} as LinearBandBridgeConfig;
       const _deps = {} as LinearBandBridgeDeps;
-    `, true);
+    `);
     expect(result.status).toBe(0);
   });
 
-  it("CJS consumer: old types fail with missing-export diagnostic via NodeNext", () => {
+  it("CJS consumer: old types fail with missing-export diagnostic", () => {
     const result = compileConsumer("old.cts", `
       import type { LinearThenvoiBridgeConfig } from "@thenvoi/sdk/linear";
       const _cfg = {} as LinearThenvoiBridgeConfig;
-    `, true);
+    `);
     expect(result.status).not.toBe(0);
-    expect(result.output).toContain("LinearThenvoiBridgeConfig");
+    expect(result.output).toMatch(/has no exported member.*LinearThenvoiBridgeConfig/);
   });
 });
 
@@ -130,10 +126,16 @@ describe("P-C3-1: new Band type names compile and old names fail", () => {
 describe("P-C3-2: config entry paths", () => {
   let tmpDir: string;
   let warnSpy: ReturnType<typeof vi.spyOn>;
+  let loadBandLinearConfig: AgentModule["loadBandLinearConfig"];
+  let resolveEmbeddedBridgeConfig: ServerModule["resolveEmbeddedBridgeConfig"];
+  let resolveBridgeApiKey: ServerModule["resolveBridgeApiKey"];
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tmpDir = mkdtempSync(join(tmpdir(), "c3-config-"));
-    _resetWarningState();
+    const { agent, server } = await freshModules();
+    loadBandLinearConfig = agent.loadBandLinearConfig;
+    resolveEmbeddedBridgeConfig = server.resolveEmbeddedBridgeConfig;
+    resolveBridgeApiKey = server.resolveBridgeApiKey;
     warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
   });
 
@@ -255,8 +257,9 @@ describe("P-C3-3B: readLinearEnv", () => {
 
   let savedEnv: Record<string, string | undefined>;
   let warnSpy: ReturnType<typeof vi.spyOn>;
+  let readLinearEnv: AgentModule["readLinearEnv"];
 
-  beforeEach(() => {
+  beforeEach(async () => {
     savedEnv = {};
     for (const [band, legacy] of ALL_ENV_PAIRS) {
       savedEnv[band] = process.env[band];
@@ -264,7 +267,7 @@ describe("P-C3-3B: readLinearEnv", () => {
       delete process.env[band];
       delete process.env[legacy];
     }
-    _resetWarningState();
+    ({ agent: { readLinearEnv } } = await freshModules());
     warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
   });
 
@@ -313,16 +316,20 @@ describe("P-C3-3B: readLinearEnv", () => {
 describe("P-C3-3: SQLite dispatch through saved binding", () => {
   let savedStateDb: string | undefined;
   let savedBandStateDb: string | undefined;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  let createLinearBandBridgeStore: AgentModule["createLinearBandBridgeStore"];
 
-  beforeEach(() => {
+  beforeEach(async () => {
     savedStateDb = process.env.LINEAR_THENVOI_STATE_DB;
     savedBandStateDb = process.env.LINEAR_BAND_STATE_DB;
     delete process.env.LINEAR_THENVOI_STATE_DB;
     delete process.env.LINEAR_BAND_STATE_DB;
-    _resetWarningState();
+    ({ agent: { createLinearBandBridgeStore } } = await freshModules());
+    warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
   });
 
   afterEach(() => {
+    warnSpy.mockRestore();
     if (savedStateDb === undefined) delete process.env.LINEAR_THENVOI_STATE_DB;
     else process.env.LINEAR_THENVOI_STATE_DB = savedStateDb;
     if (savedBandStateDb === undefined) delete process.env.LINEAR_BAND_STATE_DB;
@@ -343,7 +350,7 @@ describe("P-C3-3: SQLite dispatch through saved binding", () => {
     };
   }
 
-  it("dispatch uses the saved room from default-path store, no createChat", async () => {
+  it("dispatch uses the saved room from default-path store, no createChat, no warning", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "c3-dispatch-default-"));
     const dbPath = join(tmpDir, ".linear-thenvoi-example.sqlite");
     const originalCwd = process.cwd();
@@ -364,7 +371,8 @@ describe("P-C3-3: SQLite dispatch through saved binding", () => {
       });
       await seedStore.close?.();
 
-      // Reopen through the resolver and dispatch
+      // Reopen through the resolver and dispatch. Default path — no legacy env,
+      // so no deprecation warning fires.
       const store = createLinearBandBridgeStore();
       const restApi = new LinearBandExampleRestApi();
 
@@ -382,6 +390,9 @@ describe("P-C3-3: SQLite dispatch through saved binding", () => {
       // createChat was never called (no new room created)
       expect(restApi.createChatCalls).toHaveLength(0);
 
+      // Default path uses no legacy env, so no deprecation warning
+      expect(warnSpy).not.toHaveBeenCalled();
+
       await store.close?.();
     } finally {
       process.chdir(originalCwd);
@@ -389,7 +400,7 @@ describe("P-C3-3: SQLite dispatch through saved binding", () => {
     }
   });
 
-  it("legacy STATE_DB dispatch uses saved room from custom path, no default DB", async () => {
+  it("legacy STATE_DB dispatch uses saved room from custom path, no default DB, warns once", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "c3-dispatch-legacy-"));
     const customPath = join(tmpDir, "custom.sqlite");
     const defaultPath = join(tmpDir, ".linear-thenvoi-example.sqlite");
@@ -410,8 +421,11 @@ describe("P-C3-3: SQLite dispatch through saved binding", () => {
       });
       await seedStore.close?.();
 
-      // Open through resolver (picks up legacy env)
+      // Open through resolver (picks up legacy env → exactly one deprecation warning)
       const store = createLinearBandBridgeStore();
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("LINEAR_THENVOI_STATE_DB"));
+
       const restApi = new LinearBandExampleRestApi();
 
       await handleAgentSessionEvent({
