@@ -57,7 +57,7 @@ describe("BandClient conformance (0.0.118)", () => {
 
   for (const [namespace, methods] of requiredResources) {
     it(`exposes ${namespace} with ${methods.length} methods`, () => {
-      const resource = (client as Record<string, unknown>)[namespace];
+      const resource = (client as unknown as Record<string, unknown>)[namespace];
       expect(resource).toBeDefined();
       for (const method of methods) {
         expect(typeof (resource as Record<string, unknown>)[method]).toBe(
@@ -68,7 +68,7 @@ describe("BandClient conformance (0.0.118)", () => {
   }
 
   it("red-check: detects a missing method on a real namespace", () => {
-    const resource = (client as Record<string, unknown>).agentApiIdentity;
+    const resource = (client as unknown as Record<string, unknown>).agentApiIdentity;
     expect(resource).toBeDefined();
     expect(
       (resource as Record<string, unknown>).definitelyDoesNotExist,

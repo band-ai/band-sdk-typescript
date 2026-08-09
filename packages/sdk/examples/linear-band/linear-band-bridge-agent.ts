@@ -15,7 +15,7 @@ import {
 } from "../../src/linear";
 import type { Logger } from "../../src/core";
 
-interface LinearThenvoiBridgeAgentOptions {
+interface LinearBandBridgeAgentOptions {
   agentId?: string;
   apiKey?: string;
   wsUrl?: string;
@@ -38,15 +38,15 @@ interface LinearThenvoiBridgeAgentOptions {
   autoSubscribeExistingRooms?: boolean;
 }
 
-export function createLinearThenvoiBridgeAgent(
-  options?: LinearThenvoiBridgeAgentOptions,
+export function createLinearBandBridgeAgent(
+  options?: LinearBandBridgeAgentOptions,
 ): Agent {
-  const store = options?.store ?? createLinearThenvoiBridgeStore(options?.stateDbPath);
-  return createLinearThenvoiBridgeAgentWithStore({ ...options, store });
+  const store = options?.store ?? createLinearBandBridgeStore(options?.stateDbPath);
+  return createLinearBandBridgeAgentWithStore({ ...options, store });
 }
 
-function createLinearThenvoiBridgeAgentWithStore(
-  options: LinearThenvoiBridgeAgentOptions & { store: SessionRoomStore },
+function createLinearBandBridgeAgentWithStore(
+  options: LinearBandBridgeAgentOptions & { store: SessionRoomStore },
 ): Agent {
   const linearClient = options?.linearClient ?? createLinearClient(
     options?.linearAccessToken ?? process.env.LINEAR_ACCESS_TOKEN ?? "linear-api-key",
@@ -61,7 +61,7 @@ function createLinearThenvoiBridgeAgentWithStore(
       sandboxMode: "workspace-write",
       enableExecutionReporting: true,
       emitThoughtEvents: true,
-      customSection: buildLinearThenvoiBridgePrompt(),
+      customSection: buildLinearBandBridgePrompt(),
     },
     customTools: createLinearTools({
       client: linearClient,
@@ -92,13 +92,13 @@ function createLinearThenvoiBridgeAgentWithStore(
   });
 }
 
-function createLinearThenvoiBridgeStore(stateDbPath?: string): SessionRoomStore {
+function createLinearBandBridgeStore(stateDbPath?: string): SessionRoomStore {
   return createSqliteSessionRoomStore(
-    stateDbPath ?? process.env.LINEAR_THENVOI_STATE_DB ?? ".linear-thenvoi-example.sqlite",
+    stateDbPath ?? process.env.LINEAR_BAND_STATE_DB ?? process.env.LINEAR_THENVOI_STATE_DB ?? ".linear-thenvoi-example.sqlite",
   );
 }
 
-export function buildLinearThenvoiBridgePrompt(): string {
+export function buildLinearBandBridgePrompt(): string {
   return `You are Band Linear PM.
 
 You are the only Linear-facing coordinator in the room.
@@ -214,9 +214,9 @@ Your job is to:
 `;
 }
 
-async function runLinearThenvoiBridgeDirect(options?: LinearThenvoiBridgeAgentOptions): Promise<void> {
-  const store = createLinearThenvoiBridgeStore(options?.stateDbPath);
-  const agent = createLinearThenvoiBridgeAgentWithStore({
+async function runLinearBandBridgeDirect(options?: LinearBandBridgeAgentOptions): Promise<void> {
+  const store = createLinearBandBridgeStore(options?.stateDbPath);
+  const agent = createLinearBandBridgeAgentWithStore({
     ...options,
     store,
   });
@@ -231,8 +231,8 @@ async function runLinearThenvoiBridgeDirect(options?: LinearThenvoiBridgeAgentOp
 }
 
 if (isDirectExecution(import.meta.url)) {
-  const config = loadAgentConfig("linear_thenvoi_bridge");
-  void runLinearThenvoiBridgeDirect({
+  const config = loadAgentConfig("linear_band_bridge");
+  void runLinearBandBridgeDirect({
     ...config,
   });
 }
