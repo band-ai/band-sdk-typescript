@@ -511,7 +511,7 @@ export class LettaAdapter extends SimpleAdapter<
         (s) =>
           client.agents.create(
             {
-              name: `thenvoi-room-${roomId.slice(0, 16)}`,
+              name: `band-room-${roomId.slice(0, 16)}`,
               model: this.model,
               ...(this.embedding ? { embedding: this.embedding } : {}),
               system: this.systemPrompt || undefined, // intentional: empty string treated as no system prompt

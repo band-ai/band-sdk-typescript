@@ -603,12 +603,12 @@ describe("ParlantAdapter", () => {
 
     const tools = new FakeTools();
     await adapter.onMessage(
-      makeMessage("Hi", "room-no-thenvoi"),
+      makeMessage("Hi", "room-plain"),
       tools,
       history,
       null,
       null,
-      { isSessionBootstrap: true, roomId: "room-no-thenvoi" },
+      { isSessionBootstrap: true, roomId: "room-plain" },
     );
 
     const strings: string[] = [];

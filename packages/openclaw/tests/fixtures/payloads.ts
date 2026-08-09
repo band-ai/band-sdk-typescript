@@ -1,5 +1,5 @@
 /**
- * Test data fixtures for Thenvoi channel plugin tests.
+ * Test data fixtures for Band channel plugin tests.
  * Uses plain objects instead of importing SDK types.
  */
 

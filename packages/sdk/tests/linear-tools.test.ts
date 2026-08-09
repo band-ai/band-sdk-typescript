@@ -83,7 +83,7 @@ function makeMockClientWithSessionCreation(): LinearActivityClient {
         id: "new-issue-1",
         identifier: "SOF-42",
         url: "https://linear.app/example/issue/SOF-42",
-        title: "New issue from Thenvoi",
+        title: "New issue from Band",
       },
       success: true,
     })),
@@ -117,7 +117,7 @@ function makeMockClient(options?: { withRepoSuggestions?: boolean }): LinearActi
       updatedAt: "2026-03-06T01:00:00.000Z",
       state: { id: "state-1", name: "In Progress", type: "started" },
       assignee: { id: "user-1", name: "Darvell" },
-      delegate: { id: "agent-1", name: "Thenvoi Agent", displayName: "Thenvoi Agent" },
+      delegate: { id: "agent-1", name: "Band Agent", displayName: "Band Agent" },
       delegateId: "agent-1",
       team: { id: "team-1", key: "SOF", name: "SoftwareFactory" },
       comments: vi.fn(async () => ({
@@ -692,7 +692,7 @@ describe("createLinearTools", () => {
         identifier: "SOF-1",
         title: "Example issue",
         team: expect.objectContaining({ key: "SOF" }),
-        delegate: expect.objectContaining({ id: "agent-1", name: "Thenvoi Agent" }),
+        delegate: expect.objectContaining({ id: "agent-1", name: "Band Agent" }),
         delegate_id: "agent-1",
       }),
     });
@@ -881,7 +881,7 @@ describe("createLinearTools", () => {
 
     const result = await executeCustomTool(tool, {
       team_id: TEST_TEAM_ID,
-      title: "New issue from Thenvoi",
+      title: "New issue from Band",
       description: "Created during collaboration",
       priority: 2,
     });
@@ -892,12 +892,12 @@ describe("createLinearTools", () => {
         id: "new-issue-1",
         identifier: "SOF-42",
         url: "https://linear.app/example/issue/SOF-42",
-        title: "New issue from Thenvoi",
+        title: "New issue from Band",
       },
     });
     expect(client.createIssue).toHaveBeenCalledWith({
       teamId: TEST_TEAM_ID,
-      title: "New issue from Thenvoi",
+      title: "New issue from Band",
       description: "Created during collaboration",
       priority: 2,
     });

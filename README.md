@@ -168,7 +168,7 @@ import { Agent, LangGraphAdapter, loadAgentConfig } from "@band-ai/sdk";
 const agent = Agent.create({
   adapter: new LangGraphAdapter({
     graph: yourLangGraph,
-    customSection: "Use Thenvoi tools for side effects and final replies.",
+    customSection: "Use Band tools for side effects and final replies.",
     emitExecutionEvents: true,
   }),
   config: loadAgentConfig("my_agent"),
@@ -332,13 +332,13 @@ Working examples live in `examples/`. Each folder is self-contained.
 | `examples/custom-adapter/` | SimpleAdapter | Custom adapter protocol |
 | `examples/parlant/` | Parlant | Guideline-based behavior |
 | `examples/a2a-bridge/` | A2A | Bridge to external A2A agents |
-| `examples/a2a-gateway/` | A2A Gateway | Expose Thenvoi peers as A2A endpoints |
+| `examples/a2a-gateway/` | A2A Gateway | Expose Band peers as A2A endpoints |
 | `examples/linear-band/` | Linear | Bridge server with webhook handling |
 
 ```bash
 # Clone and run
-git clone https://github.com/thenvoi/thenvoi-sdk-typescript.git
-cd thenvoi-sdk-typescript
+git clone https://github.com/band-ai/band-sdk-typescript.git
+cd band-sdk-typescript
 pnpm install
 cp agent_config.yaml.example agent_config.yaml  # add your credentials
 

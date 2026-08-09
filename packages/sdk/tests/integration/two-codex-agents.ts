@@ -1,5 +1,5 @@
 /**
- * Two Codex agents talking to each other on the real Thenvoi platform.
+ * Two Codex agents talking to each other on the real Band platform.
  *
  * Agent A (implementer) runs as a Codex agent with tool execution.
  * Agent B (planner) sends it a real coding task via REST.

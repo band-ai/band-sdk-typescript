@@ -1,11 +1,11 @@
-# Thenvoi TypeScript SDK
+# Band TypeScript SDK
 
-This is a TypeScript SDK that connects AI agents to the Thenvoi collaborative platform.
+This is a TypeScript SDK that connects AI agents to the Band collaborative platform.
 
 ## Core Features
 
 1. Multi-framework support (OpenAI, Anthropic, Gemini, Claude Agent SDK, Codex, LangGraph, Vercel AI SDK, Google ADK, Letta, OpenCode, Parlant, plus a Generic adapter)
-2. A2A protocol support: bridge to external A2A agents and expose Thenvoi peers as A2A endpoints (`A2AAdapter`, `A2AGatewayAdapter`)
+2. A2A protocol support: bridge to external A2A agents and expose Band peers as A2A endpoints (`A2AAdapter`, `A2AGatewayAdapter`)
 3. ACP integration: editor-facing server (`ACPServer` + `BandACPServerAdapter`) and subprocess client (`ACPClientAdapter`) for Cursor, Codex, Claude Code, Zed
 4. MCP support: generic MCP backends (stdio/SSE) and a Claude Agent SDK bridge under `@band-ai/sdk/mcp` and `@band-ai/sdk/mcp/claude`
 5. Linear integration: full PM bridge with tools, webhook handling, dispatchers, and SQLite session room store (`@band-ai/sdk/linear`)
@@ -61,7 +61,7 @@ Tool schemas live in `packages/sdk/src/runtime/tools/schemas.ts` (`TOOL_MODELS`)
 
 ## REST Client API Pattern
 
-REST is wrapped around the Fern-generated `@thenvoi/rest-client`. `FernRestAdapter` and `RestFacade` expose a **flat** method surface you reach via `link.rest`:
+REST is wrapped around the Fern-generated `@band-ai/rest-client`. `FernRestAdapter` and `RestFacade` expose a **flat** method surface you reach via `link.rest`:
 
 ```ts
 // Pattern: link.rest.<method>(...)
@@ -182,7 +182,7 @@ The SDK supports the [A2A (Agent-to-Agent) protocol](https://google.github.io/A2
 
 ### A2A Adapter (outbound)
 
-`A2AAdapter` forwards Thenvoi messages to an external A2A-compliant agent. Each Thenvoi room maps to an A2A context, with automatic session-state persistence via task events and session rehydration on room rejoin.
+`A2AAdapter` forwards Band messages to an external A2A-compliant agent. Each Band room maps to an A2A context, with automatic session-state persistence via task events and session rehydration on room rejoin.
 
 ```ts
 import { Agent, A2AAdapter, type A2AAuth } from "@band-ai/sdk";
@@ -196,7 +196,7 @@ const adapter = new A2AAdapter({
 
 ### A2A Gateway (inbound)
 
-`A2AGatewayAdapter` exposes Thenvoi peers as A2A JSON-RPC endpoints over a built-in Express server. External A2A clients can send messages to Thenvoi agents through the gateway, with `contextId` preservation (same `contextId` = same chat room) and SSE streaming responses.
+`A2AGatewayAdapter` exposes Band peers as A2A JSON-RPC endpoints over a built-in Express server. External A2A clients can send messages to Band agents through the gateway, with `contextId` preservation (same `contextId` = same chat room) and SSE streaming responses.
 
 ```ts
 import { Agent, A2AGatewayAdapter } from "@band-ai/sdk";
@@ -226,8 +226,8 @@ Two-layer pattern (mirrors A2A Gateway):
 | Protocol | `ACPServer` (JSON-RPC handler) | spawned ACP subprocess |
 | Platform Bridge | `BandACPServerAdapter` | `ACPClientAdapter` |
 
-- **Server**: Editor → ACP → `ACPServer` → `BandACPServerAdapter` → Thenvoi REST/WS → peers
-- **Client**: Thenvoi room message → `ACPClientAdapter` → spawned subprocess (Codex, Claude Code, etc.)
+- **Server**: Editor → ACP → `ACPServer` → `BandACPServerAdapter` → Band REST/WS → peers
+- **Client**: Band room message → `ACPClientAdapter` → spawned subprocess (Codex, Claude Code, etc.)
 
 ### Key files (under `packages/sdk/src/adapters/acp/`)
 
@@ -254,17 +254,17 @@ Schema conversion uses Zod (`packages/sdk/src/mcp/zod.ts`). Tools exposed over M
 
 ## Linear Integration
 
-`@band-ai/sdk/linear` (re-exports from `packages/sdk/src/integrations/linear/`) ships a complete Linear ↔ Thenvoi PM bridge:
+`@band-ai/sdk/linear` (re-exports from `packages/sdk/src/integrations/linear/`) ships a complete Linear ↔ Band PM bridge:
 
 - `createLinearTools(...)`: Linear-specific agent tools (issues, comments, statuses)
 - `createLinearWebhookHandler(...)`: Express-compatible webhook handler
 - `createInlineLinearBridgeDispatcher`, `createInProcessLinearBridgeDispatcher`: dispatch strategies
-- `createLinearBridgeRuntime(...)`: unified runtime for Linear ↔ Thenvoi
+- `createLinearBridgeRuntime(...)`: unified runtime for Linear ↔ Band
 - `createSqliteSessionRoomStore(dbPath)`: persistent session-room mapping
 - `StaleSessionGuard`: detects abandoned sessions
 - Helpers for activity tracking, message conversion, notification handling
 
-A complete reference application lives in `packages/sdk/examples/linear-thenvoi/` (run with `pnpm dev:linear` from `packages/sdk/`).
+A complete reference application lives in `packages/sdk/examples/linear-band/` (run with `pnpm dev:linear` from `packages/sdk/`).
 
 ## Code Structure
 
@@ -416,7 +416,7 @@ pnpm --filter @band-ai/sdk test
 
 ## Example Files (`packages/sdk/examples/`)
 
-Each example is a standalone TypeScript script runnable with `tsx`. Folders include: `basic`, `openai`, `anthropic`, `gemini`, `claude-sdk`, `codex`, `langgraph`, `letta`, `parlant`, `custom-adapter`, `a2a-bridge`, `a2a-gateway`, `linear-thenvoi`.
+Each example is a standalone TypeScript script runnable with `tsx`. Folders include: `basic`, `openai`, `anthropic`, `gemini`, `claude-sdk`, `codex`, `langgraph`, `letta`, `parlant`, `custom-adapter`, `a2a-bridge`, `a2a-gateway`, `linear-band`.
 
 > Note: the `vercel-ai-sdk`, `google-adk`, and `opencode` adapters ship without dedicated example folders today. Mirror an existing example (e.g., `examples/anthropic/`) when adding one.
 

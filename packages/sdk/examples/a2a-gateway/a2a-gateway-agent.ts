@@ -12,12 +12,12 @@ export function createA2AGatewayAgent(
   options?: { port?: number; gatewayUrl?: string; authToken?: string },
   overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
-  const thenvoiApiKey = overrides?.apiKey ?? "api-key";
+  const bandApiKey = overrides?.apiKey ?? "api-key";
   const resolvedRestUrl = overrides?.restUrl
     ?? (overrides?.wsUrl ? deriveDefaultRestUrl(overrides.wsUrl) : undefined);
   const restApi = new FernRestAdapter(
     new BandClient({
-      apiKey: thenvoiApiKey,
+      apiKey: bandApiKey,
       ...(resolvedRestUrl ? { baseUrl: resolvedRestUrl } : {}),
     }),
   );
@@ -26,14 +26,14 @@ export function createA2AGatewayAgent(
     bandRest: restApi,
     port: options?.port,
     gatewayUrl: options?.gatewayUrl,
-    authToken: options?.authToken ?? thenvoiApiKey,
+    authToken: options?.authToken ?? bandApiKey,
   });
 
   return Agent.create({
     adapter,
     config: {
       agentId: overrides?.agentId ?? "agent-a2a-gateway",
-      apiKey: thenvoiApiKey,
+      apiKey: bandApiKey,
       ...(overrides?.wsUrl ? { wsUrl: overrides.wsUrl } : {}),
       ...(resolvedRestUrl ? { restUrl: resolvedRestUrl } : {}),
     },

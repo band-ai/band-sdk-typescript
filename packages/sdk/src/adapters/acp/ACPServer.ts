@@ -127,8 +127,8 @@ export class ACPServer implements Agent {
         },
       },
       agentInfo: {
-        name: this.agentInfo.name ?? "thenvoi-agent",
-        title: this.agentInfo.title ?? this.adapter.displayName ?? "Thenvoi Agent",
+        name: this.agentInfo.name ?? "band-agent",
+        title: this.agentInfo.title ?? this.adapter.displayName ?? "Band Agent",
         version: this.agentInfo.version ?? "0.1.0",
       },
       authMethods: this.authMethods,

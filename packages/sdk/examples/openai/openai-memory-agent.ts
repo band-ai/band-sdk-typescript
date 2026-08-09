@@ -4,13 +4,13 @@ import { renderSystemPrompt } from "../../src/runtime/prompts";
 // Memory-enabled OpenAI agent example.
 //
 // To add memory to your own OpenAI adapter, do three things:
-// 1. Set `includeMemoryTools: true` — registers thenvoi_* memory tools with the LLM.
+// 1. Set `includeMemoryTools: true` — registers band_* memory tools with the LLM.
 // 2. Pass a `systemPrompt` built with `renderSystemPrompt({ customSection, capabilities: { memory: true } })`.
 //    Your customSection is just your agent's normal persona; the SDK appends the Memory Tools section.
 // 3. Optionally set `enableExecutionReporting: true` — surfaces tool calls in the chat room.
 //
 // Run: pnpm --filter @band-ai/sdk exec tsx examples/openai/openai-memory-agent.ts
-// Config: `memory_agent` block in agent_config.yaml (Thenvoi creds + optional openai_api_key/model).
+// Config: `memory_agent` block in agent_config.yaml (Band creds + optional openai_api_key/model).
 
 // Your own agent persona — just your normal instructions, with nothing about
 // memory in here. The "Memory Tools" section (tool overview, valid field

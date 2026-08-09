@@ -34,7 +34,7 @@ describe("BandACPServerAdapter", () => {
         codex: "Codex",
       },
     })
-    await adapter.onStarted("Thenvoi Agent", "ACP server")
+    await adapter.onStarted("Band Agent", "ACP server")
 
     const updates: Array<Record<string, unknown>> = []
     adapter.bindConnection({
@@ -145,7 +145,7 @@ describe("BandACPServerAdapter", () => {
       bandRest: rest,
       maxSessions: 1,
     })
-    await adapter.onStarted("Thenvoi Agent", "ACP server")
+    await adapter.onStarted("Band Agent", "ACP server")
 
     await expect(adapter.createSession({
       cwd: "/workspace",
@@ -180,7 +180,7 @@ describe("BandACPServerAdapter", () => {
         codex: "Codex",
       },
     })
-    await adapter.onStarted("Thenvoi Agent", "ACP server")
+    await adapter.onStarted("Band Agent", "ACP server")
 
     adapter.bindConnection({
       signal: new AbortController().signal,

@@ -84,8 +84,8 @@ function makePayload(action: "created" | "updated" | "canceled") {
     },
     assignee: {
       id: "agent-1",
-      name: "Thenvoi",
-      displayName: "Thenvoi",
+      name: "Band",
+      displayName: "Band",
     },
     team: {
       id: "team-1",
@@ -157,7 +157,7 @@ function makeLinearClient(options?: { delegateId?: string | null }): HandleAgent
 }
 
 describe("linear bridge webhook actions", () => {
-  it("forwards created/updated events to Thenvoi room messages", async () => {
+  it("forwards created/updated events to Band room messages", async () => {
     const restApi = new LinearBandExampleRestApi({
       agentId: "peer-transport",
       agentName: "Transport Agent",
@@ -650,7 +650,7 @@ describe("linear bridge webhook actions", () => {
       .mockResolvedValueOnce({
         id: "issue-1",
         delegateId: "app-user",
-        delegate: { id: "app-user", name: "Thenvoi Agent", displayName: "Thenvoi Agent" },
+        delegate: { id: "app-user", name: "Band Agent", displayName: "Band Agent" },
       });
 
     await handleAgentSessionEvent({
@@ -665,7 +665,7 @@ describe("linear bridge webhook actions", () => {
     });
     // Bridge message should reflect the newly-set delegate with a human-readable name.
     expect(restApi.roomEvents[0]?.content).toContain("issue_delegate_id: app-user");
-    expect(restApi.roomEvents[0]?.content).toContain("issue_delegate: Thenvoi Agent");
+    expect(restApi.roomEvents[0]?.content).toContain("issue_delegate: Band Agent");
   });
 
   it("does not overwrite existing delegate on created event", async () => {

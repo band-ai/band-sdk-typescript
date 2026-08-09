@@ -27,7 +27,7 @@ describe("ACPServer", () => {
       promptCompletionGraceMs: 5,
       responseTimeoutMs: 500,
     })
-    await adapter.onStarted("Thenvoi Agent", "ACP server")
+    await adapter.onStarted("Band Agent", "ACP server")
 
     const server = new ACPServer(adapter)
 
@@ -114,7 +114,7 @@ describe("ACPServer", () => {
         description: "Adapter default",
       }],
     })
-    await adapter.onStarted("Thenvoi Agent", "ACP server")
+    await adapter.onStarted("Band Agent", "ACP server")
 
     const server = new ACPServer(adapter, {
       modes: [{

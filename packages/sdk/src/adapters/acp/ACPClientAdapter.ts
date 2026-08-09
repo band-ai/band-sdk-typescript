@@ -353,7 +353,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     if (backend.kind === "http") {
       const url = (backend.server as { url: string | null }).url
       if (!url) {
-        throw new Error("Thenvoi MCP HTTP backend did not expose a URL")
+        throw new Error("Band MCP HTTP backend did not expose a URL")
       }
 
       mcpServers.push({
@@ -368,7 +368,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     if (backend.kind === "sse") {
       const url = (backend.server as { sseUrl: string | null }).sseUrl
       if (!url) {
-        throw new Error("Thenvoi MCP SSE backend did not expose a URL")
+        throw new Error("Band MCP SSE backend did not expose a URL")
       }
 
       mcpServers.push({
@@ -437,14 +437,14 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       this.systemPrompt,
       "",
       "## Room Context",
-      "You are connected to Thenvoi using Thenvoi MCP tools.",
-      "Use the Thenvoi tools for any visible room action. Plain text output is not posted back to the room.",
+      "You are connected to Band using Band MCP tools.",
+      "Use the Band tools for any visible room action. Plain text output is not posted back to the room.",
       "",
       `Current room_id: ${roomId}`,
       `Current requester name: ${requesterName}`,
       `Current requester id: ${requesterId}`,
       "",
-      "All Thenvoi MCP tool calls must include room_id.",
+      "All Band MCP tool calls must include room_id.",
     ].join("\n")
   }
 
