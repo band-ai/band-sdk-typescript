@@ -1,8 +1,9 @@
 /**
  * E2E Test Setup and Utilities
  *
- * Provides helpers for running tests against a real Thenvoi environment.
- * Requires THENVOI_API_KEY, THENVOI_AGENT_ID, and THENVOI_API_KEY_USER environment variables.
+ * Provides helpers for running tests against a real Band environment.
+ * Requires BAND_API_KEY, BAND_AGENT_ID, and BAND_API_KEY_USER environment
+ * variables (legacy THENVOI_* names are accepted as a fallback).
  */
 
 /**

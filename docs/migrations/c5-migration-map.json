@@ -166,6 +166,13 @@
       "memberOld": "thenvoiRest",
       "memberNew": "bandRest",
       "subpath": "./adapters"
+    },
+    {
+      "ownerOld": "LinearThenvoiBridgeConfig",
+      "ownerNew": "LinearBandBridgeConfig",
+      "memberOld": "thenvoiAppBaseUrl",
+      "memberNew": "bandAppBaseUrl",
+      "subpath": "./linear"
     }
   ]
 }
