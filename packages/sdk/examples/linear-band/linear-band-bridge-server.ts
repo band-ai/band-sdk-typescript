@@ -227,21 +227,28 @@ function getRequiredEnv(name: string): string {
 
 function resolveBridgeApiKey(logger: Logger): string {
   const configKeyFromEnv = readLinearEnv("LINEAR_BAND_BRIDGE_AGENT_CONFIG_KEY", "LINEAR_THENVOI_BRIDGE_AGENT_CONFIG_KEY");
-  const configuredKeys = [
-    configKeyFromEnv,
-    "linear_band_bridge",
-    "linear_thenvoi_bridge",
-  ].filter((value): value is string => Boolean(value && value.length > 0));
 
-  for (const configKey of configuredKeys) {
+  // If an explicit key is configured, use it exactly
+  if (configKeyFromEnv) {
     try {
-      const config = loadAgentConfig(configKey);
+      const config = loadAgentConfig(configKeyFromEnv);
       if (config.apiKey?.trim()) {
-        logger.info("linear_thenvoi_bridge.using_agent_config_key", { configKey });
+        logger.info("linear_thenvoi_bridge.using_agent_config_key", { configKey: configKeyFromEnv });
         return config.apiKey;
       }
     } catch {
-      continue;
+      // explicit key failed — fall through to env fallback
+    }
+  } else {
+    // No explicit key — use Band-first with legacy fallback
+    try {
+      const config = loadBandLinearConfig("linear_band_bridge", "linear_thenvoi_bridge");
+      if (config.apiKey?.trim()) {
+        logger.info("linear_thenvoi_bridge.using_agent_config_key", { configKey: "linear_band_bridge" });
+        return config.apiKey;
+      }
+    } catch {
+      // config not found — fall through to env fallback
     }
   }
 
