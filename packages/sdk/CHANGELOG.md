@@ -1,6 +1,13 @@
 # Changelog
 
 
+## [0.1.8](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.1.7...sdk-v0.1.8) (2026-08-05)
+
+
+### Bug Fixes
+
+* **sdk:** normalize participant handle prefixes ([#148](https://github.com/band-ai/band-sdk-typescript/issues/148)) ([1db703b](https://github.com/band-ai/band-sdk-typescript/commit/1db703b27b30ac48da3c58fe7e21d551bbb881c9))
+
 ## [0.1.7](https://github.com/thenvoi/thenvoi-sdk-typescript/compare/sdk-v0.1.6...sdk-v0.1.7) (2026-06-17)
 
 
