@@ -1,61 +1,44 @@
 /**
- * P-C5-2 proof: the package public surface is fully migrated to Band names.
+ * P-C5-1/2/3 proofs for the package identity + public-symbol migration.
  *
- * - Runtime + declaration inventory across every declared subpath contains no
- *   `Thenvoi` export (completeness), and every mapped Band name is present while
- *   its old Thenvoi name is absent (mapping).
- * - A NodeNext consumer importing every mapped new name from its subpath
- *   compiles; a consumer importing the old names fails with a missing-export
- *   diagnostic naming each old symbol (clean cutover, no alias).
+ * P-C5-2 compares the generated before (C4 tip `70a2822`) and after export
+ * surfaces (runtime ESM keys and `.d.ts` named exports kept SEPARATE), proves
+ * every mapped Band value is present at runtime and in declarations while its
+ * old Thenvoi name is gone, imports each mapped value at runtime, and compiles
+ * new/old consumer fixtures (values as value imports). P-C5-1 packs a real
+ * tarball, installs it into ESM and CJS consumers, and executes runtime imports
+ * of every subpath with an inverse probe. P-C5-3 checks the release workflow
+ * carries no package mutation and the hold is present.
  */
 
 import { describe, it, expect, beforeAll } from "vitest";
-import { readFileSync, writeFileSync, mkdirSync, cpSync, rmSync, existsSync, readdirSync } from "node:fs";
+import {
+  readFileSync, writeFileSync, mkdirSync, cpSync, rmSync, existsSync, mkdtempSync, symlinkSync, realpathSync, readdirSync,
+} from "node:fs";
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const SDK_ROOT = resolve(__dirname, "..");
+const REPO_ROOT = resolve(SDK_ROOT, "../..");
+const MIG_DIR = join(REPO_ROOT, "docs/migrations");
 const pkg = JSON.parse(readFileSync(join(SDK_ROOT, "package.json"), "utf-8")) as {
   name: string;
-  exports: Record<string, { types: string; import: string }>;
+  version: string;
+  exports: Record<string, { types: string; import: string; require: string }>;
 };
 
-interface MigrationRow {
-  old: string;
-  new: string;
-  subpath: string;
-  kind: "value" | "type";
+interface Surface {
+  package: string;
+  subpaths: Record<string, { runtime: string[]; declarations: string[] }>;
 }
+// Before surface = the immutable C4-tip baseline artifact. After surface is
+// computed LIVE from the current dist so it can never drift from the build (and
+// so an accidental Thenvoi export/alias is caught without regenerating a file).
+const before = JSON.parse(readFileSync(join(MIG_DIR, "c5-surface-before-70a2822.json"), "utf-8")) as Surface;
 
-// Authoritative C5 public migration table (Band replacements for every remaining
-// public Thenvoi* export). C3 already owns the two Linear rows.
-const MIGRATION: MigrationRow[] = [
-  { old: "ThenvoiLink", new: "BandLink", subpath: ".", kind: "value" },
-  { old: "ThenvoiSdkError", new: "BandSdkError", subpath: "./core", kind: "value" },
-  { old: "FernThenvoiClientLike", new: "FernBandClientLike", subpath: "./rest", kind: "type" },
-  { old: "ThenvoiACPServerAdapter", new: "BandACPServerAdapter", subpath: "./adapters", kind: "value" },
-  { old: "ThenvoiACPServerAdapterOptions", new: "BandACPServerAdapterOptions", subpath: "./adapters", kind: "type" },
-  { old: "ThenvoiMcpBackend", new: "BandMcpBackend", subpath: "./mcp", kind: "type" },
-  { old: "ThenvoiMcpBackendKind", new: "BandMcpBackendKind", subpath: "./mcp", kind: "type" },
-  { old: "CreateThenvoiMcpBackendOptions", new: "CreateBandMcpBackendOptions", subpath: "./mcp", kind: "type" },
-  { old: "createThenvoiMcpBackend", new: "createBandMcpBackend", subpath: "./mcp", kind: "value" },
-  { old: "getThenvoiSdkMcpServerConfig", new: "getBandSdkMcpServerConfig", subpath: "./mcp", kind: "value" },
-  { old: "ThenvoiMcpServer", new: "BandMcpServer", subpath: "./mcp", kind: "value" },
-  { old: "ThenvoiMcpServerOptions", new: "BandMcpServerOptions", subpath: "./mcp", kind: "type" },
-  { old: "ThenvoiMcpSseServer", new: "BandMcpSseServer", subpath: "./mcp", kind: "value" },
-  { old: "ThenvoiMcpSseServerOptions", new: "BandMcpSseServerOptions", subpath: "./mcp", kind: "type" },
-  { old: "ThenvoiMcpStdioServer", new: "BandMcpStdioServer", subpath: "./mcp", kind: "value" },
-  { old: "ThenvoiMcpStdioServerOptions", new: "BandMcpStdioServerOptions", subpath: "./mcp", kind: "type" },
-  { old: "ThenvoiSdkMcpServer", new: "BandSdkMcpServer", subpath: "./mcp/claude", kind: "type" },
-  { old: "CreateThenvoiSdkMcpServerOptions", new: "CreateBandSdkMcpServerOptions", subpath: "./mcp/claude", kind: "type" },
-  { old: "createThenvoiSdkMcpServer", new: "createBandSdkMcpServer", subpath: "./mcp/claude", kind: "value" },
-  { old: "LinearThenvoiBridgeConfig", new: "LinearBandBridgeConfig", subpath: "./linear", kind: "type" },
-  { old: "LinearThenvoiBridgeDeps", new: "LinearBandBridgeDeps", subpath: "./linear", kind: "type" },
-];
-
-function dtsNamedExports(dtsText: string): Set<string> {
+function dtsNamedExports(dtsText: string): string[] {
   const names = new Set<string>();
   const declRe = /export\s+(?:declare\s+)?(?:abstract\s+)?(?:class|function|const|let|var|interface|type|enum)\s+([A-Za-z0-9_$]+)/g;
   let m: RegExpExecArray | null;
@@ -70,59 +53,104 @@ function dtsNamedExports(dtsText: string): Set<string> {
       if (/^[A-Za-z0-9_$]+$/.test(name) && name !== "default") names.add(name);
     }
   }
-  return names;
+  return [...names];
 }
 
-const surface = new Map<string, Set<string>>(); // subpath -> union of runtime+dts export names
-
+const after: Surface = { package: pkg.name, subpaths: {} };
 beforeAll(async () => {
   for (const [sub, entry] of Object.entries(pkg.exports)) {
     const mod = (await import(pathToFileURL(resolve(SDK_ROOT, entry.import)).href)) as Record<string, unknown>;
-    const names = new Set<string>(Object.keys(mod).filter((k) => k !== "default"));
-    for (const n of dtsNamedExports(readFileSync(resolve(SDK_ROOT, entry.types), "utf-8"))) names.add(n);
-    surface.set(sub, names);
+    after.subpaths[sub] = {
+      runtime: Object.keys(mod).filter((k) => k !== "default"),
+      declarations: dtsNamedExports(readFileSync(resolve(SDK_ROOT, entry.types), "utf-8")),
+    };
   }
 });
 
-describe("P-C5-2: public export inventory is fully Band-migrated", () => {
-  it("packed name is @band-ai/sdk", () => {
+interface Row { old: string; new: string; sub: string; kind: "value" | "type"; c3?: boolean }
+const MIGRATION: Row[] = [
+  { old: "ThenvoiLink", new: "BandLink", sub: ".", kind: "value" },
+  { old: "ThenvoiSdkError", new: "BandSdkError", sub: "./core", kind: "value" },
+  { old: "FernThenvoiClientLike", new: "FernBandClientLike", sub: "./rest", kind: "type" },
+  { old: "ThenvoiACPServerAdapter", new: "BandACPServerAdapter", sub: "./adapters", kind: "value" },
+  { old: "ThenvoiACPServerAdapterOptions", new: "BandACPServerAdapterOptions", sub: "./adapters", kind: "type" },
+  { old: "ThenvoiMcpBackend", new: "BandMcpBackend", sub: "./mcp", kind: "type" },
+  { old: "ThenvoiMcpBackendKind", new: "BandMcpBackendKind", sub: "./mcp", kind: "type" },
+  { old: "CreateThenvoiMcpBackendOptions", new: "CreateBandMcpBackendOptions", sub: "./mcp", kind: "type" },
+  { old: "createThenvoiMcpBackend", new: "createBandMcpBackend", sub: "./mcp", kind: "value" },
+  { old: "getThenvoiSdkMcpServerConfig", new: "getBandSdkMcpServerConfig", sub: "./mcp", kind: "value" },
+  { old: "ThenvoiMcpServer", new: "BandMcpServer", sub: "./mcp", kind: "value" },
+  { old: "ThenvoiMcpServerOptions", new: "BandMcpServerOptions", sub: "./mcp", kind: "type" },
+  { old: "ThenvoiMcpSseServer", new: "BandMcpSseServer", sub: "./mcp", kind: "value" },
+  { old: "ThenvoiMcpSseServerOptions", new: "BandMcpSseServerOptions", sub: "./mcp", kind: "type" },
+  { old: "ThenvoiMcpStdioServer", new: "BandMcpStdioServer", sub: "./mcp", kind: "value" },
+  { old: "ThenvoiMcpStdioServerOptions", new: "BandMcpStdioServerOptions", sub: "./mcp", kind: "type" },
+  { old: "ThenvoiSdkMcpServer", new: "BandSdkMcpServer", sub: "./mcp/claude", kind: "type" },
+  { old: "CreateThenvoiSdkMcpServerOptions", new: "CreateBandSdkMcpServerOptions", sub: "./mcp/claude", kind: "type" },
+  { old: "createThenvoiSdkMcpServer", new: "createBandSdkMcpServer", sub: "./mcp/claude", kind: "value" },
+  { old: "LinearThenvoiBridgeConfig", new: "LinearBandBridgeConfig", sub: "./linear", kind: "type", c3: true },
+  { old: "LinearThenvoiBridgeDeps", new: "LinearBandBridgeDeps", sub: "./linear", kind: "type", c3: true },
+];
+
+const specFor = (sub: string): string => `@band-ai/sdk${sub === "." ? "" : sub.slice(1)}`;
+const inSet = (s: Surface, sub: string, name: string, set: "runtime" | "declarations"): boolean =>
+  Boolean(s.subpaths[sub]?.[set].includes(name));
+
+describe("P-C5-2: before/after export surface migration", () => {
+  it("package renamed @thenvoi/sdk -> @band-ai/sdk across the surfaces", () => {
+    expect(before.package).toBe("@thenvoi/sdk");
+    expect(after.package).toBe("@band-ai/sdk");
     expect(pkg.name).toBe("@band-ai/sdk");
   });
 
-  it("no declared subpath exports any Thenvoi-named symbol", () => {
+  it("the after surface exports no Thenvoi-named symbol (runtime or declaration)", () => {
     const residual: string[] = [];
-    for (const [sub, names] of surface) {
-      for (const n of names) if (n.includes("Thenvoi")) residual.push(`${sub}:${n}`);
+    for (const [sub, e] of Object.entries(after.subpaths)) {
+      for (const n of [...e.runtime, ...e.declarations]) if (n.includes("Thenvoi")) residual.push(`${sub}:${n}`);
     }
     expect(residual).toEqual([]);
   });
 
-  it("each mapped Band name is exported from its subpath; the old Thenvoi name is absent", () => {
+  it("each mapped value is present after (runtime AND declarations) and absent before-new; old is gone after", () => {
     for (const row of MIGRATION) {
-      const names = surface.get(row.subpath);
-      expect(names, `subpath ${row.subpath} missing from exports`).toBeDefined();
-      expect(names!.has(row.new), `${row.new} missing from ${row.subpath}`).toBe(true);
-      expect(names!.has(row.old), `${row.old} still exported from ${row.subpath}`).toBe(false);
+      if (row.kind === "value") {
+        expect(inSet(after, row.sub, row.new, "runtime"), `${row.new} missing at runtime`).toBe(true);
+        expect(inSet(after, row.sub, row.new, "declarations"), `${row.new} missing in declarations`).toBe(true);
+      } else {
+        expect(inSet(after, row.sub, row.new, "declarations"), `${row.new} missing in declarations`).toBe(true);
+      }
+      expect(inSet(after, row.sub, row.old, "runtime"), `${row.old} still at runtime`).toBe(false);
+      expect(inSet(after, row.sub, row.old, "declarations"), `${row.old} still in declarations`).toBe(false);
+    }
+  });
+
+  it("each old name was present in the C4-tip before surface (except C3-owned rows)", () => {
+    for (const row of MIGRATION) {
+      if (row.c3) continue; // migrated in C3, already absent at the C4 before tip
+      const set = row.kind === "value" ? "runtime" : "declarations";
+      expect(inSet(before, row.sub, row.old, set), `${row.old} missing from before ${set}`).toBe(true);
+    }
+  });
+
+  it("every mapped Band value is importable and callable at runtime", async () => {
+    for (const row of MIGRATION) {
+      if (row.kind !== "value") continue;
+      const entry = pkg.exports[row.sub].import;
+      const mod = (await import(pathToFileURL(resolve(SDK_ROOT, entry)).href)) as Record<string, unknown>;
+      expect(typeof mod[row.new], `${row.new} not a runtime value in ${row.sub}`).toBe("function");
     }
   });
 });
 
-describe("P-C5-2: NodeNext consumer compile proof", () => {
+describe("P-C5-2: consumer compile proof (values as value imports)", () => {
   let tmpDir: string;
 
   beforeAll(() => {
-    tmpDir = join(tmpdir(), `c5-consume-${Date.now()}`);
-    const nmDir = join(tmpDir, "node_modules/@band-ai/sdk");
-    mkdirSync(nmDir, { recursive: true });
-    cpSync(join(SDK_ROOT, "dist"), join(nmDir, "dist"), { recursive: true });
-    cpSync(join(SDK_ROOT, "package.json"), join(nmDir, "package.json"));
-    writeFileSync(join(tmpDir, "tsconfig.json"), JSON.stringify({
-      compilerOptions: {
-        strict: true, module: "nodenext", moduleResolution: "nodenext", target: "es2022",
-        noEmit: true, skipLibCheck: true, typeRoots: [join(SDK_ROOT, "node_modules/@types")],
-      },
-      include: ["*.mts"],
-    }));
+    tmpDir = mkdtempSync(join(tmpdir(), "c5-compile-"));
+    const nm = join(tmpDir, "node_modules/@band-ai/sdk");
+    mkdirSync(nm, { recursive: true });
+    cpSync(join(SDK_ROOT, "dist"), join(nm, "dist"), { recursive: true });
+    cpSync(join(SDK_ROOT, "package.json"), join(nm, "package.json"));
   });
 
   function compile(filename: string, code: string): { status: number; output: string } {
@@ -138,33 +166,60 @@ describe("P-C5-2: NodeNext consumer compile proof", () => {
     return { status: r.status ?? 1, output: (r.stdout ?? "") + (r.stderr ?? "") };
   }
 
-  function importLines(useNew: boolean): string {
-    const bySub = new Map<string, string[]>();
+  function fixture(useNew: boolean): string {
+    const valueBySpec = new Map<string, string[]>();
+    const typeBySpec = new Map<string, string[]>();
     for (const row of MIGRATION) {
       const name = useNew ? row.new : row.old;
-      const spec = `@band-ai/sdk${row.subpath === "." ? "" : row.subpath.slice(1)}`;
-      const list = bySub.get(spec) ?? [];
+      const spec = specFor(row.sub);
+      const target = row.kind === "value" ? valueBySpec : typeBySpec;
+      const list = target.get(spec) ?? [];
       list.push(name);
-      bySub.set(spec, list);
+      target.set(spec, list);
     }
-    return [...bySub.entries()]
-      .map(([spec, names]) => `import type { ${[...new Set(names)].join(", ")} } from "${spec}";`)
-      .join("\n");
+    const lines: string[] = [];
+    const values: string[] = [];
+    for (const [spec, names] of valueBySpec) {
+      lines.push(`import { ${[...new Set(names)].join(", ")} } from "${spec}";`);
+      values.push(...names);
+    }
+    for (const [spec, names] of typeBySpec) {
+      lines.push(`import type { ${[...new Set(names)].join(", ")} } from "${spec}";`);
+    }
+    // Force value bindings to be used (not elided) so a runtime-missing value fails.
+    lines.push(`export const _values: unknown[] = [${[...new Set(values)].join(", ")}];`);
+    return lines.join("\n") + "\n";
   }
 
-  it("a consumer importing every mapped Band name compiles", () => {
-    const code = `${importLines(true)}\nexport const _ok = true;\n`;
-    const result = compile("new.mts", code);
+  it("a consumer importing every mapped Band name (values as values) compiles", () => {
+    const result = compile("new.mts", fixture(true));
     expect(result.status).toBe(0);
   });
 
-  it("a consumer importing the old Thenvoi names fails with a missing-export diagnostic for each", () => {
-    const code = `${importLines(false)}\nexport const _ok = true;\n`;
-    const result = compile("old.mts", code);
+  it("a consumer importing the old Thenvoi names fails with a diagnostic for each", () => {
+    const result = compile("old.mts", fixture(false));
     expect(result.status).not.toBe(0);
     for (const row of MIGRATION) {
-      expect(result.output, `expected missing-export diagnostic for ${row.old}`).toContain(row.old);
+      expect(result.output, `missing diagnostic for ${row.old}`).toContain(row.old);
     }
+  });
+
+  it("the renamed thenvoiRest -> bandRest option member: new compiles, old fails", () => {
+    const ok = compile("member-new.mts", `
+      import type { A2AGatewayAdapterOptions } from "@band-ai/sdk/adapters";
+      import type { BandACPServerAdapterOptions } from "@band-ai/sdk/adapters";
+      const _a: Pick<A2AGatewayAdapterOptions, "bandRest"> = {} as { bandRest: never };
+      const _b: Pick<BandACPServerAdapterOptions, "bandRest"> = {} as { bandRest: never };
+      void _a; void _b;
+    `);
+    expect(ok.status).toBe(0);
+    const bad = compile("member-old.mts", `
+      import type { A2AGatewayAdapterOptions } from "@band-ai/sdk/adapters";
+      type _Old = Pick<A2AGatewayAdapterOptions, "thenvoiRest">;
+      const _x: _Old = {} as never; void _x;
+    `);
+    expect(bad.status).not.toBe(0);
+    expect(bad.output).toContain("thenvoiRest");
   });
 
   it("cleanup", () => {
@@ -173,81 +228,107 @@ describe("P-C5-2: NodeNext consumer compile proof", () => {
   });
 });
 
-describe("P-C5-3: release workflow contains no package mutation and the hold is present", () => {
-  const REPO_ROOT = resolve(SDK_ROOT, "../..");
+describe("P-C5-1: real tarball packs, installs, and runs for ESM and CJS", () => {
+  // The consumer lives OUTSIDE the repo (an in-repo consumer would trigger
+  // Node package self-referencing and resolve the workspace package instead of
+  // the installed tarball). Every external the built dist statically imports and
+  // that resolves in the SDK's node_modules (production deps + the optional peers
+  // the imported subpaths genuinely require) is symlinked by realpath; node
+  // builtins are skipped. Fully offline — no registry install.
+  let consumer: string;
+  let extracted: string;
 
-  it("release.yml no longer rewrites the SDK package name at publish time", () => {
-    const yml = readFileSync(join(REPO_ROOT, ".github/workflows/release.yml"), "utf-8");
-    // No sed/rename mutation of the SDK package.json name, and no legacy scope.
-    expect(yml).not.toMatch(/sed[^\n]*@(thenvoi|band-ai)\\?\/sdk/);
-    expect(yml).not.toMatch(/sed[^\n]*packages\/sdk\/package\.json/);
-    expect(yml).not.toContain("@thenvoi/sdk");
+  function requiredExternals(distDir: string): string[] {
+    const ext = new Set<string>();
+    for (const f of readdirSync(distDir)) {
+      if (!/\.js$/.test(f)) continue;
+      const t = readFileSync(join(distDir, f), "utf8");
+      for (const m of t.matchAll(/(?:from|import|require)\s*\(?\s*["']([^"'.][^"']*)["']/g)) {
+        const s = m[1];
+        if (s.startsWith("node:")) continue;
+        const parts = s.split("/");
+        ext.add(s.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]);
+      }
+    }
+    return [...ext];
+  }
+
+  beforeAll(() => {
+    const packDir = mkdtempSync(join(tmpdir(), "c5-pack-"));
+    const packed = spawnSync("npm", ["pack", "--ignore-scripts", "--pack-destination", packDir], {
+      cwd: SDK_ROOT, encoding: "utf8",
+    });
+    expect(packed.status, packed.stderr).toBe(0);
+    const tgz = (packed.stdout.trim().split("\n").pop() ?? "").trim();
+    const tgzPath = join(packDir, tgz);
+    expect(existsSync(tgzPath), `tarball ${tgzPath} not produced`).toBe(true);
+
+    const untar = spawnSync("tar", ["-xzf", tgzPath, "-C", packDir], { encoding: "utf8" });
+    expect(untar.status, untar.stderr).toBe(0);
+    extracted = join(packDir, "package");
+
+    consumer = mkdtempSync(join(tmpdir(), "c5-consume-"));
+    const nm = join(consumer, "node_modules");
+    cpSync(extracted, join(nm, "@band-ai/sdk"), { recursive: true });
+    for (const dep of requiredExternals(join(extracted, "dist"))) {
+      let target: string;
+      try {
+        target = realpathSync(join(SDK_ROOT, "node_modules", dep));
+      } catch {
+        continue; // node builtin or not installed — skipped
+      }
+      const linkPath = join(nm, dep);
+      mkdirSync(resolve(linkPath, ".."), { recursive: true });
+      symlinkSync(target, linkPath);
+    }
   });
 
-  it("the SDK is packed under its own name with no publish-time rename step", () => {
+  it("the packed tarball is named @band-ai/sdk and carries no legacy scope", () => {
+    const packedPkg = JSON.parse(readFileSync(join(extracted, "package.json"), "utf-8")) as { name: string };
+    expect(packedPkg.name).toBe("@band-ai/sdk");
+    // No packed dist file leaks a legacy import.
+    const grep = spawnSync("grep", ["-rl", "@thenvoi/sdk", join(extracted, "dist")], { encoding: "utf8" });
+    expect(grep.stdout.trim()).toBe("");
+  });
+
+  it("every declared subpath imports at runtime under ESM and CJS from the installed tarball", () => {
+    const subs = Object.keys(pkg.exports);
+    const esm = subs.map((s) => `await import("${specFor(s)}");`).join("\n");
+    const cjs = subs.map((s) => `require("${specFor(s)}");`).join("\n");
+    writeFileSync(join(consumer, "c.mjs"), `${esm}\nconsole.log("esm-ok");\n`);
+    writeFileSync(join(consumer, "c.cjs"), `${cjs}\nconsole.log("cjs-ok");\n`);
+
+    const runEsm = spawnSync(process.execPath, ["c.mjs"], { cwd: consumer, encoding: "utf8" });
+    expect(runEsm.status, `ESM run failed: ${runEsm.stderr}`).toBe(0);
+    expect(runEsm.stdout).toContain("esm-ok");
+
+    const runCjs = spawnSync(process.execPath, ["c.cjs"], { cwd: consumer, encoding: "utf8" });
+    expect(runCjs.status, `CJS run failed: ${runCjs.stderr}`).toBe(0);
+    expect(runCjs.stdout).toContain("cjs-ok");
+  });
+
+  it("inverse probe: a corrupted packed entry makes the runtime import fail", () => {
+    rmSync(join(consumer, "node_modules/@band-ai/sdk/dist/index.js"), { force: true });
+    writeFileSync(join(consumer, "probe.mjs"), `await import("@band-ai/sdk");\n`);
+    const run = spawnSync(process.execPath, ["probe.mjs"], { cwd: consumer, encoding: "utf8" });
+    expect(run.status).not.toBe(0);
+  });
+
+  it("cleanup", () => {
+    rmSync(consumer, { recursive: true, force: true });
+    expect(true).toBe(true);
+  });
+});
+
+describe("P-C5-3: release workflow has no package mutation and the hold is present", () => {
+  it("release.yml no longer rewrites the SDK package name and carries no legacy scope", () => {
     const yml = readFileSync(join(REPO_ROOT, ".github/workflows/release.yml"), "utf-8");
-    // The pack step runs the ready guard then npm pack directly.
+    expect(yml).not.toMatch(/sed[^\n]*packages\/sdk\/package\.json/);
+    expect(yml).not.toContain("@thenvoi/sdk");
     expect(yml).toMatch(/npm pack --pack-destination/);
   });
 
   it(".release-hold marker exists at the repository root", () => {
-    // The hold blocks every package transition; the release-hardening suite
-    // proves the guard fails while it is present.
     expect(existsSync(join(REPO_ROOT, ".release-hold"))).toBe(true);
-  });
-});
-
-describe("P-C5-1: packed identity, subpath resolution, and no legacy leakage", () => {
-  it("npm pack reports name @band-ai/sdk and includes dist + README", () => {
-    const r = spawnSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
-      cwd: SDK_ROOT,
-      encoding: "utf8",
-    });
-    expect(r.status).toBe(0);
-    const parsed = JSON.parse(r.stdout) as Array<{ name: string; files: Array<{ path: string }> }>;
-    const meta = parsed[0];
-    expect(meta.name).toBe("@band-ai/sdk");
-    const paths = meta.files.map((f) => f.path);
-    expect(paths).toContain("package.json");
-    expect(paths.some((p) => p.startsWith("dist/"))).toBe(true);
-    expect(paths.length).toBeGreaterThanOrEqual(60);
-    // No packed path carries the legacy scope.
-    expect(paths.every((p) => !p.includes("thenvoi"))).toBe(true);
-  });
-
-  it("the built dist contains no @thenvoi/sdk import leakage", () => {
-    const distDir = join(SDK_ROOT, "dist");
-    const offenders: string[] = [];
-    for (const file of readdirSync(distDir)) {
-      if (!/\.(js|cjs|d\.ts|d\.cts)$/.test(file)) continue;
-      if (readFileSync(join(distDir, file), "utf-8").includes("@thenvoi/sdk")) offenders.push(file);
-    }
-    expect(offenders).toEqual([]);
-  });
-
-  it("every declared subpath resolves for both ESM and CJS consumers", () => {
-    const tmp = join(tmpdir(), `c5-subpaths-${Date.now()}`);
-    const nmDir = join(tmp, "node_modules/@band-ai/sdk");
-    mkdirSync(nmDir, { recursive: true });
-    cpSync(join(SDK_ROOT, "dist"), join(nmDir, "dist"), { recursive: true });
-    cpSync(join(SDK_ROOT, "package.json"), join(nmDir, "package.json"));
-    try {
-      const specs = Object.keys(pkg.exports).map((s) => `@band-ai/sdk${s === "." ? "" : s.slice(1)}`);
-      const body = specs.map((s, i) => `import type * as _m${i} from "${s}";\nvoid (0 as unknown as typeof _m${i});`).join("\n");
-      for (const [file] of [["c.mts"], ["c.cts"]] as const) {
-        writeFileSync(join(tmp, file), `${body}\nexport const _ok = true;\n`);
-        writeFileSync(join(tmp, "tsconfig.json"), JSON.stringify({
-          compilerOptions: {
-            strict: true, module: "nodenext", moduleResolution: "nodenext", target: "es2022",
-            noEmit: true, skipLibCheck: true, typeRoots: [join(SDK_ROOT, "node_modules/@types")],
-          },
-          include: [file],
-        }));
-        const r = spawnSync(join(SDK_ROOT, "node_modules/.bin/tsc"), ["-p", join(tmp, "tsconfig.json")], { encoding: "utf8" });
-        expect(r.status, `${file} subpath resolution failed: ${(r.stdout ?? "") + (r.stderr ?? "")}`).toBe(0);
-      }
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
   });
 });
