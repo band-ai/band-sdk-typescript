@@ -36,12 +36,14 @@ export function readLinearEnv(bandKey: string, legacyKey: string): string | unde
   return legacyValue || undefined;
 }
 
+/** Reset warning dedup state — for test isolation only. */
+export function _resetWarningState(): void {
+  _warnedLegacyVars.clear();
+  _warnedLegacyConfigKey.clear();
+}
+
 const _warnedLegacyConfigKey = new Set<string>();
 
-/**
- * Load agent config trying Band key first, then legacy Thenvoi key with a
- * once-per-key deprecation warning. Shared by agent and server entry paths.
- */
 /**
  * Load agent config trying Band key first, then legacy Thenvoi key with a
  * once-per-key deprecation warning. Falls back only when the Band key is
@@ -160,7 +162,7 @@ function createLinearBandBridgeAgentWithStore(
   });
 }
 
-function createLinearBandBridgeStore(stateDbPath?: string): SessionRoomStore {
+export function createLinearBandBridgeStore(stateDbPath?: string): SessionRoomStore {
   return createSqliteSessionRoomStore(
     stateDbPath ?? readLinearEnv("LINEAR_BAND_STATE_DB", "LINEAR_THENVOI_STATE_DB") ?? ".linear-thenvoi-example.sqlite",
   );
