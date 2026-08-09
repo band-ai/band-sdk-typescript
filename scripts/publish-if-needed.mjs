@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 
 function runNpm(args) {
   return spawnSync("npm", args, { encoding: "utf8" });
@@ -17,6 +18,10 @@ try {
   if (!existsSync(tarball)) {
     throw new Error(`Tarball not found at ${tarball}; cannot publish`);
   }
+  // npm-package-arg only reads a spec as a file when it starts with ./, /, ~/,
+  // or a drive letter; a bare "dir/pkg.tgz" is parsed as a GitHub shorthand and
+  // publish then tries to git-clone it. Hand npm an absolute path instead.
+  const tarballPath = resolve(tarball);
 
   const spec = `${name}@${version}`;
   const lookup = runNpm(["view", spec, "version", "--json"]);
@@ -34,7 +39,7 @@ try {
 
     const publish = runNpm([
       "publish",
-      tarball,
+      tarballPath,
       "--ignore-scripts",
       "--provenance",
       "--access",
