@@ -21,7 +21,7 @@ import {
   type WritebackMode,
 } from "../../src/linear";
 import { FernRestAdapter, type RestApi } from "../../src/rest";
-import { createLinearBandBridgeAgent, readLinearEnv, loadBandLinearConfig } from "./linear-band-bridge-agent";
+import { createLinearBandBridgeAgent, readLinearEnv, loadBandLinearConfig, loadBandLinearConfigWithKey } from "./linear-band-bridge-agent";
 
 interface LinearBandBridgeServerOptions {
   restApi: RestApi;
@@ -235,9 +235,9 @@ export function resolveBridgeApiKey(logger: Logger, configPath?: string): string
     // If it's a canonical legacy key, route through compat loader for warning
     if (CANONICAL_LEGACY_CONFIG_KEYS.has(configKeyFromEnv)) {
       try {
-        const config = loadBandLinearConfig(configKeyFromEnv.replace("thenvoi", "band"), configKeyFromEnv, configPath);
+        const { config, selectedKey } = loadBandLinearConfigWithKey(configKeyFromEnv.replace("thenvoi", "band"), configKeyFromEnv, configPath);
         if (config.apiKey?.trim()) {
-          logger.info("linear_thenvoi_bridge.using_agent_config_key", { configKey: configKeyFromEnv });
+          logger.info("linear_thenvoi_bridge.using_agent_config_key", { configKey: selectedKey });
           return config.apiKey;
         }
       } catch {
@@ -257,9 +257,9 @@ export function resolveBridgeApiKey(logger: Logger, configPath?: string): string
   } else {
     // No explicit key — use Band-first with legacy fallback
     try {
-      const config = loadBandLinearConfig("linear_band_bridge", "linear_thenvoi_bridge", configPath);
+      const { config, selectedKey } = loadBandLinearConfigWithKey("linear_band_bridge", "linear_thenvoi_bridge", configPath);
       if (config.apiKey?.trim()) {
-        logger.info("linear_thenvoi_bridge.using_agent_config_key", { configKey: "linear_band_bridge" });
+        logger.info("linear_thenvoi_bridge.using_agent_config_key", { configKey: selectedKey });
         return config.apiKey;
       }
     } catch {
