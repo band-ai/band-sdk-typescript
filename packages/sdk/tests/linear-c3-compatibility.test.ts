@@ -1,13 +1,14 @@
 /**
  * P-C3 proof tests: config/env Band-first compatibility, export renames,
- * and legacy fallback behavior.
+ * compile proofs, dispatch reuse, and legacy fallback behavior.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { writeFileSync, mkdtempSync, rmSync, existsSync } from "node:fs";
+import { writeFileSync, mkdtempSync, rmSync, existsSync, mkdirSync, cpSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
+import type { Logger } from "../src/core";
 
 import {
   readLinearEnv,
@@ -15,6 +16,17 @@ import {
   createLinearBandBridgeStore,
   _resetWarningState,
 } from "../examples/linear-band/linear-band-bridge-agent";
+
+import {
+  resolveEmbeddedBridgeConfig,
+  resolveBridgeApiKey,
+} from "../examples/linear-band/linear-band-bridge-server";
+
+import {
+  handleAgentSessionEvent,
+  createSqliteSessionRoomStore,
+} from "../src/linear";
+import { LinearBandExampleRestApi } from "../examples/linear-band/linear-band-rest-stub";
 
 const SDK_ROOT = resolve(__dirname, "..");
 
@@ -31,26 +43,43 @@ describe("P-C3-1: new Band type names compile and old names fail", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  function writeTsconfig(includes: string[]): void {
-    writeFileSync(join(tmpDir, "tsconfig.json"), JSON.stringify({
-      compilerOptions: {
-        strict: true,
-        moduleResolution: "bundler",
-        module: "esnext",
-        target: "es2022",
-        noEmit: true,
-        skipLibCheck: true,
-        typeRoots: [join(SDK_ROOT, "node_modules/@types")],
-        baseUrl: SDK_ROOT,
-        paths: { "@thenvoi/sdk/linear": ["dist/linear.d.ts"] },
-      },
-      include: includes,
-    }));
-  }
+  function compileConsumer(filename: string, code: string, useNodeNext = false): { status: number; output: string } {
+    if (useNodeNext) {
+      // Simulate real package consumer: create node_modules with SDK dist
+      const nmDir = join(tmpDir, "node_modules/@thenvoi/sdk");
+      mkdirSync(nmDir, { recursive: true });
+      cpSync(join(SDK_ROOT, "dist"), join(nmDir, "dist"), { recursive: true });
+      cpSync(join(SDK_ROOT, "package.json"), join(nmDir, "package.json"));
 
-  function compile(filename: string, code: string): { status: number; output: string } {
+      writeFileSync(join(tmpDir, "tsconfig.json"), JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          module: "nodenext",
+          moduleResolution: "nodenext",
+          target: "es2022",
+          noEmit: true,
+          skipLibCheck: true,
+          typeRoots: [join(SDK_ROOT, "node_modules/@types")],
+        },
+        include: [filename],
+      }));
+    } else {
+      writeFileSync(join(tmpDir, "tsconfig.json"), JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          moduleResolution: "bundler",
+          module: "esnext",
+          target: "es2022",
+          noEmit: true,
+          skipLibCheck: true,
+          typeRoots: [join(SDK_ROOT, "node_modules/@types")],
+          baseUrl: SDK_ROOT,
+          paths: { "@thenvoi/sdk/linear": ["dist/linear.d.ts"] },
+        },
+        include: [filename],
+      }));
+    }
     writeFileSync(join(tmpDir, filename), code);
-    writeTsconfig([filename]);
     const result = spawnSync(
       join(SDK_ROOT, "node_modules/.bin/tsc"),
       ["-p", join(tmpDir, "tsconfig.json")],
@@ -59,95 +88,152 @@ describe("P-C3-1: new Band type names compile and old names fail", () => {
     return { status: result.status ?? 1, output: (result.stdout ?? "") + (result.stderr ?? "") };
   }
 
-  it("ESM consumer importing new Band types compiles successfully", () => {
-    const result = compile("consumer.mts", `
+  it("ESM consumer: new Band types compile via bundler resolution", () => {
+    const result = compileConsumer("consumer.mts", `
       import type { LinearBandBridgeConfig, LinearBandBridgeDeps } from "@thenvoi/sdk/linear";
-      const _cfg: LinearBandBridgeConfig = {} as LinearBandBridgeConfig;
-      const _deps: LinearBandBridgeDeps = {} as LinearBandBridgeDeps;
+      const _cfg = {} as LinearBandBridgeConfig;
+      const _deps = {} as LinearBandBridgeDeps;
     `);
     expect(result.status).toBe(0);
   });
 
-  it("CTS consumer importing new Band types compiles successfully", () => {
-    const result = compile("consumer.cts", `
-      import type { LinearBandBridgeConfig, LinearBandBridgeDeps } from "@thenvoi/sdk/linear";
-      const _cfg: LinearBandBridgeConfig = {} as LinearBandBridgeConfig;
-      const _deps: LinearBandBridgeDeps = {} as LinearBandBridgeDeps;
-    `);
-    expect(result.status).toBe(0);
-  });
-
-  it("old LinearThenvoi type import fails with missing-export diagnostic", () => {
-    const result = compile("old-consumer.mts", `
+  it("ESM consumer: old types fail with TS2724 missing-export diagnostic", () => {
+    const result = compileConsumer("old.mts", `
       import type { LinearThenvoiBridgeConfig } from "@thenvoi/sdk/linear";
-      const _cfg: LinearThenvoiBridgeConfig = {} as LinearThenvoiBridgeConfig;
+      const _cfg = {} as LinearThenvoiBridgeConfig;
     `);
+    expect(result.status).not.toBe(0);
+    expect(result.output).toMatch(/has no exported member.*LinearThenvoiBridgeConfig/);
+  });
+
+  it("CJS consumer: new Band types compile via NodeNext resolution", () => {
+    const result = compileConsumer("consumer.cts", `
+      import type { LinearBandBridgeConfig, LinearBandBridgeDeps } from "@thenvoi/sdk/linear";
+      const _cfg = {} as LinearBandBridgeConfig;
+      const _deps = {} as LinearBandBridgeDeps;
+    `, true);
+    expect(result.status).toBe(0);
+  });
+
+  it("CJS consumer: old types fail with missing-export diagnostic via NodeNext", () => {
+    const result = compileConsumer("old.cts", `
+      import type { LinearThenvoiBridgeConfig } from "@thenvoi/sdk/linear";
+      const _cfg = {} as LinearThenvoiBridgeConfig;
+    `, true);
     expect(result.status).not.toBe(0);
     expect(result.output).toContain("LinearThenvoiBridgeConfig");
   });
 });
 
-// ── P-C3-2: loadBandLinearConfig ─────────────────────────────────────────────
+// ── P-C3-2: Config entry paths ───────────────────────────────────────────────
 
-describe("P-C3-2: loadBandLinearConfig", () => {
+describe("P-C3-2: config entry paths", () => {
   let tmpDir: string;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "c3-config-"));
     _resetWarningState();
+    warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
   });
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
+    warnSpy.mockRestore();
+    delete process.env.LINEAR_BAND_BRIDGE_RUNTIME_CONFIG_KEY;
+    delete process.env.LINEAR_THENVOI_BRIDGE_RUNTIME_CONFIG_KEY;
+    delete process.env.LINEAR_BAND_BRIDGE_AGENT_CONFIG_KEY;
+    delete process.env.LINEAR_THENVOI_BRIDGE_AGENT_CONFIG_KEY;
+    delete process.env.THENVOI_API_KEY;
   });
 
-  it("loads Band-key config when present", () => {
-    const configPath = join(tmpDir, "agent_config.yaml");
-    writeFileSync(configPath, [
-      "linear_band_bridge:",
-      '  agent_id: "band-agent-id"',
-      '  api_key: "band-api-key"',
-    ].join("\n"));
-    const config = loadBandLinearConfig("linear_band_bridge", "linear_thenvoi_bridge", configPath);
-    expect(config.agentId).toBe("band-agent-id");
+  function writeYaml(content: string): string {
+    const path = join(tmpDir, "agent_config.yaml");
+    writeFileSync(path, content);
+    return path;
+  }
+
+  const legacyYaml = `
+linear_thenvoi_bridge:
+  agent_id: "legacy-id"
+  api_key: "legacy-key"
+`;
+
+  it("loadBandLinearConfig: Band key loads, no warning", () => {
+    const cp = writeYaml(`
+linear_band_bridge:
+  agent_id: "band-id"
+  api_key: "band-key"
+`);
+    const config = loadBandLinearConfig("linear_band_bridge", "linear_thenvoi_bridge", cp);
+    expect(config.agentId).toBe("band-id");
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it("falls back to legacy key with exactly one warning, not two", () => {
-    const configPath = join(tmpDir, "agent_config.yaml");
-    writeFileSync(configPath, [
-      "linear_thenvoi_bridge:",
-      '  agent_id: "legacy-agent-id"',
-      '  api_key: "legacy-api-key"',
-    ].join("\n"));
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    try {
-      // First call: warns
-      const config = loadBandLinearConfig("linear_band_bridge", "linear_thenvoi_bridge", configPath);
-      expect(config.agentId).toBe("legacy-agent-id");
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("linear_thenvoi_bridge"));
-
-      // Second call: no additional warning
-      warnSpy.mockClear();
-      loadBandLinearConfig("linear_band_bridge", "linear_thenvoi_bridge", configPath);
-      expect(warnSpy).not.toHaveBeenCalled();
-    } finally {
-      warnSpy.mockRestore();
-    }
+  it("loadBandLinearConfig: legacy key loads with exactly one warning", () => {
+    const cp = writeYaml(legacyYaml);
+    const config = loadBandLinearConfig("linear_band_bridge", "linear_thenvoi_bridge", cp);
+    expect(config.agentId).toBe("legacy-id");
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    warnSpy.mockClear();
+    loadBandLinearConfig("linear_band_bridge", "linear_thenvoi_bridge", cp);
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it("surfaces validation error when Band key is present but malformed", () => {
-    const configPath = join(tmpDir, "agent_config.yaml");
-    writeFileSync(configPath, [
-      "linear_band_bridge:",
-      '  agent_id: ""',
-      "linear_thenvoi_bridge:",
-      '  agent_id: "legacy-id"',
-      '  api_key: "legacy-key"',
-    ].join("\n"));
-    expect(() =>
-      loadBandLinearConfig("linear_band_bridge", "linear_thenvoi_bridge", configPath),
-    ).toThrow(/api_key/i);
+  it("loadBandLinearConfig: malformed Band key surfaces error", () => {
+    const cp = writeYaml(`
+linear_band_bridge:
+  agent_id: ""
+linear_thenvoi_bridge:
+  agent_id: "legacy"
+  api_key: "key"
+`);
+    expect(() => loadBandLinearConfig("linear_band_bridge", "linear_thenvoi_bridge", cp)).toThrow(/api_key/i);
+  });
+
+  it("resolveEmbeddedBridgeConfig: default loads legacy-only YAML with warning", () => {
+    const cp = writeYaml(legacyYaml);
+    const config = resolveEmbeddedBridgeConfig(cp);
+    expect(config.agentId).toBe("legacy-id");
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("linear_thenvoi_bridge"));
+  });
+
+  it("resolveEmbeddedBridgeConfig: explicit legacy runtime key warns", () => {
+    process.env.LINEAR_BAND_BRIDGE_RUNTIME_CONFIG_KEY = "linear_thenvoi_bridge";
+    const cp = writeYaml(legacyYaml);
+    const config = resolveEmbeddedBridgeConfig(cp);
+    expect(config.agentId).toBe("legacy-id");
+    // Warns because the explicit key is a canonical legacy key
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("linear_thenvoi_bridge"));
+  });
+
+  it("resolveEmbeddedBridgeConfig: explicit custom key loads exact, no warning", () => {
+    process.env.LINEAR_BAND_BRIDGE_RUNTIME_CONFIG_KEY = "my_custom_agent";
+    const cp = writeYaml(`
+my_custom_agent:
+  agent_id: "custom-id"
+  api_key: "custom-key"
+`);
+    const config = resolveEmbeddedBridgeConfig(cp);
+    expect(config.agentId).toBe("custom-id");
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it("resolveBridgeApiKey: non-embedded default loads legacy-only YAML with warning", () => {
+    const cp = writeYaml(legacyYaml);
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+    const key = resolveBridgeApiKey(logger, cp);
+    expect(key).toBe("legacy-key");
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("linear_thenvoi_bridge"));
+  });
+
+  it("resolveBridgeApiKey: explicit legacy agent config key warns", () => {
+    process.env.LINEAR_BAND_BRIDGE_AGENT_CONFIG_KEY = "linear_thenvoi_bridge";
+    const cp = writeYaml(legacyYaml);
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+    const key = resolveBridgeApiKey(logger, cp);
+    expect(key).toBe("legacy-key");
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("linear_thenvoi_bridge"));
   });
 });
 
@@ -199,7 +285,7 @@ describe("P-C3-3B: readLinearEnv", () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it.each(ALL_ENV_PAIRS)("legacy-only: %s warns on first read, silent on second", (bandKey, legacyKey) => {
+  it.each(ALL_ENV_PAIRS)("legacy-only: %s warns first, silent second", (bandKey, legacyKey) => {
     process.env[legacyKey] = "legacy-value";
     expect(readLinearEnv(bandKey, legacyKey)).toBe("legacy-value");
     expect(warnSpy).toHaveBeenCalledTimes(1);
@@ -222,9 +308,9 @@ describe("P-C3-3B: readLinearEnv", () => {
   });
 });
 
-// ── P-C3-3: SQLite path resolution and reuse ─────────────────────────────────
+// ── P-C3-3: SQLite path resolution, reuse, and dispatch ──────────────────────
 
-describe("P-C3-3: SQLite path resolver and binding reuse", () => {
+describe("P-C3-3: SQLite dispatch through saved binding", () => {
   let savedStateDb: string | undefined;
   let savedBandStateDb: string | undefined;
 
@@ -243,58 +329,103 @@ describe("P-C3-3: SQLite path resolver and binding reuse", () => {
     else process.env.LINEAR_BAND_STATE_DB = savedBandStateDb;
   });
 
-  it("resolves the compatibility default and reuses an existing binding", async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "c3-default-db-"));
+  function makePayload(sessionId: string, issueId: string) {
+    return {
+      action: "created",
+      type: "AgentSessionEvent",
+      agentSession: {
+        id: sessionId,
+        issue: { id: issueId, identifier: "TEST-1", title: "Test", url: "https://linear.app/test", priority: 2, state: { name: "In Progress", type: "started" }, team: { id: "team-1", key: "TEST", name: "Test" } },
+        delegate: { id: "agent-1", name: "Agent", displayName: "Agent" },
+        delegateId: "agent-1",
+        team: { id: "team-1", key: "TEST", name: "Test" },
+      },
+    };
+  }
+
+  it("dispatch uses the saved room from default-path store, no createChat", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "c3-dispatch-default-"));
+    const dbPath = join(tmpDir, ".linear-thenvoi-example.sqlite");
     const originalCwd = process.cwd();
+
     try {
       process.chdir(tmpDir);
-      const store1 = createLinearBandBridgeStore();
+
+      // Preseed the DB with a binding
+      const seedStore = createSqliteSessionRoomStore(dbPath);
       const now = new Date().toISOString();
-      await store1.upsert({
+      await seedStore.upsert({
         linearSessionId: "session-1",
         linearIssueId: "issue-1",
-        thenvoiRoomId: "room-abc",
+        thenvoiRoomId: "room-saved",
         status: "active",
         createdAt: now,
         updatedAt: now,
       });
-      await store1.close?.();
+      await seedStore.close?.();
 
-      const store2 = createLinearBandBridgeStore();
-      const existing = await store2.getBySessionId("session-1");
-      expect(existing).toBeDefined();
-      expect(existing!.thenvoiRoomId).toBe("room-abc");
-      await store2.close?.();
+      // Reopen through the resolver and dispatch
+      const store = createLinearBandBridgeStore();
+      const restApi = new LinearBandExampleRestApi();
 
-      expect(existsSync(join(tmpDir, ".linear-thenvoi-example.sqlite"))).toBe(true);
+      await handleAgentSessionEvent({
+        payload: makePayload("session-1", "issue-1") as never,
+        config: { linearAccessToken: "test", linearWebhookSecret: "test", roomStrategy: "issue" },
+        deps: { bandRest: restApi, linearClient: { agentSessionUpdateExternalUrl: vi.fn(async () => ({})) } as never, store },
+      });
+
+      // The forwarded message uses the saved room, not a new one
+      expect(restApi.roomMessages.length + restApi.roomEvents.length).toBeGreaterThan(0);
+      const allRoomIds = [...restApi.roomMessages, ...restApi.roomEvents].map((m) => m.roomId);
+      expect(allRoomIds.every((id) => id === "room-saved")).toBe(true);
+
+      // createChat was never called (no new room created)
+      expect(restApi.createChatCalls).toHaveLength(0);
+
+      await store.close?.();
     } finally {
       process.chdir(originalCwd);
       rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 
-  it("legacy-only LINEAR_THENVOI_STATE_DB resolves to custom path, no default DB", async () => {
-    const tmpDir = mkdtempSync(join(tmpdir(), "c3-legacy-db-"));
-    const customPath = join(tmpDir, "custom-legacy.sqlite");
+  it("legacy STATE_DB dispatch uses saved room from custom path, no default DB", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "c3-dispatch-legacy-"));
+    const customPath = join(tmpDir, "custom.sqlite");
     const defaultPath = join(tmpDir, ".linear-thenvoi-example.sqlite");
 
     process.env.LINEAR_THENVOI_STATE_DB = customPath;
 
     try {
-      const store = createLinearBandBridgeStore();
+      // Preseed custom DB
+      const seedStore = createSqliteSessionRoomStore(customPath);
       const now = new Date().toISOString();
-      await store.upsert({
-        linearSessionId: "session-legacy",
-        linearIssueId: "issue-legacy",
-        thenvoiRoomId: "room-legacy",
+      await seedStore.upsert({
+        linearSessionId: "session-2",
+        linearIssueId: "issue-2",
+        thenvoiRoomId: "room-custom",
         status: "active",
         createdAt: now,
         updatedAt: now,
       });
-      await store.close?.();
+      await seedStore.close?.();
 
-      expect(existsSync(customPath)).toBe(true);
+      // Open through resolver (picks up legacy env)
+      const store = createLinearBandBridgeStore();
+      const restApi = new LinearBandExampleRestApi();
+
+      await handleAgentSessionEvent({
+        payload: makePayload("session-2", "issue-2") as never,
+        config: { linearAccessToken: "test", linearWebhookSecret: "test", roomStrategy: "issue" },
+        deps: { bandRest: restApi, linearClient: { agentSessionUpdateExternalUrl: vi.fn(async () => ({})) } as never, store },
+      });
+
+      const allRoomIds = [...restApi.roomMessages, ...restApi.roomEvents].map((m) => m.roomId);
+      expect(allRoomIds.every((id) => id === "room-custom")).toBe(true);
+      expect(restApi.createChatCalls).toHaveLength(0);
       expect(existsSync(defaultPath)).toBe(false);
+
+      await store.close?.();
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
