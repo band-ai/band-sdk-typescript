@@ -14,6 +14,8 @@ import {
   type LinearActivityClient,
   type SessionRoomStore,
 } from "../../src/linear";
+import { readFileSync } from "node:fs";
+import yaml from "js-yaml";
 import type { Logger } from "../../src/core";
 
 // ── Shared Band-first env/config helpers (imported by server) ───────────────
@@ -40,21 +42,45 @@ const _warnedLegacyConfigKey = new Set<string>();
  * Load agent config trying Band key first, then legacy Thenvoi key with a
  * once-per-key deprecation warning. Shared by agent and server entry paths.
  */
+/**
+ * Load agent config trying Band key first, then legacy Thenvoi key with a
+ * once-per-key deprecation warning. Falls back only when the Band key is
+ * absent from the YAML; a present but malformed Band key surfaces its error.
+ */
 export function loadBandLinearConfig(
   bandKey: string,
   legacyKey: string,
+  configPath?: string,
 ): AgentConfigResult {
+  const filePath = configPath ?? "./agent_config.yaml";
+  let parsed: Record<string, unknown> | null = null;
   try {
-    return loadAgentConfig(bandKey);
+    const raw = readFileSync(filePath, "utf-8");
+    const loaded = yaml.load(raw, { schema: yaml.JSON_SCHEMA });
+    if (loaded && typeof loaded === "object") {
+      parsed = loaded as Record<string, unknown>;
+    }
   } catch {
-    // Band key not found — try legacy
+    // File missing — loadAgentConfig will throw a clear error
   }
-  const config = loadAgentConfig(legacyKey);
-  if (!_warnedLegacyConfigKey.has(legacyKey)) {
-    _warnedLegacyConfigKey.add(legacyKey);
-    console.warn(`[band] YAML config key "${legacyKey}" is deprecated; use "${bandKey}" instead`);
+
+  // If the Band key is present in the YAML, use it (surfaces validation errors)
+  if (parsed && bandKey in parsed) {
+    return loadAgentConfig(bandKey, configPath);
   }
-  return config;
+
+  // Band key absent — try legacy with warning
+  if (parsed && legacyKey in parsed) {
+    const config = loadAgentConfig(legacyKey, configPath);
+    if (!_warnedLegacyConfigKey.has(legacyKey)) {
+      _warnedLegacyConfigKey.add(legacyKey);
+      console.warn(`[band] YAML config key "${legacyKey}" is deprecated; use "${bandKey}" instead`);
+    }
+    return config;
+  }
+
+  // Neither key found — let loadAgentConfig produce the standard error
+  return loadAgentConfig(bandKey, configPath);
 }
 
 interface LinearBandBridgeAgentOptions {
