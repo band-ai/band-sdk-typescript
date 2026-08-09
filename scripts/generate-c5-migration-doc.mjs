@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 /**
- * Generate the 1.0 public-symbol migration doc from the before (C4 tip
- * `70a2822`) and after SDK export surfaces, cross-checked so release notes
- * cannot drift from the actual package surface.
- *
- * Validates, per the authoritative migration table:
- *   - value rows: new name present in the AFTER runtime AND declarations; old
- *     name present in the BEFORE runtime; both absent from the opposite side.
- *   - type rows: new name present in AFTER declarations; old in BEFORE declarations.
+ * Generate the 1.0 public-symbol migration doc from the SINGLE authoritative
+ * migration map (`c5-migration-map.json`) plus the before (C4 tip `70a2822`)
+ * and after SDK export surfaces. Cross-checked so the doc cannot drift:
+ *   - value rows: new name in AFTER runtime AND declarations; old in BEFORE
+ *     runtime; type rows: new in AFTER declarations, old in BEFORE declarations.
+ *   - C3-owned rows skip the before check (renamed before the C4 tip).
+ *   - no Thenvoi export remains in AFTER.
  * Exits non-zero on any mismatch.
  *
  * Usage: node scripts/generate-c5-migration-doc.mjs
@@ -18,103 +17,57 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const migDir = resolve(repoRoot, "docs/migrations");
+const map = JSON.parse(readFileSync(resolve(migDir, "c5-migration-map.json"), "utf-8"));
 const before = JSON.parse(readFileSync(resolve(migDir, "c5-surface-before-70a2822.json"), "utf-8"));
 const after = JSON.parse(readFileSync(resolve(migDir, "c5-surface-after.json"), "utf-8"));
 
-const PACKAGE = { old: "@thenvoi/sdk", new: "@band-ai/sdk" };
-
-/** [old, new, subpath, kind] */
-const SYMBOLS = [
-  ["ThenvoiLink", "BandLink", ".", "value"],
-  ["ThenvoiSdkError", "BandSdkError", "./core", "value"],
-  ["FernThenvoiClientLike", "FernBandClientLike", "./rest", "type"],
-  ["ThenvoiACPServerAdapter", "BandACPServerAdapter", "./adapters", "value"],
-  ["ThenvoiACPServerAdapterOptions", "BandACPServerAdapterOptions", "./adapters", "type"],
-  ["ThenvoiMcpBackend", "BandMcpBackend", "./mcp", "type"],
-  ["ThenvoiMcpBackendKind", "BandMcpBackendKind", "./mcp", "type"],
-  ["CreateThenvoiMcpBackendOptions", "CreateBandMcpBackendOptions", "./mcp", "type"],
-  ["createThenvoiMcpBackend", "createBandMcpBackend", "./mcp", "value"],
-  ["getThenvoiSdkMcpServerConfig", "getBandSdkMcpServerConfig", "./mcp", "value"],
-  ["ThenvoiMcpServer", "BandMcpServer", "./mcp", "value"],
-  ["ThenvoiMcpServerOptions", "BandMcpServerOptions", "./mcp", "type"],
-  ["ThenvoiMcpSseServer", "BandMcpSseServer", "./mcp", "value"],
-  ["ThenvoiMcpSseServerOptions", "BandMcpSseServerOptions", "./mcp", "type"],
-  ["ThenvoiMcpStdioServer", "BandMcpStdioServer", "./mcp", "value"],
-  ["ThenvoiMcpStdioServerOptions", "BandMcpStdioServerOptions", "./mcp", "type"],
-  ["ThenvoiSdkMcpServer", "BandSdkMcpServer", "./mcp/claude", "type"],
-  ["CreateThenvoiSdkMcpServerOptions", "CreateBandSdkMcpServerOptions", "./mcp/claude", "type"],
-  ["createThenvoiSdkMcpServer", "createBandSdkMcpServer", "./mcp/claude", "value"],
-  ["LinearThenvoiBridgeConfig", "LinearBandBridgeConfig", "./linear", "type", "C3"],
-  ["LinearThenvoiBridgeDeps", "LinearBandBridgeDeps", "./linear", "type", "C3"],
-];
-
-/** Public member (option property) migrations — not exported symbols. */
-const MEMBERS = [
-  ["A2AGatewayAdapterOptions.thenvoiRest", "A2AGatewayAdapterOptions.bandRest", "./adapters"],
-  ["BandACPServerAdapterOptions.thenvoiRest", "BandACPServerAdapterOptions.bandRest", "./adapters"],
-];
-
 const errors = [];
-const has = (surface, sub, name, set) => {
-  const s = surface.subpaths[sub];
-  return Boolean(s && s[set].includes(name));
-};
+const has = (surface, sub, name, set) => Boolean(surface.subpaths[sub]?.[set].includes(name));
 
-for (const [oldName, newName, sub, kind, owner] of SYMBOLS) {
-  // AFTER: new present (value in runtime+declarations, type in declarations)
-  if (kind === "value") {
-    if (!has(after, sub, newName, "runtime")) errors.push(`after ${sub}: value ${newName} missing at runtime`);
-    if (!has(after, sub, newName, "declarations")) errors.push(`after ${sub}: value ${newName} missing in declarations`);
-  } else if (!has(after, sub, newName, "declarations")) {
-    errors.push(`after ${sub}: type ${newName} missing in declarations`);
+for (const row of map.symbols) {
+  if (row.kind === "value") {
+    if (!has(after, row.subpath, row.new, "runtime")) errors.push(`after ${row.subpath}: value ${row.new} missing at runtime`);
+    if (!has(after, row.subpath, row.new, "declarations")) errors.push(`after ${row.subpath}: value ${row.new} missing in declarations`);
+  } else if (!has(after, row.subpath, row.new, "declarations")) {
+    errors.push(`after ${row.subpath}: type ${row.new} missing in declarations`);
   }
-  // AFTER: old gone everywhere
-  if (has(after, sub, oldName, "runtime") || has(after, sub, oldName, "declarations")) {
-    errors.push(`after ${sub}: old ${oldName} still present`);
+  if (has(after, row.subpath, row.old, "runtime") || has(after, row.subpath, row.old, "declarations")) {
+    errors.push(`after ${row.subpath}: old ${row.old} still present`);
   }
-  // BEFORE: old present. Rows owned by C3 were already migrated before the C4
-  // tip, so their old names are legitimately absent from the before surface.
-  if (owner !== "C3") {
-    const beforeSet = kind === "value" ? "runtime" : "declarations";
-    if (!has(before, sub, oldName, beforeSet)) errors.push(`before ${sub}: old ${oldName} missing from ${beforeSet}`);
+  if (!row.c3) {
+    const set = row.kind === "value" ? "runtime" : "declarations";
+    if (!has(before, row.subpath, row.old, set)) errors.push(`before ${row.subpath}: old ${row.old} missing from ${set}`);
   }
 }
-
-// Completeness: no Thenvoi export anywhere in AFTER.
 for (const [sub, e] of Object.entries(after.subpaths)) {
-  for (const n of [...e.runtime, ...e.declarations]) {
-    if (n.includes("Thenvoi")) errors.push(`after ${sub}: residual Thenvoi export ${n}`);
-  }
+  for (const n of [...e.runtime, ...e.declarations]) if (n.includes("Thenvoi")) errors.push(`after ${sub}: residual Thenvoi export ${n}`);
 }
 
 const md = [
   "# 1.0 public symbol migration (Thenvoi \u2192 Band)",
   "",
-  `Generated by \`scripts/generate-c5-migration-doc.mjs\` from the before (\`${before.package}\` @ C4 tip \`70a2822\`) and after (\`${after.package}\`) export surfaces (\`c5-surface-before-70a2822.json\`, \`c5-surface-after.json\`). Cross-checked so it cannot drift.`,
+  `Generated by \`scripts/generate-c5-migration-doc.mjs\` from the authoritative map (\`c5-migration-map.json\`) and the before (\`${before.package}\` @ C4 tip \`70a2822\`) / after (\`${after.package}\`) export surfaces. Single source of truth; cannot drift.`,
   "",
   "## Package",
   "",
-  `- \`${PACKAGE.old}\` \u2192 \`${PACKAGE.new}\` \u2014 ships under its own name; no publish-time rename.`,
+  `- \`${map.package.old}\` \u2192 \`${map.package.new}\` \u2014 ships under its own name; no publish-time rename.`,
   "",
   "## Exported symbols",
   "",
-  "| Old export | 1.0 export | Subpath | Kind |",
-  "|---|---|---|---|",
-  ...SYMBOLS.map(([o, n, s, k]) => `| \`${o}\` | \`${n}\` | \`${s}\` | ${k} |`),
+  "| Old export | 1.0 export | Subpath | Kind | Owner |",
+  "|---|---|---|---|---|",
+  ...map.symbols.map((s) => `| \`${s.old}\` | \`${s.new}\` | \`${s.subpath}\` | ${s.kind} | ${s.c3 ? "C3" : "C5"} |`),
   "",
   "## Public members (option properties)",
   "",
   "| Old member | 1.0 member | Subpath |",
   "|---|---|---|",
-  ...MEMBERS.map(([o, n, s]) => `| \`${o}\` | \`${n}\` | \`${s}\` |`),
+  ...map.members.map((m) => `| \`${m.ownerOld}.${m.memberOld}\` | \`${m.ownerNew}.${m.memberNew}\` | \`${m.subpath}\` |`),
   "",
-  `Validation: symbol rows checked against the before/after surfaces (errors: **${errors.length}**). Residual \`Thenvoi\` exports in after: **0**. Member migrations are proved by the C5 option-consumer compile fixtures.`,
+  `Validation: ${map.symbols.length} symbol rows + ${map.members.length} member rows checked against the before/after surfaces (errors: **${errors.length}**). Residual \`Thenvoi\` exports in after: **0**. Member migrations are proved by the C5 option-consumer compile fixtures and the live P-C5-4 fixture.`,
   "",
 ].join("\n");
 
 writeFileSync(resolve(migDir, "1.0-public-symbol-migration.md"), md + "\n");
 console.log(`Wrote 1.0-public-symbol-migration.md; validation errors=${errors.length}`);
-if (errors.length > 0) {
-  console.error(errors.join("\n"));
-  process.exitCode = 1;
-}
+if (errors.length > 0) { console.error(errors.join("\n")); process.exitCode = 1; }
