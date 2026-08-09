@@ -785,4 +785,44 @@ describe("CodexAdapter", () => {
     });
     expect(["CustomToolExecutionError", "CustomToolUnknownError"]).toContain(payload.output.errorType);
   });
+
+  it("sends the default band clientInfo name and title on initialize", async () => {
+    const fakeClient = new FakeCodexClient();
+    const adapter = new CodexAdapter({
+      config: {
+        model: "gpt-5.3-codex",
+        cwd: "/tmp/workdir",
+      },
+      factory: async () => fakeClient,
+    });
+
+    await adapter.onStarted("Codex Agent", "Codex parity adapter");
+
+    const initializeCall = fakeClient.requestCalls.find((call) => call.method === "initialize");
+    expect(initializeCall).toBeDefined();
+    const clientInfo = initializeCall?.params.clientInfo as { name: string; title: string };
+    expect(clientInfo.name).toBe("band_codex_adapter");
+    expect(clientInfo.title).toBe("Band Codex Adapter");
+  });
+
+  it("lets the caller override clientInfo name and title via config", async () => {
+    const fakeClient = new FakeCodexClient();
+    const adapter = new CodexAdapter({
+      config: {
+        model: "gpt-5.3-codex",
+        cwd: "/tmp/workdir",
+        clientName: "custom_codex_adapter",
+        clientTitle: "Custom Codex Adapter",
+      },
+      factory: async () => fakeClient,
+    });
+
+    await adapter.onStarted("Codex Agent", "Codex parity adapter");
+
+    const initializeCall = fakeClient.requestCalls.find((call) => call.method === "initialize");
+    expect(initializeCall).toBeDefined();
+    const clientInfo = initializeCall?.params.clientInfo as { name: string; title: string };
+    expect(clientInfo.name).toBe("custom_codex_adapter");
+    expect(clientInfo.title).toBe("Custom Codex Adapter");
+  });
 });

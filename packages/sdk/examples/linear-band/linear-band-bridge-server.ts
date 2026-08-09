@@ -143,28 +143,28 @@ export function createEmbeddedLinearBridgeDispatcher(options: {
           try {
             if (bootstrap.metadata?.linear_reset_room_session === true) {
               const resetGraceful = await options.agent.resetRoomSession(
-                bootstrap.thenvoiRoomId,
+                bootstrap.bandRoomId,
                 roomResetTimeoutMs,
               );
               if (!resetGraceful) {
                 logger.warn("linear_thenvoi_bridge.room_reset_timed_out_continuing", {
-                  roomId: bootstrap.thenvoiRoomId,
+                  roomId: bootstrap.bandRoomId,
                   timeoutMs: roomResetTimeoutMs,
                   eventKey: job.eventKey,
                 });
               }
             }
             logger.info("linear_thenvoi_bridge.embedded_bootstrap_start", {
-              roomId: bootstrap.thenvoiRoomId,
+              roomId: bootstrap.bandRoomId,
               eventKey: job.eventKey,
               sessionId: job.input.payload.agentSession.id,
             });
             await options.agent.bootstrapRoomMessage(
-              bootstrap.thenvoiRoomId,
+              bootstrap.bandRoomId,
               buildBootstrapMessage(bootstrap),
             );
             logger.info("linear_thenvoi_bridge.embedded_bootstrap_success", {
-              roomId: bootstrap.thenvoiRoomId,
+              roomId: bootstrap.bandRoomId,
               eventKey: job.eventKey,
               sessionId: job.input.payload.agentSession.id,
             });
@@ -174,7 +174,7 @@ export function createEmbeddedLinearBridgeDispatcher(options: {
 
           await options.store.markBootstrapRequestProcessed(job.eventKey);
           logger.info("linear_thenvoi_bridge.embedded_bootstrap_marked_processed", {
-              roomId: bootstrap.thenvoiRoomId,
+              roomId: bootstrap.bandRoomId,
               eventKey: job.eventKey,
               sessionId: job.input.payload.agentSession.id,
             });
@@ -194,7 +194,7 @@ export function createEmbeddedLinearBridgeDispatcher(options: {
 
 function buildBootstrapMessage(request: {
   eventKey: string;
-  thenvoiRoomId: string;
+  bandRoomId: string;
   expectedContent: string;
   messageType: string;
   senderId?: string | null;
@@ -205,7 +205,7 @@ function buildBootstrapMessage(request: {
 }): PlatformMessage {
   return {
     id: `linear-bootstrap:${request.eventKey}`,
-    roomId: request.thenvoiRoomId,
+    roomId: request.bandRoomId,
     content: request.expectedContent,
     senderId: request.senderId?.trim() || `linear-session:${request.linearSessionId}`,
     senderType: "User",

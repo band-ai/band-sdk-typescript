@@ -65,7 +65,7 @@ function makeActiveSession(issueId: string): SessionRoomRecord {
   return {
     linearSessionId: `session-for-${issueId}`,
     linearIssueId: issueId,
-    thenvoiRoomId: `room-for-${issueId}`,
+    bandRoomId: `room-for-${issueId}`,
     status: "active",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -245,6 +245,7 @@ describe("handleAppUserNotification", () => {
           linear_notification_type: "issueNewComment",
           linear_comment_id: "comment-1",
           linear_actor_id: "alice-id",
+          linear_bridge: "band",
         }),
       }),
     );

@@ -565,7 +565,7 @@ describe("createLinearTools", () => {
     await store.upsert({
       linearSessionId: "sess-1",
       linearIssueId: "issue-1",
-      thenvoiRoomId: "room-1",
+      bandRoomId: "room-1",
       status: "active",
       lastEventKey: "event-1",
       createdAt: new Date().toISOString(),
@@ -938,7 +938,7 @@ describe("createLinearTools", () => {
     expect(record).not.toBeNull();
     expect(record!.linearSessionId).toBe("new-session-1");
     expect(record!.linearIssueId).toBe(TEST_ISSUE_ID);
-    expect(record!.thenvoiRoomId).toBe("room-abc");
+    expect(record!.bandRoomId).toBe("room-abc");
     expect(record!.status).toBe("active");
   });
 
@@ -1007,7 +1007,7 @@ describe("createLinearTools", () => {
 
     const record = await store.getBySessionId("new-session-2");
     expect(record).not.toBeNull();
-    expect(record!.thenvoiRoomId).toBe("room-xyz");
+    expect(record!.bandRoomId).toBe("room-xyz");
     expect(record!.status).toBe("active");
     // Comment sessions have null linearIssueId — verify it is persisted as null
     // and that getByIssueId does not accidentally match it.

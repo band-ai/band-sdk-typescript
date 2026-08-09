@@ -686,7 +686,7 @@ describe("createLinearWebhookHandler", () => {
     const session: SessionRoomRecord = {
       linearSessionId: "session-dedup",
       linearIssueId: "issue-dedup",
-      thenvoiRoomId: "room-dedup",
+      bandRoomId: "room-dedup",
       status: "active",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -753,7 +753,7 @@ describe("createLinearWebhookHandler", () => {
     const session: SessionRoomRecord = {
       linearSessionId: "session-fail",
       linearIssueId: "issue-fail",
-      thenvoiRoomId: "room-fail",
+      bandRoomId: "room-fail",
       status: "active",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -801,7 +801,7 @@ describe("createLinearWebhookHandler", () => {
     const session: SessionRoomRecord = {
       linearSessionId: "session-retry",
       linearIssueId: "issue-retry",
-      thenvoiRoomId: "room-retry",
+      bandRoomId: "room-retry",
       status: "active",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -899,7 +899,7 @@ describe("createLinearWebhookHandler", () => {
     const session: SessionRoomRecord = {
       linearSessionId: "session-self",
       linearIssueId: "issue-self",
-      thenvoiRoomId: "room-self",
+      bandRoomId: "room-self",
       status: "active",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),

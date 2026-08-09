@@ -135,7 +135,7 @@ function withDefaults(config?: OpencodeAdapterConfig): Required<OpencodeAdapterC
     approvalTimeoutReply: "reject",
     questionMode: "manual",
     questionWaitTimeoutMs: 300_000,
-    sessionTitlePrefix: "Thenvoi",
+    sessionTitlePrefix: "Band",
     mcpServerName: "thenvoi",
     ...config,
   };

@@ -29,7 +29,7 @@ function makeRecord(overrides?: Partial<SessionRoomRecord>): SessionRoomRecord {
   return {
     linearSessionId: "session-1",
     linearIssueId: "issue-1",
-    thenvoiRoomId: "room-1",
+    bandRoomId: "room-1",
     status: "active",
     lastEventKey: null,
     lastLinearActivityAt: now,

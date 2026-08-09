@@ -224,7 +224,7 @@ export async function handleAgentSessionEvent(
       runtime,
     });
     if (action === "created") {
-      const roomId = roomRecord.thenvoiRoomId;
+      const roomId = roomRecord.bandRoomId;
       externalUrlPromise = trySetSessionExternalUrl({
         linearClient: input.deps.linearClient,
         sessionId,
@@ -251,7 +251,7 @@ export async function handleAgentSessionEvent(
     });
     const suggestedPeerHandles = await selectRelevantPeerHandles({
       bandRest: input.deps.bandRest,
-      roomId: roomRecord.thenvoiRoomId,
+      roomId: roomRecord.bandRoomId,
       intent: sessionIntent,
       hostAgentHandle,
       planningAgentHandles: input.config.planningAgentHandles,
@@ -261,7 +261,7 @@ export async function handleAgentSessionEvent(
 
     await ensureRoomParticipants({
       bandRest: input.deps.bandRest,
-      roomId: roomRecord.thenvoiRoomId,
+      roomId: roomRecord.bandRoomId,
       handles: [hostAgentHandle],
       logger,
     });
@@ -336,13 +336,13 @@ export async function handleAgentSessionEvent(
       linear_issue_id: issueId,
       linear_prompt_context: input.payload.promptContext ?? null,
       linear_writeback_mode: config.writebackMode,
-      linear_bridge: "thenvoi",
+      linear_bridge: "band",
       linear_host_handle: hostAgentHandle,
     };
     const shouldResetRoomSession = Boolean(
       existingByIssue
       && existingByIssue.linearSessionId !== sessionId
-      && existingByIssue.thenvoiRoomId === roomRecord.thenvoiRoomId
+      && existingByIssue.bandRoomId === roomRecord.bandRoomId
       && (existingByIssue.status === "completed" || existingByIssue.status === "errored"),
     );
 
@@ -370,7 +370,7 @@ export async function handleAgentSessionEvent(
       await enqueueBootstrapRequest(input.deps.store, {
         eventKey,
         linearSessionId: sessionId,
-        thenvoiRoomId: roomRecord.thenvoiRoomId,
+        bandRoomId: roomRecord.bandRoomId,
         expectedContent: message,
         messageType: "task",
         senderId: linearActor.id,
@@ -399,7 +399,7 @@ export async function handleAgentSessionEvent(
     logger.info("linear_thenvoi_bridge.message_forwarded", {
       sessionId,
       issueId,
-      roomId: roomRecord.thenvoiRoomId,
+      roomId: roomRecord.bandRoomId,
       action,
     });
   } catch (error) {
@@ -694,14 +694,14 @@ async function handleCanceledAction(input: {
   });
 
   if (!input.skipRoomWrite) {
-    await input.deps.bandRest.createChatEvent(existing.thenvoiRoomId, {
+    await input.deps.bandRest.createChatEvent(existing.bandRoomId, {
       content: "[Linear]: Agent session canceled. Stop in-room execution and await new instructions.",
       messageType: "task",
       metadata: {
         linear_event_action: "canceled",
         linear_session_id: input.sessionId,
         linear_issue_id: input.issueId,
-        linear_bridge: "thenvoi",
+        linear_bridge: "band",
       },
     });
   }
@@ -753,14 +753,14 @@ async function handlePromptedAction(input: {
   const metadata = {
     linear_event_action: "prompted",
     linear_session_id: input.sessionId,
-    linear_bridge: "thenvoi",
+    linear_bridge: "band",
   };
 
   const canBootstrapDirectly = input.config.hostAgentHandle !== null
     ? true
     : Boolean(normalizeOptionalHandle((await input.deps.bandRest.getAgentMe()).handle));
   if (!input.skipRoomWrite || !canBootstrapDirectly) {
-    await input.deps.bandRest.createChatEvent(existing.thenvoiRoomId, {
+    await input.deps.bandRest.createChatEvent(existing.bandRoomId, {
       content: message,
       messageType: "text",
       metadata,
@@ -771,7 +771,7 @@ async function handlePromptedAction(input: {
     await enqueueBootstrapRequest(input.deps.store, {
       eventKey: input.eventKey,
       linearSessionId: input.sessionId,
-      thenvoiRoomId: existing.thenvoiRoomId,
+      bandRoomId: existing.bandRoomId,
       expectedContent: message,
       messageType: "text",
       senderId: linearActor.id,
@@ -789,7 +789,7 @@ async function handlePromptedAction(input: {
 
   input.logger.info("linear_thenvoi_bridge.prompted_forwarded", {
     sessionId: input.sessionId,
-    roomId: existing.thenvoiRoomId,
+    roomId: existing.bandRoomId,
   });
 }
 
@@ -799,7 +799,7 @@ async function enqueueBootstrapRequest(
     PendingBootstrapRequest,
     | "eventKey"
     | "linearSessionId"
-    | "thenvoiRoomId"
+    | "bandRoomId"
     | "expectedContent"
     | "messageType"
     | "senderId"
@@ -876,7 +876,7 @@ async function forwardBridgeMessage(input: {
   recoveredRoomRetryBaseDelayMs?: number;
 }): Promise<SessionRoomRecord> {
   try {
-    await input.bandRest.createChatEvent(input.roomRecord.thenvoiRoomId, {
+    await input.bandRest.createChatEvent(input.roomRecord.bandRoomId, {
       content: input.message,
       messageType: input.messageType,
       metadata: input.metadata,
@@ -890,7 +890,7 @@ async function forwardBridgeMessage(input: {
     input.logger.warn("linear_thenvoi_bridge.room_forward_recovering_with_fresh_room", {
       sessionId: input.sessionId,
       issueId: input.issueId,
-      previousRoomId: input.roomRecord.thenvoiRoomId,
+      previousRoomId: input.roomRecord.bandRoomId,
       error: error instanceof Error ? error.message : String(error),
     });
 
@@ -904,7 +904,7 @@ async function forwardBridgeMessage(input: {
 
     await ensureRoomParticipants({
       bandRest: input.bandRest,
-      roomId: recoveredRoom.thenvoiRoomId,
+      roomId: recoveredRoom.bandRoomId,
       handles: [input.hostAgentHandle],
       logger: input.logger,
     });
@@ -912,7 +912,7 @@ async function forwardBridgeMessage(input: {
     let attempt = 0;
     while (true) {
       try {
-        await input.bandRest.createChatEvent(recoveredRoom.thenvoiRoomId, {
+        await input.bandRest.createChatEvent(recoveredRoom.bandRoomId, {
           content: input.message,
           messageType: input.messageType,
           metadata: input.metadata,
@@ -929,7 +929,7 @@ async function forwardBridgeMessage(input: {
         input.logger.warn("linear_thenvoi_bridge.room_recreated_retrying", {
           sessionId: input.sessionId,
           issueId: input.issueId,
-          roomId: recoveredRoom.thenvoiRoomId,
+          roomId: recoveredRoom.bandRoomId,
           attempt,
           delayMs,
           error: recoveredError instanceof Error ? recoveredError.message : String(recoveredError),
@@ -976,7 +976,7 @@ async function createFreshRoomRecord(input: {
   const record: SessionRoomRecord = {
     linearSessionId: input.sessionId,
     linearIssueId: input.issueId,
-    thenvoiRoomId: created.id,
+    bandRoomId: created.id,
     status: "active",
     lastEventKey: null,
     createdAt: now,
@@ -1012,7 +1012,7 @@ async function resolveRoomRecordImpl(input: {
       const linkedRecord: SessionRoomRecord = {
         linearSessionId: input.sessionId,
         linearIssueId: input.issueId,
-        thenvoiRoomId: existingByIssue.thenvoiRoomId,
+        bandRoomId: existingByIssue.bandRoomId,
         status: "active",
         lastEventKey: existingBySession?.lastEventKey ?? null,
         createdAt: existingBySession?.createdAt ?? now,
@@ -1032,7 +1032,7 @@ async function resolveRoomRecordImpl(input: {
   const createdRecord: SessionRoomRecord = {
     linearSessionId: input.sessionId,
     linearIssueId: input.issueId,
-    thenvoiRoomId: created.id,
+    bandRoomId: created.id,
     status: "active",
     lastEventKey: null,
     createdAt: now,

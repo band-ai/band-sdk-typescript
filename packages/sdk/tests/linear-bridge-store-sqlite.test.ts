@@ -37,7 +37,7 @@ describe("sqlite session room store", () => {
     await store.upsert({
       linearSessionId: "session-1",
       linearIssueId: "issue-1",
-      thenvoiRoomId: "room-1",
+      bandRoomId: "room-1",
       status: "active",
       createdAt: "2026-03-03T00:00:00.000Z",
       updatedAt: "2026-03-03T00:00:00.000Z",
@@ -46,7 +46,7 @@ describe("sqlite session room store", () => {
     await expect(store.getBySessionId("session-1")).resolves.toMatchObject({
       linearSessionId: "session-1",
       linearIssueId: "issue-1",
-      thenvoiRoomId: "room-1",
+      bandRoomId: "room-1",
       status: "active",
     });
   });
@@ -58,7 +58,7 @@ describe("sqlite session room store", () => {
     await store.upsert({
       linearSessionId: "session-old",
       linearIssueId: "issue-1",
-      thenvoiRoomId: "room-old",
+      bandRoomId: "room-old",
       status: "active",
       createdAt: "2026-03-03T00:00:00.000Z",
       updatedAt: "2026-03-03T00:00:00.000Z",
@@ -67,14 +67,14 @@ describe("sqlite session room store", () => {
     await store.upsert({
       linearSessionId: "session-new",
       linearIssueId: "issue-1",
-      thenvoiRoomId: "room-new",
+      bandRoomId: "room-new",
       status: "active",
       createdAt: "2026-03-03T00:01:00.000Z",
       updatedAt: "2026-03-03T00:01:00.000Z",
     });
 
     await expect(store.getByIssueId("issue-1")).resolves.toMatchObject({
-      thenvoiRoomId: "room-new",
+      bandRoomId: "room-new",
       linearSessionId: "session-new",
     });
   });
@@ -86,7 +86,7 @@ describe("sqlite session room store", () => {
     await store.upsert({
       linearSessionId: "session-1",
       linearIssueId: "issue-1",
-      thenvoiRoomId: "room-1",
+      bandRoomId: "room-1",
       status: "active",
       createdAt: "2026-03-03T00:00:00.000Z",
       updatedAt: "2026-03-03T00:00:00.000Z",
@@ -107,7 +107,7 @@ describe("sqlite session room store", () => {
     await store.upsert({
       linearSessionId: "session-1",
       linearIssueId: "issue-1",
-      thenvoiRoomId: "room-1",
+      bandRoomId: "room-1",
       status: "completed",
       createdAt: "2026-03-03T00:00:00.000Z",
       updatedAt: "2026-03-03T00:00:00.000Z",
@@ -115,7 +115,7 @@ describe("sqlite session room store", () => {
 
     await expect(store.getByIssueId("issue-1")).resolves.toMatchObject({
       linearSessionId: "session-1",
-      thenvoiRoomId: "room-1",
+      bandRoomId: "room-1",
       status: "completed",
     });
     await expect(store.getBySessionId("session-1")).resolves.toMatchObject({
@@ -130,7 +130,7 @@ describe("sqlite session room store", () => {
     await store.enqueueBootstrapRequest({
       eventKey: "event-1",
       linearSessionId: "session-1",
-      thenvoiRoomId: "room-1",
+      bandRoomId: "room-1",
       expectedContent: "Bootstrap me",
       messageType: "task",
       metadata: { linear_bridge: "thenvoi" },
@@ -142,7 +142,7 @@ describe("sqlite session room store", () => {
       {
         eventKey: "event-1",
         linearSessionId: "session-1",
-        thenvoiRoomId: "room-1",
+        bandRoomId: "room-1",
         expectedContent: "Bootstrap me",
         messageType: "task",
         metadata: { linear_bridge: "thenvoi" },

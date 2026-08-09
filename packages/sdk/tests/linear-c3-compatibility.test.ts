@@ -381,7 +381,7 @@ describe("P-C3-3: SQLite dispatch through saved binding", () => {
       await seedStore.upsert({
         linearSessionId: "session-1",
         linearIssueId: "issue-1",
-        thenvoiRoomId: "room-saved",
+        bandRoomId: "room-saved",
         status: "active",
         createdAt: now,
         updatedAt: now,
@@ -431,7 +431,7 @@ describe("P-C3-3: SQLite dispatch through saved binding", () => {
       await seedStore.upsert({
         linearSessionId: "session-2",
         linearIssueId: "issue-2",
-        thenvoiRoomId: "room-custom",
+        bandRoomId: "room-custom",
         status: "active",
         createdAt: now,
         updatedAt: now,
