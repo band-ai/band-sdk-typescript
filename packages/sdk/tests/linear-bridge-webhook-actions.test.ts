@@ -596,19 +596,19 @@ describe("linear bridge webhook actions", () => {
     expect(linearClient.agentSessionUpdateExternalUrl).toHaveBeenCalledWith(
       "session-1",
       {
-        externalUrls: [{ label: "View in Band", url: expect.stringMatching(/^https:\/\/app\.thenvoi\.com\/rooms\//) }],
+        externalUrls: [{ label: "View in Band", url: expect.stringMatching(/^https:\/\/app\.band\.ai\/rooms\//) }],
       },
     );
   });
 
-  it("uses custom thenvoiAppBaseUrl for external URL", async () => {
+  it("uses custom bandAppBaseUrl for external URL (explicit value byte-preserved)", async () => {
     const restApi = new LinearBandExampleRestApi();
     const store = new MemorySessionRoomStore();
     const linearClient = makeLinearClient();
 
     await handleAgentSessionEvent({
       payload: makePayload("created"),
-      config: { ...config, thenvoiAppBaseUrl: "https://custom.example.com" },
+      config: { ...config, bandAppBaseUrl: "https://custom.example.com" },
       deps: { bandRest: restApi, linearClient, store },
     });
 

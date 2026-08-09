@@ -1,6 +1,6 @@
 # NemoClaw + Thenvoi Demo
 
-Demo setup for running the `@thenvoi/openclaw-channel-thenvoi` channel plugin inside a NemoClaw sandbox on a Mac, with Anthropic Claude as the inference backend.
+Demo setup for running the `@band-ai/openclaw-channel-band` channel plugin inside a NemoClaw sandbox on a Mac, with Anthropic Claude as the inference backend.
 
 Thenvoi credentials are stored in the sandbox's OpenClaw config (`/sandbox/.openclaw/openclaw.json`), not in host env vars.
 
@@ -57,9 +57,9 @@ nemoclaw thenvoi-demo connect
 Inside the sandbox shell, paste your actual Thenvoi credentials directly into the config (these stay inside the sandbox, never in env vars or the repo):
 
 ```bash
-openclaw config set channels.openclaw-channel-thenvoi.accounts.primary.enabled true
-openclaw config set channels.openclaw-channel-thenvoi.accounts.primary.apiKey  '<your-thenvoi-api-key>'
-openclaw config set channels.openclaw-channel-thenvoi.accounts.primary.agentId '<your-thenvoi-agent-id>'
+openclaw config set channels.openclaw-channel-band.accounts.primary.enabled true
+openclaw config set channels.openclaw-channel-band.accounts.primary.apiKey  '<your-thenvoi-api-key>'
+openclaw config set channels.openclaw-channel-band.accounts.primary.agentId '<your-thenvoi-agent-id>'
 ```
 
 ## 5. Start the agent
@@ -79,4 +79,4 @@ Watch for:
 
 In the Thenvoi app, open a chat room with the agent and `@`-mention it. Expected: a Claude-generated reply appears in the room.
 
-If nothing arrives, OpenShell's TUI will surface any blocked-egress prompts for operator approval — most likely candidate is the WSS upgrade to `app.thenvoi.com`.
+If nothing arrives, OpenShell's TUI will surface any blocked-egress prompts for operator approval — most likely candidate is the WSS upgrade to `app.band.ai`.

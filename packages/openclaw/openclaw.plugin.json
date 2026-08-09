@@ -6,7 +6,7 @@
   "description": "Connect OpenClaw to the Band AI agent collaboration platform",
   "author": "Band",
   "license": "MIT",
-  "repository": "https://github.com/thenvoi/thenvoi-sdk-typescript",
+  "repository": "https://github.com/band-ai/band-sdk-typescript",
   "kind": "channel",
   "entry": "dist/index.js",
   "setupEntry": "dist/setup-entry.js",
@@ -35,12 +35,12 @@
             },
             "wsUrl": {
               "type": "string",
-              "default": "wss://app.thenvoi.com/api/v1/socket",
+              "default": "wss://app.band.ai/api/v1/socket",
               "description": "Band WebSocket URL"
             },
             "restUrl": {
               "type": "string",
-              "default": "https://app.thenvoi.com",
+              "default": "https://app.band.ai",
               "description": "Band REST API URL"
             },
             "stateDir": {
@@ -65,7 +65,7 @@
     ]
   },
   "openclaw.install": {
-    "githubRepo": "thenvoi/thenvoi-sdk-typescript",
+    "githubRepo": "band-ai/band-sdk-typescript",
     "defaultChoice": false
   },
   "contracts": {
@@ -136,12 +136,12 @@
                 },
                 "wsUrl": {
                   "type": "string",
-                  "default": "wss://app.thenvoi.com/api/v1/socket",
+                  "default": "wss://app.band.ai/api/v1/socket",
                   "description": "Band WebSocket URL"
                 },
                 "restUrl": {
                   "type": "string",
-                  "default": "https://app.thenvoi.com",
+                  "default": "https://app.band.ai",
                   "description": "Band REST API URL"
                 },
                 "stateDir": {
@@ -166,11 +166,11 @@
         },
         "wsUrl": {
           "label": "WebSocket URL",
-          "placeholder": "wss://app.thenvoi.com/api/v1/socket"
+          "placeholder": "wss://app.band.ai/api/v1/socket"
         },
         "restUrl": {
           "label": "REST URL",
-          "placeholder": "https://app.thenvoi.com"
+          "placeholder": "https://app.band.ai"
         }
       }
     }
@@ -188,12 +188,12 @@
     "BAND_WS_URL": {
       "description": "Band WebSocket endpoint",
       "required": false,
-      "default": "wss://app.thenvoi.com/api/v1/socket"
+      "default": "wss://app.band.ai/api/v1/socket"
     },
     "BAND_REST_URL": {
       "description": "Band REST API endpoint",
       "required": false,
-      "default": "https://app.thenvoi.com"
+      "default": "https://app.band.ai"
     }
   }
 }

@@ -14,7 +14,28 @@ export interface AgentConfigResult extends AgentCredentials {
 }
 
 const DEFAULT_CONFIG_PATH = "./agent_config.yaml";
-const DEFAULT_ENV_PREFIX = "THENVOI_";
+const DEFAULT_ENV_PREFIX = "BAND_";
+const LEGACY_ENV_PREFIX = "THENVOI_";
+
+// Once-per-process dedup for legacy env-var deprecation warnings. Warnings name
+// the old variable and its Band replacement only — never a secret value.
+const _warnedLegacyEnvVars = new Set<string>();
+
+function readBandFirstEnv(
+  env: Record<string, string | undefined>,
+  field: string,
+): string | undefined {
+  const bandVar = `${DEFAULT_ENV_PREFIX}${field}`;
+  const bandValue = env[bandVar];
+  if (bandValue !== undefined) return bandValue;
+  const legacyVar = `${LEGACY_ENV_PREFIX}${field}`;
+  const legacyValue = env[legacyVar];
+  if (legacyValue !== undefined && !_warnedLegacyEnvVars.has(legacyVar)) {
+    _warnedLegacyEnvVars.add(legacyVar);
+    console.warn(`[band] ${legacyVar} is deprecated; use ${bandVar} instead`);
+  }
+  return legacyValue;
+}
 
 const REQUIRED_FIELDS = ["agent_id", "api_key"] as const;
 const UNSAFE_KEYS = new Set(["__proto__", "constructor", "prototype", "toString", "valueOf"]);
@@ -125,30 +146,49 @@ export function loadAgentConfig(
   return toAgentConfigResult(section, sourceLabel);
 }
 
-/** Load agent credentials from environment variables (prefix defaults to `THENVOI_`). */
+/**
+ * Load agent credentials from environment variables. With no explicit prefix the
+ * default is `BAND_` with a per-field fallback to the legacy `THENVOI_` variable
+ * (Band wins independently for each of AGENT_ID/API_KEY/WS_URL/REST_URL, and each
+ * legacy variable used warns once per process). An explicit prefix — including an
+ * empty string — is used exactly, with no fallback or warning.
+ */
 export function loadAgentConfigFromEnv(
   options?: LoadAgentConfigFromEnvOptions,
 ): AgentCredentials {
   const env = options?.env ?? process.env;
-  const prefix = options?.prefix === undefined
-    ? DEFAULT_ENV_PREFIX
-    : options.prefix === "" || options.prefix.endsWith("_")
+
+  let section: Record<string, unknown>;
+  let requiredHint: string;
+  if (options?.prefix === undefined) {
+    // Band-first default with per-field legacy fallback + once-per-process warnings.
+    section = normalizeKeys({
+      agent_id: readBandFirstEnv(env, "AGENT_ID"),
+      api_key: readBandFirstEnv(env, "API_KEY"),
+      ws_url: readBandFirstEnv(env, "WS_URL"),
+      rest_url: readBandFirstEnv(env, "REST_URL"),
+    });
+    requiredHint = `${DEFAULT_ENV_PREFIX}AGENT_ID and ${DEFAULT_ENV_PREFIX}API_KEY (legacy ${LEGACY_ENV_PREFIX}* still accepted)`;
+  } else {
+    // Explicit prefix is exact — no fallback, no warning; empty prefix allowed.
+    const prefix = options.prefix === "" || options.prefix.endsWith("_")
       ? options.prefix
       : `${options.prefix}_`;
-
-  const section = normalizeKeys({
-    agent_id: env[`${prefix}AGENT_ID`],
-    api_key: env[`${prefix}API_KEY`],
-    ws_url: env[`${prefix}WS_URL`],
-    rest_url: env[`${prefix}REST_URL`],
-  });
+    section = normalizeKeys({
+      agent_id: env[`${prefix}AGENT_ID`],
+      api_key: env[`${prefix}API_KEY`],
+      ws_url: env[`${prefix}WS_URL`],
+      rest_url: env[`${prefix}REST_URL`],
+    });
+    requiredHint = `${prefix}AGENT_ID and ${prefix}API_KEY`;
+  }
 
   try {
-    return toAgentConfigResult(section, `environment variables (${prefix}AGENT_ID, ${prefix}API_KEY)`);
+    return toAgentConfigResult(section, `environment variables (${requiredHint})`);
   } catch (error) {
     if (error instanceof ValidationError) {
       throw new ValidationError(
-        `${error.message}. Set ${prefix}AGENT_ID and ${prefix}API_KEY, or use loadAgentConfig() for agent_config.yaml.`,
+        `${error.message}. Set ${requiredHint}, or use loadAgentConfig() for agent_config.yaml.`,
       );
     }
     throw error;

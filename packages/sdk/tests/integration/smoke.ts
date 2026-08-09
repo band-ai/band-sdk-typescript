@@ -9,7 +9,7 @@ import { BandClient } from "@band-ai/rest-client";
 import { Agent, GenericAdapter, loadAgentConfig } from "../../src/index";
 import { FernRestAdapter } from "../../src/rest";
 
-const DEFAULT_REST_URL = "https://app.thenvoi.com/";
+const DEFAULT_REST_URL = "https://app.band.ai/";
 
 async function main() {
   const config = loadAgentConfig("basic_agent");
