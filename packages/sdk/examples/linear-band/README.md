@@ -35,7 +35,7 @@ Common optional settings:
 LINEAR_BAND_STATE_DB=.linear-thenvoi-example.sqlite
 LINEAR_BAND_ROOM_STRATEGY=issue
 LINEAR_BAND_WRITEBACK_MODE=activity_stream
-BAND_HOST_AGENT_HANDLE=your-org/linear-orchestrator
+THENVOI_HOST_AGENT_HANDLE=your-org/linear-orchestrator
 CODEX_MODEL=gpt-5.3-codex
 PORT=8787
 ```
@@ -95,13 +95,13 @@ docker run --env-file .env -p 8787:8787 band-linear-bridge
 ```
 
 The SQLite state database is created inside the container at the path set by
-`LINEAR_THENVOI_STATE_DB` (defaults to `.linear-thenvoi-example.sqlite`).
+`LINEAR_BAND_STATE_DB` (defaults to `.linear-thenvoi-example.sqlite`).
 To persist it across container restarts, mount a volume:
 
 ```bash
 docker run --env-file .env -p 8787:8787 \
   -v linear-bridge-data:/app/packages/sdk/data \
-  -e LINEAR_THENVOI_STATE_DB=/app/packages/sdk/data/state.sqlite \
+  -e LINEAR_BAND_STATE_DB=/app/packages/sdk/data/state.sqlite \
   band-linear-bridge
 ```
 

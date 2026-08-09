@@ -333,7 +333,7 @@ Working examples live in `examples/`. Each folder is self-contained.
 | `examples/parlant/` | Parlant | Guideline-based behavior |
 | `examples/a2a-bridge/` | A2A | Bridge to external A2A agents |
 | `examples/a2a-gateway/` | A2A Gateway | Expose Thenvoi peers as A2A endpoints |
-| `examples/linear-thenvoi/` | Linear | Bridge server with webhook handling |
+| `examples/linear-band/` | Linear | Bridge server with webhook handling |
 
 ```bash
 # Clone and run
