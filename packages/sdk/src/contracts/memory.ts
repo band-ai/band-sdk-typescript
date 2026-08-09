@@ -45,12 +45,12 @@ export const MEMORY_SEGMENTS = [
   "tool", // Tool usage or task procedures
   "guideline", // Behavioral rules or policies
 ] as const;
-/** Visibility scope for `thenvoi_store_memory`. */
+/** Visibility scope for `band_store_memory`. */
 export const MEMORY_STORE_SCOPES = [
   "subject", // About one person/agent; requires subject_id
   "organization", // Shared org-wide
 ] as const;
-/** Scope filter for `thenvoi_list_memories`. */
+/** Scope filter for `band_list_memories`. */
 export const MEMORY_LIST_SCOPES = [
   "subject", // Subject-scoped memories only
   "organization", // Organization-scoped memories only
@@ -59,8 +59,8 @@ export const MEMORY_LIST_SCOPES = [
 /** Lifecycle state; list filter and set by supersede/archive tools. */
 export const MEMORY_STATUSES = [
   "active", // Normal, visible memories
-  "superseded", // Outdated; soft-deleted via thenvoi_supersede_memory
-  "archived", // Hidden but preserved via thenvoi_archive_memory
+  "superseded", // Outdated; soft-deleted via band_supersede_memory
+  "archived", // Hidden but preserved via band_archive_memory
   "all", // Any status (no filter)
 ] as const;
 

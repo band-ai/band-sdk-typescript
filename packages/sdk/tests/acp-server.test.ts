@@ -17,10 +17,10 @@ describe("ACPServer", () => {
         return { ok: true }
       },
       listChatParticipants: async () => [
-        { id: "agent-1", name: "Thenvoi Agent", type: "Agent", handle: "thenvoi" },
+        { id: "agent-1", name: "Band Agent", type: "Agent", handle: "band" },
         { id: "peer-1", name: "Codex", type: "Agent", handle: "codex" },
       ],
-    }, { id: "agent-1", name: "Thenvoi Agent", description: null })
+    }, { id: "agent-1", name: "Band Agent", description: null })
 
     const adapter = new BandACPServerAdapter({
       bandRest: rest,
@@ -104,7 +104,7 @@ describe("ACPServer", () => {
     const rest = new FakeRestApi({
       createChat: async () => ({ id: "room-1" }),
       createChatEvent: async () => ({ ok: true }),
-    }, { id: "agent-1", name: "Thenvoi Agent", description: null })
+    }, { id: "agent-1", name: "Band Agent", description: null })
 
     const adapter = new BandACPServerAdapter({
       bandRest: rest,

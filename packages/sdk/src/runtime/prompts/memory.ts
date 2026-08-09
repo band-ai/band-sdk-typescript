@@ -13,10 +13,10 @@ import { TOOL_MODELS } from "../tools/schemas";
 const MEMORY_INTRO = `## Memory Tools
 
 You have access to memory tools for storing and retrieving information
-across conversations. Use \`thenvoi_store_memory\` to persist important
-information and \`thenvoi_list_memories\` / \`thenvoi_get_memory\` to recall it.
-Use \`thenvoi_supersede_memory\` to mark outdated memories and
-\`thenvoi_archive_memory\` to hide memories that should be preserved.`;
+across conversations. Use \`band_store_memory\` to persist important
+information and \`band_list_memories\` / \`band_get_memory\` to recall it.
+Use \`band_supersede_memory\` to mark outdated memories and
+\`band_archive_memory\` to hide memories that should be preserved.`;
 
 type MemoryTypeForSystem<S extends MemorySystem> = (typeof MEMORY_SYSTEM_TYPES)[S][number];
 
@@ -61,7 +61,7 @@ const MEMORY_COMMON_PATTERNS = [
 
 const MEMORY_SCOPE_GUIDANCE = `Prefer \`scope="${MEMORY_STORE_SCOPE.subject}"\` whenever the memory is about a specific person or agent, so it
 stays attached to that subject rather than leaking org-wide. Storing with \`scope="${MEMORY_STORE_SCOPE.subject}"\` requires a
-real \`subject_id\` UUID, so resolve it first via \`thenvoi_lookup_peers\` or the participant list.
+real \`subject_id\` UUID, so resolve it first via \`band_lookup_peers\` or the participant list.
 Reserve \`scope="${MEMORY_STORE_SCOPE.organization}"\` for knowledge that is genuinely shared across the whole organization and
 is not about any one subject.`;
 
@@ -76,12 +76,12 @@ function memoryTypeLines(): string {
 }
 
 function buildMemorySection(): string {
-  const storeMemoryProps = TOOL_MODELS.thenvoi_store_memory.properties;
+  const storeMemoryProps = TOOL_MODELS.band_store_memory.properties;
   const systems = storeMemoryProps.system.enum as readonly string[];
   const segments = storeMemoryProps.segment.enum as readonly string[];
   const scopes = storeMemoryProps.scope.enum as readonly string[];
 
-  const fieldRules = `When calling \`thenvoi_store_memory\`, the \`system\`, \`type\`, \`segment\`, and \`scope\` fields
+  const fieldRules = `When calling \`band_store_memory\`, the \`system\`, \`type\`, \`segment\`, and \`scope\` fields
 must use these exact values (case-sensitive):
 
 - **system**: ${quoteChoices(systems)}

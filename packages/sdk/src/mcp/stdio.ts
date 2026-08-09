@@ -10,6 +10,7 @@ import {
   buildSingleContextRegistrations,
 } from "./registrations";
 import { buildZodShape } from "./zod";
+import { MCP_SERVER_NAME } from "../runtime/tools/schemas";
 
 export interface BandMcpStdioServerOptions {
   tools: AdapterToolsProtocol | ((roomId: string) => AdapterToolsProtocol | undefined);
@@ -57,7 +58,7 @@ export class BandMcpStdioServer {
     const { z } = await import("zod");
 
     const mcpServer = new McpServer({
-      name: this.options.name ?? "thenvoi",
+      name: this.options.name ?? MCP_SERVER_NAME,
       version: "1.0.0",
     });
 

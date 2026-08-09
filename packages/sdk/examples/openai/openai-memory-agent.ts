@@ -30,7 +30,7 @@ export function createOpenAIMemoryAgent(
   const adapter = new OpenAIAdapter({
     openAIModel: options.model ?? "gpt-4o",
     apiKey: options.apiKey,
-    includeMemoryTools: true, // exposes thenvoi_store_memory, thenvoi_list_memories, etc.
+    includeMemoryTools: true, // exposes band_store_memory, band_list_memories, etc.
     enableExecutionReporting: true, // optional: show tool activity in chat
     systemPrompt: renderSystemPrompt({
       customSection: CUSTOM_SECTION,

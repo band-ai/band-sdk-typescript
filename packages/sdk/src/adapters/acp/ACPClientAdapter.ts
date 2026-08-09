@@ -17,6 +17,7 @@ import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import type { PlatformMessage } from "../../runtime/types";
 import type { McpToolRegistration } from "../../mcp/registrations";
+import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
 import { BandMcpServer } from "../../mcp/server";
 import { BandMcpSseServer } from "../../mcp/sse";
 import {
@@ -357,7 +358,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
       mcpServers.push({
         type: "http",
-        name: "thenvoi",
+        name: MCP_SERVER_NAME,
         url,
         headers: [],
       })
@@ -372,7 +373,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
       mcpServers.push({
         type: "sse",
-        name: "thenvoi",
+        name: MCP_SERVER_NAME,
         url,
         headers: [],
       })

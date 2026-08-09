@@ -5,7 +5,7 @@ import { NoopLogger } from "../../core/logger";
 import { UnsupportedFeatureError } from "../../core/errors";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import { mcpToolNames } from "../../runtime/tools/schemas";
+import { mcpToolNames, MCP_SERVER_NAME } from "../../runtime/tools/schemas";
 import { buildConversationPrompt } from "../shared/conversationPrompt";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { extractClaudeSessionId } from "../../converters/claude-sdk";
@@ -146,7 +146,7 @@ const bandMcpBridgeFactory = new LazyAsyncValue<BandMcpBridgeFactory>({
 
       return {
         serverConfig: createSdkMcpServer({
-          name: "thenvoi",
+          name: MCP_SERVER_NAME,
           tools: toolDefinitions,
         }),
         allowedTools: mcpToolNames(new Set(registrations.map((registration) => registration.name))),
@@ -270,14 +270,14 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
 
     if (this.mcpBridge && this.enableMcpTools) {
       options.mcpServers = {
-        thenvoi: this.mcpBridge.serverConfig,
+        [MCP_SERVER_NAME]: this.mcpBridge.serverConfig,
       };
       options.allowedTools = this.mcpBridge.allowedTools;
       this.roomTools.set(context.roomId, tools);
     }
 
     const roomToolHint = this.enableMcpTools
-      ? `\n\n[Tooling note]: For any mcp__thenvoi__* tool call, pass room_id="${context.roomId}".`
+      ? `\n\n[Tooling note]: For any mcp__band__* tool call, pass room_id="${context.roomId}".`
       : "";
 
     const query = queryFn({

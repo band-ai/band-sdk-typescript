@@ -86,7 +86,7 @@ class ToolSchemaFakeTools extends FakeTools {
       {
         type: "function",
         function: {
-          name: "thenvoi_send_message",
+          name: "band_send_message",
           description: "Send a message to the room.",
           parameters: {
             type: "object",
@@ -165,7 +165,7 @@ describe("CodexAdapter", () => {
             threadId: "thread-1",
             turnId: "turn-1",
             callId: "call-platform",
-            tool: "thenvoi_send_message",
+            tool: "band_send_message",
             arguments: {
               content: "hello",
               mentions: ["@user"],
@@ -272,7 +272,7 @@ describe("CodexAdapter", () => {
       sandbox: "workspace-write",
       developerInstructions: expect.stringContaining("Coordinate room work and use tools."),
       dynamicTools: expect.arrayContaining([
-        expect.objectContaining({ name: "thenvoi_send_message" }),
+        expect.objectContaining({ name: "band_send_message" }),
         expect.objectContaining({ name: "post_action" }),
       ]),
     });
@@ -290,7 +290,7 @@ describe("CodexAdapter", () => {
 
     expect(tools.toolCalls).toEqual([
       {
-        name: "thenvoi_send_message",
+        name: "band_send_message",
         args: {
           content: "hello",
           mentions: ["@user"],
@@ -301,7 +301,7 @@ describe("CodexAdapter", () => {
       {
         id: 1,
         result: {
-          contentItems: [{ type: "inputText", text: "{\"ok\":true,\"tool\":\"thenvoi_send_message\"}" }],
+          contentItems: [{ type: "inputText", text: "{\"ok\":true,\"tool\":\"band_send_message\"}" }],
           success: true,
         },
       },
@@ -554,7 +554,7 @@ describe("CodexAdapter", () => {
       : "";
 
     expect(developerInstructions).toContain("Linear policy: always post_thought before complete_session.");
-    expect(developerInstructions).toContain("Use `thenvoi_send_message(content, mentions)` to respond.");
+    expect(developerInstructions).toContain("Use `band_send_message(content, mentions)` to respond.");
   });
 
   it("handles local slash commands without starting a turn", async () => {
@@ -649,7 +649,7 @@ describe("CodexAdapter", () => {
           id: 1,
           method: "item/tool/call",
           params: {
-            tool: "thenvoi_send_message",
+            tool: "band_send_message",
             arguments: {
               content: "hello",
             },

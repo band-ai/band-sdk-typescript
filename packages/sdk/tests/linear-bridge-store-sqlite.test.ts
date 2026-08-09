@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createSqliteSessionRoomStore, type SessionRoomStore } from "../src/linear";
 
 async function createStore(): Promise<{ store: SessionRoomStore; cleanup: () => Promise<void> }> {
-  const dir = await mkdtemp(join(tmpdir(), "thenvoi-linear-store-"));
+  const dir = await mkdtemp(join(tmpdir(), "band-linear-store-"));
   const store = createSqliteSessionRoomStore(join(dir, "session-map.sqlite"));
 
   return {
@@ -133,7 +133,7 @@ describe("sqlite session room store", () => {
       bandRoomId: "room-1",
       expectedContent: "Bootstrap me",
       messageType: "task",
-      metadata: { linear_bridge: "thenvoi" },
+      metadata: { linear_bridge: "band" },
       createdAt: "2026-03-03T00:00:00.000Z",
       expiresAt: "2099-03-03T00:10:00.000Z",
     });
@@ -145,7 +145,7 @@ describe("sqlite session room store", () => {
         bandRoomId: "room-1",
         expectedContent: "Bootstrap me",
         messageType: "task",
-        metadata: { linear_bridge: "thenvoi" },
+        metadata: { linear_bridge: "band" },
         createdAt: "2026-03-03T00:00:00.000Z",
         expiresAt: "2099-03-03T00:10:00.000Z",
       },
