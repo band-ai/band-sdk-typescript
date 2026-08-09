@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.11](https://github.com/band-ai/band-sdk-typescript/compare/openclaw-channel-band-v0.1.10...openclaw-channel-band-v0.1.11) (2026-08-09)
+
+
+### Bug Fixes
+
+* **release:** point package repository URLs at band-ai/band-sdk-typescript ([#154](https://github.com/band-ai/band-sdk-typescript/issues/154)) ([09acead](https://github.com/band-ai/band-sdk-typescript/commit/09acead90200c7904eb8ba81aa4fe0e196ad6031))
+
 ## [0.1.10](https://github.com/thenvoi/thenvoi-sdk-typescript/compare/openclaw-channel-band-v0.1.9...openclaw-channel-band-v0.1.10) (2026-07-14)
 
 
