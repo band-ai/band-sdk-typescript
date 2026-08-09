@@ -522,6 +522,82 @@ test("release workflow validates independent outputs before package work and rea
   assert.match(openclawPublish.body, /RELEASE_HOLD_REF: refs\/remotes\/origin\/main/);
 });
 
+test("release workflow asserts package contents after README copy and before packing", async () => {
+  const workflow = await readFile(join(root, ".github/workflows/release.yml"), "utf8");
+  const steps = namedWorkflowSteps(workflow);
+  const step = (name) => steps.find((candidate) => candidate.name === name);
+  const readmeCopy = step("Copy README into SDK package");
+  const sdkContents = step("Assert SDK package contents");
+  const openclawContents = step("Assert OpenClaw package contents");
+  const sdkPack = step("Pack SDK (@band-ai)");
+  const openclawPack = step("Pack OpenClaw (@band-ai)");
+
+  assert.ok(readmeCopy, "Copy README step must exist");
+  assert.ok(sdkContents, "Assert SDK package contents step must exist");
+  assert.ok(openclawContents, "Assert OpenClaw package contents step must exist");
+  assert.ok(sdkPack);
+  assert.ok(openclawPack);
+
+  // Content assertions run after README copy and before packing
+  assert.ok(readmeCopy.index < sdkContents.index);
+  assert.ok(sdkContents.index < sdkPack.index);
+  assert.ok(openclawContents.index < openclawPack.index);
+
+  // Both invoke the shared script with a file-count floor
+  assert.match(sdkContents.body, /node scripts\/assert-package-contents\.mjs/);
+  assert.match(sdkContents.body, /packages\/sdk/);
+  assert.match(sdkContents.body, /README\.md/);
+  assert.match(openclawContents.body, /node scripts\/assert-package-contents\.mjs/);
+  assert.match(openclawContents.body, /packages\/openclaw/);
+});
+
+test("assert-package-contents rejects missing entries, low file counts, and excluded-but-existing files", async () => {
+  const script = join(root, "scripts/assert-package-contents.mjs");
+  const directory = await mkdtemp(join(tmpdir(), "pkg-contents-"));
+  try {
+    // Setup: a minimal package with dist included and an extra file NOT in "files"
+    await mkdir(join(directory, "dist"), { recursive: true });
+    await writeFile(join(directory, "dist/index.js"), "export {};\n");
+    // extra.json exists on disk but is NOT listed in "files" — npm won't pack it
+    await writeFile(join(directory, "extra.json"), "{}");
+    await writeFile(join(directory, "package.json"), JSON.stringify({
+      name: "test-pkg-contents",
+      version: "0.0.0",
+      files: ["dist"],
+    }));
+
+    // Should pass: dist/index.js is packed, package.json is always packed, floor=1
+    const passResult = spawnSync(process.execPath, [script, directory, "1", "dist/index.js", "package.json"], {
+      encoding: "utf8",
+    });
+    assert.equal(passResult.status, 0, `Expected pass but got: ${passResult.stderr}`);
+
+    // RED regression: extra.json exists on disk but is excluded from "files" —
+    // the guard must reject it as missing from the packlist
+    const failExcluded = spawnSync(process.execPath, [script, directory, "1", "extra.json"], {
+      encoding: "utf8",
+    });
+    assert.notEqual(failExcluded.status, 0, "Guard must reject a file that exists but is excluded from npm packlist");
+    assert.match(failExcluded.stderr, /missing required/i);
+
+    // Should fail when a required entry doesn't exist at all
+    const failMissing = spawnSync(process.execPath, [script, directory, "1", "README.md"], {
+      encoding: "utf8",
+    });
+    assert.notEqual(failMissing.status, 0);
+    assert.match(failMissing.stderr, /missing required/i);
+
+    // Should fail when file count is below the floor
+    const failFloor = spawnSync(process.execPath, [script, directory, "999", "dist/index.js"], {
+      encoding: "utf8",
+    });
+    assert.notEqual(failFloor.status, 0);
+    assert.match(failFloor.stderr, /floor not met/i);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("release workflow pins every action to a full commit SHA", async () => {
   const workflow = await readFile(join(root, ".github/workflows/release.yml"), "utf8");
   const refs = [...workflow.matchAll(/^\s*uses: (\S+?)(?:\s+#.*)?$/gm)].map(
@@ -805,4 +881,17 @@ test("CI uses exact nonempty package filters and selects both packages for contr
     const occurrences = workflow.match(new RegExp(`['\"]${escaped}['\"]`, "g")) ?? [];
     assert.equal(occurrences.length, 2, `${requiredPath} must select both packages`);
   }
+});
+
+test("pnpm overrides live in pnpm-workspace.yaml, not root package.json", async () => {
+  const pkgRaw = await readFile(join(root, "package.json"), "utf8");
+  const pkg = JSON.parse(pkgRaw);
+  assert.equal(pkg.pnpm, undefined, "root package.json must not have a pnpm field (overrides moved to pnpm-workspace.yaml)");
+
+  const workspaceRaw = await readFile(join(root, "pnpm-workspace.yaml"), "utf8");
+  assert.match(workspaceRaw, /^overrides:/m, "pnpm-workspace.yaml must contain an overrides section");
+  // Spot-check a few known overrides
+  assert.match(workspaceRaw, /postcss/);
+  assert.match(workspaceRaw, /protobufjs/);
+  assert.match(workspaceRaw, /fast-uri/);
 });
