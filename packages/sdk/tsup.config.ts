@@ -19,7 +19,7 @@ const EXTERNAL = [
   "@opencode-ai/sdk/server",
   "@opencode-ai/sdk/v2/client",
   "ai",
-  "@thenvoi/rest-client",
+  "@band-ai/rest-client",
   "express",
   "openai",
   "parlant-client",

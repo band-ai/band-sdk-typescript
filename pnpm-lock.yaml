@@ -76,6 +76,9 @@ importers:
       '@anthropic-ai/sdk':
         specifier: '>=0.91.1 <1.0.0'
         version: 0.95.1(zod@3.25.76)
+      '@band-ai/rest-client':
+        specifier: 0.0.118
+        version: 0.0.118
       '@google/adk':
         specifier: '>=0.5.0'
         version: 0.5.0(55a8abe8648e5bd540af85ebee6aa7e1)
@@ -91,9 +94,6 @@ importers:
       '@letta-ai/letta-client':
         specifier: '>=1.7.0'
         version: 1.10.0
-      '@thenvoi/rest-client':
-        specifier: 0.0.113
-        version: 0.0.113
       express:
         specifier: '>=5.2.1'
         version: 5.2.1
@@ -336,6 +336,10 @@ packages:
   '@babel/types@7.29.0':
     resolution: {integrity: sha512-LwdZHpScM4Qz8Xw2iKSzS+cfglZzJGvofQICy7W7v4caru4EaAmyUuO6BGrbyQ2mYV11W0U8j5mBhd14dd3B0A==}
     engines: {node: '>=6.9.0'}
+
+  '@band-ai/rest-client@0.0.118':
+    resolution: {integrity: sha512-psizi+1ASQ89E+PbPIn1N/vTK3DrIzjiGaUWLPM0k9YRkD4PTVpbPcSNLIpm/DY8EPlq2eMwdPvroC5XUiG+yQ==}
+    engines: {node: '>=18.0.0'}
 
   '@bcoe/v8-coverage@1.0.2':
     resolution: {integrity: sha512-6zABk/ECA/QYSCQ1NGiVwwbQerUCZ+TQbp64Q3AgmfNvurHH0j8TtXa1qbShXA6qqkpAj4V5W8pP6mLe1mcMqA==}
@@ -1342,10 +1346,6 @@ packages:
 
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
-
-  '@thenvoi/rest-client@0.0.113':
-    resolution: {integrity: sha512-8s2dH+A/Wo/fQ8g48+5e+Ioo8InI+O3eKcjuIS5k1mmfoejXyZcHPtpUUjOtZ/Qi7ZMqilpJGHymmmlet0PBwA==}
-    engines: {node: '>=18.0.0'}
 
   '@tokenizer/inflate@0.4.1':
     resolution: {integrity: sha512-2mAv+8pkG6GIZiF1kNg1jAjh27IDxEPKwdGul3snfztFerfPGI1LjDezZp3i7BElXompqEtPmoPx6c2wgtWsOA==}
@@ -4370,6 +4370,8 @@ snapshots:
       '@babel/helper-string-parser': 7.27.1
       '@babel/helper-validator-identifier': 7.28.5
 
+  '@band-ai/rest-client@0.0.118': {}
+
   '@bcoe/v8-coverage@1.0.2': {}
 
   '@borewit/text-codec@0.2.2': {}
@@ -5452,8 +5454,6 @@ snapshots:
   '@stablelib/base64@1.0.1': {}
 
   '@standard-schema/spec@1.1.0': {}
-
-  '@thenvoi/rest-client@0.0.113': {}
 
   '@tokenizer/inflate@0.4.1':
     dependencies:

@@ -32,7 +32,7 @@ import {
   DEFAULT_AGENT_TOOLS_CAPABILITIES,
   type AgentToolsCapabilities,
 } from "../contracts/protocols";
-import { ThenvoiClient } from "@thenvoi/rest-client";
+import { BandClient } from "@band-ai/rest-client";
 
 export interface ThenvoiLinkOptions {
   agentId: string;
@@ -119,7 +119,7 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
     const restApi =
       options.restApi ??
       new FernRestAdapter(
-        new ThenvoiClient({
+        new BandClient({
           apiKey: this.apiKey,
           baseUrl: this.restUrl,
         }) as unknown as FernThenvoiClientLike,

@@ -6,7 +6,7 @@ import {
   isDirectExecution,
 } from "../../src/index";
 import { FernRestAdapter } from "../../src/rest";
-import { ThenvoiClient } from "@thenvoi/rest-client";
+import { BandClient } from "@band-ai/rest-client";
 
 export function createA2AGatewayAgent(
   options?: { port?: number; gatewayUrl?: string; authToken?: string },
@@ -16,7 +16,7 @@ export function createA2AGatewayAgent(
   const resolvedRestUrl = overrides?.restUrl
     ?? (overrides?.wsUrl ? deriveDefaultRestUrl(overrides.wsUrl) : undefined);
   const restApi = new FernRestAdapter(
-    new ThenvoiClient({
+    new BandClient({
       apiKey: thenvoiApiKey,
       ...(resolvedRestUrl ? { baseUrl: resolvedRestUrl } : {}),
     }),
