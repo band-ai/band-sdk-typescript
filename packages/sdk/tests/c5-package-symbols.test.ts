@@ -214,12 +214,15 @@ describe("P-C5-2: consumer compile proof (values as value imports)", () => {
     `);
     expect(ok.status).toBe(0);
     const bad = compile("member-old.mts", `
-      import type { A2AGatewayAdapterOptions } from "@band-ai/sdk/adapters";
-      type _Old = Pick<A2AGatewayAdapterOptions, "thenvoiRest">;
-      const _x: _Old = {} as never; void _x;
+      import type { A2AGatewayAdapterOptions, BandACPServerAdapterOptions } from "@band-ai/sdk/adapters";
+      type _OldA2A = Pick<A2AGatewayAdapterOptions, "thenvoiRest">;
+      type _OldAcp = Pick<BandACPServerAdapterOptions, "thenvoiRest">;
+      const _x: _OldA2A = {} as never; const _y: _OldAcp = {} as never; void _x; void _y;
     `);
     expect(bad.status).not.toBe(0);
-    expect(bad.output).toContain("thenvoiRest");
+    // Both renamed option members are proved gone (old name no longer a key).
+    const thenvoiRestErrors = (bad.output.match(/thenvoiRest/g) ?? []).length;
+    expect(thenvoiRestErrors).toBeGreaterThanOrEqual(2);
   });
 
   it("cleanup", () => {
@@ -330,5 +333,31 @@ describe("P-C5-3: release workflow has no package mutation and the hold is prese
 
   it(".release-hold marker exists at the repository root", () => {
     expect(existsSync(join(REPO_ROOT, ".release-hold"))).toBe(true);
+  });
+});
+
+describe("P-C5-2: committed inventory + migration doc cannot drift from the live surface", () => {
+  it("the committed after-surface equals the live dumped surface", () => {
+    const dumped = spawnSync(process.execPath, ["scripts/dump-sdk-surface.mjs", "packages/sdk"], {
+      cwd: REPO_ROOT, encoding: "utf8",
+    });
+    expect(dumped.status, dumped.stderr).toBe(0);
+    const live = JSON.parse(dumped.stdout) as Surface;
+    const committed = JSON.parse(readFileSync(join(MIG_DIR, "c5-surface-after.json"), "utf8")) as Surface;
+    // dump-sdk-surface sorts both sets; committed was produced the same way.
+    expect(committed).toEqual(live);
+  });
+
+  it("regenerating the migration doc from the surfaces produces no change (byte-identical)", () => {
+    const gen = spawnSync(process.execPath, ["scripts/generate-c5-migration-doc.mjs"], {
+      cwd: REPO_ROOT, encoding: "utf8",
+    });
+    expect(gen.status, gen.stderr).toBe(0);
+    const diff = spawnSync("git", [
+      "diff", "--quiet", "--",
+      "docs/migrations/1.0-public-symbol-migration.md",
+      "docs/migrations/c5-surface-after.json",
+    ], { cwd: REPO_ROOT, encoding: "utf8" });
+    expect(diff.status, "committed migration doc/after-surface differ from regeneration").toBe(0);
   });
 });
