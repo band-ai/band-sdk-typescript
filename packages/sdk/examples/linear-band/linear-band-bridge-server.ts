@@ -21,20 +21,7 @@ import {
   type WritebackMode,
 } from "../../src/linear";
 import { FernRestAdapter, type RestApi } from "../../src/rest";
-import { createLinearBandBridgeAgent } from "./linear-band-bridge-agent";
-
-// ── Band-first env with per-field legacy LINEAR_THENVOI_* fallback ──────────
-const _warnedLegacyVars = new Set<string>();
-function readLinearEnv(bandKey: string, legacyKey: string): string | undefined {
-  const bandValue = process.env[bandKey]?.trim();
-  if (bandValue) return bandValue;
-  const legacyValue = process.env[legacyKey]?.trim();
-  if (legacyValue && !_warnedLegacyVars.has(legacyKey)) {
-    _warnedLegacyVars.add(legacyKey);
-    console.warn(`[band] ${legacyKey} is deprecated; use ${bandKey} instead`);
-  }
-  return legacyValue || undefined;
-}
+import { createLinearBandBridgeAgent, readLinearEnv } from "./linear-band-bridge-agent";
 
 interface LinearBandBridgeServerOptions {
   restApi: RestApi;
@@ -239,9 +226,9 @@ function getRequiredEnv(name: string): string {
 }
 
 function resolveBridgeApiKey(logger: Logger): string {
+  const configKeyFromEnv = readLinearEnv("LINEAR_BAND_BRIDGE_AGENT_CONFIG_KEY", "LINEAR_THENVOI_BRIDGE_AGENT_CONFIG_KEY");
   const configuredKeys = [
-    process.env.LINEAR_BAND_BRIDGE_AGENT_CONFIG_KEY?.trim(),
-    process.env.LINEAR_THENVOI_BRIDGE_AGENT_CONFIG_KEY?.trim(),
+    configKeyFromEnv,
     "linear_band_bridge",
     "linear_thenvoi_bridge",
   ].filter((value): value is string => Boolean(value && value.length > 0));
@@ -264,7 +251,7 @@ function resolveBridgeApiKey(logger: Logger): string {
   }
 
   throw new Error(
-    "Missing API key. Set THENVOI_API_KEY or configure linear_thenvoi_bridge in agent_config.yaml.",
+    "Missing API key. Set THENVOI_API_KEY or configure linear_band_bridge (legacy: linear_thenvoi_bridge) in agent_config.yaml.",
   );
 }
 
@@ -614,7 +601,7 @@ async function runLinearBandBridgeServer(): Promise<void> {
     embedBridgeAgent,
     embeddedBridgeConfig,
   });
-  const stateDbPath = process.env.LINEAR_BAND_STATE_DB ?? process.env.LINEAR_THENVOI_STATE_DB ?? ".linear-thenvoi-example.sqlite";
+  const stateDbPath = readLinearEnv("LINEAR_BAND_STATE_DB", "LINEAR_THENVOI_STATE_DB") ?? ".linear-thenvoi-example.sqlite";
   const rawRestApi = new FernRestAdapter(new BandClient({
     apiKey: bridgeApiKey,
     baseUrl: process.env.THENVOI_REST_URL ?? "https://app.thenvoi.com",
@@ -690,7 +677,7 @@ async function runLinearBandBridgeServer(): Promise<void> {
     logger.info("linear_thenvoi_bridge.server_started", {
       port,
       mode: embedBridgeAgent ? "embedded_bridge_agent" : "agent_rest_adapter",
-      bandRestUrl: process.env.THENVOI_REST_URL ?? "https://app.thenvoi.com",
+      thenvoiRestUrl: process.env.THENVOI_REST_URL ?? "https://app.thenvoi.com",
       bridgeMinRequestIntervalMs,
     });
   });

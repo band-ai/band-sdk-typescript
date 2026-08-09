@@ -1,5 +1,6 @@
 import {
   Agent,
+  type AgentConfigResult,
   type AgentCreateOptions,
   CodexAdapter,
   type SessionConfig,
@@ -14,6 +15,47 @@ import {
   type SessionRoomStore,
 } from "../../src/linear";
 import type { Logger } from "../../src/core";
+
+// ── Shared Band-first env/config helpers (imported by server) ───────────────
+const _warnedLegacyVars = new Set<string>();
+
+/**
+ * Read an env var with Band-first precedence and once-per-variable legacy
+ * deprecation warning. Shared by agent and server entry paths.
+ */
+export function readLinearEnv(bandKey: string, legacyKey: string): string | undefined {
+  const bandValue = process.env[bandKey]?.trim();
+  if (bandValue) return bandValue;
+  const legacyValue = process.env[legacyKey]?.trim();
+  if (legacyValue && !_warnedLegacyVars.has(legacyKey)) {
+    _warnedLegacyVars.add(legacyKey);
+    console.warn(`[band] ${legacyKey} is deprecated; use ${bandKey} instead`);
+  }
+  return legacyValue || undefined;
+}
+
+const _warnedLegacyConfigKey = new Set<string>();
+
+/**
+ * Load agent config trying Band key first, then legacy Thenvoi key with a
+ * once-per-key deprecation warning. Shared by agent and server entry paths.
+ */
+export function loadBandLinearConfig(
+  bandKey: string,
+  legacyKey: string,
+): AgentConfigResult {
+  try {
+    return loadAgentConfig(bandKey);
+  } catch {
+    // Band key not found — try legacy
+  }
+  const config = loadAgentConfig(legacyKey);
+  if (!_warnedLegacyConfigKey.has(legacyKey)) {
+    _warnedLegacyConfigKey.add(legacyKey);
+    console.warn(`[band] YAML config key "${legacyKey}" is deprecated; use "${bandKey}" instead`);
+  }
+  return config;
+}
 
 interface LinearBandBridgeAgentOptions {
   agentId?: string;
@@ -94,7 +136,7 @@ function createLinearBandBridgeAgentWithStore(
 
 function createLinearBandBridgeStore(stateDbPath?: string): SessionRoomStore {
   return createSqliteSessionRoomStore(
-    stateDbPath ?? process.env.LINEAR_BAND_STATE_DB ?? process.env.LINEAR_THENVOI_STATE_DB ?? ".linear-thenvoi-example.sqlite",
+    stateDbPath ?? readLinearEnv("LINEAR_BAND_STATE_DB", "LINEAR_THENVOI_STATE_DB") ?? ".linear-thenvoi-example.sqlite",
   );
 }
 
@@ -231,7 +273,7 @@ async function runLinearBandBridgeDirect(options?: LinearBandBridgeAgentOptions)
 }
 
 if (isDirectExecution(import.meta.url)) {
-  const config = loadAgentConfig("linear_band_bridge");
+  const config = loadBandLinearConfig("linear_band_bridge", "linear_thenvoi_bridge");
   void runLinearBandBridgeDirect({
     ...config,
   });
