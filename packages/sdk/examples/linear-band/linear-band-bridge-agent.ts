@@ -36,12 +36,6 @@ export function readLinearEnv(bandKey: string, legacyKey: string): string | unde
   return legacyValue || undefined;
 }
 
-/** Reset warning dedup state — for test isolation only. */
-export function _resetWarningState(): void {
-  _warnedLegacyVars.clear();
-  _warnedLegacyConfigKey.clear();
-}
-
 const _warnedLegacyConfigKey = new Set<string>();
 
 /**
