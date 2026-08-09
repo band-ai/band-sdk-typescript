@@ -225,24 +225,39 @@ function getRequiredEnv(name: string): string {
   return value;
 }
 
-function resolveBridgeApiKey(logger: Logger): string {
+const CANONICAL_LEGACY_CONFIG_KEYS = new Set(["linear_thenvoi_bridge", "linear_thenvoi_transport"]);
+
+export function resolveBridgeApiKey(logger: Logger, configPath?: string): string {
   const configKeyFromEnv = readLinearEnv("LINEAR_BAND_BRIDGE_AGENT_CONFIG_KEY", "LINEAR_THENVOI_BRIDGE_AGENT_CONFIG_KEY");
 
   // If an explicit key is configured, use it exactly
   if (configKeyFromEnv) {
-    try {
-      const config = loadAgentConfig(configKeyFromEnv);
-      if (config.apiKey?.trim()) {
-        logger.info("linear_thenvoi_bridge.using_agent_config_key", { configKey: configKeyFromEnv });
-        return config.apiKey;
+    // If it's a canonical legacy key, route through compat loader for warning
+    if (CANONICAL_LEGACY_CONFIG_KEYS.has(configKeyFromEnv)) {
+      try {
+        const config = loadBandLinearConfig(configKeyFromEnv.replace("thenvoi", "band"), configKeyFromEnv, configPath);
+        if (config.apiKey?.trim()) {
+          logger.info("linear_thenvoi_bridge.using_agent_config_key", { configKey: configKeyFromEnv });
+          return config.apiKey;
+        }
+      } catch {
+        // fall through to env fallback
       }
-    } catch {
-      // explicit key failed — fall through to env fallback
+    } else {
+      try {
+        const config = loadAgentConfig(configKeyFromEnv, configPath);
+        if (config.apiKey?.trim()) {
+          logger.info("linear_thenvoi_bridge.using_agent_config_key", { configKey: configKeyFromEnv });
+          return config.apiKey;
+        }
+      } catch {
+        // explicit key failed — fall through to env fallback
+      }
     }
   } else {
     // No explicit key — use Band-first with legacy fallback
     try {
-      const config = loadBandLinearConfig("linear_band_bridge", "linear_thenvoi_bridge");
+      const config = loadBandLinearConfig("linear_band_bridge", "linear_thenvoi_bridge", configPath);
       if (config.apiKey?.trim()) {
         logger.info("linear_thenvoi_bridge.using_agent_config_key", { configKey: "linear_band_bridge" });
         return config.apiKey;
@@ -262,14 +277,19 @@ function resolveBridgeApiKey(logger: Logger): string {
   );
 }
 
-function resolveEmbeddedBridgeConfig(): AgentConfigResult {
+
+export function resolveEmbeddedBridgeConfig(configPath?: string): AgentConfigResult {
   const explicitKey = readLinearEnv("LINEAR_BAND_BRIDGE_RUNTIME_CONFIG_KEY", "LINEAR_THENVOI_BRIDGE_RUNTIME_CONFIG_KEY");
   if (explicitKey) {
-    // Explicitly configured — use exact key, no fallback
-    return loadAgentConfig(explicitKey);
+    // If the explicit key is a known legacy key, route through the compat loader so it warns
+    if (CANONICAL_LEGACY_CONFIG_KEYS.has(explicitKey)) {
+      return loadBandLinearConfig(explicitKey.replace("thenvoi", "band"), explicitKey, configPath);
+    }
+    // Arbitrary custom key — use exact, no fallback
+    return loadAgentConfig(explicitKey, configPath);
   }
   // Default — use Band-first with legacy fallback
-  return loadBandLinearConfig("linear_band_bridge", "linear_thenvoi_bridge");
+  return loadBandLinearConfig("linear_band_bridge", "linear_thenvoi_bridge", configPath);
 }
 
 export function resolveRestApiKeyForMode(input: {
