@@ -8,6 +8,7 @@ import {
   buildSingleContextRegistrations,
 } from "./registrations";
 import { buildZodShape } from "./zod";
+import { MCP_SERVER_NAME } from "../runtime/tools/schemas";
 
 export interface BandMcpServerOptions {
   /** Single tools instance (no room scoping) or a resolver function for room-scoped tools. */
@@ -96,7 +97,7 @@ export class BandMcpServer {
     const { randomUUID } = await import("node:crypto");
     const { z } = await import("zod");
 
-    const serverName = this.options.name ?? "thenvoi";
+    const serverName = this.options.name ?? MCP_SERVER_NAME;
 
     const app = express();
     app.use(express.json());

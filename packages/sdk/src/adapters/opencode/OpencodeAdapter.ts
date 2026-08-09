@@ -17,6 +17,7 @@ import {
 } from "../../mcp/backends";
 import type { McpToolRegistration } from "../../mcp/registrations";
 import { errorResult, successResult } from "../../mcp/registrations";
+import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
 import { asErrorMessage, asOptionalRecord } from "../shared/coercion";
 import {
   type OpencodeSessionState,
@@ -30,8 +31,8 @@ import {
 } from "./client";
 
 const OPENCODE_SYSTEM_NOTE = [
-  "Responses are relayed back into the Thenvoi room by the adapter.",
-  "Use the thenvoi_ prefixed tools (for example thenvoi_send_message) for Thenvoi platform actions when available.",
+  "Responses are relayed back into the Band room by the adapter.",
+  "Use the band_ prefixed tools (for example band_send_message) for Band platform actions when available.",
   "When you need approval or clarification, ask clearly and wait for the user's next room message.",
 ].join("\n");
 
@@ -136,7 +137,7 @@ function withDefaults(config?: OpencodeAdapterConfig): Required<OpencodeAdapterC
     questionMode: "manual",
     questionWaitTimeoutMs: 300_000,
     sessionTitlePrefix: "Band",
-    mcpServerName: "thenvoi",
+    mcpServerName: MCP_SERVER_NAME,
     ...config,
   };
 }

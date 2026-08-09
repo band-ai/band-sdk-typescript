@@ -11,6 +11,7 @@ import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
+import { SEND_MESSAGE_TOOL_NAME, SEND_EVENT_TOOL_NAME } from "../../runtime/tools/schemas";
 import {
   CustomToolExecutionError,
   CustomToolValidationError,
@@ -122,8 +123,8 @@ type ThoughtLikeItem =
   | ReviewModeItem;
 
 const SILENT_REPORTING_TOOLS = new Set([
-  "thenvoi_send_message",
-  "thenvoi_send_event",
+  SEND_MESSAGE_TOOL_NAME,
+  SEND_EVENT_TOOL_NAME,
 ]);
 
 export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProtocol> {
@@ -814,7 +815,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
           }), "tool_result");
         }
 
-        return !isError && toolName === "thenvoi_send_message";
+        return !isError && toolName === SEND_MESSAGE_TOOL_NAME;
       } catch (error) {
         const output = {
           ok: false,

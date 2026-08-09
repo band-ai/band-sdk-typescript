@@ -8,6 +8,7 @@ import {
   buildSingleContextRegistrations,
 } from "./registrations";
 import { buildZodShape } from "./zod";
+import { MCP_SERVER_NAME } from "../runtime/tools/schemas";
 
 export interface BandMcpSseServerOptions {
   tools: AdapterToolsProtocol | ((roomId: string) => AdapterToolsProtocol | undefined);
@@ -90,7 +91,7 @@ export class BandMcpSseServer {
     app.get("/sse", async (_req, res) => {
       const transport = new SSEServerTransport("/messages", res)
       const mcpServer = new McpServer({
-        name: this.options.name ?? "thenvoi",
+        name: this.options.name ?? MCP_SERVER_NAME,
         version: "1.0.0",
       })
       registerTools(mcpServer, z, this.registrations)

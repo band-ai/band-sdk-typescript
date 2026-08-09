@@ -44,7 +44,7 @@ describe("LangGraphAdapter", () => {
           {
             type: "function",
             function: {
-              name: "thenvoi_send_message",
+              name: "band_send_message",
               description: "Send a message",
               parameters: {
                 type: "object",
@@ -128,8 +128,8 @@ describe("LangGraphAdapter", () => {
     const graph = {
       streamEvents() {
         return streamFrom([
-          { event: "on_tool_start", name: "thenvoi_send_message" },
-          { event: "on_tool_end", name: "thenvoi_send_message" },
+          { event: "on_tool_start", name: "band_send_message" },
+          { event: "on_tool_end", name: "band_send_message" },
           {
             event: "on_chain_end",
             data: { output: { messages: [["assistant", "streamed reply"]] } },
@@ -199,7 +199,7 @@ describe("LangGraphAdapter", () => {
   it("logs stream event serialization fallbacks instead of swallowing them", async () => {
     const circularEvent: Record<string, unknown> = {
       event: "on_tool_start",
-      name: "thenvoi_send_message",
+      name: "band_send_message",
     };
     circularEvent.self = circularEvent;
 

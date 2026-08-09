@@ -20,11 +20,11 @@ describe("BandACPServerAdapter", () => {
         return { ok: true }
       },
       listChatParticipants: async () => [
-        { id: "agent-1", name: "Thenvoi Agent", type: "Agent", handle: "thenvoi" },
+        { id: "agent-1", name: "Band Agent", type: "Agent", handle: "band" },
         { id: "peer-1", name: "Codex", type: "Agent", handle: "codex" },
         { id: "peer-2", name: "Claude", type: "Agent", handle: "claude" },
       ],
-    }, { id: "agent-1", name: "Thenvoi Agent", description: null })
+    }, { id: "agent-1", name: "Band Agent", description: null })
 
     const adapter = new BandACPServerAdapter({
       bandRest: rest,
@@ -139,7 +139,7 @@ describe("BandACPServerAdapter", () => {
       createChatEvent: async () => {
         throw new Error("bootstrap failed")
       },
-    }, { id: "agent-1", name: "Thenvoi Agent", description: null })
+    }, { id: "agent-1", name: "Band Agent", description: null })
 
     const adapter = new BandACPServerAdapter({
       bandRest: rest,
@@ -170,10 +170,10 @@ describe("BandACPServerAdapter", () => {
           return { ok: true }
         },
         listChatParticipants: async () => [
-          { id: "agent-1", name: "Thenvoi Agent", type: "Agent", handle: "thenvoi" },
+          { id: "agent-1", name: "Band Agent", type: "Agent", handle: "band" },
           { id: "peer-1", name: "Codex", type: "Agent", handle: "codex" },
         ],
-      }, { id: "agent-1", name: "Thenvoi Agent", description: null }),
+      }, { id: "agent-1", name: "Band Agent", description: null }),
       promptCompletionGraceMs: 5,
       responseTimeoutMs: 100,
       slashCommands: {

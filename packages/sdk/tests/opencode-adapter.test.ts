@@ -205,7 +205,7 @@ describe("OpencodeAdapter", () => {
     await pending;
 
     expect(client.registeredMcpServers).toEqual([
-      { name: "thenvoi", url: "http://127.0.0.1:5555/mcp" },
+      { name: "band", url: "http://127.0.0.1:5555/mcp" },
     ]);
     expect(client.promptCalls[0]?.payload.parts).toEqual([{
       type: "text",
@@ -405,7 +405,7 @@ describe("OpencodeAdapter", () => {
     expect(client.createdSessionTitles[0]).toBe("Acme: OpenCode Agent / room-override");
   });
 
-  it("retains the mcpServerName \"thenvoi\" by default", async () => {
+  it("uses the mcpServerName \"band\" by default", async () => {
     const tools = new FakeTools();
     const client = new FakeOpencodeClient();
     createdClients.push(client);
@@ -440,8 +440,8 @@ describe("OpencodeAdapter", () => {
     await pending;
 
     expect(client.registeredMcpServers).toHaveLength(1);
-    expect(client.registeredMcpServers[0]?.name).toBe("thenvoi");
-    expect(client.registeredMcpServers.some((entry) => entry.name === "band")).toBe(false);
-    expect(client.deregisteredMcpServers).not.toContain("band");
+    expect(client.registeredMcpServers[0]?.name).toBe("band");
+    expect(client.registeredMcpServers.some((entry) => entry.name === "thenvoi")).toBe(false);
+    expect(client.deregisteredMcpServers).not.toContain("thenvoi");
   });
 });

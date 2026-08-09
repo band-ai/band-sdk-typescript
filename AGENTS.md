@@ -35,29 +35,29 @@ Adapters' upstream LLM SDKs are declared as **optional peer dependencies**. Inst
 ## Platform Tools
 
 ### Chat Tools
-- `thenvoi_send_message`: send a message to the chat room (requires at least one `@mention`)
-- `thenvoi_send_event`: send a non-message event (`thought`, `error`, `task`, etc.)
-- `thenvoi_add_participant`: add agent/user to room by name (use `thenvoi_lookup_peers` first)
-- `thenvoi_remove_participant`: remove participant from room
-- `thenvoi_get_participants`: list room participants
-- `thenvoi_lookup_peers`: find agents/users available to add
-- `thenvoi_create_chatroom`: create a new chat room (optional `task_id`)
+- `band_send_message`: send a message to the chat room (requires at least one `@mention`)
+- `band_send_event`: send a non-message event (`thought`, `error`, `task`, etc.)
+- `band_add_participant`: add agent/user to room by name (use `band_lookup_peers` first)
+- `band_remove_participant`: remove participant from room
+- `band_get_participants`: list room participants
+- `band_lookup_peers`: find agents/users available to add
+- `band_create_chatroom`: create a new chat room (optional `task_id`)
 
 ### Contact Tools
-- `thenvoi_list_contacts`: list contacts with pagination
-- `thenvoi_add_contact`: send a contact request
-- `thenvoi_remove_contact`: remove an existing contact (by handle or contact id)
-- `thenvoi_list_contact_requests`: list received and sent contact requests
-- `thenvoi_respond_contact_request`: approve, reject, or cancel a contact request
+- `band_list_contacts`: list contacts with pagination
+- `band_add_contact`: send a contact request
+- `band_remove_contact`: remove an existing contact (by handle or contact id)
+- `band_list_contact_requests`: list received and sent contact requests
+- `band_respond_contact_request`: approve, reject, or cancel a contact request
 
 ### Memory Tools
-- `thenvoi_list_memories`: query stored memories with filters (scope, system, type, segment, content_query, status)
-- `thenvoi_store_memory`: store a new memory (content, system, type, segment, scope, optional `subject_id`, metadata)
-- `thenvoi_get_memory`: retrieve a specific memory by id
-- `thenvoi_supersede_memory`: soft-delete an outdated memory (keeps audit trail)
-- `thenvoi_archive_memory`: archive a memory (hide but preserve)
+- `band_list_memories`: query stored memories with filters (scope, system, type, segment, content_query, status)
+- `band_store_memory`: store a new memory (content, system, type, segment, scope, optional `subject_id`, metadata)
+- `band_get_memory`: retrieve a specific memory by id
+- `band_supersede_memory`: soft-delete an outdated memory (keeps audit trail)
+- `band_archive_memory`: archive a memory (hide but preserve)
 
-Tool schemas live in `packages/sdk/src/runtime/tools/schemas.ts` (`TOOL_MODELS`). They are registered automatically on the adapter via `AgentTools` and exposed through MCP with the `mcp__thenvoi__` prefix (`MCP_TOOL_PREFIX`).
+Tool schemas live in `packages/sdk/src/runtime/tools/schemas.ts` (`TOOL_MODELS`). They are registered automatically on the adapter via `AgentTools` and exposed through MCP with the `mcp__band__` prefix (`MCP_TOOL_PREFIX`).
 
 ## REST Client API Pattern
 
@@ -250,7 +250,7 @@ Two MCP entry points:
 - `@band-ai/sdk/mcp`: generic MCP registrations + stdio/SSE/server backends. Use `createBandMcpBackend`, `buildRoomScopedRegistrations`, `buildSingleContextRegistrations`. No Claude-specific dependency required.
 - `@band-ai/sdk/mcp/claude`: bridge for the Claude Agent SDK. `createBandSdkMcpServer(options)` returns an in-process MCP server compatible with `@anthropic-ai/claude-agent-sdk`.
 
-Schema conversion uses Zod (`packages/sdk/src/mcp/zod.ts`). Tools exposed over MCP are prefixed with `mcp__thenvoi__`.
+Schema conversion uses Zod (`packages/sdk/src/mcp/zod.ts`). Tools exposed over MCP are prefixed with `mcp__band__`.
 
 ## Linear Integration
 

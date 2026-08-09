@@ -8,7 +8,7 @@ import { z } from "zod";
 
 import type { AgentIdentity } from "../client/rest/types";
 import type { AdapterToolsProtocol } from "../contracts/protocols";
-import { mcpToolNames } from "../runtime/tools/schemas";
+import { mcpToolNames, MCP_SERVER_NAME } from "../runtime/tools/schemas";
 import {
   buildRoomScopedRegistrations,
   buildSingleContextRegistrations,
@@ -84,7 +84,7 @@ export function createBandSdkMcpServer(
   const MAX_CONTEXT_CACHE_ENTRIES = 100;
 
   const serverConfig = createSdkMcpServer({
-    name: "thenvoi",
+    name: MCP_SERVER_NAME,
     tools: toolDefinitions,
   });
 
