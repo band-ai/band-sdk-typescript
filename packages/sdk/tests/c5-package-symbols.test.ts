@@ -281,25 +281,34 @@ describe("P-C5-4b: source-C4-only member provenance (C4-tip compile proof)", () 
       .toContain("LinearBandBridgeConfig.thenvoiAppBaseUrl->bandAppBaseUrl");
   });
 
+  const FORMATS = ["mts", "cts"] as const;
+
   for (const m of SOURCE_ONLY) {
-    it(`${m.ownerNew}.${m.memberOld}: existed in C4-tip source, absent as ${m.memberNew} there`, () => {
-      expect(m.sourceFile, "source-c4 member needs a sourceFile").toBeTruthy();
-      const iface = c4TipInterface(m.sourceFile!, m.ownerNew);
-      const oldOk = compile("c4-old.mts", `${iface}\ntype _has = Pick<${m.ownerNew}, "${m.memberOld}">;\nexport const _x = 0;\n`);
-      expect(oldOk.status, oldOk.output).toBe(0);
-      const newAbsent = compile("c4-new.mts", `${iface}\ntype _no = Pick<${m.ownerNew}, "${m.memberNew}">;\nexport const _x = 0;\n`);
-      expect(newAbsent.status, "new member must not exist at C4 tip").not.toBe(0);
-      expect(newAbsent.output).toContain(m.memberNew);
+    it(`${m.ownerNew} is a public export at ${m.subpath} in the C4 before surface`, () => {
+      const decls = before.subpaths[m.subpath]?.declarations ?? [];
+      expect(decls, `${m.ownerNew} not a public export at ${m.subpath} in the C4 before surface`).toContain(m.ownerNew);
     });
 
-    it(`${m.ownerNew}.${m.memberNew}: compiles against the candidate dist, old ${m.memberOld} fails`, () => {
-      const spec = specFor(m.subpath);
-      const newOk = compile("cand-new.mts", `import type { ${m.ownerNew} } from "${spec}";\ntype _n = Pick<${m.ownerNew}, "${m.memberNew}">;\n`);
-      expect(newOk.status, newOk.output).toBe(0);
-      const oldBad = compile("cand-old.mts", `import type { ${m.ownerNew} } from "${spec}";\ntype _o = Pick<${m.ownerNew}, "${m.memberOld}">;\n`);
-      expect(oldBad.status).not.toBe(0);
-      expect(oldBad.output).toContain(m.memberOld);
-    });
+    for (const ext of FORMATS) {
+      it(`${m.ownerNew}.${m.memberOld} (.${ext}): existed in C4-tip source, absent as ${m.memberNew}`, () => {
+        expect(m.sourceFile, "source-c4 member needs a sourceFile").toBeTruthy();
+        const iface = c4TipInterface(m.sourceFile!, m.ownerNew);
+        const oldOk = compile(`c4-old.${ext}`, `${iface}\ntype _has = Pick<${m.ownerNew}, "${m.memberOld}">;\nexport const _x = 0;\n`);
+        expect(oldOk.status, `[.${ext}] old member should compile at C4 tip:\n${oldOk.output}`).toBe(0);
+        const newAbsent = compile(`c4-new.${ext}`, `${iface}\ntype _no = Pick<${m.ownerNew}, "${m.memberNew}">;\nexport const _x = 0;\n`);
+        expect(newAbsent.status, `[.${ext}] new member must not exist at C4 tip`).not.toBe(0);
+        expect(newAbsent.output, `[.${ext}] diagnostic should name ${m.memberNew}`).toContain(m.memberNew);
+      });
+
+      it(`${m.ownerNew}.${m.memberNew} (.${ext}): compiles via candidate ${ext === "cts" ? "require/CJS" : "import/ESM"} condition, old ${m.memberOld} fails`, () => {
+        const spec = specFor(m.subpath);
+        const newOk = compile(`cand-new.${ext}`, `import type { ${m.ownerNew} } from "${spec}";\ntype _n = Pick<${m.ownerNew}, "${m.memberNew}">;\nexport const _x = 0;\n`);
+        expect(newOk.status, `[.${ext}] Band member should compile:\n${newOk.output}`).toBe(0);
+        const oldBad = compile(`cand-old.${ext}`, `import type { ${m.ownerNew} } from "${spec}";\ntype _o = Pick<${m.ownerNew}, "${m.memberOld}">;\nexport const _x = 0;\n`);
+        expect(oldBad.status, `[.${ext}] old member must fail (${ext === "cts" ? "require/CJS" : "import/ESM"}-side red-check)`).not.toBe(0);
+        expect(oldBad.output, `[.${ext}] diagnostic should name ${m.memberOld}`).toContain(m.memberOld);
+      });
+    }
   }
 
   it("cleanup", () => {
