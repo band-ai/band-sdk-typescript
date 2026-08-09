@@ -34,10 +34,19 @@ for (const [subpath, e] of Object.entries(before.subpaths)) {
 symbols.push({ old: "LinearThenvoiBridgeConfig", new: "LinearBandBridgeConfig", subpath: "./linear", kind: "type", c3: true });
 symbols.push({ old: "LinearThenvoiBridgeDeps", new: "LinearBandBridgeDeps", subpath: "./linear", kind: "type", c3: true });
 
+// Option-member renames. `provenance` records where the OLD member actually
+// exists, so consumers apply each row to the right surface:
+//   "published-0x" — present in the packed 0.x under the old owner/member; the
+//                    live P-C5-4 fixture migrates and compiles it against 0.x.
+//   "source-c4"    — present only in this repo's source at the C4 tip (renamed
+//                    later than the published 0.x), so it is NOT in @thenvoi/sdk
+//                    0.x; the live fixture excludes it and a dedicated C4-tip
+//                    source compile proof covers it instead.
+// `sourceFile` locates the C4-tip declaration for the source-only proof.
 const members = [
-  { ownerOld: "A2AGatewayAdapterOptions", ownerNew: "A2AGatewayAdapterOptions", memberOld: "thenvoiRest", memberNew: "bandRest", subpath: "./adapters" },
-  { ownerOld: "ThenvoiACPServerAdapterOptions", ownerNew: "BandACPServerAdapterOptions", memberOld: "thenvoiRest", memberNew: "bandRest", subpath: "./adapters" },
-  { ownerOld: "LinearThenvoiBridgeConfig", ownerNew: "LinearBandBridgeConfig", memberOld: "thenvoiAppBaseUrl", memberNew: "bandAppBaseUrl", subpath: "./linear" },
+  { ownerOld: "A2AGatewayAdapterOptions", ownerNew: "A2AGatewayAdapterOptions", memberOld: "thenvoiRest", memberNew: "bandRest", subpath: "./adapters", provenance: "published-0x" },
+  { ownerOld: "ThenvoiACPServerAdapterOptions", ownerNew: "BandACPServerAdapterOptions", memberOld: "thenvoiRest", memberNew: "bandRest", subpath: "./adapters", provenance: "published-0x" },
+  { ownerOld: "LinearBandBridgeConfig", ownerNew: "LinearBandBridgeConfig", memberOld: "thenvoiAppBaseUrl", memberNew: "bandAppBaseUrl", subpath: "./linear", provenance: "source-c4", sourceFile: "packages/sdk/src/integrations/linear/types.ts" },
 ];
 
 const map = {

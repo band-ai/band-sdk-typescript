@@ -158,21 +158,25 @@
       "ownerNew": "A2AGatewayAdapterOptions",
       "memberOld": "thenvoiRest",
       "memberNew": "bandRest",
-      "subpath": "./adapters"
+      "subpath": "./adapters",
+      "provenance": "published-0x"
     },
     {
       "ownerOld": "ThenvoiACPServerAdapterOptions",
       "ownerNew": "BandACPServerAdapterOptions",
       "memberOld": "thenvoiRest",
       "memberNew": "bandRest",
-      "subpath": "./adapters"
+      "subpath": "./adapters",
+      "provenance": "published-0x"
     },
     {
-      "ownerOld": "LinearThenvoiBridgeConfig",
+      "ownerOld": "LinearBandBridgeConfig",
       "ownerNew": "LinearBandBridgeConfig",
       "memberOld": "thenvoiAppBaseUrl",
       "memberNew": "bandAppBaseUrl",
-      "subpath": "./linear"
+      "subpath": "./linear",
+      "provenance": "source-c4",
+      "sourceFile": "packages/sdk/src/integrations/linear/types.ts"
     }
   ]
 }

@@ -34,6 +34,10 @@ const before = JSON.parse(readFileSync(join(migDir, "c5-surface-before-70a2822.j
 const OLD = map.package.old;
 const NEW = map.package.new;
 const tsc = join(sdkRoot, "node_modules/.bin/tsc");
+// Only members present in the packed 0.x participate in the live migration.
+// Source-C4-only members (renamed after the published 0.x) are proven by the
+// dedicated C4-tip source compile test instead.
+const publishedMembers = map.members.filter((m) => m.provenance === "published-0x");
 
 function run(cmd, args, opts = {}) {
   const r = spawnSync(cmd, args, { encoding: "utf8", ...opts });
@@ -49,7 +53,7 @@ function migrate(text) {
   let out = text.split(OLD).join(NEW);
   const syms = [...map.symbols].sort((a, b) => b.old.length - a.old.length);
   for (const s of syms) out = out.replace(new RegExp(`\\b${s.old}\\b`, "g"), s.new);
-  for (const m of map.members) out = out.replace(new RegExp(`\\b${m.memberOld}\\b`, "g"), m.memberNew);
+  for (const m of publishedMembers) out = out.replace(new RegExp(`\\b${m.memberOld}\\b`, "g"), m.memberNew);
   return out;
 }
 
@@ -67,12 +71,12 @@ function oldConsumer() {
   for (const [spec, names] of typeBySpec) lines.push(`import type { ${[...new Set(names)].join(", ")} } from ${JSON.stringify(spec)};`);
   // option-member owners not otherwise imported (interface names unchanged)
   const ownerImports = new Map();
-  map.members.forEach((m) => {
+  publishedMembers.forEach((m) => {
     const spec = OLD + (m.subpath === "." ? "" : m.subpath.slice(1));
     if (!map.symbols.some((s) => s.old === m.ownerOld)) ownerImports.set(spec, [...(ownerImports.get(spec) ?? []), m.ownerOld]);
   });
   for (const [spec, names] of ownerImports) lines.push(`import type { ${[...new Set(names)].join(", ")} } from ${JSON.stringify(spec)};`);
-  map.members.forEach((m, i) => lines.push(`type _M${i} = ${m.ownerOld}["${m.memberOld}"];`));
+  publishedMembers.forEach((m, i) => lines.push(`type _M${i} = ${m.ownerOld}["${m.memberOld}"];`));
   map.symbols.filter((s) => s.kind === "type").forEach((s, i) => lines.push(`type _Ty${i} = ${s.old};`));
   const values = map.symbols.filter((s) => s.kind === "value").map((s) => s.old);
   lines.push(`for (const v of [${values.join(", ")}]) { if (typeof v !== "function" && typeof v !== "object") throw new Error("value missing at runtime"); }`);
@@ -113,7 +117,7 @@ try {
   // 4. build + transform the single fixture
   const oldSrc = oldConsumer();
   const migSrc = migrate(oldSrc);
-  for (const bad of [OLD, "Thenvoi", ...map.members.map((m) => m.memberOld)]) {
+  for (const bad of [OLD, "Thenvoi", ...publishedMembers.map((m) => m.memberOld)]) {
     if (migSrc.includes(bad)) fail(`migrated fixture still contains "${bad}"`);
   }
   console.log("ok: migrated fixture has no @thenvoi/sdk import or legacy identifier");
@@ -123,6 +127,22 @@ try {
   writeFileSync(join(work, "proj/package.json"), JSON.stringify({ name: "c5-consumer", private: true, version: "1.0.0", type: "module" }));
   const peers = Object.entries(pkg.peerDependencies || {}).map(([n, r]) => `${n}@${r}`);
   must("install peers + both SDKs", run("npm", ["install", "--no-audit", "--no-fund", "--loglevel=error", `${OLD}@${oldVer}`, resolve(work, candTgz), ...peers], { cwd: join(work, "proj") }));
+
+  // applicability: every published-0x member's OLD member must actually be
+  // declared in the packed 0.x. Misclassifying a source-c4 member as
+  // published-0x fails here (its old member is absent from the real 0.x).
+  const oldPkgDir = join(work, "proj/node_modules", OLD);
+  const oldDts = readdirSync(oldPkgDir, { recursive: true })
+    .map(String)
+    .filter((f) => f.endsWith(".d.ts") || f.endsWith(".d.cts"))
+    .map((f) => readFileSync(join(oldPkgDir, f), "utf-8"))
+    .join("\n");
+  for (const m of publishedMembers) {
+    if (!new RegExp(`\\b${m.memberOld}\\b`).test(oldDts)) {
+      fail(`published-0x member ${m.ownerOld}.${m.memberOld} is not declared in ${OLD}@${oldVer}; provenance misclassified (should be source-c4)`);
+    }
+  }
+  console.log(`ok: all ${publishedMembers.length} published-0x members are declared in ${OLD}@${oldVer}`);
 
   for (const [name, src] of [["old.mts", oldSrc], ["old.cts", oldSrc], ["mig.mts", migSrc], ["mig.cts", migSrc]]) {
     writeFileSync(join(work, "proj", name), src);
@@ -143,7 +163,8 @@ try {
   if (run(tsc, ["-p", "tsconfig.bad.json"], { cwd: join(work, "proj") }).status === 0) fail("red-check missing-export compiled unexpectedly");
   console.log("ok: red-check missing export fails to compile");
 
-  console.log(`\nP-C5-4 PASS: ${OLD}@${oldVer} -> ${NEW} candidate — one fixture migrated via the authoritative map (${map.symbols.length} symbols + ${map.members.length} members), tsc-compiled AND executed for ESM+CJS across ${Object.keys(pkg.exports).length} subpaths.`);
+  const sourceOnly = map.members.length - publishedMembers.length;
+  console.log(`\nP-C5-4 PASS: ${OLD}@${oldVer} -> ${NEW}@${bandVer} candidate — one fixture migrated via the authoritative map (${map.symbols.length} symbols + ${publishedMembers.length} published-0x members; ${sourceOnly} source-c4 member(s) excluded, proven by the C4-tip source compile test), tsc-compiled AND executed for ESM+CJS across ${Object.keys(pkg.exports).length} subpaths.`);
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

@@ -60,11 +60,13 @@ const md = [
   "",
   "## Public members (option properties)",
   "",
-  "| Old member | 1.0 member | Subpath |",
-  "|---|---|---|",
-  ...map.members.map((m) => `| \`${m.ownerOld}.${m.memberOld}\` | \`${m.ownerNew}.${m.memberNew}\` | \`${m.subpath}\` |`),
+  "| Old member | 1.0 member | Subpath | Provenance |",
+  "|---|---|---|---|",
+  ...map.members.map((m) => `| \`${m.ownerOld}.${m.memberOld}\` | \`${m.ownerNew}.${m.memberNew}\` | \`${m.subpath}\` | ${m.provenance === "published-0x" ? "published 0.x" : "source (C4-tip only)"} |`),
   "",
-  `Validation: ${map.symbols.length} symbol rows + ${map.members.length} member rows checked against the before/after surfaces (errors: **${errors.length}**). Residual \`Thenvoi\` exports in after: **0**. Member migrations are proved by the C5 option-consumer compile fixtures and the live P-C5-4 fixture.`,
+  "Provenance dispositions: **published 0.x** members exist in the last published `@thenvoi/sdk` 0.x and are migrated + compiled against it by the live P-C5-4 fixture. **source (C4-tip only)** members were renamed after that 0.x, so they never shipped under the old name; the live fixture excludes them and a dedicated C4-tip source compile proof (P-C5-4b) shows the old member existed in source before C6 and the Band member compiles after.",
+  "",
+  `Validation: ${map.symbols.length} symbol rows + ${map.members.length} member rows (${map.members.filter((m) => m.provenance === "published-0x").length} published 0.x, ${map.members.filter((m) => m.provenance === "source-c4").length} source-C4-only) checked against the before/after surfaces (errors: **${errors.length}**). Residual \`Thenvoi\` exports in after: **0**. Member migrations are proved by the C5 option-consumer compile fixtures, the C4-tip source proof, and the live P-C5-4 fixture.`,
   "",
 ].join("\n");
 
