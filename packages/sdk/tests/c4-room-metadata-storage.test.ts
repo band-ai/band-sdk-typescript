@@ -35,7 +35,8 @@ const LEGACY_SCHEMA = `
     status TEXT NOT NULL,
     last_event_key TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    last_linear_activity_at TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_linear_thenvoi_session_rooms_issue_active
     ON linear_thenvoi_session_rooms (linear_issue_id, status, updated_at);
@@ -58,16 +59,35 @@ interface SchemaObject {
   type: string;
   name: string;
   tbl_name: string;
+  sql: string | null;
 }
 
 async function dumpSchema(path: string): Promise<{ objects: SchemaObject[]; userVersion: number }> {
   const db = await openRawDb(path);
   try {
+    // Include `sql` so an added/renamed/retyped column is caught — selecting only
+    // type/name/tbl_name is false-green against column-level changes.
     const objects = db
-      .prepare("SELECT type, name, tbl_name FROM sqlite_master ORDER BY name")
+      .prepare("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY name")
       .all() as unknown as SchemaObject[];
     const version = db.prepare("PRAGMA user_version").get() as unknown as { user_version: number };
     return { objects, userVersion: version.user_version };
+  } finally {
+    db.close();
+  }
+}
+
+interface ColumnInfo {
+  name: string;
+}
+
+async function tableColumns(path: string, table: string): Promise<string[]> {
+  const db = await openRawDb(path);
+  try {
+    const cols = db
+      .prepare("SELECT name FROM pragma_table_info(?)")
+      .all(table) as unknown as ColumnInfo[];
+    return cols.map((c) => c.name);
   } finally {
     db.close();
   }
@@ -91,11 +111,13 @@ describe("P-STO: no-DDL storage compatibility matrix", () => {
     return dir;
   }
 
-  it("P-STO-01: existing DB with rows, unrelated objects, and user_version=42 is preserved; Band fields round-trip", async () => {
+  it("P-STO-01: existing DB (session + bootstrap rows, unrelated objects, user_version=42) is preserved; Band fields round-trip", async () => {
     const dir = await tempDir("c4-sto01-");
     const dbPath = join(dir, "existing.sqlite");
 
-    // Seed an existing database: legacy schema + rows + unrelated object + version.
+    // Seed an existing database with the CURRENT legacy schema (includes
+    // last_event_key, so the store's additive init is a no-op), representative
+    // session + bootstrap rows, an unrelated object, and a user_version.
     const seed = await openRawDb(dbPath);
     seed.exec(LEGACY_SCHEMA);
     seed.exec("CREATE TABLE unrelated_widget (id INTEGER PRIMARY KEY, note TEXT);");
@@ -109,14 +131,25 @@ describe("P-STO: no-DDL storage compatibility matrix", () => {
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
       .run("session-1", "issue-1", "room-existing", "active", null, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z");
+    seed
+      .prepare(
+        `INSERT INTO linear_thenvoi_bootstrap_requests
+         (event_key, linear_session_id, thenvoi_room_id, expected_content, message_type, metadata_json, created_at, expires_at, processed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run("evt-existing", "session-1", "room-existing", "bootstrap", "task", null, "2026-01-01T00:00:00.000Z", "2099-01-01T00:00:00.000Z", null);
     seed.close();
 
     const before = await dumpSchema(dbPath);
 
-    // Open through the real store and exercise read + write via Band public types.
+    // Open through the real store and exercise reads + writes via Band public types.
     const store = createSqliteSessionRoomStore(dbPath);
     const loaded = await store.getBySessionId("session-1");
     expect(loaded?.bandRoomId).toBe("room-existing");
+
+    // The seeded bootstrap row round-trips to the public bandRoomId field.
+    const pendingBefore = await store.listPendingBootstrapRequests();
+    expect(pendingBefore.find((p) => p.eventKey === "evt-existing")?.bandRoomId).toBe("room-existing");
 
     await store.upsert({
       linearSessionId: "session-2",
@@ -126,24 +159,36 @@ describe("P-STO: no-DDL storage compatibility matrix", () => {
       createdAt: "2026-01-02T00:00:00.000Z",
       updatedAt: "2026-01-02T00:00:00.000Z",
     });
+    await store.enqueueBootstrapRequest({
+      eventKey: "evt-new",
+      linearSessionId: "session-2",
+      bandRoomId: "room-new",
+      expectedContent: "bootstrap",
+      messageType: "task",
+      createdAt: "2026-01-02T00:00:00.000Z",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
     await store.close?.();
 
     const after = await dumpSchema(dbPath);
 
-    // Physical schema, unrelated objects, and version are all unchanged.
+    // Full schema (including each object's SQL), unrelated objects, and version
+    // are all unchanged by opening/writing through the new code.
     expect(after.objects).toEqual(before.objects);
     expect(after.userVersion).toBe(42);
     expect(after.objects.map((o) => o.name)).toContain("unrelated_widget");
-    expect(after.objects.map((o) => o.name)).toContain("linear_thenvoi_session_rooms");
-    expect(after.objects.map((o) => o.name)).toContain("linear_thenvoi_bootstrap_requests");
 
-    // The new record is stored in the retained physical column.
+    // New public writes land in the retained physical thenvoi_room_id columns.
     const raw = await openRawDb(dbPath);
     try {
-      const row = raw
+      const sessionRow = raw
         .prepare("SELECT thenvoi_room_id FROM linear_thenvoi_session_rooms WHERE linear_session_id = ?")
         .get("session-2") as unknown as { thenvoi_room_id: string };
-      expect(row.thenvoi_room_id).toBe("room-new");
+      expect(sessionRow.thenvoi_room_id).toBe("room-new");
+      const bootRow = raw
+        .prepare("SELECT thenvoi_room_id FROM linear_thenvoi_bootstrap_requests WHERE event_key = ?")
+        .get("evt-new") as unknown as { thenvoi_room_id: string };
+      expect(bootRow.thenvoi_room_id).toBe("room-new");
       const unrelated = raw.prepare("SELECT note FROM unrelated_widget WHERE id = 1").get() as unknown as { note: string };
       expect(unrelated.note).toBe("keep me");
     } finally {
@@ -179,25 +224,20 @@ describe("P-STO: no-DDL storage compatibility matrix", () => {
     expect(schemaText).not.toMatch(/linear_band_/);
     expect(schemaText).not.toMatch(/band_room_id/);
 
-    // The physical column is thenvoi_room_id, not band_room_id.
-    const raw = await openRawDb(dbPath);
-    try {
-      const cols = raw
-        .prepare("SELECT name FROM pragma_table_info('linear_thenvoi_session_rooms')")
-        .all() as unknown as Array<{ name: string }>;
-      const colNames = cols.map((c) => c.name);
-      expect(colNames).toContain("thenvoi_room_id");
-      expect(colNames).not.toContain("band_room_id");
-    } finally {
-      raw.close();
-    }
+    // Both physical tables use thenvoi_room_id, neither uses band_room_id.
+    const sessionCols = await tableColumns(dbPath, "linear_thenvoi_session_rooms");
+    expect(sessionCols).toContain("thenvoi_room_id");
+    expect(sessionCols).not.toContain("band_room_id");
+    const bootCols = await tableColumns(dbPath, "linear_thenvoi_bootstrap_requests");
+    expect(bootCols).toContain("thenvoi_room_id");
+    expect(bootCols).not.toContain("band_room_id");
   });
 
-  it("P-STO-03: old-code (raw SQL) and new-code (store) operations alternate on one file without duplication", async () => {
+  it("P-STO-03: session bindings AND bootstrap records alternate old/new code on one file without duplication", async () => {
     const dir = await tempDir("c4-sto03-");
     const dbPath = join(dir, "alt.sqlite");
 
-    // New code creates the schema and a binding.
+    // New code creates the schema, a session binding, and a bootstrap request.
     const store1 = createSqliteSessionRoomStore(dbPath);
     await store1.upsert({
       linearSessionId: "session-1",
@@ -207,9 +247,19 @@ describe("P-STO: no-DDL storage compatibility matrix", () => {
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
     });
+    await store1.enqueueBootstrapRequest({
+      eventKey: "evt-1",
+      linearSessionId: "session-1",
+      bandRoomId: "room-1",
+      expectedContent: "bootstrap",
+      messageType: "task",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    });
     await store1.close?.();
 
-    // Old code opens the same file and upserts through the physical column.
+    // Old code opens the same file and updates both the session binding and the
+    // bootstrap request through the retained physical thenvoi_room_id column.
     const raw = await openRawDb(dbPath);
     raw
       .prepare(
@@ -219,14 +269,27 @@ describe("P-STO: no-DDL storage compatibility matrix", () => {
          ON CONFLICT(linear_session_id) DO UPDATE SET thenvoi_room_id = excluded.thenvoi_room_id, updated_at = excluded.updated_at`,
       )
       .run("session-1", "issue-1", "room-1-updated", "active", null, "2026-01-01T00:00:00.000Z", "2026-01-03T00:00:00.000Z");
-    const count = raw.prepare("SELECT COUNT(*) AS n FROM linear_thenvoi_session_rooms").get() as unknown as { n: number };
+    raw
+      .prepare(
+        `INSERT INTO linear_thenvoi_bootstrap_requests
+         (event_key, linear_session_id, thenvoi_room_id, expected_content, message_type, metadata_json, created_at, expires_at, processed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(event_key) DO UPDATE SET thenvoi_room_id = excluded.thenvoi_room_id`,
+      )
+      .run("evt-1", "session-1", "room-1-updated", "bootstrap", "task", null, "2026-01-01T00:00:00.000Z", "2099-01-01T00:00:00.000Z", null);
+    const sessionCount = raw.prepare("SELECT COUNT(*) AS n FROM linear_thenvoi_session_rooms").get() as unknown as { n: number };
+    const bootCount = raw.prepare("SELECT COUNT(*) AS n FROM linear_thenvoi_bootstrap_requests").get() as unknown as { n: number };
     raw.close();
-    expect(count.n).toBe(1); // reused, not duplicated
+    expect(sessionCount.n).toBe(1); // session binding reused, not duplicated
+    expect(bootCount.n).toBe(1); // bootstrap record reused, not duplicated
 
-    // New code reopens and reads the old-code write through the Band field.
+    // New code reopens and reads both old-code writes through Band public fields.
     const store2 = createSqliteSessionRoomStore(dbPath);
     const loaded = await store2.getBySessionId("session-1");
     expect(loaded?.bandRoomId).toBe("room-1-updated");
+    const pending = await store2.listPendingBootstrapRequests();
+    const boot = pending.find((p) => p.eventKey === "evt-1");
+    expect(boot?.bandRoomId).toBe("room-1-updated");
     await store2.close?.();
   });
 

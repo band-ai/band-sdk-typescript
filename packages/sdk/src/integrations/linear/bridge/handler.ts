@@ -502,7 +502,7 @@ async function trySetSessionExternalUrl(input: {
   const base = input.appBaseUrl.replace(/\/+$/, "");
   const roomUrl = `${base}/rooms/${input.roomId}`;
   await input.linearClient.agentSessionUpdateExternalUrl(input.sessionId, {
-    externalUrls: [{ label: "View in Thenvoi", url: roomUrl }],
+    externalUrls: [{ label: "View in Band", url: roomUrl }],
   });
 
   input.logger.info("linear_thenvoi_bridge.external_url_set", {
