@@ -10,7 +10,7 @@
  *  - validateConfig ok/err via an injected connectivity probe (no network)
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   resolveAccount,
   listAccountIds,
@@ -159,5 +159,58 @@ describe("validateConfig", () => {
     expect(res.valid).toBe(false);
     expect(res.errors?.[0]).toMatch(/api key/i);
     expect(probe).not.toHaveBeenCalled();
+  });
+});
+
+describe("resolveConnectionConfig legacy env warnings (P-C6-1)", () => {
+  const LEGACY = ["THENVOI_API_KEY", "THENVOI_AGENT_ID", "THENVOI_WS_URL", "THENVOI_REST_URL"];
+  const BAND = ["BAND_API_KEY", "BAND_AGENT_ID", "BAND_WS_URL", "BAND_REST_URL"];
+  const saved: Record<string, string | undefined> = {};
+
+  afterEach(() => {
+    for (const v of [...LEGACY, ...BAND]) {
+      if (saved[v] === undefined) delete process.env[v];
+      else process.env[v] = saved[v];
+    }
+    vi.restoreAllMocks();
+  });
+
+  function clear(): void {
+    for (const v of [...LEGACY, ...BAND]) { saved[v] = process.env[v]; delete process.env[v]; }
+  }
+
+  async function fresh() {
+    vi.resetModules();
+    return (await import("../../src/config.js")).resolveConnectionConfig;
+  }
+
+  it("warns once per legacy variable (naming old + Band replacement, never a secret)", async () => {
+    clear();
+    process.env.THENVOI_API_KEY = "super-secret";
+    process.env.THENVOI_AGENT_ID = "legacy-agent";
+    process.env.THENVOI_WS_URL = "wss://legacy";
+    const resolve = await fresh();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    resolve({});
+    for (const [legacy, band] of [
+      ["THENVOI_API_KEY", "BAND_API_KEY"], ["THENVOI_AGENT_ID", "BAND_AGENT_ID"], ["THENVOI_WS_URL", "BAND_WS_URL"],
+    ]) {
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(legacy));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(band));
+    }
+    for (const call of warn.mock.calls) expect(String(call[0])).not.toContain("super-secret");
+    warn.mockClear();
+    resolve({}); // once per process
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("does not warn when account fields or BAND_* satisfy every field", async () => {
+    clear();
+    process.env.THENVOI_API_KEY = "legacy-key";
+    process.env.BAND_AGENT_ID = "band-agent";
+    const resolve = await fresh();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    resolve({ apiKey: "acct-key" }); // account apiKey + BAND agentId -> no legacy used
+    expect(warn).not.toHaveBeenCalled();
   });
 });

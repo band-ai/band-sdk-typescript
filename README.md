@@ -17,7 +17,7 @@ const agent = Agent.create({
 await agent.run();
 ```
 
-Set `THENVOI_AGENT_ID` and `THENVOI_API_KEY` as environment variables, then run with `npx tsx your-agent.ts`.
+Set `BAND_AGENT_ID` and `BAND_API_KEY` as environment variables, then run with `npx tsx your-agent.ts`.
 
 ## Installation
 
@@ -222,8 +222,8 @@ await agent.run();
 ### Environment Variables
 
 ```bash
-export THENVOI_AGENT_ID="your-agent-uuid"
-export THENVOI_API_KEY="your-api-key"
+export BAND_AGENT_ID="your-agent-uuid"
+export BAND_API_KEY="your-api-key"
 ```
 
 ```ts

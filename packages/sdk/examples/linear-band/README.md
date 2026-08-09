@@ -25,8 +25,8 @@ Create a local `.env.local` from `.env.local.example`. The agent only needs a fe
 ```bash
 LINEAR_ACCESS_TOKEN=lin_api_xxx
 LINEAR_WEBHOOK_SECRET=lin_wh_xxx
-THENVOI_API_KEY=thnv_a_xxx
-THENVOI_REST_URL=https://app.thenvoi.com
+BAND_API_KEY=bnd_a_xxx
+BAND_REST_URL=https://app.band.ai
 ```
 
 Common optional settings:
@@ -35,7 +35,7 @@ Common optional settings:
 LINEAR_BAND_STATE_DB=.linear-thenvoi-example.sqlite
 LINEAR_BAND_ROOM_STRATEGY=issue
 LINEAR_BAND_WRITEBACK_MODE=activity_stream
-THENVOI_HOST_AGENT_HANDLE=your-org/linear-orchestrator
+BAND_HOST_AGENT_HANDLE=your-org/linear-orchestrator
 CODEX_MODEL=gpt-5.3-codex
 PORT=8787
 ```
@@ -78,7 +78,7 @@ https://<your-tunnel-host>/linear/webhook
 - `.env.local` is gitignored.
 - `agent_config.yaml` is gitignored.
 - `*.sqlite` files are gitignored.
-- Do not commit real `LINEAR_ACCESS_TOKEN`, `LINEAR_WEBHOOK_SECRET`, or `THENVOI_API_KEY` values.
+- Do not commit real `LINEAR_ACCESS_TOKEN`, `LINEAR_WEBHOOK_SECRET`, or `BAND_API_KEY` values.
 
 ## Docker
 

@@ -18,7 +18,7 @@ import { ConsoleLogger } from "../../src/core";
 import { BandClient } from "@band-ai/rest-client";
 import { FernRestAdapter } from "../../src/rest";
 
-const REST_URL = "https://app.thenvoi.com/";
+const REST_URL = "https://app.band.ai/";
 
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));

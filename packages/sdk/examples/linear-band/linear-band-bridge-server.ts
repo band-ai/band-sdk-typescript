@@ -267,13 +267,13 @@ export function resolveBridgeApiKey(logger: Logger, configPath?: string): string
     }
   }
 
-  const fallbackEnvKey = process.env.THENVOI_API_KEY?.trim();
+  const fallbackEnvKey = readLinearEnv("BAND_API_KEY", "THENVOI_API_KEY")?.trim();
   if (fallbackEnvKey) {
     return fallbackEnvKey;
   }
 
   throw new Error(
-    "Missing API key. Set THENVOI_API_KEY or configure linear_band_bridge (legacy: linear_thenvoi_bridge) in agent_config.yaml.",
+    "Missing API key. Set BAND_API_KEY (legacy THENVOI_API_KEY) or configure linear_band_bridge (legacy: linear_thenvoi_bridge) in agent_config.yaml.",
   );
 }
 
@@ -636,7 +636,7 @@ async function runLinearBandBridgeServer(): Promise<void> {
   const stateDbPath = readLinearEnv("LINEAR_BAND_STATE_DB", "LINEAR_THENVOI_STATE_DB") ?? ".linear-thenvoi-example.sqlite";
   const rawRestApi = new FernRestAdapter(new BandClient({
     apiKey: bridgeApiKey,
-    baseUrl: process.env.THENVOI_REST_URL ?? "https://app.thenvoi.com",
+    baseUrl: readLinearEnv("BAND_REST_URL", "THENVOI_REST_URL") ?? "https://app.band.ai",
   }));
   const restApi = createRateLimitedRestApi({
     api: rawRestApi,
@@ -646,7 +646,7 @@ async function runLinearBandBridgeServer(): Promise<void> {
   const store = createSqliteSessionRoomStore(stateDbPath);
   const linearAccessToken = getRequiredEnv("LINEAR_ACCESS_TOKEN");
   const linearWebhookSecret = getRequiredEnv("LINEAR_WEBHOOK_SECRET");
-  const hostAgentHandle = process.env.THENVOI_HOST_AGENT_HANDLE;
+  const hostAgentHandle = readLinearEnv("BAND_HOST_AGENT_HANDLE", "THENVOI_HOST_AGENT_HANDLE");
   const roomStrategy = parseRoomStrategy(readLinearEnv("LINEAR_BAND_ROOM_STRATEGY", "LINEAR_THENVOI_ROOM_STRATEGY")) ?? "issue";
   const writebackMode = parseWritebackMode(readLinearEnv("LINEAR_BAND_WRITEBACK_MODE", "LINEAR_THENVOI_WRITEBACK_MODE")) ?? "activity_stream";
 
@@ -709,7 +709,7 @@ async function runLinearBandBridgeServer(): Promise<void> {
     logger.info("linear_thenvoi_bridge.server_started", {
       port,
       mode: embedBridgeAgent ? "embedded_bridge_agent" : "agent_rest_adapter",
-      thenvoiRestUrl: process.env.THENVOI_REST_URL ?? "https://app.thenvoi.com",
+      thenvoiRestUrl: readLinearEnv("BAND_REST_URL", "THENVOI_REST_URL") ?? "https://app.band.ai",
       bridgeMinRequestIntervalMs,
     });
   });

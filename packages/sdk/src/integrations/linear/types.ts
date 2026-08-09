@@ -27,7 +27,7 @@ export interface LinearBandBridgeConfig {
   planningAgentHandles?: string[];
   implementationAgentHandles?: string[];
   recoveredRoomRetryBaseDelayMs?: number;
-  thenvoiAppBaseUrl?: string;
+  bandAppBaseUrl?: string;
 }
 
 export interface SessionRoomRecord {

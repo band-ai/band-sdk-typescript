@@ -7,7 +7,7 @@ network_policies:
   thenvoi:
     name: thenvoi
     endpoints:
-      - host: app.thenvoi.com
+      - host: app.band.ai
         port: 443
         protocol: rest
         enforcement: enforce
@@ -16,7 +16,7 @@ network_policies:
           - allow: { method: POST,   path: "/api/**" }
           - allow: { method: PATCH,  path: "/api/**" }
           - allow: { method: DELETE, path: "/api/**" }
-      - host: app.thenvoi.com
+      - host: app.band.ai
         port: 443
         access: full
         tls: skip

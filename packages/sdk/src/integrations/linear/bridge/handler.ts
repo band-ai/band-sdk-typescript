@@ -31,10 +31,10 @@ interface NormalizedBridgeConfig {
   roomStrategy: "issue" | "session";
   writebackMode: "final_only" | "activity_stream";
   hostAgentHandle: string | null;
-  thenvoiAppBaseUrl: string;
+  bandAppBaseUrl: string;
 }
 
-const DEFAULT_THENVOI_APP_BASE_URL = "https://app.thenvoi.com";
+const DEFAULT_APP_BASE_URL = "https://app.band.ai";
 
 const SUPPORTED_ACTIONS = new Set(["created", "updated", "canceled", "prompted"]);
 const MAX_PEER_LOOKUP_PAGES = 25;
@@ -229,7 +229,7 @@ export async function handleAgentSessionEvent(
         linearClient: input.deps.linearClient,
         sessionId,
         roomId,
-        appBaseUrl: config.thenvoiAppBaseUrl,
+        appBaseUrl: config.bandAppBaseUrl,
         logger,
       }).catch((urlError) => {
         logger.warn("linear_thenvoi_bridge.set_external_url_failed", {
@@ -517,7 +517,7 @@ function normalizeConfig(config: LinearBandBridgeConfig): NormalizedBridgeConfig
     roomStrategy: config.roomStrategy ?? "issue",
     writebackMode: config.writebackMode ?? "final_only",
     hostAgentHandle: normalizeOptionalHandle(config.hostAgentHandle),
-    thenvoiAppBaseUrl: config.thenvoiAppBaseUrl ?? DEFAULT_THENVOI_APP_BASE_URL,
+    bandAppBaseUrl: config.bandAppBaseUrl ?? DEFAULT_APP_BASE_URL,
   };
 }
 

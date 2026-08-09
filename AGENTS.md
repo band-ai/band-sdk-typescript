@@ -78,7 +78,7 @@ The full method set is the union `BandLinkRestApi = AgentProfileRestApi & Messag
 
 ## WebSocket Channels & Events
 
-WebSocket transport is Phoenix Channels (`packages/sdk/src/platform/streaming/PhoenixChannelsTransport.ts`). Default base URL: `wss://app.thenvoi.com/api/v1/socket` (the `phoenix` JS lib appends `/websocket` to form the actual WS endpoint — set `THENVOI_WS_URL` to the base URL, not the `/websocket` URL).
+WebSocket transport is Phoenix Channels (`packages/sdk/src/platform/streaming/PhoenixChannelsTransport.ts`). Default base URL: `wss://app.band.ai/api/v1/socket` (the `phoenix` JS lib appends `/websocket` to form the actual WS endpoint — set `BAND_WS_URL` to the base URL, not the `/websocket` URL).
 
 ### Channels (Phoenix Channels Protocol V2)
 
@@ -345,12 +345,16 @@ pnpm --filter @band-ai/sdk run dev:linear
 
 ## Environment Variables
 
-The SDK reads only the `THENVOI_*` prefix by default (override via `loadAgentConfigFromEnv({ prefix })`).
+The SDK reads the `BAND_*` prefix by default, with a per-field fallback to the
+legacy `THENVOI_*` variable (Band wins independently for each field; each legacy
+variable used emits a one-time, non-secret deprecation warning). Override the
+prefix via `loadAgentConfigFromEnv({ prefix })`; a custom prefix — including an
+empty string — is used exactly, with no fallback.
 
-- `THENVOI_AGENT_ID`: agent UUID (required)
-- `THENVOI_API_KEY`: agent API key (required)
-- `THENVOI_WS_URL`: WebSocket base URL (optional; default: `wss://app.thenvoi.com/api/v1/socket` — the `phoenix` lib appends `/websocket`)
-- `THENVOI_REST_URL`: REST API URL (optional; derived from `THENVOI_WS_URL` if not set, via `deriveDefaultRestUrl`)
+- `BAND_AGENT_ID` (legacy `THENVOI_AGENT_ID`): agent UUID (required)
+- `BAND_API_KEY` (legacy `THENVOI_API_KEY`): agent API key (required)
+- `BAND_WS_URL` (legacy `THENVOI_WS_URL`): WebSocket base URL (optional; default: `wss://app.band.ai/api/v1/socket` — the `phoenix` lib appends `/websocket`)
+- `BAND_REST_URL` (legacy `THENVOI_REST_URL`): REST API URL (optional; derived from the WS URL if not set, via `deriveDefaultRestUrl`)
 
 LLM API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`/`GEMINI_API_KEY`, etc.) are read directly by the underlying provider SDKs and passed via adapter options. For Gemini, `@google/genai` accepts both `GOOGLE_API_KEY` and `GEMINI_API_KEY` (it prefers `GOOGLE_API_KEY` if both are set; verified in `@google/genai` 1.50.x `getApiKeyFromEnv`).
 
@@ -418,7 +422,7 @@ Each example is a standalone TypeScript script runnable with `tsx`. Folders incl
 
 ### Conventions
 
-- Use `loadAgentConfig("agent_name")` (YAML) or `loadAgentConfigFromEnv()` (env vars). Never read `THENVOI_AGENT_ID`/`THENVOI_API_KEY` directly via `process.env`.
+- Use `loadAgentConfig("agent_name")` (YAML) or `loadAgentConfigFromEnv()` (env vars). Never read `BAND_AGENT_ID`/`BAND_API_KEY` directly via `process.env`.
 - Throw `ValidationError` (from `@band-ai/sdk/core`) for missing required configuration; do **not** `console.error` + `process.exit`.
 - Top-level `await` is fine; the package is ESM (`"type": "module"`).
 - Examples are excluded from strict ESLint rules but still typechecked.
