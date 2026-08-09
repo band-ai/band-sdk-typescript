@@ -1,5 +1,5 @@
 import express, { type NextFunction, type Request, type Response } from "express";
-import { ThenvoiClient } from "@thenvoi/rest-client";
+import { BandClient } from "@band-ai/rest-client";
 
 import {
   Agent,
@@ -600,7 +600,7 @@ async function runLinearThenvoiBridgeServer(): Promise<void> {
     embeddedBridgeConfig,
   });
   const stateDbPath = process.env.LINEAR_THENVOI_STATE_DB ?? ".linear-thenvoi-example.sqlite";
-  const rawRestApi = new FernRestAdapter(new ThenvoiClient({
+  const rawRestApi = new FernRestAdapter(new BandClient({
     apiKey: bridgeApiKey,
     baseUrl: process.env.THENVOI_REST_URL ?? "https://app.thenvoi.com",
   }));

@@ -4,7 +4,7 @@
  *
  * Run:  npx tsx tests/integration/smoke.ts
  */
-import { ThenvoiClient } from "@thenvoi/rest-client";
+import { BandClient } from "@band-ai/rest-client";
 
 import { Agent, GenericAdapter, loadAgentConfig } from "../../src/index";
 import { FernRestAdapter } from "../../src/rest";
@@ -17,7 +17,7 @@ async function main() {
 
   console.log("smoke Agent ID:", config.agentId);
 
-  const restApi = new FernRestAdapter(new ThenvoiClient({ baseUrl: restUrl, apiKey: config.apiKey }));
+  const restApi = new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey: config.apiKey }));
 
   // --- Step 1: Test REST identity ---
   console.log("smoke Fetching agent identity...");

@@ -88,7 +88,7 @@
     "node": ">=22.12"
   },
   "dependencies": {
-    "@thenvoi/rest-client": "0.0.113",
+    "@band-ai/rest-client": "0.0.118",
     "js-yaml": "^4.1.1",
     "phoenix": "^1.8.4",
     "ws": "^8.19.0",
