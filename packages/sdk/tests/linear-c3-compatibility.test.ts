@@ -221,12 +221,29 @@ my_custom_agent:
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it("resolveBridgeApiKey: non-embedded default loads legacy-only YAML with warning", () => {
+  it("resolveBridgeApiKey: non-embedded default loads legacy-only YAML with warning and reports legacy key", () => {
     const cp = writeYaml(legacyYaml);
-    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+    const info = vi.fn();
+    const logger = { info, warn: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
     const key = resolveBridgeApiKey(logger, cp);
     expect(key).toBe("legacy-key");
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("linear_thenvoi_bridge"));
+    // Observability metadata reports the key actually selected (legacy fallback)
+    expect(info).toHaveBeenCalledWith("linear_thenvoi_bridge.using_agent_config_key", { configKey: "linear_thenvoi_bridge" });
+  });
+
+  it("resolveBridgeApiKey: non-embedded default loads Band YAML and reports Band key", () => {
+    const cp = writeYaml(`
+linear_band_bridge:
+  agent_id: "band-id"
+  api_key: "band-key"
+`);
+    const info = vi.fn();
+    const logger = { info, warn: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as Logger;
+    const key = resolveBridgeApiKey(logger, cp);
+    expect(key).toBe("band-key");
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith("linear_thenvoi_bridge.using_agent_config_key", { configKey: "linear_band_bridge" });
   });
 
   it("resolveBridgeApiKey: explicit legacy agent config key warns", () => {
@@ -434,6 +451,8 @@ describe("P-C3-3: SQLite dispatch through saved binding", () => {
         deps: { bandRest: restApi, linearClient: { agentSessionUpdateExternalUrl: vi.fn(async () => ({})) } as never, store },
       });
 
+      // Forwarding actually happened (guards against a vacuous every([]) pass)
+      expect(restApi.roomMessages.length + restApi.roomEvents.length).toBeGreaterThan(0);
       const allRoomIds = [...restApi.roomMessages, ...restApi.roomEvents].map((m) => m.roomId);
       expect(allRoomIds.every((id) => id === "room-custom")).toBe(true);
       expect(restApi.createChatCalls).toHaveLength(0);

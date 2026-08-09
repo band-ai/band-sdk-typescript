@@ -38,16 +38,25 @@ export function readLinearEnv(bandKey: string, legacyKey: string): string | unde
 
 const _warnedLegacyConfigKey = new Set<string>();
 
+/** Result of a Band-first config load, including which YAML key was selected. */
+export interface BandLinearConfigSelection {
+  config: AgentConfigResult;
+  /** The YAML key actually loaded — the Band key, or the legacy key on fallback. */
+  selectedKey: string;
+}
+
 /**
  * Load agent config trying Band key first, then legacy Thenvoi key with a
  * once-per-key deprecation warning. Falls back only when the Band key is
  * absent from the YAML; a present but malformed Band key surfaces its error.
+ * Returns the actually-selected key so callers can report it accurately
+ * instead of assuming the requested Band key.
  */
-export function loadBandLinearConfig(
+export function loadBandLinearConfigWithKey(
   bandKey: string,
   legacyKey: string,
   configPath?: string,
-): AgentConfigResult {
+): BandLinearConfigSelection {
   const filePath = configPath ?? "./agent_config.yaml";
   let parsed: Record<string, unknown> | null = null;
   try {
@@ -62,7 +71,7 @@ export function loadBandLinearConfig(
 
   // If the Band key is present in the YAML, use it (surfaces validation errors)
   if (parsed && bandKey in parsed) {
-    return loadAgentConfig(bandKey, configPath);
+    return { config: loadAgentConfig(bandKey, configPath), selectedKey: bandKey };
   }
 
   // Band key absent — try legacy with warning
@@ -72,11 +81,20 @@ export function loadBandLinearConfig(
       _warnedLegacyConfigKey.add(legacyKey);
       console.warn(`[band] YAML config key "${legacyKey}" is deprecated; use "${bandKey}" instead`);
     }
-    return config;
+    return { config, selectedKey: legacyKey };
   }
 
   // Neither key found — let loadAgentConfig produce the standard error
-  return loadAgentConfig(bandKey, configPath);
+  return { config: loadAgentConfig(bandKey, configPath), selectedKey: bandKey };
+}
+
+/** Band-first config load returning only the config (key selection discarded). */
+export function loadBandLinearConfig(
+  bandKey: string,
+  legacyKey: string,
+  configPath?: string,
+): AgentConfigResult {
+  return loadBandLinearConfigWithKey(bandKey, legacyKey, configPath).config;
 }
 
 interface LinearBandBridgeAgentOptions {
