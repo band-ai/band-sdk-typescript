@@ -2,10 +2,10 @@ export { GenericAdapter, type GenericAdapterHandler } from "./GenericAdapter";
 export {
   ACPClientAdapter,
   ACPServer,
-  ThenvoiACPServerAdapter,
+  BandACPServerAdapter,
   type ACPClientAdapterOptions,
   type ACPServerOptions,
-  type ThenvoiACPServerAdapterOptions,
+  type BandACPServerAdapterOptions,
 } from "./acp";
 export {
   VercelAISDKAdapter,

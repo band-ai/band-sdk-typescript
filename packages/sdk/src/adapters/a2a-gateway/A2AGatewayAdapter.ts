@@ -39,7 +39,7 @@ interface PendingTaskRecord extends PendingA2ATask {
 export class A2AGatewayAdapter
   extends SimpleAdapter<GatewaySessionState, MessagingTools>
 {
-  private readonly thenvoiRest: A2AGatewayAdapterOptions["thenvoiRest"];
+  private readonly bandRest: A2AGatewayAdapterOptions["bandRest"];
   private readonly gatewayUrl: string;
   private readonly host: string;
   private readonly port: number;
@@ -64,7 +64,7 @@ export class A2AGatewayAdapter
       historyConverter: new GatewayHistoryConverter(),
     });
 
-    this.thenvoiRest = options.thenvoiRest;
+    this.bandRest = options.bandRest;
     this.gatewayUrl = options.gatewayUrl ?? DEFAULT_GATEWAY_URL;
     this.host = options.host ?? DEFAULT_HOST;
     this.port = options.port ?? DEFAULT_PORT;
@@ -169,14 +169,14 @@ export class A2AGatewayAdapter
   private async refreshPeers(): Promise<void> {
     this.peersBySlug.clear();
     this.peersById.clear();
-    if (!this.thenvoiRest.listPeers) {
+    if (!this.bandRest.listPeers) {
       throw new UnsupportedFeatureError(
         "Peer listing is not available in current REST adapter",
       );
     }
 
     for (let page = 1; page <= this.maxPeerPages; page += 1) {
-      const response = await this.thenvoiRest.listPeers({
+      const response = await this.bandRest.listPeers({
         page,
         pageSize: this.peerPageSize,
         notInChat: "",
@@ -262,7 +262,7 @@ export class A2AGatewayAdapter
       await this.emitContextEvent(roomId, contextId);
 
       const content = extractMessageText(request.message) ?? "";
-      await this.thenvoiRest.createChatMessage(roomId, {
+      await this.bandRest.createChatMessage(roomId, {
         content: buildMentionedContent(peer.name, content),
         mentions: buildMentions(peer),
         metadata: {
@@ -413,7 +413,7 @@ export class A2AGatewayAdapter
     if (existingRoom) {
       const participants = this.roomParticipants.get(existingRoom) ?? new Set<string>();
       if (!participants.has(targetPeerId)) {
-        await this.thenvoiRest.addChatParticipant(existingRoom, {
+        await this.bandRest.addChatParticipant(existingRoom, {
           participantId: targetPeerId,
           role: "member",
         });
@@ -425,12 +425,12 @@ export class A2AGatewayAdapter
     }
 
     const normalizedContextId = contextId && contextId.length > 0 ? contextId : randomUUID();
-    const created = await this.thenvoiRest.createChat(
+    const created = await this.bandRest.createChat(
       `a2a:gateway:${normalizedContextId}`,
     );
     const roomId = created.id;
 
-    await this.thenvoiRest.addChatParticipant(roomId, {
+    await this.bandRest.addChatParticipant(roomId, {
       participantId: targetPeerId,
       role: "member",
     });
@@ -442,7 +442,7 @@ export class A2AGatewayAdapter
   }
 
   private async emitContextEvent(roomId: string, contextId: string): Promise<void> {
-    await this.thenvoiRest.createChatEvent(roomId, {
+    await this.bandRest.createChatEvent(roomId, {
       content: "A2A gateway context",
       messageType: "task",
       metadata: {

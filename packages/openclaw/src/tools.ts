@@ -12,9 +12,9 @@
  * registration layer supplies the live context from the connected account.
  */
 
-import type { ThenvoiLink } from "@thenvoi/sdk";
+import type { BandLink } from "@band-ai/sdk";
 
-type BandRest = ThenvoiLink["rest"];
+type BandRest = BandLink["rest"];
 
 export interface BandToolContext {
   rest: BandRest;

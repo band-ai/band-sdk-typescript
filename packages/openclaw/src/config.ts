@@ -10,7 +10,7 @@
  * fallback so existing installs don't break.
  */
 
-import { ThenvoiLink } from "@thenvoi/sdk";
+import { BandLink } from "@band-ai/sdk";
 
 // =============================================================================
 // Types
@@ -168,9 +168,9 @@ export function inspectAccount(config: PluginConfig, accountId = "default"): Acc
 
 /** Default probe: open a temporary link, fetch agent metadata, disconnect. */
 const defaultProbe: ConnectivityProbe = async (conn) => {
-  let link: ThenvoiLink | null = null;
+  let link: BandLink | null = null;
   try {
-    link = new ThenvoiLink({
+    link = new BandLink({
       agentId: conn.agentId,
       apiKey: conn.apiKey,
       wsUrl: conn.wsUrl,

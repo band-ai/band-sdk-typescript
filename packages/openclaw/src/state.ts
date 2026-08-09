@@ -3,17 +3,17 @@
  *
  * Per D6 (architect consensus Q6): a module-scoped Map keyed by accountId, NOT a
  * globalThis registry. It holds the per-account state that the TOOLS path and the
- * OUTBOUND adapter need without a gateway context — the connected ThenvoiLink,
+ * OUTBOUND adapter need without a gateway context — the connected BandLink,
  * the agent's own id + owner id (F2), a room-type cache (L2 ChatType), and an LRU
  * last-sender cache (auto-mention fallback). `resetAccounts()` exists for test
  * isolation.
  */
 
-import type { ThenvoiLink } from "@thenvoi/sdk";
+import type { BandLink } from "@band-ai/sdk";
 import type { LastSender } from "./mentions.js";
 
 export interface AccountState {
-  link: ThenvoiLink;
+  link: BandLink;
   /** The agent's own id (self), for excluding self + skipping self-authored. */
   selfAgentId: string;
   /** The agent owner's id; commands are authorized only for the owner (F2). */
@@ -49,7 +49,7 @@ export function getAccount(accountId = "default"): AccountState | undefined {
   return accounts.get(accountId);
 }
 
-export function getLink(accountId = "default"): ThenvoiLink | undefined {
+export function getLink(accountId = "default"): BandLink | undefined {
   return accounts.get(accountId)?.link;
 }
 

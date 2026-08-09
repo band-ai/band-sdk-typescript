@@ -54,11 +54,11 @@ describe("P-C3-1: new Band type names compile and old names fail", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  // Compile a consumer that resolves `@thenvoi/sdk/linear` through the package's
+  // Compile a consumer that resolves `@band-ai/sdk/linear` through the package's
   // real `exports` map under NodeNext — a temp node_modules link, no `paths`
   // alias to a declaration file. `.mts` exercises ESM resolution, `.cts` CJS.
   function compileConsumer(filename: string, code: string): { status: number; output: string } {
-    const nmDir = join(tmpDir, "node_modules/@thenvoi/sdk");
+    const nmDir = join(tmpDir, "node_modules/@band-ai/sdk");
     mkdirSync(nmDir, { recursive: true });
     cpSync(join(SDK_ROOT, "dist"), join(nmDir, "dist"), { recursive: true });
     cpSync(join(SDK_ROOT, "package.json"), join(nmDir, "package.json"));
@@ -86,7 +86,7 @@ describe("P-C3-1: new Band type names compile and old names fail", () => {
 
   it("ESM consumer: new Band types compile via NodeNext package exports", () => {
     const result = compileConsumer("consumer.mts", `
-      import type { LinearBandBridgeConfig, LinearBandBridgeDeps } from "@thenvoi/sdk/linear";
+      import type { LinearBandBridgeConfig, LinearBandBridgeDeps } from "@band-ai/sdk/linear";
       const _cfg = {} as LinearBandBridgeConfig;
       const _deps = {} as LinearBandBridgeDeps;
     `);
@@ -95,7 +95,7 @@ describe("P-C3-1: new Band type names compile and old names fail", () => {
 
   it("ESM consumer: old types fail with missing-export diagnostic", () => {
     const result = compileConsumer("old.mts", `
-      import type { LinearThenvoiBridgeConfig } from "@thenvoi/sdk/linear";
+      import type { LinearThenvoiBridgeConfig } from "@band-ai/sdk/linear";
       const _cfg = {} as LinearThenvoiBridgeConfig;
     `);
     expect(result.status).not.toBe(0);
@@ -104,7 +104,7 @@ describe("P-C3-1: new Band type names compile and old names fail", () => {
 
   it("CJS consumer: new Band types compile via NodeNext package exports", () => {
     const result = compileConsumer("consumer.cts", `
-      import type { LinearBandBridgeConfig, LinearBandBridgeDeps } from "@thenvoi/sdk/linear";
+      import type { LinearBandBridgeConfig, LinearBandBridgeDeps } from "@band-ai/sdk/linear";
       const _cfg = {} as LinearBandBridgeConfig;
       const _deps = {} as LinearBandBridgeDeps;
     `);
@@ -113,7 +113,7 @@ describe("P-C3-1: new Band type names compile and old names fail", () => {
 
   it("CJS consumer: old types fail with missing-export diagnostic", () => {
     const result = compileConsumer("old.cts", `
-      import type { LinearThenvoiBridgeConfig } from "@thenvoi/sdk/linear";
+      import type { LinearThenvoiBridgeConfig } from "@band-ai/sdk/linear";
       const _cfg = {} as LinearThenvoiBridgeConfig;
     `);
     expect(result.status).not.toBe(0);

@@ -6,29 +6,29 @@ This is a TypeScript SDK that connects AI agents to the Thenvoi collaborative pl
 
 1. Multi-framework support (OpenAI, Anthropic, Gemini, Claude Agent SDK, Codex, LangGraph, Vercel AI SDK, Google ADK, Letta, OpenCode, Parlant, plus a Generic adapter)
 2. A2A protocol support: bridge to external A2A agents and expose Thenvoi peers as A2A endpoints (`A2AAdapter`, `A2AGatewayAdapter`)
-3. ACP integration: editor-facing server (`ACPServer` + `ThenvoiACPServerAdapter`) and subprocess client (`ACPClientAdapter`) for Cursor, Codex, Claude Code, Zed
-4. MCP support: generic MCP backends (stdio/SSE) and a Claude Agent SDK bridge under `@thenvoi/sdk/mcp` and `@thenvoi/sdk/mcp/claude`
-5. Linear integration: full PM bridge with tools, webhook handling, dispatchers, and SQLite session room store (`@thenvoi/sdk/linear`)
+3. ACP integration: editor-facing server (`ACPServer` + `BandACPServerAdapter`) and subprocess client (`ACPClientAdapter`) for Cursor, Codex, Claude Code, Zed
+4. MCP support: generic MCP backends (stdio/SSE) and a Claude Agent SDK bridge under `@band-ai/sdk/mcp` and `@band-ai/sdk/mcp/claude`
+5. Linear integration: full PM bridge with tools, webhook handling, dispatchers, and SQLite session room store (`@band-ai/sdk/linear`)
 6. Platform tools for chat, contacts, and memory management
 7. WebSocket + REST transport: real-time messaging via Phoenix Channels with REST API fallback
 
 ## Package & Subpath Exports
 
-The SDK ships from `@thenvoi/sdk` with multiple ESM/CJS subpath entries.
+The SDK ships from `@band-ai/sdk` with multiple ESM/CJS subpath entries.
 
 | Import | Contents |
 |--------|----------|
-| `@thenvoi/sdk` | `Agent`, adapters, config loaders, runtime, core types |
-| `@thenvoi/sdk/adapters` | Adapter classes and helper types (e.g., `CodexAppServerStdioClient`, `ToolCallingModel`) |
-| `@thenvoi/sdk/config` | `loadAgentConfig`, `loadAgentConfigFromEnv` (also re-exported from root) |
-| `@thenvoi/sdk/core` | `SimpleAdapter`, `Logger`, error classes, base protocols |
-| `@thenvoi/sdk/converters` | History converters per framework |
-| `@thenvoi/sdk/runtime` | Runtime internals (room presence, execution context, agent tools) |
-| `@thenvoi/sdk/rest` | `FernRestAdapter`, `RestFacade`, REST API types, pagination helpers |
-| `@thenvoi/sdk/testing` | `FakeAgentTools`, stub REST API, test utilities |
-| `@thenvoi/sdk/linear` | Linear tools plus bridge runtime, webhook handler, dispatchers, session room store |
-| `@thenvoi/sdk/mcp` | Generic MCP registrations and HTTP/SSE/stdio backends without Claude-specific dependencies |
-| `@thenvoi/sdk/mcp/claude` | Claude Agent SDK MCP bridge (`createThenvoiSdkMcpServer`) |
+| `@band-ai/sdk` | `Agent`, adapters, config loaders, runtime, core types |
+| `@band-ai/sdk/adapters` | Adapter classes and helper types (e.g., `CodexAppServerStdioClient`, `ToolCallingModel`) |
+| `@band-ai/sdk/config` | `loadAgentConfig`, `loadAgentConfigFromEnv` (also re-exported from root) |
+| `@band-ai/sdk/core` | `SimpleAdapter`, `Logger`, error classes, base protocols |
+| `@band-ai/sdk/converters` | History converters per framework |
+| `@band-ai/sdk/runtime` | Runtime internals (room presence, execution context, agent tools) |
+| `@band-ai/sdk/rest` | `FernRestAdapter`, `RestFacade`, REST API types, pagination helpers |
+| `@band-ai/sdk/testing` | `FakeAgentTools`, stub REST API, test utilities |
+| `@band-ai/sdk/linear` | Linear tools plus bridge runtime, webhook handler, dispatchers, session room store |
+| `@band-ai/sdk/mcp` | Generic MCP registrations and HTTP/SSE/stdio backends without Claude-specific dependencies |
+| `@band-ai/sdk/mcp/claude` | Claude Agent SDK MCP bridge (`createBandSdkMcpServer`) |
 
 Adapters' upstream LLM SDKs are declared as **optional peer dependencies**. Install only the ones you use (e.g., `pnpm add @anthropic-ai/sdk` to use `AnthropicAdapter`).
 
@@ -74,7 +74,7 @@ await link.rest.getAgentMe();
 
 Memory list args use snake_case (`subject_id`, `content_query`, `page_size`, `status`) because the wire DTOs preserve the API's snake_case names — see `WireListMemoriesArgs` in `packages/sdk/src/contracts/dtos.ts`. Other args are camelCase.
 
-The full method set is the union `ThenvoiLinkRestApi = AgentProfileRestApi & MessageLifecycleRestApi & AgentToolsRestApi & ChatListingRestApi` (`packages/sdk/src/client/rest/types.ts`), covering: agent profile (`getAgentMe`), chat messaging (`createChatMessage`, `createChatEvent`, `createChat`, `listChats`, `getChatContext`), participants (`listChatParticipants`, `addChatParticipant`, `removeChatParticipant`), message lifecycle (`markMessageProcessing`, `markMessageProcessed`, `markMessageFailed`, `listMessages`, `getNextMessage`), contacts (`addContact`, `removeContact`, `respondContactRequest`, `listContacts`, `listContactRequests`), memory (`storeMemory`, `getMemory`, `supersedeMemory`, `archiveMemory`, `listMemories`), and peers (`listPeers`). Pagination helpers live in `packages/sdk/src/client/rest/pagination.ts`.
+The full method set is the union `BandLinkRestApi = AgentProfileRestApi & MessageLifecycleRestApi & AgentToolsRestApi & ChatListingRestApi` (`packages/sdk/src/client/rest/types.ts`), covering: agent profile (`getAgentMe`), chat messaging (`createChatMessage`, `createChatEvent`, `createChat`, `listChats`, `getChatContext`), participants (`listChatParticipants`, `addChatParticipant`, `removeChatParticipant`), message lifecycle (`markMessageProcessing`, `markMessageProcessed`, `markMessageFailed`, `listMessages`, `getNextMessage`), contacts (`addContact`, `removeContact`, `respondContactRequest`, `listContacts`, `listContactRequests`), memory (`storeMemory`, `getMemory`, `supersedeMemory`, `archiveMemory`, `listMemories`), and peers (`listPeers`). Pagination helpers live in `packages/sdk/src/client/rest/pagination.ts`.
 
 ## WebSocket Channels & Events
 
@@ -113,7 +113,7 @@ type ContactEvent =
   | ContactRemovedEvent;
 ```
 
-`ThenvoiLink` is `AsyncIterable<PlatformEvent>`; `PlatformRuntime` consumes it and dispatches to the correct `ExecutionContext` per room.
+`BandLink` is `AsyncIterable<PlatformEvent>`; `PlatformRuntime` consumes it and dispatches to the correct `ExecutionContext` per room.
 
 ## Contact Event Handling
 
@@ -137,7 +137,7 @@ The SDK supports three strategies for handling contact WebSocket events via `Con
 ### Configuration
 
 ```ts
-import { Agent, type ContactEventConfig } from "@thenvoi/sdk";
+import { Agent, type ContactEventConfig } from "@band-ai/sdk";
 
 // CALLBACK strategy — programmatic handling (auto-approve example)
 const contactConfig: ContactEventConfig = {
@@ -185,7 +185,7 @@ The SDK supports the [A2A (Agent-to-Agent) protocol](https://google.github.io/A2
 `A2AAdapter` forwards Thenvoi messages to an external A2A-compliant agent. Each Thenvoi room maps to an A2A context, with automatic session-state persistence via task events and session rehydration on room rejoin.
 
 ```ts
-import { Agent, A2AAdapter, type A2AAuth } from "@thenvoi/sdk";
+import { Agent, A2AAdapter, type A2AAuth } from "@band-ai/sdk";
 
 const adapter = new A2AAdapter({
   remoteUrl: "http://localhost:10000",
@@ -199,7 +199,7 @@ const adapter = new A2AAdapter({
 `A2AGatewayAdapter` exposes Thenvoi peers as A2A JSON-RPC endpoints over a built-in Express server. External A2A clients can send messages to Thenvoi agents through the gateway, with `contextId` preservation (same `contextId` = same chat room) and SSE streaming responses.
 
 ```ts
-import { Agent, A2AGatewayAdapter } from "@thenvoi/sdk";
+import { Agent, A2AGatewayAdapter } from "@band-ai/sdk";
 
 const adapter = new A2AGatewayAdapter({ gatewayPort: 10000 });
 ```
@@ -224,9 +224,9 @@ Two-layer pattern (mirrors A2A Gateway):
 | Layer | Server Side | Client Side |
 |-------|-------------|-------------|
 | Protocol | `ACPServer` (JSON-RPC handler) | spawned ACP subprocess |
-| Platform Bridge | `ThenvoiACPServerAdapter` | `ACPClientAdapter` |
+| Platform Bridge | `BandACPServerAdapter` | `ACPClientAdapter` |
 
-- **Server**: Editor → ACP → `ACPServer` → `ThenvoiACPServerAdapter` → Thenvoi REST/WS → peers
+- **Server**: Editor → ACP → `ACPServer` → `BandACPServerAdapter` → Thenvoi REST/WS → peers
 - **Client**: Thenvoi room message → `ACPClientAdapter` → spawned subprocess (Codex, Claude Code, etc.)
 
 ### Key files (under `packages/sdk/src/adapters/acp/`)
@@ -234,7 +234,7 @@ Two-layer pattern (mirrors A2A Gateway):
 | File | Purpose |
 |------|---------|
 | `ACPServer.ts` | JSON-RPC handler exposing the ACP Agent surface |
-| `ThenvoiACPServerAdapter.ts` | REST client + room/session mapping |
+| `BandACPServerAdapter.ts` | REST client + room/session mapping |
 | `ACPClientAdapter.ts` | Spawns external ACP agent subprocess |
 
 ### Optional Dependency
@@ -247,14 +247,14 @@ pnpm add @agentclientprotocol/sdk
 
 Two MCP entry points:
 
-- `@thenvoi/sdk/mcp`: generic MCP registrations + stdio/SSE/server backends. Use `createThenvoiMcpBackend`, `buildRoomScopedRegistrations`, `buildSingleContextRegistrations`. No Claude-specific dependency required.
-- `@thenvoi/sdk/mcp/claude`: bridge for the Claude Agent SDK. `createThenvoiSdkMcpServer(options)` returns an in-process MCP server compatible with `@anthropic-ai/claude-agent-sdk`.
+- `@band-ai/sdk/mcp`: generic MCP registrations + stdio/SSE/server backends. Use `createBandMcpBackend`, `buildRoomScopedRegistrations`, `buildSingleContextRegistrations`. No Claude-specific dependency required.
+- `@band-ai/sdk/mcp/claude`: bridge for the Claude Agent SDK. `createBandSdkMcpServer(options)` returns an in-process MCP server compatible with `@anthropic-ai/claude-agent-sdk`.
 
 Schema conversion uses Zod (`packages/sdk/src/mcp/zod.ts`). Tools exposed over MCP are prefixed with `mcp__thenvoi__`.
 
 ## Linear Integration
 
-`@thenvoi/sdk/linear` (re-exports from `packages/sdk/src/integrations/linear/`) ships a complete Linear ↔ Thenvoi PM bridge:
+`@band-ai/sdk/linear` (re-exports from `packages/sdk/src/integrations/linear/`) ships a complete Linear ↔ Thenvoi PM bridge:
 
 - `createLinearTools(...)`: Linear-specific agent tools (issues, comments, statuses)
 - `createLinearWebhookHandler(...)`: Express-compatible webhook handler
@@ -280,10 +280,10 @@ packages/sdk/src/
 ├── converters/        # History converters per framework
 ├── core/              # SimpleAdapter, Logger, errors, base classes
 ├── integrations/      # Deep integrations (currently: linear/)
-├── linear/            # Subpath barrel for @thenvoi/sdk/linear
+├── linear/            # Subpath barrel for @band-ai/sdk/linear
 ├── mcp/               # Generic MCP + Claude SDK MCP bridge
-├── platform/          # ThenvoiLink (WS+REST), PlatformEvent, Phoenix Channels transport
-├── rest/              # Subpath barrel for @thenvoi/sdk/rest
+├── platform/          # BandLink (WS+REST), PlatformEvent, Phoenix Channels transport
+├── rest/              # Subpath barrel for @band-ai/sdk/rest
 ├── runtime/           # PlatformRuntime, ExecutionContext, Execution, ContactEventHandler
 │   ├── tools/         # AgentTools, ContactToolsImpl, ContactCallbackTools, schemas
 │   ├── preprocessing/ # DefaultPreprocessor
@@ -314,13 +314,13 @@ pnpm install
 
 # Run unit tests (all packages from root, sdk only from packages/sdk)
 pnpm -r test
-pnpm --filter @thenvoi/sdk test
+pnpm --filter @band-ai/sdk test
 
 # Run a single test file
-pnpm --filter @thenvoi/sdk exec vitest run path/to/file.test.ts
+pnpm --filter @band-ai/sdk exec vitest run path/to/file.test.ts
 
 # Coverage
-pnpm --filter @thenvoi/sdk run coverage
+pnpm --filter @band-ai/sdk run coverage
 
 # Type-check (no emit)
 pnpm -r typecheck
@@ -332,7 +332,7 @@ pnpm -r lint
 pnpm -r build
 
 # Linear bridge example
-pnpm --filter @thenvoi/sdk run dev:linear
+pnpm --filter @band-ai/sdk run dev:linear
 ```
 
 ## Subpath Builds
@@ -382,7 +382,7 @@ When adding a new adapter, follow this workflow. Use the lowercase module name (
 ### Phase 4: Tests
 
 - Unit tests at `packages/sdk/tests/<framework>-adapter.test.ts` covering: invocation flow, tool execution, error handling, custom tools, history conversion edge cases.
-- Use `FakeAgentTools` from `@thenvoi/sdk/testing` to mock the platform side.
+- Use `FakeAgentTools` from `@band-ai/sdk/testing` to mock the platform side.
 - Optionally add an integration smoke test under `tests/integration/`.
 
 ### Phase 5: Example
@@ -393,9 +393,9 @@ When adding a new adapter, follow this workflow. Use the lowercase module name (
 ### Phase 6: Final Validation
 
 ```bash
-pnpm --filter @thenvoi/sdk run lint
-pnpm --filter @thenvoi/sdk run typecheck
-pnpm --filter @thenvoi/sdk test
+pnpm --filter @band-ai/sdk run lint
+pnpm --filter @band-ai/sdk run typecheck
+pnpm --filter @band-ai/sdk test
 ```
 
 ### Key Files Reference
@@ -419,7 +419,7 @@ Each example is a standalone TypeScript script runnable with `tsx`. Folders incl
 ### Conventions
 
 - Use `loadAgentConfig("agent_name")` (YAML) or `loadAgentConfigFromEnv()` (env vars). Never read `THENVOI_AGENT_ID`/`THENVOI_API_KEY` directly via `process.env`.
-- Throw `ValidationError` (from `@thenvoi/sdk/core`) for missing required configuration; do **not** `console.error` + `process.exit`.
+- Throw `ValidationError` (from `@band-ai/sdk/core`) for missing required configuration; do **not** `console.error` + `process.exit`.
 - Top-level `await` is fine; the package is ESM (`"type": "module"`).
 - Examples are excluded from strict ESLint rules but still typechecked.
 
@@ -431,7 +431,7 @@ Each example is a standalone TypeScript script runnable with `tsx`. Folders incl
 - No `any` in `src/` — `@typescript-eslint/no-explicit-any` is `error` for `src/**/*.ts` (relaxed for tests/examples).
 - Prefer named exports; avoid default exports.
 - All public adapter options use named interfaces (`<Framework>AdapterOptions`).
-- Use the `Logger` interface from `@thenvoi/sdk/core` instead of `console.*` in library code (`console.warn`/`console.error` allowed only when there is no logger context).
+- Use the `Logger` interface from `@band-ai/sdk/core` instead of `console.*` in library code (`console.warn`/`console.error` allowed only when there is no logger context).
 - Validate external input at boundaries with Zod schemas (`packages/sdk/src/platform/streaming/payloadSchemas.ts` is the model).
 - Never bundle peer dependencies — they must remain `external` in `tsup.config.ts`.
 - Async/await everywhere; do not return raw promises from non-async functions in library code.

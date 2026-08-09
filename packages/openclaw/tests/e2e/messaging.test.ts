@@ -2,13 +2,13 @@
  * E2E Tests: Messaging
  *
  * Tests sending and receiving messages against a real Thenvoi environment.
- * Uses ThenvoiLink from @thenvoi/sdk and RoomPresence from @thenvoi/sdk/runtime.
+ * Uses BandLink from @band-ai/sdk and RoomPresence from @band-ai/sdk/runtime.
  */
 
 import { describe, it, expect, beforeAll, afterEach } from "vitest";
-import { ThenvoiLink } from "@thenvoi/sdk";
-import { RoomPresence } from "@thenvoi/sdk/runtime";
-import type { PlatformEvent } from "@thenvoi/sdk";
+import { BandLink } from "@band-ai/sdk";
+import { RoomPresence } from "@band-ai/sdk/runtime";
+import type { PlatformEvent } from "@band-ai/sdk";
 import {
   getE2EConfig,
   canRunE2E,
@@ -29,8 +29,8 @@ interface InboundMessage {
 
 describe("E2E: Messaging", () => {
   let config: E2EConfig;
-  let link: ThenvoiLink;
-  let presenceLink: ThenvoiLink | null = null;
+  let link: BandLink;
+  let presenceLink: BandLink | null = null;
   let presence: RoomPresence | null = null;
 
   beforeAll(() => {
@@ -38,7 +38,7 @@ describe("E2E: Messaging", () => {
       return;
     }
     config = getE2EConfig();
-    link = new ThenvoiLink({
+    link = new BandLink({
       agentId: config.agentId,
       apiKey: config.apiKey,
       wsUrl: config.wsUrl,
@@ -147,7 +147,7 @@ describe("E2E: Messaging", () => {
         const receivedMessages: InboundMessage[] = [];
         let roomJoined = false;
 
-        presenceLink = new ThenvoiLink({
+        presenceLink = new BandLink({
           agentId: config.agentId,
           apiKey: config.apiKey,
           wsUrl: config.wsUrl,
@@ -195,7 +195,7 @@ describe("E2E: Messaging", () => {
       "should process backlog messages on connect",
       async () => {
         // Create a link and connect
-        presenceLink = new ThenvoiLink({
+        presenceLink = new BandLink({
           agentId: config.agentId,
           apiKey: config.apiKey,
           wsUrl: config.wsUrl,

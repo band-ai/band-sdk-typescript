@@ -449,7 +449,7 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
-function isThenvoiRateLimitError(error: unknown): boolean {
+function isBandRateLimitError(error: unknown): boolean {
   return error instanceof Error && /\b429\b/.test(error.message);
 }
 
@@ -501,7 +501,7 @@ export function createRateLimitedRestApi(input: {
         try {
           return await operation();
         } catch (error) {
-          if (!isThenvoiRateLimitError(error) || attempt >= retryLimit) {
+          if (!isBandRateLimitError(error) || attempt >= retryLimit) {
             throw error;
           }
 

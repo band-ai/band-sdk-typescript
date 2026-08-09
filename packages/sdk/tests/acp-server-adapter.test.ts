@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  ThenvoiACPServerAdapter,
+  BandACPServerAdapter,
 } from "../src/adapters/acp";
 import { FakeRestApi, FakeTools, makeMessage } from "./testUtils";
 
-describe("ThenvoiACPServerAdapter", () => {
+describe("BandACPServerAdapter", () => {
   it("creates ACP sessions, routes prompts, and streams room responses", async () => {
     const createdEvents: Array<Record<string, unknown>> = []
     const sentMessages: Array<Record<string, unknown>> = []
@@ -26,8 +26,8 @@ describe("ThenvoiACPServerAdapter", () => {
       ],
     }, { id: "agent-1", name: "Thenvoi Agent", description: null })
 
-    const adapter = new ThenvoiACPServerAdapter({
-      thenvoiRest: rest,
+    const adapter = new BandACPServerAdapter({
+      bandRest: rest,
       promptCompletionGraceMs: 5,
       responseTimeoutMs: 500,
       slashCommands: {
@@ -141,8 +141,8 @@ describe("ThenvoiACPServerAdapter", () => {
       },
     }, { id: "agent-1", name: "Thenvoi Agent", description: null })
 
-    const adapter = new ThenvoiACPServerAdapter({
-      thenvoiRest: rest,
+    const adapter = new BandACPServerAdapter({
+      bandRest: rest,
       maxSessions: 1,
     })
     await adapter.onStarted("Thenvoi Agent", "ACP server")
@@ -162,8 +162,8 @@ describe("ThenvoiACPServerAdapter", () => {
 
   it("completes ACP prompts after tool-only room updates", async () => {
     const sentMessages: Array<Record<string, unknown>> = []
-    const adapter = new ThenvoiACPServerAdapter({
-      thenvoiRest: new FakeRestApi({
+    const adapter = new BandACPServerAdapter({
+      bandRest: new FakeRestApi({
         createChat: async () => ({ id: "room-tools" }),
         createChatMessage: async (_chatId, message) => {
           sentMessages.push(message as Record<string, unknown>)

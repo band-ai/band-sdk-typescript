@@ -150,7 +150,7 @@ describe("A2AGatewayAdapter", () => {
     expect(
       () =>
         new A2AGatewayAdapter({
-          thenvoiRest: new FakeRestApi(),
+          bandRest: new FakeRestApi(),
           allowUnauthenticatedLoopback: true,
           host: "0.0.0.0",
         }),
@@ -175,7 +175,7 @@ describe("A2AGatewayAdapter", () => {
     };
 
     const adapter = new A2AGatewayAdapter({
-      thenvoiRest: rest,
+      bandRest: rest,
       serverFactory,
       responseTimeoutMs: 2_000,
     });
@@ -250,7 +250,7 @@ describe("A2AGatewayAdapter", () => {
 
   it("forgets room mappings during cleanup", async () => {
     const adapter = new A2AGatewayAdapter({
-      thenvoiRest: new FakeRestApi(),
+      bandRest: new FakeRestApi(),
     });
     const state = adapter as unknown as {
       contextToRoom: Map<string, string>;
@@ -280,7 +280,7 @@ describe("A2AGatewayAdapter", () => {
     const rest = new FakeRestApi();
     let stopped = false;
     const adapter = new A2AGatewayAdapter({
-      thenvoiRest: rest,
+      bandRest: rest,
       serverFactory: () => ({
         start: async () => undefined,
         stop: async () => {
@@ -326,7 +326,7 @@ describe("A2AGatewayAdapter", () => {
 
     let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
     const adapter = new A2AGatewayAdapter({
-      thenvoiRest: rest,
+      bandRest: rest,
       serverFactory: (options) => {
         onRequest = options.onRequest;
         return {
@@ -386,7 +386,7 @@ describe("A2AGatewayAdapter", () => {
 
     let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
     const adapter = new A2AGatewayAdapter({
-      thenvoiRest: rest,
+      bandRest: rest,
       serverFactory: (options) => {
         onRequest = options.onRequest;
         return {
@@ -463,7 +463,7 @@ describe("A2AGatewayAdapter", () => {
 
     let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
     const adapter = new A2AGatewayAdapter({
-      thenvoiRest: rest,
+      bandRest: rest,
       serverFactory: (options) => {
         onRequest = options.onRequest;
         return {
@@ -501,7 +501,7 @@ describe("A2AGatewayAdapter", () => {
 
     let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
     const adapter = new A2AGatewayAdapter({
-      thenvoiRest: rest,
+      bandRest: rest,
       serverFactory: (options) => {
         onRequest = options.onRequest;
         return {
@@ -565,7 +565,7 @@ describe("A2AGatewayAdapter", () => {
 
     let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
     const adapter = new A2AGatewayAdapter({
-      thenvoiRest: rest,
+      bandRest: rest,
       serverFactory: (options) => {
         onRequest = options.onRequest;
         return {
@@ -619,7 +619,7 @@ describe("A2AGatewayAdapter", () => {
 
     let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
     const adapter = new A2AGatewayAdapter({
-      thenvoiRest: rest,
+      bandRest: rest,
       serverFactory: (options) => {
         onRequest = options.onRequest;
         return {
@@ -673,7 +673,7 @@ describe("A2AGatewayAdapter", () => {
 
     let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
     const adapter = new A2AGatewayAdapter({
-      thenvoiRest: rest,
+      bandRest: rest,
       serverFactory: (options) => {
         onRequest = options.onRequest;
         return {
@@ -774,7 +774,7 @@ describe("A2AGatewayAdapter", () => {
 
     let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
     const adapter = new A2AGatewayAdapter({
-      thenvoiRest: rest,
+      bandRest: rest,
       serverFactory: (options) => {
         onRequest = options.onRequest;
         return {
@@ -832,7 +832,7 @@ describe("A2AGatewayAdapter", () => {
 
     let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
     const adapter = new A2AGatewayAdapter({
-      thenvoiRest: rest,
+      bandRest: rest,
       serverFactory: (options) => {
         onRequest = options.onRequest;
         return {
@@ -892,7 +892,7 @@ describe("A2AGatewayAdapter", () => {
 
     let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
     const adapter = new A2AGatewayAdapter({
-      thenvoiRest: rest,
+      bandRest: rest,
       serverFactory: (options) => {
         onRequest = options.onRequest;
         return {

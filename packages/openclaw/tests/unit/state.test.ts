@@ -3,7 +3,7 @@
  * accountId, NO globalThis; reset() for test isolation).
  *
  * Holds per-account state the tools path and outbound adapter need without a
- * gateway ctx: the ThenvoiLink, the agent's own id + owner id, a room-type
+ * gateway ctx: the BandLink, the agent's own id + owner id, a room-type
  * cache (L2 ChatType), and an LRU last-sender cache (auto-mention fallback).
  */
 

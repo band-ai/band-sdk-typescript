@@ -28,8 +28,8 @@ const DEFAULT_MAX_SESSIONS = 100
 const DEFAULT_PROMPT_TIMEOUT_MS = 300_000
 const DEFAULT_PROMPT_COMPLETION_GRACE_MS = 250
 
-export interface ThenvoiACPServerAdapterOptions {
-  thenvoiRest: RestApi;
+export interface BandACPServerAdapterOptions {
+  bandRest: RestApi;
   maxSessions?: number;
   responseTimeoutMs?: number;
   promptCompletionGraceMs?: number;
@@ -38,8 +38,8 @@ export interface ThenvoiACPServerAdapterOptions {
   slashCommands?: Record<string, string>;
 }
 
-export class ThenvoiACPServerAdapter extends SimpleAdapter<ACPServerSessionState, MessagingTools> {
-  private readonly thenvoiRest: RestApi
+export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, MessagingTools> {
+  private readonly bandRest: RestApi
   private readonly maxSessions: number
   private readonly responseTimeoutMs: number
   private readonly promptCompletionGraceMs: number
@@ -59,12 +59,12 @@ export class ThenvoiACPServerAdapter extends SimpleAdapter<ACPServerSessionState
   private readonly router: AgentRouter
   private readonly pushHandler: ACPPushHandler
 
-  public constructor(options: ThenvoiACPServerAdapterOptions) {
+  public constructor(options: BandACPServerAdapterOptions) {
     super({
       historyConverter: new ACPServerHistoryConverter(),
     })
 
-    this.thenvoiRest = options.thenvoiRest
+    this.bandRest = options.bandRest
     this.maxSessions = options.maxSessions ?? DEFAULT_MAX_SESSIONS
     this.responseTimeoutMs = options.responseTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS
     this.promptCompletionGraceMs = options.promptCompletionGraceMs ?? DEFAULT_PROMPT_COMPLETION_GRACE_MS
@@ -148,7 +148,7 @@ export class ThenvoiACPServerAdapter extends SimpleAdapter<ACPServerSessionState
 
   public async verifyCredentials(): Promise<boolean> {
     try {
-      await this.thenvoiRest.getAgentMe()
+      await this.bandRest.getAgentMe()
       return true
     } catch {
       return false
@@ -162,7 +162,7 @@ export class ThenvoiACPServerAdapter extends SimpleAdapter<ACPServerSessionState
     await super.onStarted(agentName, agentDescription)
 
     try {
-      const identity = await this.thenvoiRest.getAgentMe()
+      const identity = await this.bandRest.getAgentMe()
       this.agentId = identity.id
     } catch {
       this.agentId = null
@@ -182,7 +182,7 @@ export class ThenvoiACPServerAdapter extends SimpleAdapter<ACPServerSessionState
       throw new Error(`Maximum ACP sessions (${this.maxSessions}) reached`)
     }
     try {
-      const room = await this.thenvoiRest.createChat()
+      const room = await this.bandRest.createChat()
       const sessionId = randomUUID()
       const normalizedMcpServers = normalizeMcpServers(input.mcpServers)
 
@@ -194,7 +194,7 @@ export class ThenvoiACPServerAdapter extends SimpleAdapter<ACPServerSessionState
       }
 
       try {
-        await this.thenvoiRest.createChatEvent(room.id, {
+        await this.bandRest.createChatEvent(room.id, {
           content: "ACP session context",
           messageType: "task",
           metadata: {
@@ -231,11 +231,11 @@ export class ThenvoiACPServerAdapter extends SimpleAdapter<ACPServerSessionState
 
     const resolved = this.router.resolve(text, this.sessionModeIds.get(sessionId))
     const promptText = this.prependSessionContext(sessionId, resolved.text)
-    const participants = await this.thenvoiRest.listChatParticipants(roomId)
+    const participants = await this.bandRest.listChatParticipants(roomId)
     const mentions = this.resolveMentions(participants, resolved.targetPeer)
 
     try {
-      await this.thenvoiRest.createChatMessage(roomId, {
+      await this.bandRest.createChatMessage(roomId, {
         content: promptText,
         mentions,
       })

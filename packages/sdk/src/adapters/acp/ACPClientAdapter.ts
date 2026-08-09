@@ -17,10 +17,10 @@ import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import type { PlatformMessage } from "../../runtime/types";
 import type { McpToolRegistration } from "../../mcp/registrations";
-import { ThenvoiMcpServer } from "../../mcp/server";
-import { ThenvoiMcpSseServer } from "../../mcp/sse";
+import { BandMcpServer } from "../../mcp/server";
+import { BandMcpSseServer } from "../../mcp/sse";
 import {
-  ThenvoiACPClient,
+  BandACPClient,
 } from "./client";
 import {
   choosePermissionOption,
@@ -32,12 +32,12 @@ import { acpModule } from "./loader";
 type InjectedMcpBackend =
   | {
     kind: "http";
-    server: ThenvoiMcpServer;
+    server: BandMcpServer;
     stop(): Promise<void>;
   }
   | {
     kind: "sse";
-    server: ThenvoiMcpSseServer;
+    server: BandMcpSseServer;
     stop(): Promise<void>;
   }
 
@@ -72,7 +72,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private readonly bootstrappedSessions = new Set<string>()
 
   private backend: InjectedMcpBackend | null = null
-  private client: ThenvoiACPClient | null = null
+  private client: BandACPClient | null = null
   private connectionHandle: ACPClientConnectionHandle | null = null
   private connection: ClientSideConnection | null = null
   private connectionState: InitializeResponse | null = null
@@ -247,7 +247,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
   private async spawnConnection(): Promise<ClientSideConnection> {
     const acp = await acpModule.get()
-    const client = new ThenvoiACPClient()
+    const client = new BandACPClient()
     const handle = await this.connectionFactory(client as Client, {
       command: this.command,
       cwd: this.cwd,
@@ -392,7 +392,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       : (this.connectionState?.agentCapabilities?.mcpCapabilities?.sse ? "sse" : "http")
 
     if (transport === "sse") {
-      const server = new ThenvoiMcpSseServer({
+      const server = new BandMcpSseServer({
         tools: (roomId) => this.roomTools.get(roomId),
         enableMemoryTools: this.enableMemoryTools,
         enableContactTools: true,
@@ -409,7 +409,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       return this.backend
     }
 
-    const server = new ThenvoiMcpServer({
+    const server = new BandMcpServer({
       tools: (roomId) => this.roomTools.get(roomId),
       enableMemoryTools: this.enableMemoryTools,
       enableContactTools: true,

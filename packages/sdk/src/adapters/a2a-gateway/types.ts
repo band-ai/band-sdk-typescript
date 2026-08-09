@@ -118,7 +118,7 @@ export type GatewayServerFactory = (
 ) => GatewayServerLike;
 
 export interface A2AGatewayAdapterOptions {
-  thenvoiRest: RestApi;
+  bandRest: RestApi;
   gatewayUrl?: string;
   host?: string;
   port?: number;

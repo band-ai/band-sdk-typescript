@@ -23,7 +23,7 @@ export function createA2AGatewayAgent(
   );
 
   const adapter = new A2AGatewayAdapter({
-    thenvoiRest: restApi,
+    bandRest: restApi,
     port: options?.port,
     gatewayUrl: options?.gatewayUrl,
     authToken: options?.authToken ?? thenvoiApiKey,

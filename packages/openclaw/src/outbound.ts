@@ -13,10 +13,10 @@
  * wiring supplies the live deps from the connected account.
  */
 
-import type { ThenvoiLink } from "@thenvoi/sdk";
+import type { BandLink } from "@band-ai/sdk";
 import { resolveMentions, type LastSender } from "./mentions.js";
 
-type BandRest = ThenvoiLink["rest"];
+type BandRest = BandLink["rest"];
 
 export interface OutboundDeps {
   rest: BandRest;

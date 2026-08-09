@@ -1,5 +1,5 @@
 /**
- * Band transport layer: owns the WebSocket connection lifecycle (ThenvoiLink +
+ * Band transport layer: owns the WebSocket connection lifecycle (BandLink +
  * AgentRuntime) and turns inbound Band platform events into OpenClaw inbound
  * contexts dispatched to core. `AgentRuntime` (one `Execution` per room) drains
  * the REST backlog on (re)connect, so messages sent while disconnected aren't
@@ -13,9 +13,9 @@
  *  - SessionKey is the stable `band:{roomId}` (no chat_type/platform folding)
  */
 
-import type { PlatformEvent, ContactEvent } from "@thenvoi/sdk";
-import { ThenvoiLink } from "@thenvoi/sdk";
-import { AgentRuntime, ContactEventHandler } from "@thenvoi/sdk/runtime";
+import type { PlatformEvent, ContactEvent } from "@band-ai/sdk";
+import { BandLink } from "@band-ai/sdk";
+import { AgentRuntime, ContactEventHandler } from "@band-ai/sdk/runtime";
 import type { MsgContext } from "openclaw/plugin-sdk/reply-runtime";
 import { dispatchInboundMessageWithBufferedDispatcher } from "openclaw/plugin-sdk/reply-runtime";
 import { runPassiveAccountLifecycle } from "openclaw/plugin-sdk/channel-lifecycle";
@@ -244,7 +244,7 @@ function defaultDispatch(deps: Required<Pick<BandGatewayDeps, "log">>): (p: Disp
  * is unit-testable with fakes. */
 export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAdapter<BandAccountConfig> {
   const log = deps.log ?? ((msg: string) => console.log(msg));
-  const createLink = deps.createLink ?? ((conn) => new ThenvoiLink(conn) as unknown as LinkLike);
+  const createLink = deps.createLink ?? ((conn) => new BandLink(conn) as unknown as LinkLike);
   const createRuntime =
     deps.createRuntime ??
     ((link, opts) => new AgentRuntime(buildRuntimeOptions(link, opts) as never) as unknown as RuntimeLike);
@@ -325,7 +325,7 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
       // Band's message status is sent -> processing -> processed; markProcessing
       // must be called before markProcessed. Not bestEffort: we want a REST
       // failure here to surface (via the catch below) rather than be silently
-      // swallowed by ThenvoiLink's no-op logger, since a message that never
+      // swallowed by BandLink's no-op logger, since a message that never
       // gets marked processed is redelivered from the backlog.
       async function markRoomMessageHandled(roomId: string, messageId: string): Promise<void> {
         if (link.markProcessing) {

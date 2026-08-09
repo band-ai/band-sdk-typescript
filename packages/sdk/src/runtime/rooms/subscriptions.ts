@@ -1,10 +1,10 @@
 import type { RestRequestOptions } from "../../client/rest/requestOptions";
 import { UnsupportedFeatureError } from "../../core/errors";
 import type { MetadataMap } from "../../contracts/dtos";
-import type { ThenvoiLink } from "../../platform/ThenvoiLink";
+import type { BandLink } from "../../platform/BandLink";
 
 interface TrackRoomJoinOptions {
-  link: ThenvoiLink;
+  link: BandLink;
   roomId: string | null;
   payload: MetadataMap;
   trackedRooms: Set<string>;
@@ -13,14 +13,14 @@ interface TrackRoomJoinOptions {
 }
 
 interface TrackRoomLeaveOptions {
-  link: ThenvoiLink;
+  link: BandLink;
   roomId: string | null;
   trackedRooms: Set<string>;
   onLeft?: (roomId: string) => Promise<void>;
 }
 
 interface HydrateTrackedRoomsOptions {
-  link: ThenvoiLink;
+  link: BandLink;
   trackedRooms: Set<string>;
   roomFilter?: (room: MetadataMap) => boolean;
   onJoined?: (roomId: string, payload: MetadataMap) => Promise<void>;

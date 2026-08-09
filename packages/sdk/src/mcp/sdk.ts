@@ -17,7 +17,7 @@ import {
 } from "./registrations";
 import { buildZodShape } from "./zod";
 
-export interface CreateThenvoiSdkMcpServerOptions {
+export interface CreateBandSdkMcpServerOptions {
   enableMemoryTools: boolean;
   /**
    * Returns the tools for a given room. In single-room mode (`multiRoom: false`),
@@ -53,7 +53,7 @@ export interface GetSystemPromptContextOptions {
   ttlMs?: number;
 }
 
-export interface ThenvoiSdkMcpServer {
+export interface BandSdkMcpServer {
   serverConfig: McpSdkServerConfigWithInstance;
   allowedTools: string[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- matches SDK's own SdkMcpToolDefinition<any> signature
@@ -65,9 +65,9 @@ export interface ThenvoiSdkMcpServer {
   ): Promise<GetSystemPromptContextResult>;
 }
 
-export function createThenvoiSdkMcpServer(
-  options: CreateThenvoiSdkMcpServerOptions,
-): ThenvoiSdkMcpServer {
+export function createBandSdkMcpServer(
+  options: CreateBandSdkMcpServerOptions,
+): BandSdkMcpServer {
   const registrationOptions = {
     enableMemoryTools: options.enableMemoryTools,
     enableContactTools: true,

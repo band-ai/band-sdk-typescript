@@ -12,8 +12,8 @@ import {
   type CustomToolDef,
 } from "../../runtime/tools/customTools";
 import {
-  createThenvoiMcpBackend,
-  type ThenvoiMcpBackend,
+  createBandMcpBackend,
+  type BandMcpBackend,
 } from "../../mcp/backends";
 import type { McpToolRegistration } from "../../mcp/registrations";
 import { errorResult, successResult } from "../../mcp/registrations";
@@ -102,7 +102,7 @@ interface OpencodeAdapterOptions {
   customTools?: CustomToolDef[];
   historyConverter?: OpencodeHistoryConverter;
   clientFactory?: (config: Required<OpencodeAdapterConfig>) => OpencodeClientLike;
-  mcpBackendFactory?: typeof createThenvoiMcpBackend;
+  mcpBackendFactory?: typeof createBandMcpBackend;
   logger?: Logger;
 }
 
@@ -174,13 +174,13 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   private readonly config: Required<OpencodeAdapterConfig>;
   private readonly customTools: CustomToolDef[];
   private readonly clientFactory: (config: Required<OpencodeAdapterConfig>) => OpencodeClientLike;
-  private readonly mcpBackendFactory: typeof createThenvoiMcpBackend;
+  private readonly mcpBackendFactory: typeof createBandMcpBackend;
   private readonly logger: Logger;
   private readonly rooms = new Map<string, RoomState>();
   private readonly roomBySession = new Map<string, string>();
   private client: OpencodeClientLike | null = null;
   private eventTask: Promise<void> | null = null;
-  private mcpBackend: ThenvoiMcpBackend | null = null;
+  private mcpBackend: BandMcpBackend | null = null;
   private systemPrompt = "";
 
   public constructor(options: OpencodeAdapterOptions = {}) {
@@ -202,7 +202,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
           workspace: config.workspace || undefined,
         })
     ));
-    this.mcpBackendFactory = options.mcpBackendFactory ?? createThenvoiMcpBackend;
+    this.mcpBackendFactory = options.mcpBackendFactory ?? createBandMcpBackend;
     this.logger = options.logger ?? new NoopLogger();
   }
 
@@ -350,7 +350,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     }
   }
 
-  private async ensureMcpBackend(): Promise<ThenvoiMcpBackend> {
+  private async ensureMcpBackend(): Promise<BandMcpBackend> {
     if (this.mcpBackend) {
       return this.mcpBackend;
     }

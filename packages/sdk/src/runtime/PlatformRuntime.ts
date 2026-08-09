@@ -1,6 +1,6 @@
 import type { FrameworkAdapter, Preprocessor } from "../contracts/protocols";
 import type { ContactEvent, PlatformEvent } from "../platform/events";
-import { ThenvoiLink, type ThenvoiLinkOptions } from "../platform/ThenvoiLink";
+import { BandLink, type BandLinkOptions } from "../platform/BandLink";
 import { AgentRuntime } from "./rooms/AgentRuntime";
 import type { AgentConfig, ContactEventConfig, SessionConfig } from "./types";
 import type { PlatformMessage } from "./types";
@@ -18,8 +18,8 @@ export interface PlatformRuntimeOptions {
   apiKey: string;
   wsUrl?: string;
   restUrl?: string;
-  link?: ThenvoiLink;
-  linkOptions?: Omit<ThenvoiLinkOptions, "agentId" | "apiKey">;
+  link?: BandLink;
+  linkOptions?: Omit<BandLinkOptions, "agentId" | "apiKey">;
   preprocessor?: Preprocessor<PlatformEvent>;
   sessionConfig?: SessionConfig;
   contactConfig?: ContactEventConfig;
@@ -44,7 +44,7 @@ export class PlatformRuntime {
   private readonly sessionConfig?: SessionConfig;
   private readonly contactConfig?: ContactEventConfig;
   private readonly agentConfig?: AgentConfig;
-  private readonly linkOptions?: Omit<ThenvoiLinkOptions, "agentId" | "apiKey">;
+  private readonly linkOptions?: Omit<BandLinkOptions, "agentId" | "apiKey">;
   private readonly configuredIdentity?: {
     name: string;
     description?: string | null;
@@ -55,7 +55,7 @@ export class PlatformRuntime {
   private readonly _roomFilter?: (room: MetadataMap) => boolean;
   private readonly _contextFactory?: (roomId: string, defaults: ExecutionContextOptions) => ExecutionContext;
 
-  private linkInstance?: ThenvoiLink;
+  private linkInstance?: BandLink;
   private initPromise: Promise<void> | null = null;
   private runtime?: AgentRuntime;
   private contactHandler?: ContactEventHandler;
@@ -96,7 +96,7 @@ export class PlatformRuntime {
     this._contextFactory = options.contextFactory;
   }
 
-  public get link(): ThenvoiLink {
+  public get link(): BandLink {
     if (!this.linkInstance) {
       throw new RuntimeStateError("Runtime is not initialized");
     }
@@ -140,7 +140,7 @@ export class PlatformRuntime {
 
   private async doInitialize(): Promise<void> {
     if (!this.linkInstance) {
-      this.linkInstance = new ThenvoiLink({
+      this.linkInstance = new BandLink({
         ...this.linkOptions,
         agentId: this._agentId,
         apiKey: this._apiKey,

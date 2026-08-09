@@ -1,13 +1,13 @@
 /**
- * E2E Tests: MCP Tools (via ThenvoiLink REST API)
+ * E2E Tests: MCP Tools (via BandLink REST API)
  *
  * Tests the underlying API calls that power the MCP tools.
- * These tests call ThenvoiLink.rest directly since MCP tools
+ * These tests call BandLink.rest directly since MCP tools
  * require the channel to be initialized.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { ThenvoiLink } from "@thenvoi/sdk";
+import { BandLink } from "@band-ai/sdk";
 import {
   getE2EConfig,
   canRunE2E,
@@ -18,7 +18,7 @@ import type { E2EConfig } from "./setup.js";
 
 describe("E2E: MCP Tools (API)", () => {
   let config: E2EConfig;
-  let link: ThenvoiLink;
+  let link: BandLink;
   let testRoomId: string | null = null;
 
   beforeAll(() => {
@@ -26,7 +26,7 @@ describe("E2E: MCP Tools (API)", () => {
       return;
     }
     config = getE2EConfig();
-    link = new ThenvoiLink({
+    link = new BandLink({
       agentId: config.agentId,
       apiKey: config.apiKey,
       wsUrl: config.wsUrl,

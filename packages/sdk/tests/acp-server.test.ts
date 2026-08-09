@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   ACPServer,
-  ThenvoiACPServerAdapter,
+  BandACPServerAdapter,
 } from "../src/adapters/acp";
 import { ClientSideConnection, ndJsonStream } from "@agentclientprotocol/sdk";
 import { FakeRestApi, FakeTools, makeMessage } from "./testUtils";
@@ -22,8 +22,8 @@ describe("ACPServer", () => {
       ],
     }, { id: "agent-1", name: "Thenvoi Agent", description: null })
 
-    const adapter = new ThenvoiACPServerAdapter({
-      thenvoiRest: rest,
+    const adapter = new BandACPServerAdapter({
+      bandRest: rest,
       promptCompletionGraceMs: 5,
       responseTimeoutMs: 500,
     })
@@ -106,8 +106,8 @@ describe("ACPServer", () => {
       createChatEvent: async () => ({ ok: true }),
     }, { id: "agent-1", name: "Thenvoi Agent", description: null })
 
-    const adapter = new ThenvoiACPServerAdapter({
-      thenvoiRest: rest,
+    const adapter = new BandACPServerAdapter({
+      bandRest: rest,
       sessionModes: [{
         id: "default",
         name: "Default",
