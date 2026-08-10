@@ -1,6 +1,6 @@
 {
   "package": "@band-ai/sdk",
-  "version": "0.1.7",
+  "version": "0.1.10",
   "subpaths": {
     ".": {
       "runtime": [
