@@ -10,6 +10,6 @@ describe("MCP import boundary", () => {
     const mcp = await import("../src/mcp/index");
 
     expect(typeof mcp.buildRoomScopedRegistrations).toBe("function");
-    expect("createThenvoiSdkMcpServer" in mcp).toBe(false);
+    expect("createBandSdkMcpServer" in mcp).toBe(false);
   });
 });

@@ -203,7 +203,7 @@ describe("OpencodeAdapter", () => {
     await pending;
 
     expect(client.registeredMcpServers).toEqual([
-      { name: "thenvoi", url: "http://127.0.0.1:5555/mcp" },
+      { name: "band", url: "http://127.0.0.1:5555/mcp" },
     ]);
     expect(client.promptCalls[0]?.payload.parts).toEqual([{
       type: "text",

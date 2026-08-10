@@ -353,6 +353,36 @@ export const TOOL_MODELS = {
   },
 } as const;
 
+export const TOOL_NAME_ALIASES = {
+  band_send_message: "thenvoi_send_message",
+  band_send_event: "thenvoi_send_event",
+  band_add_participant: "thenvoi_add_participant",
+  band_remove_participant: "thenvoi_remove_participant",
+  band_get_participants: "thenvoi_get_participants",
+  band_lookup_peers: "thenvoi_lookup_peers",
+  band_create_chatroom: "thenvoi_create_chatroom",
+  band_list_contacts: "thenvoi_list_contacts",
+  band_add_contact: "thenvoi_add_contact",
+  band_remove_contact: "thenvoi_remove_contact",
+  band_list_contact_requests: "thenvoi_list_contact_requests",
+  band_respond_contact_request: "thenvoi_respond_contact_request",
+  band_list_memories: "thenvoi_list_memories",
+  band_store_memory: "thenvoi_store_memory",
+  band_get_memory: "thenvoi_get_memory",
+  band_supersede_memory: "thenvoi_supersede_memory",
+  band_archive_memory: "thenvoi_archive_memory",
+} as const satisfies Record<string, keyof typeof TOOL_MODELS>;
+
+export function canonicalToolName(name: string): string {
+  return TOOL_NAME_ALIASES[name as keyof typeof TOOL_NAME_ALIASES] ?? name;
+}
+
+export function legacyToolNamesForCanonical(name: string): string[] {
+  return Object.entries(TOOL_NAME_ALIASES)
+    .filter(([, canonical]) => canonical === name)
+    .map(([legacy]) => legacy);
+}
+
 export const ALL_TOOL_NAMES = new Set(Object.keys(TOOL_MODELS));
 
 export const MEMORY_TOOL_NAMES = new Set<string>([

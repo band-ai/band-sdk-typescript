@@ -12,8 +12,8 @@ import {
   type CustomToolDef,
 } from "../../runtime/tools/customTools";
 import {
-  createThenvoiMcpBackend,
-  type ThenvoiMcpBackend,
+  createBandMcpBackend,
+  type BandMcpBackend,
 } from "../../mcp/backends";
 import type { McpToolRegistration } from "../../mcp/registrations";
 import { errorResult, successResult } from "../../mcp/registrations";
@@ -30,8 +30,8 @@ import {
 } from "./client";
 
 const OPENCODE_SYSTEM_NOTE = [
-  "Responses are relayed back into the Thenvoi room by the adapter.",
-  "Use the thenvoi_ prefixed tools (for example thenvoi_send_message) for Thenvoi platform actions when available.",
+  "Responses are relayed back into the Band room by the adapter.",
+  "Use the thenvoi_ prefixed tools (for example thenvoi_send_message) for Band platform actions when available.",
   "When you need approval or clarification, ask clearly and wait for the user's next room message.",
 ].join("\n");
 
@@ -102,7 +102,7 @@ interface OpencodeAdapterOptions {
   customTools?: CustomToolDef[];
   historyConverter?: OpencodeHistoryConverter;
   clientFactory?: (config: Required<OpencodeAdapterConfig>) => OpencodeClientLike;
-  mcpBackendFactory?: typeof createThenvoiMcpBackend;
+  mcpBackendFactory?: typeof createBandMcpBackend;
   logger?: Logger;
 }
 
@@ -135,8 +135,8 @@ function withDefaults(config?: OpencodeAdapterConfig): Required<OpencodeAdapterC
     approvalTimeoutReply: "reject",
     questionMode: "manual",
     questionWaitTimeoutMs: 300_000,
-    sessionTitlePrefix: "Thenvoi",
-    mcpServerName: "thenvoi",
+    sessionTitlePrefix: "Band",
+    mcpServerName: "band",
     ...config,
   };
 }
@@ -174,13 +174,13 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   private readonly config: Required<OpencodeAdapterConfig>;
   private readonly customTools: CustomToolDef[];
   private readonly clientFactory: (config: Required<OpencodeAdapterConfig>) => OpencodeClientLike;
-  private readonly mcpBackendFactory: typeof createThenvoiMcpBackend;
+  private readonly mcpBackendFactory: typeof createBandMcpBackend;
   private readonly logger: Logger;
   private readonly rooms = new Map<string, RoomState>();
   private readonly roomBySession = new Map<string, string>();
   private client: OpencodeClientLike | null = null;
   private eventTask: Promise<void> | null = null;
-  private mcpBackend: ThenvoiMcpBackend | null = null;
+  private mcpBackend: BandMcpBackend | null = null;
   private systemPrompt = "";
 
   public constructor(options: OpencodeAdapterOptions = {}) {
@@ -202,7 +202,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
           workspace: config.workspace || undefined,
         })
     ));
-    this.mcpBackendFactory = options.mcpBackendFactory ?? createThenvoiMcpBackend;
+    this.mcpBackendFactory = options.mcpBackendFactory ?? createBandMcpBackend;
     this.logger = options.logger ?? new NoopLogger();
   }
 
@@ -350,7 +350,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     }
   }
 
-  private async ensureMcpBackend(): Promise<ThenvoiMcpBackend> {
+  private async ensureMcpBackend(): Promise<BandMcpBackend> {
     if (this.mcpBackend) {
       return this.mcpBackend;
     }

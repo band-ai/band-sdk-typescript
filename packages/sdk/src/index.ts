@@ -1,7 +1,7 @@
 export { Agent } from "./agent/Agent";
 export type { AgentCreateOptions } from "./agent/Agent";
 
-export { ThenvoiLink, deriveDefaultRestUrl } from "./platform/ThenvoiLink";
+export { BandLink, ThenvoiLink, deriveDefaultRestUrl } from "./platform/BandLink";
 export type { PlatformEvent, ContactEvent } from "./platform/events";
 export { WebSocketDisconnectError } from "./platform/streaming/disconnectReason";
 export type {

@@ -9,6 +9,7 @@ import {
   MEMORY_TOOL_NAMES,
   TOOL_MODELS,
   getToolDescription,
+  legacyToolNamesForCanonical,
 } from "../runtime/tools/schemas";
 
 export interface McpToolRegistration {
@@ -126,16 +127,29 @@ function buildRegistrations(
       required.push("room_id");
     }
 
-    registrations.push({
-      name: toolName,
+    const registration = {
       description: getToolDescription(toolName),
       inputSchema: {
-        type: "object",
+        type: "object" as const,
         properties,
         required,
       },
+    };
+
+    registrations.push({
+      ...registration,
+      name: toolName,
       execute: (args) => executor(toolName, args),
     });
+
+    for (const legacyName of legacyToolNamesForCanonical(toolName)) {
+      registrations.push({
+        ...registration,
+        name: legacyName,
+        description: `${registration.description} (legacy alias for ${toolName})`,
+        execute: (args) => executor(toolName, args),
+      });
+    }
   }
 
   return registrations;

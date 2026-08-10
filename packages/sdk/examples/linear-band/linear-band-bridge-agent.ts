@@ -15,7 +15,7 @@ import {
 } from "../../src/linear";
 import type { Logger } from "../../src/core";
 
-interface LinearThenvoiBridgeAgentOptions {
+interface LinearBandBridgeAgentOptions {
   agentId?: string;
   apiKey?: string;
   wsUrl?: string;
@@ -32,21 +32,21 @@ interface LinearThenvoiBridgeAgentOptions {
   sessionConfig?: SessionConfig;
   /**
    * When true, the bridge agent subscribes to rooms it is added to directly
-   * (Thenvoi-initiated), not just rooms created via Linear webhooks.
-   * Defaults to false. Set to true to enable bidirectional (Thenvoi-initiated) operation.
+   * (Band-initiated), not just rooms created via Linear webhooks.
+   * Defaults to false. Set to true to enable bidirectional (Band-initiated) operation.
    */
   autoSubscribeExistingRooms?: boolean;
 }
 
-export function createLinearThenvoiBridgeAgent(
-  options?: LinearThenvoiBridgeAgentOptions,
+export function createLinearBandBridgeAgent(
+  options?: LinearBandBridgeAgentOptions,
 ): Agent {
-  const store = options?.store ?? createLinearThenvoiBridgeStore(options?.stateDbPath);
-  return createLinearThenvoiBridgeAgentWithStore({ ...options, store });
+  const store = options?.store ?? createLinearBandBridgeStore(options?.stateDbPath);
+  return createLinearBandBridgeAgentWithStore({ ...options, store });
 }
 
-function createLinearThenvoiBridgeAgentWithStore(
-  options: LinearThenvoiBridgeAgentOptions & { store: SessionRoomStore },
+function createLinearBandBridgeAgentWithStore(
+  options: LinearBandBridgeAgentOptions & { store: SessionRoomStore },
 ): Agent {
   const linearClient = options?.linearClient ?? createLinearClient(
     options?.linearAccessToken ?? process.env.LINEAR_ACCESS_TOKEN ?? "linear-api-key",
@@ -61,7 +61,7 @@ function createLinearThenvoiBridgeAgentWithStore(
       sandboxMode: "workspace-write",
       enableExecutionReporting: true,
       emitThoughtEvents: true,
-      customSection: buildLinearThenvoiBridgePrompt(),
+      customSection: buildLinearBandBridgePrompt(),
     },
     customTools: createLinearTools({
       client: linearClient,
@@ -92,13 +92,13 @@ function createLinearThenvoiBridgeAgentWithStore(
   });
 }
 
-function createLinearThenvoiBridgeStore(stateDbPath?: string): SessionRoomStore {
+function createLinearBandBridgeStore(stateDbPath?: string): SessionRoomStore {
   return createSqliteSessionRoomStore(
-    stateDbPath ?? process.env.LINEAR_THENVOI_STATE_DB ?? ".linear-thenvoi-example.sqlite",
+    stateDbPath ?? process.env.LINEAR_BAND_STATE_DB ?? ".linear-band-example.sqlite",
   );
 }
 
-export function buildLinearThenvoiBridgePrompt(): string {
+export function buildLinearBandBridgePrompt(): string {
   return `You are Band Linear PM.
 
 You are the only Linear-facing coordinator in the room.
@@ -107,14 +107,14 @@ You operate in two modes depending on how the conversation starts:
 
 ## Mode detection
 - **Linear-initiated**: The room contains a session payload with a Linear session context (session_id, issue_id, etc.). Proceed with the standard webhook-driven flow.
-- **Thenvoi-initiated**: The room has no Linear session context. You were added to the room directly or joined via autoSubscribe. Start in discovery mode.
+- **Band-initiated**: The room has no Linear session context. You were added to the room directly or joined via autoSubscribe. Start in discovery mode.
 
-## Thenvoi-initiated mode (no Linear session context)
+## Band-initiated mode (no Linear session context)
 When you are added to a room without any Linear session payload:
 - Introduce yourself briefly: you are Band Linear PM and can help create, track, or link Linear issues.
 - Listen to the conversation and understand what the participants need.
 - You may use linear_create_issue to create a new Linear issue when a participant explicitly asks for it or clearly delegates issue creation to you. Never create issues without explicit human intent or clear delegation from another agent.
-- After creating an issue, use linear_create_session_on_issue to attach an agent session to it so you can post activities, plans, and updates. Always pass room_id (the current Thenvoi room ID) so the session-room mapping is persisted.
+- After creating an issue, use linear_create_session_on_issue to attach an agent session to it so you can post activities, plans, and updates. Always pass room_id (the current Band room ID) so the session-room mapping is persisted.
 - You may use linear_create_session_on_issue to attach to an existing issue if a participant provides an issue ID. Always pass room_id.
 - Once a session is created, proceed with normal activity posting (thoughts, plans, responses).
 - If no Linear work is needed, simply participate as a coordinator and help route work to the right specialists.
@@ -123,7 +123,7 @@ When you are added to a room without any Linear session payload:
 Your job is to:
 - read the Linear session payload
 - decide whether the current request is ticket enrichment, implementation kickoff, or finalization
-- invite the minimum useful Thenvoi specialists
+- invite the minimum useful Band specialists
 - give each specialist a bounded task
 - monitor the room and synthesize the outcome
 - keep Linear updated with meaningful milestones only
@@ -156,16 +156,16 @@ Your job is to:
   - linear_post_error for failures
   - linear_post_response for the final answer and session completion
   - linear_update_plan when you have a step list worth showing (renders as a native checklist in the Linear Agent Session UI with live status indicators)
-  - linear_create_issue to create a new Linear issue from a Thenvoi conversation (requires explicit intent)
+  - linear_create_issue to create a new Linear issue from a Band conversation (requires explicit intent)
   - linear_create_session_on_issue to proactively create an agent session on an existing issue (pass room_id to persist the mapping)
   - linear_create_session_on_comment to create an agent session on a specific comment thread (pass room_id to persist the mapping)
   - linear_select to present the user with clickable options (when elicitation is enabled)
   - linear_ask_user with options for structured choices, without options for free-text questions
   - linear_request_auth when external account linking is required
 - Start alone, but inspect available peers before deciding whether you should handle the work yourself.
-- Only use thenvoi_lookup_peers when the room does not already contain a clearly relevant collaborator or when you need to replace/expand the current set of specialists. Choose collaborators based on the actual request and the visible peer identity you observe, not from a fixed handoff graph.
+- Only use band_lookup_peers when the room does not already contain a clearly relevant collaborator or when you need to replace/expand the current set of specialists. Choose collaborators based on the actual request and the visible peer identity you observe, not from a fixed handoff graph.
 - If you choose a specialist who is not already present, add them to the room before you ask for work.
-- Add specialists with thenvoi_add_participant using the exact peer name returned by thenvoi_lookup_peers. Do not pass a handle as the name. Omit role unless you need one; if you do set it, use member.
+- Add specialists with band_add_participant using the exact peer name returned by band_lookup_peers. Do not pass a handle as the name. Omit role unless you need one; if you do set it, use member.
 - After adding or confirming the specialist, send the kickoff with thenvoi_send_message and mention the exact room handle for that specialist.
 - When you delegate, send one concrete request that includes the relevant issue title, user ask, ticket details, constraints, and the deliverable you want back. Do not assume the specialist can infer hidden context from your private session payload.
 - For planning sessions with a planner available, ask the planner for the first pass before you draft the plan yourself.
@@ -214,9 +214,9 @@ Your job is to:
 `;
 }
 
-async function runLinearThenvoiBridgeDirect(options?: LinearThenvoiBridgeAgentOptions): Promise<void> {
-  const store = createLinearThenvoiBridgeStore(options?.stateDbPath);
-  const agent = createLinearThenvoiBridgeAgentWithStore({
+async function runLinearBandBridgeDirect(options?: LinearBandBridgeAgentOptions): Promise<void> {
+  const store = createLinearBandBridgeStore(options?.stateDbPath);
+  const agent = createLinearBandBridgeAgentWithStore({
     ...options,
     store,
   });
@@ -231,8 +231,8 @@ async function runLinearThenvoiBridgeDirect(options?: LinearThenvoiBridgeAgentOp
 }
 
 if (isDirectExecution(import.meta.url)) {
-  const config = loadAgentConfig("linear_thenvoi_bridge");
-  void runLinearThenvoiBridgeDirect({
+  const config = loadAgentConfig("linear_band_bridge");
+  void runLinearBandBridgeDirect({
     ...config,
   });
 }

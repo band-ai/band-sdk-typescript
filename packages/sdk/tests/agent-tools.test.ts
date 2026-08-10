@@ -253,6 +253,25 @@ describe("AgentTools", () => {
     await expect(tools.sendEvent("hello", "message_created")).rejects.toBeInstanceOf(ValidationError);
   });
 
+  it("executes legacy Thenvoi tool names as Band aliases", async () => {
+    const api = new FakeRestApi();
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api }),
+    });
+
+    await tools.executeToolCall("thenvoi_send_message", {
+      content: "hello",
+      mentions: ["@jane"],
+    });
+
+    expect(api.chatMessages).toContainEqual({
+      chatId: "room-1",
+      content: "hello",
+      mentions: [{ handle: "@jane", id: "u1" }],
+    });
+  });
+
   it("validates send_message requires mentions", async () => {
     const tools = new AgentTools({
       roomId: "room-1",

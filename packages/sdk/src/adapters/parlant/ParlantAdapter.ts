@@ -284,7 +284,7 @@ export class ParlantAdapter
         {
           agentId: this.agentId,
           customerId,
-          title: `Thenvoi Room ${roomId.slice(0, 8)}`,
+          title: `Band Room ${roomId.slice(0, 8)}`,
           metadata: {
             thenvoi_room_id: roomId,
           },

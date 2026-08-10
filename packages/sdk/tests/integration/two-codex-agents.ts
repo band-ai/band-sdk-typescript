@@ -1,5 +1,5 @@
 /**
- * Two Codex agents talking to each other on the real Thenvoi platform.
+ * Two Codex agents talking to each other on the real Band platform.
  *
  * Agent A (implementer) runs as a Codex agent with tool execution.
  * Agent B (planner) sends it a real coding task via REST.
@@ -18,7 +18,7 @@ import { ConsoleLogger } from "../../src/core";
 import { ThenvoiClient } from "@thenvoi/rest-client";
 import { FernRestAdapter } from "../../src/rest";
 
-const REST_URL = "https://app.thenvoi.com/";
+const REST_URL = "https://app.band.ai/";
 
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));

@@ -14,6 +14,7 @@ describe("adapters import boundary", () => {
 
     expect(typeof adapters.OpenAIAdapter).toBe("function");
     expect(typeof adapters.ACPClientAdapter).toBe("function");
+    expect(adapters.ThenvoiACPServerAdapter).toBe(adapters.BandACPServerAdapter);
     expect(typeof adapters.ClaudeSDKAdapter).toBe("function");
   });
 });
