@@ -142,10 +142,20 @@ describe("band_remove_participant", () => {
 });
 
 describe("band_get_participants / band_create_chatroom / band_send_event", () => {
-  it("get_participants maps and counts", async () => {
-    const listChatParticipants = vi.fn().mockResolvedValue([{ id: "a", name: "A", type: "user" }]);
-    const res = (await run("band_get_participants", makeCtx({ listChatParticipants }), { room_id: "r1" })) as { count: number };
-    expect(res.count).toBe(1);
+  it("get_participants maps id/name/type/handle exactly, preserving a present handle and nulling an absent one", async () => {
+    const listChatParticipants = vi.fn().mockResolvedValue([
+      { id: "a", name: "A", type: "user", handle: "a-handle" },
+      { id: "b", name: "B", type: "agent" },
+    ]);
+    const res = (await run("band_get_participants", makeCtx({ listChatParticipants }), { room_id: "r1" })) as {
+      participants: Array<{ id: string; name: string; type: string; handle: string | null }>;
+      count: number;
+    };
+    expect(res.participants).toEqual([
+      { id: "a", name: "A", type: "user", handle: "a-handle" },
+      { id: "b", name: "B", type: "agent", handle: null },
+    ]);
+    expect(res.count).toBe(2);
   });
 
   it("create_chatroom returns the new room id", async () => {
