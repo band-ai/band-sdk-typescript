@@ -158,26 +158,14 @@ export async function handleAgentSessionEvent(
   }
 
   // Auto-delegate: fire in background, runs concurrently with room resolution (best-effort).
-  let delegatePromise: Promise<{ set: boolean; delegateName: string | null }> | undefined;
-  if (action === "created" && issueId) {
-    const appUserId = input.payload.appUserId;
-    if (appUserId) {
-      delegatePromise = trySetAgentAsDelegate({
-        linearClient: input.deps.linearClient,
-        issueId,
-        appUserId,
-        logger,
-      }).catch((delegateError) => {
-        logger.warn("linear_thenvoi_bridge.auto_delegate_failed", {
-          sessionId,
-          issueId,
-          appUserId,
-          error: delegateError instanceof Error ? delegateError.message : String(delegateError),
-        });
-        return { set: false, delegateName: null };
-      });
-    }
-  }
+  const delegatePromise = startDelegateAssignment({
+    action,
+    payload: input.payload,
+    linearClient: input.deps.linearClient,
+    sessionId,
+    issueId,
+    logger,
+  });
 
   // Auto-start: fire in background, runs concurrently with room resolution (best-effort).
   let autoStartPromise: Promise<AutoStartResult> | undefined;
@@ -528,6 +516,37 @@ function normalizeOptionalHandle(handle: string | null | undefined): string | nu
 
   const normalized = stripHandlePrefix(handle);
   return normalized.length > 0 ? normalized : null;
+}
+
+function startDelegateAssignment(input: {
+  action: SupportedAction;
+  payload: HandleAgentSessionEventInput["payload"];
+  linearClient: HandleAgentSessionEventInput["deps"]["linearClient"];
+  sessionId: string;
+  issueId: string | null;
+  logger: Logger;
+}): Promise<{ set: boolean; delegateName: string | null }> | undefined {
+  if (input.action !== "created" || !input.issueId || !input.payload.appUserId) {
+    return undefined;
+  }
+
+  const { issueId, sessionId, logger } = input;
+  const appUserId = input.payload.appUserId;
+
+  return trySetAgentAsDelegate({
+    linearClient: input.linearClient,
+    issueId,
+    appUserId,
+    logger,
+  }).catch((delegateError) => {
+    logger.warn("linear_thenvoi_bridge.auto_delegate_failed", {
+      sessionId,
+      issueId,
+      appUserId,
+      error: delegateError instanceof Error ? delegateError.message : String(delegateError),
+    });
+    return { set: false, delegateName: null };
+  });
 }
 
 async function trySetAgentAsDelegate(input: {

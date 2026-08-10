@@ -1,42 +1,40 @@
-# Linear Bridge Agent
-#
-# Build context: repository root (pnpm workspace)
-#
-#   docker build -f packages/sdk/examples/linear-thenvoi/Dockerfile -t thenvoi-linear-bridge .
-#   docker run --env-file .env -p 8787:8787 thenvoi-linear-bridge
-#
+# syntax=docker/dockerfile:1
 
-FROM node:22-alpine
+FROM node:22-slim AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
 
-RUN corepack enable && corepack prepare pnpm@10.22.0 --activate
+FROM deps AS build
+COPY linear-thenvoi-bridge-agent.ts linear-thenvoi-bridge-server.ts ./
+RUN npm run build
+
+FROM node:22-slim AS runtime
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && update-ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
-# ── dependency layer (cached until manifests change) ──────────────
-COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
-COPY packages/sdk/package.json packages/sdk/
-COPY packages/openclaw/package.json packages/openclaw/
-
-RUN pnpm install --frozen-lockfile
-
-# ── source layer ──────────────────────────────────────────────────
-COPY packages/sdk/src ./packages/sdk/src
-COPY packages/sdk/examples/linear-thenvoi ./packages/sdk/examples/linear-thenvoi
-
-# ── run as non-root ───────────────────────────────────────────────
-RUN addgroup --system --gid 1001 bridge && \
-    adduser --system --uid 1001 --ingroup bridge bridge
-
-USER bridge
-
 ENV NODE_ENV=production
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --omit=optional --ignore-scripts \
+    && npm cache clean --force
+
+COPY --from=build /app/dist ./dist
+COPY prompt.md ./prompt.md
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
+    && mkdir -p /app/data
+
 ENV PORT=8787
+ENV LINEAR_THENVOI_STATE_DB=/app/data/state.sqlite
+ENV LINEAR_THENVOI_PROMPT_PATH=/app/prompt.md
 
 EXPOSE 8787
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:8787/healthz || exit 1
+    CMD curl -f http://localhost:8787/healthz || exit 1
 
-# tsx is required because the example imports TypeScript source (../../src/*) directly.
-# devDependencies (including tsx) are installed before NODE_ENV=production is set.
-CMD ["pnpm", "--filter", "@thenvoi/sdk", "start:linear"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["node", "dist/linear-thenvoi-bridge-server.js"]

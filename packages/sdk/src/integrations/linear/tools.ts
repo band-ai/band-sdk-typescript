@@ -111,84 +111,7 @@ export function createLinearTools(options: CreateLinearToolsOptions): CustomTool
   );
 
   if (enableElicitation) {
-    tools.push({
-      name: "linear_ask_user",
-      description: "Ask the Linear user a question. When options are provided, Linear renders them as a clickable picker (select signal); otherwise the user sees a free-text prompt.",
-      schema: z.object({
-        session_id: z.string().describe("The Linear agent session ID"),
-        body: z.string().max(ELICITATION_BODY_MAX_LENGTH).describe("The question to ask, in Markdown format"),
-        options: z.array(z.object({
-          label: z.string().max(SELECT_OPTION_MAX_LENGTH).describe("Display text for the option"),
-          value: z.string().max(SELECT_OPTION_MAX_LENGTH).describe("Value returned when the option is selected"),
-        })).min(2).max(20).optional().describe("Clickable options for a select picker (2–20 items). Omit for free-text input."),
-      }),
-      handler: async (args: Record<string, unknown>) => {
-        const sessionId = args.session_id as string;
-        const body = args.body as string;
-        // Zod .min(2) guarantees options is either undefined or has ≥2 items
-        const options = args.options as SelectOption[] | undefined;
-        if (options) {
-          await postSelectElicitation(client, sessionId, body, options);
-        } else {
-          await postElicitation(client, sessionId, body);
-        }
-        return { ok: true };
-      },
-    });
-
-    tools.push({
-      name: "linear_select",
-      description:
-        "Present the Linear user with a set of clickable options via a select elicitation. " +
-        "Use this instead of linear_ask_user when the user should pick from a known list of choices.",
-      schema: z.object({
-        session_id: z.string().describe("The Linear agent session ID"),
-        body: z.string().describe("The question or prompt shown above the options (Markdown)"),
-        options: z
-          .array(
-            z.object({
-              label: z.string().describe("Display label for this option"),
-              value: z.string().describe("Value returned when this option is selected"),
-            }),
-          )
-          .min(1)
-          .max(25)
-          .describe("The selectable options"),
-      }),
-      handler: async (args: Record<string, unknown>) => {
-        await postSelectElicitation(
-          client,
-          args.session_id as string,
-          args.body as string,
-          args.options as SelectOption[],
-        );
-        return { ok: true };
-      },
-    });
-
-    tools.push({
-      name: "linear_request_auth",
-      description: "Ask the Linear user to link an external account by presenting an authentication button. The user sees a 'Link account' UI that opens the provided URL.",
-      schema: z.object({
-        session_id: z.string().describe("The Linear agent session ID"),
-        body: z.string().max(ELICITATION_BODY_MAX_LENGTH).describe("Explanation of why authentication is needed, in Markdown format"),
-        url: z.string().url().refine(
-          isAllowedAuthUrl,
-          { message: "URL must use https (http allowed only for localhost)" },
-        ).describe("The authentication URL to open when the user clicks the link button"),
-        provider: z.string().min(1).max(PROVIDER_MAX_LENGTH).optional().describe("Name of the external service (e.g. 'GitHub', 'Slack')"),
-      }),
-      handler: async (args: Record<string, unknown>) => {
-        await postAuthElicitation(
-          client,
-          args.session_id as string,
-          args.body as string,
-          args.url as string,
-          args.provider as string | undefined,
-        );
-        return { ok: true };
-      },
-    });
+    addElicitationTools({ tools, client });
   }
 
   // linear_post_response is registered manually (not via addSessionBodyTool) because
@@ -281,6 +204,92 @@ export function createLinearTools(options: CreateLinearToolsOptions): CustomTool
   addSessionCreationTools({ tools, client, store, logger });
 
   return tools;
+}
+
+function addElicitationTools(input: {
+  tools: CustomToolDef[];
+  client: LinearActivityClient;
+}): void {
+  const { tools, client } = input;
+
+  tools.push({
+    name: "linear_ask_user",
+    description: "Ask the Linear user a question. When options are provided, Linear renders them as a clickable picker (select signal); otherwise the user sees a free-text prompt.",
+    schema: z.object({
+      session_id: z.string().describe("The Linear agent session ID"),
+      body: z.string().max(ELICITATION_BODY_MAX_LENGTH).describe("The question to ask, in Markdown format"),
+      options: z.array(z.object({
+        label: z.string().max(SELECT_OPTION_MAX_LENGTH).describe("Display text for the option"),
+        value: z.string().max(SELECT_OPTION_MAX_LENGTH).describe("Value returned when the option is selected"),
+      })).min(2).max(20).optional().describe("Clickable options for a select picker (2–20 items). Omit for free-text input."),
+    }),
+    handler: async (args: Record<string, unknown>) => {
+      const sessionId = args.session_id as string;
+      const body = args.body as string;
+      // Zod .min(2) guarantees options is either undefined or has ≥2 items
+      const options = args.options as SelectOption[] | undefined;
+      if (options) {
+        await postSelectElicitation(client, sessionId, body, options);
+      } else {
+        await postElicitation(client, sessionId, body);
+      }
+      return { ok: true };
+    },
+  });
+
+  tools.push({
+    name: "linear_select",
+    description:
+      "Present the Linear user with a set of clickable options via a select elicitation. " +
+      "Use this instead of linear_ask_user when the user should pick from a known list of choices.",
+    schema: z.object({
+      session_id: z.string().describe("The Linear agent session ID"),
+      body: z.string().describe("The question or prompt shown above the options (Markdown)"),
+      options: z
+        .array(
+          z.object({
+            label: z.string().describe("Display label for this option"),
+            value: z.string().describe("Value returned when this option is selected"),
+          }),
+        )
+        .min(1)
+        .max(25)
+        .describe("The selectable options"),
+    }),
+    handler: async (args: Record<string, unknown>) => {
+      await postSelectElicitation(
+        client,
+        args.session_id as string,
+        args.body as string,
+        args.options as SelectOption[],
+      );
+      return { ok: true };
+    },
+  });
+
+  tools.push({
+    name: "linear_request_auth",
+    description: "Ask the Linear user to link an external account by presenting an authentication button. The user sees a 'Link account' UI that opens the provided URL.",
+    schema: z.object({
+      session_id: z.string().describe("The Linear agent session ID"),
+      body: z.string().max(ELICITATION_BODY_MAX_LENGTH).describe("Explanation of why authentication is needed, in Markdown format"),
+      url: z.string().url().refine(
+        isAllowedAuthUrl,
+        { message: "URL must use https (http allowed only for localhost)" },
+      ).describe("The authentication URL to open when the user clicks the link button"),
+      provider: z.string().min(1).max(PROVIDER_MAX_LENGTH).optional().describe("Name of the external service (e.g. 'GitHub', 'Slack')"),
+    }),
+    handler: async (args: Record<string, unknown>) => {
+      await postAuthElicitation(
+        client,
+        args.session_id as string,
+        args.body as string,
+        args.url as string,
+        args.provider as string | undefined,
+      );
+      return { ok: true };
+    },
+  });
 }
 
 function addIssueTools(input: {
