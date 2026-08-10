@@ -1,5 +1,6 @@
 import { UnsupportedFeatureError } from "../../core/errors";
 import { asNullableString, asOptionalRecord, asString } from "../../adapters/shared/coercion";
+import { deriveRemoteAlias } from "../../contracts/dtos";
 import type {
   AddContactArgs,
   ContactRecord,
@@ -255,12 +256,33 @@ function isChatParticipant(value: unknown): value is ChatParticipant {
   return typeof record.id === "string"
     && typeof record.name === "string"
     && typeof record.type === "string"
-    && (record.handle === undefined || record.handle === null || typeof record.handle === "string");
+    && (record.handle === undefined || record.handle === null || typeof record.handle === "string")
+    && !hasInvalidNullableBoolean(record.is_remote)
+    && !hasInvalidNullableBoolean(record.is_external);
 }
 
 function normalizeChatParticipantsResponse(response: unknown): ChatParticipant[] {
   const payload = extractEnvelopeData(response);
-  return Array.isArray(payload) ? payload.filter(isChatParticipant) : [];
+  if (!Array.isArray(payload)) {
+    return [];
+  }
+
+  return payload.flatMap((item) => {
+    if (!isChatParticipant(item)) {
+      return [];
+    }
+
+    const normalized = deriveRemoteAlias({
+      id: item.id,
+      name: item.name,
+      type: item.type,
+      ...(item.handle !== undefined ? { handle: item.handle } : {}),
+      ...(item.is_remote !== undefined ? { is_remote: item.is_remote } : {}),
+      ...(item.is_external !== undefined ? { is_external: item.is_external } : {}),
+    });
+
+    return [normalized];
+  });
 }
 
 function normalizeMetadataRecord(value: MetadataMap): MetadataMap {
@@ -306,21 +328,23 @@ function normalizeContactRecord(value: MetadataMap): ContactRecord | null {
     || hasInvalidNullableString(value.name)
     || hasInvalidString(value.type)
     || hasInvalidNullableString(value.description)
+    || hasInvalidNullableBoolean(value.is_remote)
     || hasInvalidNullableBoolean(value.is_external)
     || hasInvalidString(value.inserted_at)
   ) {
     return null;
   }
 
-  return {
+  return deriveRemoteAlias({
     ...(typeof value.id === "string" ? { id: value.id } : {}),
     ...(typeof value.handle === "string" ? { handle: value.handle } : {}),
     ...(value.name !== undefined ? { name: value.name as string | null } : {}),
     ...(typeof value.type === "string" ? { type: value.type } : {}),
     ...(value.description !== undefined ? { description: value.description as string | null } : {}),
+    ...(value.is_remote !== undefined ? { is_remote: value.is_remote as boolean | null } : {}),
     ...(value.is_external !== undefined ? { is_external: value.is_external as boolean | null } : {}),
     ...(typeof value.inserted_at === "string" ? { inserted_at: value.inserted_at } : {}),
-  };
+  });
 }
 
 function normalizeMemoryRecordItem(value: MetadataMap): MemoryRecord | null {

@@ -4,7 +4,7 @@ import { PlatformRuntime } from "../src/runtime/PlatformRuntime";
 import { RuntimeStateError, ValidationError } from "../src/core/errors";
 import { ThenvoiLink } from "../src/platform/ThenvoiLink";
 import type { StreamingTransport } from "../src/platform/streaming/transport";
-import type { ContactEvent } from "../src/platform/events";
+import type { ContactEvent, PlatformEvent } from "../src/platform/events";
 import { AgentRuntime } from "../src/runtime/rooms/AgentRuntime";
 import { ContactEventHandler } from "../src/runtime/ContactEventHandler";
 import { FakeRestApi } from "./testUtils";
@@ -117,6 +117,69 @@ describe("PlatformRuntime coverage", () => {
     );
   });
 
+  it("normalizes remote aliases on websocket participant and contact events", async () => {
+    const participantEvents: unknown[] = [];
+    const contactEvents: ContactEvent[] = [];
+    const runtime = new AgentRuntime({
+      agentId: "a1",
+      link: new ThenvoiLink({
+        agentId: "a1",
+        apiKey: "k",
+        transport: new MinimalTransport(),
+        restApi: new FakeRestApi(),
+      }),
+      onExecute: async () => {},
+      onParticipantAdded: async (_roomId, participant) => {
+        participantEvents.push(participant);
+      },
+      onContactEvent: async (event) => {
+        contactEvents.push(event);
+      },
+    });
+    const handleEvent = (runtime as unknown as { handleEvent(event: PlatformEvent): Promise<void> }).handleEvent.bind(runtime);
+
+    await handleEvent({
+      type: "participant_added",
+      roomId: "room-1",
+      payload: {
+        id: "p1",
+        name: "Pat",
+        type: "User",
+        handle: "@pat",
+        is_external: true,
+      },
+    });
+    await handleEvent({
+      type: "contact_added",
+      roomId: null,
+      payload: {
+        id: "c1",
+        handle: "@casey",
+        name: "Casey",
+        type: "User",
+        description: null,
+        is_remote: false,
+        is_external: true,
+        inserted_at: "2026-03-10T00:00:00.000Z",
+      },
+    });
+
+    expect(participantEvents).toEqual([
+      {
+        id: "p1",
+        name: "Pat",
+        type: "User",
+        handle: "@pat",
+        is_remote: true,
+        is_external: true,
+      },
+    ]);
+    expect(contactEvents[0]?.payload).toMatchObject({
+      is_remote: false,
+      is_external: false,
+    });
+  });
+
   it("cleans up if startup fails after the adapter starts", async () => {
     const runtime = new PlatformRuntime({
       agentId: "a1",
@@ -203,6 +266,7 @@ describe("PlatformRuntime coverage", () => {
           name: "Jane",
           type: "User",
           description: null,
+          is_remote: false,
           is_external: false,
           inserted_at: "2026-03-10T00:00:00.000Z",
         },

@@ -2,6 +2,7 @@ import type { AgentToolsRestApi } from "../client/rest/types";
 import { DEFAULT_REQUEST_OPTIONS } from "../client/rest/requestOptions";
 import type { AdapterToolsProtocol, AgentToolsCapabilities } from "../contracts/protocols";
 import type { MetadataMap, ParticipantRecord } from "../contracts/dtos";
+import { mapParticipantRecord } from "./tools/ContactCallbackTools";
 import { UnsupportedFeatureError } from "../core/errors";
 import type { ConversationContext, PlatformMessage } from "./types";
 import { AgentTools } from "./tools/AgentTools";
@@ -281,12 +282,7 @@ export class ExecutionContext {
 
   private async loadParticipants(): Promise<ParticipantRecord[]> {
     const participants = await this.link.rest.listChatParticipants(this.roomId, DEFAULT_REQUEST_OPTIONS);
-    const normalized = participants.map((participant) => ({
-      id: participant.id,
-      name: participant.name,
-      type: participant.type,
-      handle: participant.handle ?? null,
-    }));
+    const normalized = participants.map((participant) => mapParticipantRecord(participant));
     this.replaceParticipants(normalized);
     return [...this.participants];
   }

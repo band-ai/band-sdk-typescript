@@ -32,6 +32,8 @@ export interface ChatParticipant {
   name: string;
   type: string;
   handle?: string | null;
+  is_remote?: boolean | null;
+  is_external?: boolean | null;
 }
 
 export interface ChatMessageMention {
