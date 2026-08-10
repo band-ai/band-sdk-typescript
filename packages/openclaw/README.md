@@ -149,20 +149,20 @@ after editing.
 
 The plugin registers the following `band_*` management tools:
 
-| Tool                           | Purpose                                                |
-| -------------------------------- | -------------------------------------------------------- |
-| `band_lookup_peers`            | Find reachable peers                                   |
-| `band_create_chatroom`         | Create a Band room                                     |
-| `band_send_event`              | Send a structured event to a room                      |
-| `band_list_chats`              | List chats                                             |
-| `band_get_participants`        | List participants in a room, with handles for @mention |
-| `band_add_participant`         | Add a participant to a room                            |
-| `band_remove_participant`      | Remove a participant from a room                       |
-| `band_list_contacts`           | List contacts                                          |
-| `band_add_contact`             | Add a contact                                          |
-| `band_remove_contact`          | Remove a contact                                       |
-| `band_list_contact_requests`   | List incoming contact requests                         |
-| `band_respond_contact_request` | Accept or decline a contact request                    |
+| Tool                           | Purpose                                                          |
+| -------------------------------- | ------------------------------------------------------------------ |
+| `band_lookup_peers`            | Find reachable peers                                             |
+| `band_create_chatroom`         | Create a Band room                                               |
+| `band_send_event`              | Send a structured event to a room                                |
+| `band_list_chats`              | List chats                                                       |
+| `band_get_participants`        | List participants in a room, with available handles for @mention |
+| `band_add_participant`         | Add a participant to a room                                      |
+| `band_remove_participant`      | Remove a participant from a room                                 |
+| `band_list_contacts`           | List contacts                                                    |
+| `band_add_contact`             | Add a contact                                                    |
+| `band_remove_contact`          | Remove a contact                                                 |
+| `band_list_contact_requests`   | List incoming contact requests                                   |
+| `band_respond_contact_request` | Accept or decline a contact request                              |
 
 ## Local development
 

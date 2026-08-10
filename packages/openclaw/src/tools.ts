@@ -213,7 +213,7 @@ const removeParticipantTool: BandTool = {
 
 const getParticipantsTool: BandTool = {
   name: "band_get_participants",
-  description: "List all participants in a Band chat room, including each participant's handle for @mention discovery.",
+  description: "List all participants in a Band chat room, including available participant handles for @mention discovery.",
   inputSchema: {
     type: "object",
     properties: {
