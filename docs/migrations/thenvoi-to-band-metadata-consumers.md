@@ -1,9 +1,8 @@
 # Thenvoi → Band outbound metadata consumer migration
 
-Canonical checked-in artifact for cross-repository dependency **X-08** and
-implementation proof **P-C4-6**. It records every searched source, each known
-reader of the renamed outbound metadata, that reader's owner and migration
-disposition, and the concrete missing-correlation signal to monitor.
+Canonical checked-in inventory of every searched source, each known reader of
+the renamed outbound metadata, that reader's owner and migration disposition,
+and the concrete missing-correlation signal to monitor.
 
 > **Compatibility break (no cross-system atomicity).** The SDK guarantees each
 > emitted payload uses a single namespace, but it cannot atomically migrate
@@ -15,7 +14,7 @@ disposition, and the concrete missing-correlation signal to monitor.
 
 | Source | Ref / SHA | Scope | Status |
 |---|---|---|---|
-| `band-sdk-typescript` (this repo) | branch `feature/thenvoi-band-rename-c4-room-metadata`, reviewed C4 commit `9722fe2` | full `packages/sdk` source, examples, tests, docs | **searched — emitters only; no in-repo reader of the renamed keys** |
+| `band-sdk-typescript` (this repo) | commit `9722fe2` | full `packages/sdk` source, examples, tests, docs | **searched — emitters only; no in-repo reader of the renamed keys** |
 | `../thenvoi-platform` (backend) | `70464b737` (branch `dev`) | event/message metadata handling, A2A/Parlant/Linear consumers | **searched — no reader found** |
 | `../band-frontend-app` | `ae171b2` | UI metadata consumers | **searched — no reader found** |
 | `../platform-ui` | `a29c709` | UI metadata consumers | **searched — no reader found** |
@@ -23,8 +22,8 @@ disposition, and the concrete missing-correlation signal to monitor.
 | `../python-sdk` | `6f00096` | parallel SDK | **searched — no reader found** |
 | `../band-prototype` | `1172166` | prototype/operational config | **searched — no reader found** |
 
-Owner approval for read-only linked-repository inspection was granted in room
-message #88 and directed in #89. The inventory searched each source above for
+Read-only linked-repository inspection was authorized for this inventory. The
+inventory searched each source above for
 the six renamed metadata keys, the three brand values, and the retained
 `gateway_*`/`a2a_*` keys. **No in-scope operational reader of any renamed key or
 brand value was found.** The backend (`../thenvoi-platform@70464b737`) treats
@@ -33,17 +32,16 @@ non-attention event metadata as an opaque, size-bounded pass-through
 `thenvoi_system_prompt`-shaped hit is an unrelated documentation filename
 (`obsidian_docs/.../thenvoi_system_prompt_template.md`), not a reader.
 `../band-sdk-python` is a separate SDK that emits its own payloads and does not
-read this SDK's; any brand alignment there is tracked in the cross-repository
-handoff, not this branch.
+read this SDK's; any brand alignment there is out of scope for this repository.
 
-No owned consumer therefore blocks REL-01 from this inventory. Unknown
+No owned consumer blocks this migration. Unknown
 third-party readers outside these repositories remain consumer-owned: release
 notes publish the old→new key map and the monitors below, and direct an affected
 operator to pin the last `0.x` SDK until their reader is migrated.
 
 ## Renamed outbound payload keys and values
 
-Owned by C4; changed atomically per payload (no mixed namespace).
+Changed atomically per payload (no mixed namespace).
 
 ### Six metadata keys (`thenvoi_*` → `band_*`)
 
@@ -64,7 +62,7 @@ Owned by C4; changed atomically per payload (no mixed namespace).
 | Parlant session title prefix | `Thenvoi Room …` | `Band Room …` |
 | Linear bridge `linear_bridge` metadata value | `thenvoi` | `band` |
 
-### Adapter identity strings (write-only, R-12/D-08)
+### Adapter identity strings (write-only)
 
 Codex `clientInfo` (`band_codex_adapter` / `Band Codex Adapter`), Google ADK
 `APP_NAME` (`band`) and default agent (`band_agent`), A2A agent-card skill tag
@@ -85,7 +83,7 @@ store maps public `bandRoomId` ↔ physical `thenvoi_room_id` at its boundary.
 |---|---|---|
 | A2A gateway routing/history readers of `gateway_context_id`, `gateway_room_id`, `gateway_task_id`, `gateway_peer_id`, `gateway_peer_slug` | this repo | **Unchanged.** These keys are NOT renamed; routing (`shouldRouteToPendingTask`) and history reconstruction (`a2a-gateway/history.ts`) still read them. Retained by design. |
 | A2A adapter readers of `a2a_context_id`, `a2a_task_id`, `a2a_task_state` | this repo | **Unchanged / retained.** |
-| In-repository readers of the renamed `band_*` metadata keys | this repo | **None.** The six renamed keys are emitted outbound only; no in-repo code reads them back. Verified by source search at base `ead21f5` + this branch. |
+| In-repository readers of the renamed `band_*` metadata keys | this repo | **None.** The six renamed keys are emitted outbound only; no in-repo code reads them back. Verified by source search at commit `ead21f5`. |
 | Backend event/message metadata (`../thenvoi-platform@70464b737`) | thenvoi-platform | **No reader.** Non-attention metadata is an opaque, size-bounded pass-through (`events_controller.ex`); the backend does not read or validate the renamed keys. No migration needed. |
 | A2A/Parlant/Linear metadata in `../band-frontend-app@ae171b2`, `../platform-ui@a29c709`, `../band-prototype@1172166` | those repos | **No reader found** for any renamed key/brand value. |
 | External A2A protocol clients consuming gateway status-event `band_*` metadata | consumer-owned (external, outside inventoried repos) | Not owned here. Release notes publish the old→new key map; affected operators pin the last `0.x` SDK until migrated. |
@@ -126,4 +124,4 @@ such store or query is fabricated here.
 
 The in-repository inventory (this repo at `9722fe2` + the linked operational
 repositories under Searched sources) is complete and found no owned reader that
-blocks REL-01.
+blocks this migration.
