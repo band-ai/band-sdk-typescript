@@ -2,8 +2,8 @@
  * Unit tests for the Band setup wizard's config-mutation logic.
  */
 
-import { describe, it, expect } from "vitest";
-import { setBandAccountConfig, ensureBandToolsAllowed, bandSetupWizard } from "../../src/setup-wizard.js";
+import { describe, it, expect, afterEach } from "vitest";
+import { setBandAccountConfig, ensureBandToolsAllowed, bandSetupWizard, applyBandAccountConfig } from "../../src/setup-wizard.js";
 import { BAND_CHANNEL_ID } from "../../src/config.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -104,5 +104,106 @@ describe("bandSetupWizard", () => {
     const enabled = setBandAccountConfig(asCfg({}), "default", { apiKey: "k" });
     const disabled = bandSetupWizard.disable!(enabled);
     expect(band(disabled).enabled).toBe(false);
+  });
+});
+
+describe("applyBandAccountConfig (non-interactive `channels add --flags` mapping)", () => {
+  it("maps token/userId/baseUrl onto apiKey/agentId/restUrl", () => {
+    const cfg = applyBandAccountConfig(asCfg({}), "default", {
+      token: "band_a_x",
+      userId: "agent-1",
+      baseUrl: "https://custom.example",
+    });
+    expect(band(cfg).accounts.default).toMatchObject({
+      apiKey: "band_a_x",
+      agentId: "agent-1",
+      restUrl: "https://custom.example",
+    });
+  });
+
+  it("prefers httpUrl over url for wsUrl when both are given", () => {
+    const cfg = applyBandAccountConfig(asCfg({}), "default", {
+      httpUrl: "wss://from-http-url",
+      url: "wss://from-url",
+    });
+    expect(band(cfg).accounts.default.wsUrl).toBe("wss://from-http-url");
+  });
+
+  it("falls back to url for wsUrl when httpUrl is absent", () => {
+    const cfg = applyBandAccountConfig(asCfg({}), "default", { url: "wss://from-url" });
+    expect(band(cfg).accounts.default.wsUrl).toBe("wss://from-url");
+  });
+
+  it("writes no fields (but still enables the channel) when input is empty", () => {
+    const cfg = applyBandAccountConfig(asCfg({}), "default", {});
+    expect(band(cfg).accounts.default).toEqual({});
+    expect(band(cfg).enabled).toBe(true);
+  });
+});
+
+describe("bandSetupWizard credentials[0] (token) allowEnv + inspect", () => {
+  const originalEnv = process.env.BAND_API_KEY;
+  afterEach(() => {
+    if (originalEnv === undefined) delete process.env.BAND_API_KEY;
+    else process.env.BAND_API_KEY = originalEnv;
+  });
+
+  it("allows the env fallback only for the default account", () => {
+    const token = bandSetupWizard.credentials[0];
+    expect(token.allowEnv!({ cfg: asCfg({}), accountId: "default" })).toBe(true);
+    expect(token.allowEnv!({ cfg: asCfg({}), accountId: "secondary" })).toBe(false);
+  });
+
+  it("inspect resolves the configured value, falling back to BAND_API_KEY for the default account", () => {
+    process.env.BAND_API_KEY = "env-key";
+    const token = bandSetupWizard.credentials[0];
+
+    const unconfigured = token.inspect!({ cfg: asCfg({}), accountId: "default" });
+    expect(unconfigured).toMatchObject({ hasConfiguredValue: false, resolvedValue: "env-key", envValue: "env-key" });
+
+    const withStoredKey = setBandAccountConfig(asCfg({}), "default", { apiKey: "stored-key" });
+    const configured = token.inspect!({ cfg: withStoredKey, accountId: "default" });
+    expect(configured).toMatchObject({ hasConfiguredValue: true, resolvedValue: "stored-key" });
+
+    const nonDefault = token.inspect!({ cfg: asCfg({}), accountId: "secondary" });
+    expect(nonDefault).toMatchObject({ hasConfiguredValue: false, resolvedValue: undefined, envValue: undefined });
+  });
+});
+
+describe("bandSetupWizard textInputs currentValue + truthy applySet", () => {
+  it("httpUrl/baseUrl currentValue read back the stored wsUrl/restUrl", () => {
+    const httpUrl = (bandSetupWizard.textInputs ?? []).find((t) => t.inputKey === "httpUrl")!;
+    const baseUrl = (bandSetupWizard.textInputs ?? []).find((t) => t.inputKey === "baseUrl")!;
+    const empty = asCfg({});
+    expect(httpUrl.currentValue!({ cfg: empty, accountId: "default" })).toBeUndefined();
+    expect(baseUrl.currentValue!({ cfg: empty, accountId: "default" })).toBeUndefined();
+
+    const cfg = setBandAccountConfig(empty, "default", { wsUrl: "wss://stored", restUrl: "https://stored" });
+    expect(httpUrl.currentValue!({ cfg, accountId: "default" })).toBe("wss://stored");
+    expect(baseUrl.currentValue!({ cfg, accountId: "default" })).toBe("https://stored");
+  });
+
+  it("userId currentValue reads back the stored agentId", () => {
+    const userId = (bandSetupWizard.textInputs ?? []).find((t) => t.inputKey === "userId")!;
+    expect(userId.currentValue!({ cfg: asCfg({}), accountId: "default" })).toBeUndefined();
+    const cfg = setBandAccountConfig(asCfg({}), "default", { agentId: "a-7" });
+    expect(userId.currentValue!({ cfg, accountId: "default" })).toBe("a-7");
+  });
+
+  it("userId validate requires a non-blank value", () => {
+    const userId = (bandSetupWizard.textInputs ?? []).find((t) => t.inputKey === "userId")!;
+    expect(userId.validate!({ value: "  " })).toBe("Agent id is required");
+    expect(userId.validate!({ value: "a-1" })).toBeUndefined();
+  });
+
+  it("httpUrl/baseUrl applySet write the trimmed value when non-blank", () => {
+    const httpUrl = (bandSetupWizard.textInputs ?? []).find((t) => t.inputKey === "httpUrl")!;
+    const baseUrl = (bandSetupWizard.textInputs ?? []).find((t) => t.inputKey === "baseUrl")!;
+
+    const withWs = httpUrl.applySet!({ cfg: asCfg({}), accountId: "default", value: "  wss://new  " });
+    expect(band(withWs).accounts.default.wsUrl).toBe("wss://new");
+
+    const withRest = baseUrl.applySet!({ cfg: asCfg({}), accountId: "default", value: "  https://new  " });
+    expect(band(withRest).accounts.default.restUrl).toBe("https://new");
   });
 });
