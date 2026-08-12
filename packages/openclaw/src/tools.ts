@@ -213,7 +213,7 @@ const removeParticipantTool: BandTool = {
 
 const getParticipantsTool: BandTool = {
   name: "band_get_participants",
-  description: "List all participants in a Band chat room.",
+  description: "List all participants in a Band chat room, including available participant handles for @mention discovery.",
   inputSchema: {
     type: "object",
     properties: {
@@ -225,7 +225,7 @@ const getParticipantsTool: BandTool = {
     const { room_id } = params as GetParticipantsParams;
     const participants = await ctx.rest.listChatParticipants(room_id);
     return {
-      participants: participants.map((p) => ({ id: p.id, name: p.name, type: p.type })),
+      participants: participants.map((p) => ({ id: p.id, name: p.name, type: p.type, handle: p.handle ?? null })),
       count: participants.length,
     };
   },
