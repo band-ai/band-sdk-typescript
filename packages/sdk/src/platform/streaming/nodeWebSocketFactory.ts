@@ -19,7 +19,7 @@ type NodeWebSocketConstructor = new (
 export function createNodeWebSocketFactory(headers?: Record<string, string>): typeof WebSocket {
   const Constructor = NodeWebSocket as unknown as NodeWebSocketConstructor;
 
-  class ThenvoiNodeWebSocket {
+  class BandNodeWebSocket {
     public constructor(address: string | URL, protocols?: string | string[]) {
       const socket = new Constructor(address, protocols, headers ? { headers } : undefined);
       socket.once("unexpected-response", (request, response) => {
@@ -29,7 +29,7 @@ export function createNodeWebSocketFactory(headers?: Record<string, string>): ty
     }
   }
 
-  return ThenvoiNodeWebSocket as unknown as typeof WebSocket;
+  return BandNodeWebSocket as unknown as typeof WebSocket;
 }
 
 async function emitUpgradeError(

@@ -70,6 +70,7 @@ function makeServerOptions(
 function createModulesRecorder() {
   const recordedUses: RecordedUse[] = [];
   const recordedExecutors: RecordedExecutor[] = [];
+  const recordedCards: Record<string, unknown>[] = [];
   const fakeServer = {
     once: () => fakeServer,
     close: (callback?: (error?: Error) => void) => callback?.(),
@@ -97,10 +98,11 @@ function createModulesRecorder() {
     AGENT_CARD_PATH: ".well-known/agent-card.json",
     DefaultRequestHandler: class {
       public constructor(
-        _agentCard: Record<string, unknown>,
+        agentCard: Record<string, unknown>,
         _taskStore: unknown,
         executor: RecordedExecutor,
       ) {
+        recordedCards.push(agentCard);
         recordedExecutors.push(executor);
       }
 
@@ -121,6 +123,7 @@ function createModulesRecorder() {
   return {
     recordedUses,
     recordedExecutors,
+    recordedCards,
     loadModules: async () => modules,
   };
 }
@@ -396,5 +399,23 @@ describe("GatewayServer", () => {
     expect(String(event.metadata?.error_message)).not.toContain("secret-token");
     expect(String(event.metadata?.error_message)).not.toContain("abc123");
     expect(String(event.metadata?.error_message)).not.toContain("xyz");
+  });
+
+  it("builds agent card skills tagged with band and gateway", async () => {
+    const { recordedCards, loadModules } = createModulesRecorder();
+    const server = createGatewayServer(makeServerOptions({
+      allowUnauthenticatedLoopback: true,
+      loadModules,
+    }));
+
+    await server.start();
+    await server.stop();
+
+    expect(recordedCards).toHaveLength(1);
+    const card = recordedCards[0] as {
+      skills?: Array<{ id?: string; tags?: string[] }>;
+    };
+    expect(card.skills).toHaveLength(1);
+    expect(card.skills?.[0]?.tags).toEqual(["band", "gateway"]);
   });
 });

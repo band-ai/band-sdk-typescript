@@ -5,7 +5,7 @@ import { NoopLogger } from "../../core/logger";
 import { UnsupportedFeatureError } from "../../core/errors";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import { mcpToolNames } from "../../runtime/tools/schemas";
+import { mcpToolNames, MCP_SERVER_NAME } from "../../runtime/tools/schemas";
 import { buildConversationPrompt } from "../shared/conversationPrompt";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { extractClaudeSessionId } from "../../converters/claude-sdk";
@@ -78,7 +78,7 @@ export interface ClaudeSDKAdapterOptions {
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 
-interface ThenvoiMcpBridge {
+interface BandMcpBridge {
   serverConfig: Record<string, unknown>;
   allowedTools: string[];
 }
@@ -90,13 +90,13 @@ type ClaudeSdkToolFactory = (
   handler: (args: Record<string, unknown>) => Promise<unknown>,
 ) => unknown;
 
-type ThenvoiMcpBridgeFactory = (input: {
+type BandMcpBridgeFactory = (input: {
   enableMemoryTools: boolean;
   getToolsForRoom: (roomId: string) => AdapterToolsProtocol | undefined;
   additionalTools?: McpToolRegistration[];
-}) => ThenvoiMcpBridge;
+}) => BandMcpBridge;
 
-const thenvoiMcpBridgeFactory = new LazyAsyncValue<ThenvoiMcpBridgeFactory>({
+const bandMcpBridgeFactory = new LazyAsyncValue<BandMcpBridgeFactory>({
   load: async () => {
     const module = await import("@anthropic-ai/claude-agent-sdk").catch((error: unknown) => {
       throw new UnsupportedFeatureError(
@@ -146,7 +146,7 @@ const thenvoiMcpBridgeFactory = new LazyAsyncValue<ThenvoiMcpBridgeFactory>({
 
       return {
         serverConfig: createSdkMcpServer({
-          name: "thenvoi",
+          name: MCP_SERVER_NAME,
           tools: toolDefinitions,
         }),
         allowedTools: mcpToolNames(new Set(registrations.map((registration) => registration.name))),
@@ -171,7 +171,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
   private readonly sessionIds = new Map<string, string>();
   private readonly sessionInitLocks = new Map<string, Promise<void>>();
   private readonly roomTools = new Map<string, AdapterToolsProtocol>();
-  private mcpBridge: ThenvoiMcpBridge | null = null;
+  private mcpBridge: BandMcpBridge | null = null;
   private systemPrompt = "";
 
   public constructor(options?: ClaudeSDKAdapterOptions) {
@@ -201,8 +201,8 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     });
 
     if (this.enableMcpTools) {
-      const createThenvoiMcpBridge = await thenvoiMcpBridgeFactory.get()
-      this.mcpBridge = createThenvoiMcpBridge({
+      const createBandMcpBridge = await bandMcpBridgeFactory.get()
+      this.mcpBridge = createBandMcpBridge({
         enableMemoryTools: this.enableMemoryTools,
         getToolsForRoom: (roomId) => this.roomTools.get(roomId),
         additionalTools: this.additionalMcpTools.length > 0 ? this.additionalMcpTools : undefined,
@@ -270,14 +270,14 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
 
     if (this.mcpBridge && this.enableMcpTools) {
       options.mcpServers = {
-        thenvoi: this.mcpBridge.serverConfig,
+        [MCP_SERVER_NAME]: this.mcpBridge.serverConfig,
       };
       options.allowedTools = this.mcpBridge.allowedTools;
       this.roomTools.set(context.roomId, tools);
     }
 
     const roomToolHint = this.enableMcpTools
-      ? `\n\n[Tooling note]: For any mcp__thenvoi__* tool call, pass room_id="${context.roomId}".`
+      ? `\n\n[Tooling note]: For any mcp__band__* tool call, pass room_id="${context.roomId}".`
       : "";
 
     const query = queryFn({

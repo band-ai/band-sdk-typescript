@@ -122,7 +122,7 @@ class SqliteSessionRoomStore implements SessionRoomStore {
       .run(
         record.linearSessionId,
         record.linearIssueId,
-        record.thenvoiRoomId,
+        record.bandRoomId,
         record.status,
         record.lastEventKey ?? null,
         record.lastLinearActivityAt ?? null,
@@ -175,7 +175,7 @@ class SqliteSessionRoomStore implements SessionRoomStore {
       .run(
         request.eventKey,
         request.linearSessionId,
-        request.thenvoiRoomId,
+        request.bandRoomId,
         request.expectedContent,
         request.messageType,
         request.metadata ? JSON.stringify(request.metadata) : null,
@@ -211,7 +211,7 @@ class SqliteSessionRoomStore implements SessionRoomStore {
     return rows.map((row) => ({
       eventKey: row.event_key,
       linearSessionId: row.linear_session_id,
-      thenvoiRoomId: row.thenvoi_room_id,
+      bandRoomId: row.thenvoi_room_id,
       expectedContent: row.expected_content,
       messageType: row.message_type,
       metadata: this.parseMetadata(row.metadata_json),
@@ -374,7 +374,7 @@ class SqliteSessionRoomStore implements SessionRoomStore {
     return {
       linearSessionId: row.linear_session_id,
       linearIssueId: row.linear_issue_id,
-      thenvoiRoomId: row.thenvoi_room_id,
+      bandRoomId: row.thenvoi_room_id,
       status: row.status,
       lastEventKey: row.last_event_key,
       lastLinearActivityAt: row.last_linear_activity_at,
@@ -444,7 +444,7 @@ function parseSessionRoomRow(value: unknown): SessionRoomRow | null {
 
   const linearSessionId = asString(row.linear_session_id);
   const linearIssueId = asNullableString(row.linear_issue_id);
-  const thenvoiRoomId = asString(row.thenvoi_room_id);
+  const bandRoomId = asString(row.thenvoi_room_id);
   const status = asString(row.status);
   const lastEventKey = asNullableString(row.last_event_key);
   const lastLinearActivityAt = asNullableString(row.last_linear_activity_at);
@@ -454,7 +454,7 @@ function parseSessionRoomRow(value: unknown): SessionRoomRow | null {
   if (
     !linearSessionId
     || linearIssueId === undefined
-    || !thenvoiRoomId
+    || !bandRoomId
     || !status
     || !isSessionStatus(status)
     || lastEventKey === undefined
@@ -468,7 +468,7 @@ function parseSessionRoomRow(value: unknown): SessionRoomRow | null {
   return {
     linear_session_id: linearSessionId,
     linear_issue_id: linearIssueId,
-    thenvoi_room_id: thenvoiRoomId,
+    thenvoi_room_id: bandRoomId,
     status,
     last_event_key: lastEventKey,
     last_linear_activity_at: lastLinearActivityAt,
@@ -495,7 +495,7 @@ function parseBootstrapRequestRow(value: unknown): BootstrapRequestRow | null {
 
   const eventKey = asString(row.event_key);
   const linearSessionId = asString(row.linear_session_id);
-  const thenvoiRoomId = asString(row.thenvoi_room_id);
+  const bandRoomId = asString(row.thenvoi_room_id);
   const expectedContent = asString(row.expected_content);
   const messageType = asString(row.message_type);
   const metadataJson = asNullableString(row.metadata_json);
@@ -506,7 +506,7 @@ function parseBootstrapRequestRow(value: unknown): BootstrapRequestRow | null {
   if (
     !eventKey
     || !linearSessionId
-    || !thenvoiRoomId
+    || !bandRoomId
     || !expectedContent
     || !messageType
     || metadataJson === undefined
@@ -520,7 +520,7 @@ function parseBootstrapRequestRow(value: unknown): BootstrapRequestRow | null {
   return {
     event_key: eventKey,
     linear_session_id: linearSessionId,
-    thenvoi_room_id: thenvoiRoomId,
+    thenvoi_room_id: bandRoomId,
     expected_content: expectedContent,
     message_type: messageType,
     metadata_json: metadataJson,

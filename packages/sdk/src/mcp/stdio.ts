@@ -10,8 +10,9 @@ import {
   buildSingleContextRegistrations,
 } from "./registrations";
 import { buildZodShape } from "./zod";
+import { MCP_SERVER_NAME } from "../runtime/tools/schemas";
 
-export interface ThenvoiMcpStdioServerOptions {
+export interface BandMcpStdioServerOptions {
   tools: AdapterToolsProtocol | ((roomId: string) => AdapterToolsProtocol | undefined);
   name?: string;
   enableMemoryTools?: boolean;
@@ -21,13 +22,13 @@ export interface ThenvoiMcpStdioServerOptions {
   stdout?: Writable;
 }
 
-export class ThenvoiMcpStdioServer {
-  private readonly options: ThenvoiMcpStdioServerOptions;
+export class BandMcpStdioServer {
+  private readonly options: BandMcpStdioServerOptions;
   private readonly registrations: McpToolRegistration[];
   private mcpServer: InstanceType<typeof import("@modelcontextprotocol/sdk/server/mcp.js").McpServer> | null = null;
   private transport: import("@modelcontextprotocol/sdk/server/stdio.js").StdioServerTransport | null = null;
 
-  public constructor(options: ThenvoiMcpStdioServerOptions) {
+  public constructor(options: BandMcpStdioServerOptions) {
     this.options = options;
 
     const regOptions: BuildRegistrationsOptions = {
@@ -57,7 +58,7 @@ export class ThenvoiMcpStdioServer {
     const { z } = await import("zod");
 
     const mcpServer = new McpServer({
-      name: this.options.name ?? "thenvoi",
+      name: this.options.name ?? MCP_SERVER_NAME,
       version: "1.0.0",
     });
 

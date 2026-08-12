@@ -1,13 +1,13 @@
 /**
  * E2E Tests: WebSocket Connection
  *
- * Tests the connection flow against a real Thenvoi environment.
- * Uses ThenvoiLink from @thenvoi/sdk and RoomPresence from @thenvoi/sdk/runtime.
+ * Tests the connection flow against a real Band environment.
+ * Uses BandLink from @band-ai/sdk and RoomPresence from @band-ai/sdk/runtime.
  */
 
 import { describe, it, expect, beforeAll, afterEach } from "vitest";
-import { ThenvoiLink } from "@thenvoi/sdk";
-import { RoomPresence } from "@thenvoi/sdk/runtime";
+import { BandLink } from "@band-ai/sdk";
+import { RoomPresence } from "@band-ai/sdk/runtime";
 import {
   getE2EConfig,
   canRunE2E,
@@ -18,7 +18,7 @@ import type { E2EConfig } from "./setup.js";
 
 describe("E2E: Connection", () => {
   let config: E2EConfig;
-  let link: ThenvoiLink | null = null;
+  let link: BandLink | null = null;
   let presence: RoomPresence | null = null;
 
   beforeAll(() => {
@@ -43,7 +43,7 @@ describe("E2E: Connection", () => {
     it.skipIf(!canRunE2E())(
       "should authenticate and get agent metadata",
       async () => {
-        link = new ThenvoiLink({
+        link = new BandLink({
           agentId: config.agentId,
           apiKey: config.apiKey,
           wsUrl: config.wsUrl,
@@ -60,7 +60,7 @@ describe("E2E: Connection", () => {
     it.skipIf(!canRunE2E())(
       "should reject invalid API key",
       async () => {
-        const invalidLink = new ThenvoiLink({
+        const invalidLink = new BandLink({
           agentId: config.agentId,
           apiKey: "invalid-key",
           wsUrl: config.wsUrl,
@@ -76,7 +76,7 @@ describe("E2E: Connection", () => {
     it.skipIf(!canRunE2E())(
       "should connect to WebSocket successfully",
       async () => {
-        link = new ThenvoiLink({
+        link = new BandLink({
           agentId: config.agentId,
           apiKey: config.apiKey,
           wsUrl: config.wsUrl,
@@ -94,7 +94,7 @@ describe("E2E: Connection", () => {
       async () => {
         let roomJoined = false;
 
-        link = new ThenvoiLink({
+        link = new BandLink({
           agentId: config.agentId,
           apiKey: config.apiKey,
           wsUrl: config.wsUrl,
@@ -123,7 +123,7 @@ describe("E2E: Connection", () => {
     it.skipIf(!canRunE2E())(
       "should disconnect cleanly",
       async () => {
-        link = new ThenvoiLink({
+        link = new BandLink({
           agentId: config.agentId,
           apiKey: config.apiKey,
           wsUrl: config.wsUrl,
@@ -143,7 +143,7 @@ describe("E2E: Connection", () => {
     it.skipIf(!canRunE2E())(
       "should reject connection with invalid credentials",
       async () => {
-        const invalidLink = new ThenvoiLink({
+        const invalidLink = new BandLink({
           agentId: config.agentId,
           apiKey: "invalid-key",
           wsUrl: config.wsUrl,
@@ -159,7 +159,7 @@ describe("E2E: Connection", () => {
     it.skipIf(!canRunE2E())(
       "should report correct connection state",
       async () => {
-        link = new ThenvoiLink({
+        link = new BandLink({
           agentId: config.agentId,
           apiKey: config.apiKey,
           wsUrl: config.wsUrl,

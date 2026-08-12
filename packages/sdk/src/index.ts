@@ -1,7 +1,7 @@
 export { Agent } from "./agent/Agent";
 export type { AgentCreateOptions } from "./agent/Agent";
 
-export { ThenvoiLink, deriveDefaultRestUrl } from "./platform/ThenvoiLink";
+export { BandLink, deriveDefaultRestUrl } from "./platform/BandLink";
 export type { PlatformEvent, ContactEvent } from "./platform/events";
 export { WebSocketDisconnectError } from "./platform/streaming/disconnectReason";
 export type {
@@ -104,4 +104,4 @@ export type {
 } from "./adapters";
 
 export { SimpleAdapter } from "./core/simpleAdapter";
-export { MCP_TOOL_PREFIX, TOOL_MODELS } from "./runtime/tools/schemas";
+export { MCP_TOOL_PREFIX, MCP_SERVER_NAME, TOOL_MODELS } from "./runtime/tools/schemas";

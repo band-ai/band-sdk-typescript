@@ -8,8 +8,9 @@ import {
   buildSingleContextRegistrations,
 } from "./registrations";
 import { buildZodShape } from "./zod";
+import { MCP_SERVER_NAME } from "../runtime/tools/schemas";
 
-export interface ThenvoiMcpSseServerOptions {
+export interface BandMcpSseServerOptions {
   tools: AdapterToolsProtocol | ((roomId: string) => AdapterToolsProtocol | undefined);
   name?: string;
   port?: number;
@@ -29,15 +30,15 @@ const PORT_RANGE_END = 60000
 const SESSION_IDLE_TTL_MS = 15 * 60 * 1000
 const SESSION_SWEEP_INTERVAL_MS = 60 * 1000
 
-export class ThenvoiMcpSseServer {
-  private readonly options: ThenvoiMcpSseServerOptions
+export class BandMcpSseServer {
+  private readonly options: BandMcpSseServerOptions
   private readonly registrations: McpToolRegistration[]
   private httpServer: import("node:http").Server | null = null
   private actualPort: number | null = null
   private readonly sessions = new Map<string, SessionRecord>()
   private sweepTimer: ReturnType<typeof setInterval> | null = null
 
-  public constructor(options: ThenvoiMcpSseServerOptions) {
+  public constructor(options: BandMcpSseServerOptions) {
     this.options = options
 
     const regOptions: BuildRegistrationsOptions = {
@@ -90,7 +91,7 @@ export class ThenvoiMcpSseServer {
     app.get("/sse", async (_req, res) => {
       const transport = new SSEServerTransport("/messages", res)
       const mcpServer = new McpServer({
-        name: this.options.name ?? "thenvoi",
+        name: this.options.name ?? MCP_SERVER_NAME,
         version: "1.0.0",
       })
       registerTools(mcpServer, z, this.registrations)

@@ -15,10 +15,10 @@ import {
 } from "../../src/index";
 import { ConsoleLogger } from "../../src/core";
 import type { AgentInput } from "../../src/index";
-import { ThenvoiClient } from "@thenvoi/rest-client";
+import { BandClient } from "@band-ai/rest-client";
 import { FernRestAdapter } from "../../src/rest";
 
-const DEFAULT_REST_URL = "https://app.thenvoi.com/";
+const DEFAULT_REST_URL = "https://app.band.ai/";
 
 // ── Test harness ───────────────────────────────────────────────────────
 
@@ -39,8 +39,8 @@ async function main() {
   const restUrl = implConfig.restUrl ?? DEFAULT_REST_URL;
   const logger = new ConsoleLogger();
 
-  const implRest = new FernRestAdapter(new ThenvoiClient({ baseUrl: restUrl, apiKey: implConfig.apiKey }));
-  const planRest = new FernRestAdapter(new ThenvoiClient({ baseUrl: restUrl, apiKey: planConfig.apiKey }));
+  const implRest = new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey: implConfig.apiKey }));
+  const planRest = new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey: planConfig.apiKey }));
 
   // ── Step 1: Verify both agent identities ─────────────────────────
   console.log("\ne2e === Agent Identities ===");

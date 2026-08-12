@@ -1,7 +1,7 @@
 import type { Logger } from "../core/logger";
 import { NoopLogger } from "../core/logger";
 import { FernRestAdapter } from "../client/rest/RestFacade";
-import type { FernThenvoiClientLike } from "../client/rest/types";
+import type { FernBandClientLike } from "../client/rest/types";
 import type { RestRequestOptions } from "../client/rest/requestOptions";
 import {
   fetchPaginated,
@@ -10,7 +10,7 @@ import {
 import type {
   PaginatedResponse,
   PlatformChatMessage,
-  ThenvoiLinkRestApi,
+  BandLinkRestApi,
 } from "../client/rest/types";
 import type { PlatformEvent } from "./events";
 import { UnsupportedFeatureError } from "../core/errors";
@@ -32,21 +32,21 @@ import {
   DEFAULT_AGENT_TOOLS_CAPABILITIES,
   type AgentToolsCapabilities,
 } from "../contracts/protocols";
-import { ThenvoiClient } from "@thenvoi/rest-client";
+import { BandClient } from "@band-ai/rest-client";
 
-export interface ThenvoiLinkOptions {
+export interface BandLinkOptions {
   agentId: string;
   apiKey: string;
   wsUrl?: string;
   restUrl?: string;
-  restApi?: ThenvoiLinkRestApi;
+  restApi?: BandLinkRestApi;
   transport?: StreamingTransport;
   logger?: Logger;
   capabilities?: Partial<AgentToolsCapabilities>;
   conflictPolicy?: WebSocketConflictPolicy;
 }
 
-const DEFAULT_WS_URL = "wss://app.thenvoi.com/api/v1/socket";
+const DEFAULT_WS_URL = "wss://app.band.ai/api/v1/socket";
 
 export function deriveDefaultRestUrl(wsUrl: string): string {
   const parsed = new URL(wsUrl);
@@ -88,12 +88,12 @@ function toPlatformMessage(
   };
 }
 
-export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
+export class BandLink implements AsyncIterable<PlatformEvent> {
   public readonly agentId: string;
   private readonly apiKey: string;
   public readonly wsUrl: string;
   public readonly restUrl: string;
-  public readonly rest: ThenvoiLinkRestApi;
+  public readonly rest: BandLinkRestApi;
   public readonly capabilities: AgentToolsCapabilities;
 
   private readonly logger: Logger;
@@ -105,7 +105,7 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
   private lastDisconnectReason: WebSocketDisconnectReason | null = null;
   private terminalDisconnectError: WebSocketDisconnectError | null = null;
 
-  public constructor(options: ThenvoiLinkOptions) {
+  public constructor(options: BandLinkOptions) {
     this.agentId = options.agentId;
     this.apiKey = options.apiKey;
     this.wsUrl = options.wsUrl ?? DEFAULT_WS_URL;
@@ -119,10 +119,10 @@ export class ThenvoiLink implements AsyncIterable<PlatformEvent> {
     const restApi =
       options.restApi ??
       new FernRestAdapter(
-        new ThenvoiClient({
+        new BandClient({
           apiKey: this.apiKey,
           baseUrl: this.restUrl,
-        }) as unknown as FernThenvoiClientLike,
+        }) as unknown as FernBandClientLike,
       );
 
     this.rest = restApi;

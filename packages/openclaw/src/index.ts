@@ -1,7 +1,7 @@
 /**
  * @band-ai/openclaw-channel-band — OpenClaw channel plugin for the Band platform.
  *
- * Uses @thenvoi/sdk (ThenvoiLink) for all platform communication. The default
+ * Uses @band-ai/sdk (BandLink) for all platform communication. The default
  * export is the channel plugin entry: it registers the assembled channel plugin
  * (with the live WS gateway) and, in full registration mode, the 12 band_*
  * platform-management tools.

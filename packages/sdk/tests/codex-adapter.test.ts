@@ -86,7 +86,7 @@ class ToolSchemaFakeTools extends FakeTools {
       {
         type: "function",
         function: {
-          name: "thenvoi_send_message",
+          name: "band_send_message",
           description: "Send a message to the room.",
           parameters: {
             type: "object",
@@ -165,7 +165,7 @@ describe("CodexAdapter", () => {
             threadId: "thread-1",
             turnId: "turn-1",
             callId: "call-platform",
-            tool: "thenvoi_send_message",
+            tool: "band_send_message",
             arguments: {
               content: "hello",
               mentions: ["@user"],
@@ -272,7 +272,7 @@ describe("CodexAdapter", () => {
       sandbox: "workspace-write",
       developerInstructions: expect.stringContaining("Coordinate room work and use tools."),
       dynamicTools: expect.arrayContaining([
-        expect.objectContaining({ name: "thenvoi_send_message" }),
+        expect.objectContaining({ name: "band_send_message" }),
         expect.objectContaining({ name: "post_action" }),
       ]),
     });
@@ -290,7 +290,7 @@ describe("CodexAdapter", () => {
 
     expect(tools.toolCalls).toEqual([
       {
-        name: "thenvoi_send_message",
+        name: "band_send_message",
         args: {
           content: "hello",
           mentions: ["@user"],
@@ -301,7 +301,7 @@ describe("CodexAdapter", () => {
       {
         id: 1,
         result: {
-          contentItems: [{ type: "inputText", text: "{\"ok\":true,\"tool\":\"thenvoi_send_message\"}" }],
+          contentItems: [{ type: "inputText", text: "{\"ok\":true,\"tool\":\"band_send_message\"}" }],
           success: true,
         },
       },
@@ -513,7 +513,7 @@ describe("CodexAdapter", () => {
     expect(tools.events.some((event) => event.messageType === "thought" && event.content === "(reasoning)")).toBe(false);
   });
 
-  it("renders default Thenvoi prompt and appends customSection when no full override is set", async () => {
+  it("renders default Band prompt and appends customSection when no full override is set", async () => {
     const tools = new ToolSchemaFakeTools();
     const fakeClient = new FakeCodexClient({
       events: [
@@ -554,7 +554,7 @@ describe("CodexAdapter", () => {
       : "";
 
     expect(developerInstructions).toContain("Linear policy: always post_thought before complete_session.");
-    expect(developerInstructions).toContain("Use `thenvoi_send_message(content, mentions)` to respond.");
+    expect(developerInstructions).toContain("Use `band_send_message(content, mentions)` to respond.");
   });
 
   it("handles local slash commands without starting a turn", async () => {
@@ -649,7 +649,7 @@ describe("CodexAdapter", () => {
           id: 1,
           method: "item/tool/call",
           params: {
-            tool: "thenvoi_send_message",
+            tool: "band_send_message",
             arguments: {
               content: "hello",
             },
@@ -784,5 +784,45 @@ describe("CodexAdapter", () => {
       message: "Custom tool post_action failed: custom boom",
     });
     expect(["CustomToolExecutionError", "CustomToolUnknownError"]).toContain(payload.output.errorType);
+  });
+
+  it("sends the default band clientInfo name and title on initialize", async () => {
+    const fakeClient = new FakeCodexClient();
+    const adapter = new CodexAdapter({
+      config: {
+        model: "gpt-5.3-codex",
+        cwd: "/tmp/workdir",
+      },
+      factory: async () => fakeClient,
+    });
+
+    await adapter.onStarted("Codex Agent", "Codex parity adapter");
+
+    const initializeCall = fakeClient.requestCalls.find((call) => call.method === "initialize");
+    expect(initializeCall).toBeDefined();
+    const clientInfo = initializeCall?.params.clientInfo as { name: string; title: string };
+    expect(clientInfo.name).toBe("band_codex_adapter");
+    expect(clientInfo.title).toBe("Band Codex Adapter");
+  });
+
+  it("lets the caller override clientInfo name and title via config", async () => {
+    const fakeClient = new FakeCodexClient();
+    const adapter = new CodexAdapter({
+      config: {
+        model: "gpt-5.3-codex",
+        cwd: "/tmp/workdir",
+        clientName: "custom_codex_adapter",
+        clientTitle: "Custom Codex Adapter",
+      },
+      factory: async () => fakeClient,
+    });
+
+    await adapter.onStarted("Codex Agent", "Codex parity adapter");
+
+    const initializeCall = fakeClient.requestCalls.find((call) => call.method === "initialize");
+    expect(initializeCall).toBeDefined();
+    const clientInfo = initializeCall?.params.clientInfo as { name: string; title: string };
+    expect(clientInfo.name).toBe("custom_codex_adapter");
+    expect(clientInfo.title).toBe("Custom Codex Adapter");
   });
 });

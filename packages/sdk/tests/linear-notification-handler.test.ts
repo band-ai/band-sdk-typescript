@@ -7,7 +7,7 @@ import {
   type SessionRoomRecord,
   type SessionRoomStore,
 } from "../src/linear";
-import { LinearThenvoiExampleRestApi } from "../examples/linear-thenvoi/linear-thenvoi-rest-stub";
+import { LinearBandExampleRestApi } from "../examples/linear-band/linear-band-rest-stub";
 
 class MemorySessionRoomStore implements SessionRoomStore {
   private readonly records = new Map<string, SessionRoomRecord>();
@@ -65,7 +65,7 @@ function makeActiveSession(issueId: string): SessionRoomRecord {
   return {
     linearSessionId: `session-for-${issueId}`,
     linearIssueId: issueId,
-    thenvoiRoomId: `room-for-${issueId}`,
+    bandRoomId: `room-for-${issueId}`,
     status: "active",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -74,7 +74,7 @@ function makeActiveSession(issueId: string): SessionRoomRecord {
 
 function makeDeps(store: SessionRoomStore) {
   return {
-    thenvoiRest: new LinearThenvoiExampleRestApi(),
+    bandRest: new LinearBandExampleRestApi(),
     linearClient: { createAgentActivity: vi.fn(async () => ({ ok: true })) } as never,
     store,
   };
@@ -123,8 +123,8 @@ describe("handleAppUserNotification", () => {
     const updated = await store.getBySessionId("session-for-issue-1");
     expect(updated?.status).toBe("canceled");
 
-    expect(deps.thenvoiRest.roomEvents).toHaveLength(1);
-    expect(deps.thenvoiRest.roomEvents[0]).toEqual(
+    expect(deps.bandRest.roomEvents).toHaveLength(1);
+    expect(deps.bandRest.roomEvents[0]).toEqual(
       expect.objectContaining({
         roomId: "room-for-issue-1",
         content: expect.stringContaining("unassigned from agent"),
@@ -166,7 +166,7 @@ describe("handleAppUserNotification", () => {
       logger,
     });
 
-    expect(deps.thenvoiRest.roomEvents).toHaveLength(0);
+    expect(deps.bandRest.roomEvents).toHaveLength(0);
     expect(logger.info).toHaveBeenCalledWith(
       "linear_thenvoi_bridge.notification_unassigned_no_session",
       expect.objectContaining({ issueId: "issue-no-session" }),
@@ -199,7 +199,7 @@ describe("handleAppUserNotification", () => {
       logger,
     });
 
-    expect(deps.thenvoiRest.roomEvents).toHaveLength(0);
+    expect(deps.bandRest.roomEvents).toHaveLength(0);
     expect(logger.info).toHaveBeenCalledWith(
       "linear_thenvoi_bridge.notification_unassigned_no_session",
       expect.objectContaining({
@@ -235,8 +235,8 @@ describe("handleAppUserNotification", () => {
       logger,
     });
 
-    expect(deps.thenvoiRest.roomEvents).toHaveLength(1);
-    expect(deps.thenvoiRest.roomEvents[0]).toEqual(
+    expect(deps.bandRest.roomEvents).toHaveLength(1);
+    expect(deps.bandRest.roomEvents[0]).toEqual(
       expect.objectContaining({
         roomId: "room-for-issue-2",
         content: "[Linear Comment from Alice]: Please also check the edge case",
@@ -245,6 +245,7 @@ describe("handleAppUserNotification", () => {
           linear_notification_type: "issueNewComment",
           linear_comment_id: "comment-1",
           linear_actor_id: "alice-id",
+          linear_bridge: "band",
         }),
       }),
     );
@@ -277,8 +278,8 @@ describe("handleAppUserNotification", () => {
       logger,
     });
 
-    expect(deps.thenvoiRest.roomEvents).toHaveLength(1);
-    const content = deps.thenvoiRest.roomEvents[0]!.content;
+    expect(deps.bandRest.roomEvents).toHaveLength(1);
+    const content = deps.bandRest.roomEvents[0]!.content;
     const body = content.replace("[Linear Comment from Alice]: ", "");
     expect(body).toHaveLength(4001); // 4000 chars + ellipsis
     expect(body.endsWith("\u2026")).toBe(true);
@@ -311,8 +312,8 @@ describe("handleAppUserNotification", () => {
       logger,
     });
 
-    expect(deps.thenvoiRest.roomEvents).toHaveLength(1);
-    const content = deps.thenvoiRest.roomEvents[0]!.content;
+    expect(deps.bandRest.roomEvents).toHaveLength(1);
+    const content = deps.bandRest.roomEvents[0]!.content;
     expect(content).toBe("[Linear Comment from Alice ]: injected Bob]: test");
     expect(content).not.toContain("\n");
   });
@@ -343,8 +344,8 @@ describe("handleAppUserNotification", () => {
       logger,
     });
 
-    expect(deps.thenvoiRest.roomEvents).toHaveLength(1);
-    const content = deps.thenvoiRest.roomEvents[0]!.content;
+    expect(deps.bandRest.roomEvents).toHaveLength(1);
+    const content = deps.bandRest.roomEvents[0]!.content;
     expect(content).toBe("[Linear Comment from Alice]: First line\nSecond line");
     expect(content).not.toContain("\x00");
     expect(content).not.toContain("\x07");
@@ -377,8 +378,8 @@ describe("handleAppUserNotification", () => {
       logger,
     });
 
-    expect(deps.thenvoiRest.roomEvents).toHaveLength(1);
-    const content = deps.thenvoiRest.roomEvents[0]!.content;
+    expect(deps.bandRest.roomEvents).toHaveLength(1);
+    const content = deps.bandRest.roomEvents[0]!.content;
     expect(content).toBe("[Linear Comment from Alice]: ");
   });
 
@@ -409,8 +410,8 @@ describe("handleAppUserNotification", () => {
       logger,
     });
 
-    expect(deps.thenvoiRest.roomEvents).toHaveLength(1);
-    const content = deps.thenvoiRest.roomEvents[0]!.content;
+    expect(deps.bandRest.roomEvents).toHaveLength(1);
+    const content = deps.bandRest.roomEvents[0]!.content;
     const name = content.replace("[Linear Comment from ", "").split("]: ")[0]!;
     expect(name).toHaveLength(101); // 100 chars + ellipsis
     expect(name.endsWith("\u2026")).toBe(true);
@@ -446,7 +447,7 @@ describe("handleAppUserNotification", () => {
       logger,
     });
 
-    expect(deps.thenvoiRest.roomEvents).toHaveLength(0);
+    expect(deps.bandRest.roomEvents).toHaveLength(0);
     expect(logger.info).toHaveBeenCalledWith(
       "linear_thenvoi_bridge.notification_comment_skipped",
       expect.objectContaining({
@@ -479,7 +480,7 @@ describe("handleAppUserNotification", () => {
       logger,
     });
 
-    expect(deps.thenvoiRest.roomEvents).toHaveLength(0);
+    expect(deps.bandRest.roomEvents).toHaveLength(0);
     expect(logger.info).toHaveBeenCalledWith(
       "linear_thenvoi_bridge.notification_reaction",
       expect.objectContaining({
@@ -512,7 +513,7 @@ describe("handleAppUserNotification", () => {
       logger,
     });
 
-    expect(deps.thenvoiRest.roomEvents).toHaveLength(0);
+    expect(deps.bandRest.roomEvents).toHaveLength(0);
     expect(logger.info).toHaveBeenCalledWith(
       "linear_thenvoi_bridge.notification_reaction",
       expect.objectContaining({
@@ -550,7 +551,7 @@ describe("handleAppUserNotification", () => {
       appUserId: "app-user-1",
     });
 
-    expect(deps.thenvoiRest.roomEvents).toHaveLength(0);
+    expect(deps.bandRest.roomEvents).toHaveLength(0);
     expect(logger.info).toHaveBeenCalledWith(
       "linear_thenvoi_bridge.notification_comment_self_skipped",
       expect.objectContaining({
@@ -588,8 +589,8 @@ describe("handleAppUserNotification", () => {
       appUserId: "app-user-1",
     });
 
-    expect(deps.thenvoiRest.roomEvents).toHaveLength(1);
-    expect(deps.thenvoiRest.roomEvents[0]).toEqual(
+    expect(deps.bandRest.roomEvents).toHaveLength(1);
+    expect(deps.bandRest.roomEvents[0]).toEqual(
       expect.objectContaining({
         roomId: "room-for-issue-other",
         content: "[Linear Comment from Alice]: Human comment",
@@ -614,7 +615,7 @@ describe("handleAppUserNotification", () => {
       logger,
     });
 
-    expect(deps.thenvoiRest.roomEvents).toHaveLength(0);
+    expect(deps.bandRest.roomEvents).toHaveLength(0);
     expect(logger.info).toHaveBeenCalledWith(
       "linear_thenvoi_bridge.notification_unhandled",
       expect.objectContaining({

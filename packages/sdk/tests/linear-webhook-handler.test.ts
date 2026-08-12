@@ -7,13 +7,13 @@ import {
   createInProcessLinearBridgeDispatcher,
   createLinearWebhookHandler,
   type LinearBridgeDispatcher,
-  type LinearThenvoiBridgeConfig,
+  type LinearBandBridgeConfig,
   type PendingBootstrapRequest,
   type PermissionChangeCallbacks,
   type SessionRoomRecord,
   type SessionRoomStore,
 } from "../src/linear";
-import { LinearThenvoiExampleRestApi } from "../examples/linear-thenvoi/linear-thenvoi-rest-stub";
+import { LinearBandExampleRestApi } from "../examples/linear-band/linear-band-rest-stub";
 
 class MemorySessionRoomStore implements SessionRoomStore {
   private readonly records = new Map<string, SessionRoomRecord>();
@@ -66,7 +66,7 @@ afterEach(async () => {
   servers.clear();
 });
 
-const config: LinearThenvoiBridgeConfig = {
+const config: LinearBandBridgeConfig = {
   linearAccessToken: "lin_api_test",
   linearWebhookSecret: "linear_webhook_secret",
   hostAgentHandle: "linear-host",
@@ -128,7 +128,7 @@ async function startServer(dispatcher?: LinearBridgeDispatcher, permissionCallba
     dispatcher,
     permissionCallbacks,
     deps: {
-      thenvoiRest: new LinearThenvoiExampleRestApi(),
+      bandRest: new LinearBandExampleRestApi(),
       linearClient: linearClient as never,
       store,
     },
@@ -156,7 +156,7 @@ async function startServer(dispatcher?: LinearBridgeDispatcher, permissionCallba
 }
 
 async function startServerWithDeps(deps: {
-  thenvoiRest: unknown;
+  bandRest: unknown;
   store: SessionRoomStore;
   linearClient?: unknown;
 }) {
@@ -166,7 +166,7 @@ async function startServerWithDeps(deps: {
   const handler = createLinearWebhookHandler({
     config,
     deps: {
-      thenvoiRest: deps.thenvoiRest as never,
+      bandRest: deps.bandRest as never,
       linearClient: linearClient as never,
       store: deps.store,
     },
@@ -589,7 +589,7 @@ describe("createLinearWebhookHandler", () => {
       workflowStates: vi.fn(async () => ({ nodes: [] })),
       updateIssue: vi.fn(async () => ({ success: true })),
     };
-    const thenvoiRest = {
+    const bandRest = {
       getAgentMe: vi.fn(async () => ({ id: "agent-1", handle: "linear-host" })),
       createChat: vi.fn(async () => {
         throw new Error("createChat failed");
@@ -603,7 +603,7 @@ describe("createLinearWebhookHandler", () => {
         payload: makePayload() as never,
         config,
         deps: {
-          thenvoiRest: thenvoiRest as never,
+          bandRest: bandRest as never,
           linearClient: linearClient as never,
           store,
           logger,
@@ -686,16 +686,16 @@ describe("createLinearWebhookHandler", () => {
     const session: SessionRoomRecord = {
       linearSessionId: "session-dedup",
       linearIssueId: "issue-dedup",
-      thenvoiRoomId: "room-dedup",
+      bandRoomId: "room-dedup",
       status: "active",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
     await store.upsert(session);
 
-    const thenvoiRest = new LinearThenvoiExampleRestApi();
+    const bandRest = new LinearBandExampleRestApi();
     const { url } = await startServerWithDeps({
-      thenvoiRest,
+      bandRest,
       store,
     });
 
@@ -733,12 +733,12 @@ describe("createLinearWebhookHandler", () => {
     expect(second.status).toBe(200);
 
     // Only one disengagement message should have been sent
-    expect(thenvoiRest.roomEvents).toHaveLength(1);
+    expect(bandRest.roomEvents).toHaveLength(1);
   });
 
   it("returns 200 even when notification handling throws", async () => {
     const store = new MemorySessionRoomStore();
-    const thenvoiRest = {
+    const bandRest = {
       getAgentMe: vi.fn(async () => ({ id: "agent-1", handle: "linear-host" })),
       createChatEvent: vi.fn(async () => {
         throw new Error("room write failed");
@@ -746,14 +746,14 @@ describe("createLinearWebhookHandler", () => {
     };
 
     const { url } = await startServerWithDeps({
-      thenvoiRest: thenvoiRest as never,
+      bandRest: bandRest as never,
       store,
     });
 
     const session: SessionRoomRecord = {
       linearSessionId: "session-fail",
       linearIssueId: "issue-fail",
-      thenvoiRoomId: "room-fail",
+      bandRoomId: "room-fail",
       status: "active",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -801,14 +801,14 @@ describe("createLinearWebhookHandler", () => {
     const session: SessionRoomRecord = {
       linearSessionId: "session-retry",
       linearIssueId: "issue-retry",
-      thenvoiRoomId: "room-retry",
+      bandRoomId: "room-retry",
       status: "active",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
     await store.upsert(session);
 
-    const thenvoiRest = {
+    const bandRest = {
       getAgentMe: vi.fn(async () => ({ id: "agent-1", handle: "linear-host" })),
       createChatEvent: vi
         .fn()
@@ -817,7 +817,7 @@ describe("createLinearWebhookHandler", () => {
     };
 
     const { url } = await startServerWithDeps({
-      thenvoiRest: thenvoiRest as never,
+      bandRest: bandRest as never,
       store,
     });
 
@@ -857,7 +857,7 @@ describe("createLinearWebhookHandler", () => {
     expect(second.status).toBe(200);
 
     // createChatEvent should have been called twice (once failed, once succeeded)
-    expect(thenvoiRest.createChatEvent).toHaveBeenCalledTimes(2);
+    expect(bandRest.createChatEvent).toHaveBeenCalledTimes(2);
   });
 
   it("returns 200 when notification payload is missing the notification field", async () => {
@@ -899,16 +899,16 @@ describe("createLinearWebhookHandler", () => {
     const session: SessionRoomRecord = {
       linearSessionId: "session-self",
       linearIssueId: "issue-self",
-      thenvoiRoomId: "room-self",
+      bandRoomId: "room-self",
       status: "active",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
     await store.upsert(session);
 
-    const thenvoiRest = new LinearThenvoiExampleRestApi();
+    const bandRest = new LinearBandExampleRestApi();
     const { url } = await startServerWithDeps({
-      thenvoiRest,
+      bandRest,
       store,
     });
 
@@ -949,6 +949,6 @@ describe("createLinearWebhookHandler", () => {
 
     expect(response.status).toBe(200);
     // No message should have been sent to the room
-    expect(thenvoiRest.roomEvents).toHaveLength(0);
+    expect(bandRest.roomEvents).toHaveLength(0);
   });
 });

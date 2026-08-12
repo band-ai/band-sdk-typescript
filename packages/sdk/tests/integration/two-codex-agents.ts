@@ -1,5 +1,5 @@
 /**
- * Two Codex agents talking to each other on the real Thenvoi platform.
+ * Two Codex agents talking to each other on the real Band platform.
  *
  * Agent A (implementer) runs as a Codex agent with tool execution.
  * Agent B (planner) sends it a real coding task via REST.
@@ -15,10 +15,10 @@ import {
   loadAgentConfig,
 } from "../../src/index";
 import { ConsoleLogger } from "../../src/core";
-import { ThenvoiClient } from "@thenvoi/rest-client";
+import { BandClient } from "@band-ai/rest-client";
 import { FernRestAdapter } from "../../src/rest";
 
-const REST_URL = "https://app.thenvoi.com/";
+const REST_URL = "https://app.band.ai/";
 
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
@@ -28,8 +28,8 @@ async function main() {
   const implConfig = loadAgentConfig("basic_agent");
   const planConfig = loadAgentConfig("planner_agent");
 
-  const implRest = new FernRestAdapter(new ThenvoiClient({ baseUrl: REST_URL, apiKey: implConfig.apiKey }));
-  const planRest = new FernRestAdapter(new ThenvoiClient({ baseUrl: REST_URL, apiKey: planConfig.apiKey }));
+  const implRest = new FernRestAdapter(new BandClient({ baseUrl: REST_URL, apiKey: implConfig.apiKey }));
+  const planRest = new FernRestAdapter(new BandClient({ baseUrl: REST_URL, apiKey: planConfig.apiKey }));
   const logger = new ConsoleLogger();
 
   const implMe = await implRest.getAgentMe();

@@ -174,11 +174,18 @@ jobs:
         if: steps.release_state.outputs.sdk_created == 'true'
         run: cp README.md packages/sdk/README.md
 
+      - name: Assert SDK package contents
+        if: steps.release_state.outputs.sdk_created == 'true'
+        run: node scripts/assert-package-contents.mjs packages/sdk 75 dist/index.js dist/index.d.ts README.md package.json
+
+      - name: Assert OpenClaw package contents
+        if: steps.release_state.outputs.openclaw_created == 'true'
+        run: node scripts/assert-package-contents.mjs packages/openclaw 55 dist/index.js dist/index.d.ts openclaw.plugin.json package.json
+
       - name: Pack SDK (@band-ai)
         if: steps.release_state.outputs.sdk_created == 'true'
         run: |
           node scripts/assert-release-ready.mjs
-          sed -i 's/"@thenvoi\/sdk"/"@band-ai\/sdk"/' packages/sdk/package.json
           mkdir -p release-artifacts
           cd packages/sdk
           npm pack --pack-destination ../../release-artifacts

@@ -2,8 +2,8 @@
 #
 # Build context: repository root (pnpm workspace)
 #
-#   docker build -f packages/sdk/examples/linear-thenvoi/Dockerfile -t thenvoi-linear-bridge .
-#   docker run --env-file .env -p 8787:8787 thenvoi-linear-bridge
+#   docker build -f packages/sdk/examples/linear-band/Dockerfile -t band-linear-bridge .
+#   docker run --env-file .env -p 8787:8787 band-linear-bridge
 #
 
 FROM node:22-alpine
@@ -21,7 +21,7 @@ RUN pnpm install --frozen-lockfile
 
 # ── source layer ──────────────────────────────────────────────────
 COPY packages/sdk/src ./packages/sdk/src
-COPY packages/sdk/examples/linear-thenvoi ./packages/sdk/examples/linear-thenvoi
+COPY packages/sdk/examples/linear-band ./packages/sdk/examples/linear-band
 
 # ── run as non-root ───────────────────────────────────────────────
 RUN addgroup --system --gid 1001 bridge && \
@@ -39,4 +39,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 # tsx is required because the example imports TypeScript source (../../src/*) directly.
 # devDependencies (including tsx) are installed before NODE_ENV=production is set.
-CMD ["pnpm", "--filter", "@thenvoi/sdk", "start:linear"]
+CMD ["pnpm", "--filter", "@band-ai/sdk", "start:linear"]

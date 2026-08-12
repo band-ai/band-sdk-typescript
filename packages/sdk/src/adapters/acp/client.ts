@@ -14,7 +14,7 @@ import type {
 } from "./types";
 import { choosePermissionOption } from "./types";
 
-export class ThenvoiACPClient implements Client {
+export class BandACPClient implements Client {
   private readonly sessionChunks = new Map<string, CollectedChunk[]>()
   private readonly permissionHandlers = new Map<string, ACPPermissionHandler>()
 

@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 preset:
-  name: thenvoi
-  description: "Thenvoi platform REST API and Phoenix Channels WebSocket access"
+  name: band
+  description: "Band platform REST API and Phoenix Channels WebSocket access"
 
 network_policies:
-  thenvoi:
-    name: thenvoi
+  band:
+    name: band
     endpoints:
-      - host: app.thenvoi.com
+      - host: app.band.ai
         port: 443
         protocol: rest
         enforcement: enforce
@@ -16,7 +16,7 @@ network_policies:
           - allow: { method: POST,   path: "/api/**" }
           - allow: { method: PATCH,  path: "/api/**" }
           - allow: { method: DELETE, path: "/api/**" }
-      - host: app.thenvoi.com
+      - host: app.band.ai
         port: 443
         access: full
         tls: skip

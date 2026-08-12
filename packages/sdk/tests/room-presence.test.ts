@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { TopicHandlers, StreamingTransport } from "../src/platform/streaming/transport";
 import { RoomPresence } from "../src/runtime/rooms/RoomPresence";
-import { ThenvoiLink } from "../src/platform/ThenvoiLink";
+import { BandLink } from "../src/platform/BandLink";
 import { FakeRestApi } from "./testUtils";
 
 class FakeTransport implements StreamingTransport {
@@ -65,7 +65,7 @@ describe("RoomPresence", () => {
     const left: string[] = [];
 
     const presence = new RoomPresence({
-      link: new ThenvoiLink({
+      link: new BandLink({
         agentId: "agent-1",
         apiKey: "key",
         transport,
@@ -114,7 +114,7 @@ describe("RoomPresence", () => {
     const contactEvents: string[] = [];
 
     const presence = new RoomPresence({
-      link: new ThenvoiLink({
+      link: new BandLink({
         agentId: "agent-1",
         apiKey: "key",
         transport,
@@ -147,7 +147,7 @@ describe("RoomPresence", () => {
     const joined: string[] = [];
 
     const presence = new RoomPresence({
-      link: new ThenvoiLink({
+      link: new BandLink({
         agentId: "agent-1",
         apiKey: "key",
         transport,
@@ -190,7 +190,7 @@ describe("RoomPresence", () => {
     };
 
     const presence = new RoomPresence({
-      link: new ThenvoiLink({
+      link: new BandLink({
         agentId: "agent-1",
         apiKey: "key",
         transport,

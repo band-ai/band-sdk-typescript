@@ -10,7 +10,7 @@
  * fallback so existing installs don't break.
  */
 
-import { ThenvoiLink } from "@thenvoi/sdk";
+import { BandLink } from "@band-ai/sdk";
 
 // =============================================================================
 // Types
@@ -117,6 +117,25 @@ export function resolveAccount(
  * account field -> BAND_* -> legacy THENVOI_* -> default. URLs always resolve
  * to a default; apiKey/agentId may be undefined (callers decide what to do).
  */
+const _warnedLegacyEnvVars = new Set<string>();
+
+/**
+ * Resolve one field with `account -> BAND_* -> THENVOI_*` precedence. When the
+ * legacy `THENVOI_*` variable is the resolved source, warn once per process
+ * (naming the old variable and its Band replacement only — never a secret).
+ */
+function resolveField(accountVal: string | undefined, bandVar: string, legacyVar: string): string | undefined {
+  if (accountVal !== undefined) return accountVal;
+  const bandVal = process.env[bandVar];
+  if (bandVal !== undefined) return bandVal;
+  const legacyVal = process.env[legacyVar];
+  if (legacyVal !== undefined && !_warnedLegacyEnvVars.has(legacyVar)) {
+    _warnedLegacyEnvVars.add(legacyVar);
+    console.warn(`[band] ${legacyVar} is deprecated; use ${bandVar} instead`);
+  }
+  return legacyVal;
+}
+
 function readRawCreds(account: BandAccountConfig): {
   apiKey?: string;
   agentId?: string;
@@ -124,12 +143,10 @@ function readRawCreds(account: BandAccountConfig): {
   restUrl: string;
 } {
   return {
-    apiKey: account.apiKey ?? process.env.BAND_API_KEY ?? process.env.THENVOI_API_KEY,
-    agentId: account.agentId ?? process.env.BAND_AGENT_ID ?? process.env.THENVOI_AGENT_ID,
-    wsUrl:
-      account.wsUrl ?? process.env.BAND_WS_URL ?? process.env.THENVOI_WS_URL ?? DEFAULT_WS_URL,
-    restUrl:
-      account.restUrl ?? process.env.BAND_REST_URL ?? process.env.THENVOI_REST_URL ?? DEFAULT_REST_URL,
+    apiKey: resolveField(account.apiKey, "BAND_API_KEY", "THENVOI_API_KEY"),
+    agentId: resolveField(account.agentId, "BAND_AGENT_ID", "THENVOI_AGENT_ID"),
+    wsUrl: resolveField(account.wsUrl, "BAND_WS_URL", "THENVOI_WS_URL") ?? DEFAULT_WS_URL,
+    restUrl: resolveField(account.restUrl, "BAND_REST_URL", "THENVOI_REST_URL") ?? DEFAULT_REST_URL,
   };
 }
 
@@ -168,9 +185,9 @@ export function inspectAccount(config: PluginConfig, accountId = "default"): Acc
 
 /** Default probe: open a temporary link, fetch agent metadata, disconnect. */
 const defaultProbe: ConnectivityProbe = async (conn) => {
-  let link: ThenvoiLink | null = null;
+  let link: BandLink | null = null;
   try {
-    link = new ThenvoiLink({
+    link = new BandLink({
       agentId: conn.agentId,
       apiKey: conn.apiKey,
       wsUrl: conn.wsUrl,
