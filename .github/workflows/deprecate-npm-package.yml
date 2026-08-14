@@ -1,0 +1,61 @@
+name: Deprecate npm Package
+
+# One-off, manually-triggered operation for retiring a package left behind by
+# the Thenvoi -> Band rename (e.g. @thenvoi/sdk, superseded by @band-ai/sdk).
+# npm's OIDC trusted publishing (used by release.yml) only authorizes
+# `npm publish`, so this job authenticates with a long-lived NPM_TOKEN scoped
+# to the `npm-deprecate` environment instead.
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: 'Retired @thenvoi/* package to deprecate'
+        required: true
+        default: '@thenvoi/sdk'
+      message:
+        description: 'Deprecation message shown to installers'
+        required: true
+        default: 'This package has been renamed to @band-ai/sdk: https://www.npmjs.com/package/@band-ai/sdk'
+      version-range:
+        description: 'npm semver range to deprecate'
+        required: true
+        default: '*'
+      confirm-package:
+        description: 'Re-type the exact package name above to confirm'
+        required: true
+
+permissions:
+  contents: read
+
+concurrency: deprecate-npm-package
+
+jobs:
+  deprecate:
+    runs-on: ubuntu-latest
+    environment: npm-deprecate
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4; immutable pin, consistent with release.yml
+
+      - name: Setup Node for npm auth
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4; immutable pin, consistent with release.yml
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Deprecate package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DEPRECATE_PACKAGE: ${{ inputs.package }}
+          DEPRECATE_MESSAGE: ${{ inputs.message }}
+          DEPRECATE_RANGE: ${{ inputs.version-range }}
+          DEPRECATE_CONFIRM: ${{ inputs.confirm-package }}
+        run: node scripts/deprecate-npm-package.mjs
+
+      - name: Deprecation summary
+        run: |
+          echo "## npm Deprecation" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Deprecated \`${{ inputs.package }}@${{ inputs.version-range }}\`:" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> ${{ inputs.message }}" >> "$GITHUB_STEP_SUMMARY"

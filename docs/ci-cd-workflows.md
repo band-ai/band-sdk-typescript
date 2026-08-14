@@ -186,6 +186,32 @@ tag cannot silently change the workflow that holds npm publishing rights.
 Dependabot updates those SHAs. A test in `scripts/release-hardening.test.mjs`
 fails the build if any action in this workflow is left on a floating tag.
 
+### Deprecate npm Package — `deprecate-npm-package.yml`
+
+Manual (`workflow_dispatch`-only) tool for retiring packages left behind by the
+Thenvoi -> Band rename, e.g. marking `@thenvoi/sdk` deprecated on npm once
+`@band-ai/sdk` is the maintained package. It is deliberately not triggered by
+any push or release event — deprecation of a still-installable package is a
+one-time, human-initiated action.
+
+`npm deprecate` is a separate registry permission from `npm publish`, and
+npm's OIDC trusted publishing (used by `release.yml`'s `publish` job) only
+covers `publish`. This workflow instead authenticates with a long-lived
+`NPM_TOKEN` secret, scoped to the `npm-deprecate` GitHub environment — an
+administrator must create that environment, add required reviewers, and add
+`NPM_TOKEN` (an npm token with write access to the `@thenvoi` scope) before
+this can run.
+
+Guardrails in `scripts/deprecate-npm-package.mjs`:
+
+- The target package must start with `@thenvoi/`; the workflow refuses to
+  touch any other scope, so a fat-fingered input can't affect a live
+  `@band-ai/*` package.
+- The dispatch form requires re-typing the exact package name into a separate
+  `confirm-package` input; a mismatch aborts before any npm call.
+- The package is looked up on the registry first, so a typo'd name fails
+  closed instead of silently deprecating nothing.
+
 ### Release hardening tests — `scripts/release-hardening.test.mjs`
 
 Run by `test` on every PR (`pnpm test:release-hardening`). It covers the
