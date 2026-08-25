@@ -97,7 +97,7 @@ Nothing here blocks shipping more 0.1.x releases, but **several items should be 
 
 ## Findings count
 
-**200 findings total** across 9 area files (4 Blockers, 73 Major, 85 Minor, 38 Nits). Each area file has its own `### Blockers / ### Major / ### Minor / ### Nits` breakdown; this table is the rollup. `review.md` (this file) summarizes only the Blockers and Majors — open the linked area file for full Minor/Nit lists.
+**201 findings total** across 9 area files (4 Blockers, 74 Major, 85 Minor, 38 Nits). Each area file has its own `### Blockers / ### Major / ### Minor / ### Nits` breakdown; this table is the rollup. `review.md` (this file) summarizes only the Blockers and Majors — open the linked area file for full Minor/Nit lists.
 
 One entry in `network.md` is struck through rather than removed — [`disconnect()` mutates the map being iterated](review/network.md#disconnect-mutates-the-map-being-iterated--no-longer-applicable) — because the pattern it describes is now the model the other cleanup paths should follow, and it is worth recording so it is not "re-fixed". It is not counted below.
 
@@ -110,9 +110,9 @@ One entry in `network.md` is struck through rather than removed — [`disconnect
 | [Verticals (MCP + Linear)](review/verticals.md#verticals-review-mcp-and-linear) | 0 | 4 | 7 | 3 | 14 |
 | [Type safety](review/type-safety.md#type-safety-review-cross-cutting) | 0 | 5 | 5 | 1 | 11 |
 | [Error / async / cleanup / logging](review/error-async.md#error-handling-async-cleanup-and-logging-review) | 0 | 9 | 7 | 5 | 21 |
-| [Build / tests / docs / examples](review/build-tests-docs.md#build-tests-and-docs-review) | 1 | 12 | 12 | 2 | 27 |
+| [Build / tests / docs / examples](review/build-tests-docs.md#build-tests-and-docs-review) | 1 | 13 | 12 | 2 | 28 |
 | [Cross-module consistency & architecture](review/cross-module.md#cross-module-consistency-and-architecture-review) | 0 | 9 | 12 | 6 | 27 |
-| **Total** | **4** | **73** | **85** | **38** | **200** |
+| **Total** | **4** | **74** | **85** | **38** | **201** |
 
 ---
 
@@ -165,15 +165,17 @@ One entry in `network.md` is struck through rather than removed — [`disconnect
 ### B6. `c5-package-symbols.test.ts` asserts a file that HEAD deleted
 *Blocker-adjacent · Effort: S · `packages/sdk/tests/c5-package-symbols.test.ts:420-421`*
 
-**Problem** — The test `".release-hold marker exists at the repository root"` asserts `existsSync(join(REPO_ROOT, ".release-hold"))` is `true`. Commit `1eb7bc9` — the current HEAD, *"chore: remove stale `.release-hold` from the Band rebrand"* — deleted that file and did not update the assertion. The test fails on `main` today with `expected false to be true`.
+**Problem** — The test `".release-hold marker exists at the repository root"` asserts `existsSync(join(REPO_ROOT, ".release-hold"))` is `true`. The current HEAD, `1eb7bc9` (*"chore: remove stale `.release-hold` from the Band rebrand"*), deleted that file and did not update the assertion. `vitest run` on `main`'s tree fails with `expected false to be true`.
 
-**Impact** — `main` has a red test. Whatever gate this assertion was guarding (the release-hold half of the rebrand's release-pipeline controls) is now guarding nothing, and the failure will mask any *real* regression that lands in the same file. Either the marker was meant to stay and its deletion was wrong, or it was correctly deleted and the assertion is dead — the two commits disagree and nothing in the tree says which is intended.
+This was not missed. CI reported it precisely: on the pull request that made the change, the `test` job concluded **failure** and the annotation named the line — `packages/sdk/tests/c5-package-symbols.test.ts:421 AssertionError: expected false to be true`. The aggregate `ci-status` check also concluded **failure**. The change was merged with both red, because nothing prevents that — see [`main`'s ruleset requires a pull request but no passing checks](review/build-tests-docs.md#mains-ruleset-requires-a-pull-request-but-no-passing-checks).
 
-**Fix** — Decide which side is right. If removing the hold was correct, delete the assertion (and the surrounding `P-C5-3` expectation about the hold being present) in the same change. If the hold is still required for the release pipeline, restore `.release-hold` and record in the test *why* it must exist, so the next cleanup pass does not delete it again.
+**Impact** — `main`'s tree has a failing test, and it stays invisible in normal operation: `ci.yml` triggers only on `pull_request`, so the suite never runs against `main` after a merge (the green checks on `main` are `release.yml` and CodeQL). The failure will also mask a real regression landing in the same file, and it invalidates the "all tests pass" premise that verification work on this repo tends to assume.
 
-**Graded Blocker-adjacent, not Blocker** — it does not break the published package or any consumer; it breaks CI signal. It is listed here rather than as a Major because a red `main` invalidates the "all tests pass" premise the rest of this review's verification relies on.
+**Fix** — The intent is already on record: the commit message calls the marker stale and the merge went ahead, so the marker was deliberately removed. Delete the assertion and the surrounding `P-C5-3` expectation about the hold being present. If that reading is wrong and the hold is still required by the release pipeline, restore `.release-hold` and record in the test *why* it must exist, so the next cleanup pass does not delete it again.
 
-[→ Full test-suite triage in review/build-tests-docs.md](review/build-tests-docs.md#test-suite-state)
+**Graded Blocker-adjacent, not Blocker** — it breaks no published package and no consumer; it breaks CI signal.
+
+[→ Full test-suite triage in review/build-tests-docs.md](review/build-tests-docs.md#test-suite-state) · [→ The merge-gate gap](review/build-tests-docs.md#mains-ruleset-requires-a-pull-request-but-no-passing-checks)
 
 ---
 

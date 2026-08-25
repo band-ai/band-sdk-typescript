@@ -26,11 +26,14 @@ The SDK is generally well-packaged: `tsup` entries align with the `package.json`
 - README/examples drift — see [`examples/README.md` references non-existent example](#examplesreadmemd-references-non-existent-example), [Root `README.md` Examples table omits `letta/`](#root-readmemd-examples-table-omits-letta), [Root `README.md` "Subpath Exports" table omits `@band-ai/sdk/converters`](#root-readmemd-subpath-exports-table-omits-band-aisdkconverters).
 - tsconfig strictness gaps — see [`tsconfig.json` does not enable `noUncheckedIndexedAccess` or `noImplicitOverride`](#tsconfigjson-does-not-enable-nouncheckedindexedaccess-or-noimplicitoverride).
 - [Test type-safety: 60+ `as never` or `as any` casts in tests](#test-type-safety-60-as-never-or-as-any-casts-in-tests).
+- No status check is required to merge, and the suite never runs on the trunk — see [`main`'s ruleset requires a pull request but no passing checks](#mains-ruleset-requires-a-pull-request-but-no-passing-checks).
 - The migration-proof suite does not run off POSIX, and half of its assertions pass vacuously when it cannot — see [Compile-proof tests are not portable off POSIX](#compile-proof-tests-are-not-portable-off-posix), [Part of the test suite silently requires a prior build](#part-of-the-test-suite-silently-requires-a-prior-build), [The brand guard assertion is line-ending sensitive](#the-brand-guard-assertion-is-line-ending-sensitive).
 
 ## Test suite state
 
 `vitest run` at `1eb7bc9`: **898 tests across 96 test files — 871 pass, 23 fail, 4 skipped.** `tsc --noEmit` is clean and `eslint .` reports 0 errors with 12 warnings.
+
+Note that these numbers cannot be read off CI. `ci.yml` triggers on `pull_request` only, so the suite never runs against `main` after a merge — the green checks on `main` are `release.yml` and CodeQL. See [`main`'s ruleset requires a pull request but no passing checks](#mains-ruleset-requires-a-pull-request-but-no-passing-checks).
 
 The 23 failures need triage rather than a headline number, because only one of them is a defect in the repo:
 
@@ -269,6 +272,34 @@ Gaps:
 - `packages/sdk/tests/opencode-adapter.test.ts:176,223,286`
 - `packages/sdk/tests/claude-sdk-adapter.test.ts:36,...`
 - 63 total occurrences across the suite
+
+#### `main`'s ruleset requires a pull request but no passing checks
+*Major · Effort: S · `.github/workflows/ci.yml` (trigger), repository ruleset `main-branch-protection`*
+
+**Observation** — Two configuration facts combine badly.
+
+`ci.yml` — the workflow that runs lint, typecheck, and the test suite — triggers on `pull_request` only:
+
+```yaml
+on:
+  pull_request:
+    branches: [main, dev]
+```
+
+Nothing runs it on a push to `main`. What runs there is `release.yml` (`on: push: branches: [main]`) plus CodeQL, so `main` shows green checks while its tree is never tested.
+
+The `main-branch-protection` ruleset is `active` with no bypass actors, but its rules are only `deletion`, `non_fast_forward`, and `pull_request`. There is **no `required_status_checks` rule**. A pull request is mandatory; a *passing* pull request is not.
+
+The consequence is on record. The commit that deleted `.release-hold` was merged with `test` concluding **failure** and the aggregate `ci-status` check concluding **failure**, with an annotation naming the exact assertion — see [review.md B6](../review.md#b6-c5-package-symbolstestts-asserts-a-file-that-head-deleted). CI did its job; nothing acted on the result, and because the suite never re-runs on `main`, the failure has been invisible since.
+
+**Impact** — Red builds can land on the trunk and then stop being reported. The repo has invested heavily in guard tests — the `c3`–`c7` migration proofs, the REST-client conformance test, the release-hardening suite — and all of that investment is advisory as long as no check is required to pass. It also means "CI is green on `main`" cannot be used as evidence about `main`'s tree, which is exactly the inference a contributor will make.
+
+**Fix** — Two changes, both small:
+
+1. Add a `required_status_checks` rule to the `main-branch-protection` ruleset listing `ci-status` as the required context. **The gate itself is already written and correct** — `ci.yml:232-261` defines a `ci-status` job with `needs: [changes, lint, test, packaging]` and `if: always()`, which walks each job's result and exits 1 unless every one is `success` (or `skipped`, for the two that are conditional on `changes`). It even documents why `changes` is checked separately: a failure there skips `lint` and `test` rather than failing them, and treating skipped-because-broken as a pass would hide the break. So this is one setting, not a piece of work: the single context `ci-status` is enough. Keep `strict` on so a stale branch must update before merging.
+2. Add `push: branches: [main]` to `ci.yml`'s trigger, so the trunk is validated after a merge and a regression that lands anyway is visible rather than silent.
+
+Together these turn the existing guard suite from advisory into enforcing, which is the assumption most of its tests were written under.
 
 #### Compile-proof tests are not portable off POSIX
 *Major · Effort: S · `packages/sdk/tests/linear-c3-compatibility.test.ts:79-83`, `packages/sdk/tests/c4-room-metadata-storage.test.ts`, `packages/sdk/tests/c5-package-symbols.test.ts`*
