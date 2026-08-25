@@ -83,7 +83,7 @@ function makeMockClientWithSessionCreation(): LinearActivityClient {
         id: "new-issue-1",
         identifier: "SOF-42",
         url: "https://linear.app/example/issue/SOF-42",
-        title: "New issue from Thenvoi",
+        title: "New issue from Band",
       },
       success: true,
     })),
@@ -117,7 +117,7 @@ function makeMockClient(options?: { withRepoSuggestions?: boolean }): LinearActi
       updatedAt: "2026-03-06T01:00:00.000Z",
       state: { id: "state-1", name: "In Progress", type: "started" },
       assignee: { id: "user-1", name: "Darvell" },
-      delegate: { id: "agent-1", name: "Thenvoi Agent", displayName: "Thenvoi Agent" },
+      delegate: { id: "agent-1", name: "Band Agent", displayName: "Band Agent" },
       delegateId: "agent-1",
       team: { id: "team-1", key: "SOF", name: "SoftwareFactory" },
       comments: vi.fn(async () => ({
@@ -565,7 +565,7 @@ describe("createLinearTools", () => {
     await store.upsert({
       linearSessionId: "sess-1",
       linearIssueId: "issue-1",
-      thenvoiRoomId: "room-1",
+      bandRoomId: "room-1",
       status: "active",
       lastEventKey: "event-1",
       createdAt: new Date().toISOString(),
@@ -692,7 +692,7 @@ describe("createLinearTools", () => {
         identifier: "SOF-1",
         title: "Example issue",
         team: expect.objectContaining({ key: "SOF" }),
-        delegate: expect.objectContaining({ id: "agent-1", name: "Thenvoi Agent" }),
+        delegate: expect.objectContaining({ id: "agent-1", name: "Band Agent" }),
         delegate_id: "agent-1",
       }),
     });
@@ -881,7 +881,7 @@ describe("createLinearTools", () => {
 
     const result = await executeCustomTool(tool, {
       team_id: TEST_TEAM_ID,
-      title: "New issue from Thenvoi",
+      title: "New issue from Band",
       description: "Created during collaboration",
       priority: 2,
     });
@@ -892,12 +892,12 @@ describe("createLinearTools", () => {
         id: "new-issue-1",
         identifier: "SOF-42",
         url: "https://linear.app/example/issue/SOF-42",
-        title: "New issue from Thenvoi",
+        title: "New issue from Band",
       },
     });
     expect(client.createIssue).toHaveBeenCalledWith({
       teamId: TEST_TEAM_ID,
-      title: "New issue from Thenvoi",
+      title: "New issue from Band",
       description: "Created during collaboration",
       priority: 2,
     });
@@ -938,7 +938,7 @@ describe("createLinearTools", () => {
     expect(record).not.toBeNull();
     expect(record!.linearSessionId).toBe("new-session-1");
     expect(record!.linearIssueId).toBe(TEST_ISSUE_ID);
-    expect(record!.thenvoiRoomId).toBe("room-abc");
+    expect(record!.bandRoomId).toBe("room-abc");
     expect(record!.status).toBe("active");
   });
 
@@ -1007,7 +1007,7 @@ describe("createLinearTools", () => {
 
     const record = await store.getBySessionId("new-session-2");
     expect(record).not.toBeNull();
-    expect(record!.thenvoiRoomId).toBe("room-xyz");
+    expect(record!.bandRoomId).toBe("room-xyz");
     expect(record!.status).toBe("active");
     // Comment sessions have null linearIssueId — verify it is persisted as null
     // and that getByIssueId does not accidentally match it.

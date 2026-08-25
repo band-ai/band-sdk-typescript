@@ -150,14 +150,14 @@ describe("A2AGatewayAdapter", () => {
     expect(
       () =>
         new A2AGatewayAdapter({
-          thenvoiRest: new FakeRestApi(),
+          bandRest: new FakeRestApi(),
           allowUnauthenticatedLoopback: true,
           host: "0.0.0.0",
         }),
     ).toThrow("allowUnauthenticatedLoopback");
   });
 
-  it("routes A2A requests into Thenvoi rooms and streams completion", async () => {
+  it("routes A2A requests into Band rooms and streams completion", async () => {
     const rest = new FakeRestApi();
 
     let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
@@ -175,7 +175,7 @@ describe("A2AGatewayAdapter", () => {
     };
 
     const adapter = new A2AGatewayAdapter({
-      thenvoiRest: rest,
+      bandRest: rest,
       serverFactory,
       responseTimeoutMs: 2_000,
     });
@@ -250,7 +250,7 @@ describe("A2AGatewayAdapter", () => {
 
   it("forgets room mappings during cleanup", async () => {
     const adapter = new A2AGatewayAdapter({
-      thenvoiRest: new FakeRestApi(),
+      bandRest: new FakeRestApi(),
     });
     const state = adapter as unknown as {
       contextToRoom: Map<string, string>;
@@ -280,7 +280,7 @@ describe("A2AGatewayAdapter", () => {
     const rest = new FakeRestApi();
     let stopped = false;
     const adapter = new A2AGatewayAdapter({
-      thenvoiRest: rest,
+      bandRest: rest,
       serverFactory: () => ({
         start: async () => undefined,
         stop: async () => {
@@ -326,7 +326,7 @@ describe("A2AGatewayAdapter", () => {
 
     let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
     const adapter = new A2AGatewayAdapter({
-      thenvoiRest: rest,
+      bandRest: rest,
       serverFactory: (options) => {
         onRequest = options.onRequest;
         return {
@@ -386,7 +386,7 @@ describe("A2AGatewayAdapter", () => {
 
     let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
     const adapter = new A2AGatewayAdapter({
-      thenvoiRest: rest,
+      bandRest: rest,
       serverFactory: (options) => {
         onRequest = options.onRequest;
         return {
@@ -463,7 +463,7 @@ describe("A2AGatewayAdapter", () => {
 
     let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
     const adapter = new A2AGatewayAdapter({
-      thenvoiRest: rest,
+      bandRest: rest,
       serverFactory: (options) => {
         onRequest = options.onRequest;
         return {
@@ -501,7 +501,7 @@ describe("A2AGatewayAdapter", () => {
 
     let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
     const adapter = new A2AGatewayAdapter({
-      thenvoiRest: rest,
+      bandRest: rest,
       serverFactory: (options) => {
         onRequest = options.onRequest;
         return {
@@ -565,7 +565,7 @@ describe("A2AGatewayAdapter", () => {
 
     let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
     const adapter = new A2AGatewayAdapter({
-      thenvoiRest: rest,
+      bandRest: rest,
       serverFactory: (options) => {
         onRequest = options.onRequest;
         return {
@@ -619,7 +619,7 @@ describe("A2AGatewayAdapter", () => {
 
     let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
     const adapter = new A2AGatewayAdapter({
-      thenvoiRest: rest,
+      bandRest: rest,
       serverFactory: (options) => {
         onRequest = options.onRequest;
         return {
@@ -673,7 +673,7 @@ describe("A2AGatewayAdapter", () => {
 
     let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
     const adapter = new A2AGatewayAdapter({
-      thenvoiRest: rest,
+      bandRest: rest,
       serverFactory: (options) => {
         onRequest = options.onRequest;
         return {
@@ -767,5 +767,163 @@ describe("A2AGatewayAdapter", () => {
     const newFinal = await newIterator.next();
     const text = newFinal.value?.status?.message?.parts?.[0]?.text;
     expect(text).toBe("response for new task");
+  });
+
+  it("emits band_-prefixed status metadata for a Band peer response conversion", async () => {
+    const rest = new FakeRestApi();
+
+    let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
+    const adapter = new A2AGatewayAdapter({
+      bandRest: rest,
+      serverFactory: (options) => {
+        onRequest = options.onRequest;
+        return {
+          start: async () => undefined,
+          stop: async () => undefined,
+        };
+      },
+      responseTimeoutMs: 2_000,
+    });
+
+    await adapter.onStarted("Gateway", "A2A gateway");
+
+    const stream = onRequest!({
+      peerId: "peer-weather",
+      taskId: "task-meta",
+      contextId: "ctx-meta",
+      message: {
+        kind: "message",
+        messageId: "user-msg-meta",
+        role: "user",
+        parts: [{ kind: "text", text: "What is the weather?" }],
+      },
+    });
+    const iterator = stream[Symbol.asyncIterator]();
+    await iterator.next(); // working
+
+    await adapter.onMessage(
+      makePeerMessage({
+        content: "Sunny and 72F",
+        roomId: "room-1",
+        senderId: "peer-weather",
+      }),
+      new FakeTools(),
+      { contextToRoom: {}, roomParticipants: {} },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    );
+
+    const finalEvent = await iterator.next();
+    const metadata = finalEvent.value?.metadata as Record<string, unknown>;
+    expect(metadata).toEqual({
+      band_message_id: "msg-1",
+      band_message_type: "text",
+      band_sender_id: "peer-weather",
+      band_room_id: "room-1",
+    });
+    expect(
+      Object.keys(metadata).some((key) => key.startsWith("thenvoi_")),
+    ).toBe(false);
+  });
+
+  it("retains gateway_ routing metadata on createChatMessage and routes by gateway_task_id", async () => {
+    const rest = new FakeRestApi();
+
+    let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
+    const adapter = new A2AGatewayAdapter({
+      bandRest: rest,
+      serverFactory: (options) => {
+        onRequest = options.onRequest;
+        return {
+          start: async () => undefined,
+          stop: async () => undefined,
+        };
+      },
+      responseTimeoutMs: 2_000,
+    });
+
+    await adapter.onStarted("Gateway", "A2A gateway");
+
+    const stream = onRequest!({
+      peerId: "peer-weather",
+      taskId: "task-route",
+      contextId: "ctx-route",
+      message: {
+        kind: "message",
+        messageId: "user-msg-route",
+        role: "user",
+        parts: [{ kind: "text", text: "Route me" }],
+      },
+    });
+    const iterator = stream[Symbol.asyncIterator]();
+    await iterator.next(); // working
+
+    await adapter.onMessage(
+      makePeerMessage({
+        content: "routed by task id",
+        roomId: "room-1",
+        senderId: "peer-data",
+        metadata: { gateway_task_id: "task-route" },
+      }),
+      new FakeTools(),
+      { contextToRoom: {}, roomParticipants: {} },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    );
+
+    const finalEvent = await iterator.next();
+    expect(finalEvent.value?.status?.state).toBe("completed");
+    expect(finalEvent.value?.status?.message?.parts?.[0]?.text).toBe(
+      "routed by task id",
+    );
+    expect(rest.createMessageCalls[0]?.metadata).toEqual({
+      gateway_context_id: "ctx-route",
+      gateway_room_id: "room-1",
+      gateway_task_id: "task-route",
+      gateway_peer_id: "peer-weather",
+      gateway_peer_slug: "weather-agent",
+    });
+  });
+
+  it("emits the Band peer timeout text when no response arrives", async () => {
+    const rest = new FakeRestApi();
+
+    let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
+    const adapter = new A2AGatewayAdapter({
+      bandRest: rest,
+      serverFactory: (options) => {
+        onRequest = options.onRequest;
+        return {
+          start: async () => undefined,
+          stop: async () => undefined,
+        };
+      },
+      responseTimeoutMs: 20,
+    });
+
+    await adapter.onStarted("Gateway", "A2A gateway");
+
+    const stream = onRequest!({
+      peerId: "peer-weather",
+      taskId: "task-timeout",
+      contextId: "ctx-timeout",
+      message: {
+        kind: "message",
+        messageId: "user-msg-timeout",
+        role: "user",
+        parts: [{ kind: "text", text: "Any response?" }],
+      },
+    });
+    const iterator = stream[Symbol.asyncIterator]();
+    await iterator.next(); // working
+
+    const finalEvent = await iterator.next();
+    expect(finalEvent.value?.final).toBe(true);
+    expect(finalEvent.value?.status?.state).toBe("failed");
+    expect(finalEvent.value?.status?.message?.parts?.[0]?.text).toBe(
+      "Timed out waiting for a Band peer response.",
+    );
   });
 });

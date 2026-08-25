@@ -1,12 +1,12 @@
 export {
-  createThenvoiMcpBackend,
-  getThenvoiSdkMcpServerConfig,
+  createBandMcpBackend,
+  getBandSdkMcpServerConfig,
 } from "./backends";
 
 export type {
-  CreateThenvoiMcpBackendOptions,
-  ThenvoiMcpBackend,
-  ThenvoiMcpBackendKind,
+  CreateBandMcpBackendOptions,
+  BandMcpBackend,
+  BandMcpBackendKind,
 } from "./backends";
 
 export {
@@ -23,9 +23,9 @@ export type {
   BuildRegistrationsOptions,
 } from "./registrations";
 
-export { ThenvoiMcpServer } from "./server";
-export type { ThenvoiMcpServerOptions } from "./server";
-export { ThenvoiMcpSseServer } from "./sse";
-export type { ThenvoiMcpSseServerOptions } from "./sse";
-export { ThenvoiMcpStdioServer } from "./stdio";
-export type { ThenvoiMcpStdioServerOptions } from "./stdio";
+export { BandMcpServer } from "./server";
+export type { BandMcpServerOptions } from "./server";
+export { BandMcpSseServer } from "./sse";
+export type { BandMcpSseServerOptions } from "./sse";
+export { BandMcpStdioServer } from "./stdio";
+export type { BandMcpStdioServerOptions } from "./stdio";

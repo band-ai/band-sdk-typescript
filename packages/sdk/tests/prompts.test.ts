@@ -38,7 +38,7 @@ describe("renderSystemPrompt", () => {
     });
 
     expect(result).toContain("You are Bot, helper.");
-    expect(result).not.toContain("thenvoi_send_message");
+    expect(result).not.toContain("band_send_message");
   });
 
   it("falls back to default template for unknown template name", () => {
@@ -78,6 +78,39 @@ describe("renderSystemPrompt", () => {
     });
 
     expect(result).not.toMatch(/\s$/);
+  });
+
+  it("includes memory guidance when memory capability is enabled", () => {
+    const result = renderSystemPrompt({
+      agentName: "Bot",
+      agentDescription: "helper",
+      capabilities: { memory: true },
+    });
+
+    expect(result).toContain("## Memory Tools");
+    expect(result).toContain("band_store_memory");
+    expect(result).toContain('scope="organization"');
+    expect(result).toContain("real `subject_id` UUID");
+  });
+
+  it("excludes memory guidance by default", () => {
+    const result = renderSystemPrompt({
+      agentName: "Bot",
+      agentDescription: "helper",
+    });
+
+    expect(result).not.toContain("## Memory Tools");
+  });
+
+  it("excludes memory guidance when base instructions are disabled", () => {
+    const result = renderSystemPrompt({
+      agentName: "Bot",
+      agentDescription: "helper",
+      capabilities: { memory: true },
+      includeBaseInstructions: false,
+    });
+
+    expect(result).not.toContain("## Memory Tools");
   });
 });
 

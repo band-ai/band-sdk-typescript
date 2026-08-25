@@ -6,7 +6,7 @@ import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { formatMessageForLlm } from "../../runtime/formatters";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
+import type { PlatformMessage } from "../../runtime/types";
 import {
   customToolToOpenAISchema,
   executeCustomTool,
@@ -19,7 +19,7 @@ import {
   type GoogleADKMessages,
 } from "../../converters/google-adk";
 
-const APP_NAME = "thenvoi";
+const APP_NAME = "band";
 const DEFAULT_MAX_HISTORY_MESSAGES = 50;
 const DEFAULT_MAX_TRANSCRIPT_CHARS = 100_000;
 const MAX_TOOL_OUTPUT_PREVIEW = 200;
@@ -215,6 +215,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
         agentName,
         agentDescription,
         customSection: this.customSection,
+        capabilities: { memory: this.enableMemoryTools },
       });
   }
 
@@ -304,7 +305,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
     tools: AdapterToolsProtocol,
   ): unknown {
     return sdk.createAgent({
-      name: this.agentName || "thenvoi_agent",
+      name: this.agentName || "band_agent",
       model: this.model,
       instruction: this.systemPrompt,
       tools: this.buildTools(sdk, tools),

@@ -21,8 +21,8 @@ import {
 } from "./bridge";
 import type {
   HandleAgentSessionEventInput,
-  LinearThenvoiBridgeConfig,
-  LinearThenvoiBridgeDeps,
+  LinearBandBridgeConfig,
+  LinearBandBridgeDeps,
 } from "./types";
 
 export interface LinearBridgeDispatchJob {
@@ -43,8 +43,8 @@ export interface PermissionChangeCallbacks {
 }
 
 export interface CreateLinearWebhookHandlerOptions {
-  config: LinearThenvoiBridgeConfig;
-  deps: LinearThenvoiBridgeDeps;
+  config: LinearBandBridgeConfig;
+  deps: LinearBandBridgeDeps;
   dispatcher?: LinearBridgeDispatcher;
   permissionCallbacks?: PermissionChangeCallbacks;
 }

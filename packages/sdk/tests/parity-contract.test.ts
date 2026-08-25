@@ -2,7 +2,7 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 
 import {
   Agent,
-  ThenvoiLink,
+  BandLink,
   PlatformRuntime,
 } from "../src/index";
 import type { CustomToolDef as PublicCustomToolDef } from "../src/index";
@@ -125,9 +125,9 @@ describe("sdk contract", () => {
     expect(typeof RoomPresence.prototype.start).toBe("function");
     expect(typeof RoomPresence.prototype.stop).toBe("function");
 
-    expect(typeof ThenvoiLink.prototype.markProcessing).toBe("function");
-    expect(typeof ThenvoiLink.prototype.markProcessed).toBe("function");
-    expect(typeof ThenvoiLink.prototype.markFailed).toBe("function");
+    expect(typeof BandLink.prototype.markProcessing).toBe("function");
+    expect(typeof BandLink.prototype.markProcessed).toBe("function");
+    expect(typeof BandLink.prototype.markFailed).toBe("function");
   });
 
   it("exposes working contact and memory tools when REST adapter supports them", async () => {

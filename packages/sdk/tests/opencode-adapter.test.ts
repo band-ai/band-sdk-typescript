@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { HttpStatusError, OpencodeAdapter } from "../src/adapters";
+import { HttpStatusError, OpencodeAdapter, type OpencodeClientLike } from "../src/adapters";
 import type { OpencodeSessionState } from "../src/converters";
 import { FakeTools, makeMessage } from "./testUtils";
 
@@ -44,6 +44,7 @@ class FakeOpencodeClient {
   public readonly registeredMcpServers: Array<{ name: string; url: string }> = [];
   public readonly deregisteredMcpServers: string[] = [];
   public readonly createdSessions: string[] = [];
+  public readonly createdSessionTitles: string[] = [];
   public readonly eventQueue = new EventQueue();
   private readonly missingSessions = new Set<string>();
   private sessionCounter = 0;
@@ -52,10 +53,11 @@ class FakeOpencodeClient {
     this.missingSessions.add(sessionId);
   }
 
-  public async createSession(): Promise<Record<string, unknown>> {
+  public async createSession(input?: { title?: string }): Promise<Record<string, unknown>> {
     this.sessionCounter += 1;
     const sessionId = `session-${this.sessionCounter}`;
     this.createdSessions.push(sessionId);
+    this.createdSessionTitles.push(input?.title ?? "");
     return { id: sessionId };
   }
 
@@ -203,7 +205,7 @@ describe("OpencodeAdapter", () => {
     await pending;
 
     expect(client.registeredMcpServers).toEqual([
-      { name: "thenvoi", url: "http://127.0.0.1:5555/mcp" },
+      { name: "band", url: "http://127.0.0.1:5555/mcp" },
     ]);
     expect(client.promptCalls[0]?.payload.parts).toEqual([{
       type: "text",
@@ -324,5 +326,122 @@ describe("OpencodeAdapter", () => {
       text: "Previous OpenCode session state was missing. Recovered room history:\n[Jane]: previous context\n[User]: Recover this session",
     }]);
     expect(tools.messages).toContain("OpenCode completed the turn without a text reply.");
+  });
+
+  it("titles new sessions with the default \"Band: \" prefix", async () => {
+    const tools = new FakeTools();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as unknown as OpencodeClientLike,
+      mcpBackendFactory: async () => ({
+        kind: "http",
+        server: { url: "http://127.0.0.1:5555/mcp" },
+        allowedTools: [],
+        stop: async () => undefined,
+      }),
+    });
+    adapters.push(adapter);
+
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+
+    const pending = adapter.onMessage(
+      makeMessage("Kick things off"),
+      tools,
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-title" },
+    );
+
+    await waitFor(() => client.createdSessions.length === 1);
+    const sessionId = client.createdSessions[0]!;
+    client.eventQueue.push({
+      type: "session.idle",
+      properties: { sessionID: sessionId },
+    });
+    await pending;
+
+    expect(client.createdSessionTitles[0]?.startsWith("Band: ")).toBe(true);
+    expect(client.createdSessionTitles[0]).toBe("Band: OpenCode Agent / room-title");
+  });
+
+  it("honors a caller-supplied sessionTitlePrefix override", async () => {
+    const tools = new FakeTools();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as unknown as OpencodeClientLike,
+      config: { sessionTitlePrefix: "Acme" },
+      mcpBackendFactory: async () => ({
+        kind: "http",
+        server: { url: "http://127.0.0.1:5555/mcp" },
+        allowedTools: [],
+        stop: async () => undefined,
+      }),
+    });
+    adapters.push(adapter);
+
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+
+    const pending = adapter.onMessage(
+      makeMessage("Kick things off"),
+      tools,
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-override" },
+    );
+
+    await waitFor(() => client.createdSessions.length === 1);
+    const sessionId = client.createdSessions[0]!;
+    client.eventQueue.push({
+      type: "session.idle",
+      properties: { sessionID: sessionId },
+    });
+    await pending;
+
+    expect(client.createdSessionTitles[0]?.startsWith("Acme: ")).toBe(true);
+    expect(client.createdSessionTitles[0]).toBe("Acme: OpenCode Agent / room-override");
+  });
+
+  it("uses the mcpServerName \"band\" by default", async () => {
+    const tools = new FakeTools();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as unknown as OpencodeClientLike,
+      mcpBackendFactory: async () => ({
+        kind: "http",
+        server: { url: "http://127.0.0.1:5555/mcp" },
+        allowedTools: [],
+        stop: async () => undefined,
+      }),
+    });
+    adapters.push(adapter);
+
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+
+    const pending = adapter.onMessage(
+      makeMessage("Register the server"),
+      tools,
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-mcp" },
+    );
+
+    await waitFor(() => client.createdSessions.length === 1);
+    const sessionId = client.createdSessions[0]!;
+    client.eventQueue.push({
+      type: "session.idle",
+      properties: { sessionID: sessionId },
+    });
+    await pending;
+
+    expect(client.registeredMcpServers).toHaveLength(1);
+    expect(client.registeredMcpServers[0]?.name).toBe("band");
+    expect(client.registeredMcpServers.some((entry) => entry.name === "thenvoi")).toBe(false);
+    expect(client.deregisteredMcpServers).not.toContain("thenvoi");
   });
 });

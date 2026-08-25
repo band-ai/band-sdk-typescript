@@ -31,6 +31,7 @@ export { ContactToolsImpl } from "./tools/ContactToolsImpl";
 export {
   TOOL_MODELS,
   MCP_TOOL_PREFIX,
+  MCP_SERVER_NAME,
   CHAT_TOOL_NAMES,
   MEMORY_TOOL_NAMES,
   CONTACT_TOOL_NAMES,
@@ -57,6 +58,7 @@ export {
 
 export {
   BASE_INSTRUCTIONS,
+  MEMORY_SECTION,
   TEMPLATES,
   renderSystemPrompt,
   type RenderSystemPromptOptions,

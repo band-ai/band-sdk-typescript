@@ -1,8 +1,16 @@
 name: CI
 
+# GitHub Flow: `main` is the canonical trunk. Keep validating legacy `dev` PRs
+# during the transition so old or mistakenly targeted work is not left untested.
 on:
   pull_request:
-    branches: [dev, main]
+    branches: [main, dev]
+
+# Checkout reads repository contents; paths-filter reads the PR file list.
+# No CI job needs write access to repository or pull-request state.
+permissions:
+  contents: read
+  pull-requests: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -26,11 +34,25 @@ jobs:
           filters: |
             sdk:
               - 'packages/sdk/**'
+              - '.github/**'
+              - 'scripts/**'
+              - 'package.json'
+              - 'pnpm-workspace.yaml'
               - 'pnpm-lock.yaml'
+              - 'release-please-config.json'
+              - '.release-please-manifest.json'
+              - '.release-hold'
             openclaw:
               - 'packages/openclaw/**'
               - 'packages/sdk/**'
+              - '.github/**'
+              - 'scripts/**'
+              - 'package.json'
+              - 'pnpm-workspace.yaml'
               - 'pnpm-lock.yaml'
+              - 'release-please-config.json'
+              - '.release-please-manifest.json'
+              - '.release-hold'
 
   lint:
     needs: changes
@@ -54,27 +76,27 @@ jobs:
 
       - name: Build SDK
         if: needs.changes.outputs.sdk == 'true' || needs.changes.outputs.openclaw == 'true'
-        run: pnpm --filter @thenvoi/sdk build
+        run: pnpm --fail-if-no-match --filter @band-ai/sdk build
 
       - name: Build OpenClaw
         if: needs.changes.outputs.openclaw == 'true'
-        run: pnpm --filter @thenvoi/openclaw-channel-thenvoi build
+        run: pnpm --fail-if-no-match --filter @band-ai/openclaw-channel-band build
 
       - name: Typecheck SDK
         if: needs.changes.outputs.sdk == 'true'
-        run: pnpm --filter @thenvoi/sdk typecheck
+        run: pnpm --fail-if-no-match --filter @band-ai/sdk typecheck
 
       - name: Typecheck OpenClaw
         if: needs.changes.outputs.openclaw == 'true'
-        run: pnpm --filter @thenvoi/openclaw-channel-thenvoi typecheck
+        run: pnpm --fail-if-no-match --filter @band-ai/openclaw-channel-band typecheck
 
       - name: Lint SDK
         if: needs.changes.outputs.sdk == 'true'
-        run: pnpm --filter @thenvoi/sdk lint
+        run: pnpm --fail-if-no-match --filter @band-ai/sdk lint
 
       - name: Lint OpenClaw
         if: needs.changes.outputs.openclaw == 'true'
-        run: pnpm --filter @thenvoi/openclaw-channel-thenvoi lint
+        run: pnpm --fail-if-no-match --filter @band-ai/openclaw-channel-band lint
 
   test:
     needs: changes
@@ -83,6 +105,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -96,21 +120,29 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Verify release intent
+        run: node scripts/assert-release-intent.mjs
+        env:
+          RELEASE_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
+
       - name: Build SDK
         if: needs.changes.outputs.sdk == 'true' || needs.changes.outputs.openclaw == 'true'
-        run: pnpm --filter @thenvoi/sdk build
+        run: pnpm --fail-if-no-match --filter @band-ai/sdk build
 
       - name: Build OpenClaw
         if: needs.changes.outputs.openclaw == 'true'
-        run: pnpm --filter @thenvoi/openclaw-channel-thenvoi build
+        run: pnpm --fail-if-no-match --filter @band-ai/openclaw-channel-band build
 
       - name: Test SDK
         if: needs.changes.outputs.sdk == 'true'
-        run: pnpm --filter @thenvoi/sdk test
+        run: pnpm --fail-if-no-match --filter @band-ai/sdk test
 
       - name: Test OpenClaw
         if: needs.changes.outputs.openclaw == 'true'
-        run: pnpm --filter @thenvoi/openclaw-channel-thenvoi test
+        run: pnpm --fail-if-no-match --filter @band-ai/openclaw-channel-band test
+
+      - name: Test release hardening
+        run: pnpm test:release-hardening
 
   packaging:
     runs-on: ubuntu-latest
@@ -182,9 +214,48 @@ jobs:
           }
           // Verify .d.ts has expected exports
           const dts = fs.readFileSync('dist/index.d.ts', 'utf8');
-          const expectedExports = ['thenvoiChannel', 'registerChannel', 'mcpTools', 'BASE_INSTRUCTIONS', 'buildSystemPrompt'];
+          const expectedExports = ['createBandChannelPlugin', 'BAND_CHANNEL_ID', 'bandTools', 'BASE_INSTRUCTIONS', 'buildSystemPrompt'];
           for (const exp of expectedExports) {
             if (!dts.includes(exp)) throw new Error('Missing export in .d.ts: ' + exp);
           }
           console.log('OpenClaw: ' + expectedExports.length + ' key exports verified in .d.ts');
           "
+
+  # The single status branch protection should require.
+  #
+  # `lint` and `test` are intentionally conditional and may report as skipped.
+  # `changes` and `packaging` are mandatory and must report success. This job
+  # always runs, provides one stable ruleset context, and rejects any other state.
+  #
+  # Requiring only this context also means adding or renaming a job above never
+  # requires editing the ruleset.
+  ci-status:
+    needs: [changes, lint, test, packaging]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify every CI job passed or was skipped
+        run: |
+          set -euo pipefail
+          failed=0
+          # `changes` is listed too: when it fails, lint and test are skipped
+          # rather than failed, and treating that as a pass would hide the break.
+          for entry in \
+            "changes:${{ needs.changes.result }}:success" \
+            "lint:${{ needs.lint.result }}:success|skipped" \
+            "test:${{ needs.test.result }}:success|skipped" \
+            "packaging:${{ needs.packaging.result }}:success"; do
+            job="${entry%%:*}"
+            remainder="${entry#*:}"
+            result="${remainder%%:*}"
+            allowed="${remainder#*:}"
+            case "|$allowed|" in
+              *"|$result|"*) printf 'ok      %-10s %s\n' "$job" "$result" ;;
+              *) printf 'FAILED  %-10s %s (expected %s)\n' "$job" "$result" "$allowed"; failed=1 ;;
+            esac
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::one or more CI jobs did not pass"
+            exit 1
+          fi
+          echo "All CI jobs passed or were skipped."

@@ -43,6 +43,24 @@ import {
   getToolDescription,
   TOOL_MODELS
 } from "./schemas";
+import {
+  expectedMemoryTypesForSystem,
+  expectedList,
+  memoryTypeForSystemError,
+  isMemoryListScope,
+  isMemorySegment,
+  isMemoryStatus,
+  isMemoryStoreScope,
+  isMemorySystem,
+  isMemoryType,
+  isMemoryTypeForSystem,
+  MEMORY_LIST_SCOPES,
+  MEMORY_SEGMENTS,
+  MEMORY_STATUSES,
+  MEMORY_STORE_SCOPES,
+  MEMORY_SYSTEMS,
+  MEMORY_TYPES,
+} from "../../contracts/memory";
 
 interface AgentToolsOptions {
   roomId: string;
@@ -111,46 +129,6 @@ const CONTACT_REQUEST_ACTIONS: ReadonlySet<RespondContactRequestArgs["action"]> 
   "approve",
   "reject",
   "cancel",
-]);
-
-const MEMORY_SYSTEMS: ReadonlySet<StoreMemoryArgs["system"]> = new Set([
-  "sensory",
-  "working",
-  "long_term",
-]);
-
-const MEMORY_TYPES: ReadonlySet<StoreMemoryArgs["type"]> = new Set([
-  "iconic",
-  "echoic",
-  "haptic",
-  "episodic",
-  "semantic",
-  "procedural",
-]);
-
-const MEMORY_SEGMENTS: ReadonlySet<StoreMemoryArgs["segment"]> = new Set([
-  "user",
-  "agent",
-  "tool",
-  "guideline",
-]);
-
-const LIST_MEMORY_SCOPES: ReadonlySet<MemoryScope> = new Set([
-  "subject",
-  "organization",
-  "all",
-]);
-
-const LIST_MEMORY_STATUSES: ReadonlySet<MemoryStatus> = new Set([
-  "active",
-  "superseded",
-  "archived",
-  "all",
-]);
-
-const MEMORY_SCOPES: ReadonlySet<NonNullable<StoreMemoryArgs["scope"]>> = new Set([
-  "subject",
-  "organization",
 ]);
 
 export class AgentTools implements AgentToolsProtocol {
@@ -376,7 +354,7 @@ export class AgentTools implements AgentToolsProtocol {
           return false;
         }
 
-        if (name === "thenvoi_lookup_peers" && !this.capabilities.peers) {
+        if (name === "band_lookup_peers" && !this.capabilities.peers) {
           return false;
         }
 
@@ -739,68 +717,68 @@ export class AgentTools implements AgentToolsProtocol {
 
   private buildMessagingToolHandlers(): Record<string, ToolHandler> {
     return {
-      thenvoi_send_message: async (arguments_) =>
+      band_send_message: async (arguments_) =>
         this.sendMessage(
           String(arguments_.content ?? ""),
           this.normalizeMentionInput(arguments_.mentions),
         ),
-      thenvoi_send_event: async (arguments_) =>
+      band_send_event: async (arguments_) =>
         this.sendEvent(
           String(arguments_.content ?? ""),
           String(arguments_.message_type ?? "task"),
           this.normalizeOptionalMetadata(arguments_.metadata),
         ),
-      thenvoi_add_participant: async (arguments_) =>
+      band_add_participant: async (arguments_) =>
         this.addParticipant(String(arguments_.name ?? ""), String(arguments_.role ?? "member")),
-      thenvoi_remove_participant: async (arguments_) =>
+      band_remove_participant: async (arguments_) =>
         this.removeParticipant(String(arguments_.name ?? "")),
-      thenvoi_lookup_peers: async (arguments_) =>
+      band_lookup_peers: async (arguments_) =>
         this.lookupPeers(
           coercePositiveInt(arguments_.page, 1),
           coercePositiveInt(arguments_.page_size, 50),
         ),
-      thenvoi_get_participants: async () => this.getParticipants(),
-      thenvoi_create_chatroom: async (arguments_) =>
+      band_get_participants: async () => this.getParticipants(),
+      band_create_chatroom: async (arguments_) =>
         this.createChatroom(this.normalizeOptionalString(arguments_.task_id)),
     };
   }
 
   private buildContactToolHandlers(): Record<string, ToolHandler> {
     return {
-      thenvoi_list_contacts: async (arguments_) =>
+      band_list_contacts: async (arguments_) =>
         this.listContacts({
           page: coercePositiveInt(arguments_.page, 1),
           pageSize: coercePositiveInt(arguments_.page_size, 50),
         }),
-      thenvoi_add_contact: async (arguments_) =>
+      band_add_contact: async (arguments_) =>
         this.addContact({
           handle: String(arguments_.handle ?? ""),
           ...(typeof arguments_.message === "string" ? { message: arguments_.message } : {}),
         }),
-      thenvoi_remove_contact: async (arguments_) =>
+      band_remove_contact: async (arguments_) =>
         this.removeContact(this.toRemoveContactArgs(arguments_)),
-      thenvoi_list_contact_requests: async (arguments_) =>
+      band_list_contact_requests: async (arguments_) =>
         this.listContactRequests({
           page: coercePositiveInt(arguments_.page, 1),
           pageSize: coercePositiveInt(arguments_.page_size, 50),
           sentStatus: String(arguments_.sent_status ?? "pending"),
         }),
-      thenvoi_respond_contact_request: async (arguments_) =>
+      band_respond_contact_request: async (arguments_) =>
         this.respondContactRequest(this.toRespondContactRequestArgs(arguments_)),
     };
   }
 
   private buildMemoryToolHandlers(): Record<string, ToolHandler> {
     return {
-      thenvoi_list_memories: async (arguments_) =>
+      band_list_memories: async (arguments_) =>
         this.listMemories(this.toListMemoriesArgs(arguments_)),
-      thenvoi_store_memory: async (arguments_) =>
+      band_store_memory: async (arguments_) =>
         this.storeMemory(this.toStoreMemoryArgs(arguments_)),
-      thenvoi_get_memory: async (arguments_) =>
+      band_get_memory: async (arguments_) =>
         this.getMemory(String(arguments_.memory_id ?? "")),
-      thenvoi_supersede_memory: async (arguments_) =>
+      band_supersede_memory: async (arguments_) =>
         this.supersedeMemory(String(arguments_.memory_id ?? "")),
-      thenvoi_archive_memory: async (arguments_) =>
+      band_archive_memory: async (arguments_) =>
         this.archiveMemory(String(arguments_.memory_id ?? "")),
     };
   }
@@ -864,6 +842,11 @@ export class AgentTools implements AgentToolsProtocol {
     const subjectId = this.normalizeOptionalString(arguments_.subject_id);
     const contentQuery = this.normalizeOptionalString(arguments_.content_query);
 
+    // Keep combined filters within valid memory taxonomy pairs.
+    if (system && type && !isMemoryTypeForSystem(system, type)) {
+      throw new ValidationError(memoryTypeForSystemError(system));
+    }
+
     return {
       ...(subjectId ? { subject_id: subjectId } : {}),
       ...(scope ? { scope } : {}),
@@ -887,15 +870,28 @@ export class AgentTools implements AgentToolsProtocol {
     const metadata = this.normalizeOptionalMetadata(arguments_.metadata);
 
     if (!system) {
-      throw new ValidationError("system must be one of: sensory, working, long_term");
+      throw new ValidationError(`system must be one of: ${expectedList(MEMORY_SYSTEMS)}`);
     }
 
     if (!type) {
-      throw new ValidationError("type must be one of: iconic, echoic, haptic, episodic, semantic, procedural");
+      throw new ValidationError(`type must be one of: ${expectedList(MEMORY_TYPES)}`);
+    }
+
+    // Prevent storing memories with a type that belongs to a different system tier.
+    if (!isMemoryTypeForSystem(system, type)) {
+      throw new ValidationError(memoryTypeForSystemError(system));
     }
 
     if (!segment) {
-      throw new ValidationError("segment must be one of: user, agent, tool, guideline");
+      throw new ValidationError(`segment must be one of: ${expectedList(MEMORY_SEGMENTS)}`);
+    }
+
+    if (scope === "subject" && !subjectId) {
+      throw new ValidationError(
+        'scope="subject" requires a subject_id (the UUID of the person or agent the memory is about). ' +
+          'If you do not have a concrete subject UUID, retry with scope="organization" and omit subject_id. ' +
+          "Do not invent a UUID.",
+      );
     }
 
     return {
@@ -993,8 +989,8 @@ export class AgentTools implements AgentToolsProtocol {
       return undefined;
     }
 
-    if (!isListMemoryScope(normalized)) {
-      throw new ValidationError("scope must be one of: subject, organization, all");
+    if (!isMemoryListScope(normalized)) {
+      throw new ValidationError(`scope must be one of: ${expectedList(MEMORY_LIST_SCOPES)}`);
     }
 
     return normalized;
@@ -1007,7 +1003,7 @@ export class AgentTools implements AgentToolsProtocol {
     }
 
     if (!isMemorySystem(normalized)) {
-      throw new ValidationError("system must be one of: sensory, working, long_term");
+      throw new ValidationError(`system must be one of: ${expectedList(MEMORY_SYSTEMS)}`);
     }
 
     return normalized;
@@ -1020,7 +1016,7 @@ export class AgentTools implements AgentToolsProtocol {
     }
 
     if (!isMemoryType(normalized)) {
-      throw new ValidationError("type must be one of: iconic, echoic, haptic, episodic, semantic, procedural");
+      throw new ValidationError(`type must be one of: ${expectedList(MEMORY_TYPES)}`);
     }
 
     return normalized;
@@ -1033,7 +1029,7 @@ export class AgentTools implements AgentToolsProtocol {
     }
 
     if (!isMemorySegment(normalized)) {
-      throw new ValidationError("segment must be one of: user, agent, tool, guideline");
+      throw new ValidationError(`segment must be one of: ${expectedList(MEMORY_SEGMENTS)}`);
     }
 
     return normalized;
@@ -1046,7 +1042,7 @@ export class AgentTools implements AgentToolsProtocol {
     }
 
     if (!isMemoryStatus(normalized)) {
-      throw new ValidationError("status must be one of: active, superseded, archived, all");
+      throw new ValidationError(`status must be one of: ${expectedList(MEMORY_STATUSES)}`);
     }
 
     return normalized;
@@ -1060,8 +1056,8 @@ export class AgentTools implements AgentToolsProtocol {
       return undefined;
     }
 
-    if (!isStoreMemoryScope(normalized)) {
-      throw new ValidationError("scope must be one of: subject, organization");
+    if (!isMemoryStoreScope(normalized)) {
+      throw new ValidationError(`scope must be one of: ${expectedList(MEMORY_STORE_SCOPES)}`);
     }
 
     return normalized;
@@ -1070,30 +1066,6 @@ export class AgentTools implements AgentToolsProtocol {
 
 function isContactRequestAction(value: string): value is RespondContactRequestArgs["action"] {
   return CONTACT_REQUEST_ACTIONS.has(value as RespondContactRequestArgs["action"]);
-}
-
-function isMemorySystem(value: string): value is MemorySystem {
-  return MEMORY_SYSTEMS.has(value as MemorySystem);
-}
-
-function isMemoryType(value: string): value is MemoryType {
-  return MEMORY_TYPES.has(value as MemoryType);
-}
-
-function isMemorySegment(value: string): value is MemorySegment {
-  return MEMORY_SEGMENTS.has(value as MemorySegment);
-}
-
-function isStoreMemoryScope(value: string): value is NonNullable<StoreMemoryArgs["scope"]> {
-  return MEMORY_SCOPES.has(value as NonNullable<StoreMemoryArgs["scope"]>);
-}
-
-function isListMemoryScope(value: string): value is MemoryScope {
-  return LIST_MEMORY_SCOPES.has(value as MemoryScope);
-}
-
-function isMemoryStatus(value: string): value is MemoryStatus {
-  return LIST_MEMORY_STATUSES.has(value as MemoryStatus);
 }
 
 function coercePositiveInt(value: unknown, fallback: number): number {
@@ -1119,14 +1091,14 @@ function validateToolArgs(toolName: string, args: Record<string, unknown>): Tool
     }
   }
 
-  if (toolName === "thenvoi_send_message") {
+  if (toolName === "band_send_message") {
     const mentions = args.mentions;
     if (Array.isArray(mentions) && mentions.length === 0) {
       errors.push("mentions: At least one mention is required");
     }
   }
 
-  if (toolName === "thenvoi_send_event") {
+  if (toolName === "band_send_event") {
     const messageType = args.message_type;
     if (typeof messageType === "string" && !(CHAT_EVENT_TYPES as readonly string[]).includes(messageType)) {
       errors.push(
@@ -1135,7 +1107,7 @@ function validateToolArgs(toolName: string, args: Record<string, unknown>): Tool
     }
   }
 
-  if (toolName === "thenvoi_respond_contact_request") {
+  if (toolName === "band_respond_contact_request") {
     const action = args.action;
     const validActions = ["approve", "reject", "cancel"];
     if (typeof action === "string" && !validActions.includes(action)) {
@@ -1145,19 +1117,28 @@ function validateToolArgs(toolName: string, args: Record<string, unknown>): Tool
     }
   }
 
-  if (toolName === "thenvoi_store_memory") {
-    const validSystems = ["sensory", "working", "long_term"];
-    const validTypes = ["iconic", "echoic", "haptic", "episodic", "semantic", "procedural"];
-    const validSegments = ["user", "agent", "tool", "guideline"];
-
-    if (typeof args.system === "string" && !validSystems.includes(args.system)) {
-      errors.push(`system: Invalid value '${args.system}'. Expected one of: ${validSystems.join(", ")}`);
+  if (toolName === "band_store_memory") {
+    if (typeof args.system === "string" && !isMemorySystem(args.system)) {
+      errors.push(`system: Invalid value '${args.system}'. Expected one of: ${expectedList(MEMORY_SYSTEMS)}`);
     }
-    if (typeof args.type === "string" && !validTypes.includes(args.type)) {
-      errors.push(`type: Invalid value '${args.type}'. Expected one of: ${validTypes.join(", ")}`);
+    if (typeof args.type === "string" && !isMemoryType(args.type)) {
+      errors.push(`type: Invalid value '${args.type}'. Expected one of: ${expectedList(MEMORY_TYPES)}`);
     }
-    if (typeof args.segment === "string" && !validSegments.includes(args.segment)) {
-      errors.push(`segment: Invalid value '${args.segment}'. Expected one of: ${validSegments.join(", ")}`);
+    // Return a structured tool error before the normalized handler reaches REST.
+    if (
+      typeof args.system === "string"
+      && isMemorySystem(args.system)
+      && typeof args.type === "string"
+      && isMemoryType(args.type)
+      && !isMemoryTypeForSystem(args.system, args.type)
+    ) {
+      errors.push(
+        `type: Invalid value '${args.type}' for system '${args.system}'. ` +
+          `Expected one of: ${expectedMemoryTypesForSystem(args.system)}`,
+      );
+    }
+    if (typeof args.segment === "string" && !isMemorySegment(args.segment)) {
+      errors.push(`segment: Invalid value '${args.segment}'. Expected one of: ${expectedList(MEMORY_SEGMENTS)}`);
     }
   }
 

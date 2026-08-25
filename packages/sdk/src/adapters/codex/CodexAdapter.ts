@@ -11,6 +11,7 @@ import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
+import { SEND_MESSAGE_TOOL_NAME, SEND_EVENT_TOOL_NAME } from "../../runtime/tools/schemas";
 import {
   CustomToolExecutionError,
   CustomToolValidationError,
@@ -82,7 +83,7 @@ export interface CodexAdapterConfig {
   customSection?: string;
   /**
    * Full system prompt override.
-   * When set, this bypasses the default Thenvoi prompt template + customSection.
+   * When set, this bypasses the default Band prompt template + customSection.
    */
   systemPrompt?: string;
   experimentalApi?: boolean;
@@ -122,8 +123,8 @@ type ThoughtLikeItem =
   | ReviewModeItem;
 
 const SILENT_REPORTING_TOOLS = new Set([
-  "thenvoi_send_message",
-  "thenvoi_send_event",
+  SEND_MESSAGE_TOOL_NAME,
+  SEND_EVENT_TOOL_NAME,
 ]);
 
 export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProtocol> {
@@ -155,8 +156,8 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       includeBaseInstructions: true,
       experimentalApi: true,
       fallbackSendAgentText: true,
-      clientName: "thenvoi_codex_adapter",
-      clientTitle: "Thenvoi Codex Adapter",
+      clientName: "band_codex_adapter",
+      clientTitle: "Band Codex Adapter",
       clientVersion: "0.1.0",
       turnTimeoutMs: 180_000,
       ...options?.config,
@@ -431,6 +432,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       agentDescription: this.agentDescription,
       customSection,
       includeBaseInstructions: this.baseConfig.includeBaseInstructions ?? true,
+      capabilities: { memory: this.includeMemoryTools },
     }).trim();
 
     this.systemPrompt = prompt.length > 0 ? prompt : null;
@@ -459,8 +461,8 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
         await client.connect();
         await client.initialize({
           clientInfo: {
-            name: this.baseConfig.clientName ?? "thenvoi_codex_adapter",
-            title: this.baseConfig.clientTitle ?? "Thenvoi Codex Adapter",
+            name: this.baseConfig.clientName ?? "band_codex_adapter",
+            title: this.baseConfig.clientTitle ?? "Band Codex Adapter",
             version: this.baseConfig.clientVersion ?? "0.1.0",
           },
           capabilities: {
@@ -813,7 +815,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
           }), "tool_result");
         }
 
-        return !isError && toolName === "thenvoi_send_message";
+        return !isError && toolName === SEND_MESSAGE_TOOL_NAME;
       } catch (error) {
         const output = {
           ok: false,

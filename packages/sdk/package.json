@@ -1,11 +1,11 @@
 {
-  "name": "@thenvoi/sdk",
-  "version": "0.1.4",
-  "description": "Thenvoi TypeScript SDK core runtime",
+  "name": "@band-ai/sdk",
+  "version": "0.1.10",
+  "description": "Band TypeScript SDK core runtime",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/thenvoi/thenvoi-sdk-typescript.git",
+    "url": "git+https://github.com/band-ai/band-sdk-typescript.git",
     "directory": "packages/sdk"
   },
   "type": "module",
@@ -81,14 +81,14 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "clean": "rm -rf dist",
-    "dev:linear": "tsx examples/linear-thenvoi/linear-thenvoi-bridge-server.ts",
-    "start:linear": "tsx examples/linear-thenvoi/linear-thenvoi-bridge-server.ts"
+    "dev:linear": "tsx examples/linear-band/linear-band-bridge-server.ts",
+    "start:linear": "tsx examples/linear-band/linear-band-bridge-server.ts"
   },
   "engines": {
     "node": ">=22.12"
   },
   "dependencies": {
-    "@thenvoi/rest-client": "0.0.113",
+    "@band-ai/rest-client": "0.0.118",
     "js-yaml": "^4.1.1",
     "phoenix": "^1.8.4",
     "ws": "^8.19.0",

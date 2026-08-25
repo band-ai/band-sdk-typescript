@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createThenvoiMcpBackend } from "../src/mcp/backends";
+import { createBandMcpBackend } from "../src/mcp/backends";
 import { FakeRestApi, FakeTools } from "./testUtils";
 
-describe("createThenvoiMcpBackend", () => {
+describe("createBandMcpBackend", () => {
   const backends: Array<{ stop(): Promise<void> }> = [];
 
   afterEach(async () => {
@@ -27,7 +27,7 @@ describe("createThenvoiMcpBackend", () => {
       { id: "agent-1", name: "Agent", type: "Agent", handle: "@owner/agent" },
     ];
 
-    const backend = await createThenvoiMcpBackend({
+    const backend = await createBandMcpBackend({
       kind: "sdk",
       enableMemoryTools: false,
       getToolsForRoom: () => tools,
@@ -35,7 +35,7 @@ describe("createThenvoiMcpBackend", () => {
     backends.push(backend);
 
     expect(backend.kind).toBe("sdk");
-    expect(backend.allowedTools).toContain("mcp__thenvoi__thenvoi_send_message");
+    expect(backend.allowedTools).toContain("mcp__band__band_send_message");
 
     const context = await (backend.server as { getSystemPromptContext: (roomId: string) => Promise<string> }).getSystemPromptContext("room-1");
     expect(context).toContain("Room");
@@ -50,7 +50,7 @@ describe("createThenvoiMcpBackend", () => {
       return { ok: true };
     };
 
-    const backend = await createThenvoiMcpBackend({
+    const backend = await createBandMcpBackend({
       kind: "sdk",
       multiRoom: false,
       enableMemoryTools: false,
@@ -59,27 +59,27 @@ describe("createThenvoiMcpBackend", () => {
     backends.push(backend);
 
     expect(backend.kind).toBe("sdk");
-    expect(backend.allowedTools).toContain("mcp__thenvoi__thenvoi_send_message");
+    expect(backend.allowedTools).toContain("mcp__band__band_send_message");
 
     const toolDefinitions = (backend.server as { toolDefinitions: Array<{ name: string; handler: (args: Record<string, unknown>, ctx: Record<string, unknown>) => Promise<{ isError?: true }> }> }).toolDefinitions;
-    const sendMessage = toolDefinitions.find((tool) => tool.name === "thenvoi_send_message");
+    const sendMessage = toolDefinitions.find((tool) => tool.name === "band_send_message");
     expect(sendMessage).toBeDefined();
     if (!sendMessage) {
-      throw new Error("thenvoi_send_message tool definition missing");
+      throw new Error("band_send_message tool definition missing");
     }
 
     const result = await sendMessage.handler({ content: "hello" }, {});
     expect(result.isError).toBeUndefined();
     expect(calls).toEqual([
       {
-        name: "thenvoi_send_message",
+        name: "band_send_message",
         args: { content: "hello" },
       },
     ]);
   });
 
   it("creates an http backend and starts the local server", async () => {
-    const backend = await createThenvoiMcpBackend({
+    const backend = await createBandMcpBackend({
       kind: "http",
       enableMemoryTools: false,
       getToolsForRoom: () => new FakeTools(),
@@ -87,12 +87,12 @@ describe("createThenvoiMcpBackend", () => {
     backends.push(backend);
 
     expect(backend.kind).toBe("http");
-    expect(backend.allowedTools).toContain("mcp__thenvoi__thenvoi_send_message");
+    expect(backend.allowedTools).toContain("mcp__band__band_send_message");
     expect(backend.server).toHaveProperty("url");
   });
 
   it("creates an sse backend and starts the local server", async () => {
-    const backend = await createThenvoiMcpBackend({
+    const backend = await createBandMcpBackend({
       kind: "sse",
       enableMemoryTools: false,
       getToolsForRoom: () => new FakeTools(),
@@ -100,7 +100,7 @@ describe("createThenvoiMcpBackend", () => {
     backends.push(backend);
 
     expect(backend.kind).toBe("sse");
-    expect(backend.allowedTools).toContain("mcp__thenvoi__thenvoi_send_message");
+    expect(backend.allowedTools).toContain("mcp__band__band_send_message");
     expect(backend.server).toHaveProperty("sseUrl");
   });
 });

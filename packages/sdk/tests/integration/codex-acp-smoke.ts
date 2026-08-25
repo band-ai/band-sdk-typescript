@@ -5,8 +5,8 @@
  * for validating that the ACP client adapter can:
  * - initialize a real ACP subprocess
  * - create and reuse a session
- * - auto-inject the Thenvoi MCP server
- * - round-trip visible room actions through Thenvoi tools
+ * - auto-inject the Band MCP server
+ * - round-trip visible room actions through Band tools
  *
  * Run:
  *   RUN_CODEX_ACP_E2E=1 npx tsx tests/integration/codex-acp-smoke.ts
@@ -102,11 +102,11 @@ async function main(): Promise<void> {
     assert(sessionIds.size === 1, `expected exactly 1 reused ACP session, got ${sessionIds.size}`);
 
     const sendMessageCalls = toolCallEvents.filter((event) =>
-      (event.metadata?.raw_input as Record<string, unknown> | undefined)?.tool === "thenvoi_send_message",
+      (event.metadata?.raw_input as Record<string, unknown> | undefined)?.tool === "band_send_message",
     );
     assert(
       sendMessageCalls.length >= 2,
-      `expected thenvoi_send_message MCP calls, got ${sendMessageCalls.length}`,
+      `expected band_send_message MCP calls, got ${sendMessageCalls.length}`,
     );
 
     console.log("codex-acp smoke passed");

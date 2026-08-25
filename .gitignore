@@ -1,6 +1,7 @@
 node_modules
 dist
 coverage
+.DS_Store
 .pnpm-store
 .venv
 .venv-*
@@ -9,6 +10,7 @@ coverage
 .desloppify
 .claude
 .agents
+.idea
 scorecard.png
 agent_config.yaml
 .env

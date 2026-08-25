@@ -1,12 +1,13 @@
 /**
  * E2E Test Setup and Utilities
  *
- * Provides helpers for running tests against a real Thenvoi environment.
- * Requires THENVOI_API_KEY, THENVOI_AGENT_ID, and THENVOI_API_KEY_USER environment variables.
+ * Provides helpers for running tests against a real Band environment.
+ * Requires BAND_API_KEY, BAND_AGENT_ID, and BAND_API_KEY_USER environment
+ * variables (legacy THENVOI_* names are accepted as a fallback).
  */
 
 /**
- * Configuration shape for E2E tests, matching ThenvoiLink constructor options.
+ * Configuration shape for E2E tests, matching BandLink constructor options.
  */
 export interface E2EConfig {
   apiKey: string;
@@ -16,36 +17,39 @@ export interface E2EConfig {
   restUrl: string;
 }
 
+function envFirst(bandVar: string, legacyVar: string): string | undefined {
+  return process.env[bandVar] ?? process.env[legacyVar];
+}
+
 /**
- * Get E2E test configuration from environment variables.
- * Throws if required variables are not set.
+ * Get E2E test configuration from environment variables, Band-first with a
+ * legacy `THENVOI_*` fallback. Throws if required variables are not set.
  */
 export function getE2EConfig(): E2EConfig {
-  const apiKey = process.env.THENVOI_API_KEY;
-  const agentId = process.env.THENVOI_AGENT_ID;
-  const userId = process.env.THENVOI_API_KEY_USER;
-  const wsUrl =
-    process.env.THENVOI_WS_URL ?? "wss://app.thenvoi.com/api/v1/socket";
-  const restUrl = process.env.THENVOI_REST_URL ?? "https://app.thenvoi.com";
+  const apiKey = envFirst("BAND_API_KEY", "THENVOI_API_KEY");
+  const agentId = envFirst("BAND_AGENT_ID", "THENVOI_AGENT_ID");
+  const userId = envFirst("BAND_API_KEY_USER", "THENVOI_API_KEY_USER");
+  const wsUrl = envFirst("BAND_WS_URL", "THENVOI_WS_URL") ?? "wss://app.band.ai/api/v1/socket";
+  const restUrl = envFirst("BAND_REST_URL", "THENVOI_REST_URL") ?? "https://app.band.ai";
 
   if (!apiKey) {
     throw new Error(
-      "E2E tests require THENVOI_API_KEY environment variable. " +
-        "Set it to run tests against a real Thenvoi environment.",
+      "E2E tests require the BAND_API_KEY (legacy THENVOI_API_KEY) environment variable. " +
+        "Set it to run tests against a real Band environment.",
     );
   }
 
   if (!agentId) {
     throw new Error(
-      "E2E tests require THENVOI_AGENT_ID environment variable. " +
-        "Set it to run tests against a real Thenvoi environment.",
+      "E2E tests require the BAND_AGENT_ID (legacy THENVOI_AGENT_ID) environment variable. " +
+        "Set it to run tests against a real Band environment.",
     );
   }
 
   if (!userId) {
     throw new Error(
-      "E2E tests require THENVOI_API_KEY_USER environment variable. " +
-        "Set it to run tests against a real Thenvoi environment.",
+      "E2E tests require the BAND_API_KEY_USER (legacy THENVOI_API_KEY_USER) environment variable. " +
+        "Set it to run tests against a real Band environment.",
     );
   }
 
@@ -53,13 +57,13 @@ export function getE2EConfig(): E2EConfig {
 }
 
 /**
- * Check if E2E tests can run (env vars are set).
+ * Check if E2E tests can run (env vars are set), Band-first with legacy fallback.
  */
 export function canRunE2E(): boolean {
   return !!(
-    process.env.THENVOI_API_KEY &&
-    process.env.THENVOI_AGENT_ID &&
-    process.env.THENVOI_API_KEY_USER
+    envFirst("BAND_API_KEY", "THENVOI_API_KEY") &&
+    envFirst("BAND_AGENT_ID", "THENVOI_AGENT_ID") &&
+    envFirst("BAND_API_KEY_USER", "THENVOI_API_KEY_USER")
   );
 }
 
@@ -67,7 +71,7 @@ export function canRunE2E(): boolean {
  * Skip message for when E2E env vars are not configured.
  */
 export const E2E_SKIP_MESSAGE =
-  "Skipping E2E test: THENVOI_API_KEY, THENVOI_AGENT_ID, and THENVOI_API_KEY_USER not set";
+  "Skipping E2E test: BAND_API_KEY, BAND_AGENT_ID, and BAND_API_KEY_USER (or legacy THENVOI_*) not set";
 
 /**
  * Helper to wait for a condition with timeout.

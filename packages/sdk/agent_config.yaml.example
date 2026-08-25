@@ -1,8 +1,8 @@
-# Thenvoi SDK agent configuration
+# Band SDK agent configuration
 # Copy this file to agent_config.yaml and fill in your credentials.
 #
 # Usage in code:
-#   import { loadAgentConfig } from "@thenvoi/sdk";
+#   import { loadAgentConfig } from "@band-ai/sdk";
 #   const config = loadAgentConfig("basic_agent");
 #   Agent.create({ adapter, ...config });
 
@@ -34,6 +34,15 @@ langgraph_agent:
   agent_id: "your-langgraph-agent-id"
   api_key: "your-api-key"
 
+memory_agent:
+  agent_id: "your-memory-agent-id"
+  api_key: "your-api-key"
+  # Optional: defaults to OPENAI_API_KEY from the environment
+  # Used by examples/openai/openai-memory-agent.ts
+  openai_api_key: "your-openai-api-key"
+  # Optional: defaults to gpt-4o
+  model: "gpt-4o"
+
 a2a_bridge_agent:
   agent_id: "your-a2a-bridge-agent-id"
   api_key: "your-api-key"
@@ -54,9 +63,14 @@ custom_adapter_agent:
   agent_id: "your-custom-adapter-agent-id"
   api_key: "your-api-key"
 
-linear_thenvoi_bridge:
+linear_band_bridge:
   agent_id: "your-band-linear-pm-agent-id"
   api_key: "your-api-key"
+
+# Legacy key — accepted with a deprecation warning:
+# linear_thenvoi_bridge:
+#   agent_id: "your-band-linear-pm-agent-id"
+#   api_key: "your-api-key"
 
 planner_agent:
   agent_id: "your-planner-agent-id"
@@ -66,6 +80,6 @@ reviewer_agent:
   agent_id: "your-reviewer-agent-id"
   api_key: "your-api-key"
 
-linear_thenvoi_transport:
+linear_band_transport:
   agent_id: "your-linear-transport-agent-id"
   api_key: "your-api-key"

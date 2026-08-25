@@ -79,15 +79,15 @@ describe("contracts/protocols", () => {
   it("provides helpers for the normalized tool executor error contract", () => {
     const error = createToolExecutorError({
       errorType: "ToolExecutionError",
-      toolName: "thenvoi_send_message",
+      toolName: "band_send_message",
       message: "Mention not found",
-      legacyMessage: "Error executing thenvoi_send_message: Mention not found",
+      legacyMessage: "Error executing band_send_message: Mention not found",
       details: { mention: "@jane" },
     });
 
     expect(isToolExecutorError(error)).toBe(true);
     expect(toLegacyToolExecutorErrorMessage(error)).toBe(
-      "Error executing thenvoi_send_message: Mention not found",
+      "Error executing band_send_message: Mention not found",
     );
     expect(toLegacyToolExecutorErrorMessage("already string")).toBe("already string");
     expect(toLegacyToolExecutorErrorMessage({ ok: true })).toBeNull();

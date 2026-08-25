@@ -36,18 +36,34 @@ class GoogleAdkTestTools extends FakeTools {
   }
 }
 
+interface GoogleAdkCapture {
+  createAgentCalls: Array<Record<string, unknown>>;
+  createRunnerCalls: Array<{ appName: string }>;
+  createSessionCalls: Array<{ appName: string; userId: string; sessionId: string }>;
+}
+
 function createFakeGoogleAdkSdk(
   run: (agent: Record<string, unknown>, request: { userId: string; sessionId: string; newMessage: { role: "user"; parts: Array<{ text: string }> } }) => AsyncIterable<unknown>,
+  capture?: GoogleAdkCapture,
 ): () => Promise<any> {
   return async () => ({
-    createAgent: (params: Record<string, unknown>) => params,
+    createAgent: (params: Record<string, unknown>) => {
+      capture?.createAgentCalls?.push(params);
+      return params;
+    },
     createFunctionTool: (params: Record<string, unknown>) => params,
-    createRunner: ({ agent }: { agent: Record<string, unknown> }) => ({
-      sessionService: {
-        createSession: async () => ({ ok: true }),
-      },
-      runAsync: (request: { userId: string; sessionId: string; newMessage: { role: "user"; parts: Array<{ text: string }> } }) => run(agent, request),
-    }),
+    createRunner: (params: { agent: Record<string, unknown>; appName: string }) => {
+      capture?.createRunnerCalls?.push({ appName: params.appName });
+      return {
+        sessionService: {
+          createSession: async (sessionParams: { appName: string; userId: string; sessionId: string }) => {
+            capture?.createSessionCalls?.push(sessionParams);
+            return { ok: true };
+          },
+        },
+        runAsync: (request: { userId: string; sessionId: string; newMessage: { role: "user"; parts: Array<{ text: string }> } }) => run(params.agent, request),
+      };
+    },
     isFinalResponse: (event: Record<string, unknown>) => event.final === true,
     getFunctionCalls: (event: Record<string, unknown>) => Array.isArray(event.functionCalls) ? event.functionCalls : [],
     getFunctionResponses: (event: Record<string, unknown>) => Array.isArray(event.functionResponses) ? event.functionResponses : [],
@@ -159,5 +175,58 @@ describe("GoogleADKAdapter", () => {
 
     expect(tools.messages).toEqual(["custom:Toronto"]);
     expect(tools.executedCalls).toEqual([]);
+  });
+
+  it("passes appName \"band\" to createRunner and createSession", async () => {
+    const tools = new GoogleAdkTestTools();
+    const capture: GoogleAdkCapture = {
+      createAgentCalls: [],
+      createRunnerCalls: [],
+      createSessionCalls: [],
+    };
+
+    const adapter = new GoogleADKAdapter({
+      sdkFactory: createFakeGoogleAdkSdk(async function* () {
+        yield { final: true, text: "done" };
+      }, capture),
+    });
+
+    await adapter.onStarted("Weather Agent", "Answers weather questions");
+    await adapter.onMessage(
+      makeMessage("What's the weather?", "room-app"),
+      tools,
+      new GoogleADKHistoryConverter().convert([]),
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-app" },
+    );
+
+    expect(capture.createRunnerCalls).toEqual([{ appName: "band" }]);
+    expect(capture.createSessionCalls).toHaveLength(1);
+    expect(capture.createSessionCalls[0]?.appName).toBe("band");
+  });
+
+  it("names the default agent \"band_agent\" when agentName is unset", async () => {
+    const tools = new GoogleAdkTestTools();
+    const capture: GoogleAdkCapture = { createAgentCalls: [], createRunnerCalls: [], createSessionCalls: [] };
+
+    const adapter = new GoogleADKAdapter({
+      sdkFactory: createFakeGoogleAdkSdk(async function* () {
+        yield { final: true, text: "done" };
+      }, capture),
+    });
+
+    await adapter.onStarted("", "Answers weather questions");
+    await adapter.onMessage(
+      makeMessage("What's the weather?", "room-default"),
+      tools,
+      new GoogleADKHistoryConverter().convert([]),
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-default" },
+    );
+
+    expect(capture.createAgentCalls).toHaveLength(1);
+    expect(capture.createAgentCalls[0]?.name).toBe("band_agent");
   });
 });

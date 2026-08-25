@@ -18,7 +18,7 @@ export const STALE_SESSION_CHECK_INTERVAL_MS = 20 * 60_000;
  */
 export const STALE_SESSION_THRESHOLD_MS = 25 * 60_000;
 
-export interface LinearThenvoiBridgeConfig {
+export interface LinearBandBridgeConfig {
   linearAccessToken: string;
   linearWebhookSecret: string;
   roomStrategy?: RoomStrategy;
@@ -27,13 +27,13 @@ export interface LinearThenvoiBridgeConfig {
   planningAgentHandles?: string[];
   implementationAgentHandles?: string[];
   recoveredRoomRetryBaseDelayMs?: number;
-  thenvoiAppBaseUrl?: string;
+  bandAppBaseUrl?: string;
 }
 
 export interface SessionRoomRecord {
   linearSessionId: string;
   linearIssueId: string | null;
-  thenvoiRoomId: string;
+  bandRoomId: string;
   status: SessionStatus;
   lastEventKey?: string | null;
   /** ISO-8601 timestamp of the last activity sent to Linear for this session. */
@@ -45,7 +45,7 @@ export interface SessionRoomRecord {
 export interface PendingBootstrapRequest {
   eventKey: string;
   linearSessionId: string;
-  thenvoiRoomId: string;
+  bandRoomId: string;
   expectedContent: string;
   messageType: string;
   senderId?: string | null;
@@ -68,8 +68,8 @@ export interface SessionRoomStore {
   close?(): Promise<void>;
 }
 
-export interface LinearThenvoiBridgeDeps {
-  thenvoiRest: RestApi;
+export interface LinearBandBridgeDeps {
+  bandRest: RestApi;
   linearClient: LinearClient;
   store: SessionRoomStore;
   logger?: Logger;
@@ -77,8 +77,8 @@ export interface LinearThenvoiBridgeDeps {
 
 export interface HandleAgentSessionEventInput {
   payload: AgentSessionEventWebhookPayload;
-  config: LinearThenvoiBridgeConfig;
-  deps: LinearThenvoiBridgeDeps;
+  config: LinearBandBridgeConfig;
+  deps: LinearBandBridgeDeps;
 }
 
 export type { CandidateRepositoryInput, LinearActivityClient, PlanStep, RepositorySuggestion, SelectOption } from "./activities";

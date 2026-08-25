@@ -6,7 +6,7 @@ import type { RestApi } from "../../../client/rest/types";
 import type { PeerRecord } from "../../../contracts/dtos";
 import type {
   HandleAgentSessionEventInput,
-  LinearThenvoiBridgeConfig,
+  LinearBandBridgeConfig,
   PendingBootstrapRequest,
   SessionRoomStore,
   SessionRoomRecord,
@@ -31,10 +31,10 @@ interface NormalizedBridgeConfig {
   roomStrategy: "issue" | "session";
   writebackMode: "final_only" | "activity_stream";
   hostAgentHandle: string | null;
-  thenvoiAppBaseUrl: string;
+  bandAppBaseUrl: string;
 }
 
-const DEFAULT_THENVOI_APP_BASE_URL = "https://app.thenvoi.com";
+const DEFAULT_APP_BASE_URL = "https://app.band.ai";
 
 const SUPPORTED_ACTIONS = new Set(["created", "updated", "canceled", "prompted"]);
 const MAX_PEER_LOOKUP_PAGES = 25;
@@ -206,7 +206,7 @@ export async function handleAgentSessionEvent(
   let externalUrlPromise: Promise<void> | undefined;
   try {
     const hostAgentHandle = await resolveHostAgentHandle({
-      thenvoiRest: input.deps.thenvoiRest,
+      bandRest: input.deps.bandRest,
       configuredHostHandle: config.hostAgentHandle,
       logger,
       runtime,
@@ -215,7 +215,7 @@ export async function handleAgentSessionEvent(
       ? await input.deps.store.getByIssueId(issueId)
       : null;
     roomRecord = await resolveRoomRecord({
-      thenvoiRest: input.deps.thenvoiRest,
+      bandRest: input.deps.bandRest,
       store: input.deps.store,
       roomStrategy: config.roomStrategy,
       sessionId,
@@ -224,12 +224,12 @@ export async function handleAgentSessionEvent(
       runtime,
     });
     if (action === "created") {
-      const roomId = roomRecord.thenvoiRoomId;
+      const roomId = roomRecord.bandRoomId;
       externalUrlPromise = trySetSessionExternalUrl({
         linearClient: input.deps.linearClient,
         sessionId,
         roomId,
-        appBaseUrl: config.thenvoiAppBaseUrl,
+        appBaseUrl: config.bandAppBaseUrl,
         logger,
       }).catch((urlError) => {
         logger.warn("linear_thenvoi_bridge.set_external_url_failed", {
@@ -250,8 +250,8 @@ export async function handleAgentSessionEvent(
       issueDescription: input.payload.agentSession.issue?.description,
     });
     const suggestedPeerHandles = await selectRelevantPeerHandles({
-      thenvoiRest: input.deps.thenvoiRest,
-      roomId: roomRecord.thenvoiRoomId,
+      bandRest: input.deps.bandRest,
+      roomId: roomRecord.bandRoomId,
       intent: sessionIntent,
       hostAgentHandle,
       planningAgentHandles: input.config.planningAgentHandles,
@@ -260,8 +260,8 @@ export async function handleAgentSessionEvent(
     });
 
     await ensureRoomParticipants({
-      thenvoiRest: input.deps.thenvoiRest,
-      roomId: roomRecord.thenvoiRoomId,
+      bandRest: input.deps.bandRest,
+      roomId: roomRecord.bandRoomId,
       handles: [hostAgentHandle],
       logger,
     });
@@ -336,23 +336,23 @@ export async function handleAgentSessionEvent(
       linear_issue_id: issueId,
       linear_prompt_context: input.payload.promptContext ?? null,
       linear_writeback_mode: config.writebackMode,
-      linear_bridge: "thenvoi",
+      linear_bridge: "band",
       linear_host_handle: hostAgentHandle,
     };
     const shouldResetRoomSession = Boolean(
       existingByIssue
       && existingByIssue.linearSessionId !== sessionId
-      && existingByIssue.thenvoiRoomId === roomRecord.thenvoiRoomId
+      && existingByIssue.bandRoomId === roomRecord.bandRoomId
       && (existingByIssue.status === "completed" || existingByIssue.status === "errored"),
     );
 
-    const authenticatedHostHandle = runtime.authenticatedHostHandleCache.get(input.deps.thenvoiRest) ?? null;
+    const authenticatedHostHandle = runtime.authenticatedHostHandleCache.get(input.deps.bandRest) ?? null;
     const canBootstrapDirectly = options?.skipRoomWrite === true
       || authenticatedHostHandle === null
       || authenticatedHostHandle === hostAgentHandle;
     if (!options?.skipRoomWrite || !canBootstrapDirectly) {
       roomRecord = await forwardBridgeMessage({
-        thenvoiRest: input.deps.thenvoiRest,
+        bandRest: input.deps.bandRest,
         store: input.deps.store,
         logger,
         roomRecord,
@@ -370,7 +370,7 @@ export async function handleAgentSessionEvent(
       await enqueueBootstrapRequest(input.deps.store, {
         eventKey,
         linearSessionId: sessionId,
-        thenvoiRoomId: roomRecord.thenvoiRoomId,
+        bandRoomId: roomRecord.bandRoomId,
         expectedContent: message,
         messageType: "task",
         senderId: linearActor.id,
@@ -399,7 +399,7 @@ export async function handleAgentSessionEvent(
     logger.info("linear_thenvoi_bridge.message_forwarded", {
       sessionId,
       issueId,
-      roomId: roomRecord.thenvoiRoomId,
+      roomId: roomRecord.bandRoomId,
       action,
     });
   } catch (error) {
@@ -502,7 +502,7 @@ async function trySetSessionExternalUrl(input: {
   const base = input.appBaseUrl.replace(/\/+$/, "");
   const roomUrl = `${base}/rooms/${input.roomId}`;
   await input.linearClient.agentSessionUpdateExternalUrl(input.sessionId, {
-    externalUrls: [{ label: "View in Thenvoi", url: roomUrl }],
+    externalUrls: [{ label: "View in Band", url: roomUrl }],
   });
 
   input.logger.info("linear_thenvoi_bridge.external_url_set", {
@@ -512,12 +512,12 @@ async function trySetSessionExternalUrl(input: {
   });
 }
 
-function normalizeConfig(config: LinearThenvoiBridgeConfig): NormalizedBridgeConfig {
+function normalizeConfig(config: LinearBandBridgeConfig): NormalizedBridgeConfig {
   return {
     roomStrategy: config.roomStrategy ?? "issue",
     writebackMode: config.writebackMode ?? "final_only",
     hostAgentHandle: normalizeOptionalHandle(config.hostAgentHandle),
-    thenvoiAppBaseUrl: config.thenvoiAppBaseUrl ?? DEFAULT_THENVOI_APP_BASE_URL,
+    bandAppBaseUrl: config.bandAppBaseUrl ?? DEFAULT_APP_BASE_URL,
   };
 }
 
@@ -618,32 +618,32 @@ async function tryMoveIssueToStarted(input: {
 }
 
 async function resolveHostAgentHandle(input: {
-  thenvoiRest: RestApi;
+  bandRest: RestApi;
   configuredHostHandle: string | null;
   logger: Logger;
   runtime: LinearBridgeRuntime;
 }): Promise<string> {
   if (input.configuredHostHandle) {
-    input.runtime.resolvedHostHandleCache.set(input.thenvoiRest, input.configuredHostHandle);
+    input.runtime.resolvedHostHandleCache.set(input.bandRest, input.configuredHostHandle);
     return input.configuredHostHandle;
   }
 
-  const cachedAuthenticated = input.runtime.authenticatedHostHandleCache.get(input.thenvoiRest);
+  const cachedAuthenticated = input.runtime.authenticatedHostHandleCache.get(input.bandRest);
   if (cachedAuthenticated) {
-    input.runtime.resolvedHostHandleCache.set(input.thenvoiRest, cachedAuthenticated);
+    input.runtime.resolvedHostHandleCache.set(input.bandRest, cachedAuthenticated);
     return cachedAuthenticated;
   }
 
-  const cached = input.runtime.resolvedHostHandleCache.get(input.thenvoiRest);
+  const cached = input.runtime.resolvedHostHandleCache.get(input.bandRest);
   if (cached) {
     return cached;
   }
 
-  const identity = await input.thenvoiRest.getAgentMe();
+  const identity = await input.bandRest.getAgentMe();
   const authenticatedAgentHandle = normalizeOptionalHandle(identity.handle);
   if (authenticatedAgentHandle) {
-    input.runtime.authenticatedHostHandleCache.set(input.thenvoiRest, authenticatedAgentHandle);
-    input.runtime.resolvedHostHandleCache.set(input.thenvoiRest, authenticatedAgentHandle);
+    input.runtime.authenticatedHostHandleCache.set(input.bandRest, authenticatedAgentHandle);
+    input.runtime.resolvedHostHandleCache.set(input.bandRest, authenticatedAgentHandle);
     return authenticatedAgentHandle;
   }
 
@@ -694,14 +694,14 @@ async function handleCanceledAction(input: {
   });
 
   if (!input.skipRoomWrite) {
-    await input.deps.thenvoiRest.createChatEvent(existing.thenvoiRoomId, {
+    await input.deps.bandRest.createChatEvent(existing.bandRoomId, {
       content: "[Linear]: Agent session canceled. Stop in-room execution and await new instructions.",
       messageType: "task",
       metadata: {
         linear_event_action: "canceled",
         linear_session_id: input.sessionId,
         linear_issue_id: input.issueId,
-        linear_bridge: "thenvoi",
+        linear_bridge: "band",
       },
     });
   }
@@ -753,14 +753,14 @@ async function handlePromptedAction(input: {
   const metadata = {
     linear_event_action: "prompted",
     linear_session_id: input.sessionId,
-    linear_bridge: "thenvoi",
+    linear_bridge: "band",
   };
 
   const canBootstrapDirectly = input.config.hostAgentHandle !== null
     ? true
-    : Boolean(normalizeOptionalHandle((await input.deps.thenvoiRest.getAgentMe()).handle));
+    : Boolean(normalizeOptionalHandle((await input.deps.bandRest.getAgentMe()).handle));
   if (!input.skipRoomWrite || !canBootstrapDirectly) {
-    await input.deps.thenvoiRest.createChatEvent(existing.thenvoiRoomId, {
+    await input.deps.bandRest.createChatEvent(existing.bandRoomId, {
       content: message,
       messageType: "text",
       metadata,
@@ -771,7 +771,7 @@ async function handlePromptedAction(input: {
     await enqueueBootstrapRequest(input.deps.store, {
       eventKey: input.eventKey,
       linearSessionId: input.sessionId,
-      thenvoiRoomId: existing.thenvoiRoomId,
+      bandRoomId: existing.bandRoomId,
       expectedContent: message,
       messageType: "text",
       senderId: linearActor.id,
@@ -789,7 +789,7 @@ async function handlePromptedAction(input: {
 
   input.logger.info("linear_thenvoi_bridge.prompted_forwarded", {
     sessionId: input.sessionId,
-    roomId: existing.thenvoiRoomId,
+    roomId: existing.bandRoomId,
   });
 }
 
@@ -799,7 +799,7 @@ async function enqueueBootstrapRequest(
     PendingBootstrapRequest,
     | "eventKey"
     | "linearSessionId"
-    | "thenvoiRoomId"
+    | "bandRoomId"
     | "expectedContent"
     | "messageType"
     | "senderId"
@@ -836,7 +836,7 @@ function resolveLinearActor(payload: HandleAgentSessionEventInput["payload"]): {
 }
 
 async function resolveRoomRecord(input: {
-  thenvoiRest: RestApi;
+  bandRest: RestApi;
   store: HandleAgentSessionEventInput["deps"]["store"];
   roomStrategy: "issue" | "session";
   sessionId: string;
@@ -863,7 +863,7 @@ async function resolveRoomRecord(input: {
 }
 
 async function forwardBridgeMessage(input: {
-  thenvoiRest: RestApi;
+  bandRest: RestApi;
   store: SessionRoomStore;
   logger: Logger;
   roomRecord: SessionRoomRecord;
@@ -876,7 +876,7 @@ async function forwardBridgeMessage(input: {
   recoveredRoomRetryBaseDelayMs?: number;
 }): Promise<SessionRoomRecord> {
   try {
-    await input.thenvoiRest.createChatEvent(input.roomRecord.thenvoiRoomId, {
+    await input.bandRest.createChatEvent(input.roomRecord.bandRoomId, {
       content: input.message,
       messageType: input.messageType,
       metadata: input.metadata,
@@ -890,12 +890,12 @@ async function forwardBridgeMessage(input: {
     input.logger.warn("linear_thenvoi_bridge.room_forward_recovering_with_fresh_room", {
       sessionId: input.sessionId,
       issueId: input.issueId,
-      previousRoomId: input.roomRecord.thenvoiRoomId,
+      previousRoomId: input.roomRecord.bandRoomId,
       error: error instanceof Error ? error.message : String(error),
     });
 
     const recoveredRoom = await createFreshRoomRecord({
-      thenvoiRest: input.thenvoiRest,
+      bandRest: input.bandRest,
       store: input.store,
       sessionId: input.sessionId,
       issueId: input.issueId,
@@ -903,8 +903,8 @@ async function forwardBridgeMessage(input: {
     });
 
     await ensureRoomParticipants({
-      thenvoiRest: input.thenvoiRest,
-      roomId: recoveredRoom.thenvoiRoomId,
+      bandRest: input.bandRest,
+      roomId: recoveredRoom.bandRoomId,
       handles: [input.hostAgentHandle],
       logger: input.logger,
     });
@@ -912,7 +912,7 @@ async function forwardBridgeMessage(input: {
     let attempt = 0;
     while (true) {
       try {
-        await input.thenvoiRest.createChatEvent(recoveredRoom.thenvoiRoomId, {
+        await input.bandRest.createChatEvent(recoveredRoom.bandRoomId, {
           content: input.message,
           messageType: input.messageType,
           metadata: input.metadata,
@@ -929,7 +929,7 @@ async function forwardBridgeMessage(input: {
         input.logger.warn("linear_thenvoi_bridge.room_recreated_retrying", {
           sessionId: input.sessionId,
           issueId: input.issueId,
-          roomId: recoveredRoom.thenvoiRoomId,
+          roomId: recoveredRoom.bandRoomId,
           attempt,
           delayMs,
           error: recoveredError instanceof Error ? recoveredError.message : String(recoveredError),
@@ -965,18 +965,18 @@ function isRetryableRateLimitError(error: unknown): boolean {
 }
 
 async function createFreshRoomRecord(input: {
-  thenvoiRest: RestApi;
+  bandRest: RestApi;
   store: SessionRoomStore;
   sessionId: string;
   issueId: string | null;
   logger: Logger;
 }): Promise<SessionRoomRecord> {
   const now = new Date().toISOString();
-  const created = await input.thenvoiRest.createChat();
+  const created = await input.bandRest.createChat();
   const record: SessionRoomRecord = {
     linearSessionId: input.sessionId,
     linearIssueId: input.issueId,
-    thenvoiRoomId: created.id,
+    bandRoomId: created.id,
     status: "active",
     lastEventKey: null,
     createdAt: now,
@@ -993,7 +993,7 @@ async function createFreshRoomRecord(input: {
 }
 
 async function resolveRoomRecordImpl(input: {
-  thenvoiRest: RestApi;
+  bandRest: RestApi;
   store: HandleAgentSessionEventInput["deps"]["store"];
   roomStrategy: "issue" | "session";
   sessionId: string;
@@ -1012,7 +1012,7 @@ async function resolveRoomRecordImpl(input: {
       const linkedRecord: SessionRoomRecord = {
         linearSessionId: input.sessionId,
         linearIssueId: input.issueId,
-        thenvoiRoomId: existingByIssue.thenvoiRoomId,
+        bandRoomId: existingByIssue.bandRoomId,
         status: "active",
         lastEventKey: existingBySession?.lastEventKey ?? null,
         createdAt: existingBySession?.createdAt ?? now,
@@ -1025,14 +1025,14 @@ async function resolveRoomRecordImpl(input: {
   }
 
   const now = new Date().toISOString();
-  // Thenvoi validates `chat.task_id` as a Thenvoi task UUID. Linear issue/session IDs
+  // Band validates `chat.task_id` as a Band task UUID. Linear issue/session IDs
   // are external identifiers, so this bridge must omit `task_id` unless it has a real
-  // Thenvoi task to associate with the room.
-  const created = await input.thenvoiRest.createChat();
+  // Band task to associate with the room.
+  const created = await input.bandRest.createChat();
   const createdRecord: SessionRoomRecord = {
     linearSessionId: input.sessionId,
     linearIssueId: input.issueId,
-    thenvoiRoomId: created.id,
+    bandRoomId: created.id,
     status: "active",
     lastEventKey: null,
     createdAt: now,
@@ -1052,7 +1052,7 @@ async function resolveRoomRecordImpl(input: {
 }
 
 async function ensureRoomParticipants(input: {
-  thenvoiRest: RestApi;
+  bandRest: RestApi;
   roomId: string;
   handles: string[];
   logger: Logger;
@@ -1063,7 +1063,7 @@ async function ensureRoomParticipants(input: {
 
   let existingParticipants;
   try {
-    existingParticipants = await input.thenvoiRest.listChatParticipants(input.roomId);
+    existingParticipants = await input.bandRest.listChatParticipants(input.roomId);
   } catch (error) {
     if (isRetryableRateLimitError(error)) {
       input.logger.warn("linear_thenvoi_bridge.participant_list_rate_limited", {
@@ -1087,7 +1087,7 @@ async function ensureRoomParticipants(input: {
 
   let peersByHandle: Map<string, string>;
   try {
-    peersByHandle = await lookupPeerIdsByHandle(input.thenvoiRest, input.roomId, missingHandles);
+    peersByHandle = await lookupPeerIdsByHandle(input.bandRest, input.roomId, missingHandles);
   } catch (error) {
     if (error instanceof UnsupportedFeatureError) {
       input.logger.warn("linear_thenvoi_bridge.peer_lookup_unavailable", {
@@ -1112,7 +1112,7 @@ async function ensureRoomParticipants(input: {
     }
 
     try {
-      await input.thenvoiRest.addChatParticipant(
+      await input.bandRest.addChatParticipant(
         input.roomId,
         {
           participantId,
@@ -1133,11 +1133,11 @@ async function ensureRoomParticipants(input: {
 }
 
 async function lookupPeerIdsByHandle(
-  thenvoiRest: RestApi,
+  bandRest: RestApi,
   roomId: string,
   handles: string[],
 ): Promise<Map<string, string>> {
-  if (!thenvoiRest.listPeers) {
+  if (!bandRest.listPeers) {
     throw new UnsupportedFeatureError("Peer listing is not available in current REST adapter");
   }
 
@@ -1145,7 +1145,7 @@ async function lookupPeerIdsByHandle(
   const found = new Map<string, string>();
 
   for (let page = 1; page <= MAX_PEER_LOOKUP_PAGES && found.size < targets.size; page += 1) {
-    const response = await thenvoiRest.listPeers({
+    const response = await bandRest.listPeers({
       page,
       pageSize: PEER_PAGE_SIZE,
       notInChat: roomId,
@@ -1180,7 +1180,7 @@ async function lookupPeerIdsByHandle(
 }
 
 async function selectRelevantPeerHandles(input: {
-  thenvoiRest: RestApi;
+  bandRest: RestApi;
   roomId: string;
   intent: SessionIntent;
   hostAgentHandle: string;
@@ -1202,13 +1202,13 @@ async function selectRelevantPeerHandles(input: {
     return configuredHandles;
   }
 
-  if (!input.thenvoiRest.listPeers) {
+  if (!input.bandRest.listPeers) {
     return [];
   }
 
   let peers: PeerRecord[];
   try {
-    const response = await input.thenvoiRest.listPeers({
+    const response = await input.bandRest.listPeers({
       page: 1,
       pageSize: PEER_PAGE_SIZE,
       notInChat: input.roomId,

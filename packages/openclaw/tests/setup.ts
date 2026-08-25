@@ -21,7 +21,11 @@ beforeEach(() => {
   // Reset gateway registry to prevent state leaking between tests
   delete (globalThis as unknown as Record<string, unknown>)[GATEWAY_REGISTRY_KEY];
 
-  // Reset environment variables
+  // Reset environment variables (BAND_* primary + legacy THENVOI_* fallback)
+  delete process.env.BAND_API_KEY;
+  delete process.env.BAND_AGENT_ID;
+  delete process.env.BAND_WS_URL;
+  delete process.env.BAND_REST_URL;
   delete process.env.THENVOI_API_KEY;
   delete process.env.THENVOI_AGENT_ID;
   delete process.env.THENVOI_WS_URL;

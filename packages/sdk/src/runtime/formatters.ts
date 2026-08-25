@@ -1,4 +1,5 @@
 import type { MetadataMap, ToolModelMessage } from "../contracts/dtos";
+import { ensureHandlePrefix } from "./types";
 
 function isMetadataMap(value: unknown): value is MetadataMap {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -17,7 +18,7 @@ export function replaceUuidMentions(
     const participantId = participant.id;
     const handle = participant.handle;
     if (typeof participantId === "string" && typeof handle === "string") {
-      next = next.replaceAll(`@[[${participantId}]]`, `@${handle}`);
+      next = next.replaceAll(`@[[${participantId}]]`, ensureHandlePrefix(handle) ?? "");
     }
   }
 
@@ -69,12 +70,14 @@ export function buildParticipantsMessage(participants: Array<Record<string, unkn
     const participantType = String(participant.type ?? "Unknown");
     const participantName = String(participant.name ?? "Unknown");
     const participantHandle = String(participant.handle ?? "Unknown");
-    lines.push(`- @${participantHandle} — ${participantName} (${participantType})`);
+    lines.push(
+      `- ${ensureHandlePrefix(participantHandle) ?? ""} — ${participantName} (${participantType})`,
+    );
   }
 
   lines.push("");
   lines.push(
-    "IMPORTANT: In thenvoi_send_message mentions, always use the exact handle shown above (e.g. '@john' for users, '@john/weather-agent' for agents), NOT the display name. Handles are lowercase with no spaces.",
+    "IMPORTANT: In band_send_message mentions, always use the exact handle shown above (e.g. '@john' for users, '@john/weather-agent' for agents), NOT the display name. Handles are lowercase with no spaces.",
   );
 
   return lines.join("\n");

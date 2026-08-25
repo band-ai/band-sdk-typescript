@@ -1,4 +1,4 @@
-import { describe, expect, it, afterEach } from "vitest";
+import { describe, expect, it, afterEach, vi } from "vitest";
 import { writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -145,38 +145,99 @@ ws_url: "wss://example.com"
     expect(options.wsUrl).toBe("wss://example.com");
   });
 
-  it("loads credentials from THENVOI_ env vars by default", () => {
+  it("P-C6-1: BAND_ default wins for every field with no warning", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const result = loadAgentConfigFromEnv({
       env: {
-        THENVOI_AGENT_ID: "agent-env",
-        THENVOI_API_KEY: "key-env",
-        THENVOI_WS_URL: "wss://ws.example.com",
-        THENVOI_REST_URL: "https://rest.example.com",
+        BAND_AGENT_ID: "agent-band",
+        BAND_API_KEY: "key-band",
+        BAND_WS_URL: "wss://ws.band",
+        BAND_REST_URL: "https://rest.band",
       },
     });
-
-    expect(result.agentId).toBe("agent-env");
-    expect(result.apiKey).toBe("key-env");
-    expect(result.wsUrl).toBe("wss://ws.example.com");
-    expect(result.restUrl).toBe("https://rest.example.com");
+    expect(result.agentId).toBe("agent-band");
+    expect(result.apiKey).toBe("key-band");
+    expect(result.wsUrl).toBe("wss://ws.band");
+    expect(result.restUrl).toBe("https://rest.band");
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
-  it("supports custom env prefixes without requiring a trailing underscore", () => {
-    const result = loadAgentConfigFromEnv({
-      prefix: "BASIC_AGENT",
+  it("P-C6-1: legacy THENVOI_ fallback loads and warns once per variable, never a secret", async () => {
+    vi.resetModules();
+    const { loadAgentConfigFromEnv: load } = await import("../src/config/loader");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = load({
       env: {
-        BASIC_AGENT_AGENT_ID: "agent-prefixed",
-        BASIC_AGENT_API_KEY: "key-prefixed",
+        THENVOI_AGENT_ID: "agent-legacy",
+        THENVOI_API_KEY: "super-secret-key",
+        THENVOI_WS_URL: "wss://ws.legacy",
+        THENVOI_REST_URL: "https://rest.legacy",
       },
     });
+    expect(result.agentId).toBe("agent-legacy");
+    expect(result.apiKey).toBe("super-secret-key");
+    expect(warn).toHaveBeenCalledTimes(4);
+    for (const [legacy, band] of [
+      ["THENVOI_AGENT_ID", "BAND_AGENT_ID"], ["THENVOI_API_KEY", "BAND_API_KEY"],
+      ["THENVOI_WS_URL", "BAND_WS_URL"], ["THENVOI_REST_URL", "BAND_REST_URL"],
+    ]) {
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(legacy));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining(band));
+    }
+    // The secret value is never echoed in a warning.
+    for (const call of warn.mock.calls) expect(String(call[0])).not.toContain("super-secret-key");
+    // Once per process: a second read warns no further.
+    warn.mockClear();
+    load({ env: { THENVOI_AGENT_ID: "a", THENVOI_API_KEY: "k" } });
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
 
+  it("P-C6-1: mixed fields resolve independently; Band wins where present", async () => {
+    vi.resetModules();
+    const { loadAgentConfigFromEnv: load } = await import("../src/config/loader");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = load({
+      env: { BAND_AGENT_ID: "agent-band", THENVOI_API_KEY: "key-legacy", BAND_WS_URL: "wss://ws.band" },
+    });
+    expect(result.agentId).toBe("agent-band");
+    expect(result.apiKey).toBe("key-legacy");
+    expect(result.wsUrl).toBe("wss://ws.band");
+    // Only the one legacy field used warns.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("THENVOI_API_KEY"));
+    warn.mockRestore();
+  });
+
+  it("P-C6-1: when both are set for a field, Band wins and no warning fires", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const result = loadAgentConfigFromEnv({
+      env: { BAND_AGENT_ID: "band", THENVOI_AGENT_ID: "legacy", BAND_API_KEY: "k" },
+    });
+    expect(result.agentId).toBe("band");
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("P-C6-1: a custom prefix is exact — no THENVOI_ fallback", () => {
+    const result = loadAgentConfigFromEnv({
+      prefix: "BASIC_AGENT",
+      env: { BASIC_AGENT_AGENT_ID: "agent-prefixed", BASIC_AGENT_API_KEY: "key-prefixed", THENVOI_AGENT_ID: "ignored" },
+    });
     expect(result.agentId).toBe("agent-prefixed");
     expect(result.apiKey).toBe("key-prefixed");
   });
 
-  it("throws a helpful error when required env vars are missing", () => {
-    expect(() => loadAgentConfigFromEnv({ env: {} })).toThrow("THENVOI_AGENT_ID");
-    expect(() => loadAgentConfigFromEnv({ env: {} })).toThrow("THENVOI_API_KEY");
+  it("P-C6-1: an empty prefix reads bare env names exactly", () => {
+    const result = loadAgentConfigFromEnv({ prefix: "", env: { AGENT_ID: "agent-bare", API_KEY: "key-bare" } });
+    expect(result.agentId).toBe("agent-bare");
+    expect(result.apiKey).toBe("key-bare");
+  });
+
+  it("P-C6-1: missing required env vars throw naming the BAND_ variables", () => {
+    expect(() => loadAgentConfigFromEnv({ env: {} })).toThrow("BAND_AGENT_ID");
+    expect(() => loadAgentConfigFromEnv({ env: {} })).toThrow("BAND_API_KEY");
     expect(() => loadAgentConfigFromEnv({ env: {} })).toThrow("loadAgentConfig()");
   });
 
