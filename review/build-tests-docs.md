@@ -6,6 +6,8 @@ Scope: `packages/sdk/` build/packaging, tests, examples, and documentation.
 
 ## Summary
 
+> **Refresh (2026-08-25, main @ `1eb7bc9`).** Packaging and config are unchanged — `tsconfig.json` is byte-identical, `tsup.config.ts` changed by one line (the rebranded rest-client name), `eslint.config.js` and `vitest.config.ts` are untouched. So every build/config finding below stands verbatim, **including the `zod` Blocker at exactly the cited lines**. Tests and docs moved: the suite grew 86 → 96 files and 670 → 898 tests, almost entirely from the rebrand's `c3`–`c7` migration-proof suite and `#80`'s streaming tests. That new suite is the source of the three findings added here, and of a red `main` — see the [refresh log](../review.md#refresh-log--v014--v0110) for the full triage. Documentation drift is unchanged: the broken examples link, the omitted `letta/` row, and the omitted `converters` subpath row are all still there, just at slightly different line numbers.
+
 The SDK is generally well-packaged: `tsup` entries align with the `package.json` exports map; every optional peer is correctly flagged in `peerDependenciesMeta`; ESLint runs with `recommended-type-checked` rules on `src/**`; vitest is wired with a v8 coverage provider; and the test directory covers nearly every adapter and runtime module 1:1. Test code is largely behavior-focused and uses typed fakes (e.g. `FakeTools`, `FakeRestApi`) instead of duck typing. The main shortcomings cluster around documentation and minor configuration polish.
 
 **What's good:**
@@ -13,8 +15,9 @@ The SDK is generally well-packaged: `tsup` entries align with the `package.json`
 - `tsup` ↔ `exports` map alignment is correct; every entry has a matching tsup entry and vice versa, both ESM + CJS with sourcemaps and per-format `.d.ts`.
 - All 17 optional peer dependencies are flagged `optional: true` in `peerDependenciesMeta`.
 - ESLint runs with `recommended-type-checked` on `src/**`, `no-explicit-any: error`, and `no-unsafe-*` enabled.
-- 86 test files map 1:1 to source modules; behavior-focused tests; typed fakes in `tests/testUtils.ts`.
-- Examples are real and runnable (`linear-thenvoi-bridge-server.ts` doubles as the production bridge — though see [the verticals.md finding](./verticals.md#linear-thenvoi-bridge-serverts-is-713-loc-and-doubles-as-production-code) on why this dual role is also a problem).
+- 96 test files map 1:1 to source modules (86 at v0.1.4); behavior-focused tests; typed fakes in `tests/testUtils.ts`.
+- *(new since v0.1.4)* `tests/band-client-conformance.test.ts` instantiates the real REST client and asserts all ten `agentApi*` namespaces and 25 methods exist, with a deliberate red-check — exactly the contract test the network-layer Blocker asked for. `tests/phoenix-upgrade-errors.test.ts` (74 lines) and ~500 new lines in `tests/phoenix-channels-transport.test.ts` cover the disconnect-reason work.
+- Examples are real and runnable (`linear-band-bridge-server.ts` doubles as the production bridge — though see [the verticals.md finding](./verticals.md#linear-band-bridge-serverts-is-713-loc-and-doubles-as-production-code) on why this dual role is also a problem).
 - `AGENTS.md` is comprehensive and accurate — better than the user-facing README in coverage. (Though see [Architecture documentation is hidden under `AGENTS.md`](#architecture-documentation-is-hidden-under-agentsmd) on why the filename hurts discoverability.)
 
 **What's not** (each linked to its full finding):
@@ -22,9 +25,10 @@ The SDK is generally well-packaged: `tsup` entries align with the `package.json`
 - [`npm install` fails with `ERESOLVE` on a `zod` peer conflict (SDK dev env and Claude-adapter consumers)](#npm-install-fails-with-eresolve-on-a-zod-peer-conflict-sdk-dev-env-and-claude-adapter-consumers).
 - Public-API JSDoc is largely absent — 19 of 22 surveyed public-surface files have zero JSDoc blocks; only `Agent` and `SimpleAdapter` are consistently documented. See [Missing JSDoc on most public adapter classes and options interfaces](#missing-jsdoc-on-most-public-adapter-classes-and-options-interfaces), [Missing JSDoc on `Logger`, error classes, runtime config types](#missing-jsdoc-on-logger-error-classes-runtime-config-types), [Missing JSDoc on `contracts/protocols` public interfaces](#missing-jsdoc-on-contractsprotocols-public-interfaces).
 - CHANGELOG drift and duplicate release entries — see [Stale/duplicated `packages/sdk/CHANGELOG.md`](#staleduplicated-packagessdkchangelogmd) and [Root `/CHANGELOG.md` is also out of date](#root-changelogmd-is-also-out-of-date).
-- README/examples drift — see [`examples/README.md` references non-existent example](#examplesreadmemd-references-non-existent-example), [Root `README.md` Examples table omits `letta/`](#root-readmemd-examples-table-omits-letta), [Root `README.md` "Subpath Exports" table omits `@thenvoi/sdk/converters`](#root-readmemd-subpath-exports-table-omits-thenvoisdkconverters).
+- README/examples drift — see [`examples/README.md` references non-existent example](#examplesreadmemd-references-non-existent-example), [Root `README.md` Examples table omits `letta/`](#root-readmemd-examples-table-omits-letta), [Root `README.md` "Subpath Exports" table omits `@band-ai/sdk/converters`](#root-readmemd-subpath-exports-table-omits-band-aisdkconverters).
 - tsconfig strictness gaps — see [`tsconfig.json` does not enable `noUncheckedIndexedAccess` or `noImplicitOverride`](#tsconfigjson-does-not-enable-nouncheckedindexedaccess-or-noimplicitoverride).
 - [Test type-safety: 60+ `as never` or `as any` casts in tests](#test-type-safety-60-as-never-or-as-any-casts-in-tests).
+- *(new at v0.1.10)* The migration-proof suite does not run off POSIX, and half of its assertions pass vacuously when it cannot — see [Compile-proof tests are not portable off POSIX](#compile-proof-tests-are-not-portable-off-posix), [Part of the test suite silently requires a prior build](#part-of-the-test-suite-silently-requires-a-prior-build), [The brand guard assertion is line-ending sensitive](#the-brand-guard-assertion-is-line-ending-sensitive).
 
 ## Coverage map
 
@@ -37,7 +41,7 @@ The SDK is generally well-packaged: `tsup` entries align with the `package.json`
 | `src/runtime/tools/` | yes | `agent-tools.test.ts`, `agent-tools-coverage.test.ts`, `custom-tools.test.ts`, `linear-tools.test.ts`, `fake-agent-tools.test.ts` |
 | `src/runtime/preprocessing/` | yes | `preprocessor.test.ts` |
 | `src/runtime/rooms/` | yes | `room-presence.test.ts` (RoomPresence), `platform-runtime*.test.ts` (AgentRuntime) |
-| `src/platform/` | yes | `thenvoi-link.test.ts`, `phoenix-channels-transport.test.ts`, `payload-schemas.test.ts` |
+| `src/platform/` | yes | `band-link.test.ts`, `phoenix-channels-transport.test.ts`, `payload-schemas.test.ts` |
 | `src/platform/streaming/` | yes | `phoenix-channels-transport.test.ts`, `payload-schemas.test.ts` |
 | `src/contracts/` | yes | `contracts-protocols.test.ts`, `parity-contract.test.ts` |
 | `src/core/` | yes (most) | `logger.test.ts`, `lazy-async-value.test.ts`, `parity-contract.test.ts`; `isDirectExecution.ts`, `simpleAdapter.ts` are exercised indirectly through adapter tests |
@@ -70,9 +74,17 @@ The SDK is generally well-packaged: `tsup` entries align with the `package.json`
 | `src/mcp/sdk.ts` (claude bridge) | yes | `claude-sdk-mcp.test.ts` |
 | `src/integrations/linear/` | yes | `linear-activities.test.ts`, `linear-handles.test.ts`, `linear-tools.test.ts`, `linear-notification-handler.test.ts`, `linear-stale-session-guard.test.ts`, `linear-webhook-handler.test.ts`, `linear-bridge-room-strategy.test.ts`, `linear-bridge-store-sqlite.test.ts`, `linear-bridge-webhook-actions.test.ts` |
 | `src/testing/` | indirect | `examples-basic-agent.test.ts`, `examples-standalone.test.ts` use `StubRestApi`; no test file dedicated to `FakeAgentTools`/`StubRestApi` boundary |
+| `src/platform/streaming/disconnectReason.ts` *(new)* | yes | `phoenix-upgrade-errors.test.ts`, `phoenix-channels-transport.test.ts` |
+| `src/platform/streaming/nodeWebSocketFactory.ts` *(new)* | **no direct tests** | exercised only indirectly through the transport tests |
+| `src/contracts/memory.ts` *(new)* | indirect | `agent-tools*.test.ts`, `prompts.test.ts`; no test for the guards/`expected*` helpers themselves |
+| `src/runtime/prompts/` *(was `prompts.ts`)* | yes | `prompts.test.ts`, `conversation-prompt.test.ts` |
+| `src/runtime/tools/ContactCallbackTools.ts` | yes *(new)* | `contact-tools.test.ts` (541 lines, added since v0.1.4) |
+| `@band-ai/rest-client` conformance | yes *(new)* | `band-client-conformance.test.ts` |
+| rebrand migration guards | yes *(new)* | `linear-c3-compatibility.test.ts`, `c4-room-metadata-storage.test.ts`, `c5-package-symbols.test.ts`, `c6-urls.test.ts`, `c7-tools-mcp.test.ts`, and the stale-live-text guard <!-- legacy-named file --> |
 
-Gaps:
-- `src/mcp/sse.ts` and `src/mcp/stdio.ts` have no direct behavioral tests (only barrel-import smoke).
+Gaps (re-checked at `1eb7bc9`):
+- `src/mcp/sse.ts` and `src/mcp/stdio.ts` have no direct behavioral tests (only barrel-import smoke). **Unchanged.**
+- `src/platform/streaming/nodeWebSocketFactory.ts` is new and untested directly, despite containing the handshake-header auth path and an `unexpected-response` → `error`/`close` translation that is easy to get wrong.
 - `src/testing/` is not directly unit-tested.
 - `src/core/isDirectExecution.ts` has no direct test (used transitively in example tests).
 
@@ -89,7 +101,7 @@ Gaps:
 
 | Scenario | Result |
 | --- | --- |
-| `npm install @thenvoi/sdk` in an empty folder | ✓ Works. Peers are marked `{ optional: true }` in `peerDependenciesMeta`, and `devDependencies` aren't installed for consumers. So `claude-agent-sdk` never enters the tree → no zod@^4 demand to conflict with. |
+| `npm install @band-ai/sdk` in an empty folder | ✓ Works. Peers are marked `{ optional: true }` in `peerDependenciesMeta`, and `devDependencies` aren't installed for consumers. So `claude-agent-sdk` never enters the tree → no zod@^4 demand to conflict with. |
 | Consumer wants to use the **Claude SDK adapter** and installs `@anthropic-ai/claude-agent-sdk` alongside | ✗ Fails. Both your `zod@^3` and claude-agent-sdk's `zod@^4` peer requirement are now in the tree. |
 | SDK maintainer running `npm install` inside `packages/sdk/` | ✗ Fails. `claude-agent-sdk` is in `devDependencies`, so it gets installed locally; its peer-on-zod-4 activates and conflicts with the direct `zod@^3` dep. |
 | Anyone running `pnpm install` | ✓ Works. pnpm warns rather than fails on peer mismatches; this is why the bug went undetected — the project is pnpm-first (`packageManager: "pnpm@10.22.0"`, `pnpm-lock.yaml`). |
@@ -115,7 +127,7 @@ Gaps:
 #### Missing JSDoc on most public adapter classes and options interfaces
 *Major · Effort: M · 5 adapter files (see Locations below)*
 
-**Observation** — Adapter classes and their `*AdapterOptions` interfaces are exported from `@thenvoi/sdk` (the package's primary surface) but carry no JSDoc. Only `SimpleAdapter` (well-documented at `src/core/simpleAdapter.ts:10-18`) and `Agent.create` are documented; everything else relies on README prose. README examples won't survive into editor tooltips.
+**Observation** — Adapter classes and their `*AdapterOptions` interfaces are exported from `@band-ai/sdk` (the package's primary surface) but carry no JSDoc. Only `SimpleAdapter` (well-documented at `src/core/simpleAdapter.ts:10-18`) and `Agent.create` are documented; everything else relies on README prose. README examples won't survive into editor tooltips.
 
 **Impact** — Developers integrating the SDK have no inline documentation for the most commonly used types; they must cross-reference the README or source code to understand adapter options.
 
@@ -125,7 +137,7 @@ Gaps:
 - `packages/sdk/src/adapters/openai/OpenAIAdapter.ts:8-37`
 - `packages/sdk/src/adapters/anthropic/AnthropicAdapter.ts:8-17`
 - `packages/sdk/src/adapters/gemini/GeminiAdapter.ts` (analogous)
-- `packages/sdk/src/adapters/codex/CodexAdapter.ts:66-129`
+- `packages/sdk/src/adapters/codex/CodexAdapter.ts:67-130`
 - `packages/sdk/src/adapters/GenericAdapter.ts:5-17`
 - Plus most other adapters under `src/adapters/*`
 
@@ -138,7 +150,7 @@ Gaps:
 
 **Impact** — Exported types that are part of the public API surface provide no guidance to consumers; discoverability relies entirely on README prose that doesn't appear in editor tooltips.
 
-**Fix** — Add short JSDoc describing each interface and its semantically important fields. Document when each `ThenvoiSdkError` subclass is thrown.
+**Fix** — Add short JSDoc describing each interface and its semantically important fields. Document when each `BandSdkError` subclass is thrown.
 
 **Locations:**
 - `packages/sdk/src/core/logger.ts:1-6` (`Logger` interface)
@@ -152,7 +164,7 @@ Gaps:
 #### Missing JSDoc on `contracts/protocols` public interfaces
 *Major · Effort: M · `packages/sdk/src/contracts/protocols.ts:21-95`*
 
-**Observation** — Only `FrameworkAdapter` and `AdapterToolsProtocol` have minimal one-line JSDoc. Tool surface interfaces (`HistoryConverter`, `PlatformMessageLike`, `HistoryLike`, `MessagingTools`, `RoomParticipantTools`, `PeerLookupTools`, `ToolSchemaProvider`, `ContactTools`, `MemoryTools`, `ToolExecutor`) are exported through `@thenvoi/sdk` and `@thenvoi/sdk/core` but undocumented. Custom adapter authors and ACP/A2A integrators need this.
+**Observation** — Only `FrameworkAdapter` and `AdapterToolsProtocol` have minimal one-line JSDoc. Tool surface interfaces (`HistoryConverter`, `PlatformMessageLike`, `HistoryLike`, `MessagingTools`, `RoomParticipantTools`, `PeerLookupTools`, `ToolSchemaProvider`, `ContactTools`, `MemoryTools`, `ToolExecutor`) are exported through `@band-ai/sdk` and `@band-ai/sdk/core` but undocumented. Custom adapter authors and ACP/A2A integrators need this.
 
 **Impact** — Custom adapter authors and ACP/A2A integrators have no inline guidance on what each protocol interface represents or what its methods expect; this directly increases integration friction for the most advanced SDK use cases.
 
@@ -161,7 +173,7 @@ Gaps:
 [↑ Summary in review.md M14](../review.md#m14-jsdoc-missing-on-public-api-surface)
 
 #### Stale/duplicated `packages/sdk/CHANGELOG.md`
-*Major · Effort: S · `packages/sdk/CHANGELOG.md:1-31`*
+*Major · Effort: S · `packages/sdk/CHANGELOG.md:1-29`*
 
 **Observation** — Versions 0.1.1, 0.1.2, and 0.1.3 all reference the same PR (#22) with the identical feature line — appears to be release-please re-running on the same change. The file then jumps to 0.1.4 (band-ai publish) on 2026-04-02 and stops, while >20 feature commits land between then and now (Linear bridge, Dependabot, INT-334 export, INT-355 docs, INT-293 system prompt context, etc.). No release-please-pending PR is visible from this snapshot.
 
@@ -185,7 +197,9 @@ Gaps:
 #### `examples/README.md` references non-existent example
 *Major · Effort: S · `packages/sdk/examples/README.md:19`*
 
-**Observation** — `dog-landing-page/` does not exist in `packages/sdk/examples/`. The actual folders are: `a2a-bridge`, `a2a-gateway`, `anthropic`, `basic`, `claude-sdk`, `codex`, `custom-adapter`, `gemini`, `langgraph`, `letta`, `linear-thenvoi`, `openai`, `parlant`.
+> **Refresh (2026-08-25, main @ `1eb7bc9`) — still present, same line.** `examples/README.md:19` still lists a `dog-landing-page/` bullet. The rebrand renamed the Linear example folder (`linear-band`) and updated every other entry in this list, but did not remove the dead one — a rename sweep touched the file and the broken reference survived it.
+
+**Observation** — `dog-landing-page/` does not exist in `packages/sdk/examples/`. The actual folders, re-listed at `1eb7bc9`, are: `a2a-bridge`, `a2a-gateway`, `anthropic`, `basic`, `claude-sdk`, `codex`, `custom-adapter`, `gemini`, `langgraph`, `letta`, `linear-band`, `openai`, `parlant`.
 
 **Impact** — Developers following the examples README will encounter a dead reference, undermining confidence in the documentation.
 
@@ -196,27 +210,33 @@ Gaps:
 #### Root `README.md` Examples table omits `letta/`
 *Major · Effort: S · `/README.md:323-336`*
 
-**Observation** — The "Examples" table lists basic, openai, anthropic, gemini, claude-sdk, codex, langgraph, custom-adapter, parlant, a2a-bridge, a2a-gateway, linear-thenvoi — but `examples/letta/letta-agent.ts` exists and the AGENTS.md "Core Features" section lists Letta. No row, no mention of Letta anywhere in README.
+> **Refresh (2026-08-25, main @ `1eb7bc9`) — still present, same lines.** The table is still `README.md:323-336` and still has twelve rows with no Letta row. `#87` added an `examples/openai/openai-memory-agent.ts` example and a `memory_agent` config block, so the table is now missing **two** examples rather than one.
+
+**Observation** — The "Examples" table lists basic, openai, anthropic, gemini, claude-sdk, codex, langgraph, custom-adapter, parlant, a2a-bridge, a2a-gateway, linear-band — but `examples/letta/letta-agent.ts` exists and the AGENTS.md "Core Features" section lists Letta. No row, no mention of Letta anywhere in README.
 
 **Impact** — The `letta/` example is invisible to users consulting the README, reducing discoverability of the Letta integration.
 
-**Fix** — Add `examples/letta/ | Letta | Letta-managed agent state` row. Also add a short README section under "Adapters" for `LettaAdapter` (currently absent despite being exported from the root).
+**Fix** — Add `examples/letta/ | Letta | Letta-managed agent state` row, and a row for the memory example `#87` added. Also add a short README section under "Adapters" for `LettaAdapter` (currently absent despite being exported from the root).
 
 [↑ Summary in review.md M15](../review.md#m15-documentation-drift)
 
-#### Root `README.md` "Subpath Exports" table omits `@thenvoi/sdk/converters`
-*Major · Effort: S · `/README.md:303-318`*
+#### Root `README.md` "Subpath Exports" table omits `@band-ai/sdk/converters`
+*Major · Effort: S · `/README.md:306-317`*
+
+> **Refresh (2026-08-25, main @ `1eb7bc9`) — still present; table shifted to `:306-317`.** All nine rows were rebranded to `@band-ai/sdk/*`; `converters` was still not added.
 
 **Observation** — The package ships an exports entry for `./converters` (`package.json:40-44`) backed by a real tsup entry (`tsup.config.ts:35`) and a populated barrel (`src/converters/index.ts`). The README's subpath table covers `adapters`, `mcp`, `mcp/claude`, `rest`, `linear`, `testing`, `config`, `core`, `runtime` but not `converters`. The internal `AGENTS.md` does list it.
 
-**Impact** — Consumers are unaware the `@thenvoi/sdk/converters` subpath exists, causing them to either re-implement converters or import them via internal paths.
+**Impact** — Consumers are unaware the `@band-ai/sdk/converters` subpath exists, causing them to either re-implement converters or import them via internal paths.
 
-**Fix** — Add a row to the README table: `@thenvoi/sdk/converters | Per-framework history converters (ACP, A2A, Anthropic, Claude SDK, Codex, Gemini, Google ADK, LangChain, Opencode, Parlant, Vercel AI SDK)`.
+**Fix** — Add a row to the README table: `@band-ai/sdk/converters | Per-framework history converters (ACP, A2A, Anthropic, Claude SDK, Codex, Gemini, Google ADK, LangChain, Opencode, Parlant, Vercel AI SDK)`.
 
 [↑ Summary in review.md M15](../review.md#m15-documentation-drift)
 
 #### `tsconfig.json` does not enable `noUncheckedIndexedAccess` or `noImplicitOverride`
 *Major · Effort: M · `packages/sdk/tsconfig.json:2-17`*
+
+> **Refresh (2026-08-25, main @ `1eb7bc9`) — still present; `tsconfig.json` is byte-identical to v0.1.4.** Neither flag was added, and `types: ["node", "vitest/globals"]` is still on `:15`.
 
 **Observation** — `strict: true` is on but the two strict-adjacent flags most relevant for SDK code (array/Record access safety, override correctness) are off. Given the SDK has many `Record<string, unknown>` accesses, enabling `noUncheckedIndexedAccess` would catch real bugs.
 
@@ -238,9 +258,42 @@ Gaps:
 **Locations:**
 - `packages/sdk/tests/agent.test.ts:30,60`
 - `packages/sdk/tests/shutdown.test.ts:25,42,59,60,81,...`
-- `packages/sdk/tests/opencode-adapter.test.ts:174,223,286`
-- `packages/sdk/tests/claude-sdk-adapter.test.ts:35,...`
+- `packages/sdk/tests/opencode-adapter.test.ts:176,223,286`
+- `packages/sdk/tests/claude-sdk-adapter.test.ts:36,...`
 - 63 total occurrences across the suite
+
+#### Compile-proof tests are not portable off POSIX
+*Major · New at v0.1.10 · Effort: S · `packages/sdk/tests/linear-c3-compatibility.test.ts:79-83`, `packages/sdk/tests/c4-room-metadata-storage.test.ts`, `packages/sdk/tests/c5-package-symbols.test.ts`*
+
+> Filed by the 2026-08-25 refresh. Introduced with the `c3`–`c5` migration-proof suite in `#150`.
+
+**Observation** — The rename shipped an genuinely good idea: prove the migration by compiling a real consumer against the built package under NodeNext resolution, asserting the new symbol names compile and the old ones fail. Each of these tests copies `dist/` and `package.json` into a temp `node_modules/@band-ai/sdk`, writes a `tsconfig.json` and a consumer file, then shells out to the compiler:
+
+```ts
+const result = spawnSync(
+  join(SDK_ROOT, "node_modules/.bin/tsc"),
+  ["-p", join(tmpDir, "tsconfig.json")],
+  { encoding: "utf8" },
+);
+return { status: result.status ?? 1, output: … };
+```
+
+On Windows, `node_modules/.bin/tsc` is a POSIX shell script — the executable forms are `tsc.CMD` and `tsc.ps1`. `spawnSync` without `shell: true` cannot run it, so it returns `error.code === "ENOENT"` and `status === null`, and the `?? 1` collapses that to `1`.
+
+The failure mode is worse than a red test. **Both directions of every proof are corrupted, in opposite ways:**
+
+- Tests asserting `expect(result.status).toBe(0)` (new names compile) fail — a false negative.
+- Tests asserting `expect(result.status).not.toBe(0)` (old names must fail to compile) **pass for the wrong reason** — they pass because the compiler never ran, not because the old name was rejected. Those assertions are silently vacuous, and would keep passing even if the legacy symbols were accidentally re-exported.
+
+Measured at `1eb7bc9`: 16 failures across `linear-c3-compatibility` (P-C3-1, 4), `c4-room-metadata-storage` (P-C4-2, 4), and `c5-package-symbols` (P-C5-1, P-C5-2, P-C5-4b, 8). Verified directly: `spawnSync("packages/sdk/node_modules/.bin/tsc", ["--version"])` returns `{ status: null, error: { code: "ENOENT" } }` on this platform.
+
+**Impact** — The migration proofs do not run at all on Windows, and the half of them that assert *rejection* report success while proving nothing. Any contributor on Windows sees a permanently red suite and learns to ignore it, which is how the B6 assertion failure stayed invisible. On Linux CI the tests work, so this will not be caught there.
+
+**Fix** — Resolve the binary per platform and stop treating a spawn failure as a compiler verdict:
+
+1. Spawn the compiler through Node instead of the shim — `spawnSync(process.execPath, [require.resolve("typescript/lib/tsc.js"), "-p", cfg])`. This is platform-independent and needs no `shell: true`.
+2. Fail loudly on a spawn error: if `result.error` is set, `throw` it. A missing compiler must never be reportable as "compilation failed as expected".
+3. For the negative assertions, assert on the **diagnostic** rather than on the exit code — the tests already capture `output`, so `expect(output).toMatch(/has no exported member 'LinearThenvoiBridgeConfig'/)` proves the legacy name was rejected for the intended reason. This is the change that makes the proof meaningful rather than merely non-vacuous.
 
 ### Minor
 
@@ -263,20 +316,22 @@ Gaps:
 **Fix** — Add `thresholds: { lines: 80, functions: 80, branches: 70, statements: 80 }` (calibrate to current coverage), and add `reporter: ["text", "lcov", "json-summary"]`.
 
 #### Engine-version mismatch between root and SDK
-*Minor · Effort: S · 2 manifest files (see Locations below)*
+*Minor → Major · Effort: S · 2 manifest files (see Locations below)*
 
-**Observation** — Root requires a newer Node than the SDK. Probably both should agree; `node:sqlite` is the load-bearing dependency and is GA in 22.5+, so `>=22.14.0` is fine for both.
+> **Refresh (2026-08-25, main @ `1eb7bc9`) — still present, same lines, and the original reasoning was wrong in the SDK's favour.** The v0.1.4 note said `node:sqlite` "is GA in 22.5+, so `>=22.14.0` is fine for both" and treated the gap as cosmetic. Verified empirically on Node **22.12** — the exact floor `packages/sdk/package.json:87-89` declares: `require("node:sqlite")` throws `ERR_UNKNOWN_BUILTIN_MODULE`, and only `node --experimental-sqlite` makes it resolve. It was flag-gated on 22.x, not GA. So the declared SDK floor is a version on which the SDK's own SQLite room store **cannot load**: `SqliteSessionRoomStore.initialize` (`src/integrations/linear/store.ts:287-289`) throws `UnsupportedFeatureError: SQLite store requires node:sqlite (Node.js 22+)` — a message that is itself misleading, since "Node.js 22+" is what the user has. This accounted for 18 of the test failures in the first refresh run and is why the suite had to be re-run with `--experimental-sqlite`. Re-graded Minor → Major: this is a wrong published constraint, not a cosmetic inconsistency.
 
-**Impact** — Consumers may install the SDK on a Node version that satisfies the SDK constraint but not the root, causing subtle incompatibilities in monorepo workflows.
+**Observation** — Root requires a newer Node (`>=22.14.0`) than the SDK (`>=22.12`), and the lower of the two does not actually support the `node:sqlite` builtin the Linear vertical depends on.
 
-**Fix** — Align both to `>=22.14.0` (or whichever the team picks).
+**Impact** — A consumer on Node 22.12 satisfies the SDK's declared engine, installs successfully, and then hits `UnsupportedFeatureError` the first time the Linear room store is used — with an error message telling them to be on the Node version they are already on. In a monorepo the root constraint hides this; standalone SDK consumers get the full effect.
+
+**Fix** — Align both manifests to a floor where `node:sqlite` resolves without a flag, and verify it rather than inferring it (`node -e "require('node:sqlite')"` on the candidate version). Then correct the error text at `store.ts:288-290` to name the real requirement instead of "Node.js 22+". If a lower floor must be supported, the store should say so explicitly and the `engines` field should not promise it.
 
 **Locations:**
 - `/package.json:11-13` (`>=22.14.0`)
 - `packages/sdk/package.json:87-89` (`>=22.12`)
 
 #### `packages/sdk/CHANGELOG.md` duplicate version entries
-*Minor · Effort: S · `packages/sdk/CHANGELOG.md:11-23`*
+*Minor · Effort: S · `packages/sdk/CHANGELOG.md:89-101`*
 
 **Observation** — 0.1.1, 0.1.2, 0.1.3 all link to PR #22 with identical "add @band-ai dual-publish support" text. Likely a release-please loop on the same merge.
 
@@ -287,21 +342,21 @@ Gaps:
 #### Examples use repo-relative imports inconsistent with README claims
 *Minor · Effort: S · multiple example files (see Locations below)*
 
-**Observation** — The README quick-start uses `import { ... } from "@thenvoi/sdk"`, but every example file imports from `../../src/index`. A developer copying an example folder out per the `examples/README.md` rationale ("each subfolder is intentionally standalone so you can copy a single folder out and hack on it") will have broken imports until they rewrite them.
+**Observation** — The README quick-start uses `import { ... } from "@band-ai/sdk"`, but every example file imports from `../../src/index`. A developer copying an example folder out per the `examples/README.md` rationale ("each subfolder is intentionally standalone so you can copy a single folder out and hack on it") will have broken imports until they rewrite them.
 
 **Impact** — Copied examples will fail to run without modification, contradicting the stated standalone promise; this creates a poor first-run experience.
 
-**Fix** — Either (a) switch examples to `@thenvoi/sdk` imports (requires linking the package in the workspace, which pnpm already supports), or (b) add a sentence at the top of `examples/README.md` clarifying that imports use the in-repo path and instructing copiers to replace `../../src` with `@thenvoi/sdk`.
+**Fix** — Either (a) switch examples to `@band-ai/sdk` imports (requires linking the package in the workspace, which pnpm already supports), or (b) add a sentence at the top of `examples/README.md` clarifying that imports use the in-repo path and instructing copiers to replace `../../src` with `@band-ai/sdk`.
 
 **Locations:**
 - `packages/sdk/examples/basic/basic-agent.ts:1`
 - Every other `examples/*/*-agent.ts`
-- `packages/sdk/examples/linear-thenvoi/linear-thenvoi-bridge-server.ts:4-23`
+- `packages/sdk/examples/linear-band/linear-band-bridge-server.ts:4-23`
 
 #### `agent_config.yaml.example` lists more agents than used by examples
 *Minor · Effort: S · `packages/sdk/agent_config.yaml.example:1-72`*
 
-**Observation** — `letta_agent` is referenced by `examples/letta/letta-agent.ts:43` but missing from the file. Four keys are present but never referenced by any example or test in the public examples folder: `planner_agent`, `reviewer_agent`, `linear_thenvoi_transport`, `a2a_bridge_auth_agent`.
+**Observation** — `letta_agent` is referenced by `examples/letta/letta-agent.ts:43` but missing from the file. Four keys are present but never referenced by any example or test in the public examples folder: `planner_agent`, `reviewer_agent`, `linear_band_transport`, `a2a_bridge_auth_agent`.
 
 **Impact** — The missing `letta_agent` key causes a runtime config error when running the letta example; spurious keys mislead developers about which examples exist.
 
@@ -330,9 +385,9 @@ Gaps:
 
 **Observation** — Both servers are exported from `src/mcp/index.ts` and listed in the README as part of the MCP subpath, but `tests/` has no dedicated file beyond `mcp-import-boundary.test.ts` which only checks the barrel. `mcp-server.test.ts` only covers the HTTP variant.
 
-**Impact** — Behavioral regressions in `ThenvoiMcpSseServer` and `ThenvoiMcpStdioServer` will not be caught by the test suite; these are public API exports with no behavioral coverage.
+**Impact** — Behavioral regressions in `BandMcpSseServer` and `BandMcpStdioServer` will not be caught by the test suite; these are public API exports with no behavioral coverage.
 
-**Fix** — Add lightweight construction / lifecycle tests for `ThenvoiMcpSseServer` and `ThenvoiMcpStdioServer` even if they only assert wiring (start/stop, registration delegation).
+**Fix** — Add lightweight construction / lifecycle tests for `BandMcpSseServer` and `BandMcpStdioServer` even if they only assert wiring (start/stop, registration delegation).
 
 **Locations:**
 - `packages/sdk/src/mcp/sse.ts`
@@ -341,7 +396,7 @@ Gaps:
 #### `src/testing/` (FakeAgentTools, StubRestApi) has no direct tests
 *Minor · Effort: S · 2 testing files (see Locations below)*
 
-**Observation** — `examples-basic-agent.test.ts` smoke-tests `StubRestApi.getAgentMe`, but nothing exercises `FakeAgentTools` boundary semantics (capture buffers, capabilities flagging). Since this module is part of the public API (`@thenvoi/sdk/testing`), the public surface deserves at least one dedicated test file.
+**Observation** — `examples-basic-agent.test.ts` smoke-tests `StubRestApi.getAgentMe`, but nothing exercises `FakeAgentTools` boundary semantics (capture buffers, capabilities flagging). Since this module is part of the public API (`@band-ai/sdk/testing`), the public surface deserves at least one dedicated test file.
 
 **Impact** — Bugs in `FakeAgentTools` or `StubRestApi` go undetected until they break consumer tests; there is no regression guard for the testing utilities themselves.
 
@@ -362,6 +417,35 @@ Gaps:
 - **Add an "Architecture" link near the top of `README.md`** pointing to the architecture doc, so it is discoverable from the canonical entry point.
 - **Either rename `AGENTS.md` → `ARCHITECTURE.md` (with `AGENTS.md` becoming a thin pointer)**, or split: keep AI-agent-specific instructions in `AGENTS.md` and move the architecture content to `ARCHITECTURE.md`.
 - **Add 2–3 Mermaid diagrams** for the highest-traffic flows: platform/runtime/adapter dependency direction, Phoenix channel topology (`agent`, `agent_contacts`, `agent_rooms`, per-room channels), and the contact-event hub flow. Diagrams cut a paragraph of prose to a glance.
+
+#### Part of the test suite silently requires a prior build
+*Minor · New at v0.1.10 · Effort: S · `packages/sdk/package.json:78`, `packages/sdk/tests/c5-package-symbols.test.ts`, `packages/sdk/tests/c4-room-metadata-storage.test.ts`, `packages/sdk/tests/linear-c3-compatibility.test.ts`*
+
+> Filed by the 2026-08-25 refresh.
+
+**Observation** — The `c3`–`c5` tests consume `packages/sdk/dist/` — they `cpSync(join(SDK_ROOT, "dist"), …)` into a temp package, and `c5-package-symbols` packs a real tarball. `pnpm test` is plain `vitest run` (`package.json:78`) with no build dependency, and nothing in the test files or `vitest.config.ts` checks for `dist/` first. On a fresh clone, `pnpm install && pnpm test` produces 8 failures reading `ENOENT: … lstat 'packages/sdk/dist'` and `Cannot find module '…/dist/index.js'` — errors that describe a missing build, not a broken SDK.
+
+**Impact** — A first-time contributor's first test run fails with errors that point nowhere near the cause. It also means the compile proofs silently test a *stale* `dist/` whenever someone runs the suite after editing source without rebuilding — the proofs pass against yesterday's build.
+
+**Fix** — Either make the dependency explicit (`"test": "pnpm build && vitest run"`, or a vitest `globalSetup` that builds when `dist/` is absent or older than `src/`), or have the tests that need it fail with a directed message: `expect(existsSync(distDir), "run `pnpm build` before this suite").toBe(true)`. The stale-`dist` case argues for the setup hook over the guard.
+
+#### The brand guard assertion is line-ending sensitive
+*Minor · New at v0.1.10 · Effort: S · `packages/sdk/tests/c6-no-stale-live-thenvoi.test.ts:94`* <!-- legacy filename retained from the rebrand -->
+
+> Filed by the 2026-08-25 refresh.
+
+**Observation** — The guard's final assertion reads the README and compares its first line exactly:
+
+```ts
+const readme = readFileSync(join(REPO_ROOT, "README.md"), "utf8");
+expect(readme.split("\n")[0]).toBe("# Band TypeScript SDK");
+```
+
+Splitting on `"\n"` leaves a trailing `\r` on every line of a CRLF checkout, so the assertion fails with `expected '# Band TypeScript SDK\r' to be '# Band TypeScript SDK'` — a diff that renders as two identical strings and takes a while to recognise. Git's default `core.autocrlf=true` on Windows makes this the normal case there, not an edge case. The same file's other two assertions use `.split(/\r?\n/)`-equivalent handling via line iteration, so this is an inconsistency inside one test file rather than a project-wide convention gap.
+
+**Impact** — One more permanently-red test for Windows contributors, with a failure message that actively misleads. Combined with the 16 compile-proof failures above, the practical effect is that the entire migration-guard suite reads as broken on that platform and gets ignored.
+
+**Fix** — `split(/\r?\n/)` here, and prefer `.trimEnd()` on any single-line comparison against file content. Worth a sweep: `grep -rn 'split("\\n")' tests/` finds the other guards that read tracked files and would have the same problem if they ever compared a whole line.
 
 ### Nits
 
@@ -390,7 +474,7 @@ Gaps:
 - **ESLint config is sound.** `recommended-type-checked` rules on `src/**` with explicit `no-explicit-any: error` and the `no-unsafe-*` family enabled. Relaxed but still typed config for tests and examples.
 - **Test breadth is excellent.** 86 test files mapping 1:1 to source modules; nearly every adapter, integration, and runtime piece has a dedicated test. Behavior-focused tests with descriptive names ("waits for startup to finish before honoring a stop request", "gates peers endpoint when disabled", "validates send_message requires mentions").
 - **`tests/testUtils.ts` is the right pattern.** Typed `FakeTools implements AgentToolsProtocol`, typed `FakeRestApi implements RestApi` — fakes are type-safe and constrain the API contract.
-- **Examples are real and runnable.** `linear-thenvoi-bridge-server.ts` is a production-shape server with retry, rate-limiting, and graceful shutdown. The `pnpm dev:linear` script wires it up. (Caveat: at 713 LOC the file is now hard to follow as an *example*, and the dual production/demo role is itself a structural concern — see [verticals.md](./verticals.md#linear-thenvoi-bridge-serverts-is-713-loc-and-doubles-as-production-code).)
+- **Examples are real and runnable.** `linear-band-bridge-server.ts` is a production-shape server with retry, rate-limiting, and graceful shutdown. The `pnpm dev:linear` script wires it up. (Caveat: at 713 LOC the file is now hard to follow as an *example*, and the dual production/demo role is itself a structural concern — see [verticals.md](./verticals.md#linear-band-bridge-serverts-is-713-loc-and-doubles-as-production-code).)
 - **AGENTS.md is comprehensive and accurate.** Subpath table, REST patterns, channel topology, contact event strategies — all aligned with the source. Better than the user-facing README in coverage. (Caveat: hidden behind a filename suggesting it's for AI agents only — see [the discoverability finding](#architecture-documentation-is-hidden-under-agentsmd).)
 - **Node-22-only features are used consistently with the declared engine.** `node:sqlite` is lazy-imported with a clear error in `src/integrations/linear/store.ts:287-289` and gated on Node 22.
 - **Graceful shutdown + signal handling is documented and tested.** `Agent.run({ signals: false })` is supported (see README architecture section) and `shutdown.test.ts` covers the lifecycle.

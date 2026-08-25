@@ -4,6 +4,12 @@
 
 ## Summary
 
+> **Refresh (2026-08-25, main @ `1eb7bc9`) — every finding here stands unchanged.** The whole `src/integrations/linear/` tree (`handler.ts`, `webhook.ts`, `store.ts`, `tools.ts`, `notification.ts`, `types.ts`, `bridge/message.ts`) is **rename-only** — zero non-rebrand line changes — so all Linear findings and their line numbers are verbatim. The MCP files (`server.ts`, `sse.ts`, `stdio.ts`, `sdk.ts`, `backends.ts`) changed by 2–3 lines each: `#150` replaced the hardcoded `"band"` server-name literal in four places with a shared `MCP_SERVER_NAME` constant (`runtime/tools/schemas.ts:385`), which is a small improvement this review did not ask for and did not flag. `src/mcp/claude.ts` is still dead code.
+>
+> Two updates worth noting:
+> - **`config/loader.ts` changed substantively** (+51 non-rebrand lines). `loadAgentConfigFromEnv` is now Band-first with per-field legacy fallback and once-per-process deprecation warnings. The `js-yaml` `JSON_SCHEMA` observation below moved from `:100` to `:121` and is still correct. The new code added the third out-of-logger `console.warn` in the SDK (`:35`).
+> - **The `agent_config.yaml.example` finding is unchanged but the key names moved.** `letta_agent` is still missing; the unreferenced keys are now `planner_agent`, `reviewer_agent`, `linear_band_transport`, `a2a_bridge_auth_agent`. `#87` added a `memory_agent` key *and* a matching `examples/openai/openai-memory-agent.ts`, so that one is correctly wired — the pattern to follow for the rest.
+
 The Linear vertical is well isolated and MCP exposes a clean dispatch interface, but both verticals show the same pattern: a structurally sound public surface around duplicated or leaky internals.
 
 **What's good:**
@@ -34,7 +40,7 @@ _None._ No Linear secrets are logged, the yaml loader is RCE-safe under `JSON_SC
 ### Major
 
 #### CodexAdapter reads Linear-specific metadata keys
-*Major · Effort: M · `packages/sdk/src/adapters/codex/CodexAdapter.ts:189-191`, `:220`*
+*Major · Effort: M · `packages/sdk/src/adapters/codex/CodexAdapter.ts:190-192`, `:220`*
 
 **Observation** — `CodexAdapter.onMessage` directly reads `message.metadata?.linear_session_id`, `message.metadata?.linear_issue_id`, and uses `message.metadata?.linear_reset_room_session !== true` to decide whether to reuse the Codex thread. This is a vertical-specific identifier leaking into a generic framework adapter. If any other vertical needs the same "reset thread" signal it has to pick the Linear key, and Linear can no longer be torn out cleanly. The Linear bridge sets these metadata values in `bridge/handler.ts` (`linear_reset_room_session`, `linear_session_id`, `linear_issue_id`).
 
@@ -47,7 +53,7 @@ _None._ No Linear secrets are logged, the yaml loader is RCE-safe under `JSON_SC
 #### `mcp/claude` sub-entry is an arbitrary 7-line redirect
 *Major · Effort: S · `packages/sdk/src/mcp/claude.ts:1-7`, `packages/sdk/package.json:70-74`*
 
-**Observation** — `mcp/claude.ts` re-exports exactly `createThenvoiSdkMcpServer`, `ThenvoiSdkMcpServer`, `CreateThenvoiSdkMcpServerOptions`, and `GetSystemPromptContextResult` — every one of which is already exported by `mcp/index.ts` transitively via `sdk.ts`. The file name "claude" does not match the content (no Claude-specific code beyond an `@anthropic-ai/claude-agent-sdk` import in `sdk.ts`), and the actual class is named `ThenvoiSdkMcpServer`, not `ThenvoiClaudeMcpServer`. The package.json `./mcp/claude` export points consumers at a name that implies Claude-specificity, but they receive the same SDK server they could import from `./mcp`.
+**Observation** — `mcp/claude.ts` re-exports exactly `createBandSdkMcpServer`, `BandSdkMcpServer`, `CreateBandSdkMcpServerOptions`, and `GetSystemPromptContextResult` — every one of which is already exported by `mcp/index.ts` transitively via `sdk.ts`. The file name "claude" does not match the content (no Claude-specific code beyond an `@anthropic-ai/claude-agent-sdk` import in `sdk.ts`), and the actual class is named `BandSdkMcpServer`, not `BandClaudeMcpServer`. The package.json `./mcp/claude` export points consumers at a name that implies Claude-specificity, but they receive the same SDK server they could import from `./mcp`.
 
 **Impact** — Consumers importing from `./mcp/claude` receive no additional symbols and may be confused by the naming mismatch; the sub-entry adds maintenance surface for no benefit.
 
@@ -65,15 +71,15 @@ _None._ No Linear secrets are logged, the yaml loader is RCE-safe under `JSON_SC
 **Fix** — Extract `registerToolsOnMcpServer(mcpServer, z, registrations)` into `zod.ts` (or a new `mcp/internal.ts`) and have `server.ts`, `sse.ts`, and `stdio.ts` call it. Move `findAvailablePort` + `checkPort` + the port-range constants to the same shared internal module. This collapses three copies of the same logic into one and removes three of the four `eslint-disable` comments.
 
 **Locations:**
-- `packages/sdk/src/mcp/server.ts:286-304`
-- `packages/sdk/src/mcp/sse.ts:204-226`
-- `packages/sdk/src/mcp/stdio.ts:80-98`
+- `packages/sdk/src/mcp/server.ts:287-305`
+- `packages/sdk/src/mcp/sse.ts:205-227`
+- `packages/sdk/src/mcp/stdio.ts:81-99`
 - `packages/sdk/src/mcp/sdk.ts:349-362`
 
 #### `sdk.ts` mixes MCP plumbing and a 200-line "system prompt context" feature
 *Major · Effort: M · `packages/sdk/src/mcp/sdk.ts:31-66`, `:83-148`, `:150-320`*
 
-**Observation** — `sdk.ts` is 363 lines. About half is the actual MCP SDK adapter (`createThenvoiSdkMcpServer`, `toSdkToolDefinition`). The other half is an unrelated feature: `getSystemPromptContext`, with its own cache (`contextCache`, `MAX_CONTEXT_CACHE_ENTRIES`, `evictLeastRecentlyUsedContext`), agent-identity duck-typing (`resolveAgentIdentity`), and room-title pagination (`resolveRoomTitle`). The duck typing also bypasses `AdapterToolsProtocol` by casting to `tools as AdapterToolsProtocol & { getAgentIdentity?: ...; rest?: ... }`.
+**Observation** — `sdk.ts` is 363 lines. About half is the actual MCP SDK adapter (`createBandSdkMcpServer`, `toSdkToolDefinition`). The other half is an unrelated feature: `getSystemPromptContext`, with its own cache (`contextCache`, `MAX_CONTEXT_CACHE_ENTRIES`, `evictLeastRecentlyUsedContext`), agent-identity duck-typing (`resolveAgentIdentity`), and room-title pagination (`resolveRoomTitle`). The duck typing also bypasses `AdapterToolsProtocol` by casting to `tools as AdapterToolsProtocol & { getAgentIdentity?: ...; rest?: ... }`.
 
 **Impact** — The file has two distinct responsibilities that are difficult to navigate and test independently; the duck-typed casts bypass the type system and can silently break when the underlying protocol shape changes.
 
@@ -95,7 +101,7 @@ _None._ No Linear secrets are logged, the yaml loader is RCE-safe under `JSON_SC
 #### `console.warn` used in library code instead of injected logger
 *Minor · Effort: S · `packages/sdk/src/integrations/linear/activities.ts:214`, `packages/sdk/src/integrations/linear/store.ts:397`*
 
-**Observation** — `activities.updatePlan` and `SqliteSessionRoomStore.parseMetadata` both fall back to `console.warn`. The rest of the Linear vertical accepts a `Logger` via `LinearThenvoiBridgeDeps.logger` / `StaleSessionGuardOptions.logger` and uses `logger.warn("linear_thenvoi_bridge.*", { ... })` with structured context.
+**Observation** — `activities.updatePlan` and `SqliteSessionRoomStore.parseMetadata` both fall back to `console.warn`. The rest of the Linear vertical accepts a `Logger` via `LinearBandBridgeDeps.logger` / `StaleSessionGuardOptions.logger` and uses `logger.warn("linear_band_bridge.*", { ... })` with structured context.
 
 **Impact** — These two sites bypass the structured logging pipeline, making it impossible to suppress or redirect their output in production environments.
 
@@ -104,16 +110,16 @@ _None._ No Linear secrets are logged, the yaml loader is RCE-safe under `JSON_SC
 #### `agent_config.yaml.example` is out of sync with example usage
 *Minor · Effort: S · `packages/sdk/agent_config.yaml.example:9-72`*
 
-**Observation** — `examples/letta/letta-agent.ts:43` calls `loadAgentConfig("letta_agent")` but the example file has no `letta_agent:` block, so a fresh user copying the example will hit a validation error from `loader.ts:36-40`. Conversely, the example declares `planner_agent`, `reviewer_agent`, and `linear_thenvoi_transport` that are never consumed from the SDK's `examples/` directory — they appear only in `tests/integration/` and via env-var overrides (`LINEAR_THENVOI_BRIDGE_RUNTIME_CONFIG_KEY` defaulting to `linear_thenvoi_bridge`).
+**Observation** — `examples/letta/letta-agent.ts:43` calls `loadAgentConfig("letta_agent")` but the example file has no `letta_agent:` block, so a fresh user copying the example will hit a validation error from `loader.ts:36-40`. Conversely, the example declares `planner_agent`, `reviewer_agent`, and `linear_band_transport` that are never consumed from the SDK's `examples/` directory — they appear only in `tests/integration/` and via env-var overrides (`LINEAR_BAND_BRIDGE_RUNTIME_CONFIG_KEY` defaulting to `linear_band_bridge`).
 
 **Impact** — A new user following the Letta example will encounter a confusing validation error that is not mentioned in any documentation.
 
-**Fix** — Add a `letta_agent:` block. Either remove `planner_agent` / `reviewer_agent` / `linear_thenvoi_transport` from the example, or add a comment above them explaining they exist for the test/integration runtime — without a comment, users have no signal these keys are not for the bridge example.
+**Fix** — Add a `letta_agent:` block. Either remove `planner_agent` / `reviewer_agent` / `linear_band_transport` from the example, or add a comment above them explaining they exist for the test/integration runtime — without a comment, users have no signal these keys are not for the bridge example.
 
 #### MCP `multiRoom` boolean is fragile in the SDK backend path
 *Minor · Effort: M · `packages/sdk/src/mcp/backends.ts:63-69`, `packages/sdk/src/mcp/sdk.ts:77-79`, `packages/sdk/src/mcp/registrations.ts:206-214`*
 
-**Observation** — In `backends.ts`, when `options.kind === "sdk"`, `multiRoom` is forwarded into `createThenvoiSdkMcpServer` (which internally checks `multiRoom === false`). For the non-SDK kinds, the same check happens locally in `backends.ts`. There is no shared discriminator, so a caller that passes `kind: "sdk"` and forgets `multiRoom` may get different defaulting behavior than the non-SDK branches. `resolveSingleRoomTools(getToolsForRoom)` is called with the sentinel `""` to retrieve the single tools instance — a comment documents this but the `roomId: string` parameter still flows through into `getToolsForRoom`, which is easy to misread.
+**Observation** — In `backends.ts`, when `options.kind === "sdk"`, `multiRoom` is forwarded into `createBandSdkMcpServer` (which internally checks `multiRoom === false`). For the non-SDK kinds, the same check happens locally in `backends.ts`. There is no shared discriminator, so a caller that passes `kind: "sdk"` and forgets `multiRoom` may get different defaulting behavior than the non-SDK branches. `resolveSingleRoomTools(getToolsForRoom)` is called with the sentinel `""` to retrieve the single tools instance — a comment documents this but the `roomId: string` parameter still flows through into `getToolsForRoom`, which is easy to misread.
 
 **Impact** — Inconsistent defaulting behavior across backend kinds can silently produce single-room or multi-room behavior depending on which backend is chosen, making the bug hard to diagnose.
 
@@ -137,23 +143,23 @@ _None._ No Linear secrets are logged, the yaml loader is RCE-safe under `JSON_SC
 
 **Fix** — Either (a) make the runtime an explicit construct callers create once and pass into both the dispatcher and the webhook handler (currently each creates its own), or (b) since the caches all key on `RestApi`, hoist them into a module-level `WeakMap<RestApi, BridgeCaches>` so they share automatically. The current shape is the worst of both worlds: it's plumbed explicitly but constructed multiple times per process.
 
-#### `linear-thenvoi-bridge-server.ts` is 713 LOC and doubles as production code
-*Minor · Effort: M · `packages/sdk/examples/linear-thenvoi/linear-thenvoi-bridge-server.ts`*
+#### `linear-band-bridge-server.ts` is 713 LOC and doubles as production code
+*Minor · Effort: M · `packages/sdk/examples/linear-band/linear-band-bridge-server.ts`*
 
-**Observation** — The Linear bridge "example" is 713 lines — 3× the next-largest example file (`linear-thenvoi-rest-stub.ts` at 249 lines) and approaching the M5 god-file threshold. More notably, the file is dual-role: the build-tests-docs strengths section explicitly notes it "doubles as the production bridge." Production code shipping under `examples/` is structurally surprising — readers scanning the Examples table treat the folder as a demo gallery and won't expect one of its entries to be the bridge server the SDK actually runs. Together with `integrations/linear/bridge/handler.ts` (already in the M5 list at 1326 LOC), the Linear bridge surface is a ~2000-LOC pair split across `src/` and `examples/`.
+**Observation** — The Linear bridge "example" is 713 lines — 3× the next-largest example file (`linear-band-rest-stub.ts` at 249 lines) and approaching the M5 god-file threshold. More notably, the file is dual-role: the build-tests-docs strengths section explicitly notes it "doubles as the production bridge." Production code shipping under `examples/` is structurally surprising — readers scanning the Examples table treat the folder as a demo gallery and won't expect one of its entries to be the bridge server the SDK actually runs. Together with `integrations/linear/bridge/handler.ts` (already in the M5 list at 1326 LOC), the Linear bridge surface is a ~2000-LOC pair split across `src/` and `examples/`.
 
 **Impact** — Two costs: (a) the file is hard to follow as a learning resource (its stated purpose under `examples/`), and (b) the dual role obscures the real layering — half the bridge is in `src/`, half outside, and consumers can't tell from the directory layout which is the SDK's product and which is illustrative.
 
 **Fix** — Two options:
 - **Split it up while keeping the file in `examples/`** — extract the production wiring (HTTP server, event loop, signal handling, secret loading) into a sibling utility file, and leave a thin demo entry that imports it. The "example" then stays under ~200 LOC.
-- **Relocate to `src/`** — move the bridge server into `src/integrations/linear/bridge/server.ts` (or similar), and leave a small ~30-line example under `examples/linear-thenvoi/` that constructs and starts it. This separates the SDK's product from its demos and lets the example shrink to the audience that needs it.
+- **Relocate to `src/`** — move the bridge server into `src/integrations/linear/bridge/server.ts` (or similar), and leave a small ~30-line example under `examples/linear-band/` that constructs and starts it. This separates the SDK's product from its demos and lets the example shrink to the audience that needs it.
 
 The second option is cleaner architecturally but requires deciding the public-API shape of the relocated server. The first is a strict subset of the work and a reasonable interim step.
 
 ### Nits
 
 #### `console.warn` plus unused `lastSeenAt` / `createdAt` fields
-*Nit · Effort: S · `packages/sdk/src/mcp/server.ts:33-38`, `:198-230`*
+*Nit · Effort: S · `packages/sdk/src/mcp/server.ts:34-39`, `:198-230`*
 
 **Observation** — `SessionRecord.createdAt` is set but only `lastSeenAt` is read (in `closeIdleSessions`). The field is harmless but it implies a use that doesn't exist.
 
@@ -162,7 +168,7 @@ The second option is cleaner architecturally but requires deciding the public-AP
 **Fix** — Drop `createdAt` from `SessionRecord` and the constructor literal, or use it in a startup log line.
 
 #### Inconsistent semicolon style between MCP files
-*Nit · Effort: S · `packages/sdk/src/mcp/sse.ts:27-249` (no trailing semicolons) vs `packages/sdk/src/mcp/server.ts` and `stdio.ts` (semicolons everywhere)*
+*Nit · Effort: S · `packages/sdk/src/mcp/sse.ts:28-250` (no trailing semicolons) vs `packages/sdk/src/mcp/server.ts` and `stdio.ts` (semicolons everywhere)*
 
 **Observation** — `sse.ts` omits trailing semicolons on every statement while its peer backends use them. ESLint may not flag this if `semi` is off, but it's visually jarring across the same directory.
 
@@ -184,11 +190,11 @@ The second option is cleaner architecturally but requires deciding the public-AP
 - **Linear vertical is properly isolated.** `core/`, `runtime/`, `agent/`, and `contracts/` have zero imports from `linear/` or `integrations/linear/`. The single exception is `CodexAdapter` reading three `linear_*` metadata keys (flagged as major above).
 - **`src/linear/index.ts` is a pure re-export barrel** from `src/integrations/linear/` — matches "Module and Import Patterns" guidance about barrels.
 - **No type duplication against `@linear/sdk`.** `LinearActivityClient` deliberately defines a subset surface for testing; types like `AgentSessionEventWebhookPayload`, `AppUserNotificationWebhookPayloadWithNotification`, `OAuthAppWebhookPayload`, and `LinearDocument as L` are consumed from `@linear/sdk` directly. `Notification` and `NotificationByType<T>` in `notification.ts:7-11` use `Extract<T, { __typename?: T }>` against the library's union type — a strong type-derivation pattern.
-- **`js-yaml` loaded with `JSON_SCHEMA`.** `config/loader.ts:100` calls `yaml.load(raw, { schema: yaml.JSON_SCHEMA })`, which disables `!!js/function` and other code-execution tags. Not as restrictive as `FAILSAFE_SCHEMA` (which would block all type conversion) but safe against RCE.
+- **`js-yaml` loaded with `JSON_SCHEMA`.** `config/loader.ts:121` calls `yaml.load(raw, { schema: yaml.JSON_SCHEMA })`, which disables `!!js/function` and other code-execution tags. Not as restrictive as `FAILSAFE_SCHEMA` (which would block all type conversion) but safe against RCE.
 - **`UNSAFE_KEYS` filter in `loader.ts:20-21` and `:64-68`** prevents prototype pollution via `__proto__` / `constructor` / `prototype` in YAML.
 - **No Linear secrets logged.** Searches for `apiKey`, `accessToken`, `linearAccessToken`, `linearWebhookSecret` in log statements turn up nothing. `webhook.ts` validates the signature before doing anything with the body.
-- **`mcp/backends.ts` is a clean dispatch.** Despite the four similar server classes, the public surface (`createThenvoiMcpBackend`, `ThenvoiMcpBackend`, `ThenvoiMcpBackendKind`) is small and consistent.
+- **`mcp/backends.ts` is a clean dispatch.** Despite the four similar server classes, the public surface (`createBandMcpBackend`, `BandMcpBackend`, `BandMcpBackendKind`) is small and consistent.
 - **Bidirectional initiation is sound.** `agentSessionCreateOnIssue`, `agentSessionCreateOnComment`, and `createIssue` are all guarded by `typeof client.foo === "function"` in `tools.ts:649-723`, so missing capabilities surface as tool-not-registered rather than runtime crashes. `persistSessionRoom` shares logic between the two session-creation tools.
 - **Optional peer dependencies are dynamically imported** in `server.ts:90-97`, `sse.ts:77-82`, `stdio.ts:55-57`, and `sdk.ts` (static — which is fine since `@anthropic-ai/claude-agent-sdk` is the entry point's whole purpose). The dynamic imports include `express`, `@modelcontextprotocol/sdk/server/*`, and `zod`, so a consumer that doesn't install them only pays at `start()` time, not at module load.
-- **Example imports match the SDK surface.** All 10 named imports in `examples/linear-thenvoi/linear-thenvoi-bridge-server.ts:12-22` and 5 in `linear-thenvoi-bridge-agent.ts:10-15` resolve against `src/linear/index.ts`. No drift.
+- **Example imports match the SDK surface.** All 10 named imports in `examples/linear-band/linear-band-bridge-server.ts:12-22` and 5 in `linear-band-bridge-agent.ts:10-15` resolve against `src/linear/index.ts`. No drift.
 - **Stale-session keepalive is well factored.** `StaleSessionGuard` + `isSessionStale` + `sendRecoveryActivityIfStale` (in `stale-session-guard.ts`) is a focused module with one responsibility, structured logging, and `unref()` on the timer so it doesn't block process exit (line 60-62).

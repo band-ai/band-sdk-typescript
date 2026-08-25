@@ -4,6 +4,10 @@
 
 ## Summary
 
+> **Refresh (2026-08-25, main @ `1eb7bc9`) — every finding in this area is still present and unfixed.** `tsup.config.ts` changed by one line (the rebranded rest-client name), so the exports/entry alignment and the four missing peer roots are exactly as recorded. `src/mcp/claude.ts` is still dead code built by nothing. `src/core/index.ts` gained three exports from `#80` (`WebSocketDisconnectError`, `WebSocketConflictPolicy`, `WebSocketDisconnectReason`) but still exports no DTO type. Two things got worse:
+> - **The DTO export gap widened.** `#87` added `src/contracts/memory.ts` — 129 lines of unambiguously public-looking surface: `MEMORY_SYSTEMS`, `MEMORY_TYPES`, `MEMORY_SEGMENTS`, `MEMORY_STORE_SCOPES`, `MEMORY_LIST_SCOPES`, `MEMORY_STATUSES`, the `MemoryScope`/`MemorySegment`/`MemoryStatus`/`MemorySystem`/`MemoryType`/`MemoryVisibility`/`MemoryStoreScope` types, eight `isMemory*` type guards, and three error-message helpers. **None of it is exported from any sub-entry** — verified by grep: the only importers are `contracts/dtos.ts`, `runtime/prompts/memory.ts`, `runtime/tools/AgentTools.ts`, and `runtime/tools/schemas.ts`, all internal. A consumer calling `band_store_memory` has no supported way to name the scope or validate a type.
+> - **A new root export sits outside the error hierarchy.** `WebSocketDisconnectError` is now exported from `src/index.ts:6` and `src/core/index.ts:25`, and it extends bare `Error` rather than `BandSdkError` — see [`error-async.md`](error-async.md).
+
 The SDK's exports map is internally consistent (11 entries in both `tsup.config.ts` and `package.json`, types/import/require triples in correct order), every entry source file exists, and named exports are used throughout — no default exports anywhere. The big problems are a runtime class exported as a type from the root entry, and a fan-out of public-facing protocol/DTO types that are not actually exported from any sub-entry.
 
 **What's good:**
@@ -24,16 +28,16 @@ The SDK's exports map is internally consistent (11 entries in both `tsup.config.
 - `src/mcp/claude.ts` is stale duplicate code — [`src/mcp/claude.ts` is dead code](#srcmcpclaudets-is-dead-code).
 - Callback type naming convention is not followed — [`ContactEventCallback` violates callback naming convention](#contacteventcallback-violates-callback-naming-convention).
 - tsup `external` list misses optional peers — [Optional peer dependencies not all externalized in tsup config](#optional-peer-dependencies-not-all-externalized-in-tsup-config).
-- `Logger`, error classes, `ThenvoiLinkOptions`, and `Captured*` shapes are referenced by public surface but not exported from root or relevant sub-entries — [`Logger` type not exported from root](#logger-type-not-exported-from-root-despite-being-on-platformruntimeoptions), [Error classes only available from `./core`](#error-classes-only-available-from-core), [`ThenvoiLinkOptions` not exported](#thenvoilinkoptions-not-exported), [`./mcp` entry does not re-export `ThenvoiSdkMcpServer`](#mcp-entry-does-not-re-export-thenvoisdkmcpserver), [`FakeAgentTools` exposes `Captured*` shapes](#fakeagenttools-exposes-captured-shapes-on-public-fields-without-exporting-the-types), [Root `index.ts` does not surface several types relevant to extension authors](#root-indexts-does-not-surface-several-types-relevant-to-extension-authors).
+- `Logger`, error classes, `BandLinkOptions`, and `Captured*` shapes are referenced by public surface but not exported from root or relevant sub-entries — [`Logger` type not exported from root](#logger-type-not-exported-from-root-despite-being-on-platformruntimeoptions), [Error classes only available from `./core`](#error-classes-only-available-from-core), [`BandLinkOptions` not exported](#bandlinkoptions-not-exported), [`./mcp` entry does not re-export `BandSdkMcpServer`](#mcp-entry-does-not-re-export-bandsdkmcpserver), [`FakeAgentTools` exposes `Captured*` shapes](#fakeagenttools-exposes-captured-shapes-on-public-fields-without-exporting-the-types), [Root `index.ts` does not surface several types relevant to extension authors](#root-indexts-does-not-surface-several-types-relevant-to-extension-authors).
 
 ## Findings
 
 ### Blockers
 
 #### `HistoryProvider` class exported as type from root entry
-*Blocker · Effort: S · `packages/sdk/src/index.ts:12-23`*
+*Blocker · Effort: S · `packages/sdk/src/index.ts:7-28`*
 
-**Observation** — `HistoryProvider` is a class declared with `export class HistoryProvider` (`packages/sdk/src/runtime/types.ts:49`). In the root `index.ts` it appears inside `export type { AgentConfig, AgentInput, ContactEventConfig, ContactEventStrategy, ContactEventCallback, ConversationContext, HistoryProvider, MessageHandler, PlatformMessage, SessionConfig } from "./runtime/types";`. With `verbatimModuleSyntax` (`packages/sdk/tsconfig.json:14`), that block produces only `.d.ts` re-exports — there is no runtime binding. Users who do `import { HistoryProvider } from "@thenvoi/sdk"` and call `new HistoryProvider([])` will get a runtime `HistoryProvider is not a constructor` (or `undefined`) error. The `./runtime` sub-entry's `index.ts:11-17` exports it correctly as a value, so the bug is isolated to the root entry but still affects every user reading the root `index.ts` as the canonical API.
+**Observation** — `HistoryProvider` is a class declared with `export class HistoryProvider` (`packages/sdk/src/runtime/types.ts:49`). In the root `index.ts` it appears inside `export type { AgentConfig, AgentInput, ContactEventConfig, ContactEventStrategy, ContactEventCallback, ConversationContext, HistoryProvider, MessageHandler, PlatformMessage, SessionConfig } from "./runtime/types";`. With `verbatimModuleSyntax` (`packages/sdk/tsconfig.json:14`), that block produces only `.d.ts` re-exports — there is no runtime binding. Users who do `import { HistoryProvider } from "@band-ai/sdk"` and call `new HistoryProvider([])` will get a runtime `HistoryProvider is not a constructor` (or `undefined`) error. The `./runtime` sub-entry's `index.ts:11-17` exports it correctly as a value, so the bug is isolated to the root entry but still affects every user reading the root `index.ts` as the canonical API.
 
 **Impact** — Any consumer importing `HistoryProvider` from the root entry will receive a runtime crash (`HistoryProvider is not a constructor`) despite the type declarations appearing correct.
 
@@ -51,6 +55,8 @@ The SDK's exports map is internally consistent (11 entries in both `tsup.config.
 **Impact** — Consumers implementing a custom adapter cannot reference DTO types by name without importing from an internal non-public path, which breaks when paths change.
 
 **Fix** — Either add a dedicated `contracts` or `dtos` sub-entry exporting the shared types, or surface them from `./core` (which is the natural home — it already exports the protocol types that depend on them). At minimum: `MetadataMap`, `MentionInput`, `MentionReference`, `ToolOperationResult`, `PaginatedList`, `PaginationMetadataLike`, `ParticipantRecord`, `PeerRecord`, `ContactRecord`, `MemoryRecord`, `ToolSchemaRecord`, `ListContactsArgs`, `AddContactArgs`, `RemoveContactArgs`, `ListContactRequestsArgs`, `RespondContactRequestArgs`, `ContactRequestsResult`, `ListMemoriesArgs`, `StoreMemoryArgs`.
+
+> **Refresh (2026-08-25, main @ `1eb7bc9`) — still present, and the list above is now incomplete.** Add everything in the new `src/contracts/memory.ts` (`#87`): the constant arrays `MEMORY_SYSTEMS` / `MEMORY_TYPES` / `MEMORY_SEGMENTS` / `MEMORY_STORE_SCOPES` / `MEMORY_LIST_SCOPES` / `MEMORY_STATUSES`, the named-value objects `MEMORY_SYSTEM` / `MEMORY_TYPE` / `MEMORY_SEGMENT` / `MEMORY_STORE_SCOPE`, the derived types `MemorySystem`, `MemoryType`, `MemorySegment`, `MemoryStoreScope`, `MemoryScope`, `MemoryStatus`, `MemoryVisibility`, and the guards `isMemorySystem`, `isMemoryType`, `isMemoryTypeForSystem`, `isMemorySegment`, `isMemoryStoreScope`, `isMemoryListScope`, `isMemoryStatus`. `#87` moved these out of `dtos.ts` precisely so they could be a single source of truth for the memory taxonomy — which makes it the surface a consumer most needs and least can reach. Note `dtos.ts:123-130` re-exports six of the types, so the *types* are reachable via `contracts/dtos` (still not public); the constants and guards are reachable from nowhere.
 
 [↑ Summary in review.md M4](../review.md#m4-public-api-dtoprotocol-types-not-re-exported-from-sub-entries)
 
@@ -87,7 +93,7 @@ The SDK's exports map is internally consistent (11 entries in both `tsup.config.
 #### `src/mcp/claude.ts` is dead code
 *Major · Effort: S · `packages/sdk/src/mcp/claude.ts`*
 
-**Observation** — `tsup.config.ts:41` builds the `mcp-claude` entry directly from `src/mcp/sdk.ts`. The file `src/mcp/claude.ts` re-exports a subset of `sdk.ts` (`createThenvoiSdkMcpServer`, `ThenvoiSdkMcpServer`, `CreateThenvoiSdkMcpServerOptions`, `GetSystemPromptContextResult`) but is never referenced by tsup or by any internal import (verified via `grep -rn "\"./claude\""`). The dead file is also incomplete: it omits `GetSystemPromptContextOptions` which is part of the public `ThenvoiSdkMcpServer` API and is built into the actual `./mcp/claude` entry.
+**Observation** — `tsup.config.ts:41` builds the `mcp-claude` entry directly from `src/mcp/sdk.ts`. The file `src/mcp/claude.ts` re-exports a subset of `sdk.ts` (`createBandSdkMcpServer`, `BandSdkMcpServer`, `CreateBandSdkMcpServerOptions`, `GetSystemPromptContextResult`) but is never referenced by tsup or by any internal import (verified via `grep -rn "\"./claude\""`). The dead file is also incomplete: it omits `GetSystemPromptContextOptions` which is part of the public `BandSdkMcpServer` API and is built into the actual `./mcp/claude` entry.
 
 **Impact** — The stale file misleads contributors into thinking it is the MCP Claude entry point, and its incomplete surface could cause confusion about the actual public API.
 
@@ -129,7 +135,7 @@ All four are declared optional peer deps in `package.json:99-116`. Dynamic `awai
 #### `Logger` type not exported from root despite being on `PlatformRuntimeOptions`
 *Minor · Effort: S · `packages/sdk/src/index.ts`*
 
-**Observation** — `PlatformRuntimeOptions` is exported from root (`src/index.ts:7`) and has `logger?: Logger`. The `Logger` interface and `ConsoleLogger`/`NoopLogger` classes are only exported from `./core`. A user importing only from root cannot type a custom logger they pass to `PlatformRuntime`/`Agent.create`.
+**Observation** — `PlatformRuntimeOptions` is exported from root (`src/index.ts:12`) and has `logger?: Logger`. The `Logger` interface and `ConsoleLogger`/`NoopLogger` classes are only exported from `./core`. A user importing only from root cannot type a custom logger they pass to `PlatformRuntime`/`Agent.create`.
 
 **Impact** — Users importing only from root cannot type a custom logger without adding a second sub-path import.
 
@@ -138,29 +144,29 @@ All four are declared optional peer deps in `package.json:99-116`. Dynamic `awai
 #### Error classes only available from `./core`
 *Minor · Effort: S · `packages/sdk/src/core/errors.ts`, `packages/sdk/src/index.ts`*
 
-**Observation** — `ThenvoiSdkError`, `UnsupportedFeatureError`, `ValidationError`, `TransportError`, `RuntimeStateError` are exported from `./core` but not from root. `loadAgentConfig`/`loadAgentConfigFromEnv` throw `ValidationError`; users of root who want a typed catch must add a second sub-path import.
+**Observation** — `BandSdkError`, `UnsupportedFeatureError`, `ValidationError`, `TransportError`, `RuntimeStateError` are exported from `./core` but not from root. `loadAgentConfig`/`loadAgentConfigFromEnv` throw `ValidationError`; users of root who want a typed catch must add a second sub-path import.
 
 **Impact** — Users catching typed errors from root-exported functions must add a separate `./core` sub-path import just to reference the error class.
 
-**Fix** — Re-export the error classes (or at least `ThenvoiSdkError` + `ValidationError`) from root.
+**Fix** — Re-export the error classes (or at least `BandSdkError` + `ValidationError`) from root.
 
-#### `ThenvoiLinkOptions` not exported
-*Minor · Effort: S · `packages/sdk/src/platform/ThenvoiLink.ts:25`, `packages/sdk/src/index.ts:4`*
+#### `BandLinkOptions` not exported
+*Minor · Effort: S · `packages/sdk/src/platform/BandLink.ts:37`, `packages/sdk/src/index.ts:4`*
 
-**Observation** — Root exports the `ThenvoiLink` class and `deriveDefaultRestUrl` helper but not `ThenvoiLinkOptions`. The constructor signature `new ThenvoiLink(options: ThenvoiLinkOptions)` is the main entrypoint to the class. Users instantiating it directly cannot name the options shape.
+**Observation** — Root exports the `BandLink` class and `deriveDefaultRestUrl` helper but not `BandLinkOptions`. The constructor signature `new BandLink(options: BandLinkOptions)` is the main entrypoint to the class. Users instantiating it directly cannot name the options shape.
 
-**Impact** — Users cannot type the options object for `ThenvoiLink` construction without reaching into an internal path.
+**Impact** — Users cannot type the options object for `BandLink` construction without reaching into an internal path.
 
-**Fix** — Add `export type { ThenvoiLinkOptions } from "./platform/ThenvoiLink";` to root.
+**Fix** — Add `export type { BandLinkOptions } from "./platform/BandLink";` to root.
 
-#### `./mcp` entry does not re-export `ThenvoiSdkMcpServer`
+#### `./mcp` entry does not re-export `BandSdkMcpServer`
 *Minor · Effort: S · `packages/sdk/src/mcp/index.ts`*
 
-**Observation** — `./mcp` exports `getThenvoiSdkMcpServerConfig(backend)` whose return type is `ThenvoiSdkMcpServer["serverConfig"]` (`packages/sdk/src/mcp/backends.ts:129`). The `ThenvoiSdkMcpServer` interface (the source of the indexed access) is defined in `src/mcp/sdk.ts:56` but not re-exported from `./mcp` — a user importing `./mcp` who wants to type the returned config has to also reach into `./mcp/claude`.
+**Observation** — `./mcp` exports `getBandSdkMcpServerConfig(backend)` whose return type is `BandSdkMcpServer["serverConfig"]` (`packages/sdk/src/mcp/backends.ts:129`). The `BandSdkMcpServer` interface (the source of the indexed access) is defined in `src/mcp/sdk.ts:56` but not re-exported from `./mcp` — a user importing `./mcp` who wants to type the returned config has to also reach into `./mcp/claude`.
 
-**Impact** — Users of `./mcp` who need to type the return value of `getThenvoiSdkMcpServerConfig` must also import from `./mcp/claude`, which is an undocumented coupling.
+**Impact** — Users of `./mcp` who need to type the return value of `getBandSdkMcpServerConfig` must also import from `./mcp/claude`, which is an undocumented coupling.
 
-**Fix** — Re-export `type ThenvoiSdkMcpServer` (and arguably `GetSystemPromptContextResult`, `GetSystemPromptContextOptions`, `CreateThenvoiSdkMcpServerOptions`) from `./mcp` for type-completeness, OR document clearly that `./mcp/claude` is the canonical SDK-MCP types entry.
+**Fix** — Re-export `type BandSdkMcpServer` (and arguably `GetSystemPromptContextResult`, `GetSystemPromptContextOptions`, `CreateBandSdkMcpServerOptions`) from `./mcp` for type-completeness, OR document clearly that `./mcp/claude` is the canonical SDK-MCP types entry.
 
 #### `FakeAgentTools` exposes `Captured*` shapes on public fields without exporting the types
 *Minor · Effort: S · `packages/sdk/src/testing/FakeAgentTools.ts:29-48`, `:66-70`*
@@ -192,7 +198,7 @@ All four are declared optional peer deps in `package.json:99-116`. Dynamic `awai
 **Fix** — Either reduce `src/linear/index.ts` to a single `export * from "../integrations/linear";` (with `export type * from "../integrations/linear";` if `verbatimModuleSyntax` requires it), or accept the verbose form as deliberate. The same simplification applies less cleanly to `./rest` (it merges two underlying files) and `./converters` (multiple files, intentional curation).
 
 #### Adapters cross-import `../../mcp/*` — slight coupling between sub-entries
-*Nit · Effort: M · `packages/sdk/src/adapters/claude-sdk/ClaudeSDKAdapter.ts:15-16`, `packages/sdk/src/adapters/opencode/OpencodeAdapter.ts:17-19`, `packages/sdk/src/adapters/acp/ACPClientAdapter.ts:19-21`*
+*Nit · Effort: M · `packages/sdk/src/adapters/claude-sdk/ClaudeSDKAdapter.ts:15-16`, `packages/sdk/src/adapters/opencode/OpencodeAdapter.ts:17-19`, `packages/sdk/src/adapters/acp/ACPClientAdapter.ts:19-22`*
 
 **Observation** — Three adapters (`ClaudeSDKAdapter`, `OpencodeAdapter`, `ACPClientAdapter`) cross-import from `../../mcp/`, collectively pulling in five modules: `registrations`, `server`, `sse`, `backends`, `zod`. Because tsup emits one bundle per entry and does not share chunks, the `adapters` build duplicates the `mcp` code that's already in the standalone `mcp` build. Functionally fine, but it inflates `dist/adapters.js`. No public API leak — none of these internal imports surface from `./adapters` — but it foreshadows future tree-shaking pain.
 

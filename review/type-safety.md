@@ -6,6 +6,10 @@ Scope: `packages/sdk/src/` — entire tree (~30,300 LOC, 152 `.ts` files).
 
 ## Summary
 
+> **Refresh (2026-08-25, main @ `1eb7bc9`) — every finding here stands unchanged.** `src/optional-deps.d.ts`, `src/types/google-adk.d.ts`, `src/types/ws.d.ts`, `src/phoenix.d.ts`, `src/client/rest/RestFacade.ts`, and `src/contracts/protocols.ts` are all untouched (`RestFacade.ts` and `types.ts` are rename-only), so M2 and the `: object` findings are verbatim. Re-measured counts: `as <Type>` assertions **133 → 132**, `as unknown as` **15 → 16**, `any` **5 → 5** (same five eslint-disabled sites in `src/mcp/`), `@ts-ignore`/`@ts-expect-error` **0 → 0**, `: object` **2 → 2** (`RestFacade.ts:396`, `:411`).
+>
+> The one `as unknown as` added since v0.1.4 is in `#80`'s new `nodeWebSocketFactory.ts` — two of them, at `:20` and `:32`, laundering `ws` into the DOM `WebSocket` shape, plus a hand-declared `NodeUpgradeWebSocket` intersection at `:4-11`. That file is the clearest current example of the `*Like` shadow-interface pattern this area's findings are about, and it is on the connection path. See [`network.md`](network.md#optional-ws-dependency-typing--obsolete-the-recommendation-is-now-wrong).
+
 Type hygiene at usage sites is unusually disciplined for a codebase that integrates ~14 optional AI-framework SDKs. The systemic weaknesses are not in the source — they're in the ambient module declarations and tsconfig strictness gaps that force everything else to compensate.
 
 **What's good:**
@@ -46,7 +50,7 @@ All 5 occurrences are eslint-disabled with a one-line justification. No `as any`
 | `src/client/rest/` | 8 |
 | `src/adapters/codex/` | 9 |
 | `src/adapters/acp/` | 7 |
-| `src/platform/ThenvoiLink.ts` | 5 |
+| `src/platform/BandLink.ts` | 5 |
 | `src/adapters/openai/` | 5 |
 | `src/adapters/vercel-ai-sdk/` | 4 |
 | `src/runtime/rooms/` | 3 |
@@ -119,7 +123,7 @@ What each missing flag catches:
 
 **Impact** — Missing strict flags allow entire classes of bugs — undetected unused variables, unsafe array index access, and missing override annotations — to slip through compile-time checks.
 
-**Fix** — Mirror the flags from `packages/openclaw/tsconfig.json` and add `noImplicitOverride`. Expect new errors at array/object index sites (e.g. `tokens[index]` in `src/adapters/codex/CodexAdapter.ts:1195`); these are real correctness wins.
+**Fix** — Mirror the flags from `packages/openclaw/tsconfig.json` and add `noImplicitOverride`. Expect new errors at array/object index sites (e.g. `tokens[index]` in `src/adapters/codex/CodexAdapter.ts:1197`); these are real correctness wins.
 
 [↑ Summary in review.md M3](../review.md#m3-tsconfigjson-missing-several-strict-flags)
 
@@ -219,7 +223,7 @@ What each missing flag catches:
 #### No branded ID types
 *Nit · Effort: L · ~277 occurrences across `src/contracts/`, `src/integrations/linear/`, `src/runtime/rooms/` (see Locations below)*
 
-**Observation** — The bridge layer (Linear integration) deals with both Thenvoi room IDs and Linear session IDs and issue IDs simultaneously. In `src/integrations/linear/bridge/handler.ts` and `src/integrations/linear/store.ts` these IDs are passed around as plain `string`. There is no compile-time protection against passing a `thenvoiRoomId` where a `linearSessionId` is expected.
+**Observation** — The bridge layer (Linear integration) deals with both Band room IDs and Linear session IDs and issue IDs simultaneously. In `src/integrations/linear/bridge/handler.ts` and `src/integrations/linear/store.ts` these IDs are passed around as plain `string`. There is no compile-time protection against passing a `thenvoiRoomId` where a `linearSessionId` is expected.
 
 **Impact** — Plain `string` IDs for seven distinct domain concepts can be silently mixed up at call sites, producing hard-to-diagnose runtime bugs.
 

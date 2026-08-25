@@ -4,6 +4,11 @@
 
 ## Summary
 
+> **Refresh (2026-08-25, main @ `1eb7bc9`) — every finding here stands; one duplication was partially resolved.**
+> - **Partially resolved:** `#87` centralised the memory taxonomy into a new `src/contracts/memory.ts`, deleting six duplicated enum sets from `runtime/tools/AgentTools.ts` (`MEMORY_SYSTEMS`, `MEMORY_TYPES`, `MEMORY_SEGMENTS`, `LIST_MEMORY_SCOPES`, `LIST_MEMORY_STATUSES`, `MEMORY_SCOPES`) and five more inline `enum: [...]` literals from `runtime/tools/schemas.ts`. That is exactly the move the [duplication finding](#coercion-and-error-message-helpers-are-duplicated-across-modules) recommends, applied to one family of duplicates — and it is the only decomposition anywhere in this delta. `#150` did the same for the MCP server-name literal, replacing four hardcoded `"band"` strings with a shared `MCP_SERVER_NAME` (`schemas.ts:385`). Neither was prompted by this review, but both are the pattern to repeat.
+> - **Unchanged:** `adapters/shared/coercion.ts` was never moved out of the adapter-named folder, so the 33 inline `error instanceof Error ? … : String(error)` sites, the 3 `sleep()` helpers, the 3 `assertNever` copies, and the per-file `asRecord`/`asString` forks are all still there. `src/linear` / `src/integrations/linear` and `src/rest` / `src/client/rest` still sit side by side. Zero of the 8 `runtime/` callback types adopted `On{Action}Callback`.
+> - **God-files re-measured:** five files still over 1000 LOC. `AgentTools.ts` came down 1176 → 1157 (the `contracts/memory.ts` extraction); `AgentRuntime.ts` went up 438 → 464; `CodexAdapter.ts` 1477 → 1479; `OpencodeAdapter.ts` 1092 → 1094; `handler.ts` and `LettaAdapter.ts` unchanged. Total `src/` grew 30,300 → 31,315 LOC across 152 → 158 files.
+
 The SDK is broadly well-layered (`platform` <- `runtime` <- `agent` at the core, with `adapters/`, `converters/`, `mcp/`, `integrations/linear/` as vertical slices). Module dependency direction is mostly acyclic and `core/`, `contracts/`, `platform/`, `runtime/` stay vertical-agnostic — verticals never leak into the core.
 
 **What's good:**
@@ -39,7 +44,7 @@ runtime/PlatformRuntime --> runtime/ContactEventHandler
 runtime/rooms/AgentRuntime --> runtime/{Execution, ExecutionContext, formatters, prompts, tools/*}
    |
    v
-platform/ThenvoiLink + platform/streaming/*
+platform/BandLink + platform/streaming/*
    |
    v
 client/rest/* (RestFacade, FernRestAdapter, types, pagination, requestOptions)
@@ -53,7 +58,7 @@ Verticals (each pulls from `contracts`, `core`, `runtime`, `platform`, sometimes
 - `adapters/*`: per-framework `FrameworkAdapter` implementations, plus `adapters/shared/` and `adapters/tool-calling/`. Internally heterogeneous (each adapter folder organizes its own way).
 - `converters/`: stateless `HistoryConverter` implementations + `converters/shared.ts` parse helpers.
 - `mcp/`: standalone server stacks (HTTP, SSE, stdio, claude-sdk). `mcp/registrations.ts` is the central tool-schema builder consumed by `adapters/acp`, `adapters/claude-sdk`, `adapters/opencode`.
-- `integrations/linear/`: the Linear ⇄ Thenvoi bridge. Self-contained vertical.
+- `integrations/linear/`: the Linear ⇄ Band bridge. Self-contained vertical.
 
 Public sub-entrypoints (per `package.json` `exports`): `.`, `./adapters`, `./config`, `./converters`, `./core`, `./linear`, `./mcp`, `./mcp/claude`, `./rest`, `./runtime`, `./testing`. Two of those (`linear` and `rest`) are paper-thin barrels that re-export from `integrations/linear` and `client/rest`. That two-tier directory layout is what gives the tree the apparent "duplicate folder" feel.
 
@@ -93,7 +98,7 @@ _None — no module dependency cycles, no vertical leakage into `core/`/`runtime
 - `packages/sdk/src/mcp/registrations.ts:160` (`asNonEmptyString`) and `:184` (`serializeValue`)
 - `packages/sdk/src/integrations/linear/store.ts:403,419,423` (`asRecord`, `asString`, `asNullableString`)
 - `packages/sdk/src/client/rest/FernRestAdapter.ts:182` (`asRecordArray`)
-- `packages/sdk/src/adapters/acp/ACPClientAdapter.ts:581` (`toErrorMessage`)
+- `packages/sdk/src/adapters/acp/ACPClientAdapter.ts:582` (`toErrorMessage`)
 - Plus 33 inline `error instanceof Error ? error.message : String(error)` sites across `integrations/linear/*`, `adapters/*`, `mcp/sdk.ts`
 
 [↑ Summary in review.md M6](../review.md#m6-coercion-and-error-extraction-helpers-duplicated-across-the-tree)
@@ -123,7 +128,7 @@ _None — no module dependency cycles, no vertical leakage into `core/`/`runtime
 #### Public sub-entrypoint barrels live next to the implementation directories with the same name
 *Major · Effort: S · 2 barrel files (see Locations below)*
 
-**Observation** — `src/linear` and `src/integrations/linear` exist side by side. Same for `src/rest` and `src/client/rest`. Both are intentional — the top-level dirs are the `@thenvoi/sdk/linear` and `@thenvoi/sdk/rest` package entrypoints — but for anyone navigating the tree this looks like a duplicate or a circular re-export. Worsened by the fact that `src/linear/index.ts` lists every export name explicitly (~50 lines) instead of `export *`.
+**Observation** — `src/linear` and `src/integrations/linear` exist side by side. Same for `src/rest` and `src/client/rest`. Both are intentional — the top-level dirs are the `@band-ai/sdk/linear` and `@band-ai/sdk/rest` package entrypoints — but for anyone navigating the tree this looks like a duplicate or a circular re-export. Worsened by the fact that `src/linear/index.ts` lists every export name explicitly (~50 lines) instead of `export *`.
 
 **Impact** — New contributors waste time discovering which directory holds the actual implementation, and manually enumerated re-exports fall out of sync (already missing `getAgentSessionEventKey`).
 
@@ -161,7 +166,7 @@ _None — no module dependency cycles, no vertical leakage into `core/`/`runtime
 **Fix** — Convert each to a typed handler map (`Record<EventType, (event) => Promise<void>>`). For `ContactCallbackTools.executeToolCall`, mirror the `toolHandlers` pattern already used in `AgentTools.buildToolHandlers`.
 
 **Locations:**
-- `packages/sdk/src/runtime/rooms/AgentRuntime.ts:221` (`handleEvent` switch over event.type)
+- `packages/sdk/src/runtime/rooms/AgentRuntime.ts:229` (`handleEvent` switch over event.type)
 - `packages/sdk/src/runtime/ContactEventHandler.ts:264,295` (two parallel switches over the same ContactEvent type)
 - `packages/sdk/src/runtime/rooms/RoomPresence.ts:98`
 - `packages/sdk/src/runtime/tools/ContactCallbackTools.ts:269` (`executeToolCall` switch over toolName with 16 cases)
@@ -178,7 +183,7 @@ _None — no module dependency cycles, no vertical leakage into `core/`/`runtime
 **Locations:**
 - `packages/sdk/src/runtime/PlatformRuntime.ts:335`
 - `packages/sdk/src/runtime/ContactEventHandler.ts:454`
-- `packages/sdk/src/runtime/rooms/AgentRuntime.ts:436`
+- `packages/sdk/src/runtime/rooms/AgentRuntime.ts:462`
 
 #### `RoomPresence` reimplements AgentRuntime's room-event loop and is unused internally
 *Major · Effort: M · `packages/sdk/src/runtime/rooms/RoomPresence.ts`*
@@ -229,13 +234,13 @@ _None — no module dependency cycles, no vertical leakage into `core/`/`runtime
 **Fix** — Rename `CodexAdapterConfig` → `CodexAdapterOptions` (and similarly for Opencode). If a `Config` distinction is intentional (e.g., runtime-tunable subset), document it once in `contracts/`.
 
 **Locations:**
-- `packages/sdk/src/adapters/codex/CodexAdapter.ts:66` (`CodexAdapterConfig` + private `CodexAdapterOptions`)
-- `packages/sdk/src/adapters/opencode/OpencodeAdapter.ts:42,100` (`OpencodeAdapterConfig` + private `OpencodeAdapterOptions`)
+- `packages/sdk/src/adapters/codex/CodexAdapter.ts:67` (`CodexAdapterConfig` + private `CodexAdapterOptions`)
+- `packages/sdk/src/adapters/opencode/OpencodeAdapter.ts:43,100` (`OpencodeAdapterConfig` + private `OpencodeAdapterOptions`)
 
 #### File-name casing is mixed without a clear rule
 *Minor · Effort: S · multiple files across `packages/sdk/src/`*
 
-**Observation** — Both `simpleAdapter.ts`, `appServerClient.ts`, `appServerProtocol.ts`, `eventConverter.ts`, `pushHandler.ts`, `cursorExtensions.ts`, `payloadSchemas.ts` (camelCase) and `Agent.ts`, `Execution.ts`, `AgentRuntime.ts`, `ThenvoiLink.ts`, `*Adapter.ts`, `*Tools.ts` (PascalCase) coexist. ACP folder mixes both heavily. The implicit convention is "PascalCase when the file primarily defines a class" but `simpleAdapter.ts` (class `SimpleAdapter`) is camelCase, `payloadSchemas.ts` (zod schemas + types) is camelCase, while `RoomPresence.ts` and `Execution.ts` are PascalCase. Module barrel files always use lowercase (`index.ts`, `claude.ts`, `sse.ts`).
+**Observation** — Both `simpleAdapter.ts`, `appServerClient.ts`, `appServerProtocol.ts`, `eventConverter.ts`, `pushHandler.ts`, `cursorExtensions.ts`, `payloadSchemas.ts` (camelCase) and `Agent.ts`, `Execution.ts`, `AgentRuntime.ts`, `BandLink.ts`, `*Adapter.ts`, `*Tools.ts` (PascalCase) coexist. ACP folder mixes both heavily. The implicit convention is "PascalCase when the file primarily defines a class" but `simpleAdapter.ts` (class `SimpleAdapter`) is camelCase, `payloadSchemas.ts` (zod schemas + types) is camelCase, while `RoomPresence.ts` and `Execution.ts` are PascalCase. Module barrel files always use lowercase (`index.ts`, `claude.ts`, `sse.ts`).
 
 **Impact** — No clear rule means contributors pick arbitrarily, making the inconsistency grow over time.
 
@@ -364,17 +369,17 @@ _None — no module dependency cycles, no vertical leakage into `core/`/`runtime
 
 **Fix** — Replace with `export type PaginationMetadata = PaginationMetadataLike; export type PaginatedResponse<T = MetadataMap> = PaginatedList<T>;` or drop entirely and import the base names.
 
-#### `interface RestApi extends ThenvoiLinkRestApi {}` is an empty alias
+#### `interface RestApi extends BandLinkRestApi {}` is an empty alias
 *Nit · Effort: S · `packages/sdk/src/client/rest/types.ts:220`*
 
 **Observation** — Same anti-pattern as above.
 
 **Impact** — Unnecessary indirection with no added value.
 
-**Fix** — `export type RestApi = ThenvoiLinkRestApi;` or just standardize on one name.
+**Fix** — `export type RestApi = BandLinkRestApi;` or just standardize on one name.
 
 #### `forEach` over `for...of` in `OpencodeAdapter`
-*Nit · Effort: S · `packages/sdk/src/adapters/opencode/OpencodeAdapter.ts:1062`*
+*Nit · Effort: S · `packages/sdk/src/adapters/opencode/OpencodeAdapter.ts:1064`*
 
 **Observation** — `questions.forEach((question, index) => …)` — the rest of the SDK uses `for...of` consistently; one outlier.
 
@@ -392,7 +397,7 @@ _None — no module dependency cycles, no vertical leakage into `core/`/`runtime
 **Fix** — Drop the alias, export `SessionStatus` under both names if required for backward compat, or just keep one name.
 
 #### `WireXxx` + `export type XxxRecord = WireXxxRecord` pairs duplicate type names
-*Nit · Effort: S · `packages/sdk/src/contracts/dtos.ts:50-86,128-167`*
+*Nit · Effort: S · `packages/sdk/src/contracts/dtos.ts:59-95,128-167`*
 
 **Observation** — Every wire DTO is declared twice: an interface and a type alias with no transformation between them. The alias adds no value.
 
@@ -408,6 +413,6 @@ _None — no module dependency cycles, no vertical leakage into `core/`/`runtime
 - `runtime/rooms/subscriptions.ts` is an exemplary pure-utility module: dependency-injected `link`, `trackedRooms`, callbacks; no state of its own.
 - `mcp/backends.ts` is a clean factory that hides four MCP server implementations behind one interface.
 - `runtime/tools/AgentTools.ts` already uses a `toolHandlers` handler map for tool dispatch (the convention exists — it just needs to be propagated to `ContactCallbackTools`).
-- The `package.json` `exports` field is granular and matches the directory structure — consumers can import `@thenvoi/sdk/linear` without pulling the whole SDK graph.
+- The `package.json` `exports` field is granular and matches the directory structure — consumers can import `@band-ai/sdk/linear` without pulling the whole SDK graph.
 - Tests directory (`packages/sdk/tests/`) is rich (40+ files), giving real coverage to refactor against — including a `parity-contract.test.ts` that pins the public surface.
 - Module dependency direction is acyclic: verticals (`adapters/`, `converters/`, `integrations/linear/`, `mcp/`) all depend on `runtime`/`platform`/`contracts`/`core`, never the other way around.

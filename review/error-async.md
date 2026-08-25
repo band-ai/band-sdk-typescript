@@ -6,6 +6,12 @@ Scope: `packages/sdk/src/` (152 `.ts` files). Cross-cutting audit against the co
 
 ## Summary
 
+> **Refresh (2026-08-25, main @ `1eb7bc9`) — every finding here stands, and two counts regressed.**
+> - **Custom error classes outside `BandSdkError`: 6 → 7.** `#80` added `WebSocketDisconnectError extends Error` at `src/platform/streaming/disconnectReason.ts:112`. Unlike the other six it is exported from *both* `src/index.ts:6` and `src/core/index.ts:25`, so it is the first out-of-hierarchy error class a consumer will actually catch — and `instanceof BandSdkError` will not see it. Fix this one first.
+> - **`console.warn` outside the logger: 2 → 3.** `#150` added `console.warn` at `src/config/loader.ts:35`, warning once per process on deprecated legacy env-var names. Its content is safe (it names variables, never values) but it bypasses the injected `Logger` like the other two.
+> - **Unchanged and re-verified:** bare `throw new Error` is still exactly **63**; catches dropping error context still **13**; the three MCP `Promise.all` cleanup sites survive at `mcp/server.ts:171`, `:258`, `mcp/sse.ts:153`; `adapters/shared/coercion.ts` is untouched, so `asErrorMessage` is still the un-adopted central helper.
+> - **New context for the `Promise.all`-in-cleanup finding:** `#80` made `AgentRuntime.stop()`'s swallowed `fatalError` materially worse — see [`core-runtime.md`](core-runtime.md#agentruntimestop-swallows-fatalerror-if-cleanup-throws).
+
 Hygiene is solid at the edges — logger DI, no credential leakage, no empty catches, comprehensive cleanup in the runtime — but the typed-error story is half-applied and a long tail of small inconsistencies (silent catches, `Promise.all` for cleanup, duplicated helpers) drags on diagnosability.
 
 **What's good:**
@@ -19,11 +25,11 @@ Hygiene is solid at the edges — logger DI, no credential leakage, no empty cat
 
 **What's not** (each linked to its full finding):
 
-- The `ThenvoiSdkError` hierarchy is bypassed wholesale — see [63 bare `throw new Error` sites](#central-error-utility-ignored-by-63-bare-throw-new-error-sites) and [six custom error classes that don't extend it](#custom-error-classes-dont-extend-thenvoisdkerror).
+- The `BandSdkError` hierarchy is bypassed wholesale — see [63 bare `throw new Error` sites](#central-error-utility-ignored-by-63-bare-throw-new-error-sites) and [six custom error classes that don't extend it](#custom-error-classes-dont-extend-bandsdkerror).
 - Error-message extraction is reinvented everywhere — see [duplicated and inline-reinvented 33 times](#no-central-safe-message-extraction-util-duplicated-and-inline-reinvented-33-times) and [duplicate `serializeError`](#duplicate-serializeerror-helper).
 - Silent catches hide production failures — see [silent catches in critical paths drop error context](#silent-catches-in-critical-paths-drop-error-context), [`mcp/sdk.ts` returns warning string](#mcpsdkts-returns-warning-string-instead-of-throwing-or-logging), and [`mcp/registrations.ts:155`](#mcpregistrationsts155-returns-error-result-without-logging).
 - Cleanup fan-outs use `Promise.all` where one failure leaks the rest — see [`Promise.all` used for cleanup](#promiseall-used-for-cleanup-one-failure-leaks-the-rest).
-- `AbortSignal` plumbing stops at the streaming boundary — see [`AbortSignal` not plumbed through `ThenvoiLink` or `RestApi`](#abortsignal-not-plumbed-through-thenvoilink-or-restapi).
+- `AbortSignal` plumbing stops at the streaming boundary — see [`AbortSignal` not plumbed through `BandLink` or `RestApi`](#abortsignal-not-plumbed-through-bandlink-or-restapi).
 - Two `console.warn` calls bypass the injected logger — see [`console.warn` used instead of the injected logger](#consolewarn-used-instead-of-the-injected-logger).
 - Three identical `sleep(ms)` and three identical `assertNever` helpers — see [redundant `sleep(ms)` helpers](#redundant-sleepms-helpers-three-copies) and [`assertNever` should be a shared util](#assertnever-should-be-a-shared-util).
 
@@ -38,26 +44,26 @@ Hygiene is solid at the edges — logger DI, no credential leakage, no empty cat
 #### Central error utility ignored by 63 bare `throw new Error` sites
 *Major · Effort: M · 60+ locations (see Locations below)*
 
-**Observation** — `core/errors.ts` exports `ThenvoiSdkError`, `ValidationError`, `UnsupportedFeatureError`, `TransportError`, `RuntimeStateError`. Adapters and integrations consistently bypass them:
+**Observation** — `core/errors.ts` exports `BandSdkError`, `ValidationError`, `UnsupportedFeatureError`, `TransportError`, `RuntimeStateError`. Adapters and integrations consistently bypass them:
 
 - **Validation throws** (`linear_update_issue requires...`) should be `ValidationError`.
 - **"client not initialized" / "not connected"** should be `RuntimeStateError`.
 - **"command is empty" / "stdio not exposed"** should be `ValidationError` or a new `ConfigurationError`.
-- **`assertNever` fallbacks** (`Unhandled platform event`, `Unhandled contact event`) should at minimum be `ThenvoiSdkError`.
+- **`assertNever` fallbacks** (`Unhandled platform event`, `Unhandled contact event`) should at minimum be `BandSdkError`.
 - **`new Error(String(error))` rewrappings** lose the original error's `cause` chain.
 
 **Impact** — SDK consumers cannot catch errors selectively by type — every `throw new Error` bypasses the typed hierarchy, making SDK boundaries harder to program against and future error-translation refactors multiplicatively more expensive.
 
-**Fix** — Pass an audit replacing `throw new Error(msg)` with the closest existing typed class. For "feature not available on this Linear client" cases use `UnsupportedFeatureError` to match the `FernRestAdapter` style. Where rewrapping `unknown` errors, use `new ThenvoiSdkError(message, error)` instead of `new Error(String(error))` so the original error survives in `cause`.
+**Fix** — Pass an audit replacing `throw new Error(msg)` with the closest existing typed class. For "feature not available on this Linear client" cases use `UnsupportedFeatureError` to match the `FernRestAdapter` style. Where rewrapping `unknown` errors, use `new BandSdkError(message, error)` instead of `new Error(String(error))` so the original error survives in `cause`.
 
 **Locations:**
 - `packages/sdk/src/integrations/linear/tools.ts:333,354,369,397,415,422,460,514,528,559,575,746,776`
-- `packages/sdk/src/adapters/codex/CodexAdapter.ts:258,451,541,566,1231,1303`
+- `packages/sdk/src/adapters/codex/CodexAdapter.ts:259,451,541,566,1231,1303`
 - `packages/sdk/src/adapters/a2a-gateway/server.ts:327,360,502,563,579`
-- `packages/sdk/src/adapters/acp/ACPClientAdapter.ts:90,135,233,355,370,536`
-- `packages/sdk/src/adapters/acp/ThenvoiACPServerAdapter.ts:182,226`
+- `packages/sdk/src/adapters/acp/ACPClientAdapter.ts:91,135,233,355,370,536`
+- `packages/sdk/src/adapters/acp/BandACPServerAdapter.ts:182,226`
 - `packages/sdk/src/client/rest/FernRestAdapter.ts:106,122,147,176`
-- `packages/sdk/src/adapters/opencode/OpencodeAdapter.ts:250,781,841`
+- `packages/sdk/src/adapters/opencode/OpencodeAdapter.ts:252,781,841`
 - `packages/sdk/src/adapters/letta/LettaAdapter.ts:908,981`
 - `packages/sdk/src/adapters/parlant/ParlantAdapter.ts:496,532`
 - `packages/sdk/src/adapters/a2a/A2AAdapter.ts:163`
@@ -71,20 +77,20 @@ Hygiene is solid at the edges — logger DI, no credential leakage, no empty cat
 - `packages/sdk/src/adapters/google-adk/GoogleADKAdapter.ts:130,153`
 - `packages/sdk/src/adapters/opencode/client.ts:269,278,301,418`
 - `packages/sdk/src/runtime/PlatformRuntime.ts:336`
-- `packages/sdk/src/runtime/rooms/AgentRuntime.ts:437`
+- `packages/sdk/src/runtime/rooms/AgentRuntime.ts:463`
 - `packages/sdk/src/adapters/a2a/types.ts:37`
-- plus several `new Error(String(error))` re-wrappings (`adapters/codex/appServerClient.ts:156`, `adapters/letta/LettaAdapter.ts:893`, `runtime/PlatformRuntime.ts:263`, `runtime/rooms/AgentRuntime.ts:180,197`)
+- plus several `new Error(String(error))` re-wrappings (`adapters/codex/appServerClient.ts:156`, `adapters/letta/LettaAdapter.ts:893`, `runtime/PlatformRuntime.ts:263`, `runtime/rooms/AgentRuntime.ts:181,197`)
 
 [↑ Summary in review.md M8](../review.md#m8-error-handling-consistency)
 
-#### Custom error classes don't extend `ThenvoiSdkError`
+#### Custom error classes don't extend `BandSdkError`
 *Major · Effort: S · 6 locations (see Locations below)*
 
-**Observation** — Six bespoke error classes all `extends Error`. A consumer who wants to discriminate "this is from the Thenvoi SDK" cannot use `instanceof ThenvoiSdkError`.
+**Observation** — Six bespoke error classes all `extends Error`. A consumer who wants to discriminate "this is from the Band SDK" cannot use `instanceof BandSdkError`.
 
-**Impact** — SDK consumers must catch each custom class individually; a single top-level `instanceof ThenvoiSdkError` guard — the expected pattern — silently misses all six.
+**Impact** — SDK consumers must catch each custom class individually; a single top-level `instanceof BandSdkError` guard — the expected pattern — silently misses all six.
 
-**Fix** — Have each extend `ThenvoiSdkError` (e.g. `class HttpStatusError extends ThenvoiSdkError`). Existing `instanceof HttpStatusError` checks in `OpencodeAdapter.ts:793` keep working; consumers gain a single discriminator.
+**Fix** — Have each extend `BandSdkError` (e.g. `class HttpStatusError extends BandSdkError`). Existing `instanceof HttpStatusError` checks in `OpencodeAdapter.ts:793` keep working; consumers gain a single discriminator.
 
 **Locations:**
 - `packages/sdk/src/adapters/codex/appServerClient.ts:46` (`CodexJsonRpcError`)
@@ -107,8 +113,8 @@ Hygiene is solid at the edges — logger DI, no credential leakage, no empty cat
 
 **Locations:**
 - `packages/sdk/src/adapters/shared/coercion.ts:82` (canonical `asErrorMessage`)
-- `packages/sdk/src/adapters/acp/ACPClientAdapter.ts:581` (duplicate `toErrorMessage`)
-- Inline `error instanceof Error ? error.message : String(error)` at: `integrations/linear/bridge/handler.ts:155,175,198,238,651`; `integrations/linear/store.ts:289-291,396`; `integrations/linear/activities.ts:214` (uses console + inline); `integrations/linear/webhook.ts:632 serializeError`; `runtime/ContactEventHandler.ts:435 serializeError`; `runtime/Execution.ts:279`; `runtime/PlatformRuntime.ts:263,320`; `runtime/rooms/AgentRuntime.ts:180,197`; `runtime/tools/AgentTools.ts:356`; `adapters/anthropic/model.ts:183`; `adapters/openai/model.ts:248`; `adapters/gemini/model.ts:298`; `adapters/vercel-ai-sdk/model.ts:197`; `adapters/claude-sdk/ClaudeSDKAdapter.ts:101,362`; `adapters/parlant/ParlantAdapter.ts:600`; `adapters/letta/LettaAdapter.ts:1083`; `mcp/registrations.ts:156`; `mcp/sdk.ts:241,284`; `adapters/opencode/OpencodeAdapter.ts:165`
+- `packages/sdk/src/adapters/acp/ACPClientAdapter.ts:582` (duplicate `toErrorMessage`)
+- Inline `error instanceof Error ? error.message : String(error)` at: `integrations/linear/bridge/handler.ts:155,175,198,238,651`; `integrations/linear/store.ts:289-291,396`; `integrations/linear/activities.ts:214` (uses console + inline); `integrations/linear/webhook.ts:632 serializeError`; `runtime/ContactEventHandler.ts:435 serializeError`; `runtime/Execution.ts:279`; `runtime/PlatformRuntime.ts:263,320`; `runtime/rooms/AgentRuntime.ts:181,197`; `runtime/tools/AgentTools.ts:334`; `adapters/anthropic/model.ts:183`; `adapters/openai/model.ts:248`; `adapters/gemini/model.ts:298`; `adapters/vercel-ai-sdk/model.ts:197`; `adapters/claude-sdk/ClaudeSDKAdapter.ts:101,362`; `adapters/parlant/ParlantAdapter.ts:600`; `adapters/letta/LettaAdapter.ts:1083`; `mcp/registrations.ts:156`; `mcp/sdk.ts:241,284`; `adapters/opencode/OpencodeAdapter.ts:166`
 
 [↑ Summary in review.md M6](../review.md#m6-coercion-and-error-extraction-helpers-duplicated-across-the-tree)
 
@@ -125,8 +131,8 @@ Hygiene is solid at the edges — logger DI, no credential leakage, no empty cat
 - `packages/sdk/src/runtime/rooms/RoomPresence.ts:52-56` — `try { subscribeAgentRooms } catch { /* Best-effort */ }`. No log of the error.
 - `packages/sdk/src/runtime/rooms/AgentRuntime.ts:102-104,121-123` — `catch { this.logger.warn("...continuing without it"); }`. Error variable not captured, no error included in payload.
 - `packages/sdk/src/runtime/Execution.ts:178-183,355-360` — `catch { this.logger.warn("Failed to fetch stale processing messages, skipping recovery", { roomId }); }`. Error not logged.
-- `packages/sdk/src/mcp/server.ts:133-137` — `catch (error) { if (!res.headersSent) sendMcpError(res, 500, "Internal server error"); }`. The actual `error` is never logged; debugging 500s server-side is impossible.
-- `packages/sdk/src/mcp/sse.ts:109-111` — `transport.onerror = () => { this.sessions.delete(sessionId) }`. Drops the error argument the SDK passes.
+- `packages/sdk/src/mcp/server.ts:134-138` — `catch (error) { if (!res.headersSent) sendMcpError(res, 500, "Internal server error"); }`. The actual `error` is never logged; debugging 500s server-side is impossible.
+- `packages/sdk/src/mcp/sse.ts:110-112` — `transport.onerror = () => { this.sessions.delete(sessionId) }`. Drops the error argument the SDK passes.
 - `packages/sdk/src/agent/Agent.ts:90-95` — `try { await this.startPromise } catch { return true; }`. Stop swallows start-failure.
 - `packages/sdk/src/runtime/shutdown.ts:65-68` — `catch { process.exit(1); }`. Forced exit with no diagnostic.
 - `packages/sdk/src/adapters/opencode/client.ts:213,227,228,253` — `.catch(() => undefined)` chains in `registerMcpServer`/`deregisterMcpServer`/`close`. Failures during MCP teardown are invisible.
@@ -143,23 +149,23 @@ Hygiene is solid at the edges — logger DI, no credential leakage, no empty cat
 **Fix** — Switch to `Promise.allSettled`, log any rejected results at `warn` with `sessionId`, then continue to close the HTTP server.
 
 **Locations:**
-- `packages/sdk/src/mcp/server.ts:170` (`stop`)
-- `packages/sdk/src/mcp/server.ts:257` (`closeIdleSessions`)
-- `packages/sdk/src/mcp/sse.ts:152` (`stop`)
+- `packages/sdk/src/mcp/server.ts:171` (`stop`)
+- `packages/sdk/src/mcp/server.ts:258` (`closeIdleSessions`)
+- `packages/sdk/src/mcp/sse.ts:153` (`stop`)
 
 [↑ Summary in review.md M11](../review.md#m11-cleanup-uses-promiseall-where-allsettled-is-needed)
 
-#### `AbortSignal` not plumbed through `ThenvoiLink` or `RestApi`
+#### `AbortSignal` not plumbed through `BandLink` or `RestApi`
 *Major · Effort: M · 3 locations (see Locations below)*
 
 **Observation** — `AgentRuntime.stop()` aborts its `stopController`, but in-flight REST calls (e.g. a 4-attempt rate-limit-retry on `getAgentMe()`, paginated `listAllChats`, `markProcessing`/`markProcessed`/`markFailed`, contact-handler `createChatEvent`) cannot be cancelled. The Letta adapter shows the right pattern (`raceTimeout` cancelling underlying HTTP via signal).
 
 **Impact** — REST calls can't be cancelled. The rate-limit retry loop in `withRateLimitRetry` can `sleep` ~16s ignoring any caller signal. The streaming side has `AbortSignal` plumbing — the asymmetry is the surface bug.
 
-**Fix** — Add `signal?: AbortSignal` to `RestRequestOptions` (it already merges into Fern options at line 32-37 of `FernRestAdapter.ts`; the underlying Fern client supports it), and to `ThenvoiLink.markProcessing/Processed/Failed`. Have `AgentRuntime.stop()` pass its signal to in-flight cleanup REST calls.
+**Fix** — Add `signal?: AbortSignal` to `RestRequestOptions` (it already merges into Fern options at line 32-37 of `FernRestAdapter.ts`; the underlying Fern client supports it), and to `BandLink.markProcessing/Processed/Failed`. Have `AgentRuntime.stop()` pass its signal to in-flight cleanup REST calls.
 
 **Locations:**
-- `packages/sdk/src/platform/ThenvoiLink.ts` (all REST-facing methods)
+- `packages/sdk/src/platform/BandLink.ts` (all REST-facing methods)
 - `packages/sdk/src/client/rest/FernRestAdapter.ts:73-98` (`withRateLimitRetry` has no signal)
 - `packages/sdk/src/client/rest/types.ts` (`RestApi` shape)
 
@@ -192,18 +198,18 @@ Hygiene is solid at the edges — logger DI, no credential leakage, no empty cat
 #### Custom timeout reject pattern instead of `Promise.race`
 *Major · Effort: S · 4 locations (see Locations below)*
 
-**Observation** — Four sites build the timer-then-`reject` pattern manually with `setTimeout`/`clearTimeout`/`settled` flags. `ThenvoiACPServerAdapter.ts` already shows the cleaner `Promise.race([pending.done, new Promise<never>((_, reject) => setTimeout(…))])` form.
+**Observation** — Four sites build the timer-then-`reject` pattern manually with `setTimeout`/`clearTimeout`/`settled` flags. `BandACPServerAdapter.ts` already shows the cleaner `Promise.race([pending.done, new Promise<never>((_, reject) => setTimeout(…))])` form.
 
 **Impact** — Manual timer/settled-flag patterns are error-prone and add boilerplate; the `settled` guard is easy to miss, and timer cleanup on early resolution must be handled manually at each site.
 
 **Fix** — Introduce a `withTimeout(promise, ms, label)` helper in `core/utils.ts`; replace the four sites.
 
 **Locations:**
-- `packages/sdk/src/platform/streaming/PhoenixChannelsTransport.ts:215-231` (`waitForConnection`)
+- `packages/sdk/src/platform/streaming/PhoenixChannelsTransport.ts:406-434` (`waitForConnection`) — re-anchored at the 2026-08-25 refresh; `#80` moved this method from `:215-231`. It still hand-rolls the deferred, so it still belongs on this list, but both of the concrete defects the network-layer finding recorded against it are now fixed — see [`network.md`](network.md#connect-timeout-uses-manual-settimeout-instead-of-promiserace).
 - `packages/sdk/src/adapters/codex/appServerClient.ts:194-205` (`recvEvent`)
 - `packages/sdk/src/runtime/Execution.ts:100-136` (`waitForIdle`)
 - `packages/sdk/src/adapters/a2a-gateway/A2AGatewayAdapter.ts:561-577` (`AsyncQueue.dequeue`)
-- `packages/sdk/src/adapters/acp/ThenvoiACPServerAdapter.ts:243-251` already uses `Promise.race` correctly — good model.
+- `packages/sdk/src/adapters/acp/BandACPServerAdapter.ts:243-251` already uses `Promise.race` correctly — good model.
 
 ### Minor
 
@@ -220,8 +226,8 @@ Hygiene is solid at the edges — logger DI, no credential leakage, no empty cat
 - `packages/sdk/src/agent/Agent.ts:76-81`
 - `packages/sdk/src/adapters/codex/appServerClient.ts:154-157`
 - `packages/sdk/src/adapters/letta/LettaAdapter.ts:880-895`
-- `packages/sdk/src/adapters/opencode/OpencodeAdapter.ts:840`
-- `packages/sdk/src/platform/streaming/PhoenixChannelsTransport.ts:88-99`
+- `packages/sdk/src/adapters/opencode/OpencodeAdapter.ts:842`
+- `packages/sdk/src/platform/streaming/PhoenixChannelsTransport.ts:134-145`
 
 #### Redundant `sleep(ms)` helpers (three copies)
 *Minor · Effort: S · 3 locations (see Locations below)*
@@ -304,7 +310,7 @@ Hygiene is solid at the edges — logger DI, no credential leakage, no empty cat
 **Locations:**
 - `packages/sdk/src/runtime/PlatformRuntime.ts:335-337`
 - `packages/sdk/src/runtime/ContactEventHandler.ts:454-456`
-- `packages/sdk/src/runtime/rooms/AgentRuntime.ts:436-438`
+- `packages/sdk/src/runtime/rooms/AgentRuntime.ts:462-464`
 
 #### `Linear bridge could not resolve…` throws bare `Error`
 *Nit · Effort: S · `packages/sdk/src/integrations/linear/bridge/handler.ts:650-653`*
@@ -315,7 +321,7 @@ Hygiene is solid at the edges — logger DI, no credential leakage, no empty cat
 
 **Fix** — Use `ValidationError` (consistent with `PlatformRuntime` constructor validation).
 
-#### `linear_thenvoi_bridge.acknowledgment_failed` logs `error.message` only, drops stack
+#### `linear_band_bridge.acknowledgment_failed` logs `error.message` only, drops stack
 *Nit · Effort: S · `packages/sdk/src/integrations/linear/bridge/handler.ts:152-157`*
 
 **Observation** — Logger already serializes Errors with stack (via `sanitizeValue`); passing `error` directly is preferable to `error instanceof Error ? error.message : String(error)`. Same pattern appears at lines 175, 198, 238 of `bridge/handler.ts`.
@@ -338,7 +344,7 @@ Hygiene is solid at the edges — logger DI, no credential leakage, no empty cat
 - `packages/sdk/src/adapters/letta/LettaAdapter.ts:874-876`
 
 #### `Codex returned an invalid …` messages are throw-and-stringify
-*Nit · Effort: S · `packages/sdk/src/adapters/codex/CodexAdapter.ts:258,451,541,566`*
+*Nit · Effort: S · `packages/sdk/src/adapters/codex/CodexAdapter.ts:259,451,541,566`*
 
 **Observation** — Four validation failure sites in `CodexAdapter` throw bare `Error` instead of `ValidationError`, making it impossible for callers to distinguish transport failures from validation failures.
 
@@ -356,7 +362,7 @@ Hygiene is solid at the edges — logger DI, no credential leakage, no empty cat
 - **Rate-limit retry with exponential backoff + jitter** — `FernRestAdapter.withRateLimitRetry` (line 73) is the right shape; just needs generalizing to other transient errors.
 - **No empty catch blocks** anywhere in the tree (`catch (e) {}` — 0 occurrences).
 - **No `console.log` debug leftovers** in production code paths.
-- **`Promise.allSettled` correctly used** for fan-out where individual failures are independent — `ThenvoiLink.disconnect` (line 130), `LettaAdapter.onCleanup` (line 439), `ParlantAdapter` (line 257), `webhook.ts` (line 133).
+- **`Promise.allSettled` correctly used** for fan-out where individual failures are independent — `BandLink.disconnect` (line 130), `LettaAdapter.onCleanup` (line 439), `ParlantAdapter` (line 257), `webhook.ts` (line 133).
 - **Typed errors at SDK construction boundaries** — `PlatformRuntime` constructor uses `ValidationError` (lines 70, 76); `RuntimeStateError` for "not initialized" / "not started" (lines 101, 272, 280, 288).
 - **`UnsupportedFeatureError` for optional-dependency loading** — All `await import("...").catch` shims (Anthropic, OpenAI, Gemini, Vercel AI, LangGraph, Claude SDK, Parlant, Letta, OpenCode, ACP, node:sqlite) wrap missing-package errors in `UnsupportedFeatureError` with a helpful install hint.
 - **`StaleSessionGuard` error logging is exemplary** — see packages/sdk/src/integrations/linear/stale-session-guard.ts:84-90 (`list_sessions_failed` at `error`) and :111-115 (`keepalive_failed` at `warn`); both include `sessionId` and serialized error.

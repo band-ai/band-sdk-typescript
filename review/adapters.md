@@ -4,6 +4,12 @@
 
 ## Summary
 
+> **Refresh (2026-08-25, main @ `1eb7bc9`) — every Major here stands; one Minor is half fixed and one premise was corrected.** Seven adapter files changed and only two substantively. `LangGraphAdapter.ts` (+98/−19 from `#152`) fixed `streamEvents` argument placement, history replay under a checkpointer, and duplicate-message emission — real behaviour fixes, none of which this review had flagged, and none of which invalidate a finding here. `#87` added one line to each of five adapters (`capabilities: { memory: … }` passed into prompt rendering) and removed one dead import. Everything else in `adapters/` — including all the `*Like` shadow interfaces, every `load*ClientFactory` copy, the Letta/Parlant `selectCompleteExchanges` duplication, and the `converters/` boundary leak — is byte-identical apart from the rebrand.
+>
+> - [Two dead imports](#two-dead-imports-flagged-by-npm-run-lint--one-fixed-one-outstanding): the Google ADK half is **fixed**; `asJsonSafe` in `BandACPServerAdapter.ts:21` is still there and `eslint` still warns on it.
+> - [`assertCapability` exists but few adapters call it](#assertcapability-exists-but-few-adapters-call-it): the "grep finds zero usages" premise was **wrong at v0.1.4** and is corrected in place. The finding's substance is unaffected.
+> - `#87` incidentally makes the `assertCapability` fix cheaper: five adapters now already hold their `enableMemoryTools` value at the point the assertion belongs.
+
 The adapter layer is the largest part of the SDK — **15 framework adapters** behind a thin shared contract. Hygiene at the boundaries is strong; the weaknesses are inside, in the form of duplicated cross-cutting patterns and a misleading abstraction story.
 
 **What's good:**
@@ -70,9 +76,9 @@ The real contract is `FrameworkAdapter` in `contracts/protocols.ts:219`, which `
 - `packages/sdk/src/adapters/letta/LettaAdapter.ts:261-270` (six maps + lock map)
 - `packages/sdk/src/adapters/parlant/ParlantAdapter.ts:108-112` (four maps)
 - `packages/sdk/src/adapters/claude-sdk/ClaudeSDKAdapter.ts:171-173` (three maps)
-- `packages/sdk/src/adapters/codex/CodexAdapter.ts:141-143` (three maps)
-- `packages/sdk/src/adapters/opencode/OpencodeAdapter.ts:179-180` + `RoomState` (huge)
-- `packages/sdk/src/adapters/acp/ThenvoiACPServerAdapter.ts:48-54` (seven maps)
+- `packages/sdk/src/adapters/codex/CodexAdapter.ts:142-144` (three maps)
+- `packages/sdk/src/adapters/opencode/OpencodeAdapter.ts:180-181` + `RoomState` (huge)
+- `packages/sdk/src/adapters/acp/BandACPServerAdapter.ts:48-54` (seven maps)
 
 #### Verbatim duplication between Letta and Parlant
 *Major · Effort: S · 2 adapter pairs (see Locations below)*
@@ -117,7 +123,7 @@ while (index < history.length) {
 #### `ParlantAdapter`'s `selectCompleteExchanges` silently drops consecutive same-role messages
 *Major · Effort: S · `packages/sdk/src/adapters/parlant/ParlantAdapter.ts:549-574`*
 
-**Observation** — `selectCompleteExchanges` looks for strict user→assistant pairs and silently drops every other shape. In a multi-participant Thenvoi room where several users speak before the agent replies, every user message except the last one in the pair will be invisible to Parlant. Letta's version (`LettaAdapter.ts:993`) merges consecutive same-role entries before pairing; Parlant never got that step.
+**Observation** — `selectCompleteExchanges` looks for strict user→assistant pairs and silently drops every other shape. In a multi-participant Band room where several users speak before the agent replies, every user message except the last one in the pair will be invisible to Parlant. Letta's version (`LettaAdapter.ts:993`) merges consecutive same-role entries before pairing; Parlant never got that step.
 
 **Impact** — Silent data loss in multi-participant rooms — user messages disappear from the conversation history sent to Parlant, with no log, no error, and no caller-visible signal. The agent responds to truncated context, and there is no way to detect this happened from outside the adapter.
 
@@ -177,7 +183,7 @@ and let each adapter call `loadOptionalPeer("@anthropic-ai/sdk", "AnthropicAdapt
 - `packages/sdk/src/adapters/vercel-ai-sdk/model.ts:195-215`
 - `packages/sdk/src/adapters/letta/LettaAdapter.ts:1078-1111`
 - `packages/sdk/src/adapters/parlant/ParlantAdapter.ts:596-623`
-- `packages/sdk/src/adapters/claude-sdk/ClaudeSDKAdapter.ts:361-375`
+- `packages/sdk/src/adapters/claude-sdk/ClaudeSDKAdapter.ts:362-376`
 - `packages/sdk/src/adapters/google-adk/GoogleADKAdapter.ts:125-169`
 
 [↑ Summary in review.md M6](../review.md#m6-coercion-and-error-extraction-helpers-duplicated-across-the-tree)
@@ -214,7 +220,7 @@ and let each adapter call `loadOptionalPeer("@anthropic-ai/sdk", "AnthropicAdapt
 #### Custom MCP backend bridge factory wires through a static-typed `LazyAsyncValue` of a function
 *Major · Effort: S · `packages/sdk/src/adapters/claude-sdk/ClaudeSDKAdapter.ts:99-156`*
 
-**Observation** — The module-level `thenvoiMcpBridgeFactory` is a `LazyAsyncValue<ThenvoiMcpBridgeFactory>` whose `load()` reads `@anthropic-ai/claude-agent-sdk` and returns a function that closes over the bridge runtime, but the function it returns is shared across every `ClaudeSDKAdapter` instance because the `LazyAsyncValue` lives in module scope (line 99). Multiple `ClaudeSDKAdapter` instances will share the same cached `tool` factory. That's accidental, fragile, and undocumented.
+**Observation** — The module-level `bandMcpBridgeFactory` is a `LazyAsyncValue<BandMcpBridgeFactory>` whose `load()` reads `@anthropic-ai/claude-agent-sdk` and returns a function that closes over the bridge runtime, but the function it returns is shared across every `ClaudeSDKAdapter` instance because the `LazyAsyncValue` lives in module scope (line 99). Multiple `ClaudeSDKAdapter` instances will share the same cached `tool` factory. That's accidental, fragile, and undocumented.
 
 **Impact** — Multiple `ClaudeSDKAdapter` instances silently share a single cached factory; any state held in the factory closure is unintentionally shared across instances, which is a latent correctness bug.
 
@@ -243,32 +249,36 @@ and let each adapter call `loadOptionalPeer("@anthropic-ai/sdk", "AnthropicAdapt
 #### `assertCapability` exists but few adapters call it
 *Minor · Effort: S · `packages/sdk/src/contracts/capabilities.ts:12-19`*
 
-**Observation** — `assertCapability` is exported but never called from any adapter (grep finds zero usages outside the contracts file itself). Tools exposed via `getToolSchemas({ includeMemory })` rely on the schema layer to silently omit memory tools when capabilities don't allow it, but the adapters that take an `enableMemoryTools` config option (Letta, Parlant, Claude SDK, Codex, ACP, Opencode, Google ADK, LangGraph) never cross-validate against `tools.capabilities.memory`.
+> **Refresh (2026-08-25, main @ `1eb7bc9`) — premise corrected; the finding itself still stands.** The parenthetical "grep finds zero usages outside the contracts file itself" was **wrong when written**. At v0.1.4 `assertCapability` had 12 call sites — one in the platform link (`:202` pre-rebrand) plus 11 in `runtime/tools/AgentTools.ts`; today it has 11, at `platform/BandLink.ts:278` and `runtime/tools/AgentTools.ts:265`, `:402`, `:420`, `:440`, `:477`, `:497`, `:534`, `:543`, `:552`, `:566`, `:580`. So it is not dead code, and the "either delete `assertCapability` if it's dead" half of the fix should be dropped. The substantive claim is unaffected and still true: the *runtime tools* assert capabilities, the *adapters* never do. No adapter cross-checks its own `enableMemoryTools` config against `tools.capabilities.memory`, so the misconfiguration this finding describes is still silent.
+
+**Observation** — `assertCapability` is called consistently from the runtime tool layer (11 sites in `AgentTools.ts` and `BandLink.ts`) but **never from an adapter**. Tools exposed via `getToolSchemas({ includeMemory })` rely on the schema layer to silently omit memory tools when capabilities don't allow it, but the adapters that take an `enableMemoryTools` config option (Letta, Parlant, Claude SDK, Codex, ACP, Opencode, Google ADK, LangGraph) never cross-validate against `tools.capabilities.memory`.
 
 **Impact** — An adapter configured with `enableMemoryTools: true` against a runtime where `memory: false` silently produces best-effort behaviour instead of failing loudly, making misconfiguration invisible.
 
-**Fix** — Either delete `assertCapability` if it's dead, or wire it into adapter init (call it once per onStarted/onMessage based on config). If an adapter is configured with `enableMemoryTools: true` but the runtime capability is `memory: false`, today the user gets silent best-effort behaviour; an assertion would fail loudly.
+**Fix** — Wire `assertCapability` into adapter init (call it once per `onStarted`/`onMessage` based on config). If an adapter is configured with `enableMemoryTools: true` but the runtime capability is `memory: false`, today the user gets silent best-effort behaviour; an assertion would fail loudly. Note `#87` made this cheaper to do: adapters now already pass a capability hint into prompt rendering (`capabilities: { memory: this.enableMemoryTools }` — `GoogleADKAdapter.ts:218`, `LangGraphAdapter.ts:113`, and the three other adapters `#87` touched), so the config value is already in hand at exactly the point the assertion belongs.
 
-#### Two dead imports flagged by `npm run lint`
-*Minor · Effort: S · `src/adapters/acp/ThenvoiACPServerAdapter.ts:21`, `src/adapters/google-adk/GoogleADKAdapter.ts:9`*
+#### Two dead imports flagged by `npm run lint` — one fixed, one outstanding
+*Minor · Effort: S · `src/adapters/acp/BandACPServerAdapter.ts:21` (outstanding)*
 
-**Observation** — Surfaced by `npm run lint`. Both are stale imports left from refactors. `asJsonSafe` (ACP server) and `HistoryProvider` (Google ADK) — neither symbol is referenced anywhere in the importing file.
+> **Refresh (2026-08-25, main @ `1eb7bc9`) — half fixed.** `#87` removed the `HistoryProvider` import from `GoogleADKAdapter.ts:9` (the line is now `import type { PlatformMessage } from "../../runtime/types";`). `asJsonSafe` in `BandACPServerAdapter.ts:21` is untouched, and a fresh `eslint .` run at `1eb7bc9` still reports it: *"'asJsonSafe' is defined but never used"*. The recommendation to escalate `no-unused-vars` from `warn` to `error` was **not** adopted, and the same run shows why it still matters — 12 warnings survive CI, including two more dead symbols this review did not originally list: `error` in `mcp/server.ts:134` and `assertNever` in `runtime/PlatformRuntime.ts:335` (the latter is the dead `assertNever` filed separately in `core-runtime.md`).
 
-**Impact** — Minor cognitive noise; signals refactor hygiene gap. Lint flags them but the project's ESLint config treats them as warnings (not errors), so they survive CI.
+**Observation** — Surfaced by `npm run lint`. `asJsonSafe` (ACP server, `:21`) is a stale import left from a refactor; the symbol is not referenced anywhere in the importing file.
 
-**Fix** — Delete both `import` lines. Consider escalating `no-unused-vars` from `warn` to `error` in the lint config to prevent these from recurring.
+**Impact** — Minor cognitive noise; signals refactor hygiene gap. Lint flags it but the project's ESLint config treats it as a warning (not an error), so it survives CI — as it has for a whole release line now.
+
+**Fix** — Delete the `import` line. Escalate `no-unused-vars` from `warn` to `error` in the lint config to prevent recurrence; at `1eb7bc9` that would catch 4 dead symbols across `src/` and 2 more in `tests/`.
 
 #### `GoogleADKAdapter` keeps an unused `roomSessions` map
-*Minor · Effort: S · `packages/sdk/src/adapters/google-adk/GoogleADKAdapter.ts:184, :240-241, :299`*
+*Minor · Effort: S · `packages/sdk/src/adapters/google-adk/GoogleADKAdapter.ts:184`, `:242`, `:300`*
 
-**Observation** — `roomSessions = new Map<string, string>()` is written to on line 241 (`this.roomSessions.set(context.roomId, sessionId)`) and cleared on line 299, but it's never *read*. The session id is always a fresh `randomUUID()` per message and the Runner is recreated per message (line 236), so the map is dead.
+**Observation** — `roomSessions = new Map<string, string>()` (`:184`) is written to on `:242` (`this.roomSessions.set(context.roomId, sessionId)`) and cleared on `:300`, but it's never *read*. The session id is always a fresh `randomUUID()` per message and the Runner is recreated per message (`:237`), so the map is dead. (Line numbers shifted by one from v0.1.4: `#87` added a `capabilities` argument to the prompt render call at `:218`.)
 
 **Impact** — Dead state adds cognitive overhead when reading the adapter and implies session continuity that does not actually exist.
 
 **Fix** — Remove the field.
 
 #### Codex `extractLocalCommand` searches the first 5 tokens with a case-insensitive `/` check
-*Minor · Effort: S · `packages/sdk/src/adapters/codex/CodexAdapter.ts:1177-1212`*
+*Minor · Effort: S · `packages/sdk/src/adapters/codex/CodexAdapter.ts:1179-1214`*
 
 **Observation** — `command = token.slice(1).toLowerCase()` (line 1200) and `searchLimit = Math.min(tokens.length, 5)` (line 1193) — local commands like `/model`, `/status` can appear up to position 5 in the prompt and are matched case-insensitively. The case-insensitive match is undocumented and not consistent with the rest of the codebase (most regexes are case-sensitive). The "up to 5 tokens deep" lookahead is also undocumented.
 
@@ -277,7 +287,7 @@ and let each adapter call `loadOptionalPeer("@anthropic-ai/sdk", "AnthropicAdapt
 **Fix** — Either match commands at position 0 only (the usual convention for slash commands) or document why the prefix search and the case-insensitive comparison are needed.
 
 #### Many adapters log to `error` for *expected* runtime states
-*Minor · Effort: S · `parlant/ParlantAdapter.ts:137`, `letta/LettaAdapter.ts:307`, `codex/CodexAdapter.ts:475`*
+*Minor · Effort: S · `parlant/ParlantAdapter.ts:137`, `letta/LettaAdapter.ts:307`, `codex/CodexAdapter.ts:477`*
 
 **Observation** — Client-initialisation failures are logged at `error` from inside `onRejected` of `LazyAsyncValue`, which fires once per failed attempt. Combined with the retry-backoff path (`lazyAsyncValue.ts:33`), a peer that's misconfigured produces an `error` log every time the SDK touches the loader. Parlant additionally tracks `lastInitFailure` *outside* the loader and produces a separate cooldown error (line 532). The intent is fine but the log noise is heavy for expected configuration issues.
 
@@ -304,7 +314,7 @@ and let each adapter call `loadOptionalPeer("@anthropic-ai/sdk", "AnthropicAdapt
 **Fix** — Export `OpencodeAdapterOptions` (currently `interface OpencodeAdapterOptions` on line 100 of `OpencodeAdapter.ts` without `export`).
 
 #### `extractThreadIdFromHistory` lives in `CodexAdapter.ts` alongside `extractCodexSessionId` in `converters/codex.ts` — same logic, two homes
-*Minor · Effort: S · `codex/CodexAdapter.ts:1214-1223`, `converters/codex.ts:36-43`*
+*Minor · Effort: S · `codex/CodexAdapter.ts:1216-1225`, `converters/codex.ts:36-43`*
 
 **Observation** — Identical implementation (both call `findLatestTaskMetadata` looking at `codex_thread_id`). Same for `extractClaudeSessionId` (only defined in `converters/claude-sdk.ts`, but used directly by `ClaudeSDKAdapter.ts:11`). Codex chose to inline a second copy; Claude SDK chose to import. Pick one pattern.
 
@@ -315,7 +325,7 @@ and let each adapter call `loadOptionalPeer("@anthropic-ai/sdk", "AnthropicAdapt
 ### Nits
 
 #### Some adapters use `String(value ?? "")`, others use `asNonEmptyString`
-*Nit · Effort: S · `langgraph/LangGraphAdapter.ts:225`, `a2a-gateway/A2AGatewayAdapter.ts:649`, `google-adk/GoogleADKAdapter.ts:438`*
+*Nit · Effort: S · `langgraph/LangGraphAdapter.ts:248`, `a2a-gateway/A2AGatewayAdapter.ts:649`, `google-adk/GoogleADKAdapter.ts:439`*
 
 **Observation** — `String(entry.sender_type ?? "")` is the older idiom; `asNonEmptyString(value)` from `shared/coercion.ts` is the newer one. Both styles appear within the same file (Codex uses both, LangGraph uses both, ACP uses both). Pick one.
 
@@ -371,7 +381,7 @@ and let each adapter call `loadOptionalPeer("@anthropic-ai/sdk", "AnthropicAdapt
 **Locations:**
 - `packages/sdk/src/adapters/acp/ACPClientAdapter.ts:4`
 - `packages/sdk/src/adapters/acp/ACPServer.ts:3`
-- `packages/sdk/src/adapters/acp/ThenvoiACPServerAdapter.ts:3`
+- `packages/sdk/src/adapters/acp/BandACPServerAdapter.ts:3`
 - `packages/sdk/src/adapters/acp/client.ts:1`
 - `packages/sdk/src/adapters/acp/types.ts:1`
 
@@ -394,7 +404,7 @@ and let each adapter call `loadOptionalPeer("@anthropic-ai/sdk", "AnthropicAdapt
 | A2AAdapter              | extends SimpleAdapter   | dynamic via ad-hoc try/catch | yes (room maps) | no                  | UnsupportedFeatureError + ValidationError | yes (a2a-adapter.test) |
 | A2AGatewayAdapter       | extends SimpleAdapter   | N/A (server, not client of peer) | yes (room maps + queues) | yes      | UnsupportedFeatureError + ValidationError | yes (a2a-gateway-adapter.test) |
 | ACPClientAdapter        | extends SimpleAdapter   | dynamic via LazyAsyncValue (loader.ts) | yes (room + backend) | yes        | plain Error    | yes (acp-client-adapter.test) |
-| ThenvoiACPServerAdapter | extends SimpleAdapter   | dynamic via LazyAsyncValue (loader.ts) | yes (room maps + pending) | yes  | plain Error    | yes (acp-server-adapter.test) |
+| BandACPServerAdapter | extends SimpleAdapter   | dynamic via LazyAsyncValue (loader.ts) | yes (room maps + pending) | yes  | plain Error    | yes (acp-server-adapter.test) |
 
 Inconsistencies the matrix highlights:
 
