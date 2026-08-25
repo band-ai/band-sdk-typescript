@@ -6,8 +6,6 @@ Scope: `packages/sdk/` build/packaging, tests, examples, and documentation.
 
 ## Summary
 
-> **Refresh (2026-08-25, main @ `1eb7bc9`).** Packaging and config are unchanged — `tsconfig.json` is byte-identical, `tsup.config.ts` changed by one line (the rebranded rest-client name), `eslint.config.js` and `vitest.config.ts` are untouched. So every build/config finding below stands verbatim, **including the `zod` Blocker at exactly the cited lines**. Tests and docs moved: the suite grew 86 → 96 files and 670 → 898 tests, almost entirely from the rebrand's `c3`–`c7` migration-proof suite and `#80`'s streaming tests. That new suite is the source of the three findings added here, and of a red `main` — see the [refresh log](../review.md#refresh-log--v014--v0110) for the full triage. Documentation drift is unchanged: the broken examples link, the omitted `letta/` row, and the omitted `converters` subpath row are all still there, just at slightly different line numbers.
-
 The SDK is generally well-packaged: `tsup` entries align with the `package.json` exports map; every optional peer is correctly flagged in `peerDependenciesMeta`; ESLint runs with `recommended-type-checked` rules on `src/**`; vitest is wired with a v8 coverage provider; and the test directory covers nearly every adapter and runtime module 1:1. Test code is largely behavior-focused and uses typed fakes (e.g. `FakeTools`, `FakeRestApi`) instead of duck typing. The main shortcomings cluster around documentation and minor configuration polish.
 
 **What's good:**
@@ -15,8 +13,8 @@ The SDK is generally well-packaged: `tsup` entries align with the `package.json`
 - `tsup` ↔ `exports` map alignment is correct; every entry has a matching tsup entry and vice versa, both ESM + CJS with sourcemaps and per-format `.d.ts`.
 - All 17 optional peer dependencies are flagged `optional: true` in `peerDependenciesMeta`.
 - ESLint runs with `recommended-type-checked` on `src/**`, `no-explicit-any: error`, and `no-unsafe-*` enabled.
-- 96 test files map 1:1 to source modules (86 at v0.1.4); behavior-focused tests; typed fakes in `tests/testUtils.ts`.
-- *(new since v0.1.4)* `tests/band-client-conformance.test.ts` instantiates the real REST client and asserts all ten `agentApi*` namespaces and 25 methods exist, with a deliberate red-check — exactly the contract test the network-layer Blocker asked for. `tests/phoenix-upgrade-errors.test.ts` (74 lines) and ~500 new lines in `tests/phoenix-channels-transport.test.ts` cover the disconnect-reason work.
+- 96 test files map 1:1 to source modules; behavior-focused tests; typed fakes in `tests/testUtils.ts`.
+- `tests/band-client-conformance.test.ts` instantiates the real REST client and asserts all ten `agentApi*` namespaces and 25 methods exist, with a deliberate red-check — exactly the contract test the network-layer Blocker asked for. `tests/phoenix-upgrade-errors.test.ts` (74 lines) and ~500 new lines in `tests/phoenix-channels-transport.test.ts` cover the disconnect-reason work.
 - Examples are real and runnable (`linear-band-bridge-server.ts` doubles as the production bridge — though see [the verticals.md finding](./verticals.md#linear-band-bridge-serverts-is-713-loc-and-doubles-as-production-code) on why this dual role is also a problem).
 - `AGENTS.md` is comprehensive and accurate — better than the user-facing README in coverage. (Though see [Architecture documentation is hidden under `AGENTS.md`](#architecture-documentation-is-hidden-under-agentsmd) on why the filename hurts discoverability.)
 
@@ -28,7 +26,25 @@ The SDK is generally well-packaged: `tsup` entries align with the `package.json`
 - README/examples drift — see [`examples/README.md` references non-existent example](#examplesreadmemd-references-non-existent-example), [Root `README.md` Examples table omits `letta/`](#root-readmemd-examples-table-omits-letta), [Root `README.md` "Subpath Exports" table omits `@band-ai/sdk/converters`](#root-readmemd-subpath-exports-table-omits-band-aisdkconverters).
 - tsconfig strictness gaps — see [`tsconfig.json` does not enable `noUncheckedIndexedAccess` or `noImplicitOverride`](#tsconfigjson-does-not-enable-nouncheckedindexedaccess-or-noimplicitoverride).
 - [Test type-safety: 60+ `as never` or `as any` casts in tests](#test-type-safety-60-as-never-or-as-any-casts-in-tests).
-- *(new at v0.1.10)* The migration-proof suite does not run off POSIX, and half of its assertions pass vacuously when it cannot — see [Compile-proof tests are not portable off POSIX](#compile-proof-tests-are-not-portable-off-posix), [Part of the test suite silently requires a prior build](#part-of-the-test-suite-silently-requires-a-prior-build), [The brand guard assertion is line-ending sensitive](#the-brand-guard-assertion-is-line-ending-sensitive).
+- The migration-proof suite does not run off POSIX, and half of its assertions pass vacuously when it cannot — see [Compile-proof tests are not portable off POSIX](#compile-proof-tests-are-not-portable-off-posix), [Part of the test suite silently requires a prior build](#part-of-the-test-suite-silently-requires-a-prior-build), [The brand guard assertion is line-ending sensitive](#the-brand-guard-assertion-is-line-ending-sensitive).
+
+## Test suite state
+
+`vitest run` at `1eb7bc9`: **898 tests across 96 test files — 871 pass, 23 fail, 4 skipped.** `tsc --noEmit` is clean and `eslint .` reports 0 errors with 12 warnings.
+
+The 23 failures need triage rather than a headline number, because only one of them is a defect in the repo:
+
+| Failures | Cause | Verdict |
+| ---: | --- | --- |
+| 16 | `c3-1`, `c4-2`, `c5-1`, `c5-2`, `c5-4b` shell out via `spawnSync(join(SDK_ROOT, "node_modules/.bin/tsc"), …)`. Off POSIX the extensionless `.bin/tsc` is a shell script, `spawnSync` returns `ENOENT`, and `status ?? 1` reports that as a compiler verdict. | Test-harness bug — [Compile-proof tests are not portable off POSIX](#compile-proof-tests-are-not-portable-off-posix). The code under test is fine, and worse, the assertions expecting *rejection* pass vacuously. |
+| 1 | `c5-package-symbols.test.ts:420-421` asserts `.release-hold` exists at the repo root; `1eb7bc9` deleted that file. | **Genuine.** A red test on `main` — see [review.md B6](../review.md#b6-c5-package-symbolstestts-asserts-a-file-that-head-deleted). |
+| 1 | The stale-live-text guard compares `readme.split("\n")[0]` to an exact string, so a CRLF checkout leaves a trailing `\r`. | Test bug — [The brand guard assertion is line-ending sensitive](#the-brand-guard-assertion-is-line-ending-sensitive). |
+| 2 | `adapters-import-boundary` and `root-import-boundary` exceed the default 5s timeout on a cold transform cache. | Environment-sensitive. A 5s budget for a test that transforms the whole adapter barrel is thin; worth raising. |
+| 3 | `c6`/`c7` brand guards scan `git ls-files`, and any tracked document carrying legacy brand words trips them. | Guards working as designed. |
+
+A further 8 failures appear on a fresh clone before `dist/` exists — see [Part of the test suite silently requires a prior build](#part-of-the-test-suite-silently-requires-a-prior-build). Reproducing the numbers above requires `pnpm build` first, and `--experimental-sqlite` on a Node version below the `node:sqlite` floor (see [Engine-version mismatch](#engine-version-mismatch-between-root-and-sdk)).
+
+**Net: 1 real defect in the repo, 20 test-infrastructure problems, 2 marginal timeouts, 0 product-code regressions.** On Linux CI with a build step the suite is green apart from the `.release-hold` assertion.
 
 ## Coverage map
 
@@ -74,17 +90,17 @@ The SDK is generally well-packaged: `tsup` entries align with the `package.json`
 | `src/mcp/sdk.ts` (claude bridge) | yes | `claude-sdk-mcp.test.ts` |
 | `src/integrations/linear/` | yes | `linear-activities.test.ts`, `linear-handles.test.ts`, `linear-tools.test.ts`, `linear-notification-handler.test.ts`, `linear-stale-session-guard.test.ts`, `linear-webhook-handler.test.ts`, `linear-bridge-room-strategy.test.ts`, `linear-bridge-store-sqlite.test.ts`, `linear-bridge-webhook-actions.test.ts` |
 | `src/testing/` | indirect | `examples-basic-agent.test.ts`, `examples-standalone.test.ts` use `StubRestApi`; no test file dedicated to `FakeAgentTools`/`StubRestApi` boundary |
-| `src/platform/streaming/disconnectReason.ts` *(new)* | yes | `phoenix-upgrade-errors.test.ts`, `phoenix-channels-transport.test.ts` |
-| `src/platform/streaming/nodeWebSocketFactory.ts` *(new)* | **no direct tests** | exercised only indirectly through the transport tests |
-| `src/contracts/memory.ts` *(new)* | indirect | `agent-tools*.test.ts`, `prompts.test.ts`; no test for the guards/`expected*` helpers themselves |
-| `src/runtime/prompts/` *(was `prompts.ts`)* | yes | `prompts.test.ts`, `conversation-prompt.test.ts` |
-| `src/runtime/tools/ContactCallbackTools.ts` | yes *(new)* | `contact-tools.test.ts` (541 lines, added since v0.1.4) |
-| `@band-ai/rest-client` conformance | yes *(new)* | `band-client-conformance.test.ts` |
-| rebrand migration guards | yes *(new)* | `linear-c3-compatibility.test.ts`, `c4-room-metadata-storage.test.ts`, `c5-package-symbols.test.ts`, `c6-urls.test.ts`, `c7-tools-mcp.test.ts`, and the stale-live-text guard <!-- legacy-named file --> |
+| `src/platform/streaming/disconnectReason.ts` | yes | `phoenix-upgrade-errors.test.ts`, `phoenix-channels-transport.test.ts` |
+| `src/platform/streaming/nodeWebSocketFactory.ts` | **no direct tests** | exercised only indirectly through the transport tests |
+| `src/contracts/memory.ts` | indirect | `agent-tools*.test.ts`, `prompts.test.ts`; no test for the guards/`expected*` helpers themselves |
+| `src/runtime/prompts/` | yes | `prompts.test.ts`, `conversation-prompt.test.ts` |
+| `src/runtime/tools/ContactCallbackTools.ts` | yes | `contact-tools.test.ts` (541 lines) |
+| `@band-ai/rest-client` conformance | yes | `band-client-conformance.test.ts` |
+| rebrand migration guards | yes | `linear-c3-compatibility.test.ts`, `c4-room-metadata-storage.test.ts`, `c5-package-symbols.test.ts`, `c6-urls.test.ts`, `c7-tools-mcp.test.ts`, and the stale-live-text guard <!-- legacy-named file --> |
 
-Gaps (re-checked at `1eb7bc9`):
-- `src/mcp/sse.ts` and `src/mcp/stdio.ts` have no direct behavioral tests (only barrel-import smoke). **Unchanged.**
-- `src/platform/streaming/nodeWebSocketFactory.ts` is new and untested directly, despite containing the handshake-header auth path and an `unexpected-response` → `error`/`close` translation that is easy to get wrong.
+Gaps:
+- `src/mcp/sse.ts` and `src/mcp/stdio.ts` have no direct behavioral tests (only barrel-import smoke).
+- `src/platform/streaming/nodeWebSocketFactory.ts` has no direct test, despite containing the handshake-header auth path and an `unexpected-response` → `error`/`close` translation that is easy to get wrong.
 - `src/testing/` is not directly unit-tested.
 - `src/core/isDirectExecution.ts` has no direct test (used transitively in example tests).
 
@@ -197,8 +213,6 @@ Gaps (re-checked at `1eb7bc9`):
 #### `examples/README.md` references non-existent example
 *Major · Effort: S · `packages/sdk/examples/README.md:19`*
 
-> **Refresh (2026-08-25, main @ `1eb7bc9`) — still present, same line.** `examples/README.md:19` still lists a `dog-landing-page/` bullet. The rebrand renamed the Linear example folder (`linear-band`) and updated every other entry in this list, but did not remove the dead one — a rename sweep touched the file and the broken reference survived it.
-
 **Observation** — `dog-landing-page/` does not exist in `packages/sdk/examples/`. The actual folders, re-listed at `1eb7bc9`, are: `a2a-bridge`, `a2a-gateway`, `anthropic`, `basic`, `claude-sdk`, `codex`, `custom-adapter`, `gemini`, `langgraph`, `letta`, `linear-band`, `openai`, `parlant`.
 
 **Impact** — Developers following the examples README will encounter a dead reference, undermining confidence in the documentation.
@@ -209,8 +223,6 @@ Gaps (re-checked at `1eb7bc9`):
 
 #### Root `README.md` Examples table omits `letta/`
 *Major · Effort: S · `/README.md:323-336`*
-
-> **Refresh (2026-08-25, main @ `1eb7bc9`) — still present, same lines.** The table is still `README.md:323-336` and still has twelve rows with no Letta row. `#87` added an `examples/openai/openai-memory-agent.ts` example and a `memory_agent` config block, so the table is now missing **two** examples rather than one.
 
 **Observation** — The "Examples" table lists basic, openai, anthropic, gemini, claude-sdk, codex, langgraph, custom-adapter, parlant, a2a-bridge, a2a-gateway, linear-band — but `examples/letta/letta-agent.ts` exists and the AGENTS.md "Core Features" section lists Letta. No row, no mention of Letta anywhere in README.
 
@@ -223,8 +235,6 @@ Gaps (re-checked at `1eb7bc9`):
 #### Root `README.md` "Subpath Exports" table omits `@band-ai/sdk/converters`
 *Major · Effort: S · `/README.md:306-317`*
 
-> **Refresh (2026-08-25, main @ `1eb7bc9`) — still present; table shifted to `:306-317`.** All nine rows were rebranded to `@band-ai/sdk/*`; `converters` was still not added.
-
 **Observation** — The package ships an exports entry for `./converters` (`package.json:40-44`) backed by a real tsup entry (`tsup.config.ts:35`) and a populated barrel (`src/converters/index.ts`). The README's subpath table covers `adapters`, `mcp`, `mcp/claude`, `rest`, `linear`, `testing`, `config`, `core`, `runtime` but not `converters`. The internal `AGENTS.md` does list it.
 
 **Impact** — Consumers are unaware the `@band-ai/sdk/converters` subpath exists, causing them to either re-implement converters or import them via internal paths.
@@ -235,8 +245,6 @@ Gaps (re-checked at `1eb7bc9`):
 
 #### `tsconfig.json` does not enable `noUncheckedIndexedAccess` or `noImplicitOverride`
 *Major · Effort: M · `packages/sdk/tsconfig.json:2-17`*
-
-> **Refresh (2026-08-25, main @ `1eb7bc9`) — still present; `tsconfig.json` is byte-identical to v0.1.4.** Neither flag was added, and `types: ["node", "vitest/globals"]` is still on `:15`.
 
 **Observation** — `strict: true` is on but the two strict-adjacent flags most relevant for SDK code (array/Record access safety, override correctness) are off. Given the SDK has many `Record<string, unknown>` accesses, enabling `noUncheckedIndexedAccess` would catch real bugs.
 
@@ -263,9 +271,7 @@ Gaps (re-checked at `1eb7bc9`):
 - 63 total occurrences across the suite
 
 #### Compile-proof tests are not portable off POSIX
-*Major · New at v0.1.10 · Effort: S · `packages/sdk/tests/linear-c3-compatibility.test.ts:79-83`, `packages/sdk/tests/c4-room-metadata-storage.test.ts`, `packages/sdk/tests/c5-package-symbols.test.ts`*
-
-> Filed by the 2026-08-25 refresh. Introduced with the `c3`–`c5` migration-proof suite in `#150`.
+*Major · Effort: S · `packages/sdk/tests/linear-c3-compatibility.test.ts:79-83`, `packages/sdk/tests/c4-room-metadata-storage.test.ts`, `packages/sdk/tests/c5-package-symbols.test.ts`*
 
 **Observation** — The rename shipped an genuinely good idea: prove the migration by compiling a real consumer against the built package under NodeNext resolution, asserting the new symbol names compile and the old ones fail. Each of these tests copies `dist/` and `package.json` into a temp `node_modules/@band-ai/sdk`, writes a `tsconfig.json` and a consumer file, then shells out to the compiler:
 
@@ -318,9 +324,7 @@ Measured at `1eb7bc9`: 16 failures across `linear-c3-compatibility` (P-C3-1, 4),
 #### Engine-version mismatch between root and SDK
 *Minor → Major · Effort: S · 2 manifest files (see Locations below)*
 
-> **Refresh (2026-08-25, main @ `1eb7bc9`) — still present, same lines, and the original reasoning was wrong in the SDK's favour.** The v0.1.4 note said `node:sqlite` "is GA in 22.5+, so `>=22.14.0` is fine for both" and treated the gap as cosmetic. Verified empirically on Node **22.12** — the exact floor `packages/sdk/package.json:87-89` declares: `require("node:sqlite")` throws `ERR_UNKNOWN_BUILTIN_MODULE`, and only `node --experimental-sqlite` makes it resolve. It was flag-gated on 22.x, not GA. So the declared SDK floor is a version on which the SDK's own SQLite room store **cannot load**: `SqliteSessionRoomStore.initialize` (`src/integrations/linear/store.ts:287-289`) throws `UnsupportedFeatureError: SQLite store requires node:sqlite (Node.js 22+)` — a message that is itself misleading, since "Node.js 22+" is what the user has. This accounted for 18 of the test failures in the first refresh run and is why the suite had to be re-run with `--experimental-sqlite`. Re-graded Minor → Major: this is a wrong published constraint, not a cosmetic inconsistency.
-
-**Observation** — Root requires a newer Node (`>=22.14.0`) than the SDK (`>=22.12`), and the lower of the two does not actually support the `node:sqlite` builtin the Linear vertical depends on.
+**Observation** — Root requires a newer Node (`>=22.14.0`) than the SDK (`>=22.12`), and the lower of the two does not support the `node:sqlite` builtin the Linear vertical depends on. Verified on Node 22.12, the exact floor `packages/sdk/package.json:87-89` declares: `require("node:sqlite")` throws `ERR_UNKNOWN_BUILTIN_MODULE`, and only `node --experimental-sqlite` makes it resolve. It is flag-gated on 22.x, not GA — so the declared floor is a version on which the SDK's own SQLite room store cannot load. `SqliteSessionRoomStore.initialize` (`src/integrations/linear/store.ts:287-289`) throws `UnsupportedFeatureError: SQLite store requires node:sqlite (Node.js 22+)`, a message that is itself misleading since "Node.js 22+" is what the user has.
 
 **Impact** — A consumer on Node 22.12 satisfies the SDK's declared engine, installs successfully, and then hits `UnsupportedFeatureError` the first time the Linear room store is used — with an error message telling them to be on the Node version they are already on. In a monorepo the root constraint hides this; standalone SDK consumers get the full effect.
 
@@ -419,9 +423,7 @@ Measured at `1eb7bc9`: 16 failures across `linear-c3-compatibility` (P-C3-1, 4),
 - **Add 2–3 Mermaid diagrams** for the highest-traffic flows: platform/runtime/adapter dependency direction, Phoenix channel topology (`agent`, `agent_contacts`, `agent_rooms`, per-room channels), and the contact-event hub flow. Diagrams cut a paragraph of prose to a glance.
 
 #### Part of the test suite silently requires a prior build
-*Minor · New at v0.1.10 · Effort: S · `packages/sdk/package.json:78`, `packages/sdk/tests/c5-package-symbols.test.ts`, `packages/sdk/tests/c4-room-metadata-storage.test.ts`, `packages/sdk/tests/linear-c3-compatibility.test.ts`*
-
-> Filed by the 2026-08-25 refresh.
+*Minor · Effort: S · `packages/sdk/package.json:78`, `packages/sdk/tests/c5-package-symbols.test.ts`, `packages/sdk/tests/c4-room-metadata-storage.test.ts`, `packages/sdk/tests/linear-c3-compatibility.test.ts`*
 
 **Observation** — The `c3`–`c5` tests consume `packages/sdk/dist/` — they `cpSync(join(SDK_ROOT, "dist"), …)` into a temp package, and `c5-package-symbols` packs a real tarball. `pnpm test` is plain `vitest run` (`package.json:78`) with no build dependency, and nothing in the test files or `vitest.config.ts` checks for `dist/` first. On a fresh clone, `pnpm install && pnpm test` produces 8 failures reading `ENOENT: … lstat 'packages/sdk/dist'` and `Cannot find module '…/dist/index.js'` — errors that describe a missing build, not a broken SDK.
 
@@ -430,9 +432,7 @@ Measured at `1eb7bc9`: 16 failures across `linear-c3-compatibility` (P-C3-1, 4),
 **Fix** — Either make the dependency explicit (`"test": "pnpm build && vitest run"`, or a vitest `globalSetup` that builds when `dist/` is absent or older than `src/`), or have the tests that need it fail with a directed message: `expect(existsSync(distDir), "run `pnpm build` before this suite").toBe(true)`. The stale-`dist` case argues for the setup hook over the guard.
 
 #### The brand guard assertion is line-ending sensitive
-*Minor · New at v0.1.10 · Effort: S · `packages/sdk/tests/c6-no-stale-live-thenvoi.test.ts:94`* <!-- legacy filename retained from the rebrand -->
-
-> Filed by the 2026-08-25 refresh.
+*Minor · Effort: S · `packages/sdk/tests/c6-no-stale-live-thenvoi.test.ts:94`* <!-- legacy filename retained from the rebrand -->
 
 **Observation** — The guard's final assertion reads the README and compares its first line exactly:
 

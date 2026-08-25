@@ -4,12 +4,6 @@
 
 ## Summary
 
-> **Refresh (2026-08-25, main @ `1eb7bc9`) — every finding here stands unchanged.** The whole `src/integrations/linear/` tree (`handler.ts`, `webhook.ts`, `store.ts`, `tools.ts`, `notification.ts`, `types.ts`, `bridge/message.ts`) is **rename-only** — zero non-rebrand line changes — so all Linear findings and their line numbers are verbatim. The MCP files (`server.ts`, `sse.ts`, `stdio.ts`, `sdk.ts`, `backends.ts`) changed by 2–3 lines each: `#150` replaced the hardcoded `"band"` server-name literal in four places with a shared `MCP_SERVER_NAME` constant (`runtime/tools/schemas.ts:385`), which is a small improvement this review did not ask for and did not flag. `src/mcp/claude.ts` is still dead code.
->
-> Two updates worth noting:
-> - **`config/loader.ts` changed substantively** (+51 non-rebrand lines). `loadAgentConfigFromEnv` is now Band-first with per-field legacy fallback and once-per-process deprecation warnings. The `js-yaml` `JSON_SCHEMA` observation below moved from `:100` to `:121` and is still correct. The new code added the third out-of-logger `console.warn` in the SDK (`:35`).
-> - **The `agent_config.yaml.example` finding is unchanged but the key names moved.** `letta_agent` is still missing; the unreferenced keys are now `planner_agent`, `reviewer_agent`, `linear_band_transport`, `a2a_bridge_auth_agent`. `#87` added a `memory_agent` key *and* a matching `examples/openai/openai-memory-agent.ts`, so that one is correctly wired — the pattern to follow for the rest.
-
 The Linear vertical is well isolated and MCP exposes a clean dispatch interface, but both verticals show the same pattern: a structurally sound public surface around duplicated or leaky internals.
 
 **What's good:**

@@ -6,12 +6,6 @@ Scope: `packages/sdk/src/` (152 `.ts` files). Cross-cutting audit against the co
 
 ## Summary
 
-> **Refresh (2026-08-25, main @ `1eb7bc9`) — every finding here stands, and two counts regressed.**
-> - **Custom error classes outside `BandSdkError`: 6 → 7.** `#80` added `WebSocketDisconnectError extends Error` at `src/platform/streaming/disconnectReason.ts:112`. Unlike the other six it is exported from *both* `src/index.ts:6` and `src/core/index.ts:25`, so it is the first out-of-hierarchy error class a consumer will actually catch — and `instanceof BandSdkError` will not see it. Fix this one first.
-> - **`console.warn` outside the logger: 2 → 3.** `#150` added `console.warn` at `src/config/loader.ts:35`, warning once per process on deprecated legacy env-var names. Its content is safe (it names variables, never values) but it bypasses the injected `Logger` like the other two.
-> - **Unchanged and re-verified:** bare `throw new Error` is still exactly **63**; catches dropping error context still **13**; the three MCP `Promise.all` cleanup sites survive at `mcp/server.ts:171`, `:258`, `mcp/sse.ts:153`; `adapters/shared/coercion.ts` is untouched, so `asErrorMessage` is still the un-adopted central helper.
-> - **New context for the `Promise.all`-in-cleanup finding:** `#80` made `AgentRuntime.stop()`'s swallowed `fatalError` materially worse — see [`core-runtime.md`](core-runtime.md#agentruntimestop-swallows-fatalerror-if-cleanup-throws).
-
 Hygiene is solid at the edges — logger DI, no credential leakage, no empty catches, comprehensive cleanup in the runtime — but the typed-error story is half-applied and a long tail of small inconsistencies (silent catches, `Promise.all` for cleanup, duplicated helpers) drags on diagnosability.
 
 **What's good:**
@@ -25,12 +19,12 @@ Hygiene is solid at the edges — logger DI, no credential leakage, no empty cat
 
 **What's not** (each linked to its full finding):
 
-- The `BandSdkError` hierarchy is bypassed wholesale — see [63 bare `throw new Error` sites](#central-error-utility-ignored-by-63-bare-throw-new-error-sites) and [six custom error classes that don't extend it](#custom-error-classes-dont-extend-bandsdkerror).
+- The `BandSdkError` hierarchy is bypassed wholesale — see [63 bare `throw new Error` sites](#central-error-utility-ignored-by-63-bare-throw-new-error-sites) and [seven custom error classes that don't extend it](#custom-error-classes-dont-extend-bandsdkerror).
 - Error-message extraction is reinvented everywhere — see [duplicated and inline-reinvented 33 times](#no-central-safe-message-extraction-util-duplicated-and-inline-reinvented-33-times) and [duplicate `serializeError`](#duplicate-serializeerror-helper).
 - Silent catches hide production failures — see [silent catches in critical paths drop error context](#silent-catches-in-critical-paths-drop-error-context), [`mcp/sdk.ts` returns warning string](#mcpsdkts-returns-warning-string-instead-of-throwing-or-logging), and [`mcp/registrations.ts:155`](#mcpregistrationsts155-returns-error-result-without-logging).
 - Cleanup fan-outs use `Promise.all` where one failure leaks the rest — see [`Promise.all` used for cleanup](#promiseall-used-for-cleanup-one-failure-leaks-the-rest).
 - `AbortSignal` plumbing stops at the streaming boundary — see [`AbortSignal` not plumbed through `BandLink` or `RestApi`](#abortsignal-not-plumbed-through-bandlink-or-restapi).
-- Two `console.warn` calls bypass the injected logger — see [`console.warn` used instead of the injected logger](#consolewarn-used-instead-of-the-injected-logger).
+- Three `console.warn` calls bypass the injected logger — see [`console.warn` used instead of the injected logger](#consolewarn-used-instead-of-the-injected-logger).
 - Three identical `sleep(ms)` and three identical `assertNever` helpers — see [redundant `sleep(ms)` helpers](#redundant-sleepms-helpers-three-copies) and [`assertNever` should be a shared util](#assertnever-should-be-a-shared-util).
 
 ## Findings
@@ -86,7 +80,9 @@ Hygiene is solid at the edges — logger DI, no credential leakage, no empty cat
 #### Custom error classes don't extend `BandSdkError`
 *Major · Effort: S · 6 locations (see Locations below)*
 
-**Observation** — Six bespoke error classes all `extends Error`. A consumer who wants to discriminate "this is from the Band SDK" cannot use `instanceof BandSdkError`.
+**Observation** — Seven bespoke error classes all `extends Error`. A consumer who wants to discriminate "this is from the Band SDK" cannot use `instanceof BandSdkError`.
+
+One of the seven deserves priority: `WebSocketDisconnectError` (`src/platform/streaming/disconnectReason.ts:112`) is exported from **both** the root entry (`src/index.ts:6`) and `./core` (`src/core/index.ts:25`). It is the out-of-hierarchy class a consumer is most likely to actually catch — a terminal websocket disconnect is a normal thing to handle — and `instanceof BandSdkError` will not see it.
 
 **Impact** — SDK consumers must catch each custom class individually; a single top-level `instanceof BandSdkError` guard — the expected pattern — silently misses all six.
 
@@ -205,7 +201,7 @@ Hygiene is solid at the edges — logger DI, no credential leakage, no empty cat
 **Fix** — Introduce a `withTimeout(promise, ms, label)` helper in `core/utils.ts`; replace the four sites.
 
 **Locations:**
-- `packages/sdk/src/platform/streaming/PhoenixChannelsTransport.ts:406-434` (`waitForConnection`) — re-anchored at the 2026-08-25 refresh; `#80` moved this method from `:215-231`. It still hand-rolls the deferred, so it still belongs on this list, but both of the concrete defects the network-layer finding recorded against it are now fixed — see [`network.md`](network.md#connect-timeout-uses-manual-settimeout-instead-of-promiserace).
+- `packages/sdk/src/platform/streaming/PhoenixChannelsTransport.ts:406-434` (`waitForConnection`) — hand-rolls the deferred rather than racing; correct as written but the invariant is spread across four methods. See [`network.md`](network.md#connect-handshake-hand-rolls-its-deferred-instead-of-using-promiserace).
 - `packages/sdk/src/adapters/codex/appServerClient.ts:194-205` (`recvEvent`)
 - `packages/sdk/src/runtime/Execution.ts:100-136` (`waitForIdle`)
 - `packages/sdk/src/adapters/a2a-gateway/A2AGatewayAdapter.ts:561-577` (`AsyncQueue.dequeue`)

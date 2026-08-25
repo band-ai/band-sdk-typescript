@@ -4,11 +4,6 @@
 
 ## Summary
 
-> **Refresh (2026-08-25, main @ `1eb7bc9`) — every finding here stands; one duplication was partially resolved.**
-> - **Partially resolved:** `#87` centralised the memory taxonomy into a new `src/contracts/memory.ts`, deleting six duplicated enum sets from `runtime/tools/AgentTools.ts` (`MEMORY_SYSTEMS`, `MEMORY_TYPES`, `MEMORY_SEGMENTS`, `LIST_MEMORY_SCOPES`, `LIST_MEMORY_STATUSES`, `MEMORY_SCOPES`) and five more inline `enum: [...]` literals from `runtime/tools/schemas.ts`. That is exactly the move the [duplication finding](#coercion-and-error-message-helpers-are-duplicated-across-modules) recommends, applied to one family of duplicates — and it is the only decomposition anywhere in this delta. `#150` did the same for the MCP server-name literal, replacing four hardcoded `"band"` strings with a shared `MCP_SERVER_NAME` (`schemas.ts:385`). Neither was prompted by this review, but both are the pattern to repeat.
-> - **Unchanged:** `adapters/shared/coercion.ts` was never moved out of the adapter-named folder, so the 33 inline `error instanceof Error ? … : String(error)` sites, the 3 `sleep()` helpers, the 3 `assertNever` copies, and the per-file `asRecord`/`asString` forks are all still there. `src/linear` / `src/integrations/linear` and `src/rest` / `src/client/rest` still sit side by side. Zero of the 8 `runtime/` callback types adopted `On{Action}Callback`.
-> - **God-files re-measured:** five files still over 1000 LOC. `AgentTools.ts` came down 1176 → 1157 (the `contracts/memory.ts` extraction); `AgentRuntime.ts` went up 438 → 464; `CodexAdapter.ts` 1477 → 1479; `OpencodeAdapter.ts` 1092 → 1094; `handler.ts` and `LettaAdapter.ts` unchanged. Total `src/` grew 30,300 → 31,315 LOC across 152 → 158 files.
-
 The SDK is broadly well-layered (`platform` <- `runtime` <- `agent` at the core, with `adapters/`, `converters/`, `mcp/`, `integrations/linear/` as vertical slices). Module dependency direction is mostly acyclic and `core/`, `contracts/`, `platform/`, `runtime/` stay vertical-agnostic — verticals never leak into the core.
 
 **What's good:**
@@ -92,6 +87,8 @@ _None — no module dependency cycles, no vertical leakage into `core/`/`runtime
 
 **Fix** — Move `coercion.ts` (and `history.ts`'s `findLatestTaskMetadata`) out of `adapters/shared/` into a top-level `utils/` (or `core/utils/`). Replace the inline `instanceof Error ? error.message : String(error)` sites with `asErrorMessage`. Remove the local `asNonEmptyString` in `mcp/registrations.ts` and the per-file forks in `integrations/linear/store.ts`.
 
+Two precedents in the tree already show the shape of this fix and are worth copying: `src/contracts/memory.ts` centralises the memory taxonomy, which deleted six duplicated enum sets from `runtime/tools/AgentTools.ts` and five inline `enum: [...]` literals from `runtime/tools/schemas.ts`; and `MCP_SERVER_NAME` (`runtime/tools/schemas.ts:385`) replaced four hardcoded server-name literals across `mcp/server.ts`, `mcp/sse.ts`, `mcp/stdio.ts`, and `mcp/sdk.ts`. Same move, different constant — the coercion helpers are the remaining case.
+
 **Locations:**
 - `packages/sdk/src/adapters/shared/coercion.ts`
 - `packages/sdk/src/converters/shared.ts:14`
@@ -144,6 +141,8 @@ _None — no module dependency cycles, no vertical leakage into `core/`/`runtime
 **Observation** — Each of these files mixes class state, RPC/event handling, helper functions, and adapter-specific types. CodexAdapter mixes the `ToolLikeItem`/`ThoughtLikeItem` union types, the class, and tool-call dispatching. AgentTools mixes the giant `TOOL_MODELS`-driven `toolHandlers` map with per-tool argument validators and adapter wiring.
 
 **Impact** — Files this large are difficult to review, test in isolation, and extend — a change to one concern risks breaking another in the same file.
+
+Current sizes: `CodexAdapter.ts` 1479, `bridge/handler.ts` 1326, `AgentTools.ts` 1157, `LettaAdapter.ts` 1111, `OpencodeAdapter.ts` 1094. `AgentTools.ts` is the one that has moved in the right direction — extracting the memory taxonomy into `src/contracts/memory.ts` took ~20 lines out of it, which is the shape of the fix but at 1/8th the scale needed.
 
 **Fix** — For each, extract (a) constants/types into a sibling `*.types.ts`, (b) per-tool handler bodies into a sibling `handlers.ts`/`events.ts` keyed by tool name, and (c) any factory functions (`createXxx`) into their own file. The linear bridge handler especially needs a per-action breakdown (`actions/created.ts`, `actions/updated.ts`, etc.).
 

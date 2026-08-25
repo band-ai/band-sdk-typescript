@@ -4,10 +4,9 @@
 
 ## Summary
 
-> **Refresh (2026-08-25, main @ `1eb7bc9`) — every Major here stands; one Minor is half fixed and one premise was corrected.** Seven adapter files changed and only two substantively. `LangGraphAdapter.ts` (+98/−19 from `#152`) fixed `streamEvents` argument placement, history replay under a checkpointer, and duplicate-message emission — real behaviour fixes, none of which this review had flagged, and none of which invalidate a finding here. `#87` added one line to each of five adapters (`capabilities: { memory: … }` passed into prompt rendering) and removed one dead import. Everything else in `adapters/` — including all the `*Like` shadow interfaces, every `load*ClientFactory` copy, the Letta/Parlant `selectCompleteExchanges` duplication, and the `converters/` boundary leak — is byte-identical apart from the rebrand.
 >
 > - [Two dead imports](#two-dead-imports-flagged-by-npm-run-lint--one-fixed-one-outstanding): the Google ADK half is **fixed**; `asJsonSafe` in `BandACPServerAdapter.ts:21` is still there and `eslint` still warns on it.
-> - [`assertCapability` exists but few adapters call it](#assertcapability-exists-but-few-adapters-call-it): the "grep finds zero usages" premise was **wrong at v0.1.4** and is corrected in place. The finding's substance is unaffected.
+> - [`assertCapability` exists but few adapters call it](#assertcapability-exists-but-few-adapters-call-it): the "grep finds zero usages outside the contracts file" premise is wrong — there are 11 call sites. The finding's substance (adapters never cross-validate) is unaffected.
 > - `#87` incidentally makes the `assertCapability` fix cheaper: five adapters now already hold their `enableMemoryTools` value at the point the assertion belongs.
 
 The adapter layer is the largest part of the SDK — **15 framework adapters** behind a thin shared contract. Hygiene at the boundaries is strong; the weaknesses are inside, in the form of duplicated cross-cutting patterns and a misleading abstraction story.
@@ -249,8 +248,6 @@ and let each adapter call `loadOptionalPeer("@anthropic-ai/sdk", "AnthropicAdapt
 #### `assertCapability` exists but few adapters call it
 *Minor · Effort: S · `packages/sdk/src/contracts/capabilities.ts:12-19`*
 
-> **Refresh (2026-08-25, main @ `1eb7bc9`) — premise corrected; the finding itself still stands.** The parenthetical "grep finds zero usages outside the contracts file itself" was **wrong when written**. At v0.1.4 `assertCapability` had 12 call sites — one in the platform link (`:202` pre-rebrand) plus 11 in `runtime/tools/AgentTools.ts`; today it has 11, at `platform/BandLink.ts:278` and `runtime/tools/AgentTools.ts:265`, `:402`, `:420`, `:440`, `:477`, `:497`, `:534`, `:543`, `:552`, `:566`, `:580`. So it is not dead code, and the "either delete `assertCapability` if it's dead" half of the fix should be dropped. The substantive claim is unaffected and still true: the *runtime tools* assert capabilities, the *adapters* never do. No adapter cross-checks its own `enableMemoryTools` config against `tools.capabilities.memory`, so the misconfiguration this finding describes is still silent.
-
 **Observation** — `assertCapability` is called consistently from the runtime tool layer (11 sites in `AgentTools.ts` and `BandLink.ts`) but **never from an adapter**. Tools exposed via `getToolSchemas({ includeMemory })` rely on the schema layer to silently omit memory tools when capabilities don't allow it, but the adapters that take an `enableMemoryTools` config option (Letta, Parlant, Claude SDK, Codex, ACP, Opencode, Google ADK, LangGraph) never cross-validate against `tools.capabilities.memory`.
 
 **Impact** — An adapter configured with `enableMemoryTools: true` against a runtime where `memory: false` silently produces best-effort behaviour instead of failing loudly, making misconfiguration invisible.
@@ -260,18 +257,16 @@ and let each adapter call `loadOptionalPeer("@anthropic-ai/sdk", "AnthropicAdapt
 #### Two dead imports flagged by `npm run lint` — one fixed, one outstanding
 *Minor · Effort: S · `src/adapters/acp/BandACPServerAdapter.ts:21` (outstanding)*
 
-> **Refresh (2026-08-25, main @ `1eb7bc9`) — half fixed.** `#87` removed the `HistoryProvider` import from `GoogleADKAdapter.ts:9` (the line is now `import type { PlatformMessage } from "../../runtime/types";`). `asJsonSafe` in `BandACPServerAdapter.ts:21` is untouched, and a fresh `eslint .` run at `1eb7bc9` still reports it: *"'asJsonSafe' is defined but never used"*. The recommendation to escalate `no-unused-vars` from `warn` to `error` was **not** adopted, and the same run shows why it still matters — 12 warnings survive CI, including two more dead symbols this review did not originally list: `error` in `mcp/server.ts:134` and `assertNever` in `runtime/PlatformRuntime.ts:335` (the latter is the dead `assertNever` filed separately in `core-runtime.md`).
-
 **Observation** — Surfaced by `npm run lint`. `asJsonSafe` (ACP server, `:21`) is a stale import left from a refactor; the symbol is not referenced anywhere in the importing file.
 
 **Impact** — Minor cognitive noise; signals refactor hygiene gap. Lint flags it but the project's ESLint config treats it as a warning (not an error), so it survives CI — as it has for a whole release line now.
 
-**Fix** — Delete the `import` line. Escalate `no-unused-vars` from `warn` to `error` in the lint config to prevent recurrence; at `1eb7bc9` that would catch 4 dead symbols across `src/` and 2 more in `tests/`.
+**Fix** — Delete the `import` line. Escalate `no-unused-vars` from `warn` to `error` in the lint config to prevent recurrence: as configured it catches 4 dead symbols across `src/` (this one, `error` in `mcp/server.ts:134`, `assertNever` in `runtime/PlatformRuntime.ts:335`, and one more) plus 2 in `tests/`, and reports all of them as warnings that pass CI.
 
 #### `GoogleADKAdapter` keeps an unused `roomSessions` map
 *Minor · Effort: S · `packages/sdk/src/adapters/google-adk/GoogleADKAdapter.ts:184`, `:242`, `:300`*
 
-**Observation** — `roomSessions = new Map<string, string>()` (`:184`) is written to on `:242` (`this.roomSessions.set(context.roomId, sessionId)`) and cleared on `:300`, but it's never *read*. The session id is always a fresh `randomUUID()` per message and the Runner is recreated per message (`:237`), so the map is dead. (Line numbers shifted by one from v0.1.4: `#87` added a `capabilities` argument to the prompt render call at `:218`.)
+**Observation** — `roomSessions = new Map<string, string>()` (`:184`) is written to on `:242` (`this.roomSessions.set(context.roomId, sessionId)`) and cleared on `:300`, but it's never *read*. The session id is always a fresh `randomUUID()` per message and the Runner is recreated per message (`:237`), so the map is dead. 
 
 **Impact** — Dead state adds cognitive overhead when reading the adapter and implies session continuity that does not actually exist.
 

@@ -6,10 +6,6 @@ Scope: `packages/sdk/src/` — entire tree (~30,300 LOC, 152 `.ts` files).
 
 ## Summary
 
-> **Refresh (2026-08-25, main @ `1eb7bc9`) — every finding here stands unchanged.** `src/optional-deps.d.ts`, `src/types/google-adk.d.ts`, `src/types/ws.d.ts`, `src/phoenix.d.ts`, `src/client/rest/RestFacade.ts`, and `src/contracts/protocols.ts` are all untouched (`RestFacade.ts` and `types.ts` are rename-only), so M2 and the `: object` findings are verbatim. Re-measured counts: `as <Type>` assertions **133 → 132**, `as unknown as` **15 → 16**, `any` **5 → 5** (same five eslint-disabled sites in `src/mcp/`), `@ts-ignore`/`@ts-expect-error` **0 → 0**, `: object` **2 → 2** (`RestFacade.ts:396`, `:411`).
->
-> The one `as unknown as` added since v0.1.4 is in `#80`'s new `nodeWebSocketFactory.ts` — two of them, at `:20` and `:32`, laundering `ws` into the DOM `WebSocket` shape, plus a hand-declared `NodeUpgradeWebSocket` intersection at `:4-11`. That file is the clearest current example of the `*Like` shadow-interface pattern this area's findings are about, and it is on the connection path. See [`network.md`](network.md#optional-ws-dependency-typing--obsolete-the-recommendation-is-now-wrong).
-
 Type hygiene at usage sites is unusually disciplined for a codebase that integrates ~14 optional AI-framework SDKs. The systemic weaknesses are not in the source — they're in the ambient module declarations and tsconfig strictness gaps that force everything else to compensate.
 
 **What's good:**
@@ -21,6 +17,8 @@ Type hygiene at usage sites is unusually disciplined for a codebase that integra
 - Disciplined typed-catch behavior — errors typed `unknown` by default and narrowed via `instanceof Error`.
 
 **What's not** (each linked to its full finding):
+
+- `src/platform/streaming/nodeWebSocketFactory.ts` is the clearest example of the pattern these findings describe, and it sits on the connection path: two `as unknown as` casts (`:20`, `:32`) launder `ws` into the DOM `WebSocket` shape, on top of a hand-declared `NodeUpgradeWebSocket` intersection (`:4-11`). See [`network.md`](network.md#ws-is-load-bearing-not-a-removable-polyfill--do-not-drop-the-ws-dependency).
 
 - Ambient `declare module` erases types from 12 peer modules → 34 `*Like` shims and 55 `as Record<string, unknown>` casts — [ambient `declare module` erases all upstream types](#ambient-declare-module-erases-all-upstream-types-for-8-peer-sdks), [`*Like` duck-typed shims drift](#like-duck-typed-shims-drift-from-upstream-sdk-shapes).
 - tsconfig is missing 5 strict flags the sibling package enables — [`tsconfig.json` strict-mode flags inconsistent](#tsconfigjson-strict-mode-flags-inconsistent-with-sibling-package).

@@ -4,13 +4,6 @@
 
 ## Summary
 
-> **Refresh (2026-08-25, main @ `1eb7bc9`).** Both Blockers and every Major here are **still present and unfixed**. Of the files this area covers, only `AgentRuntime.ts` changed substantively (438 → 464 lines, from `#80`); `PlatformRuntime.ts`, `Agent.ts`, `Execution.ts`, `ContactEventHandler.ts`, `ExecutionContext.ts`, `logger.ts`, `errors.ts`, `simpleAdapter.ts`, `shutdown.ts`, and `participantTracker.ts` are unchanged apart from the rebrand — so their findings, and their line numbers, stand verbatim.
->
-> Three things are worth flagging beyond "unchanged":
-> - **`#80` raised the stakes on the `AgentRuntime` findings rather than lowering them.** `stop()` can now be entered because of a `fatalError` (guard changed on `:138`), which makes the swallowed-`fatalError` path the one a caller depends on to learn why the runtime died. A per-room timeout budget was threaded through the same unguarded loop, adding a second way for those awaits to throw. See [`AgentRuntime.stop()` swallows fatalError if cleanup throws](#agentruntimestop-swallows-fatalerror-if-cleanup-throws).
-> - **The error hierarchy regressed.** `#80` added `WebSocketDisconnectError extends Error` (`src/platform/streaming/disconnectReason.ts:112`), taking the count of error classes outside `BandSdkError` from 6 to 7. It is exported from both the root entry and `./core`, making it the most visible break of the `instanceof BandSdkError` contract.
-> - **One prose correction.** The B3 wording "lines 88-91 unconditionally `abort()`" is imprecise — the abort is guarded by `if (!this.stopController.signal.aborted)`. The finding is unaffected (on the first `start()` the guard passes and the field-init controller is aborted on arrival) but the word "unconditionally" should not be relied on when reading the code.
-
 The core/agent/runtime slice is structurally reasonable — state is mostly owned by clear classes (`PlatformRuntime` → `AgentRuntime` → `Execution`/`ExecutionContext`), Phoenix channel join/leave is paired and centralized, and the error hierarchy is small and used consistently. The pervasive problem is lifecycle state expressed as 2–4 independent booleans across the major classes, producing fragile invariants and at least one unrecoverable failure mode.
 
 **What's good:**
@@ -111,7 +104,7 @@ The `HUB_ROOM_SYSTEM_PROMPT` constant (lines 16-43) is also defined here — it 
 
 - **`LruCache<TKey, TValue>`** → `utils/`.
 - **`formatContactEvent` / `formatContactBroadcast`** → `formatters/contact.ts` (matches the pattern already used by `runtime/formatters.ts`).
-- **`HUB_ROOM_SYSTEM_PROMPT`** → `runtime/prompts/`. *(Refresh note: `#87` turned `runtime/prompts.ts` into a directory — `base.ts`, `memory.ts`, `templates.ts`, `index.ts` — so there is now an obvious home for this constant that did not exist at v0.1.4.)*
+- **`HUB_ROOM_SYSTEM_PROMPT`** → `runtime/prompts/`, which is already split into `base.ts`, `memory.ts`, `templates.ts`, and `index.ts` and is the obvious home for it.
 - **`ContactEventHandlerError`** → `core/errors.ts` (or a new `contact/errors.ts`).
 - **Remove `serializeError`** entirely — rely on the logger's sanitizer.
 
@@ -199,9 +192,9 @@ There's no symmetric "leave agent_rooms" call — it's implicit in `disconnect()
 - **Parallelise execution shutdown in `AgentRuntime.stop()`** with `Promise.all(this.executions.values().map(e => e.stop(...)))` — they're independent, the current `for` loop serialises them unnecessarily.
 
 #### `AgentRuntime.stop()` swallows fatalError if cleanup throws
-*Major · Effort: S · `packages/sdk/src/runtime/rooms/AgentRuntime.ts:153-184`*
+*Major · Effort: S · `packages/sdk/src/runtime/rooms/AgentRuntime.ts:138`, `:153-184`*
 
-> **Refresh (2026-08-25, main @ `1eb7bc9`) — still present and now more consequential.** `#80` changed the entry guard on `:138` from `!this.running || this.stopping` to `this.stopping || (!this.running && !this.fatalError)`, deliberately so that a runtime which died of a `fatalError` can still be stopped. That makes the rethrow at `:180-182` the mechanism by which a caller learns *why* it died — and it is still the one statement skipped when any earlier cleanup await throws. `#80` also threaded a per-room timeout budget through the same loop (`:162-163`, `:396`), so there is now a second class of failure that can bypass the rethrow.
+The entry guard on `:138` is `this.stopping || (!this.running && !this.fatalError)` — deliberately written so a runtime that died of a `fatalError` can still be stopped. That makes the rethrow at `:180-182` the mechanism by which a caller learns *why* it died, and it is the one statement skipped when any earlier cleanup await throws. A per-room timeout budget is also threaded through the same loop (`:162-163`, `:396`), so there are two classes of failure that can bypass it.
 
 **Observation** — If any `leaveTrackedRoom` (line 162) or `onSessionCleanup` (line 166) throws, control jumps out of `stop()` with that error, and the subsequent `if (this.fatalError) throw` at line 179-181 never runs. The fatal error from the runtime is silently lost. Also, the loop at line 161-163 awaits each leave sequentially; a single hung leave blocks the entire shutdown without a timeout.
 
@@ -271,10 +264,9 @@ There's no symmetric "leave agent_rooms" call — it's implicit in `disconnect()
 
 #### Dead `assertNever` function in `PlatformRuntime.ts`
 
-> **Refresh (2026-08-25, main @ `1eb7bc9`) — still present and confirmed by lint.** An `eslint .` run at `1eb7bc9` reports it directly: `src/runtime/PlatformRuntime.ts:335 warning 'assertNever' is defined but never used`. It survives CI because `no-unused-vars` is configured as a warning.
 *Minor · Effort: S · `packages/sdk/src/runtime/PlatformRuntime.ts:335-337`*
 
-**Observation** — No caller. The contact-event handler at line 328-332 already just forwards to `contactHandler.handle(event)` without exhaustive checking.
+**Observation** — No caller. The contact-event handler at line 328-332 already just forwards to `contactHandler.handle(event)` without exhaustive checking. `eslint .` reports it directly — `'assertNever' is defined but never used` — and it survives CI because `no-unused-vars` is configured as a warning rather than an error.
 
 **Impact** — Dead code adds noise and may confuse readers into thinking exhaustive checking is happening when it isn't.
 
@@ -323,12 +315,11 @@ There's no symmetric "leave agent_rooms" call — it's implicit in `disconnect()
 
 #### `BandSdkError` constructor uses non-portable `cause` argument
 
-> **Refresh (2026-08-25, main @ `1eb7bc9`) — unchanged; `core/errors.ts` is rename-only.** `BandSdkError` is still at `:1` with the same `cause` handling, and the five subclasses still derive from it. What changed is around it: `WebSocketDisconnectError` (`src/platform/streaming/disconnectReason.ts:112`) was added extending bare `Error`, so the class list outside the hierarchy is now `CodexJsonRpcError`, `HttpStatusError`, `ContactEventHandlerError`, `CustomToolDefinitionError`, `CustomToolValidationError`, `CustomToolExecutionError`, and `WebSocketDisconnectError` — 7, up from 6.
 *Minor · Effort: S · `packages/sdk/src/core/errors.ts:3`*
 
 **Observation** — The constructor passes `cause` through `Error`'s options bag — only supported in ES2022+ runtimes. The SDK targets Node so that's fine, but no test or JSDoc documents this.
 
-**Impact** — The ES2022 runtime requirement is undocumented and could surprise consumers targeting older Node versions.
+**Impact** — The ES2022 runtime requirement is undocumented and could surprise consumers targeting older Node versions. Note also that only five classes derive from `BandSdkError`; seven sit outside it — `CodexJsonRpcError`, `HttpStatusError`, `ContactEventHandlerError`, `CustomToolDefinitionError`, `CustomToolValidationError`, `CustomToolExecutionError`, and `WebSocketDisconnectError` — so `cause` handling is not uniform across the SDK's error surface either.
 
 **Fix** — Add a brief JSDoc noting `cause` is propagated via standard `Error(message, { cause })` and requires ES2022.
 
