@@ -40,7 +40,7 @@ The 23 failures need triage rather than a headline number, because only one of t
 | Failures | Cause | Verdict |
 | ---: | --- | --- |
 | 16 | `c3-1`, `c4-2`, `c5-1`, `c5-2`, `c5-4b` shell out via `spawnSync(join(SDK_ROOT, "node_modules/.bin/tsc"), …)`. Off POSIX the extensionless `.bin/tsc` is a shell script, `spawnSync` returns `ENOENT`, and `status ?? 1` reports that as a compiler verdict. | Test-harness bug — [Compile-proof tests are not portable off POSIX](#compile-proof-tests-are-not-portable-off-posix). The code under test is fine, and worse, the assertions expecting *rejection* pass vacuously. |
-| 1 | `c5-package-symbols.test.ts:420-421` asserts `.release-hold` exists at the repo root; `1eb7bc9` deleted that file. | **Genuine.** A red test on `main` — see [review.md B5](../review.md#b5-c5-package-symbolstestts-asserts-a-file-that-head-deleted). |
+| 1 | `c5-package-symbols.test.ts:420-421` asserts `.release-hold` exists at the repo root; `1eb7bc9` deleted that file. | **Genuine.** A red test on `main` — see [`.release-hold` marker finding](#c5-package-symbolstestts-asserts-a-release-hold-marker-that-head-deleted). |
 | 1 | The stale-live-text guard compares `readme.split("\n")[0]` to an exact string, so a CRLF checkout leaves a trailing `\r`. | Test bug — [The brand guard assertion is line-ending sensitive](#the-brand-guard-assertion-is-line-ending-sensitive). |
 | 2 | `adapters-import-boundary` and `root-import-boundary` exceed the default 5s timeout on a cold transform cache. | Environment-sensitive. A 5s budget for a test that transforms the whole adapter barrel is thin; worth raising. |
 | 3 | `c6`/`c7` brand guards scan `git ls-files`, and any tracked document carrying legacy brand words trips them. | Guards working as designed. |
@@ -273,6 +273,17 @@ Gaps:
 - `packages/sdk/tests/claude-sdk-adapter.test.ts:36,...`
 - 63 total occurrences across the suite
 
+#### `c5-package-symbols.test.ts` asserts a `.release-hold` marker that HEAD deleted
+*Blocker-adjacent · Effort: S · `packages/sdk/tests/c5-package-symbols.test.ts:420-421`*
+
+**Observation** — `P-C5-3`'s `.release-hold marker exists at the repository root` asserts `existsSync(join(REPO_ROOT, ".release-hold"))` is `true`. Commit `1eb7bc9` — the current HEAD, *"chore: remove stale `.release-hold` from the Band rebrand"* — deleted that file and did not update the assertion, so `vitest run` against `main`'s own tree fails with `expected false to be true`. This was not a silent slip: on the pull request that made the change, the `test` job concluded failure with an annotation naming this exact line, and the aggregate `ci-status` check also concluded failure — see [`main`'s ruleset requires a pull request but no passing checks](#mains-ruleset-requires-a-pull-request-but-no-passing-checks) for why that didn't block the merge.
+
+**Impact** — `main`'s tree carries a permanently failing test that nothing surfaces in normal operation, since `ci.yml` only runs on `pull_request` and never re-validates `main` after a merge. It also masks any real regression that happens to land in the same test file, and it invalidates the "all tests pass" assumption that any later verification pass over this repo would otherwise rely on.
+
+**Fix** — The commit message and the merge both treat the marker's removal as intentional, so the fix is to delete the assertion (and the sibling expectation in the same `describe` block that the hold is present) rather than restore the file. If that reading turns out to be wrong and the hold is still required by the release pipeline, restore `.release-hold` and add a comment recording *why* it must exist, so a future cleanup pass doesn't delete it again without noticing.
+
+[↑ Summary in review.md B5](../review.md#b5-c5-package-symbolstestts-asserts-a-release-hold-marker-that-head-deleted)
+
 #### `main`'s ruleset requires a pull request but no passing checks
 *Major · Effort: S · `.github/workflows/ci.yml` (trigger), repository ruleset `main-branch-protection`*
 
@@ -290,7 +301,7 @@ Nothing runs it on a push to `main`. What runs there is `release.yml` (`on: push
 
 The `main-branch-protection` ruleset is `active` with no bypass actors, but its rules are only `deletion`, `non_fast_forward`, and `pull_request`. There is **no `required_status_checks` rule**. A pull request is mandatory; a *passing* pull request is not.
 
-The consequence is on record. The commit that deleted `.release-hold` was merged with `test` concluding **failure** and the aggregate `ci-status` check concluding **failure**, with an annotation naming the exact assertion — see [review.md B5](../review.md#b5-c5-package-symbolstestts-asserts-a-file-that-head-deleted). CI did its job; nothing acted on the result, and because the suite never re-runs on `main`, the failure has been invisible since.
+The consequence is on record. The commit that deleted `.release-hold` was merged with `test` concluding **failure** and the aggregate `ci-status` check concluding **failure**, with an annotation naming the exact assertion — see [the `.release-hold` marker finding above](#c5-package-symbolstestts-asserts-a-release-hold-marker-that-head-deleted). CI did its job; nothing acted on the result, and because the suite never re-runs on `main`, the failure has been invisible since.
 
 **Impact** — Red builds can land on the trunk and then stop being reported. The repo has invested heavily in guard tests — the `c3`–`c7` migration proofs, the REST-client conformance test, the release-hardening suite — and all of that investment is advisory as long as no check is required to pass. It also means "CI is green on `main`" cannot be used as evidence about `main`'s tree, which is exactly the inference a contributor will make.
 

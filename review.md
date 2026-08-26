@@ -64,7 +64,7 @@ What's weakest:
 Nothing here blocks shipping more 0.1.x releases, but **several items should be cleared before stabilizing a 1.0 API**.
 
 >
-> The one new item worth acting on immediately is not a design finding at all — it is a **broken assertion on `main` right now**: `tests/c5-package-symbols.test.ts:420-421` asserts `.release-hold` exists at the repo root, and `1eb7bc9` (the HEAD commit) deleted that file. See [B5](#b5-c5-package-symbolstestts-asserts-a-file-that-head-deleted).
+> The one new item worth acting on immediately is not a design finding at all — it is a **broken assertion on `main` right now**: `tests/c5-package-symbols.test.ts:420-421` asserts `.release-hold` exists at the repo root, and `1eb7bc9` (the HEAD commit) deleted that file. See [B5](#b5-c5-package-symbolstestts-asserts-a-release-hold-marker-that-head-deleted).
 
 ---
 
@@ -162,7 +162,7 @@ One entry in `network.md` is struck through rather than removed — [`disconnect
 
 [→ Full detail in review/build-tests-docs.md](review/build-tests-docs.md#npm-install-fails-with-eresolve-on-a-zod-peer-conflict-sdk-dev-env-and-claude-adapter-consumers)
 
-### B5. `c5-package-symbols.test.ts` asserts a file that HEAD deleted
+### B5. `c5-package-symbols.test.ts` asserts a `.release-hold` marker that HEAD deleted
 *Blocker-adjacent · Effort: S · `packages/sdk/tests/c5-package-symbols.test.ts:420-421`*
 
 **Problem** — The test `".release-hold marker exists at the repository root"` asserts `existsSync(join(REPO_ROOT, ".release-hold"))` is `true`. The current HEAD, `1eb7bc9` (*"chore: remove stale `.release-hold` from the Band rebrand"*), deleted that file and did not update the assertion. `vitest run` on `main`'s tree fails with `expected false to be true`.
@@ -175,7 +175,7 @@ This was not missed. CI reported it precisely: on the pull request that made the
 
 **Graded Blocker-adjacent, not Blocker** — it breaks no published package and no consumer; it breaks CI signal.
 
-[→ Full test-suite triage in review/build-tests-docs.md](review/build-tests-docs.md#test-suite-state) · [→ The merge-gate gap](review/build-tests-docs.md#mains-ruleset-requires-a-pull-request-but-no-passing-checks)
+[→ Full detail in review/build-tests-docs.md](review/build-tests-docs.md#c5-package-symbolstestts-asserts-a-release-hold-marker-that-head-deleted) · [→ The merge-gate gap](review/build-tests-docs.md#mains-ruleset-requires-a-pull-request-but-no-passing-checks) · [→ Full test-suite triage](review/build-tests-docs.md#test-suite-state)
 
 ---
 
@@ -279,7 +279,7 @@ Grouped by theme rather than by area. **Effort** tags: **S** = under a day, **M*
 
 **Fix** — Bring the 7 stray classes under `BandSdkError`. Convert REST validation throws to `ValidationError` / `TransportError`. Capture the error variable in every cited silent catch. Replace the 3 `console.warn` calls with the injected logger.
 
-[→ Full detail in review/error-async.md](review/error-async.md#major)
+[→ Bare throws](review/error-async.md#central-error-utility-ignored-by-63-bare-throw-new-error-sites) · [→ Stray error classes](review/error-async.md#custom-error-classes-dont-extend-bandsdkerror) · [→ REST raw errors in review/network.md](review/network.md#rest-errors-are-not-normalized-to-typed-sdk-errors) · [→ Dropped-context catches](review/error-async.md#silent-catches-in-critical-paths-drop-error-context) · [→ console.warn sites](review/error-async.md#consolewarn-used-instead-of-the-injected-logger)
 
 ### M9. `AbortSignal` not plumbed through REST
 *Major · Effort: M · `src/client/rest/requestOptions.ts:1`*
@@ -309,7 +309,7 @@ Grouped by theme rather than by area. **Effort** tags: **S** = under a day, **M*
 
 Then drop the `as unknown as` casts in `PhoenixChannelsTransport.ts:460` and `:465`.
 
-[→ Full detail in review/network.md](review/network.md#phoenixdts-ambient-narrows-behaviour-the-sdk-depends-on) · [→ Cast inventory in review/type-safety.md](review/type-safety.md#major)
+[→ Full detail in review/network.md](review/network.md#phoenixdts-ambient-narrows-behaviour-the-sdk-depends-on)
 
 ### M11. Cleanup uses `Promise.all` where `allSettled` is needed
 *Major · Effort: S · `src/mcp/server.ts:171, 257`, `src/mcp/sse.ts:153`, `src/runtime/rooms/AgentRuntime.ts:153-184`*
@@ -356,7 +356,7 @@ Then drop the `as unknown as` casts in `PhoenixChannelsTransport.ts:460` and `:4
 
 **Fix** — Add JSDoc to every exported declaration on the listed surfaces, starting with `contracts/protocols.ts` (the most consumer-facing) and the error classes (`core/errors.ts`).
 
-[→ Per-file list in review/build-tests-docs.md](review/build-tests-docs.md#missing-jsdoc-on-most-public-adapter-classes-and-options-interfaces)
+[→ Adapter classes](review/build-tests-docs.md#missing-jsdoc-on-most-public-adapter-classes-and-options-interfaces) · [→ Logger, errors, runtime config](review/build-tests-docs.md#missing-jsdoc-on-logger-error-classes-runtime-config-types) · [→ contracts/protocols](review/build-tests-docs.md#missing-jsdoc-on-contractsprotocols-public-interfaces)
 
 ### M15. Documentation drift
 *Major · Effort: S · README.md, examples/README.md, CHANGELOG.md (root + SDK), package.json*
@@ -371,7 +371,7 @@ Then drop the `as unknown as` casts in `PhoenixChannelsTransport.ts:460` and `:4
 
 **Fix** — Drop the `dog-landing-page/` bullet from `examples/README.md`; add `letta/` to the Examples table and `@band-ai/sdk/converters` to the Subpath Exports table; consolidate the duplicate CHANGELOG entries and bring it up to date; align `engines` between root and SDK.
 
-[→ Per-issue detail in review/build-tests-docs.md](review/build-tests-docs.md#major)
+[→ CHANGELOG drift](review/build-tests-docs.md#staleduplicated-packagessdkchangelogmd) · [→ Root CHANGELOG stale](review/build-tests-docs.md#root-changelogmd-is-also-out-of-date) · [→ Dead examples link](review/build-tests-docs.md#examplesreadmemd-references-non-existent-example) · [→ README omits letta](review/build-tests-docs.md#root-readmemd-examples-table-omits-letta) · [→ README omits converters subpath](review/build-tests-docs.md#root-readmemd-subpath-exports-table-omits-band-aisdkconverters)
 
 ### M16. Dead code in `src/mcp/claude.ts`
 *Major · Effort: S · `src/mcp/claude.ts`, `tsup.config.ts:41`*
