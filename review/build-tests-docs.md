@@ -40,7 +40,7 @@ The 23 failures need triage rather than a headline number, because only one of t
 | Failures | Cause | Verdict |
 | ---: | --- | --- |
 | 16 | `c3-1`, `c4-2`, `c5-1`, `c5-2`, `c5-4b` shell out via `spawnSync(join(SDK_ROOT, "node_modules/.bin/tsc"), …)`. Off POSIX the extensionless `.bin/tsc` is a shell script, `spawnSync` returns `ENOENT`, and `status ?? 1` reports that as a compiler verdict. | Test-harness bug — [Compile-proof tests are not portable off POSIX](#compile-proof-tests-are-not-portable-off-posix). The code under test is fine, and worse, the assertions expecting *rejection* pass vacuously. |
-| 1 | `c5-package-symbols.test.ts:420-421` asserts `.release-hold` exists at the repo root; `1eb7bc9` deleted that file. | **Genuine.** A red test on `main` — see [review.md B6](../review.md#b6-c5-package-symbolstestts-asserts-a-file-that-head-deleted). |
+| 1 | `c5-package-symbols.test.ts:420-421` asserts `.release-hold` exists at the repo root; `1eb7bc9` deleted that file. | **Genuine.** A red test on `main` — see [review.md B5](../review.md#b5-c5-package-symbolstestts-asserts-a-file-that-head-deleted). |
 | 1 | The stale-live-text guard compares `readme.split("\n")[0]` to an exact string, so a CRLF checkout leaves a trailing `\r`. | Test bug — [The brand guard assertion is line-ending sensitive](#the-brand-guard-assertion-is-line-ending-sensitive). |
 | 2 | `adapters-import-boundary` and `root-import-boundary` exceed the default 5s timeout on a cold transform cache. | Environment-sensitive. A 5s budget for a test that transforms the whole adapter barrel is thin; worth raising. |
 | 3 | `c6`/`c7` brand guards scan `git ls-files`, and any tracked document carrying legacy brand words trips them. | Guards working as designed. |
@@ -137,9 +137,9 @@ Gaps:
 2. **Why "downgrade `claude-agent-sdk` to a pre-zod-4 version" is not viable:** querying npm for every published version of `@anthropic-ai/claude-agent-sdk` shows the `zod@^4.0.0` peer is present in *every release*, including the earliest published version (`0.2.39`). There has never been a zod-3-compatible version. The earlier-suggested ceiling like `">=0.2.63 <0.2.142"` simply doesn't contain any working version.
 3. **Why upgrading to `claude-agent-sdk@0.3.x` doesn't help:** `0.3.159` (current latest) keeps the same `zod@^4.0.0` peer and *adds* two new peer constraints (`@anthropic-ai/sdk: ">=0.93.0"`, `@modelcontextprotocol/sdk: "^1.29.0"`). It doesn't fix this issue and introduces additional coordination headaches.
 4. **`pnpm.overrides` zod pin** is a temporary workaround for the SDK's own dev environment, but **does not propagate to consumers** — the Claude-adapter consumer path remains broken on npm. Don't ship the SDK relying on it.
-5. **Broader audit recommendation:** the peer-range style across the SDK leans on open-ended `">=X"` for several optional peers, which sets up future B5-style traps every time one of those peers cuts a major release with a peer-dep change. Audit every `peerDependencies` entry in `packages/sdk/package.json` — open-ended `>=` should be replaced with bounded ranges representing the versions you've actually tested. Also reconcile the contradiction between the peer range (`>=0.2.63`) and the dev range (`^0.2.63`) for `claude-agent-sdk`; they should match.
+5. **Broader audit recommendation:** the peer-range style across the SDK leans on open-ended `">=X"` for several optional peers, which sets up future B4-style traps every time one of those peers cuts a major release with a peer-dep change. Audit every `peerDependencies` entry in `packages/sdk/package.json` — open-ended `>=` should be replaced with bounded ranges representing the versions you've actually tested. Also reconcile the contradiction between the peer range (`>=0.2.63`) and the dev range (`^0.2.63`) for `claude-agent-sdk`; they should match.
 
-[↑ Summary in review.md B5](../review.md#b5-zod-3-vs-zod-4-peer-conflict-blocks-claude-adapter-consumers-and-the-sdks-own-dev-env)
+[↑ Summary in review.md B4](../review.md#b4-zod-3-vs-zod-4-peer-conflict-blocks-claude-adapter-consumers-and-the-sdks-own-dev-env)
 
 ### Major
 
@@ -290,7 +290,7 @@ Nothing runs it on a push to `main`. What runs there is `release.yml` (`on: push
 
 The `main-branch-protection` ruleset is `active` with no bypass actors, but its rules are only `deletion`, `non_fast_forward`, and `pull_request`. There is **no `required_status_checks` rule**. A pull request is mandatory; a *passing* pull request is not.
 
-The consequence is on record. The commit that deleted `.release-hold` was merged with `test` concluding **failure** and the aggregate `ci-status` check concluding **failure**, with an annotation naming the exact assertion — see [review.md B6](../review.md#b6-c5-package-symbolstestts-asserts-a-file-that-head-deleted). CI did its job; nothing acted on the result, and because the suite never re-runs on `main`, the failure has been invisible since.
+The consequence is on record. The commit that deleted `.release-hold` was merged with `test` concluding **failure** and the aggregate `ci-status` check concluding **failure**, with an annotation naming the exact assertion — see [review.md B5](../review.md#b5-c5-package-symbolstestts-asserts-a-file-that-head-deleted). CI did its job; nothing acted on the result, and because the suite never re-runs on `main`, the failure has been invisible since.
 
 **Impact** — Red builds can land on the trunk and then stop being reported. The repo has invested heavily in guard tests — the `c3`–`c7` migration proofs, the REST-client conformance test, the release-hardening suite — and all of that investment is advisory as long as no check is required to pass. It also means "CI is green on `main`" cannot be used as evidence about `main`'s tree, which is exactly the inference a contributor will make.
 
@@ -324,7 +324,7 @@ The failure mode is worse than a red test. **Both directions of every proof are 
 
 Measured at `1eb7bc9`: 16 failures across `linear-c3-compatibility` (P-C3-1, 4), `c4-room-metadata-storage` (P-C4-2, 4), and `c5-package-symbols` (P-C5-1, P-C5-2, P-C5-4b, 8). Verified directly: `spawnSync("packages/sdk/node_modules/.bin/tsc", ["--version"])` returns `{ status: null, error: { code: "ENOENT" } }` on this platform.
 
-**Impact** — The migration proofs do not run at all on Windows, and the half of them that assert *rejection* report success while proving nothing. Any contributor on Windows sees a permanently red suite and learns to ignore it, which is how the B6 assertion failure stayed invisible. On Linux CI the tests work, so this will not be caught there.
+**Impact** — The migration proofs do not run at all on Windows, and the half of them that assert *rejection* report success while proving nothing. Any contributor on Windows sees a permanently red suite and learns to ignore it, which is how the B5 assertion failure stayed invisible. On Linux CI the tests work, so this will not be caught there.
 
 **Fix** — Resolve the binary per platform and stop treating a spawn failure as a compiler verdict:
 

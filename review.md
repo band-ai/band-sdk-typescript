@@ -64,7 +64,7 @@ What's weakest:
 Nothing here blocks shipping more 0.1.x releases, but **several items should be cleared before stabilizing a 1.0 API**.
 
 >
-> The one new item worth acting on immediately is not a design finding at all — it is a **broken assertion on `main` right now**: `tests/c5-package-symbols.test.ts:420-421` asserts `.release-hold` exists at the repo root, and `1eb7bc9` (the HEAD commit) deleted that file. See [B6](#b6-c5-package-symbolstestts-asserts-a-file-that-head-deleted).
+> The one new item worth acting on immediately is not a design finding at all — it is a **broken assertion on `main` right now**: `tests/c5-package-symbols.test.ts:420-421` asserts `.release-hold` exists at the repo root, and `1eb7bc9` (the HEAD commit) deleted that file. See [B5](#b5-c5-package-symbolstestts-asserts-a-file-that-head-deleted).
 
 ---
 
@@ -151,7 +151,7 @@ One entry in `network.md` is struck through rather than removed — [`disconnect
 
 [→ Full detail in review/core-runtime.md](review/core-runtime.md#agentruntimestart-re-entry-uses-a-stale-aborted-controller-for-the-consume-loop-signal)
 
-### B5. `zod 3` vs `zod 4` peer conflict blocks Claude-adapter consumers and the SDK's own dev env
+### B4. `zod 3` vs `zod 4` peer conflict blocks Claude-adapter consumers and the SDK's own dev env
 *Blocker · Effort: M · `packages/sdk/package.json:95` (`zod`), `:101, :172` (`@anthropic-ai/claude-agent-sdk`)*
 
 **Problem** — The SDK pins `zod@^3.24.2`, but every published version of `@anthropic-ai/claude-agent-sdk` (which is in `devDependencies` and an optional peer) requires `zod@^4.0.0`. When both end up in the same tree, npm 7+ refuses with `ERESOLVE`.
@@ -162,7 +162,7 @@ One entry in `network.md` is struck through rather than removed — [`disconnect
 
 [→ Full detail in review/build-tests-docs.md](review/build-tests-docs.md#npm-install-fails-with-eresolve-on-a-zod-peer-conflict-sdk-dev-env-and-claude-adapter-consumers)
 
-### B6. `c5-package-symbols.test.ts` asserts a file that HEAD deleted
+### B5. `c5-package-symbols.test.ts` asserts a file that HEAD deleted
 *Blocker-adjacent · Effort: S · `packages/sdk/tests/c5-package-symbols.test.ts:420-421`*
 
 **Problem** — The test `".release-hold marker exists at the repository root"` asserts `existsSync(join(REPO_ROOT, ".release-hold"))` is `true`. The current HEAD, `1eb7bc9` (*"chore: remove stale `.release-hold` from the Band rebrand"*), deleted that file and did not update the assertion. `vitest run` on `main`'s tree fails with `expected false to be true`.
@@ -501,8 +501,8 @@ Each area file has its own Summary, Top issues, Findings (Blockers / Major / Min
 
 ## Suggested order of attack
 
-0. **Fix the red test on `main`** (B6). `tests/c5-package-symbols.test.ts:420-421` asserts a file HEAD deleted. Do this first — everything below assumes a green baseline.
-1. **Land the blockers** (B1, B2, B3, B5). Single-line fixes for B1 and B2; B3 needs a small state-machine refactor; B5 needs the zod 4 migration.
+0. **Fix the red test on `main`** (B5). `tests/c5-package-symbols.test.ts:420-421` asserts a file HEAD deleted. Do this first — everything below assumes a green baseline.
+1. **Land the blockers** (B1, B2, B3, B4). Single-line fixes for B1 and B2; B3 needs a small state-machine refactor; B4 needs the zod 4 migration.
 2. **Delete `src/optional-deps.d.ts`** (M2) and replace with real `import type` of peers from devDependencies. This collapses 34 `*Like` shims and most of the 133 `as <Type>` assertions in one pass — and is the single highest-ROI change in the review. (Requires adding the missing peers to `devDependencies` first.)
 3. **Tighten `tsconfig.json`** (M3). Will surface a wave of follow-up findings; do this before fixing scattered issues so the compiler points them out.
 4. **Centralize error utilities and unify the error hierarchy** (M6 + M8). Eliminates 33 inline reinventions and brings the 7 stray error classes under `BandSdkError` — start with `WebSocketDisconnectError`, which is the only one exported from the root entry.
