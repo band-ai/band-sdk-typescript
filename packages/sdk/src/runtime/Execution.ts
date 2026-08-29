@@ -1,9 +1,17 @@
+import { RuntimeStateError } from "../core/errors";
 import type { Logger } from "../core/logger";
 import { NoopLogger } from "../core/logger";
 import type { BandLink } from "../platform/BandLink";
 import type { PlatformEvent } from "../platform/events";
 import type { PlatformMessage } from "./types";
 import type { ExecutionContext } from "./ExecutionContext";
+import type { ExecutionLifecycleState } from "./lifecycle";
+import {
+  LifecycleTracker,
+  TerminalSignal,
+  isLegalExecutionTransition,
+  toLifecycleError,
+} from "./lifecycle";
 import type { MessageRetryTracker } from "./retryTracker";
 
 export type ExecutionHandler = (
@@ -53,10 +61,12 @@ export class Execution {
   private readonly idleWaiters = new Set<() => void>();
   private readonly drainedWsMessageIds = new Set<string>();
   private readonly syncProcessedIds = new Set<string>();
-  private processTask: Promise<void>;
+  private readonly stoppedSignal = new TerminalSignal();
+  private readonly lifecycle: LifecycleTracker<ExecutionLifecycleState>;
+  private readonly processTask: Promise<void>;
+  private stopOperation: Promise<boolean> | null = null;
   private firstWsMessageId: string | null = null;
   private syncComplete = false;
-  private running = true;
   private inFlight = 0;
 
   public constructor(options: ExecutionOptions) {
@@ -67,10 +77,46 @@ export class Execution {
     this.onExecute = options.onExecute;
     this.onFailure = options.onFailure;
     this.logger = options.logger ?? new NoopLogger();
-    this.processTask = this.processLoop();
+    this.lifecycle = new LifecycleTracker<ExecutionLifecycleState>({ status: "running" }, {
+      owner: "Execution",
+      logContext: { roomId: this.roomId },
+      logger: this.logger,
+      isLegalTransition: isLegalExecutionTransition,
+      onTransition: (state) => {
+        if (state.status === "stopped") {
+          this.stoppedSignal.settle(null);
+        } else if (state.status === "failed") {
+          this.stoppedSignal.settle(state.error);
+        }
+      },
+    });
+    this.processTask = this.runProcessLoop();
+    // A non-graceful stop deliberately detaches the loop, so keep its outcome
+    // observed here; real callers still see it via waitUntilStopped()/stop().
+    void this.processTask.catch(() => undefined);
   }
 
-  public enqueue(event: PlatformEvent): Promise<void> {
+  /**
+   * Whether this `Execution` is still alive, and if not, why it ended.
+   *
+   * This is the *lifecycle* axis. For "is this turn's handler currently
+   * executing" read `ExecutionContext.state` instead, which reports
+   * `"starting" | "idle" | "processing"` for the room's context.
+   *
+   * @see ExecutionContext.state
+   */
+  public get state(): ExecutionLifecycleState {
+    return this.lifecycle.state;
+  }
+
+  public async enqueue(event: PlatformEvent): Promise<void> {
+    const status = this.lifecycle.state.status;
+    if (status === "stopped" || status === "failed") {
+      throw new RuntimeStateError(
+        `Execution for room ${this.roomId} has already ended (status: ${status}); enqueue() is a no-op after stop()`,
+      );
+    }
+
     if (event.type === "message_created" && !this.syncComplete && this.firstWsMessageId === null) {
       this.firstWsMessageId = event.payload.id;
     }
@@ -81,8 +127,6 @@ export class Execution {
     } else {
       this.eventQueue.push(event);
     }
-
-    return Promise.resolve();
   }
 
   public async bootstrapMessage(message: PlatformMessage): Promise<void> {
@@ -136,8 +180,35 @@ export class Execution {
   }
 
   public async stop(timeoutMs?: number): Promise<boolean> {
+    if (this.stopOperation) {
+      return await this.stopOperation;
+    }
+
+    const operation = this.runStop(timeoutMs);
+    this.stopOperation = operation;
+    return await operation;
+  }
+
+  private async runStop(timeoutMs?: number): Promise<boolean> {
+    const initial = this.lifecycle.state;
+    if (initial.status === "failed") {
+      throw initial.error;
+    }
+    if (initial.status === "stopped") {
+      return initial.graceful;
+    }
+
+    // stop() is single-flight, so the only remaining state here is "running".
+    this.lifecycle.transition({ status: "stopping" }, "stop");
+
     const graceful = await this.waitForIdle(timeoutMs);
-    this.running = false;
+
+    const drained = this.lifecycle.state;
+    if (drained.status === "failed") {
+      throw drained.error;
+    }
+
+    this.lifecycle.transition({ status: "stopped", graceful }, graceful ? "stopped" : "stopped-forced");
     this.resolveEventWaiters(null);
 
     if (graceful || timeoutMs === undefined) {
@@ -147,15 +218,29 @@ export class Execution {
     return graceful;
   }
 
+  /**
+   * Resolve once this `Execution` has reached a terminal state — including a
+   * forced, non-graceful stop that detached the process loop — or reject with
+   * the error that ended it.
+   */
   public async waitUntilStopped(): Promise<void> {
-    await this.processTask;
+    await this.stoppedSignal.wait();
+  }
+
+  private async runProcessLoop(): Promise<void> {
+    try {
+      await this.processLoop();
+    } catch (error) {
+      this.markFailed(error, "process-loop-failed");
+      throw error;
+    }
   }
 
   private async processLoop(): Promise<void> {
     await this.recoverStaleProcessingMessages();
     await this.synchronizeWithNext();
 
-    while (this.running) {
+    while (this.isActive()) {
       const event = await this.nextQueuedEvent();
       if (!event) {
         return;
@@ -192,7 +277,7 @@ export class Execution {
     });
 
     for (const message of staleMessages) {
-      if (!this.running) {
+      if (!this.isActive()) {
         break;
       }
 
@@ -210,7 +295,7 @@ export class Execution {
   }
 
   private async synchronizeWithNext(): Promise<void> {
-    while (this.running) {
+    while (this.isActive()) {
       const nextMessage = await this.link.getNextMessage(this.roomId);
       if (!nextMessage) {
         break;
@@ -304,7 +389,7 @@ export class Execution {
           error,
         });
       }
-      this.running = false;
+      this.markFailed(error, "execution-failed");
       this.eventQueue.splice(0, this.eventQueue.length);
       this.resolveEventWaiters(null);
       throw error;
@@ -321,13 +406,28 @@ export class Execution {
       return queued;
     }
 
-    if (!this.running) {
+    if (!this.isActive()) {
       return null;
     }
 
     return new Promise<PlatformEvent | null>((resolve) => {
       this.waiters.push(resolve);
     });
+  }
+
+  /** True while the process loop should keep draining (`running` or mid-`stop()`). */
+  private isActive(): boolean {
+    const status = this.lifecycle.state.status;
+    return status === "running" || status === "stopping";
+  }
+
+  private markFailed(error: unknown, trigger: string): void {
+    const status = this.lifecycle.state.status;
+    if (status === "stopped" || status === "failed") {
+      return;
+    }
+
+    this.lifecycle.transition({ status: "failed", error: toLifecycleError(error) }, trigger);
   }
 
   private notifyIfIdle(): void {

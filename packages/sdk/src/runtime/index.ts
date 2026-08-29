@@ -19,6 +19,7 @@ export {
 export { ContactEventHandler, HUB_ROOM_SYSTEM_PROMPT } from "./ContactEventHandler";
 export type { ExecutionState, ExecutionContextOptions } from "./ExecutionContext";
 export type { ExecutionHandler } from "./Execution";
+export type { RuntimeLifecycleState, ExecutionLifecycleState } from "./lifecycle";
 
 export { AgentRuntime } from "./rooms/AgentRuntime";
 export { Execution } from "./Execution";

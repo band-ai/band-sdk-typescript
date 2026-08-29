@@ -93,28 +93,23 @@ describe("PlatformRuntime coverage", () => {
       }),
     });
 
-    (runtime as unknown as {
-      runtime: { stop(timeoutMs?: number): Promise<boolean> };
-      activeAdapter: { onRuntimeStop?: () => Promise<void> };
-      stopping: boolean;
-    }).runtime = {
-      stop: async () => {
-        throw new Error("runtime stop failed");
-      },
-    };
-    (runtime as unknown as {
-      runtime: { stop(timeoutMs?: number): Promise<boolean> };
-      activeAdapter: { onRuntimeStop?: () => Promise<void> };
-      stopping: boolean;
-    }).activeAdapter = {
-      onRuntimeStop: async () => {
+    const adapter = {
+      onEvent: vi.fn(async () => {}),
+      onStarted: vi.fn(async () => {}),
+      onCleanup: vi.fn(async () => {}),
+      onRuntimeStop: vi.fn(async () => {
         throw new Error("adapter cleanup failed");
-      },
+      }),
     };
+    vi.spyOn(AgentRuntime.prototype, "stop").mockRejectedValue(new Error("runtime stop failed"));
+
+    await runtime.start(adapter as never);
+    expect(runtime.state).toEqual({ status: "running" });
 
     await expect(runtime.stop()).rejects.toThrow(
       "PlatformRuntime stop failed and adapter cleanup also failed",
     );
+    expect(runtime.state.status).toBe("failed");
   });
 
   it("cleans up if startup fails after the adapter starts", async () => {

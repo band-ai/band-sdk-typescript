@@ -1,10 +1,18 @@
 import type { BandLink } from "../../platform/BandLink";
 import type { ContactEvent, PlatformEvent } from "../../platform/events";
+import { RuntimeStateError } from "../../core/errors";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import type { MetadataMap, ParticipantRecord } from "../../contracts/dtos";
 import { Execution } from "../Execution";
 import { ExecutionContext, type ExecutionContextOptions } from "../ExecutionContext";
+import type { RuntimeLifecycleState } from "../lifecycle";
+import {
+  LifecycleTracker,
+  TerminalSignal,
+  isLegalRuntimeTransition,
+  toLifecycleError,
+} from "../lifecycle";
 import { hydrateTrackedRooms, trackRoomJoin, trackRoomLeave } from "./subscriptions";
 import type { AgentConfig, SessionConfig } from "../types";
 import type { PlatformMessage } from "../types";
@@ -47,11 +55,12 @@ export class AgentRuntime {
   private readonly executions = new Map<string, Execution>();
   private readonly executionWatchers = new Map<string, Promise<void>>();
   private readonly logger: Logger;
-  private running = false;
-  private stopping = false;
+  private readonly stoppedSignal = new TerminalSignal();
+  private readonly lifecycle: LifecycleTracker<RuntimeLifecycleState>;
   private stopController = new AbortController();
   private consumeTask: Promise<void> | null = null;
-  private fatalError: unknown = null;
+  private startOperation: Promise<void> | null = null;
+  private stopOperation: Promise<boolean> | null = null;
 
   public constructor(options: AgentRuntimeOptions) {
     this.link = options.link;
@@ -75,25 +84,67 @@ export class AgentRuntime {
       enableContextHydration: options.sessionConfig?.enableContextHydration ?? true,
     };
     this.autoSubscribeExistingRooms = options.agentConfig?.autoSubscribeExistingRooms ?? false;
+    this.lifecycle = new LifecycleTracker<RuntimeLifecycleState>({ status: "not_started" }, {
+      owner: "AgentRuntime",
+      logContext: { agentId: this.agentId },
+      logger: this.logger,
+      isLegalTransition: isLegalRuntimeTransition,
+      onTransition: (state) => {
+        if (state.status === "stopped") {
+          this.stoppedSignal.settle(null);
+        } else if (state.status === "failed") {
+          this.stoppedSignal.settle(state.error);
+        }
+      },
+    });
   }
 
+  /** Current lifecycle state of this runtime. */
+  public get state(): RuntimeLifecycleState {
+    return this.lifecycle.state;
+  }
+
+  /**
+   * Connect, subscribe, and begin consuming platform events.
+   *
+   * Repeated or concurrent calls join the in-flight start instead of starting a
+   * second consume loop. Calling `start()` while a `stop()` is still in flight
+   * rejects with a {@link RuntimeStateError}.
+   */
   public async start(): Promise<void> {
-    if (this.running) {
-      return;
+    if (this.lifecycle.state.status === "stopping") {
+      throw new RuntimeStateError("AgentRuntime cannot start while a stop is in progress");
     }
 
-    this.running = true;
-    this.stopping = false;
-    this.fatalError = null;
-    if (!this.stopController.signal.aborted) {
-      this.stopController.abort();
+    if (this.startOperation) {
+      return await this.startOperation;
     }
+
+    this.stopOperation = null;
+    this.stoppedSignal.rearm();
+    this.lifecycle.transition({ status: "starting" }, "start");
+    const operation = this.runStart();
+    this.startOperation = operation;
+
+    try {
+      await operation;
+    } catch (error) {
+      if (this.startOperation === operation) {
+        this.startOperation = null;
+      }
+      throw error;
+    }
+  }
+
+  private async runStart(): Promise<void> {
+    // A fresh controller per run; the previous one is never aborted here because
+    // another caller may still be observing it.
     this.stopController = new AbortController();
 
     try {
       await this.link.connect();
     } catch (error) {
-      await this.handleStartFailure();
+      await this.finishFailedStart();
       throw error;
     }
 
@@ -106,11 +157,14 @@ export class AgentRuntime {
     try {
       await this.subscribeExistingRooms();
     } catch (error) {
-      await this.handleStartFailure();
+      await this.finishFailedStart();
       throw error;
     }
 
     this.consumeTask = this.consumeLoop(this.stopController.signal);
+    if (this.lifecycle.state.status === "starting") {
+      this.lifecycle.transition({ status: "running" }, "started");
+    }
 
     if (!this.link.capabilities.contacts) {
       return;
@@ -123,9 +177,20 @@ export class AgentRuntime {
     }
   }
 
+  private async finishFailedStart(): Promise<void> {
+    try {
+      await this.handleStartFailure();
+    } catch (cleanupError) {
+      this.markFailed(cleanupError, "start-cleanup-failed");
+      throw cleanupError;
+    }
+
+    if (this.lifecycle.state.status === "starting") {
+      this.lifecycle.transition({ status: "stopped" }, "start-failed");
+    }
+  }
+
   private async handleStartFailure(): Promise<void> {
-    this.running = false;
-    this.stopping = false;
     this.stopController.abort();
     if (this.consumeTask) {
       await this.consumeTask;
@@ -134,37 +199,88 @@ export class AgentRuntime {
     await this.link.disconnect();
   }
 
+  /**
+   * Tear the runtime down.
+   *
+   * A concurrent second call joins the in-flight teardown and mirrors its
+   * outcome — including rejecting with the *same* `Error` instance — instead of
+   * reporting a shutdown it did not perform.
+   */
   public async stop(timeoutMs?: number): Promise<boolean> {
-    if (this.stopping || (!this.running && !this.fatalError)) {
-      return true;
+    if (this.stopOperation) {
+      return await this.stopOperation;
     }
 
-    this.stopping = true;
-    this.running = false;
-    this.stopController.abort();
-    if (this.consumeTask) {
-      await this.consumeTask;
-      this.consumeTask = null;
-    }
+    const operation = this.runStop(timeoutMs);
+    this.stopOperation = operation;
+    return await operation;
+  }
 
-    const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
-    let graceful = true;
-
-    for (const execution of this.executions.values()) {
-      const remaining = deadline === undefined ? undefined : Math.max(0, deadline - Date.now());
-      const stopped = await execution.stop(remaining);
-      if (!stopped) {
-        graceful = false;
+  private async runStop(timeoutMs?: number): Promise<boolean> {
+    // A stop landing mid-start must not report a teardown of resources that
+    // start() has not created yet, so wait for it to settle first. Nothing is
+    // awaited when no start is in flight, keeping the transition below
+    // observable in the caller's own tick.
+    const pendingStart = this.lifecycle.state.status === "starting" ? this.startOperation : null;
+    if (pendingStart) {
+      try {
+        await pendingStart;
+      } catch (error) {
+        // The start's own caller sees this rejection; teardown continues here.
+        this.logger.debug("AgentRuntime stop is proceeding after the in-flight start failed", { error });
       }
     }
 
+    const initial = this.lifecycle.state;
+    if (initial.status === "not_started" || initial.status === "stopped") {
+      return true;
+    }
+
+    const fatalError = initial.status === "failed" ? initial.error : null;
+
+    this.startOperation = null;
+    this.lifecycle.transition({ status: "stopping" }, "stop");
+
+    try {
+      return await this.performStop(timeoutMs, fatalError);
+    } catch (error) {
+      // Never leave the runtime latched in "stopping": a teardown that blew up
+      // must still be re-attemptable and must not block a later start().
+      this.markFailed(error, "stop-failed");
+      throw error;
+    }
+  }
+
+  private async performStop(timeoutMs: number | undefined, fatalError: Error | null): Promise<boolean> {
+    // Every step below is isolated: one room's failed teardown must not skip the
+    // remaining rooms, the map clearing, or the link disconnect.
+    const errors: unknown[] = [];
+
+    this.stopController.abort();
+    const consumeTask = this.consumeTask;
+    if (consumeTask) {
+      this.consumeTask = null;
+      await isolateTeardown(errors, () => consumeTask);
+    }
+
+    const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
+    const remaining = (): number | undefined =>
+      deadline === undefined ? undefined : Math.max(0, deadline - Date.now());
+
+    let graceful = true;
+
+    for (const execution of this.executions.values()) {
+      await isolateTeardown(errors, async () => {
+        graceful = (await execution.stop(remaining())) && graceful;
+      });
+    }
+
     for (const roomId of [...this.subscribedRooms]) {
-      const remaining = deadline === undefined ? undefined : Math.max(0, deadline - Date.now());
-      await this.leaveTrackedRoom(roomId, remaining);
+      await isolateTeardown(errors, () => this.leaveTrackedRoom(roomId, remaining()));
     }
 
     for (const roomId of [...this.contexts.keys()]) {
-      await this.onSessionCleanup(roomId);
+      await isolateTeardown(errors, () => this.onSessionCleanup(roomId));
     }
 
     this.subscribedRooms.clear();
@@ -173,13 +289,25 @@ export class AgentRuntime {
     this.executionWatchers.clear();
 
     if (this.link.capabilities.contacts) {
-      await this.link.unsubscribeAgentContacts();
+      await isolateTeardown(errors, () => this.link.unsubscribeAgentContacts());
     }
 
-    await this.link.disconnect();
-    if (this.fatalError) {
-      throw this.fatalError instanceof Error ? this.fatalError : new Error(String(this.fatalError));
+    await isolateTeardown(errors, () => this.link.disconnect());
+
+    const settled = this.lifecycle.state;
+    const failure = settled.status === "failed" ? settled.error : fatalError;
+    if (failure) {
+      if (settled.status !== "failed") {
+        this.lifecycle.transition({ status: "failed", error: failure }, "stopped-after-failure");
+      }
+      errors.unshift(failure);
     }
+
+    if (errors.length > 0) {
+      throw combineTeardownErrors(errors);
+    }
+
+    this.lifecycle.transition({ status: "stopped" }, "stopped");
     return graceful;
   }
 
@@ -187,16 +315,35 @@ export class AgentRuntime {
     return this.contexts.get(roomId);
   }
 
+  /**
+   * Resolve once the runtime has actually stopped, or reject with the fatal
+   * error that ended it.
+   *
+   * A runtime that was never started stays pending until it stops or fails;
+   * starting it does not resolve a pending wait.
+   */
   public async waitUntilStopped(): Promise<void> {
-    if (this.consumeTask) {
-      await this.consumeTask;
-    } else {
-      await this.link.runForever(this.stopController.signal);
+    const task = this.consumeTask;
+    if (!task) {
+      await this.stoppedSignal.wait();
+      return;
     }
 
-    if (this.fatalError) {
-      throw this.fatalError instanceof Error ? this.fatalError : new Error(String(this.fatalError));
+    await task;
+    const state = this.lifecycle.state;
+    if (state.status === "failed") {
+      throw state.error;
     }
+  }
+
+  private markFailed(error: unknown, trigger: string): boolean {
+    const status = this.lifecycle.state.status;
+    if (status === "stopped" || status === "failed" || status === "not_started") {
+      return false;
+    }
+
+    this.lifecycle.transition({ status: "failed", error: toLifecycleError(error) }, trigger);
+    return true;
   }
 
   public getContexts(): ExecutionContext[] {
@@ -297,14 +444,24 @@ export class AgentRuntime {
 
   public async resetRoomSession(roomId: string, timeoutMs?: number): Promise<boolean> {
     const execution = this.executions.get(roomId);
+    const errors: unknown[] = [];
     let graceful = true;
+
     if (execution) {
-      graceful = await execution.stop(timeoutMs);
+      // Isolated so a failed execution still gets evicted from the maps.
+      await isolateTeardown(errors, async () => {
+        graceful = await execution.stop(timeoutMs);
+      });
     }
 
     this.executions.delete(roomId);
     this.contexts.delete(roomId);
-    await this.onSessionCleanup(roomId);
+    await isolateTeardown(errors, () => this.onSessionCleanup(roomId));
+
+    if (errors.length > 0) {
+      throw combineTeardownErrors(errors);
+    }
+
     return graceful;
   }
 
@@ -394,29 +551,46 @@ export class AgentRuntime {
   }
 
   private async leaveTrackedRoom(roomId: string, timeoutMs?: number): Promise<void> {
+    const errors: unknown[] = [];
     await trackRoomLeave({
       link: this.link,
       roomId,
       trackedRooms: this.subscribedRooms,
       onLeft: async (leftRoomId) => {
-        await this.executions.get(leftRoomId)?.stop(timeoutMs);
+        const execution = this.executions.get(leftRoomId);
+        if (execution) {
+          // Isolated so a failed execution still gets evicted from the maps.
+          await isolateTeardown(errors, () => execution.stop(timeoutMs));
+        }
+
         this.contexts.delete(leftRoomId);
         this.executions.delete(leftRoomId);
-        await this.onSessionCleanup(leftRoomId);
+        await isolateTeardown(errors, () => this.onSessionCleanup(leftRoomId));
       },
     });
+
+    if (errors.length > 0) {
+      throw combineTeardownErrors(errors);
+    }
   }
 
   private async failRuntime(error: unknown, event: PlatformEvent): Promise<void> {
-    if (!this.fatalError) {
-      this.fatalError = error;
-      this.running = false;
+    if (this.markFailed(error, "runtime-error")) {
       this.logger.error("Fatal runtime error handling platform event", {
         eventType: event.type,
         roomId: event.roomId,
         error,
       });
       this.notifyOnError(error, event);
+    } else {
+      // The lifecycle is already terminal, so the transition is a no-op — but the
+      // error itself still deserves a trace instead of being dropped silently.
+      this.logger.debug("Runtime error after the lifecycle already ended", {
+        status: this.lifecycle.state.status,
+        eventType: event.type,
+        roomId: event.roomId,
+        error,
+      });
     }
 
     if (!this.stopController.signal.aborted) {
@@ -439,6 +613,28 @@ export class AgentRuntime {
       });
     }
   }
+}
+
+/** Runs one teardown step, recording its failure instead of propagating it. */
+async function isolateTeardown(errors: unknown[], step: () => Promise<unknown>): Promise<void> {
+  try {
+    await step();
+  } catch (error) {
+    errors.push(error);
+  }
+}
+
+/**
+ * Collapses the errors collected across isolated teardown steps.
+ *
+ * A single distinct error is rethrown as-is so callers that coalesced onto the
+ * same teardown still observe one identical `Error` instance.
+ */
+function combineTeardownErrors(errors: unknown[]): unknown {
+  const distinct = [...new Set(errors)];
+  return distinct.length === 1
+    ? distinct[0]
+    : new AggregateError(distinct, "AgentRuntime failed to tear down cleanly");
 }
 
 function syntheticRuntimeFailureEvent(agentId: string): PlatformEvent {
