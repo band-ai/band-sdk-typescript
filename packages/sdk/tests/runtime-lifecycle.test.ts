@@ -9,7 +9,7 @@ import type { PlatformEvent } from "../src/platform/events";
 import type { StreamingTransport, TopicHandlers } from "../src/platform/streaming/transport";
 import { Execution } from "../src/runtime/Execution";
 import type { ExecutionState } from "../src/runtime/ExecutionContext";
-import { PlatformRuntime } from "../src/runtime/PlatformRuntime";
+import { PlatformRuntime, type PlatformRuntimeOptions } from "../src/runtime/PlatformRuntime";
 import { AgentRuntime } from "../src/runtime/rooms/AgentRuntime";
 import { MessageRetryTracker } from "../src/runtime/retryTracker";
 import {
@@ -18,10 +18,61 @@ import {
   type ExecutionLifecycleStatus,
   type RuntimeLifecycleStatus,
 } from "../src/runtime/lifecycle";
-// AC-19: the union must be one declaration, reachable from both public entry points.
+// The lifecycle union must be one declaration, reachable from both public entry points.
 import type { RuntimeLifecycleState as RootLifecycleState } from "../src/index";
 import type { RuntimeLifecycleState as RuntimeSubpathLifecycleState } from "../src/runtime/index";
 import { FakeRestApi } from "./testUtils";
+
+const AGENT_ID = "a1";
+const API_KEY = "k";
+/** The room used by the single-room fixtures; must match the emitted topics. */
+const ROOM_ID = "room-1";
+
+/**
+ * Long enough that a promise which was going to settle on its own already has,
+ * so one still pending after this window is genuinely parked.
+ */
+const SETTLE_WINDOW_MS = 20;
+
+/** Shorter than any gated handler here, so a stop bounded by it must time out. */
+const FORCED_STOP_TIMEOUT_MS = 10;
+
+/** Yields one macrotask so an in-flight start()/stop() can reach its first await. */
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function settleWindow(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, SETTLE_WINDOW_MS));
+}
+
+interface Gate {
+  /** Blocks the gated operation until `release()` is called. */
+  wait: () => Promise<void>;
+  release: () => void;
+}
+
+/** A promise a test can hold an operation on and open at a chosen moment. */
+function createGate(): Gate {
+  let release!: () => void;
+  const opened = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  return { wait: () => opened, release };
+}
+
+/**
+ * Resolves with the rejection reason, or `null` if the promise fulfilled. The
+ * handler is attached synchronously, so parking on the result never lets the
+ * rejection surface as an unhandled one first.
+ */
+function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
+  return promise.then(
+    () => null,
+    (error: unknown) => error,
+  );
+}
 
 class FakeTransport implements StreamingTransport {
   public connectCount = 0;
@@ -89,26 +140,70 @@ function makeAdapter(onRuntimeStop?: () => Promise<void>): StubAdapter {
 
 function makeLink(transport: StreamingTransport): BandLink {
   return new BandLink({
-    agentId: "a1",
-    apiKey: "k",
+    agentId: AGENT_ID,
+    apiKey: API_KEY,
     transport,
     restApi: new FakeRestApi(),
   });
 }
 
-function makePlatformRuntime(transport: StreamingTransport): PlatformRuntime {
-  return new PlatformRuntime({ agentId: "a1", apiKey: "k", link: makeLink(transport) });
-}
+/** AgentRuntime's option interface is not exported, so derive it from the constructor. */
+type AgentRuntimeOptions = ConstructorParameters<typeof AgentRuntime>[0];
 
-function makeAgentRuntime(transport: StreamingTransport): AgentRuntime {
-  return new AgentRuntime({
+function makePlatformRuntime(
+  transport: StreamingTransport,
+  overrides: Partial<PlatformRuntimeOptions> = {},
+): PlatformRuntime {
+  return new PlatformRuntime({
+    agentId: AGENT_ID,
+    apiKey: API_KEY,
     link: makeLink(transport),
-    agentId: "a1",
-    onExecute: async () => undefined,
+    ...overrides,
   });
 }
 
-function makeExecutionEvent(id: string, roomId = "room-1"): PlatformEvent {
+function makeAgentRuntime(
+  transport: StreamingTransport,
+  overrides: Partial<AgentRuntimeOptions> = {},
+): AgentRuntime {
+  return new AgentRuntime({
+    link: makeLink(transport),
+    agentId: AGENT_ID,
+    onExecute: async () => undefined,
+    ...overrides,
+  });
+}
+
+async function emitRoomAdded(transport: FakeTransport, roomId: string): Promise<void> {
+  await transport.emit(`agent_rooms:${AGENT_ID}`, "room_added", {
+    id: roomId,
+    status: "active",
+    type: "direct",
+    title: "Room",
+    removed_at: "",
+  });
+}
+
+async function emitMessage(
+  transport: FakeTransport,
+  roomId: string,
+  id: string,
+  content: string,
+): Promise<void> {
+  const now = new Date().toISOString();
+  await transport.emit(`chat_room:${roomId}`, "message_created", {
+    id,
+    content,
+    message_type: "text",
+    sender_id: "u1",
+    sender_type: "User",
+    sender_name: "Jane",
+    inserted_at: now,
+    updated_at: now,
+  });
+}
+
+function makeExecutionEvent(id: string, roomId = ROOM_ID): PlatformEvent {
   const now = new Date("2026-03-05T00:00:00.000Z").toISOString();
   return {
     type: "message_created",
@@ -135,7 +230,7 @@ function makeExecution(onExecute: () => Promise<void> = async () => undefined): 
   };
 
   return new Execution({
-    roomId: "room-1",
+    roomId: ROOM_ID,
     link: {
       getNextMessage: async () => null,
       getStaleProcessingMessages: async () => [],
@@ -157,7 +252,7 @@ async function withoutUnhandledRejections(work: () => Promise<void>): Promise<vo
     await work();
     // Unhandled rejections are reported once the microtask queue has drained and
     // the promise has been garbage-collection-eligible for a turn of the loop.
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await settleWindow();
   } finally {
     process.off("unhandledRejection", listener);
   }
@@ -170,8 +265,8 @@ describe("lifecycle state machine", () => {
     vi.restoreAllMocks();
   });
 
-  // AC-8: adding a status without a case in the transition switch fails `tsc`,
-  // because the switch's default branch narrows to `never`. These maps are the
+  // Adding a status without a case in the transition switch fails `tsc`, because
+  // the switch's default branch narrows to `never`. These maps are the
   // compile-time half of that proof: they stop compiling if a status is added.
   const RUNTIME_STATUSES: Record<RuntimeLifecycleStatus, true> = {
     not_started: true,
@@ -188,7 +283,7 @@ describe("lifecycle state machine", () => {
     failed: true,
   };
 
-  it("AC-8: every declared status is handled by its transition table", () => {
+  it("every declared status is handled by its transition table", () => {
     const runtimeStatuses = Object.keys(RUNTIME_STATUSES) as RuntimeLifecycleStatus[];
     for (const from of runtimeStatuses) {
       for (const to of runtimeStatuses) {
@@ -209,7 +304,7 @@ describe("lifecycle state machine", () => {
     expect(isLegalExecutionTransition("stopped", "running")).toBe(false);
   });
 
-  it("AC-7: the replaced lifecycle booleans no longer exist on the four classes", async () => {
+  it("the replaced lifecycle booleans no longer exist on the four classes", async () => {
     const transport = new FakeTransport();
     const platformRuntime = makePlatformRuntime(transport);
     const agent = new Agent(platformRuntime, makeAdapter() as never);
@@ -228,7 +323,7 @@ describe("lifecycle state machine", () => {
     await execution.stop();
   });
 
-  it("AC-11/AC-18: all four classes expose a public state getter with a `status` discriminant", async () => {
+  it("all four classes expose a public state getter with a `status` discriminant", async () => {
     const transport = new FakeTransport();
     const platformRuntime = makePlatformRuntime(transport);
     const agent = new Agent(platformRuntime, makeAdapter() as never);
@@ -243,7 +338,7 @@ describe("lifecycle state machine", () => {
     await execution.stop();
   });
 
-  it("AC-19: the lifecycle union is the same declaration on both public entry points", () => {
+  it("the lifecycle union is the same declaration on both public entry points", () => {
     const fromRoot: RootLifecycleState = { status: "running" };
     const fromSubpath: RuntimeSubpathLifecycleState = fromRoot;
     const backToRoot: RootLifecycleState = fromSubpath;
@@ -251,7 +346,7 @@ describe("lifecycle state machine", () => {
     expect(backToRoot.status).toBe("running");
   });
 
-  it("AC-20: Execution and ExecutionContext state vocabularies are disjoint and cross-referenced", () => {
+  it("Execution and ExecutionContext state vocabularies are disjoint and cross-referenced", () => {
     const lifecycleNames = Object.keys(EXECUTION_STATUSES);
     const perTurnNames: ExecutionState[] = ["starting", "idle", "processing"];
     expect(lifecycleNames.filter((name) => perTurnNames.includes(name as ExecutionState))).toEqual([]);
@@ -261,7 +356,7 @@ describe("lifecycle state machine", () => {
     expect(readFileSync(join(srcDir, "ExecutionContext.ts"), "utf8")).toContain("@see Execution.state");
   });
 
-  it("AC-28: the value returned by state is immutable from the caller's perspective", async () => {
+  it("the value returned by state is immutable from the caller's perspective", async () => {
     const execution = makeExecution();
     const observed = execution.state;
     expect(Object.isFrozen(observed)).toBe(true);
@@ -283,7 +378,7 @@ describe("PlatformRuntime lifecycle", () => {
     vi.restoreAllMocks();
   });
 
-  it("AC-1: a failed stop does not disable teardown on the next start/stop cycle", async () => {
+  it("a failed stop does not disable teardown on the next start/stop cycle", async () => {
     const transport = new FakeTransport();
     const runtime = makePlatformRuntime(transport);
     let failCleanup = true;
@@ -314,7 +409,7 @@ describe("PlatformRuntime lifecycle", () => {
     expect(runtime.state).toEqual({ status: "stopped" });
   });
 
-  it("AC-2: a failed start whose cleanup also failed does not poison the instance", async () => {
+  it("a failed start whose cleanup also failed does not poison the instance", async () => {
     const transport = new FakeTransport();
     const runtime = makePlatformRuntime(transport);
     let failCleanup = true;
@@ -342,15 +437,12 @@ describe("PlatformRuntime lifecycle", () => {
     expect(transport.disconnectCount - disconnectsBefore).toBe(1);
   });
 
-  it("AC-3: a concurrent stop awaits the in-flight teardown instead of reporting success", async () => {
+  it("a concurrent stop awaits the in-flight teardown instead of reporting success", async () => {
     const transport = new FakeTransport();
     const runtime = makePlatformRuntime(transport);
-    let releaseCleanup!: () => void;
-    const cleanupGate = new Promise<void>((resolve) => {
-      releaseCleanup = resolve;
-    });
+    const cleanupGate = createGate();
     const adapter = makeAdapter(async () => {
-      await cleanupGate;
+      await cleanupGate.wait();
     });
 
     await runtime.start(adapter as never);
@@ -365,17 +457,17 @@ describe("PlatformRuntime lifecycle", () => {
       return value;
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await settleWindow();
     expect(settled).toEqual([]);
 
-    releaseCleanup();
+    cleanupGate.release();
     await expect(first).resolves.toBe(true);
     await expect(second).resolves.toBe(true);
     expect(settled).toEqual(["first", "second"]);
     expect(adapter.onRuntimeStop).toHaveBeenCalledTimes(1);
   });
 
-  it("AC-23: coalesced stop callers receive the identical Error instance", async () => {
+  it("coalesced stop callers receive the identical Error instance", async () => {
     const transport = new FakeTransport();
     const runtime = makePlatformRuntime(transport);
     const failure = new Error("adapter cleanup failed");
@@ -385,25 +477,23 @@ describe("PlatformRuntime lifecycle", () => {
 
     await runtime.start(adapter as never);
 
-    const first = runtime.stop();
-    const second = runtime.stop();
+    // Both stops are in flight before either settles, so the second coalesces.
+    const first = rejectionOf(runtime.stop());
+    const second = rejectionOf(runtime.stop());
 
-    const firstError = await first.then(() => null, (error: unknown) => error);
-    const secondError = await second.then(() => null, (error: unknown) => error);
+    const firstError = await first;
+    const secondError = await second;
 
     expect(firstError).toBe(failure);
     expect(secondError).toBe(firstError);
   });
 
-  it("AC-24: start() while a stop is in flight rejects with RuntimeStateError", async () => {
+  it("start() while a stop is in flight rejects with RuntimeStateError", async () => {
     const transport = new FakeTransport();
     const runtime = makePlatformRuntime(transport);
-    let releaseCleanup!: () => void;
-    const cleanupGate = new Promise<void>((resolve) => {
-      releaseCleanup = resolve;
-    });
+    const cleanupGate = createGate();
     const adapter = makeAdapter(async () => {
-      await cleanupGate;
+      await cleanupGate.wait();
     });
 
     await runtime.start(adapter as never);
@@ -412,43 +502,37 @@ describe("PlatformRuntime lifecycle", () => {
 
     await expect(runtime.start(adapter as never)).rejects.toBeInstanceOf(RuntimeStateError);
 
-    releaseCleanup();
+    cleanupGate.release();
     await expect(stopPromise).resolves.toBe(true);
   });
 
-  it("AC-25: an external stop coalesces with the internal cleanup stop of a failing start", async () => {
+  it("an external stop coalesces with the internal cleanup stop of a failing start", async () => {
     const transport = new FakeTransport();
     const runtime = makePlatformRuntime(transport);
     const adapter = makeAdapter();
 
-    let releaseStart!: () => void;
-    const startGate = new Promise<void>((resolve) => {
-      releaseStart = resolve;
-    });
+    const startGate = createGate();
     vi.spyOn(AgentRuntime.prototype, "start").mockImplementation(async () => {
-      await startGate;
+      await startGate.wait();
       throw new Error("runtime start failed");
     });
 
     const startPromise = runtime.start(adapter as never);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await yieldToEventLoop();
 
     // External caller races the cleanup stop() that start()'s own failure path runs.
     const externalStop = runtime.stop();
-    releaseStart();
+    startGate.release();
 
     await expect(startPromise).rejects.toThrow("runtime start failed");
     await expect(externalStop).resolves.toBe(true);
     expect(adapter.onRuntimeStop).toHaveBeenCalledTimes(1);
   });
 
-  it("AC-22: a post-stop enqueue on the contact hub path is handled, not left unhandled", async () => {
+  it("a post-stop enqueue on the contact hub path is handled, not left unhandled", async () => {
     const transport = new FakeTransport();
     const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-    const runtime = new PlatformRuntime({
-      agentId: "a1",
-      apiKey: "k",
-      link: makeLink(transport),
+    const runtime = makePlatformRuntime(transport, {
       logger,
       contactConfig: { strategy: "hub_room", hubTaskId: "task-1" },
     });
@@ -460,7 +544,7 @@ describe("PlatformRuntime lifecycle", () => {
 
     await withoutUnhandledRejections(async () => {
       await runtime.start(adapter as never);
-      await transport.emit("agent_contacts:a1", "contact_request_received", {
+      await transport.emit(`agent_contacts:${AGENT_ID}`, "contact_request_received", {
         id: "req-1",
         from_handle: "alice",
         from_name: "Alice",
@@ -468,7 +552,7 @@ describe("PlatformRuntime lifecycle", () => {
         status: "pending",
         inserted_at: new Date().toISOString(),
       });
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await settleWindow();
     });
 
     const reported = logger.error.mock.calls.find(
@@ -482,19 +566,16 @@ describe("PlatformRuntime lifecycle", () => {
   it("stop() during the early window of a start does not report a teardown it did not perform", async () => {
     const transport = new FakeTransport();
     const runtime = makePlatformRuntime(transport);
-    let releaseStarted!: () => void;
-    const startedGate = new Promise<void>((resolve) => {
-      releaseStarted = resolve;
-    });
+    const startedGate = createGate();
     const adapter = makeAdapter();
     adapter.onStarted.mockImplementation(async () => {
-      await startedGate;
+      await startedGate.wait();
     });
 
     // Held before `activeAdapter`/`runtime` are assigned: the window in which
     // stop() used to short-circuit to "stopped" while start() built a live runtime.
     const startPromise = runtime.start(adapter as never);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await yieldToEventLoop();
     expect(runtime.state).toEqual({ status: "starting" });
 
     const settled: string[] = [];
@@ -503,11 +584,11 @@ describe("PlatformRuntime lifecycle", () => {
       return value;
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await settleWindow();
     expect(settled).toEqual([]);
     expect(runtime.state).toEqual({ status: "starting" });
 
-    releaseStarted();
+    startedGate.release();
     await startPromise;
     await expect(stopPromise).resolves.toBe(true);
 
@@ -521,25 +602,22 @@ describe("PlatformRuntime lifecycle", () => {
     const transport = new FakeTransport();
     const runtime = makePlatformRuntime(transport);
     const failure = new Error("adapter onStarted failed");
-    let releaseStarted!: () => void;
-    const startedGate = new Promise<void>((resolve) => {
-      releaseStarted = resolve;
-    });
+    const startedGate = createGate();
     const adapter = makeAdapter();
     adapter.onStarted.mockImplementation(async () => {
-      await startedGate;
+      await startedGate.wait();
       throw failure;
     });
 
     // Fails before `activeAdapter`/`runtime` are assigned, so there is nothing to
     // tear down — but the parked stop() must not read that as a graceful shutdown.
     const startPromise = runtime.start(adapter as never);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await yieldToEventLoop();
     expect(runtime.state).toEqual({ status: "starting" });
 
-    const startOutcome = startPromise.then(() => null, (error: unknown) => error);
-    const stopOutcome = runtime.stop().then(() => null, (error: unknown) => error);
-    releaseStarted();
+    const startOutcome = rejectionOf(startPromise);
+    const stopOutcome = rejectionOf(runtime.stop());
+    startedGate.release();
 
     expect(await startOutcome).toBe(failure);
     expect(await stopOutcome).toBe(failure);
@@ -587,7 +665,7 @@ describe("AgentRuntime lifecycle", () => {
     vi.restoreAllMocks();
   });
 
-  it("AC-5: start() does not resolve a pending waitUntilStopped()", async () => {
+  it("start() does not resolve a pending waitUntilStopped()", async () => {
     const transport = new FakeTransport();
     const runtime = makeAgentRuntime(transport);
 
@@ -597,7 +675,7 @@ describe("AgentRuntime lifecycle", () => {
     });
 
     await runtime.start();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await settleWindow();
 
     expect(resolved).toBe(false);
     expect(runtime.state).toEqual({ status: "running" });
@@ -607,7 +685,7 @@ describe("AgentRuntime lifecycle", () => {
     expect(resolved).toBe(true);
   });
 
-  it("AC-6: waitUntilStopped resolves because the runtime is stopped, distinguishably from never started", async () => {
+  it("waitUntilStopped resolves because the runtime is stopped, distinguishably from never started", async () => {
     const transport = new FakeTransport();
     const neverStarted = makeAgentRuntime(transport);
     expect(neverStarted.state).toEqual({ status: "not_started" });
@@ -616,7 +694,7 @@ describe("AgentRuntime lifecycle", () => {
     void neverStarted.waitUntilStopped().then(() => {
       neverStartedResolved = true;
     });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await settleWindow();
     expect(neverStartedResolved).toBe(false);
 
     const runtime = makeAgentRuntime(transport);
@@ -627,7 +705,7 @@ describe("AgentRuntime lifecycle", () => {
     await expect(runtime.waitUntilStopped()).resolves.toBeUndefined();
   });
 
-  it("AC-5: a restarted runtime does not resolve waitUntilStopped from the previous run", async () => {
+  it("a restarted runtime does not resolve waitUntilStopped from the previous run", async () => {
     const transport = new FakeTransport();
     const runtime = makeAgentRuntime(transport);
 
@@ -635,13 +713,11 @@ describe("AgentRuntime lifecycle", () => {
     await runtime.stop();
     expect(runtime.state).toEqual({ status: "stopped" });
 
-    let releaseConnect!: () => void;
-    transport.beforeConnect = () => new Promise<void>((resolve) => {
-      releaseConnect = resolve;
-    });
+    const connectGate = createGate();
+    transport.beforeConnect = () => connectGate.wait();
 
     const restart = runtime.start();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await yieldToEventLoop();
 
     // Started while the consume loop does not exist yet: the wait must track the
     // new run, not the terminal state the previous one left behind.
@@ -649,11 +725,11 @@ describe("AgentRuntime lifecycle", () => {
     const waiter = runtime.waitUntilStopped().then(() => {
       resolved = true;
     });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await settleWindow();
     expect(resolved).toBe(false);
 
     transport.beforeConnect = undefined;
-    releaseConnect();
+    connectGate.release();
     await restart;
     expect(runtime.state).toEqual({ status: "running" });
     expect(resolved).toBe(false);
@@ -663,12 +739,10 @@ describe("AgentRuntime lifecycle", () => {
     expect(resolved).toBe(true);
   });
 
-  it("AC-6: a fatal runtime error surfaces through waitUntilStopped and the failed state", async () => {
+  it("a fatal runtime error surfaces through waitUntilStopped and the failed state", async () => {
     const transport = new FakeTransport();
     const failure = new Error("adapter exploded");
-    const runtime = new AgentRuntime({
-      link: makeLink(transport),
-      agentId: "a1",
+    const runtime = makeAgentRuntime(transport, {
       onExecute: async () => {
         throw failure;
       },
@@ -677,40 +751,22 @@ describe("AgentRuntime lifecycle", () => {
     await runtime.start();
     const waiter = runtime.waitUntilStopped();
 
-    await transport.emit("agent_rooms:a1", "room_added", {
-      id: "room-1",
-      status: "active",
-      type: "direct",
-      title: "Room",
-      removed_at: "",
-    });
-    await transport.emit("chat_room:room-1", "message_created", {
-      id: "m-fail",
-      content: "explode",
-      message_type: "text",
-      sender_id: "u1",
-      sender_type: "User",
-      sender_name: "Jane",
-      inserted_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    });
+    await emitRoomAdded(transport, ROOM_ID);
+    await emitMessage(transport, ROOM_ID, "m-fail", "explode");
 
     await expect(waiter).rejects.toBe(failure);
     expect(runtime.state).toEqual({ status: "failed", error: failure });
   });
 
-  it("AC-4/AC-23: a concurrent stop mirrors the in-flight stop, error identity included", async () => {
+  it("a concurrent stop mirrors the in-flight stop, error identity included", async () => {
     const transport = new FakeTransport();
     const runtime = makeAgentRuntime(transport);
     const failure = new Error("disconnect failed");
     await runtime.start();
 
-    let releaseDisconnect!: () => void;
-    const disconnectGate = new Promise<void>((resolve) => {
-      releaseDisconnect = resolve;
-    });
+    const disconnectGate = createGate();
     vi.spyOn(transport, "disconnect").mockImplementation(async () => {
-      await disconnectGate;
+      await disconnectGate.wait();
       throw failure;
     });
 
@@ -730,10 +786,10 @@ describe("AgentRuntime lifecycle", () => {
       },
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await settleWindow();
     expect(settled).toEqual([]);
 
-    releaseDisconnect();
+    disconnectGate.release();
     const firstError = await first;
     const secondError = await second;
 
@@ -742,55 +798,37 @@ describe("AgentRuntime lifecycle", () => {
     expect(secondError).toBe(failure);
   });
 
-  it("AC-24: start() while a stop is in flight rejects with RuntimeStateError", async () => {
+  it("start() while a stop is in flight rejects with RuntimeStateError", async () => {
     const transport = new FakeTransport();
     const runtime = makeAgentRuntime(transport);
     await runtime.start();
 
-    let releaseDisconnect!: () => void;
-    const disconnectGate = new Promise<void>((resolve) => {
-      releaseDisconnect = resolve;
-    });
+    const disconnectGate = createGate();
     vi.spyOn(transport, "disconnect").mockImplementation(async () => {
-      await disconnectGate;
+      await disconnectGate.wait();
     });
 
     const stopPromise = runtime.stop();
     expect(runtime.state).toEqual({ status: "stopping" });
     await expect(runtime.start()).rejects.toBeInstanceOf(RuntimeStateError);
 
-    releaseDisconnect();
+    disconnectGate.release();
     await expect(stopPromise).resolves.toBe(true);
   });
 
-  it("AC-22: a post-stop enqueue on the consume path fails the runtime instead of going unhandled", async () => {
+  it("a post-stop enqueue on the consume path fails the runtime instead of going unhandled", async () => {
     const transport = new FakeTransport();
     const runtime = makeAgentRuntime(transport);
     const rejection = new RuntimeStateError(
-      "Execution for room room-1 has already ended (status: stopped); enqueue() is a no-op after stop()",
+      `Execution for room ${ROOM_ID} has already ended (status: stopped); enqueue() is a no-op after stop()`,
     );
     vi.spyOn(Execution.prototype, "enqueue").mockRejectedValue(rejection);
 
     await withoutUnhandledRejections(async () => {
       await runtime.start();
-      await transport.emit("agent_rooms:a1", "room_added", {
-        id: "room-1",
-        status: "active",
-        type: "direct",
-        title: "Room",
-        removed_at: "",
-      });
-      await transport.emit("chat_room:room-1", "message_created", {
-        id: "m1",
-        content: "hello",
-        message_type: "text",
-        sender_id: "u1",
-        sender_type: "User",
-        sender_name: "Jane",
-        inserted_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      });
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await emitRoomAdded(transport, ROOM_ID);
+      await emitMessage(transport, ROOM_ID, "m1", "hello");
+      await settleWindow();
     });
 
     expect(runtime.state).toEqual({ status: "failed", error: rejection });
@@ -800,11 +838,9 @@ describe("AgentRuntime lifecycle", () => {
     const transport = new FakeTransport();
     const failure = new Error("handler exploded");
     const cleanedRooms: string[] = [];
-    const runtime = new AgentRuntime({
-      link: makeLink(transport),
-      agentId: "a1",
+    const runtime = makeAgentRuntime(transport, {
       onExecute: async (_context, event) => {
-        if (event.roomId === "room-1") {
+        if (event.roomId === ROOM_ID) {
           throw failure;
         }
       },
@@ -814,35 +850,20 @@ describe("AgentRuntime lifecycle", () => {
     });
 
     await runtime.start();
-    for (const roomId of ["room-1", "room-2"]) {
-      await transport.emit("agent_rooms:a1", "room_added", {
-        id: roomId,
-        status: "active",
-        type: "direct",
-        title: "Room",
-        removed_at: "",
-      });
+    for (const roomId of [ROOM_ID, "room-2"]) {
+      await emitRoomAdded(transport, roomId);
     }
 
     // Fails room-1's Execution (and with it the runtime) before any stop() call.
-    await transport.emit("chat_room:room-1", "message_created", {
-      id: "m-fail",
-      content: "explode",
-      message_type: "text",
-      sender_id: "u1",
-      sender_type: "User",
-      sender_name: "Jane",
-      inserted_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await emitMessage(transport, ROOM_ID, "m-fail", "explode");
+    await settleWindow();
     expect(runtime.state).toEqual({ status: "failed", error: failure });
 
     const disconnectsBefore = transport.disconnectCount;
     await expect(runtime.stop()).rejects.toBe(failure);
 
     // room-1's rejecting stop() must not have skipped the rest of the teardown.
-    expect(cleanedRooms.sort()).toEqual(["room-1", "room-2"]);
+    expect(cleanedRooms.sort()).toEqual([ROOM_ID, "room-2"]);
     expect(transport.disconnectCount - disconnectsBefore).toBe(1);
     expect(transport.isConnected()).toBe(false);
     expect(runtime.getContexts()).toEqual([]);
@@ -852,13 +873,11 @@ describe("AgentRuntime lifecycle", () => {
     const transport = new FakeTransport();
     const runtime = makeAgentRuntime(transport);
 
-    let releaseConnect!: () => void;
-    transport.beforeConnect = () => new Promise<void>((resolve) => {
-      releaseConnect = resolve;
-    });
+    const connectGate = createGate();
+    transport.beforeConnect = () => connectGate.wait();
 
     const startPromise = runtime.start();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await yieldToEventLoop();
     expect(runtime.state).toEqual({ status: "starting" });
 
     const settled: string[] = [];
@@ -867,12 +886,12 @@ describe("AgentRuntime lifecycle", () => {
       return value;
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await settleWindow();
     expect(settled).toEqual([]);
     expect(runtime.state).toEqual({ status: "starting" });
 
     transport.beforeConnect = undefined;
-    releaseConnect();
+    connectGate.release();
     await startPromise;
     await expect(stopPromise).resolves.toBe(true);
 
@@ -891,7 +910,7 @@ describe("Agent lifecycle", () => {
     stop?: () => Promise<boolean>;
   }) {
     return {
-      agentId: "a1",
+      agentId: AGENT_ID,
       name: "test",
       description: "test",
       contactConfiguration: undefined,
@@ -902,23 +921,24 @@ describe("Agent lifecycle", () => {
     };
   }
 
-  it("AC-13/AC-21: isRunning is false during an in-flight start, true once started, false once stopped", async () => {
-    let releaseStart!: () => void;
-    const startGate = new Promise<void>((resolve) => {
-      releaseStart = resolve;
-    });
+  function makeAgent(runtime: ReturnType<typeof makeStubRuntime>): Agent {
+    return new Agent(runtime as never, makeAdapter() as never);
+  }
+
+  it("isRunning is false during an in-flight start, true once started, false once stopped", async () => {
+    const startGate = createGate();
     const runtime = makeStubRuntime({
       start: async () => {
-        await startGate;
+        await startGate.wait();
       },
     });
-    const agent = new Agent(runtime as never, makeAdapter() as never);
+    const agent = makeAgent(runtime);
 
     const startPromise = agent.start();
     expect(agent.isRunning).toBe(false);
     expect(agent.state).toEqual({ status: "starting" });
 
-    releaseStart();
+    startGate.release();
     await startPromise;
     expect(agent.isRunning).toBe(true);
     expect(agent.state).toEqual({ status: "running" });
@@ -928,14 +948,14 @@ describe("Agent lifecycle", () => {
     expect(agent.state).toEqual({ status: "stopped" });
   });
 
-  it("AC-12/AC-23: a rejected stop is not reported as a completed one", async () => {
+  it("a rejected stop is not reported as a completed one", async () => {
     const failure = new Error("platform stop failed");
     const runtime = makeStubRuntime({
       stop: async () => {
         throw failure;
       },
     });
-    const agent = new Agent(runtime as never, makeAdapter() as never);
+    const agent = makeAgent(runtime);
 
     await agent.start();
     await expect(agent.stop()).rejects.toBe(failure);
@@ -952,7 +972,7 @@ describe("Agent lifecycle", () => {
         throw failure;
       },
     });
-    const agent = new Agent(runtime as never, makeAdapter() as never);
+    const agent = makeAgent(runtime);
 
     await expect(agent.start()).rejects.toBe(failure);
     expect(agent.state).toEqual({ status: "failed", error: failure });
@@ -967,22 +987,19 @@ describe("Agent lifecycle", () => {
 
   it("stop() parked on a start that then fails reports the failure instead of a masked true", async () => {
     const failure = new Error("platform start failed");
-    let releaseStart!: () => void;
-    const startGate = new Promise<void>((resolve) => {
-      releaseStart = resolve;
-    });
+    const startGate = createGate();
     const runtime = makeStubRuntime({
       start: async () => {
-        await startGate;
+        await startGate.wait();
         throw failure;
       },
     });
-    const agent = new Agent(runtime as never, makeAdapter() as never);
+    const agent = makeAgent(runtime);
 
-    const startOutcome = agent.start().then(() => null, (error: unknown) => error);
+    const startOutcome = rejectionOf(agent.start());
     expect(agent.state).toEqual({ status: "starting" });
-    const stopOutcome = agent.stop().then(() => null, (error: unknown) => error);
-    releaseStart();
+    const stopOutcome = rejectionOf(agent.stop());
+    startGate.release();
 
     expect(await startOutcome).toBe(failure);
     expect(await stopOutcome).toBe(failure);
@@ -990,18 +1007,15 @@ describe("Agent lifecycle", () => {
     expect(runtime.stop).not.toHaveBeenCalled();
   });
 
-  it("AC-24: start() while a stop is in flight rejects with RuntimeStateError", async () => {
-    let releaseStop!: () => void;
-    const stopGate = new Promise<void>((resolve) => {
-      releaseStop = resolve;
-    });
+  it("start() while a stop is in flight rejects with RuntimeStateError", async () => {
+    const stopGate = createGate();
     const runtime = makeStubRuntime({
       stop: async () => {
-        await stopGate;
+        await stopGate.wait();
         return true;
       },
     });
-    const agent = new Agent(runtime as never, makeAdapter() as never);
+    const agent = makeAgent(runtime);
 
     await agent.start();
     const stopPromise = agent.stop();
@@ -1009,7 +1023,7 @@ describe("Agent lifecycle", () => {
 
     await expect(agent.start()).rejects.toBeInstanceOf(RuntimeStateError);
 
-    releaseStop();
+    stopGate.release();
     await expect(stopPromise).resolves.toBe(true);
   });
 });
@@ -1019,53 +1033,47 @@ describe("Execution lifecycle", () => {
     vi.restoreAllMocks();
   });
 
-  it("AC-9: enqueue after stop rejects with a RuntimeStateError naming the room", async () => {
+  it("enqueue after stop rejects with a RuntimeStateError naming the room", async () => {
     const execution = makeExecution();
     await execution.stop();
 
     expect(execution.state).toEqual({ status: "stopped", graceful: true });
-    await expect(execution.enqueue(makeExecutionEvent("m1"))).rejects.toThrow(/room-1/);
+    await expect(execution.enqueue(makeExecutionEvent("m1"))).rejects.toThrow(ROOM_ID);
     await expect(execution.enqueue(makeExecutionEvent("m1"))).rejects.toBeInstanceOf(RuntimeStateError);
   });
 
-  it("AC-10/AC-26: a timed-out stop lands in a terminal state a third party can read as non-graceful", async () => {
-    let releaseExecute!: () => void;
-    const executeGate = new Promise<void>((resolve) => {
-      releaseExecute = resolve;
-    });
+  it("a timed-out stop lands in a terminal state a third party can read as non-graceful", async () => {
+    const executeGate = createGate();
 
     await withoutUnhandledRejections(async () => {
       const execution = makeExecution(async () => {
-        await executeGate;
+        await executeGate.wait();
         throw new Error("stuck handler eventually failed");
       });
 
       await execution.enqueue(makeExecutionEvent("m1"));
-      await expect(execution.stop(10)).resolves.toBe(false);
+      await expect(execution.stop(FORCED_STOP_TIMEOUT_MS)).resolves.toBe(false);
 
       // A caller that never held the boolean can still tell the stop was forced.
       expect(execution.state).toEqual({ status: "stopped", graceful: false });
       await expect(execution.waitUntilStopped()).resolves.toBeUndefined();
       await expect(execution.stop()).resolves.toBe(false);
 
-      releaseExecute();
+      executeGate.release();
     });
   });
 
-  it("AC-3-style coalescing: concurrent stops share one outcome", async () => {
-    let releaseExecute!: () => void;
-    const executeGate = new Promise<void>((resolve) => {
-      releaseExecute = resolve;
-    });
+  it("concurrent stops share one outcome", async () => {
+    const executeGate = createGate();
     const execution = makeExecution(async () => {
-      await executeGate;
+      await executeGate.wait();
     });
 
     await execution.enqueue(makeExecutionEvent("m1"));
     const first = execution.stop();
     const second = execution.stop();
 
-    releaseExecute();
+    executeGate.release();
     await expect(first).resolves.toBe(true);
     await expect(second).resolves.toBe(true);
     expect(execution.state).toEqual({ status: "stopped", graceful: true });
