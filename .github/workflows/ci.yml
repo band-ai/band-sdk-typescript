@@ -137,6 +137,14 @@ jobs:
         if: needs.changes.outputs.sdk == 'true'
         run: pnpm --fail-if-no-match --filter @band-ai/sdk test
 
+      # Needs no secrets or network — just proves tsup didn't inline the wasm
+      # dependency, so it belongs on every PR, unlike the live harnesses in
+      # e2e.yml.
+      - name: Bundler interop check (SDK)
+        if: needs.changes.outputs.sdk == 'true'
+        working-directory: packages/sdk
+        run: npx tsx tests/integration/band-sdk-core-bundler.ts
+
       - name: Test OpenClaw
         if: needs.changes.outputs.openclaw == 'true'
         run: pnpm --fail-if-no-match --filter @band-ai/openclaw-channel-band test
