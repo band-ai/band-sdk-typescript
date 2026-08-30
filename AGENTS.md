@@ -427,6 +427,20 @@ Each example is a standalone TypeScript script runnable with `tsx`. Folders incl
 - Top-level `await` is fine; the package is ESM (`"type": "module"`).
 - Examples are excluded from strict ESLint rules but still typechecked.
 
+## SDK Design Guidelines
+
+- Types as the API — design the surface around what TypeScript can infer and enforce; good types should tell a caller what a function does without reading the implementation.
+- Runtime validation matches static types — a schema library (Zod) is the single source of truth for both, so "compiles" and "actually valid" never drift apart.
+- Factories over constructors — prefer `createX(config)` over `new X(...)` for anything with defaults to apply or dependencies to inject; it's more testable and composable.
+- Interceptors for cross-cutting concerns — auth, retries, and error-wrapping live in one shared place every request passes through, not copy-pasted per method.
+- Custom error types — wrap raw HTTP/protocol errors in typed errors so callers can `instanceof`-check instead of parsing status codes or message strings.
+- Consistency across the surface — the same kind of operation should look and behave the same way everywhere in the SDK.
+- Classes for namespacing, functions for helpers — give callers both a low-level client and high-level convenience helpers; don't force one style.
+- Modular types at scale — split types by domain as the surface grows; don't let one file become the bottleneck.
+- Predictable defaults — a new caller should get a working result with minimal config; sane defaults (timeouts, retries) apply out of the box.
+- Declarative coding style — describe *what* the result should be, not the step-by-step *how*; push imperative control flow into small, named helpers.
+- Comments are factual, not narration — short, state the non-obvious *why* only. Let the code speak for itself.
+
 ## Coding Standards
 
 - TypeScript strict mode is on (`tsconfig.json`: `strict: true`, `verbatimModuleSyntax: true`, `forceConsistentCasingInFileNames: true`).
