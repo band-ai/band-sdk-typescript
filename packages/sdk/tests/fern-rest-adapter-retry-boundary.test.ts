@@ -4,18 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FernRestAdapter } from "../src/client/rest/FernRestAdapter";
 import type { FernBandClientLike } from "../src/client/rest/types";
 import { createFakeFetchServer, type FakeResponseSpec } from "./support/fakeFetchServer";
+import { settleThroughRetries } from "./support/settleThroughRetries";
 
 /**
- * INT-1258: FernRestAdapter used to wrap a hand-rolled retry loop around the
- * generated `@band-ai/rest-client`, which already retries 408/429/5xx via
- * `maxRetries`. Mocking the client *method* directly (as the coverage tests
- * do) proves the adapter calls that mock the right number of times, but
- * never exercises the generated retry path itself — a dropped `maxRetries`
- * would pass those tests silently.
- *
- * These tests build a real `BandClient` wired to a fake `fetch`, so the
- * adapter's `maxRetries` has to survive all the way through
- * `requestWithRetries.js` to pass.
+ * Mocking the client method directly only proves the adapter calls it the
+ * expected number of times — it says nothing about whether `maxRetries`
+ * reaches the transport's own retry logic. These tests wire a real
+ * `BandClient` to a fake `fetch`, so `maxRetries` has to survive all the way
+ * through the generated client's retry/backoff to pass.
  */
 
 function buildAdapter(responses: FakeResponseSpec[]) {
@@ -26,19 +22,6 @@ function buildAdapter(responses: FakeResponseSpec[]) {
     fetch,
   }) as unknown as FernBandClientLike;
   return { adapter: new FernRestAdapter(client), calls };
-}
-
-async function settleThroughRetries<T>(promise: Promise<T>): Promise<T> {
-  const settled = promise.then(
-    (value) => ({ ok: true as const, value }),
-    (error) => ({ ok: false as const, error }),
-  );
-  await vi.runAllTimersAsync();
-  const outcome = await settled;
-  if (!outcome.ok) {
-    throw outcome.error;
-  }
-  return outcome.value;
 }
 
 describe("FernRestAdapter retry boundary (real generated client)", () => {

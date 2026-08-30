@@ -171,7 +171,6 @@ export class AgentTools implements AgentToolsProtocol {
         content,
         mentions: resolvedMentions,
       },
-      DEFAULT_REQUEST_OPTIONS,
     );
   }
 
@@ -188,7 +187,6 @@ export class AgentTools implements AgentToolsProtocol {
         messageType,
         metadata,
       },
-      DEFAULT_REQUEST_OPTIONS,
     );
   }
 

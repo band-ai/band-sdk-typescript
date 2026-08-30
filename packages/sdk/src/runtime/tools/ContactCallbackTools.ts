@@ -113,7 +113,6 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
         content,
         ...(normalizedMentions ? { mentions: normalizedMentions } : {}),
       },
-      DEFAULT_REQUEST_OPTIONS,
     );
   }
 
@@ -133,7 +132,6 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
         messageType,
         ...(metadata ? { metadata } : {}),
       },
-      DEFAULT_REQUEST_OPTIONS,
     );
   }
 
