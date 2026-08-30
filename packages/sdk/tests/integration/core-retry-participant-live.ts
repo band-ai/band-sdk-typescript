@@ -10,11 +10,16 @@
  * before reaching the adapter. Spies on `rest.markMessageFailed` (write-only,
  * no read-back endpoint) to observe the outcome.
  *
- * Run:  BAND_E2E_LANE=core npx tsx tests/integration/core-retry-participant-live.ts
+ * Credentials come from env vars (SDK_E2E_BASIC_*, SDK_E2E_PLANNER_*), not a
+ * committed or secret-materialized agent_config.yaml — see loadAgentConfigFromEnv.
+ *
+ * Run:  BAND_E2E_LANE=core SDK_E2E_BASIC_AGENT_ID=... SDK_E2E_BASIC_API_KEY=... \
+ *       SDK_E2E_PLANNER_AGENT_ID=... SDK_E2E_PLANNER_API_KEY=... \
+ *       npx tsx tests/integration/core-retry-participant-live.ts
  */
 import { BandClient } from "@band-ai/rest-client";
 
-import { Agent, GenericAdapter, loadAgentConfig } from "../../src/index";
+import { Agent, GenericAdapter, loadAgentConfigFromEnv } from "../../src/index";
 import { FernRestAdapter } from "../../src/rest";
 import { shouldRunLane } from "./lanes";
 
@@ -35,8 +40,8 @@ async function main() {
 
   console.log("core-retry === retry exhaustion via sync-recovery ===");
 
-  const testConfig = loadAgentConfig("basic_agent");
-  const senderConfig = loadAgentConfig("planner_agent");
+  const testConfig = loadAgentConfigFromEnv({ prefix: "SDK_E2E_BASIC" });
+  const senderConfig = loadAgentConfigFromEnv({ prefix: "SDK_E2E_PLANNER" });
   const restUrl = testConfig.restUrl ?? DEFAULT_REST_URL;
 
   const testRest = new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey: testConfig.apiKey }));

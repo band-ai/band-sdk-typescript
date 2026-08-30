@@ -41,14 +41,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # agent_config.yaml is gitignored; reconstitute from a repo secret.
-      - name: Materialize agent_config.yaml
-        working-directory: packages/sdk
-        run: |
-          cat > agent_config.yaml <<'EOF'
-          ${{ secrets.SDK_E2E_AGENT_CONFIG_YAML }}
-          EOF
-
       - name: Run core retry/participant live test
         working-directory: packages/sdk
+        env:
+          SDK_E2E_BASIC_AGENT_ID: ${{ secrets.SDK_E2E_BASIC_AGENT_ID }}
+          SDK_E2E_BASIC_API_KEY: ${{ secrets.SDK_E2E_BASIC_API_KEY }}
+          SDK_E2E_PLANNER_AGENT_ID: ${{ secrets.SDK_E2E_PLANNER_AGENT_ID }}
+          SDK_E2E_PLANNER_API_KEY: ${{ secrets.SDK_E2E_PLANNER_API_KEY }}
         run: npx tsx tests/integration/core-retry-participant-live.ts
