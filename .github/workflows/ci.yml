@@ -143,6 +143,10 @@ jobs:
       - name: Bundler interop check (SDK)
         if: needs.changes.outputs.sdk == 'true'
         working-directory: packages/sdk
+        # "Build SDK" above already produced dist/; without this the script
+        # rebuilds tsup + DTS for every entry point a second time.
+        env:
+          BUNDLER_CHECK_SKIP_BUILD: "1"
         run: npx tsx tests/integration/band-sdk-core-bundler.ts
 
       - name: Test OpenClaw

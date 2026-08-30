@@ -35,8 +35,14 @@ async function main() {
   }
   pass("@band-ai/band-sdk-core resolves in packages/sdk/node_modules");
 
-  console.log("bundler Building packages/sdk (tsup)...");
-  execSync("pnpm build", { cwd: PACKAGE_ROOT, stdio: "inherit" });
+  // Building is the slowest step, so CI sets this after its own build step.
+  // The dist/ assertions below still fail loudly if nothing was built.
+  if (process.env.BUNDLER_CHECK_SKIP_BUILD === "1") {
+    console.log("bundler Reusing existing dist/ (BUNDLER_CHECK_SKIP_BUILD=1)");
+  } else {
+    console.log("bundler Building packages/sdk (tsup)...");
+    execSync("pnpm build", { cwd: PACKAGE_ROOT, stdio: "inherit" });
+  }
 
   const builtRuntimePath = resolve(PACKAGE_ROOT, "dist/runtime.cjs");
   if (!existsSync(builtRuntimePath)) {

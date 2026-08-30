@@ -17,7 +17,7 @@ run by hand — check below before assuming either.
 Current harnesses:
 - `npx tsx tests/integration/smoke.ts`, `e2e.ts`, `two-codex-agents.ts` — operator-run only, not wired into any workflow; each needs live credentials from `agent_config.yaml`.
 - `RUN_CODEX_ACP_E2E=1 npx tsx tests/integration/codex-acp-smoke.ts` — operator-run only, not wired into any workflow.
-- `npx tsx tests/integration/band-sdk-core-bundler.ts` — no secrets/network needed; runs on every PR via `.github/workflows/ci.yml`'s `test` job.
+- `npx tsx tests/integration/band-sdk-core-bundler.ts` — no secrets/network needed; runs on every PR via `.github/workflows/ci.yml`'s `test` job. Builds `dist/` first unless `BUNDLER_CHECK_SKIP_BUILD=1` says a build already ran.
 - `BAND_API_KEY_USER=... npx tsx tests/integration/core-retry-participant-live.ts` — hits the real Band platform; nightly + manual dispatch only, via `.github/workflows/e2e.yml`.
 
 Adding a new script here that should run in CI: wire it in explicitly (a new

@@ -28,6 +28,11 @@ export { RoomPresence } from "./rooms/RoomPresence";
 
 export { AgentTools } from "./tools/AgentTools";
 export { ContactToolsImpl } from "./tools/ContactToolsImpl";
+
+// `AgentTools`'s `roster` option and `ExecutionContext.getRetryTracker()` are
+// typed by these core classes. A consumer cannot import a transitive dependency
+// under a strict node_modules layout, so re-export them to keep both nameable.
+export { ParticipantRoster, RetryTracker } from "@band-ai/band-sdk-core";
 export {
   TOOL_MODELS,
   MCP_TOOL_PREFIX,
