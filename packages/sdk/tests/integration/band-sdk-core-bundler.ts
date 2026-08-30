@@ -1,7 +1,7 @@
 /**
  * Proves @band-ai/band-sdk-core (eager wasm load, no init()) resolves and
  * runs through packages/sdk's tsup-built dist/ output, not just under
- * vitest/ts-node resolution. Generic name — INT-1237 reuses it unchanged.
+ * vitest/ts-node resolution. Generic name — reused unchanged from an earlier check.
  *
  * Run:  npx tsx tests/integration/band-sdk-core-bundler.ts
  */
