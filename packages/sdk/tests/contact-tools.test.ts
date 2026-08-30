@@ -205,7 +205,6 @@ describe("ContactCallbackTools", () => {
       expect(createChatMessage).toHaveBeenCalledWith(
         "room-1",
         { content: "hi", mentions: [{ id: "u-1", name: "Bob" }] },
-        expect.anything(),
       );
     });
 
@@ -215,7 +214,7 @@ describe("ContactCallbackTools", () => {
 
       await tools.sendMessage("hi");
 
-      expect(createChatMessage).toHaveBeenCalledWith("room-1", { content: "hi" }, expect.anything());
+      expect(createChatMessage).toHaveBeenCalledWith("room-1", { content: "hi" });
     });
   });
 
@@ -238,14 +237,12 @@ describe("ContactCallbackTools", () => {
       expect(createChatEvent).toHaveBeenCalledWith(
         "room-1",
         { content: "hi", messageType: "task", metadata: { key: "value" } },
-        expect.anything(),
       );
 
       await tools.sendEvent("hi", "task");
       expect(createChatEvent).toHaveBeenLastCalledWith(
         "room-1",
         { content: "hi", messageType: "task" },
-        expect.anything(),
       );
     });
   });
@@ -457,7 +454,6 @@ describe("ContactCallbackTools", () => {
       expect(rest.createChatEvent).toHaveBeenCalledWith(
         "room-1",
         { content: "hi", messageType: "task" },
-        expect.anything(),
       );
     });
 

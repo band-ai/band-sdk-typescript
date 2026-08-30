@@ -165,13 +165,14 @@ export class AgentTools implements AgentToolsProtocol {
 
     const resolvedMentions = this.resolveMentions(mentions);
 
+    // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
+    // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
     return this.rest.createChatMessage(
       this.roomId,
       {
         content,
         mentions: resolvedMentions,
       },
-      DEFAULT_REQUEST_OPTIONS,
     );
   }
 
@@ -181,6 +182,8 @@ export class AgentTools implements AgentToolsProtocol {
     metadata?: MetadataMap,
   ): Promise<ToolOperationResult> {
     assertChatEventType(messageType);
+    // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
+    // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
     return this.rest.createChatEvent(
       this.roomId,
       {
@@ -188,7 +191,6 @@ export class AgentTools implements AgentToolsProtocol {
         messageType,
         metadata,
       },
-      DEFAULT_REQUEST_OPTIONS,
     );
   }
 

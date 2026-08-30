@@ -3,14 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import { UnsupportedFeatureError } from "../src/core/errors";
 import {
   FernRestAdapter,
-  isFernRateLimitError,
   normalizeFernContactRequestsResponse,
   normalizeFernPaginatedResponse,
 } from "../src/client/rest/FernRestAdapter";
-
-function rateLimitError(message = "rate limited"): Error & { statusCode: number } {
-  return Object.assign(new Error(message), { statusCode: 429 });
-}
 
 describe("FernRestAdapter coverage", () => {
   it("throws when no identity endpoint exists", async () => {
@@ -19,18 +14,16 @@ describe("FernRestAdapter coverage", () => {
     await expect(adapter.getAgentMe()).rejects.toBeInstanceOf(UnsupportedFeatureError);
   });
 
-  it("retries getAgentMe on 429s and then returns the normalized identity", async () => {
-    const getAgentMe = vi.fn()
-      .mockRejectedValueOnce(rateLimitError())
-      .mockResolvedValueOnce({
-        data: {
-          id: "a1",
-          name: "Agent",
-          description: null,
-          handle: "@agent",
-          owner_uuid: "owner-1",
-        },
-      });
+  it("calls getAgentMe once with maxRetries: 3, letting the generated client own retries", async () => {
+    const getAgentMe = vi.fn().mockResolvedValueOnce({
+      data: {
+        id: "a1",
+        name: "Agent",
+        description: null,
+        handle: "@agent",
+        owner_uuid: "owner-1",
+      },
+    });
     const adapter = new FernRestAdapter({
       agentApiIdentity: { getAgentMe },
     });
@@ -42,7 +35,8 @@ describe("FernRestAdapter coverage", () => {
       handle: "@agent",
       ownerUuid: "owner-1",
     });
-    expect(getAgentMe).toHaveBeenCalledTimes(2);
+    expect(getAgentMe).toHaveBeenCalledTimes(1);
+    expect(getAgentMe).toHaveBeenCalledWith(expect.objectContaining({ maxRetries: 3 }));
   });
 
   it("rejects invalid identity payloads", async () => {
@@ -53,11 +47,6 @@ describe("FernRestAdapter coverage", () => {
     });
 
     await expect(adapter.getAgentMe()).rejects.toThrow("expected non-empty string AgentIdentity.name");
-  });
-
-  it("detects rate limits from structured status codes", () => {
-    expect(isFernRateLimitError(rateLimitError())).toBe(true);
-    expect(isFernRateLimitError(new Error("429"))).toBe(false);
   });
 
   it("falls back to legacy profile identity when agentApiIdentity is missing", async () => {
@@ -235,14 +224,12 @@ describe("FernRestAdapter coverage", () => {
           metadata: { x: true },
         },
       },
-      expect.any(Object),
+      expect.objectContaining({ maxRetries: 2 }),
     );
   });
 
-  it("retries chat message writes on structured 429 responses", async () => {
-    const createChatMessage = vi.fn()
-      .mockRejectedValueOnce(rateLimitError())
-      .mockResolvedValueOnce({ data: { ok: true, id: "msg-1" } });
+  it("calls createChatMessage once with maxRetries: 2, letting the generated client own retries", async () => {
+    const createChatMessage = vi.fn().mockResolvedValueOnce({ data: { ok: true, id: "msg-1" } });
     const adapter = new FernRestAdapter({
       chatMessages: {
         createChatMessage,
@@ -255,7 +242,12 @@ describe("FernRestAdapter coverage", () => {
         messageType: "text",
       }),
     ).resolves.toEqual({ ok: true, id: "msg-1" });
-    expect(createChatMessage).toHaveBeenCalledTimes(2);
+    expect(createChatMessage).toHaveBeenCalledTimes(1);
+    expect(createChatMessage).toHaveBeenLastCalledWith(
+      "room-1",
+      expect.any(Object),
+      expect.objectContaining({ maxRetries: 2 }),
+    );
   });
 
   it("falls back from createChatEvent to createChatMessage when the event endpoint is unavailable", async () => {
