@@ -1,4 +1,5 @@
-import type { MetadataMap, ToolModelMessage } from "../contracts/dtos";
+import type { ParticipantFields } from "@band-ai/band-sdk-core";
+import type { MetadataMap, ParticipantRecord, ToolModelMessage } from "../contracts/dtos";
 import { ensureHandlePrefix } from "./types";
 
 function isMetadataMap(value: unknown): value is MetadataMap {
@@ -58,6 +59,21 @@ export function formatHistoryForLlm(
   return messages
     .filter((message) => String(message.id ?? "") !== excludeId)
     .map((message) => formatMessageForLlm(message, participants));
+}
+
+/**
+ * `ParticipantRoster.list()` returns core's `ParticipantFields` (name/type
+ * optional/nullable); the TS-public `ParticipantRecord` requires both as
+ * plain strings. Shared by `ExecutionContext` and `AgentTools` — both read
+ * a `ParticipantRecord[]` from the same roster.
+ */
+export function toParticipantRecord(fields: ParticipantFields): ParticipantRecord {
+  return {
+    id: fields.id,
+    name: fields.name ?? "unknown",
+    type: fields.type ?? "unknown",
+    handle: fields.handle ?? null,
+  };
 }
 
 export function buildParticipantsMessage(participants: Array<Record<string, unknown>>): string {

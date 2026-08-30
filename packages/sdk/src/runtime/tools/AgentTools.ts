@@ -1,4 +1,6 @@
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
+import { ParticipantRoster } from "@band-ai/band-sdk-core";
+import { toParticipantRecord } from "../formatters";
 import type { AgentToolsRestApi } from "../../client/rest/types";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
 import { assertCapability } from "../../contracts/capabilities";
@@ -65,7 +67,7 @@ import {
 interface AgentToolsOptions {
   roomId: string;
   rest: AgentToolsRestApi;
-  participants?: ParticipantRecord[];
+  roster?: ParticipantRoster;
   capabilities?: Partial<AgentToolsCapabilities>;
 }
 
@@ -135,14 +137,14 @@ export class AgentTools implements AgentToolsProtocol {
   public readonly roomId: string;
   public readonly capabilities: Readonly<AgentToolsCapabilities>;
   private readonly rest: AgentToolsRestApi;
-  private participants: ParticipantRecord[];
+  private readonly roster: ParticipantRoster;
   private readonly adapterTools: AdapterToolsProtocol;
   private readonly toolHandlers: Record<string, ToolHandler>;
 
   public constructor(options: AgentToolsOptions) {
     this.roomId = options.roomId;
     this.rest = options.rest;
-    this.participants = options.participants ?? [];
+    this.roster = options.roster ?? new ParticipantRoster();
     this.capabilities = {
       ...DEFAULT_AGENT_TOOLS_CAPABILITIES,
       ...options.capabilities,
@@ -159,7 +161,7 @@ export class AgentTools implements AgentToolsProtocol {
     content: string,
     mentions: MentionInput = [],
   ): Promise<ToolOperationResult> {
-    if (mentions.length > 0 && typeof mentions[0] === "string" && this.participants.length === 0) {
+    if (mentions.length > 0 && typeof mentions[0] === "string" && this.roster.list().length === 0) {
       await this.syncParticipants();
     }
 
@@ -233,7 +235,7 @@ export class AgentTools implements AgentToolsProtocol {
       handle: typeof peer.handle === "string" ? peer.handle : null,
     };
 
-    this.participants.push(participantRecord);
+    this.roster.add(participantRecord);
 
     return {
       ...participantRecord,
@@ -252,7 +254,7 @@ export class AgentTools implements AgentToolsProtocol {
     }
 
     await this.rest.removeChatParticipant(this.roomId, String(participant.id), DEFAULT_REQUEST_OPTIONS);
-    this.replaceParticipants(this.participants.filter((entry) => entry.id !== participant.id));
+    this.roster.remove(participant.id);
 
     return {
       id: participant.id,
@@ -295,8 +297,8 @@ export class AgentTools implements AgentToolsProtocol {
 
   private async syncParticipants(): Promise<ParticipantRecord[]> {
     const participants = await this.fetchParticipants();
-    this.replaceParticipants(participants);
-    return [...this.participants];
+    this.roster.setAll(participants, undefined);
+    return this.roster.list().map(toParticipantRecord);
   }
 
   public async executeToolCall(toolName: string, arguments_: MetadataMap): Promise<unknown> {
@@ -608,7 +610,7 @@ export class AgentTools implements AgentToolsProtocol {
     const participantsByHandle = new Map<string, MentionReference>();
     const participantsById = new Map<string, MentionReference>();
     const participantsByName = new Map<string, MentionReference>();
-    for (const participant of this.participants) {
+    for (const participant of this.roster.list()) {
       const ref: MentionReference = {
         id: String(participant.id),
         handle: typeof participant.handle === "string" ? participant.handle : undefined,
@@ -674,10 +676,6 @@ export class AgentTools implements AgentToolsProtocol {
 
   private normalizeMentionHandle(handle: string): string {
     return handle.trim().replace(/^@+/, "").toLowerCase();
-  }
-
-  private replaceParticipants(participants: ParticipantRecord[]): void {
-    this.participants.splice(0, this.participants.length, ...participants);
   }
 
   private buildAdapterTools(): AdapterToolsProtocol {

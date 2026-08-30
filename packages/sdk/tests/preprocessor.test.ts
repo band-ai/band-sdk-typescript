@@ -122,4 +122,25 @@ describe("DefaultPreprocessor", () => {
     // Legacy message was NOT consumed since system messages took priority
     expect(context.consumeContactsMessage()).toBe("legacy contact info");
   });
+
+  it("surfaces a field-only participant change on the next processed event", async () => {
+    const context = makeContext();
+    const preprocessor = new DefaultPreprocessor();
+
+    context.addParticipant({ id: "p1", name: "Weather Agent", type: "Agent", handle: "weather-agent" });
+    const first = await preprocessor.process(context, makeEvent(), "a1");
+    expect(first?.participantsMessage).toContain("Weather Agent joined the room.");
+    expect(first?.participantsMessage).toContain("weather-agent");
+
+    // Sparse update: same id, only the handle changes. Membership is
+    // unchanged, so this must surface as a field refresh, not a rejoin.
+    context.addParticipant({ id: "p1", handle: "weather-agent-v2" });
+    const second = await preprocessor.process(
+      context,
+      { ...makeEvent(), payload: { ...makeEvent().payload, id: "m2" } },
+      "a1",
+    );
+    expect(second?.participantsMessage).toContain("weather-agent-v2");
+    expect(second?.participantsMessage).not.toContain("joined the room");
+  });
 });

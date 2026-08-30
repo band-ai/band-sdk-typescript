@@ -1,0 +1,64 @@
+name: E2E (live)
+
+# Live end-to-end run against the real Band platform. These tests provision
+# real agents and exercise live REST/WebSocket behavior, so — mirroring
+# band-sdk-python's e2e.yml trigger shape — this never runs on every PR (cost
+# + external platform state), only nightly or on demand from the Actions tab.
+#
+# TS has a single lane today (BAND_E2E_LANE="core" — band-sdk-core-driven
+# retry/participant-roster behavior; see packages/sdk/tests/integration/
+# lanes.ts). Unlike band-sdk-python's many-lane matrix (forced by conflicting
+# per-framework Python dependency trees needing separate venvs), TS's
+# adapters coexist fine in one node_modules, so this stays one job until a
+# later ticket (e.g. a TS adapter-capability matrix) adds more lanes.
+
+on:
+  schedule:
+    # Nightly, off-peak UTC minute (not :00) to avoid GitHub's top-of-hour
+    # scheduling thundering herd.
+    - cron: "23 4 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-live-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: e2e (core)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BAND_E2E_LANE: core
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # agent_config.yaml is never committed (see agent_config.yaml.example);
+      # this reconstitutes it from a repo secret, the same role Python's e2e.yml
+      # fills by materializing .env.test.
+      - name: Materialize agent_config.yaml
+        working-directory: packages/sdk
+        run: |
+          cat > agent_config.yaml <<'EOF'
+          ${{ secrets.SDK_E2E_AGENT_CONFIG_YAML }}
+          EOF
+
+      - name: Run core retry/participant live test
+        working-directory: packages/sdk
+        run: npx tsx tests/integration/core-retry-participant-live.ts

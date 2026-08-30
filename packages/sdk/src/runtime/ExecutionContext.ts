@@ -5,8 +5,8 @@ import type { MetadataMap, ParticipantRecord } from "../contracts/dtos";
 import { UnsupportedFeatureError } from "../core/errors";
 import type { ConversationContext, PlatformMessage } from "./types";
 import { AgentTools } from "./tools/AgentTools";
-import { MessageRetryTracker } from "./retryTracker";
-import { buildParticipantsMessage } from "./formatters";
+import { ParticipantRoster, RetryTracker } from "@band-ai/band-sdk-core";
+import { buildParticipantsMessage, toParticipantRecord } from "./formatters";
 
 export type ExecutionState = "starting" | "idle" | "processing";
 
@@ -37,17 +37,16 @@ export class ExecutionContext {
   private readonly history: PlatformMessage[] = [];
   private messageIds = new Set<string>();
   private readonly dedupCache = new Map<string, true>();
-  private participants: ParticipantRecord[] = [];
+  private readonly roster = new ParticipantRoster();
   private readonly tools: AgentTools;
   private readonly adapterTools: AdapterToolsProtocol;
   private participantsMessage: string | null = null;
-  private lastSentParticipantIds: Set<string> | null = null;
   private contactsMessage: string | null = null;
   private contextCache: ConversationContext | null = null;
   private contextCacheExpiresAt = 0;
 
   private _state: ExecutionState = "starting";
-  private readonly retryTrackerInstance: MessageRetryTracker;
+  private readonly retryTrackerInstance: RetryTracker;
   private _llmInitialized = false;
   private readonly _pendingSystemMessages: string[] = [];
 
@@ -58,11 +57,11 @@ export class ExecutionContext {
     this.enableContextCache = options.enableContextCache ?? true;
     this.contextCacheTtlMs = Math.max(0, (options.contextCacheTtlSeconds ?? 300) * 1000);
     this.enableContextHydration = options.enableContextHydration ?? true;
-    this.retryTrackerInstance = new MessageRetryTracker(options.maxMessageRetries ?? 1);
+    this.retryTrackerInstance = new RetryTracker(options.maxMessageRetries ?? 1);
     this.tools = new AgentTools({
       roomId: this.roomId,
       rest: this.link.rest,
-      participants: this.participants,
+      roster: this.roster,
       capabilities: this.link.capabilities,
     });
     this.adapterTools = this.tools.getAdapterTools();
@@ -76,7 +75,7 @@ export class ExecutionContext {
     this._state = state;
   }
 
-  public getRetryTracker(): MessageRetryTracker {
+  public getRetryTracker(): RetryTracker {
     return this.retryTrackerInstance;
   }
 
@@ -144,25 +143,22 @@ export class ExecutionContext {
   }
 
   public setParticipants(participants: ParticipantRecord[]): void {
-    this.replaceParticipants(participants);
+    this.roster.setAll(participants, undefined);
     this.updateCachedParticipants();
   }
 
-  public addParticipant(participant: ParticipantRecord): void {
-    const existingIndex = this.participants.findIndex((entry) => entry.id === participant.id);
-    if (existingIndex >= 0) {
-      this.participants.splice(existingIndex, 1);
+  public addParticipant(participant: Partial<ParticipantRecord> & Pick<ParticipantRecord, "id">): void {
+    const isNew = this.roster.add(participant);
+    if (isNew) {
+      const name = String(participant.name ?? "unknown");
+      this.participantsMessage = `${name} joined the room.`;
     }
-    this.participants.push(participant);
-    const name = String(participant.name ?? "unknown");
-    this.participantsMessage = `${name} joined the room.`;
     this.updateCachedParticipants();
   }
 
   public removeParticipant(participantId: string): void {
-    const removed = this.participants.find((entry) => String(entry.id) === participantId);
-    const next = this.participants.filter((entry) => String(entry.id) !== participantId);
-    this.replaceParticipants(next);
+    const removed = this.roster.list().find((entry) => entry.id === participantId);
+    this.roster.remove(participantId);
     if (removed) {
       this.participantsMessage = `${String(removed.name ?? participantId)} left the room.`;
     }
@@ -174,18 +170,7 @@ export class ExecutionContext {
   }
 
   public consumeParticipantsMessage(): string | null {
-    const currentIds = new Set(this.participants.map((p) => String(p.id)));
-    let changed = !this.lastSentParticipantIds
-      || currentIds.size !== this.lastSentParticipantIds.size;
-    if (!changed) {
-      for (const id of currentIds) {
-        if (!this.lastSentParticipantIds!.has(id)) {
-          changed = true;
-          break;
-        }
-      }
-    }
-
+    const changed = this.roster.changed();
     if (!changed && !this.participantsMessage) {
       return null;
     }
@@ -197,7 +182,7 @@ export class ExecutionContext {
     }
 
     if (changed) {
-      const asRecords = this.participants.map((p) => ({
+      const asRecords = this.roster.list().map((p) => ({
         id: p.id,
         name: p.name,
         type: p.type,
@@ -206,7 +191,7 @@ export class ExecutionContext {
       parts.push(buildParticipantsMessage(asRecords));
     }
 
-    this.lastSentParticipantIds = currentIds;
+    this.roster.markSent();
     return parts.length > 0 ? parts.join("\n") : null;
   }
 
@@ -266,15 +251,11 @@ export class ExecutionContext {
     }
   }
 
-  private replaceParticipants(participants: ParticipantRecord[]): void {
-    this.participants.splice(0, this.participants.length, ...participants);
-  }
-
   private buildLocalContext(): ConversationContext {
     return {
       roomId: this.roomId,
       messages: this.getRawHistory(),
-      participants: [...this.participants],
+      participants: this.roster.list().map(toParticipantRecord),
       hydratedAt: new Date(),
     };
   }
@@ -287,8 +268,8 @@ export class ExecutionContext {
       type: participant.type,
       handle: participant.handle ?? null,
     }));
-    this.replaceParticipants(normalized);
-    return [...this.participants];
+    this.roster.setAll(normalized, undefined);
+    return this.roster.list().map(toParticipantRecord);
   }
 
   private async loadHydratedMessages(): Promise<MetadataMap[]> {
@@ -336,7 +317,7 @@ export class ExecutionContext {
       return;
     }
 
-    this.contextCache.participants = [...this.participants];
+    this.contextCache.participants = this.roster.list().map(toParticipantRecord);
     this.contextCache.hydratedAt = new Date();
     this.contextCacheExpiresAt = this.nextCacheExpiry();
   }

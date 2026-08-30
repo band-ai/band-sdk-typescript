@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PlatformEvent } from "../src/platform/events";
 import { Execution } from "../src/runtime/Execution";
 import type { ExecutionState } from "../src/runtime/ExecutionContext";
-import { MessageRetryTracker } from "../src/runtime/retryTracker";
+import { RetryTracker } from "@band-ai/band-sdk-core";
 
 interface BacklogMessage {
   id: string;
@@ -51,7 +51,7 @@ function makeBacklogMessage(id: string, content = "backlog"): BacklogMessage {
 
 function makeContext(maxRetries = 1) {
   const states: ExecutionState[] = [];
-  const retryTracker = new MessageRetryTracker(maxRetries);
+  const retryTracker = new RetryTracker(maxRetries);
   return {
     setState(state: ExecutionState) {
       states.push(state);

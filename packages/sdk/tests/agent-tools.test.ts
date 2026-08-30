@@ -15,6 +15,7 @@ import {
 } from "../src/contracts/protocols";
 import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
+import { makeRoster } from "./testUtils";
 
 class FakeRestApi implements RestApi {
   public readonly chatMessages: Array<{ chatId: string; content: string; mentions?: unknown[] }> = [];
@@ -207,7 +208,7 @@ describe("AgentTools", () => {
     const tools = new AgentTools({
       roomId: "room-1",
       rest: new RestFacade({ api: new FakeRestApi() }),
-      participants: [{ id: "u1", handle: "@jane", name: "Jane", type: "User" }],
+      roster: makeRoster([{ id: "u1", handle: "@jane", name: "Jane", type: "User" }]),
     });
 
     const result = await tools.sendMessage("hi", ["@jane"]);
@@ -316,7 +317,7 @@ describe("AgentTools", () => {
     const tools = new AgentTools({
       roomId: "room-1",
       rest: new RestFacade({ api: new FakeRestApi() }),
-      participants: [],
+      roster: makeRoster([]),
     });
 
     const result = await tools.executeToolCall("band_send_message", {
@@ -361,6 +362,44 @@ describe("AgentTools", () => {
     expect(api.addedParticipants).toEqual([
       { chatId: "room-1", participantId: "p1", role: "member" },
     ]);
+  });
+
+  it("works standalone with no roster option, adding and removing participants via its own owned ParticipantRoster", async () => {
+    class StatefulRestApi extends FakeRestApi {
+      private joined = false;
+
+      public override async listChatParticipants() {
+        return this.joined
+          ? [{ id: "p1", name: "Weather", type: "Agent", handle: "@sam/weather" }]
+          : [];
+      }
+
+      public override async addChatParticipant(
+        chatId: string,
+        participant: { participantId: string; role: string },
+      ) {
+        this.joined = true;
+        return super.addChatParticipant(chatId, participant);
+      }
+    }
+
+    const api = new StatefulRestApi();
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api }),
+    });
+
+    const added = await tools.addParticipant("Weather");
+    expect(added).toMatchObject({ id: "p1", name: "Weather", status: "added" });
+
+    const mentionResult = await tools.executeToolCall("band_send_message", {
+      content: "hello",
+      mentions: ["@sam/weather"],
+    });
+    expect(isToolExecutorError(mentionResult)).toBe(false);
+
+    const removed = await tools.removeParticipant("Weather");
+    expect(removed).toMatchObject({ id: "p1", status: "removed" });
   });
 
   it("delegates contact tools to the REST adapter when enabled", async () => {
@@ -476,7 +515,7 @@ describe("AgentTools", () => {
     const tools = new AgentTools({
       roomId: "room-1",
       rest: new RestFacade({ api }),
-      participants: [{ id: "u1", handle: "@jane", name: "Jane", type: "User" }],
+      roster: makeRoster([{ id: "u1", handle: "@jane", name: "Jane", type: "User" }]),
     });
 
     await expect(

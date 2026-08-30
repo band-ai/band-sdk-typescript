@@ -76,6 +76,9 @@ importers:
       '@anthropic-ai/sdk':
         specifier: '>=0.91.1 <1.0.0'
         version: 0.95.1(zod@3.25.76)
+      '@band-ai/band-sdk-core':
+        specifier: 2.0.0
+        version: 2.0.0
       '@band-ai/rest-client':
         specifier: 0.0.118
         version: 0.0.118
@@ -337,6 +340,9 @@ packages:
     resolution: {integrity: sha512-LwdZHpScM4Qz8Xw2iKSzS+cfglZzJGvofQICy7W7v4caru4EaAmyUuO6BGrbyQ2mYV11W0U8j5mBhd14dd3B0A==}
     engines: {node: '>=6.9.0'}
 
+  '@band-ai/band-sdk-core@2.0.0':
+    resolution: {integrity: sha512-yPgba25N4a3XHeG0y3Ic90Z9zAt2fwIXVAt7AmlryqvsEvc9kvZ8xg0ILkRj5K6HdvuiXo7QtpMd6t8lnrjRNA==}
+
   '@band-ai/rest-client@0.0.118':
     resolution: {integrity: sha512-psizi+1ASQ89E+PbPIn1N/vTK3DrIzjiGaUWLPM0k9YRkD4PTVpbPcSNLIpm/DY8EPlq2eMwdPvroC5XUiG+yQ==}
     engines: {node: '>=18.0.0'}
@@ -585,6 +591,7 @@ packages:
   '@google-cloud/opentelemetry-resource-util@3.0.0':
     resolution: {integrity: sha512-CGR/lNzIfTKlZoZFfS6CkVzx+nsC9gzy6S8VcyaLegfEJbiPjxbMLP7csyhJTvZe/iRRcQJxSk0q8gfrGqD3/Q==}
     engines: {node: '>=18'}
+    deprecated: Google Cloud Platform now supports native OpenTelemetry Protocol (OTLP) endpoints via the Telemetry API. Please follow https://github.com/GoogleCloudPlatform/opentelemetry-operations-js/blob/main/MIGRATION.md
     peerDependencies:
       '@opentelemetry/core': ^2.0.0
       '@opentelemetry/resources': ^2.0.0
@@ -4369,6 +4376,8 @@ snapshots:
     dependencies:
       '@babel/helper-string-parser': 7.27.1
       '@babel/helper-validator-identifier': 7.28.5
+
+  '@band-ai/band-sdk-core@2.0.0': {}
 
   '@band-ai/rest-client@0.0.118': {}
 
