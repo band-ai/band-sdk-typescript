@@ -13,8 +13,10 @@ permissions:
   contents: read
 
 concurrency:
+  # Never cancel in progress: a killed run skips its `finally` reap, orphaning
+  # the agents and rooms it provisioned on the real platform. Queue instead.
   group: e2e-live-${{ github.event_name }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   e2e:

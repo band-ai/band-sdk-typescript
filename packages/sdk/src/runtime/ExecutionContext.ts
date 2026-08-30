@@ -143,7 +143,7 @@ export class ExecutionContext {
   }
 
   public setParticipants(participants: ParticipantRecord[]): void {
-    this.roster.setAll(participants, undefined);
+    this.roster.setAll(participants);
     this.updateCachedParticipants();
   }
 
@@ -182,6 +182,7 @@ export class ExecutionContext {
     }
 
     if (changed) {
+      // Spread widens each record to the index-signature shape the formatter takes.
       parts.push(buildParticipantsMessage(this.roster.list().map((p) => ({ ...toParticipantRecord(p) }))));
     }
 
@@ -257,7 +258,7 @@ export class ExecutionContext {
   private async loadParticipants(): Promise<ParticipantRecord[]> {
     const participants = await this.link.rest.listChatParticipants(this.roomId, DEFAULT_REQUEST_OPTIONS);
     const normalized = participants.map(toParticipantRecordFromRest);
-    this.roster.setAll(normalized, undefined);
+    this.roster.setAll(normalized);
     return this.roster.list().map(toParticipantRecord);
   }
 

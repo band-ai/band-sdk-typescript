@@ -33,7 +33,7 @@ describe("Agent.create", () => {
 
   // RetryTracker rejects these, but only once a room's context is built
   // mid-run, which takes down the whole runtime.
-  it.each([-1, 1.5])("rejects maxMessageRetries=%s up front", (maxMessageRetries) => {
+  it.each([-1, 1.5, 4_294_967_296])("rejects maxMessageRetries=%s up front", (maxMessageRetries) => {
     expect(() =>
       Agent.create({
         adapter: new GenericAdapter(async () => undefined),

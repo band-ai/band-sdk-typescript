@@ -165,8 +165,7 @@ export class AgentTools implements AgentToolsProtocol {
     if (mentions.length > 0 && typeof mentions[0] === "string") {
       participants = this.roster.list();
       if (participants.length === 0) {
-        await this.syncParticipants();
-        participants = this.roster.list();
+        participants = await this.syncParticipants();
       }
     }
 
@@ -297,7 +296,7 @@ export class AgentTools implements AgentToolsProtocol {
 
   private async syncParticipants(): Promise<ParticipantRecord[]> {
     const participants = await this.fetchParticipants();
-    this.roster.setAll(participants, undefined);
+    this.roster.setAll(participants);
     return this.roster.list().map(toParticipantRecord);
   }
 

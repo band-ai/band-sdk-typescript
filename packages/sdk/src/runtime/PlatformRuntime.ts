@@ -13,6 +13,9 @@ import type { ExecutionContext, ExecutionContextOptions } from "./ExecutionConte
 import type { Logger } from "../core/logger";
 import { NoopLogger } from "../core/logger";
 
+/** Upper bound core's `RetryTracker` accepts for `maxRetries` (u32::MAX). */
+const MAX_MESSAGE_RETRIES = 4_294_967_295;
+
 export interface PlatformRuntimeOptions {
   agentId: string;
   apiKey: string;
@@ -79,11 +82,17 @@ export class PlatformRuntime {
     }
 
     // RetryTracker rejects these too, but only once a room's ExecutionContext
-    // is built mid-run — too late to be actionable.
+    // is built mid-run — too late to be actionable. Mirror its full accepted
+    // range, or an out-of-range integer still slips through to that late throw.
     const maxMessageRetries = options.sessionConfig?.maxMessageRetries;
-    if (maxMessageRetries !== undefined && (!Number.isInteger(maxMessageRetries) || maxMessageRetries < 0)) {
+    if (
+      maxMessageRetries !== undefined
+      && (!Number.isInteger(maxMessageRetries)
+        || maxMessageRetries < 0
+        || maxMessageRetries > MAX_MESSAGE_RETRIES)
+    ) {
       throw new ValidationError(
-        `sessionConfig.maxMessageRetries must be a non-negative integer, got ${maxMessageRetries}.`,
+        `sessionConfig.maxMessageRetries must be an integer between 0 and ${MAX_MESSAGE_RETRIES}, got ${maxMessageRetries}.`,
       );
     }
 
