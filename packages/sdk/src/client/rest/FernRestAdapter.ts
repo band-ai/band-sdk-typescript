@@ -29,72 +29,25 @@ import type {
   PlatformChatMessage,
 } from "./types";
 
-function mergeOptions(options?: RestRequestOptions): RestRequestOptions {
+// `maxRetries` on RestRequestOptions counts retries *after* the first attempt
+// (total attempts = maxRetries + 1) — it flows straight into
+// `@band-ai/rest-client`'s generated `requestWithRetries`, which already
+// retries 408/429/5xx with Retry-After / X-RateLimit-Reset aware backoff.
+// These per-operation values are one less than the total-attempt counts they
+// replace, to keep today's attempt counts unchanged.
+function mergeOptions(options?: RestRequestOptions, maxRetries?: number): RestRequestOptions {
   return {
     ...DEFAULT_REQUEST_OPTIONS,
+    ...(maxRetries !== undefined ? { maxRetries } : {}),
     ...options,
   };
 }
 
-const AGENT_ME_RETRY_LIMIT = 4;
-const AGENT_ME_RETRY_BASE_DELAY_MS = 2_000;
-const MESSAGE_SEND_RETRY_LIMIT = 3;
-const MESSAGE_SEND_RETRY_BASE_DELAY_MS = 500;
+const AGENT_ME_MAX_RETRIES = 3;
+const MESSAGE_SEND_MAX_RETRIES = 2;
 
 function asMetadataMap(value: unknown): MetadataMap | undefined {
   return asOptionalRecord(value) as MetadataMap | undefined;
-}
-
-function extractHttpStatus(error: unknown): number | undefined {
-  const record = asOptionalRecord(error);
-  if (!record) {
-    return undefined;
-  }
-
-  const response = asOptionalRecord(record.response);
-  const status = record.statusCode ?? record.status ?? response?.statusCode ?? response?.status;
-  return typeof status === "number" ? status : undefined;
-}
-
-export function isFernRateLimitError(error: unknown): boolean {
-  return extractHttpStatus(error) === 429;
-}
-
-async function sleep(ms: number): Promise<void> {
-  await new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
-}
-
-function computeRetryDelayMs(baseDelayMs: number, attempt: number): number {
-  const backoff = baseDelayMs * (2 ** (attempt - 1));
-  const jitter = Math.floor(Math.random() * Math.max(1, Math.floor(backoff / 4)));
-  return backoff + jitter;
-}
-
-async function withRateLimitRetry<T>(
-  operation: () => Promise<T>,
-  options: {
-    retryLimit: number;
-    baseDelayMs: number;
-  },
-): Promise<T> {
-  let lastError: unknown;
-
-  for (let attempt = 1; attempt <= options.retryLimit; attempt += 1) {
-    try {
-      return await operation();
-    } catch (error) {
-      lastError = error;
-      if (!isFernRateLimitError(error) || attempt === options.retryLimit) {
-        throw error;
-      }
-
-      await sleep(computeRetryDelayMs(options.baseDelayMs, attempt));
-    }
-  }
-
-  throw lastError instanceof Error
-    ? lastError
-    : new Error("Rate-limit retry exhausted without a terminal error.");
 }
 
 function requireNonEmptyStringField(
@@ -406,30 +359,24 @@ export class FernRestAdapter implements RestApi {
   }
 
   public async getAgentMe(options?: RestRequestOptions): Promise<AgentIdentity> {
-    return withRateLimitRetry(
-      async () => {
-        if (this.client.agentApiIdentity?.getAgentMe) {
-          const response = await this.client.agentApiIdentity.getAgentMe(mergeOptions(options));
-          return normalizeAgentIdentityEnvelope(response, "agentApiIdentity.getAgentMe");
-        }
+    if (this.client.agentApiIdentity?.getAgentMe) {
+      const response = await this.client.agentApiIdentity.getAgentMe(
+        mergeOptions(options, AGENT_ME_MAX_RETRIES),
+      );
+      return normalizeAgentIdentityEnvelope(response, "agentApiIdentity.getAgentMe");
+    }
 
-        const profileClient = this.client.myProfile ?? this.client.humanApiProfile;
-        if (!profileClient?.getMyProfile) {
-          throw new UnsupportedFeatureError(
-            "Fern client missing agentApiIdentity.getAgentMe or humanApiProfile.getMyProfile",
-          );
-        }
+    const profileClient = this.client.myProfile ?? this.client.humanApiProfile;
+    if (!profileClient?.getMyProfile) {
+      throw new UnsupportedFeatureError(
+        "Fern client missing agentApiIdentity.getAgentMe or humanApiProfile.getMyProfile",
+      );
+    }
 
-        const profile = await profileClient.getMyProfile(mergeOptions(options));
-        return normalizeLegacyProfileIdentity(
-          normalizeLegacyProfileEnvelope(profile),
-          "profile.getMyProfile",
-        );
-      },
-      {
-        retryLimit: AGENT_ME_RETRY_LIMIT,
-        baseDelayMs: AGENT_ME_RETRY_BASE_DELAY_MS,
-      },
+    const profile = await profileClient.getMyProfile(mergeOptions(options, AGENT_ME_MAX_RETRIES));
+    return normalizeLegacyProfileIdentity(
+      normalizeLegacyProfileEnvelope(profile),
+      "profile.getMyProfile",
     );
   }
 
@@ -450,23 +397,17 @@ export class FernRestAdapter implements RestApi {
       throw new UnsupportedFeatureError("Fern client missing chat message creation endpoint");
     }
 
-    const response = await withRateLimitRetry(
-      async () => await api(
-        chatId,
-        {
-          message: {
-            content: message.content,
-            message_type: message.messageType,
-            metadata: message.metadata,
-            mentions: message.mentions,
-          },
-        },
-        mergeOptions(options),
-      ),
+    const response = await api(
+      chatId,
       {
-        retryLimit: MESSAGE_SEND_RETRY_LIMIT,
-        baseDelayMs: MESSAGE_SEND_RETRY_BASE_DELAY_MS,
+        message: {
+          content: message.content,
+          message_type: message.messageType,
+          metadata: message.metadata,
+          mentions: message.mentions,
+        },
       },
+      mergeOptions(options, MESSAGE_SEND_MAX_RETRIES),
     );
     return normalizeToolOperationResult(response);
   }
@@ -483,22 +424,16 @@ export class FernRestAdapter implements RestApi {
     const createAgentChatEvent = this.client.agentApiEvents?.createAgentChatEvent
       ?.bind(this.client.agentApiEvents);
     if (createAgentChatEvent) {
-      const response = await withRateLimitRetry(
-        async () => await createAgentChatEvent(
-          chatId,
-          {
-            event: {
-              content: event.content,
-              message_type: event.messageType,
-              metadata: event.metadata,
-            },
-          },
-          mergeOptions(options),
-        ),
+      const response = await createAgentChatEvent(
+        chatId,
         {
-          retryLimit: MESSAGE_SEND_RETRY_LIMIT,
-          baseDelayMs: MESSAGE_SEND_RETRY_BASE_DELAY_MS,
+          event: {
+            content: event.content,
+            message_type: event.messageType,
+            metadata: event.metadata,
+          },
         },
+        mergeOptions(options, MESSAGE_SEND_MAX_RETRIES),
       );
       return normalizeToolOperationResult(response);
     }
