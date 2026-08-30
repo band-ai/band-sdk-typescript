@@ -313,7 +313,7 @@ The root `@band-ai/sdk` import covers the common runtime, adapters, and config. 
 | `@band-ai/sdk/linear` | Linear tools plus bridge/webhook helpers (`createLinearTools`, webhook handler, dispatchers, room store) |
 | `@band-ai/sdk/testing` | `FakeAgentTools` and test utilities |
 | `@band-ai/sdk/config` | Config loaders (also re-exported from root) |
-| `@band-ai/sdk/core` | Logger, errors, base classes |
+| `@band-ai/sdk/core` | Logger, the `BandSdkError` family, adapter protocols, and the DTO, memory-contract and tool-executor types those protocols name |
 | `@band-ai/sdk/runtime` | Runtime internals (room presence, execution context) |
 
 ## Examples

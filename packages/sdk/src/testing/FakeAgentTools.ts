@@ -5,7 +5,7 @@ import type {
   ContactTools,
   MemoryTools,
 } from "../contracts/protocols";
-import { DEFAULT_AGENT_TOOLS_CAPABILITIES } from "../contracts/protocols";
+import { DEFAULT_AGENT_TOOLS_CAPABILITIES } from "../core";
 import type {
   AddContactArgs,
   ContactRecord,

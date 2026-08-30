@@ -14,6 +14,9 @@ export { AgentRuntime } from "./runtime/rooms/AgentRuntime";
 export type { ExecutionContextOptions } from "./runtime/ExecutionContext";
 export { DefaultPreprocessor } from "./runtime/preprocessing/DefaultPreprocessor";
 export type { CustomToolDef } from "./runtime/tools/customTools";
+// HistoryProvider is a class, so it must be exported as a value. Exporting it inside the
+// type-only block below left `new HistoryProvider([])` with no runtime binding.
+export { HistoryProvider } from "./runtime/types";
 export type {
   AgentConfig,
   AgentInput,
@@ -21,7 +24,6 @@ export type {
   ContactEventStrategy,
   ContactEventCallback,
   ConversationContext,
-  HistoryProvider,
   MessageHandler,
   PlatformMessage,
   SessionConfig,
@@ -36,6 +38,18 @@ export {
 } from "./config";
 
 export { isDirectExecution } from "./core/isDirectExecution";
+
+// Every error the SDK throws from its own code satisfies `instanceof BandSdkError`. These
+// are re-exported here as well as from ./core so that catching an error does not require
+// importing from a different subpath than the adapter that threw it — the same reason
+// WebSocketDisconnectError is exported from both.
+export {
+  BandSdkError,
+  UnsupportedFeatureError,
+  ValidationError,
+  TransportError,
+  RuntimeStateError,
+} from "./core/errors";
 
 export { GenericAdapter } from "./adapters/GenericAdapter";
 export {
