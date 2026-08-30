@@ -81,7 +81,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "clean": "rm -rf dist",
-    "dev:linear": "tsx examples/linear-band/linear-band-bridge-server.ts",
+    "dev:linear": "tsx --env-file-if-exists=.env.local examples/linear-band/linear-band-bridge-server.ts",
     "start:linear": "tsx examples/linear-band/linear-band-bridge-server.ts"
   },
   "engines": {
