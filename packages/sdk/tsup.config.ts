@@ -1,7 +1,9 @@
 import { defineConfig } from "tsup";
 
 const EXTERNAL = [
+  "@langchain/langgraph",
   "@langchain/langgraph/prebuilt",
+  "@langchain/core",
   "@langchain/core/tools",
   "@a2a-js/sdk",
   "@a2a-js/sdk/client",
@@ -10,7 +12,9 @@ const EXTERNAL = [
   "@agentclientprotocol/sdk",
   "@anthropic-ai/sdk",
   "@anthropic-ai/claude-agent-sdk",
+  "@google/adk",
   "@google/genai",
+  "@letta-ai/letta-client",
   "@linear/sdk",
   "@linear/sdk/webhooks",
   "@modelcontextprotocol/sdk",

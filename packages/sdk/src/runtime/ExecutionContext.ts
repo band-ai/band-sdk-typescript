@@ -7,6 +7,7 @@ import type { ConversationContext, PlatformMessage } from "./types";
 import { AgentTools } from "./tools/AgentTools";
 import { MessageRetryTracker } from "./retryTracker";
 import { buildParticipantsMessage } from "./formatters";
+import { ParticipantTracker } from "./participantTracker";
 
 export type ExecutionState = "starting" | "idle" | "processing";
 
@@ -37,11 +38,19 @@ export class ExecutionContext {
   private readonly history: PlatformMessage[] = [];
   private messageIds = new Set<string>();
   private readonly dedupCache = new Map<string, true>();
-  private participants: ParticipantRecord[] = [];
+  private readonly participantTracker = new ParticipantTracker<ParticipantRecord>();
+
+  /**
+   * The tracker's live participant array. AgentTools is handed this reference once at
+   * construction and must keep observing updates, so this deliberately is not a copy;
+   * callers wanting a snapshot spread it.
+   */
+  private get participants(): ParticipantRecord[] {
+    return this.participantTracker.liveView;
+  }
   private readonly tools: AgentTools;
   private readonly adapterTools: AdapterToolsProtocol;
   private participantsMessage: string | null = null;
-  private lastSentParticipantIds: Set<string> | null = null;
   private contactsMessage: string | null = null;
   private contextCache: ConversationContext | null = null;
   private contextCacheExpiresAt = 0;
@@ -149,20 +158,15 @@ export class ExecutionContext {
   }
 
   public addParticipant(participant: ParticipantRecord): void {
-    const existingIndex = this.participants.findIndex((entry) => entry.id === participant.id);
-    if (existingIndex >= 0) {
-      this.participants.splice(existingIndex, 1);
-    }
-    this.participants.push(participant);
+    this.participantTracker.upsert(participant);
     const name = String(participant.name ?? "unknown");
     this.participantsMessage = `${name} joined the room.`;
     this.updateCachedParticipants();
   }
 
   public removeParticipant(participantId: string): void {
-    const removed = this.participants.find((entry) => String(entry.id) === participantId);
-    const next = this.participants.filter((entry) => String(entry.id) !== participantId);
-    this.replaceParticipants(next);
+    const removed = this.participantTracker.find(participantId);
+    this.participantTracker.remove(participantId);
     if (removed) {
       this.participantsMessage = `${String(removed.name ?? participantId)} left the room.`;
     }
@@ -174,17 +178,7 @@ export class ExecutionContext {
   }
 
   public consumeParticipantsMessage(): string | null {
-    const currentIds = new Set(this.participants.map((p) => String(p.id)));
-    let changed = !this.lastSentParticipantIds
-      || currentIds.size !== this.lastSentParticipantIds.size;
-    if (!changed) {
-      for (const id of currentIds) {
-        if (!this.lastSentParticipantIds!.has(id)) {
-          changed = true;
-          break;
-        }
-      }
-    }
+    const changed = this.participantTracker.changed();
 
     if (!changed && !this.participantsMessage) {
       return null;
@@ -206,7 +200,7 @@ export class ExecutionContext {
       parts.push(buildParticipantsMessage(asRecords));
     }
 
-    this.lastSentParticipantIds = currentIds;
+    this.participantTracker.markSent();
     return parts.length > 0 ? parts.join("\n") : null;
   }
 
@@ -267,7 +261,7 @@ export class ExecutionContext {
   }
 
   private replaceParticipants(participants: ParticipantRecord[]): void {
-    this.participants.splice(0, this.participants.length, ...participants);
+    this.participantTracker.replace(participants);
   }
 
   private buildLocalContext(): ConversationContext {

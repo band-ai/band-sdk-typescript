@@ -237,7 +237,7 @@ export class RestFacade implements RestApi {
       "addContact",
       OPTIONAL_UNSUPPORTED_MESSAGES.addContact,
       (method) => method(request, options),
-      request,
+      { ...request },
     );
   }
 
@@ -273,7 +273,7 @@ export class RestFacade implements RestApi {
       "storeMemory",
       OPTIONAL_UNSUPPORTED_MESSAGES.storeMemory,
       (method) => method(request, options),
-      request,
+      { ...request },
     );
   }
 
@@ -324,7 +324,7 @@ export class RestFacade implements RestApi {
           metadata: normalizePaginationMetadata(response.metadata),
         };
       },
-      request,
+      { ...request },
     );
   }
 
@@ -342,7 +342,7 @@ export class RestFacade implements RestApi {
           metadata: normalizePaginationMetadata(response.metadata),
         };
       },
-      request,
+      { ...request },
     );
   }
 
@@ -372,7 +372,7 @@ export class RestFacade implements RestApi {
       "listContactRequests",
       OPTIONAL_UNSUPPORTED_MESSAGES.listContactRequests,
       async (method) => normalizeContactRequestsResult(await method(request, options)),
-      request,
+      { ...request },
     );
   }
 
@@ -393,7 +393,7 @@ export class RestFacade implements RestApi {
     operation: Op,
     unsupportedMessage: string,
     invoke: (method: NonNullable<RestApi[Op]>) => Promise<Result>,
-    metadata?: object,
+    metadata?: Record<string, unknown>,
   ): Promise<Result> {
     const method = this.api[operation];
     if (!method) {
@@ -408,9 +408,9 @@ export class RestFacade implements RestApi {
   private forward<T>(
     operation: string,
     call: () => Promise<T>,
-    metadata?: object,
+    metadata?: Record<string, unknown>,
   ): Promise<T> {
-    this.logger.debug(`REST ${operation}`, metadata as Record<string, unknown>);
+    this.logger.debug(`REST ${operation}`, metadata);
     return call();
   }
 }
