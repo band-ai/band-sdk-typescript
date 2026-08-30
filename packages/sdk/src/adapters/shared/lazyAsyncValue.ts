@@ -1,3 +1,5 @@
+import { RuntimeStateError } from "../../core/errors";
+
 interface LazyAsyncValueOptions<T> {
   load: () => Promise<T>;
   onRejected?: (error: unknown) => void;
@@ -31,7 +33,7 @@ export class LazyAsyncValue<T> {
 
     if (!this.pending) {
       if (this.lastFailureAt > 0 && Date.now() - this.lastFailureAt < this.retryBackoffMs) {
-        throw new Error(
+        throw new RuntimeStateError(
           `LazyAsyncValue load failed recently; retrying after ${this.retryBackoffMs}ms backoff.`,
         );
       }

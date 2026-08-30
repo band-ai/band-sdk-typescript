@@ -24,6 +24,8 @@ import type {
   LinearBandBridgeConfig,
   LinearBandBridgeDeps,
 } from "./types";
+import { asErrorMessage, serializeError } from "../../core/errors";
+import { sleep } from "../../core/sleep";
 
 export interface LinearBridgeDispatchJob {
   eventKey: string;
@@ -254,7 +256,7 @@ export function createLinearWebhookHandler(
       ) as { type?: string };
     } catch (error) {
       logger.warn("linear_thenvoi_bridge.webhook_invalid_signature", {
-        error: error instanceof Error ? error.message : String(error),
+        error: asErrorMessage(error),
       });
       sendText(response, 400, "Invalid webhook");
       return;
@@ -623,27 +625,6 @@ async function signalTerminalDispatchFailure(input: {
 
 function isRetryableDispatchError(error: unknown): error is { retryable: true } {
   return typeof error === "object" && error !== null && "retryable" in error && (error as { retryable?: boolean }).retryable === true;
-}
-
-async function sleep(ms: number): Promise<void> {
-  await new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
-}
-
-function serializeError(error: unknown): Record<string, unknown> {
-  if (error instanceof Error) {
-    return {
-      name: error.name,
-      message: error.message,
-      stack: error.stack,
-      ...(typeof (error as { retryable?: unknown }).retryable !== "undefined"
-        ? { retryable: (error as { retryable?: unknown }).retryable }
-        : {}),
-    };
-  }
-
-  return {
-    message: String(error),
-  };
 }
 
 function toDispatchFailureError(failure: DispatchTerminalFailure): Error {

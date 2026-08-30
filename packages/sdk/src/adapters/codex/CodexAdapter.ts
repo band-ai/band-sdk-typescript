@@ -21,7 +21,8 @@ import {
   executeCustomTool,
   findCustomToolInIndex,
 } from "../../runtime/tools/customTools";
-import { asErrorMessage, asNonEmptyString, asOptionalRecord, asRecord, toWireString } from "../shared/coercion";
+import { asErrorMessage, RuntimeStateError, ValidationError } from "../../core/errors";
+import { asNonEmptyString, asOptionalRecord, asRecord, toWireString } from "../shared/coercion";
 import { findLatestTaskMetadata } from "../shared/history";
 import {
   CodexAppServerStdioClient,
@@ -256,7 +257,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       toRpcParams(turnParams),
     ));
     if (!turnStarted) {
-      throw new Error("Codex returned an invalid turn/start payload");
+      throw new ValidationError("Codex returned an invalid turn/start payload");
     }
     this.debug("codex_adapter.turn.started", {
       roomId: context.roomId,
@@ -450,7 +451,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     const cooldownMs = 2_000;
     const elapsed = Date.now() - this.lastInitFailure;
     if (this.lastInitFailure > 0 && elapsed < cooldownMs) {
-      throw new Error(
+      throw new RuntimeStateError(
         `Codex client init failed recently (${elapsed}ms ago). Retrying after ${cooldownMs}ms cooldown.`,
       );
     }
@@ -540,7 +541,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
             toRpcParams(this.buildThreadResumeParams(resumeThreadId, config)),
           ));
           if (!resumed) {
-            throw new Error("Codex returned an invalid thread/resume payload");
+            throw new ValidationError("Codex returned an invalid thread/resume payload");
           }
           const threadId = resumed.thread.id;
           this.roomThreadIds.set(roomId, threadId);
@@ -565,7 +566,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
         toRpcParams(this.buildThreadStartParams(tools, config)),
       ));
       if (!started) {
-        throw new Error("Codex returned an invalid thread/start payload");
+        throw new ValidationError("Codex returned an invalid thread/start payload");
       }
       const threadId = started.thread.id;
       this.roomThreadIds.set(roomId, threadId);
@@ -1230,7 +1231,7 @@ function loadCodexFactory(
 ): CodexFactory {
   return async () => {
     if (config.codexCommand && config.codexCommand.length === 0) {
-      throw new Error("Codex app-server command is empty");
+      throw new ValidationError("Codex app-server command is empty");
     }
 
     return new CodexAppServerStdioClient({
@@ -1302,7 +1303,7 @@ function normalizeCustomToolError(
 
 function toRpcParams(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Codex RPC params must be an object");
+    throw new ValidationError("Codex RPC params must be an object");
   }
   return value as Record<string, unknown>;
 }

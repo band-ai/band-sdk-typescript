@@ -11,6 +11,7 @@ import type {
 } from "./types";
 import { buildStatusEvent } from "./statusEvent";
 import { asNonEmptyString } from "../shared/coercion";
+import { asErrorMessage, BandSdkError, UnsupportedFeatureError, ValidationError } from "../../core/errors";
 
 interface ExpressAppLike {
   use: (...args: unknown[]) => void;
@@ -324,9 +325,9 @@ async function loadA2AServerModules(): Promise<RuntimeA2AServerModules> {
     import("@a2a-js/sdk/server/express") as Promise<Record<string, unknown>>,
     import("express") as Promise<Record<string, unknown>>,
   ]).catch((error: unknown) => {
-    throw new Error(
-      `A2AGatewayAdapter requires optional dependency @a2a-js/sdk and express. (${error instanceof Error ? error.message : String(error)})`,
-      { cause: error },
+    throw new UnsupportedFeatureError(
+      `A2AGatewayAdapter requires optional dependency @a2a-js/sdk and express. (${asErrorMessage(error)})`,
+      error,
     );
   });
 
@@ -357,7 +358,7 @@ async function loadA2AServerModules(): Promise<RuntimeA2AServerModules> {
     typeof createExpressApp !== "function" ||
     typeof createExpressApp.json !== "function"
   ) {
-    throw new Error(
+    throw new UnsupportedFeatureError(
       "Failed to initialize A2A gateway server: missing required exports from @a2a-js/sdk/server or @a2a-js/sdk/server/express.",
     );
   }
@@ -499,7 +500,7 @@ function assertGatewayAuthPolicy(
     return;
   }
 
-  throw new Error(
+  throw new ValidationError(
     "A2A gateway authToken is required unless allowUnauthenticatedLoopback is explicitly enabled on a loopback host.",
   );
 }
@@ -560,7 +561,7 @@ function createUserBuilder(
   const authToken = options.authToken;
   if (!authToken) {
     if (!options.allowUnauthenticatedLoopback) {
-      throw new Error(
+      throw new ValidationError(
         "A2A gateway authToken is required unless allowUnauthenticatedLoopback is explicitly enabled on a loopback host.",
       );
     }
@@ -576,7 +577,7 @@ function createUserBuilder(
 
   return async (request) => {
     if (!verifyBearerAuthorization(request.headers, authToken)) {
-      throw new Error("Unauthorized");
+      throw new BandSdkError("Unauthorized");
     }
 
     return {
@@ -623,7 +624,7 @@ function buildGatewayExecutionFailureMetadata(
 }
 
 function sanitizeGatewayErrorMessage(error: unknown): string {
-  const rawMessage = error instanceof Error ? error.message : String(error);
+  const rawMessage = asErrorMessage(error);
   const trimmed = rawMessage.trim();
   if (!trimmed) {
     return "Unknown error";

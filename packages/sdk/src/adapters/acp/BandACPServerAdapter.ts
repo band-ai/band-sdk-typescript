@@ -18,11 +18,11 @@ import { ACPPushHandler } from "./pushHandler";
 import { AgentRouter } from "./router";
 import {
   DEFAULT_ACP_SERVER_MODES,
-  asJsonSafe,
   createPendingPrompt,
   normalizeMcpServers,
   type PendingACPPrompt,
 } from "./types";
+import { RuntimeStateError, ValidationError } from "../../core/errors";
 
 const DEFAULT_MAX_SESSIONS = 100
 const DEFAULT_PROMPT_TIMEOUT_MS = 300_000
@@ -179,7 +179,7 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
     const activeCount = this.sessionToRoom.size + this.sessionsInFlight
     if (activeCount > this.maxSessions) {
       this.sessionsInFlight = Math.max(0, this.sessionsInFlight - 1)
-      throw new Error(`Maximum ACP sessions (${this.maxSessions}) reached`)
+      throw new RuntimeStateError(`Maximum ACP sessions (${this.maxSessions}) reached`)
     }
     try {
       const room = await this.bandRest.createChat()
@@ -223,7 +223,7 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
   public async handlePrompt(sessionId: string, text: string): Promise<void> {
     const roomId = this.sessionToRoom.get(sessionId)
     if (!roomId) {
-      throw new Error(`Unknown ACP session: ${sessionId}`)
+      throw new ValidationError(`Unknown ACP session: ${sessionId}`)
     }
 
     const pending = createPendingPrompt(sessionId)

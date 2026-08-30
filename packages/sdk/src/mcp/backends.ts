@@ -11,6 +11,7 @@ import { BandMcpStdioServer } from "./stdio";
 import { BandMcpServer } from "./server";
 import { BandMcpSseServer } from "./sse";
 import type { BandSdkMcpServer } from "./sdk";
+import { ValidationError } from "../core/errors";
 
 export type BandMcpBackendKind = "sdk" | "http" | "sse" | "stdio";
 
@@ -135,7 +136,7 @@ export function getBandSdkMcpServerConfig(
   backend: BandMcpBackend,
 ): BandSdkMcpServer["serverConfig"] {
   if (backend.kind !== "sdk") {
-    throw new Error(`Expected sdk MCP backend, received ${backend.kind}`);
+    throw new ValidationError(`Expected sdk MCP backend, received ${backend.kind}`);
   }
 
   return (backend.server as BandSdkMcpServer).serverConfig;

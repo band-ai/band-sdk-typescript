@@ -11,6 +11,7 @@ import type {
   RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
 
+import { asErrorMessage, RuntimeStateError, ValidationError } from "../../core/errors";
 import { ACPClientHistoryConverter, type ACPClientSessionState } from "../../converters/acp-client";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
@@ -88,7 +89,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
     this.command = Array.isArray(options.command) ? [...options.command] : [options.command]
     if (this.command.length === 0 || this.command[0].length === 0) {
-      throw new Error("ACPClientAdapter requires a command")
+      throw new ValidationError("ACPClientAdapter requires a command")
     }
 
     this.cwd = options.cwd ?? process.cwd()
@@ -133,7 +134,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     const connection = await this.ensureConnection()
     const client = this.client
     if (!client) {
-      throw new Error("ACP client was not initialized")
+      throw new RuntimeStateError("ACP client was not initialized")
     }
 
     const sessionId = await this.getOrCreateSession(context.roomId, connection)
@@ -159,8 +160,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       })
     } catch (error) {
       await this.stop()
-      await tools.sendEvent(`ACP agent error: ${toErrorMessage(error)}`, "error", {
-        acp_error: toErrorMessage(error),
+      await tools.sendEvent(`ACP agent error: ${asErrorMessage(error)}`, "error", {
+        acp_error: asErrorMessage(error),
       })
       return
     }
@@ -231,7 +232,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     }
 
     if (!this.started) {
-      throw new Error("ACPClientAdapter was not started")
+      throw new RuntimeStateError("ACPClientAdapter was not started")
     }
 
     const isCreator = !this.spawnPromise
@@ -353,7 +354,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     if (backend.kind === "http") {
       const url = (backend.server as { url: string | null }).url
       if (!url) {
-        throw new Error("Band MCP HTTP backend did not expose a URL")
+        throw new ValidationError("Band MCP HTTP backend did not expose a URL")
       }
 
       mcpServers.push({
@@ -368,7 +369,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     if (backend.kind === "sse") {
       const url = (backend.server as { sseUrl: string | null }).sseUrl
       if (!url) {
-        throw new Error("Band MCP SSE backend did not expose a URL")
+        throw new ValidationError("Band MCP SSE backend did not expose a URL")
       }
 
       mcpServers.push({
@@ -534,7 +535,7 @@ export async function createSubprocessConnection(
   })
 
   if (!child.stdin || !child.stdout) {
-    throw new Error("ACP subprocess did not expose stdio pipes")
+    throw new RuntimeStateError("ACP subprocess did not expose stdio pipes")
   }
 
   const stream = acp.ndJsonStream(
@@ -577,12 +578,4 @@ export async function createSubprocessConnection(
       })
     },
   }
-}
-
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message
-  }
-
-  return String(error)
 }

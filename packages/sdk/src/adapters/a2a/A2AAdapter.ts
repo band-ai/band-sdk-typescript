@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 
-import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
+import { asErrorMessage, BandSdkError, UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import { SimpleAdapter } from "../../core/simpleAdapter";
+import { isRecord } from "../shared/coercion";
 import type { MessagingTools } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import type { PlatformMessage } from "../../runtime/types";
-import { asErrorMessage } from "../shared/coercion";
 import {
   A2AHistoryConverter,
   buildA2AAuthHeaders,
@@ -160,7 +160,7 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
         for await (const event of client.sendMessageStream(request)) {
           streamEventCount += 1;
           if (streamEventCount > this.maxStreamEvents) {
-            throw new Error(`A2A stream exceeded maximum event limit (${this.maxStreamEvents})`);
+            throw new BandSdkError(`A2A stream exceeded maximum event limit (${this.maxStreamEvents})`);
           }
           try {
             await this.handleEvent(event, tools, context.roomId, message.senderId);
@@ -197,7 +197,7 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
         });
       }
 
-      throw error instanceof Error ? error : new Error(errorMessage);
+      throw error instanceof Error ? error : new BandSdkError(errorMessage, error);
     }
   }
 
@@ -606,10 +606,6 @@ function unwrapResult(value: unknown, depth = 0): A2AEventLike | null {
   }
 
   return event as A2AEventLike;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 function isOptionalString(value: unknown): value is string | undefined {

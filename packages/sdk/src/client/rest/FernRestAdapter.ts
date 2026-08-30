@@ -1,5 +1,6 @@
-import { UnsupportedFeatureError } from "../../core/errors";
-import { asNullableString, asOptionalRecord, asString } from "../../adapters/shared/coercion";
+import { TransportError, UnsupportedFeatureError, ValidationError } from "../../core/errors";
+import { sleep } from "../../core/sleep";
+import { asNullableString, asOptionalRecord, asRecordArray, asString } from "../../adapters/shared/coercion";
 import type {
   AddContactArgs,
   ContactRecord,
@@ -60,10 +61,6 @@ export function isFernRateLimitError(error: unknown): boolean {
   return extractHttpStatus(error) === 429;
 }
 
-async function sleep(ms: number): Promise<void> {
-  await new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
-}
-
 function computeRetryDelayMs(baseDelayMs: number, attempt: number): number {
   const backoff = baseDelayMs * (2 ** (attempt - 1));
   const jitter = Math.floor(Math.random() * Math.max(1, Math.floor(backoff / 4)));
@@ -94,7 +91,7 @@ async function withRateLimitRetry<T>(
 
   throw lastError instanceof Error
     ? lastError
-    : new Error("Rate-limit retry exhausted without a terminal error.");
+    : new TransportError("Rate-limit retry exhausted without a terminal error.");
 }
 
 function requireNonEmptyStringField(
@@ -103,7 +100,7 @@ function requireNonEmptyStringField(
   source: string,
 ): string {
   if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`Invalid ${source} response: expected non-empty string AgentIdentity.${field}`);
+    throw new ValidationError(`Invalid ${source} response: expected non-empty string AgentIdentity.${field}`);
   }
 
   return value;
@@ -119,7 +116,7 @@ function normalizeOptionalStringField(
   }
 
   if (typeof value !== "string") {
-    throw new Error(`Invalid ${source} response: expected string or null AgentIdentity.${field}`);
+    throw new ValidationError(`Invalid ${source} response: expected string or null AgentIdentity.${field}`);
   }
 
   return value;
@@ -144,7 +141,7 @@ function normalizeAgentIdentityEnvelope(
 ): AgentIdentity {
   const payload = asMetadataMap(extractEnvelopeData(value));
   if (!payload) {
-    throw new Error(`Invalid ${source} response: expected object payload for AgentIdentity`);
+    throw new ValidationError(`Invalid ${source} response: expected object payload for AgentIdentity`);
   }
 
   return normalizeAgentIdentityRecord(payload, source);
@@ -173,18 +170,10 @@ function normalizeLegacyProfileIdentity(
 function normalizeLegacyProfileEnvelope(value: unknown): FernUserProfile {
   const payload = asMetadataMap(extractEnvelopeData(value));
   if (!payload) {
-    throw new Error("Invalid profile.getMyProfile response: expected object payload");
+    throw new ValidationError("Invalid profile.getMyProfile response: expected object payload");
   }
 
   return payload as unknown as FernUserProfile;
-}
-
-function asRecordArray(value: unknown): MetadataMap[] | undefined {
-  if (!Array.isArray(value)) {
-    return undefined;
-  }
-
-  return value.filter((entry): entry is MetadataMap => asOptionalRecord(entry) !== undefined);
 }
 
 function extractEnvelopeData(value: unknown): unknown {

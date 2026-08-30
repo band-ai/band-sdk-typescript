@@ -1,3 +1,4 @@
+import { assertNever, BandSdkError, serializeError } from "../core/errors";
 import type { Logger } from "../core/logger";
 import { NoopLogger } from "../core/logger";
 import type { ContactEvent, MessageEvent } from "../platform/events";
@@ -67,7 +68,7 @@ interface ContactEventHandlerOptions {
 
 type ContactEventFailureStage = "callback" | "hub_room_init" | "hub_room_persist" | "hub_room_dispatch";
 
-export class ContactEventHandlerError extends Error {
+export class ContactEventHandlerError extends BandSdkError {
   public readonly retryable: boolean;
   public readonly stage: ContactEventFailureStage;
   public readonly eventType: ContactEvent["type"];
@@ -78,7 +79,7 @@ export class ContactEventHandlerError extends Error {
     retryable: boolean;
     cause: unknown;
   }) {
-    super(`Contact event ${input.eventType} failed during ${input.stage}`, { cause: input.cause });
+    super(`Contact event ${input.eventType} failed during ${input.stage}`, input.cause);
     this.name = "ContactEventHandlerError";
     this.retryable = input.retryable;
     this.stage = input.stage;
@@ -288,7 +289,7 @@ export class ContactEventHandler {
         return `[Contact Removed] Contact ${event.payload.id} was removed.`;
     }
 
-    return assertNever(event);
+    return assertNever(event, "contact event");
   }
 
   private formatBroadcast(event: ContactEvent): string | null {
@@ -428,31 +429,9 @@ export class ContactEventHandler {
       type: event.type,
       stage,
       retryable,
-      error: this.serializeError(error),
+      error: serializeError(error),
     });
   }
-
-  private serializeError(error: unknown): Record<string, unknown> {
-    if (error instanceof Error) {
-      const payload: Record<string, unknown> = {
-        name: error.name,
-        message: error.message,
-        stack: error.stack,
-      };
-
-      if (typeof (error as { retryable?: unknown }).retryable !== "undefined") {
-        payload.retryable = (error as { retryable?: unknown }).retryable;
-      }
-
-      return payload;
-    }
-
-    return { message: String(error) };
-  }
-}
-
-function assertNever(value: never): never {
-  throw new Error(`Unhandled contact event: ${JSON.stringify(value)}`);
 }
 
 function normalizeHandle(handle: string | null | undefined): string {

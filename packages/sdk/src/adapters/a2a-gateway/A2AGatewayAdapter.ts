@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { SimpleAdapter } from "../../core/simpleAdapter";
-import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
+import { asErrorMessage, UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import type { PeerRecord } from "../../contracts/dtos";
 import type { MessagingTools } from "../../contracts/protocols";
 import type { ChatMessageMention } from "../../client/rest/types";
@@ -280,7 +280,7 @@ export class A2AGatewayAdapter
         contextId: pending.contextId,
         state: "failed",
         final: true,
-        text: error instanceof Error ? error.message : String(error),
+        text: asErrorMessage(error),
       });
       return;
     }

@@ -1,5 +1,6 @@
 import type { BandLink } from "../../platform/BandLink";
 import type { ContactEvent, PlatformEvent } from "../../platform/events";
+import { assertNever, BandSdkError } from "../../core/errors";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import type { MetadataMap, ParticipantRecord } from "../../contracts/dtos";
@@ -184,6 +185,9 @@ export class AgentRuntime {
 
     await this.link.disconnect();
     if (this.fatalError) {
+      // Left bare: another in-flight ticket reworks stop()'s cleanup path, this re-wrap
+      // included, and typing it here would collide with that change.
+      // eslint-disable-next-line no-restricted-syntax
       throw this.fatalError instanceof Error ? this.fatalError : new Error(String(this.fatalError));
     }
     return graceful;
@@ -201,7 +205,9 @@ export class AgentRuntime {
     }
 
     if (this.fatalError) {
-      throw this.fatalError instanceof Error ? this.fatalError : new Error(String(this.fatalError));
+      throw this.fatalError instanceof Error
+        ? this.fatalError
+        : new BandSdkError(String(this.fatalError), this.fatalError);
     }
   }
 
@@ -288,7 +294,7 @@ export class AgentRuntime {
         return;
     }
 
-    return assertNever(event);
+    return assertNever(event, "platform event");
   }
 
   public async enqueueEvent(roomId: string, event: PlatformEvent): Promise<void> {
@@ -463,8 +469,4 @@ function syntheticRuntimeFailureEvent(agentId: string): PlatformEvent {
       updated_at: new Date(0).toISOString(),
     },
   };
-}
-
-function assertNever(value: never): never {
-  throw new Error(`Unhandled platform event: ${JSON.stringify(value)}`);
 }

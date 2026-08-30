@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { BandSdkError } from "../../core/errors";
+
 export type WebSocketConflictPolicy = "supersede" | "reject";
 export type WebSocketDisconnectSource =
   | "agent_control"
@@ -109,7 +111,7 @@ const upgradeErrorSchema = z.object({
   headers: z.record(z.unknown()).optional(),
 });
 
-export class WebSocketDisconnectError extends Error {
+export class WebSocketDisconnectError extends BandSdkError {
   public readonly reason: WebSocketDisconnectReason;
 
   public constructor(reason: WebSocketDisconnectReason) {

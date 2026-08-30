@@ -3,6 +3,7 @@ import { NoopLogger } from "../../core/logger";
 import { postThought, type LinearActivityClient } from "./activities";
 import type { SessionRoomRecord, SessionRoomStore } from "./types";
 import { STALE_SESSION_CHECK_INTERVAL_MS, STALE_SESSION_THRESHOLD_MS } from "./types";
+import { asErrorMessage } from "../../core/errors";
 
 export interface StaleSessionGuardOptions {
   store: SessionRoomStore;
@@ -85,7 +86,7 @@ export class StaleSessionGuard {
       sessions = await this.store.listActiveSessions();
     } catch (error) {
       this.logger.error("stale_session_guard.list_sessions_failed", {
-        error: error instanceof Error ? error.message : String(error),
+        error: asErrorMessage(error),
       });
       return 0;
     }
@@ -111,7 +112,7 @@ export class StaleSessionGuard {
         } catch (error) {
           this.logger.warn("stale_session_guard.keepalive_failed", {
             sessionId: session.linearSessionId,
-            error: error instanceof Error ? error.message : String(error),
+            error: asErrorMessage(error),
           });
         }
       }
@@ -190,7 +191,7 @@ export async function sendRecoveryActivityIfStale(input: {
   } catch (error) {
     input.logger.warn("stale_session_guard.recovery_activity_failed", {
       sessionId: input.session.linearSessionId,
-      error: error instanceof Error ? error.message : String(error),
+      error: asErrorMessage(error),
     });
     return false;
   }

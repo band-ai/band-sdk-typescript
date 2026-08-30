@@ -26,6 +26,7 @@ import type {
   ToolResult,
   ToolRound,
 } from "./types";
+import { asErrorMessage, BandSdkError } from "../../core/errors";
 
 export interface ToolCallingAdapterOptions {
   model: ToolCallingModel;
@@ -144,7 +145,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
                 output = {
                   ok: false,
                   errorType: "CustomToolUnknownError",
-                  message: error instanceof Error ? error.message : String(error),
+                  message: asErrorMessage(error),
                   toolName: call.name,
                 };
               }
@@ -263,7 +264,7 @@ export function runSingleToolRound(
   request: ToolCallingModelRequest,
 ): Promise<ToolCallingResponse> {
   return model.complete(request).catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Tool round failed: ${message}`, { cause: error });
+    const message = asErrorMessage(error);
+    throw new BandSdkError(`Tool round failed: ${message}`, error);
   });
 }

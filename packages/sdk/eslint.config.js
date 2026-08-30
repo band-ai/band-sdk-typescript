@@ -64,4 +64,25 @@ export default [
     },
     rules: relaxedRules,
   },
+  {
+    // Library code throws from the typed hierarchy in src/core/errors.ts so consumers can
+    // catch by class instead of matching on message text. Last in the list so it applies
+    // to every src file, including the ones the relaxed block above also matches.
+    //
+    // PlatformRuntime.ts is excluded because another in-flight ticket owns that file's
+    // lifecycle rework, including its one remaining bare throw. Converting it here would
+    // collide with that change; remove this exclusion once that work lands.
+    files: STRICT_TS_FILES,
+    ignores: ["src/runtime/PlatformRuntime.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: 'ThrowStatement NewExpression[callee.name="Error"]',
+          message:
+            "Throw a typed error from src/core/errors.ts (BandSdkError, ValidationError, RuntimeStateError, UnsupportedFeatureError, TransportError) instead of a bare Error.",
+        },
+      ],
+    },
+  },
 ];

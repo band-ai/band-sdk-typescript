@@ -1,6 +1,7 @@
 import { LinearDocument as L } from "@linear/sdk";
 
-import { UnsupportedFeatureError } from "../../../core/errors";
+import { asErrorMessage, UnsupportedFeatureError, ValidationError } from "../../../core/errors";
+import { sleep } from "../../../core/sleep";
 import { NoopLogger, type Logger } from "../../../core/logger";
 import type { RestApi } from "../../../client/rest/types";
 import type { PeerRecord } from "../../../contracts/dtos";
@@ -152,7 +153,7 @@ export async function handleAgentSessionEvent(
     } catch (ackError) {
       logger.warn("linear_thenvoi_bridge.acknowledgment_failed", {
         sessionId,
-        error: ackError instanceof Error ? ackError.message : String(ackError),
+        error: asErrorMessage(ackError),
       });
     }
   }
@@ -172,7 +173,7 @@ export async function handleAgentSessionEvent(
           sessionId,
           issueId,
           appUserId,
-          error: delegateError instanceof Error ? delegateError.message : String(delegateError),
+          error: asErrorMessage(delegateError),
         });
         return { set: false, delegateName: null };
       });
@@ -195,7 +196,7 @@ export async function handleAgentSessionEvent(
           sessionId,
           issueId,
           teamId,
-          error: autoStartError instanceof Error ? autoStartError.message : String(autoStartError),
+          error: asErrorMessage(autoStartError),
         });
         return { moved: false, stateId: null, stateName: null };
       });
@@ -235,7 +236,7 @@ export async function handleAgentSessionEvent(
         logger.warn("linear_thenvoi_bridge.set_external_url_failed", {
           sessionId,
           roomId,
-          error: urlError instanceof Error ? urlError.message : String(urlError),
+          error: asErrorMessage(urlError),
         });
       });
     }
@@ -414,12 +415,12 @@ export async function handleAgentSessionEvent(
       await postError(
         input.deps.linearClient,
         sessionId,
-        `Bridge error: ${error instanceof Error ? error.message : String(error)}`,
+        `Bridge error: ${asErrorMessage(error)}`,
       );
     } catch (reportError) {
       logger.warn("linear_thenvoi_bridge.error_reporting_failed", {
         sessionId,
-        error: reportError instanceof Error ? reportError.message : String(reportError),
+        error: asErrorMessage(reportError),
       });
     }
 
@@ -647,7 +648,7 @@ async function resolveHostAgentHandle(input: {
     return authenticatedAgentHandle;
   }
 
-  throw new Error(
+  throw new ValidationError(
     "Linear bridge could not resolve the host agent handle. Set hostAgentHandle or use a REST adapter whose getAgentMe() returns handle.",
   );
 }
@@ -891,7 +892,7 @@ async function forwardBridgeMessage(input: {
       sessionId: input.sessionId,
       issueId: input.issueId,
       previousRoomId: input.roomRecord.bandRoomId,
-      error: error instanceof Error ? error.message : String(error),
+      error: asErrorMessage(error),
     });
 
     const recoveredRoom = await createFreshRoomRecord({
@@ -932,7 +933,7 @@ async function forwardBridgeMessage(input: {
           roomId: recoveredRoom.bandRoomId,
           attempt,
           delayMs,
-          error: recoveredError instanceof Error ? recoveredError.message : String(recoveredError),
+          error: asErrorMessage(recoveredError),
         });
         await sleep(delayMs);
       }
@@ -1068,7 +1069,7 @@ async function ensureRoomParticipants(input: {
     if (isRetryableRateLimitError(error)) {
       input.logger.warn("linear_thenvoi_bridge.participant_list_rate_limited", {
         roomId: input.roomId,
-        error: error instanceof Error ? error.message : String(error),
+        error: asErrorMessage(error),
       });
       return;
     }
@@ -1123,7 +1124,7 @@ async function ensureRoomParticipants(input: {
       input.logger.warn("linear_thenvoi_bridge.add_participant_failed", {
         roomId: input.roomId,
         handle,
-        error: error instanceof Error ? error.message : String(error),
+        error: asErrorMessage(error),
       });
       if (!isRetryableRateLimitError(error)) {
         throw error;
@@ -1222,7 +1223,7 @@ async function selectRelevantPeerHandles(input: {
     input.logger.warn("linear_thenvoi_bridge.peer_prefetch_failed", {
       roomId: input.roomId,
       intent: input.intent,
-      error: error instanceof Error ? error.message : String(error),
+      error: asErrorMessage(error),
     });
     return [];
   }
@@ -1312,10 +1313,6 @@ function scorePeerForIntent(peer: PeerRecord, intent: SessionIntent): number {
     ];
 
   return weightedTerms.reduce((total, term) => (term.pattern.test(haystack) ? total + term.score : total), 0);
-}
-
-async function sleep(ms: number): Promise<void> {
-  await new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
 }
 
 async function saveSessionRecord(

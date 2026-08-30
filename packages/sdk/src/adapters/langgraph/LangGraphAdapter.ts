@@ -1,11 +1,11 @@
-import { RuntimeStateError, UnsupportedFeatureError, ValidationError } from "../../core/errors";
+import { asErrorMessage, RuntimeStateError, UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
-import { asErrorMessage, asOptionalRecord, asRecord } from "../shared/coercion";
+import { asOptionalRecord, asRecord } from "../shared/coercion";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 
 type LangGraphRole = "system" | "user" | "assistant";

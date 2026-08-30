@@ -1,6 +1,7 @@
 import type { HistoryConverter } from "../../contracts/protocols";
 import { asNonEmptyString } from "../shared/coercion";
 import { findLatestTaskMetadata } from "../shared/history";
+import { ValidationError } from "../../core/errors";
 
 export interface A2AAuth {
   apiKey?: string;
@@ -34,7 +35,7 @@ export function buildA2AAuthHeaders(auth?: A2AAuth): Record<string, string> {
 
 function sanitizeHeaderValue(value: string, headerName: string): string {
   if (/[\r\n]/u.test(value)) {
-    throw new Error(`${headerName} header value must not contain CR or LF characters.`);
+    throw new ValidationError(`${headerName} header value must not contain CR or LF characters.`);
   }
 
   return value;

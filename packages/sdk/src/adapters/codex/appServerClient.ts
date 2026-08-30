@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, type Interface as ReadLineInterface } from "node:readline";
 
+import { BandSdkError, RuntimeStateError, ValidationError } from "../../core/errors";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import type {
@@ -43,7 +44,7 @@ interface PendingEventWaiter {
   timer: NodeJS.Timeout | null;
 }
 
-export class CodexJsonRpcError extends Error {
+export class CodexJsonRpcError extends BandSdkError {
   public readonly code: number;
   public readonly data: unknown;
 
@@ -100,7 +101,7 @@ export class CodexAppServerStdioClient implements CodexClientLike {
 
     const [bin, ...args] = this.command;
     if (!bin) {
-      throw new Error("Codex app-server command is empty");
+      throw new ValidationError("Codex app-server command is empty");
     }
 
     this.closed = false;
@@ -153,7 +154,7 @@ export class CodexAppServerStdioClient implements CodexClientLike {
       this.pending.set(id, { resolve, reject });
       void this.sendJson({ id, method, params: params ?? {} }).catch((error) => {
         this.pending.delete(id);
-        reject(error instanceof Error ? error : new Error(String(error)));
+        reject(error instanceof Error ? error : new BandSdkError(String(error), error));
       });
     });
     return response;
@@ -235,7 +236,7 @@ export class CodexAppServerStdioClient implements CodexClientLike {
   private async sendJson(payload: JsonRpcPayload): Promise<void> {
     const proc = this.process;
     if (!proc) {
-      throw new Error("Codex app-server is not connected");
+      throw new RuntimeStateError("Codex app-server is not connected");
     }
 
     const line = `${JSON.stringify(payload)}\n`;
@@ -392,7 +393,7 @@ function parseRequestId(value: unknown): RequestId | null {
 function toJsonRpcParams(value: unknown): Record<string, unknown> {
   const record = asObject(value);
   if (!record) {
-    throw new Error("JSON-RPC params must be an object");
+    throw new ValidationError("JSON-RPC params must be an object");
   }
   return record;
 }

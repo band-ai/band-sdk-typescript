@@ -1,4 +1,4 @@
-import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
+import { asErrorMessage, UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import type { AgentToolsRestApi } from "../../client/rest/types";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
 import { assertCapability } from "../../contracts/capabilities";
@@ -331,7 +331,7 @@ export class AgentTools implements AgentToolsProtocol {
         });
       }
 
-      const message = error instanceof Error ? error.message : String(error);
+      const message = asErrorMessage(error);
       return createToolExecutorError({
         errorType: "ToolExecutionError",
         toolName,

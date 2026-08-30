@@ -16,6 +16,7 @@ import {
   type McpToolRegistration,
 } from "./registrations";
 import { buildZodShape } from "./zod";
+import { asErrorMessage } from "../core/errors";
 
 export interface CreateBandSdkMcpServerOptions {
   enableMemoryTools: boolean;
@@ -238,7 +239,7 @@ async function resolveAgentIdentity(
   } catch (error) {
     return {
       value: null,
-      warning: `Unable to resolve agent identity: ${error instanceof Error ? error.message : String(error)}`,
+      warning: `Unable to resolve agent identity: ${asErrorMessage(error)}`,
     };
   }
 
@@ -281,7 +282,7 @@ async function resolveRoomTitle(
   } catch (error) {
     return {
       value: null,
-      warning: `Unable to resolve room title: ${error instanceof Error ? error.message : String(error)}`,
+      warning: `Unable to resolve room title: ${asErrorMessage(error)}`,
     };
   }
 }

@@ -1,5 +1,6 @@
 import { z, type ZodIssue } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
+import { asErrorMessage, BandSdkError } from "../../core/errors";
 
 export interface CustomToolDef {
   schema: z.AnyZodObject;
@@ -8,14 +9,14 @@ export interface CustomToolDef {
   description?: string;
 }
 
-export class CustomToolDefinitionError extends Error {
+export class CustomToolDefinitionError extends BandSdkError {
   public constructor(message: string) {
     super(message);
     this.name = "CustomToolDefinitionError";
   }
 }
 
-export class CustomToolValidationError extends Error {
+export class CustomToolValidationError extends BandSdkError {
   public readonly toolName: string;
   public readonly issues: string[];
 
@@ -27,16 +28,13 @@ export class CustomToolValidationError extends Error {
   }
 }
 
-export class CustomToolExecutionError extends Error {
+export class CustomToolExecutionError extends BandSdkError {
   public readonly toolName: string;
-  public readonly cause: unknown;
 
   public constructor(toolName: string, cause: unknown) {
-    const message = cause instanceof Error ? cause.message : String(cause);
-    super(`Custom tool ${toolName} failed: ${message}`);
+    super(`Custom tool ${toolName} failed: ${asErrorMessage(cause)}`, cause);
     this.name = "CustomToolExecutionError";
     this.toolName = toolName;
-    this.cause = cause;
   }
 }
 
