@@ -30,8 +30,7 @@ export { AgentTools } from "./tools/AgentTools";
 export { ContactToolsImpl } from "./tools/ContactToolsImpl";
 
 // `AgentTools`'s `roster` option and `ExecutionContext.getRetryTracker()` are
-// typed by these core classes. A consumer cannot import a transitive dependency
-// under a strict node_modules layout, so re-export them to keep both nameable.
+// typed by these, and a consumer cannot import a transitive dependency.
 export { ParticipantRoster, RetryTracker } from "@band-ai/band-sdk-core";
 export {
   TOOL_MODELS,

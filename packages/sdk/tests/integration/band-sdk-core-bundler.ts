@@ -3,9 +3,9 @@
  * runs through packages/sdk's tsup-built dist/ output, not just under
  * vitest/ts-node resolution.
  *
- * Run:  npx tsx tests/integration/band-sdk-core-bundler.ts
+ * Checks build output only — the caller produces it.
+ * Run:  pnpm build && npx tsx tests/integration/band-sdk-core-bundler.ts
  */
-import { execSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -35,20 +35,11 @@ async function main() {
   }
   pass("@band-ai/band-sdk-core resolves in packages/sdk/node_modules");
 
-  // Building is the slowest step, so CI sets this after its own build step.
-  // The dist/ assertions below still fail loudly if nothing was built.
-  if (process.env.BUNDLER_CHECK_SKIP_BUILD === "1") {
-    console.log("bundler Reusing existing dist/ (BUNDLER_CHECK_SKIP_BUILD=1)");
-  } else {
-    console.log("bundler Building packages/sdk (tsup)...");
-    execSync("pnpm build", { cwd: PACKAGE_ROOT, stdio: "inherit" });
-  }
-
   const builtRuntimePath = resolve(PACKAGE_ROOT, "dist/runtime.cjs");
   if (!existsSync(builtRuntimePath)) {
-    fail("build output exists", `${builtRuntimePath} was not produced by the build`);
+    fail("build output exists", `${builtRuntimePath} not found — run 'pnpm build' first`);
   }
-  pass("build produced dist/runtime.cjs");
+  pass("dist/runtime.cjs is present");
 
   // Throws here if tsup inlined the wasm package instead of leaving it external.
   const runtime = require(builtRuntimePath) as Record<string, unknown>;
@@ -61,7 +52,7 @@ async function main() {
   // named imports through it rely on cjs-module-lexer detecting its exports.
   const builtEsmPath = resolve(PACKAGE_ROOT, "dist/runtime.js");
   if (!existsSync(builtEsmPath)) {
-    fail("ESM build output exists", `${builtEsmPath} was not produced by the build`);
+    fail("ESM build output exists", `${builtEsmPath} not found — run 'pnpm build' first`);
   }
   const esmRuntime = await import(pathToFileURL(builtEsmPath).href) as Record<string, unknown>;
   if (typeof esmRuntime.ExecutionContext !== "function" || typeof esmRuntime.AgentTools !== "function") {

@@ -15,6 +15,8 @@ permissions:
 concurrency:
   # Never cancel in progress: a killed run skips its `finally` reap, orphaning
   # the agents and rooms it provisioned on the real platform. Queue instead.
+  # Partial protection — `sweepOrphans` recovers stale agents on a later run,
+  # but nothing reaps rooms, and a job timeout skips the reap just the same.
   group: e2e-live-${{ github.event_name }}
   cancel-in-progress: false
 

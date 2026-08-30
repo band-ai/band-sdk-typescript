@@ -101,9 +101,8 @@ async function sweepOrphans(userClient: BandClient, runId: string): Promise<void
     for (const candidate of response.data) {
       if (!candidate.name.startsWith(NAME_PREFIX)) continue; // name filter is a contains-match
       if (candidate.name.includes(`-${runId}-`)) continue; // never reap our own run
-      // Unparseable timestamp reads as "too fresh": never reap on an unknown age.
       const insertedAt = Date.parse(candidate.inserted_at);
-      if (!Number.isFinite(insertedAt) || insertedAt > cutoff) continue;
+      if (Number.isNaN(insertedAt) || insertedAt > cutoff) continue; // unknown age or too fresh — could be concurrent
       orphanIds.push(candidate.id);
     }
     cursor = response.metadata.next_cursor;
