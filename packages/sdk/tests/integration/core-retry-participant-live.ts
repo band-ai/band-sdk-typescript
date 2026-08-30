@@ -14,7 +14,9 @@
  * (via `humanApiAgents.registerMyAgent`, the same platform primitive
  * band-sdk-python's baseline E2E toolkit uses) and force-deleted on exit —
  * no static pre-created agents to maintain, and the credential (a Band user
- * key) is shareable across both SDKs' E2E suites.
+ * key) is shareable across both SDKs' E2E suites. A prefix-guarded orphan
+ * sweep runs first, reaping any leftovers from a run that crashed before its
+ * own cleanup ran (mirrors band-sdk-python's `sweep_orphans`).
  *
  * Run:  BAND_E2E_LANE=core BAND_API_KEY_USER=... npx tsx tests/integration/core-retry-participant-live.ts
  */
@@ -28,6 +30,7 @@ import { shouldRunLane } from "./lanes";
 
 const DEFAULT_REST_URL = "https://app.band.ai/";
 const NAME_PREFIX = "e2e-ts-core-";
+const ORPHAN_MAX_AGE_MINUTES = 60;
 
 interface TestResult { name: string; passed: boolean; error?: string }
 const results: TestResult[] = [];
@@ -60,6 +63,43 @@ async function provisionAgent(userClient: BandClient, runId: string, label: stri
   return { id: agent.id, name, apiKey: credentials.api_key };
 }
 
+/**
+ * Force-deletes leftover `NAME_PREFIX`-named agents from a run that crashed
+ * before its own `finally` reap ran (e.g. the process was killed) — the same
+ * failure mode band-sdk-python's orphan sweep exists for. Never touches an
+ * agent from the *current* run or anything younger than
+ * `ORPHAN_MAX_AGE_MINUTES` (a concurrent run in flight).
+ */
+async function sweepOrphans(userClient: BandClient, runId: string): Promise<void> {
+  const cutoff = Date.now() - ORPHAN_MAX_AGE_MINUTES * 60_000;
+  const orphanIds: string[] = [];
+  let cursor: string | undefined;
+
+  for (let page = 0; page < 20; page++) {
+    const response = await userClient.humanApiAgents.listMyAgents({ name: NAME_PREFIX, limit: 100, cursor });
+    for (const candidate of response.data) {
+      if (!candidate.name.startsWith(NAME_PREFIX)) continue; // name filter is a contains-match
+      if (candidate.name.includes(`-${runId}-`)) continue; // never reap our own run
+      if (Date.parse(candidate.inserted_at) > cutoff) continue; // too fresh — could be concurrent
+      orphanIds.push(candidate.id);
+    }
+    cursor = response.metadata.next_cursor;
+    if (!response.metadata.has_more || !cursor) break;
+  }
+
+  if (orphanIds.length === 0) {
+    return;
+  }
+  console.log(`core-retry Sweeping ${orphanIds.length} orphaned test agent(s) from a prior run...`);
+  await Promise.all(
+    orphanIds.map((id) =>
+      userClient.humanApiAgents.deleteMyAgent(id, { force: true }).catch((err: unknown) => {
+        console.warn(`core-retry Failed to sweep orphan agent ${id}:`, err);
+      }),
+    ),
+  );
+}
+
 async function main() {
   if (!shouldRunLane("core")) {
     return;
@@ -72,11 +112,18 @@ async function main() {
   const userClient = new BandClient({ baseUrl: restUrl, apiKey: requireEnv("BAND_API_KEY_USER") });
 
   const runId = randomUUID().slice(0, 8);
-  const testAgent = await provisionAgent(userClient, runId, "basic");
-  const senderAgent = await provisionAgent(userClient, runId, "planner");
-  console.log(`core-retry Provisioned test agent "${testAgent.name}" (${testAgent.id}) and sender "${senderAgent.name}" (${senderAgent.id})`);
+  await sweepOrphans(userClient, runId);
+  // Tracked as each is created (not `[testAgent, senderAgent]` after both
+  // resolve) so a failure provisioning the second still reaps the first.
+  const provisioned: ProvisionedAgent[] = [];
 
   try {
+    const testAgent = await provisionAgent(userClient, runId, "basic");
+    provisioned.push(testAgent);
+    const senderAgent = await provisionAgent(userClient, runId, "planner");
+    provisioned.push(senderAgent);
+    console.log(`core-retry Provisioned test agent "${testAgent.name}" (${testAgent.id}) and sender "${senderAgent.name}" (${senderAgent.id})`);
+
     const testRest = new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey: testAgent.apiKey }));
     const senderRest = new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey: senderAgent.apiKey }));
 
@@ -141,9 +188,9 @@ async function main() {
     // to an undocumented raw REST call; not worth that here for one room).
     console.log("core-retry Reaping provisioned agents...");
     await Promise.all(
-      [testAgent, senderAgent].map((provisioned) =>
-        userClient.humanApiAgents.deleteMyAgent(provisioned.id, { force: true }).catch((err: unknown) => {
-          console.warn(`core-retry Failed to reap agent ${provisioned.id}:`, err);
+      provisioned.map((agent) =>
+        userClient.humanApiAgents.deleteMyAgent(agent.id, { force: true }).catch((err: unknown) => {
+          console.warn(`core-retry Failed to reap agent ${agent.id}:`, err);
         }),
       ),
     );
