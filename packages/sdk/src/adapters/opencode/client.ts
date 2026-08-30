@@ -1,5 +1,7 @@
 import { createServer } from "node:net";
+import { BandSdkError, RuntimeStateError, UnsupportedFeatureError } from "../../core/errors";
 import { NoopLogger, type Logger } from "../../core/logger";
+import { asNonEmptyString, isRecord } from "../shared/coercion";
 
 export interface OpencodeClientLike {
   createSession(input?: { title?: string }): Promise<Record<string, unknown>>;
@@ -106,7 +108,7 @@ const DEFAULT_SERVER_STARTUP_TIMEOUT_MS = 5_000;
 
 let cachedSdkPromise: Promise<LoadedOpencodeSdk> | null = null;
 
-export class HttpStatusError extends Error {
+export class HttpStatusError extends BandSdkError {
   public readonly status: number;
   public readonly body: unknown;
 
@@ -128,8 +130,8 @@ abstract class SdkOpencodeClientBase implements OpencodeClientLike {
   protected readonly logger: Logger;
 
   protected constructor(options: { directory?: string; workspace?: string; logger?: Logger }) {
-    this.directory = optionalString(options.directory) ?? undefined;
-    this.workspace = optionalString(options.workspace) ?? undefined;
+    this.directory = asNonEmptyString(options.directory) ?? undefined;
+    this.workspace = asNonEmptyString(options.workspace) ?? undefined;
     this.logger = options.logger ?? new NoopLogger();
     this.runtimePromise = this.createRuntime();
   }
@@ -288,7 +290,7 @@ abstract class SdkOpencodeClientBase implements OpencodeClientLike {
         const createServer = serverModule.createOpencodeServer;
 
         if (typeof createClient !== "function" || typeof createServer !== "function") {
-          throw new Error("Installed `@opencode-ai/sdk` package is missing required exports.");
+          throw new UnsupportedFeatureError("Installed `@opencode-ai/sdk` package is missing required exports.");
         }
 
         return {
@@ -297,9 +299,9 @@ abstract class SdkOpencodeClientBase implements OpencodeClientLike {
         };
       }).catch((error: unknown) => {
         cachedSdkPromise = null;
-        throw new Error(
+        throw new UnsupportedFeatureError(
           "OpenCode support requires the optional peer dependency `@opencode-ai/sdk`.",
-          { cause: error },
+          error,
         );
       });
     }
@@ -320,7 +322,7 @@ abstract class SdkOpencodeClientBase implements OpencodeClientLike {
 
   private async getRuntime(): Promise<ClientRuntime> {
     if (this.closed) {
-      throw new Error("OpenCode client is closed.");
+      throw new RuntimeStateError("OpenCode client is closed.");
     }
 
     return this.runtimePromise;
@@ -393,19 +395,6 @@ export class ManagedOpencodeClient extends SdkOpencodeClientBase {
       },
     };
   }
-}
-
-function optionalString(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
 function getResultBody(result: RequestResultLike): unknown {

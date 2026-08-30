@@ -5,6 +5,7 @@ import type { PlatformEvent } from "../platform/events";
 import type { PlatformMessage } from "./types";
 import type { ExecutionContext } from "./ExecutionContext";
 import type { MessageRetryTracker } from "./retryTracker";
+import { asErrorMessage } from "../core/errors";
 
 export type ExecutionHandler = (
   context: ExecutionContext,
@@ -277,7 +278,7 @@ export class Execution {
       await this.onExecute(this.context, event);
       this.retryTracker.markSuccess(messageId);
     } catch (error: unknown) {
-      const label = error instanceof Error ? error.message : String(error);
+      const label = asErrorMessage(error);
       this.logger.error("Sync message execution failed", {
         roomId: this.roomId,
         messageId,

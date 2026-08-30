@@ -2,10 +2,11 @@ import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
-import { RuntimeStateError, UnsupportedFeatureError } from "../../core/errors";
+import { asErrorMessage, BandSdkError, RuntimeStateError, ValidationError } from "../../core/errors";
 import type { PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import { asErrorMessage, toWireString } from "../shared/coercion";
+import { toWireString } from "../shared/coercion";
+import { loadOptionalPeer } from "../shared/optionalPeer";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import type { LettaMessages } from "./types";
 import { LettaHistoryConverter } from "./types";
@@ -414,7 +415,7 @@ export class LettaAdapter extends SimpleAdapter<
         });
       }
 
-      throw error instanceof Error ? error : new Error(errorMessage);
+      throw error instanceof Error ? error : new BandSdkError(errorMessage, error);
     }
   }
 
@@ -890,7 +891,7 @@ export class LettaAdapter extends SimpleAdapter<
           settled = true;
           signal.removeEventListener("abort", onAbort);
           cleanup();
-          reject(error instanceof Error ? error : new Error(String(error)));
+          reject(error instanceof Error ? error : new BandSdkError(String(error), error));
         },
       );
     });
@@ -905,7 +906,7 @@ export class LettaAdapter extends SimpleAdapter<
   ): Promise<LettaResponse> {
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
-      throw new Error("Letta response timeout exceeded before API call");
+      throw new BandSdkError("Letta response timeout exceeded before API call");
     }
 
     return this.raceTimeout(
@@ -978,7 +979,7 @@ function safeParseToolArgs(
   } catch {
     const message = `Letta tool_call arguments are not valid JSON: ${json.slice(0, 200)}`;
     logger.warn(message, { json: json.slice(0, 200) });
-    throw new Error(message);
+    throw new ValidationError(message);
   }
 }
 
@@ -1079,29 +1080,16 @@ async function loadLettaClientFactory(config: {
   apiKey?: string;
   baseUrl?: string;
 }): Promise<LettaClientFactory> {
-  const module = (await import("@letta-ai/letta-client").catch(
-    (error: unknown) => {
-      throw new UnsupportedFeatureError(
-        `LettaAdapter requires optional dependency @letta-ai/letta-client. Install it with "pnpm add @letta-ai/letta-client". (${error instanceof Error ? error.message : String(error)})`,
-      );
-    },
-  )) as {
-    default?: new (options?: {
-      apiKey?: string;
-      baseURL?: string;
-    }) => LettaClientLike;
-    Letta?: new (options?: {
-      apiKey?: string;
-      baseURL?: string;
-    }) => LettaClientLike;
-  };
-
-  const LettaCtor = module.default ?? module.Letta;
-  if (!LettaCtor) {
-    throw new UnsupportedFeatureError(
-      'LettaAdapter requires optional dependency @letta-ai/letta-client. Install it with "pnpm add @letta-ai/letta-client".',
-    );
-  }
+  const LettaCtor = await loadOptionalPeer({
+    feature: "LettaAdapter",
+    packageName: "@letta-ai/letta-client",
+    importModule: () => import("@letta-ai/letta-client"),
+    expectedExports: "a default or `Letta` client constructor",
+    select: (module) =>
+      (module.default ?? module.Letta) as
+        | (new (options?: { apiKey?: string; baseURL?: string }) => LettaClientLike)
+        | undefined,
+  });
 
   return async () =>
     new LettaCtor({

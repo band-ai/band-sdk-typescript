@@ -10,6 +10,8 @@ import {
   TOOL_MODELS,
   getToolDescription,
 } from "../runtime/tools/schemas";
+import { asErrorMessage, RuntimeStateError } from "../core/errors";
+import { asNonEmptyString, toWireString } from "../adapters/shared/coercion";
 
 export interface McpToolRegistration {
   name: string;
@@ -153,23 +155,15 @@ async function executeToolCall(
     }
     return successResult(result);
   } catch (error) {
-    return errorResult(error instanceof Error ? error.message : String(error));
+    return errorResult(asErrorMessage(error));
   }
-}
-
-function asNonEmptyString(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
 }
 
 export function successResult(value: unknown): McpToolResult {
   return {
     content: [{
       type: "text",
-      text: serializeValue(value),
+      text: toWireString(value),
     }],
   };
 }
@@ -179,23 +173,6 @@ export function errorResult(message: string): McpToolResult {
     content: [{ type: "text", text: message }],
     isError: true,
   };
-}
-
-function serializeValue(value: unknown): string {
-  if (value === undefined || value === null) {
-    return "";
-  }
-
-  if (typeof value === "string") {
-    return value;
-  }
-
-  try {
-    const json = JSON.stringify(value);
-    return typeof json === "string" ? json : String(value);
-  } catch {
-    return String(value);
-  }
 }
 
 /**
@@ -208,7 +185,7 @@ export function resolveSingleRoomTools(
 ): AdapterToolsProtocol {
   const tools = getToolsForRoom("");
   if (!tools) {
-    throw new Error("Single-room mode requires getToolsForRoom(\"\") to return a tools instance");
+    throw new RuntimeStateError("Single-room mode requires getToolsForRoom(\"\") to return a tools instance");
   }
   return tools;
 }

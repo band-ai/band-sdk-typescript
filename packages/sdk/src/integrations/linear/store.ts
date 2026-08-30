@@ -1,4 +1,5 @@
-import { UnsupportedFeatureError } from "../../core/errors";
+import { asErrorMessage, UnsupportedFeatureError } from "../../core/errors";
+import { asNullableString, asOptionalRecord, asString } from "../../adapters/shared/coercion";
 import { NoopLogger, type Logger } from "../../core/logger";
 import type { PendingBootstrapRequest, SessionRoomRecord, SessionRoomStore } from "./types";
 
@@ -295,9 +296,8 @@ class SqliteSessionRoomStore implements SessionRoomStore {
   private async initialize(): Promise<DatabaseSync> {
     const module = await import("node:sqlite").catch((error: unknown) => {
       throw new UnsupportedFeatureError(
-        `SQLite store requires node:sqlite (Node.js 22+). Original error: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `SQLite store requires node:sqlite (Node.js 22+). Original error: ${asErrorMessage(error)}`,
+        error,
       );
     });
 
@@ -399,21 +399,13 @@ class SqliteSessionRoomStore implements SessionRoomStore {
 
     try {
       const parsed = JSON.parse(metadataJson) as unknown;
-      return asRecord(parsed) ?? undefined;
+      return asOptionalRecord(parsed);
     } catch (error) {
       // Log but don't throw — corrupted metadata shouldn't block the row
       this.logger.warn("SqliteSessionRoomStore: failed to parse metadata_json", { error });
       return undefined;
     }
   }
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-
-  return value as Record<string, unknown>;
 }
 
 function isDuplicateColumnError(error: unknown): boolean {
@@ -424,28 +416,12 @@ function isDuplicateColumnError(error: unknown): boolean {
   return /duplicate column name/i.test(error.message);
 }
 
-function asString(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
-}
-
-function asNullableString(value: unknown): string | null | undefined {
-  if (value === null) {
-    return null;
-  }
-
-  if (value === undefined) {
-    return undefined;
-  }
-
-  return asString(value);
-}
-
 function isSessionStatus(value: string): value is SessionRoomRecord["status"] {
   return SESSION_STATUSES.has(value as SessionRoomRecord["status"]);
 }
 
 function parseSessionRoomRow(value: unknown): SessionRoomRow | null {
-  const row = asRecord(value);
+  const row = asOptionalRecord(value);
   if (!row) {
     return null;
   }
@@ -496,7 +472,7 @@ function parseBootstrapRequestRows(value: unknown): BootstrapRequestRow[] {
 }
 
 function parseBootstrapRequestRow(value: unknown): BootstrapRequestRow | null {
-  const row = asRecord(value);
+  const row = asOptionalRecord(value);
   if (!row) {
     return null;
   }

@@ -4,9 +4,10 @@ import type {
   ToolCallingModelRequest,
   ToolCallingResponse,
 } from "../tool-calling";
-import { UnsupportedFeatureError } from "../../core/errors";
+import { asErrorMessage, ValidationError } from "../../core/errors";
 import { toDisplayText, toWireString } from "../shared/coercion";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
+import { loadOptionalPeer } from "../shared/optionalPeer";
 import {
   mapConversationMessages,
   normalizeConversationRole,
@@ -235,30 +236,23 @@ function serializeArguments(call: ToolCall): string {
   try {
     return JSON.stringify(call.input);
   } catch (error) {
-    throw new Error(
-      `OpenAI tool-call arguments for "${call.name}" (${call.id}) could not be serialized: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+    throw new ValidationError(
+      `OpenAI tool-call arguments for "${call.name}" (${call.id}) could not be serialized: ${asErrorMessage(error)}`,
     );
   }
 }
 
 async function loadOpenAIClientFactory(): Promise<OpenAIClientFactory> {
-  const module = (await import("openai").catch((error: unknown) => {
-    throw new UnsupportedFeatureError(
-      `OpenAIAdapter requires optional dependency "openai". Install it with "pnpm add openai". (${error instanceof Error ? error.message : String(error)})`,
-    );
-  })) as {
-    default?: new (options?: { apiKey?: string }) => OpenAIClientLike;
-    OpenAI?: new (options?: { apiKey?: string }) => OpenAIClientLike;
-  };
-
-  const OpenAIClientCtor = module.default ?? module.OpenAI;
-  if (!OpenAIClientCtor) {
-    throw new UnsupportedFeatureError(
-      'OpenAIAdapter requires optional dependency "openai". Install it with "pnpm add openai".',
-    );
-  }
+  const OpenAIClientCtor = await loadOptionalPeer({
+    feature: "OpenAIAdapter",
+    packageName: "openai",
+    importModule: () => import("openai"),
+    expectedExports: "a default or `OpenAI` client constructor",
+    select: (module) =>
+      (module.default ?? module.OpenAI) as
+        | (new (options?: { apiKey?: string }) => OpenAIClientLike)
+        | undefined,
+  });
 
   return async ({ apiKey }) => new OpenAIClientCtor({ apiKey });
 }

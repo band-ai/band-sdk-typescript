@@ -1,6 +1,6 @@
 import type { HistoryConverter } from "../contracts/protocols";
 import { findLatestTaskMetadata } from "../adapters/shared/history";
-import { asOptionalString } from "./shared";
+import { asNonEmptyString } from "../adapters/shared/coercion";
 
 export interface ClaudeSDKSessionState {
   text: string;
@@ -48,13 +48,13 @@ function buildClaudeSdkText(raw: Array<Record<string, unknown>>, agentName: stri
       continue;
     }
 
-    const content = asOptionalString(entry.content);
+    const content = asNonEmptyString(entry.content);
     if (!content) {
       continue;
     }
 
     const role = String(entry.role ?? "user");
-    const senderName = asOptionalString(entry.sender_name) ?? "Unknown";
+    const senderName = asNonEmptyString(entry.sender_name) ?? "Unknown";
     if (messageType === "text") {
       if (role === "assistant" && senderName === agentName) {
         continue;

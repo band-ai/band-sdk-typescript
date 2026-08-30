@@ -18,7 +18,8 @@ import {
 import type { McpToolRegistration } from "../../mcp/registrations";
 import { errorResult, successResult } from "../../mcp/registrations";
 import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
-import { asErrorMessage, asOptionalRecord } from "../shared/coercion";
+import { asErrorMessage, BandSdkError, RuntimeStateError } from "../../core/errors";
+import { asOptionalRecord } from "../shared/coercion";
 import {
   type OpencodeSessionState,
   OpencodeHistoryConverter,
@@ -164,7 +165,7 @@ function buildCustomMcpRegistrations(customTools: CustomToolDef[]): McpToolRegis
         try {
           return successResult(await executeCustomTool(customTool, args));
         } catch (error) {
-          return errorResult(error instanceof Error ? error.message : String(error));
+          return errorResult(asErrorMessage(error));
         }
       },
     };
@@ -251,7 +252,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     await this.ensureClientStarted();
     const client = this.client;
     if (!client) {
-      throw new Error("OpenCode client is not initialized.");
+      throw new RuntimeStateError("OpenCode client is not initialized.");
     }
 
     try {
@@ -787,7 +788,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   ): Promise<{ sessionId: string; created: boolean; restoredMissingSession: boolean }> {
     const client = this.client;
     if (!client) {
-      throw new Error("OpenCode client is not initialized.");
+      throw new RuntimeStateError("OpenCode client is not initialized.");
     }
 
     const restoredSessionId = roomState.sessionId ?? history.sessionId;
@@ -847,7 +848,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       await Promise.race([
         turnDone,
         delay(this.config.turnTimeoutMs).then(() => {
-          throw new Error("timeout");
+          throw new BandSdkError("timeout");
         }),
       ]);
       await this.deliverFallbackText(roomState);

@@ -21,6 +21,8 @@ export {
   ValidationError,
   TransportError,
   RuntimeStateError,
+  asErrorMessage,
+  serializeError,
 } from "./errors";
 export { WebSocketDisconnectError } from "../platform/streaming/disconnectReason";
 export type {

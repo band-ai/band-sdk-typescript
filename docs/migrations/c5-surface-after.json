@@ -335,6 +335,7 @@
         "UnsupportedFeatureError",
         "ValidationError",
         "WebSocketDisconnectError",
+        "asErrorMessage",
         "createToolExecutorError",
         "isMemoryListScope",
         "isMemorySegment",
@@ -344,6 +345,7 @@
         "isMemoryType",
         "isMemoryTypeForSystem",
         "isToolExecutorError",
+        "serializeError",
         "toLegacyToolExecutorErrorMessage"
       ],
       "declarations": [
@@ -418,6 +420,7 @@
         "WebSocketConflictPolicy",
         "WebSocketDisconnectError",
         "WebSocketDisconnectReason",
+        "asErrorMessage",
         "createToolExecutorError",
         "isMemoryListScope",
         "isMemorySegment",
@@ -427,6 +430,7 @@
         "isMemoryType",
         "isMemoryTypeForSystem",
         "isToolExecutorError",
+        "serializeError",
         "toLegacyToolExecutorErrorMessage"
       ]
     },

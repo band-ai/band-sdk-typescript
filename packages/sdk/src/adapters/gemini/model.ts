@@ -5,9 +5,10 @@ import type {
   ToolCallingResponse,
   ToolResult,
 } from "../tool-calling";
-import { UnsupportedFeatureError } from "../../core/errors";
+import { RuntimeStateError, UnsupportedFeatureError } from "../../core/errors";
 import { toDisplayText, toWireString } from "../shared/coercion";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
+import { loadOptionalPeer } from "../shared/optionalPeer";
 import {
   normalizeConversationRole,
 } from "../tool-calling/valueUtils";
@@ -170,7 +171,7 @@ export class GeminiToolCallingModel implements ToolCallingModel {
     const partFromCall = this.createPartFromFunctionCall;
     const partFromResponse = this.createPartFromFunctionResponse;
     if (!partFromCall || !partFromResponse) {
-      throw new Error("Part factories not initialized. Call ensurePartFactories() first.");
+      throw new RuntimeStateError("Part factories not initialized. Call ensurePartFactories() first.");
     }
 
     for (const round of rounds) {
@@ -294,19 +295,16 @@ function openAIToolToGeminiDeclaration(
 }
 
 async function loadGeminiClientFactory(): Promise<GeminiClientFactory> {
-  const module = (await import("@google/genai").catch((error: unknown) => {
-    throw new UnsupportedFeatureError(
-      `GeminiAdapter requires optional dependency "@google/genai". Install it with "pnpm add @google/genai". (${error instanceof Error ? error.message : String(error)})`,
-    );
-  })) as {
-    GoogleGenAI?: new (options?: { apiKey?: string }) => GeminiClientLike;
-  };
+  const GoogleGenAI = await loadOptionalPeer({
+    feature: "GeminiAdapter",
+    packageName: "@google/genai",
+    importModule: () => import("@google/genai"),
+    expectedExports: "`GoogleGenAI`",
+    select: (module) =>
+      module.GoogleGenAI as
+        | (new (options?: { apiKey?: string }) => GeminiClientLike)
+        | undefined,
+  });
 
-  if (!module.GoogleGenAI) {
-    throw new UnsupportedFeatureError(
-      'GeminiAdapter requires optional dependency "@google/genai". Install it with "pnpm add @google/genai".',
-    );
-  }
-
-  return async ({ apiKey }) => new module.GoogleGenAI!({ apiKey });
+  return async ({ apiKey }) => new GoogleGenAI({ apiKey });
 }

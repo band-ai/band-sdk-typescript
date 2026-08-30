@@ -1,5 +1,6 @@
 import { findLatestTaskMetadata } from "../adapters/shared/history";
-import { asOptionalString, parseDate } from "./shared";
+import { asNonEmptyString } from "../adapters/shared/coercion";
+import { parseDate } from "./shared";
 
 export interface OpencodeSessionState {
   sessionId: string | null;
@@ -28,8 +29,8 @@ export class OpencodeHistoryConverter {
     }
 
     return {
-      sessionId: asOptionalString(metadata.opencode_session_id),
-      roomId: asOptionalString(metadata.opencode_room_id),
+      sessionId: asNonEmptyString(metadata.opencode_session_id),
+      roomId: asNonEmptyString(metadata.opencode_room_id),
       createdAt: parseDate(metadata.opencode_created_at),
       replayMessages,
     };
@@ -39,7 +40,7 @@ export class OpencodeHistoryConverter {
 export function extractOpencodeSessionId(
   raw: Array<Record<string, unknown>>,
 ): string | null {
-  return asOptionalString(
+  return asNonEmptyString(
     findLatestTaskMetadata(
       raw,
       (entry) => typeof entry.opencode_session_id === "string" && entry.opencode_session_id.length > 0,
@@ -55,13 +56,13 @@ function buildReplayMessages(raw: Array<Record<string, unknown>>): string[] {
       continue;
     }
 
-    const content = asOptionalString(entry.content);
+    const content = asNonEmptyString(entry.content);
     if (!content) {
       continue;
     }
 
-    const senderName = asOptionalString(entry.sender_name)
-      ?? asOptionalString(entry.sender_type)
+    const senderName = asNonEmptyString(entry.sender_name)
+      ?? asNonEmptyString(entry.sender_type)
       ?? "Unknown";
     replayMessages.push(`[${senderName}]: ${content}`);
   }

@@ -12,7 +12,9 @@ import {
   executeCustomTool,
   type CustomToolDef,
 } from "../../runtime/tools/customTools";
-import { asErrorMessage, asOptionalRecord } from "../shared/coercion";
+import { asErrorMessage, BandSdkError } from "../../core/errors";
+import { asOptionalRecord } from "../shared/coercion";
+import { loadOptionalPeer } from "../shared/optionalPeer";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import {
   GoogleADKHistoryConverter,
@@ -123,49 +125,50 @@ function stringifyToolResult(result: unknown): string {
 }
 
 async function loadGoogleAdkSdk(): Promise<GoogleAdkSdkLike> {
-  let sdkModule: Record<string, unknown>;
-  try {
-    sdkModule = await import("@google/adk") as Record<string, unknown>;
-  } catch (error) {
-    throw new Error(
-      "Google ADK support requires the optional peer dependency `@google/adk`.",
-      { cause: error },
-    );
-  }
+  return loadOptionalPeer({
+    feature: "GoogleADKAdapter",
+    packageName: "@google/adk",
+    importModule: () => import("@google/adk"),
+    expectedExports:
+      "`LlmAgent`, `FunctionTool`, `InMemoryRunner`, `isFinalResponse`, `getFunctionCalls`, `getFunctionResponses` and `stringifyContent`",
+    select: (sdkModule) => {
+      const {
+        LlmAgent,
+        FunctionTool,
+        InMemoryRunner,
+        isFinalResponse,
+        getFunctionCalls,
+        getFunctionResponses,
+        stringifyContent,
+      } = sdkModule;
 
-  const LlmAgent = sdkModule.LlmAgent;
-  const FunctionTool = sdkModule.FunctionTool;
-  const InMemoryRunner = sdkModule.InMemoryRunner;
-  const isFinalResponse = sdkModule.isFinalResponse;
-  const getFunctionCalls = sdkModule.getFunctionCalls;
-  const getFunctionResponses = sdkModule.getFunctionResponses;
-  const stringifyContent = sdkModule.stringifyContent;
+      if (
+        typeof LlmAgent !== "function"
+        || typeof FunctionTool !== "function"
+        || typeof InMemoryRunner !== "function"
+        || typeof isFinalResponse !== "function"
+        || typeof getFunctionCalls !== "function"
+        || typeof getFunctionResponses !== "function"
+        || typeof stringifyContent !== "function"
+      ) {
+        return undefined;
+      }
 
-  if (
-    typeof LlmAgent !== "function"
-    || typeof FunctionTool !== "function"
-    || typeof InMemoryRunner !== "function"
-    || typeof isFinalResponse !== "function"
-    || typeof getFunctionCalls !== "function"
-    || typeof getFunctionResponses !== "function"
-    || typeof stringifyContent !== "function"
-  ) {
-    throw new Error("Installed `@google/adk` package is missing required exports.");
-  }
-
-  return {
-    createAgent: (params) => new (LlmAgent as new (params: Record<string, unknown>) => unknown)(params),
-    createFunctionTool: (params) => new (
-      FunctionTool as new (params: Record<string, unknown>) => unknown
-    )(params),
-    createRunner: (params) => new (
-      InMemoryRunner as new (params: { agent: unknown; appName: string }) => GoogleAdkRunnerLike
-    )(params),
-    isFinalResponse: isFinalResponse as (event: unknown) => boolean,
-    getFunctionCalls: getFunctionCalls as (event: unknown) => GoogleAdkFunctionCallLike[],
-    getFunctionResponses: getFunctionResponses as (event: unknown) => GoogleAdkFunctionResponseLike[],
-    stringifyContent: stringifyContent as (event: unknown) => string,
-  };
+      return {
+        createAgent: (params) => new (LlmAgent as new (params: Record<string, unknown>) => unknown)(params),
+        createFunctionTool: (params) => new (
+          FunctionTool as new (params: Record<string, unknown>) => unknown
+        )(params),
+        createRunner: (params) => new (
+          InMemoryRunner as new (params: { agent: unknown; appName: string }) => GoogleAdkRunnerLike
+        )(params),
+        isFinalResponse: isFinalResponse as (event: unknown) => boolean,
+        getFunctionCalls: getFunctionCalls as (event: unknown) => GoogleAdkFunctionCallLike[],
+        getFunctionResponses: getFunctionResponses as (event: unknown) => GoogleAdkFunctionResponseLike[],
+        stringifyContent: stringifyContent as (event: unknown) => string,
+      };
+    },
+  });
 }
 
 export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterToolsProtocol> {
@@ -277,7 +280,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
         roomId: context.roomId,
       });
       await tools.sendEvent(`Google ADK adapter error: ${messageText}`, "error");
-      throw error instanceof Error ? error : new Error(messageText);
+      throw error instanceof Error ? error : new BandSdkError(messageText, error);
     }
 
     const nextHistory = this.roomHistory.get(context.roomId) ?? [];

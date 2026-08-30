@@ -17,6 +17,18 @@ export function asRecord(value: unknown, context = "value"): Record<string, unkn
   return record;
 }
 
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return asOptionalRecord(value) !== undefined;
+}
+
+export function asRecordArray(value: unknown): Record<string, unknown>[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value.filter(isRecord);
+}
+
 export function asNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") {
     return null;
@@ -77,12 +89,4 @@ export function toWireString(value: unknown): string {
   } catch {
     return String(value);
   }
-}
-
-export function asErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return String(error);
 }

@@ -2,12 +2,12 @@ import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
-import { UnsupportedFeatureError } from "../../core/errors";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { mcpToolNames, MCP_SERVER_NAME } from "../../runtime/tools/schemas";
 import { buildConversationPrompt } from "../shared/conversationPrompt";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
+import { loadOptionalPeer } from "../shared/optionalPeer";
 import { extractClaudeSessionId } from "../../converters/claude-sdk";
 import {
   buildRoomScopedRegistrations,
@@ -98,26 +98,23 @@ type BandMcpBridgeFactory = (input: {
 
 const bandMcpBridgeFactory = new LazyAsyncValue<BandMcpBridgeFactory>({
   load: async () => {
-    const module = await import("@anthropic-ai/claude-agent-sdk").catch((error: unknown) => {
-      throw new UnsupportedFeatureError(
-        `ClaudeSDKAdapter requires optional dependency "@anthropic-ai/claude-agent-sdk" when MCP tools are enabled. Install it with "pnpm add @anthropic-ai/claude-agent-sdk". (${error instanceof Error ? error.message : String(error)})`,
-      )
+    const { createSdkMcpServer, defineTool } = await loadOptionalPeer({
+      feature: "ClaudeSDKAdapter",
+      packageName: "@anthropic-ai/claude-agent-sdk",
+      condition: "when MCP tools are enabled",
+      importModule: () => import("@anthropic-ai/claude-agent-sdk"),
+      expectedExports: "`createSdkMcpServer` and `tool`",
+      select: (module) =>
+        typeof module.createSdkMcpServer === "function" && typeof module.tool === "function"
+          ? {
+            createSdkMcpServer: module.createSdkMcpServer as (input: {
+              name: string;
+              tools: unknown[];
+            }) => Record<string, unknown>,
+            defineTool: module.tool as ClaudeSdkToolFactory,
+          }
+          : undefined,
     })
-
-    if (
-      typeof module.createSdkMcpServer !== "function"
-      || typeof module.tool !== "function"
-    ) {
-      throw new UnsupportedFeatureError(
-        'ClaudeSDKAdapter requires optional dependency "@anthropic-ai/claude-agent-sdk" when MCP tools are enabled. Install it with "pnpm add @anthropic-ai/claude-agent-sdk".',
-      )
-    }
-
-    const createSdkMcpServer = module.createSdkMcpServer as (input: {
-      name: string;
-      tools: unknown[];
-    }) => Record<string, unknown>
-    const defineTool = module.tool as ClaudeSdkToolFactory
 
     return (input) => {
       const registrations = buildRoomScopedRegistrations(
@@ -360,19 +357,13 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
 }
 
 async function loadClaudeQuery(): Promise<ClaudeSDKQuery> {
-  const module = await import("@anthropic-ai/claude-agent-sdk").catch((error: unknown) => {
-    throw new UnsupportedFeatureError(
-      `ClaudeSDKAdapter requires optional dependency "@anthropic-ai/claude-agent-sdk". Install it with "pnpm add @anthropic-ai/claude-agent-sdk". (${error instanceof Error ? error.message : String(error)})`,
-    );
-  }) as {
-    query?: ClaudeSDKQuery;
-  };
-
-  if (!module.query) {
-    throw new UnsupportedFeatureError("@anthropic-ai/claude-agent-sdk did not export query()");
-  }
-
-  return module.query;
+  return loadOptionalPeer({
+    feature: "ClaudeSDKAdapter",
+    packageName: "@anthropic-ai/claude-agent-sdk",
+    importModule: () => import("@anthropic-ai/claude-agent-sdk"),
+    expectedExports: "`query`",
+    select: (module) => module.query as ClaudeSDKQuery | undefined,
+  });
 }
 
 function extractAssistantText(event: ClaudeSDKMessageLike): string {

@@ -2,10 +2,11 @@ import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { MessagingTools } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
-import { UnsupportedFeatureError } from "../../core/errors";
+import { asErrorMessage, BandSdkError, RuntimeStateError } from "../../core/errors";
 import type { PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import { asErrorMessage, asNonEmptyString, asOptionalRecord } from "../shared/coercion";
+import { asNonEmptyString, asOptionalRecord } from "../shared/coercion";
+import { loadOptionalPeer } from "../shared/optionalPeer";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import {
   ParlantHistoryConverter,
@@ -242,7 +243,7 @@ export class ParlantAdapter
         });
       }
 
-      throw error instanceof Error ? error : new Error(errorMessage);
+      throw error instanceof Error ? error : new BandSdkError(errorMessage, error);
     }
   }
 
@@ -493,7 +494,7 @@ export class ParlantAdapter
 
         const state = extractStatusState(event);
         if (state === "error" || state === "cancelled") {
-          throw new Error(
+          throw new RuntimeStateError(
             `Parlant session ${sessionId} entered terminal status: ${state}`,
           );
         }
@@ -529,7 +530,7 @@ export class ParlantAdapter
     const cooldownMs = 2_000;
     const elapsed = Date.now() - this.lastInitFailure;
     if (this.lastInitFailure > 0 && elapsed < cooldownMs) {
-      throw new Error(
+      throw new RuntimeStateError(
         `Parlant client init failed recently (${elapsed}ms ago). Retrying after ${cooldownMs}ms cooldown.`,
       );
     }
@@ -597,23 +598,19 @@ async function loadParlantClientFactory(config: {
   environment: string;
   baseUrl?: string;
 }): Promise<ParlantClientFactory> {
-  const module = (await import("parlant-client").catch((error: unknown) => {
-    throw new UnsupportedFeatureError(
-      `ParlantAdapter requires optional dependency parlant-client. Install it with "pnpm add parlant-client". (${error instanceof Error ? error.message : String(error)})`,
-    );
-  })) as {
-    ParlantClient?: new (options: {
-      environment: () => string;
-      baseUrl?: () => string;
-    }) => ParlantClientLike;
-  };
-
-  if (!module.ParlantClient) {
-    throw new UnsupportedFeatureError(
-      "ParlantAdapter requires optional dependency parlant-client. Install it with \"pnpm add parlant-client\".",
-    );
-  }
-  const ParlantClientCtor = module.ParlantClient;
+  const ParlantClientCtor = await loadOptionalPeer({
+    feature: "ParlantAdapter",
+    packageName: "parlant-client",
+    importModule: () => import("parlant-client"),
+    expectedExports: "`ParlantClient`",
+    select: (module) =>
+      module.ParlantClient as
+        | (new (options: {
+          environment: () => string;
+          baseUrl?: () => string;
+        }) => ParlantClientLike)
+        | undefined,
+  });
 
   return async () =>
     new ParlantClientCtor({

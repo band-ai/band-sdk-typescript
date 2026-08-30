@@ -1,3 +1,5 @@
+import { asNonEmptyString } from "../adapters/shared/coercion";
+
 export interface ParsedToolCall {
   name: string;
   args: Record<string, unknown>;
@@ -9,15 +11,6 @@ export interface ParsedToolResult {
   output: string;
   toolCallId: string;
   isError: boolean;
-}
-
-export function asOptionalString(value: unknown): string | null {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
 }
 
 export function parseDate(value: unknown): Date | null {
@@ -46,8 +39,8 @@ export function parseToolPayload(value: unknown): Record<string, unknown> | null
 
 export function parseToolCall(value: unknown): ParsedToolCall | null {
   const parsed = parseToolPayload(value);
-  const name = asOptionalString(parsed?.name);
-  const toolCallId = asOptionalString(parsed?.tool_call_id);
+  const name = asNonEmptyString(parsed?.name);
+  const toolCallId = asNonEmptyString(parsed?.tool_call_id);
 
   if (!name || !toolCallId) {
     return null;
@@ -65,8 +58,8 @@ export function parseToolCall(value: unknown): ParsedToolCall | null {
 
 export function parseToolResult(value: unknown): ParsedToolResult | null {
   const parsed = parseToolPayload(value);
-  const name = asOptionalString(parsed?.name);
-  const toolCallId = asOptionalString(parsed?.tool_call_id);
+  const name = asNonEmptyString(parsed?.name);
+  const toolCallId = asNonEmptyString(parsed?.tool_call_id);
 
   if (!name || !toolCallId) {
     return null;

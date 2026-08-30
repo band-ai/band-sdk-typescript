@@ -17,6 +17,7 @@ import {
 } from "./activities";
 import { completeLinearSession } from "./bridge";
 import type { SessionRoomStore } from "./types";
+import { asErrorMessage, UnsupportedFeatureError, ValidationError } from "../../core/errors";
 
 const LOCALHOST_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
@@ -331,7 +332,7 @@ function addIssueTools(input: {
           ? args.team_id
           : await readIssueTeamId(client, issueId);
         if (!teamId) {
-          throw new Error("linear_list_workflow_states requires issue_id or team_id.");
+          throw new ValidationError("linear_list_workflow_states requires issue_id or team_id.");
         }
 
         return readWorkflowStates(client, teamId);
@@ -352,7 +353,7 @@ function addIssueTools(input: {
       }),
       handler: async (args: Record<string, unknown>) => {
         if (typeof client.updateIssue !== "function") {
-          throw new Error("linear_update_issue is unavailable: Linear client does not support updateIssue().");
+          throw new UnsupportedFeatureError("linear_update_issue is unavailable: Linear client does not support updateIssue().");
         }
         const issueId = resolveIssueId("linear_update_issue", args);
 
@@ -367,7 +368,7 @@ function addIssueTools(input: {
           || args.due_date !== undefined
         );
         if (!hasUpdates) {
-          throw new Error("linear_update_issue requires at least one update field.");
+          throw new ValidationError("linear_update_issue requires at least one update field.");
         }
 
         await client.updateIssue(
@@ -395,7 +396,7 @@ function addIssueTools(input: {
       }),
       handler: async (args: Record<string, unknown>) => {
         if (typeof client.createComment !== "function") {
-          throw new Error("linear_add_issue_comment is unavailable: Linear client does not support createComment().");
+          throw new UnsupportedFeatureError("linear_add_issue_comment is unavailable: Linear client does not support createComment().");
         }
         const issueId = resolveIssueId("linear_add_issue_comment", args);
 
@@ -413,14 +414,14 @@ function addIssueTools(input: {
 function assertUuid(toolName: string, value: string): void {
   const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   if (!uuidPattern.test(value)) {
-    throw new Error(`${toolName} requires the exact Linear UUID from the session context (not the human-readable identifier). Received "${value}".`);
+    throw new ValidationError(`${toolName} requires the exact Linear UUID from the session context (not the human-readable identifier). Received "${value}".`);
   }
 }
 
 function resolveIssueId(toolName: string, args: Record<string, unknown>): string {
   const issueId = resolveOptionalIssueId(toolName, args);
   if (!issueId) {
-    throw new Error(`${toolName} requires issue_id.`);
+    throw new ValidationError(`${toolName} requires issue_id.`);
   }
 
   return issueId;
@@ -458,7 +459,7 @@ interface LinearIssueSnapshot {
 
 async function readIssue(client: LinearActivityClient, issueId: string): Promise<unknown> {
   if (typeof client.issue !== "function") {
-    throw new Error("linear_get_issue is unavailable: Linear client does not support issue().");
+    throw new UnsupportedFeatureError("linear_get_issue is unavailable: Linear client does not support issue().");
   }
 
   const issue = await client.issue(issueId) as LinearIssueSnapshot;
@@ -512,7 +513,7 @@ async function readIssueComments(
   limit: number,
 ): Promise<unknown> {
   if (typeof client.issue !== "function") {
-    throw new Error("linear_list_issue_comments is unavailable: Linear client does not support issue().");
+    throw new UnsupportedFeatureError("linear_list_issue_comments is unavailable: Linear client does not support issue().");
   }
 
   const issue = await client.issue(issueId) as {
@@ -526,7 +527,7 @@ async function readIssueComments(
   };
 
   if (typeof issue.comments !== "function") {
-    throw new Error("linear_list_issue_comments is unavailable: issue.comments() is not supported by the Linear client.");
+    throw new UnsupportedFeatureError("linear_list_issue_comments is unavailable: issue.comments() is not supported by the Linear client.");
   }
 
   const response = await issue.comments();
@@ -557,7 +558,7 @@ async function readIssueTeamId(
   }
 
   if (typeof client.issue !== "function") {
-    throw new Error("linear_list_workflow_states is unavailable: Linear client does not support issue().");
+    throw new UnsupportedFeatureError("linear_list_workflow_states is unavailable: Linear client does not support issue().");
   }
 
   const issue = await client.issue(issueId) as {
@@ -573,7 +574,7 @@ async function readWorkflowStates(
   teamId: string,
 ): Promise<unknown> {
   if (typeof client.workflowStates !== "function") {
-    throw new Error(
+    throw new UnsupportedFeatureError(
       "linear_list_workflow_states is unavailable: Linear client does not support workflowStates().",
     );
   }
@@ -641,7 +642,7 @@ function addSessionCreationTools(input: {
         sessionId,
         issueId,
         roomId,
-        error: err instanceof Error ? err.message : String(err),
+        error: asErrorMessage(err),
       });
       return "session-room mapping not persisted";
     }
@@ -744,7 +745,7 @@ function extractCreatedSession(result: unknown, logger?: Logger): {
     logger?.error("linear_tools.orphan_session_created", {
       raw: safeStringify(result),
     });
-    throw new Error("Linear API returned a session without an ID.");
+    throw new ValidationError("Linear API returned a session without an ID.");
   }
 
   return {
@@ -774,7 +775,7 @@ function extractCreatedIssue(result: unknown, logger?: Logger): {
     logger?.error("linear_tools.orphan_issue_created", {
       raw: safeStringify(result),
     });
-    throw new Error("Linear API returned an issue without an ID.");
+    throw new ValidationError("Linear API returned an issue without an ID.");
   }
 
   return {

@@ -4,8 +4,8 @@ import type {
   ToolCallingModelRequest,
   ToolCallingResponse,
 } from "../tool-calling";
-import { UnsupportedFeatureError } from "../../core/errors";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
+import { loadOptionalPeer } from "../shared/optionalPeer";
 import { toDisplayText } from "../shared/coercion";
 import { mapConversationMessages, normalizeConversationRole } from "../tool-calling/valueUtils";
 
@@ -193,23 +193,15 @@ function parseVercelAISDKToolCalls(raw: unknown): ToolCall[] {
 }
 
 async function loadVercelAISDKRuntime(): Promise<VercelAISDKRuntime> {
-  const module = (await import("ai").catch((error: unknown) => {
-    throw new UnsupportedFeatureError(
-      `VercelAISDKAdapter requires optional dependency "ai". Install it with "pnpm add ai". (${error instanceof Error ? error.message : String(error)})`,
-    );
-  })) as {
-    generateText?: VercelAISDKGenerateText;
-    tool?: VercelAISDKToolFactory;
-  };
-
-  if (!module.generateText || !module.tool) {
-    throw new UnsupportedFeatureError(
-      'VercelAISDKAdapter requires optional dependency "ai". Install it with "pnpm add ai".',
-    );
-  }
-
-  return {
-    generateText: module.generateText,
-    tool: module.tool,
-  };
+  return loadOptionalPeer({
+    feature: "VercelAISDKAdapter",
+    packageName: "ai",
+    importModule: () => import("ai"),
+    expectedExports: "`generateText` and `tool`",
+    select: (module) => {
+      const generateText = module.generateText as VercelAISDKGenerateText | undefined;
+      const tool = module.tool as VercelAISDKToolFactory | undefined;
+      return generateText && tool ? { generateText, tool } : undefined;
+    },
+  });
 }

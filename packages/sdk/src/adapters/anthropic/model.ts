@@ -4,9 +4,9 @@ import type {
   ToolCallingModelRequest,
   ToolCallingResponse,
 } from "../tool-calling";
-import { UnsupportedFeatureError } from "../../core/errors";
 import { toDisplayText, toWireString } from "../shared/coercion";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
+import { loadOptionalPeer } from "../shared/optionalPeer";
 import {
   mapConversationMessages,
   mergeConsecutiveSameRole,
@@ -178,21 +178,16 @@ function parseAnthropicResponse(
 }
 
 async function loadAnthropicClientFactory(): Promise<AnthropicClientFactory> {
-  const module = (await import("@anthropic-ai/sdk").catch((error: unknown) => {
-    throw new UnsupportedFeatureError(
-      `AnthropicAdapter requires optional dependency "@anthropic-ai/sdk". Install it with "pnpm add @anthropic-ai/sdk". (${error instanceof Error ? error.message : String(error)})`,
-    );
-  })) as {
-    default?: new (options?: { apiKey?: string }) => AnthropicClientLike;
-    Anthropic?: new (options?: { apiKey?: string }) => AnthropicClientLike;
-  };
-
-  const AnthropicClientCtor = module.default ?? module.Anthropic;
-  if (!AnthropicClientCtor) {
-    throw new UnsupportedFeatureError(
-      'AnthropicAdapter requires optional dependency "@anthropic-ai/sdk". Install it with "pnpm add @anthropic-ai/sdk".',
-    );
-  }
+  const AnthropicClientCtor = await loadOptionalPeer({
+    feature: "AnthropicAdapter",
+    packageName: "@anthropic-ai/sdk",
+    importModule: () => import("@anthropic-ai/sdk"),
+    expectedExports: "a default or `Anthropic` client constructor",
+    select: (module) =>
+      (module.default ?? module.Anthropic) as
+        | (new (options?: { apiKey?: string }) => AnthropicClientLike)
+        | undefined,
+  });
 
   return async ({ apiKey }) => new AnthropicClientCtor({ apiKey });
 }

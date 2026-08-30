@@ -1,6 +1,7 @@
 import type { HistoryConverter } from "../contracts/protocols";
 import { findLatestTaskMetadata } from "../adapters/shared/history";
-import { asOptionalString, parseDate } from "./shared";
+import { asNonEmptyString } from "../adapters/shared/coercion";
+import { parseDate } from "./shared";
 
 export interface CodexSessionState {
   threadId: string | null;
@@ -26,8 +27,8 @@ export class CodexHistoryConverter implements HistoryConverter<CodexSessionState
     }
 
     return {
-      threadId: asOptionalString(metadata.codex_thread_id),
-      roomId: asOptionalString(metadata.codex_room_id),
+      threadId: asNonEmptyString(metadata.codex_thread_id),
+      roomId: asNonEmptyString(metadata.codex_room_id),
       createdAt: parseDate(metadata.codex_created_at),
     };
   }
