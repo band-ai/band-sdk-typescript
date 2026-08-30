@@ -287,8 +287,10 @@ packages/sdk/src/
 ├── runtime/           # PlatformRuntime, ExecutionContext, Execution, ContactEventHandler
 │   ├── tools/         # AgentTools, ContactToolsImpl, ContactCallbackTools, schemas
 │   ├── preprocessing/ # DefaultPreprocessor
+│   ├── prompts/       # System-prompt building (base, memory, templates)
 │   └── rooms/         # AgentRuntime
 ├── testing/           # FakeAgentTools, StubRestApi
+├── types/             # Ambient type shims (google-adk.d.ts, ws.d.ts)
 └── index.ts           # Main barrel export
 ```
 
@@ -356,7 +358,7 @@ empty string — is used exactly, with no fallback.
 - `BAND_WS_URL` (legacy `THENVOI_WS_URL`): WebSocket base URL (optional; default: `wss://app.band.ai/api/v1/socket` — the `phoenix` lib appends `/websocket`)
 - `BAND_REST_URL` (legacy `THENVOI_REST_URL`): REST API URL (optional; derived from the WS URL if not set, via `deriveDefaultRestUrl`)
 
-LLM API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`/`GEMINI_API_KEY`, etc.) are read directly by the underlying provider SDKs and passed via adapter options. For Gemini, `@google/genai` accepts both `GOOGLE_API_KEY` and `GEMINI_API_KEY` (it prefers `GOOGLE_API_KEY` if both are set; verified in `@google/genai` 1.50.x `getApiKeyFromEnv`).
+LLM API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`/`GEMINI_API_KEY`, etc.) are read directly by the underlying provider SDKs and passed via adapter options. For Gemini, `@google/genai` accepts both `GOOGLE_API_KEY` and `GEMINI_API_KEY` (it prefers `GOOGLE_API_KEY` if both are set; verified in `@google/genai`'s `getApiKeyFromEnv`, peer range `>=1.44.0`).
 
 ## Adding a New Framework Adapter
 
@@ -431,7 +433,7 @@ Each example is a standalone TypeScript script runnable with `tsx`. Folders incl
 
 - Types as the API — design the surface around what TypeScript can infer and enforce; good types should tell a caller what a function does without reading the implementation.
 - Runtime validation matches static types — a schema library (Zod) is the single source of truth for both, so "compiles" and "actually valid" never drift apart.
-- Factories over constructors — prefer `createX(config)` over `new X(...)` for anything with defaults to apply or dependencies to inject; it's more testable and composable.
+- Factories over constructors — prefer `createX(config)` over `new X(...)` for anything with defaults to apply or dependencies to inject; it's more testable and composable. Applies to new top-level entry points (like `Agent.create`); existing adapters keep their established `new <Framework>Adapter(options)` constructor pattern (see "Adding a New Framework Adapter").
 - Interceptors for cross-cutting concerns — auth, retries, and error-wrapping live in one shared place every request passes through, not copy-pasted per method.
 - Custom error types — wrap raw HTTP/protocol errors in typed errors so callers can `instanceof`-check instead of parsing status codes or message strings.
 - Consistency across the surface — the same kind of operation should look and behave the same way everywhere in the SDK.
