@@ -6,7 +6,7 @@ import { UnsupportedFeatureError } from "../core/errors";
 import type { ConversationContext, PlatformMessage } from "./types";
 import { AgentTools } from "./tools/AgentTools";
 import { ParticipantRoster, RetryTracker } from "@band-ai/band-sdk-core";
-import { buildParticipantsMessage, toParticipantRecord } from "./formatters";
+import { buildParticipantsMessage, toParticipantRecord, toParticipantRecordFromRest } from "./formatters";
 
 export type ExecutionState = "starting" | "idle" | "processing";
 
@@ -262,12 +262,7 @@ export class ExecutionContext {
 
   private async loadParticipants(): Promise<ParticipantRecord[]> {
     const participants = await this.link.rest.listChatParticipants(this.roomId, DEFAULT_REQUEST_OPTIONS);
-    const normalized = participants.map((participant) => ({
-      id: participant.id,
-      name: participant.name,
-      type: participant.type,
-      handle: participant.handle ?? null,
-    }));
+    const normalized = participants.map(toParticipantRecordFromRest);
     this.roster.setAll(normalized, undefined);
     return this.roster.list().map(toParticipantRecord);
   }

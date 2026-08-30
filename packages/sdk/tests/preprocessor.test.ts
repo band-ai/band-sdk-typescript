@@ -132,8 +132,6 @@ describe("DefaultPreprocessor", () => {
     expect(first?.participantsMessage).toContain("Weather Agent joined the room.");
     expect(first?.participantsMessage).toContain("weather-agent");
 
-    // Sparse update: same id, only the handle changes. Membership is
-    // unchanged, so this must surface as a field refresh, not a rejoin.
     context.addParticipant({ id: "p1", handle: "weather-agent-v2" });
     const second = await preprocessor.process(
       context,

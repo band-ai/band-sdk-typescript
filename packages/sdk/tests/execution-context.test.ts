@@ -52,8 +52,6 @@ describe("ExecutionContext", () => {
     expect(firstMessage).toContain("Weather Agent joined the room.");
     expect(firstMessage).toContain("old-handle");
 
-    // Sparse update: only `handle` is supplied. `name`/`type` must carry
-    // through from the existing record, not collapse to "unknown".
     context.addParticipant({ id: "p1", handle: "new-handle" });
     const secondMessage = context.consumeParticipantsMessage();
 
@@ -94,14 +92,10 @@ describe("ExecutionContext", () => {
       maxContextMessages: 20,
     });
 
-    // Tool-driven add: writes straight into the shared roster, not a
-    // parallel array `ExecutionContext` would otherwise miss.
     await context.getTools().addParticipant("Weather Agent");
     const afterToolAdd = context.consumeParticipantsMessage();
     expect(afterToolAdd).toContain("Weather Agent");
 
-    // An unrelated WS-driven add must merge into the same roster, not
-    // replace it — the tool-added participant must survive.
     context.addParticipant({ id: "peer-other", name: "Other Agent", type: "Agent", handle: "other-agent" });
     const afterWsAdd = context.consumeParticipantsMessage();
     expect(afterWsAdd).toContain("Weather Agent");

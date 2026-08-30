@@ -1,25 +1,14 @@
 /**
  * Live E2E: retry exhaustion via sync-recovery, gated by BAND_E2E_LANE="core".
  *
- * Sending one message to an always-throwing handler over a live WebSocket
- * cannot reach `maxMessageRetries` attempts: `PlatformRuntime.executeAdapter`
- * calls `markFailed` once and re-throws on a live WS adapter throw, and
- * `Execution.executeEvent` stops the whole execution on that same throw —
- * neither path ever touches `RetryTracker`. `recordAttempt`/
- * `isPermanentlyFailed` are called only inside `Execution.executeSyncMessage`,
- * which runs exclusively during startup backlog/stale-message recovery.
- *
- * So this seeds a message via REST *before* connecting the agent (it must
- * sit unprocessed in a room the agent already belongs to at startup), starts
- * the agent with `agentConfig: { autoSubscribeExistingRooms: true }` (so
- * `subscribeExistingRooms()` actually hydrates the existing room and calls
- * `getOrCreateExecution`, whose constructor runs the sync pass that picks up
- * the seeded message) and `maxMessageRetries: 0` (so the very first
- * `recordAttempt` already exceeds). Spies on the real
- * `rest.markMessageFailed` call (write-only — no read-back endpoint exists,
- * so "live" means everything up to that call is real: REST backlog fetch,
- * real `Execution` sync-recovery path, real wasm `RetryTracker.recordAttempt`;
- * only the final call is wrapped-and-forwarded, not replaced).
+ * `RetryTracker.recordAttempt` only runs inside `Execution.executeSyncMessage`
+ * (startup backlog recovery) — never on live WS events. So this seeds a
+ * message via REST before the agent connects, then starts it with
+ * `autoSubscribeExistingRooms: true` and `maxMessageRetries: 0` so the
+ * seeded message exhausts on the first sync-recovery attempt. A second
+ * agent identity sends the seed, since self-authored messages are skipped
+ * before reaching the adapter. Spies on `rest.markMessageFailed` (write-only,
+ * no read-back endpoint) to observe the outcome.
  *
  * Run:  BAND_E2E_LANE=core npx tsx tests/integration/core-retry-participant-live.ts
  */
@@ -62,9 +51,8 @@ async function main() {
   await testRest.addChatParticipant(chat.id, { participantId: senderMe.id, role: "member" });
   console.log(`core-retry Created chat: ${chat.id}`);
 
-  // Seed the message via REST *before* the agent connects, from a
-  // different identity (self-authored messages are skipped by the
-  // preprocessor before ever reaching RetryTracker).
+  // Seeded before the agent connects, from a different identity
+  // (self-authored messages are skipped by the preprocessor).
   const seeded = await senderRest.createChatMessage(chat.id, {
     content: `@${testMe.name} this must permanently fail on the first sync-recovery attempt`,
     mentions: [{ id: testMe.id, handle: testMe.name }],

@@ -1,12 +1,7 @@
 /**
- * Bundler-interop harness: proves @band-ai/band-sdk-core — a Node
- * CommonJS package with an eager (synchronous, no `init()`) wasm load —
- * actually resolves and runs through packages/sdk's own tsup-built dist/
- * output, not just under vitest/ts-node's own module resolution.
- *
- * Generically named so INT-1237 (event-validation integration, which needs
- * the identical pack -> build -> run-bundled-output flow for its own
- * band-sdk-core usage) can reuse this unchanged.
+ * Proves @band-ai/band-sdk-core (eager wasm load, no init()) resolves and
+ * runs through packages/sdk's tsup-built dist/ output, not just under
+ * vitest/ts-node resolution. Generic name — INT-1237 reuses it unchanged.
  *
  * Run:  npx tsx tests/integration/band-sdk-core-bundler.ts
  */
@@ -49,19 +44,14 @@ async function main() {
   }
   pass("build produced dist/runtime.cjs");
 
-  // packages/sdk's own runtime entry does a top-level, unconditional
-  // `require("@band-ai/band-sdk-core")` (via ExecutionContext/AgentTools).
-  // If tsup's `external` treatment had inlined the wasm-backed package
-  // incorrectly, or the built CJS output couldn't resolve it at all, this
-  // require() itself would throw before any test code runs.
+  // Throws here if tsup inlined the wasm package instead of leaving it external.
   const runtime = require(builtRuntimePath) as Record<string, unknown>;
   if (typeof runtime.ExecutionContext !== "function" || typeof runtime.AgentTools !== "function") {
     fail("built runtime exposes expected exports", "ExecutionContext/AgentTools missing from dist/runtime.cjs");
   }
   pass("dist/runtime.cjs loaded and eager-loaded the wasm dependency without throwing");
 
-  // Exercise the same package instance node resolution would hand to the
-  // built output, calling one method on each delivery-state class.
+  // Exercise the same package instance the built output would resolve.
   const core = require("@band-ai/band-sdk-core") as typeof import("@band-ai/band-sdk-core");
 
   const retryTracker = new core.RetryTracker(1);

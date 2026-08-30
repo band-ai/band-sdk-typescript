@@ -1,4 +1,5 @@
 import type { ParticipantFields } from "@band-ai/band-sdk-core";
+import type { ChatParticipant } from "../client/rest/types";
 import type { MetadataMap, ParticipantRecord, ToolModelMessage } from "../contracts/dtos";
 import { ensureHandlePrefix } from "./types";
 
@@ -61,18 +62,22 @@ export function formatHistoryForLlm(
     .map((message) => formatMessageForLlm(message, participants));
 }
 
-/**
- * `ParticipantRoster.list()` returns core's `ParticipantFields` (name/type
- * optional/nullable); the TS-public `ParticipantRecord` requires both as
- * plain strings. Shared by `ExecutionContext` and `AgentTools` — both read
- * a `ParticipantRecord[]` from the same roster.
- */
+/** Maps core's `ParticipantFields` (name/type optional) to the public `ParticipantRecord` (required strings). */
 export function toParticipantRecord(fields: ParticipantFields): ParticipantRecord {
   return {
     id: fields.id,
     name: fields.name ?? "unknown",
     type: fields.type ?? "unknown",
     handle: fields.handle ?? null,
+  };
+}
+
+export function toParticipantRecordFromRest(participant: ChatParticipant): ParticipantRecord {
+  return {
+    id: participant.id,
+    name: participant.name,
+    type: participant.type,
+    handle: participant.handle ?? null,
   };
 }
 

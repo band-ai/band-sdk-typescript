@@ -1,21 +1,13 @@
 name: E2E (live)
 
-# Live end-to-end run against the real Band platform. These tests provision
-# real agents and exercise live REST/WebSocket behavior, so — mirroring
-# band-sdk-python's e2e.yml trigger shape — this never runs on every PR (cost
-# + external platform state), only nightly or on demand from the Actions tab.
+# Live E2E against the real Band platform. Provisions real agents, hits
+# live REST/WS — nightly/on-demand only, never per-PR.
 #
-# TS has a single lane today (BAND_E2E_LANE="core" — band-sdk-core-driven
-# retry/participant-roster behavior; see packages/sdk/tests/integration/
-# lanes.ts). Unlike band-sdk-python's many-lane matrix (forced by conflicting
-# per-framework Python dependency trees needing separate venvs), TS's
-# adapters coexist fine in one node_modules, so this stays one job until a
-# later ticket (e.g. a TS adapter-capability matrix) adds more lanes.
+# Single lane (core) today; see packages/sdk/tests/integration/lanes.ts.
 
 on:
   schedule:
-    # Nightly, off-peak UTC minute (not :00) to avoid GitHub's top-of-hour
-    # scheduling thundering herd.
+    # Off-peak minute avoids GitHub's top-of-hour thundering herd.
     - cron: "23 4 * * *"
   workflow_dispatch: {}
 
@@ -49,9 +41,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # agent_config.yaml is never committed (see agent_config.yaml.example);
-      # this reconstitutes it from a repo secret, the same role Python's e2e.yml
-      # fills by materializing .env.test.
+      # agent_config.yaml is gitignored; reconstitute from a repo secret.
       - name: Materialize agent_config.yaml
         working-directory: packages/sdk
         run: |

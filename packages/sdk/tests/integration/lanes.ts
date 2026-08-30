@@ -1,14 +1,4 @@
-/**
- * Minimal BAND_E2E_LANE registry for live integration scripts.
- *
- * band-sdk-python needed many lanes (`Lane.CORE`/`CREWAI`/`BACKENDS`/...)
- * because conflicting per-framework Python dependency trees forced separate
- * venvs. TS's adapters coexist fine in one node_modules, so there is no
- * forcing function for more than one lane yet — this starts with just
- * "core" (band-sdk-core-driven behavior: retry, participant roster,
- * redelivery), structured so a later ticket (e.g. a TS adapter-capability
- * matrix) can add lanes here without reworking this mechanism.
- */
+/** BAND_E2E_LANE registry for live integration scripts. Single lane ("core") today. */
 export type Lane = "core";
 
 const KNOWN_LANES: readonly Lane[] = ["core"];

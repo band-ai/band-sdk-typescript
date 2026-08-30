@@ -1,6 +1,6 @@
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import { ParticipantRoster } from "@band-ai/band-sdk-core";
-import { toParticipantRecord } from "../formatters";
+import { toParticipantRecord, toParticipantRecordFromRest } from "../formatters";
 import type { AgentToolsRestApi } from "../../client/rest/types";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
 import { assertCapability } from "../../contracts/capabilities";
@@ -287,12 +287,7 @@ export class AgentTools implements AgentToolsProtocol {
 
   private async fetchParticipants(): Promise<ParticipantRecord[]> {
     const participants = await this.rest.listChatParticipants(this.roomId, DEFAULT_REQUEST_OPTIONS);
-    return participants.map((participant) => ({
-      id: participant.id,
-      name: participant.name,
-      type: participant.type,
-      handle: participant.handle ?? null,
-    }));
+    return participants.map(toParticipantRecordFromRest);
   }
 
   private async syncParticipants(): Promise<ParticipantRecord[]> {
