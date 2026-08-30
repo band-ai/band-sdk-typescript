@@ -9,7 +9,7 @@ import { execSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const require = createRequire(import.meta.url);
@@ -50,6 +50,18 @@ async function main() {
     fail("built runtime exposes expected exports", "ExecutionContext/AgentTools missing from dist/runtime.cjs");
   }
   pass("dist/runtime.cjs loaded and eager-loaded the wasm dependency without throwing");
+
+  // The ESM half is the fragile one: @band-ai/band-sdk-core is CommonJS, so
+  // named imports through it rely on cjs-module-lexer detecting its exports.
+  const builtEsmPath = resolve(PACKAGE_ROOT, "dist/runtime.js");
+  if (!existsSync(builtEsmPath)) {
+    fail("ESM build output exists", `${builtEsmPath} was not produced by the build`);
+  }
+  const esmRuntime = await import(pathToFileURL(builtEsmPath).href) as Record<string, unknown>;
+  if (typeof esmRuntime.ExecutionContext !== "function" || typeof esmRuntime.AgentTools !== "function") {
+    fail("built ESM runtime exposes expected exports", "ExecutionContext/AgentTools missing from dist/runtime.js");
+  }
+  pass("dist/runtime.js (ESM) resolved the CommonJS wasm dependency's named exports");
 
   // Exercise the same package instance the built output would resolve.
   const core = require("@band-ai/band-sdk-core") as typeof import("@band-ai/band-sdk-core");

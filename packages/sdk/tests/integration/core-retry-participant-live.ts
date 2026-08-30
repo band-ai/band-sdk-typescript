@@ -124,8 +124,10 @@ async function sweepOrphans(userClient: BandClient, runId: string): Promise<void
 async function main() {
   console.log("core-retry === retry exhaustion via sync-recovery ===");
 
-  const restUrl = process.env.BAND_REST_URL ?? DEFAULT_REST_URL;
-  const wsUrl = process.env.BAND_WS_URL;
+  // `||`, not `??`: an unset GitHub Actions secret expands to "", which `??`
+  // would pass through as a real URL.
+  const restUrl = process.env.BAND_REST_URL || DEFAULT_REST_URL;
+  const wsUrl = process.env.BAND_WS_URL || undefined;
   const userApiKey = requireEnv("BAND_API_KEY_USER");
   const userClient = new BandClient({ baseUrl: restUrl, apiKey: userApiKey });
 

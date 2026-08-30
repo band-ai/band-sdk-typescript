@@ -78,6 +78,15 @@ export class PlatformRuntime {
       );
     }
 
+    // RetryTracker rejects these too, but only once a room's ExecutionContext
+    // is built mid-run — too late to be actionable.
+    const maxMessageRetries = options.sessionConfig?.maxMessageRetries;
+    if (maxMessageRetries !== undefined && (!Number.isInteger(maxMessageRetries) || maxMessageRetries < 0)) {
+      throw new ValidationError(
+        `sessionConfig.maxMessageRetries must be a non-negative integer, got ${maxMessageRetries}.`,
+      );
+    }
+
     this._agentId = options.agentId;
     this._apiKey = options.apiKey;
     this._wsUrl = options.wsUrl;
