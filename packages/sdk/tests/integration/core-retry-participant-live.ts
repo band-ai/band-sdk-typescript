@@ -63,6 +63,28 @@ async function provisionAgent(userClient: BandClient, runId: string, label: stri
 }
 
 /**
+ * Bulk-deletes chat rooms via the raw `/me/chats/bulk-delete` endpoint —
+ * `@band-ai/rest-client` has no generated method for it yet. Replace this
+ * with the generated client call once one ships. Enterprise-plan-gated on
+ * some accounts, so callers should treat failure as non-fatal cleanup.
+ */
+async function deleteRoomsBulk(restUrl: string, apiKey: string, roomIds: string[]): Promise<void> {
+  if (roomIds.length === 0) {
+    return;
+  }
+  const response = await fetch(new URL("api/v1/me/chats/bulk-delete", restUrl), {
+    method: "POST",
+    headers: { "X-API-Key": apiKey, "Content-Type": "application/json" },
+    body: JSON.stringify({ ids: roomIds }),
+  });
+  if (!response.ok) {
+    throw new Error(`bulk-delete rooms failed: ${response.status} ${await response.text()}`);
+  }
+  const body = await response.json();
+  console.log(`core-retry Room bulk-delete job accepted: ${body?.data?.id} (status=${body?.data?.status})`);
+}
+
+/**
  * Force-deletes leftover `NAME_PREFIX`-named agents from a run that crashed
  * before its own `finally` reap ran (e.g. the process was killed) — the same
  * failure mode band-sdk-python's orphan sweep exists for. Never touches an
@@ -104,13 +126,15 @@ async function main() {
 
   const restUrl = process.env.BAND_REST_URL ?? DEFAULT_REST_URL;
   const wsUrl = process.env.BAND_WS_URL;
-  const userClient = new BandClient({ baseUrl: restUrl, apiKey: requireEnv("BAND_API_KEY_USER") });
+  const userApiKey = requireEnv("BAND_API_KEY_USER");
+  const userClient = new BandClient({ baseUrl: restUrl, apiKey: userApiKey });
 
   const runId = randomUUID().slice(0, 8);
   await sweepOrphans(userClient, runId);
   // Tracked as each is created (not `[testAgent, senderAgent]` after both
   // resolve) so a failure provisioning the second still reaps the first.
   const provisioned: ProvisionedAgent[] = [];
+  const roomIds: string[] = [];
 
   try {
     const testAgent = await provisionAgent(userClient, runId, "basic");
@@ -124,6 +148,7 @@ async function main() {
 
     // The test agent's own room — it's already a participant at creation.
     const chat = await testRest.createChat();
+    roomIds.push(chat.id);
     await testRest.addChatParticipant(chat.id, { participantId: senderAgent.id, role: "member" });
     console.log(`core-retry Created chat: ${chat.id}`);
 
@@ -178,17 +203,17 @@ async function main() {
       `error=${markMessageFailedCalls[0]?.error}`,
     );
   } finally {
-    // The room itself is left behind (no delete-room endpoint is generated
-    // yet — band-sdk-python's own toolkit notes the same gap and falls back
-    // to an undocumented raw REST call; not worth that here for one room).
-    console.log("core-retry Reaping provisioned agents...");
-    await Promise.all(
-      provisioned.map((agent) =>
+    console.log("core-retry Reaping provisioned agents and rooms...");
+    await Promise.all([
+      ...provisioned.map((agent) =>
         userClient.humanApiAgents.deleteMyAgent(agent.id, { force: true }).catch((err: unknown) => {
           console.warn(`core-retry Failed to reap agent ${agent.id}:`, err);
         }),
       ),
-    );
+      deleteRoomsBulk(restUrl, userApiKey, roomIds).catch((err: unknown) => {
+        console.warn("core-retry Failed to bulk-delete rooms:", err);
+      }),
+    ]);
   }
 
   const failed = results.filter((r) => !r.passed);
