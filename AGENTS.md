@@ -440,6 +440,7 @@ Each example is a standalone TypeScript script runnable with `tsx`. Folders incl
 - Predictable defaults — a new caller should get a working result with minimal config; sane defaults (timeouts, retries) apply out of the box.
 - Declarative coding style — describe *what* the result should be, not the step-by-step *how*; push imperative control flow into small, named helpers.
 - Comments are factual, not narration — short, state the non-obvious *why* only. Let the code speak for itself.
+- Tests assert real behavior, not the obvious or an assumption — don't assert language/library trivia or a mock echoing back what you told it to return; assert outcomes that would actually fail if the code broke.
 
 ## Coding Standards
 
