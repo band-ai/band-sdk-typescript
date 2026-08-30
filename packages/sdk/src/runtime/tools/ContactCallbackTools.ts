@@ -107,6 +107,8 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
       ? mentions
       : undefined;
 
+    // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
+    // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
     return this.rest.createChatMessage(
       roomId,
       {
@@ -125,6 +127,8 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
     if (!this.rest.createChatEvent) {
       throw new UnsupportedFeatureError("Event sending is not available in current REST adapter");
     }
+    // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
+    // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
     return this.rest.createChatEvent(
       roomId,
       {

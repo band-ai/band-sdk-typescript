@@ -17,7 +17,6 @@ import type {
   ToolOperationResult,
 } from "../../contracts/dtos";
 import {
-  AGENT_ME_MAX_RETRIES,
   DEFAULT_REQUEST_OPTIONS,
   MESSAGE_SEND_MAX_RETRIES,
   type RestRequestOptions,
@@ -355,7 +354,7 @@ export class FernRestAdapter implements RestApi {
   }
 
   public async getAgentMe(options?: RestRequestOptions): Promise<AgentIdentity> {
-    const requestOptions = mergeOptions(options, AGENT_ME_MAX_RETRIES);
+    const requestOptions = mergeOptions(options);
 
     if (this.client.agentApiIdentity?.getAgentMe) {
       const response = await this.client.agentApiIdentity.getAgentMe(requestOptions);
