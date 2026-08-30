@@ -2,8 +2,8 @@ export function buildZodShape(
   z: typeof import("zod").z,
   properties: Record<string, unknown>,
   required: Set<string>,
-): Record<string, import("zod").ZodTypeAny> {
-  const shape: Record<string, import("zod").ZodTypeAny> = {};
+): Record<string, import("zod").ZodType> {
+  const shape: Record<string, import("zod").ZodType> = {};
 
   for (const [name, schema] of Object.entries(properties)) {
     const validator = jsonSchemaToZod(z, schema as Record<string, unknown>);
@@ -16,7 +16,7 @@ export function buildZodShape(
 function jsonSchemaToZod(
   z: typeof import("zod").z,
   schema: Record<string, unknown>,
-): import("zod").ZodTypeAny {
+): import("zod").ZodType {
   const type = schema.type;
 
   if (type === "string") {

@@ -86,7 +86,7 @@ interface BandMcpBridge {
 type ClaudeSdkToolFactory = (
   name: string,
   description: string,
-  shape: Record<string, import("zod").ZodTypeAny>,
+  shape: Record<string, import("zod").ZodType>,
   handler: (args: Record<string, unknown>) => Promise<unknown>,
 ) => unknown;
 
