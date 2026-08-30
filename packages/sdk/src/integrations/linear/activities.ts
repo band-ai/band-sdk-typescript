@@ -1,4 +1,5 @@
 import { LinearDocument as L } from "@linear/sdk";
+import { NoopLogger, type Logger } from "../../core/logger";
 
 export interface CandidateRepositoryInput {
   hostname: string;
@@ -198,6 +199,7 @@ export async function updatePlan(
   client: LinearActivityClient,
   sessionId: string,
   steps: PlanStep[],
+  options?: { logger?: Logger },
 ): Promise<void> {
   if (typeof client.updateAgentSession === "function") {
     const plan = {
@@ -211,7 +213,10 @@ export async function updatePlan(
       await client.updateAgentSession(sessionId, { plan });
       return;
     } catch (err) {
-      console.warn("updateAgentSession failed, falling back to legacy plan", err);
+      (options?.logger ?? new NoopLogger()).warn(
+        "updateAgentSession failed, falling back to legacy plan",
+        { sessionId, error: err },
+      );
     }
   }
 

@@ -1,4 +1,5 @@
 import { createServer } from "node:net";
+import { NoopLogger, type Logger } from "../../core/logger";
 
 export interface OpencodeClientLike {
   createSession(input?: { title?: string }): Promise<Record<string, unknown>>;
@@ -35,12 +36,16 @@ export interface HttpOpencodeClientOptions {
   directory?: string;
   workspace?: string;
   timeoutMs?: number;
+  /** Destination for best-effort cleanup diagnostics. Defaults to a no-op logger. */
+  logger?: Logger;
 }
 
 interface ManagedOpencodeClientOptions {
   directory?: string;
   workspace?: string;
   startupTimeoutMs?: number;
+  /** Destination for best-effort cleanup diagnostics. Defaults to a no-op logger. */
+  logger?: Logger;
 }
 
 interface RequestResultLike<TData = unknown> {
@@ -120,11 +125,25 @@ abstract class SdkOpencodeClientBase implements OpencodeClientLike {
 
   protected readonly directory?: string;
   protected readonly workspace?: string;
+  protected readonly logger: Logger;
 
-  protected constructor(options: { directory?: string; workspace?: string }) {
+  protected constructor(options: { directory?: string; workspace?: string; logger?: Logger }) {
     this.directory = optionalString(options.directory) ?? undefined;
     this.workspace = optionalString(options.workspace) ?? undefined;
+    this.logger = options.logger ?? new NoopLogger();
     this.runtimePromise = this.createRuntime();
+  }
+
+  /**
+   * Runs a best-effort cleanup step. Failures are reported and swallowed: these run on
+   * teardown paths where a throw would mask the caller's real work.
+   */
+  protected async bestEffort(operation: string, run: () => Promise<unknown>): Promise<void> {
+    try {
+      await run();
+    } catch (error) {
+      this.logger.debug(`Opencode ${operation} failed (best-effort)`, { error });
+    }
   }
 
   public async createSession(input?: { title?: string }): Promise<Record<string, unknown>> {
@@ -210,7 +229,7 @@ abstract class SdkOpencodeClientBase implements OpencodeClientLike {
 
   public async registerMcpServer(input: { name: string; url: string }): Promise<Record<string, unknown>> {
     const runtime = await this.getRuntime();
-    await this.deleteMcpServer(input.name).catch(() => undefined);
+    await this.bestEffort("registerMcpServer:deleteExisting", () => this.deleteMcpServer(input.name));
     const result = await runtime.client.mcp.add({
       ...this.scope(),
       name: input.name,
@@ -221,11 +240,11 @@ abstract class SdkOpencodeClientBase implements OpencodeClientLike {
 
   public async deregisterMcpServer(name: string): Promise<void> {
     const runtime = await this.getRuntime();
-    await expectVoid(runtime.client.mcp.disconnect({
+    await this.bestEffort("deregisterMcpServer:disconnect", () => expectVoid(runtime.client.mcp.disconnect({
       ...this.scope(),
       name,
-    })).catch(() => undefined);
-    await this.deleteMcpServer(name).catch(() => undefined);
+    })));
+    await this.bestEffort("deregisterMcpServer:delete", () => this.deleteMcpServer(name));
   }
 
   public async *iterEvents(): AsyncIterable<Record<string, unknown>> {
@@ -250,7 +269,10 @@ abstract class SdkOpencodeClientBase implements OpencodeClientLike {
     this.closed = true;
     this.eventsAbortController.abort();
 
-    const runtime = await this.runtimePromise.catch(() => null);
+    const runtime = await this.runtimePromise.catch((error: unknown) => {
+      this.logger.debug("Opencode runtime never became available; nothing to close", { error });
+      return null;
+    });
     runtime?.close();
   }
 

@@ -99,8 +99,11 @@ export class AgentRuntime {
 
     try {
       await this.link.subscribeAgentRooms();
-    } catch {
-      this.logger.warn("AgentRuntime failed to subscribe agent_rooms channel, continuing without it");
+    } catch (error) {
+      this.logger.warn(
+        "AgentRuntime failed to subscribe agent_rooms channel, continuing without it",
+        { error },
+      );
     }
 
     try {
@@ -118,8 +121,11 @@ export class AgentRuntime {
 
     try {
       await this.link.subscribeAgentContacts();
-    } catch {
-      this.logger.warn("AgentRuntime failed to subscribe agent_contacts channel, continuing without it");
+    } catch (error) {
+      this.logger.warn(
+        "AgentRuntime failed to subscribe agent_contacts channel, continuing without it",
+        { error },
+      );
     }
   }
 

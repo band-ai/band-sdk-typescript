@@ -175,9 +175,10 @@ export class Execution {
     let staleMessages: PlatformMessage[];
     try {
       staleMessages = await this.link.getStaleProcessingMessages(this.roomId);
-    } catch {
+    } catch (error) {
       this.logger.warn("Failed to fetch stale processing messages, skipping recovery", {
         roomId: this.roomId,
+        error,
       });
       return;
     }
@@ -349,13 +350,15 @@ export class Execution {
     }
   }
 
-  private async markMessageFailed(messageId: string, error: string): Promise<void> {
+  private async markMessageFailed(messageId: string, reason: string): Promise<void> {
     try {
-      await this.link.markFailed(this.roomId, messageId, error, { bestEffort: true });
-    } catch {
+      await this.link.markFailed(this.roomId, messageId, reason, { bestEffort: true });
+    } catch (error) {
       this.logger.warn("Failed to mark message as failed on server", {
         roomId: this.roomId,
         messageId,
+        reason,
+        error,
       });
     }
   }

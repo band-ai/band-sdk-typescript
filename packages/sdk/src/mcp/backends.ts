@@ -1,4 +1,5 @@
 import type { AdapterToolsProtocol } from "../contracts/protocols";
+import type { Logger } from "../core/logger";
 import { mcpToolNames } from "../runtime/tools/schemas";
 import type { McpToolRegistration } from "./registrations";
 import {
@@ -30,6 +31,8 @@ export interface CreateBandMcpBackendOptions {
   getToolsForRoom: (roomId: string) => AdapterToolsProtocol | undefined;
   additionalTools?: McpToolRegistration[];
   multiRoom?: boolean;
+  /** Forwarded to the MCP server so teardown failures are reported. */
+  logger?: Logger;
 }
 
 export async function createBandMcpBackend(
@@ -95,6 +98,7 @@ export async function createBandMcpBackend(
       enableMemoryTools: options.enableMemoryTools,
       enableContactTools: true,
       additionalTools: options.additionalTools,
+      ...(options.logger ? { logger: options.logger } : {}),
     });
     await server.start();
 
@@ -113,6 +117,7 @@ export async function createBandMcpBackend(
     enableMemoryTools: options.enableMemoryTools,
     enableContactTools: true,
     additionalTools: options.additionalTools,
+    ...(options.logger ? { logger: options.logger } : {}),
   });
   await server.start();
 

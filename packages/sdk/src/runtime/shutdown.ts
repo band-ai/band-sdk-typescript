@@ -1,3 +1,5 @@
+import { NoopLogger, type Logger } from "../core/logger";
+
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 30_000;
 
 interface StoppableAgent {
@@ -8,6 +10,8 @@ interface StoppableAgent {
 interface GracefulShutdownOptions {
   timeoutMs?: number | null;
   onSignal?: (signal: NodeJS.Signals) => void;
+  /** Destination for shutdown diagnostics. Defaults to a no-op logger. */
+  logger?: Logger;
 }
 
 export class GracefulShutdown {
@@ -15,6 +19,7 @@ export class GracefulShutdown {
   private readonly timeoutMs: number | null;
   private readonly onSignal?: (signal: NodeJS.Signals) => void;
   private readonly handlers = new Map<NodeJS.Signals, () => void>();
+  private readonly logger: Logger;
   private shuttingDown = false;
 
   public constructor(agent: StoppableAgent, options?: GracefulShutdownOptions) {
@@ -23,6 +28,7 @@ export class GracefulShutdown {
       ? DEFAULT_SHUTDOWN_TIMEOUT_MS
       : options.timeoutMs;
     this.onSignal = options?.onSignal;
+    this.logger = options?.logger ?? new NoopLogger();
   }
 
   public registerSignals(): void {
@@ -62,8 +68,10 @@ export class GracefulShutdown {
     this.shuttingDown = true;
     try {
       await this.agent.stop(this.timeoutMs);
-    } catch {
-      // Best-effort graceful shutdown — force exit if stop() itself fails.
+    } catch (error) {
+      // Best-effort graceful shutdown — force exit if stop() itself fails. Report the
+      // reason first: without it the process dies on signal with no explanation at all.
+      this.logger.error("Graceful shutdown failed; forcing exit", { error });
       process.exit(1);
     }
   }

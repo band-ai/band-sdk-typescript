@@ -190,6 +190,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     });
     this.config = withDefaults(options.config);
     this.customTools = [...(options.customTools ?? [])];
+    this.logger = options.logger ?? new NoopLogger();
     this.clientFactory = options.clientFactory ?? ((config) => (
       config.baseUrl
         ? new HttpOpencodeClient({
@@ -197,14 +198,15 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
           directory: config.directory || undefined,
           workspace: config.workspace || undefined,
           timeoutMs: config.turnTimeoutMs,
+          logger: this.logger,
         })
         : new ManagedOpencodeClient({
           directory: config.directory || undefined,
           workspace: config.workspace || undefined,
+          logger: this.logger,
         })
     ));
     this.mcpBackendFactory = options.mcpBackendFactory ?? createBandMcpBackend;
-    this.logger = options.logger ?? new NoopLogger();
   }
 
   public override async onStarted(agentName: string, agentDescription: string): Promise<void> {
@@ -361,6 +363,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       enableMemoryTools: this.config.enableMemoryTools,
       getToolsForRoom: (roomId) => this.rooms.get(roomId)?.tools ?? undefined,
       additionalTools: this.customTools.length > 0 ? buildCustomMcpRegistrations(this.customTools) : undefined,
+      logger: this.logger,
     });
     this.mcpBackend = backend;
     return backend;
@@ -399,7 +402,9 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     if (client) {
       try {
         await client.deregisterMcpServer(this.config.mcpServerName);
-      } catch {}
+      } catch (error) {
+        this.logger.debug("Failed to deregister the Opencode MCP server during teardown", { error });
+      }
     }
 
     if (backend) {
@@ -411,7 +416,9 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     }
 
     if (eventTask) {
-      await Promise.resolve(eventTask).catch(() => undefined);
+      await Promise.resolve(eventTask).catch((error: unknown) => {
+        this.logger.debug("Opencode event loop ended with an error during teardown", { error });
+      });
     }
   }
 
@@ -850,7 +857,12 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
         if (this.client && roomState.sessionId) {
           try {
             await this.client.abortSession(roomState.sessionId);
-          } catch {}
+          } catch (error) {
+            this.logger.debug("Failed to abort the Opencode session after a turn timeout", {
+              sessionId: roomState.sessionId,
+              error,
+            });
+          }
         }
         if (roomState.tools) {
           await roomState.tools.sendEvent("OpenCode timed out before completing the turn.", "error");

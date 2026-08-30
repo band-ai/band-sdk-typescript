@@ -1,4 +1,5 @@
 import { UnsupportedFeatureError } from "../../core/errors";
+import { NoopLogger, type Logger } from "../../core/logger";
 import type { PendingBootstrapRequest, SessionRoomRecord, SessionRoomStore } from "./types";
 
 type DatabaseSync = import("node:sqlite").DatabaseSync;
@@ -34,13 +35,21 @@ const SESSION_STATUSES = new Set<SessionRoomRecord["status"]>([
   "errored",
 ]);
 
+/** Options accepted by {@link createSqliteSessionRoomStore}. */
+export interface CreateSqliteSessionRoomStoreOptions {
+  /** Destination for non-fatal diagnostics. Defaults to a no-op logger. */
+  logger?: Logger;
+}
+
 /** SQLite-backed session room store. Uses `node:sqlite` (lazily imported). */
 class SqliteSessionRoomStore implements SessionRoomStore {
   private readonly dbPath: string;
+  private readonly logger: Logger;
   private dbPromise: Promise<DatabaseSync> | null = null;
 
-  public constructor(dbPath: string) {
+  public constructor(dbPath: string, logger: Logger = new NoopLogger()) {
     this.dbPath = dbPath;
+    this.logger = logger;
   }
 
   public async getBySessionId(sessionId: string): Promise<SessionRoomRecord | null> {
@@ -393,8 +402,7 @@ class SqliteSessionRoomStore implements SessionRoomStore {
       return asRecord(parsed) ?? undefined;
     } catch (error) {
       // Log but don't throw — corrupted metadata shouldn't block the row
-      const msg = error instanceof Error ? error.message : String(error);
-      console.warn(`SqliteSessionRoomStore: failed to parse metadata_json: ${msg}`);
+      this.logger.warn("SqliteSessionRoomStore: failed to parse metadata_json", { error });
       return undefined;
     }
   }
@@ -530,6 +538,9 @@ function parseBootstrapRequestRow(value: unknown): BootstrapRequestRow | null {
   };
 }
 
-export function createSqliteSessionRoomStore(dbPath: string): SessionRoomStore {
-  return new SqliteSessionRoomStore(dbPath);
+export function createSqliteSessionRoomStore(
+  dbPath: string,
+  options?: CreateSqliteSessionRoomStoreOptions,
+): SessionRoomStore {
+  return new SqliteSessionRoomStore(dbPath, options?.logger);
 }

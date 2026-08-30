@@ -9,6 +9,7 @@ import {
 } from "./registrations";
 import { buildZodShape } from "./zod";
 import { MCP_SERVER_NAME } from "../runtime/tools/schemas";
+import { NoopLogger, type Logger } from "../core/logger";
 
 export interface BandMcpServerOptions {
   /** Single tools instance (no room scoping) or a resolver function for room-scoped tools. */
@@ -23,6 +24,8 @@ export interface BandMcpServerOptions {
   enableContactTools?: boolean;
   /** Additional MCP tool registrations to expose alongside the built-in tools. */
   additionalTools?: McpToolRegistration[];
+  /** Destination for teardown diagnostics. Defaults to a no-op logger. */
+  logger?: Logger;
 }
 
 const PORT_RANGE_START = 50000;
@@ -51,9 +54,11 @@ export class BandMcpServer {
   private actualPort: number | null = null;
   private readonly sessions = new Map<string, SessionRecord>();
   private sessionSweepTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly logger: Logger;
 
   public constructor(options: BandMcpServerOptions) {
     this.options = options;
+    this.logger = options.logger ?? new NoopLogger();
 
     const regOptions: BuildRegistrationsOptions = {
       enableMemoryTools: options.enableMemoryTools,
@@ -132,6 +137,12 @@ export class BandMcpServer {
         session.lastSeenAt = Date.now();
         await session.transport.handleRequest(req, res, req.body);
       } catch (error) {
+        // The client only ever sees a generic 500; without this the actual cause of a
+        // failed MCP request is lost entirely.
+        this.logger.warn("MCP request handler failed", {
+          sessionId: getSessionIdHeader(req.headers["mcp-session-id"]),
+          error,
+        });
         if (!res.headersSent) {
           sendMcpError(res, 500, "Internal server error");
         }
@@ -166,11 +177,11 @@ export class BandMcpServer {
 
   public async stop(): Promise<void> {
     this.stopSessionSweep();
-    const activeSessions = [...this.sessions.values()];
+    const activeSessions = [...this.sessions.entries()];
     this.sessions.clear();
-    await Promise.all(activeSessions.map(async (session) => {
-      await session.transport.close();
-    }));
+    // allSettled, not all: one transport refusing to close must not leave the remaining
+    // sessions open or skip the HTTP server shutdown below.
+    await this.closeAllSettled(activeSessions, "stop");
 
     if (!this.httpServer) {
       return;
@@ -253,11 +264,31 @@ export class BandMcpServer {
 
   private async closeIdleSessions(): Promise<void> {
     const cutoff = Date.now() - SESSION_IDLE_TTL_MS;
-    const idleSessions = [...this.sessions.values()].filter((session) => session.lastSeenAt < cutoff);
+    const idleSessions = [...this.sessions.entries()].filter(([, session]) => session.lastSeenAt < cutoff);
 
-    await Promise.all(idleSessions.map(async (session) => {
-      await session.transport.close();
-    }));
+    await this.closeAllSettled(idleSessions, "closeIdleSessions");
+  }
+
+  /**
+   * Closes every supplied session, reporting failures without letting one failure
+   * cancel the rest of the fan-out.
+   */
+  private async closeAllSettled(
+    entries: Array<[string, SessionRecord]>,
+    operation: string,
+  ): Promise<void> {
+    const results = await Promise.allSettled(
+      entries.map(async ([, session]) => { await session.transport.close(); }),
+    );
+
+    results.forEach((result, index) => {
+      if (result.status === "rejected") {
+        this.logger.warn(`MCP ${operation}: failed to close session transport`, {
+          sessionId: entries[index]?.[0],
+          error: result.reason,
+        });
+      }
+    });
   }
 }
 

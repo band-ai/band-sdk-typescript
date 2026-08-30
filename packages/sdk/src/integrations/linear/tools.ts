@@ -225,6 +225,7 @@ export function createLinearTools(options: CreateLinearToolsOptions): CustomTool
           client,
           args.session_id as string,
           args.steps as PlanStep[],
+          { logger },
         );
         return { ok: true };
       },

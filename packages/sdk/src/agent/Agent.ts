@@ -3,6 +3,7 @@ import type { AgentCredentials } from "../config";
 import { PlatformRuntime, type PlatformRuntimeOptions } from "../runtime/PlatformRuntime";
 import { runWithGracefulShutdown } from "../runtime/shutdown";
 import type { PlatformMessage } from "../runtime/types";
+import { NoopLogger, type Logger } from "../core/logger";
 
 export interface AgentCreateOptions extends Omit<PlatformRuntimeOptions, "agentId" | "apiKey" | "wsUrl" | "restUrl"> {
   adapter: FrameworkAdapter;
@@ -23,6 +24,7 @@ export interface AgentCreateOptions extends Omit<PlatformRuntimeOptions, "agentI
 export class Agent {
   private readonly platformRuntime: PlatformRuntime;
   private readonly adapter: FrameworkAdapter;
+  private logger: Logger = new NoopLogger();
   private started = false;
   private startPromise: Promise<void> | null = null;
   private shutdownTimeoutMs: number | null = 30_000;
@@ -56,6 +58,7 @@ export class Agent {
         : {}),
     });
     const agent = new Agent(runtime, adapter);
+    agent.logger = runtimeOptions.logger ?? new NoopLogger();
     agent.shutdownTimeoutMs = shutdownTimeoutMs === undefined ? 30_000 : shutdownTimeoutMs;
     return agent;
   }
@@ -90,7 +93,10 @@ export class Agent {
     if (!this.started && this.startPromise) {
       try {
         await this.startPromise;
-      } catch {
+      } catch (error) {
+        // start() already rejected and surfaced this to its own caller; there is nothing
+        // left to stop. Recorded at debug so the reason is still traceable from a log.
+        this.logger.debug("Agent.stop() called after a failed start; nothing to stop", { error });
         return true;
       }
     }
@@ -129,6 +135,7 @@ export class Agent {
     if (useSignals) {
       await runWithGracefulShutdown(this, {
         timeoutMs: this.shutdownTimeoutMs,
+        logger: this.logger,
       });
     } else {
       await this.start();

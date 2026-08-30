@@ -9,6 +9,7 @@ import {
 } from "./registrations";
 import { buildZodShape } from "./zod";
 import { MCP_SERVER_NAME } from "../runtime/tools/schemas";
+import { NoopLogger, type Logger } from "../core/logger";
 
 export interface BandMcpSseServerOptions {
   tools: AdapterToolsProtocol | ((roomId: string) => AdapterToolsProtocol | undefined);
@@ -17,6 +18,8 @@ export interface BandMcpSseServerOptions {
   enableMemoryTools?: boolean;
   enableContactTools?: boolean;
   additionalTools?: McpToolRegistration[];
+  /** Destination for teardown diagnostics. Defaults to a no-op logger. */
+  logger?: Logger;
 }
 
 interface SessionRecord {
@@ -37,9 +40,11 @@ export class BandMcpSseServer {
   private actualPort: number | null = null
   private readonly sessions = new Map<string, SessionRecord>()
   private sweepTimer: ReturnType<typeof setInterval> | null = null
+  private readonly logger: Logger
 
   public constructor(options: BandMcpSseServerOptions) {
     this.options = options
+    this.logger = options.logger ?? new NoopLogger()
 
     const regOptions: BuildRegistrationsOptions = {
       enableMemoryTools: options.enableMemoryTools,
@@ -107,7 +112,8 @@ export class BandMcpSseServer {
       transport.onclose = () => {
         this.sessions.delete(sessionId)
       }
-      transport.onerror = () => {
+      transport.onerror = (error) => {
+        this.logger.warn("MCP SSE transport error; dropping session", { sessionId, error })
         this.sessions.delete(sessionId)
       }
 
@@ -148,11 +154,21 @@ export class BandMcpSseServer {
 
   public async stop(): Promise<void> {
     this.stopSessionSweep()
-    const sessions = [...this.sessions.values()]
+    const sessions = [...this.sessions.entries()]
     this.sessions.clear()
-    await Promise.all(sessions.map(async (session) => {
-      await session.transport.close()
-    }))
+    // allSettled, not all: one transport refusing to close must not leave the remaining
+    // sessions open or skip the HTTP server shutdown below.
+    const results = await Promise.allSettled(
+      sessions.map(async ([, session]) => { await session.transport.close() }),
+    )
+    results.forEach((result, index) => {
+      if (result.status === "rejected") {
+        this.logger.warn("MCP SSE stop: failed to close session transport", {
+          sessionId: sessions[index]?.[0],
+          error: result.reason,
+        })
+      }
+    })
 
     if (!this.httpServer) {
       return
