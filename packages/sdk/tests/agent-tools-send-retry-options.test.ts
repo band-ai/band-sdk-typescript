@@ -1,12 +1,9 @@
-import { BandClient } from "@band-ai/rest-client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { FernRestAdapter } from "../src/client/rest/FernRestAdapter";
-import type { FernBandClientLike } from "../src/client/rest/types";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 import { ContactCallbackTools } from "../src/runtime/tools/ContactCallbackTools";
-import { createFakeFetchServer, type FakeResponseSpec } from "./support/fakeFetchServer";
+import { SUSTAINED_429 } from "./support/fakeFetchServer";
+import { buildFakeRestAdapter } from "./support/fakeRestAdapter";
 import { settleThroughRetries } from "./support/settleThroughRetries";
 
 /**
@@ -20,19 +17,6 @@ import { settleThroughRetries } from "./support/settleThroughRetries";
  * so a reintroduced forwarded default fails on attempt count, not on an
  * inspectable argument.
  */
-function buildFakeClient(responses: FakeResponseSpec[]) {
-  const { fetch, calls } = createFakeFetchServer(responses);
-  const client = new BandClient({
-    apiKey: "test-key",
-    baseUrl: "http://fake-band.test",
-    fetch,
-  }) as unknown as FernBandClientLike;
-  return { rest: new FernRestAdapter(client), calls };
-}
-
-const SUSTAINED_429 = (attempts: number): FakeResponseSpec[] =>
-  Array.from({ length: attempts }, () => ({ status: 429, headers: { "Retry-After": "1" } }));
-
 describe("message-send retry cap holds through the tool layer", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -43,7 +27,7 @@ describe("message-send retry cap holds through the tool layer", () => {
   });
 
   it("AgentTools.sendMessage makes 3 attempts, not 4, on a sustained 429", async () => {
-    const { rest, calls } = buildFakeClient(SUSTAINED_429(3));
+    const { rest, calls } = buildFakeRestAdapter(SUSTAINED_429(3));
     const tools = new AgentTools({ roomId: "room-1", rest });
 
     await expect(settleThroughRetries(tools.sendMessage("hi"))).rejects.toMatchObject({
@@ -53,7 +37,7 @@ describe("message-send retry cap holds through the tool layer", () => {
   });
 
   it("AgentTools.sendEvent makes 3 attempts, not 4, on a sustained 429", async () => {
-    const { rest, calls } = buildFakeClient(SUSTAINED_429(3));
+    const { rest, calls } = buildFakeRestAdapter(SUSTAINED_429(3));
     const tools = new AgentTools({ roomId: "room-1", rest });
 
     await expect(settleThroughRetries(tools.sendEvent("hi", "task"))).rejects.toMatchObject({
@@ -63,7 +47,7 @@ describe("message-send retry cap holds through the tool layer", () => {
   });
 
   it("ContactCallbackTools.sendMessage makes 3 attempts, not 4, on a sustained 429", async () => {
-    const { rest, calls } = buildFakeClient(SUSTAINED_429(3));
+    const { rest, calls } = buildFakeRestAdapter(SUSTAINED_429(3));
     const tools = new ContactCallbackTools(rest, "room-1");
 
     await expect(settleThroughRetries(tools.sendMessage("hi"))).rejects.toMatchObject({
@@ -73,7 +57,7 @@ describe("message-send retry cap holds through the tool layer", () => {
   });
 
   it("ContactCallbackTools.sendEvent makes 3 attempts, not 4, on a sustained 429", async () => {
-    const { rest, calls } = buildFakeClient(SUSTAINED_429(3));
+    const { rest, calls } = buildFakeRestAdapter(SUSTAINED_429(3));
     const tools = new ContactCallbackTools(rest, "room-1");
 
     await expect(settleThroughRetries(tools.sendEvent("hi", "task"))).rejects.toMatchObject({

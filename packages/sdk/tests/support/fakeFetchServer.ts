@@ -26,6 +26,11 @@ export function createFakeFetchServer(responses: FakeResponseSpec[]): FakeFetchS
   const calls: RecordedFetchCall[] = [];
 
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+    if (signal?.aborted) {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    }
+
     const url = input instanceof Request ? input.url : input.toString();
     const method = init?.method ?? (input instanceof Request ? input.method : "GET");
     const headerSource = init?.headers ?? (input instanceof Request ? input.headers : undefined);
@@ -49,4 +54,9 @@ export function createFakeFetchServer(responses: FakeResponseSpec[]): FakeFetchS
   }) as typeof fetch;
 
   return { fetch: fetchImpl, calls };
+}
+
+/** `count` consecutive rate-limited responses, for driving a retry budget to exhaustion. */
+export function SUSTAINED_429(count: number): FakeResponseSpec[] {
+  return Array.from({ length: count }, () => ({ status: 429, headers: { "Retry-After": "1" } }));
 }

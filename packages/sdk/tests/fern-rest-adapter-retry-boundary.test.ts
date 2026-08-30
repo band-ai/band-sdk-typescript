@@ -1,9 +1,7 @@
-import { BandClient } from "@band-ai/rest-client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { FernRestAdapter } from "../src/client/rest/FernRestAdapter";
-import type { FernBandClientLike } from "../src/client/rest/types";
-import { createFakeFetchServer, type FakeResponseSpec } from "./support/fakeFetchServer";
+import { SUSTAINED_429 } from "./support/fakeFetchServer";
+import { buildFakeRestAdapter } from "./support/fakeRestAdapter";
 import { settleThroughRetries } from "./support/settleThroughRetries";
 
 /**
@@ -13,16 +11,6 @@ import { settleThroughRetries } from "./support/settleThroughRetries";
  * `BandClient` to a fake `fetch`, so `maxRetries` has to survive all the way
  * through the generated client's retry/backoff to pass.
  */
-
-function buildAdapter(responses: FakeResponseSpec[]) {
-  const { fetch, calls } = createFakeFetchServer(responses);
-  const client = new BandClient({
-    apiKey: "test-key",
-    baseUrl: "http://fake-band.test",
-    fetch,
-  }) as unknown as FernBandClientLike;
-  return { adapter: new FernRestAdapter(client), calls };
-}
 
 describe("FernRestAdapter retry boundary (real generated client)", () => {
   beforeEach(() => {
@@ -34,17 +22,15 @@ describe("FernRestAdapter retry boundary (real generated client)", () => {
   });
 
   it("getAgentMe: exhausts its 4-attempt budget (maxRetries: 3) then succeeds", async () => {
-    const { adapter, calls } = buildAdapter([
-      { status: 429, headers: { "Retry-After": "1" } },
-      { status: 429, headers: { "Retry-After": "1" } },
-      { status: 429, headers: { "Retry-After": "1" } },
+    const { rest, calls } = buildFakeRestAdapter([
+      ...SUSTAINED_429(3),
       {
         status: 200,
         body: { id: "a1", name: "Agent", description: null, handle: "@agent", owner_uuid: "owner-1" },
       },
     ]);
 
-    const result = await settleThroughRetries(adapter.getAgentMe());
+    const result = await settleThroughRetries(rest.getAgentMe());
 
     expect(result).toEqual({
       id: "a1",
@@ -57,28 +43,22 @@ describe("FernRestAdapter retry boundary (real generated client)", () => {
   });
 
   it("getAgentMe: never exceeds its 4-attempt budget and surfaces the terminal 429", async () => {
-    const { adapter, calls } = buildAdapter([
-      { status: 429, headers: { "Retry-After": "1" } },
-      { status: 429, headers: { "Retry-After": "1" } },
-      { status: 429, headers: { "Retry-After": "1" } },
-      { status: 429, headers: { "Retry-After": "1" } },
-    ]);
+    const { rest, calls } = buildFakeRestAdapter(SUSTAINED_429(4));
 
-    await expect(settleThroughRetries(adapter.getAgentMe())).rejects.toMatchObject({
+    await expect(settleThroughRetries(rest.getAgentMe())).rejects.toMatchObject({
       statusCode: 429,
     });
     expect(calls).toHaveLength(4);
   });
 
   it("createChatMessage: exhausts its 3-attempt budget (maxRetries: 2) then succeeds", async () => {
-    const { adapter, calls } = buildAdapter([
-      { status: 429, headers: { "Retry-After": "1" } },
-      { status: 429, headers: { "Retry-After": "1" } },
+    const { rest, calls } = buildFakeRestAdapter([
+      ...SUSTAINED_429(2),
       { status: 200, body: { ok: true, id: "msg-1" } },
     ]);
 
     const result = await settleThroughRetries(
-      adapter.createChatMessage("room-1", { content: "hello", messageType: "text" }),
+      rest.createChatMessage("room-1", { content: "hello", messageType: "text" }),
     );
 
     expect(result).toEqual({ ok: true, id: "msg-1" });

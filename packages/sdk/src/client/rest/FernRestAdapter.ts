@@ -16,7 +16,12 @@ import type {
   StoreMemoryArgs,
   ToolOperationResult,
 } from "../../contracts/dtos";
-import { DEFAULT_REQUEST_OPTIONS, type RestRequestOptions } from "./requestOptions";
+import {
+  AGENT_ME_MAX_RETRIES,
+  DEFAULT_REQUEST_OPTIONS,
+  MESSAGE_SEND_MAX_RETRIES,
+  type RestRequestOptions,
+} from "./requestOptions";
 import { normalizePaginationMetadata } from "./pagination";
 import { normalizeContactRequestsResult } from "./responseNormalization";
 import type {
@@ -29,12 +34,6 @@ import type {
   PlatformChatMessage,
 } from "./types";
 
-// `maxRetries` on RestRequestOptions counts retries *after* the first attempt
-// (total attempts = maxRetries + 1) — it flows straight into
-// `@band-ai/rest-client`'s generated `requestWithRetries`, which already
-// retries 408/429/5xx with Retry-After / X-RateLimit-Reset aware backoff.
-// These per-operation values are one less than the total-attempt counts they
-// replace, to keep today's attempt counts unchanged.
 function mergeOptions(options?: RestRequestOptions, maxRetries?: number): RestRequestOptions {
   return {
     ...DEFAULT_REQUEST_OPTIONS,
@@ -42,9 +41,6 @@ function mergeOptions(options?: RestRequestOptions, maxRetries?: number): RestRe
     ...options,
   };
 }
-
-const AGENT_ME_MAX_RETRIES = 3;
-const MESSAGE_SEND_MAX_RETRIES = 2;
 
 function asMetadataMap(value: unknown): MetadataMap | undefined {
   return asOptionalRecord(value) as MetadataMap | undefined;
@@ -359,10 +355,10 @@ export class FernRestAdapter implements RestApi {
   }
 
   public async getAgentMe(options?: RestRequestOptions): Promise<AgentIdentity> {
+    const requestOptions = mergeOptions(options, AGENT_ME_MAX_RETRIES);
+
     if (this.client.agentApiIdentity?.getAgentMe) {
-      const response = await this.client.agentApiIdentity.getAgentMe(
-        mergeOptions(options, AGENT_ME_MAX_RETRIES),
-      );
+      const response = await this.client.agentApiIdentity.getAgentMe(requestOptions);
       return normalizeAgentIdentityEnvelope(response, "agentApiIdentity.getAgentMe");
     }
 
@@ -373,7 +369,7 @@ export class FernRestAdapter implements RestApi {
       );
     }
 
-    const profile = await profileClient.getMyProfile(mergeOptions(options, AGENT_ME_MAX_RETRIES));
+    const profile = await profileClient.getMyProfile(requestOptions);
     return normalizeLegacyProfileIdentity(
       normalizeLegacyProfileEnvelope(profile),
       "profile.getMyProfile",
