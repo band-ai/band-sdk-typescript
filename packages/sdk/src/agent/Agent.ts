@@ -5,7 +5,7 @@ import type { Logger } from "../core/logger";
 import { NoopLogger } from "../core/logger";
 import { PlatformRuntime, type PlatformRuntimeOptions } from "../runtime/PlatformRuntime";
 import type { RuntimeLifecycleState } from "../runtime/lifecycle";
-import { LifecycleTracker, isLegalRuntimeTransition, toLifecycleError } from "../runtime/lifecycle";
+import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, toLifecycleError } from "../runtime/lifecycle";
 import { runWithGracefulShutdown } from "../runtime/shutdown";
 import type { PlatformMessage } from "../runtime/types";
 
@@ -30,8 +30,8 @@ export class Agent {
   private readonly adapter: FrameworkAdapter;
   private readonly lifecycle: LifecycleTracker<RuntimeLifecycleState>;
   private readonly logger: Logger;
-  private startOperation: Promise<void> | null = null;
-  private stopOperation: Promise<boolean> | null = null;
+  private readonly startGate = new SingleFlight<void>();
+  private readonly stopGate = new SingleFlight<boolean>();
   private shutdownTimeoutMs: number | null = 30_000;
 
   public constructor(runtime: PlatformRuntime, adapter: FrameworkAdapter, logger?: Logger) {
@@ -107,23 +107,13 @@ export class Agent {
       throw new RuntimeStateError("Agent cannot start while a stop is in progress");
     }
 
-    if (this.startOperation) {
-      return await this.startOperation;
+    if (this.startGate.pending) {
+      return await this.startGate.pending;
     }
 
-    this.stopOperation = null;
+    this.stopGate.reset();
     this.lifecycle.transition({ status: "starting" }, "start");
-    const operation = this.runStart();
-    this.startOperation = operation;
-
-    try {
-      await operation;
-    } catch (error) {
-      if (this.startOperation === operation) {
-        this.startOperation = null;
-      }
-      throw error;
-    }
+    await this.startGate.runOrRetry(() => this.runStart());
   }
 
   private async runStart(): Promise<void> {
@@ -151,19 +141,13 @@ export class Agent {
    * same failure, and a `start()` re-arms teardown.
    */
   public async stop(timeoutMs?: number | null): Promise<boolean> {
-    if (this.stopOperation) {
-      return await this.stopOperation;
-    }
-
-    const operation = this.runStop(timeoutMs);
-    this.stopOperation = operation;
-    return await operation;
+    return await this.stopGate.run(() => this.runStop(timeoutMs));
   }
 
   private async runStop(timeoutMs?: number | null): Promise<boolean> {
     // Only a start that is still in flight has to be awaited; waiting on an
     // already-settled one would leave a window where start() is still allowed.
-    const pendingStart = this.lifecycle.state.status === "starting" ? this.startOperation : null;
+    const pendingStart = this.lifecycle.state.status === "starting" ? this.startGate.pending : null;
     if (pendingStart) {
       try {
         await pendingStart;
@@ -181,6 +165,7 @@ export class Agent {
     // agent shut down gracefully while `state` still reads "failed".
     if (initial.status === "failed") {
       this.logger.debug("Agent stop is resurfacing the recorded start failure", { error: initial.error });
+
       throw initial.error;
     }
 
@@ -188,7 +173,7 @@ export class Agent {
       return true;
     }
 
-    this.startOperation = null;
+    this.startGate.reset();
     this.lifecycle.transition({ status: "stopping" }, "stop");
 
     try {

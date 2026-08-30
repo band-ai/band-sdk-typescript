@@ -54,58 +54,47 @@ export type ExecutionLifecycleState =
 /** Discriminant values of {@link ExecutionLifecycleState}. */
 export type ExecutionLifecycleStatus = ExecutionLifecycleState["status"];
 
-function assertNever(value: never, context: string): never {
-  throw new Error(`Unhandled ${context}: ${JSON.stringify(value)}`);
-}
-
 /**
- * Legal successors for {@link RuntimeLifecycleState}.
+ * Legal successors for {@link RuntimeLifecycleState}, keyed by the current status.
  *
- * The `never`-typed default is the exhaustiveness guard: adding a status to the
- * union without adding a case here fails `tsc --noEmit`.
+ * A `Record` over the full `RuntimeLifecycleStatus` union, not a switch: adding
+ * a status without adding a row here is a missing-property error under
+ * `tsc --noEmit`, the same exhaustiveness guarantee a `never`-typed switch
+ * default would give, without a runtime branch to fall through to.
  */
+const RUNTIME_LIFECYCLE_TRANSITIONS: Readonly<Record<RuntimeLifecycleStatus, readonly RuntimeLifecycleStatus[]>> = {
+  not_started: ["starting"],
+  starting: ["running", "stopping", "stopped", "failed"],
+  running: ["stopping", "failed"],
+  stopping: ["stopped", "failed"],
+  stopped: ["starting"],
+  failed: ["starting", "stopping", "failed"],
+};
+
 export function isLegalRuntimeTransition(
   from: RuntimeLifecycleStatus,
   to: RuntimeLifecycleStatus,
 ): boolean {
-  switch (from) {
-    case "not_started":
-      return to === "starting";
-    case "starting":
-      return to === "running" || to === "stopping" || to === "stopped" || to === "failed";
-    case "running":
-      return to === "stopping" || to === "failed";
-    case "stopping":
-      return to === "stopped" || to === "failed";
-    case "stopped":
-      return to === "starting";
-    case "failed":
-      return to === "starting" || to === "stopping" || to === "failed";
-    default:
-      return assertNever(from, "runtime lifecycle status");
-  }
+  return RUNTIME_LIFECYCLE_TRANSITIONS[from].includes(to);
 }
 
 /**
- * Legal successors for {@link ExecutionLifecycleState}.
+ * Legal successors for {@link ExecutionLifecycleState}, keyed by the current status.
  *
- * Same exhaustiveness guard as {@link isLegalRuntimeTransition}.
+ * Same exhaustiveness guarantee as {@link RUNTIME_LIFECYCLE_TRANSITIONS}.
  */
+const EXECUTION_LIFECYCLE_TRANSITIONS: Readonly<Record<ExecutionLifecycleStatus, readonly ExecutionLifecycleStatus[]>> = {
+  running: ["stopping", "failed"],
+  stopping: ["stopped", "failed"],
+  stopped: [],
+  failed: [],
+};
+
 export function isLegalExecutionTransition(
   from: ExecutionLifecycleStatus,
   to: ExecutionLifecycleStatus,
 ): boolean {
-  switch (from) {
-    case "running":
-      return to === "stopping" || to === "failed";
-    case "stopping":
-      return to === "stopped" || to === "failed";
-    case "stopped":
-    case "failed":
-      return false;
-    default:
-      return assertNever(from, "execution lifecycle status");
-  }
+  return EXECUTION_LIFECYCLE_TRANSITIONS[from].includes(to);
 }
 
 /** Normalises an unknown thrown value into an `Error` for storage on a state. */
@@ -165,6 +154,63 @@ export class TerminalSignal {
       } else {
         waiter.resolve();
       }
+    }
+  }
+}
+
+/**
+ * Coalesces concurrent calls into one in-flight operation.
+ *
+ * Shared by the `start()`/`stop()` pair on {@link Agent}, {@link PlatformRuntime},
+ * {@link AgentRuntime} and {@link Execution} — the one piece of their lifecycle
+ * plumbing that is identical across all four.
+ */
+export class SingleFlight<T> {
+  private operation: Promise<T> | null = null;
+
+  /** The in-flight (or last latched) operation, if any. */
+  public get pending(): Promise<T> | null {
+    return this.operation;
+  }
+
+  /** Forget the latched operation so the next {@link run}/{@link runOrRetry} starts fresh. */
+  public reset(): void {
+    this.operation = null;
+  }
+
+  /**
+   * Runs `factory()` once; concurrent and later callers get the same promise.
+   * The result — success or failure — stays latched until {@link reset}.
+   */
+  public run(factory: () => Promise<T>): Promise<T> {
+    if (this.operation) {
+      return this.operation;
+    }
+
+    const operation = factory();
+    this.operation = operation;
+    return operation;
+  }
+
+  /**
+   * Like {@link run}, but unlatches on rejection so the next call retries
+   * instead of replaying the same failure. Only unlatches its own operation —
+   * one already replaced by a {@link reset} or a subsequent call is left alone.
+   */
+  public async runOrRetry(factory: () => Promise<T>): Promise<T> {
+    if (this.operation) {
+      return this.operation;
+    }
+
+    const operation = factory();
+    this.operation = operation;
+    try {
+      return await operation;
+    } catch (error) {
+      if (this.operation === operation) {
+        this.operation = null;
+      }
+      throw error;
     }
   }
 }

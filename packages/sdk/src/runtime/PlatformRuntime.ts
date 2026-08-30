@@ -11,7 +11,7 @@ import { DefaultPreprocessor } from "./preprocessing/DefaultPreprocessor";
 import { ContactEventHandler } from "./ContactEventHandler";
 import type { ExecutionContext, ExecutionContextOptions } from "./ExecutionContext";
 import type { RuntimeLifecycleState } from "./lifecycle";
-import { LifecycleTracker, isLegalRuntimeTransition, toLifecycleError } from "./lifecycle";
+import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, toLifecycleError } from "./lifecycle";
 import type { Logger } from "../core/logger";
 import { NoopLogger } from "../core/logger";
 
@@ -66,8 +66,8 @@ export class PlatformRuntime {
   private runtime?: AgentRuntime;
   private contactHandler?: ContactEventHandler;
   private activeAdapter?: FrameworkAdapter;
-  private startOperation: Promise<void> | null = null;
-  private stopOperation: Promise<boolean> | null = null;
+  private readonly startGate = new SingleFlight<void>();
+  private readonly stopGate = new SingleFlight<boolean>();
   private stopAwaitsStart = false;
   private _agentName = "";
   private _agentDescription = "";
@@ -201,23 +201,13 @@ export class PlatformRuntime {
       throw new RuntimeStateError("PlatformRuntime cannot start while a stop is in progress");
     }
 
-    if (this.startOperation) {
-      return await this.startOperation;
+    if (this.startGate.pending) {
+      return await this.startGate.pending;
     }
 
-    this.stopOperation = null;
+    this.stopGate.reset();
     this.lifecycle.transition({ status: "starting" }, "start");
-    const operation = this.runStart(adapter);
-    this.startOperation = operation;
-
-    try {
-      await operation;
-    } catch (error) {
-      if (this.startOperation === operation) {
-        this.startOperation = null;
-      }
-      throw error;
-    }
+    await this.startGate.runOrRetry(() => this.runStart(adapter));
   }
 
   private async runStart(adapter: FrameworkAdapter): Promise<void> {
@@ -328,13 +318,7 @@ export class PlatformRuntime {
   }
 
   private async beginStop(timeoutMs: number | undefined, trigger: string): Promise<boolean> {
-    if (this.stopOperation) {
-      return await this.stopOperation;
-    }
-
-    const operation = this.runStop(timeoutMs, trigger);
-    this.stopOperation = operation;
-    return await operation;
+    return await this.stopGate.run(() => this.runStop(timeoutMs, trigger));
   }
 
   private async runStop(timeoutMs: number | undefined, trigger: string): Promise<boolean> {
@@ -345,7 +329,7 @@ export class PlatformRuntime {
     // awaited when no start is in flight, keeping the transitions below
     // observable in the caller's own tick.
     const pendingStart = trigger !== START_CLEANUP_TRIGGER && this.lifecycle.state.status === "starting"
-      ? this.startOperation
+      ? this.startGate.pending
       : null;
     if (pendingStart) {
       this.stopAwaitsStart = true;
@@ -369,6 +353,7 @@ export class PlatformRuntime {
       const initial = this.lifecycle.state;
       if (initial.status === "failed") {
         this.logger.debug("PlatformRuntime stop is resurfacing the recorded start failure", { error: initial.error });
+
         throw initial.error;
       }
       if (initial.status === "starting" || initial.status === "running") {
@@ -377,7 +362,7 @@ export class PlatformRuntime {
       return true;
     }
 
-    this.startOperation = null;
+    this.startGate.reset();
     this.lifecycle.transition({ status: "stopping" }, trigger);
     this.runtime = undefined;
     this.contactHandler = undefined;

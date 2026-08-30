@@ -9,6 +9,7 @@ import { ExecutionContext, type ExecutionContextOptions } from "../ExecutionCont
 import type { RuntimeLifecycleState } from "../lifecycle";
 import {
   LifecycleTracker,
+  SingleFlight,
   TerminalSignal,
   isLegalRuntimeTransition,
   toLifecycleError,
@@ -59,8 +60,8 @@ export class AgentRuntime {
   private readonly lifecycle: LifecycleTracker<RuntimeLifecycleState>;
   private stopController = new AbortController();
   private consumeTask: Promise<void> | null = null;
-  private startOperation: Promise<void> | null = null;
-  private stopOperation: Promise<boolean> | null = null;
+  private readonly startGate = new SingleFlight<void>();
+  private readonly stopGate = new SingleFlight<boolean>();
 
   public constructor(options: AgentRuntimeOptions) {
     this.link = options.link;
@@ -116,24 +117,14 @@ export class AgentRuntime {
       throw new RuntimeStateError("AgentRuntime cannot start while a stop is in progress");
     }
 
-    if (this.startOperation) {
-      return await this.startOperation;
+    if (this.startGate.pending) {
+      return await this.startGate.pending;
     }
 
-    this.stopOperation = null;
+    this.stopGate.reset();
     this.stoppedSignal.rearm();
     this.lifecycle.transition({ status: "starting" }, "start");
-    const operation = this.runStart();
-    this.startOperation = operation;
-
-    try {
-      await operation;
-    } catch (error) {
-      if (this.startOperation === operation) {
-        this.startOperation = null;
-      }
-      throw error;
-    }
+    await this.startGate.runOrRetry(() => this.runStart());
   }
 
   private async runStart(): Promise<void> {
@@ -207,13 +198,7 @@ export class AgentRuntime {
    * reporting a shutdown it did not perform.
    */
   public async stop(timeoutMs?: number): Promise<boolean> {
-    if (this.stopOperation) {
-      return await this.stopOperation;
-    }
-
-    const operation = this.runStop(timeoutMs);
-    this.stopOperation = operation;
-    return await operation;
+    return await this.stopGate.run(() => this.runStop(timeoutMs));
   }
 
   private async runStop(timeoutMs?: number): Promise<boolean> {
@@ -221,7 +206,7 @@ export class AgentRuntime {
     // start() has not created yet, so wait for it to settle first. Nothing is
     // awaited when no start is in flight, keeping the transition below
     // observable in the caller's own tick.
-    const pendingStart = this.lifecycle.state.status === "starting" ? this.startOperation : null;
+    const pendingStart = this.lifecycle.state.status === "starting" ? this.startGate.pending : null;
     if (pendingStart) {
       try {
         await pendingStart;
@@ -238,7 +223,7 @@ export class AgentRuntime {
 
     const fatalError = initial.status === "failed" ? initial.error : null;
 
-    this.startOperation = null;
+    this.startGate.reset();
     this.lifecycle.transition({ status: "stopping" }, "stop");
 
     try {

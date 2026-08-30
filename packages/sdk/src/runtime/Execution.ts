@@ -8,6 +8,7 @@ import type { ExecutionContext } from "./ExecutionContext";
 import type { ExecutionLifecycleState } from "./lifecycle";
 import {
   LifecycleTracker,
+  SingleFlight,
   TerminalSignal,
   isLegalExecutionTransition,
   toLifecycleError,
@@ -64,7 +65,7 @@ export class Execution {
   private readonly stoppedSignal = new TerminalSignal();
   private readonly lifecycle: LifecycleTracker<ExecutionLifecycleState>;
   private readonly processTask: Promise<void>;
-  private stopOperation: Promise<boolean> | null = null;
+  private readonly stopGate = new SingleFlight<boolean>();
   private firstWsMessageId: string | null = null;
   private syncComplete = false;
   private inFlight = 0;
@@ -180,13 +181,7 @@ export class Execution {
   }
 
   public async stop(timeoutMs?: number): Promise<boolean> {
-    if (this.stopOperation) {
-      return await this.stopOperation;
-    }
-
-    const operation = this.runStop(timeoutMs);
-    this.stopOperation = operation;
-    return await operation;
+    return await this.stopGate.run(() => this.runStop(timeoutMs));
   }
 
   private async runStop(timeoutMs?: number): Promise<boolean> {
