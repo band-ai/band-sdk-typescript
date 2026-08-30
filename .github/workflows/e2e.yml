@@ -41,11 +41,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # BAND_API_KEY_USER is the same Band user credential band-sdk-python's
+      # e2e.yml uses (its E2E_BAND_API_KEY_USER secret) to dynamically
+      # provision/reap its own test agents — same secret name/shape here so
+      # the value can be shared across both repos' E2E secrets.
       - name: Run core retry/participant live test
         working-directory: packages/sdk
         env:
-          SDK_E2E_BASIC_AGENT_ID: ${{ secrets.SDK_E2E_BASIC_AGENT_ID }}
-          SDK_E2E_BASIC_API_KEY: ${{ secrets.SDK_E2E_BASIC_API_KEY }}
-          SDK_E2E_PLANNER_AGENT_ID: ${{ secrets.SDK_E2E_PLANNER_AGENT_ID }}
-          SDK_E2E_PLANNER_API_KEY: ${{ secrets.SDK_E2E_PLANNER_API_KEY }}
+          BAND_API_KEY_USER: ${{ secrets.E2E_BAND_API_KEY_USER }}
+          BAND_REST_URL: ${{ secrets.E2E_BAND_REST_URL }}
+          BAND_WS_URL: ${{ secrets.E2E_BAND_WS_URL }}
         run: npx tsx tests/integration/core-retry-participant-live.ts
