@@ -96,13 +96,11 @@
 ## [0.1.2](https://github.com/thenvoi/thenvoi-sdk-typescript/compare/sdk-v0.1.1...sdk-v0.1.2) (2026-03-31)
 
 
-### Features
-
-* add [@band-ai](https://github.com/band-ai) dual-publish support ([#22](https://github.com/thenvoi/thenvoi-sdk-typescript/issues/22)) ([ada247f](https://github.com/thenvoi/thenvoi-sdk-typescript/commit/ada247fb13d48385d787388b1cd57cbb7891a2df))
+No changes of its own: release-please cut this version alongside 0.1.3 for the same
+change, which is recorded once under 0.1.3 above.
 
 ## [0.1.1](https://github.com/thenvoi/thenvoi-sdk-typescript/compare/sdk-v0.1.0...sdk-v0.1.1) (2026-03-31)
 
 
-### Features
-
-* add [@band-ai](https://github.com/band-ai) dual-publish support ([#22](https://github.com/thenvoi/thenvoi-sdk-typescript/issues/22)) ([ada247f](https://github.com/thenvoi/thenvoi-sdk-typescript/commit/ada247fb13d48385d787388b1cd57cbb7891a2df))
+No changes of its own: release-please cut this version alongside 0.1.3 for the same
+change, which is recorded once under 0.1.3 above.

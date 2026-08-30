@@ -177,6 +177,27 @@ const agent = Agent.create({
 await agent.run();
 ```
 
+### Letta
+
+Stateful agents whose memory persists on a Letta server between sessions:
+
+```ts
+import { Agent, LettaAdapter, loadAgentConfig } from "@band-ai/sdk";
+
+const agent = Agent.create({
+  adapter: new LettaAdapter({
+    model: "openai/gpt-4o",
+    lettaApiKey: process.env.LETTA_API_KEY,
+    memoryBlocks: [{ label: "persona", value: "You are a helpful teammate." }],
+  }),
+  config: loadAgentConfig("my_agent"),
+});
+
+await agent.run();
+```
+
+Pass `lettaAgentId` to attach to an existing Letta agent instead of creating one.
+
 ### A2A Bridge
 
 Route messages to an external A2A-compliant agent:
@@ -314,6 +335,7 @@ The root `@band-ai/sdk` import covers the common runtime, adapters, and config. 
 | `@band-ai/sdk/testing` | `FakeAgentTools` and test utilities |
 | `@band-ai/sdk/config` | Config loaders (also re-exported from root) |
 | `@band-ai/sdk/core` | Logger, the `BandSdkError` family, adapter protocols, and the DTO, memory-contract and tool-executor types those protocols name |
+| `@band-ai/sdk/converters` | History converters for turning platform messages into each framework's own message shape |
 | `@band-ai/sdk/runtime` | Runtime internals (room presence, execution context) |
 
 ## Examples
@@ -331,6 +353,7 @@ Working examples live in `examples/`. Each folder is self-contained.
 | `examples/langgraph/` | LangGraph | Graph-based agent |
 | `examples/custom-adapter/` | SimpleAdapter | Custom adapter protocol |
 | `examples/parlant/` | Parlant | Guideline-based behavior |
+| `examples/letta/` | Letta | Stateful agents with persistent memory |
 | `examples/a2a-bridge/` | A2A | Bridge to external A2A agents |
 | `examples/a2a-gateway/` | A2A Gateway | Expose Band peers as A2A endpoints |
 | `examples/linear-band/` | Linear | Bridge server with webhook handling |

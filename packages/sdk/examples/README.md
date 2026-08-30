@@ -13,7 +13,7 @@ Folders:
 - `custom-adapter/`
 - `langgraph/`
 - `parlant/`
+- `letta/`
 - `a2a-bridge/`
 - `a2a-gateway/`
 - `linear-band/`
-- `dog-landing-page/`
