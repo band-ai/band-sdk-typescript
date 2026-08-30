@@ -64,4 +64,16 @@ describe("FernRestAdapter retry boundary (real generated client)", () => {
     expect(result).toEqual({ ok: true, id: "msg-1" });
     expect(calls).toHaveLength(3);
   });
+
+  it("createChatMessage: an explicit caller maxRetries wins over the operation's own cap", async () => {
+    const { rest, calls } = buildFakeRestAdapter(SUSTAINED_429(1));
+
+    await expect(
+      settleThroughRetries(
+        rest.createChatMessage("room-1", { content: "hello", messageType: "text" }, { maxRetries: 0 }),
+      ),
+    ).rejects.toMatchObject({ statusCode: 429 });
+
+    expect(calls).toHaveLength(1);
+  });
 });

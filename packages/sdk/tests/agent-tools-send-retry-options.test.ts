@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { FernRestAdapter } from "../src/client/rest/FernRestAdapter";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 import { ContactCallbackTools } from "../src/runtime/tools/ContactCallbackTools";
 import { SUSTAINED_429 } from "./support/fakeFetchServer";
@@ -17,6 +18,35 @@ import { settleThroughRetries } from "./support/settleThroughRetries";
  * so a reintroduced forwarded default fails on attempt count, not on an
  * inspectable argument.
  */
+interface SendPath {
+  name: string;
+  urlSegment: "messages" | "events";
+  send: (rest: FernRestAdapter) => Promise<unknown>;
+}
+
+const SEND_PATHS: SendPath[] = [
+  {
+    name: "AgentTools.sendMessage",
+    urlSegment: "messages",
+    send: (rest) => new AgentTools({ roomId: "room-1", rest }).sendMessage("hi"),
+  },
+  {
+    name: "AgentTools.sendEvent",
+    urlSegment: "events",
+    send: (rest) => new AgentTools({ roomId: "room-1", rest }).sendEvent("hi", "task"),
+  },
+  {
+    name: "ContactCallbackTools.sendMessage",
+    urlSegment: "messages",
+    send: (rest) => new ContactCallbackTools(rest, "room-1").sendMessage("hi"),
+  },
+  {
+    name: "ContactCallbackTools.sendEvent",
+    urlSegment: "events",
+    send: (rest) => new ContactCallbackTools(rest, "room-1").sendEvent("hi", "task"),
+  },
+];
+
 describe("message-send retry cap holds through the tool layer", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -26,43 +56,15 @@ describe("message-send retry cap holds through the tool layer", () => {
     vi.useRealTimers();
   });
 
-  it("AgentTools.sendMessage makes 3 attempts, not 4, on a sustained 429", async () => {
-    const { rest, calls } = buildFakeRestAdapter(SUSTAINED_429(3));
-    const tools = new AgentTools({ roomId: "room-1", rest });
+  it.each(SEND_PATHS)(
+    "$name makes 3 attempts, not 4, on a sustained 429, over its own /$urlSegment route",
+    async ({ urlSegment, send }) => {
+      const { rest, calls } = buildFakeRestAdapter(SUSTAINED_429(3));
 
-    await expect(settleThroughRetries(tools.sendMessage("hi"))).rejects.toMatchObject({
-      statusCode: 429,
-    });
-    expect(calls).toHaveLength(3);
-  });
+      await expect(settleThroughRetries(send(rest))).rejects.toMatchObject({ statusCode: 429 });
 
-  it("AgentTools.sendEvent makes 3 attempts, not 4, on a sustained 429", async () => {
-    const { rest, calls } = buildFakeRestAdapter(SUSTAINED_429(3));
-    const tools = new AgentTools({ roomId: "room-1", rest });
-
-    await expect(settleThroughRetries(tools.sendEvent("hi", "task"))).rejects.toMatchObject({
-      statusCode: 429,
-    });
-    expect(calls).toHaveLength(3);
-  });
-
-  it("ContactCallbackTools.sendMessage makes 3 attempts, not 4, on a sustained 429", async () => {
-    const { rest, calls } = buildFakeRestAdapter(SUSTAINED_429(3));
-    const tools = new ContactCallbackTools(rest, "room-1");
-
-    await expect(settleThroughRetries(tools.sendMessage("hi"))).rejects.toMatchObject({
-      statusCode: 429,
-    });
-    expect(calls).toHaveLength(3);
-  });
-
-  it("ContactCallbackTools.sendEvent makes 3 attempts, not 4, on a sustained 429", async () => {
-    const { rest, calls } = buildFakeRestAdapter(SUSTAINED_429(3));
-    const tools = new ContactCallbackTools(rest, "room-1");
-
-    await expect(settleThroughRetries(tools.sendEvent("hi", "task"))).rejects.toMatchObject({
-      statusCode: 429,
-    });
-    expect(calls).toHaveLength(3);
-  });
+      expect(calls).toHaveLength(3);
+      expect(calls.every((call) => call.url.includes(`/${urlSegment}`))).toBe(true);
+    },
+  );
 });
