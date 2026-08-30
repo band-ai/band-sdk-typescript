@@ -1,5 +1,5 @@
 /**
- * Live E2E: retry exhaustion via sync-recovery, gated by BAND_E2E_LANE="core".
+ * Live E2E: retry exhaustion via sync-recovery.
  *
  * `RetryTracker.recordAttempt` only runs inside `Execution.executeSyncMessage`
  * (startup backlog recovery) — never on live WS events. So this seeds a
@@ -18,7 +18,7 @@
  * sweep runs first, reaping any leftovers from a run that crashed before its
  * own cleanup ran (mirrors band-sdk-python's `sweep_orphans`).
  *
- * Run:  BAND_E2E_LANE=core BAND_API_KEY_USER=... npx tsx tests/integration/core-retry-participant-live.ts
+ * Run:  BAND_API_KEY_USER=... npx tsx tests/integration/core-retry-participant-live.ts
  */
 import { randomUUID } from "node:crypto";
 
@@ -26,7 +26,6 @@ import { BandClient } from "@band-ai/rest-client";
 
 import { Agent, GenericAdapter } from "../../src/index";
 import { FernRestAdapter } from "../../src/rest";
-import { shouldRunLane } from "./lanes";
 
 const DEFAULT_REST_URL = "https://app.band.ai/";
 const NAME_PREFIX = "e2e-ts-core-";
@@ -101,10 +100,6 @@ async function sweepOrphans(userClient: BandClient, runId: string): Promise<void
 }
 
 async function main() {
-  if (!shouldRunLane("core")) {
-    return;
-  }
-
   console.log("core-retry === retry exhaustion via sync-recovery ===");
 
   const restUrl = process.env.BAND_REST_URL ?? DEFAULT_REST_URL;
