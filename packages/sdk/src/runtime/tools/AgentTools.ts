@@ -1,5 +1,5 @@
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
-import { ParticipantRoster } from "@band-ai/band-sdk-core";
+import { ParticipantRoster, type ParticipantFields } from "@band-ai/band-sdk-core";
 import { toParticipantRecord, toParticipantRecordFromRest } from "../formatters";
 import type { AgentToolsRestApi } from "../../client/rest/types";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
@@ -161,11 +161,16 @@ export class AgentTools implements AgentToolsProtocol {
     content: string,
     mentions: MentionInput = [],
   ): Promise<ToolOperationResult> {
-    if (mentions.length > 0 && typeof mentions[0] === "string" && this.roster.list().length === 0) {
-      await this.syncParticipants();
+    let participants: ParticipantFields[] | undefined;
+    if (mentions.length > 0 && typeof mentions[0] === "string") {
+      participants = this.roster.list();
+      if (participants.length === 0) {
+        await this.syncParticipants();
+        participants = this.roster.list();
+      }
     }
 
-    const resolvedMentions = this.resolveMentions(mentions);
+    const resolvedMentions = this.resolveMentions(mentions, participants);
 
     return this.rest.createChatMessage(
       this.roomId,
@@ -589,6 +594,7 @@ export class AgentTools implements AgentToolsProtocol {
 
   private resolveMentions(
     mentions: MentionInput,
+    participants: ParticipantFields[] | undefined,
   ): MentionReference[] {
     if (mentions.length === 0) {
       return [];
@@ -605,7 +611,7 @@ export class AgentTools implements AgentToolsProtocol {
     const participantsByHandle = new Map<string, MentionReference>();
     const participantsById = new Map<string, MentionReference>();
     const participantsByName = new Map<string, MentionReference>();
-    for (const participant of this.roster.list()) {
+    for (const participant of participants ?? []) {
       const ref: MentionReference = {
         id: String(participant.id),
         handle: typeof participant.handle === "string" ? participant.handle : undefined,

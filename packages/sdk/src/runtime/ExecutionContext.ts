@@ -182,13 +182,7 @@ export class ExecutionContext {
     }
 
     if (changed) {
-      const asRecords = this.roster.list().map((p) => ({
-        id: p.id,
-        name: p.name,
-        type: p.type,
-        handle: p.handle ?? null,
-      }));
-      parts.push(buildParticipantsMessage(asRecords));
+      parts.push(buildParticipantsMessage(this.roster.list().map((p) => ({ ...toParticipantRecord(p) }))));
     }
 
     this.roster.markSent();
