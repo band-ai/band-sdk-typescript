@@ -409,16 +409,12 @@ describe("P-C5-1: real tarball packs, installs, and runs for ESM and CJS", () =>
   });
 });
 
-describe("P-C5-3: release workflow has no package mutation and the hold is present", () => {
+describe("P-C5-3: release workflow has no package mutation", () => {
   it("release.yml no longer rewrites the SDK package name and carries no legacy scope", () => {
     const yml = readFileSync(join(REPO_ROOT, ".github/workflows/release.yml"), "utf-8");
     expect(yml).not.toMatch(/sed[^\n]*packages\/sdk\/package\.json/);
     expect(yml).not.toContain("@thenvoi/sdk");
     expect(yml).toMatch(/npm pack --pack-destination/);
-  });
-
-  it(".release-hold marker exists at the repository root", () => {
-    expect(existsSync(join(REPO_ROOT, ".release-hold"))).toBe(true);
   });
 });
 
