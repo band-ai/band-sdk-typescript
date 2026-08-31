@@ -181,3 +181,63 @@ describe("shared error helpers", () => {
     expect("retryable" in serializeError(new Error("plain"))).toBe(false);
   });
 });
+
+describe("re-wrapped non-Error throws keep the original as `cause`", () => {
+  // These sites previously did `new Error(String(error))`, which flattened whatever was
+  // thrown into a string and lost it. AC-23 asks for reference equality, not just a
+  // message match, because that is the difference between a diagnosable cause and a
+  // stringified one.
+
+  it("AgentRuntime.waitUntilStopped preserves a non-Error fatal error by reference", async () => {
+    const { AgentRuntime } = await import("../src/runtime/rooms/AgentRuntime");
+    const { BandSdkError } = await import("../src/core/errors");
+
+    const thrown = { code: "ENOTANERROR", detail: "not an Error instance" };
+
+    const runtime = Object.create(AgentRuntime.prototype) as {
+      fatalError: unknown;
+      consumeTask: Promise<void> | null;
+      link: unknown;
+      stopController: AbortController;
+      waitUntilStopped: () => Promise<void>;
+    };
+    runtime.fatalError = thrown;
+    runtime.consumeTask = Promise.resolve();
+    runtime.stopController = new AbortController();
+    runtime.link = { runForever: async () => {} };
+
+    const caught = await runtime.waitUntilStopped().then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+    expect(caught).toBeInstanceOf(BandSdkError);
+    // The point of the AC: the original object survives, not a copy of its text.
+    expect((caught as { cause?: unknown }).cause).toBe(thrown);
+    expect((caught as Error).message).toBe(String(thrown));
+  });
+
+  it("an Error thrown as-is is rethrown unchanged, not re-wrapped", async () => {
+    const { AgentRuntime } = await import("../src/runtime/rooms/AgentRuntime");
+
+    const original = new Error("already an Error");
+    const runtime = Object.create(AgentRuntime.prototype) as {
+      fatalError: unknown;
+      consumeTask: Promise<void> | null;
+      link: unknown;
+      stopController: AbortController;
+      waitUntilStopped: () => Promise<void>;
+    };
+    runtime.fatalError = original;
+    runtime.consumeTask = Promise.resolve();
+    runtime.stopController = new AbortController();
+    runtime.link = { runForever: async () => {} };
+
+    const caught = await runtime.waitUntilStopped().then(
+      () => null,
+      (error: unknown) => error,
+    );
+
+    expect(caught).toBe(original);
+  });
+});
