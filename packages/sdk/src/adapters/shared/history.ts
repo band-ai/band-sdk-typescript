@@ -22,8 +22,8 @@ export function findLatestTaskMetadata(
 
 /**
  * The minimal shape the history helpers need from an adapter's message
- * type.  Adapters keep their own richer types (sender, senderType, ...);
- * the generic parameter preserves them through each call.
+ * type.  Adapters extend it with their own fields (sender, senderType,
+ * ...); the generic parameter preserves those through each call.
  */
 export interface ChatTurn {
   role: "user" | "assistant";
@@ -31,23 +31,22 @@ export interface ChatTurn {
 }
 
 /**
- * Join runs of same-role messages into a single entry so that nothing is
- * lost when several participants speak before the agent replies.  Entries
- * are shallow copies, so the input is never mutated.
+ * Join runs of same-role messages into a single turn so that nothing is
+ * lost when several participants speak before the agent replies.
  */
-function mergeConsecutiveSameRole<T extends ChatTurn>(history: readonly T[]): T[] {
+function mergeConsecutiveSameRole<T extends ChatTurn>(turns: readonly T[]): T[] {
   const merged: T[] = [];
 
-  for (const message of history) {
-    if (!message.content) {
+  for (const turn of turns) {
+    if (!turn.content) {
       continue;
     }
 
     const previous = merged[merged.length - 1];
-    if (previous && previous.role === message.role) {
-      previous.content += `\n${message.content}`;
+    if (previous && previous.role === turn.role) {
+      previous.content += `\n${turn.content}`;
     } else {
-      merged.push({ ...message });
+      merged.push({ ...turn });
     }
   }
 
@@ -55,9 +54,9 @@ function mergeConsecutiveSameRole<T extends ChatTurn>(history: readonly T[]): T[
 }
 
 /**
- * Keep user->assistant pairs, plus a trailing user message that has no
- * reply yet so the agent sees the most recent unanswered question.
- * Assistant turns with no preceding question are dropped, leaving a clean
+ * Keep user->assistant pairs, plus a trailing user turn that has no reply
+ * yet so the agent sees the most recent unanswered question.  Assistant
+ * turns with no preceding question are dropped, leaving a clean
  * alternating conversation.
  */
 function pairUserAssistantTurns<T extends ChatTurn>(turns: readonly T[]): T[] {
@@ -91,14 +90,19 @@ function pairUserAssistantTurns<T extends ChatTurn>(turns: readonly T[]): T[] {
 /**
  * Keep the most recent `limit` turns.  A plain `slice(-limit)` can land
  * between a question and its answer, so an assistant turn left leading by
- * the cut is dropped rather than replayed without the question it answers.
+ * the cut is dropped rather than replayed without the question it answers
+ * — which is why the result can be one turn shorter than `limit`.
  */
-function takeRecentWholeExchanges<T extends ChatTurn>(
-  turns: T[],
+function takeRecentTurns<T extends ChatTurn>(
+  turns: readonly T[],
   limit: number,
 ): T[] {
+  if (limit <= 0) {
+    return [];
+  }
+
   if (turns.length <= limit) {
-    return turns;
+    return [...turns];
   }
 
   const truncated = turns.slice(-limit);
@@ -110,24 +114,22 @@ function takeRecentWholeExchanges<T extends ChatTurn>(
 }
 
 /**
- * Select the conversation history to replay to an agent: consecutive
- * same-role messages are merged rather than dropped, complete
- * user->assistant exchanges are kept in order, and a trailing unanswered
- * user message is preserved.
+ * Select the conversation history to replay to an agent, keeping at most
+ * `limit` turns: consecutive same-role messages are merged rather than
+ * dropped, complete user->assistant exchanges are kept in order, and a
+ * trailing unanswered user message is preserved.
  *
- * `limit` caps how many turns come back, keeping the most recent.  It
- * belongs here rather than at the call site because truncating afterwards
- * can cut between a question and its answer.
+ * Truncation belongs here rather than at the call site because cutting the
+ * result afterwards can land between a question and its answer.
  *
- * The input is never mutated.
+ * The input is never mutated; every returned turn is a fresh object.
  */
 export function selectCompleteExchanges<T extends ChatTurn>(
   history: readonly T[],
-  limit?: number,
+  limit: number,
 ): T[] {
-  const exchanges = pairUserAssistantTurns(mergeConsecutiveSameRole(history));
-
-  return limit === undefined
-    ? exchanges
-    : takeRecentWholeExchanges(exchanges, limit);
+  return takeRecentTurns(
+    pairUserAssistantTurns(mergeConsecutiveSameRole(history)),
+    limit,
+  );
 }

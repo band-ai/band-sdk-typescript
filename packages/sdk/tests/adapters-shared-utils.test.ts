@@ -51,6 +51,8 @@ describe("adapter shared utilities", () => {
 });
 
 describe("selectCompleteExchanges", () => {
+  const NO_LIMIT = 100;
+
   const turn = (role: "user" | "assistant", content: string, sender = "") => ({
     role,
     content,
@@ -59,11 +61,14 @@ describe("selectCompleteExchanges", () => {
   });
 
   it("merges consecutive same-role messages instead of dropping them", () => {
-    const result = selectCompleteExchanges([
-      turn("user", "[Alice]: Hey", "Alice"),
-      turn("user", "[Bob]: Hi there", "Bob"),
-      turn("assistant", "Hello both!", "Bot"),
-    ]);
+    const result = selectCompleteExchanges(
+      [
+        turn("user", "[Alice]: Hey", "Alice"),
+        turn("user", "[Bob]: Hi there", "Bob"),
+        turn("assistant", "Hello both!", "Bot"),
+      ],
+      NO_LIMIT,
+    );
 
     expect(result).toEqual([
       turn("user", "[Alice]: Hey\n[Bob]: Hi there", "Alice"),
@@ -72,11 +77,14 @@ describe("selectCompleteExchanges", () => {
   });
 
   it("merges consecutive assistant messages into one turn", () => {
-    const result = selectCompleteExchanges([
-      turn("user", "Question", "Alice"),
-      turn("assistant", "Part one", "Bot"),
-      turn("assistant", "Part two", "Bot"),
-    ]);
+    const result = selectCompleteExchanges(
+      [
+        turn("user", "Question", "Alice"),
+        turn("assistant", "Part one", "Bot"),
+        turn("assistant", "Part two", "Bot"),
+      ],
+      NO_LIMIT,
+    );
 
     expect(result).toEqual([
       turn("user", "Question", "Alice"),
@@ -85,11 +93,14 @@ describe("selectCompleteExchanges", () => {
   });
 
   it("keeps a trailing user message that has no assistant reply yet", () => {
-    const result = selectCompleteExchanges([
-      turn("user", "First", "Alice"),
-      turn("assistant", "Reply", "Bot"),
-      turn("user", "Unanswered", "Alice"),
-    ]);
+    const result = selectCompleteExchanges(
+      [
+        turn("user", "First", "Alice"),
+        turn("assistant", "Reply", "Bot"),
+        turn("user", "Unanswered", "Alice"),
+      ],
+      NO_LIMIT,
+    );
 
     expect(result.map((entry) => entry.content)).toEqual([
       "First",
@@ -99,11 +110,14 @@ describe("selectCompleteExchanges", () => {
   });
 
   it("drops orphaned assistant messages with no preceding user turn", () => {
-    const result = selectCompleteExchanges([
-      turn("assistant", "Unprompted", "Bot"),
-      turn("user", "Question", "Alice"),
-      turn("assistant", "Answer", "Bot"),
-    ]);
+    const result = selectCompleteExchanges(
+      [
+        turn("assistant", "Unprompted", "Bot"),
+        turn("user", "Question", "Alice"),
+        turn("assistant", "Answer", "Bot"),
+      ],
+      NO_LIMIT,
+    );
 
     expect(result.map((entry) => entry.content)).toEqual(["Question", "Answer"]);
   });
@@ -116,18 +130,22 @@ describe("selectCompleteExchanges", () => {
     ];
     const snapshot = structuredClone(history);
 
-    const result = selectCompleteExchanges(history);
+    const result = selectCompleteExchanges(history, NO_LIMIT);
 
     expect(result.map((entry) => entry.content)).toEqual(["Kept", "Answer"]);
     expect(history).toEqual(snapshot);
   });
 
+  it("keeps a lone trailing user message", () => {
+    const result = selectCompleteExchanges([turn("user", "Only", "Alice")], NO_LIMIT);
 
-  it("keeps a lone trailing user message and drops a lone orphaned assistant", () => {
-    expect(selectCompleteExchanges([turn("user", "Only", "Alice")])).toEqual([
-      turn("user", "Only", "Alice"),
-    ]);
-    expect(selectCompleteExchanges([turn("assistant", "Only", "Bot")])).toEqual([]);
+    expect(result).toEqual([turn("user", "Only", "Alice")]);
+  });
+
+  it("drops a lone orphaned assistant message", () => {
+    expect(
+      selectCompleteExchanges([turn("assistant", "Only", "Bot")], NO_LIMIT),
+    ).toEqual([]);
   });
 
   it("caps the result at `limit`, keeping the most recent turns", () => {
@@ -160,8 +178,16 @@ describe("selectCompleteExchanges", () => {
       2,
     );
 
-    expect(result[0].role).toBe("user");
     expect(result.map((entry) => entry.content)).toEqual(["Unanswered"]);
+  });
+
+  it("returns nothing when `limit` is zero", () => {
+    const result = selectCompleteExchanges(
+      [turn("user", "Q", "Alice"), turn("assistant", "A", "Bot")],
+      0,
+    );
+
+    expect(result).toEqual([]);
   });
 
   it("returns everything when the history is shorter than `limit`", () => {
@@ -171,6 +197,6 @@ describe("selectCompleteExchanges", () => {
   });
 
   it("returns nothing for an empty history", () => {
-    expect(selectCompleteExchanges([])).toEqual([]);
+    expect(selectCompleteExchanges([], NO_LIMIT)).toEqual([]);
   });
 });

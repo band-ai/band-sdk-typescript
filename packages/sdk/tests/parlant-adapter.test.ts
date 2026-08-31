@@ -61,6 +61,24 @@ class FakeParlantClient {
   public eventPollBatches: Array<Array<Record<string, unknown>>> = [];
 }
 
+const historyTurn = (
+  role: "user" | "assistant",
+  content: string,
+  sender: string,
+) => ({ role, content, sender, senderType: role === "assistant" ? "Agent" : "User" });
+
+const historicalMessages = (client: FakeParlantClient): string[] =>
+  client.eventCreateCalls
+    .filter(
+      (call) =>
+        (call.params.metadata as Record<string, unknown> | undefined)
+          ?.historical === true,
+    )
+    .map((call) => {
+      const data = call.params.data as { message?: string } | undefined;
+      return (call.params.message as string | undefined) ?? data?.message ?? "";
+    });
+
 describe("ParlantAdapter", () => {
   it("creates a session and forwards ai-agent response", async () => {
     const client = new FakeParlantClient();
@@ -152,9 +170,7 @@ describe("ParlantAdapter", () => {
       { isSessionBootstrap: true, roomId: "room-bootstrap" },
     );
 
-    const historicalEventsAfterFirst = client.eventCreateCalls.filter(
-      (call) => call.params.metadata && (call.params.metadata as Record<string, unknown>).historical === true,
-    ).length;
+    const historicalEventsAfterFirst = historicalMessages(client).length;
 
     await adapter.onMessage(
       makeMessage("Follow up", "room-bootstrap"),
@@ -165,9 +181,7 @@ describe("ParlantAdapter", () => {
       { isSessionBootstrap: false, roomId: "room-bootstrap" },
     );
 
-    const historicalEventsAfterSecond = client.eventCreateCalls.filter(
-      (call) => call.params.metadata && (call.params.metadata as Record<string, unknown>).historical === true,
-    ).length;
+    const historicalEventsAfterSecond = historicalMessages(client).length;
 
     expect(historicalEventsAfterFirst).toBeGreaterThan(0);
     expect(historicalEventsAfterSecond).toBe(historicalEventsAfterFirst);
@@ -195,58 +209,26 @@ describe("ParlantAdapter", () => {
     // Multi-participant room: two users speak before the agent replies, and a
     // third message is still unanswered.
     const history = [
-      {
-        role: "user" as const,
-        content: "[Alice]: Hey",
-        sender: "Alice",
-        senderType: "User",
-      },
-      {
-        role: "user" as const,
-        content: "[Bob]: Hi there",
-        sender: "Bob",
-        senderType: "User",
-      },
-      {
-        role: "assistant" as const,
-        content: "Hello both!",
-        sender: "Bot",
-        senderType: "Agent",
-      },
-      {
-        role: "user" as const,
-        content: "[Alice]: Still there?",
-        sender: "Alice",
-        senderType: "User",
-      },
+      historyTurn("user", "[Alice]: Hey", "Alice"),
+      historyTurn("user", "[Bob]: Hi there", "Bob"),
+      historyTurn("assistant", "Hello both!", "Bot"),
+      historyTurn("user", "[Alice]: Still there?", "Alice"),
     ];
 
-    const tools = new FakeTools();
     await adapter.onMessage(
       makeMessage("Current question", "room-merge"),
-      tools,
+      new FakeTools(),
       history,
       null,
       null,
       { isSessionBootstrap: true, roomId: "room-merge" },
     );
 
-    const historicalMessages = client.eventCreateCalls
-      .filter(
-        (call) =>
-          (call.params.metadata as Record<string, unknown> | undefined)
-            ?.historical === true,
-      )
-      .map((call) => {
-        const data = call.params.data as { message?: string } | undefined;
-        return (call.params.message as string | undefined) ?? data?.message ?? "";
-      });
-
-    const injected = historicalMessages.join("\n");
-    expect(injected).toContain("Alice]: Hey");
-    expect(injected).toContain("Bob]: Hi there");
-    expect(injected).toContain("Hello both!");
-    expect(injected).toContain("Still there?");
+    expect(historicalMessages(client)).toEqual([
+      "[Alice]: Hey\n[Bob]: Hi there",
+      "Hello both!",
+      "[Alice]: Still there?",
+    ]);
   });
 
   it("emits an error event when no response arrives before timeout", async () => {
