@@ -5,6 +5,7 @@ import type {
   ContactTools,
   MemoryTools,
 } from "../contracts/protocols";
+import { BandSdkError } from "../core/errors";
 import { DEFAULT_AGENT_TOOLS_CAPABILITIES } from "../core";
 import type {
   AddContactArgs,
@@ -78,7 +79,7 @@ export class FakeAgentTools
     this.failOn = new Set(options?.failOn ?? []);
     this.errorFactory =
       options?.errorFactory ??
-      ((method) => new Error(`FakeAgentTools configured failure for ${String(method)}`));
+      ((method) => new BandSdkError(`FakeAgentTools configured failure for ${String(method)}`));
   }
 
   public async sendMessage(

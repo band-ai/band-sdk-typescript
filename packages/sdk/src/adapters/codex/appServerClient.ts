@@ -203,7 +203,7 @@ export class CodexAppServerStdioClient implements CodexClientLike {
         ? null
         : setTimeout(() => {
           this.removeWaiter(waiter);
-          reject(new Error("Timed out waiting for Codex app-server event"));
+          reject(new RuntimeStateError("Timed out waiting for Codex app-server event"));
         }, timeoutMs);
 
       const waiter: PendingEventWaiter = { resolve, reject, timer };
@@ -358,7 +358,7 @@ export class CodexAppServerStdioClient implements CodexClientLike {
     this.closed = true;
     this.process = null;
 
-    const error = new Error(reason);
+    const error = new RuntimeStateError(reason);
     for (const pending of this.pending.values()) {
       pending.reject(error);
     }

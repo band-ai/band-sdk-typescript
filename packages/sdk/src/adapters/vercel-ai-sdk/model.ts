@@ -200,7 +200,7 @@ async function loadVercelAISDKRuntime(): Promise<VercelAISDKRuntime> {
     importModule: () => import("ai"),
     expectedExports: "`generateText` and `tool`",
     select: (module) => {
-      const generateText = module.generateText as VercelAISDKGenerateText | undefined;
+      const generateText = module.generateText as unknown as VercelAISDKGenerateText | undefined;
       const tool = module.tool as VercelAISDKToolFactory | undefined;
       return generateText && tool ? { generateText, tool } : undefined;
     },

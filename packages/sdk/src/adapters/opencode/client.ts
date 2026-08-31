@@ -429,7 +429,7 @@ async function findAvailablePort(): Promise<number> {
       const address = server.address();
       if (!address || typeof address === "string") {
         server.close();
-        reject(new Error("Failed to determine an available OpenCode port."));
+        reject(new RuntimeStateError("Failed to determine an available OpenCode port."));
         return;
       }
 

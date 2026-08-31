@@ -253,7 +253,7 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
         pending.done,
         new Promise<never>((_, reject) => {
           const timer = setTimeout(() => {
-            reject(new Error(`ACP prompt timed out after ${this.responseTimeoutMs}ms`))
+            reject(new RuntimeStateError(`ACP prompt timed out after ${this.responseTimeoutMs}ms`))
           }, this.responseTimeoutMs)
           // The enclosing Promise.race already awaits (and surfaces) pending.done. This
           // second handle exists only to clear the timer, so its rejection is deliberately

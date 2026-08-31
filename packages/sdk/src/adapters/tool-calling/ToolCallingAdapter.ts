@@ -26,7 +26,7 @@ import type {
   ToolResult,
   ToolRound,
 } from "./types";
-import { asErrorMessage, BandSdkError } from "../../core/errors";
+import { asErrorMessage, BandSdkError, RuntimeStateError } from "../../core/errors";
 
 /**
  * Options for {@link ToolCallingAdapter}: the model to call, which tool schema dialect to
@@ -103,7 +103,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     while ((response.toolCalls?.length ?? 0) > 0) {
       roundCount += 1;
       if (roundCount > this.maxToolRounds) {
-        const maxRoundsError = new Error(
+        const maxRoundsError = new RuntimeStateError(
           `Stopped tool loop after ${this.maxToolRounds} rounds to prevent infinite recursion.`,
         );
         await tools.sendEvent(

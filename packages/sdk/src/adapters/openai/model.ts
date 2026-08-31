@@ -247,7 +247,7 @@ async function loadOpenAIClientFactory(): Promise<OpenAIClientFactory> {
     importModule: () => import("openai"),
     expectedExports: "a default or `OpenAI` client constructor",
     select: (module) =>
-      (module.default ?? module.OpenAI) as
+      (module.default ?? module.OpenAI) as unknown as
         | (new (options?: { apiKey?: string }) => OpenAIClientLike)
         | undefined,
   });

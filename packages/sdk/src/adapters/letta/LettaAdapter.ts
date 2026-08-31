@@ -851,7 +851,7 @@ export class LettaAdapter extends SimpleAdapter<
     parentSignal?: AbortSignal,
   ): Promise<T> {
     if (parentSignal?.aborted) {
-      return Promise.reject(new Error("Operation aborted"));
+      return Promise.reject(new RuntimeStateError("Operation aborted"));
     }
 
     // Derived controller: aborted by either the parent signal or the timeout.
@@ -886,8 +886,8 @@ export class LettaAdapter extends SimpleAdapter<
         cleanup();
         reject(
           parentSignal?.aborted
-            ? new Error("Operation aborted")
-            : new Error(message),
+            ? new RuntimeStateError("Operation aborted")
+            : new BandSdkError(message),
         );
       };
       signal.addEventListener("abort", onAbort, { once: true });
@@ -1100,7 +1100,7 @@ async function loadLettaClientFactory(config: {
     importModule: () => import("@letta-ai/letta-client"),
     expectedExports: "a default or `Letta` client constructor",
     select: (module) =>
-      (module.default ?? module.Letta) as
+      (module.default ?? module.Letta) as unknown as
         | (new (options?: { apiKey?: string; baseURL?: string }) => LettaClientLike)
         | undefined,
   });

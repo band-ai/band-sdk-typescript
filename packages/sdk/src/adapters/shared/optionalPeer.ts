@@ -1,6 +1,6 @@
 import { asErrorMessage, UnsupportedFeatureError } from "../../core/errors";
 
-export interface LoadOptionalPeerOptions<T> {
+interface LoadOptionalPeerOptions<TModule, T> {
   /** Adapter (or adapter feature) that needs the peer, used to open the diagnostic. */
   feature: string;
   /** Package name as it appears in `peerDependencies`, quoted in the diagnostic. */
@@ -14,17 +14,17 @@ export interface LoadOptionalPeerOptions<T> {
    * Imports the peer. Must contain a literal `import()` so bundlers keep the specifier
    * external rather than trying to resolve it at build time.
    */
-  importModule: () => Promise<unknown>;
+  importModule: () => Promise<TModule>;
   /**
    * Narrows the loaded module to the shape the caller needs, or returns `undefined` when
    * the installed version does not export it.
    */
-  select: (module: Record<string, unknown>) => T | undefined;
+  select: (module: TModule) => T | undefined;
   /** What `select` looked for, named in the diagnostic when it returns `undefined`. */
   expectedExports: string;
 }
 
-function requirement(feature: string, packageName: string, condition?: string): string {
+function describePeerRequirement(feature: string, packageName: string, condition?: string): string {
   const qualifier = condition ? ` ${condition}` : "";
   return `${feature} requires optional dependency "${packageName}"${qualifier}.`;
 }
@@ -36,15 +36,17 @@ function requirement(feature: string, packageName: string, condition?: string): 
  * naming the missing exports instead — an install hint there would be misleading, since
  * the package is already present.
  */
-export async function loadOptionalPeer<T>(options: LoadOptionalPeerOptions<T>): Promise<T> {
+export async function loadOptionalPeer<TModule, T>(
+  options: LoadOptionalPeerOptions<TModule, T>,
+): Promise<T> {
   const { feature, packageName, condition } = options;
 
-  let module: Record<string, unknown>;
+  let module: TModule;
   try {
-    module = (await options.importModule()) as Record<string, unknown>;
+    module = await options.importModule();
   } catch (error) {
     throw new UnsupportedFeatureError(
-      `${requirement(feature, packageName, condition)} Install it with "pnpm add ${packageName}". (${asErrorMessage(error)})`,
+      `${describePeerRequirement(feature, packageName, condition)} Install it with "pnpm add ${packageName}". (${asErrorMessage(error)})`,
       error,
     );
   }
@@ -52,7 +54,7 @@ export async function loadOptionalPeer<T>(options: LoadOptionalPeerOptions<T>): 
   const selected = options.select(module);
   if (selected === undefined) {
     throw new UnsupportedFeatureError(
-      `${requirement(feature, packageName, condition)} The installed package does not export ${options.expectedExports}.`,
+      `${describePeerRequirement(feature, packageName, condition)} The installed package does not export ${options.expectedExports}.`,
     );
   }
 

@@ -24,7 +24,7 @@ import type {
   LinearBandBridgeConfig,
   LinearBandBridgeDeps,
 } from "./types";
-import { asErrorMessage, serializeError } from "../../core/errors";
+import { asErrorMessage, serializeError, TransportError } from "../../core/errors";
 import { sleep } from "../../core/sleep";
 
 export interface LinearBridgeDispatchJob {
@@ -641,9 +641,9 @@ function isRetryableDispatchError(error: unknown): error is { retryable: true } 
   return typeof error === "object" && error !== null && "retryable" in error && (error as { retryable?: boolean }).retryable === true;
 }
 
-function toDispatchFailureError(failure: DispatchTerminalFailure): Error {
-  return new Error(
+function toDispatchFailureError(failure: DispatchTerminalFailure): TransportError {
+  return new TransportError(
     `Linear bridge async dispatch failed for event ${failure.eventKey} (session ${failure.sessionId})`,
-    { cause: failure.error },
+    failure.error,
   );
 }

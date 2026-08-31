@@ -30,7 +30,7 @@ describe("loadOptionalPeer", () => {
     const caught = await loadOptionalPeer({
       feature: "TestAdapter",
       packageName: "not-installed",
-      importModule: () => Promise.reject(failure),
+      importModule: (): Promise<{ thing?: string }> => Promise.reject(failure),
       expectedExports: "`thing`",
       select: (module) => module.thing,
     }).catch((error: unknown) => error);
@@ -46,7 +46,7 @@ describe("loadOptionalPeer", () => {
     const caught = await loadOptionalPeer({
       feature: "TestAdapter",
       packageName: "installed",
-      importModule: () => Promise.resolve({ somethingElse: 1 }),
+      importModule: () => Promise.resolve<{ thing?: string; somethingElse: number }>({ somethingElse: 1 }),
       expectedExports: "`thing`",
       select: (module) => module.thing,
     }).catch((error: unknown) => error);
@@ -62,7 +62,7 @@ describe("loadOptionalPeer", () => {
       feature: "TestAdapter",
       packageName: "conditional",
       condition: "when MCP tools are enabled",
-      importModule: () => Promise.reject(new Error("boom")),
+      importModule: (): Promise<{ thing?: string }> => Promise.reject(new Error("boom")),
       expectedExports: "`thing`",
       select: (module) => module.thing,
     }).catch((error: unknown) => error);

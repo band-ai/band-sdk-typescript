@@ -121,9 +121,12 @@ export default [
       "no-restricted-syntax": [
         "error",
         {
-          selector: 'ThrowStatement NewExpression[callee.name="Error"]',
+          // Not scoped to ThrowStatement: an error built in a factory or handed to
+          // reject() reaches the caller just the same, and those were the sites the
+          // throw-only selector let through.
+          selector: 'NewExpression[callee.name="Error"]',
           message:
-            "Throw a typed error from src/core/errors.ts (BandSdkError, ValidationError, RuntimeStateError, UnsupportedFeatureError, TransportError) instead of a bare Error.",
+            "Construct a typed error from src/core/errors.ts (BandSdkError, ValidationError, RuntimeStateError, UnsupportedFeatureError, TransportError) instead of a bare Error.",
         },
       ],
     },

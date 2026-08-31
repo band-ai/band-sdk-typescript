@@ -299,7 +299,7 @@ async function loadGeminiClientFactory(): Promise<GeminiClientFactory> {
     importModule: () => import("@google/genai"),
     expectedExports: "`GoogleGenAI`",
     select: (module) =>
-      module.GoogleGenAI as
+      module.GoogleGenAI as unknown as
         | (new (options?: { apiKey?: string }) => GeminiClientLike)
         | undefined,
   });

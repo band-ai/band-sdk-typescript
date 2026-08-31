@@ -1,5 +1,6 @@
 import type { ClientRequest, IncomingMessage } from "http";
 import { WebSocket as NodeWebSocket } from "ws";
+import { TransportError } from "../../core/errors";
 
 type NodeUpgradeWebSocket = InstanceType<typeof NodeWebSocket> & {
   once(
@@ -38,7 +39,7 @@ async function emitUpgradeError(
   response: IncomingMessage,
 ): Promise<void> {
   const body = await readResponseBody(response);
-  const error = new Error(
+  const error = new TransportError(
     `Unexpected server response: ${response.statusCode ?? "unknown"}`,
   ) as Error & {
     status?: number;

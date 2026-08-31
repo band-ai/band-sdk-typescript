@@ -26,21 +26,22 @@ const DEFAULT_MAX_HISTORY_MESSAGES = 50;
 const DEFAULT_MAX_TRANSCRIPT_CHARS = 100_000;
 const MAX_TOOL_OUTPUT_PREVIEW = 200;
 
-// Mirrors `@google/adk`'s function-call part; it publishes no type declarations.
+// Narrow facade over `@google/adk`'s function-call part: only the fields this adapter
+// reads, so a caller-supplied double does not have to build the full upstream shape.
 interface GoogleAdkFunctionCallLike {
   id?: string;
   name?: string;
   args?: unknown;
 }
 
-// Mirrors `@google/adk`'s function-response part; it publishes no type declarations.
+// Narrow facade over `@google/adk`'s function-response part, for the same reason.
 interface GoogleAdkFunctionResponseLike {
   id?: string;
   name?: string;
   response?: unknown;
 }
 
-// Mirrors `@google/adk`'s runner; that package publishes no type declarations.
+// Narrow facade over `@google/adk`'s runner: only the members this adapter drives.
 interface GoogleAdkRunnerLike {
   sessionService: {
     createSession(params: {
@@ -59,7 +60,8 @@ interface GoogleAdkRunnerLike {
   }): AsyncIterable<unknown>;
 }
 
-// Mirrors `@google/adk`'s module entry points; it publishes no type declarations.
+// Facade over `@google/adk`'s module entry points: only the members this adapter uses,
+// so `sdkFactory` doubles stay cheap to build.
 interface GoogleAdkSdkLike {
   createAgent(params: {
     name: string;
@@ -163,7 +165,7 @@ async function loadGoogleAdkSdk(): Promise<GoogleAdkSdkLike> {
       }
 
       return {
-        createAgent: (params) => new (LlmAgent as new (params: Record<string, unknown>) => unknown)(params),
+        createAgent: (params) => new (LlmAgent as unknown as new (params: Record<string, unknown>) => unknown)(params),
         createFunctionTool: (params) => new (
           FunctionTool as new (params: Record<string, unknown>) => unknown
         )(params),

@@ -175,7 +175,7 @@ async function loadAnthropicClientFactory(): Promise<AnthropicClientFactory> {
     importModule: () => import("@anthropic-ai/sdk"),
     expectedExports: "a default or `Anthropic` client constructor",
     select: (module) =>
-      (module.default ?? module.Anthropic) as
+      (module.default ?? module.Anthropic) as unknown as
         | (new (options?: { apiKey?: string }) => AnthropicClientLike)
         | undefined,
   });

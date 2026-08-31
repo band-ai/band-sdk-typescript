@@ -1,4 +1,5 @@
 import { describe, expectTypeOf, expect, it } from "vitest";
+import { readDistTypes } from "./distSurface";
 
 import type {
   ContactEventCallback as RootContactEventCallback,
@@ -41,15 +42,17 @@ describe("the renamed contact-event callback type", () => {
       .toEqualTypeOf<RootOnContactEventCallback>();
   });
 
-  it("is exported from both the root and the runtime subpath", async () => {
-    // Type-only exports leave no runtime binding, so assert on the emitted declarations.
-    const { readFileSync } = await import("node:fs");
-    const { resolve } = await import("node:path");
-    for (const entry of ["src/index.ts", "src/runtime/index.ts"]) {
-      const source = readFileSync(resolve(__dirname, "..", entry), "utf-8");
-      expect(source, `${entry} must export OnContactEventCallback`)
+  it("is exported from both the root and the runtime subpath", () => {
+    // "OnContactEventCallback" CONTAINS "ContactEventCallback", so a substring check for
+    // the deprecated name can never fail once the new name is present -- it would not
+    // notice the alias being dropped, which is the only thing worth guarding here.
+    // Split the built declarations into whole identifiers and check membership instead.
+    for (const subpath of [".", "./runtime"] as const) {
+      const identifiers = new Set(readDistTypes(subpath).split(/[^A-Za-z0-9_$]+/));
+
+      expect(identifiers, `${subpath} must export OnContactEventCallback`)
         .toContain("OnContactEventCallback");
-      expect(source, `${entry} must keep exporting ContactEventCallback`)
+      expect(identifiers, `${subpath} must keep exporting the deprecated ContactEventCallback`)
         .toContain("ContactEventCallback");
     }
   });

@@ -11,7 +11,13 @@ import type {
 } from "./types";
 import { buildStatusEvent } from "./statusEvent";
 import { asNonEmptyString } from "../shared/coercion";
-import { asErrorMessage, BandSdkError, UnsupportedFeatureError, ValidationError } from "../../core/errors";
+import {
+  asErrorMessage,
+  BandSdkError,
+  RuntimeStateError,
+  UnsupportedFeatureError,
+  ValidationError,
+} from "../../core/errors";
 
 interface ExpressAppLike {
   use: (...args: unknown[]) => void;
@@ -479,7 +485,7 @@ function listen(
           return;
         }
 
-        reject(new Error("Gateway server did not return an HTTP server instance."));
+        reject(new RuntimeStateError("Gateway server did not return an HTTP server instance."));
       });
     };
 
