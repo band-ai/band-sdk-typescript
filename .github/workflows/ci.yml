@@ -2,9 +2,16 @@ name: CI
 
 # GitHub Flow: `main` is the canonical trunk. Keep validating legacy `dev` PRs
 # during the transition so old or mistakenly targeted work is not left untested.
+#
+# `push: [main]` re-validates the trunk after every merge. Without it the suite
+# only ever ran against a PR's merge commit, so a red build that landed anyway
+# stopped being reported the moment it was merged — which is how a failing
+# assertion sat on `main` unnoticed.
 on:
   pull_request:
     branches: [main, dev]
+  push:
+    branches: [main]
 
 # Checkout reads repository contents; paths-filter reads the PR file list.
 # No CI job needs write access to repository or pull-request state.
@@ -14,22 +21,30 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseding a PR run is free; superseding a trunk run is not. Cancelling a
+  # push run would leave that commit of `main` with no verdict at all, which is
+  # the exact gap this workflow's push trigger exists to close.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
 
-  # Detect which packages changed to skip unnecessary builds
+  # Detect which packages changed to skip unnecessary builds.
+  #
+  # On a push to `main` both outputs are forced true: trunk validation must
+  # exercise the whole tree, not the slice one merge happened to touch, or a
+  # green `ci-status` would again say nothing about `main`'s actual state.
   changes:
     runs-on: ubuntu-latest
     outputs:
-      sdk: ${{ steps.filter.outputs.sdk }}
-      openclaw: ${{ steps.filter.outputs.openclaw }}
+      sdk: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.sdk }}
+      openclaw: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.openclaw }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - uses: dorny/paths-filter@v3
         id: filter
+        if: github.event_name == 'pull_request'
         with:
           filters: |
             sdk:
@@ -120,7 +135,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # A merge gate, so it only has a baseline (and only has a job to do) on a
+      # pull request. On a push the merge has already happened and release.yml
+      # owns the release path; there is no `pull_request.base.sha` to compare
+      # against, and inventing one would turn every trunk run red.
       - name: Verify release intent
+        if: github.event_name == 'pull_request'
         run: node scripts/assert-release-intent.mjs
         env:
           RELEASE_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}

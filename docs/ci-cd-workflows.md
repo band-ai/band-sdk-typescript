@@ -52,11 +52,30 @@ topology from hiding a version transition.
 
 **Intended required status check:** `ci-status` — and only that one.
 
-The workflow provides this check, but repository rulesets are external state.
-During rollout, first observe `ci-status` on this PR, then an administrator must
-require that exact context in the live `main` ruleset and verify the setting.
-Until that step is complete, this document must not be treated as proof that CI
-is enforced by GitHub.
+> **Not yet enforced.** As of 2026-08-31 the live `main-branch-protection`
+> ruleset is `active` with no bypass actors, but its rules are only `deletion`,
+> `non_fast_forward`, and `pull_request`. There is **no `required_status_checks`
+> rule**: a pull request is mandatory, a *passing* one is not. This is not
+> theoretical — the commit that deleted `.release-hold` (#159) merged with both
+> `test` and the aggregate `ci-status` concluding failure.
+>
+> Verify the current state:
+>
+> ```sh
+> gh api repos/band-ai/band-sdk-typescript/rulesets/14198025 \
+>   --jq '.rules[] | .type'
+> ```
+>
+> An administrator closes the gap by adding one rule to that ruleset —
+> `required_status_checks` with the single context `ci-status`, integration id
+> `null` (GitHub Actions). Nothing in the workflow needs to change: the gate job
+> already exists and is already correct.
+
+Repository rulesets are external state that no file in this repo can assert, so
+until the rule above is present this document must not be read as proof that CI
+is enforced by GitHub. What the repo *can* guarantee is that the check exists,
+covers every job, and now also runs on the trunk itself — see
+[CI — `ci.yml`](#ci--ciyml).
 
 `ci-status` is an aggregate job that always runs and fails unless every other CI
 job passed or was legitimately skipped. Requiring it instead of the individual
@@ -88,6 +107,26 @@ group carries no PR title), or the queue will deadlock.
 Runs on every PR to `main` and, as a compatibility measure, every PR to `dev`.
 Passing CI on `dev` does not make that branch releasable; viable work should be
 retargeted to `main`.
+
+It also runs on every **push to `main`**, so the trunk is re-validated after a
+merge. Without that trigger the suite only ever saw a PR's merge commit: a red
+build that landed anyway stopped being reported the moment it merged, and "CI is
+green on `main`" said nothing about `main`'s actual tree. Three details make the
+trunk run meaningful rather than decorative:
+
+- **Path filtering is skipped.** `dorny/paths-filter` runs only on pull
+  requests; on a push both package outputs are forced `true`. Trunk validation
+  exercises the whole tree, not the slice one merge happened to touch —
+  otherwise `ci-status` could go green having skipped `lint` and `test`.
+- **Runs are not cancelled.** `cancel-in-progress` is on for pull requests only.
+  Superseding a PR run is free; superseding a trunk run would leave that commit
+  of `main` with no verdict at all.
+- **Release intent is PR-only.** `assert-release-intent.mjs` is a merge gate and
+  needs `github.event.pull_request.base.sha` as its baseline. A push has no such
+  baseline, and the merge it would gate has already happened.
+
+`scripts/release-hardening.test.mjs` asserts each of these, so the trunk trigger
+cannot be quietly removed or hollowed out.
 
 The workflow-level `GITHUB_TOKEN` is least-privilege: `contents: read` supports
 checkout and `pull-requests: read` supports changed-file detection. CI receives
