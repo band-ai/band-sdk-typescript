@@ -39,7 +39,11 @@ jobs:
       sdk: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.sdk }}
       openclaw: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.openclaw }}
     steps:
+      # Only feeds paths-filter below, which itself only runs on pull_request —
+      # skip the checkout too on push so a trunk run doesn't pay for a step with
+      # nothing downstream to use it.
       - name: Checkout code
+        if: github.event_name == 'pull_request'
         uses: actions/checkout@v4
 
       - uses: dorny/paths-filter@v3

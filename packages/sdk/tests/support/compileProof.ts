@@ -78,6 +78,12 @@ export function compileConsumer(dir: string, filename: string, code: string): Co
 
   const result = spawnSync(process.execPath, [TSC_ENTRY, "-p", join(dir, "tsconfig.json")], {
     encoding: "utf8",
+    // Without a timeout, a hung `tsc` blocks this synchronous spawn — and with
+    // it, the Node event loop — so Vitest's own testTimeout/hookTimeout can
+    // never fire to end the test. This is the real backstop those timeouts are
+    // meant to be; without it a hang runs until the CI job's own timeout kills
+    // the whole runner instead.
+    timeout: COMPILE_PROOF_TIMEOUT_MS,
   });
   if (result.error) throw result.error;
   if (result.status === null) {

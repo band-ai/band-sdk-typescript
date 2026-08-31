@@ -333,12 +333,29 @@ describe("P-C5-1: real tarball packs, installs, and runs for ESM and CJS", COMPI
   // also covers `&` and `^`. `mkdtempSync` never returns a trailing separator,
   // so the one case quoting cannot express — a path ending in `\` — is not
   // reachable here. POSIX takes the args array untouched.
+  //
+  // Quoting does not stop cmd.exe from expanding a `%VAR%` sequence inside a
+  // quoted segment — that substitution runs as a separate pass from quote
+  // parsing. Reliably escaping it takes more than doubling the `%` (cmd's
+  // handling of `%%` differs between batch files and a `/c` command line), so
+  // rather than ship a half-working escape, fail loudly if an argument could
+  // ever be misinterpreted this way instead of silently packing to the wrong
+  // path.
   function runNpm(args: string[]): NpmResult {
     const useShell = process.platform === "win32";
+    if (useShell) {
+      for (const arg of args) {
+        if (arg.includes("%")) {
+          throw new Error(
+            `refusing to run npm with an argument containing '%': ${arg} (cmd.exe may expand it as an environment variable)`,
+          );
+        }
+      }
+    }
     const result = spawnSync(
       "npm",
       useShell ? args.map((arg) => `"${arg}"`) : args,
-      { cwd: SDK_ROOT, encoding: "utf8", shell: useShell },
+      { cwd: SDK_ROOT, encoding: "utf8", shell: useShell, timeout: COMPILE_PROOF_TIMEOUT_MS },
     );
     if (result.error) throw result.error;
     if (result.status === null) throw new Error(`npm ${args[0]} was killed by ${String(result.signal)}`);
