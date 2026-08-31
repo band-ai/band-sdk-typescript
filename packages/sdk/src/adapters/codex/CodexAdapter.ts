@@ -27,7 +27,7 @@ import {
   findCustomToolInIndex,
 } from "../../runtime/tools/customTools";
 import { asErrorMessage, RuntimeStateError, ValidationError } from "../../core/errors";
-import { asNonEmptyString, asOptionalRecord, asRecord, toWireString } from "../shared/coercion";
+import { asNonEmptyString, asOptionalRecord, asRecord, toWireString } from "../../core/coercion";
 import { findLatestTaskMetadata } from "../shared/history";
 import {
   CodexAppServerStdioClient,

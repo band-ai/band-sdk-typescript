@@ -84,7 +84,7 @@ describe("the shared coercion helpers have exactly one home", () => {
   ];
 
   it.each(HELPERS)("%s is declared exactly once", (helper) => {
-    expect(declarationsOf(helper)).toEqual(["adapters/shared/coercion.ts"]);
+    expect(declarationsOf(helper)).toEqual(["core/coercion.ts"]);
   });
 });
 

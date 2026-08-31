@@ -19,7 +19,7 @@ import type { McpToolRegistration } from "../../mcp/registrations";
 import { errorResult, successResult } from "../../mcp/registrations";
 import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
 import { asErrorMessage, BandSdkError, RuntimeStateError } from "../../core/errors";
-import { asOptionalRecord } from "../shared/coercion";
+import { asOptionalRecord } from "../../core/coercion";
 import {
   type OpencodeSessionState,
   OpencodeHistoryConverter,

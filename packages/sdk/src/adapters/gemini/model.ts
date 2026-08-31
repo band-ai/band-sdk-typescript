@@ -8,7 +8,7 @@ import type {
   ToolResult,
 } from "../tool-calling";
 import { RuntimeStateError, UnsupportedFeatureError } from "../../core/errors";
-import { toDisplayText, toWireString } from "../shared/coercion";
+import { toDisplayText, toWireString } from "../../core/coercion";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { loadOptionalPeer } from "../shared/optionalPeer";
 import {

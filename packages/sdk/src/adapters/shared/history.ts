@@ -1,4 +1,4 @@
-import { asOptionalRecord } from "./coercion";
+import { asOptionalRecord } from "../../core/coercion";
 
 export function findLatestTaskMetadata(
   raw: Array<Record<string, unknown>>,

@@ -1,5 +1,5 @@
 import { findLatestTaskMetadata } from "../adapters/shared/history";
-import { asNonEmptyString } from "../adapters/shared/coercion";
+import { asNonEmptyString } from "../core/coercion";
 import { parseDate } from "./shared";
 
 export interface OpencodeSessionState {

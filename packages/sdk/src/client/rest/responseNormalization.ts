@@ -1,4 +1,4 @@
-import { asOptionalRecord } from "../../adapters/shared/coercion";
+import { asOptionalRecord } from "../../core/coercion";
 import type { ContactRequestsResult, MetadataMap } from "../../contracts/dtos";
 
 function asMetadataMap(value: unknown): MetadataMap | undefined {

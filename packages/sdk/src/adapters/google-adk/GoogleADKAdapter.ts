@@ -13,7 +13,7 @@ import {
   type CustomToolDef,
 } from "../../runtime/tools/customTools";
 import { asErrorMessage, BandSdkError } from "../../core/errors";
-import { asOptionalRecord } from "../shared/coercion";
+import { asOptionalRecord } from "../../core/coercion";
 import { loadOptionalPeer } from "../shared/optionalPeer";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import {

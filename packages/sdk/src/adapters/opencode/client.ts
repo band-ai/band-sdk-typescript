@@ -1,7 +1,7 @@
 import { createServer } from "node:net";
 import { BandSdkError, RuntimeStateError, UnsupportedFeatureError } from "../../core/errors";
 import { NoopLogger, type Logger } from "../../core/logger";
-import { asNonEmptyString, isRecord } from "../shared/coercion";
+import { asNonEmptyString, isRecord } from "../../core/coercion";
 
 export interface OpencodeClientLike {
   createSession(input?: { title?: string }): Promise<Record<string, unknown>>;

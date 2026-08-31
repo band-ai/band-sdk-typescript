@@ -1,5 +1,5 @@
 import { asErrorMessage, UnsupportedFeatureError } from "../../core/errors";
-import { asNullableString, asOptionalRecord, asString } from "../../adapters/shared/coercion";
+import { asNullableString, asOptionalRecord, asString } from "../../core/coercion";
 import { NoopLogger, type Logger } from "../../core/logger";
 import type { PendingBootstrapRequest, SessionRoomRecord, SessionRoomStore } from "./types";
 

@@ -1,4 +1,4 @@
-import { toLegacyToolExecutorErrorMessage } from "../../contracts/protocols";
+import { toLegacyToolExecutorErrorMessage } from "../contracts/protocols";
 
 export function asOptionalRecord(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {

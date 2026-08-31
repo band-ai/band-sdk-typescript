@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { asErrorMessage, BandSdkError, UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import { SimpleAdapter } from "../../core/simpleAdapter";
-import { isRecord } from "../shared/coercion";
+import { isRecord } from "../../core/coercion";
 import type { MessagingTools } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";

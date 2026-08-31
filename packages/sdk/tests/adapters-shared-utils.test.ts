@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { asNonEmptyString, asOptionalRecord, asRecord } from "../src/adapters/shared/coercion";
+import { asNonEmptyString, asOptionalRecord, asRecord } from "../src/core/coercion";
 import { findLatestTaskMetadata } from "../src/adapters/shared/history";
 import { mapConversationMessages } from "../src/adapters/tool-calling/valueUtils";
 

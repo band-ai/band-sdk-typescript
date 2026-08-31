@@ -1,5 +1,5 @@
 import type { HistoryConverter } from "../../contracts/protocols";
-import { asNonEmptyString } from "../shared/coercion";
+import { asNonEmptyString } from "../../core/coercion";
 
 export interface ParlantMessage {
   role: "user" | "assistant";

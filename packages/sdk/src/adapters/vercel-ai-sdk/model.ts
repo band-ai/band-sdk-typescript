@@ -6,7 +6,7 @@ import type {
 } from "../tool-calling";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { loadOptionalPeer } from "../shared/optionalPeer";
-import { toDisplayText } from "../shared/coercion";
+import { toDisplayText } from "../../core/coercion";
 import { mapConversationMessages, normalizeConversationRole } from "../tool-calling/valueUtils";
 
 interface VercelAISDKToolDefinition {

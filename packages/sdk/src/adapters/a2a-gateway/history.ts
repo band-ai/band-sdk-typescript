@@ -1,5 +1,5 @@
 import type { HistoryConverter } from "../../contracts/protocols";
-import { asNonEmptyString, asOptionalRecord } from "../shared/coercion";
+import { asNonEmptyString, asOptionalRecord } from "../../core/coercion";
 
 import type { GatewaySessionState } from "./types";
 

@@ -1,4 +1,4 @@
-import { asNonEmptyString } from "../adapters/shared/coercion";
+import { asNonEmptyString } from "../core/coercion";
 
 export interface ParsedToolCall {
   name: string;

@@ -6,7 +6,7 @@ import type { PeerRecord } from "../../contracts/dtos";
 import type { MessagingTools } from "../../contracts/protocols";
 import type { ChatMessageMention } from "../../client/rest/types";
 import type { PlatformMessage } from "../../runtime/types";
-import { asNonEmptyString } from "../shared/coercion";
+import { asNonEmptyString } from "../../core/coercion";
 import { GatewayHistoryConverter } from "./history";
 import { createGatewayServer } from "./server";
 import { buildStatusEvent } from "./statusEvent";

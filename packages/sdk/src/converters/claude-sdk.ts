@@ -1,6 +1,6 @@
 import type { HistoryConverter } from "../contracts/protocols";
 import { findLatestTaskMetadata } from "../adapters/shared/history";
-import { asNonEmptyString } from "../adapters/shared/coercion";
+import { asNonEmptyString } from "../core/coercion";
 
 export interface ClaudeSDKSessionState {
   text: string;

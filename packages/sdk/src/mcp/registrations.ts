@@ -11,7 +11,7 @@ import {
   getToolDescription,
 } from "../runtime/tools/schemas";
 import { asErrorMessage, RuntimeStateError } from "../core/errors";
-import { asNonEmptyString, toWireString } from "../adapters/shared/coercion";
+import { asNonEmptyString, toWireString } from "../core/coercion";
 
 export interface McpToolRegistration {
   name: string;

@@ -1,7 +1,7 @@
 import type { Band } from "@band-ai/rest-client";
 import { TransportError, UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import { sleep } from "../../core/sleep";
-import { asNullableString, asOptionalRecord, asRecordArray, asString } from "../../adapters/shared/coercion";
+import { asNullableString, asOptionalRecord, asRecordArray, asString } from "../../core/coercion";
 import type {
   AddContactArgs,
   ContactRecord,

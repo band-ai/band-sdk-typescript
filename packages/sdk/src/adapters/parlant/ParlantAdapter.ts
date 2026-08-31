@@ -5,7 +5,7 @@ import { NoopLogger } from "../../core/logger";
 import { asErrorMessage, BandSdkError, RuntimeStateError } from "../../core/errors";
 import type { PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import { asNonEmptyString, asOptionalRecord } from "../shared/coercion";
+import { asNonEmptyString, asOptionalRecord } from "../../core/coercion";
 import { loadOptionalPeer } from "../shared/optionalPeer";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import {

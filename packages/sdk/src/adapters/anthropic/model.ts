@@ -6,7 +6,7 @@ import type {
   ToolCallingModelRequest,
   ToolCallingResponse,
 } from "../tool-calling";
-import { isRecord, toDisplayText, toWireString } from "../shared/coercion";
+import { isRecord, toDisplayText, toWireString } from "../../core/coercion";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { loadOptionalPeer } from "../shared/optionalPeer";
 import {

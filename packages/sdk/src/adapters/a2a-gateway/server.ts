@@ -10,7 +10,7 @@ import type {
   GatewayServerOptions,
 } from "./types";
 import { buildStatusEvent } from "./statusEvent";
-import { asNonEmptyString } from "../shared/coercion";
+import { asNonEmptyString } from "../../core/coercion";
 import {
   asErrorMessage,
   BandSdkError,
