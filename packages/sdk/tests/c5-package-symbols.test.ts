@@ -8,7 +8,7 @@
  * new/old consumer fixtures (values as value imports). P-C5-1 packs a real
  * tarball, installs it into ESM and CJS consumers, and executes runtime imports
  * of every subpath with an inverse probe. P-C5-3 checks the release workflow
- * carries no package mutation and the hold is present.
+ * carries no package mutation.
  */
 
 import { describe, it, expect, beforeAll } from "vitest";

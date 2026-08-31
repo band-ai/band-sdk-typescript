@@ -1,4 +1,6 @@
-import type { MetadataMap, ToolModelMessage } from "../contracts/dtos";
+import type { ParticipantFields } from "@band-ai/band-sdk-core";
+import type { ChatParticipant } from "../client/rest/types";
+import type { MetadataMap, ParticipantRecord, ToolModelMessage } from "../contracts/dtos";
 import { ensureHandlePrefix } from "./types";
 
 function isMetadataMap(value: unknown): value is MetadataMap {
@@ -58,6 +60,25 @@ export function formatHistoryForLlm(
   return messages
     .filter((message) => String(message.id ?? "") !== excludeId)
     .map((message) => formatMessageForLlm(message, participants));
+}
+
+/** Maps core's `ParticipantFields` (name/type optional) to the public `ParticipantRecord` (required strings). */
+export function toParticipantRecord(fields: ParticipantFields): ParticipantRecord {
+  return {
+    id: fields.id,
+    name: fields.name ?? "unknown",
+    type: fields.type ?? "unknown",
+    handle: fields.handle ?? null,
+  };
+}
+
+export function toParticipantRecordFromRest(participant: ChatParticipant): ParticipantRecord {
+  return {
+    id: participant.id,
+    name: participant.name,
+    type: participant.type,
+    handle: participant.handle ?? null,
+  };
 }
 
 export function buildParticipantsMessage(participants: Array<Record<string, unknown>>): string {

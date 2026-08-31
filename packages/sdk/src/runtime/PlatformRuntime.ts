@@ -13,6 +13,12 @@ import type { ExecutionContext, ExecutionContextOptions } from "./ExecutionConte
 import type { Logger } from "../core/logger";
 import { NoopLogger } from "../core/logger";
 
+/** Upper bound core's `RetryTracker` accepts for `maxRetries` (u32::MAX). */
+export const MAX_MESSAGE_RETRIES = 4_294_967_295;
+
+const isValidRetryCount = (value: number): boolean =>
+  Number.isInteger(value) && value >= 0 && value <= MAX_MESSAGE_RETRIES;
+
 export interface PlatformRuntimeOptions {
   agentId: string;
   apiKey: string;
@@ -75,6 +81,15 @@ export class PlatformRuntime {
     if (!options.apiKey || options.apiKey.trim() === "") {
       throw new ValidationError(
         "apiKey is required and must be a non-empty string. Use loadAgentConfig() to load credentials from agent_config.yaml.",
+      );
+    }
+
+    // RetryTracker rejects these too, but only once a room's ExecutionContext
+    // is built mid-run — too late to be actionable.
+    const maxMessageRetries = options.sessionConfig?.maxMessageRetries;
+    if (maxMessageRetries !== undefined && !isValidRetryCount(maxMessageRetries)) {
+      throw new ValidationError(
+        `sessionConfig.maxMessageRetries must be an integer between 0 and ${MAX_MESSAGE_RETRIES}, got ${maxMessageRetries}.`,
       );
     }
 
