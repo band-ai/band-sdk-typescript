@@ -353,7 +353,10 @@ describe("linear bridge room strategy", () => {
       expect.arrayContaining([
         expect.objectContaining({
           linearSessionId: "session-2",
+          // The bridge writes both spellings for one release so an adapter that has not
+          // moved to the neutral key yet keeps resetting its thread.
           metadata: expect.objectContaining({
+            reset_adapter_thread: true,
             linear_reset_room_session: true,
           }),
         }),

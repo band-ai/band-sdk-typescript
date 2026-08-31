@@ -44,6 +44,7 @@ interface PendingEventWaiter {
   timer: NodeJS.Timeout | null;
 }
 
+/** Thrown when the Codex app-server answers a JSON-RPC request with an error object. */
 export class CodexJsonRpcError extends BandSdkError {
   public readonly code: number;
   public readonly data: unknown;
@@ -56,6 +57,11 @@ export class CodexJsonRpcError extends BandSdkError {
   }
 }
 
+/**
+ * JSON-RPC client for a Codex app-server subprocess spoken to over stdio. Handles the
+ * request/response correlation, notification fan-out, and process lifecycle that
+ * {@link CodexAdapter} runs on.
+ */
 export class CodexAppServerStdioClient implements CodexClientLike {
   private readonly command: readonly string[];
   private readonly cwd?: string;

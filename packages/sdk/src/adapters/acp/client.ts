@@ -14,6 +14,10 @@ import type {
 } from "./types";
 import { choosePermissionOption } from "./types";
 
+/**
+ * ACP `Client` implementation used when the SDK drives an external ACP agent: it collects
+ * the streamed session updates for each turn and answers the agent's permission requests.
+ */
 export class BandACPClient implements Client {
   private readonly sessionChunks = new Map<string, CollectedChunk[]>()
   private readonly permissionHandlers = new Map<string, ACPPermissionHandler>()

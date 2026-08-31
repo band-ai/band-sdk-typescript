@@ -2,13 +2,27 @@ import { z, type ZodIssue } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { asErrorMessage, BandSdkError } from "../../core/errors";
 
+/**
+ * An extra tool an adapter exposes to its model alongside the platform tools.
+ *
+ * `name` is required and must be a non-empty string — it is what the model calls and what
+ * the SDK looks the tool up by. `schema` must be a Zod **object** schema (`z.object({…})`),
+ * because it is converted to a JSON Schema `object` for the provider's tool format; a bare
+ * `z.string()` or `z.array()` has no properties to convert. Use `z.object({})` for a tool
+ * that takes no arguments.
+ */
 export interface CustomToolDef {
+  /** Zod object schema for the tool's arguments. Must be an object schema. */
   schema: z.AnyZodObject;
+  /** Runs the tool. Receives the parsed arguments; may return anything serializable. */
   handler: (args: Record<string, unknown>) => unknown;
+  /** Required, non-empty tool name the model calls. */
   name: string;
+  /** Prompt-facing description of when the model should call this tool. */
   description?: string;
 }
 
+/** Thrown when a custom tool is declared without a usable name or schema. */
 export class CustomToolDefinitionError extends BandSdkError {
   public constructor(message: string) {
     super(message);
@@ -16,6 +30,7 @@ export class CustomToolDefinitionError extends BandSdkError {
   }
 }
 
+/** Thrown when a model's arguments for a custom tool fail that tool's Zod schema. */
 export class CustomToolValidationError extends BandSdkError {
   public readonly toolName: string;
   public readonly issues: string[];
@@ -28,6 +43,7 @@ export class CustomToolValidationError extends BandSdkError {
   }
 }
 
+/** Thrown when a custom tool's own handler throws; the original error is kept as the cause. */
 export class CustomToolExecutionError extends BandSdkError {
   public readonly toolName: string;
 

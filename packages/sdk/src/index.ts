@@ -22,6 +22,8 @@ export type {
   AgentInput,
   ContactEventConfig,
   ContactEventStrategy,
+  OnContactEventCallback,
+  // Deprecated alias of OnContactEventCallback, kept exported so the rename is not breaking.
   ContactEventCallback,
   ConversationContext,
   MessageHandler,

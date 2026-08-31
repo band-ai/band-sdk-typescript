@@ -5,6 +5,10 @@ import { sleep } from "../../../core/sleep";
 import { NoopLogger, type Logger } from "../../../core/logger";
 import type { RestApi } from "../../../client/rest/types";
 import type { PeerRecord } from "../../../contracts/dtos";
+import {
+  BRIDGE_METADATA_KEYS,
+  LEGACY_BRIDGE_METADATA_KEYS,
+} from "../../../contracts/bridgeMetadata";
 import type {
   HandleAgentSessionEventInput,
   LinearBandBridgeConfig,
@@ -333,12 +337,15 @@ export async function handleAgentSessionEvent(
 
     const messageMetadata = {
       linear_event_action: action,
-      linear_session_id: sessionId,
-      linear_issue_id: issueId,
       linear_prompt_context: input.payload.promptContext ?? null,
       linear_writeback_mode: config.writebackMode,
       linear_bridge: "band",
       linear_host_handle: hostAgentHandle,
+      [BRIDGE_METADATA_KEYS.sessionId]: sessionId,
+      [BRIDGE_METADATA_KEYS.issueId]: issueId,
+      // Legacy spellings -- remove in 0.2.0, once adapters no longer read them.
+      [LEGACY_BRIDGE_METADATA_KEYS.sessionId]: sessionId,
+      [LEGACY_BRIDGE_METADATA_KEYS.issueId]: issueId,
     };
     const shouldResetRoomSession = Boolean(
       existingByIssue
@@ -379,7 +386,9 @@ export async function handleAgentSessionEvent(
         metadata: shouldResetRoomSession
           ? {
             ...messageMetadata,
-            linear_reset_room_session: true,
+            [BRIDGE_METADATA_KEYS.resetThread]: true,
+            // Legacy spelling -- remove in 0.2.0, once adapters no longer read it.
+            [LEGACY_BRIDGE_METADATA_KEYS.resetThread]: true,
           }
           : messageMetadata,
       });
@@ -700,9 +709,12 @@ async function handleCanceledAction(input: {
       messageType: "task",
       metadata: {
         linear_event_action: "canceled",
-        linear_session_id: input.sessionId,
-        linear_issue_id: input.issueId,
         linear_bridge: "band",
+        [BRIDGE_METADATA_KEYS.sessionId]: input.sessionId,
+        [BRIDGE_METADATA_KEYS.issueId]: input.issueId,
+        // Legacy spellings -- remove in 0.2.0, once adapters no longer read them.
+        [LEGACY_BRIDGE_METADATA_KEYS.sessionId]: input.sessionId,
+        [LEGACY_BRIDGE_METADATA_KEYS.issueId]: input.issueId,
       },
     });
   }
@@ -753,8 +765,10 @@ async function handlePromptedAction(input: {
   const message = `[Linear User Response]: ${userResponse}`;
   const metadata = {
     linear_event_action: "prompted",
-    linear_session_id: input.sessionId,
     linear_bridge: "band",
+    [BRIDGE_METADATA_KEYS.sessionId]: input.sessionId,
+    // Legacy spelling -- remove in 0.2.0, once adapters no longer read it.
+    [LEGACY_BRIDGE_METADATA_KEYS.sessionId]: input.sessionId,
   };
 
   const canBootstrapDirectly = input.config.hostAgentHandle !== null

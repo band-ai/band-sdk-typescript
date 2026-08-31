@@ -5,6 +5,11 @@ import {
   type AnthropicClientFactory,
 } from "./model";
 
+/**
+ * Options for {@link AnthropicAdapter}. Everything {@link ToolCallingAdapterOptions}
+ * accepts, plus the Claude model name, API key, response token budget, and hooks to supply
+ * your own client or a pre-built {@link ToolCallingModel}.
+ */
 export interface AnthropicAdapterOptions
   extends Omit<ToolCallingAdapterOptions, "toolFormat" | "model"> {
   model?: ToolCallingModel;
@@ -14,6 +19,12 @@ export interface AnthropicAdapterOptions
   clientFactory?: AnthropicClientFactory;
 }
 
+/**
+ * Adapter for Anthropic's `@anthropic-ai/sdk`. Exposes the Band platform tools as Claude
+ * tools and runs the tool-calling loop against the Messages API.
+ *
+ * Requires the optional peer dependency `@anthropic-ai/sdk`.
+ */
 export class AnthropicAdapter extends ToolCallingAdapter {
   public constructor(options: AnthropicAdapterOptions = {}) {
     const {

@@ -41,6 +41,10 @@ function sanitizeHeaderValue(value: string, headerName: string): string {
   return value;
 }
 
+/**
+ * Recovers the A2A context and task ids for a room from its task-event history, so the
+ * adapter can resume an existing remote A2A conversation after a restart.
+ */
 export class A2AHistoryConverter implements HistoryConverter<A2ASessionState> {
   public convert(raw: Array<Record<string, unknown>>): A2ASessionState {
     const metadata = findLatestTaskMetadata(

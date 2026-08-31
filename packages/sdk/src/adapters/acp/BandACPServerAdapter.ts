@@ -28,6 +28,10 @@ const DEFAULT_MAX_SESSIONS = 100
 const DEFAULT_PROMPT_TIMEOUT_MS = 300_000
 const DEFAULT_PROMPT_COMPLETION_GRACE_MS = 250
 
+/**
+ * Options for {@link BandACPServerAdapter}: the Band REST client to act through, session
+ * limits and timeouts, and how editor modes and slash commands map to Band peers.
+ */
 export interface BandACPServerAdapterOptions {
   bandRest: RestApi;
   maxSessions?: number;
@@ -38,6 +42,11 @@ export interface BandACPServerAdapterOptions {
   slashCommands?: Record<string, string>;
 }
 
+/**
+ * The Band-facing half of the ACP integration: maps each ACP session to a Band room,
+ * forwards editor prompts to the routed peer, and streams the peer's replies back to
+ * {@link ACPServer}.
+ */
 export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, MessagingTools> {
   private readonly bandRest: RestApi
   private readonly maxSessions: number

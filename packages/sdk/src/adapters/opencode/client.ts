@@ -108,6 +108,7 @@ const DEFAULT_SERVER_STARTUP_TIMEOUT_MS = 5_000;
 
 let cachedSdkPromise: Promise<LoadedOpencodeSdk> | null = null;
 
+/** Thrown when the Opencode server answers with a non-2xx status; carries the status and body. */
 export class HttpStatusError extends BandSdkError {
   public readonly status: number;
   public readonly body: unknown;
@@ -352,6 +353,7 @@ abstract class SdkOpencodeClientBase implements OpencodeClientLike {
   }
 }
 
+/** Opencode client that talks to an Opencode server the host already runs, at a given base URL. */
 export class HttpOpencodeClient extends SdkOpencodeClientBase {
   private readonly baseUrl: string;
 
@@ -370,6 +372,7 @@ export class HttpOpencodeClient extends SdkOpencodeClientBase {
   }
 }
 
+/** Opencode client that starts and owns its own local Opencode server on a free port. */
 export class ManagedOpencodeClient extends SdkOpencodeClientBase {
   private readonly startupTimeoutMs: number;
 

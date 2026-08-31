@@ -1,35 +1,20 @@
-import { createRequire } from "node:module";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
-
 import { beforeAll, describe, expect, it } from "vitest";
 
 import pkg from "../package.json" with { type: "json" };
+import { importDistEsm, readDistTypes, requireDistCjs, type Mod } from "./distSurface";
 
 // These assertions run against the BUILT package, not src. A src-only surface test cannot
 // see a type/value mismatch under verbatimModuleSyntax -- which is exactly the class of bug
 // the HistoryProvider case below was.
-const SDK_ROOT = resolve(__dirname, "..");
-const requireCjs = createRequire(import.meta.url);
-
-type Mod = Record<string, unknown>;
-
-function distEntry(subpath: string, condition: "import" | "require"): string {
-  const entry = (pkg.exports as Record<string, Record<string, string>>)[subpath];
-  if (!entry?.[condition]) {
-    throw new Error(`package.json#exports is missing ${subpath} -> ${condition}`);
-  }
-  return resolve(SDK_ROOT, entry[condition]);
-}
 
 let rootEsm: Mod;
 let rootCjs: Mod;
 let coreEsm: Mod;
 
 beforeAll(async () => {
-  rootEsm = (await import(pathToFileURL(distEntry(".", "import")).href)) as Mod;
-  coreEsm = (await import(pathToFileURL(distEntry("./core", "import")).href)) as Mod;
-  rootCjs = requireCjs(distEntry(".", "require")) as Mod;
+  rootEsm = await importDistEsm(".");
+  coreEsm = await importDistEsm("./core");
+  rootCjs = requireDistCjs(".");
 });
 
 describe("HistoryProvider is reachable as a value from the root entry", () => {
@@ -155,12 +140,8 @@ describe("tool-executor helpers and capabilities are reachable as values from ./
 describe("the DTO surface referenced by AdapterToolsProtocol is declared on ./core", () => {
   // These are types, so they cannot be probed at runtime. Assert instead that the built
   // declaration file names each one -- the .d.ts is what a consumer's tsc actually reads.
-  it("every DTO named in the public protocol signatures appears in dist/core.d.ts", async () => {
-    const { readFileSync } = await import("node:fs");
-    const dts = readFileSync(
-      resolve(SDK_ROOT, (pkg.exports as Record<string, Record<string, string>>)["./core"]!.types!),
-      "utf-8",
-    );
+  it("every DTO named in the public protocol signatures appears in dist/core.d.ts", () => {
+    const dts = readDistTypes("./core");
 
     const expected = [
       "MetadataMap",
@@ -201,19 +182,12 @@ describe("the ./mcp/claude subpath exposes the full Claude MCP bridge surface", 
   // mcp-claude entry from src/mcp/sdk.ts. It also omitted GetSystemPromptContextOptions,
   // so wiring it up would have narrowed this surface rather than widening it.
   it("still resolves the export path after the dead file was removed", async () => {
-    const mod = (await import(pathToFileURL(distEntry("./mcp/claude", "import")).href)) as Mod;
+    const mod = await importDistEsm("./mcp/claude");
     expect(typeof mod.createBandSdkMcpServer).toBe("function");
   });
 
-  it("declares every documented symbol, including GetSystemPromptContextOptions", async () => {
-    const { readFileSync } = await import("node:fs");
-    const dts = readFileSync(
-      resolve(
-        SDK_ROOT,
-        (pkg.exports as Record<string, Record<string, string>>)["./mcp/claude"]!.types!,
-      ),
-      "utf-8",
-    );
+  it("declares every documented symbol, including GetSystemPromptContextOptions", () => {
+    const dts = readDistTypes("./mcp/claude");
 
     for (const name of [
       "createBandSdkMcpServer",

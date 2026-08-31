@@ -41,6 +41,11 @@ export type OpencodeApprovalMode = "manual" | "auto_accept" | "auto_decline";
 export type OpencodeQuestionMode = "manual" | "auto_reject";
 export type OpencodeApprovalReply = "once" | "always" | "reject";
 
+/**
+ * Configuration for {@link OpencodeAdapter}: which Opencode server, workspace, provider and
+ * model to run against, how approvals and questions are answered, and the prompt, event and
+ * timeout settings.
+ */
 export interface OpencodeAdapterConfig {
   baseUrl?: string;
   directory?: string;
@@ -172,6 +177,13 @@ function buildCustomMcpRegistrations(customTools: CustomToolDef[]): McpToolRegis
   });
 }
 
+/**
+ * Adapter for Opencode. Keeps one Opencode session per Band room, streams the session's
+ * events back into the room, and answers its permission and question prompts according to
+ * the configured modes.
+ *
+ * Requires the optional peer dependency `@opencode-ai/sdk`.
+ */
 export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, AdapterToolsProtocol> {
   private readonly config: Required<OpencodeAdapterConfig>;
   private readonly customTools: CustomToolDef[];

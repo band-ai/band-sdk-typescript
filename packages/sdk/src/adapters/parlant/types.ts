@@ -10,6 +10,7 @@ export interface ParlantMessage {
 
 export type ParlantMessages = ParlantMessage[];
 
+/** Converts a room's raw history into the message list the Parlant client expects. */
 export class ParlantHistoryConverter
   implements HistoryConverter<ParlantMessages>
 {

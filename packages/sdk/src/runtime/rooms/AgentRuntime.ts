@@ -1,46 +1,63 @@
 import type { BandLink } from "../../platform/BandLink";
-import type { ContactEvent, PlatformEvent } from "../../platform/events";
+import type { PlatformEvent } from "../../platform/events";
 import { assertNever, BandSdkError } from "../../core/errors";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
-import type { MetadataMap, ParticipantRecord } from "../../contracts/dtos";
+import type { MetadataMap } from "../../contracts/dtos";
 import { Execution } from "../Execution";
 import { ExecutionContext, type ExecutionContextOptions } from "../ExecutionContext";
 import { hydrateTrackedRooms, trackRoomJoin, trackRoomLeave } from "./subscriptions";
+import type {
+  ExecutionContextFactory,
+  OnContactEventDispatchCallback,
+  OnErrorCallback,
+  OnExecuteCallback,
+  OnParticipantAddedCallback,
+  OnParticipantRemovedCallback,
+  OnRoomJoinedCallback,
+  OnRoomLeftCallback,
+  OnSessionCleanupCallback,
+  RoomFilter,
+} from "../callbacks";
 import type { AgentConfig, SessionConfig } from "../types";
 import type { PlatformMessage } from "../types";
 
 interface AgentRuntimeOptions {
   link: BandLink;
   agentId: string;
-  onExecute: (context: ExecutionContext, event: PlatformEvent) => Promise<void>;
-  onSessionCleanup?: (roomId: string) => Promise<void>;
-  onRoomJoined?: (roomId: string, payload: MetadataMap) => Promise<void> | void;
-  onRoomLeft?: (roomId: string) => Promise<void> | void;
-  onContactEvent?: (event: ContactEvent) => Promise<void>;
-  onParticipantAdded?: (roomId: string, participant: ParticipantRecord) => Promise<void> | void;
-  onParticipantRemoved?: (roomId: string, participantId: string) => Promise<void> | void;
-  onError?: (error: unknown, event: PlatformEvent) => void;
-  roomFilter?: (room: MetadataMap) => boolean;
-  contextFactory?: (roomId: string, defaults: ExecutionContextOptions) => ExecutionContext;
+  onExecute: OnExecuteCallback;
+  onSessionCleanup?: OnSessionCleanupCallback;
+  onRoomJoined?: OnRoomJoinedCallback;
+  onRoomLeft?: OnRoomLeftCallback;
+  onContactEvent?: OnContactEventDispatchCallback;
+  onParticipantAdded?: OnParticipantAddedCallback;
+  onParticipantRemoved?: OnParticipantRemovedCallback;
+  onError?: OnErrorCallback;
+  roomFilter?: RoomFilter;
+  contextFactory?: ExecutionContextFactory;
   sessionConfig?: SessionConfig;
   agentConfig?: AgentConfig;
   logger?: Logger;
 }
 
+/**
+ * Owns the agent's room lifecycle: it consumes the platform link's event stream, keeps one
+ * {@link ExecutionContext} and {@link Execution} queue per subscribed room, and hands each
+ * event to the caller's callbacks.
+ */
 export class AgentRuntime {
   private readonly link: BandLink;
   private readonly agentId: string;
-  private readonly onExecute: (context: ExecutionContext, event: PlatformEvent) => Promise<void>;
-  private readonly onSessionCleanup: (roomId: string) => Promise<void>;
-  private readonly onRoomJoined?: (roomId: string, payload: MetadataMap) => Promise<void> | void;
-  private readonly onRoomLeft?: (roomId: string) => Promise<void> | void;
-  private readonly onContactEvent?: (event: ContactEvent) => Promise<void>;
-  private readonly onParticipantAdded?: (roomId: string, participant: ParticipantRecord) => Promise<void> | void;
-  private readonly onParticipantRemoved?: (roomId: string, participantId: string) => Promise<void> | void;
-  private readonly onError?: (error: unknown, event: PlatformEvent) => void;
-  private readonly roomFilter?: (room: MetadataMap) => boolean;
-  private readonly contextFactory?: (roomId: string, defaults: ExecutionContextOptions) => ExecutionContext;
+  private readonly onExecute: OnExecuteCallback;
+  private readonly onSessionCleanup: OnSessionCleanupCallback;
+  private readonly onRoomJoined?: OnRoomJoinedCallback;
+  private readonly onRoomLeft?: OnRoomLeftCallback;
+  private readonly onContactEvent?: OnContactEventDispatchCallback;
+  private readonly onParticipantAdded?: OnParticipantAddedCallback;
+  private readonly onParticipantRemoved?: OnParticipantRemovedCallback;
+  private readonly onError?: OnErrorCallback;
+  private readonly roomFilter?: RoomFilter;
+  private readonly contextFactory?: ExecutionContextFactory;
   private readonly sessionConfig: Required<SessionConfig>;
   private readonly autoSubscribeExistingRooms: boolean;
   private readonly subscribedRooms = new Set<string>();

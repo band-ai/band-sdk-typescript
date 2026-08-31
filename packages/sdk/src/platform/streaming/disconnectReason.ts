@@ -111,6 +111,11 @@ const upgradeErrorSchema = z.object({
   headers: z.record(z.unknown()).optional(),
 });
 
+/**
+ * Thrown when the platform WebSocket closes for a reason the SDK will not retry — most
+ * often because another connection superseded this agent's session. Inspect `reason` for
+ * the parsed close payload.
+ */
 export class WebSocketDisconnectError extends BandSdkError {
   public readonly reason: WebSocketDisconnectReason;
 

@@ -33,6 +33,10 @@ import { CursorExtensionHandler } from "./cursorExtensions";
 import type { ACPExtensionHandler } from "./extensions";
 import { acpModule } from "./loader";
 
+/**
+ * Options for {@link ACPServer}: the session modes and auth methods advertised to the
+ * editor, the agent identity it reports, and an optional editor-specific extension handler.
+ */
 export interface ACPServerOptions {
   modes?: SessionMode[];
   authMethods?: InitializeResponse["authMethods"];
@@ -40,6 +44,13 @@ export interface ACPServerOptions {
   extensionHandler?: ACPExtensionHandler;
 }
 
+/**
+ * The editor-facing half of the ACP integration: a JSON-RPC ACP `Agent` that an editor
+ * (Zed, Cursor, JetBrains, Neovim) connects to over stdio. It delegates the actual work to
+ * a {@link BandACPServerAdapter}, which routes prompts to Band peers.
+ *
+ * Requires the optional peer dependency `@agentclientprotocol/sdk`.
+ */
 export class ACPServer implements Agent {
   private readonly adapter: BandACPServerAdapter
   private readonly authMethods: InitializeResponse["authMethods"]

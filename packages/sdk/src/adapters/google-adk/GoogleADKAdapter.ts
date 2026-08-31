@@ -83,6 +83,10 @@ interface GoogleAdkSdkLike {
   stringifyContent(event: unknown): string;
 }
 
+/**
+ * Options for {@link GoogleADKAdapter}: the model and system prompt, which tool groups to
+ * expose, and the history/transcript limits applied to each turn.
+ */
 export interface GoogleADKAdapterOptions {
   model?: string;
   systemPrompt?: string;
@@ -175,6 +179,12 @@ async function loadGoogleAdkSdk(): Promise<GoogleAdkSdkLike> {
   });
 }
 
+/**
+ * Adapter for the Google Agent Development Kit. Runs each room turn through an ADK agent
+ * with the Band platform tools registered as ADK function tools.
+ *
+ * Requires the optional peer dependency `@google/adk`.
+ */
 export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterToolsProtocol> {
   private readonly model: string;
   private readonly systemPromptOverride?: string;

@@ -25,6 +25,12 @@ function toPlatformMessage(roomId: string, payload: {
     };
   }
 
+/**
+ * The SDK's stock {@link Preprocessor}: turns a `message_created` event into an adapter
+ * turn, skipping the agent's own messages and ones it has already handled, and attaching
+ * the room's history — hydrated from REST on the first message of a session — along with
+ * the pending participant and system messages.
+ */
 export class DefaultPreprocessor implements Preprocessor<PlatformEvent> {
   public async process(
     context: PreprocessorContext,

@@ -14,6 +14,11 @@ export type GenericAdapterHandler = (args: {
   agentDescription: string;
 }) => Promise<void>;
 
+/**
+ * Adapter that wraps a plain async function instead of an LLM SDK. Use it to run arbitrary
+ * per-message logic — a scripted bot, a proxy to your own service, or a test double —
+ * without writing an adapter class.
+ */
 export class GenericAdapter extends SimpleAdapter<HistoryProvider> {
   private readonly handler: GenericAdapterHandler;
 

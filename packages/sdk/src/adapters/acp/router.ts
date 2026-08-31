@@ -3,6 +3,10 @@ export interface AgentRouterOptions {
   slashCommands?: Record<string, string>;
 }
 
+/**
+ * Resolves which Band peer an ACP prompt is addressed to, from the editor's current mode
+ * or a leading slash command, and strips the command from the text.
+ */
 export class AgentRouter {
   private readonly modeToPeer: Record<string, string>
   private readonly slashCommands: Record<string, string>

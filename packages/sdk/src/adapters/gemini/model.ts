@@ -65,6 +65,7 @@ export interface GeminiToolCallingModelOptions {
   };
 }
 
+/** {@link ToolCallingModel} backed by the Gemini API's function-calling support. */
 export class GeminiToolCallingModel implements ToolCallingModel {
   private readonly model: string;
   private readonly apiKey?: string;

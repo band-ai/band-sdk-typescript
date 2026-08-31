@@ -162,6 +162,7 @@ class GatewayPeerExecutor {
   }
 }
 
+/** The HTTP/JSON-RPC server {@link A2AGatewayAdapter} runs to receive inbound A2A calls. */
 export class GatewayServer implements GatewayServerLike {
   private readonly options: GatewayServerOptions;
   private server: HttpServer | null = null;

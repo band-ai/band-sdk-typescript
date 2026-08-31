@@ -5,6 +5,11 @@ import {
   type GeminiClientFactory,
 } from "./model";
 
+/**
+ * Options for {@link GeminiAdapter}. Everything {@link ToolCallingAdapterOptions} accepts,
+ * plus the Gemini model name, API key, and hooks to supply your own client or a pre-built
+ * {@link ToolCallingModel}.
+ */
 export interface GeminiAdapterOptions
   extends Omit<ToolCallingAdapterOptions, "toolFormat" | "model"> {
   model?: ToolCallingModel;
@@ -13,6 +18,12 @@ export interface GeminiAdapterOptions
   clientFactory?: GeminiClientFactory;
 }
 
+/**
+ * Adapter for Google's `@google/genai` SDK. Exposes the Band platform tools as Gemini
+ * function declarations and runs the tool-calling loop against the Gemini API.
+ *
+ * Requires the optional peer dependency `@google/genai`.
+ */
 export class GeminiAdapter extends ToolCallingAdapter {
   public constructor(options: GeminiAdapterOptions = {}) {
     const {

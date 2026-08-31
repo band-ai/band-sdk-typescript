@@ -68,6 +68,10 @@ export interface ParlantClientLike {
   };
 }
 
+/**
+ * Options for {@link ParlantAdapter}: which Parlant environment and agent to talk to, how
+ * to authenticate, and the prompt, history and timeout settings for each turn.
+ */
 export interface ParlantAdapterOptions {
   environment: string;
   baseUrl?: string;
@@ -89,6 +93,12 @@ export type ParlantClientFactory = () => Promise<ParlantClientLike>;
 const DEFAULT_RESPONSE_TIMEOUT_SECONDS = 120;
 const DEFAULT_MAX_HISTORY_MESSAGES = 100;
 
+/**
+ * Adapter for Parlant. Forwards each room turn to a Parlant agent session and posts the
+ * agent's reply back into the room.
+ *
+ * Requires the optional peer dependency `parlant-client`.
+ */
 export class ParlantAdapter
   extends SimpleAdapter<ParlantMessages, MessagingTools>
 {

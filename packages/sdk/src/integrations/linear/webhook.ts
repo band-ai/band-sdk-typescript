@@ -39,9 +39,23 @@ export interface LinearBridgeDispatcher {
   waitForIdle?(): Promise<void>;
 }
 
+/** Notifies the host that the app's access to a Linear team was granted or revoked. */
+export type OnTeamAccessChangedCallback = (
+  payload: AppUserTeamAccessChangedWebhookPayload,
+) => void | Promise<void>;
+
+/** Notifies the host that the Linear OAuth app itself was revoked and can no longer act. */
+export type OnOAuthAppRevokedCallback = (
+  payload: OAuthAppWebhookPayload,
+) => void | Promise<void>;
+
+/**
+ * Hooks the webhook handler calls when Linear reports that the app's permissions changed.
+ * Neither hook is required; unhandled permission events are logged and ignored.
+ */
 export interface PermissionChangeCallbacks {
-  onTeamAccessChanged?: (payload: AppUserTeamAccessChangedWebhookPayload) => void | Promise<void>;
-  onOAuthAppRevoked?: (payload: OAuthAppWebhookPayload) => void | Promise<void>;
+  onTeamAccessChanged?: OnTeamAccessChangedCallback;
+  onOAuthAppRevoked?: OnOAuthAppRevokedCallback;
 }
 
 export interface CreateLinearWebhookHandlerOptions {

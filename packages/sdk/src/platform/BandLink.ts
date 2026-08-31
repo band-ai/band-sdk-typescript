@@ -89,6 +89,12 @@ function toPlatformMessage(
   };
 }
 
+/**
+ * The agent's connection to the Band platform: a REST client on `rest` plus a WebSocket
+ * event stream. Iterate it (`for await (const event of link)`) to consume platform events,
+ * and call `markProcessing`/`markProcessed`/`markFailed` to report a message's lifecycle
+ * back to the platform.
+ */
 export class BandLink implements AsyncIterable<PlatformEvent> {
   public readonly agentId: string;
   private readonly apiKey: string;

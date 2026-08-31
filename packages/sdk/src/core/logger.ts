@@ -1,3 +1,9 @@
+/**
+ * Structured logging sink the SDK writes to instead of `console`. Every level takes a
+ * short event name plus an optional context object, so hosts can forward SDK activity to
+ * whatever logger they already run. Pass an implementation via an adapter's or runtime's
+ * `logger` option; the default is {@link NoopLogger}.
+ */
 export interface Logger {
   debug(message: string, context?: Record<string, unknown>): void;
   info(message: string, context?: Record<string, unknown>): void;
@@ -10,6 +16,7 @@ const REDACTED_VALUE = "[REDACTED]";
 const CIRCULAR_VALUE = "[Circular]";
 const SENSITIVE_KEY_PATTERN = /(authorization|api[-_]?key|token|secret|password|cookie)/i;
 
+/** {@link Logger} that discards everything. The SDK's default, so it is silent unless asked. */
 export class NoopLogger implements Logger {
   public debug = noop;
   public info = noop;
@@ -17,6 +24,11 @@ export class NoopLogger implements Logger {
   public error = noop;
 }
 
+/**
+ * {@link Logger} that writes to the console — `error` to stderr, the rest through the
+ * matching `console` method. Context objects are serialized with values under
+ * authorization/key/token/secret/password/cookie keys redacted.
+ */
 export class ConsoleLogger implements Logger {
   public debug(message: string, context?: Record<string, unknown>): void {
     this.emit("debug", message, context);

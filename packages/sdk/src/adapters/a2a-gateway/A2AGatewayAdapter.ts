@@ -36,6 +36,13 @@ interface PendingTaskRecord extends PendingA2ATask {
   readonly queue: AsyncEventQueue<GatewayA2AStatusUpdateEvent>;
 }
 
+/**
+ * Adapter that exposes Band peers to the outside world as A2A JSON-RPC endpoints. External
+ * A2A clients send messages through the gateway server; the same `contextId` always maps to
+ * the same Band room, and replies stream back over SSE.
+ *
+ * Requires the optional peer dependencies `@a2a-js/sdk` and `express`.
+ */
 export class A2AGatewayAdapter
   extends SimpleAdapter<GatewaySessionState, MessagingTools>
 {

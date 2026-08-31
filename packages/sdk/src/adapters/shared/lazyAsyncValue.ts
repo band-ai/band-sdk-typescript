@@ -8,6 +8,11 @@ interface LazyAsyncValueOptions<T> {
 
 const DEFAULT_RETRY_BACKOFF_MS = 1_000;
 
+/**
+ * A value produced once by an async loader and then cached, with concurrent callers
+ * sharing one in-flight load. A failed load is retried, but not before a backoff window
+ * has passed, so a broken dependency is not hammered on every message.
+ */
 export class LazyAsyncValue<T> {
   private readonly load: () => Promise<T>;
   private readonly onRejected?: (error: unknown) => void;

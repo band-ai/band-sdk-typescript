@@ -3,6 +3,11 @@ import { asNonEmptyString, asOptionalRecord } from "../shared/coercion";
 
 import type { GatewaySessionState } from "./types";
 
+/**
+ * Rebuilds the A2A gateway's session state (context-to-room bindings and per-room
+ * participants) from a room's task-event history, so a restarted gateway keeps serving the
+ * same `contextId`s.
+ */
 export class GatewayHistoryConverter
   implements HistoryConverter<GatewaySessionState>
 {

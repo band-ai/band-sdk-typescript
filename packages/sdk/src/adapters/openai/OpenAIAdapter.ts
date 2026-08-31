@@ -5,6 +5,11 @@ import {
   type OpenAIClientFactory,
 } from "./model";
 
+/**
+ * Options for {@link OpenAIAdapter}. Everything {@link ToolCallingAdapterOptions} accepts,
+ * plus the OpenAI model name, API key, and hooks to supply your own client or a
+ * pre-built {@link ToolCallingModel}.
+ */
 export interface OpenAIAdapterOptions
   extends Omit<ToolCallingAdapterOptions, "toolFormat" | "model"> {
   model?: ToolCallingModel;
@@ -13,6 +18,12 @@ export interface OpenAIAdapterOptions
   clientFactory?: OpenAIClientFactory;
 }
 
+/**
+ * Adapter for OpenAI's `openai` SDK. Exposes the Band platform tools as OpenAI function
+ * tools and runs the tool-calling loop against the Chat Completions API.
+ *
+ * Requires the optional peer dependency `openai`.
+ */
 export class OpenAIAdapter extends ToolCallingAdapter {
   public constructor(options: OpenAIAdapterOptions = {}) {
     const {

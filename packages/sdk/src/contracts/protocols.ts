@@ -18,10 +18,12 @@ import type {
   ToolSchemaRecord,
 } from "./dtos";
 
+/** Turns a room's raw message history into a framework's own message representation. */
 export interface HistoryConverter<T> {
   convert(raw: MetadataMap[]): T;
 }
 
+/** One chat message as it arrives from the platform, normalized to the SDK's field names. */
 export interface PlatformMessageLike {
   id: string;
   roomId: string;
@@ -34,17 +36,34 @@ export interface PlatformMessageLike {
   createdAt: Date;
 }
 
+/** Read-only view of a room's raw history, convertible via a {@link HistoryConverter}. */
 export interface HistoryLike {
   readonly raw: MetadataMap[];
   convert<T>(converter: HistoryConverter<T>): T;
   readonly length: number;
 }
 
+/**
+ * Sending side of the chat surface: post a message, or post a non-message room event such
+ * as a thought or an error.
+ */
 export interface MessagingTools {
+  /**
+   * Posts a chat message to the room.
+   *
+   * A message must address at least one participant. The `band_send_message` tool rejects
+   * a call whose `mentions` list is empty, and a message that mentions nobody reaches
+   * nobody, so pass at least one handle here too. Use {@link sendEvent} for output that is
+   * not directed at anyone.
+   */
   sendMessage(
     content: string,
     mentions?: MentionInput,
   ): Promise<ToolOperationResult>;
+  /**
+   * Posts a non-message room event (`thought`, `error`, `task`, …). Unlike
+   * {@link sendMessage} it needs no mention, so it is the right call for progress updates.
+   */
   sendEvent(
     content: string,
     messageType: string,
@@ -52,6 +71,7 @@ export interface MessagingTools {
   ): Promise<ToolOperationResult>;
 }
 
+/** Room membership surface: add, remove and list participants, and create new rooms. */
 export interface RoomParticipantTools {
   addParticipant(name: string, role?: string): Promise<ToolOperationResult>;
   removeParticipant(name: string): Promise<ToolOperationResult>;
@@ -59,10 +79,12 @@ export interface RoomParticipantTools {
   createChatroom(taskId?: string): Promise<string>;
 }
 
+/** Directory surface: page through the agents and users this agent may add to a room. */
 export interface PeerLookupTools {
   lookupPeers(page?: number, pageSize?: number): Promise<PaginatedList<PeerRecord>>;
 }
 
+/** Renders the platform tool set as function/tool schemas in a model provider's format. */
 export interface ToolSchemaProvider {
   getToolSchemas(
     format: "openai" | "anthropic",
@@ -72,6 +94,7 @@ export interface ToolSchemaProvider {
   getOpenAIToolSchemas(options?: { includeMemory?: boolean }): ToolSchemaRecord[];
 }
 
+/** Contact surface: list contacts, request and remove them, and answer incoming requests. */
 export interface ContactTools {
   listContacts(request?: ListContactsArgs): Promise<PaginatedList<ContactRecord>>;
   addContact(request: AddContactArgs): Promise<ToolOperationResult>;
@@ -82,6 +105,7 @@ export interface ContactTools {
   respondContactRequest(request: RespondContactRequestArgs): Promise<ToolOperationResult>;
 }
 
+/** Memory surface: query, store, retrieve, supersede and archive the agent's memories. */
 export interface MemoryTools {
   listMemories(args?: ListMemoriesArgs): Promise<PaginatedList<MemoryRecord>>;
   storeMemory(args: StoreMemoryArgs): Promise<MemoryRecord>;
@@ -90,6 +114,7 @@ export interface MemoryTools {
   archiveMemory(memoryId: string): Promise<ToolOperationResult>;
 }
 
+/** Dispatch surface: run a platform tool by name with the arguments a model produced. */
 export interface ToolExecutor {
   executeToolCall(toolName: string, toolArgs: MetadataMap): Promise<unknown>;
 }
@@ -100,8 +125,10 @@ export const TOOL_EXECUTOR_ERROR_TYPES = [
   "ToolExecutionError",
 ] as const;
 
+/** Which stage of a tool call failed: argument validation, lookup, or execution. */
 export type ToolExecutorErrorType = (typeof TOOL_EXECUTOR_ERROR_TYPES)[number];
 
+/** Structured failure returned (not thrown) by {@link ToolExecutor.executeToolCall}. */
 export interface ToolExecutorError {
   ok: false;
   errorType: ToolExecutorErrorType;
@@ -160,6 +187,7 @@ export function toLegacyToolExecutorErrorMessage(value: unknown): string | null 
   return value.legacyMessage;
 }
 
+/** Room membership and peer lookup together, for adapters that need both. */
 export interface ParticipantTools extends RoomParticipantTools, PeerLookupTools {}
 
 /** Full tool surface available to framework adapters during message handling. */
@@ -176,8 +204,10 @@ export interface AdapterToolsProtocol
   readonly capabilities: Readonly<AgentToolsCapabilities>;
 }
 
+/** Alias of {@link AdapterToolsProtocol}, kept for adapters that already import this name. */
 export type AgentToolsProtocol = AdapterToolsProtocol;
 
+/** Which optional tool groups the current tool instance actually supports. */
 export interface AgentToolsCapabilities {
   peers: boolean;
   contacts: boolean;
@@ -190,6 +220,7 @@ export const DEFAULT_AGENT_TOOLS_CAPABILITIES: AgentToolsCapabilities = {
   memory: true,
 };
 
+/** Everything an adapter receives for one turn: the message, its room context, and the tools. */
 export interface FrameworkAdapterInput {
   message: PlatformMessageLike;
   tools: AdapterToolsProtocol;
@@ -200,6 +231,11 @@ export interface FrameworkAdapterInput {
   roomId: string;
 }
 
+/**
+ * Per-room state a {@link Preprocessor} reads and mutates while deciding whether an event
+ * becomes an adapter turn — dedupe bookkeeping, history hydration, and pending system
+ * messages.
+ */
 export interface PreprocessorContext {
   roomId: string;
   hasMessage(messageId: string): boolean;
@@ -223,6 +259,7 @@ export interface FrameworkAdapter {
   onRuntimeStop?(): Promise<void>;
 }
 
+/** Minimal shape of a platform event: its type, the room it belongs to, and its payload. */
 export interface EventEnvelope {
   type: string;
   roomId: string | null;
@@ -230,6 +267,10 @@ export interface EventEnvelope {
   raw?: MetadataMap;
 }
 
+/**
+ * Decides what a platform event means for a room: returns the adapter input to run, or
+ * `null` to drop the event.
+ */
 export interface Preprocessor<TEvent extends EventEnvelope = EventEnvelope> {
   process(
     context: PreprocessorContext,

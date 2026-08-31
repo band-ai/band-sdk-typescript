@@ -35,6 +35,7 @@ export interface OpenAIToolCallingModelOptions {
   clientFactory?: OpenAIClientFactory;
 }
 
+/** {@link ToolCallingModel} backed by the OpenAI Chat Completions API. */
 export class OpenAIToolCallingModel implements ToolCallingModel {
   private readonly model: string;
   private readonly apiKey?: string;

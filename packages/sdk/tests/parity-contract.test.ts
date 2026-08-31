@@ -1,4 +1,4 @@
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { beforeAll, describe, expect, expectTypeOf, it } from "vitest";
 
 import {
   Agent,
@@ -9,6 +9,7 @@ import type { CustomToolDef as PublicCustomToolDef } from "../src/index";
 import { AgentTools, Execution, RoomPresence } from "../src/runtime";
 import { RestFacade, type RestApi } from "../src/rest";
 import type { CustomToolDef as InternalCustomToolDef } from "../src/runtime/tools/customTools";
+import { importDistEsm, readDistTypes, requireDistCjs, type Mod } from "./distSurface";
 
 class ContractRestApi implements RestApi {
   public async getAgentMe() {
@@ -168,5 +169,55 @@ describe("sdk contract", () => {
       id: "memory-1",
       status: "archived",
     });
+  });
+});
+
+// Everything above is pinned against src. A consumer only ever sees dist, and the two can
+// disagree: a class exported inside an `export type {}` block type-checks in src but has no
+// runtime binding in the build. So pin the same symbols against the built entry for the
+// subpath each one is documented under.
+describe("every symbol this contract pins is also reachable from the built package", () => {
+  const VALUE_EXPORTS_BY_SUBPATH: Record<string, readonly string[]> = {
+    ".": ["Agent", "BandLink", "PlatformRuntime", "HistoryProvider"],
+    "./runtime": ["AgentTools", "Execution", "RoomPresence"],
+    "./rest": ["RestFacade"],
+  };
+
+  const TYPE_EXPORTS_BY_SUBPATH: Record<string, readonly string[]> = {
+    ".": ["CustomToolDef"],
+    "./rest": ["RestApi"],
+  };
+
+  const flatten = (bySubpath: Record<string, readonly string[]>) =>
+    Object.entries(bySubpath).flatMap(([subpath, names]) =>
+      names.map((name) => [subpath, name] as const),
+    );
+
+  const valueCases = flatten(VALUE_EXPORTS_BY_SUBPATH);
+  const esm: Record<string, Mod> = {};
+
+  beforeAll(async () => {
+    for (const subpath of Object.keys(VALUE_EXPORTS_BY_SUBPATH)) {
+      esm[subpath] = await importDistEsm(subpath);
+    }
+  });
+
+  it.each(valueCases)(
+    "%s exports %s as a constructable value from the built ESM entry",
+    (subpath, name) => {
+      expect(typeof esm[subpath]?.[name], `${name} missing from the ESM build of ${subpath}`)
+        .toBe("function");
+    },
+  );
+
+  it.each(valueCases)("%s exports %s from the built CJS entry too", (subpath, name) => {
+    expect(typeof requireDistCjs(subpath)[name], `${name} missing from the CJS build of ${subpath}`)
+      .toBe("function");
+  });
+
+  it.each(flatten(TYPE_EXPORTS_BY_SUBPATH))("%s declares the type %s in its built .d.ts", (subpath, name) => {
+    // Types have no runtime binding, so the declaration file is the only place to look.
+    expect(new RegExp(`\\b${name}\\b`).test(readDistTypes(subpath)),
+      `${name} missing from the declarations of ${subpath}`).toBe(true);
   });
 });

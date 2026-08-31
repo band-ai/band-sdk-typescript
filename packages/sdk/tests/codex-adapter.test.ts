@@ -394,7 +394,13 @@ describe("CodexAdapter", () => {
     expect(tools.messages).toEqual(["resumed via fallback"]);
   });
 
-  it("does not resume an older thread when bootstrap metadata requests a reset", async () => {
+  // The reset signal is a runtime-only metadata contract, so the adapter honours both the
+  // vertical-neutral key and, for one release, the Linear-specific spelling it replaced.
+  // Each case carries ONLY its own key, so neither can pass on the other's behalf.
+  it.each([
+    ["the vertical-neutral reset key", { reset_adapter_thread: true }],
+    ["the legacy vertical-specific reset key", { linear_reset_room_session: true }],
+  ])("does not resume an older thread when bootstrap metadata carries %s", async (_label, metadata) => {
     const tools = new ToolSchemaFakeTools();
     const fakeClient = new FakeCodexClient({
       events: [
@@ -430,9 +436,7 @@ describe("CodexAdapter", () => {
     await adapter.onMessage(
       {
         ...makeMessage("restart here"),
-        metadata: {
-          linear_reset_room_session: true,
-        },
+        metadata,
       },
       tools,
       new HistoryProvider([

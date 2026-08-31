@@ -34,6 +34,7 @@ export interface AnthropicToolCallingModelOptions {
   clientFactory?: AnthropicClientFactory;
 }
 
+/** {@link ToolCallingModel} backed by the Anthropic Messages API. */
 export class AnthropicToolCallingModel implements ToolCallingModel {
   private readonly model: string;
   private readonly apiKey?: string;

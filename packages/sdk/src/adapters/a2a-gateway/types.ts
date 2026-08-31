@@ -117,6 +117,10 @@ export type GatewayServerFactory = (
   options: GatewayServerOptions,
 ) => GatewayServerLike;
 
+/**
+ * Options for {@link A2AGatewayAdapter}: where to bind the inbound A2A server, how callers
+ * authenticate to it, and how long to wait for a Band peer to answer.
+ */
 export interface A2AGatewayAdapterOptions {
   bandRest: RestApi;
   gatewayUrl?: string;

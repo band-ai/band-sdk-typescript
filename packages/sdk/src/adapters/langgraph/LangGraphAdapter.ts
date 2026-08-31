@@ -43,6 +43,11 @@ interface LangGraphSdk {
   ) => unknown;
 }
 
+/**
+ * Options for {@link LangGraphAdapter}: the LLM and optional checkpointer to build the
+ * default ReAct graph from, or a ready-made `graph`/`graphFactory` to run instead, plus
+ * the prompt, tool and recursion limits.
+ */
 export interface LangGraphAdapterOptions {
   llm?: unknown;
   checkpointer?: unknown;
@@ -58,6 +63,13 @@ export interface LangGraphAdapterOptions {
   logger?: Logger;
 }
 
+/**
+ * Adapter for LangGraph. Runs each room turn through a compiled LangGraph graph — either
+ * one you supply or a ReAct agent the adapter builds from your LLM — with the Band platform
+ * tools bound as LangChain tools.
+ *
+ * Requires the optional peer dependencies `@langchain/core` and `@langchain/langgraph`.
+ */
 export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterToolsProtocol> {
   private readonly llm?: unknown;
   private readonly checkpointer?: unknown;

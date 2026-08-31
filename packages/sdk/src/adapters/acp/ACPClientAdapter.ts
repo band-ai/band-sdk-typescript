@@ -43,6 +43,10 @@ type InjectedMcpBackend =
     stop(): Promise<void>;
   }
 
+/**
+ * Options for {@link ACPClientAdapter}: the subprocess command to spawn, its working
+ * directory and environment, and which MCP servers and tools to expose to it.
+ */
 export interface ACPClientAdapterOptions {
   command: string | string[];
   cwd?: string;
@@ -56,6 +60,13 @@ export interface ACPClientAdapterOptions {
   connectionFactory?: ACPClientConnectionFactory;
 }
 
+/**
+ * Adapter that spawns an external ACP agent (Codex, Claude Code, Gemini CLI, …) as a
+ * subprocess and drives it over JSON-RPC on stdio, keeping one ACP session per Band room
+ * and exposing the Band platform tools to it over MCP.
+ *
+ * Requires the optional peer dependency `@agentclientprotocol/sdk`.
+ */
 export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, AdapterToolsProtocol> {
   private readonly command: string[]
   private readonly cwd: string

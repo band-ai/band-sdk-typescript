@@ -202,6 +202,11 @@ function extractReasoningMessages(
 // Adapter options
 // ---------------------------------------------------------------------------
 
+/**
+ * Options for {@link LettaAdapter}: how to reach the Letta server and which agent to use
+ * (or how to create one — model, embedding, memory blocks, server tools), plus the prompt,
+ * history and timeout settings for each turn.
+ */
 export interface LettaAdapterOptions {
   model?: string;
   lettaApiKey?: string;
@@ -236,6 +241,12 @@ const DEFAULT_MAX_HISTORY_MESSAGES = 100;
 // history message that stays well within typical context window limits.
 const MAX_HISTORY_CHARS = 32_000;
 
+/**
+ * Adapter for Letta. Binds each Band room to a stateful Letta agent, so Letta owns the
+ * conversation memory across turns, and exposes the Band platform tools to it.
+ *
+ * Requires the optional peer dependency `@letta-ai/letta-client`.
+ */
 export class LettaAdapter extends SimpleAdapter<
   LettaMessages,
   AdapterToolsProtocol

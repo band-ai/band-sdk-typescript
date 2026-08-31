@@ -61,6 +61,11 @@ export interface ClaudeSDKQueryParams {
 
 export type ClaudeSDKQuery = (params: ClaudeSDKQueryParams) => AsyncIterable<ClaudeSDKMessageLike>;
 
+/**
+ * Options for {@link ClaudeSDKAdapter}: the Claude model and permission mode, how the
+ * system prompt is assembled, and which tool groups are exposed over the in-process MCP
+ * server.
+ */
 export interface ClaudeSDKAdapterOptions {
   model?: string;
   customSection?: string;
@@ -152,6 +157,13 @@ const bandMcpBridgeFactory = new LazyAsyncValue<BandMcpBridgeFactory>({
   },
 })
 
+/**
+ * Adapter for the Claude Agent SDK. Runs each room turn through the SDK's `query()` loop
+ * with the Band platform tools attached as an in-process MCP server, so Claude uses its own
+ * agentic loop rather than the SDK's tool-calling loop.
+ *
+ * Requires the optional peer dependency `@anthropic-ai/claude-agent-sdk`.
+ */
 export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterToolsProtocol> {
   private readonly model: string;
   private readonly customSection?: string;

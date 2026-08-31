@@ -6,6 +6,8 @@ export type {
   MessageHandler,
   ContactEventConfig,
   ContactEventStrategy,
+  OnContactEventCallback,
+  // Deprecated alias of OnContactEventCallback, kept exported so the rename is not breaking.
   ContactEventCallback,
 } from "./types";
 export {

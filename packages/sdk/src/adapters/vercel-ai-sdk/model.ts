@@ -28,6 +28,7 @@ export interface VercelAISDKToolCallingModelOptions {
   toolFactory?: VercelAISDKToolFactory;
 }
 
+/** {@link ToolCallingModel} backed by the Vercel AI SDK's `generateText`. */
 export class VercelAISDKToolCallingModel implements ToolCallingModel {
   private readonly model: unknown;
   private readonly generateTextOverride?: VercelAISDKGenerateText;

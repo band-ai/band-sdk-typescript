@@ -10,6 +10,7 @@ export interface LettaMessage {
 
 export type LettaMessages = LettaMessage[];
 
+/** Converts a room's raw history into the message list the Letta client expects. */
 export class LettaHistoryConverter
   implements HistoryConverter<LettaMessages>
 {

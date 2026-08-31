@@ -102,6 +102,10 @@ export interface A2AClientLike {
   resubscribeTask?(params: { id: string }): AsyncIterable<unknown>;
 }
 
+/**
+ * Options for {@link A2AAdapter}: which remote A2A agent to call, how to authenticate to
+ * it, and whether to stream its responses.
+ */
 export interface A2AAdapterOptions {
   remoteUrl: string;
   auth?: A2AAuth;
@@ -116,6 +120,13 @@ export type A2AClientFactory = (input: {
   authHeaders: Record<string, string>;
 }) => Promise<A2AClientLike>;
 
+/**
+ * Adapter that forwards Band room messages to an external agent speaking the A2A protocol.
+ * Each Band room maps to one A2A context; the mapping is persisted as task events so a
+ * restarted agent rejoins the same remote conversation.
+ *
+ * Requires the optional peer dependency `@a2a-js/sdk`.
+ */
 export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
   private readonly remoteUrl: string;
   private readonly authHeaders: Record<string, string>;

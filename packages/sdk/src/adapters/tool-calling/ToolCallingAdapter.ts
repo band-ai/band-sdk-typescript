@@ -28,6 +28,10 @@ import type {
 } from "./types";
 import { asErrorMessage, BandSdkError } from "../../core/errors";
 
+/**
+ * Options for {@link ToolCallingAdapter}: the model to call, which tool schema dialect to
+ * render the platform tools in, and the usual prompt/tool/limit knobs.
+ */
 export interface ToolCallingAdapterOptions {
   model: ToolCallingModel;
   toolFormat: "openai" | "anthropic";
@@ -41,6 +45,12 @@ export interface ToolCallingAdapterOptions {
 
 type ToolCallingTools = MessagingTools & ToolExecutor & ToolSchemaProvider;
 
+/**
+ * Base adapter for LLMs that call the Band platform tools as function calls. It renders the
+ * tool schemas, runs the model/tool round-trip loop up to `maxToolRounds`, and executes each
+ * requested tool. Provider adapters supply a {@link ToolCallingModel} rather than
+ * re-implementing this loop.
+ */
 export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCallingTools> {
   private readonly model: ToolCallingModel;
   private readonly toolFormat: "openai" | "anthropic";

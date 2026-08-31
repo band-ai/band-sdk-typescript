@@ -1,5 +1,9 @@
 import type { AppUserNotificationWebhookPayloadWithNotification } from "@linear/sdk/webhooks";
 
+import {
+  BRIDGE_METADATA_KEYS,
+  LEGACY_BRIDGE_METADATA_KEYS,
+} from "../../contracts/bridgeMetadata";
 import type { Logger } from "../../core/logger";
 import type { LinearBandBridgeDeps } from "./types";
 
@@ -94,9 +98,11 @@ async function handleIssueUnassigned(input: {
     messageType: "task",
     metadata: {
       linear_notification_type: "issueUnassignedFromYou",
-      linear_issue_id: notification.issueId,
       linear_actor_id: notification.actorId ?? null,
       linear_bridge: "band",
+      [BRIDGE_METADATA_KEYS.issueId]: notification.issueId,
+      // Legacy spelling -- remove in 0.2.0, once adapters no longer read it.
+      [LEGACY_BRIDGE_METADATA_KEYS.issueId]: notification.issueId,
     },
   });
 
@@ -164,10 +170,12 @@ async function handleIssueNewComment(input: {
     messageType: "text",
     metadata: {
       linear_notification_type: "issueNewComment",
-      linear_issue_id: notification.issueId,
       linear_comment_id: notification.commentId,
       linear_actor_id: notification.actorId ?? null,
       linear_bridge: "band",
+      [BRIDGE_METADATA_KEYS.issueId]: notification.issueId,
+      // Legacy spelling -- remove in 0.2.0, once adapters no longer read it.
+      [LEGACY_BRIDGE_METADATA_KEYS.issueId]: notification.issueId,
     },
   });
 

@@ -192,8 +192,12 @@ describe("linear bridge webhook actions", () => {
 
     expect(restApi.roomEvents).toHaveLength(2);
     expect(restApi.createChatCalls).toEqual([undefined]);
+    // Both spellings are written for one release: the neutral keys adapters read now, and
+    // the Linear-specific ones they used to read.
     expect(restApi.roomEvents[0]?.metadata).toMatchObject({
       linear_event_action: "created",
+      bridge_session_id: "session-1",
+      bridge_issue_id: "issue-1",
       linear_session_id: "session-1",
       linear_issue_id: "issue-1",
       linear_host_handle: "linear-host",

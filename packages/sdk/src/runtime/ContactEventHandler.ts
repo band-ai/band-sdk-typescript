@@ -4,6 +4,11 @@ import { NoopLogger } from "../core/logger";
 import type { ContactEvent, MessageEvent } from "../platform/events";
 import type { AdapterToolsProtocol } from "../contracts/protocols";
 import type { AgentToolsRestApi, ChatMessagingRestApi, ChatRoomRestApi, ContactRestApi } from "../client/rest/types";
+import type {
+  OnBroadcastCallback,
+  OnHubEventCallback,
+  OnHubInitCallback,
+} from "./callbacks";
 import type { ContactEventConfig } from "./types";
 import { ContactCallbackTools } from "./tools/ContactCallbackTools";
 import {
@@ -61,9 +66,9 @@ interface ContactEventHandlerOptions {
   config: ContactEventConfig;
   rest: ContactHandlerRestApi;
   logger?: Logger;
-  onBroadcast?: (message: string) => void;
-  onHubEvent?: (roomId: string, event: MessageEvent) => Promise<void>;
-  onHubInit?: (roomId: string, systemPrompt: string) => Promise<void>;
+  onBroadcast?: OnBroadcastCallback;
+  onHubEvent?: OnHubEventCallback;
+  onHubInit?: OnHubInitCallback;
 }
 
 type ContactEventFailureStage = "callback" | "hub_room_init" | "hub_room_persist" | "hub_room_dispatch";
@@ -91,9 +96,9 @@ export class ContactEventHandler {
   private readonly config: ContactEventConfig;
   private readonly rest: ContactHandlerRestApi;
   private readonly logger: Logger;
-  private readonly onBroadcast?: (message: string) => void;
-  private readonly onHubEvent?: (roomId: string, event: MessageEvent) => Promise<void>;
-  private readonly onHubInit?: (roomId: string, systemPrompt: string) => Promise<void>;
+  private readonly onBroadcast?: OnBroadcastCallback;
+  private readonly onHubEvent?: OnHubEventCallback;
+  private readonly onHubInit?: OnHubInitCallback;
 
   private readonly dedup = new Set<string>();
   private readonly dedupOrder: string[] = [];

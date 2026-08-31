@@ -7,6 +7,11 @@ import {
   toLegacyToolExecutorErrorMessage,
 } from "../../contracts/protocols";
 import type { MentionInput } from "../../contracts/dtos";
+import {
+  readBridgeIssueId,
+  readBridgeSessionId,
+  shouldResetAdapterThread,
+} from "../../contracts/bridgeMetadata";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
@@ -65,6 +70,11 @@ export const CODEX_REASONING_SUMMARIES = ["auto", "concise", "detailed", "none"]
 export const CODEX_REASONING_EFFORTS = ["low", "medium", "high", "xhigh"] as const satisfies readonly Exclude<ModelReasoningEffort, "minimal">[];
 export type CodexReasoningEffort = (typeof CODEX_REASONING_EFFORTS)[number];
 
+/**
+ * Configuration for {@link CodexAdapter}: which Codex model to run, where and how
+ * sandboxed it may execute, its reasoning and web-search settings, and the per-room
+ * history and timeout limits. Can be set globally or overridden per room.
+ */
 export interface CodexAdapterConfig {
   model?: string;
   cwd?: string;
@@ -128,6 +138,13 @@ const SILENT_REPORTING_TOOLS = new Set([
   SEND_EVENT_TOOL_NAME,
 ]);
 
+/**
+ * Adapter for the OpenAI Codex app-server. Keeps one Codex thread per Band room, resuming
+ * it across messages unless a bridge asks for a reset, and surfaces the Band platform tools
+ * plus any custom tools as Codex dynamic tools.
+ *
+ * Requires the optional peer dependency `@openai/codex-sdk`.
+ */
 export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProtocol> {
   private readonly baseConfig: CodexAdapterConfig;
   private readonly roomConfigOverrides = new Map<string, Partial<CodexAdapterConfig>>();
@@ -188,8 +205,8 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     this.debug("codex_adapter.on_message.start", {
       roomId: context.roomId,
       isSessionBootstrap: context.isSessionBootstrap,
-      metadataSessionId: message.metadata?.linear_session_id ?? null,
-      metadataIssueId: message.metadata?.linear_issue_id ?? null,
+      metadataSessionId: readBridgeSessionId(message.metadata),
+      metadataIssueId: readBridgeIssueId(message.metadata),
     });
     this.ensureSystemPrompt();
 
@@ -219,7 +236,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       tools,
       history,
       context.isSessionBootstrap,
-      message.metadata?.linear_reset_room_session !== true,
+      !shouldResetAdapterThread(message.metadata),
       config,
     );
     this.debug("codex_adapter.thread.ready", {

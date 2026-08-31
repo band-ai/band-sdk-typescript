@@ -1,3 +1,8 @@
+/**
+ * Base class for every error the SDK raises from its own code. Thrown directly when a
+ * failure does not fit one of the specific classes below — for example an unhandled member
+ * of a discriminated union. Catch this to catch anything the SDK threw deliberately.
+ */
 export class BandSdkError extends Error {
   public constructor(message: string, cause?: unknown) {
     super(message, cause !== undefined ? { cause } : undefined);
@@ -5,6 +10,11 @@ export class BandSdkError extends Error {
   }
 }
 
+/**
+ * Thrown when a requested capability is not available: an optional peer SDK is not
+ * installed or is missing an export the adapter needs, the host runtime lacks a required
+ * built-in, or a backend does not implement the operation being asked for.
+ */
 export class UnsupportedFeatureError extends BandSdkError {
   public constructor(message: string, cause?: unknown) {
     super(message, cause);
@@ -12,6 +22,10 @@ export class UnsupportedFeatureError extends BandSdkError {
   }
 }
 
+/**
+ * Thrown when caller-supplied input is unusable: missing or malformed credentials and
+ * configuration, an argument that fails a tool's schema, or a value outside its allowed set.
+ */
 export class ValidationError extends BandSdkError {
   public constructor(message: string, cause?: unknown) {
     super(message, cause);
@@ -19,6 +33,10 @@ export class ValidationError extends BandSdkError {
   }
 }
 
+/**
+ * Thrown when communication with the Band platform fails: a WebSocket connect, join or
+ * leave that errors or times out, or a REST call the client could not complete.
+ */
 export class TransportError extends BandSdkError {
   public constructor(message: string, cause?: unknown) {
     super(message, cause);
@@ -26,6 +44,11 @@ export class TransportError extends BandSdkError {
   }
 }
 
+/**
+ * Thrown when an operation is attempted in the wrong state: using a client or adapter that
+ * has not been started or initialized, or exceeding a runtime limit such as the maximum
+ * number of concurrent sessions.
+ */
 export class RuntimeStateError extends BandSdkError {
   public constructor(message: string, cause?: unknown) {
     super(message, cause);

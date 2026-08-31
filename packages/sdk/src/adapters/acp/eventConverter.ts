@@ -7,6 +7,7 @@ import type {
 import { parseToolCall, parseToolResult } from "../../converters/shared";
 import type { PlatformMessage } from "../../runtime/types";
 
+/** Converts a Band room message into the matching ACP `SessionUpdate` for an editor. */
 export class EventConverter {
   public static convert(message: PlatformMessage): SessionUpdate | null {
     switch (message.messageType) {
