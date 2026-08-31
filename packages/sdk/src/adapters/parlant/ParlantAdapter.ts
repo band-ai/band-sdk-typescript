@@ -76,6 +76,7 @@ export interface ParlantAdapterOptions {
   customSection?: string;
   includeBaseInstructions?: boolean;
   responseTimeoutSeconds?: number;
+  /** Max prior turns to inject as history. `0` injects none. */
   maxHistoryMessages?: number;
   historyConverter?: ParlantHistoryConverter;
   clientFactory?: ParlantClientFactory;

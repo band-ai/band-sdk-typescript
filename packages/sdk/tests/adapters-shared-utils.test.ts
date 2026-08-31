@@ -92,6 +92,23 @@ describe("selectCompleteExchanges", () => {
     ]);
   });
 
+  it("does not merge consecutive assistant messages from different senders", () => {
+    const result = selectCompleteExchanges(
+      [
+        turn("user", "Question", "Alice"),
+        turn("assistant", "From bot one", "BotOne"),
+        turn("assistant", "From bot two", "BotTwo"),
+      ],
+      NO_LIMIT,
+    );
+
+    expect(result).toEqual([
+      turn("user", "Question", "Alice"),
+      turn("assistant", "From bot one", "BotOne"),
+      turn("assistant", "From bot two", "BotTwo"),
+    ]);
+  });
+
   it("keeps a trailing user message that has no assistant reply yet", () => {
     const result = selectCompleteExchanges(
       [
@@ -179,6 +196,24 @@ describe("selectCompleteExchanges", () => {
     );
 
     expect(result.map((entry) => entry.content)).toEqual(["Unanswered"]);
+  });
+
+  it("strips a whole leading run of orphaned assistant turns, not just the first", () => {
+    // A raw slice(-3) would start mid-run, on "From bot one" - an assistant
+    // reply whose question ("Q1") was just cut away. Both turns in that run
+    // must go, not only the one landing at index 0.
+    const result = selectCompleteExchanges(
+      [
+        turn("user", "Q1", "Alice"),
+        turn("assistant", "From bot one", "BotOne"),
+        turn("assistant", "From bot two", "BotTwo"),
+        turn("user", "Q2", "Alice"),
+        turn("assistant", "A2", "Bot"),
+      ],
+      3,
+    );
+
+    expect(result.map((entry) => entry.content)).toEqual(["Q2", "A2"]);
   });
 
   it("returns nothing when `limit` is zero", () => {

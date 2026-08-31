@@ -214,6 +214,7 @@ export interface LettaAdapterOptions {
   systemPrompt?: string;
   customSection?: string;
   includeBaseInstructions?: boolean;
+  /** Max prior turns to inject as history. `0` injects none. */
   maxHistoryMessages?: number;
   emitReasoningEvents?: boolean;
   historyConverter?: LettaHistoryConverter;

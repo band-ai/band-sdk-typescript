@@ -22,6 +22,11 @@ export function mapConversationMessages(
 /**
  * Merge consecutive messages with the same role by concatenating their content
  * with newlines. Required by APIs (Anthropic, Gemini) that enforce alternating roles.
+ *
+ * `adapters/shared/history.ts` has a same-purpose `mergeConsecutiveSameRoleTurns`
+ * for typed `ChatTurn`s (guaranteed string `content`, a `sender` to preserve on
+ * merge); this one folds raw wire-format API messages instead, where `content`
+ * may be a content-block array, so it isn't reused here.
  */
 export function mergeConsecutiveSameRole(
   messages: Array<Record<string, unknown>>,

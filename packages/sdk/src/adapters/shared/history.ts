@@ -22,19 +22,35 @@ export function findLatestTaskMetadata(
 
 /**
  * The minimal shape the history helpers need from an adapter's message
- * type.  Adapters extend it with their own fields (sender, senderType,
- * ...); the generic parameter preserves those through each call.
+ * type.  Adapters extend it with their own fields; the generic parameter
+ * preserves those through each call.  `sender` is optional here but both
+ * `LettaMessage` and `ParlantMessage` always set it — it identifies which
+ * participant (or, on the assistant side, which bot) spoke the turn.
  */
 export interface ChatTurn {
   role: "user" | "assistant";
   content: string;
+  sender?: string;
 }
 
 /**
  * Join runs of same-role messages into a single turn so that nothing is
  * lost when several participants speak before the agent replies.
+ *
+ * Assistant turns only merge when they share the same `sender`: adapters
+ * inject the merged turn's history entry under a single display name
+ * (`item.sender`), so folding two different bots' replies together would
+ * silently relabel the second bot's words as the first bot's. User turns
+ * merge regardless of sender — the injected history has no per-user
+ * attribution to lose.
+ *
+ * `adapters/tool-calling/valueUtils.ts` has a same-purpose
+ * `mergeConsecutiveSameRole` for a different data shape: it folds raw
+ * wire-format API messages (`content` may be a string or a content-block
+ * array, no `sender`) rather than typed `ChatTurn`s, which is why it isn't
+ * reused here.
  */
-function mergeConsecutiveSameRole<T extends ChatTurn>(turns: readonly T[]): T[] {
+function mergeConsecutiveSameRoleTurns<T extends ChatTurn>(turns: readonly T[]): T[] {
   const merged: T[] = [];
 
   for (const turn of turns) {
@@ -43,7 +59,12 @@ function mergeConsecutiveSameRole<T extends ChatTurn>(turns: readonly T[]): T[] 
     }
 
     const previous = merged[merged.length - 1];
-    if (previous && previous.role === turn.role) {
+    const canMerge =
+      previous !== undefined &&
+      previous.role === turn.role &&
+      (turn.role !== "assistant" || previous.sender === turn.sender);
+
+    if (canMerge) {
       previous.content += `\n${turn.content}`;
     } else {
       merged.push({ ...turn });
@@ -54,10 +75,16 @@ function mergeConsecutiveSameRole<T extends ChatTurn>(turns: readonly T[]): T[] 
 }
 
 /**
- * Keep user->assistant pairs, plus a trailing user turn that has no reply
- * yet so the agent sees the most recent unanswered question.  Assistant
- * turns with no preceding question are dropped, leaving a clean
+ * Keep user->assistant(s) groups, plus a trailing user turn that has no
+ * reply yet so the agent sees the most recent unanswered question.
+ * Assistant turns with no preceding question are dropped, leaving a clean
  * alternating conversation.
+ *
+ * A user turn can be followed by more than one assistant turn: same-sender
+ * assistant runs are already merged by `mergeConsecutiveSameRoleTurns`, but
+ * a run from *different* senders (several bots replying to the same
+ * question) is deliberately left as separate turns so each keeps its own
+ * identity, and every one of them is kept here — not just the first.
  */
 function pairUserAssistantTurns<T extends ChatTurn>(turns: readonly T[]): T[] {
   const paired: T[] = [];
@@ -65,23 +92,18 @@ function pairUserAssistantTurns<T extends ChatTurn>(turns: readonly T[]): T[] {
 
   while (index < turns.length) {
     const current = turns[index];
-    if (current.role !== "user" || !current.content) {
+    if (current.role !== "user") {
       index += 1;
       continue;
     }
 
-    const next = turns[index + 1];
-    if (next && next.role === "assistant" && next.content) {
-      paired.push(current, next);
-      index += 2;
-      continue;
-    }
-
-    if (index === turns.length - 1) {
-      paired.push(current);
-    }
-
+    paired.push(current);
     index += 1;
+
+    while (index < turns.length && turns[index].role === "assistant") {
+      paired.push(turns[index]);
+      index += 1;
+    }
   }
 
   return paired;
@@ -89,9 +111,18 @@ function pairUserAssistantTurns<T extends ChatTurn>(turns: readonly T[]): T[] {
 
 /**
  * Keep the most recent `limit` turns.  A plain `slice(-limit)` can land
- * between a question and its answer, so an assistant turn left leading by
- * the cut is dropped rather than replayed without the question it answers
- * — which is why the result can be one turn shorter than `limit`.
+ * between a question and its answer, so any assistant turn(s) left leading
+ * by the cut are dropped rather than replayed without the question they
+ * answer — a user turn can be followed by more than one assistant turn
+ * (different bots replying to the same question), so this strips the
+ * *whole* leading run, not just its first entry, which is why the result
+ * can be more than one turn shorter than `limit`.
+ *
+ * `limit <= 0` returns no history at all. The pre-existing call sites used
+ * `.slice(-maxHistoryMessages)` directly, where `slice(-0)` is `slice(0)`
+ * and returns the *whole* array — an accident of `-0 === 0`, not a
+ * documented "0 means unlimited" contract. Treating 0 as "inject nothing"
+ * is the behavior actually implied by the option's name.
  */
 function takeRecentTurns<T extends ChatTurn>(
   turns: readonly T[],
@@ -106,7 +137,7 @@ function takeRecentTurns<T extends ChatTurn>(
   }
 
   const truncated = turns.slice(-limit);
-  if (truncated[0]?.role === "assistant") {
+  while (truncated[0]?.role === "assistant") {
     truncated.shift();
   }
 
@@ -129,7 +160,7 @@ export function selectCompleteExchanges<T extends ChatTurn>(
   limit: number,
 ): T[] {
   return takeRecentTurns(
-    pairUserAssistantTurns(mergeConsecutiveSameRole(history)),
+    pairUserAssistantTurns(mergeConsecutiveSameRoleTurns(history)),
     limit,
   );
 }
