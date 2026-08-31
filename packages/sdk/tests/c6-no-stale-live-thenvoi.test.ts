@@ -32,6 +32,13 @@ function scopedFiles(): string[] {
     .filter((f) => f && !EXCLUDE_PATH.test(f));
 }
 
+// These files are read from the working tree, so their line endings are whatever
+// git checked out — CRLF under `core.autocrlf=true` on Windows. Split on both so
+// the guard compares text, not the contributor's checkout config.
+function readLines(file: string): string[] {
+  return readFileSync(join(REPO_ROOT, file), "utf8").split(/\r?\n/);
+}
+
 interface Violation {
   file: string;
   line: number;
@@ -48,7 +55,7 @@ describe("C6 stale-live-text guard", () => {
   it("uses no `thenvoi.com` service host without a legacy/escape-hatch label", () => {
     const violations: Violation[] = [];
     for (const file of files) {
-      const lines = readFileSync(join(REPO_ROOT, file), "utf8").split("\n");
+      const lines = readLines(file);
       lines.forEach((text, i) => {
         if (HOST.test(text) && !ALLOW_MARKER.test(text)) {
           violations.push({ file, line: i + 1, text: text.trim() });
@@ -64,7 +71,7 @@ describe("C6 stale-live-text guard", () => {
     );
     const violations: Violation[] = [];
     for (const file of docFiles) {
-      const lines = readFileSync(join(REPO_ROOT, file), "utf8").split("\n");
+      const lines = readLines(file);
       lines.forEach((text, i) => {
         if (DOC_ENV.test(text) && !ALLOW_MARKER.test(text) && !RETAINED_ENV.test(text)) {
           violations.push({ file, line: i + 1, text: text.trim() });
@@ -91,7 +98,7 @@ describe("C6 stale-live-text guard", () => {
     expect(setup).not.toContain("real Thenvoi environment");
 
     const readme = readFileSync(join(REPO_ROOT, "README.md"), "utf8");
-    expect(readme.split("\n")[0]).toBe("# Band TypeScript SDK");
+    expect(readme.split(/\r?\n/)[0]).toBe("# Band TypeScript SDK");
     expect(readme).not.toContain("platform.thenvoi.com");
   });
 });
