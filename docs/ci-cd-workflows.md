@@ -41,7 +41,7 @@ Protection is enforced with GitHub Rulesets, not classic branch protection.
 
 | Branch | Merge Method | Required Reviews | Stale Dismissed | Thread Resolution | Strict Checks | Merge Queue |
 |--------|--------------|------------------|-----------------|-------------------|---------------|-------------|
-| `main` | Squash (ordinary features) / Merge or approved history-preserving exception | 1 | Yes | Yes | Undecided — [suggested](#strict-checks--a-suggestion-not-a-settled-decision) | No |
+| `main` | Squash (ordinary features) / Merge or approved history-preserving exception | 1 | Yes | Yes | Yes | No |
 
 `main` blocks deletion and non-fast-forward (force) pushes.
 
@@ -76,14 +76,10 @@ topology from hiding a version transition.
 >
 > An administrator closes the gap by adding **one rule** to that ruleset:
 > `required_status_checks`, with the single required context `ci-status`
-> (integration id `null`, i.e. GitHub Actions). Nothing in the workflow needs to
-> change — the `ci-status` gate job already exists, already covers every job,
-> and is already correct.
->
-> That rule carries a *"Require branches to be up to date before merging"*
-> checkbox (strict). Enabling it is
-> [suggested but explicitly undecided](#strict-checks--a-suggestion-not-a-settled-decision)
-> — the gap above is closed either way, and the checkbox can be changed later.
+> (integration id `null`, i.e. GitHub Actions) and *"Require branches to be up to
+> date before merging"* enabled — see [Strict checks](#strict-checks). Nothing in
+> the workflow needs to change; the `ci-status` gate job already exists, already
+> covers every job, and is already correct.
 
 Repository rulesets are external state that no file in this repo can assert, so
 until the rule above is present this document must not be read as proof that CI
@@ -105,55 +101,24 @@ jobs matters for two reasons:
    `scripts/release-hardening.test.mjs` asserts `ci-status` depends on every
    other job in `ci.yml`, so a new job cannot silently escape the gate.
 
-### Strict checks — a suggestion, not a settled decision
+### Strict checks
 
-Whether checks are **strict** (a PR branch must be up to date with `main` before
-it merges) is the repository owner's call, and is deliberately left open here.
-This section records a *recommendation to enable it* together with the evidence,
-so whoever decides can weigh it — it does not describe current or agreed
-configuration, and nothing else in this repo depends on the outcome.
+Checks are **strict**: a PR branch must be up to date with `main` before it
+merges. This guards against semantic conflicts — two PRs that each pass alone and
+break once combined, with no textual conflict for git to catch. The `C3`–`C7`
+guards assert over global state (export-surface snapshots, whole-tree text scans,
+byte-identical doc regeneration), so that failure mode is realistic here rather
+than theoretical.
 
-An earlier revision of this document judged strictness not worth the
-update-branch churn. That judgement is worth revisiting because four things have
-changed or were not measured at the time:
+There is **no merge queue**, so on a busy day a branch can go stale between
+updating and merging and the update is simply retried. If that becomes a real
+cost, adding the queue means giving `ci.yml` and `pr-title.yml` both a
+`merge_group:` trigger and guarding `pr-title.yml`'s validation step with
+`if: github.event_name == 'pull_request'` — a merge group carries no PR title, so
+without that guard the queue deadlocks.
 
-1. **CI takes about two minutes.** The churn argument was priced against a
-   slower suite. At this duration, bringing a branch up to date is one button
-   and a short wait, not friction worth trading correctness for.
-2. **`main` is the release branch, not just the trunk.** Release Please cuts
-   releases from it, so a bad interaction between two PRs is a publish
-   candidate rather than merely a broken trunk.
-3. **There is no integration branch.** `dev` is a legacy compatibility lane, not
-   a buffer, so nothing catches a bad interaction before it reaches `main`.
-4. **Long-lived PRs are the real risk.** Several open PRs are months behind
-   `main`. A stale branch merging on a long-outdated green run is the highest
-   risk merge this repo makes, and strictness is exactly the control for it.
-
-Strictness targets **semantic conflicts** — two PRs that each pass alone and
-break once combined, with no textual conflict for git to catch. That is not
-hypothetical here: the `c3`–`c7` guards assert over *global* state (export
-surface snapshots, whole-tree text scans, byte-identical doc regeneration), so
-one PR tightening a guard while another adds text the old guard allowed is green
-twice and red on the trunk.
-
-**The case against**, stated fairly so the decision is not one-sided:
-
-- There is **no merge queue**, and strictness without one leaves a race: on a
-  busy day (this repo has seen nine merges in a day) a branch can go stale
-  between updating and merging, so the update is retried. Adding the queue later
-  means giving `ci.yml` and `pr-title.yml` both a `merge_group:` trigger and
-  guarding `pr-title.yml`'s validation step with
-  `if: github.event_name == 'pull_request'` (a merge group carries no PR title),
-  or the queue deadlocks.
-- Dependabot PRs go stale on every merge. Dependabot rebases its own branches,
-  so this is noise rather than work, but it is visible noise.
-- Strictness is **not** required for the trunk to be protected. Requiring
-  `ci-status` at all is the change that closes the gap this document's
-  [required status check](#branch-protection-github-rulesets) note describes;
-  strictness is an additional, independent tightening.
-
-Whichever way this is decided, it is one checkbox on the
-`required_status_checks` rule and is reversible at any time.
+Dependabot PRs go stale on every merge to `main`. Dependabot rebases its own
+branches, so this is visible noise rather than work.
 
 ## PR Workflows
 
