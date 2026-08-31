@@ -1,11 +1,10 @@
 import type { FrameworkAdapter } from "../contracts/protocols";
 import type { AgentCredentials } from "../config";
-import { RuntimeStateError } from "../core/errors";
 import type { Logger } from "../core/logger";
 import { NoopLogger } from "../core/logger";
 import { PlatformRuntime, type PlatformRuntimeOptions } from "../runtime/PlatformRuntime";
 import type { RuntimeLifecycleState } from "../runtime/lifecycle";
-import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, toLifecycleError } from "../runtime/lifecycle";
+import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, startWithGate } from "../runtime/lifecycle";
 import { runWithGracefulShutdown } from "../runtime/shutdown";
 import type { PlatformMessage } from "../runtime/types";
 
@@ -84,7 +83,7 @@ export class Agent {
    * `"starting"`, `"stopping"` and `"failed"` from a plain `"not_started"`.
    */
   public get isRunning(): boolean {
-    return this.lifecycle.state.status === "running";
+    return this.lifecycle.is("running");
   }
 
   /** Current lifecycle state of this agent. */
@@ -108,20 +107,16 @@ export class Agent {
    * Start the agent.
    *
    * Repeated or concurrent calls join the in-flight start. Calling `start()`
-   * while a `stop()` is still in flight rejects with a {@link RuntimeStateError}.
+   * while a `stop()` is still in flight rejects with a `RuntimeStateError`.
    */
   public async start(): Promise<void> {
-    if (this.lifecycle.state.status === "stopping") {
-      throw new RuntimeStateError("Agent cannot start while a stop is in progress");
-    }
-
-    if (this.startGate.pending) {
-      return await this.startGate.pending;
-    }
-
-    this.stopGate.reset();
-    this.lifecycle.transition({ status: "starting" }, "start");
-    await this.startGate.runOrRetry(() => this.runStart());
+    await startWithGate({
+      lifecycle: this.lifecycle,
+      startGate: this.startGate,
+      stopGate: this.stopGate,
+      ownerName: "Agent",
+      runStart: () => this.runStart(),
+    });
   }
 
   private async runStart(): Promise<void> {
@@ -129,13 +124,13 @@ export class Agent {
       await this.platformRuntime.start(this.adapter);
     } catch (error) {
       // PlatformRuntime.start() already ran its own cleanup before rejecting.
-      if (this.lifecycle.state.status === "starting") {
-        this.lifecycle.transition({ status: "failed", error: toLifecycleError(error) }, "start-failed");
+      if (this.lifecycle.is("starting")) {
+        this.lifecycle.fail(error, "start-failed");
       }
       throw error;
     }
 
-    if (this.lifecycle.state.status === "starting") {
+    if (this.lifecycle.is("starting")) {
       this.lifecycle.transition({ status: "running" }, "started");
     }
   }
@@ -155,7 +150,7 @@ export class Agent {
   private async runStop(timeoutMs?: number | null): Promise<boolean> {
     // Only a start that is still in flight has to be awaited; waiting on an
     // already-settled one would leave a window where start() is still allowed.
-    const pendingStart = this.lifecycle.state.status === "starting" ? this.startGate.pending : null;
+    const pendingStart = this.lifecycle.is("starting") ? this.startGate.pending : null;
     if (pendingStart) {
       try {
         await pendingStart;
@@ -167,17 +162,16 @@ export class Agent {
       }
     }
 
-    const initial = this.lifecycle.state;
     // A start that failed already tore down whatever PlatformRuntime had built,
     // so there is nothing left to stop — but the caller must not be told the
     // agent shut down gracefully while `state` still reads "failed".
-    if (initial.status === "failed") {
-      this.logger.debug("Agent stop is resurfacing the recorded start failure", { error: initial.error });
+    if (this.lifecycle.is("failed")) {
+      this.logger.debug("Agent stop is resurfacing the recorded start failure", { error: this.lifecycle.state.error });
 
-      throw initial.error;
+      throw this.lifecycle.state.error;
     }
 
-    if (initial.status !== "starting" && initial.status !== "running") {
+    if (!this.lifecycle.is("starting") && !this.lifecycle.is("running")) {
       return true;
     }
 
@@ -189,7 +183,7 @@ export class Agent {
       this.lifecycle.transition({ status: "stopped" }, "stopped");
       return graceful;
     } catch (error) {
-      this.lifecycle.transition({ status: "failed", error: toLifecycleError(error) }, "stop-failed");
+      this.lifecycle.fail(error, "stop-failed");
       throw error;
     }
   }

@@ -174,6 +174,26 @@ function makeAgentRuntime(
   });
 }
 
+function makeStubRuntime(overrides?: {
+  start?: () => Promise<void>;
+  stop?: () => Promise<boolean>;
+}) {
+  return {
+    agentId: AGENT_ID,
+    name: "test",
+    description: "test",
+    contactConfiguration: undefined,
+    isContactsSubscribed: false,
+    start: vi.fn(overrides?.start ?? (async () => undefined)),
+    stop: vi.fn(overrides?.stop ?? (async () => true)),
+    runForever: vi.fn(async () => undefined),
+  };
+}
+
+function makeAgent(runtime: ReturnType<typeof makeStubRuntime>): Agent {
+  return new Agent(runtime as never, makeAdapter() as never);
+}
+
 async function emitRoomAdded(transport: FakeTransport, roomId: string): Promise<void> {
   await transport.emit(`agent_rooms:${AGENT_ID}`, "room_added", {
     id: roomId,
@@ -634,30 +654,6 @@ describe("PlatformRuntime lifecycle", () => {
     await expect(runtime.stop()).resolves.toBe(true);
     expect(adapter.onRuntimeStop).toHaveBeenCalledTimes(1);
   });
-
-  it("stop() after a failed start reports the failure instead of a masked true", async () => {
-    const transport = new FakeTransport();
-    const runtime = makePlatformRuntime(transport);
-    const failure = new Error("adapter onStarted failed");
-    const adapter = makeAdapter();
-    adapter.onStarted.mockImplementation(async () => {
-      throw failure;
-    });
-
-    // The start settles before any stop() is made, so stop() reaches the failed
-    // state directly instead of via a park on an in-flight start.
-    await expect(runtime.start(adapter as never)).rejects.toBe(failure);
-    expect(runtime.state).toEqual({ status: "failed", error: failure });
-
-    // Nothing was built, so there is no teardown to run — but a graceful `true`
-    // while `state` reads "failed" is the discrepancy this rejects instead.
-    await expect(runtime.stop()).rejects.toBe(failure);
-    expect(runtime.state).toEqual({ status: "failed", error: failure });
-    expect(adapter.onRuntimeStop).not.toHaveBeenCalled();
-
-    // The replayed rejection is the same Error instance, not a re-wrapped copy.
-    await expect(runtime.stop()).rejects.toBe(failure);
-  });
 });
 
 describe("AgentRuntime lifecycle", () => {
@@ -905,26 +901,6 @@ describe("Agent lifecycle", () => {
     vi.restoreAllMocks();
   });
 
-  function makeStubRuntime(overrides?: {
-    start?: () => Promise<void>;
-    stop?: () => Promise<boolean>;
-  }) {
-    return {
-      agentId: AGENT_ID,
-      name: "test",
-      description: "test",
-      contactConfiguration: undefined,
-      isContactsSubscribed: false,
-      start: vi.fn(overrides?.start ?? (async () => undefined)),
-      stop: vi.fn(overrides?.stop ?? (async () => true)),
-      runForever: vi.fn(async () => undefined),
-    };
-  }
-
-  function makeAgent(runtime: ReturnType<typeof makeStubRuntime>): Agent {
-    return new Agent(runtime as never, makeAdapter() as never);
-  }
-
   it("isRunning is false during an in-flight start, true once started, false once stopped", async () => {
     const startGate = createGate();
     const runtime = makeStubRuntime({
@@ -963,26 +939,6 @@ describe("Agent lifecycle", () => {
 
     await expect(agent.stop()).rejects.toBe(failure);
     expect(runtime.stop).toHaveBeenCalledTimes(1);
-  });
-
-  it("stop() after a failed start reports the failure instead of a masked true", async () => {
-    const failure = new Error("platform start failed");
-    const runtime = makeStubRuntime({
-      start: async () => {
-        throw failure;
-      },
-    });
-    const agent = makeAgent(runtime);
-
-    await expect(agent.start()).rejects.toBe(failure);
-    expect(agent.state).toEqual({ status: "failed", error: failure });
-
-    // PlatformRuntime already ran its own cleanup, so there is nothing left to
-    // stop — but reporting a graceful shutdown while `state` says "failed" is
-    // the discrepancy this rejects instead.
-    await expect(agent.stop()).rejects.toBe(failure);
-    expect(agent.state).toEqual({ status: "failed", error: failure });
-    expect(runtime.stop).not.toHaveBeenCalled();
   });
 
   it("stop() parked on a start that then fails reports the failure instead of a masked true", async () => {
@@ -1077,5 +1033,80 @@ describe("Execution lifecycle", () => {
     await expect(first).resolves.toBe(true);
     await expect(second).resolves.toBe(true);
     expect(execution.state).toEqual({ status: "stopped", graceful: true });
+  });
+});
+
+/**
+ * `PlatformRuntime` and `Agent` share the same contract here: a start that
+ * fails must land in "failed" (not "stopped"), and stop() must resurface the
+ * recorded failure instead of masking it behind a graceful `true` — rather
+ * than assert this once per class, one table of factories drives one test.
+ */
+describe("cross-runtime lifecycle contract: stop() after a failed start", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const cases = [
+    {
+      name: "PlatformRuntime",
+      make: () => {
+        const transport = new FakeTransport();
+        const runtime = makePlatformRuntime(transport);
+        const failure = new Error("adapter onStarted failed");
+        const adapter = makeAdapter();
+        adapter.onStarted.mockImplementation(async () => {
+          throw failure;
+        });
+
+        return {
+          failure,
+          start: () => runtime.start(adapter as never),
+          stop: () => runtime.stop(),
+          state: () => runtime.state,
+          // Nothing was built, so there is no teardown to run.
+          expectNoTeardown: () => expect(adapter.onRuntimeStop).not.toHaveBeenCalled(),
+        };
+      },
+    },
+    {
+      name: "Agent",
+      make: () => {
+        const failure = new Error("platform start failed");
+        const runtime = makeStubRuntime({
+          start: async () => {
+            throw failure;
+          },
+        });
+        const agent = makeAgent(runtime);
+
+        return {
+          failure,
+          start: () => agent.start(),
+          stop: () => agent.stop(),
+          state: () => agent.state,
+          // PlatformRuntime already ran its own cleanup, so there is nothing left to stop.
+          expectNoTeardown: () => expect(runtime.stop).not.toHaveBeenCalled(),
+        };
+      },
+    },
+  ];
+
+  it.each(cases)("$name", async ({ make }) => {
+    const { failure, start, stop, state, expectNoTeardown } = make();
+
+    // The start settles before any stop() is made, so stop() reaches the
+    // failed state directly instead of via a park on an in-flight start.
+    await expect(start()).rejects.toBe(failure);
+    expect(state()).toEqual({ status: "failed", error: failure });
+
+    // A graceful `true` while `state` reads "failed" is the discrepancy this
+    // rejects instead.
+    await expect(stop()).rejects.toBe(failure);
+    expect(state()).toEqual({ status: "failed", error: failure });
+    expectNoTeardown();
+
+    // The replayed rejection is the same Error instance, not a re-wrapped copy.
+    await expect(stop()).rejects.toBe(failure);
   });
 });

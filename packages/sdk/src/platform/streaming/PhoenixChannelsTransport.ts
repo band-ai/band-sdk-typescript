@@ -2,6 +2,7 @@ import { Channel, Socket } from "phoenix";
 import { TransportError } from "../../core/errors";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
+import { combineTeardownErrors } from "../../core/teardown";
 import {
   WebSocketDisconnectError,
   genericCloseReason,
@@ -164,10 +165,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     }
 
     if (failures.length > 0) {
-      throw new AggregateError(
-        failures,
-        "Failed to leave one or more Phoenix topics during disconnect",
-      );
+      // A lone failure is rethrown as-is rather than masked inside a
+      // one-element AggregateError, matching the runtime teardown helpers.
+      throw combineTeardownErrors(failures, "Failed to leave one or more Phoenix topics during disconnect");
     }
   }
 

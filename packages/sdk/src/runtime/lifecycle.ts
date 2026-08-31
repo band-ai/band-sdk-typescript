@@ -269,4 +269,69 @@ export class LifecycleTracker<S extends { readonly status: string }> {
     });
     this.options.onTransition?.(next);
   }
+
+  /**
+   * Type-guard check against the current status: narrows `this` (and so
+   * `this.state`) to the matching union member on success, e.g.
+   * `if (tracker.is("failed")) { tracker.state.error }`.
+   *
+   * Prefer this over a raw `tracker.state.status === "..."` comparison —
+   * same check, but the payload stays reachable without a separate
+   * destructured snapshot.
+   */
+  public is<K extends S["status"]>(status: K): this is LifecycleTracker<Extract<S, { status: K }>> {
+    return this.current.status === status;
+  }
+
+  /**
+   * Transition to a `"failed"` state carrying `error`, unless already
+   * terminal (`"stopped"` or `"failed"`), in which case this is a no-op.
+   * Returns whether the transition happened.
+   *
+   * Assumes `S` has a `{ status: "failed", error: Error }` member — true for
+   * both `RuntimeLifecycleState` and `ExecutionLifecycleState`, the only two
+   * states this tracker is used with.
+   */
+  public fail(error: unknown, trigger: string): boolean {
+    if (this.is("stopped") || this.is("failed")) {
+      return false;
+    }
+
+    this.transition({ status: "failed", error: toLifecycleError(error) } as unknown as S, trigger);
+    return true;
+  }
+}
+
+/**
+ * Shared `start()` skeleton for {@link Agent}, {@link PlatformRuntime} and
+ * {@link AgentRuntime}: guard against starting mid-`stop()`, join an
+ * in-flight start, reset the stop gate (and rearm a stopped-signal, for
+ * owners that have one), transition to `"starting"`, then run the caller's
+ * own `runStart()` body single-flighted.
+ *
+ * `runStop()` is not unified here: unlike `start()`, it differs meaningfully
+ * across the three owners (trigger threading, per-room teardown isolation).
+ */
+export async function startWithGate(options: {
+  readonly lifecycle: LifecycleTracker<RuntimeLifecycleState>;
+  readonly startGate: SingleFlight<void>;
+  readonly stopGate: { reset(): void };
+  /** Rearmed before transitioning to "starting", if the owner has one (only `AgentRuntime` does today). */
+  readonly stoppedSignal?: TerminalSignal;
+  /** Class name, for the `RuntimeStateError` message. */
+  readonly ownerName: string;
+  readonly runStart: () => Promise<void>;
+}): Promise<void> {
+  if (options.lifecycle.state.status === "stopping") {
+    throw new RuntimeStateError(`${options.ownerName} cannot start while a stop is in progress`);
+  }
+
+  if (options.startGate.pending) {
+    return await options.startGate.pending;
+  }
+
+  options.stopGate.reset();
+  options.stoppedSignal?.rearm();
+  options.lifecycle.transition({ status: "starting" }, "start");
+  await options.startGate.runOrRetry(options.runStart);
 }

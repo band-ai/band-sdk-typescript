@@ -11,7 +11,8 @@ import { DefaultPreprocessor } from "./preprocessing/DefaultPreprocessor";
 import { ContactEventHandler } from "./ContactEventHandler";
 import type { ExecutionContext, ExecutionContextOptions } from "./ExecutionContext";
 import type { RuntimeLifecycleState } from "./lifecycle";
-import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, toLifecycleError } from "./lifecycle";
+import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, startWithGate, toLifecycleError } from "./lifecycle";
+import { combineTeardownErrors, isolateTeardown } from "../core/teardown";
 import type { Logger } from "../core/logger";
 import { NoopLogger } from "../core/logger";
 
@@ -196,17 +197,13 @@ export class PlatformRuntime {
    * `stop()` failed can be shut down properly on the next attempt.
    */
   public async start(adapter: FrameworkAdapter): Promise<void> {
-    if (this.lifecycle.state.status === "stopping") {
-      throw new RuntimeStateError("PlatformRuntime cannot start while a stop is in progress");
-    }
-
-    if (this.startGate.pending) {
-      return await this.startGate.pending;
-    }
-
-    this.stopGate.reset();
-    this.lifecycle.transition({ status: "starting" }, "start");
-    await this.startGate.runOrRetry(() => this.runStart(adapter));
+    await startWithGate({
+      lifecycle: this.lifecycle,
+      startGate: this.startGate,
+      stopGate: this.stopGate,
+      ownerName: "PlatformRuntime",
+      runStart: () => this.runStart(adapter),
+    });
   }
 
   private async runStart(adapter: FrameworkAdapter): Promise<void> {
@@ -214,13 +211,13 @@ export class PlatformRuntime {
       await this.doStart(adapter);
     } catch (error) {
       // A cleanup that already reached a terminal state keeps its own outcome.
-      if (this.lifecycle.state.status === "starting") {
-        this.lifecycle.transition({ status: "failed", error: toLifecycleError(error) }, "start-failed");
+      if (this.lifecycle.is("starting")) {
+        this.lifecycle.fail(error, "start-failed");
       }
       throw error;
     }
 
-    if (this.lifecycle.state.status === "starting") {
+    if (this.lifecycle.is("starting")) {
       this.lifecycle.transition({ status: "running" }, "started");
     }
   }
@@ -328,7 +325,7 @@ export class PlatformRuntime {
     // cleanup stop is exempt: it *is* that start's failure path. Nothing is
     // awaited when no start is in flight, keeping the transitions below
     // observable in the caller's own tick.
-    const pendingStart = trigger !== START_CLEANUP_TRIGGER && this.lifecycle.state.status === "starting"
+    const pendingStart = trigger !== START_CLEANUP_TRIGGER && this.lifecycle.is("starting")
       ? this.startGate.pending
       : null;
     if (pendingStart) {
@@ -347,16 +344,15 @@ export class PlatformRuntime {
       // recorded failure (a start that blew up before it built anything) still
       // has to reach this caller. Reporting a graceful shutdown while `state`
       // says "failed" is the same lie this lifecycle exists to remove.
-      const initial = this.lifecycle.state;
-      if (initial.status === "failed") {
-        this.logger.debug("PlatformRuntime stop is resurfacing the recorded start failure", { error: initial.error });
+      if (this.lifecycle.is("failed")) {
+        this.logger.debug("PlatformRuntime stop is resurfacing the recorded start failure", { error: this.lifecycle.state.error });
 
-        throw initial.error;
+        throw this.lifecycle.state.error;
       }
       // "running" never reaches here: state only becomes "running" in runStart()
       // after `runtime`/`activeAdapter` are already assigned, which the guard
       // above (`!runtime && !adapter`) rules out.
-      if (initial.status === "starting") {
+      if (this.lifecycle.is("starting")) {
         this.lifecycle.transition({ status: "stopped" }, trigger);
       }
       return true;
@@ -370,30 +366,20 @@ export class PlatformRuntime {
     this.activeAdapter = undefined;
 
     let graceful = true;
-    let runtimeError: unknown = null;
+    const errors: unknown[] = [];
 
     if (runtime) {
-      try {
+      await isolateTeardown(errors, async () => {
         graceful = await runtime.stop(timeoutMs);
-      } catch (error) {
-        runtimeError = error;
-      }
+      });
     }
 
-    try {
-      await adapter?.onRuntimeStop?.();
-    } catch (error) {
-      const failure = runtimeError
-        ? new AggregateError(
-          [runtimeError, error],
-          "PlatformRuntime stop failed and adapter cleanup also failed",
-        )
-        : error;
-      throw this.recordStopFailure(failure);
-    }
+    await isolateTeardown(errors, () => Promise.resolve(adapter?.onRuntimeStop?.()));
 
-    if (runtimeError) {
-      throw this.recordStopFailure(runtimeError);
+    if (errors.length > 0) {
+      throw this.recordStopFailure(
+        combineTeardownErrors(errors, "PlatformRuntime stop failed and adapter cleanup also failed"),
+      );
     }
 
     this.lifecycle.transition({ status: "stopped" }, "stopped");
@@ -402,7 +388,7 @@ export class PlatformRuntime {
 
   private recordStopFailure(error: unknown): Error {
     const failure = toLifecycleError(error);
-    this.lifecycle.transition({ status: "failed", error: failure }, "stop-failed");
+    this.lifecycle.fail(failure, "stop-failed");
     return failure;
   }
 

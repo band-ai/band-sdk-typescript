@@ -1,6 +1,5 @@
 import type { BandLink } from "../../platform/BandLink";
 import type { ContactEvent, PlatformEvent } from "../../platform/events";
-import { RuntimeStateError } from "../../core/errors";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import type { MetadataMap, ParticipantRecord } from "../../contracts/dtos";
@@ -12,9 +11,10 @@ import {
   SingleFlight,
   TerminalSignal,
   isLegalRuntimeTransition,
-  toLifecycleError,
+  startWithGate,
 } from "../lifecycle";
 import { hydrateTrackedRooms, trackRoomJoin, trackRoomLeave } from "./subscriptions";
+import { combineTeardownErrors, isolateTeardown } from "../../core/teardown";
 import type { AgentConfig, SessionConfig } from "../types";
 import type { PlatformMessage } from "../types";
 
@@ -110,21 +110,17 @@ export class AgentRuntime {
    *
    * Repeated or concurrent calls join the in-flight start instead of starting a
    * second consume loop. Calling `start()` while a `stop()` is still in flight
-   * rejects with a {@link RuntimeStateError}.
+   * rejects with a `RuntimeStateError`.
    */
   public async start(): Promise<void> {
-    if (this.lifecycle.state.status === "stopping") {
-      throw new RuntimeStateError("AgentRuntime cannot start while a stop is in progress");
-    }
-
-    if (this.startGate.pending) {
-      return await this.startGate.pending;
-    }
-
-    this.stopGate.reset();
-    this.stoppedSignal.rearm();
-    this.lifecycle.transition({ status: "starting" }, "start");
-    await this.startGate.runOrRetry(() => this.runStart());
+    await startWithGate({
+      lifecycle: this.lifecycle,
+      startGate: this.startGate,
+      stopGate: this.stopGate,
+      stoppedSignal: this.stoppedSignal,
+      ownerName: "AgentRuntime",
+      runStart: () => this.runStart(),
+    });
   }
 
   private async runStart(): Promise<void> {
@@ -153,7 +149,7 @@ export class AgentRuntime {
     }
 
     this.consumeTask = this.consumeLoop(this.stopController.signal);
-    if (this.lifecycle.state.status === "starting") {
+    if (this.lifecycle.is("starting")) {
       this.lifecycle.transition({ status: "running" }, "started");
     }
 
@@ -176,7 +172,7 @@ export class AgentRuntime {
       throw cleanupError;
     }
 
-    if (this.lifecycle.state.status === "starting") {
+    if (this.lifecycle.is("starting")) {
       this.lifecycle.transition({ status: "stopped" }, "start-failed");
     }
   }
@@ -206,7 +202,7 @@ export class AgentRuntime {
     // start() has not created yet, so wait for it to settle first. Nothing is
     // awaited when no start is in flight, keeping the transition below
     // observable in the caller's own tick.
-    const pendingStart = this.lifecycle.state.status === "starting" ? this.startGate.pending : null;
+    const pendingStart = this.lifecycle.is("starting") ? this.startGate.pending : null;
     if (pendingStart) {
       try {
         await pendingStart;
@@ -216,12 +212,11 @@ export class AgentRuntime {
       }
     }
 
-    const initial = this.lifecycle.state;
-    if (initial.status === "not_started" || initial.status === "stopped") {
+    if (this.lifecycle.is("not_started") || this.lifecycle.is("stopped")) {
       return true;
     }
 
-    const fatalError = initial.status === "failed" ? initial.error : null;
+    const fatalError = this.lifecycle.is("failed") ? this.lifecycle.state.error : null;
 
     this.startGate.reset();
     this.lifecycle.transition({ status: "stopping" }, "stop");
@@ -279,17 +274,16 @@ export class AgentRuntime {
 
     await isolateTeardown(errors, () => this.link.disconnect());
 
-    const settled = this.lifecycle.state;
-    const failure = settled.status === "failed" ? settled.error : fatalError;
+    const failure = this.lifecycle.is("failed") ? this.lifecycle.state.error : fatalError;
     if (failure) {
-      if (settled.status !== "failed") {
+      if (!this.lifecycle.is("failed")) {
         this.lifecycle.transition({ status: "failed", error: failure }, "stopped-after-failure");
       }
       errors.unshift(failure);
     }
 
     if (errors.length > 0) {
-      throw combineTeardownErrors(errors);
+      throw combineTeardownErrors(errors, "AgentRuntime failed to tear down cleanly");
     }
 
     this.lifecycle.transition({ status: "stopped" }, "stopped");
@@ -315,20 +309,17 @@ export class AgentRuntime {
     }
 
     await task;
-    const state = this.lifecycle.state;
-    if (state.status === "failed") {
-      throw state.error;
+    if (this.lifecycle.is("failed")) {
+      throw this.lifecycle.state.error;
     }
   }
 
   private markFailed(error: unknown, trigger: string): boolean {
-    const status = this.lifecycle.state.status;
-    if (status === "stopped" || status === "failed" || status === "not_started") {
+    if (this.lifecycle.is("not_started")) {
       return false;
     }
 
-    this.lifecycle.transition({ status: "failed", error: toLifecycleError(error) }, trigger);
-    return true;
+    return this.lifecycle.fail(error, trigger);
   }
 
   public getContexts(): ExecutionContext[] {
@@ -444,7 +435,7 @@ export class AgentRuntime {
     await isolateTeardown(errors, () => this.onSessionCleanup(roomId));
 
     if (errors.length > 0) {
-      throw combineTeardownErrors(errors);
+      throw combineTeardownErrors(errors, "AgentRuntime failed to tear down cleanly");
     }
 
     return graceful;
@@ -555,7 +546,7 @@ export class AgentRuntime {
     });
 
     if (errors.length > 0) {
-      throw combineTeardownErrors(errors);
+      throw combineTeardownErrors(errors, "AgentRuntime failed to tear down cleanly");
     }
   }
 
@@ -598,28 +589,6 @@ export class AgentRuntime {
       });
     }
   }
-}
-
-/** Runs one teardown step, recording its failure instead of propagating it. */
-async function isolateTeardown(errors: unknown[], step: () => Promise<unknown>): Promise<void> {
-  try {
-    await step();
-  } catch (error) {
-    errors.push(error);
-  }
-}
-
-/**
- * Collapses the errors collected across isolated teardown steps.
- *
- * A single distinct error is rethrown as-is so callers that coalesced onto the
- * same teardown still observe one identical `Error` instance.
- */
-function combineTeardownErrors(errors: unknown[]): unknown {
-  const distinct = [...new Set(errors)];
-  return distinct.length === 1
-    ? distinct[0]
-    : new AggregateError(distinct, "AgentRuntime failed to tear down cleanly");
 }
 
 function syntheticRuntimeFailureEvent(agentId: string): PlatformEvent {

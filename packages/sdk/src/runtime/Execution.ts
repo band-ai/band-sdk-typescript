@@ -11,7 +11,6 @@ import {
   SingleFlight,
   TerminalSignal,
   isLegalExecutionTransition,
-  toLifecycleError,
 } from "./lifecycle";
 import type { MessageRetryTracker } from "./retryTracker";
 
@@ -117,14 +116,13 @@ export class Execution {
   }
 
   public async enqueue(event: PlatformEvent): Promise<void> {
-    const status = this.lifecycle.state.status;
-    if (status === "stopped" || status === "failed" || this.closed) {
+    if (this.lifecycle.is("stopped") || this.lifecycle.is("failed") || this.closed) {
       // `closed` can be true slightly ahead of `status` reaching "stopped" (see
       // runStop): the queue stops accepting before the final drain it is
       // closing for has finished, so report the status as-is rather than
       // claiming "stopped" prematurely.
       throw new RuntimeStateError(
-        `Execution for room ${this.roomId} has already ended or is stopping (status: ${status}); enqueue() is a no-op after stop()`,
+        `Execution for room ${this.roomId} has already ended or is stopping (status: ${this.lifecycle.state.status}); enqueue() is a no-op after stop()`,
       );
     }
 
@@ -195,12 +193,11 @@ export class Execution {
   }
 
   private async runStop(timeoutMs?: number): Promise<boolean> {
-    const initial = this.lifecycle.state;
-    if (initial.status === "failed") {
-      throw initial.error;
+    if (this.lifecycle.is("failed")) {
+      throw this.lifecycle.state.error;
     }
-    if (initial.status === "stopped") {
-      return initial.graceful;
+    if (this.lifecycle.is("stopped")) {
+      return this.lifecycle.state.graceful;
     }
 
     // stop() is single-flight, so the only remaining state here is "running".
@@ -208,9 +205,8 @@ export class Execution {
 
     const graceful = await this.waitForIdle(timeoutMs);
 
-    const drained = this.lifecycle.state;
-    if (drained.status === "failed") {
-      throw drained.error;
+    if (this.lifecycle.is("failed")) {
+      throw this.lifecycle.state.error;
     }
 
     // Closing the queue is independent of — and precedes — the lifecycle
@@ -437,12 +433,7 @@ export class Execution {
   }
 
   private markFailed(error: unknown, trigger: string): void {
-    const status = this.lifecycle.state.status;
-    if (status === "stopped" || status === "failed") {
-      return;
-    }
-
-    this.lifecycle.transition({ status: "failed", error: toLifecycleError(error) }, trigger);
+    this.lifecycle.fail(error, trigger);
   }
 
   private notifyIfIdle(): void {
