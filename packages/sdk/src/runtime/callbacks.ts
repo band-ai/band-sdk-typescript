@@ -47,6 +47,15 @@ export type OnParticipantRemovedCallback = (
 /** Reports an error raised while handling an event, together with the event that caused it. */
 export type OnErrorCallback = (error: unknown, event: PlatformEvent) => void;
 
+/**
+ * Reports a failed event execution. Unlike {@link OnErrorCallback} it may be async, so a
+ * handler can await its own reporting before the runtime moves on.
+ */
+export type OnFailureCallback = (
+  error: unknown,
+  event: PlatformEvent,
+) => void | Promise<void>;
+
 /** Decides whether the agent should subscribe to a room, from the room's metadata. */
 export type RoomFilter = (room: MetadataMap) => boolean;
 

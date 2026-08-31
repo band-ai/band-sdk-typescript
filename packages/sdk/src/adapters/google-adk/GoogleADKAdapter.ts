@@ -296,6 +296,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
         roomId: context.roomId,
       });
       await tools.sendEvent(`Google ADK adapter error: ${messageText}`, "error");
+
       throw error instanceof Error ? error : new BandSdkError(messageText, error);
     }
 

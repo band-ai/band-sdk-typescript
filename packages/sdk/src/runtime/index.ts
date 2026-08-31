@@ -21,6 +21,7 @@ export {
 export { ContactEventHandler, HUB_ROOM_SYSTEM_PROMPT } from "./ContactEventHandler";
 export type { ExecutionState, ExecutionContextOptions } from "./ExecutionContext";
 export type { ExecutionHandler } from "./Execution";
+export type { OnExecuteCallback, OnFailureCallback } from "./callbacks";
 
 export { AgentRuntime } from "./rooms/AgentRuntime";
 export { Execution } from "./Execution";

@@ -93,6 +93,7 @@ describe("MCP teardown does not abandon sessions when one transport fails", () =
     expect(warns).toHaveLength(1);
     expect(warns[0]!.context?.sessionId).toBe("session-fails");
     expect(String((warns[0]!.context?.error as Error).message)).toContain("refused to close");
+    expect(warns[0]!.context?.operation).toBe("stop");
   }, 30_000);
 
   it("reports every failure when more than one transport rejects", async () => {
@@ -224,6 +225,6 @@ describe("the injected logger reaches the SDK's own production call sites", () =
 
     await backend.stop();
 
-    expect(warns.some((m) => m.includes("close session transport"))).toBe(true);
+    expect(warns.some((m) => m.includes("Failed to close MCP session transport"))).toBe(true);
   }, 30_000);
 });

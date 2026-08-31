@@ -358,6 +358,7 @@ export class LettaAdapter extends SimpleAdapter<
     if (this.cleaningUpRooms.has(context.roomId)) {
       const reason = `Room ${context.roomId} is being cleaned up; message rejected`;
       this.logger.warn(reason, { roomId: context.roomId });
+
       throw new RuntimeStateError(reason);
     }
 

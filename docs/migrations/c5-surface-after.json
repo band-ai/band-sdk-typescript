@@ -691,6 +691,8 @@
         "MessageHandler",
         "MessageRetryTracker",
         "OnContactEventCallback",
+        "OnExecuteCallback",
+        "OnFailureCallback",
         "ParticipantTracker",
         "PlatformMessage",
         "PlatformRuntime",

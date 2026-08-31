@@ -6,18 +6,20 @@ import type { PlatformMessage } from "./types";
 import type { ExecutionContext } from "./ExecutionContext";
 import type { MessageRetryTracker } from "./retryTracker";
 import { asErrorMessage } from "../core/errors";
+import type { OnExecuteCallback, OnFailureCallback } from "./callbacks";
 
-export type ExecutionHandler = (
-  context: ExecutionContext,
-  event: PlatformEvent,
-) => Promise<void>;
+/**
+ * @deprecated Use {@link OnExecuteCallback} instead. Kept exported so the rename is not
+ * a breaking change.
+ */
+export type ExecutionHandler = OnExecuteCallback;
 
 interface ExecutionOptions {
   roomId: string;
   link: BandLink;
   context: ExecutionContext;
-  onExecute: ExecutionHandler;
-  onFailure?: (error: unknown, event: PlatformEvent) => void | Promise<void>;
+  onExecute: OnExecuteCallback;
+  onFailure?: OnFailureCallback;
   logger?: Logger;
 }
 
@@ -46,7 +48,7 @@ export class Execution {
   private readonly link: BandLink;
   private readonly context: ExecutionContext;
   private readonly retryTracker: MessageRetryTracker;
-  private readonly onExecute: ExecutionHandler;
+  private readonly onExecute: OnExecuteCallback;
   private readonly onFailure?: (error: unknown, event: PlatformEvent) => void | Promise<void>;
   private readonly logger: Logger;
   private readonly eventQueue: PlatformEvent[] = [];

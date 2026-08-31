@@ -10,6 +10,7 @@ import {
 import { buildZodShape } from "./zod";
 import { MCP_SERVER_NAME } from "../runtime/tools/schemas";
 import { NoopLogger, type Logger } from "../core/logger";
+import { closeSessionTransports } from "./sessionCleanup";
 
 export interface BandMcpServerOptions {
   /** Single tools instance (no room scoping) or a resolver function for room-scoped tools. */
@@ -139,7 +140,7 @@ export class BandMcpServer {
       } catch (error) {
         // The client only ever sees a generic 500; without this the actual cause of a
         // failed MCP request is lost entirely.
-        this.logger.warn("MCP request handler failed", {
+        this.logger.error("MCP request handler failed", {
           sessionId: getSessionIdHeader(req.headers["mcp-session-id"]),
           error,
         });
@@ -181,7 +182,7 @@ export class BandMcpServer {
     this.sessions.clear();
     // allSettled, not all: one transport refusing to close must not leave the remaining
     // sessions open or skip the HTTP server shutdown below.
-    await this.closeAllSettled(activeSessions, "stop");
+    await closeSessionTransports(activeSessions, "stop", this.logger);
 
     if (!this.httpServer) {
       return;
@@ -225,6 +226,9 @@ export class BandMcpServer {
       },
     });
 
+    transport.onerror = (error) => {
+      this.logger.warn("MCP transport error", { sessionId: transport.sessionId, error });
+    };
     transport.onclose = () => {
       const sessionId = transport.sessionId;
       if (sessionId) {
@@ -266,30 +270,9 @@ export class BandMcpServer {
     const cutoff = Date.now() - SESSION_IDLE_TTL_MS;
     const idleSessions = [...this.sessions.entries()].filter(([, session]) => session.lastSeenAt < cutoff);
 
-    await this.closeAllSettled(idleSessions, "closeIdleSessions");
+    await closeSessionTransports(idleSessions, "closeIdleSessions", this.logger);
   }
 
-  /**
-   * Closes every supplied session, reporting failures without letting one failure
-   * cancel the rest of the fan-out.
-   */
-  private async closeAllSettled(
-    entries: Array<[string, SessionRecord]>,
-    operation: string,
-  ): Promise<void> {
-    const results = await Promise.allSettled(
-      entries.map(async ([, session]) => { await session.transport.close(); }),
-    );
-
-    results.forEach((result, index) => {
-      if (result.status === "rejected") {
-        this.logger.warn(`MCP ${operation}: failed to close session transport`, {
-          sessionId: entries[index]?.[0],
-          error: result.reason,
-        });
-      }
-    });
-  }
 }
 
 function getSessionIdHeader(headerValue: string | string[] | undefined): string | null {

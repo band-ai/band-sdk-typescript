@@ -10,6 +10,7 @@ import {
 import { buildZodShape } from "./zod";
 import { MCP_SERVER_NAME } from "../runtime/tools/schemas";
 import { NoopLogger, type Logger } from "../core/logger";
+import { closeSessionTransports } from "./sessionCleanup";
 
 export interface BandMcpSseServerOptions {
   tools: AdapterToolsProtocol | ((roomId: string) => AdapterToolsProtocol | undefined);
@@ -158,17 +159,7 @@ export class BandMcpSseServer {
     this.sessions.clear()
     // allSettled, not all: one transport refusing to close must not leave the remaining
     // sessions open or skip the HTTP server shutdown below.
-    const results = await Promise.allSettled(
-      sessions.map(async ([, session]) => { await session.transport.close() }),
-    )
-    results.forEach((result, index) => {
-      if (result.status === "rejected") {
-        this.logger.warn("MCP SSE stop: failed to close session transport", {
-          sessionId: sessions[index]?.[0],
-          error: result.reason,
-        })
-      }
-    })
+    await closeSessionTransports(sessions, "stop", this.logger)
 
     if (!this.httpServer) {
       return
@@ -195,7 +186,9 @@ export class BandMcpSseServer {
     }
 
     this.sweepTimer = setInterval(() => {
-      this.closeIdleSessions()
+      // Safe to leave unawaited: closeIdleSessions settles every close and reports
+      // failures rather than rejecting.
+      void this.closeIdleSessions()
     }, SESSION_SWEEP_INTERVAL_MS)
     this.sweepTimer.unref?.()
   }
@@ -207,14 +200,17 @@ export class BandMcpSseServer {
     }
   }
 
-  private closeIdleSessions(): void {
+  private async closeIdleSessions(): Promise<void> {
     const cutoff = Date.now() - SESSION_IDLE_TTL_MS
+    const idle: Array<[string, SessionRecord]> = []
     for (const [sessionId, session] of this.sessions) {
       if (session.lastSeenAt < cutoff) {
         this.sessions.delete(sessionId)
-        void session.transport.close()
+        idle.push([sessionId, session])
       }
     }
+
+    await closeSessionTransports(idle, "closeIdleSessions", this.logger)
   }
 }
 
