@@ -92,6 +92,14 @@ export class Agent {
     return this.lifecycle.state;
   }
 
+  /**
+   * The underlying `PlatformRuntime`, for reading its `link`/`getContext()`/etc.
+   *
+   * Do not call `runtime.start()`/`runtime.stop()` directly: `Agent` keeps its
+   * own lifecycle tracker, so driving `PlatformRuntime`'s independently leaves
+   * `agent.state` reporting stale information. Use {@link Agent.start}/
+   * {@link Agent.stop} instead.
+   */
   public get runtime(): PlatformRuntime {
     return this.platformRuntime;
   }

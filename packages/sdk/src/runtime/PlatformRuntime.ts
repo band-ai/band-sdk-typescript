@@ -68,7 +68,6 @@ export class PlatformRuntime {
   private activeAdapter?: FrameworkAdapter;
   private readonly startGate = new SingleFlight<void>();
   private readonly stopGate = new SingleFlight<boolean>();
-  private stopAwaitsStart = false;
   private _agentName = "";
   private _agentDescription = "";
   private contactsSubscribed = false;
@@ -287,9 +286,10 @@ export class PlatformRuntime {
       await this.runtime.start();
       this.contactsSubscribed = Boolean(this.link.capabilities.contacts);
     } catch (error) {
-      if (this.stopAwaitsStart) {
-        // A stop() is already waiting for this start to settle and will run the
-        // teardown itself; joining its single-flight promise here would deadlock.
+      if (this.stopGate.pending) {
+        // A stop() is already waiting for this start to settle (see runStop)
+        // and will run the teardown itself; joining its single-flight promise
+        // here would deadlock.
         throw error;
       }
 
@@ -332,14 +332,11 @@ export class PlatformRuntime {
       ? this.startGate.pending
       : null;
     if (pendingStart) {
-      this.stopAwaitsStart = true;
       try {
         await pendingStart;
       } catch (error) {
         // The start's own caller sees this rejection; teardown continues here.
         this.logger.debug("PlatformRuntime stop is proceeding after the in-flight start failed", { error });
-      } finally {
-        this.stopAwaitsStart = false;
       }
     }
 
@@ -356,7 +353,10 @@ export class PlatformRuntime {
 
         throw initial.error;
       }
-      if (initial.status === "starting" || initial.status === "running") {
+      // "running" never reaches here: state only becomes "running" in runStart()
+      // after `runtime`/`activeAdapter` are already assigned, which the guard
+      // above (`!runtime && !adapter`) rules out.
+      if (initial.status === "starting") {
         this.lifecycle.transition({ status: "stopped" }, trigger);
       }
       return true;

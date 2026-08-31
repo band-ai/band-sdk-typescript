@@ -69,6 +69,12 @@ export class Execution {
   private firstWsMessageId: string | null = null;
   private syncComplete = false;
   private inFlight = 0;
+  /**
+   * Set once the queue stops accepting new events, ahead of the lifecycle
+   * itself reporting `"stopped"` (see {@link runStop}) — closing the queue
+   * cannot wait on the drain it is closing for.
+   */
+  private closed = false;
 
   public constructor(options: ExecutionOptions) {
     this.roomId = options.roomId;
@@ -112,9 +118,13 @@ export class Execution {
 
   public async enqueue(event: PlatformEvent): Promise<void> {
     const status = this.lifecycle.state.status;
-    if (status === "stopped" || status === "failed") {
+    if (status === "stopped" || status === "failed" || this.closed) {
+      // `closed` can be true slightly ahead of `status` reaching "stopped" (see
+      // runStop): the queue stops accepting before the final drain it is
+      // closing for has finished, so report the status as-is rather than
+      // claiming "stopped" prematurely.
       throw new RuntimeStateError(
-        `Execution for room ${this.roomId} has already ended (status: ${status}); enqueue() is a no-op after stop()`,
+        `Execution for room ${this.roomId} has already ended or is stopping (status: ${status}); enqueue() is a no-op after stop()`,
       );
     }
 
@@ -203,12 +213,22 @@ export class Execution {
       throw drained.error;
     }
 
-    this.lifecycle.transition({ status: "stopped", graceful }, graceful ? "stopped" : "stopped-forced");
+    // Closing the queue is independent of — and precedes — the lifecycle
+    // itself reporting "stopped": enqueue() must reject from this point on
+    // even though the drain below hasn't finished yet.
+    this.closed = true;
     this.resolveEventWaiters(null);
 
     if (graceful || timeoutMs === undefined) {
       await this.processTask;
     }
+
+    // Only now — after the process loop has actually finished draining, or been
+    // deliberately detached past a timeout — does external state (and
+    // waitUntilStopped()) report "stopped". Transitioning before the drain
+    // completes let a concurrent getOrCreateExecution() observe "stopped" while
+    // this Execution was still mid-teardown.
+    this.lifecycle.transition({ status: "stopped", graceful }, graceful ? "stopped" : "stopped-forced");
 
     return graceful;
   }
