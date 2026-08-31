@@ -6,6 +6,7 @@ import { UnsupportedFeatureError } from "../../core/errors";
 import type { PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { asErrorMessage, asNonEmptyString, asOptionalRecord } from "../shared/coercion";
+import { selectCompleteExchanges } from "../shared/history";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import {
   ParlantHistoryConverter,
@@ -390,8 +391,9 @@ export class ParlantAdapter
       return;
     }
 
-    const completeHistory = selectCompleteExchanges(history).slice(
-      -this.maxHistoryMessages,
+    const completeHistory = selectCompleteExchanges(
+      history,
+      this.maxHistoryMessages,
     );
     let failedEvents = 0;
 
@@ -544,33 +546,6 @@ export class ParlantAdapter
     }));
     return factory();
   }
-}
-
-function selectCompleteExchanges(history: ParlantMessages): ParlantMessages {
-  const complete: ParlantMessages = [];
-
-  let index = 0;
-  while (index < history.length) {
-    const current = history[index];
-
-    if (current.role === "user" && current.content) {
-      const next = history[index + 1];
-      if (next && next.role === "assistant" && next.content) {
-        complete.push(current);
-        complete.push(next);
-        index += 2;
-        continue;
-      }
-
-      index += 1;
-      continue;
-    }
-
-    // Skip orphaned assistant messages without a preceding user message.
-    index += 1;
-  }
-
-  return complete;
 }
 
 function buildUserMessage(input: {

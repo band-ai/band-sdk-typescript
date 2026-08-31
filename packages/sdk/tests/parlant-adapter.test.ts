@@ -173,6 +173,82 @@ describe("ParlantAdapter", () => {
     expect(historicalEventsAfterSecond).toBe(historicalEventsAfterFirst);
   });
 
+  it("injects consecutive same-role history messages instead of dropping them", async () => {
+    const client = new FakeParlantClient();
+    client.eventPollBatches.push([
+      {
+        kind: "message",
+        offset: 20,
+        data: { message: "Response" },
+      },
+    ]);
+
+    const adapter = new ParlantAdapter({
+      environment: "https://parlant.example",
+      agentId: "agent-1",
+      clientFactory: async () => client,
+      responseTimeoutSeconds: 1,
+    });
+
+    await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
+
+    // Multi-participant room: two users speak before the agent replies, and a
+    // third message is still unanswered.
+    const history = [
+      {
+        role: "user" as const,
+        content: "[Alice]: Hey",
+        sender: "Alice",
+        senderType: "User",
+      },
+      {
+        role: "user" as const,
+        content: "[Bob]: Hi there",
+        sender: "Bob",
+        senderType: "User",
+      },
+      {
+        role: "assistant" as const,
+        content: "Hello both!",
+        sender: "Bot",
+        senderType: "Agent",
+      },
+      {
+        role: "user" as const,
+        content: "[Alice]: Still there?",
+        sender: "Alice",
+        senderType: "User",
+      },
+    ];
+
+    const tools = new FakeTools();
+    await adapter.onMessage(
+      makeMessage("Current question", "room-merge"),
+      tools,
+      history,
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-merge" },
+    );
+
+    const historicalMessages = client.eventCreateCalls
+      .filter(
+        (call) =>
+          (call.params.metadata as Record<string, unknown> | undefined)
+            ?.historical === true,
+      )
+      .map((call) => {
+        const data = call.params.data as { message?: string } | undefined;
+        return (call.params.message as string | undefined) ?? data?.message ?? "";
+      });
+
+    const injected = historicalMessages.join("\n");
+    expect(injected).toContain("Alice]: Hey");
+    expect(injected).toContain("Bob]: Hi there");
+    expect(injected).toContain("Hello both!");
+    expect(injected).toContain("Still there?");
+  });
+
   it("emits an error event when no response arrives before timeout", async () => {
     const client = new FakeParlantClient();
     client.eventPollBatches.push([]);

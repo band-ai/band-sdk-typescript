@@ -6,6 +6,7 @@ import { RuntimeStateError, UnsupportedFeatureError } from "../../core/errors";
 import type { PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { asErrorMessage, toWireString } from "../shared/coercion";
+import { selectCompleteExchanges } from "../shared/history";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import type { LettaMessages } from "./types";
 import { LettaHistoryConverter } from "./types";
@@ -641,8 +642,9 @@ export class LettaAdapter extends SimpleAdapter<
       return;
     }
 
-    const completeHistory = selectCompleteExchanges(history).slice(
-      -this.maxHistoryMessages,
+    const completeHistory = selectCompleteExchanges(
+      history,
+      this.maxHistoryMessages,
     );
 
     if (completeHistory.length === 0) {
@@ -980,60 +982,6 @@ function safeParseToolArgs(
     logger.warn(message, { json: json.slice(0, 200) });
     throw new Error(message);
   }
-}
-
-/**
- * Merge consecutive same-role messages, then keep paired user→assistant
- * exchanges and an optional trailing user message.  Merging first
- * ensures that consecutive user messages (common in multi-participant
- * conversations) are preserved rather than silently dropped.  Orphaned
- * assistant messages without a preceding user turn are still dropped so
- * that Letta receives a clean alternating conversation.
- */
-function selectCompleteExchanges(history: LettaMessages): LettaMessages {
-  // 1. Merge consecutive same-role messages into single entries so no
-  //    user content is lost when multiple participants speak in a row.
-  const merged: LettaMessages = [];
-  for (const msg of history) {
-    if (!msg.content) continue;
-    const prev = merged[merged.length - 1];
-    if (prev && prev.role === msg.role) {
-      prev.content += `\n${msg.content}`;
-    } else {
-      merged.push({ ...msg });
-    }
-  }
-
-  // 2. Select user→assistant pairs + optional trailing user message.
-  const complete: LettaMessages = [];
-
-  let index = 0;
-  while (index < merged.length) {
-    const current = merged[index];
-
-    if (current.role === "user" && current.content) {
-      const next = merged[index + 1];
-      if (next && next.role === "assistant" && next.content) {
-        complete.push(current);
-        complete.push(next);
-        index += 2;
-        continue;
-      }
-
-      // Include a trailing user message (no assistant reply yet) so the
-      // agent has context about the most recent unanswered question.
-      if (index === merged.length - 1) {
-        complete.push(current);
-      }
-
-      index += 1;
-      continue;
-    }
-
-    index += 1;
-  }
-
-  return complete;
 }
 
 /**
