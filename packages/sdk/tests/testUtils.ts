@@ -1,3 +1,4 @@
+import { ParticipantRoster } from "@band-ai/band-sdk-core";
 import type { PlatformMessage } from "../src/runtime";
 import type { AgentToolsProtocol } from "../src/core";
 import { DEFAULT_AGENT_TOOLS_CAPABILITIES } from "../src/contracts/protocols";
@@ -113,6 +114,12 @@ export class FakeTools implements AgentToolsProtocol {
       throw this.errorFactory(method);
     }
   }
+}
+
+export function makeRoster(participants: ParticipantRecord[]): ParticipantRoster {
+  const roster = new ParticipantRoster();
+  roster.setAll(participants);
+  return roster;
 }
 
 export function makeMessage(content: string, roomId = "room-1"): PlatformMessage {

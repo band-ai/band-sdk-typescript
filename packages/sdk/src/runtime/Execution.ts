@@ -4,7 +4,7 @@ import type { BandLink } from "../platform/BandLink";
 import type { PlatformEvent } from "../platform/events";
 import type { PlatformMessage } from "./types";
 import type { ExecutionContext } from "./ExecutionContext";
-import type { MessageRetryTracker } from "./retryTracker";
+import type { RetryTracker } from "@band-ai/band-sdk-core";
 
 export type ExecutionHandler = (
   context: ExecutionContext,
@@ -44,7 +44,7 @@ export class Execution {
   private readonly roomId: string;
   private readonly link: BandLink;
   private readonly context: ExecutionContext;
-  private readonly retryTracker: MessageRetryTracker;
+  private readonly retryTracker: RetryTracker;
   private readonly onExecute: ExecutionHandler;
   private readonly onFailure?: (error: unknown, event: PlatformEvent) => void | Promise<void>;
   private readonly logger: Logger;

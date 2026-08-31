@@ -76,6 +76,9 @@ importers:
       '@anthropic-ai/sdk':
         specifier: '>=0.91.1 <1.0.0'
         version: 0.95.1(zod@4.4.3)
+      '@band-ai/band-sdk-core':
+        specifier: 2.0.0
+        version: 2.0.0
       '@band-ai/rest-client':
         specifier: 0.0.118
         version: 0.0.118
@@ -333,6 +336,9 @@ packages:
   '@babel/types@7.29.0':
     resolution: {integrity: sha512-LwdZHpScM4Qz8Xw2iKSzS+cfglZzJGvofQICy7W7v4caru4EaAmyUuO6BGrbyQ2mYV11W0U8j5mBhd14dd3B0A==}
     engines: {node: '>=6.9.0'}
+
+  '@band-ai/band-sdk-core@2.0.0':
+    resolution: {integrity: sha512-yPgba25N4a3XHeG0y3Ic90Z9zAt2fwIXVAt7AmlryqvsEvc9kvZ8xg0ILkRj5K6HdvuiXo7QtpMd6t8lnrjRNA==}
 
   '@band-ai/rest-client@0.0.118':
     resolution: {integrity: sha512-psizi+1ASQ89E+PbPIn1N/vTK3DrIzjiGaUWLPM0k9YRkD4PTVpbPcSNLIpm/DY8EPlq2eMwdPvroC5XUiG+yQ==}
@@ -4363,6 +4369,8 @@ snapshots:
     dependencies:
       '@babel/helper-string-parser': 7.27.1
       '@babel/helper-validator-identifier': 7.28.5
+
+  '@band-ai/band-sdk-core@2.0.0': {}
 
   '@band-ai/rest-client@0.0.118': {}
 

@@ -141,4 +141,16 @@ describe("ExecutionContext coverage", () => {
     expect(hydrated.messages[0]?.content).toBe("local-only");
     expect(getChatContext).not.toHaveBeenCalled();
   });
+
+  it("returns an isolated participants snapshot on every hydration", async () => {
+    const ctx = makeContext({}, { enableContextHydration: false });
+    ctx.addParticipant({ id: "u1", name: "Jane", type: "User", handle: "@jane" });
+
+    const first = await ctx.hydrateContext();
+    first.participants.push({ id: "intruder", name: "Ghost", type: "User", handle: null });
+    (first.participants[0] as { name: string }).name = "Mutated";
+
+    const second = await ctx.hydrateContext();
+    expect(second.participants).toEqual([{ id: "u1", name: "Jane", type: "User", handle: "@jane" }]);
+  });
 });

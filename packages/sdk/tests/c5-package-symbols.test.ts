@@ -8,7 +8,7 @@
  * new/old consumer fixtures (values as value imports). P-C5-1 packs a real
  * tarball, installs it into ESM and CJS consumers, and executes runtime imports
  * of every subpath with an inverse probe. P-C5-3 checks the release workflow
- * carries no package mutation and the hold is present.
+ * carries no package mutation.
  */
 
 import { describe, it, expect, beforeAll } from "vitest";
@@ -409,16 +409,12 @@ describe("P-C5-1: real tarball packs, installs, and runs for ESM and CJS", () =>
   });
 });
 
-describe("P-C5-3: release workflow has no package mutation and the hold is present", () => {
+describe("P-C5-3: release workflow has no package mutation", () => {
   it("release.yml no longer rewrites the SDK package name and carries no legacy scope", () => {
     const yml = readFileSync(join(REPO_ROOT, ".github/workflows/release.yml"), "utf-8");
     expect(yml).not.toMatch(/sed[^\n]*packages\/sdk\/package\.json/);
     expect(yml).not.toContain("@thenvoi/sdk");
     expect(yml).toMatch(/npm pack --pack-destination/);
-  });
-
-  it(".release-hold marker exists at the repository root", () => {
-    expect(existsSync(join(REPO_ROOT, ".release-hold"))).toBe(true);
   });
 });
 

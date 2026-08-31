@@ -28,6 +28,7 @@ import { buildSingleContextRegistrations } from "../src/mcp/registrations";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 import { RestFacade } from "../src/client/rest/RestFacade";
 import type { RestApi } from "../src/client/rest/types";
+import { makeRoster } from "./testUtils";
 import { isToolExecutorError } from "../src/contracts/protocols";
 import { FakeAgentTools } from "../src/testing/FakeAgentTools";
 import { createBandSdkMcpServer } from "../src/mcp/sdk";
@@ -240,7 +241,7 @@ describe("P-TOOL-04: every canonical name reaches a handler; every legacy name i
     return new AgentTools({
       roomId: "room-1",
       rest: new RestFacade({ api }),
-      participants: [{ id: "u1", handle: "@jane", name: "Jane", type: "User" }],
+      roster: makeRoster([{ id: "u1", handle: "@jane", name: "Jane", type: "User" }]),
       capabilities: { peers: true, contacts: true, memory: true },
     });
   }

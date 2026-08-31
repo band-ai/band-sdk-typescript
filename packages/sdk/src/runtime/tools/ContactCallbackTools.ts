@@ -1,7 +1,6 @@
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
 import type {
   AgentToolsRestApi,
-  ChatParticipant,
   ChatMessagingRestApi,
   ChatRoomRestApi,
   ContactRestApi,
@@ -30,6 +29,7 @@ import type {
   AgentToolsCapabilities,
 } from "../../contracts/protocols";
 import { UnsupportedFeatureError } from "../../core/errors";
+import { toParticipantRecordFromRest } from "../formatters";
 import { ContactToolsImpl } from "./ContactToolsImpl";
 
 type ContactCallbackRestApi =
@@ -37,15 +37,6 @@ type ContactCallbackRestApi =
   & Pick<ChatRoomRestApi, "createChat">
   & Partial<Pick<ChatMessagingRestApi, "createChatMessage" | "createChatEvent">>
   & Partial<ContactRestApi>;
-
-function toParticipantRecord(participant: ChatParticipant): ParticipantRecord {
-  return {
-    id: participant.id,
-    name: participant.name,
-    type: participant.type,
-    handle: participant.handle ?? null,
-  };
-}
 
 function normalizePage(value: number | undefined, fallback: number): number {
   return Number.isInteger(value) && value && value > 0 ? value : fallback;
@@ -107,13 +98,14 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
       ? mentions
       : undefined;
 
+    // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
+    // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
     return this.rest.createChatMessage(
       roomId,
       {
         content,
         ...(normalizedMentions ? { mentions: normalizedMentions } : {}),
       },
-      DEFAULT_REQUEST_OPTIONS,
     );
   }
 
@@ -126,6 +118,8 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
     if (!this.rest.createChatEvent) {
       throw new UnsupportedFeatureError("Event sending is not available in current REST adapter");
     }
+    // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
+    // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
     return this.rest.createChatEvent(
       roomId,
       {
@@ -133,7 +127,6 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
         messageType,
         ...(metadata ? { metadata } : {}),
       },
-      DEFAULT_REQUEST_OPTIONS,
     );
   }
 
@@ -150,7 +143,7 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
     if (!this.rest.listChatParticipants) {
       throw new UnsupportedFeatureError("Participant listing is not available in current REST adapter");
     }
-    return (await this.rest.listChatParticipants(roomId, DEFAULT_REQUEST_OPTIONS)).map(toParticipantRecord);
+    return (await this.rest.listChatParticipants(roomId, DEFAULT_REQUEST_OPTIONS)).map(toParticipantRecordFromRest);
   }
 
   public async createChatroom(taskId?: string): Promise<string> {

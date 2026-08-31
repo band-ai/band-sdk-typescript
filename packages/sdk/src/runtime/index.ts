@@ -28,6 +28,10 @@ export { RoomPresence } from "./rooms/RoomPresence";
 
 export { AgentTools } from "./tools/AgentTools";
 export { ContactToolsImpl } from "./tools/ContactToolsImpl";
+
+// `AgentTools`'s `roster` option and `ExecutionContext.getRetryTracker()` are
+// typed by these, and a consumer cannot import a transitive dependency.
+export { ParticipantRoster, RetryTracker } from "@band-ai/band-sdk-core";
 export {
   TOOL_MODELS,
   MCP_TOOL_PREFIX,
@@ -64,7 +68,5 @@ export {
   type RenderSystemPromptOptions,
 } from "./prompts";
 
-export { ParticipantTracker } from "./participantTracker";
-export { MessageRetryTracker } from "./retryTracker";
 export { GracefulShutdown, runWithGracefulShutdown } from "./shutdown";
 export { DefaultPreprocessor } from "./preprocessing/DefaultPreprocessor";

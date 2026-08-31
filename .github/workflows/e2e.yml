@@ -1,0 +1,54 @@
+name: E2E (live)
+
+# Live E2E against the real Band platform. Provisions real agents, hits
+# live REST/WS — nightly/on-demand only, never per-PR.
+
+on:
+  schedule:
+    # Off-peak minute avoids GitHub's top-of-hour thundering herd.
+    - cron: "23 4 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never cancel in progress: a killed run skips its `finally` reap, orphaning
+  # the agents and rooms it provisioned on the real platform. Queue instead.
+  # Partial protection — `sweepOrphans` recovers stale agents on a later run,
+  # but nothing reaps rooms, and a job timeout skips the reap just the same.
+  group: e2e-live-${{ github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # BAND_API_KEY_USER is the same Band user credential band-sdk-python's
+      # e2e.yml uses (its E2E_BAND_API_KEY_USER secret) to dynamically
+      # provision/reap its own test agents — same secret name/shape here so
+      # the value can be shared across both repos' E2E secrets.
+      - name: Run core retry/participant live test
+        working-directory: packages/sdk
+        env:
+          BAND_API_KEY_USER: ${{ secrets.E2E_BAND_API_KEY_USER }}
+          BAND_REST_URL: ${{ secrets.E2E_BAND_REST_URL }}
+          BAND_WS_URL: ${{ secrets.E2E_BAND_WS_URL }}
+        run: npx tsx tests/integration/core-retry-participant-live.ts
