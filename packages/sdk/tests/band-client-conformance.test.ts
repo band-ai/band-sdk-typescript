@@ -1,24 +1,32 @@
 /**
- * Conformance guard: verifies the real @band-ai/rest-client@0.0.118 exports
- * every resource and method the SDK consumes, without making network calls.
+ * Conformance guard: verifies the real @band-ai/rest-client exports every resource and
+ * method the SDK consumes, and no longer exposes the legacy resources the adapter used to
+ * probe, without making network calls.
  *
- * This test catches a removed or renamed generated resource that typecheck
- * alone misses (BandLink casts BandClient through `unknown`). A missing
- * method here means the SDK would throw at runtime.
+ * This test catches a removed or renamed generated resource at runtime. A missing method
+ * here means the SDK would throw; a resurrected legacy name here means the adapter is
+ * reaching a namespace it no longer supports.
  */
+
+import { createRequire } from "node:module";
 
 import { describe, it, expect } from "vitest";
 import { BandClient } from "@band-ai/rest-client";
 
-describe("BandClient conformance (0.0.118)", () => {
+const require = createRequire(import.meta.url);
+const restClientVersion = (
+  require("@band-ai/rest-client/package.json") as { version: string }
+).version;
+
+describe(`BandClient conformance (${restClientVersion})`, () => {
   // Instantiate with a dummy key — no network call is made.
   const client = new BandClient({ apiKey: "test-conformance-key" });
+  const resources = client as unknown as Record<string, unknown>;
 
   /**
-   * Every agentApi* resource the FernRestAdapter prefers. Each entry is
-   * [namespace, [...methods]]. The adapter falls back to legacy namespaces
-   * when these are absent, but the preferred set MUST exist on the current
-   * generated client to avoid degraded behavior.
+   * Every agentApi* resource the FernRestAdapter calls. Each entry is
+   * [namespace, [...methods]]. These are the only endpoints the adapter knows about, so
+   * a missing one means degraded behavior at runtime.
    */
   const requiredResources: Array<[string, string[]]> = [
     ["agentApiIdentity", ["getAgentMe"]],
@@ -55,9 +63,26 @@ describe("BandClient conformance (0.0.118)", () => {
     ["agentApiContext", ["getAgentChatContext"]],
   ];
 
+  /**
+   * Resources the adapter used to probe ahead of the agentApi* ones. They have never
+   * existed on this client, so every probe was dead code; pin their absence so the
+   * fallbacks are not reintroduced without a reason.
+   */
+  const removedLegacyResources = [
+    "myProfile",
+    "myChatMessages",
+    "chatRooms",
+    "chatMessages",
+    "chatParticipants",
+    "chatContext",
+    "agentPeers",
+    "agentContacts",
+    "agentMemories",
+  ];
+
   for (const [namespace, methods] of requiredResources) {
     it(`exposes ${namespace} with ${methods.length} methods`, () => {
-      const resource = (client as unknown as Record<string, unknown>)[namespace];
+      const resource = resources[namespace];
       expect(resource).toBeDefined();
       for (const method of methods) {
         expect(typeof (resource as Record<string, unknown>)[method]).toBe(
@@ -67,8 +92,12 @@ describe("BandClient conformance (0.0.118)", () => {
     });
   }
 
+  it.each(removedLegacyResources)("does not expose the legacy %s resource", (namespace) => {
+    expect(resources[namespace]).toBeUndefined();
+  });
+
   it("red-check: detects a missing method on a real namespace", () => {
-    const resource = (client as unknown as Record<string, unknown>).agentApiIdentity;
+    const resource = resources.agentApiIdentity;
     expect(resource).toBeDefined();
     expect(
       (resource as Record<string, unknown>).definitelyDoesNotExist,

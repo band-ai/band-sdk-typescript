@@ -405,12 +405,19 @@ export class RestFacade implements RestApi {
     return this.forward(String(operation), () => invoke(boundMethod), metadata);
   }
 
-  private forward<T>(
+  private async forward<T>(
     operation: string,
     call: () => Promise<T>,
     metadata?: Record<string, unknown>,
   ): Promise<T> {
     this.logger.debug(`REST ${operation}`, metadata);
-    return call();
+    try {
+      return await call();
+    } catch (error) {
+      // Rethrow the original instance so callers keep whatever typed error the
+      // transport produced; the log only adds the context the caller cannot see.
+      this.logger.warn(`REST ${operation} failed`, { ...metadata, operation, error });
+      throw error;
+    }
   }
 }

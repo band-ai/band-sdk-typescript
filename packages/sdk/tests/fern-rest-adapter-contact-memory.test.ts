@@ -159,13 +159,13 @@ describe("FernRestAdapter contact and memory parity", () => {
   it("normalizes duck-typed agent contact, memory, and peer resources", async () => {
     const rest = new RestFacade({
       api: new FernRestAdapter({
-        agentPeers: {
+        agentApiPeers: {
           listAgentPeers: async () => ({
             data: [{ id: "peer-1", name: "Weather", type: "Agent", handle: "@sam/weather" }],
             metadata: { page: 1, page_size: 5, total_count: 1, total_pages: 1 },
           }),
         },
-        agentContacts: {
+        agentApiContacts: {
           listAgentContacts: async () => ({
             data: [{ id: "contact-1", handle: "@jane", name: "Jane", type: "User" }],
             metadata: { page: 2, page_size: 25, total_count: 1, total_pages: 1 },
@@ -186,7 +186,7 @@ describe("FernRestAdapter contact and memory parity", () => {
           }),
           respondToAgentContactRequest: async () => ({ data: { id: "request-1", status: "approved" } }),
         },
-        agentMemories: {
+        agentApiMemories: {
           listAgentMemories: async () => ({
             data: [{
               id: "memory-1",
@@ -349,24 +349,8 @@ describe("FernRestAdapter contact and memory parity", () => {
     await expect(invalidRest.getNextMessage({ chatId: "room-1" })).resolves.toBeNull();
   });
 
-  it("supports both participant listing endpoint variants", async () => {
-    const primaryRest = new RestFacade({
-      api: new FernRestAdapter({
-        chatParticipants: {
-          listChatParticipants: async () => ({
-            data: [{ id: "user-1", name: "Jane", type: "User", handle: "@jane" }],
-          }),
-          addChatParticipant: async () => ({ data: {} }),
-          removeChatParticipant: async () => ({ data: {} }),
-        },
-      }),
-    });
-
-    await expect(primaryRest.listChatParticipants("room-1")).resolves.toEqual([
-      { id: "user-1", name: "Jane", type: "User", handle: "@jane" },
-    ]);
-
-    const fallbackRest = new RestFacade({
+  it("lists participants through the agent participants resource", async () => {
+    const rest = new RestFacade({
       api: new FernRestAdapter({
         agentApiParticipants: {
           listAgentChatParticipants: async () => ({
@@ -378,7 +362,7 @@ describe("FernRestAdapter contact and memory parity", () => {
       }),
     });
 
-    await expect(fallbackRest.listChatParticipants("room-2")).resolves.toEqual([
+    await expect(rest.listChatParticipants("room-2")).resolves.toEqual([
       { id: "agent-1", name: "Weather", type: "Agent", handle: "@sam/weather" },
     ]);
   });
@@ -395,10 +379,10 @@ describe("FernRestAdapter contact and memory parity", () => {
     await expect(rest.getAgentMe()).rejects.toThrow("AgentIdentity.name");
   });
 
-  it("throws when legacy profile identity cannot produce a valid id or name", async () => {
+  it("throws when the human profile fallback cannot produce a valid id or name", async () => {
     const rest = new RestFacade({
       api: new FernRestAdapter({
-        myProfile: {
+        humanApiProfile: {
           getMyProfile: async () => ({ id: "", name: "" }),
         },
       }),

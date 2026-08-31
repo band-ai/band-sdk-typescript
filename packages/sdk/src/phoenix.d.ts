@@ -1,32 +1,10 @@
+// The `phoenix` package ships no types of its own, so the SDK relies on the
+// DefinitelyTyped package for the Socket/Channel/Push surface. The only member it
+// omits is the socket's own channel list, which the transport reads when logging.
+import "phoenix";
+
 declare module "phoenix" {
-  export interface Push {
-    receive(
-      status: "ok" | "error" | "timeout",
-      callback: (response?: unknown) => void,
-    ): Push;
-  }
-
-  export class Channel {
-    on(event: string, callback: (payload: Record<string, unknown>) => void): number;
-    off(event: string, ref?: number): void;
-    join(): Push;
-    leave(): Push;
-  }
-
-  export interface SocketOptions {
-    params?: Record<string, unknown>;
-    heartbeatIntervalMs?: number;
-    reconnectAfterMs?: (tries: number) => number;
-    transport?: typeof WebSocket;
-  }
-
-  export class Socket {
-    constructor(url: string, options?: SocketOptions);
-    channel(topic: string, params?: Record<string, unknown>): Channel;
-    connect(): void;
-    disconnect(): void;
-    onOpen(callback: () => void): number;
-    onClose(callback: () => void): number;
-    onError(callback: (event: unknown) => void): number;
+  interface Socket {
+    channels: Channel[];
   }
 }

@@ -93,7 +93,7 @@ describe("FernRestAdapter coverage", () => {
     await expect(adapter.createChat()).rejects.toThrow("Chat create response did not include id");
   });
 
-  it("uses the modern chat and event namespaces when they exist", async () => {
+  it("uses the agent chat, event, and message namespaces when they exist", async () => {
     const createChatMessage = vi.fn(async () => ({ data: { ok: true, id: "msg-1" } }));
     const createAgentChatEvent = vi.fn(async () => ({ data: { ok: true, id: "evt-1" } }));
     const createChat = vi.fn(async () => ({ data: { id: "room-9" } }));
@@ -135,26 +135,26 @@ describe("FernRestAdapter coverage", () => {
       },
     }));
     const adapter = new FernRestAdapter({
-      chatMessages: {
-        createChatMessage,
-        markMessageProcessing,
-        markMessageProcessed,
-        markMessageFailed,
-        listMessages,
+      agentApiMessages: {
+        createAgentChatMessage: createChatMessage,
+        markAgentMessageProcessing: markMessageProcessing,
+        markAgentMessageProcessed: markMessageProcessed,
+        markAgentMessageFailed: markMessageFailed,
+        listAgentMessages: listMessages,
       },
       agentApiEvents: {
         createAgentChatEvent,
       },
-      chatRooms: {
-        createChat,
+      agentApiChats: {
+        createAgentChat: createChat,
       },
-      chatParticipants: {
-        listChatParticipants: async () => ({ data: [] }),
-        addChatParticipant,
-        removeChatParticipant,
+      agentApiParticipants: {
+        listAgentChatParticipants: async () => ({ data: [] }),
+        addAgentChatParticipant: addChatParticipant,
+        removeAgentChatParticipant: removeChatParticipant,
       },
-      chatContext: {
-        getChatContext,
+      agentApiContext: {
+        getAgentChatContext: getChatContext,
       },
     });
 
@@ -244,8 +244,8 @@ describe("FernRestAdapter coverage", () => {
       .mockRejectedValueOnce(rateLimitError())
       .mockResolvedValueOnce({ data: { ok: true, id: "msg-1" } });
     const adapter = new FernRestAdapter({
-      chatMessages: {
-        createChatMessage,
+      agentApiMessages: {
+        createAgentChatMessage: createChatMessage,
       },
     });
 
@@ -259,10 +259,10 @@ describe("FernRestAdapter coverage", () => {
   });
 
   it("falls back from createChatEvent to createChatMessage when the event endpoint is unavailable", async () => {
-    const createMyChatMessage = vi.fn(async () => ({ data: { ok: true } }));
+    const createAgentChatMessage = vi.fn(async () => ({ data: { ok: true } }));
     const adapter = new FernRestAdapter({
-      myChatMessages: {
-        createMyChatMessage,
+      agentApiMessages: {
+        createAgentChatMessage,
       },
     });
 
@@ -270,7 +270,7 @@ describe("FernRestAdapter coverage", () => {
       content: "hello",
       messageType: "task",
     })).resolves.toEqual({ ok: true });
-    expect(createMyChatMessage).toHaveBeenCalledOnce();
+    expect(createAgentChatMessage).toHaveBeenCalledOnce();
   });
 
   it("uses agent-style contact and memory endpoints and normalizes filtered payloads", async () => {
@@ -326,14 +326,14 @@ describe("FernRestAdapter coverage", () => {
     const supersedeAgentMemory = vi.fn(async () => ({ data: { status: "superseded" } }));
     const archiveAgentMemory = vi.fn(async () => ({ data: { status: "archived" } }));
     const adapter = new FernRestAdapter({
-      agentContacts: {
+      agentApiContacts: {
         listAgentContacts,
         addAgentContact,
         removeAgentContact,
         listAgentContactRequests,
         respondToAgentContactRequest,
       },
-      agentMemories: {
+      agentApiMemories: {
         listAgentMemories,
         createAgentMemory,
         getAgentMemory,
@@ -451,17 +451,17 @@ describe("FernRestAdapter coverage", () => {
     });
   });
 
-  it("normalizes listChatParticipants from the chatParticipants namespace", async () => {
+  it("drops participant records that do not match the expected shape", async () => {
     const adapter = new FernRestAdapter({
-      chatParticipants: {
-        listChatParticipants: async () => ({
+      agentApiParticipants: {
+        listAgentChatParticipants: async () => ({
           data: [
             { id: "u1", name: "Jane", type: "User", handle: "@jane" },
             { id: 42 },
           ],
         }),
-        addChatParticipant: async () => ({ data: {} }),
-        removeChatParticipant: async () => ({ data: {} }),
+        addAgentChatParticipant: async () => ({ data: {} }),
+        removeAgentChatParticipant: async () => ({ data: {} }),
       },
     });
 

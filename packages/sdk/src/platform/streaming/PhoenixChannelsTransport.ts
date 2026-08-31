@@ -89,7 +89,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       void this.handleOpen();
     });
 
-    this.socket.onClose((event?: { code?: number; reason?: string }) => {
+    this.socket.onClose((event: CloseEvent) => {
       this.recordSocketClose(event);
     });
 
@@ -233,7 +233,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       }
       // Leave and remove the channel so it doesn't get rejoined on reconnect.
       channel.leave();
-      removeSocketChannel(this.socket, channel);
+      this.socket.remove(channel);
       throw error;
     }
 
@@ -330,14 +330,16 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     this.connectResolve = null;
     this.connectReject = null;
     this.logger.info("Phoenix socket opened", {
-      channels: getSocketChannelCount(this.socket),
+      channels: this.socket.channels.length,
     });
   }
 
   private stopReconnectIfNoChannels(
     options: { suppressCloseReason?: boolean } = {},
   ): void {
-    if (this.stoppingReconnect || getSocketChannelCount(this.socket) !== 0) {
+    // The SDK's own topic map is the source of truth for what is still joined, so a
+    // socket that has nothing left to serve stops reconnecting on every close path.
+    if (this.stoppingReconnect || this.channels.size !== 0) {
       return;
     }
 
@@ -366,7 +368,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     });
   }
 
-  private recordSocketClose(event?: { code?: number; reason?: string }): void {
+  private recordSocketClose(event?: CloseEvent): void {
     this.connected = false;
     const suppressCloseReason = this.suppressNextCloseReason;
     this.suppressNextCloseReason = false;
@@ -454,18 +456,4 @@ function unwrapErrorEvent(event: unknown): unknown {
 
 function isErrorEvent(event: unknown): event is { error: unknown } {
   return typeof event === "object" && event !== null && "error" in event;
-}
-
-function removeSocketChannel(socket: Socket, channel: Channel): void {
-  const candidate = socket as unknown as { remove?: (value: Channel) => void };
-  candidate.remove?.(channel);
-}
-
-function getSocketChannelCount(socket: Socket): number | "unknown" {
-  const candidate = socket as unknown as { channels?: Channel[] };
-  if (!Array.isArray(candidate.channels)) {
-    return "unknown";
-  }
-
-  return candidate.channels.length;
 }

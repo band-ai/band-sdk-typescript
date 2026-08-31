@@ -1,8 +1,8 @@
+import type { BandClient } from "@band-ai/rest-client";
 import type { RestRequestOptions } from "./requestOptions";
 import type {
   AddContactArgs,
   ContactRecord,
-  ContactRequestAction,
   ContactRequestsResult,
   ListContactRequestsArgs,
   ListContactsArgs,
@@ -228,288 +228,41 @@ export interface FernUserProfile {
   username?: string;
 }
 
-// Method syntax (not property-function syntax) is used intentionally so that
-// TypeScript checks parameter types bivariantly.
-export interface FernBandClientLike {
-  agentApiIdentity?: {
-    getAgentMe(options?: RestRequestOptions): Promise<unknown>;
-  };
-  myProfile?: {
-    getMyProfile(options?: RestRequestOptions): Promise<unknown>;
-  };
-  humanApiProfile?: {
-    getMyProfile(options?: RestRequestOptions): Promise<unknown>;
-  };
-  agentPeers?: {
-    listAgentPeers?(
-      request?: { page?: number; page_size?: number; not_in_chat?: string },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-  };
-  agentApiPeers?: {
-    listAgentPeers?(
-      request?: { page?: number; page_size?: number; not_in_chat?: string },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-  };
-  agentContacts?: {
-    listAgentContacts?(
-      request?: { page?: number; page_size?: number },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    addAgentContact?(
-      request: { handle: string; message?: string },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    removeAgentContact?(
-      request: { handle?: string; contact_id?: string },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    listAgentContactRequests?(
-      request?: { page?: number; page_size?: number; sent_status?: string },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    respondToAgentContactRequest?(
-      request: { action: ContactRequestAction; handle?: string; request_id?: string },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-  };
-  agentApiContacts?: {
-    listAgentContacts?(
-      request?: { page?: number; page_size?: number },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    addAgentContact?(
-      request: { handle: string; message?: string },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    removeAgentContact?(
-      request?: { handle?: string; contact_id?: string },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    listAgentContactRequests?(
-      request?: { page?: number; page_size?: number; sent_status?: string },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    respondToAgentContactRequest?(
-      request: { action: ContactRequestAction; handle?: string; request_id?: string },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-  };
-  agentMemories?: {
-    listAgentMemories?(
-      request?: ListMemoriesArgs,
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    createAgentMemory?(
-      request: { memory: StoreMemoryArgs },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    getAgentMemory?(
-      memoryId: string,
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    supersedeAgentMemory?(
-      memoryId: string,
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    archiveAgentMemory?(
-      memoryId: string,
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-  };
-  agentApiMemories?: {
-    listAgentMemories?(
-      request?: ListMemoriesArgs,
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    createAgentMemory?(
-      request: { memory: StoreMemoryArgs },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    getAgentMemory?(
-      memoryId: string,
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    supersedeAgentMemory?(
-      memoryId: string,
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    archiveAgentMemory?(
-      memoryId: string,
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-  };
-  chatMessages?: {
-    listMessages?(
-      chatId: string,
-      request?: { page?: number; page_size?: number; status?: string },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    createChatMessage(
-      chatId: string,
-      request: {
-        message: {
-          content: string;
-          message_type?: string;
-          metadata?: MetadataMap;
-          mentions?: MentionReference[];
-        };
-      },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    markMessageProcessing?(
-      chatId: string,
-      id: string,
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    markMessageProcessed?(
-      chatId: string,
-      id: string,
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    markMessageFailed?(
-      chatId: string,
-      id: string,
-      request: { error: string },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    getNextMessage?(
-      chatId: string,
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-  };
-  agentApiMessages?: {
-    listAgentMessages?(
-      chatId: string,
-      request?: { page?: number; page_size?: number; status?: string },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    createAgentChatMessage?(
-      chatId: string,
-      request: {
-        message: {
-          content: string;
-          message_type?: string;
-          metadata?: MetadataMap;
-          mentions?: MentionReference[];
-        };
-      },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    markAgentMessageProcessing?(
-      chatId: string,
-      id: string,
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    markAgentMessageProcessed?(
-      chatId: string,
-      id: string,
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    markAgentMessageFailed?(
-      chatId: string,
-      id: string,
-      request: { error: string },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    getAgentNextMessage?(
-      chatId: string,
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-  };
-  agentApiEvents?: {
-    createAgentChatEvent?(
-      chatId: string,
-      request: {
-        event: {
-          content: string;
-          message_type: string;
-          metadata?: MetadataMap;
-        };
-      },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-  };
-  myChatMessages?: {
-    createMyChatMessage(
-      chatId: string,
-      request: {
-        message: {
-          content: string;
-          message_type?: string;
-          metadata?: MetadataMap;
-          mentions?: MentionReference[];
-        };
-      },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-  };
-  chatRooms?: {
-    createChat(
-      request: { chat: { task_id?: string } },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    listChats?(
-      request?: { page?: number; page_size?: number },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-  };
-  agentApiChats?: {
-    createAgentChat?(
-      request: { chat: { task_id?: string } },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    listAgentChats?(
-      request?: { page?: number; page_size?: number },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-  };
-  chatParticipants?: {
-    listChatParticipants(
-      chatId: string,
-      request?: { participant_type?: "User" | "Agent" },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    addChatParticipant(
-      chatId: string,
-      request: { participant: { participant_id: string; role: string } },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    removeChatParticipant(
-      chatId: string,
-      participantId: string,
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-  };
-  chatContext?: {
-    getChatContext?(
-      chatId: string,
-      request?: { page?: number; page_size?: number },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-  };
-  agentApiParticipants?: {
-    listAgentChatParticipants?(
-      chatId: string,
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    addAgentChatParticipant?(
-      chatId: string,
-      request: unknown,
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-    removeAgentChatParticipant?(
-      chatId: string,
-      participantId: string,
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-  };
-  agentApiContext?: {
-    getAgentChatContext?(
-      chatId: string,
-      request?: { page?: number; page_size?: number },
-      options?: RestRequestOptions,
-    ): Promise<unknown>;
-  };
-}
+/**
+ * The namespaces of the generated REST client that this SDK consumes. Listing them here
+ * (rather than describing them by hand) makes an upstream rename a compile error.
+ */
+type ConsumedNamespace =
+  | "agentApiIdentity"
+  | "humanApiProfile"
+  | "agentApiPeers"
+  | "agentApiContacts"
+  | "agentApiMemories"
+  | "agentApiMessages"
+  | "agentApiEvents"
+  | "agentApiChats"
+  | "agentApiParticipants"
+  | "agentApiContext";
+
+/**
+ * Keeps the generated method's parameters — the part the SDK has to get right — and widens
+ * only its return type, so the adapter's own response normalizers stay in charge of
+ * interpreting payloads and test doubles can resolve plain promises.
+ */
+type FernMethod<Method> = Method extends (...args: infer Args) => unknown
+  ? (...args: Args) => Promise<unknown>
+  : never;
+
+type FernNamespace<Namespace> = {
+  [Method in keyof Namespace]?: FernMethod<Namespace[Method]>;
+};
+
+/**
+ * Structural view of `@band-ai/rest-client`'s client, derived from the generated type so
+ * the compiler — not a hand-written copy — decides what the SDK may call. Namespaces and
+ * methods are optional because the adapter probes for each endpoint and reports an
+ * unsupported feature when the installed client predates it.
+ */
+export type FernBandClientLike = {
+  [Namespace in ConsumedNamespace]?: FernNamespace<BandClient[Namespace]>;
+};

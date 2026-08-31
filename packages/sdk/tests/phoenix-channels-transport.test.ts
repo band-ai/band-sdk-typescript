@@ -655,3 +655,94 @@ describe("PhoenixChannelsTransport", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 });
+
+type FakeSocketInstance = InstanceType<typeof phoenixMock.FakeSocket>;
+
+describe("PhoenixChannelsTransport reconnect retention", () => {
+  beforeEach(() => {
+    phoenixMock.reset();
+  });
+
+  async function connectedTransport(): Promise<{
+    transport: PhoenixChannelsTransport;
+    socket: FakeSocketInstance;
+  }> {
+    // No agentId, so nothing is joined until the test joins a topic itself.
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+    });
+    await transport.connect();
+    const socket = phoenixMock.FakeSocket.instances[0];
+    if (!socket) {
+      throw new Error("expected a socket to have been constructed");
+    }
+    return { transport, socket };
+  }
+
+  const disconnectPaths = [
+    [
+      "a clean close",
+      (socket: FakeSocketInstance) =>
+        socket.emitClose({ code: 1006, reason: "" }),
+    ],
+    [
+      "a retryable upgrade failure",
+      (socket: FakeSocketInstance) =>
+        socket.emitError({
+          status: 429,
+          body: {
+            error: {
+              code: "too_many_requests",
+              message: "Too many websocket connection attempts.",
+              retry_after: 7,
+              request_id: null,
+            },
+          },
+        }),
+    ],
+    [
+      "a generic socket error",
+      (socket: FakeSocketInstance) =>
+        socket.emitError({ status: 403 }),
+    ],
+  ] as const;
+
+  it.each(disconnectPaths)(
+    "keeps the socket alive after %s while a topic is still joined",
+    async (_label, trigger) => {
+      const { transport, socket } = await connectedTransport();
+      await transport.join("chat_room:room-1", {});
+
+      trigger(socket);
+
+      expect(socket.disconnectCount).toBe(0);
+    },
+  );
+
+  it.each(disconnectPaths)(
+    "stops reconnecting after %s once the last topic has been left",
+    async (_label, trigger) => {
+      const { transport, socket } = await connectedTransport();
+      await transport.join("chat_room:room-1", {});
+      await transport.leave("chat_room:room-1");
+
+      trigger(socket);
+
+      expect(socket.disconnectCount).toBeGreaterThan(0);
+    },
+  );
+
+  it("ignores channels the socket still holds that the SDK no longer tracks", async () => {
+    const { transport, socket } = await connectedTransport();
+    await transport.join("chat_room:room-1", {});
+    await transport.leave("chat_room:room-1");
+    // The SDK deletes the topic from its own map on leave; the fake socket keeps its
+    // channel, which is exactly the state the old internals probe read as "still busy".
+    expect(socket.channels).toHaveLength(1);
+
+    socket.emitClose({ code: 1000, reason: "normal" });
+
+    expect(socket.disconnectCount).toBeGreaterThan(0);
+  });
+});

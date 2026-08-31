@@ -1,7 +1,6 @@
 import type { Logger } from "../core/logger";
 import { NoopLogger } from "../core/logger";
 import { FernRestAdapter } from "../client/rest/RestFacade";
-import type { FernBandClientLike } from "../client/rest/types";
 import type { RestRequestOptions } from "../client/rest/requestOptions";
 import {
   fetchPaginated,
@@ -62,6 +61,8 @@ interface PendingWaiter {
 
 export interface MessageMarkOptions {
   bestEffort?: boolean;
+  /** Cancels the underlying REST call, including any in-progress rate-limit backoff. */
+  abortSignal?: AbortSignal;
 }
 
 function roomTopics(roomId: string): { chat: string; participants: string } {
@@ -122,7 +123,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         new BandClient({
           apiKey: this.apiKey,
           baseUrl: this.restUrl,
-        }) as unknown as FernBandClientLike,
+        }),
       );
 
     this.rest = restApi;
@@ -375,7 +376,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         roomId,
         messageId,
       },
-      () => this.rest.markMessageProcessing(roomId, messageId),
+      (requestOptions) => this.rest.markMessageProcessing(roomId, messageId, requestOptions),
       options,
     );
   }
@@ -391,7 +392,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         roomId,
         messageId,
       },
-      () => this.rest.markMessageProcessed(roomId, messageId),
+      (requestOptions) => this.rest.markMessageProcessed(roomId, messageId, requestOptions),
       options,
     );
   }
@@ -410,7 +411,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         messageId,
         error: normalizedError,
       },
-      () => this.rest.markMessageFailed(roomId, messageId, normalizedError),
+      (requestOptions) => this.rest.markMessageFailed(roomId, messageId, normalizedError, requestOptions),
       options,
     );
   }
@@ -422,11 +423,11 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
       messageId: string;
       error?: string;
     },
-    mark: () => Promise<unknown>,
+    mark: (requestOptions?: RestRequestOptions) => Promise<unknown>,
     options?: MessageMarkOptions,
   ): Promise<void> {
     try {
-      await mark();
+      await mark(options?.abortSignal ? { abortSignal: options.abortSignal } : undefined);
     } catch (error: unknown) {
       if (!options?.bestEffort) {
         throw error;
