@@ -3,20 +3,20 @@
  * compile proofs, dispatch reuse, and legacy fallback behavior.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { SKIP_WITHOUT_NODE_SQLITE } from "./support/nodeSqlite";
 import { writeFileSync, mkdtempSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { Logger } from "../src/core";
-import { COMPILE_PROOF_OPTS, compileConsumer, linkBuiltSdk } from "./support/compileProof";
 
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+
+import { COMPILE_PROOF_OPTS, compileConsumer, linkBuiltSdk, type CompileResult } from "./support/compileProof";
+import { SKIP_WITHOUT_NODE_SQLITE } from "./support/nodeSqlite";
 import {
   handleAgentSessionEvent,
   createSqliteSessionRoomStore,
 } from "../src/linear";
 import { LinearBandExampleRestApi } from "../examples/linear-band/linear-band-rest-stub";
-
+import type { Logger } from "../src/core";
 
 // Module namespace types for the example entry modules. A top-level `typeof
 // import()` alias is the canonical way to type a dynamically-imported module;
@@ -57,7 +57,10 @@ describe("P-C3-1: new Band type names compile and old names fail", COMPILE_PROOF
   // Compile a consumer that resolves `@band-ai/sdk/linear` through the package's
   // real `exports` map under NodeNext — a temp node_modules link, no `paths`
   // alias to a declaration file. `.mts` exercises ESM resolution, `.cts` CJS.
-  function compile(filename: string, code: string): { status: number; output: string } {
+  //
+  // `linkBuiltSdk` runs per call rather than in a `beforeAll` because `tmpDir`
+  // is recreated for every test, so the link would not survive between them.
+  function compile(filename: string, code: string): CompileResult {
     linkBuiltSdk(tmpDir);
     return compileConsumer(tmpDir, filename, code);
   }

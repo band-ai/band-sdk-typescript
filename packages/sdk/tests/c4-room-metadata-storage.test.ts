@@ -9,15 +9,15 @@
  */
 
 import { mkdtemp, rm, readFile } from "node:fs/promises";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SKIP_WITHOUT_NODE_SQLITE } from "./support/nodeSqlite";
 
+import { COMPILE_PROOF_OPTS, compileConsumer, linkBuiltSdk, type CompileResult } from "./support/compileProof";
+import { SKIP_WITHOUT_NODE_SQLITE } from "./support/nodeSqlite";
 import { createSqliteSessionRoomStore } from "../src/linear";
-import { COMPILE_PROOF_OPTS, compileConsumer, linkBuiltSdk } from "./support/compileProof";
 
 const SDK_ROOT = resolve(__dirname, "..");
 // node:sqlite is a runtime-selected native module (Node 22+); the store loads it
@@ -365,10 +365,12 @@ describe("P-C4-2: public room-id field compile proof", COMPILE_PROOF_OPTS, () =>
   let tmpDirPath: string;
 
   afterEach(() => {
-    if (tmpDirPath) rm(tmpDirPath, { recursive: true, force: true });
+    if (tmpDirPath) rmSync(tmpDirPath, { recursive: true, force: true });
   });
 
-  function compile(filename: string, code: string): { status: number; output: string } {
+  // Each call gets a fresh temp project, so the SDK link is established per call
+  // rather than once in a `beforeAll`.
+  function compile(filename: string, code: string): CompileResult {
     const base = mkdtempSync(join(tmpdir(), "c4-compile-"));
     tmpDirPath = base;
     linkBuiltSdk(base);
@@ -390,7 +392,7 @@ describe("P-C4-2: public room-id field compile proof", COMPILE_PROOF_OPTS, () =>
 
   it("ESM consumer: new bandRoomId field compiles via NodeNext package exports", () => {
     const result = compile("consumer.mts", record("bandRoomId"));
-    expect(result.status).toBe(0);
+    expect(result.status, result.output).toBe(0);
   });
 
   it("ESM consumer: old thenvoiRoomId field fails to compile", () => {
@@ -401,7 +403,7 @@ describe("P-C4-2: public room-id field compile proof", COMPILE_PROOF_OPTS, () =>
 
   it("CJS consumer: new bandRoomId field compiles via NodeNext package exports", () => {
     const result = compile("consumer.cts", record("bandRoomId"));
-    expect(result.status).toBe(0);
+    expect(result.status, result.output).toBe(0);
   });
 
   it("CJS consumer: old thenvoiRoomId field fails to compile", () => {

@@ -97,8 +97,7 @@ describe("C6 stale-live-text guard", () => {
     expect(setup).toContain("real Band environment");
     expect(setup).not.toContain("real Thenvoi environment");
 
-    const readme = readFileSync(join(REPO_ROOT, "README.md"), "utf8");
-    expect(readme.split(/\r?\n/)[0]).toBe("# Band TypeScript SDK");
-    expect(readme).not.toContain("platform.thenvoi.com");
+    expect(readLines("README.md")[0]).toBe("# Band TypeScript SDK");
+    expect(readFileSync(join(REPO_ROOT, "README.md"), "utf8")).not.toContain("platform.thenvoi.com");
   });
 });

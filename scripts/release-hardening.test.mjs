@@ -371,7 +371,7 @@ test("release intent uses the PR base across a multi-commit release topology", a
 // POSIX-only, and the publish job they model only ever runs on ubuntu-latest.
 // Skipping is deliberate: a permanently red suite on Windows is what teaches
 // contributors to stop reading it.
-const POSIX_ONLY = process.platform === "win32"
+const SKIP_ON_WINDOWS = process.platform === "win32"
   ? { skip: "fake-npm stub and bare `npm` lookup require a POSIX shell" }
   : {};
 
@@ -411,7 +411,7 @@ async function withFakeNpm(viewMode, callback, { createTarball = true } = {}) {
   }
 }
 
-test("idempotent publisher skips an exact version already on npm", POSIX_ONLY, async () => {
+test("idempotent publisher skips an exact version already on npm", SKIP_ON_WINDOWS, async () => {
   await withFakeNpm("found", async (directory, env, log) => {
     const result = run(publishScript, directory, env);
     assert.equal(result.status, 0, result.stderr);
@@ -420,7 +420,7 @@ test("idempotent publisher skips an exact version already on npm", POSIX_ONLY, a
   });
 });
 
-test("idempotent publisher publishes only when npm confirms the version is absent", POSIX_ONLY, async () => {
+test("idempotent publisher publishes only when npm confirms the version is absent", SKIP_ON_WINDOWS, async () => {
   await withFakeNpm("missing", async (directory, env, log) => {
     const result = run(publishScript, directory, env);
     assert.equal(result.status, 0, result.stderr);
@@ -433,7 +433,7 @@ test("idempotent publisher publishes only when npm confirms the version is absen
   });
 });
 
-test("idempotent publisher fails closed when the npm lookup is inconclusive", POSIX_ONLY, async () => {
+test("idempotent publisher fails closed when the npm lookup is inconclusive", SKIP_ON_WINDOWS, async () => {
   await withFakeNpm("error", async (directory, env, log) => {
     const result = run(publishScript, directory, env);
     assert.notEqual(result.status, 0);
@@ -441,7 +441,7 @@ test("idempotent publisher fails closed when the npm lookup is inconclusive", PO
   });
 });
 
-test("idempotent publisher fails fast with a named path when the tarball is missing", POSIX_ONLY, async () => {
+test("idempotent publisher fails fast with a named path when the tarball is missing", SKIP_ON_WINDOWS, async () => {
   await withFakeNpm("missing", async (directory, env, log) => {
     const result = run(publishScript, directory, env);
     assert.notEqual(result.status, 0);

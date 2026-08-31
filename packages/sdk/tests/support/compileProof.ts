@@ -13,11 +13,20 @@ const DIST = join(SDK_ROOT, "dist");
 const TSC_ENTRY = createRequire(join(SDK_ROOT, "package.json")).resolve("typescript/lib/tsc.js");
 
 /**
- * Spread onto a `describe` that spawns a compiler or packs a tarball. Each such
- * assertion is a full `tsc` program build against the real `dist`, which costs
- * seconds even warm; the suite-wide timeout is sized for ordinary tests.
+ * Budget for one compiler run, tarball pack, or `dist` copy. Each costs seconds
+ * even warm, and far more when the whole suite is running in parallel; the
+ * suite-wide timeouts are sized for ordinary tests.
  */
-export const COMPILE_PROOF_OPTS = { timeout: 120_000 } as const;
+export const COMPILE_PROOF_TIMEOUT_MS = 120_000;
+
+/**
+ * Spread onto a `describe` that spawns a compiler or packs a tarball.
+ *
+ * This covers the *tests* only. Vitest governs hooks with a separate
+ * `hookTimeout`, so a `beforeAll` doing the same heavy work must be given
+ * `COMPILE_PROOF_TIMEOUT_MS` explicitly as its own second argument.
+ */
+export const COMPILE_PROOF_OPTS = { timeout: COMPILE_PROOF_TIMEOUT_MS } as const;
 
 export interface CompileResult {
   /** The compiler's exit code. Never synthesized — a compiler that did not run throws instead. */
@@ -56,8 +65,13 @@ export function compileConsumer(dir: string, filename: string, code: string): Co
   writeFileSync(join(dir, filename), code);
   writeFileSync(join(dir, "tsconfig.json"), JSON.stringify({
     compilerOptions: {
-      strict: true, module: "nodenext", moduleResolution: "nodenext", target: "es2022",
-      noEmit: true, skipLibCheck: true, typeRoots: [join(SDK_ROOT, "node_modules/@types")],
+      strict: true,
+      module: "nodenext",
+      moduleResolution: "nodenext",
+      target: "es2022",
+      noEmit: true,
+      skipLibCheck: true,
+      typeRoots: [join(SDK_ROOT, "node_modules/@types")],
     },
     include: [filename],
   }));

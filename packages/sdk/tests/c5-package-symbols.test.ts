@@ -11,7 +11,6 @@
  * carries no package mutation.
  */
 
-import { describe, it, expect, beforeAll } from "vitest";
 import {
   readFileSync, writeFileSync, mkdirSync, cpSync, rmSync, existsSync, mkdtempSync, symlinkSync, realpathSync, readdirSync,
 } from "node:fs";
@@ -19,7 +18,10 @@ import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
-import { COMPILE_PROOF_OPTS, compileConsumer, linkBuiltSdk } from "./support/compileProof";
+
+import { describe, it, expect, beforeAll } from "vitest";
+
+import { COMPILE_PROOF_OPTS, COMPILE_PROOF_TIMEOUT_MS, compileConsumer, linkBuiltSdk } from "./support/compileProof";
 
 const SDK_ROOT = resolve(__dirname, "..");
 const REPO_ROOT = resolve(SDK_ROOT, "../..");
@@ -67,6 +69,12 @@ beforeAll(async () => {
     };
   }
 });
+
+interface NpmResult {
+  status: number;
+  stdout: string;
+  stderr: string;
+}
 
 interface Row { old: string; new: string; sub: string; kind: "value" | "type"; c3?: boolean }
 interface MemberRow { ownerOld: string; ownerNew: string; memberOld: string; memberNew: string; subpath: string; provenance: "published-0x" | "source-c4"; sourceFile?: string }
@@ -148,7 +156,7 @@ describe("P-C5-2: consumer compile proof (values as value imports)", COMPILE_PRO
   beforeAll(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "c5-compile-"));
     linkBuiltSdk(tmpDir);
-  });
+  }, COMPILE_PROOF_TIMEOUT_MS);
 
   const compile = (filename: string, code: string) => compileConsumer(tmpDir, filename, code);
 
@@ -179,7 +187,7 @@ describe("P-C5-2: consumer compile proof (values as value imports)", COMPILE_PRO
 
   it("a consumer importing every mapped Band name (values as values) compiles", () => {
     const result = compile("new.mts", fixture(true));
-    expect(result.status).toBe(0);
+    expect(result.status, result.output).toBe(0);
   });
 
   it("a consumer importing the old Thenvoi names fails with a diagnostic for each", () => {
@@ -201,7 +209,7 @@ describe("P-C5-2: consumer compile proof (values as value imports)", COMPILE_PRO
     };
     const ok = compile("member-new.mts",
       `${importsFor()}\n` + MEMBERS.map((m, i) => `type _n${i} = Pick<${m.ownerNew}, "${m.memberNew}">;`).join("\n") + "\n");
-    expect(ok.status).toBe(0);
+    expect(ok.status, ok.output).toBe(0);
 
     const bad = compile("member-old.mts",
       `${importsFor()}\n` + MEMBERS.map((m, i) => `type _o${i} = Pick<${m.ownerNew}, "${m.memberOld}">;`).join("\n") + "\n");
@@ -230,7 +238,7 @@ describe("P-C5-4b: source-C4-only member provenance (C4-tip compile proof)", COM
   beforeAll(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "c5-c4tip-"));
     linkBuiltSdk(tmpDir);
-  });
+  }, COMPILE_PROOF_TIMEOUT_MS);
 
   const compile = (filename: string, code: string) => compileConsumer(tmpDir, filename, code);
 
@@ -315,14 +323,21 @@ describe("P-C5-1: real tarball packs, installs, and runs for ESM and CJS", COMPI
     return [...ext];
   }
 
-  // On Windows `npm` is `npm.cmd`, which Node refuses to spawn without a shell;
-  // spawning the bare name yields ENOENT and a null status. Every argument here
-  // is a repo-controlled literal or a temp path, so the shell is quoting-only.
-  function runNpm(args: string[]): { status: number; stdout: string; stderr: string } {
+  // On Windows `npm` is `npm.cmd`, and a shell is the only way to reach it.
+  // Both shell-free alternatives were measured and rejected on Node 22:
+  //   spawnSync("npm.cmd", …, { shell: false })                  → EINVAL
+  //     (Node blocks .cmd/.bat without a shell — CVE-2024-27980)
+  //   createRequire(process.execPath).resolve("npm/bin/npm-cli.js")
+  //                                                → ERR_PACKAGE_PATH_NOT_EXPORTED
+  // So quote every argument rather than only those containing spaces, which
+  // also covers `&` and `^`. `mkdtempSync` never returns a trailing separator,
+  // so the one case quoting cannot express — a path ending in `\` — is not
+  // reachable here. POSIX takes the args array untouched.
+  function runNpm(args: string[]): NpmResult {
     const useShell = process.platform === "win32";
     const result = spawnSync(
       "npm",
-      useShell ? args.map((a) => (/\s/.test(a) ? `"${a}"` : a)) : args,
+      useShell ? args.map((arg) => `"${arg}"`) : args,
       { cwd: SDK_ROOT, encoding: "utf8", shell: useShell },
     );
     if (result.error) throw result.error;
@@ -377,7 +392,7 @@ describe("P-C5-1: real tarball packs, installs, and runs for ESM and CJS", COMPI
       // junctions require.
       symlinkSync(target, linkPath, "junction");
     }
-  });
+  }, COMPILE_PROOF_TIMEOUT_MS);
 
   it("the packed tarball is named @band-ai/sdk and carries no legacy scope", () => {
     const packedPkg = JSON.parse(readFileSync(join(extracted, "package.json"), "utf-8")) as { name: string };
