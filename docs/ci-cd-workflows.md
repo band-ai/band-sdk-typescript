@@ -50,42 +50,12 @@ release-intent check independently compares the full PR or push range against
 GitHub's authoritative base SHA, preventing an earlier commit in a multi-commit
 topology from hiding a version transition.
 
-**Intended required status check:** `ci-status` — and only that one.
+**Required status check:** `ci-status` — and only that one.
 
-> **Not yet enforced.** Verified against the live API on 2026-08-31: ruleset
-> `14198025` (`main-branch-protection`) is `active`, scoped to `refs/heads/main`,
-> with **no bypass actors** — but its rules are only `deletion`,
-> `non_fast_forward`, and `pull_request`. There is **no `required_status_checks`
-> rule at all**.
->
-> Review *is* already enforced — that same `pull_request` rule sets
-> `required_approving_review_count: 1`, `dismiss_stale_reviews_on_push: true`,
-> and `required_review_thread_resolution: true`. The missing control is
-> orthogonal: a pull request and an approval are mandatory, a **passing** one is
-> not. An approver can merge a PR whose CI is red, which is exactly what happened
-> on #159 — it merged with both `test` and the aggregate `ci-status` concluding
-> failure, and because CI did not then run on `main`, the failure went unreported
-> until a manual review found it.
->
-> Re-verify the current state at any time:
->
-> ```sh
-> gh api repos/band-ai/band-sdk-typescript/rulesets/14198025 \
->   --jq '{rules: [.rules[].type], bypass: .bypass_actors}'
-> ```
->
-> An administrator closes the gap by adding **one rule** to that ruleset:
-> `required_status_checks`, with the single required context `ci-status`
-> (integration id `null`, i.e. GitHub Actions) and *"Require branches to be up to
-> date before merging"* enabled — see [Strict checks](#strict-checks). Nothing in
-> the workflow needs to change; the `ci-status` gate job already exists, already
-> covers every job, and is already correct.
-
-Repository rulesets are external state that no file in this repo can assert, so
-until the rule above is present this document must not be read as proof that CI
-is enforced by GitHub. What the repo *can* guarantee is that the check exists,
-covers every job, and now also runs on the trunk itself — see
-[CI — `ci.yml`](#ci--ciyml).
+Rulesets are external GitHub state that no file in this repository can assert, so
+this section describes the intended configuration rather than proving what is
+live. Check the real thing with
+`gh api repos/band-ai/band-sdk-typescript/rulesets`.
 
 `ci-status` is an aggregate job that always runs and fails unless every other CI
 job passed or was legitimately skipped. Requiring it instead of the individual
