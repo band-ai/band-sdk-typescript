@@ -3,7 +3,6 @@ import { z } from "zod";
 
 import { GoogleADKAdapter } from "../src/adapters";
 import { GoogleADKHistoryConverter } from "../src/converters";
-import type { AgentToolsProtocol } from "../src/core";
 import { FakeTools, makeMessage } from "./testUtils";
 
 class GoogleAdkTestTools extends FakeTools {

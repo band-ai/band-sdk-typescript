@@ -48,7 +48,7 @@ function mergeConsecutiveRoles(messages: GeminiMessages): GeminiMessages {
     return messages;
   }
 
-  const merged: GeminiMessages = [messages[0]];
+  const merged: GeminiMessages = messages.slice(0, 1);
   for (const message of messages.slice(1)) {
     const previous = merged[merged.length - 1];
     if (previous && previous.role === message.role) {

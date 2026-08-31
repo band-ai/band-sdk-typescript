@@ -39,7 +39,7 @@ describe("LangGraphAdapter", () => {
     langGraphMocks.tool.mockImplementation((_fn, fields) => ({ name: fields.name }));
 
     class FakeToolsWithSchemas extends FakeTools {
-      public getToolSchemas(): Array<Record<string, unknown>> {
+      public override getToolSchemas(): Array<Record<string, unknown>> {
         return [
           {
             type: "function",

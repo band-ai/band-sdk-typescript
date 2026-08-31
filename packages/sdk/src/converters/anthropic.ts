@@ -47,7 +47,7 @@ function flushPendingToolResults(
 function patchOrphanedToolUses(messages: AnthropicMessages): void {
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];
-    if (message.role !== "assistant" || !Array.isArray(message.content)) {
+    if (!message || message.role !== "assistant" || !Array.isArray(message.content)) {
       continue;
     }
 

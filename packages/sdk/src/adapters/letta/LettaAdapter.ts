@@ -77,13 +77,16 @@ export interface LettaRequestOptions {
   signal?: AbortSignal | null;
 }
 
+// Hand-declared on purpose: `clientFactory` is a public seam for injecting a double, and
+// the upstream `Letta` client returns `APIPromise`, which a plain-promise double cannot
+// satisfy.
 export interface LettaClientLike {
   agents: {
     create(
       params: LettaAgentCreateParams,
       options?: LettaRequestOptions,
     ): Promise<{ id: string }>;
-    delete?(agentId: string): Promise<void>;
+    delete?(agentId: string): Promise<unknown>;
     messages: {
       create(
         agentId: string,
@@ -314,7 +317,7 @@ export class LettaAdapter extends SimpleAdapter<
   // Lifecycle
   // -----------------------------------------------------------------------
 
-  public async onStarted(
+  public override async onStarted(
     agentName: string,
     agentDescription: string,
   ): Promise<void> {
@@ -419,7 +422,7 @@ export class LettaAdapter extends SimpleAdapter<
     }
   }
 
-  public async onCleanup(roomId: string): Promise<void> {
+  public override async onCleanup(roomId: string): Promise<void> {
     if (this.cleaningUpRooms.has(roomId)) {
       return;
     }
@@ -673,7 +676,7 @@ export class LettaAdapter extends SimpleAdapter<
     let startIndex = entryLines.length;
     for (let i = entryLines.length - 1; i >= 0; i--) {
       const entryLen =
-        entryLines[i].length + (i < entryLines.length - 1 ? separator.length : 0);
+        (entryLines[i] ?? "").length + (i < entryLines.length - 1 ? separator.length : 0);
       if (totalChars + entryLen > budget) break;
       totalChars += entryLen;
       startIndex = i;
@@ -815,7 +818,7 @@ export class LettaAdapter extends SimpleAdapter<
       }
       // Should not happen — each execution already catches internally —
       // but handle defensively to avoid dropping tool results.
-      const toolCallId = approvals[index].tool_call.tool_call_id;
+      const toolCallId = approvals[index]?.tool_call.tool_call_id ?? "";
       return {
         status: "error" as const,
         tool_call_id: toolCallId,
@@ -1012,7 +1015,7 @@ function selectCompleteExchanges(history: LettaMessages): LettaMessages {
   while (index < merged.length) {
     const current = merged[index];
 
-    if (current.role === "user" && current.content) {
+    if (current?.role === "user" && current.content) {
       const next = merged[index + 1];
       if (next && next.role === "assistant" && next.content) {
         complete.push(current);

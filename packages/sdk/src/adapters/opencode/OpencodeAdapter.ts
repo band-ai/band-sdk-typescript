@@ -294,7 +294,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     }
   }
 
-  public async onCleanup(roomId: string): Promise<void> {
+  public override async onCleanup(roomId: string): Promise<void> {
     const roomState = this.rooms.get(roomId);
     if (!roomState) {
       return;
@@ -1035,13 +1035,15 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     loweredContent: string,
     pending: PendingPermission,
   ): OpencodeApprovalReply | null {
-    const tokens = loweredContent.split(/\s+/).filter((value) => value.length > 0);
-    if (tokens.length === 0) {
+    const [rawCommand, rawRequestId] = loweredContent
+      .split(/\s+/)
+      .filter((value) => value.length > 0);
+    if (!rawCommand) {
       return null;
     }
 
-    const command = tokens[0].replace(/^\//, "");
-    const requestId = tokens[1] ?? pending.requestId;
+    const command = rawCommand.replace(/^\//, "");
+    const requestId = rawRequestId ?? pending.requestId;
     if (requestId !== pending.requestId) {
       return null;
     }

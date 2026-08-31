@@ -1,3 +1,4 @@
+import type { Message } from "@anthropic-ai/sdk/resources/messages";
 import { describe, expect, it } from "vitest";
 
 import type { HistoryProvider } from "../src/runtime";
@@ -48,12 +49,14 @@ const history = {
 describe("AnthropicAdapter", () => {
   it("uses official SDK-style client factory and completes tool loop", async () => {
     const requests: Array<Record<string, unknown>> = [];
-    const responses = [
+    // Typed against the upstream response so a shape change upstream fails this test.
+    const responses: Array<Pick<Message, "content">> = [
       {
         content: [
           {
             type: "tool_use",
             id: "toolu_1",
+            caller: { type: "direct" },
             name: "band_lookup_peers",
             input: { page: 1 },
           },
@@ -63,6 +66,7 @@ describe("AnthropicAdapter", () => {
         content: [
           {
             type: "text",
+            citations: null,
             text: "Anthropic final response",
           },
         ],

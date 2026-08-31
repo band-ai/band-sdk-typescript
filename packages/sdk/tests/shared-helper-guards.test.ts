@@ -46,10 +46,13 @@ describe("errors thrown from src/ come from the typed hierarchy", () => {
     expect(filesMatching(/throw new Error\(/)).toEqual([]);
   });
 
-  it("the one known exception is still the file another change owns", () => {
+  // The lint rule bans `new Error` inside a throw, which includes the ternary re-wrap
+  // form. One file is excluded because another in-flight ticket owns it; if that file
+  // stops throwing a bare Error, this fails so the exclusion cannot outlive its reason.
+  it("the one lint exclusion is still earning its place", () => {
     const source = readFileSync(resolve(SRC, FILE_OWNED_BY_ANOTHER_CHANGE), "utf-8");
     expect(
-      source.includes("throw new Error("),
+      /throw[^;]*new Error\(/.test(source),
       "the exclusion is stale -- drop it and the lint-config exclusion with it",
     ).toBe(true);
   });

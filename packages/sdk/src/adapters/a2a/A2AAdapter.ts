@@ -35,6 +35,7 @@ interface A2AMessagePart {
   root?: A2AMessagePart;
 }
 
+// Mirrors `@a2a-js/sdk`'s `Message`; that package publishes no usable types.
 interface A2AMessageLike {
   kind?: string;
   role?: string;
@@ -44,15 +45,18 @@ interface A2AMessageLike {
   messageId?: string;
 }
 
+// Mirrors `@a2a-js/sdk`'s `TaskStatus`; that package publishes no usable types.
 interface A2AStatusLike {
   state?: string;
   message?: A2AMessageLike;
 }
 
+// Mirrors `@a2a-js/sdk`'s `Artifact`; that package publishes no usable types.
 interface A2AArtifactLike {
   parts?: A2AMessagePart[];
 }
 
+// Mirrors `@a2a-js/sdk`'s `Task`; that package publishes no usable types.
 interface A2ATaskLike {
   kind?: string;
   id: string;
@@ -62,6 +66,7 @@ interface A2ATaskLike {
   history?: A2AMessageLike[];
 }
 
+// Mirrors `@a2a-js/sdk`'s `TaskStatusUpdateEvent`; it publishes no usable types.
 interface A2AStatusUpdateEventLike {
   kind: "status-update";
   taskId: string;
@@ -69,6 +74,7 @@ interface A2AStatusUpdateEventLike {
   status: A2AStatusLike;
 }
 
+// Mirrors `@a2a-js/sdk`'s `TaskArtifactUpdateEvent`; it publishes no usable types.
 interface A2AArtifactUpdateEventLike {
   kind: "artifact-update";
   taskId: string;
@@ -89,6 +95,7 @@ interface A2AMessageSendParams {
   };
 }
 
+// Mirrors `@a2a-js/sdk`'s `A2AClient`; that package publishes no usable types.
 export interface A2AClientLike {
   sendMessage(params: A2AMessageSendParams): Promise<unknown>;
   sendMessageStream(params: A2AMessageSendParams): AsyncIterable<unknown>;
@@ -133,7 +140,7 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
     this.logger = options.logger ?? new NoopLogger();
   }
 
-  public async onStarted(agentName: string, agentDescription: string): Promise<void> {
+  public override async onStarted(agentName: string, agentDescription: string): Promise<void> {
     await super.onStarted(agentName, agentDescription);
     this.client = await this.createClient();
   }
@@ -201,7 +208,7 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
     }
   }
 
-  public async onCleanup(roomId: string): Promise<void> {
+  public override async onCleanup(roomId: string): Promise<void> {
     this.contexts.delete(roomId);
     this.tasks.delete(roomId);
 

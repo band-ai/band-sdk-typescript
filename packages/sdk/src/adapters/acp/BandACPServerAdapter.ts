@@ -155,7 +155,7 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
     }
   }
 
-  public async onStarted(
+  public override async onStarted(
     agentName: string,
     agentDescription: string,
   ): Promise<void> {
@@ -298,7 +298,7 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
     }
   }
 
-  public async onCleanup(roomId: string): Promise<void> {
+  public override async onCleanup(roomId: string): Promise<void> {
     const sessionId = this.roomToSession.get(roomId)
     if (sessionId) {
       this.roomToSession.delete(roomId)

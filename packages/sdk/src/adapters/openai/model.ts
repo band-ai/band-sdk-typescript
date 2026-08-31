@@ -1,3 +1,5 @@
+import type { ChatCompletion } from "openai/resources/chat/completions";
+
 import type {
   ToolCall,
   ToolCallingModel,
@@ -13,15 +15,10 @@ import {
   normalizeConversationRole,
 } from "../tool-calling/valueUtils";
 
-interface OpenAIChatCompletionResponseLike {
-  choices?: Array<{
-    message?: {
-      content?: unknown;
-      tool_calls?: unknown;
-    };
-  }>;
-}
+type OpenAIChatCompletionResponseLike = Pick<ChatCompletion, "choices">;
 
+// Hand-declared on purpose: `clientFactory` is a public seam for injecting a double, and
+// the upstream `OpenAI` client's overloaded `create` cannot be implemented by one.
 interface OpenAIClientLike {
   chat: {
     completions: {
@@ -136,9 +133,9 @@ function toBaseOpenAIMessage(
 function parseOpenAIResponse(
   response: OpenAIChatCompletionResponseLike,
 ): ToolCallingResponse {
-  const message = response.choices?.[0]?.message ?? {};
-  const toolCalls = parseToolCalls(message.tool_calls);
-  const text = parseText(message.content);
+  const message = response.choices[0]?.message;
+  const toolCalls = parseToolCalls(message?.tool_calls);
+  const text = parseText(message?.content);
 
   return {
     text: text || undefined,

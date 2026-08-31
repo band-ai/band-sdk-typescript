@@ -1,3 +1,5 @@
+import type { GenerateContentResponse } from "@google/genai";
+
 import type {
   ToolCall,
   ToolCallingModel,
@@ -37,15 +39,10 @@ function mergeConsecutiveGeminiContents(
   return merged;
 }
 
-interface GeminiGenerateResponseLike {
-  text?: string;
-  functionCalls?: Array<{
-    id?: string;
-    name?: string;
-    args?: Record<string, unknown>;
-  }>;
-}
+type GeminiGenerateResponseLike = Pick<GenerateContentResponse, "text" | "functionCalls">;
 
+// Hand-declared on purpose: `clientFactory` is a public seam for injecting a double, and
+// the upstream `GoogleGenAI` client carries far more surface than a double can implement.
 interface GeminiClientLike {
   models: {
     generateContent(params: Record<string, unknown>): Promise<GeminiGenerateResponseLike>;

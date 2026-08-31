@@ -1,3 +1,4 @@
+import type { GenerateContentResponse } from "@google/genai";
 import { describe, expect, it } from "vitest";
 
 import type { HistoryProvider } from "../src/runtime";
@@ -52,8 +53,10 @@ const history = {
 describe("GeminiAdapter", () => {
   it("uses official SDK-style generateContent flow with function call loop", async () => {
     const requests: Array<Record<string, unknown>> = [];
-    const responses = [
+    // Typed against the upstream response so a shape change upstream fails this test.
+    const responses: Array<Pick<GenerateContentResponse, "text" | "functionCalls">> = [
       {
+        text: undefined,
         functionCalls: [
           {
             id: "gcall_1",
@@ -64,6 +67,7 @@ describe("GeminiAdapter", () => {
       },
       {
         text: "Gemini final response",
+        functionCalls: undefined,
       },
     ];
 

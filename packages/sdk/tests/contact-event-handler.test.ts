@@ -191,9 +191,9 @@ describe("ContactEventHandler", () => {
       expect(rest.createChat).toHaveBeenCalledWith("task-1");
       expect(rest.createChatEvent).toHaveBeenCalled();
       expect(hubEvents).toHaveLength(1);
-      expect(hubEvents[0].roomId).toBe("hub-room-1");
+      expect(hubEvents[0]?.roomId).toBe("hub-room-1");
       expect(hubInits).toHaveLength(1);
-      expect(hubInits[0].prompt).toBe(HUB_ROOM_SYSTEM_PROMPT);
+      expect(hubInits[0]?.prompt).toBe(HUB_ROOM_SYSTEM_PROMPT);
     });
 
     it("reuses existing hub room on subsequent events", async () => {
@@ -453,8 +453,8 @@ describe("ContactEventHandler", () => {
       await handler.handle(makeContactRemoved());
 
       expect(onBroadcast).toHaveBeenCalledTimes(2);
-      expect(onBroadcast.mock.calls[0][0]).toContain("is now a contact");
-      expect(onBroadcast.mock.calls[1][0]).toContain("was removed");
+      expect(onBroadcast.mock.calls[0]?.[0]).toContain("is now a contact");
+      expect(onBroadcast.mock.calls[1]?.[0]).toContain("was removed");
     });
 
     it("does not broadcast contact_request events", async () => {

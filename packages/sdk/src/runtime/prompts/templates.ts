@@ -2,7 +2,7 @@ import type { AgentToolsCapabilities } from "../../contracts/protocols";
 import { BASE_INSTRUCTIONS } from "./base";
 import { MEMORY_SECTION } from "./memory";
 
-export const TEMPLATES: Record<string, string> = {
+export const TEMPLATES: Record<string, string> & { default: string } = {
   default:
     `You are {agent_name}, {agent_description}.\n\n{custom_section}\n` + BASE_INSTRUCTIONS,
 };

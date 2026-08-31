@@ -1,6 +1,5 @@
 type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
-type JsonObject = { [key: string]: JsonValue };
 export type RequestId = number | string;
 
 export type CodexApprovalPolicy =
@@ -39,29 +38,6 @@ export interface InitializeParams {
 
 export interface ThreadRef {
   id: string;
-}
-
-interface _ThreadStartParams {
-  model?: string | null;
-  cwd?: string | null;
-  approvalPolicy?: CodexApprovalPolicy | null;
-  sandbox?: CodexSandboxMode | null;
-  config?: JsonObject | null;
-  developerInstructions?: string | null;
-  dynamicTools?: DynamicToolSpec[] | null;
-  experimentalRawEvents: boolean;
-  persistExtendedHistory: boolean;
-}
-
-interface _ThreadResumeParams {
-  threadId: string;
-  model?: string | null;
-  cwd?: string | null;
-  approvalPolicy?: CodexApprovalPolicy | null;
-  sandbox?: CodexSandboxMode | null;
-  config?: JsonObject | null;
-  developerInstructions?: string | null;
-  persistExtendedHistory: boolean;
 }
 
 interface TextUserInput {
@@ -145,14 +121,6 @@ export interface DynamicToolCallOutputContentItem {
 export interface DynamicToolCallResponse {
   contentItems: DynamicToolCallOutputContentItem[];
   success: boolean;
-}
-
-interface _CommandExecutionApprovalResponse {
-  decision: "accept" | "acceptForSession" | "decline" | "cancel";
-}
-
-interface _FileChangeApprovalResponse {
-  decision: "accept" | "acceptForSession" | "decline" | "cancel";
 }
 
 export interface AgentMessageItem {

@@ -57,17 +57,16 @@ export class BandMcpStdioServer {
     const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
     const { z } = await import("zod");
 
-    const mcpServer = new McpServer({
+    this.mcpServer = new McpServer({
       name: this.options.name ?? MCP_SERVER_NAME,
       version: "1.0.0",
     });
 
-    registerTools(mcpServer, z, this.registrations);
+    registerTools(this.mcpServer, z, this.registrations);
 
     const transport = new StdioServerTransport(this.options.stdin, this.options.stdout);
-    await mcpServer.connect(transport);
+    await this.mcpServer.connect(transport);
 
-    this.mcpServer = mcpServer;
     this.transport = transport;
   }
 

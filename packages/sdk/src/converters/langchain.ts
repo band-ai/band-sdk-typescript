@@ -51,8 +51,10 @@ export class LangChainHistoryConverter implements HistoryConverter<LangChainMess
         const matchingCallIndex = pendingToolCalls.findIndex(
           (toolCall) => toolCall.toolCallId === parsed.toolCallId || toolCall.name === parsed.name,
         );
-        if (matchingCallIndex >= 0) {
-          const matchingCall = pendingToolCalls.splice(matchingCallIndex, 1)[0];
+        const matchingCall = matchingCallIndex >= 0
+          ? pendingToolCalls.splice(matchingCallIndex, 1)[0]
+          : undefined;
+        if (matchingCall) {
           messages.push({
             type: "ai",
             content: "",

@@ -14,6 +14,8 @@ import {
   type ParlantMessages,
 } from "./types";
 
+// Hand-declared on purpose: `clientFactory` is a public seam for injecting a double, and
+// the upstream `ParlantClient` carries far more surface than a double can implement.
 export interface ParlantClientLike {
   customers: {
     create(
@@ -62,7 +64,7 @@ export interface ParlantClientLike {
         waitForData?: number;
       },
       requestOptions?: { headers?: Record<string, string> },
-    ): Promise<Array<Record<string, unknown>>>;
+    ): Promise<unknown[]>;
   };
 }
 
@@ -142,7 +144,7 @@ export class ParlantAdapter
     });
   }
 
-  public async onStarted(
+  public override async onStarted(
     agentName: string,
     agentDescription: string,
   ): Promise<void> {
@@ -247,7 +249,7 @@ export class ParlantAdapter
     }
   }
 
-  public async onCleanup(roomId: string): Promise<void> {
+  public override async onCleanup(roomId: string): Promise<void> {
     const pendingSession = this.roomSessionInitPromises.get(roomId);
     const pendingBootstrap = this.roomBootstrapInitPromises.get(roomId);
 
@@ -480,11 +482,14 @@ export class ParlantAdapter
         continue;
       }
 
-      const ordered = [...events].sort((left, right) => {
-        const leftOffset = asNumber(left.offset) ?? Number.MAX_SAFE_INTEGER;
-        const rightOffset = asNumber(right.offset) ?? Number.MAX_SAFE_INTEGER;
-        return leftOffset - rightOffset;
-      });
+      const ordered = events
+        .map((event) => asOptionalRecord(event))
+        .filter((event) => event !== undefined)
+        .sort((left, right) => {
+          const leftOffset = asNumber(left.offset) ?? Number.MAX_SAFE_INTEGER;
+          const rightOffset = asNumber(right.offset) ?? Number.MAX_SAFE_INTEGER;
+          return leftOffset - rightOffset;
+        });
 
       for (const event of ordered) {
         const offset = asNumber(event.offset);
@@ -554,7 +559,7 @@ function selectCompleteExchanges(history: ParlantMessages): ParlantMessages {
   while (index < history.length) {
     const current = history[index];
 
-    if (current.role === "user" && current.content) {
+    if (current?.role === "user" && current.content) {
       const next = history[index + 1];
       if (next && next.role === "assistant" && next.content) {
         complete.push(current);

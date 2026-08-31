@@ -181,7 +181,7 @@ ws_url: "wss://example.com"
     for (const [legacy, band] of [
       ["THENVOI_AGENT_ID", "BAND_AGENT_ID"], ["THENVOI_API_KEY", "BAND_API_KEY"],
       ["THENVOI_WS_URL", "BAND_WS_URL"], ["THENVOI_REST_URL", "BAND_REST_URL"],
-    ]) {
+    ] as const) {
       expect(warn).toHaveBeenCalledWith(expect.stringContaining(legacy));
       expect(warn).toHaveBeenCalledWith(expect.stringContaining(band));
     }

@@ -64,9 +64,9 @@ describe("contracts/protocols", () => {
         const content = readFileSync(fullPath, "utf8");
         const lines = content.split("\n");
         for (let i = 0; i < lines.length; i++) {
-          if (lines[i].includes("core/protocols")) {
+          if (lines[i]?.includes("core/protocols")) {
             const relativePath = fullPath.replace(srcDir + "/", "");
-            violations.push(`${relativePath}:${i + 1}: ${lines[i].trim()}`);
+            violations.push(`${relativePath}:${i + 1}: ${lines[i]?.trim()}`);
           }
         }
       }

@@ -187,7 +187,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     this.logger = options?.logger ?? new NoopLogger();
   }
 
-  public async onStarted(agentName: string, agentDescription: string): Promise<void> {
+  public override async onStarted(agentName: string, agentDescription: string): Promise<void> {
     await super.onStarted(agentName, agentDescription);
     this.systemPrompt = renderSystemPrompt({
       agentName,
@@ -331,7 +331,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     }
   }
 
-  public async onCleanup(roomId: string): Promise<void> {
+  public override async onCleanup(roomId: string): Promise<void> {
     this.sessionIds.delete(roomId);
     this.sessionInitLocks.delete(roomId);
     this.roomTools.delete(roomId);

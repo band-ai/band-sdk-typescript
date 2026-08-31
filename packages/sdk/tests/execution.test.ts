@@ -215,7 +215,7 @@ describe("Execution crash recovery", () => {
     const { execution, processed } = createExecution({
       getStaleProcessingMessages: async () => staleMessages,
       getNextMessage: vi.fn<() => Promise<BacklogMessage | null>>()
-        .mockResolvedValueOnce(nextMessages[0])
+        .mockResolvedValueOnce(nextMessages[0] ?? null)
         .mockResolvedValueOnce(null),
     });
 

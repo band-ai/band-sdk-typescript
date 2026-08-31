@@ -102,7 +102,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     });
   }
 
-  public async onStarted(agentName: string, agentDescription: string): Promise<void> {
+  public override async onStarted(agentName: string, agentDescription: string): Promise<void> {
     await super.onStarted(agentName, agentDescription);
     this.renderedSystemPrompt =
       this.systemPromptOverride ??
@@ -189,7 +189,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     }
   }
 
-  public async onCleanup(roomId: string): Promise<void> {
+  public override async onCleanup(roomId: string): Promise<void> {
     this.bootstrappedRooms.delete(roomId);
   }
 

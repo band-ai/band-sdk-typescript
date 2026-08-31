@@ -28,7 +28,7 @@ interface FakeProc extends EventEmitter {
 function makeProc(): FakeProc {
   const proc = new EventEmitter() as FakeProc;
   proc.stdin = {
-    write: vi.fn((line: string, callback?: (error?: Error | null) => void) => {
+    write: vi.fn((_line: string, callback?: (error?: Error | null) => void) => {
       callback?.(null);
       return true;
     }),

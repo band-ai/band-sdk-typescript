@@ -1,3 +1,4 @@
+import type { ChatCompletion } from "openai/resources/chat/completions";
 import { describe, expect, it } from "vitest";
 
 import type { HistoryProvider } from "../src/runtime";
@@ -49,11 +50,18 @@ const history = {
 describe("OpenAIAdapter", () => {
   it("uses official SDK-style client factory and completes tool loop", async () => {
     const requests: Array<Record<string, unknown>> = [];
-    const responses = [
+    // Typed against the upstream completion so a shape change upstream fails this test.
+    const responses: Array<Pick<ChatCompletion, "choices">> = [
       {
         choices: [
           {
+            finish_reason: "tool_calls",
+            index: 0,
+            logprobs: null,
             message: {
+              role: "assistant",
+              content: null,
+              refusal: null,
               tool_calls: [
                 {
                   id: "call_1",
@@ -71,8 +79,13 @@ describe("OpenAIAdapter", () => {
       {
         choices: [
           {
+            finish_reason: "stop",
+            index: 0,
+            logprobs: null,
             message: {
+              role: "assistant",
               content: "OpenAI final response",
+              refusal: null,
             },
           },
         ],
@@ -154,11 +167,17 @@ describe("OpenAIAdapter", () => {
 
   it("returns structured parse errors for malformed tool arguments instead of executing tools", async () => {
     const requests: Array<Record<string, unknown>> = [];
-    const responses = [
+    const responses: Array<Pick<ChatCompletion, "choices">> = [
       {
         choices: [
           {
+            finish_reason: "tool_calls",
+            index: 0,
+            logprobs: null,
             message: {
+              role: "assistant",
+              content: null,
+              refusal: null,
               tool_calls: [
                 {
                   id: "call_bad",
@@ -176,8 +195,13 @@ describe("OpenAIAdapter", () => {
       {
         choices: [
           {
+            finish_reason: "stop",
+            index: 0,
+            logprobs: null,
             message: {
+              role: "assistant",
               content: "Handled malformed args",
+              refusal: null,
             },
           },
         ],

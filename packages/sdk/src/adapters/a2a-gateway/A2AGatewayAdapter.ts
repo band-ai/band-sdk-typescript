@@ -82,7 +82,7 @@ export class A2AGatewayAdapter
     }
   }
 
-  public async onStarted(
+  public override async onStarted(
     agentName: string,
     agentDescription: string,
   ): Promise<void> {
@@ -132,7 +132,7 @@ export class A2AGatewayAdapter
     }
   }
 
-  public async onCleanup(roomId: string): Promise<void> {
+  public override async onCleanup(roomId: string): Promise<void> {
     const roomPendings = this.pendingByRoom.get(roomId);
     if (roomPendings && roomPendings.size > 0) {
       for (const pending of roomPendings.values()) {

@@ -56,7 +56,7 @@ describe("MCP registrations", () => {
 
       const result = await sendMessage!.execute({ content: "hello" });
       expect(tools.executeToolCall).toHaveBeenCalledWith("band_send_message", { content: "hello" });
-      expect(result.content[0].text).toContain("ok");
+      expect(result.content[0]?.text).toContain("ok");
       expect(result.isError).toBeUndefined();
     });
 
@@ -69,7 +69,7 @@ describe("MCP registrations", () => {
 
       const result = await sendMessage.execute({ content: "hello" });
       expect(result.isError).toBe(true);
-      expect(result.content[0].text).toBe("boom");
+      expect(result.content[0]?.text).toBe("boom");
     });
   });
 
@@ -105,7 +105,7 @@ describe("MCP registrations", () => {
 
       const result = await sendMessage.execute({ content: "hello" });
       expect(result.isError).toBe(true);
-      expect(result.content[0].text).toContain("room_id");
+      expect(result.content[0]?.text).toContain("room_id");
     });
 
     it("returns error when room tools not found", async () => {
@@ -115,7 +115,7 @@ describe("MCP registrations", () => {
 
       const result = await sendMessage.execute({ room_id: "unknown", content: "hello" });
       expect(result.isError).toBe(true);
-      expect(result.content[0].text).toContain("unknown");
+      expect(result.content[0]?.text).toContain("unknown");
     });
   });
 
@@ -166,7 +166,7 @@ describe("MCP registrations", () => {
       const custom = registrations.find((r) => r.name === "my_custom_tool")!;
 
       const result = await custom.execute({ query: "hello" });
-      expect(result.content[0].text).toBe("echo: hello");
+      expect(result.content[0]?.text).toBe("echo: hello");
       expect(result.isError).toBeUndefined();
     });
 
@@ -185,19 +185,19 @@ describe("MCP registrations", () => {
   describe("result helpers", () => {
     it("successResult serializes objects as JSON", () => {
       const result = successResult({ foo: "bar" });
-      expect(result.content[0].text).toBe('{"foo":"bar"}');
+      expect(result.content[0]?.text).toBe('{"foo":"bar"}');
       expect(result.isError).toBeUndefined();
     });
 
     it("successResult passes strings through", () => {
       const result = successResult("hello");
-      expect(result.content[0].text).toBe("hello");
+      expect(result.content[0]?.text).toBe("hello");
     });
 
     it("errorResult sets isError flag", () => {
       const result = errorResult("something went wrong");
       expect(result.isError).toBe(true);
-      expect(result.content[0].text).toBe("something went wrong");
+      expect(result.content[0]?.text).toBe("something went wrong");
     });
   });
 });

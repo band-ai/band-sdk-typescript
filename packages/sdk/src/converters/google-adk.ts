@@ -42,7 +42,7 @@ function appendToolResults(
 function patchOrphanedToolCalls(messages: GoogleADKMessages): void {
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];
-    if (message.role !== "model" || !Array.isArray(message.content)) {
+    if (!message || message.role !== "model" || !Array.isArray(message.content)) {
       continue;
     }
 

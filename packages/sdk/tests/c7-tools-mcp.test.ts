@@ -277,13 +277,13 @@ describe("P-TOOL-04: every canonical name reaches a handler; every legacy name i
     for (const [band, method] of Object.entries(ROUTING)) {
       const tools = makeTools();
       const spy = vi.spyOn(tools, method);
-      const res = await tools.executeToolCall(band, VALID_ARGS[band]);
+      const res = await tools.executeToolCall(band, VALID_ARGS[band] ?? {});
       expect(isNotFound(res), `canonical ${band} must reach a handler`).toBe(false);
       // Correct routing: exactly the mapped method runs (a mis-wired handler reds).
       expect(spy, `${band} must route to ${method}()`).toHaveBeenCalledTimes(1);
 
       const legacy = band.replace(/^band_/, "thenvoi_");
-      const res2 = await tools.executeToolCall(legacy, VALID_ARGS[band]);
+      const res2 = await tools.executeToolCall(legacy, VALID_ARGS[band] ?? {});
       expect(isNotFound(res2), `legacy ${legacy} must be ToolNotFound`).toBe(true);
       if (isToolExecutorError(res2)) expect(res2.toolName).toBe(legacy);
     }

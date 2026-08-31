@@ -74,13 +74,10 @@ export function createPendingPrompt(sessionId: string): PendingACPPrompt {
 export function choosePermissionOption(
   options: PermissionOption[],
 ): PermissionOption | null {
-  if (options.length === 0) {
-    return null
-  }
-
   return options.find((option) => option.kind === "allow_once")
     ?? options.find((option) => option.kind === "allow_always")
     ?? options[0]
+    ?? null
 }
 
 export function asJsonSafe(value: unknown): unknown {

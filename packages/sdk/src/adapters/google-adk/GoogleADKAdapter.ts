@@ -26,18 +26,21 @@ const DEFAULT_MAX_HISTORY_MESSAGES = 50;
 const DEFAULT_MAX_TRANSCRIPT_CHARS = 100_000;
 const MAX_TOOL_OUTPUT_PREVIEW = 200;
 
+// Mirrors `@google/adk`'s function-call part; it publishes no type declarations.
 interface GoogleAdkFunctionCallLike {
   id?: string;
   name?: string;
   args?: unknown;
 }
 
+// Mirrors `@google/adk`'s function-response part; it publishes no type declarations.
 interface GoogleAdkFunctionResponseLike {
   id?: string;
   name?: string;
   response?: unknown;
 }
 
+// Mirrors `@google/adk`'s runner; that package publishes no type declarations.
 interface GoogleAdkRunnerLike {
   sessionService: {
     createSession(params: {
@@ -56,6 +59,7 @@ interface GoogleAdkRunnerLike {
   }): AsyncIterable<unknown>;
 }
 
+// Mirrors `@google/adk`'s module entry points; it publishes no type declarations.
 interface GoogleAdkSdkLike {
   createAgent(params: {
     name: string;
@@ -209,7 +213,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
     });
   }
 
-  public async onStarted(agentName: string, agentDescription: string): Promise<void> {
+  public override async onStarted(agentName: string, agentDescription: string): Promise<void> {
     await super.onStarted(agentName, agentDescription);
     this.historyConverterInstance.setAgentName(agentName);
     this.systemPrompt =
@@ -298,7 +302,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
     this.roomHistory.set(context.roomId, trimRoomHistory(nextHistory, this.maxHistoryMessages));
   }
 
-  public async onCleanup(roomId: string): Promise<void> {
+  public override async onCleanup(roomId: string): Promise<void> {
     this.roomHistory.delete(roomId);
     this.roomSessions.delete(roomId);
   }

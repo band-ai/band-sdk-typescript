@@ -1,10 +1,12 @@
+import type { Message } from "@anthropic-ai/sdk/resources/messages";
+
 import type {
   ToolCall,
   ToolCallingModel,
   ToolCallingModelRequest,
   ToolCallingResponse,
 } from "../tool-calling";
-import { toDisplayText, toWireString } from "../shared/coercion";
+import { isRecord, toDisplayText, toWireString } from "../shared/coercion";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { loadOptionalPeer } from "../shared/optionalPeer";
 import {
@@ -13,10 +15,10 @@ import {
   normalizeConversationRole,
 } from "../tool-calling/valueUtils";
 
-interface AnthropicMessageResponseLike {
-  content?: unknown;
-}
+type AnthropicMessageResponseLike = Pick<Message, "content">;
 
+// Hand-declared on purpose: `clientFactory` is a public seam for injecting a double, and
+// the upstream `Anthropic` client's overloaded `create` cannot be implemented by one.
 interface AnthropicClientLike {
   messages: {
     create(params: Record<string, unknown>): Promise<AnthropicMessageResponseLike>;
@@ -133,40 +135,28 @@ function toAnthropicMessageWithSystemAsUser(
 function parseAnthropicResponse(
   response: AnthropicMessageResponseLike,
 ): ToolCallingResponse {
-  const blocks = Array.isArray(response.content) ? response.content : [];
   const textParts: string[] = [];
   const toolCalls: ToolCall[] = [];
 
+  // `clientFactory` is a public seam, so a caller-supplied double can hand back a shape
+  // the upstream type says is impossible. Iterating that directly would throw.
+  const blocks = Array.isArray(response.content) ? response.content : [];
+
   for (const block of blocks) {
-    if (!block || typeof block !== "object") {
+    if (block.type === "text") {
+      textParts.push(block.text);
       continue;
     }
 
-    const blockRecord = block as Record<string, unknown>;
-    const type = blockRecord.type;
-
-    if (type === "text" && typeof blockRecord.text === "string") {
-      textParts.push(blockRecord.text);
+    if (block.type !== "tool_use") {
       continue;
     }
 
-    if (type !== "tool_use") {
-      continue;
-    }
-
-    const id = typeof blockRecord.id === "string" ? blockRecord.id : null;
-    const name = typeof blockRecord.name === "string" ? blockRecord.name : null;
-    if (!id || !name) {
-      continue;
-    }
-
-    const input = blockRecord.input;
+    // Upstream types tool-call input as `unknown`, so it still needs narrowing.
     toolCalls.push({
-      id,
-      name,
-      input: input && typeof input === "object" && !Array.isArray(input)
-        ? (input as Record<string, unknown>)
-        : {},
+      id: block.id,
+      name: block.name,
+      input: isRecord(block.input) ? block.input : {},
     });
   }
 

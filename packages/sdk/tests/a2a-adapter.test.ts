@@ -201,8 +201,8 @@ describe("A2AAdapter", () => {
 
     expect(client.resubscribeCalls).toEqual([{ id: "task-9" }]);
     const request = client.sendMessageCalls[0];
-    expect(request.message?.contextId).toBe("ctx-9");
-    expect(request.message?.taskId).toBe("task-9");
+    expect(request?.message?.contextId).toBe("ctx-9");
+    expect(request?.message?.taskId).toBe("task-9");
 
     expect(tools.messages).toContain("Need the currency pair.");
     expect(tools.messages).toContain("1 USD = 0.92 EUR");
@@ -257,9 +257,9 @@ describe("A2AAdapter", () => {
     const first = client.sendMessageCalls[0];
     const second = client.sendMessageCalls[1];
 
-    expect(first.message?.contextId).toBeUndefined();
-    expect(second.message?.contextId).toBe("ctx-1");
-    expect(second.message?.taskId).toBeUndefined();
+    expect(first?.message?.contextId).toBeUndefined();
+    expect(second?.message?.contextId).toBe("ctx-1");
+    expect(second?.message?.taskId).toBeUndefined();
   });
 
   it("reports adapter errors to the room and rethrows", async () => {

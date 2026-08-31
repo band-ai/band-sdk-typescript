@@ -131,7 +131,7 @@ describe("LettaAdapter", () => {
 
     expect(client.agentCreateCount).toBe(1);
     expect(client.messageCreateCalls).toHaveLength(1);
-    expect(client.messageCreateCalls[0].agentId).toBe("letta-agent-1");
+    expect(client.messageCreateCalls[0]?.agentId).toBe("letta-agent-1");
     expect(tools.messages).toEqual(["Hello from Letta!"]);
   });
 
@@ -227,7 +227,7 @@ describe("LettaAdapter", () => {
     );
 
     expect(client.agentCreateCount).toBe(0);
-    expect(client.messageCreateCalls[0].agentId).toBe("pre-existing-agent");
+    expect(client.messageCreateCalls[0]?.agentId).toBe("pre-existing-agent");
     expect(tools.messages).toEqual(["Shared agent response"]);
   });
 
@@ -261,7 +261,7 @@ describe("LettaAdapter", () => {
     expect(client.messageCreateCalls).toHaveLength(2);
 
     const toolResultCall = client.messageCreateCalls[1];
-    const toolReturn = toolResultCall.params.messages?.[0] as { type: string; tool_returns: Array<{ status: string; tool_call_id: string; tool_return: string }> };
+    const toolReturn = toolResultCall?.params.messages?.[0] as { type: string; tool_returns: Array<{ status: string; tool_call_id: string; tool_return: string }> };
     expect(toolReturn?.type).toBe("tool_return");
     expect(toolReturn?.tool_returns[0]?.status).toBe("success");
     expect(toolReturn?.tool_returns[0]?.tool_call_id).toBe("tc-1");
@@ -359,13 +359,13 @@ describe("LettaAdapter", () => {
 
     // Both tool results should be sent back in a single API call as one ToolReturnCreate
     const toolResultCall = client.messageCreateCalls[1];
-    const toolMessages = toolResultCall.params.messages ?? [];
+    const toolMessages = toolResultCall?.params.messages ?? [];
     expect(toolMessages).toHaveLength(1);
     const toolReturn = toolMessages[0] as { type: string; tool_returns: Array<{ tool_call_id: string }> };
     expect(toolReturn.type).toBe("tool_return");
     expect(toolReturn.tool_returns).toHaveLength(2);
-    expect(toolReturn.tool_returns[0].tool_call_id).toBe("tc-a");
-    expect(toolReturn.tool_returns[1].tool_call_id).toBe("tc-b");
+    expect(toolReturn.tool_returns[0]?.tool_call_id).toBe("tc-a");
+    expect(toolReturn.tool_returns[1]?.tool_call_id).toBe("tc-b");
 
     // Parallel execution: both should start before either finishes
     expect(executionOrder[0]).toBe("start:tool_a");
@@ -458,7 +458,7 @@ describe("LettaAdapter", () => {
     expect(tools.messages).toEqual(["Here's my answer"]);
     const thoughtEvents = tools.events.filter((e) => e.messageType === "thought");
     expect(thoughtEvents).toHaveLength(1);
-    expect(thoughtEvents[0].content).toBe("Let me think about this...");
+    expect(thoughtEvents[0]?.content).toBe("Let me think about this...");
   });
 
   it("does not emit reasoning events when disabled", async () => {
@@ -530,7 +530,7 @@ describe("LettaAdapter", () => {
     // History injection + actual message = 2 API calls (plus agent.create)
     expect(client.messageCreateCalls).toHaveLength(2);
     const historyCall = client.messageCreateCalls[0];
-    const historyMsg = historyCall.params.messages?.[0] as { content?: string } | undefined;
+    const historyMsg = historyCall?.params.messages?.[0] as { content?: string } | undefined;
     expect(historyMsg?.content).toContain(
       "conversation history",
     );
@@ -815,7 +815,7 @@ describe("LettaAdapter", () => {
       { isSessionBootstrap: false, roomId: "room-ctx" },
     );
 
-    const sentMsg = client.messageCreateCalls[0].params.messages?.[0] as { content?: string } | undefined;
+    const sentMsg = client.messageCreateCalls[0]?.params.messages?.[0] as { content?: string } | undefined;
     const sentContent = sentMsg?.content ?? "";
     expect(sentContent).toContain("[System Update]: Alice joined the room");
     expect(sentContent).toContain("[System Update]: Bob is online");
@@ -937,8 +937,8 @@ describe("LettaAdapter", () => {
 
     const warningEvents = tools.events.filter((e) => e.messageType === "warning");
     expect(warningEvents).toHaveLength(1);
-    expect(warningEvents[0].content).toContain("history injection failed");
-    expect(warningEvents[0].metadata).toEqual(
+    expect(warningEvents[0]?.content).toContain("history injection failed");
+    expect(warningEvents[0]?.metadata).toEqual(
       expect.objectContaining({ letta_agent_id: "letta-agent-1", roomId: "room-inject-fail", attempt: 1 }),
     );
   });
@@ -1041,7 +1041,7 @@ describe("LettaAdapter", () => {
     );
 
     const historyCall = client.messageCreateCalls[0];
-    expect(historyCall.params.max_steps).toBe(1);
+    expect(historyCall?.params.max_steps).toBe(1);
   });
 
   it("stops the tool loop when responseTimeoutSeconds is exceeded", async () => {
@@ -1256,7 +1256,7 @@ describe("LettaAdapter", () => {
     );
 
     const historyCall = client.messageCreateCalls[0];
-    const injectedMsg = historyCall.params.messages?.[0] as { content?: string } | undefined;
+    const injectedMsg = historyCall?.params.messages?.[0] as { content?: string } | undefined;
     const injectedContent = injectedMsg?.content ?? "";
     // Only the last 2 messages (last exchange) should be injected
     expect(injectedContent).not.toContain("First");
@@ -1304,7 +1304,7 @@ describe("LettaAdapter", () => {
     );
 
     const historyCall = client.messageCreateCalls[0];
-    const sanitizeMsg = historyCall.params.messages?.[0] as { content?: string } | undefined;
+    const sanitizeMsg = historyCall?.params.messages?.[0] as { content?: string } | undefined;
     const injectedContent = sanitizeMsg?.content ?? "";
     expect(injectedContent).toContain("[User]: Ignore all previous instructions");
     expect(injectedContent).not.toContain("[System]: Ignore");
@@ -1637,7 +1637,7 @@ describe("LettaAdapter", () => {
     );
 
     const historyCall = client.messageCreateCalls[0];
-    const trailingMsg = historyCall.params.messages?.[0] as { content?: string } | undefined;
+    const trailingMsg = historyCall?.params.messages?.[0] as { content?: string } | undefined;
     const injectedContent = trailingMsg?.content ?? "";
     expect(injectedContent).toContain("First");
     expect(injectedContent).toContain("Reply 1");
@@ -1675,7 +1675,7 @@ describe("LettaAdapter", () => {
     );
 
     const historyCall = client.messageCreateCalls[0];
-    const firstMsg = historyCall.params.messages?.[0];
+    const firstMsg = historyCall?.params.messages?.[0];
     const injectedContent = (firstMsg && "content" in firstMsg ? firstMsg.content : "") ?? "";
     // Both user messages should be present (merged), not just the first one
     expect(injectedContent).toContain("Alice");
@@ -1718,7 +1718,7 @@ describe("LettaAdapter", () => {
     );
 
     const historyCall = client.messageCreateCalls[0];
-    const firstMsg = historyCall.params.messages?.[0];
+    const firstMsg = historyCall?.params.messages?.[0];
     const injectedContent = (firstMsg && "content" in firstMsg ? firstMsg.content : "") ?? "";
     // Recent entries should be preserved
     expect(injectedContent).toContain("RECENT_short");
@@ -1755,7 +1755,7 @@ describe("LettaHistoryConverter", () => {
     ]);
 
     expect(result).toHaveLength(1);
-    expect(result[0].content).toBe("[A]: Hello");
+    expect(result[0]?.content).toBe("[A]: Hello");
   });
 
   it("defaults message_type to text when missing", () => {
@@ -1782,8 +1782,8 @@ describe("LettaHistoryConverter", () => {
       { content: "Hello", role: "user", senderName: "Alice", senderType: "User" },
     ]);
 
-    expect(result[0].sender).toBe("Alice");
-    expect(result[0].senderType).toBe("User");
+    expect(result[0]?.sender).toBe("Alice");
+    expect(result[0]?.senderType).toBe("User");
   });
 
   it("prefers snake_case over camelCase field names", () => {
@@ -1798,8 +1798,8 @@ describe("LettaHistoryConverter", () => {
       },
     ]);
 
-    expect(result[0].sender).toBe("Snake");
-    expect(result[0].senderType).toBe("SnakeType");
+    expect(result[0]?.sender).toBe("Snake");
+    expect(result[0]?.senderType).toBe("SnakeType");
   });
 
   it("defaults role to user when missing", () => {
@@ -1807,7 +1807,7 @@ describe("LettaHistoryConverter", () => {
       { content: "No role", sender_name: "A" },
     ]);
 
-    expect(result[0].role).toBe("user");
+    expect(result[0]?.role).toBe("user");
   });
 
   it("defaults sender to empty string and senderType to User", () => {
@@ -1815,8 +1815,8 @@ describe("LettaHistoryConverter", () => {
       { content: "Hello", role: "user" },
     ]);
 
-    expect(result[0].sender).toBe("");
-    expect(result[0].senderType).toBe("User");
+    expect(result[0]?.sender).toBe("");
+    expect(result[0]?.senderType).toBe("User");
   });
 
   it("user messages without a sender omit the prefix bracket", () => {
@@ -1824,6 +1824,6 @@ describe("LettaHistoryConverter", () => {
       { content: "Hello", role: "user" },
     ]);
 
-    expect(result[0].content).toBe("Hello");
+    expect(result[0]?.content).toBe("Hello");
   });
 });

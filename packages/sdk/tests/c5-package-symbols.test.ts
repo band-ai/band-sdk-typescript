@@ -42,14 +42,17 @@ function dtsNamedExports(dtsText: string): string[] {
   const names = new Set<string>();
   const declRe = /export\s+(?:declare\s+)?(?:abstract\s+)?(?:class|function|const|let|var|interface|type|enum)\s+([A-Za-z0-9_$]+)/g;
   let m: RegExpExecArray | null;
-  while ((m = declRe.exec(dtsText))) names.add(m[1]);
+  while ((m = declRe.exec(dtsText))) {
+    const declared = m[1];
+    if (declared) names.add(declared);
+  }
   const braceRe = /export\s*(?:type\s*)?\{([^}]*)\}/g;
   while ((m = braceRe.exec(dtsText))) {
-    for (const part of m[1].split(",")) {
+    for (const part of (m[1] ?? "").split(",")) {
       const seg = part.trim();
       if (!seg) continue;
       const asMatch = seg.match(/\bas\s+([A-Za-z0-9_$]+)\s*$/);
-      const name = asMatch ? asMatch[1] : seg.replace(/^type\s+/, "").trim();
+      const name = asMatch?.[1] ?? seg.replace(/^type\s+/, "").trim();
       if (/^[A-Za-z0-9_$]+$/.test(name) && name !== "default") names.add(name);
     }
   }
@@ -134,7 +137,8 @@ describe("P-C5-2: before/after export surface migration", () => {
   it("every mapped Band value is importable and callable at runtime", async () => {
     for (const row of MIGRATION) {
       if (row.kind !== "value") continue;
-      const entry = pkg.exports[row.sub].import;
+      const entry = pkg.exports[row.sub]?.import;
+      if (!entry) throw new Error(`no import entry for ${row.sub}`);
       const mod = (await import(pathToFileURL(resolve(SDK_ROOT, entry)).href)) as Record<string, unknown>;
       expect(typeof mod[row.new], `${row.new} not a runtime value in ${row.sub}`).toBe("function");
     }
@@ -270,7 +274,9 @@ describe("P-C5-4b: source-C4-only member provenance (C4-tip compile proof)", () 
     expect(match, `interface ${owner} not found at C4 tip ${C4_TIP}`).toBeTruthy();
     const block = match![0];
     const refs = new Set<string>();
-    for (const tok of block.matchAll(/(?::|\||<|,)\s*([A-Z][A-Za-z0-9_]*)/g)) refs.add(tok[1]);
+    for (const tok of block.matchAll(/(?::|\||<|,)\s*([A-Z][A-Za-z0-9_]*)/g)) {
+      if (tok[1]) refs.add(tok[1]);
+    }
     const stubs = [...refs].filter((t) => t !== owner && !BUILTIN.has(t)).map((t) => `type ${t} = unknown;`).join("\n");
     return `${stubs}\n${block}\n`;
   }
@@ -334,9 +340,9 @@ describe("P-C5-1: real tarball packs, installs, and runs for ESM and CJS", () =>
       const t = readFileSync(join(distDir, f), "utf8");
       for (const m of t.matchAll(/(?:from|import|require)\s*\(?\s*["']([^"'.][^"']*)["']/g)) {
         const s = m[1];
-        if (s.startsWith("node:")) continue;
+        if (!s || s.startsWith("node:")) continue;
         const parts = s.split("/");
-        ext.add(s.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0]);
+        ext.add(s.startsWith("@") ? parts.slice(0, 2).join("/") : (parts[0] ?? s));
       }
     }
     return [...ext];

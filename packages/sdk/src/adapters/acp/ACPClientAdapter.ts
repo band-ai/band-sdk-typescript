@@ -88,7 +88,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     })
 
     this.command = Array.isArray(options.command) ? [...options.command] : [options.command]
-    if (this.command.length === 0 || this.command[0].length === 0) {
+    if (!this.command[0]) {
       throw new ValidationError("ACPClientAdapter requires a command")
     }
 
@@ -103,7 +103,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.connectionFactory = options.connectionFactory ?? createSubprocessConnection
   }
 
-  public async onStarted(
+  public override async onStarted(
     agentName: string,
     agentDescription: string,
   ): Promise<void> {
@@ -179,7 +179,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     })
   }
 
-  public async onCleanup(roomId: string): Promise<void> {
+  public override async onCleanup(roomId: string): Promise<void> {
     const sessionId = this.roomToSession.get(roomId)
     this.roomToSession.delete(roomId)
     this.roomTools.delete(roomId)
@@ -451,7 +451,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
   private async handlePermissionRequest(
     tools: AdapterToolsProtocol,
-    roomId: string,
+    _roomId: string,
     params: RequestPermissionRequest,
   ): Promise<RequestPermissionResponse> {
     const selected = choosePermissionOption(params.options)
@@ -525,7 +525,12 @@ export async function createSubprocessConnection(
   },
 ): Promise<ACPClientConnectionHandle> {
   const acp = await acpModule.get()
-  const child = spawn(options.command[0], options.command.slice(1), {
+  const [executable, ...args] = options.command
+  if (!executable) {
+    throw new ValidationError("ACP subprocess requires a command")
+  }
+
+  const child = spawn(executable, args, {
     cwd: options.cwd,
     env: {
       ...process.env,
