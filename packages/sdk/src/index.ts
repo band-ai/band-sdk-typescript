@@ -12,6 +12,7 @@ export { PlatformRuntime } from "./runtime/PlatformRuntime";
 export type { PlatformRuntimeOptions } from "./runtime/PlatformRuntime";
 export { AgentRuntime } from "./runtime/rooms/AgentRuntime";
 export type { ExecutionContextOptions } from "./runtime/ExecutionContext";
+export type { RuntimeLifecycleState, ExecutionLifecycleState } from "./runtime/lifecycle";
 export { DefaultPreprocessor } from "./runtime/preprocessing/DefaultPreprocessor";
 export type { CustomToolDef } from "./runtime/tools/customTools";
 export type {

@@ -10,8 +10,13 @@ import { RuntimeStateError, ValidationError } from "../core/errors";
 import { DefaultPreprocessor } from "./preprocessing/DefaultPreprocessor";
 import { ContactEventHandler } from "./ContactEventHandler";
 import type { ExecutionContext, ExecutionContextOptions } from "./ExecutionContext";
+import type { RuntimeLifecycleState } from "./lifecycle";
+import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, toLifecycleError } from "./lifecycle";
 import type { Logger } from "../core/logger";
 import { NoopLogger } from "../core/logger";
+
+/** Trigger of the cleanup `stop()` that `start()` runs on its own failure path. */
+const START_CLEANUP_TRIGGER = "start-failed";
 
 export interface PlatformRuntimeOptions {
   agentId: string;
@@ -55,12 +60,15 @@ export class PlatformRuntime {
   private readonly _roomFilter?: (room: MetadataMap) => boolean;
   private readonly _contextFactory?: (roomId: string, defaults: ExecutionContextOptions) => ExecutionContext;
 
+  private readonly lifecycle: LifecycleTracker<RuntimeLifecycleState>;
   private linkInstance?: BandLink;
   private initPromise: Promise<void> | null = null;
   private runtime?: AgentRuntime;
   private contactHandler?: ContactEventHandler;
   private activeAdapter?: FrameworkAdapter;
-  private stopping = false;
+  private readonly startGate = new SingleFlight<void>();
+  private readonly stopGate = new SingleFlight<boolean>();
+  private stopAwaitsStart = false;
   private _agentName = "";
   private _agentDescription = "";
   private contactsSubscribed = false;
@@ -94,6 +102,17 @@ export class PlatformRuntime {
     this._onParticipantRemoved = options.onParticipantRemoved;
     this._roomFilter = options.roomFilter;
     this._contextFactory = options.contextFactory;
+    this.lifecycle = new LifecycleTracker<RuntimeLifecycleState>({ status: "not_started" }, {
+      owner: "PlatformRuntime",
+      logContext: { agentId: this._agentId },
+      logger: this.logger,
+      isLegalTransition: isLegalRuntimeTransition,
+    });
+  }
+
+  /** Current lifecycle state of this runtime. */
+  public get state(): RuntimeLifecycleState {
+    return this.lifecycle.state;
   }
 
   public get link(): BandLink {
@@ -120,6 +139,14 @@ export class PlatformRuntime {
     return this.contactConfig;
   }
 
+  /**
+   * Whether the contacts channel subscription is currently held.
+   *
+   * @deprecated Read {@link PlatformRuntime.state} for lifecycle questions: this
+   * flag is only ever `true` while the runtime is running and is cleared on
+   * teardown, so it conflates "contacts are subscribed" with "the runtime is
+   * alive".
+   */
   public get isContactsSubscribed(): boolean {
     return this.contactsSubscribed;
   }
@@ -161,7 +188,45 @@ export class PlatformRuntime {
     this._agentDescription = me.description ?? "";
   }
 
+  /**
+   * Connect the adapter to the platform.
+   *
+   * Repeated or concurrent calls join the in-flight start. Calling `start()`
+   * while a `stop()` is still in flight rejects with a {@link RuntimeStateError}.
+   * A successful start also re-arms teardown, so a runtime whose previous
+   * `stop()` failed can be shut down properly on the next attempt.
+   */
   public async start(adapter: FrameworkAdapter): Promise<void> {
+    if (this.lifecycle.state.status === "stopping") {
+      throw new RuntimeStateError("PlatformRuntime cannot start while a stop is in progress");
+    }
+
+    if (this.startGate.pending) {
+      return await this.startGate.pending;
+    }
+
+    this.stopGate.reset();
+    this.lifecycle.transition({ status: "starting" }, "start");
+    await this.startGate.runOrRetry(() => this.runStart(adapter));
+  }
+
+  private async runStart(adapter: FrameworkAdapter): Promise<void> {
+    try {
+      await this.doStart(adapter);
+    } catch (error) {
+      // A cleanup that already reached a terminal state keeps its own outcome.
+      if (this.lifecycle.state.status === "starting") {
+        this.lifecycle.transition({ status: "failed", error: toLifecycleError(error) }, "start-failed");
+      }
+      throw error;
+    }
+
+    if (this.lifecycle.state.status === "starting") {
+      this.lifecycle.transition({ status: "running" }, "started");
+    }
+  }
+
+  private async doStart(adapter: FrameworkAdapter): Promise<void> {
     await this.initialize();
     await adapter.onStarted(this._agentName, this._agentDescription);
     this.activeAdapter = adapter;
@@ -180,7 +245,22 @@ export class PlatformRuntime {
         onHubEvent: async (roomId, event) => {
           const runtime = this.runtime;
           if (!runtime) return;
-          await runtime.enqueueEvent(roomId, event);
+          try {
+            await runtime.enqueueEvent(roomId, event);
+          } catch (error) {
+            // The room's execution stopped between the event arriving and being
+            // queued; dropping it here keeps it from becoming an unhandled rejection.
+            if (!(error instanceof RuntimeStateError)) {
+              throw error;
+            }
+            // Logged at `error`, like every other dropped-event path: this is an
+            // unrecoverable loss of a real inbound event, not a routine warning.
+            this.logger.error("Dropped contact hub event for a stopped room execution", {
+              roomId,
+              eventType: event.type,
+              error: error.message,
+            });
+          }
         },
         onHubInit: async (roomId, systemPrompt) => {
           const runtime = this.runtime;
@@ -207,8 +287,14 @@ export class PlatformRuntime {
       await this.runtime.start();
       this.contactsSubscribed = Boolean(this.link.capabilities.contacts);
     } catch (error) {
+      if (this.stopAwaitsStart) {
+        // A stop() is already waiting for this start to settle and will run the
+        // teardown itself; joining its single-flight promise here would deadlock.
+        throw error;
+      }
+
       try {
-        await this.stop();
+        await this.beginStop(undefined, START_CLEANUP_TRIGGER);
       } catch (stopError) {
         throw new AggregateError(
           [error, stopError],
@@ -219,18 +305,65 @@ export class PlatformRuntime {
     }
   }
 
+  /**
+   * Tear the runtime down and release the platform connection.
+   *
+   * A concurrent second call joins the in-flight teardown and mirrors its
+   * outcome — including rejecting with the *same* `Error` instance — rather than
+   * reporting a graceful shutdown it did not perform. A failed teardown does not
+   * disable future ones: a subsequent `start()` re-arms `stop()`.
+   */
   public async stop(timeoutMs?: number): Promise<boolean> {
-    if (this.stopping) {
-      return true;
+    return await this.beginStop(timeoutMs, "stop");
+  }
+
+  private async beginStop(timeoutMs: number | undefined, trigger: string): Promise<boolean> {
+    return await this.stopGate.run(() => this.runStop(timeoutMs, trigger));
+  }
+
+  private async runStop(timeoutMs: number | undefined, trigger: string): Promise<boolean> {
+    // A stop landing during the early window of a start — before `runtime` and
+    // `activeAdapter` exist — would otherwise report a completed teardown while
+    // that start goes on to build a live, connected runtime. The start's own
+    // cleanup stop is exempt: it *is* that start's failure path. Nothing is
+    // awaited when no start is in flight, keeping the transitions below
+    // observable in the caller's own tick.
+    const pendingStart = trigger !== START_CLEANUP_TRIGGER && this.lifecycle.state.status === "starting"
+      ? this.startGate.pending
+      : null;
+    if (pendingStart) {
+      this.stopAwaitsStart = true;
+      try {
+        await pendingStart;
+      } catch (error) {
+        // The start's own caller sees this rejection; teardown continues here.
+        this.logger.debug("PlatformRuntime stop is proceeding after the in-flight start failed", { error });
+      } finally {
+        this.stopAwaitsStart = false;
+      }
     }
 
     const runtime = this.runtime;
     const adapter = this.activeAdapter;
     if (!runtime && !adapter) {
+      // Nothing was ever constructed, so there is no teardown to run — but a
+      // recorded failure (a start that blew up before it built anything) still
+      // has to reach this caller. Reporting a graceful shutdown while `state`
+      // says "failed" is the same lie this lifecycle exists to remove.
+      const initial = this.lifecycle.state;
+      if (initial.status === "failed") {
+        this.logger.debug("PlatformRuntime stop is resurfacing the recorded start failure", { error: initial.error });
+
+        throw initial.error;
+      }
+      if (initial.status === "starting" || initial.status === "running") {
+        this.lifecycle.transition({ status: "stopped" }, trigger);
+      }
       return true;
     }
 
-    this.stopping = true;
+    this.startGate.reset();
+    this.lifecycle.transition({ status: "stopping" }, trigger);
     this.runtime = undefined;
     this.contactHandler = undefined;
     this.contactsSubscribed = false;
@@ -250,21 +383,27 @@ export class PlatformRuntime {
     try {
       await adapter?.onRuntimeStop?.();
     } catch (error) {
-      if (runtimeError) {
-        throw new AggregateError(
+      const failure = runtimeError
+        ? new AggregateError(
           [runtimeError, error],
           "PlatformRuntime stop failed and adapter cleanup also failed",
-        );
-      }
-      throw error;
+        )
+        : error;
+      throw this.recordStopFailure(failure);
     }
 
     if (runtimeError) {
-      throw runtimeError instanceof Error ? runtimeError : new Error(String(runtimeError));
+      throw this.recordStopFailure(runtimeError);
     }
 
-    this.stopping = false;
+    this.lifecycle.transition({ status: "stopped" }, "stopped");
     return graceful;
+  }
+
+  private recordStopFailure(error: unknown): Error {
+    const failure = toLifecycleError(error);
+    this.lifecycle.transition({ status: "failed", error: failure }, "stop-failed");
+    return failure;
   }
 
   public async runForever(): Promise<void> {
@@ -330,8 +469,4 @@ export class PlatformRuntime {
       await this.contactHandler.handle(event);
     }
   }
-}
-
-function assertNever(value: never): never {
-  throw new Error(`Unhandled contact event: ${JSON.stringify(value)}`);
 }
