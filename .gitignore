@@ -23,3 +23,6 @@ agent_config.yaml
 *.key
 credentials.json
 *.sqlite
+
+# Not using npm - yarn/pnpm only
+package-lock.json
