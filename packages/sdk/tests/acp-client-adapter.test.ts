@@ -154,6 +154,12 @@ describe("ACPClientAdapter", () => {
         expect.objectContaining({
           type: "http",
           name: "band",
+          headers: [
+            expect.objectContaining({
+              name: "Authorization",
+              value: expect.stringMatching(/^Bearer [0-9a-f]{64}$/),
+            }),
+          ],
         }),
       ]),
     }))
@@ -196,5 +202,52 @@ describe("ACPClientAdapter", () => {
     expect(newSession).toHaveBeenCalledTimes(1)
     expect(promptTexts[1]).toContain("[System Context]")
     expect(promptTexts[2]).not.toContain("[System Context]")
+  })
+
+  it("fails loudly instead of guessing when the agent advertises no MCP transport", async () => {
+    const initialize = vi.fn(async () => ({
+      protocolVersion: 1,
+      agentCapabilities: {
+        mcpCapabilities: {},
+      },
+    }))
+    const newSession = vi.fn(async () => ({
+      sessionId: "session-untransported",
+    }))
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      connectionFactory: async () => {
+        const controller = new AbortController()
+        return {
+          connection: {
+            signal: controller.signal,
+            closed: new Promise<void>(() => undefined),
+            initialize,
+            authenticate: vi.fn(async () => ({})),
+            loadSession: vi.fn(),
+            unstable_resumeSession: vi.fn(),
+            newSession,
+            prompt: vi.fn(),
+          } as never,
+          stop: async () => {
+            controller.abort()
+          },
+        }
+      },
+    })
+
+    await adapter.onStarted("No Transport Agent", "ACP fallback test")
+
+    await expect(adapter.onMessage(
+      makeMessage("hello", "room-untransported"),
+      new FakeTools(),
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-untransported" },
+    )).rejects.toThrow(/does not advertise MCP transport support/)
+
+    expect(newSession).not.toHaveBeenCalled()
   })
 });

@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { Readable, Writable } from "node:stream";
 
 import type {
@@ -34,11 +35,13 @@ type InjectedMcpBackend =
   | {
     kind: "http";
     server: BandMcpServer;
+    authToken: string;
     stop(): Promise<void>;
   }
   | {
     kind: "sse";
     server: BandMcpSseServer;
+    authToken: string;
     stop(): Promise<void>;
   }
 
@@ -360,7 +363,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         type: "http",
         name: MCP_SERVER_NAME,
         url,
-        headers: [],
+        headers: [{ name: "Authorization", value: `Bearer ${backend.authToken}` }],
       })
       return mcpServers
     }
@@ -375,7 +378,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         type: "sse",
         name: MCP_SERVER_NAME,
         url,
-        headers: [],
+        headers: [{ name: "Authorization", value: `Bearer ${backend.authToken}` }],
       })
       return mcpServers
     }
@@ -388,9 +391,18 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       return this.backend
     }
 
-    const transport = this.connectionState?.agentCapabilities?.mcpCapabilities?.http
-      ? "http"
-      : (this.connectionState?.agentCapabilities?.mcpCapabilities?.sse ? "sse" : "http")
+    const mcpCapabilities = this.connectionState?.agentCapabilities?.mcpCapabilities
+    const transport = mcpCapabilities?.http ? "http" : (mcpCapabilities?.sse ? "sse" : null)
+
+    if (transport === null) {
+      throw new Error(
+        "ACP agent does not advertise MCP transport support: its initialize response has "
+        + "mcpCapabilities.http and .sse both false or missing, so Band tools cannot be "
+        + "exposed to it over MCP.",
+      )
+    }
+
+    const authToken = randomBytes(32).toString("hex")
 
     if (transport === "sse") {
       const server = new BandMcpSseServer({
@@ -398,11 +410,13 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         enableMemoryTools: this.enableMemoryTools,
         enableContactTools: true,
         additionalTools: this.additionalMcpTools,
+        authToken,
       })
       await server.start()
       this.backend = {
         kind: "sse",
         server,
+        authToken,
         stop: async () => {
           await server.stop()
         },
@@ -415,11 +429,13 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       enableMemoryTools: this.enableMemoryTools,
       enableContactTools: true,
       additionalTools: this.additionalMcpTools,
+      authToken,
     })
     await server.start()
     this.backend = {
       kind: "http",
       server,
+      authToken,
       stop: async () => {
         await server.stop()
       },
