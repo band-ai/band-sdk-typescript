@@ -102,4 +102,80 @@ describe("BandMcpServer", () => {
       },
     });
   });
+
+  it("rejects requests without a bearer token when authToken is configured", async () => {
+    const server = new BandMcpServer({
+      tools: new FakeTools(),
+      authToken: "secret-token",
+    });
+    servers.push(server);
+
+    await server.start();
+
+    const response = await fetch(server.url!, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {},
+      }),
+    });
+
+    expect(response.status).toBe(401);
+  });
+
+  it("rejects requests with the wrong bearer token", async () => {
+    const server = new BandMcpServer({
+      tools: new FakeTools(),
+      authToken: "secret-token",
+    });
+    servers.push(server);
+
+    await server.start();
+
+    const response = await fetch(server.url!, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer wrong-token",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {},
+      }),
+    });
+
+    expect(response.status).toBe(401);
+  });
+
+  it("accepts requests carrying the correct bearer token", async () => {
+    const server = new BandMcpServer({
+      tools: new FakeTools(),
+      authToken: "secret-token",
+    });
+    servers.push(server);
+
+    await server.start();
+
+    const transport = new StreamableHTTPClientTransport(new URL(server.url!), {
+      requestInit: {
+        headers: { authorization: "Bearer secret-token" },
+      },
+    });
+    const client = new Client({
+      name: "test-client",
+      version: "1.0.0",
+    });
+
+    await client.connect(transport);
+    const result = await client.listTools();
+
+    expect(result.tools.length).toBeGreaterThan(0);
+
+    await transport.close();
+  });
 });
