@@ -1,6 +1,26 @@
 # Changelog
 
 
+## [0.2.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.1.10...sdk-v0.2.0) (2026-09-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sdk:** MessageRetryTracker and ParticipantTracker are removed from the public runtime barrel with no back-compat shim -- band-sdk-core's RetryTracker/ParticipantRoster replace them, with an identical method surface. AgentTools's `participants?: ParticipantRecord[]` constructor option is replaced by `roster?: ParticipantRoster` (still optional, defaulting to an owned instance) -- only a caller passing `participants:` explicitly needs to migrate to `roster:`.
+* **sdk:** LinearThenvoiBridgeConfig → LinearBandBridgeConfig, LinearThenvoiBridgeDeps → LinearBandBridgeDeps (field thenvoiRest → bandRest). LinearThenvoiExampleRestApi → LinearBandExampleRestApi.
+
+### Features
+
+* **sdk:** integrate band-sdk-core retry and participant roster (INT-1246) ([#163](https://github.com/band-ai/band-sdk-typescript/issues/163)) ([212339e](https://github.com/band-ai/band-sdk-typescript/commit/212339eb06f42fb5ee9e1939559dd55413da580d))
+* **sdk:** rename Thenvoi SDK surfaces to Band ([#150](https://github.com/band-ai/band-sdk-typescript/issues/150)) ([3173431](https://github.com/band-ai/band-sdk-typescript/commit/3173431029c8938158af17d3523e484d62aeedb5))
+
+
+### Bug Fixes
+
+* **sdk:** authenticate the ACP MCP bridge and fail loudly on unadvertised transport (INT-1356) ([#168](https://github.com/band-ai/band-sdk-typescript/issues/168)) ([6fbcd8b](https://github.com/band-ai/band-sdk-typescript/commit/6fbcd8bca04ee5b755dcd507a498c123d4d47493))
+* **sdk:** close remaining MCP-bridge gaps found in review of [#168](https://github.com/band-ai/band-sdk-typescript/issues/168) ([#169](https://github.com/band-ai/band-sdk-typescript/issues/169)) ([58fd81f](https://github.com/band-ai/band-sdk-typescript/commit/58fd81ffe1e3a752fc088e087abd1458c5e6b28b))
+* **sdk:** remove duplicate 429 retry loop in FernRestAdapter ([#162](https://github.com/band-ai/band-sdk-typescript/issues/162)) ([831dbf1](https://github.com/band-ai/band-sdk-typescript/commit/831dbf1ec69a1e96d41c29a7286f8fca226c861b))
+
 ## [0.1.10](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.1.9...sdk-v0.1.10) (2026-08-09)
 
 
