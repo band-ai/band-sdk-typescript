@@ -8,7 +8,8 @@ coverage
 .tmp-bin
 .tmp-harness-reports
 .desloppify
-.claude
+.claude/*
+!.claude/settings.json
 .agents
 .idea
 scorecard.png
