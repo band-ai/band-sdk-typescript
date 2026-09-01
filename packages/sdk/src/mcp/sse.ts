@@ -9,6 +9,7 @@ import {
 } from "./registrations";
 import { buildZodShape } from "./zod";
 import { MCP_SERVER_NAME } from "../runtime/tools/schemas";
+import { isAuthorizedRequest } from "./auth";
 
 export interface BandMcpSseServerOptions {
   tools: AdapterToolsProtocol | ((roomId: string) => AdapterToolsProtocol | undefined);
@@ -217,17 +218,6 @@ export class BandMcpSseServer {
       }
     }
   }
-}
-
-function isAuthorizedRequest(
-  authorizationHeader: string | undefined,
-  authToken: string | undefined,
-): boolean {
-  if (!authToken) {
-    return true
-  }
-
-  return authorizationHeader === `Bearer ${authToken}`
 }
 
 function registerTools(

@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+
 import { createBandMcpBackend } from "../src/mcp/backends";
 import { FakeRestApi, FakeTools } from "./testUtils";
 
@@ -89,6 +92,31 @@ describe("createBandMcpBackend", () => {
     expect(backend.kind).toBe("http");
     expect(backend.allowedTools).toContain("mcp__band__band_send_message");
     expect(backend.server).toHaveProperty("url");
+  });
+
+  it("issues an auth token for the http backend and rejects unauthenticated requests", async () => {
+    const backend = await createBandMcpBackend({
+      kind: "http",
+      enableMemoryTools: false,
+      getToolsForRoom: () => new FakeTools(),
+    });
+    backends.push(backend);
+
+    expect(backend.authToken).toMatch(/^[0-9a-f]{64}$/);
+
+    const url = (backend.server as { url: string }).url;
+
+    const unauth = await new Client({ name: "attacker", version: "1.0.0" })
+      .connect(new StreamableHTTPClientTransport(new URL(url)))
+      .then(() => "connected", (error) => error);
+    expect(unauth).toBeInstanceOf(Error);
+
+    const client = new Client({ name: "verify-client", version: "1.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(new URL(url), {
+      requestInit: { headers: { authorization: `Bearer ${backend.authToken}` } },
+    }));
+    const tools = await client.listTools();
+    expect(tools.tools.length).toBeGreaterThan(0);
   });
 
   it("creates an sse backend and starts the local server", async () => {

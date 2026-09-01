@@ -250,4 +250,72 @@ describe("ACPClientAdapter", () => {
 
     expect(newSession).not.toHaveBeenCalled()
   })
+
+  it("creates the MCP backend at most once when two rooms bootstrap concurrently", async () => {
+    const initialize = vi.fn(async () => ({
+      protocolVersion: 1,
+      agentCapabilities: {
+        mcpCapabilities: { http: true },
+      },
+    }))
+    let sessionCounter = 0
+    const newSessionCalls: Array<{ mcpServers: Array<{ url: string; headers: Array<{ value: string }> }> }> = []
+    const newSession = vi.fn(async (params: typeof newSessionCalls[number]) => {
+      newSessionCalls.push(params)
+      return { sessionId: `session-concurrent-${sessionCounter++}` }
+    })
+    const prompt = vi.fn(async () => ({ stopReason: "end_turn" }))
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      connectionFactory: async () => {
+        const controller = new AbortController()
+        return {
+          connection: {
+            signal: controller.signal,
+            closed: new Promise<void>(() => undefined),
+            initialize,
+            authenticate: vi.fn(async () => ({})),
+            loadSession: vi.fn(),
+            unstable_resumeSession: vi.fn(),
+            newSession,
+            prompt,
+          } as never,
+          stop: async () => {
+            controller.abort()
+          },
+        }
+      },
+    })
+
+    await adapter.onStarted("Concurrent Agent", "ACP concurrency test")
+
+    await Promise.all([
+      adapter.onMessage(
+        makeMessage("hello from room A", "room-concurrent-a"),
+        new FakeTools(),
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-concurrent-a" },
+      ),
+      adapter.onMessage(
+        makeMessage("hello from room B", "room-concurrent-b"),
+        new FakeTools(),
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-concurrent-b" },
+      ),
+    ])
+
+    expect(newSession).toHaveBeenCalledTimes(2)
+    const [firstServer, secondServer] = newSessionCalls.map(({ mcpServers }) => mcpServers[0])
+
+    // Both rooms must have been handed the same backend URL and bearer token —
+    // a second, independently-created backend would mean the loopback-port race
+    // in getOrCreateBackend() regressed.
+    expect(firstServer?.url).toEqual(secondServer?.url)
+    expect(firstServer?.headers[0]?.value).toEqual(secondServer?.headers[0]?.value)
+  })
 });

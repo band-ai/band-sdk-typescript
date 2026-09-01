@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import { Readable, Writable } from "node:stream";
 
 import type {
@@ -19,6 +18,7 @@ import { renderSystemPrompt } from "../../runtime/prompts";
 import type { PlatformMessage } from "../../runtime/types";
 import type { McpToolRegistration } from "../../mcp/registrations";
 import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
+import { generateAuthToken } from "../../mcp/auth";
 import { BandMcpServer } from "../../mcp/server";
 import { BandMcpSseServer } from "../../mcp/sse";
 import {
@@ -76,6 +76,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private readonly bootstrappedSessions = new Set<string>()
 
   private backend: InjectedMcpBackend | null = null
+  private backendPromise: Promise<InjectedMcpBackend> | null = null
   private client: BandACPClient | null = null
   private connectionHandle: ACPClientConnectionHandle | null = null
   private connection: ClientSideConnection | null = null
@@ -291,13 +292,14 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     connection: ClientSideConnection,
   ): Promise<string> {
     const existingSessionId = this.roomToSession.get(roomId)
+
+    if (existingSessionId && this.activeSessions.has(existingSessionId)) {
+      return existingSessionId
+    }
+
     const mcpServers = await this.buildSessionMcpServers()
 
     if (existingSessionId) {
-      if (this.activeSessions.has(existingSessionId)) {
-        return existingSessionId
-      }
-
       const restored = await this.tryRestoreSession(connection, existingSessionId, mcpServers)
       if (restored) {
         this.activeSessions.add(existingSessionId)
@@ -391,6 +393,13 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       return this.backend
     }
 
+    this.backendPromise ??= this.createBackend().finally(() => {
+      this.backendPromise = null
+    })
+    return this.backendPromise
+  }
+
+  private async createBackend(): Promise<InjectedMcpBackend> {
     const mcpCapabilities = this.connectionState?.agentCapabilities?.mcpCapabilities
     const transport = mcpCapabilities?.http ? "http" : (mcpCapabilities?.sse ? "sse" : null)
 
@@ -402,7 +411,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       )
     }
 
-    const authToken = randomBytes(32).toString("hex")
+    const authToken = generateAuthToken()
 
     if (transport === "sse") {
       const server = new BandMcpSseServer({
