@@ -9,6 +9,7 @@ import {
 } from "./registrations";
 import { buildZodShape } from "./zod";
 import { MCP_SERVER_NAME } from "../runtime/tools/schemas";
+import { isAuthorizedRequest } from "./auth";
 
 export interface BandMcpServerOptions {
   /** Single tools instance (no room scoping) or a resolver function for room-scoped tools. */
@@ -278,17 +279,6 @@ function getSessionIdHeader(headerValue: string | string[] | undefined): string 
   }
 
   return null;
-}
-
-function isAuthorizedRequest(
-  authorizationHeader: string | undefined,
-  authToken: string | undefined,
-): boolean {
-  if (!authToken) {
-    return true;
-  }
-
-  return authorizationHeader === `Bearer ${authToken}`;
 }
 
 function sendMcpError(

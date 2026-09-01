@@ -41,7 +41,7 @@ class FakeOpencodeClient {
   public readonly questionReplies: Array<{ requestId: string; answers: string[][] }> = [];
   public readonly rejectedQuestions: string[] = [];
   public readonly aborts: string[] = [];
-  public readonly registeredMcpServers: Array<{ name: string; url: string }> = [];
+  public readonly registeredMcpServers: Array<{ name: string; url: string; headers?: Record<string, string> }> = [];
   public readonly deregisteredMcpServers: string[] = [];
   public readonly createdSessions: string[] = [];
   public readonly createdSessionTitles: string[] = [];
@@ -98,7 +98,7 @@ class FakeOpencodeClient {
     this.aborts.push(sessionId);
   }
 
-  public async registerMcpServer(input: { name: string; url: string }): Promise<Record<string, unknown>> {
+  public async registerMcpServer(input: { name: string; url: string; headers?: Record<string, string> }): Promise<Record<string, unknown>> {
     this.registeredMcpServers.push(input);
     return { ok: true };
   }
@@ -215,6 +215,52 @@ describe("OpencodeAdapter", () => {
       messageType: "task",
     });
     expect(tools.messages).toContain("Here is the fix.");
+  });
+
+  it("registers the MCP server with a bearer-token header when the backend issues an authToken", async () => {
+    const tools = new FakeTools();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as any,
+      mcpBackendFactory: async () => ({
+        kind: "http",
+        server: { url: "http://127.0.0.1:5555/mcp" },
+        allowedTools: [],
+        authToken: "s3cr3t-token",
+        stop: async () => undefined,
+      }),
+    });
+    adapters.push(adapter);
+
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+
+    const pending = adapter.onMessage(
+      makeMessage("Help with this bug"),
+      tools,
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      "Participants update",
+      "Contacts update",
+      { isSessionBootstrap: true, roomId: "room-1" },
+    );
+
+    await waitFor(() => client.createdSessions.length === 1);
+    const sessionId = client.createdSessions[0]!;
+    emitAssistantText(client, sessionId, "Here is the fix.");
+    client.eventQueue.push({
+      type: "session.idle",
+      properties: { sessionID: sessionId },
+    });
+
+    await pending;
+
+    expect(client.registeredMcpServers).toEqual([
+      {
+        name: "band",
+        url: "http://127.0.0.1:5555/mcp",
+        headers: { Authorization: "Bearer s3cr3t-token" },
+      },
+    ]);
   });
 
   it("supports manual permission follow-up while the turn is still active", async () => {
