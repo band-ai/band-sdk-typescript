@@ -204,6 +204,87 @@ describe("ACPClientAdapter", () => {
     expect(promptTexts[2]).not.toContain("[System Context]")
   })
 
+  it("completes the turn without posting a blank event, when a tool update carries no output", async () => {
+    let clientHandle: {
+      sessionUpdate: (params: Record<string, unknown>) => Promise<void>;
+      requestPermission: (params: Record<string, unknown>) => Promise<unknown>;
+    } | null = null
+
+    const initialize = vi.fn(async () => ({
+      protocolVersion: 1,
+      agentCapabilities: {
+        mcpCapabilities: { http: true },
+      },
+    }))
+    const newSession = vi.fn(async () => ({ sessionId: "session-blank-update" }))
+    const prompt = vi.fn(async (params: { sessionId: string }) => {
+      // A status-only update: no rawOutput and no content, the shape a tool
+      // that reports completion without a result produces.
+      await clientHandle?.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "call-1",
+          status: "completed",
+        },
+      })
+      await clientHandle?.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "done" },
+        },
+      })
+      return { stopReason: "end_turn" }
+    })
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      connectionFactory: async (client) => {
+        clientHandle = client as typeof clientHandle
+        const controller = new AbortController()
+        return {
+          connection: {
+            signal: controller.signal,
+            closed: new Promise<void>(() => undefined),
+            initialize,
+            authenticate: vi.fn(async () => ({})),
+            loadSession: vi.fn(),
+            unstable_resumeSession: vi.fn(),
+            newSession,
+            prompt,
+          } as never,
+          stop: async () => {
+            controller.abort()
+          },
+        }
+      },
+    })
+
+    await adapter.onStarted("Blank Update Agent", "ACP blank chunk test")
+
+    const tools = new FakeTools()
+    const sendEventSpy = vi.spyOn(tools, "sendEvent")
+
+    await adapter.onMessage(
+      makeMessage("run the tool", "room-blank-update"),
+      tools,
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-blank-update" },
+    )
+
+    // The blank status update must never even reach sendEvent — not just be
+    // dropped once it gets there.
+    expect(sendEventSpy.mock.calls.some(([content]) => content.trim().length === 0)).toBe(false)
+    expect(tools.events.some((event) => event.messageType === "tool_result")).toBe(false)
+    expect(tools.messages).toEqual(["done"])
+    expect(tools.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ messageType: "task", content: "ACP client session" }),
+    ]))
+  })
+
   it("fails loudly instead of guessing when the agent advertises no MCP transport", async () => {
     const initialize = vi.fn(async () => ({
       protocolVersion: 1,

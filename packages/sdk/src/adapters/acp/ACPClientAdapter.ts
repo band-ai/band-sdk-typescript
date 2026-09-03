@@ -517,13 +517,17 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     }
 
     for (const chunk of client.getCollectedChunks(input.sessionId)) {
+      // The platform rejects blank event content; a status-only ACP update
+      // carries its meaning in metadata and has nothing to post.
+      if (chunk.content.trim().length === 0) {
+        continue
+      }
+
       if (chunk.chunkType === "text") {
-        if (chunk.content.length > 0) {
-          await input.tools.sendMessage(chunk.content, [{
-            id: input.senderId,
-            handle: input.senderHandle,
-          }])
-        }
+        await input.tools.sendMessage(chunk.content, [{
+          id: input.senderId,
+          handle: input.senderHandle,
+        }])
         continue
       }
 
