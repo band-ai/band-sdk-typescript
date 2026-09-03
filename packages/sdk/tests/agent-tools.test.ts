@@ -254,6 +254,39 @@ describe("AgentTools", () => {
     await expect(tools.sendEvent("hello", "message_created")).rejects.toBeInstanceOf(ValidationError);
   });
 
+  it("reports a failed chat event instead of throwing, unlike a failed message", async () => {
+    class FailingRestApi extends FakeRestApi {
+      public override async createChatEvent(): ReturnType<FakeRestApi["createChatEvent"]> {
+        throw new Error("network down");
+      }
+
+      public override async createChatMessage(): ReturnType<FakeRestApi["createChatMessage"]> {
+        throw new Error("network down");
+      }
+    }
+
+    const warnings: Array<[string, Record<string, unknown> | undefined]> = [];
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api: new FailingRestApi() }),
+      logger: {
+        debug: () => {},
+        info: () => {},
+        warn: (message, context) => warnings.push([message, context]),
+        error: () => {},
+      },
+    });
+
+    await expect(tools.sendEvent("hello", "task")).resolves.toEqual({
+      ok: false,
+      status: "failed",
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0][0]).toBe("chat event send failed");
+
+    await expect(tools.sendMessage("hello")).rejects.toThrow("network down");
+  });
+
   it("validates send_message requires mentions", async () => {
     const tools = new AgentTools({
       roomId: "room-1",

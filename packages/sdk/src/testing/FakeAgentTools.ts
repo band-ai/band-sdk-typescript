@@ -97,6 +97,11 @@ export class FakeAgentTools
     metadata?: MetadataMap,
   ): Promise<ToolOperationResult> {
     this.maybeFail("sendEvent");
+    // The real platform rejects blank event content; mirroring that here is
+    // what makes a test that posts a blank chunk an actual regression test.
+    if (content.trim().length === 0) {
+      return { ok: false, status: "failed" };
+    }
     this.eventsSent.push({ content, messageType, metadata });
     const id = `evt-${this.eventCounter++}`;
     return { id, status: "sent" };

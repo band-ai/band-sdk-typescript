@@ -57,6 +57,11 @@ export class FakeTools implements AgentToolsProtocol {
     metadata?: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     this.maybeFail("sendEvent");
+    // The real platform rejects blank event content; mirroring that here is
+    // what makes a test that posts a blank chunk an actual regression test.
+    if (content.trim().length === 0) {
+      return { ok: false, status: "failed" };
+    }
     this.events.push({ content, messageType, metadata });
     return { ok: true };
   }
