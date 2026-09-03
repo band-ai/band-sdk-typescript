@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { ACPClientAdapter } from "../src/adapters/acp";
+import { ACPClientAdapter, type ACPClientAdapterOptions } from "../src/adapters/acp";
 import { FakeTools, makeMessage } from "./testUtils";
 
 describe("ACPClientAdapter", () => {
@@ -317,5 +317,297 @@ describe("ACPClientAdapter", () => {
     // in getOrCreateBackend() regressed.
     expect(firstServer?.url).toEqual(secondServer?.url)
     expect(firstServer?.headers[0]?.value).toEqual(secondServer?.headers[0]?.value)
+  })
+
+  describe("resolvePermission (manual approval)", () => {
+    // Shared harness: a connection whose `prompt` drives exactly one
+    // `requestPermission` call, scripted with one allow-kind and one
+    // reject-kind option — the shape every case below needs to distinguish
+    // "denied" from "cancelled" and to pick a specific id.
+    function buildHarness(adapterOptions: Partial<ACPClientAdapterOptions> = {}) {
+      let clientHandle: {
+        sessionUpdate: (params: Record<string, unknown>) => Promise<void>;
+        requestPermission: (params: Record<string, unknown>) => Promise<unknown>;
+      } | null = null
+      let permissionResult: unknown
+
+      const prompt = vi.fn(async (params: { sessionId: string }) => {
+        permissionResult = await clientHandle?.requestPermission({
+          sessionId: params.sessionId,
+          toolCall: { toolCallId: "call-1", title: "Edit file" },
+          options: [
+            { kind: "allow_once", name: "Allow once", optionId: "allow" },
+            { kind: "reject_once", name: "Deny", optionId: "deny" },
+          ],
+        })
+        return { stopReason: "end_turn" }
+      })
+
+      const adapter = new ACPClientAdapter({
+        command: ["acp-agent"],
+        // No real MCP backend needed for any permission scenario below —
+        // disabling it keeps every case from spinning up a real HTTP server
+        // (and its own housekeeping timers, which would otherwise pollute
+        // `vi.getTimerCount()` assertions under fake timers).
+        enableMcpTools: false,
+        connectionFactory: async (client) => {
+          clientHandle = client as typeof clientHandle
+          const controller = new AbortController()
+          return {
+            connection: {
+              signal: controller.signal,
+              closed: new Promise<void>(() => undefined),
+              initialize: vi.fn(async () => ({
+                protocolVersion: 1,
+                agentCapabilities: {},
+              })),
+              authenticate: vi.fn(async () => ({})),
+              loadSession: vi.fn(),
+              unstable_resumeSession: vi.fn(),
+              newSession: vi.fn(async () => ({ sessionId: "session-1" })),
+              prompt,
+            } as never,
+            stop: async () => {
+              controller.abort()
+            },
+          }
+        },
+        ...adapterOptions,
+      })
+
+      return { adapter, getPermissionResult: () => permissionResult }
+    }
+
+    async function send(adapter: ACPClientAdapter, tools: FakeTools, roomId = "room-1"): Promise<void> {
+      await adapter.onStarted("Agent", "desc")
+      await adapter.onMessage(
+        makeMessage("hi", roomId),
+        tools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId },
+      )
+    }
+
+    it("(a) no resolvePermission ⇒ unchanged auto-allow", async () => {
+      const { adapter, getPermissionResult } = buildHarness()
+      await send(adapter, new FakeTools())
+      expect(getPermissionResult()).toEqual({ outcome: { outcome: "selected", optionId: "allow" } })
+    })
+
+    it("(b) resolvePermission resolving an allow-kind id is used", async () => {
+      const { adapter, getPermissionResult } = buildHarness({ resolvePermission: async () => "allow" })
+      await send(adapter, new FakeTools())
+      expect(getPermissionResult()).toEqual({ outcome: { outcome: "selected", optionId: "allow" } })
+    })
+
+    it("(c) resolvePermission that never resolves falls back to cancelled after permissionTimeoutMs", async () => {
+      vi.useFakeTimers()
+      try {
+        // `resolveManually` registers its `setTimeout` synchronously, before
+        // it ever invokes `resolvePermission` (which is deferred a
+        // microtask via `Promise.resolve().then(...)`) — so waiting for
+        // this signal guarantees the timer already exists before advancing
+        // the fake clock. Without it, the timer can still be mid-registration
+        // (several `await`s deep in `onStarted`/`onMessage`) when the clock
+        // jumps, and gets scheduled to fire *after* the jump — hanging.
+        let permissionRequested: () => void = () => undefined
+        const requested = new Promise<void>((resolve) => { permissionRequested = resolve })
+
+        const { adapter, getPermissionResult } = buildHarness({
+          resolvePermission: async () => {
+            permissionRequested()
+            return new Promise<string | undefined>(() => undefined)
+          },
+          permissionTimeoutMs: 1_000,
+        })
+        const onMessage = send(adapter, new FakeTools())
+        await requested
+        await vi.advanceTimersByTimeAsync(1_000)
+        await onMessage
+        expect(getPermissionResult()).toEqual({ outcome: { outcome: "cancelled" } })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("(d) resolvePermission rejecting falls back to cancelled and is logged, not thrown", async () => {
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+      const { adapter, getPermissionResult } = buildHarness({
+        resolvePermission: async () => {
+          throw new Error("host UI call failed")
+        },
+        logger,
+      })
+      await expect(send(adapter, new FakeTools())).resolves.toBeUndefined()
+      expect(getPermissionResult()).toEqual({ outcome: { outcome: "cancelled" } })
+      expect(logger.warn).toHaveBeenCalledWith(
+        "resolvePermission threw; treating as no answer",
+        expect.objectContaining({ error: expect.stringContaining("host UI call failed") }),
+      )
+    })
+
+    it("(e) resolving before the timeout clears the pending timer", async () => {
+      vi.useFakeTimers()
+      try {
+        const { adapter } = buildHarness({
+          resolvePermission: async () => "allow",
+          permissionTimeoutMs: 5_000,
+        })
+        await send(adapter, new FakeTools())
+        expect(vi.getTimerCount()).toBe(0)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("(f) resolvePermission resolving a reject-kind id is a real deny, not cancelled", async () => {
+      const { adapter, getPermissionResult } = buildHarness({ resolvePermission: async () => "deny" })
+      await send(adapter, new FakeTools())
+      expect(getPermissionResult()).toEqual({ outcome: { outcome: "selected", optionId: "deny" } })
+    })
+
+    it("(g) an id absent from this request's own options falls back to cancelled", async () => {
+      const { adapter, getPermissionResult } = buildHarness({ resolvePermission: async () => "not-a-real-option" })
+      await send(adapter, new FakeTools())
+      expect(getPermissionResult()).toEqual({ outcome: { outcome: "cancelled" } })
+    })
+
+    it("(h) onCleanup(roomId) while a request for that room is pending resolves it cancelled immediately", async () => {
+      let permissionRequested: () => void = () => undefined
+      const requested = new Promise<void>((resolve) => { permissionRequested = resolve })
+
+      const { adapter, getPermissionResult } = buildHarness({
+        resolvePermission: async () => {
+          permissionRequested()
+          return new Promise<string | undefined>(() => undefined) // hangs until cleanup cancels it
+        },
+        permissionTimeoutMs: 60_000,
+      })
+
+      const onMessage = send(adapter, new FakeTools())
+      await requested
+      await adapter.onCleanup("room-1")
+      await onMessage
+
+      expect(getPermissionResult()).toEqual({ outcome: { outcome: "cancelled" } })
+    })
+
+    it("(h) stop() with a pending request in any room resolves it cancelled immediately", async () => {
+      let permissionRequested: () => void = () => undefined
+      const requested = new Promise<void>((resolve) => { permissionRequested = resolve })
+
+      const { adapter, getPermissionResult } = buildHarness({
+        resolvePermission: async () => {
+          permissionRequested()
+          return new Promise<string | undefined>(() => undefined)
+        },
+        permissionTimeoutMs: 60_000,
+      })
+
+      const onMessage = send(adapter, new FakeTools())
+      await requested
+      await adapter.stop()
+      await onMessage
+
+      expect(getPermissionResult()).toEqual({ outcome: { outcome: "cancelled" } })
+    })
+
+    it("(i) resolvePermission resolving promptly to undefined (a dismissed popup) ⇒ cancelled", async () => {
+      const { adapter, getPermissionResult } = buildHarness({ resolvePermission: async () => undefined })
+      await send(adapter, new FakeTools())
+      expect(getPermissionResult()).toEqual({ outcome: { outcome: "cancelled" } })
+    })
+
+    it("(j) the permission-requested event fires before a slow resolver settles, with auto_allowed:false", async () => {
+      let permissionRequested: () => void = () => undefined
+      const requested = new Promise<void>((resolve) => { permissionRequested = resolve })
+      let releasePermission: (value: string | undefined) => void = () => undefined
+      const pending = new Promise<string | undefined>((resolve) => { releasePermission = resolve })
+
+      const { adapter } = buildHarness({
+        resolvePermission: async () => {
+          permissionRequested()
+          return pending
+        },
+      })
+
+      const tools = new FakeTools()
+      const onMessage = send(adapter, tools)
+      await requested
+
+      expect(tools.events).toContainEqual(
+        expect.objectContaining({
+          messageType: "tool_call",
+          content: "Permission requested: Edit file",
+          metadata: expect.objectContaining({ auto_allowed: false }),
+        }),
+      )
+
+      releasePermission("allow")
+      await onMessage
+    })
+
+    it.each([0, -1, NaN])("(k) constructing with an invalid permissionTimeoutMs (%s) throws", (invalid) => {
+      expect(() => new ACPClientAdapter({
+        command: ["acp-agent"],
+        resolvePermission: async () => "allow",
+        permissionTimeoutMs: invalid,
+      })).toThrow(/permissionTimeoutMs must be a positive finite number/)
+    })
+
+    it("(l) resolvePermission throwing synchronously still falls back to cancelled, not an uncaught throw", async () => {
+      const { adapter, getPermissionResult } = buildHarness({
+        resolvePermission: () => {
+          throw new Error("sync boom")
+        },
+      })
+      await expect(send(adapter, new FakeTools())).resolves.toBeUndefined()
+      expect(getPermissionResult()).toEqual({ outcome: { outcome: "cancelled" } })
+    })
+
+    it("(m) onCleanup fired while the permission-requested event is still in flight still cancels promptly", async () => {
+      // Regression guard for a real gap: the pending request used to be
+      // tracked only once `resolveManually` itself ran, which is after
+      // `tools.sendEvent(...)` resolves. A room torn down while that event
+      // was still in flight found nothing to cancel and the request then
+      // hung for the full timeout. `trackPending` now runs before
+      // `sendEvent` is even called, so cancellation reaches it regardless
+      // of when it lands relative to that call.
+      let releaseSendEvent: () => void = () => undefined
+      const sendEventGate = new Promise<void>((resolve) => { releaseSendEvent = resolve })
+      let sendEventStarted: () => void = () => undefined
+      const started = new Promise<void>((resolve) => { sendEventStarted = resolve })
+
+      class DelayedTools extends FakeTools {
+        public override async sendEvent(
+          content: string,
+          messageType: string,
+          metadata?: Record<string, unknown>,
+        ): Promise<Record<string, unknown>> {
+          sendEventStarted()
+          await sendEventGate
+          return super.sendEvent(content, messageType, metadata)
+        }
+      }
+
+      const { adapter, getPermissionResult } = buildHarness({
+        // Never actually invoked in this test — onCleanup below cancels the
+        // request before resolveManually's race would ever call it — kept
+        // async-and-hanging only so a regression (the old, buggy ordering)
+        // fails by timing out rather than by a misleading assertion error.
+        resolvePermission: async () => new Promise<string | undefined>(() => undefined),
+        permissionTimeoutMs: 60_000,
+      })
+
+      const onMessage = send(adapter, new DelayedTools())
+      await started
+      await adapter.onCleanup("room-1")
+      releaseSendEvent()
+      await onMessage
+
+      expect(getPermissionResult()).toEqual({ outcome: { outcome: "cancelled" } })
+    })
   })
 });
