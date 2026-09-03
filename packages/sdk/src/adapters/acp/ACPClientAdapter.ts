@@ -14,7 +14,8 @@ import type {
 import { ACPClientHistoryConverter, type ACPClientSessionState } from "../../converters/acp-client";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
-import { renderSystemPrompt } from "../../runtime/prompts";
+import { renderSystemPrompt } from "../../runtime/prompts"
+import { mentionSubjectsFromMetadata, replaceUuidMentions } from "../../runtime/formatters";
 import type { PlatformMessage } from "../../runtime/types";
 import type { McpToolRegistration } from "../../mcp/registrations";
 import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
@@ -147,9 +148,14 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       (params) => this.handlePermissionRequest(tools, context.roomId, params),
     )
 
+    // The platform stores a typed mention as @[[participant_id]]; nothing else
+    // in ACP resolves that back to a handle, so the agent reads a bare id as
+    // an MCP protocol token instead of as being spoken to.
+    const content = replaceUuidMentions(message.content, mentionSubjectsFromMetadata(message.metadata))
+
     const promptText = this.bootstrappedSessions.has(sessionId)
-      ? message.content
-      : `${this.buildSystemContext(context.roomId, message)}\n\n${message.content}`
+      ? content
+      : `${this.buildSystemContext(context.roomId, message)}\n\n${content}`
 
     this.bootstrappedSessions.add(sessionId)
 

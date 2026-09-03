@@ -127,7 +127,7 @@ export function makeRoster(participants: ParticipantRecord[]): ParticipantRoster
   return roster;
 }
 
-export function makeMessage(content: string, roomId = "room-1"): PlatformMessage {
+export function makeMessage(content: string, roomId = "room-1", metadata: Record<string, unknown> = {}): PlatformMessage {
   return {
     id: "msg-1",
     roomId,
@@ -136,7 +136,7 @@ export function makeMessage(content: string, roomId = "room-1"): PlatformMessage
     senderType: "User",
     senderName: "User",
     messageType: "text",
-    metadata: {},
+    metadata,
     createdAt: new Date("2026-03-02T00:00:00.000Z"),
   };
 }

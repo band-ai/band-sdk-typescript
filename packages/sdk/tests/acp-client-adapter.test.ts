@@ -285,6 +285,56 @@ describe("ACPClientAdapter", () => {
     ]))
   })
 
+  it("resolves a mention token to a handle before prompting the agent", async () => {
+    const promptTexts: string[] = []
+    const prompt = vi.fn(async (params: { sessionId: string; prompt: Array<{ text?: string }> }) => {
+      promptTexts.push(params.prompt[0]?.text ?? "")
+      return { stopReason: "end_turn" }
+    })
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      connectionFactory: async () => {
+        const controller = new AbortController()
+        return {
+          connection: {
+            signal: controller.signal,
+            closed: new Promise<void>(() => undefined),
+            initialize: vi.fn(async () => ({
+              protocolVersion: 1,
+              agentCapabilities: { mcpCapabilities: { http: true } },
+            })),
+            authenticate: vi.fn(async () => ({})),
+            loadSession: vi.fn(),
+            unstable_resumeSession: vi.fn(),
+            newSession: vi.fn(async () => ({ sessionId: "session-mentions" })),
+            prompt,
+          } as never,
+          stop: async () => {
+            controller.abort()
+          },
+        }
+      },
+    })
+
+    await adapter.onStarted("Mention Agent", "ACP mention test")
+
+    const REVIEWER_ID = "65044b09-fd04-4a34-a94f-51fe413bd2cb"
+    await adapter.onMessage(
+      makeMessage(`@[[${REVIEWER_ID}]] are you there?`, "room-mentions", {
+        mentions: [{ id: REVIEWER_ID, username: "reviewer-bot" }],
+      }),
+      new FakeTools(),
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-mentions" },
+    )
+
+    expect(promptTexts[0]).toContain("@reviewer-bot are you there?")
+    expect(promptTexts[0]).not.toContain("@[[")
+  })
+
   it("fails loudly instead of guessing when the agent advertises no MCP transport", async () => {
     const initialize = vi.fn(async () => ({
       protocolVersion: 1,
