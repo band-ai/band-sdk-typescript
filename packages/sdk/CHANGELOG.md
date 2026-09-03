@@ -1,6 +1,13 @@
 # Changelog
 
 
+## [0.2.1](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.2.0...sdk-v0.2.1) (2026-09-03)
+
+
+### Features
+
+* **adapters:** add resolvePermission extension point for manual permission approval ([#170](https://github.com/band-ai/band-sdk-typescript/issues/170)) ([624983a](https://github.com/band-ai/band-sdk-typescript/commit/624983a70172d1ce2d94d5c44d4cf18bd773be86))
+
 ## [0.2.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.1.10...sdk-v0.2.0) (2026-09-01)
 
 
