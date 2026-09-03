@@ -2,6 +2,7 @@ import { ParticipantRoster } from "@band-ai/band-sdk-core";
 import type { PlatformMessage } from "../src/runtime";
 import type { AgentToolsProtocol } from "../src/core";
 import { DEFAULT_AGENT_TOOLS_CAPABILITIES } from "../src/contracts/protocols";
+import { isBlankEventContent } from "../src/contracts/chatEvents";
 import type {
   AgentIdentity,
   PaginatedResponse,
@@ -57,9 +58,9 @@ export class FakeTools implements AgentToolsProtocol {
     metadata?: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     this.maybeFail("sendEvent");
-    // The real platform rejects blank event content; mirroring that here is
-    // what makes a test that posts a blank chunk an actual regression test.
-    if (content.trim().length === 0) {
+    // Mirrors the platform's own rejection, so a test posting a blank chunk
+    // is an actual regression test rather than a vacuous pass.
+    if (isBlankEventContent(content)) {
       return { ok: false, status: "failed" };
     }
     this.events.push({ content, messageType, metadata });

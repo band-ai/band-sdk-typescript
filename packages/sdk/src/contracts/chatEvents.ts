@@ -17,3 +17,11 @@ export function assertChatEventType(value: string): asserts value is ChatEventTy
     );
   }
 }
+
+// The platform rejects a chat event whose content is blank or whitespace-only.
+// One source of truth for that rule: an adapter deciding whether a chunk is
+// worth posting at all, and a test double deciding whether to model the
+// platform's rejection, both need the exact same predicate.
+export function isBlankEventContent(content: string): boolean {
+  return content.trim().length === 0;
+}
