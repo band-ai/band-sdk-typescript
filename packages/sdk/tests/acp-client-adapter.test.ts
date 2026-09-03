@@ -566,5 +566,48 @@ describe("ACPClientAdapter", () => {
       await expect(send(adapter, new FakeTools())).resolves.toBeUndefined()
       expect(getPermissionResult()).toEqual({ outcome: { outcome: "cancelled" } })
     })
+
+    it("(m) onCleanup fired while the permission-requested event is still in flight still cancels promptly", async () => {
+      // Regression guard for a real gap: the pending request used to be
+      // tracked only once `resolveManually` itself ran, which is after
+      // `tools.sendEvent(...)` resolves. A room torn down while that event
+      // was still in flight found nothing to cancel and the request then
+      // hung for the full timeout. `trackPending` now runs before
+      // `sendEvent` is even called, so cancellation reaches it regardless
+      // of when it lands relative to that call.
+      let releaseSendEvent: () => void = () => undefined
+      const sendEventGate = new Promise<void>((resolve) => { releaseSendEvent = resolve })
+      let sendEventStarted: () => void = () => undefined
+      const started = new Promise<void>((resolve) => { sendEventStarted = resolve })
+
+      class DelayedTools extends FakeTools {
+        public override async sendEvent(
+          content: string,
+          messageType: string,
+          metadata?: Record<string, unknown>,
+        ): Promise<Record<string, unknown>> {
+          sendEventStarted()
+          await sendEventGate
+          return super.sendEvent(content, messageType, metadata)
+        }
+      }
+
+      const { adapter, getPermissionResult } = buildHarness({
+        // Never actually invoked in this test — onCleanup below cancels the
+        // request before resolveManually's race would ever call it — kept
+        // async-and-hanging only so a regression (the old, buggy ordering)
+        // fails by timing out rather than by a misleading assertion error.
+        resolvePermission: async () => new Promise<string | undefined>(() => undefined),
+        permissionTimeoutMs: 60_000,
+      })
+
+      const onMessage = send(adapter, new DelayedTools())
+      await started
+      await adapter.onCleanup("room-1")
+      releaseSendEvent()
+      await onMessage
+
+      expect(getPermissionResult()).toEqual({ outcome: { outcome: "cancelled" } })
+    })
   })
 });

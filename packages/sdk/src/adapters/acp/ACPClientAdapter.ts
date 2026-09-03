@@ -15,6 +15,7 @@ import type {
 import { ACPClientHistoryConverter, type ACPClientSessionState } from "../../converters/acp-client";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import { NoopLogger, type Logger } from "../../core/logger";
+import { ValidationError } from "../../core/errors";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import type { PlatformMessage } from "../../runtime/types";
@@ -92,7 +93,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private readonly roomTools = new Map<string, AdapterToolsProtocol>()
   private readonly activeSessions = new Set<string>()
   private readonly bootstrappedSessions = new Set<string>()
-  private readonly pendingPermissions = new Map<string /* sessionId */, Set<() => void>>()
+  private readonly pendingPermissions = new Map<string /* sessionId */, Set<AbortController>>()
 
   private readonly resolvePermission?: (request: RequestPermissionRequest, signal: AbortSignal) => Promise<string | undefined>
   private readonly permissionTimeoutMs: number
@@ -131,8 +132,12 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.resolvePermission = options.resolvePermission
     this.logger = options.logger ?? new NoopLogger()
     this.permissionTimeoutMs = options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
-    if (!Number.isFinite(this.permissionTimeoutMs) || this.permissionTimeoutMs <= 0) {
-      throw new Error(`permissionTimeoutMs must be a positive finite number, got ${options.permissionTimeoutMs}`)
+    // Only meaningful when `resolvePermission` is actually set — the
+    // auto-allow path never reads it, so an irrelevant/default value here
+    // shouldn't reject an otherwise-valid config for a caller not using
+    // manual mode at all.
+    if (this.resolvePermission && (!Number.isFinite(this.permissionTimeoutMs) || this.permissionTimeoutMs <= 0)) {
+      throw new ValidationError(`permissionTimeoutMs must be a positive finite number, got ${options.permissionTimeoutMs}`)
     }
   }
 
@@ -512,22 +517,38 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   ): Promise<RequestPermissionResponse> {
     const toolName = params.toolCall.title ?? "unknown"
 
-    // Emitted before the decision is known (not just before it's awaited) —
-    // this is the room's only "a permission request is pending" signal, and
-    // the only one other room participants ever see. A manual wait can take
-    // up to `permissionTimeoutMs`; nothing downstream should have to wait
-    // that long just to learn a request exists.
-    await tools.sendEvent(`Permission requested: ${toolName}`, "tool_call", {
-      permission_request: true,
-      tool_name: toolName,
-      tool_call_id: params.toolCall.toolCallId,
-      acp_session_id: params.sessionId,
-      auto_allowed: !this.resolvePermission,
-    })
+    // Only the auto path can be decided synchronously; the manual path's
+    // real outcome isn't known until a human answers or times out. This is
+    // the only value `auto_allowed` can honestly report at emit time, and it
+    // reflects *this specific request*'s real outcome — including the
+    // empty-`options` edge case `choosePermissionOption` maps to `null`
+    // (and `toResponse` below maps to `cancelled`, never "auto-allowed").
+    const autoSelection = this.resolvePermission ? undefined : choosePermissionOption(params.options)
 
-    const chosenId = this.resolvePermission
-      ? await this.resolveManually(params.sessionId, params)
-      : choosePermissionOption(params.options)?.optionId
+    // Created and tracked before anything below is awaited: a room/adapter
+    // teardown racing the `sendEvent` call must still find this request
+    // cancellable immediately, not only once `resolveManually` itself runs.
+    const controller = this.resolvePermission ? new AbortController() : undefined
+    if (controller) {
+      this.trackPending(params.sessionId, controller)
+    }
+
+    const [, chosenId] = await Promise.all([
+      // This is the room's only "a permission request is pending" signal,
+      // and the only one other room participants ever see — started
+      // immediately rather than serialized in front of a manual wait that
+      // can take up to `permissionTimeoutMs`.
+      tools.sendEvent(`Permission requested: ${toolName}`, "tool_call", {
+        permission_request: true,
+        tool_name: toolName,
+        tool_call_id: params.toolCall.toolCallId,
+        acp_session_id: params.sessionId,
+        auto_allowed: autoSelection !== undefined && autoSelection !== null,
+      }),
+      controller
+        ? this.resolveManually(params.sessionId, params, controller)
+        : Promise.resolve(autoSelection?.optionId),
+    ])
 
     return this.toResponse(chosenId, params.options)
   }
@@ -542,19 +563,23 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       : { outcome: { outcome: "cancelled" } }
   }
 
-  // Races the caller-supplied resolver against a timeout and an external
-  // cancellation (`cancelPendingPermissions`/`cancelAllPendingPermissions`,
-  // fired from `onCleanup`/`stop()` below when a room or the whole adapter
-  // tears down while this is still pending).
-  private async resolveManually(sessionId: string, params: RequestPermissionRequest): Promise<string | undefined> {
-    const controller = new AbortController()
+  // Races the caller-supplied resolver against a timeout and against
+  // `controller`'s own abort signal — aborted externally by
+  // `cancelPendingPermissions`/`cancelAllPendingPermissions` (fired from
+  // `onCleanup`/`stop()` below) when a room or the whole adapter tears down
+  // while this is still pending. `controller` is the same object tracked in
+  // `pendingPermissions` by the caller, so there is exactly one cancellation
+  // channel here, not a second hand-rolled one alongside it.
+  private async resolveManually(
+    sessionId: string,
+    params: RequestPermissionRequest,
+    controller: AbortController,
+  ): Promise<string | undefined> {
     let timer: ReturnType<typeof setTimeout> | undefined
-    let cancelNow: (() => void) | undefined
     const cancelled = new Promise<undefined>((resolve) => {
-      cancelNow = () => resolve(undefined)
+      controller.signal.addEventListener("abort", () => resolve(undefined))
     })
 
-    this.trackPending(sessionId, cancelNow!)
     try {
       const timeout = new Promise<undefined>((resolve) => {
         timer = setTimeout(() => resolve(undefined), this.permissionTimeoutMs)
@@ -569,7 +594,14 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         Promise.resolve()
           .then(() => this.resolvePermission!(params, controller.signal))
           .catch((error) => {
-            this.logger.warn("resolvePermission threw; treating as no answer", { error: String(error) })
+            // Best-effort: a caller-supplied `logger` that itself throws
+            // must not turn "the resolver failed" into an unhandled
+            // rejection escaping this race in its place.
+            try {
+              this.logger.warn("resolvePermission threw; treating as no answer", { error: String(error) })
+            } catch {
+              // ignore — see comment above
+            }
             return undefined
           }),
         timeout,
@@ -577,33 +609,33 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       ])
     } finally {
       clearTimeout(timer)
-      this.untrackPending(sessionId, cancelNow!)
+      this.untrackPending(sessionId, controller)
       controller.abort()
     }
   }
 
-  private trackPending(sessionId: string, cancelNow: () => void): void {
-    const pending = this.pendingPermissions.get(sessionId) ?? new Set<() => void>()
-    pending.add(cancelNow)
+  private trackPending(sessionId: string, controller: AbortController): void {
+    const pending = this.pendingPermissions.get(sessionId) ?? new Set<AbortController>()
+    pending.add(controller)
     this.pendingPermissions.set(sessionId, pending)
   }
 
-  private untrackPending(sessionId: string, cancelNow: () => void): void {
+  private untrackPending(sessionId: string, controller: AbortController): void {
     const pending = this.pendingPermissions.get(sessionId)
-    pending?.delete(cancelNow)
+    pending?.delete(controller)
     if (pending?.size === 0) {
       this.pendingPermissions.delete(sessionId)
     }
   }
 
   private cancelPendingPermissions(sessionId: string): void {
-    for (const cancelNow of this.pendingPermissions.get(sessionId) ?? []) {
-      cancelNow()
+    for (const controller of this.pendingPermissions.get(sessionId) ?? []) {
+      controller.abort()
     }
   }
 
   private cancelAllPendingPermissions(): void {
-    for (const sessionId of [...this.pendingPermissions.keys()]) {
+    for (const sessionId of this.pendingPermissions.keys()) {
       this.cancelPendingPermissions(sessionId)
     }
   }
