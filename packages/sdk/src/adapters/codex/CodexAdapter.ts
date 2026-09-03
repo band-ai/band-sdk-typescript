@@ -12,6 +12,7 @@ import { NoopLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { SEND_MESSAGE_TOOL_NAME, SEND_EVENT_TOOL_NAME } from "../../runtime/tools/schemas";
+import { systemUpdateParts } from "../shared/conversationPrompt";
 import {
   CustomToolExecutionError,
   CustomToolValidationError,
@@ -684,12 +685,8 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       }
     }
 
-    if (input.participantsMessage) {
-      items.push({ type: "text", text: `[System]: ${input.participantsMessage}` });
-    }
-
-    if (input.contactsMessage) {
-      items.push({ type: "text", text: `[System]: ${input.contactsMessage}` });
+    for (const part of systemUpdateParts(input.participantsMessage, input.contactsMessage)) {
+      items.push({ type: "text", text: part });
     }
 
     items.push({

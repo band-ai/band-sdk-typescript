@@ -15,7 +15,8 @@ import { ACPClientHistoryConverter, type ACPClientSessionState } from "../../con
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { renderSystemPrompt } from "../../runtime/prompts"
-import { mentionSubjectsFromMetadata, replaceUuidMentions } from "../../runtime/formatters";
+import { mentionSubjectsFromMetadata, replaceUuidMentions } from "../../runtime/formatters"
+import { systemUpdateParts } from "../shared/conversationPrompt";
 import type { PlatformMessage } from "../../runtime/types";
 import type { McpToolRegistration } from "../../mcp/registrations";
 import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
@@ -125,8 +126,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     message: PlatformMessage,
     tools: AdapterToolsProtocol,
     history: ACPClientSessionState,
-    _participantsMessage: string | null,
-    _contactsMessage: string | null,
+    participantsMessage: string | null,
+    contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
     if (context.isSessionBootstrap) {
@@ -153,9 +154,15 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     // an MCP protocol token instead of as being spoken to.
     const content = replaceUuidMentions(message.content, mentionSubjectsFromMetadata(message.metadata))
 
+    // ExecutionContext.consumeParticipantsMessage is edge-triggered: it only
+    // returns a value on the turn the roster actually changed, then clears
+    // itself. Injecting it here, on every turn it's non-null, is the only
+    // chance ACP gets to see it at all.
+    const messageWithContext = [...systemUpdateParts(participantsMessage, contactsMessage), content].join("\n\n")
+
     const promptText = this.bootstrappedSessions.has(sessionId)
-      ? content
-      : `${this.buildSystemContext(context.roomId, message)}\n\n${content}`
+      ? messageWithContext
+      : `${this.buildSystemContext(context.roomId, message)}\n\n${messageWithContext}`
 
     this.bootstrappedSessions.add(sessionId)
 

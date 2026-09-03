@@ -335,6 +335,61 @@ describe("ACPClientAdapter", () => {
     expect(promptTexts[0]).not.toContain("@[[")
   })
 
+  it("carries a room-context update to the agent, on a warm turn as well as a bootstrap one", async () => {
+    const promptTexts: string[] = []
+    const prompt = vi.fn(async (params: { sessionId: string; prompt: Array<{ text?: string }> }) => {
+      promptTexts.push(params.prompt[0]?.text ?? "")
+      return { stopReason: "end_turn" }
+    })
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      connectionFactory: async () => {
+        const controller = new AbortController()
+        return {
+          connection: {
+            signal: controller.signal,
+            closed: new Promise<void>(() => undefined),
+            initialize: vi.fn(async () => ({
+              protocolVersion: 1,
+              agentCapabilities: { mcpCapabilities: { http: true } },
+            })),
+            authenticate: vi.fn(async () => ({})),
+            loadSession: vi.fn(),
+            unstable_resumeSession: vi.fn(),
+            newSession: vi.fn(async () => ({ sessionId: "session-room-context" })),
+            prompt,
+          } as never,
+          stop: async () => {
+            controller.abort()
+          },
+        }
+      },
+    })
+
+    await adapter.onStarted("Room Context Agent", "ACP room context test")
+
+    await adapter.onMessage(
+      makeMessage("hello", "room-context"),
+      new FakeTools(),
+      { roomToSession: {} },
+      "Alice joined the room.",
+      null,
+      { isSessionBootstrap: true, roomId: "room-context" },
+    )
+    await adapter.onMessage(
+      makeMessage("still here?", "room-context"),
+      new FakeTools(),
+      { roomToSession: {} },
+      "Bob joined the room.",
+      null,
+      { isSessionBootstrap: false, roomId: "room-context" },
+    )
+
+    expect(promptTexts[0]).toContain("[System]: Alice joined the room.")
+    expect(promptTexts[1]).toContain("[System]: Bob joined the room.")
+  })
+
   it("fails loudly instead of guessing when the agent advertises no MCP transport", async () => {
     const initialize = vi.fn(async () => ({
       protocolVersion: 1,
