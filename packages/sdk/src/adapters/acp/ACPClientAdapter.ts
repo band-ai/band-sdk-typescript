@@ -14,8 +14,8 @@ import type {
 import { ACPClientHistoryConverter, type ACPClientSessionState } from "../../converters/acp-client";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
-import { renderSystemPrompt } from "../../runtime/prompts"
-import { mentionSubjectsFromMetadata, replaceUuidMentions } from "../../runtime/formatters"
+import { renderSystemPrompt } from "../../runtime/prompts";
+import { mentionSubjectsFromMetadata, replaceUuidMentions } from "../../runtime/formatters";
 import { systemUpdateParts } from "../shared/conversationPrompt";
 import type { PlatformMessage } from "../../runtime/types";
 import type { McpToolRegistration } from "../../mcp/registrations";
