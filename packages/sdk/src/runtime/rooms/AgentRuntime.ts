@@ -364,6 +364,7 @@ export class AgentRuntime {
       enableContextCache: this.sessionConfig.enableContextCache,
       contextCacheTtlSeconds: this.sessionConfig.contextCacheTtlSeconds,
       enableContextHydration: this.sessionConfig.enableContextHydration,
+      logger: this.logger,
     };
     const context = this.contextFactory
       ? this.contextFactory(roomId, defaults)

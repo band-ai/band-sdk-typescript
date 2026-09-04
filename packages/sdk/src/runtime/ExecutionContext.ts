@@ -3,6 +3,8 @@ import { DEFAULT_REQUEST_OPTIONS } from "../client/rest/requestOptions";
 import type { AdapterToolsProtocol, AgentToolsCapabilities } from "../contracts/protocols";
 import type { MetadataMap, ParticipantRecord } from "../contracts/dtos";
 import { UnsupportedFeatureError } from "../core/errors";
+import type { Logger } from "../core/logger";
+import { NoopLogger } from "../core/logger";
 import type { ConversationContext, PlatformMessage } from "./types";
 import { AgentTools } from "./tools/AgentTools";
 import { ParticipantRoster, RetryTracker } from "@band-ai/band-sdk-core";
@@ -23,6 +25,7 @@ export interface ExecutionContextOptions {
   enableContextCache?: boolean;
   contextCacheTtlSeconds?: number;
   enableContextHydration?: boolean;
+  logger?: Logger;
 }
 
 const DEDUP_CACHE_MAX = 500;
@@ -38,6 +41,7 @@ export class ExecutionContext {
   private messageIds = new Set<string>();
   private readonly dedupCache = new Map<string, true>();
   private readonly roster = new ParticipantRoster();
+  private readonly logger: Logger;
   private readonly tools: AgentTools;
   private readonly adapterTools: AdapterToolsProtocol;
   private participantsMessage: string | null = null;
@@ -58,11 +62,13 @@ export class ExecutionContext {
     this.contextCacheTtlMs = Math.max(0, (options.contextCacheTtlSeconds ?? 300) * 1000);
     this.enableContextHydration = options.enableContextHydration ?? true;
     this.retryTrackerInstance = new RetryTracker(options.maxMessageRetries ?? 1);
+    this.logger = options.logger ?? new NoopLogger();
     this.tools = new AgentTools({
       roomId: this.roomId,
       rest: this.link.rest,
       roster: this.roster,
       capabilities: this.link.capabilities,
+      logger: this.logger,
     });
     this.adapterTools = this.tools.getAdapterTools();
   }

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { UnsupportedFeatureError } from "../src/core/errors";
+import type { Logger } from "../src/core/logger";
 import { ExecutionContext } from "../src/runtime/ExecutionContext";
 import type { RestApi } from "../src/client/rest/types";
 import { FakeRestApi, makeMessage } from "./testUtils";
@@ -10,6 +11,7 @@ function makeContext(restOverrides?: Partial<RestApi>, options?: {
   enableContextCache?: boolean;
   contextCacheTtlSeconds?: number;
   enableContextHydration?: boolean;
+  logger?: Logger;
 }) {
   return new ExecutionContext({
     roomId: "room-1",
@@ -21,6 +23,7 @@ function makeContext(restOverrides?: Partial<RestApi>, options?: {
     enableContextCache: options?.enableContextCache,
     contextCacheTtlSeconds: options?.contextCacheTtlSeconds,
     enableContextHydration: options?.enableContextHydration,
+    logger: options?.logger,
   });
 }
 
@@ -152,5 +155,23 @@ describe("ExecutionContext coverage", () => {
 
     const second = await ctx.hydrateContext();
     expect(second.participants).toEqual([{ id: "u1", name: "Jane", type: "User", handle: "@jane" }]);
+  });
+
+  it("threads a caller-supplied logger into the AgentTools it builds, so a sendEvent failure is actually logged", async () => {
+    const logger: Logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const ctx = makeContext(
+      { createChatEvent: async () => { throw new Error("network error"); } },
+      { logger },
+    );
+
+    await expect(ctx.getTools().sendEvent("thinking", "thought")).resolves.toEqual({
+      ok: false,
+      status: "failed",
+    });
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "chat event send failed",
+      expect.objectContaining({ roomId: "room-1", messageType: "thought" }),
+    );
   });
 });
