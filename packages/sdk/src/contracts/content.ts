@@ -1,3 +1,6 @@
+import { ValidationError } from "../core/errors";
+import type { ToolOperationResult } from "./dtos";
+
 // Mirrors the platform's own rule for what counts as content, rather than a
 // plain non-empty check: whitespace-only, zero-width, and bidi-mark-only
 // strings pass a naive `.length > 0` test but the platform's chat-message
@@ -24,3 +27,15 @@ export const BLANK_CONTENT_ERROR = "can't be blank";
 // `ToolOperationResult`, so callers can recognise the refusal by name instead
 // of matching the error string.
 export const BLANK_CONTENT_STATUS = "blank_content";
+
+// sendMessage/sendEvent are the single choke point every adapter posts through
+// (directly or via AdapterToolsProtocol), so this is where a transport-level
+// blank-content refusal turns into a real failure instead of a silently
+// "successful" {ok: false} result no caller happens to check.
+export function assertNotBlankContentRefusal(result: ToolOperationResult): ToolOperationResult {
+  if (result.status === BLANK_CONTENT_STATUS) {
+    throw new ValidationError(typeof result.error === "string" ? result.error : BLANK_CONTENT_ERROR);
+  }
+
+  return result;
+}

@@ -207,7 +207,7 @@ describe("ACPClientAdapter", () => {
     expect(promptTexts[2]).not.toContain("[System Context]")
   })
 
-  // Recreates the INT-1361 trigger sequence against the real send path
+  // Recreates the original trigger sequence against the real send path
   // (AgentTools -> FernRestAdapter), not FakeTools: a status-only
   // `tool_call_update` (no rawOutput, no content) collects as a blank
   // `tool_result` chunk. When flushChunks forwarded that to sendEvent, the

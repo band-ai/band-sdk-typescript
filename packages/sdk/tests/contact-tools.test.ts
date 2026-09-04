@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ContactCallbackTools } from "../src/runtime/tools/ContactCallbackTools";
 import { ContactToolsImpl } from "../src/runtime/tools/ContactToolsImpl";
+import { BLANK_CONTENT_ERROR, BLANK_CONTENT_STATUS } from "../src/contracts/content";
 import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
 
 describe("ContactToolsImpl", () => {
@@ -216,6 +217,21 @@ describe("ContactCallbackTools", () => {
 
       expect(createChatMessage).toHaveBeenCalledWith("room-1", { content: "hi" });
     });
+
+    it("throws instead of silently accepting a transport blank-content refusal", async () => {
+      const createChatMessage = vi.fn().mockResolvedValue({
+        ok: false,
+        status: BLANK_CONTENT_STATUS,
+        error: `content ${BLANK_CONTENT_ERROR}`,
+      });
+      const tools = new ContactCallbackTools({ createChat: vi.fn(), createChatMessage } as never, "room-1");
+
+      // Zero-width space: a real-world blank the platform still rejects, chosen
+      // to document the scenario even though the fake refuses unconditionally.
+      const zeroWidthSpace = "\u200B";
+      await expect(tools.sendMessage(zeroWidthSpace)).rejects.toBeInstanceOf(ValidationError);
+      await expect(tools.sendMessage(zeroWidthSpace)).rejects.toThrow(`content ${BLANK_CONTENT_ERROR}`);
+    });
   });
 
   describe("sendEvent", () => {
@@ -244,6 +260,19 @@ describe("ContactCallbackTools", () => {
         "room-1",
         { content: "hi", messageType: "task" },
       );
+    });
+
+    it("throws instead of silently accepting a transport blank-content refusal", async () => {
+      const createChatEvent = vi.fn().mockResolvedValue({
+        ok: false,
+        status: BLANK_CONTENT_STATUS,
+        error: `content ${BLANK_CONTENT_ERROR}`,
+      });
+      const tools = new ContactCallbackTools({ createChat: vi.fn(), createChatEvent } as never, "room-1");
+
+      const zeroWidthSpace = "\u200B";
+      await expect(tools.sendEvent(zeroWidthSpace, "task")).rejects.toBeInstanceOf(ValidationError);
+      await expect(tools.sendEvent(zeroWidthSpace, "task")).rejects.toThrow(`content ${BLANK_CONTENT_ERROR}`);
     });
   });
 

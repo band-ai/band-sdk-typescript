@@ -655,7 +655,13 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     for (const chunk of client.getCollectedChunks(input.sessionId)) {
       // Nothing to post for a chunk the platform would reject as blank, and a
       // status-only `tool_call_update` (no rawOutput, no content) collects as
-      // exactly that on every routine progress tick.
+      // exactly that on every routine progress tick. This filter stays
+      // necessary even though `input.tools.sendEvent` now rejects blank
+      // content itself: that rejection throws, so without this pre-filter
+      // every routine blank progress tick would throw instead of being
+      // skipped, killing the whole message pipeline rather than just this
+      // one non-event. Do not remove this on the assumption the tools-layer
+      // guard alone makes it redundant.
       if (!hasVisibleContent(chunk.content)) {
         continue
       }

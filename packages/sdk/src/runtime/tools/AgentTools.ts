@@ -5,7 +5,11 @@ import type { AgentToolsRestApi } from "../../client/rest/types";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
 import { assertCapability } from "../../contracts/capabilities";
 import { assertChatEventType, CHAT_EVENT_TYPES } from "../../contracts/chatEvents";
-import { BLANK_CONTENT_ERROR, BLANK_CONTENT_STATUS, hasVisibleContent } from "../../contracts/content";
+import {
+  assertNotBlankContentRefusal,
+  BLANK_CONTENT_ERROR,
+  hasVisibleContent,
+} from "../../contracts/content";
 import type {
   AddContactArgs,
   ContactRecord,
@@ -1069,18 +1073,6 @@ export class AgentTools implements AgentToolsProtocol {
 
 function isContactRequestAction(value: string): value is RespondContactRequestArgs["action"] {
   return CONTACT_REQUEST_ACTIONS.has(value as RespondContactRequestArgs["action"]);
-}
-
-// sendMessage/sendEvent are the single choke point every adapter posts through
-// (directly or via AdapterToolsProtocol), so this is where a transport-level
-// blank-content refusal turns into a real failure instead of a silently
-// "successful" {ok: false} result no caller happens to check.
-function assertNotBlankContentRefusal(result: ToolOperationResult): ToolOperationResult {
-  if (result.status === BLANK_CONTENT_STATUS) {
-    throw new ValidationError(typeof result.error === "string" ? result.error : BLANK_CONTENT_ERROR);
-  }
-
-  return result;
 }
 
 function coercePositiveInt(value: unknown, fallback: number): number {

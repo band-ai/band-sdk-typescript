@@ -3,12 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 import { FernRestAdapter } from "../src/client/rest/FernRestAdapter";
 import type { Logger } from "../src/core/logger";
 
-// The root-cause regression guard for INT-1372/INT-1361: a blank chat_result
-// event used to reach the platform and 422, which escaped ACPClientAdapter's
-// prompt-only try/catch and permanently killed the agent's runtime. Every
-// send path (AgentTools, the ACP/A2A relays, every other direct caller) funnels
-// through FernRestAdapter.createChatMessage/createChatEvent, so guarding here
-// covers all of them at once.
+// Root-cause regression guard: a blank chat_result event used to reach the
+// platform and 422, which escaped ACPClientAdapter's prompt-only try/catch
+// and permanently killed the agent's runtime. Every send path (AgentTools,
+// the ACP/A2A relays, every other direct caller) funnels through
+// FernRestAdapter.createChatMessage/createChatEvent, so guarding here covers
+// all of them at once.
 function recordingLogger(): { logger: Logger; warnings: Array<{ message: string; context?: Record<string, unknown> }> } {
   const warnings: Array<{ message: string; context?: Record<string, unknown> }> = [];
   return {

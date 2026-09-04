@@ -5,6 +5,7 @@ import type {
   ChatRoomRestApi,
   ContactRestApi,
 } from "../../client/rest/types";
+import { assertNotBlankContentRefusal } from "../../contracts/content";
 import type {
   AddContactArgs,
   ContactRecord,
@@ -100,13 +101,14 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
 
     // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
     // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
-    return this.rest.createChatMessage(
+    const result = await this.rest.createChatMessage(
       roomId,
       {
         content,
         ...(normalizedMentions ? { mentions: normalizedMentions } : {}),
       },
     );
+    return assertNotBlankContentRefusal(result);
   }
 
   public async sendEvent(
@@ -120,7 +122,7 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
     }
     // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
     // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
-    return this.rest.createChatEvent(
+    const result = await this.rest.createChatEvent(
       roomId,
       {
         content,
@@ -128,6 +130,7 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
         ...(metadata ? { metadata } : {}),
       },
     );
+    return assertNotBlankContentRefusal(result);
   }
 
   public async addParticipant(): Promise<ToolOperationResult> {
