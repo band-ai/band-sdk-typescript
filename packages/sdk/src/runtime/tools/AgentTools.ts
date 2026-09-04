@@ -207,7 +207,12 @@ export class AgentTools implements AgentToolsProtocol {
       // Room telemetry, not the agent's answer: a failed post here must never
       // abort the turn the way a failed sendMessage should. See sendMessage,
       // which is deliberately left to reject.
-      this.logger.warn("chat event send failed", { roomId: this.roomId, messageType, error });
+      try {
+        this.logger.warn("chat event send failed", { roomId: this.roomId, messageType, error });
+      } catch {
+        // A caller-supplied logger that itself throws must not turn this
+        // telemetry failure into a rejection in its place — see above.
+      }
       return { ok: false, status: "failed" };
     }
   }

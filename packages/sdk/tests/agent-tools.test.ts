@@ -287,6 +287,32 @@ describe("AgentTools", () => {
     await expect(tools.sendMessage("hello")).rejects.toThrow("network down");
   });
 
+  it("still absorbs a failed chat event when the caller-supplied logger itself throws", async () => {
+    class FailingRestApi extends FakeRestApi {
+      public override async createChatEvent(): ReturnType<FakeRestApi["createChatEvent"]> {
+        throw new Error("network down");
+      }
+    }
+
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api: new FailingRestApi() }),
+      logger: {
+        debug: () => {},
+        info: () => {},
+        warn: () => {
+          throw new Error("logger is broken");
+        },
+        error: () => {},
+      },
+    });
+
+    await expect(tools.sendEvent("hello", "task")).resolves.toEqual({
+      ok: false,
+      status: "failed",
+    });
+  });
+
   it("validates send_message requires mentions", async () => {
     const tools = new AgentTools({
       roomId: "room-1",
