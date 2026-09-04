@@ -655,11 +655,12 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     for (const chunk of client.getCollectedChunks(input.sessionId)) {
       // Nothing to post for a chunk the platform would reject as blank, and a
       // status-only `tool_call_update` (no rawOutput, no content) collects as
-      // exactly that on every routine progress tick. `input.tools.sendEvent`
-      // already resolves rather than throws on a blank-content refusal, so
-      // this filter is an optimization, not a crash guard: it skips the
-      // wasted round trip (and the resulting warn log) for a tick that would
-      // just be refused and logged anyway.
+      // exactly that on every routine progress tick. For a non-text chunk this
+      // is only an optimization -- sendEvent resolves rather than throws on a
+      // blank-content refusal -- but for a "text" chunk it is load-bearing:
+      // sendMessage throws on that same refusal, and flushChunks runs outside
+      // the try/catch around connection.prompt, so an un-filtered blank text
+      // chunk would kill the runtime the same way the blank-event bug did.
       if (!hasVisibleContent(chunk.content)) {
         continue
       }

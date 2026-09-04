@@ -5,7 +5,7 @@ import type {
   ChatRoomRestApi,
   ContactRestApi,
 } from "../../client/rest/types";
-import { assertNotBlankContentRefusal } from "../../contracts/content";
+import { assertNotBlankContentRefusal, resolveEventSend } from "../../contracts/content";
 import type {
   AddContactArgs,
   ContactRecord,
@@ -120,27 +120,17 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
     metadata?: MetadataMap,
   ): Promise<ToolOperationResult> {
     const roomId = requireRoomId(this.roomId, "sendEvent");
-    if (!this.rest.createChatEvent) {
+    const createChatEvent = this.rest.createChatEvent?.bind(this.rest);
+    if (!createChatEvent) {
       throw new UnsupportedFeatureError("Event sending is not available in current REST adapter");
     }
-    try {
-      // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
-      // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
-      return await this.rest.createChatEvent(
-        roomId,
-        {
-          content,
-          messageType,
-          ...(metadata ? { metadata } : {}),
-        },
-      );
-    } catch (error) {
-      // Room telemetry, not the agent's answer: see AgentTools.sendEvent for
-      // why a failed post here (including a non-throwing blank-content
-      // refusal) must never abort the caller's turn.
-      this.logger.warn("chat event send failed", { roomId, messageType, error });
-      return { ok: false, status: "failed" };
-    }
+    // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
+    // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
+    return resolveEventSend(
+      () => createChatEvent(roomId, { content, messageType, ...(metadata ? { metadata } : {}) }),
+      this.logger,
+      { roomId, messageType },
+    );
   }
 
   public async addParticipant(): Promise<ToolOperationResult> {

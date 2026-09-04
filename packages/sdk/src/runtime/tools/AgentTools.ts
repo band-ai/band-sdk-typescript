@@ -10,6 +10,7 @@ import {
   assertNotBlankContentRefusal,
   BLANK_CONTENT_ERROR,
   hasVisibleContent,
+  resolveEventSend,
 } from "../../contracts/content";
 import type {
   AddContactArgs,
@@ -198,26 +199,13 @@ export class AgentTools implements AgentToolsProtocol {
     metadata?: MetadataMap,
   ): Promise<ToolOperationResult> {
     assertChatEventType(messageType);
-    try {
-      // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
-      // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
-      return await this.rest.createChatEvent(
-        this.roomId,
-        {
-          content,
-          messageType,
-          metadata,
-        },
-      );
-    } catch (error) {
-      // Room telemetry, not the agent's answer: a failed post here (including
-      // FernRestAdapter's own non-throwing blank-content refusal, which just
-      // flows through as a plain `{ ok: false }` result) must never abort the
-      // turn the way a failed sendMessage should. See sendMessage, which is
-      // deliberately left to reject.
-      this.logger.warn("chat event send failed", { roomId: this.roomId, messageType, error });
-      return { ok: false, status: "failed" };
-    }
+    // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
+    // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
+    return resolveEventSend(
+      () => this.rest.createChatEvent(this.roomId, { content, messageType, metadata }),
+      this.logger,
+      { roomId: this.roomId, messageType },
+    );
   }
 
   public async createChatroom(taskId?: string): Promise<string> {

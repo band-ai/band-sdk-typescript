@@ -1,4 +1,5 @@
 import { ValidationError } from "../core/errors";
+import type { Logger } from "../core/logger";
 import type { ToolOperationResult } from "./dtos";
 
 // Mirrors the platform's own rule for what counts as content, rather than a
@@ -38,4 +39,23 @@ export function assertNotBlankContentRefusal(result: ToolOperationResult): ToolO
   }
 
   return result;
+}
+
+// sendEvent's counterpart to assertNotBlankContentRefusal: an event is room
+// telemetry, not the agent's answer, so a transport failure here (a rejected
+// promise, e.g. once retries are exhausted) must resolve rather than abort
+// the caller's turn the way a failed sendMessage does. A blank-content
+// refusal already resolves instead of throwing, so it passes straight
+// through `send()` without ever reaching this catch.
+export async function resolveEventSend(
+  send: () => Promise<ToolOperationResult>,
+  logger: Logger,
+  logContext: Record<string, unknown>,
+): Promise<ToolOperationResult> {
+  try {
+    return await send();
+  } catch (error) {
+    logger.warn("chat event send failed", { ...logContext, error });
+    return { ok: false, status: "failed" };
+  }
 }
