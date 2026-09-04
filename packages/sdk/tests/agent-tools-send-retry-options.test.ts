@@ -24,21 +24,29 @@ interface SendPath {
   send: (rest: FernRestAdapter) => Promise<unknown>;
 }
 
-const SEND_PATHS: SendPath[] = [
+// sendMessage is the agent's answer, so retry exhaustion is fatal and rejects.
+// sendEvent is room telemetry -- AgentTools.sendEvent/ContactCallbackTools.sendEvent
+// absorb any transport failure, including exhausted retries, and resolve
+// { ok: false, status: "failed" } instead, so a dropped event can never abort
+// the caller's turn the way a dropped message should.
+const MESSAGE_SEND_PATHS: SendPath[] = [
   {
     name: "AgentTools.sendMessage",
     urlSegment: "messages",
     send: (rest) => new AgentTools({ roomId: "room-1", rest }).sendMessage("hi"),
   },
   {
-    name: "AgentTools.sendEvent",
-    urlSegment: "events",
-    send: (rest) => new AgentTools({ roomId: "room-1", rest }).sendEvent("hi", "task"),
-  },
-  {
     name: "ContactCallbackTools.sendMessage",
     urlSegment: "messages",
     send: (rest) => new ContactCallbackTools(rest, "room-1").sendMessage("hi"),
+  },
+];
+
+const EVENT_SEND_PATHS: SendPath[] = [
+  {
+    name: "AgentTools.sendEvent",
+    urlSegment: "events",
+    send: (rest) => new AgentTools({ roomId: "room-1", rest }).sendEvent("hi", "task"),
   },
   {
     name: "ContactCallbackTools.sendEvent",
@@ -56,12 +64,24 @@ describe("message-send retry cap holds through the tool layer", () => {
     vi.useRealTimers();
   });
 
-  it.each(SEND_PATHS)(
-    "$name makes 3 attempts, not 4, on a sustained 429, over its own /$urlSegment route",
+  it.each(MESSAGE_SEND_PATHS)(
+    "$name makes 3 attempts, not 4, on a sustained 429, over its own /$urlSegment route, and rejects",
     async ({ urlSegment, send }) => {
       const { rest, calls } = buildFakeRestAdapter(SUSTAINED_429(3));
 
       await expect(settleThroughRetries(send(rest))).rejects.toMatchObject({ statusCode: 429 });
+
+      expect(calls).toHaveLength(3);
+      expect(calls.every((call) => call.url.includes(`/${urlSegment}`))).toBe(true);
+    },
+  );
+
+  it.each(EVENT_SEND_PATHS)(
+    "$name makes 3 attempts, not 4, on a sustained 429, over its own /$urlSegment route, and resolves { ok: false }",
+    async ({ urlSegment, send }) => {
+      const { rest, calls } = buildFakeRestAdapter(SUSTAINED_429(3));
+
+      await expect(settleThroughRetries(send(rest))).resolves.toEqual({ ok: false, status: "failed" });
 
       expect(calls).toHaveLength(3);
       expect(calls.every((call) => call.url.includes(`/${urlSegment}`))).toBe(true);

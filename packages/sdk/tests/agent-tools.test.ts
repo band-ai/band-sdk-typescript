@@ -222,13 +222,9 @@ describe("AgentTools", () => {
     expect(resultByName).toEqual({ ok: true });
   });
 
-  it("throws instead of silently accepting a transport blank-content refusal", async () => {
+  it("sendMessage throws instead of silently accepting a transport blank-content refusal", async () => {
     class BlankContentRestApi extends FakeRestApi {
       public override async createChatMessage() {
-        return { ok: false, status: BLANK_CONTENT_STATUS, error: `content ${BLANK_CONTENT_ERROR}` };
-      }
-
-      public override async createChatEvent() {
         return { ok: false, status: BLANK_CONTENT_STATUS, error: `content ${BLANK_CONTENT_ERROR}` };
       }
     }
@@ -244,7 +240,41 @@ describe("AgentTools", () => {
     const zeroWidthSpace = "\u200B";
     await expect(tools.sendMessage(zeroWidthSpace, ["@jane"])).rejects.toBeInstanceOf(ValidationError);
     await expect(tools.sendMessage(zeroWidthSpace, ["@jane"])).rejects.toThrow(`content ${BLANK_CONTENT_ERROR}`);
-    await expect(tools.sendEvent(zeroWidthSpace, "task")).rejects.toThrow(`content ${BLANK_CONTENT_ERROR}`);
+  });
+
+  it("sendEvent resolves a transport blank-content refusal instead of throwing (room telemetry, not the agent's answer)", async () => {
+    class BlankContentRestApi extends FakeRestApi {
+      public override async createChatEvent() {
+        return { ok: false, status: BLANK_CONTENT_STATUS, error: `content ${BLANK_CONTENT_ERROR}` };
+      }
+    }
+
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api: new BlankContentRestApi() }),
+    });
+
+    const zeroWidthSpace = "\u200B";
+    await expect(tools.sendEvent(zeroWidthSpace, "task")).resolves.toEqual({
+      ok: false,
+      status: BLANK_CONTENT_STATUS,
+      error: `content ${BLANK_CONTENT_ERROR}`,
+    });
+  });
+
+  it("sendEvent resolves instead of throwing when the transport call itself rejects", async () => {
+    class FailingRestApi extends FakeRestApi {
+      public override async createChatEvent(): Promise<{ ok: boolean }> {
+        throw new Error("network error");
+      }
+    }
+
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api: new FailingRestApi() }),
+    });
+
+    await expect(tools.sendEvent("thinking", "thought")).resolves.toEqual({ ok: false, status: "failed" });
   });
 
   it("gates peers endpoint when disabled", async () => {

@@ -1,4 +1,5 @@
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
+import { NoopLogger, type Logger } from "../../core/logger";
 import { ParticipantRoster, type ParticipantFields } from "@band-ai/band-sdk-core";
 import { toParticipantRecord, toParticipantRecordFromRest } from "../formatters";
 import type { AgentToolsRestApi } from "../../client/rest/types";
@@ -74,6 +75,7 @@ interface AgentToolsOptions {
   rest: AgentToolsRestApi;
   roster?: ParticipantRoster;
   capabilities?: Partial<AgentToolsCapabilities>;
+  logger?: Logger;
 }
 
 type ToolHandler = (arguments_: MetadataMap) => Promise<unknown>;
@@ -145,11 +147,13 @@ export class AgentTools implements AgentToolsProtocol {
   private readonly roster: ParticipantRoster;
   private readonly adapterTools: AdapterToolsProtocol;
   private readonly toolHandlers: Record<string, ToolHandler>;
+  private readonly logger: Logger;
 
   public constructor(options: AgentToolsOptions) {
     this.roomId = options.roomId;
     this.rest = options.rest;
     this.roster = options.roster ?? new ParticipantRoster();
+    this.logger = options.logger ?? new NoopLogger();
     this.capabilities = {
       ...DEFAULT_AGENT_TOOLS_CAPABILITIES,
       ...options.capabilities,
@@ -194,17 +198,26 @@ export class AgentTools implements AgentToolsProtocol {
     metadata?: MetadataMap,
   ): Promise<ToolOperationResult> {
     assertChatEventType(messageType);
-    // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
-    // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
-    const result = await this.rest.createChatEvent(
-      this.roomId,
-      {
-        content,
-        messageType,
-        metadata,
-      },
-    );
-    return assertNotBlankContentRefusal(result);
+    try {
+      // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
+      // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
+      return await this.rest.createChatEvent(
+        this.roomId,
+        {
+          content,
+          messageType,
+          metadata,
+        },
+      );
+    } catch (error) {
+      // Room telemetry, not the agent's answer: a failed post here (including
+      // FernRestAdapter's own non-throwing blank-content refusal, which just
+      // flows through as a plain `{ ok: false }` result) must never abort the
+      // turn the way a failed sendMessage should. See sendMessage, which is
+      // deliberately left to reject.
+      this.logger.warn("chat event send failed", { roomId: this.roomId, messageType, error });
+      return { ok: false, status: "failed" };
+    }
   }
 
   public async createChatroom(taskId?: string): Promise<string> {

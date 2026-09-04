@@ -262,7 +262,7 @@ describe("ContactCallbackTools", () => {
       );
     });
 
-    it("throws instead of silently accepting a transport blank-content refusal", async () => {
+    it("resolves a transport blank-content refusal instead of throwing (room telemetry, not the agent's answer)", async () => {
       const createChatEvent = vi.fn().mockResolvedValue({
         ok: false,
         status: BLANK_CONTENT_STATUS,
@@ -271,8 +271,18 @@ describe("ContactCallbackTools", () => {
       const tools = new ContactCallbackTools({ createChat: vi.fn(), createChatEvent } as never, "room-1");
 
       const zeroWidthSpace = "\u200B";
-      await expect(tools.sendEvent(zeroWidthSpace, "task")).rejects.toBeInstanceOf(ValidationError);
-      await expect(tools.sendEvent(zeroWidthSpace, "task")).rejects.toThrow(`content ${BLANK_CONTENT_ERROR}`);
+      await expect(tools.sendEvent(zeroWidthSpace, "task")).resolves.toEqual({
+        ok: false,
+        status: BLANK_CONTENT_STATUS,
+        error: `content ${BLANK_CONTENT_ERROR}`,
+      });
+    });
+
+    it("resolves instead of throwing when the transport call itself rejects", async () => {
+      const createChatEvent = vi.fn().mockRejectedValue(new Error("network error"));
+      const tools = new ContactCallbackTools({ createChat: vi.fn(), createChatEvent } as never, "room-1");
+
+      await expect(tools.sendEvent("thinking", "thought")).resolves.toEqual({ ok: false, status: "failed" });
     });
   });
 
