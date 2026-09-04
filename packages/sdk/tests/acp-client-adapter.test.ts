@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { ACPClientAdapter, type ACPClientAdapterOptions } from "../src/adapters/acp";
+import { AgentTools } from "../src/runtime/tools/AgentTools";
+import { FernRestAdapter } from "../src/client/rest/FernRestAdapter";
 import { FakeTools, makeMessage } from "./testUtils";
 
 describe("ACPClientAdapter", () => {
@@ -203,6 +205,111 @@ describe("ACPClientAdapter", () => {
     expect(promptTexts[1]).toContain("[System Context]")
     expect(promptTexts[2]).not.toContain("[System Context]")
   })
+
+  // Recreates the INT-1361 trigger sequence against the real send path
+  // (AgentTools -> FernRestAdapter), not FakeTools: a status-only
+  // `tool_call_update` (no rawOutput, no content) collects as a blank
+  // `tool_result` chunk, and flushChunks forwards it to sendEvent
+  // unconditionally (its only emptiness guard is on the text branch). Before
+  // FernRestAdapter refused blank content transport-side, that reached the
+  // platform, 422'd, escaped the try/catch around `connection.prompt` (the
+  // adapter's only one), and killed the runtime — so the turn that produced
+  // the blank chunk would answer, but every later turn in the room would not.
+  it("keeps answering after a status-only tool_call_update collects as a blank event", async () => {
+    const createAgentChatEvent = vi.fn(async () => ({ data: { ok: true, id: "evt-1" } }));
+    const createAgentChatMessage = vi.fn(async (_chatId: string, _payload: { message: { content: string } }) => ({
+      data: { ok: true, id: "msg-1" },
+    }));
+    const rest = new FernRestAdapter({
+      agentApiEvents: { createAgentChatEvent },
+      agentApiMessages: { createAgentChatMessage },
+    });
+    const tools = new AgentTools({ roomId: "room-blank-event", rest }).getAdapterTools();
+
+    let clientHandle: { sessionUpdate: (params: Record<string, unknown>) => Promise<void> } | null = null;
+    let turn = 0;
+    const prompt = vi.fn(async (params: { sessionId: string }) => {
+      turn += 1;
+      if (turn === 1) {
+        await clientHandle?.sessionUpdate({
+          sessionId: params.sessionId,
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "on it" } },
+        });
+        await clientHandle?.sessionUpdate({
+          sessionId: params.sessionId,
+          update: { sessionUpdate: "tool_call", toolCallId: "call-1", title: "ToolSearch", status: "pending" },
+        });
+        // Status-only: no rawOutput, no content.
+        await clientHandle?.sessionUpdate({
+          sessionId: params.sessionId,
+          update: { sessionUpdate: "tool_call_update", toolCallId: "call-1", status: "in_progress" },
+        });
+      } else {
+        await clientHandle?.sessionUpdate({
+          sessionId: params.sessionId,
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "still here" } },
+        });
+      }
+      return { stopReason: "end_turn" };
+    });
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      connectionFactory: async (client) => {
+        clientHandle = client as unknown as typeof clientHandle;
+        const controller = new AbortController();
+        return {
+          connection: {
+            signal: controller.signal,
+            closed: new Promise<void>(() => undefined),
+            initialize: vi.fn(async () => ({
+              protocolVersion: 1,
+              agentCapabilities: { mcpCapabilities: { http: true } },
+            })),
+            authenticate: vi.fn(async () => ({})),
+            loadSession: vi.fn(),
+            unstable_resumeSession: vi.fn(),
+            newSession: vi.fn(async () => ({ sessionId: "session-blank-event" })),
+            prompt,
+          } as never,
+          stop: async () => {
+            controller.abort();
+          },
+        };
+      },
+    });
+
+    await adapter.onStarted("Blank Event Agent", "blank event test");
+
+    await adapter.onMessage(
+      makeMessage("first", "room-blank-event"),
+      tools,
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-blank-event" },
+    );
+    await adapter.onMessage(
+      makeMessage("second", "room-blank-event"),
+      tools,
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-blank-event" },
+    );
+
+    // The blank tool_result never reached the platform.
+    expect(createAgentChatEvent).not.toHaveBeenCalledWith(
+      "room-blank-event",
+      expect.objectContaining({ event: expect.objectContaining({ content: "" }) }),
+      expect.any(Object),
+    );
+    // And the turn survived it: both messages made it out.
+    expect(createAgentChatMessage.mock.calls.map((call) => call[1].message.content)).toEqual([
+      "on it",
+      "still here",
+    ]);
+  });
 
   it("fails loudly instead of guessing when the agent advertises no MCP transport", async () => {
     const initialize = vi.fn(async () => ({

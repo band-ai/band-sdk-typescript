@@ -293,6 +293,46 @@ describe("AgentTools", () => {
     expect(toLegacyToolExecutorErrorMessage(result)).toContain("content: Field required");
   });
 
+  it("validates send_message rejects content with no visible characters", async () => {
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api: new FakeRestApi() }),
+    });
+
+    const result = await tools.executeToolCall("band_send_message", {
+      content: "   \n\t ",
+      mentions: ["@jane"],
+    });
+    expect(isToolExecutorError(result)).toBe(true);
+    expect(result).toMatchObject({
+      ok: false,
+      errorType: "ToolArgumentsValidationError",
+      toolName: "band_send_message",
+    });
+    expect(toLegacyToolExecutorErrorMessage(result)).toContain("Invalid arguments for band_send_message");
+    expect(toLegacyToolExecutorErrorMessage(result)).toContain("content: can't be blank");
+  });
+
+  it("validates send_event rejects content with no visible characters", async () => {
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api: new FakeRestApi() }),
+    });
+
+    const result = await tools.executeToolCall("band_send_event", {
+      content: "   ",
+      message_type: "thought",
+    });
+    expect(isToolExecutorError(result)).toBe(true);
+    expect(result).toMatchObject({
+      ok: false,
+      errorType: "ToolArgumentsValidationError",
+      toolName: "band_send_event",
+    });
+    expect(toLegacyToolExecutorErrorMessage(result)).toContain("Invalid arguments for band_send_event");
+    expect(toLegacyToolExecutorErrorMessage(result)).toContain("content: can't be blank");
+  });
+
   it("validates send_event rejects invalid message_type", async () => {
     const tools = new AgentTools({
       roomId: "room-1",

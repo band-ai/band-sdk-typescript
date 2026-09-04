@@ -5,6 +5,7 @@ import type { AgentToolsRestApi } from "../../client/rest/types";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
 import { assertCapability } from "../../contracts/capabilities";
 import { assertChatEventType, CHAT_EVENT_TYPES } from "../../contracts/chatEvents";
+import { BLANK_CONTENT_ERROR, hasVisibleContent } from "../../contracts/content";
 import type {
   AddContactArgs,
   ContactRecord,
@@ -1088,6 +1089,13 @@ function validateToolArgs(toolName: string, args: Record<string, unknown>): Tool
   for (const field of model.required) {
     if (args[field] === undefined || args[field] === null) {
       errors.push(`${field}: Field required`);
+    }
+  }
+
+  if (toolName === "band_send_message" || toolName === "band_send_event") {
+    const content = args.content;
+    if (typeof content === "string" && !hasVisibleContent(content)) {
+      errors.push(`content: ${BLANK_CONTENT_ERROR}`);
     }
   }
 

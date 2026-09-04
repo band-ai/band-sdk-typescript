@@ -1,5 +1,8 @@
 import { UnsupportedFeatureError } from "../../core/errors";
+import type { Logger } from "../../core/logger";
+import { NoopLogger } from "../../core/logger";
 import { asNullableString, asOptionalRecord, asString } from "../../adapters/shared/coercion";
+import { BLANK_CONTENT_ERROR, hasVisibleContent } from "../../contracts/content";
 import type {
   AddContactArgs,
   ContactRecord,
@@ -184,6 +187,19 @@ function normalizeToolOperationResult(response: unknown): ToolOperationResult {
   return asMetadataMap(extractEnvelopeData(response)) ?? {};
 }
 
+const BLANK_CONTENT_STATUS = "blank_content";
+
+// `normalizeToolOperationResult` never adds `ok: true` on a real send (it just
+// returns the envelope data), so this has to be self-describing rather than a
+// bare `{ ok: false }` a caller could mistake for some other failure.
+function blankContentRefusal(): ToolOperationResult {
+  return {
+    ok: false,
+    status: BLANK_CONTENT_STATUS,
+    error: `content ${BLANK_CONTENT_ERROR}`,
+  };
+}
+
 function normalizeMemoryRecord(response: unknown): MemoryRecord {
   const payload = asMetadataMap(extractEnvelopeData(response));
   return payload ? normalizeMemoryRecordItem(payload) ?? {} : {};
@@ -348,9 +364,11 @@ function normalizePlatformChatMessage(value: unknown): PlatformChatMessage | nul
 
 export class FernRestAdapter implements RestApi {
   private readonly client: FernBandClientLike;
+  private readonly logger: Logger;
 
-  public constructor(client: FernBandClientLike) {
+  public constructor(client: FernBandClientLike, logger?: Logger) {
     this.client = client;
+    this.logger = logger ?? new NoopLogger();
   }
 
   public async getAgentMe(options?: RestRequestOptions): Promise<AgentIdentity> {
@@ -385,6 +403,11 @@ export class FernRestAdapter implements RestApi {
     },
     options?: RestRequestOptions,
   ): Promise<ToolOperationResult> {
+    if (!hasVisibleContent(message.content)) {
+      this.logger.warn("Refusing to send a chat message with no visible content", { chatId });
+      return blankContentRefusal();
+    }
+
     const api = this.client.chatMessages?.createChatMessage?.bind(this.client.chatMessages)
       ?? this.client.agentApiMessages?.createAgentChatMessage?.bind(this.client.agentApiMessages)
       ?? this.client.myChatMessages?.createMyChatMessage?.bind(this.client.myChatMessages);
@@ -416,6 +439,14 @@ export class FernRestAdapter implements RestApi {
     },
     options?: RestRequestOptions,
   ): Promise<ToolOperationResult> {
+    if (!hasVisibleContent(event.content)) {
+      this.logger.warn("Refusing to send a chat event with no visible content", {
+        chatId,
+        messageType: event.messageType,
+      });
+      return blankContentRefusal();
+    }
+
     const createAgentChatEvent = this.client.agentApiEvents?.createAgentChatEvent
       ?.bind(this.client.agentApiEvents);
     if (createAgentChatEvent) {
