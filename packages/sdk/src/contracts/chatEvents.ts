@@ -18,10 +18,21 @@ export function assertChatEventType(value: string): asserts value is ChatEventTy
   }
 }
 
-// The platform rejects a chat event whose content is blank or whitespace-only.
-// One source of truth for that rule: an adapter deciding whether a chunk is
-// worth posting at all, and a test double deciding whether to model the
-// platform's rejection, both need the exact same predicate.
+// The platform rejects a chat event whose content has no visible character --
+// not merely a plain non-empty check: whitespace-only, zero-width, and
+// bidi-mark-only strings pass a naive `.trim().length > 0` test but the
+// platform's chat-message changeset still rejects them with "can't be blank"
+// (`validate_has_visible_content/2`, delegating to
+// `Chat.validate_visible_content/1`). Every letter/number/punctuation/symbol
+// counts as visible; every other Unicode category (whitespace, control,
+// formatting, marks) does not.
+//
+// TODO(reconcile with fix/reject-blank-content-before-transport-INT-1372):
+// this duplicates that branch's `hasVisibleContent` in
+// `contracts/content.ts`, which isn't importable here yet since neither
+// branch has merged. Delete this copy and import that one once either lands.
+const VISIBLE_CONTENT_PATTERN = /[\p{L}\p{N}\p{P}\p{S}]/u;
+
 export function isBlankEventContent(content: string): boolean {
-  return content.trim().length === 0;
+  return !VISIBLE_CONTENT_PATTERN.test(content);
 }
