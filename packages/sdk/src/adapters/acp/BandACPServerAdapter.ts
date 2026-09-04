@@ -244,7 +244,7 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
       // The prompt never reached the room, so no reply is coming: say why now
       // instead of waiting out the response timeout and blaming a slow peer.
       if (sent?.status === BLANK_CONTENT_STATUS) {
-        throw new Error("ACP prompt was not sent: prompt content is blank")
+        throw new Error(`ACP prompt was not sent: ${String(sent.error)}`)
       }
 
       await Promise.race([

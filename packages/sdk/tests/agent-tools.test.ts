@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { RestFacade } from "../src/client/rest/RestFacade";
 import type { RestApi } from "../src/client/rest/types";
+import { BLANK_CONTENT_ERROR, BLANK_CONTENT_STATUS } from "../src/contracts/content";
 import type {
   ContactRequestAction,
   ListMemoriesArgs,
@@ -219,6 +220,31 @@ describe("AgentTools", () => {
 
     const resultByName = await tools.sendMessage("hi", ["Jane"]);
     expect(resultByName).toEqual({ ok: true });
+  });
+
+  it("throws instead of silently accepting a transport blank-content refusal", async () => {
+    class BlankContentRestApi extends FakeRestApi {
+      public override async createChatMessage() {
+        return { ok: false, status: BLANK_CONTENT_STATUS, error: `content ${BLANK_CONTENT_ERROR}` };
+      }
+
+      public override async createChatEvent() {
+        return { ok: false, status: BLANK_CONTENT_STATUS, error: `content ${BLANK_CONTENT_ERROR}` };
+      }
+    }
+
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api: new BlankContentRestApi() }),
+      roster: makeRoster([{ id: "u1", handle: "@jane", name: "Jane", type: "User" }]),
+    });
+
+    // Zero-width space: a real-world blank the platform still rejects, chosen
+    // to document the scenario even though the fake refuses unconditionally.
+    const zeroWidthSpace = "\u200B";
+    await expect(tools.sendMessage(zeroWidthSpace, ["@jane"])).rejects.toBeInstanceOf(ValidationError);
+    await expect(tools.sendMessage(zeroWidthSpace, ["@jane"])).rejects.toThrow(`content ${BLANK_CONTENT_ERROR}`);
+    await expect(tools.sendEvent(zeroWidthSpace, "task")).rejects.toThrow(`content ${BLANK_CONTENT_ERROR}`);
   });
 
   it("gates peers endpoint when disabled", async () => {

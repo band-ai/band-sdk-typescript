@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
 import { OpenAIAdapter } from "../src/index";
+import { RestFacade } from "../src/client/rest/RestFacade";
+import type { RestApi } from "../src/client/rest/types";
+import { BLANK_CONTENT_ERROR, BLANK_CONTENT_STATUS } from "../src/contracts/content";
+import { AgentTools } from "../src/runtime/tools/AgentTools";
 import type { HistoryProvider, PlatformMessage } from "../src/runtime";
 import type { CustomToolDef } from "../src/runtime/tools/customTools";
 import type { AgentToolsProtocol } from "../src/core";
@@ -154,6 +158,53 @@ class FakeModel implements ToolCallingModel {
     }
 
     return { text: "final answer" };
+  }
+}
+
+/**
+ * Minimal RestApi whose createChatMessage mirrors FernRestAdapter's blank-content
+ * refusal, so AgentTools (the real class, not FakeTools) can be wired into the
+ * adapter under test.
+ */
+class BlankContentRestApi implements RestApi {
+  public async getAgentMe() {
+    return { id: "a1", name: "Agent", description: null };
+  }
+
+  public async createChatMessage() {
+    return { ok: false, status: BLANK_CONTENT_STATUS, error: `content ${BLANK_CONTENT_ERROR}` };
+  }
+
+  public async createChatEvent() {
+    return { ok: false, status: BLANK_CONTENT_STATUS, error: `content ${BLANK_CONTENT_ERROR}` };
+  }
+
+  public async createChat() {
+    return { id: "r2" };
+  }
+
+  public async listChatParticipants() {
+    return [];
+  }
+
+  public async addChatParticipant() {
+    return { ok: true };
+  }
+
+  public async removeChatParticipant() {
+    return { ok: true };
+  }
+
+  public async markMessageProcessing() {
+    return { ok: true };
+  }
+
+  public async markMessageProcessed() {
+    return { ok: true };
+  }
+
+  public async markMessageFailed() {
+    return { ok: true };
   }
 }
 
@@ -334,5 +385,29 @@ describe("ToolCallingAdapter", () => {
     });
 
     expect(tools.messages).toEqual(["error_caught"]);
+  });
+
+  it("surfaces a blank final response as an error instead of silently succeeding", async () => {
+    // A zero-width space survives response.text?.trim() (it isn't whitespace
+    // by that check) but still has no visible content, so this is the exact
+    // shape of reply that used to reach the transport and resolve "successfully".
+    class BlankFinalResponseModel implements ToolCallingModel {
+      public async complete(): Promise<{ text?: string }> {
+        return { text: "\u200B" };
+      }
+    }
+
+    const adapter = new OpenAIAdapter({ model: new BlankFinalResponseModel() });
+    const tools = new AgentTools({
+      roomId: "r1",
+      rest: new RestFacade({ api: new BlankContentRestApi() }),
+    });
+
+    await expect(
+      adapter.onMessage(fakeMessage, tools, fakeHistory, null, null, {
+        isSessionBootstrap: true,
+        roomId: "r1",
+      }),
+    ).rejects.toThrow(`content ${BLANK_CONTENT_ERROR}`);
   });
 });
