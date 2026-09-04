@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ACPClientAdapter, type ACPClientAdapterOptions } from "../src/adapters/acp";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 import { FernRestAdapter } from "../src/client/rest/FernRestAdapter";
+import { hasVisibleContent } from "../src/contracts/content";
 import { FakeTools, makeMessage } from "./testUtils";
 
 describe("ACPClientAdapter", () => {
@@ -209,14 +210,21 @@ describe("ACPClientAdapter", () => {
   // Recreates the INT-1361 trigger sequence against the real send path
   // (AgentTools -> FernRestAdapter), not FakeTools: a status-only
   // `tool_call_update` (no rawOutput, no content) collects as a blank
-  // `tool_result` chunk, and flushChunks forwards it to sendEvent
-  // unconditionally (its only emptiness guard is on the text branch). Before
-  // FernRestAdapter refused blank content transport-side, that reached the
-  // platform, 422'd, escaped the try/catch around `connection.prompt` (the
-  // adapter's only one), and killed the runtime — so the turn that produced
-  // the blank chunk would answer, but every later turn in the room would not.
+  // `tool_result` chunk. When flushChunks forwarded that to sendEvent, the
+  // platform 422'd, and the rejection escaped the try/catch around
+  // `connection.prompt` (the adapter's only one) and killed the runtime — so
+  // the turn that produced the blank chunk would answer, but every later turn
+  // in the room would not. The fake below 422s exactly like the platform, so
+  // the test fails if either guard (flushChunks or FernRestAdapter) is lost.
   it("keeps answering after a status-only tool_call_update collects as a blank event", async () => {
-    const createAgentChatEvent = vi.fn(async () => ({ data: { ok: true, id: "evt-1" } }));
+    // Stands in for the platform's own `validate_has_visible_content`: a blank
+    // event is a 422, i.e. a rejected promise, not a quiet no-op.
+    const createAgentChatEvent = vi.fn(async (_chatId: string, payload: { event: { content: string } }) => {
+      if (!hasVisibleContent(payload.event.content)) {
+        throw new Error("422 Unprocessable Entity: content can't be blank");
+      }
+      return { data: { ok: true, id: "evt-1" } };
+    });
     const createAgentChatMessage = vi.fn(async (_chatId: string, _payload: { message: { content: string } }) => ({
       data: { ok: true, id: "msg-1" },
     }));

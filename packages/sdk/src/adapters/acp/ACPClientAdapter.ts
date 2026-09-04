@@ -16,6 +16,7 @@ import { ACPClientHistoryConverter, type ACPClientSessionState } from "../../con
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import { NoopLogger, type Logger } from "../../core/logger";
 import { ValidationError } from "../../core/errors";
+import { hasVisibleContent } from "../../contracts/content";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import type { PlatformMessage } from "../../runtime/types";
@@ -652,13 +653,18 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     }
 
     for (const chunk of client.getCollectedChunks(input.sessionId)) {
+      // Nothing to post for a chunk the platform would reject as blank, and a
+      // status-only `tool_call_update` (no rawOutput, no content) collects as
+      // exactly that on every routine progress tick.
+      if (!hasVisibleContent(chunk.content)) {
+        continue
+      }
+
       if (chunk.chunkType === "text") {
-        if (chunk.content.length > 0) {
-          await input.tools.sendMessage(chunk.content, [{
-            id: input.senderId,
-            handle: input.senderHandle,
-          }])
-        }
+        await input.tools.sendMessage(chunk.content, [{
+          id: input.senderId,
+          handle: input.senderHandle,
+        }])
         continue
       }
 

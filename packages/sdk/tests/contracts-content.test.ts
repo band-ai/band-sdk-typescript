@@ -5,10 +5,9 @@ import { hasVisibleContent } from "../src/contracts/content";
 const ZERO_WIDTH_SPACE = "\u200B";
 const LEFT_TO_RIGHT_MARK = "\u200E";
 
-// Table mirrors the platform's own validate_visible_content/1 cases
-// (thenvoi-platform lib/thenvoi_com/thenvoi/chat.ex:3936): every
-// letter/number/punctuation/symbol is visible, everything else (whitespace,
-// zero-width, bidi marks) is not.
+// Table mirrors the platform's own `Chat.validate_visible_content/1` cases:
+// every letter/number/punctuation/symbol is visible, everything else
+// (whitespace, zero-width, bidi marks) is not.
 describe("hasVisibleContent", () => {
   it.each([
     ["", false],
@@ -22,5 +21,11 @@ describe("hasVisibleContent", () => {
     ["  hi  ", true],
   ] as const)("hasVisibleContent(%j) === %s", (input, expected) => {
     expect(hasVisibleContent(input)).toBe(expected);
+  });
+
+  // A non-string reaching the regex stringifies (`undefined` -> "undefined")
+  // and would read as visible, letting a blank send through to the platform.
+  it.each([undefined, null, 42, {}])("is not fooled by non-string input (%j)", (input) => {
+    expect(hasVisibleContent(input as unknown as string)).toBe(false);
   });
 });

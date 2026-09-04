@@ -14,6 +14,7 @@
  */
 
 import type { BandLink } from "@band-ai/sdk";
+import { BLANK_CONTENT_STATUS } from "@band-ai/sdk/rest";
 import { resolveMentions, type LastSender } from "./mentions.js";
 
 type BandRest = BandLink["rest"];
@@ -63,6 +64,11 @@ export async function sendText(deps: OutboundDeps, params: SendParams): Promise<
   }
 
   const result = await deps.rest.createChatMessage(roomId, { content: params.text, mentions });
+  // Refused before the network call: reporting a (fabricated) message id here
+  // would tell the caller a message it never sent went out.
+  if (result?.status === BLANK_CONTENT_STATUS) {
+    throw new Error(`Cannot send to room ${roomId}: ${String(result.error)}`);
+  }
   if (result?.id == null) {
     // A posted message with no id is an API-contract anomaly; surface it rather
     // than silently fabricating success unobserved.

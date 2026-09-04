@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
+import { FernRestAdapter } from "@band-ai/sdk/rest";
 import {
   bandTools,
   getBandTool,
@@ -175,6 +176,23 @@ describe("band_get_participants / band_create_chatroom / band_send_event", () =>
       run("band_send_event", makeCtx({ createChatEvent }), { room_id: "r1", content: "x", message_type: "BOGUS" }),
     ).rejects.toThrow(/invalid message_type/i);
     expect(createChatEvent).not.toHaveBeenCalled();
+  });
+
+  // The transport refuses blank content by RESOLVING with a refusal, so
+  // without an explicit check the handler reports `success: true` with an
+  // undefined event_id and the model never learns the event was dropped. The
+  // real FernRestAdapter produces the refusal, so this cannot pass against a
+  // hand-copied result shape.
+  it("send_event surfaces a blank-content refusal instead of reporting success with no event id", async () => {
+    const createAgentChatEvent = vi.fn();
+    const transport = new FernRestAdapter({ agentApiEvents: { createAgentChatEvent } });
+    const createChatEvent = (roomId: string, event: Parameters<typeof transport.createChatEvent>[1]) =>
+      transport.createChatEvent(roomId, event);
+
+    await expect(
+      run("band_send_event", makeCtx({ createChatEvent }), { room_id: "r1", content: "\u200b", message_type: "thought" }),
+    ).rejects.toThrow(/can't be blank/i);
+    expect(createAgentChatEvent).not.toHaveBeenCalled();
   });
 
   it("list_chats maps room id/name/type and clamps pagination", async () => {

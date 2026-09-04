@@ -497,6 +497,7 @@
     },
     "./rest": {
       "runtime": [
+        "BLANK_CONTENT_STATUS",
         "DEFAULT_REQUEST_OPTIONS",
         "FernRestAdapter",
         "RestFacade",
@@ -505,6 +506,7 @@
       ],
       "declarations": [
         "AgentIdentity",
+        "BLANK_CONTENT_STATUS",
         "ChatMessageMention",
         "ChatParticipant",
         "DEFAULT_REQUEST_OPTIONS",

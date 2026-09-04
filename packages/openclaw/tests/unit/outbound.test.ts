@@ -10,6 +10,7 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
+import { FernRestAdapter } from "@band-ai/sdk/rest";
 import { sendText, sendMedia, type OutboundDeps } from "../../src/outbound.js";
 
 const SELF = "agent-self";
@@ -77,6 +78,23 @@ describe("sendText", () => {
     };
     await expect(sendText(deps, { to: "room-1", text: "hello" })).rejects.toThrow(/mention/i);
     expect(createChatMessage).not.toHaveBeenCalled();
+  });
+
+  // The transport refuses blank content before the network call and RESOLVES
+  // with a refusal rather than throwing, so a send that never happened would
+  // otherwise be reported to OpenClaw as a success carrying a fabricated id.
+  // The real FernRestAdapter produces the refusal, so this cannot pass against
+  // a hand-copied result shape.
+  it("throws on a blank-content refusal instead of returning a fabricated messageId", async () => {
+    const createAgentChatMessage = vi.fn();
+    const transport = new FernRestAdapter({ agentApiMessages: { createAgentChatMessage } });
+    const deps = makeDeps({
+      createChatMessage: (roomId: string, message: Parameters<typeof transport.createChatMessage>[1]) =>
+        transport.createChatMessage(roomId, message),
+    });
+
+    await expect(sendText(deps, { to: "room-1", text: "   " })).rejects.toThrow(/can't be blank/i);
+    expect(createAgentChatMessage).not.toHaveBeenCalled();
   });
 
   it("throws when no room/target is given", async () => {

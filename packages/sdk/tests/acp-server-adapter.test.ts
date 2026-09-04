@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   BandACPServerAdapter,
 } from "../src/adapters/acp";
+import { FernRestAdapter } from "../src/client/rest/FernRestAdapter";
 import { FakeRestApi, FakeTools, makeMessage } from "./testUtils";
 
 describe("BandACPServerAdapter", () => {
@@ -213,5 +214,43 @@ describe("BandACPServerAdapter", () => {
     )
 
     await expect(promptPromise).resolves.toBeUndefined()
+  })
+
+  // A rehydrated session whose bootstrap event carried no `acp_cwd` gets no
+  // session-context preamble, so a whitespace-only prompt reaches the send
+  // path blank; the transport refuses it and no reply can ever arrive. The
+  // adapter has to say that, not sit out `responseTimeoutMs` and blame a slow
+  // peer. The real FernRestAdapter produces the refusal so the test can't pass
+  // against a hand-copied result shape.
+  it("fails a blank prompt immediately instead of waiting out the response timeout", async () => {
+    const createAgentChatMessage = vi.fn()
+    const transport = new FernRestAdapter({ agentApiMessages: { createAgentChatMessage } })
+    const adapter = new BandACPServerAdapter({
+      bandRest: new FakeRestApi({
+        createChatMessage: (chatId, message) => transport.createChatMessage(chatId, message),
+        listChatParticipants: async () => [
+          { id: "agent-1", name: "Band Agent", type: "Agent", handle: "band" },
+          { id: "peer-1", name: "Codex", type: "Agent", handle: "codex" },
+        ],
+      }, { id: "agent-1", name: "Band Agent", description: null }),
+      responseTimeoutMs: 60_000,
+    })
+    await adapter.onStarted("Band Agent", "ACP server")
+
+    await adapter.onMessage(
+      makeMessage("hello", "room-rehydrated"),
+      new FakeTools(),
+      {
+        sessionToRoom: { "session-rehydrated": "room-rehydrated" },
+        sessionCwd: {},
+        sessionMcpServers: {},
+      },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-rehydrated" },
+    )
+
+    await expect(adapter.handlePrompt("session-rehydrated", "   ")).rejects.toThrow(/blank/i)
+    expect(createAgentChatMessage).not.toHaveBeenCalled()
   })
 });

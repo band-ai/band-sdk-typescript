@@ -10,6 +10,7 @@ import type {
 import { ACPServerHistoryConverter, type ACPServerSessionState } from "../../converters/acp-server";
 import type { ChatMessageMention, RestApi } from "../../client/rest/types";
 import { SimpleAdapter } from "../../core/simpleAdapter";
+import { BLANK_CONTENT_STATUS } from "../../contracts/content";
 import type { MessagingTools } from "../../contracts/protocols";
 import type { PlatformMessage } from "../../runtime/types";
 import { ensureHandlePrefix } from "../../runtime/types";
@@ -235,10 +236,16 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
     const mentions = this.resolveMentions(participants, resolved.targetPeer)
 
     try {
-      await this.bandRest.createChatMessage(roomId, {
+      const sent = await this.bandRest.createChatMessage(roomId, {
         content: promptText,
         mentions,
       })
+
+      // The prompt never reached the room, so no reply is coming: say why now
+      // instead of waiting out the response timeout and blaming a slow peer.
+      if (sent?.status === BLANK_CONTENT_STATUS) {
+        throw new Error("ACP prompt was not sent: prompt content is blank")
+      }
 
       await Promise.race([
         pending.done,

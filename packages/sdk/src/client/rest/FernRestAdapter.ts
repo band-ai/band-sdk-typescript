@@ -2,7 +2,7 @@ import { UnsupportedFeatureError } from "../../core/errors";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import { asNullableString, asOptionalRecord, asString } from "../../adapters/shared/coercion";
-import { BLANK_CONTENT_ERROR, hasVisibleContent } from "../../contracts/content";
+import { BLANK_CONTENT_ERROR, BLANK_CONTENT_STATUS, hasVisibleContent } from "../../contracts/content";
 import type {
   AddContactArgs,
   ContactRecord,
@@ -186,8 +186,6 @@ export function normalizeFernContactRequestsResponse(response: unknown): Contact
 function normalizeToolOperationResult(response: unknown): ToolOperationResult {
   return asMetadataMap(extractEnvelopeData(response)) ?? {};
 }
-
-const BLANK_CONTENT_STATUS = "blank_content";
 
 // `normalizeToolOperationResult` never adds `ok: true` on a real send (it just
 // returns the envelope data), so this has to be self-describing rather than a
