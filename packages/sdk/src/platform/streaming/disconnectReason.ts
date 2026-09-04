@@ -106,7 +106,7 @@ const upgradeErrorSchema = z.object({
       }),
     }),
   ),
-  headers: z.record(z.unknown()).optional(),
+  headers: z.record(z.string(), z.unknown()).optional(),
 });
 
 export class WebSocketDisconnectError extends Error {
