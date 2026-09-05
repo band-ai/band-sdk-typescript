@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { ParlantAdapter } from "../src/adapters/parlant/ParlantAdapter";
-import { expectNoVisibleReplySent, FakeTools, makeMessage } from "./testUtils";
+import { eventsOfType, expectNoVisibleReplySent, FakeTools, makeMessage } from "./testUtils";
 
 class FakeParlantClient {
   public readonly customers = {
@@ -182,7 +182,7 @@ describe("ParlantAdapter", () => {
     );
 
     expect(tools.messages).toEqual([]);
-    expect(tools.events.some((event) => event.messageType === "error")).toBe(true);
+    expect(eventsOfType(tools, "error")).not.toHaveLength(0);
   });
 
   it("emits an error event instead of sending an invisible-only reply", async () => {
@@ -209,7 +209,7 @@ describe("ParlantAdapter", () => {
     );
 
     expectNoVisibleReplySent(tools);
-    expect(tools.events.some((event) => event.messageType === "error")).toBe(true);
+    expect(eventsOfType(tools, "error")).not.toHaveLength(0);
   });
 
   it("serializes bootstrap initialization for concurrent first messages in one room", async () => {
@@ -436,7 +436,7 @@ describe("ParlantAdapter", () => {
         error: expect.any(Error),
       }),
     );
-    expect(tools.events.some((event) => event.messageType === "error")).toBe(true);
+    expect(eventsOfType(tools, "error")).not.toHaveLength(0);
   });
 
   it("stamps band_room_id metadata and a \"Band Room \" title on session creation", async () => {

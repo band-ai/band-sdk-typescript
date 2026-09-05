@@ -5,7 +5,7 @@ import {
   type ClaudeSDKQuery,
 } from "../src/adapters/claude-sdk/ClaudeSDKAdapter";
 import { HistoryProvider } from "../src/runtime/types";
-import { expectNoVisibleReplySent, FakeTools, makeMessage, streamFrom } from "./testUtils";
+import { eventsOfType, expectNoVisibleReplySent, FakeTools, makeMessage, streamFrom } from "./testUtils";
 import { MCP_SERVER_NAME } from "../src/runtime/tools/schemas";
 
 describe("ClaudeSDKAdapter", () => {
@@ -164,7 +164,7 @@ describe("ClaudeSDKAdapter", () => {
     );
 
     expect(tools.messages).toEqual(["done"]);
-    const toolCallEvents = tools.events.filter((event) => event.messageType === "tool_call");
+    const toolCallEvents = eventsOfType(tools, "tool_call");
     expect(toolCallEvents).toHaveLength(1);
     const payload = JSON.parse(toolCallEvents[0]?.content ?? "{}");
     expect(payload.type).toBe("tool_use_summary");
@@ -207,7 +207,7 @@ describe("ClaudeSDKAdapter", () => {
     );
 
     expect(calls[0]?.options?.resume).toBe("session-from-history");
-    expect(tools.events.some((event) => event.messageType === "task")).toBe(true);
+    expect(eventsOfType(tools, "task")).not.toHaveLength(0);
   });
 
   it("rehydrates legacy Claude session markers from bootstrap task metadata", async () => {

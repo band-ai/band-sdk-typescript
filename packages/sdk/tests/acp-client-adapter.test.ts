@@ -4,7 +4,7 @@ import { ACPClientAdapter, type ACPClientAdapterOptions } from "../src/adapters/
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 import { FernRestAdapter } from "../src/client/rest/FernRestAdapter";
 import { hasVisibleContent } from "../src/contracts/content";
-import { FakeTools, makeMessage } from "./testUtils";
+import { eventsOfType, FakeTools, makeMessage } from "./testUtils";
 
 describe("ACPClientAdapter", () => {
   it("restores ACP sessions, auto-injects MCP, and fans out ACP updates", async () => {
@@ -368,7 +368,7 @@ describe("ACPClientAdapter", () => {
     // The blank status update must never even reach sendEvent — not just be
     // dropped once it gets there.
     expect(sendEventSpy.mock.calls.some(([content]) => content.trim().length === 0)).toBe(false)
-    expect(tools.events.some((event) => event.messageType === "tool_result")).toBe(false)
+    expect(eventsOfType(tools, "tool_result")).toHaveLength(0)
     expect(tools.messages).toEqual(["done"])
     expect(tools.events).toEqual(expect.arrayContaining([
       expect.objectContaining({ messageType: "task", content: "ACP client session" }),

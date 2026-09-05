@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { A2AAdapter } from "../src/adapters/a2a/A2AAdapter";
 import { A2AHistoryConverter, buildA2AAuthHeaders } from "../src/adapters/a2a/types";
-import { FakeTools, makeMessage } from "./testUtils";
+import { eventsOfType, FakeTools, makeMessage } from "./testUtils";
 
 function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
   return (async function* generator(): AsyncGenerator<T, void> {
@@ -206,8 +206,8 @@ describe("A2AAdapter", () => {
 
     expect(tools.messages).toContain("Need the currency pair.");
     expect(tools.messages).toContain("1 USD = 0.92 EUR");
-    expect(tools.events.some((event) => event.messageType === "thought")).toBe(true);
-    expect(tools.events.filter((event) => event.messageType === "task")).toHaveLength(2);
+    expect(eventsOfType(tools, "thought")).not.toHaveLength(0);
+    expect(eventsOfType(tools, "task")).toHaveLength(2);
   });
 
   it("clears terminal task id but preserves context id for the next user turn", async () => {
