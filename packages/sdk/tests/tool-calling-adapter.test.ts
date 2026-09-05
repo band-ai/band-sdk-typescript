@@ -3,7 +3,6 @@ import { z } from "zod";
 
 import { OpenAIAdapter } from "../src/index";
 import { RestFacade } from "../src/client/rest/RestFacade";
-import type { RestApi } from "../src/client/rest/types";
 import { BLANK_CONTENT_ERROR, BLANK_CONTENT_STATUS } from "../src/contracts/content";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 import type { HistoryProvider, PlatformMessage } from "../src/runtime";
@@ -19,6 +18,7 @@ import type {
   ParticipantRecord,
   PeerRecord,
 } from "../src/contracts/dtos";
+import { FakeRestApi } from "./testUtils";
 
 class FakeTools implements AgentToolsProtocol {
   public readonly capabilities = { peers: false, contacts: false, memory: false };
@@ -158,53 +158,6 @@ class FakeModel implements ToolCallingModel {
     }
 
     return { text: "final answer" };
-  }
-}
-
-/**
- * Minimal RestApi mirroring FernRestAdapter's blank-content refusal, so the real
- * AgentTools (not FakeTools) can be wired into the adapter under test.
- * createChatEvent isn't exercised by this file's tests, so it just returns success.
- */
-class BlankContentRestApi implements RestApi {
-  public async getAgentMe() {
-    return { id: "a1", name: "Agent", description: null };
-  }
-
-  public async createChatMessage() {
-    return { ok: false, status: BLANK_CONTENT_STATUS, error: `content ${BLANK_CONTENT_ERROR}` };
-  }
-
-  public async createChatEvent() {
-    return { ok: true, id: "evt-1" };
-  }
-
-  public async createChat() {
-    return { id: "r2" };
-  }
-
-  public async listChatParticipants() {
-    return [];
-  }
-
-  public async addChatParticipant() {
-    return { ok: true };
-  }
-
-  public async removeChatParticipant() {
-    return { ok: true };
-  }
-
-  public async markMessageProcessing() {
-    return { ok: true };
-  }
-
-  public async markMessageProcessed() {
-    return { ok: true };
-  }
-
-  public async markMessageFailed() {
-    return { ok: true };
   }
 }
 
@@ -398,17 +351,20 @@ describe("ToolCallingAdapter", () => {
     }
 
     let createChatMessageCalls = 0;
-    class TrackingBlankContentRestApi extends BlankContentRestApi {
-      public override async createChatMessage(): ReturnType<BlankContentRestApi["createChatMessage"]> {
-        createChatMessageCalls += 1;
-        return super.createChatMessage();
-      }
-    }
+    const rest = new FakeRestApi(
+      {
+        createChatMessage: async () => {
+          createChatMessageCalls += 1;
+          return { ok: false, status: BLANK_CONTENT_STATUS, error: `content ${BLANK_CONTENT_ERROR}` };
+        },
+      },
+      { id: "a1", name: "Agent", description: null },
+    );
 
     const adapter = new OpenAIAdapter({ model: new BlankFinalResponseModel() });
     const tools = new AgentTools({
       roomId: "r1",
-      rest: new RestFacade({ api: new TrackingBlankContentRestApi() }),
+      rest: new RestFacade({ api: rest }),
     });
 
     await expect(
