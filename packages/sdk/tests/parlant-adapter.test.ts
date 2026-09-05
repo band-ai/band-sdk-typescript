@@ -61,18 +61,14 @@ class FakeParlantClient {
   public eventPollBatches: Array<Array<Record<string, unknown>>> = [];
 }
 
+function parlantMessage(offset: number, message: string): Record<string, unknown> {
+  return { kind: "message", offset, data: { message } };
+}
+
 describe("ParlantAdapter", () => {
   it("creates a session and forwards ai-agent response", async () => {
     const client = new FakeParlantClient();
-    client.eventPollBatches.push([
-      {
-        kind: "message",
-        offset: 10,
-        data: {
-          message: "Parlant says hello",
-        },
-      },
-    ]);
+    client.eventPollBatches.push([parlantMessage(10, "Parlant says hello")]);
 
     const adapter = new ParlantAdapter({
       environment: "https://parlant.example",
@@ -103,20 +99,8 @@ describe("ParlantAdapter", () => {
 
   it("injects history once on bootstrap and does not duplicate later", async () => {
     const client = new FakeParlantClient();
-    client.eventPollBatches.push([
-      {
-        kind: "message",
-        offset: 20,
-        data: { message: "First response" },
-      },
-    ]);
-    client.eventPollBatches.push([
-      {
-        kind: "message",
-        offset: 30,
-        data: { message: "Second response" },
-      },
-    ]);
+    client.eventPollBatches.push([parlantMessage(20, "First response")]);
+    client.eventPollBatches.push([parlantMessage(30, "Second response")]);
 
     const adapter = new ParlantAdapter({
       environment: "https://parlant.example",
@@ -203,15 +187,7 @@ describe("ParlantAdapter", () => {
 
   it("emits an error event instead of sending an invisible-only reply", async () => {
     const client = new FakeParlantClient();
-    client.eventPollBatches.push([
-      {
-        kind: "message",
-        offset: 10,
-        data: {
-          message: "​",
-        },
-      },
-    ]);
+    client.eventPollBatches.push([parlantMessage(10, "​")]);
 
     const adapter = new ParlantAdapter({
       environment: "https://parlant.example",
@@ -239,8 +215,8 @@ describe("ParlantAdapter", () => {
   it("serializes bootstrap initialization for concurrent first messages in one room", async () => {
     const client = new FakeParlantClient();
     client.eventPollBatches.push(
-      [{ kind: "message", offset: 40, data: { message: "First concurrent response" } }],
-      [{ kind: "message", offset: 50, data: { message: "Second concurrent response" } }],
+      [parlantMessage(40, "First concurrent response")],
+      [parlantMessage(50, "Second concurrent response")],
     );
 
     const adapter = new ParlantAdapter({
@@ -299,13 +275,7 @@ describe("ParlantAdapter", () => {
 
   it("logs skipped bootstrap history events instead of swallowing them", async () => {
     const client = new FakeParlantClient();
-    client.eventPollBatches.push([
-      {
-        kind: "message",
-        offset: 60,
-        data: { message: "Recovered response" },
-      },
-    ]);
+    client.eventPollBatches.push([parlantMessage(60, "Recovered response")]);
 
     const originalCreateEvent = client.sessions.createEvent;
     let failedHistoricalAssistantEvent = false;
@@ -471,9 +441,7 @@ describe("ParlantAdapter", () => {
 
   it("stamps band_room_id metadata and a \"Band Room \" title on session creation", async () => {
     const client = new FakeParlantClient();
-    client.eventPollBatches.push([
-      { kind: "message", offset: 70, data: { message: "hello" } },
-    ]);
+    client.eventPollBatches.push([parlantMessage(70, "hello")]);
 
     const sessionCreateCalls: Array<{
       agentId: string;
@@ -516,9 +484,7 @@ describe("ParlantAdapter", () => {
 
   it("forwards the customer message event with band_source and band_room_id metadata (not thenvoi_room_id)", async () => {
     const client = new FakeParlantClient();
-    client.eventPollBatches.push([
-      { kind: "message", offset: 80, data: { message: "hello" } },
-    ]);
+    client.eventPollBatches.push([parlantMessage(80, "hello")]);
 
     const adapter = new ParlantAdapter({
       environment: "https://parlant.example",
@@ -552,9 +518,7 @@ describe("ParlantAdapter", () => {
 
   it("stamps band_system_prompt on the bootstrap system-prompt event", async () => {
     const client = new FakeParlantClient();
-    client.eventPollBatches.push([
-      { kind: "message", offset: 90, data: { message: "hello" } },
-    ]);
+    client.eventPollBatches.push([parlantMessage(90, "hello")]);
 
     const adapter = new ParlantAdapter({
       environment: "https://parlant.example",
@@ -586,9 +550,7 @@ describe("ParlantAdapter", () => {
 
   it("never emits legacy thenvoi_ keys or Thenvoi brand values in any outbound payload", async () => {
     const client = new FakeParlantClient();
-    client.eventPollBatches.push([
-      { kind: "message", offset: 100, data: { message: "hello" } },
-    ]);
+    client.eventPollBatches.push([parlantMessage(100, "hello")]);
 
     const sessionCreateCalls: Array<{
       agentId: string;

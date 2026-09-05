@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { LangGraphAdapter } from "../src/adapters/langgraph";
 import { HistoryProvider } from "../src/runtime/types";
-import { expectNoVisibleReplySent, FakeTools, makeMessage } from "./testUtils";
+import { expectNoVisibleReplySent, FakeTools, makeMessage, streamFrom } from "./testUtils";
 
 const langGraphMocks = vi.hoisted(() => ({
   createReactAgent: vi.fn(),
@@ -16,14 +16,6 @@ vi.mock("@langchain/langgraph/prebuilt", () => ({
 vi.mock("@langchain/core/tools", () => ({
   tool: langGraphMocks.tool,
 }));
-
-function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
-  return (async function* generator(): AsyncGenerator<T, void> {
-    for (const item of items) {
-      yield item;
-    }
-  })();
-}
 
 describe("LangGraphAdapter", () => {
   it("constructs a graph with official LangGraph SDK when llm is provided", async () => {

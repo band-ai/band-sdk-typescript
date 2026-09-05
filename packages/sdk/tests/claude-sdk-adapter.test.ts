@@ -5,16 +5,8 @@ import {
   type ClaudeSDKQuery,
 } from "../src/adapters/claude-sdk/ClaudeSDKAdapter";
 import { HistoryProvider } from "../src/runtime/types";
-import { expectNoVisibleReplySent, FakeTools, makeMessage } from "./testUtils";
+import { expectNoVisibleReplySent, FakeTools, makeMessage, streamFrom } from "./testUtils";
 import { MCP_SERVER_NAME } from "../src/runtime/tools/schemas";
-
-function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
-  return (async function* generator(): AsyncGenerator<T, void> {
-    for (const item of items) {
-      yield item;
-    }
-  })();
-}
 
 describe("ClaudeSDKAdapter", () => {
   it("uses the stable query API and resumes by session id", async () => {

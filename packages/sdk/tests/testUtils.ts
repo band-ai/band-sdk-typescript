@@ -126,6 +126,14 @@ export function expectNoVisibleReplySent(tools: FakeTools): void {
   expect(tools.messages).toHaveLength(0);
 }
 
+export function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
+  return (async function* generator(): AsyncGenerator<T, void> {
+    for (const item of items) {
+      yield item;
+    }
+  })();
+}
+
 export function makeRoster(participants: ParticipantRecord[]): ParticipantRoster {
   const roster = new ParticipantRoster();
   roster.setAll(participants);
