@@ -207,19 +207,13 @@ describe("ACPClientAdapter", () => {
     expect(promptTexts[2]).not.toContain("[System Context]")
   })
 
-  // Recreates the original trigger sequence against the real send path
-  // (AgentTools -> FernRestAdapter), not FakeTools: a status-only
-  // `tool_call_update` (no rawOutput, no content) collects as a blank
-  // `tool_result` chunk. flushChunks now forwards every non-text chunk to
-  // sendEvent unconditionally, and FernRestAdapter substitutes a placeholder
-  // for blank event content rather than refusing it, so the narration step
-  // still lands instead of vanishing. The fake below still 422s on a truly
-  // blank payload exactly like the platform, so the test would fail if the
-  // placeholder substitution ever regressed.
+  // Recreates the original trigger sequence (AgentTools -> FernRestAdapter): a
+  // status-only `tool_call_update` collects as a blank `tool_result` chunk,
+  // which now gets a placeholder substituted instead of refused. The fake
+  // below still 422s on truly blank content, so the test fails if that regresses.
   it("substitutes a placeholder for a status-only tool_call_update that collects as a blank event, and keeps answering", async () => {
-    // Stands in for the platform's own `validate_has_visible_content`: a blank
-    // event is a 422, i.e. a rejected promise, not a quiet no-op. It should
-    // never actually see blank content once FernRestAdapter's substitution runs.
+    // Stands in for the platform's own `validate_has_visible_content`; should
+    // never actually see blank content once the substitution runs.
     const createAgentChatEvent = vi.fn(async (_chatId: string, payload: { event: { content: string } }) => {
       if (!hasVisibleContent(payload.event.content)) {
         throw new Error("422 Unprocessable Entity: content can't be blank");
@@ -307,9 +301,7 @@ describe("ACPClientAdapter", () => {
       { isSessionBootstrap: false, roomId: "room-blank-event" },
     );
 
-    // The blank tool_result still reaches the platform, but with the
-    // placeholder substituted -- the narration step is preserved instead of
-    // vanishing.
+    // Reaches the platform with the placeholder substituted, not dropped.
     expect(createAgentChatEvent).toHaveBeenCalledWith(
       "room-blank-event",
       expect.objectContaining({ event: expect.objectContaining({ content: EVENT_EMPTY_CONTENT_PLACEHOLDER }) }),

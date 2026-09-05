@@ -654,10 +654,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
     for (const chunk of client.getCollectedChunks(input.sessionId)) {
       if (chunk.chunkType === "text") {
-        // A blank text chunk must never reach sendMessage: sendMessage throws
-        // on a blank-content refusal, and flushChunks runs outside the
-        // try/catch around connection.prompt, so an un-filtered blank text
-        // chunk would kill the runtime the same way the blank-event bug did.
+        // sendMessage throws on blank content, and flushChunks has no
+        // surrounding try/catch, so filter here or it kills the runtime.
         if (!hasVisibleContent(chunk.content)) {
           continue
         }
@@ -672,11 +670,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         ? "task"
         : chunk.chunkType
 
-      // Every non-text chunk posts unconditionally, even a status-only
-      // `tool_call_update` (no rawOutput, no content) that collects as blank
-      // on a routine progress tick -- sendEvent substitutes a placeholder
-      // rather than dropping it, so the narration step still lands instead of
-      // vanishing from the room.
+      // sendEvent repairs blank content instead of throwing, so every chunk posts.
       await input.tools.sendEvent(
         chunk.content,
         messageType,

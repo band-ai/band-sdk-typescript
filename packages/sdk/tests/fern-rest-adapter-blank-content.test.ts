@@ -9,9 +9,7 @@ import type { Logger } from "../src/core/logger";
 // and permanently killed the agent's runtime. Every send path (AgentTools,
 // the ACP/A2A relays, every other direct caller) funnels through
 // FernRestAdapter.createChatMessage/createChatEvent, so guarding here covers
-// all of them at once. A blank message stays a hard refusal (a dropped final
-// reply is a real correctness bug); a blank event gets a placeholder
-// substituted instead, matching band-sdk-python's send_event.
+// all of them at once.
 function recordingLogger(): { logger: Logger; warnings: Array<{ message: string; context?: Record<string, unknown> }> } {
   const warnings: Array<{ message: string; context?: Record<string, unknown> }> = [];
   return {
@@ -69,10 +67,8 @@ describe("FernRestAdapter: blank content handling", () => {
     expect(warnings[0]).toMatchObject({ context: { chatId: "room-1", messageType: "tool_result" } });
   });
 
-  // agentApiEvents absent: createChatEvent falls back to createChatMessage. The
-  // substitution must happen once, in createChatEvent, before that fallback —
-  // createChatMessage then sees the already-visible placeholder and never
-  // triggers its own (message-only) blank-content refusal.
+  // agentApiEvents absent: falls back to createChatMessage, which must see
+  // the already-substituted placeholder, not the original blank content.
   it("createChatEvent substitutes a placeholder before falling back to createChatMessage", async () => {
     const createAgentChatMessage = vi.fn(async () => ({ data: { ok: true, id: "msg-1" } }));
     const { logger, warnings } = recordingLogger();

@@ -369,9 +369,7 @@ describe("AgentTools", () => {
     expect(toLegacyToolExecutorErrorMessage(result)).toContain("content: can't be blank");
   });
 
-  // Unlike band_send_message, blank content is not rejected here: a blank
-  // event gets a placeholder substituted downstream (FernRestAdapter), not a
-  // validation error the model has to react to.
+  // Unlike band_send_message, blank content isn't rejected here -- it's repaired downstream instead.
   it("does not reject send_event content with no visible characters at the argument-validation layer", async () => {
     const tools = new AgentTools({
       roomId: "room-1",
