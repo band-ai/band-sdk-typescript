@@ -406,19 +406,25 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
     tools: AdapterToolsProtocol,
   ): Promise<void> {
     for (const functionCall of sdk.getFunctionCalls(event)) {
-      await tools.sendEvent(JSON.stringify({
+      const result = await tools.sendEvent(JSON.stringify({
         name: functionCall.name ?? "unknown",
         args: asToolArgs(functionCall.args),
         tool_call_id: functionCall.id ?? "",
       }), "tool_call");
+      if (result.ok === false) {
+        this.logger.warn("Google ADK tool_call event send failed", { toolCallId: functionCall.id });
+      }
     }
 
     for (const functionResponse of sdk.getFunctionResponses(event)) {
-      await tools.sendEvent(JSON.stringify({
+      const result = await tools.sendEvent(JSON.stringify({
         name: functionResponse.name ?? "unknown",
         output: String(functionResponse.response ?? ""),
         tool_call_id: functionResponse.id ?? "",
       }), "tool_result");
+      if (result.ok === false) {
+        this.logger.warn("Google ADK tool_result event send failed", { toolCallId: functionResponse.id });
+      }
     }
   }
 }

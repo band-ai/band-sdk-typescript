@@ -41,7 +41,7 @@ const SEND_PATHS: SendPath[] = [
     name: "AgentTools.sendEvent",
     urlSegment: "events",
     send: (rest) => new AgentTools({ roomId: "room-1", rest }).sendEvent("hi", "task"),
-    assertOutcome: (settled) => expect(settled).resolves.toEqual({ ok: false, status: "failed" }),
+    assertOutcome: (settled) => expect(settled).resolves.toMatchObject({ ok: false, status: "failed" }),
   },
   {
     name: "ContactCallbackTools.sendMessage",

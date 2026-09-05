@@ -135,6 +135,16 @@ const CONTACT_REQUEST_ACTIONS: ReadonlySet<RespondContactRequestArgs["action"]> 
   "cancel",
 ]);
 
+/** A handler resolved `{ok: false}` (e.g. sendEvent) rather than throwing. */
+function isUnrecognizedToolFailure(value: unknown): value is ToolOperationResult & { ok: false } {
+  return (
+    typeof value === "object"
+    && value !== null
+    && (value as ToolOperationResult).ok === false
+    && !isToolExecutorError(value)
+  );
+}
+
 export class AgentTools implements AgentToolsProtocol {
   public readonly roomId: string;
   public readonly capabilities: Readonly<AgentToolsCapabilities>;
@@ -213,7 +223,8 @@ export class AgentTools implements AgentToolsProtocol {
         // A caller-supplied logger that itself throws must not turn this
         // telemetry failure into a rejection in its place — see above.
       }
-      return { ok: false, status: "failed" };
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, status: "failed", message };
     }
   }
 
@@ -336,7 +347,23 @@ export class AgentTools implements AgentToolsProtocol {
     }
 
     try {
-      return await handler(arguments_);
+      const result = await handler(arguments_);
+      // A handler can fail by resolving `{ok: false}` instead of throwing (e.g.
+      // sendEvent, which must never reject — see its own comment). Route that
+      // failure through the same ToolExecutorError conversion a thrown error
+      // gets below, so every consumer of executeToolCall recognizes it.
+      if (isUnrecognizedToolFailure(result)) {
+        const message = typeof result.message === "string"
+          ? result.message
+          : `Tool '${toolName}' reported failure`;
+        return createToolExecutorError({
+          errorType: "ToolExecutionError",
+          toolName,
+          message,
+          legacyMessage: `Error executing ${toolName}: ${message}`,
+        });
+      }
+      return result;
     } catch (error) {
       if (isToolExecutorError(error)) {
         return error;

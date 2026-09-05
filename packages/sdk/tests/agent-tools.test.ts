@@ -280,6 +280,7 @@ describe("AgentTools", () => {
     await expect(tools.sendEvent("hello", "task")).resolves.toEqual({
       ok: false,
       status: "failed",
+      message: "network down",
     });
     expect(warnings).toHaveLength(1);
     expect(warnings[0][0]).toBe("chat event send failed");
@@ -310,7 +311,34 @@ describe("AgentTools", () => {
     await expect(tools.sendEvent("hello", "task")).resolves.toEqual({
       ok: false,
       status: "failed",
+      message: "network down",
     });
+  });
+
+  it("wraps a failed send_event as a ToolExecutorError instead of reporting success", async () => {
+    class FailingRestApi extends FakeRestApi {
+      public override async createChatEvent(): ReturnType<FakeRestApi["createChatEvent"]> {
+        throw new Error("network down");
+      }
+    }
+
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api: new FailingRestApi() }),
+    });
+
+    const result = await tools.executeToolCall("band_send_event", {
+      content: "hello",
+      message_type: "task",
+    });
+    expect(isToolExecutorError(result)).toBe(true);
+    expect(result).toMatchObject({
+      ok: false,
+      errorType: "ToolExecutionError",
+      toolName: "band_send_event",
+      message: "network down",
+    });
+    expect(toLegacyToolExecutorErrorMessage(result)).toContain("Error executing band_send_event");
   });
 
   it("validates send_message requires mentions", async () => {
