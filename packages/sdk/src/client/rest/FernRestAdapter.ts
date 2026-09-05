@@ -2,7 +2,12 @@ import { UnsupportedFeatureError } from "../../core/errors";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import { asNullableString, asOptionalRecord, asString } from "../../adapters/shared/coercion";
-import { BLANK_CONTENT_ERROR, BLANK_CONTENT_STATUS, hasVisibleContent } from "../../contracts/content";
+import {
+  BLANK_CONTENT_ERROR,
+  BLANK_CONTENT_STATUS,
+  hasVisibleContent,
+  withVisibleEventContent,
+} from "../../contracts/content";
 import type {
   AddContactArgs,
   ContactRecord,
@@ -437,12 +442,12 @@ export class FernRestAdapter implements RestApi {
     },
     options?: RestRequestOptions,
   ): Promise<ToolOperationResult> {
-    if (!hasVisibleContent(event.content)) {
-      this.logger.warn("Refusing to send a chat event with no visible content", {
+    const content = withVisibleEventContent(event.content);
+    if (content !== event.content) {
+      this.logger.warn("Substituting placeholder for blank chat event content", {
         chatId,
         messageType: event.messageType,
       });
-      return blankContentRefusal();
     }
 
     const createAgentChatEvent = this.client.agentApiEvents?.createAgentChatEvent
@@ -452,7 +457,7 @@ export class FernRestAdapter implements RestApi {
         chatId,
         {
           event: {
-            content: event.content,
+            content,
             message_type: event.messageType,
             metadata: event.metadata,
           },
@@ -462,7 +467,7 @@ export class FernRestAdapter implements RestApi {
       return normalizeToolOperationResult(response);
     }
 
-    return this.createChatMessage(chatId, event, options);
+    return this.createChatMessage(chatId, { ...event, content }, options);
   }
 
   public async createChat(taskId?: string, options?: RestRequestOptions): Promise<{ id: string }> {

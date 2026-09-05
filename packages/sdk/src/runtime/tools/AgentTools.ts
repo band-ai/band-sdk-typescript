@@ -1099,14 +1099,15 @@ function validateToolArgs(toolName: string, args: Record<string, unknown>): Tool
     }
   }
 
-  if (toolName === "band_send_message" || toolName === "band_send_event") {
+  if (toolName === "band_send_message") {
+    // band_send_event has no equivalent check: a blank event gets a
+    // placeholder substituted downstream instead of being rejected, so
+    // there's nothing to validate here for it.
     const content = args.content;
     if (typeof content === "string" && !hasVisibleContent(content)) {
       errors.push(`content: ${BLANK_CONTENT_ERROR}`);
     }
-  }
 
-  if (toolName === "band_send_message") {
     const mentions = args.mentions;
     if (Array.isArray(mentions) && mentions.length === 0) {
       errors.push("mentions: At least one mention is required");

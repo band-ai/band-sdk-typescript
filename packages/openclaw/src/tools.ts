@@ -13,7 +13,6 @@
  */
 
 import type { BandLink } from "@band-ai/sdk";
-import { BLANK_CONTENT_STATUS } from "@band-ai/sdk/rest";
 
 type BandRest = BandLink["rest"];
 
@@ -282,11 +281,6 @@ const sendEventTool: BandTool = {
       );
     }
     const response = await ctx.rest.createChatEvent(room_id, { content, messageType: message_type, metadata });
-    // Refused before the network call (blank content): the model gets no
-    // validation feedback on this path unless the refusal is raised here.
-    if (response?.status === BLANK_CONTENT_STATUS) {
-      throw new Error(`Event not sent: ${String(response.error)}`);
-    }
     return { success: true, event_id: response.id, message_type };
   },
 };

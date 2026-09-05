@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ACPClientAdapter, type ACPClientAdapterOptions } from "../src/adapters/acp";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 import { FernRestAdapter } from "../src/client/rest/FernRestAdapter";
-import { hasVisibleContent } from "../src/contracts/content";
+import { EVENT_EMPTY_CONTENT_PLACEHOLDER, hasVisibleContent } from "../src/contracts/content";
 import { FakeTools, makeMessage } from "./testUtils";
 
 describe("ACPClientAdapter", () => {
@@ -210,15 +210,16 @@ describe("ACPClientAdapter", () => {
   // Recreates the original trigger sequence against the real send path
   // (AgentTools -> FernRestAdapter), not FakeTools: a status-only
   // `tool_call_update` (no rawOutput, no content) collects as a blank
-  // `tool_result` chunk. When flushChunks forwarded that to sendEvent, the
-  // platform 422'd, and the rejection escaped the try/catch around
-  // `connection.prompt` (the adapter's only one) and killed the runtime — so
-  // the turn that produced the blank chunk would answer, but every later turn
-  // in the room would not. The fake below 422s exactly like the platform, so
-  // the test fails if either guard (flushChunks or FernRestAdapter) is lost.
-  it("keeps answering after a status-only tool_call_update collects as a blank event", async () => {
+  // `tool_result` chunk. flushChunks now forwards every non-text chunk to
+  // sendEvent unconditionally, and FernRestAdapter substitutes a placeholder
+  // for blank event content rather than refusing it, so the narration step
+  // still lands instead of vanishing. The fake below still 422s on a truly
+  // blank payload exactly like the platform, so the test would fail if the
+  // placeholder substitution ever regressed.
+  it("substitutes a placeholder for a status-only tool_call_update that collects as a blank event, and keeps answering", async () => {
     // Stands in for the platform's own `validate_has_visible_content`: a blank
-    // event is a 422, i.e. a rejected promise, not a quiet no-op.
+    // event is a 422, i.e. a rejected promise, not a quiet no-op. It should
+    // never actually see blank content once FernRestAdapter's substitution runs.
     const createAgentChatEvent = vi.fn(async (_chatId: string, payload: { event: { content: string } }) => {
       if (!hasVisibleContent(payload.event.content)) {
         throw new Error("422 Unprocessable Entity: content can't be blank");
@@ -306,10 +307,12 @@ describe("ACPClientAdapter", () => {
       { isSessionBootstrap: false, roomId: "room-blank-event" },
     );
 
-    // The blank tool_result never reached the platform.
-    expect(createAgentChatEvent).not.toHaveBeenCalledWith(
+    // The blank tool_result still reaches the platform, but with the
+    // placeholder substituted -- the narration step is preserved instead of
+    // vanishing.
+    expect(createAgentChatEvent).toHaveBeenCalledWith(
       "room-blank-event",
-      expect.objectContaining({ event: expect.objectContaining({ content: "" }) }),
+      expect.objectContaining({ event: expect.objectContaining({ content: EVENT_EMPTY_CONTENT_PLACEHOLDER }) }),
       expect.any(Object),
     );
     // And the turn survived it: both messages made it out.

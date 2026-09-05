@@ -499,6 +499,7 @@
       "runtime": [
         "BLANK_CONTENT_STATUS",
         "DEFAULT_REQUEST_OPTIONS",
+        "EVENT_EMPTY_CONTENT_PLACEHOLDER",
         "FernRestAdapter",
         "RestFacade",
         "fetchPaginated",
@@ -510,6 +511,7 @@
         "ChatMessageMention",
         "ChatParticipant",
         "DEFAULT_REQUEST_OPTIONS",
+        "EVENT_EMPTY_CONTENT_PLACEHOLDER",
         "FernBandClientLike",
         "FernRestAdapter",
         "PaginatedResponse",

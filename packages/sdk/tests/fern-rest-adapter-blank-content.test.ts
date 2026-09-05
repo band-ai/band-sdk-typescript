@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { FernRestAdapter } from "../src/client/rest/FernRestAdapter";
+import { EVENT_EMPTY_CONTENT_PLACEHOLDER } from "../src/contracts/content";
 import type { Logger } from "../src/core/logger";
 
 // Root-cause regression guard: a blank chat_result event used to reach the
@@ -8,7 +9,9 @@ import type { Logger } from "../src/core/logger";
 // and permanently killed the agent's runtime. Every send path (AgentTools,
 // the ACP/A2A relays, every other direct caller) funnels through
 // FernRestAdapter.createChatMessage/createChatEvent, so guarding here covers
-// all of them at once.
+// all of them at once. A blank message stays a hard refusal (a dropped final
+// reply is a real correctness bug); a blank event gets a placeholder
+// substituted instead, matching band-sdk-python's send_event.
 function recordingLogger(): { logger: Logger; warnings: Array<{ message: string; context?: Record<string, unknown> }> } {
   const warnings: Array<{ message: string; context?: Record<string, unknown> }> = [];
   return {
@@ -22,7 +25,7 @@ function recordingLogger(): { logger: Logger; warnings: Array<{ message: string;
   };
 }
 
-describe("FernRestAdapter: blank content refusal", () => {
+describe("FernRestAdapter: blank content handling", () => {
   it.each([["", "empty"], ["   \n\t ", "whitespace-only"]])(
     "createChatMessage refuses %s content without calling the Fern client",
     async (content) => {
@@ -49,32 +52,40 @@ describe("FernRestAdapter: blank content refusal", () => {
     expect(createAgentChatMessage).toHaveBeenCalledTimes(1);
   });
 
-  it("createChatEvent refuses blank content on the modern agentApiEvents namespace without calling it", async () => {
-    const createAgentChatEvent = vi.fn();
+  it("createChatEvent substitutes a placeholder for blank content on the modern agentApiEvents namespace", async () => {
+    const createAgentChatEvent = vi.fn(async () => ({ data: { ok: true, id: "evt-1" } }));
     const { logger, warnings } = recordingLogger();
     const adapter = new FernRestAdapter({ agentApiEvents: { createAgentChatEvent } }, logger);
 
     const result = await adapter.createChatEvent("room-1", { content: "", messageType: "tool_result" });
 
-    expect(result).toEqual({ ok: false, status: "blank_content", error: "content can't be blank" });
-    expect(createAgentChatEvent).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: true, id: "evt-1" });
+    expect(createAgentChatEvent).toHaveBeenCalledWith(
+      "room-1",
+      expect.objectContaining({ event: expect.objectContaining({ content: EVENT_EMPTY_CONTENT_PLACEHOLDER }) }),
+      expect.any(Object),
+    );
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toMatchObject({ context: { chatId: "room-1", messageType: "tool_result" } });
   });
 
   // agentApiEvents absent: createChatEvent falls back to createChatMessage. The
-  // guard must fire once, in createChatEvent, before that fallback — never
-  // reaching createChatMessage's own (redundant, for its direct callers) guard,
-  // or the same refusal would be logged twice for one call.
-  it("createChatEvent refuses blank content before falling back to createChatMessage", async () => {
-    const createAgentChatMessage = vi.fn();
+  // substitution must happen once, in createChatEvent, before that fallback —
+  // createChatMessage then sees the already-visible placeholder and never
+  // triggers its own (message-only) blank-content refusal.
+  it("createChatEvent substitutes a placeholder before falling back to createChatMessage", async () => {
+    const createAgentChatMessage = vi.fn(async () => ({ data: { ok: true, id: "msg-1" } }));
     const { logger, warnings } = recordingLogger();
     const adapter = new FernRestAdapter({ agentApiMessages: { createAgentChatMessage } }, logger);
 
     const result = await adapter.createChatEvent("room-1", { content: "  ", messageType: "thought" });
 
-    expect(result).toEqual({ ok: false, status: "blank_content", error: "content can't be blank" });
-    expect(createAgentChatMessage).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: true, id: "msg-1" });
+    expect(createAgentChatMessage).toHaveBeenCalledWith(
+      "room-1",
+      expect.objectContaining({ message: expect.objectContaining({ content: EVENT_EMPTY_CONTENT_PLACEHOLDER }) }),
+      expect.any(Object),
+    );
     expect(warnings).toHaveLength(1);
   });
 

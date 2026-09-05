@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { FernRestAdapter } from "@band-ai/sdk/rest";
+import { EVENT_EMPTY_CONTENT_PLACEHOLDER, FernRestAdapter } from "@band-ai/sdk/rest";
 import {
   bandTools,
   getBandTool,
@@ -178,21 +178,27 @@ describe("band_get_participants / band_create_chatroom / band_send_event", () =>
     expect(createChatEvent).not.toHaveBeenCalled();
   });
 
-  // The transport refuses blank content by RESOLVING with a refusal, so
-  // without an explicit check the handler reports `success: true` with an
-  // undefined event_id and the model never learns the event was dropped. The
-  // real FernRestAdapter produces the refusal, so this cannot pass against a
-  // hand-copied result shape.
-  it("send_event surfaces a blank-content refusal instead of reporting success with no event id", async () => {
-    const createAgentChatEvent = vi.fn();
+  // The transport repairs blank content by substituting a placeholder rather
+  // than refusing it, so the event still lands (with the real FernRestAdapter
+  // producing the substitution, not a hand-copied result shape).
+  it("send_event substitutes a placeholder for blank content instead of dropping the event", async () => {
+    const createAgentChatEvent = vi.fn().mockResolvedValue({ data: { ok: true, id: "evt-1" } });
     const transport = new FernRestAdapter({ agentApiEvents: { createAgentChatEvent } });
     const createChatEvent = (roomId: string, event: Parameters<typeof transport.createChatEvent>[1]) =>
       transport.createChatEvent(roomId, event);
 
-    await expect(
-      run("band_send_event", makeCtx({ createChatEvent }), { room_id: "r1", content: "\u200b", message_type: "thought" }),
-    ).rejects.toThrow(/can't be blank/i);
-    expect(createAgentChatEvent).not.toHaveBeenCalled();
+    const result = (await run("band_send_event", makeCtx({ createChatEvent }), {
+      room_id: "r1",
+      content: "\u200b",
+      message_type: "thought",
+    })) as { success: boolean; event_id: string };
+
+    expect(result).toEqual({ success: true, event_id: "evt-1", message_type: "thought" });
+    expect(createAgentChatEvent).toHaveBeenCalledWith(
+      "r1",
+      expect.objectContaining({ event: expect.objectContaining({ content: EVENT_EMPTY_CONTENT_PLACEHOLDER }) }),
+      expect.any(Object),
+    );
   });
 
   it("list_chats maps room id/name/type and clamps pagination", async () => {

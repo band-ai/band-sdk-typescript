@@ -369,7 +369,10 @@ describe("AgentTools", () => {
     expect(toLegacyToolExecutorErrorMessage(result)).toContain("content: can't be blank");
   });
 
-  it("validates send_event rejects content with no visible characters", async () => {
+  // Unlike band_send_message, blank content is not rejected here: a blank
+  // event gets a placeholder substituted downstream (FernRestAdapter), not a
+  // validation error the model has to react to.
+  it("does not reject send_event content with no visible characters at the argument-validation layer", async () => {
     const tools = new AgentTools({
       roomId: "room-1",
       rest: new RestFacade({ api: new FakeRestApi() }),
@@ -379,14 +382,7 @@ describe("AgentTools", () => {
       content: "   ",
       message_type: "thought",
     });
-    expect(isToolExecutorError(result)).toBe(true);
-    expect(result).toMatchObject({
-      ok: false,
-      errorType: "ToolArgumentsValidationError",
-      toolName: "band_send_event",
-    });
-    expect(toLegacyToolExecutorErrorMessage(result)).toContain("Invalid arguments for band_send_event");
-    expect(toLegacyToolExecutorErrorMessage(result)).toContain("content: can't be blank");
+    expect(isToolExecutorError(result)).toBe(false);
   });
 
   it("validates send_event rejects invalid message_type", async () => {

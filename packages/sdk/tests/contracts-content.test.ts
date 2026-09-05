@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { hasVisibleContent } from "../src/contracts/content";
+import { EVENT_EMPTY_CONTENT_PLACEHOLDER, hasVisibleContent, withVisibleEventContent } from "../src/contracts/content";
 
 const ZERO_WIDTH_SPACE = "\u200B";
 const LEFT_TO_RIGHT_MARK = "\u200E";
@@ -27,5 +27,19 @@ describe("hasVisibleContent", () => {
   // and would read as visible, letting a blank send through to the platform.
   it.each([undefined, null, 42, {}])("is not fooled by non-string input (%j)", (input) => {
     expect(hasVisibleContent(input as unknown as string)).toBe(false);
+  });
+});
+
+describe("withVisibleEventContent", () => {
+  it.each([
+    ["", EVENT_EMPTY_CONTENT_PLACEHOLDER],
+    ["   ", EVENT_EMPTY_CONTENT_PLACEHOLDER],
+    [ZERO_WIDTH_SPACE, EVENT_EMPTY_CONTENT_PLACEHOLDER],
+  ] as const)("substitutes the placeholder for blank content (%j)", (input, expected) => {
+    expect(withVisibleEventContent(input)).toBe(expected);
+  });
+
+  it.each(["hello", "  hi  "] as const)("leaves visible content unchanged (%j)", (input) => {
+    expect(withVisibleEventContent(input)).toBe(input);
   });
 });
