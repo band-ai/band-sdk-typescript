@@ -217,6 +217,45 @@ describe("OpencodeAdapter", () => {
     expect(tools.messages).toContain("Here is the fix.");
   });
 
+  it("sends the no-text-reply fallback instead of an invisible-only reply", async () => {
+    const tools = new FakeTools();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as any,
+      mcpBackendFactory: async () => ({
+        kind: "http",
+        server: { url: "http://127.0.0.1:5555/mcp" },
+        allowedTools: [],
+        stop: async () => undefined,
+      }),
+    });
+    adapters.push(adapter);
+
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+
+    const pending = adapter.onMessage(
+      makeMessage("say nothing visible"),
+      tools,
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-invisible-reply" },
+    );
+
+    await waitFor(() => client.createdSessions.length === 1);
+    const sessionId = client.createdSessions[0]!;
+    emitAssistantText(client, sessionId, "​");
+    client.eventQueue.push({
+      type: "session.idle",
+      properties: { sessionID: sessionId },
+    });
+
+    await pending;
+
+    expect(tools.messages).toEqual(["OpenCode completed the turn without a text reply."]);
+  });
+
   it("registers the MCP server with a bearer-token header when the backend issues an authToken", async () => {
     const tools = new FakeTools();
     const client = new FakeOpencodeClient();
