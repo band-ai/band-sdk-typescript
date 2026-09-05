@@ -14,8 +14,7 @@
  */
 
 import type { BandLink } from "@band-ai/sdk";
-import { ValidationError } from "@band-ai/sdk/core";
-import { assertNotBlankContentRefusal } from "@band-ai/sdk/rest";
+import { assertMessageSent } from "@band-ai/sdk/rest";
 import { resolveMentions, type LastSender } from "./mentions.js";
 
 type BandRest = BandLink["rest"];
@@ -65,17 +64,10 @@ export async function sendText(deps: OutboundDeps, params: SendParams): Promise<
   }
 
   const result = await deps.rest.createChatMessage(roomId, { content: params.text, mentions });
-  // Refused before the network call: reporting a (fabricated) message id here
-  // would tell the caller a message it never sent went out. Reuses the shared
-  // refusal check so this is a ValidationError, same as every other
-  // blank-content caller, instead of a plain Error.
-  try {
-    assertNotBlankContentRefusal(result);
-  } catch (error) {
-    throw new ValidationError(
-      `Cannot send to room ${roomId}: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
+  // A resolved ok:false (refused blank content or otherwise) reporting a
+  // fabricated message id here would tell the caller a message it never sent
+  // went out.
+  assertMessageSent(result, `Cannot send to room ${roomId}`);
   if (result?.id == null) {
     // A posted message with no id is an API-contract anomaly; surface it rather
     // than silently fabricating success unobserved.

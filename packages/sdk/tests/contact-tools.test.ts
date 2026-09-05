@@ -229,8 +229,9 @@ describe("ContactCallbackTools", () => {
       // Zero-width space: a real-world blank the platform still rejects, chosen
       // to document the scenario even though the fake refuses unconditionally.
       const zeroWidthSpace = "\u200B";
-      await expect(tools.sendMessage(zeroWidthSpace)).rejects.toBeInstanceOf(ValidationError);
-      await expect(tools.sendMessage(zeroWidthSpace)).rejects.toThrow(`content ${BLANK_CONTENT_ERROR}`);
+      const error = await tools.sendMessage(zeroWidthSpace).catch((caught) => caught);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as Error).message).toBe(`content ${BLANK_CONTENT_ERROR}`);
     });
   });
 

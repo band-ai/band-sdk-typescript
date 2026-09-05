@@ -10,8 +10,7 @@ import type {
 import { ACPServerHistoryConverter, type ACPServerSessionState } from "../../converters/acp-server";
 import type { ChatMessageMention, RestApi } from "../../client/rest/types";
 import { SimpleAdapter } from "../../core/simpleAdapter";
-import { assertNotBlankContentRefusal } from "../../contracts/content";
-import { ValidationError } from "../../core/errors";
+import { assertMessageSent } from "../../contracts/content";
 import type { MessagingTools } from "../../contracts/protocols";
 import type { PlatformMessage } from "../../runtime/types";
 import { ensureHandlePrefix } from "../../runtime/types";
@@ -244,15 +243,7 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
 
       // The prompt never reached the room, so no reply is coming: say why now
       // instead of waiting out the response timeout and blaming a slow peer.
-      // Reuses the shared refusal check so this is a ValidationError, same as
-      // every other blank-content caller, instead of a plain Error.
-      try {
-        assertNotBlankContentRefusal(sent)
-      } catch (error) {
-        throw new ValidationError(
-          `ACP prompt was not sent: ${error instanceof Error ? error.message : String(error)}`,
-        )
-      }
+      assertMessageSent(sent, "ACP prompt was not sent")
 
       await Promise.race([
         pending.done,

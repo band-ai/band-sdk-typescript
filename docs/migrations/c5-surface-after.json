@@ -502,6 +502,7 @@
         "EVENT_EMPTY_CONTENT_PLACEHOLDER",
         "FernRestAdapter",
         "RestFacade",
+        "assertMessageSent",
         "assertNotBlankContentRefusal",
         "fetchPaginated",
         "normalizePaginationMetadata"
@@ -520,6 +521,7 @@
         "PlatformChatMessage",
         "RestApi",
         "RestFacade",
+        "assertMessageSent",
         "assertNotBlankContentRefusal",
         "fetchPaginated",
         "normalizePaginationMetadata"

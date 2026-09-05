@@ -41,6 +41,19 @@ export function assertNotBlankContentRefusal(result: ToolOperationResult): ToolO
   return result;
 }
 
+// A direct createChatMessage caller (not routed through AgentTools/ContactCallbackTools)
+// needs to know the send actually succeeded, not just that it wasn't specifically a
+// blank-content refusal -- any other resolved `ok: false` (e.g. moderation) would
+// otherwise fall through to a fabricated message id or a silent response timeout.
+export function assertMessageSent(result: ToolOperationResult, context: string): ToolOperationResult {
+  if (result?.ok === false) {
+    const reason = typeof result.error === "string" ? result.error : String(result.status ?? "unknown error");
+    throw new ValidationError(`${context}: ${reason}`);
+  }
+
+  return result;
+}
+
 // An event is room telemetry, not the agent's answer, so blank content is
 // repaired rather than refused. Matches band-sdk-python's
 // `_EVENT_EMPTY_CONTENT_PLACEHOLDER`.

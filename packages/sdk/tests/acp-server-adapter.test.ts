@@ -256,4 +256,38 @@ describe("BandACPServerAdapter", () => {
     expect((error as Error).message).toMatch(/blank/i)
     expect(createAgentChatMessage).not.toHaveBeenCalled()
   })
+
+  // A resolved ok:false isn't only a blank-content refusal -- the platform can
+  // reject a send for other reasons too, and that must surface just as
+  // immediately instead of silently degrading into a response timeout.
+  it("fails a genuinely rejected prompt immediately, not just a blank one", async () => {
+    const adapter = new BandACPServerAdapter({
+      bandRest: new FakeRestApi({
+        createChatMessage: async () => ({ ok: false, status: "moderation_rejected", error: "flagged content" }),
+        listChatParticipants: async () => [
+          { id: "agent-1", name: "Band Agent", type: "Agent", handle: "band" },
+          { id: "peer-1", name: "Codex", type: "Agent", handle: "codex" },
+        ],
+      }, { id: "agent-1", name: "Band Agent", description: null }),
+      responseTimeoutMs: 60_000,
+    })
+    await adapter.onStarted("Band Agent", "ACP server")
+
+    await adapter.onMessage(
+      makeMessage("hello", "room-rejected"),
+      new FakeTools(),
+      {
+        sessionToRoom: { "session-rejected": "room-rejected" },
+        sessionCwd: {},
+        sessionMcpServers: {},
+      },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-rejected" },
+    )
+
+    const error = await adapter.handlePrompt("session-rejected", "fix this bug").catch((caught) => caught)
+    expect(error).toBeInstanceOf(ValidationError)
+    expect((error as Error).message).toMatch(/flagged content/)
+  })
 });

@@ -100,6 +100,18 @@ describe("sendText", () => {
     expect(createAgentChatMessage).not.toHaveBeenCalled();
   });
 
+  // A resolved ok:false isn't only a blank-content refusal -- any other
+  // platform-side rejection must surface too, instead of falling through to
+  // the id-presence check below and returning a fabricated messageId.
+  it("throws on a genuine rejection that isn't a blank-content refusal", async () => {
+    const createChatMessage = vi.fn().mockResolvedValue({ ok: false, status: "moderation_rejected", error: "flagged content" });
+    const deps = makeDeps({ createChatMessage });
+
+    const error = await sendText(deps, { to: "room-1", text: "@Amy please review" }).catch((caught) => caught);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as Error).message).toMatch(/flagged content/);
+  });
+
   it("throws when no room/target is given", async () => {
     const deps: OutboundDeps = {
       rest: { listChatParticipants: vi.fn(), createChatMessage: vi.fn() } as unknown as OutboundDeps["rest"],

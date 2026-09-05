@@ -9,6 +9,7 @@ export type {
   RestApi,
 } from "../client/rest/types";
 export {
+  assertMessageSent,
   assertNotBlankContentRefusal,
   BLANK_CONTENT_STATUS,
   EVENT_EMPTY_CONTENT_PLACEHOLDER,
