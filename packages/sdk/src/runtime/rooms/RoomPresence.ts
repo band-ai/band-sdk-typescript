@@ -36,7 +36,7 @@ export class RoomPresence implements AsyncDisposable {
   public onContactEvent: RoomPresenceContactHandler | null = null;
 
   private readonly link: BandLink;
-  private readonly roomFilter?: (room: MetadataMap) => boolean;
+  private readonly roomFilter?: RoomPresenceOptions["roomFilter"];
   private readonly autoSubscribeExistingRooms: boolean;
   private readonly logger: Logger;
   private eventController: AbortController | null = null;
