@@ -184,6 +184,47 @@ describe("GoogleADKAdapter", () => {
     ]);
   });
 
+  it("still delivers the final response when a failed send's logger itself throws", async () => {
+    class FailingSendEventTools extends GoogleAdkTestTools {
+      public override async sendEvent(): Promise<Record<string, unknown>> {
+        return { ok: false, status: "failed" };
+      }
+    }
+
+    const tools = new FailingSendEventTools();
+
+    const adapter = new GoogleADKAdapter({
+      enableExecutionReporting: true,
+      logger: {
+        debug: () => {},
+        info: () => {},
+        warn: () => {
+          throw new Error("logger is broken");
+        },
+        error: () => {},
+      },
+      sdkFactory: createFakeGoogleAdkSdk(async function* () {
+        yield {
+          functionCalls: [{ id: "call-1", name: "thenvoi_lookup_weather", args: { city: "Vancouver" } }],
+          functionResponses: [{ id: "call-1", name: "thenvoi_lookup_weather", response: "12C" }],
+        };
+        yield { final: true, text: "It is 12C in Vancouver." };
+      }),
+    });
+
+    await adapter.onStarted("Weather Agent", "Answers weather questions");
+    await adapter.onMessage(
+      makeMessage("What's the weather?"),
+      tools,
+      [],
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-1" },
+    );
+
+    expect(tools.messages).toEqual(["It is 12C in Vancouver."]);
+  });
+
   it("bridges custom tools through ADK function tools", async () => {
     const tools = new GoogleAdkTestTools();
 

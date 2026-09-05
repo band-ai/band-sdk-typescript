@@ -37,6 +37,7 @@ import {
   DEFAULT_AGENT_TOOLS_CAPABILITIES,
   type AgentToolsCapabilities,
   type AgentToolsProtocol,
+  isStructuredToolFailure,
   isToolExecutorError,
   type ToolExecutorError,
 } from "../../contracts/protocols";
@@ -134,16 +135,6 @@ const CONTACT_REQUEST_ACTIONS: ReadonlySet<RespondContactRequestArgs["action"]> 
   "reject",
   "cancel",
 ]);
-
-/** A handler resolved `{ok: false}` (e.g. sendEvent) rather than throwing. */
-function isUnrecognizedToolFailure(value: unknown): value is ToolOperationResult & { ok: false } {
-  return (
-    typeof value === "object"
-    && value !== null
-    && (value as ToolOperationResult).ok === false
-    && !isToolExecutorError(value)
-  );
-}
 
 export class AgentTools implements AgentToolsProtocol {
   public readonly roomId: string;
@@ -348,19 +339,17 @@ export class AgentTools implements AgentToolsProtocol {
 
     try {
       const result = await handler(arguments_);
-      // A handler can fail by resolving `{ok: false}` instead of throwing (e.g.
-      // sendEvent, which must never reject — see its own comment). Route that
-      // failure through the same ToolExecutorError conversion a thrown error
-      // gets below, so every consumer of executeToolCall recognizes it.
-      if (isUnrecognizedToolFailure(result)) {
-        const message = typeof result.message === "string"
-          ? result.message
-          : `Tool '${toolName}' reported failure`;
+      // sendEvent fails by resolving `{ok: false}` instead of throwing (it must
+      // never reject — see its own comment). Route that failure through the
+      // same ToolExecutorError conversion a thrown error gets below, so every
+      // consumer of executeToolCall recognizes it. Scoped to sendEvent: other
+      // handlers' `ok` fields are legitimate business-result data, not errors.
+      if (toolName === "band_send_event" && isStructuredToolFailure(result) && !isToolExecutorError(result)) {
         return createToolExecutorError({
           errorType: "ToolExecutionError",
           toolName,
-          message,
-          legacyMessage: `Error executing ${toolName}: ${message}`,
+          message: result.message,
+          legacyMessage: `Error executing ${toolName}: ${result.message}`,
         });
       }
       return result;

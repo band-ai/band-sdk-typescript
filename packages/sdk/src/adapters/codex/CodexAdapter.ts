@@ -3,6 +3,7 @@ import type { ModelReasoningEffort, WebSearchMode } from "@openai/codex-sdk";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import {
   type AgentToolsProtocol,
+  isStructuredToolFailure,
   isToolExecutorError,
   toLegacyToolExecutorErrorMessage,
 } from "../../contracts/protocols";
@@ -1245,15 +1246,6 @@ const TURN_STATUS_VALUES = new Set<TurnStatus>([
   "failed",
   "inProgress",
 ]);
-
-function isStructuredToolFailure(value: unknown): value is { ok: false; message: string } {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-
-  const payload = value as Record<string, unknown>;
-  return payload.ok === false && typeof payload.message === "string";
-}
 
 function isCodexToolOutputError(value: unknown): boolean {
   return isToolExecutorError(value) || isStructuredToolFailure(value);

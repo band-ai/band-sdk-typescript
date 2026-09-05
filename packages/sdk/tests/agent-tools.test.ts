@@ -8,6 +8,7 @@ import type {
   RemoveContactArgs,
   RespondContactRequestArgs,
   StoreMemoryArgs,
+  ToolOperationResult,
 } from "../src/contracts/dtos";
 import {
   isToolExecutorError,
@@ -145,7 +146,7 @@ class FakeRestApi implements RestApi {
     };
   }
 
-  public async respondContactRequest(request: RespondContactRequestArgs) {
+  public async respondContactRequest(request: RespondContactRequestArgs): Promise<ToolOperationResult> {
     this.contactRequestResponses.push(request);
     const statusByAction: Record<ContactRequestAction, string> = {
       approve: "approved",
@@ -339,6 +340,31 @@ describe("AgentTools", () => {
       message: "network down",
     });
     expect(toLegacyToolExecutorErrorMessage(result)).toContain("Error executing band_send_event");
+  });
+
+  it("leaves another handler's own {ok:false} business result untouched, unlike send_event", async () => {
+    class ContactBusinessResultRestApi extends FakeRestApi {
+      public override async respondContactRequest(
+        request: RespondContactRequestArgs,
+      ): Promise<ToolOperationResult> {
+        this.contactRequestResponses.push(request);
+        return { ok: false, message: "request already resolved" };
+      }
+    }
+
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api: new ContactBusinessResultRestApi() }),
+      capabilities: { contacts: true },
+    });
+
+    const result = await tools.executeToolCall("band_respond_contact_request", {
+      action: "approve",
+      handle: "jane",
+    });
+
+    expect(isToolExecutorError(result)).toBe(false);
+    expect(result).toEqual({ ok: false, message: "request already resolved" });
   });
 
   it("validates send_message requires mentions", async () => {
