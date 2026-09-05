@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ContactCallbackTools } from "../src/runtime/tools/ContactCallbackTools";
 import { ContactToolsImpl } from "../src/runtime/tools/ContactToolsImpl";
 import { BLANK_CONTENT_ERROR, BLANK_CONTENT_STATUS, EVENT_SEND_FAILED_STATUS } from "../src/contracts/content";
+import { isToolExecutorError, toLegacyToolExecutorErrorMessage } from "../src/contracts/protocols";
 import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
 
 describe("ContactToolsImpl", () => {
@@ -572,9 +573,16 @@ describe("ContactCallbackTools", () => {
       expect(rest.archiveMemory).toHaveBeenCalledWith("m-1", expect.anything());
     });
 
-    it("throws UnsupportedFeatureError for an unrecognized tool name", async () => {
+    it("resolves a ToolNotFoundError for an unrecognized tool name, matching AgentTools", async () => {
       const { tools } = toolsWithFullRest();
-      await expect(tools.executeToolCall("band_unknown_tool", {})).rejects.toThrow(UnsupportedFeatureError);
+      const result = await tools.executeToolCall("band_unknown_tool", {});
+      expect(isToolExecutorError(result)).toBe(true);
+      expect(result).toMatchObject({
+        ok: false,
+        errorType: "ToolNotFoundError",
+        toolName: "band_unknown_tool",
+      });
+      expect(toLegacyToolExecutorErrorMessage(result)).toContain("band_unknown_tool");
     });
   });
 });

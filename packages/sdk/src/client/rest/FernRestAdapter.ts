@@ -405,16 +405,18 @@ export class FernRestAdapter implements RestApi {
     },
     options?: RestRequestOptions,
   ): Promise<ToolOperationResult> {
-    if (!hasVisibleContent(message.content)) {
-      this.logger.warn("Refusing to send a chat message with no visible content", { chatId });
-      return blankContentRefusal();
-    }
-
     const api = this.client.chatMessages?.createChatMessage?.bind(this.client.chatMessages)
       ?? this.client.agentApiMessages?.createAgentChatMessage?.bind(this.client.agentApiMessages)
       ?? this.client.myChatMessages?.createMyChatMessage?.bind(this.client.myChatMessages);
     if (!api) {
       throw new UnsupportedFeatureError("Fern client missing chat message creation endpoint");
+    }
+
+    // Checked after resolving the client method, so a misconfigured client still
+    // surfaces UnsupportedFeatureError instead of a masking blank-content refusal.
+    if (!hasVisibleContent(message.content)) {
+      this.logger.warn("Refusing to send a chat message with no visible content", { chatId });
+      return blankContentRefusal();
     }
 
     const response = await api(

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import { SimpleAdapter } from "../../core/simpleAdapter";
+import { hasVisibleContent } from "../../contracts/content";
 import type { MessagingTools } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
@@ -349,14 +350,17 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
     }
 
     if (input.state === "input-required") {
-      const text = extractMessageText(input.statusMessage) ?? "Please provide more information.";
+      // sendMessage throws on invisible-only content; an extracted status message with no
+      // visible content falls back to the same friendly default as a missing one.
+      const extracted = extractMessageText(input.statusMessage);
+      const text = extracted && hasVisibleContent(extracted) ? extracted : "Please provide more information.";
       await input.tools.sendMessage(text, [input.sender]);
       await this.emitTaskEvent(input.tools, input.contextId, input.taskId, input.state);
       return;
     }
 
     if (input.state === "completed") {
-      if (input.completedMessage) {
+      if (hasVisibleContent(input.completedMessage)) {
         await input.tools.sendMessage(input.completedMessage, [input.sender]);
       }
       await this.emitTaskEvent(input.tools, input.contextId, input.taskId, input.state);

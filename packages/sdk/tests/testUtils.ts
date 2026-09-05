@@ -2,7 +2,7 @@ import { ParticipantRoster } from "@band-ai/band-sdk-core";
 import type { PlatformMessage } from "../src/runtime";
 import type { AgentToolsProtocol } from "../src/core";
 import { DEFAULT_AGENT_TOOLS_CAPABILITIES } from "../src/contracts/protocols";
-import { hasVisibleContent } from "../src/contracts/content";
+import { withVisibleEventContent } from "../src/contracts/content";
 import type {
   AgentIdentity,
   PaginatedResponse,
@@ -58,12 +58,9 @@ export class FakeTools implements AgentToolsProtocol {
     metadata?: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     this.maybeFail("sendEvent");
-    // Mirrors the platform's own rejection, so a test posting a blank chunk
-    // is an actual regression test rather than a vacuous pass.
-    if (!hasVisibleContent(content)) {
-      return { ok: false, status: "failed" };
-    }
-    this.events.push({ content, messageType, metadata });
+    // Mirrors the real transport: blank content is repaired with the placeholder,
+    // not rejected, so a test posting a blank chunk still gets a delivered event.
+    this.events.push({ content: withVisibleEventContent(content), messageType, metadata });
     return { ok: true };
   }
 

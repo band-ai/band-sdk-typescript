@@ -25,11 +25,13 @@ import type {
   ToolOperationResult,
   ToolSchemaRecord,
 } from "../../contracts/dtos";
-import type {
-  AdapterToolsProtocol,
-  AgentToolsCapabilities,
+import {
+  type AdapterToolsProtocol,
+  type AgentToolsCapabilities,
+  createToolExecutorError,
+  isToolExecutorError,
 } from "../../contracts/protocols";
-import { UnsupportedFeatureError } from "../../core/errors";
+import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import { NoopLogger, type Logger } from "../../core/logger";
 import { toParticipantRecordFromRest } from "../formatters";
 import { ContactToolsImpl } from "./ContactToolsImpl";
@@ -262,6 +264,33 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
   }
 
   public async executeToolCall(toolName: string, toolArgs: MetadataMap): Promise<unknown> {
+    try {
+      return await this.dispatchToolCall(toolName, toolArgs);
+    } catch (error) {
+      if (isToolExecutorError(error)) {
+        return error;
+      }
+
+      if (error instanceof ValidationError) {
+        return createToolExecutorError({
+          errorType: "ToolArgumentsValidationError",
+          toolName,
+          message: error.message,
+          legacyMessage: `Invalid arguments for ${toolName}: ${error.message}`,
+        });
+      }
+
+      const message = error instanceof Error ? error.message : String(error);
+      return createToolExecutorError({
+        errorType: "ToolExecutionError",
+        toolName,
+        message,
+        legacyMessage: `Error executing ${toolName}: ${message}`,
+      });
+    }
+  }
+
+  private async dispatchToolCall(toolName: string, toolArgs: MetadataMap): Promise<unknown> {
     switch (toolName) {
       case "band_send_message":
         return this.sendMessage(
@@ -328,7 +357,11 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
       case "band_archive_memory":
         return this.archiveMemory(String(toolArgs.memory_id ?? ""));
       default:
-        throw new UnsupportedFeatureError(`Unsupported tool call for contact callback: ${toolName}`);
+        return createToolExecutorError({
+          errorType: "ToolNotFoundError",
+          toolName,
+          message: `Unsupported tool call for contact callback: ${toolName}`,
+        });
     }
   }
 }

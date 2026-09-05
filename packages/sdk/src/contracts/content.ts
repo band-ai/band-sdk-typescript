@@ -44,7 +44,11 @@ export function assertMessageSent(result: ToolOperationResult, context: string):
 }
 
 // Events are room telemetry, not the agent's answer, so blank content is repaired,
-// not refused. Matches band-sdk-python's `_EVENT_EMPTY_CONTENT_PLACEHOLDER`.
+// not refused. The placeholder string matches band-sdk-python's
+// `_EVENT_EMPTY_CONTENT_PLACEHOLDER`, but the trigger condition is broader here:
+// band-sdk-python's `send_event` substitutes only on an empty string (`if not content`),
+// while `withVisibleEventContent` below also substitutes for whitespace-only, zero-width,
+// and bidi-mark-only content.
 export const EVENT_EMPTY_CONTENT_PLACEHOLDER = "(no content)";
 
 export function withVisibleEventContent(value: string): string {
