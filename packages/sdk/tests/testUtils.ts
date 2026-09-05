@@ -1,3 +1,4 @@
+import { expect } from "vitest";
 import { ParticipantRoster } from "@band-ai/band-sdk-core";
 import type { PlatformMessage } from "../src/runtime";
 import type { AgentToolsProtocol } from "../src/core";
@@ -117,6 +118,12 @@ export class FakeTools implements AgentToolsProtocol {
       throw this.errorFactory(method);
     }
   }
+}
+
+// Every framework's fake client reaches a blank final reply differently, so driving it
+// stays adapter-specific; this is the one outcome every adapter must share once it gets there.
+export function expectNoVisibleReplySent(tools: FakeTools): void {
+  expect(tools.messages).toHaveLength(0);
 }
 
 export function makeRoster(participants: ParticipantRecord[]): ParticipantRoster {

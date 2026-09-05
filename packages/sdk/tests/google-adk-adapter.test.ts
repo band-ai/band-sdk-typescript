@@ -4,7 +4,7 @@ import { z } from "zod";
 import { GoogleADKAdapter } from "../src/adapters";
 import { GoogleADKHistoryConverter } from "../src/converters";
 import type { AgentToolsProtocol } from "../src/core";
-import { FakeTools, makeMessage } from "./testUtils";
+import { expectNoVisibleReplySent, FakeTools, makeMessage } from "./testUtils";
 
 class GoogleAdkTestTools extends FakeTools {
   public readonly executedCalls: Array<{ toolName: string; args: Record<string, unknown> }> = [];
@@ -161,7 +161,7 @@ describe("GoogleADKAdapter", () => {
       ),
     ).resolves.toBeUndefined();
 
-    expect(tools.messages).toHaveLength(0);
+    expectNoVisibleReplySent(tools);
   });
 
   it("logs a warning instead of silently swallowing a failed tool-call/tool-result event send", async () => {

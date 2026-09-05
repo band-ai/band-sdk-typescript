@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { LangGraphAdapter } from "../src/adapters/langgraph";
 import { HistoryProvider } from "../src/runtime/types";
-import { FakeTools, makeMessage } from "./testUtils";
+import { expectNoVisibleReplySent, FakeTools, makeMessage } from "./testUtils";
 
 const langGraphMocks = vi.hoisted(() => ({
   createReactAgent: vi.fn(),
@@ -146,7 +146,7 @@ describe("LangGraphAdapter", () => {
       { isSessionBootstrap: true, roomId: "room-invisible-reply" },
     );
 
-    expect(tools.messages).toHaveLength(0);
+    expectNoVisibleReplySent(tools);
   });
 
   it("replays history on follow-ups with the triggering message kept exactly once, last", async () => {

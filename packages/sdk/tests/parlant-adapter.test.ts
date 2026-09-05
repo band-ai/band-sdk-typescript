@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { ParlantAdapter } from "../src/adapters/parlant/ParlantAdapter";
-import { FakeTools, makeMessage } from "./testUtils";
+import { expectNoVisibleReplySent, FakeTools, makeMessage } from "./testUtils";
 
 class FakeParlantClient {
   public readonly customers = {
@@ -232,7 +232,7 @@ describe("ParlantAdapter", () => {
       { isSessionBootstrap: false, roomId: "room-invisible" },
     );
 
-    expect(tools.messages).toEqual([]);
+    expectNoVisibleReplySent(tools);
     expect(tools.events.some((event) => event.messageType === "error")).toBe(true);
   });
 

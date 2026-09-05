@@ -8,7 +8,7 @@ import type {
   LettaMessageCreateParams,
 } from "../src/adapters/letta/LettaAdapter";
 import { LettaHistoryConverter } from "../src/adapters/letta/types";
-import { FakeTools, makeMessage } from "./testUtils";
+import { expectNoVisibleReplySent, FakeTools, makeMessage } from "./testUtils";
 
 // ---------------------------------------------------------------------------
 // Fake Letta client
@@ -635,7 +635,7 @@ describe("LettaAdapter", () => {
       { isSessionBootstrap: false, roomId: "room-invisible" },
     );
 
-    expect(tools.messages).toEqual([]);
+    expectNoVisibleReplySent(tools);
     expect(tools.events.some((e) => e.messageType === "error")).toBe(true);
   });
 

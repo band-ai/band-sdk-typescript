@@ -5,7 +5,7 @@ import {
   type ClaudeSDKQuery,
 } from "../src/adapters/claude-sdk/ClaudeSDKAdapter";
 import { HistoryProvider } from "../src/runtime/types";
-import { FakeTools, makeMessage } from "./testUtils";
+import { expectNoVisibleReplySent, FakeTools, makeMessage } from "./testUtils";
 import { MCP_SERVER_NAME } from "../src/runtime/tools/schemas";
 
 function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
@@ -134,7 +134,7 @@ describe("ClaudeSDKAdapter", () => {
       ),
     ).resolves.toBeUndefined();
 
-    expect(tools.messages).toHaveLength(0);
+    expectNoVisibleReplySent(tools);
   });
 
   it("reports tool summary events when execution reporting is enabled", async () => {

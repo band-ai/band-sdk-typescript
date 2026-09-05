@@ -9,7 +9,7 @@ import {
 } from "../src/adapters/codex/appServerClient";
 import type { InitializeParams } from "../src/adapters/codex/appServerProtocol";
 import { HistoryProvider } from "../src/runtime/types";
-import { FakeTools, makeMessage } from "./testUtils";
+import { expectNoVisibleReplySent, FakeTools, makeMessage } from "./testUtils";
 
 class FakeCodexClient implements CodexClientLike {
   public readonly requestCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
@@ -558,7 +558,7 @@ describe("CodexAdapter", () => {
       ),
     ).resolves.toBeUndefined();
 
-    expect(tools.messages).toHaveLength(0);
+    expectNoVisibleReplySent(tools);
   });
 
   it("renders default Band prompt and appends customSection when no full override is set", async () => {
