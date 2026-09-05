@@ -1,5 +1,6 @@
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
+import { hasVisibleContent } from "../../contracts/content";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import { RuntimeStateError, UnsupportedFeatureError } from "../../core/errors";
@@ -384,7 +385,11 @@ export class LettaAdapter extends SimpleAdapter<
         signal,
       );
 
-      if (!assistantText) {
+      // hasVisibleContent, not falsy: sendMessage throws on invisible-only
+      // content, and while this call is wrapped in a try/catch, that catch
+      // re-throws after logging, so the room still dies -- better to never
+      // call it at all for a reply with nothing visible in it.
+      if (!assistantText || !hasVisibleContent(assistantText)) {
         await tools.sendEvent(
           "Letta did not return a response.",
           "error",

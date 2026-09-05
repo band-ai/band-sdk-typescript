@@ -124,6 +124,31 @@ describe("LangGraphAdapter", () => {
     expect(tools.messages).toEqual(["LangGraph reply"]);
   });
 
+  it("does not send an invisible-only assistant reply", async () => {
+    const graph = {
+      async invoke() {
+        return {
+          messages: [["assistant", "​"]],
+        };
+      },
+    };
+
+    const adapter = new LangGraphAdapter({ graph });
+    await adapter.onStarted("LangGraph Agent", "Graph-backed assistant");
+
+    const tools = new FakeTools();
+    await adapter.onMessage(
+      makeMessage("say nothing visible"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-invisible-reply" },
+    );
+
+    expect(tools.messages).toHaveLength(0);
+  });
+
   it("replays history on follow-ups with the triggering message kept exactly once, last", async () => {
     const invokeCalls: Array<{ messages?: Array<[string, string]> }> = [];
     const graph = {

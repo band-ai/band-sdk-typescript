@@ -615,6 +615,30 @@ describe("LettaAdapter", () => {
     expect(tools.events.some((e) => e.messageType === "error")).toBe(true);
   });
 
+  it("emits error event instead of sending an invisible-only assistant reply", async () => {
+    const client = new FakeLettaClient();
+    client.responseBatches.push(assistantResponse("​"));
+
+    const adapter = new LettaAdapter({
+      clientFactory: async () => client,
+    });
+
+    await adapter.onStarted("Agent", "An agent");
+
+    const tools = new FakeTools();
+    await adapter.onMessage(
+      makeMessage("Hi", "room-invisible"),
+      tools,
+      [],
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-invisible" },
+    );
+
+    expect(tools.messages).toEqual([]);
+    expect(tools.events.some((e) => e.messageType === "error")).toBe(true);
+  });
+
   it("logs and re-throws on client error", async () => {
     const client = new FakeLettaClient();
     client.agents.messages.create = async () => {

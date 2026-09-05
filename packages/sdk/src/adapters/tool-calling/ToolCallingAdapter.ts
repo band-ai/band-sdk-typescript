@@ -1,4 +1,5 @@
 import { SimpleAdapter } from "../../core/simpleAdapter";
+import { hasVisibleContent } from "../../contracts/content";
 import {
   isToolExecutorError,
   type MessagingTools,
@@ -185,7 +186,10 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     }
 
     const text = response.text?.trim();
-    if (text) {
+    // hasVisibleContent, not truthiness: sendMessage throws on invisible-only
+    // content and this call has no surrounding try/catch, so a weaker guard
+    // would let that throw kill the room.
+    if (text && hasVisibleContent(text)) {
       await tools.sendMessage(text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
     } else if ((response.toolCalls?.length ?? 0) === 0) {
       this.logger.warn("Model returned empty response with no tool calls", {

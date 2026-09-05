@@ -201,6 +201,41 @@ describe("ParlantAdapter", () => {
     expect(tools.events.some((event) => event.messageType === "error")).toBe(true);
   });
 
+  it("emits an error event instead of sending an invisible-only reply", async () => {
+    const client = new FakeParlantClient();
+    client.eventPollBatches.push([
+      {
+        kind: "message",
+        offset: 10,
+        data: {
+          message: "​",
+        },
+      },
+    ]);
+
+    const adapter = new ParlantAdapter({
+      environment: "https://parlant.example",
+      agentId: "agent-1",
+      clientFactory: async () => client,
+      responseTimeoutSeconds: 1,
+    });
+
+    await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
+
+    const tools = new FakeTools();
+    await adapter.onMessage(
+      makeMessage("Hi", "room-invisible"),
+      tools,
+      [],
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-invisible" },
+    );
+
+    expect(tools.messages).toEqual([]);
+    expect(tools.events.some((event) => event.messageType === "error")).toBe(true);
+  });
+
   it("serializes bootstrap initialization for concurrent first messages in one room", async () => {
     const client = new FakeParlantClient();
     client.eventPollBatches.push(

@@ -390,20 +390,31 @@ describe("ToolCallingAdapter", () => {
     expect(tools.messages).toEqual(["error_caught"]);
   });
 
-  it("surfaces a blank final response as an error instead of silently succeeding", async () => {
+  it("does not send an invisible-only final response", async () => {
     // A zero-width space survives response.text?.trim() (it isn't whitespace
-    // by that check) but still has no visible content, so this is the exact
-    // shape of reply that used to reach the transport and resolve "successfully".
+    // by that check) but still has no visible content. sendMessage throws for
+    // exactly this shape of reply, and onMessage has no surrounding try/catch,
+    // so letting the call through would propagate the throw to
+    // Execution.ts/AgentRuntime.failRuntime and kill the entire agent
+    // runtime over one turn's invisible reply -- guard before calling instead.
     class BlankFinalResponseModel implements ToolCallingModel {
       public async complete(): Promise<{ text?: string }> {
         return { text: "\u200B" };
       }
     }
 
+    let createChatMessageCalls = 0;
+    class TrackingBlankContentRestApi extends BlankContentRestApi {
+      public override async createChatMessage(): ReturnType<BlankContentRestApi["createChatMessage"]> {
+        createChatMessageCalls += 1;
+        return super.createChatMessage();
+      }
+    }
+
     const adapter = new OpenAIAdapter({ model: new BlankFinalResponseModel() });
     const tools = new AgentTools({
       roomId: "r1",
-      rest: new RestFacade({ api: new BlankContentRestApi() }),
+      rest: new RestFacade({ api: new TrackingBlankContentRestApi() }),
     });
 
     await expect(
@@ -411,6 +422,8 @@ describe("ToolCallingAdapter", () => {
         isSessionBootstrap: true,
         roomId: "r1",
       }),
-    ).rejects.toThrow(`content ${BLANK_CONTENT_ERROR}`);
+    ).resolves.toBeUndefined();
+
+    expect(createChatMessageCalls).toBe(0);
   });
 });

@@ -3,6 +3,7 @@ import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
+import { hasVisibleContent } from "../../contracts/content";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { asErrorMessage, asOptionalRecord, asRecord } from "../shared/coercion";
@@ -172,7 +173,10 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
 
     if (this.emitExecutionEvents && graph.streamEvents) {
       const text = await this.forwardStreamEvents(graph, input, graphConfig, tools);
-      if (text) {
+      // hasVisibleContent, not truthiness: sendMessage throws on invisible-only
+      // content and this call has no surrounding try/catch, so a weaker guard
+      // would let that throw kill the room.
+      if (text && hasVisibleContent(text)) {
         await tools.sendMessage(text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
       }
       return;
@@ -184,7 +188,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
 
     const result = await graph.invoke(input, graphConfig);
     const text = extractAssistantText(result);
-    if (text) {
+    if (text && hasVisibleContent(text)) {
       await tools.sendMessage(text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
     }
   }
