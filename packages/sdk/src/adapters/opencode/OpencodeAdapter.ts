@@ -919,9 +919,8 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       .join("\n")
       .trim();
 
-    // Invisible-only content throws in sendMessage; watchTurnCompletion isn't
-    // reliably awaited by its caller, so the throw becomes an unhandled
-    // rejection instead of a turn failure.
+    // watchTurnCompletion isn't reliably awaited by its caller, so a throw here
+    // becomes an unhandled rejection instead of a turn failure.
     if (hasVisibleContent(text)) {
       await roomState.tools.sendMessage(text, roomState.pendingMentions);
       roomState.pendingMentions = [];

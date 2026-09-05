@@ -990,7 +990,6 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     const mention = this.currentMention(input.message);
 
     if (input.turnStatus === "completed") {
-      // Invisible-only content throws in sendMessage; nothing here catches it.
       if (input.fallbackSendAgentText && hasVisibleContent(input.finalText) && !input.sawSendMessageTool) {
         await input.tools.sendMessage(input.finalText.trim(), mention);
       }

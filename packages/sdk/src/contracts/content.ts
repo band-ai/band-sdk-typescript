@@ -7,7 +7,10 @@ import type { ToolOperationResult } from "./dtos";
 // A naive `.length > 0` check would wrongly pass whitespace-only or zero-width strings.
 const VISIBLE_CONTENT_PATTERN = /[\p{L}\p{N}\p{P}\p{S}]/u;
 
-export function hasVisibleContent(value: unknown): boolean {
+// An adapter must guard an unconditional sendMessage with this: invisible-only text throws
+// downstream, and most callers have no surrounding try/catch (or one that rethrows after
+// logging), so an unguarded call can kill the room or the whole runtime.
+export function hasVisibleContent(value: unknown): value is string {
   // A non-string coerces into the regex ("undefined" reads as visible), so the type is guarded first.
   return typeof value === "string" && VISIBLE_CONTENT_PATTERN.test(value);
 }

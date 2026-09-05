@@ -330,7 +330,6 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
       }
     }
 
-    // Invisible-only content throws in sendMessage; nothing here catches it.
     if (hasVisibleContent(finalText)) {
       await tools.sendMessage(finalText.trim(), [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
     }

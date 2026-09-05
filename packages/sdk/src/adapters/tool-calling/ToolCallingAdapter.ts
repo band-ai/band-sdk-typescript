@@ -186,8 +186,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     }
 
     const text = response.text?.trim();
-    // Invisible-only content throws in sendMessage; nothing here catches it.
-    if (text && hasVisibleContent(text)) {
+    if (hasVisibleContent(text)) {
       await tools.sendMessage(text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
     } else if ((response.toolCalls?.length ?? 0) === 0) {
       this.logger.warn("Model returned empty response with no tool calls", {

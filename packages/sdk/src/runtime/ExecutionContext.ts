@@ -40,7 +40,6 @@ export class ExecutionContext {
   private messageIds = new Set<string>();
   private readonly dedupCache = new Map<string, true>();
   private readonly roster = new ParticipantRoster();
-  private readonly logger: Logger;
   private readonly tools: AgentTools;
   private readonly adapterTools: AdapterToolsProtocol;
   private participantsMessage: string | null = null;
@@ -61,13 +60,12 @@ export class ExecutionContext {
     this.contextCacheTtlMs = Math.max(0, (options.contextCacheTtlSeconds ?? 300) * 1000);
     this.enableContextHydration = options.enableContextHydration ?? true;
     this.retryTrackerInstance = new RetryTracker(options.maxMessageRetries ?? 1);
-    this.logger = options.logger ?? new NoopLogger();
     this.tools = new AgentTools({
       roomId: this.roomId,
       rest: this.link.rest,
       roster: this.roster,
       capabilities: this.link.capabilities,
-      logger: this.logger,
+      logger: options.logger ?? new NoopLogger(),
     });
     this.adapterTools = this.tools.getAdapterTools();
   }

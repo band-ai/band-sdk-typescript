@@ -207,9 +207,8 @@ export class ParlantAdapter
         createdEvent.offset,
       );
 
-      // Invisible-only content throws in sendMessage; the catch below re-throws
-      // after logging, so it still kills the room.
-      if (!reply || !hasVisibleContent(reply)) {
+      // The catch below re-throws after logging, so a throw here still kills the room.
+      if (!hasVisibleContent(reply)) {
         await tools.sendEvent(
           "Parlant did not return a response before timeout.",
           "error",

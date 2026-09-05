@@ -173,8 +173,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
 
     if (this.emitExecutionEvents && graph.streamEvents) {
       const text = await this.forwardStreamEvents(graph, input, graphConfig, tools);
-      // Invisible-only content throws in sendMessage; nothing here catches it.
-      if (text && hasVisibleContent(text)) {
+      if (hasVisibleContent(text)) {
         await tools.sendMessage(text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
       }
       return;
@@ -186,7 +185,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
 
     const result = await graph.invoke(input, graphConfig);
     const text = extractAssistantText(result);
-    if (text && hasVisibleContent(text)) {
+    if (hasVisibleContent(text)) {
       await tools.sendMessage(text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
     }
   }
