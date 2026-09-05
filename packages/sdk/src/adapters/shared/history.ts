@@ -19,3 +19,117 @@ export function findLatestTaskMetadata(
 
   return null;
 }
+
+/**
+ * The minimal shape the history helpers need from an adapter's message
+ * type.  Adapters extend it with their own fields (sender, senderType,
+ * ...); the generic parameter preserves those through each call.
+ */
+export interface ChatTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
+/**
+ * Join runs of same-role messages into a single turn so that nothing is
+ * lost when several participants speak before the agent replies.
+ */
+function mergeConsecutiveSameRole<T extends ChatTurn>(turns: readonly T[]): T[] {
+  const merged: T[] = [];
+
+  for (const turn of turns) {
+    if (!turn.content) {
+      continue;
+    }
+
+    const previous = merged[merged.length - 1];
+    if (previous && previous.role === turn.role) {
+      previous.content += `\n${turn.content}`;
+    } else {
+      merged.push({ ...turn });
+    }
+  }
+
+  return merged;
+}
+
+/**
+ * Keep user->assistant pairs, plus a trailing user turn that has no reply
+ * yet so the agent sees the most recent unanswered question.  Assistant
+ * turns with no preceding question are dropped, leaving a clean
+ * alternating conversation.
+ */
+function pairUserAssistantTurns<T extends ChatTurn>(turns: readonly T[]): T[] {
+  const paired: T[] = [];
+  let index = 0;
+
+  while (index < turns.length) {
+    const current = turns[index];
+    if (current.role !== "user" || !current.content) {
+      index += 1;
+      continue;
+    }
+
+    const next = turns[index + 1];
+    if (next && next.role === "assistant" && next.content) {
+      paired.push(current, next);
+      index += 2;
+      continue;
+    }
+
+    if (index === turns.length - 1) {
+      paired.push(current);
+    }
+
+    index += 1;
+  }
+
+  return paired;
+}
+
+/**
+ * Keep the most recent `limit` turns.  A plain `slice(-limit)` can land
+ * between a question and its answer, so an assistant turn left leading by
+ * the cut is dropped rather than replayed without the question it answers
+ * — which is why the result can be one turn shorter than `limit`.
+ */
+function takeRecentTurns<T extends ChatTurn>(
+  turns: readonly T[],
+  limit: number,
+): T[] {
+  if (limit <= 0) {
+    return [];
+  }
+
+  if (turns.length <= limit) {
+    return [...turns];
+  }
+
+  const truncated = turns.slice(-limit);
+  if (truncated[0]?.role === "assistant") {
+    truncated.shift();
+  }
+
+  return truncated;
+}
+
+/**
+ * Select the conversation history to replay to an agent, keeping at most
+ * `limit` turns: consecutive same-role messages are merged rather than
+ * dropped, complete user->assistant exchanges are kept in order, and a
+ * trailing unanswered user message is preserved.
+ *
+ * Truncation belongs here rather than at the call site because cutting the
+ * result afterwards can land between a question and its answer.
+ *
+ * The input is never mutated; every returned turn is a fresh object.
+ */
+export function selectCompleteExchanges<T extends ChatTurn>(
+  history: readonly T[],
+  limit: number,
+): T[] {
+  return takeRecentTurns(
+    pairUserAssistantTurns(mergeConsecutiveSameRole(history)),
+    limit,
+  );
+}
