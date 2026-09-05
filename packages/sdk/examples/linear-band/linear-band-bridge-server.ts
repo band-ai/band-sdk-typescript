@@ -21,7 +21,7 @@ import {
   type WritebackMode,
 } from "../../src/linear";
 import { FernRestAdapter, type RestApi } from "../../src/rest";
-import { createLinearBandBridgeAgent, readLinearEnv, loadBandLinearConfig, loadBandLinearConfigWithKey } from "./linear-band-bridge-agent";
+import { createLinearBandBridgeAgent, readLinearEnv, DEFAULT_BRIDGE_CONFIG_KEY } from "./linear-band-bridge-agent";
 
 interface LinearBandBridgeServerOptions {
   restApi: RestApi;
@@ -43,9 +43,9 @@ const DISPATCH_RETRY_BASE_DELAY_MS = 1_000;
 const DEFAULT_ROOM_RESET_TIMEOUT_MS = 5_000;
 const EMBEDDED_AGENT_START_RETRY_LIMIT = 4;
 const EMBEDDED_AGENT_START_RETRY_BASE_DELAY_MS = 2_000;
-const DEFAULT_THENVOI_BRIDGE_MIN_REQUEST_INTERVAL_MS = 2_000;
-const DEFAULT_THENVOI_BRIDGE_RETRY_LIMIT = 4;
-const DEFAULT_THENVOI_BRIDGE_RETRY_BASE_DELAY_MS = 2_000;
+const DEFAULT_BAND_BRIDGE_MIN_REQUEST_INTERVAL_MS = 2_000;
+const DEFAULT_BAND_BRIDGE_RETRY_LIMIT = 4;
+const DEFAULT_BAND_BRIDGE_RETRY_BASE_DELAY_MS = 2_000;
 
 export function createLinearBandBridgeApp(options: LinearBandBridgeServerOptions): express.Express {
   const logger = options.logger ?? new ConsoleLogger();
@@ -111,7 +111,7 @@ export function createEmbeddedLinearBridgeDispatcher(options: {
   const logger = options.logger ?? new ConsoleLogger();
   const queued = new Set<string>();
   const roomResetTimeoutMs = Number(
-    readLinearEnv("LINEAR_BAND_ROOM_RESET_TIMEOUT_MS", "LINEAR_THENVOI_ROOM_RESET_TIMEOUT_MS") ?? String(DEFAULT_ROOM_RESET_TIMEOUT_MS),
+    readLinearEnv("LINEAR_BAND_ROOM_RESET_TIMEOUT_MS") ?? String(DEFAULT_ROOM_RESET_TIMEOUT_MS),
   );
 
   return {
@@ -225,71 +225,33 @@ function getRequiredEnv(name: string): string {
   return value;
 }
 
-const CANONICAL_LEGACY_CONFIG_KEYS = new Set(["linear_thenvoi_bridge", "linear_thenvoi_transport"]);
-
 export function resolveBridgeApiKey(logger: Logger, configPath?: string): string {
-  const configKeyFromEnv = readLinearEnv("LINEAR_BAND_BRIDGE_AGENT_CONFIG_KEY", "LINEAR_THENVOI_BRIDGE_AGENT_CONFIG_KEY");
+  const configKey = readLinearEnv("LINEAR_BAND_BRIDGE_AGENT_CONFIG_KEY") ?? DEFAULT_BRIDGE_CONFIG_KEY;
 
-  // If an explicit key is configured, use it exactly
-  if (configKeyFromEnv) {
-    // If it's a canonical legacy key, route through compat loader for warning
-    if (CANONICAL_LEGACY_CONFIG_KEYS.has(configKeyFromEnv)) {
-      try {
-        const { config, selectedKey } = loadBandLinearConfigWithKey(configKeyFromEnv.replace("thenvoi", "band"), configKeyFromEnv, configPath);
-        if (config.apiKey?.trim()) {
-          logger.info("linear_thenvoi_bridge.using_agent_config_key", { configKey: selectedKey });
-          return config.apiKey;
-        }
-      } catch {
-        // fall through to env fallback
-      }
-    } else {
-      try {
-        const config = loadAgentConfig(configKeyFromEnv, configPath);
-        if (config.apiKey?.trim()) {
-          logger.info("linear_thenvoi_bridge.using_agent_config_key", { configKey: configKeyFromEnv });
-          return config.apiKey;
-        }
-      } catch {
-        // explicit key failed — fall through to env fallback
-      }
+  try {
+    const config = loadAgentConfig(configKey, configPath);
+    if (config.apiKey?.trim()) {
+      logger.info("linear_thenvoi_bridge.using_agent_config_key", { configKey });
+      return config.apiKey;
     }
-  } else {
-    // No explicit key — use Band-first with legacy fallback
-    try {
-      const { config, selectedKey } = loadBandLinearConfigWithKey("linear_band_bridge", "linear_thenvoi_bridge", configPath);
-      if (config.apiKey?.trim()) {
-        logger.info("linear_thenvoi_bridge.using_agent_config_key", { configKey: selectedKey });
-        return config.apiKey;
-      }
-    } catch {
-      // config not found — fall through to env fallback
-    }
+  } catch {
+    // config not found or malformed — fall through to env fallback
   }
 
-  const fallbackEnvKey = readLinearEnv("BAND_API_KEY", "THENVOI_API_KEY")?.trim();
+  const fallbackEnvKey = readLinearEnv("BAND_API_KEY")?.trim();
   if (fallbackEnvKey) {
     return fallbackEnvKey;
   }
 
   throw new Error(
-    "Missing API key. Set BAND_API_KEY (legacy THENVOI_API_KEY) or configure linear_band_bridge (legacy: linear_thenvoi_bridge) in agent_config.yaml.",
+    "Missing API key. Set BAND_API_KEY or configure linear_band_bridge in agent_config.yaml.",
   );
 }
 
 
 export function resolveEmbeddedBridgeConfig(configPath?: string): AgentConfigResult {
-  const explicitKey = readLinearEnv("LINEAR_BAND_BRIDGE_RUNTIME_CONFIG_KEY", "LINEAR_THENVOI_BRIDGE_RUNTIME_CONFIG_KEY");
-  if (explicitKey) {
-    // If the explicit key is a known legacy key, route through the compat loader so it warns
-    if (CANONICAL_LEGACY_CONFIG_KEYS.has(explicitKey)) {
-      return loadBandLinearConfig(explicitKey.replace("thenvoi", "band"), explicitKey, configPath);
-    }
-    // Arbitrary custom key — use exact, no fallback
-    return loadAgentConfig(explicitKey, configPath);
-  }
-  // Default — use Band-first with legacy fallback
-  return loadBandLinearConfig("linear_band_bridge", "linear_thenvoi_bridge", configPath);
+  const explicitKey = readLinearEnv("LINEAR_BAND_BRIDGE_RUNTIME_CONFIG_KEY");
+  return loadAgentConfig(explicitKey ?? DEFAULT_BRIDGE_CONFIG_KEY, configPath);
 }
 
 export function resolveRestApiKeyForMode(input: {
@@ -307,7 +269,7 @@ export function resolveRestApiKeyForMode(input: {
   }
 
   input.logger.warn("linear_thenvoi_bridge.embedded_mode_missing_runtime_api_key", {
-    runtimeConfigKey: readLinearEnv("LINEAR_BAND_BRIDGE_RUNTIME_CONFIG_KEY", "LINEAR_THENVOI_BRIDGE_RUNTIME_CONFIG_KEY") ?? "linear_band_bridge",
+    runtimeConfigKey: readLinearEnv("LINEAR_BAND_BRIDGE_RUNTIME_CONFIG_KEY") ?? DEFAULT_BRIDGE_CONFIG_KEY,
   });
   return resolveBridgeApiKey(input.logger);
 }
@@ -379,9 +341,9 @@ async function runDispatchAttempt(
     sessionId: string;
   },
 ): Promise<void> {
-  const retryLimit = Number(readLinearEnv("LINEAR_BAND_DISPATCH_RETRY_LIMIT", "LINEAR_THENVOI_DISPATCH_RETRY_LIMIT") ?? String(DISPATCH_RETRY_LIMIT));
+  const retryLimit = Number(readLinearEnv("LINEAR_BAND_DISPATCH_RETRY_LIMIT") ?? String(DISPATCH_RETRY_LIMIT));
   const retryBaseDelayMs = Number(
-    readLinearEnv("LINEAR_BAND_DISPATCH_RETRY_BASE_DELAY_MS", "LINEAR_THENVOI_DISPATCH_RETRY_BASE_DELAY_MS") ?? String(DISPATCH_RETRY_BASE_DELAY_MS),
+    readLinearEnv("LINEAR_BAND_DISPATCH_RETRY_BASE_DELAY_MS") ?? String(DISPATCH_RETRY_BASE_DELAY_MS),
   );
   let attempt = 0;
 
@@ -479,8 +441,8 @@ export function createRateLimitedRestApi(input: {
   retryBaseDelayMs?: number;
   logger?: Logger;
 }): RestApi {
-  const retryLimit = input.retryLimit ?? DEFAULT_THENVOI_BRIDGE_RETRY_LIMIT;
-  const retryBaseDelayMs = input.retryBaseDelayMs ?? DEFAULT_THENVOI_BRIDGE_RETRY_BASE_DELAY_MS;
+  const retryLimit = input.retryLimit ?? DEFAULT_BAND_BRIDGE_RETRY_LIMIT;
+  const retryBaseDelayMs = input.retryBaseDelayMs ?? DEFAULT_BAND_BRIDGE_RETRY_BASE_DELAY_MS;
 
   if (input.minIntervalMs <= 0 && retryLimit <= 0) {
     return input.api;
@@ -620,10 +582,10 @@ export async function startEmbeddedAgentWithRetry(agent: Agent, logger: Logger):
 async function runLinearBandBridgeServer(): Promise<void> {
   const logger = new ConsoleLogger();
   const port = Number(process.env.PORT ?? "8787");
-  const embedBridgeAgent = parseBooleanEnv(readLinearEnv("LINEAR_BAND_EMBED_AGENT", "LINEAR_THENVOI_EMBED_AGENT"), true);
+  const embedBridgeAgent = parseBooleanEnv(readLinearEnv("LINEAR_BAND_EMBED_AGENT"), true);
   const bridgeMinRequestIntervalMs = parseNonNegativeIntEnv(
-    readLinearEnv("LINEAR_BAND_BRIDGE_MIN_REQUEST_INTERVAL_MS", "LINEAR_THENVOI_BRIDGE_MIN_REQUEST_INTERVAL_MS"),
-    DEFAULT_THENVOI_BRIDGE_MIN_REQUEST_INTERVAL_MS,
+    readLinearEnv("LINEAR_BAND_BRIDGE_MIN_REQUEST_INTERVAL_MS"),
+    DEFAULT_BAND_BRIDGE_MIN_REQUEST_INTERVAL_MS,
   );
   const embeddedBridgeConfig = embedBridgeAgent
     ? resolveEmbeddedBridgeConfig()
@@ -633,10 +595,11 @@ async function runLinearBandBridgeServer(): Promise<void> {
     embedBridgeAgent,
     embeddedBridgeConfig,
   });
-  const stateDbPath = readLinearEnv("LINEAR_BAND_STATE_DB", "LINEAR_THENVOI_STATE_DB") ?? ".linear-thenvoi-example.sqlite";
+  const stateDbPath = readLinearEnv("LINEAR_BAND_STATE_DB") ?? ".linear-thenvoi-example.sqlite";
+  const bandRestUrl = readLinearEnv("BAND_REST_URL") ?? "https://app.band.ai";
   const rawRestApi = new FernRestAdapter(new BandClient({
     apiKey: bridgeApiKey,
-    baseUrl: readLinearEnv("BAND_REST_URL", "THENVOI_REST_URL") ?? "https://app.band.ai",
+    baseUrl: bandRestUrl,
   }));
   const restApi = createRateLimitedRestApi({
     api: rawRestApi,
@@ -646,9 +609,9 @@ async function runLinearBandBridgeServer(): Promise<void> {
   const store = createSqliteSessionRoomStore(stateDbPath);
   const linearAccessToken = getRequiredEnv("LINEAR_ACCESS_TOKEN");
   const linearWebhookSecret = getRequiredEnv("LINEAR_WEBHOOK_SECRET");
-  const hostAgentHandle = readLinearEnv("BAND_HOST_AGENT_HANDLE", "THENVOI_HOST_AGENT_HANDLE");
-  const roomStrategy = parseRoomStrategy(readLinearEnv("LINEAR_BAND_ROOM_STRATEGY", "LINEAR_THENVOI_ROOM_STRATEGY")) ?? "issue";
-  const writebackMode = parseWritebackMode(readLinearEnv("LINEAR_BAND_WRITEBACK_MODE", "LINEAR_THENVOI_WRITEBACK_MODE")) ?? "activity_stream";
+  const hostAgentHandle = readLinearEnv("BAND_HOST_AGENT_HANDLE");
+  const roomStrategy = parseRoomStrategy(readLinearEnv("LINEAR_BAND_ROOM_STRATEGY")) ?? "issue";
+  const writebackMode = parseWritebackMode(readLinearEnv("LINEAR_BAND_WRITEBACK_MODE")) ?? "activity_stream";
 
   let embeddedAgent: Agent | null = null;
   let dispatcher: LinearBridgeDispatcher | undefined;
@@ -709,7 +672,7 @@ async function runLinearBandBridgeServer(): Promise<void> {
     logger.info("linear_thenvoi_bridge.server_started", {
       port,
       mode: embedBridgeAgent ? "embedded_bridge_agent" : "agent_rest_adapter",
-      thenvoiRestUrl: readLinearEnv("BAND_REST_URL", "THENVOI_REST_URL") ?? "https://app.band.ai",
+      thenvoiRestUrl: bandRestUrl,
       bridgeMinRequestIntervalMs,
     });
   });
