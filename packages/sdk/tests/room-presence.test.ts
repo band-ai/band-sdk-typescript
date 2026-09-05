@@ -21,7 +21,7 @@ describe("RoomPresence", () => {
     const joined: string[] = [];
     const left: string[] = [];
 
-    const presence = new RoomPresence({
+    await using presence = new RoomPresence({
       link: new BandLink({
         agentId: "agent-1",
         apiKey: "key",
@@ -73,7 +73,7 @@ describe("RoomPresence", () => {
     const transport = new FakeTransport();
     const contactEvents: string[] = [];
 
-    const presence = new RoomPresence({
+    await using presence = new RoomPresence({
       link: new BandLink({
         agentId: "agent-1",
         apiKey: "key",
@@ -98,15 +98,13 @@ describe("RoomPresence", () => {
     });
 
     expect(contactEvents).toEqual(["contact_added"]);
-
-    await presence.stop();
   });
 
   it("paginates existing room discovery across all available pages", async () => {
     const transport = new FakeTransport();
     const joined: string[] = [];
 
-    const presence = new RoomPresence({
+    await using presence = new RoomPresence({
       link: new BandLink({
         agentId: "agent-1",
         apiKey: "key",
@@ -136,8 +134,6 @@ describe("RoomPresence", () => {
 
     expect(joined).toEqual(["room-1", "room-2"]);
     expect(presence.roster.trackedRoomIds()).toEqual(["room-1", "room-2"]);
-
-    await presence.stop();
   });
 
   it("logs room discovery failures instead of swallowing them silently", async () => {
@@ -149,7 +145,7 @@ describe("RoomPresence", () => {
       error: vi.fn(),
     };
 
-    const presence = new RoomPresence({
+    await using presence = new RoomPresence({
       link: new BandLink({
         agentId: "agent-1",
         apiKey: "key",
@@ -171,15 +167,13 @@ describe("RoomPresence", () => {
         error: expect.any(Error),
       }),
     );
-
-    await presence.stop();
   });
 
   it("admits a room only once under concurrent admission attempts", async () => {
     const transport = new FakeTransport();
     const joined: string[] = [];
 
-    const presence = new RoomPresence({
+    await using presence = new RoomPresence({
       link: new BandLink({
         agentId: "agent-1",
         apiKey: "key",
@@ -207,15 +201,13 @@ describe("RoomPresence", () => {
     expect(joined).toEqual(["room-1"]);
     expect(transport.hasTopic("chat_room:room-1")).toBe(true);
     expect(presence.roster.roomMembership("room-1")).toBe("admitted");
-
-    await presence.stop();
   });
 
   it("does not fire onRoomLeft for a room that was never admitted", async () => {
     const transport = new FakeTransport();
     const left: string[] = [];
 
-    const presence = new RoomPresence({
+    await using presence = new RoomPresence({
       link: new BandLink({
         agentId: "agent-1",
         apiKey: "key",
@@ -239,8 +231,6 @@ describe("RoomPresence", () => {
 
     expect(left).toEqual([]);
     expect(presence.roster.roomMembership("room-untracked")).toBe("unadmitted");
-
-    await presence.stop();
   });
 
   it("leaves a room unadmitted and fires no onRoomJoined when subscribeRoom fails", async () => {
@@ -248,7 +238,7 @@ describe("RoomPresence", () => {
     const joined: string[] = [];
     const restApi = new FakeRestApi({ listChats: async () => ({ data: [] }) });
 
-    const presence = new RoomPresence({
+    await using presence = new RoomPresence({
       link: new BandLink({
         agentId: "agent-1",
         apiKey: "key",
@@ -271,7 +261,6 @@ describe("RoomPresence", () => {
     expect(presence.roster.roomMembership("room-1")).toBe("unadmitted");
 
     failingTopicJoin.mockRestore();
-    await presence.stop();
   });
 
   it("fires onRoomLeft during stop() only for rooms that reached Admitted", async () => {
@@ -279,7 +268,7 @@ describe("RoomPresence", () => {
     const left: string[] = [];
     const restApi = new FakeRestApi({ listChats: async () => ({ data: [] }) });
 
-    const presence = new RoomPresence({
+    await using presence = new RoomPresence({
       link: new BandLink({
         agentId: "agent-1",
         apiKey: "key",
@@ -305,7 +294,7 @@ describe("RoomPresence", () => {
     const transport = new FakeTransport();
     const joined: string[] = [];
 
-    const presence = new RoomPresence({
+    await using presence = new RoomPresence({
       link: new BandLink({
         agentId: "agent-1",
         apiKey: "key",
@@ -333,8 +322,6 @@ describe("RoomPresence", () => {
     await waitFor(() => joined.length === 1);
 
     expect(joined).toEqual(["room-after-rejection"]);
-
-    await presence.stop();
   });
 
   it("warns and continues start() when the agent_contacts subscribe fails", async () => {
@@ -352,7 +339,7 @@ describe("RoomPresence", () => {
       return FakeTransport.prototype.join.call(transport, topic, handlers);
     });
 
-    const presence = new RoomPresence({
+    await using presence = new RoomPresence({
       link: new BandLink({
         agentId: "agent-1",
         apiKey: "key",
@@ -370,7 +357,6 @@ describe("RoomPresence", () => {
     );
 
     failingJoin.mockRestore();
-    await presence.stop();
   });
 
   it("still tears down admitted rooms during stop() when unsubscribeAgentContacts fails", async () => {
@@ -383,7 +369,7 @@ describe("RoomPresence", () => {
     };
     const left: string[] = [];
 
-    const presence = new RoomPresence({
+    await using presence = new RoomPresence({
       link: new BandLink({
         agentId: "agent-1",
         apiKey: "key",

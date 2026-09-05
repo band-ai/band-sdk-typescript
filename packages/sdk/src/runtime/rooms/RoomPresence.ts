@@ -28,7 +28,7 @@ type RoomPresenceEventHandler = (
 ) => Promise<void>;
 type RoomPresenceContactHandler = (event: ContactEvent) => Promise<void>;
 
-export class RoomPresence {
+export class RoomPresence implements AsyncDisposable {
   public readonly roster = new RoomRoster();
   public onRoomJoined: RoomPresenceJoinHandler | null = null;
   public onRoomLeft: RoomPresenceLeaveHandler | null = null;
@@ -58,6 +58,10 @@ export class RoomPresence {
 
   public async stop(): Promise<void> {
     return this.serialize(() => this.stopBody());
+  }
+
+  public async [Symbol.asyncDispose](): Promise<void> {
+    await this.stop();
   }
 
   public abortEventLoop(): void {

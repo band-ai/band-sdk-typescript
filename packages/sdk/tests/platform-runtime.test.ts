@@ -47,7 +47,7 @@ describe("PlatformRuntime", () => {
       resolveSeen?.();
     });
 
-    const runtime = new PlatformRuntime({
+    await using runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
       link: new BandLink({
@@ -78,8 +78,6 @@ describe("PlatformRuntime", () => {
     expect(runtime.name).toBe("Agent");
     expect(seenMessage).toBe("hello runtime");
     expect(lifecycle).toEqual(["processing", "adapter", "processed"]);
-
-    await runtime.stop();
   });
 
   it("exposes fern adapter for duck-typed client", async () => {
@@ -134,7 +132,7 @@ describe("PlatformRuntime", () => {
       seenMessages.push(message.content);
     });
 
-    const runtime = new PlatformRuntime({
+    await using runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
       link: new BandLink({
@@ -173,15 +171,13 @@ describe("PlatformRuntime", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(transport.hasTopic("chat_room:room-existing")).toBe(false);
     expect(transport.hasTopic("room_participants:room-existing")).toBe(false);
-
-    await runtime.stop();
   });
 
   it("skips rooms rejected by roomFilter", async () => {
     const transport = new FakeTransport();
     const adapter = new GenericAdapter(async () => {});
 
-    const runtime = new PlatformRuntime({
+    await using runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
       link: new BandLink({
@@ -212,8 +208,6 @@ describe("PlatformRuntime", () => {
 
     expect(transport.hasTopic("chat_room:direct-1")).toBe(true);
     expect(transport.hasTopic("chat_room:group-1")).toBe(false);
-
-    await runtime.stop();
   });
 
   it("uses contextFactory when provided", async () => {
@@ -221,7 +215,7 @@ describe("PlatformRuntime", () => {
     const factoryCalls: string[] = [];
     const adapter = new GenericAdapter(async () => {});
 
-    const runtime = new PlatformRuntime({
+    await using runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
       link: new BandLink({
@@ -248,8 +242,6 @@ describe("PlatformRuntime", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(factoryCalls).toEqual(["room-1"]);
-
-    await runtime.stop();
   });
 
   it("dispatches participant events to the room context and message events to its execution", async () => {
@@ -262,7 +254,7 @@ describe("PlatformRuntime", () => {
       seenMessages.push(message.content);
     });
 
-    const runtime = new PlatformRuntime({
+    await using runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
       link: new BandLink({
@@ -317,8 +309,6 @@ describe("PlatformRuntime", () => {
     expect(added).toEqual(["room-1:participant-1"]);
     expect(seenMessages).toEqual(["hello"]);
     expect(removed).toEqual(["room-1:participant-1"]);
-
-    await runtime.stop();
   });
 
   it("cleans up admitted rooms via onCleanup when the runtime stops, without a prior room_removed", async () => {
@@ -330,7 +320,7 @@ describe("PlatformRuntime", () => {
       onRuntimeStop: vi.fn(async () => undefined),
     };
 
-    const runtime = new PlatformRuntime({
+    await using runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
       link: new BandLink({
@@ -360,7 +350,7 @@ describe("PlatformRuntime", () => {
     const transport = new FakeTransport();
     const adapter = new GenericAdapter(async () => {});
 
-    const runtime = new PlatformRuntime({
+    await using runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
       link: new BandLink({
@@ -382,8 +372,6 @@ describe("PlatformRuntime", () => {
     await expect(transport.emit("chat_room:room-bootstrap", "message_created", {})).rejects.toThrow(
       "No handler for chat_room:room-bootstrap/message_created",
     );
-
-    await runtime.stop();
   });
 
   it("propagates fatal adapter failures through runForever", async () => {
@@ -473,7 +461,7 @@ describe("PlatformRuntime", () => {
       seenMessages.push(message.content);
     });
 
-    const runtime = new PlatformRuntime({
+    await using runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
       link: new BandLink({
@@ -518,8 +506,6 @@ describe("PlatformRuntime", () => {
       "recover me second",
       "live only",
     ]);
-
-    await runtime.stop();
   });
 
   it("preserves the hub-room system prompt on the first contact event", async () => {
@@ -541,7 +527,7 @@ describe("PlatformRuntime", () => {
       resolveSeen?.();
     });
 
-    const runtime = new PlatformRuntime({
+    await using runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
       link: new BandLink({
@@ -575,8 +561,6 @@ describe("PlatformRuntime", () => {
         content: "[Contact Request] Alice (@alice) wants to connect.\nMessage: \"Hello!\"\nRequest ID: req-1",
       },
     ]);
-
-    await runtime.stop();
   });
 
   it("calls adapter onRuntimeStop when PlatformRuntime stops", async () => {
@@ -588,7 +572,7 @@ describe("PlatformRuntime", () => {
       onRuntimeStop: vi.fn(async () => undefined),
     };
 
-    const runtime = new PlatformRuntime({
+    await using runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
       link: new BandLink({
@@ -623,7 +607,7 @@ describe("PlatformRuntime", () => {
       isConnected: vi.fn(() => false),
     };
 
-    const runtime = new PlatformRuntime({
+    await using runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
       link: new BandLink({
