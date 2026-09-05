@@ -13,6 +13,7 @@
  */
 
 import type { BandLink } from "@band-ai/sdk";
+import { assertMessageSent } from "@band-ai/sdk/rest";
 
 type BandRest = BandLink["rest"];
 
@@ -285,9 +286,7 @@ const sendEventTool: BandTool = {
     // placeholder), but the platform can still resolve a genuine ok:false
     // instead of throwing -- report that honestly instead of a fabricated
     // success with no event_id.
-    if (response?.ok === false) {
-      throw new Error(`Event not sent: ${String(response.error ?? response.status ?? "unknown error")}`);
-    }
+    assertMessageSent(response, "Event not sent");
     return { success: true, event_id: response.id, message_type };
   },
 };

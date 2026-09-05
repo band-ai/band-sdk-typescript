@@ -34,7 +34,7 @@ export const BLANK_CONTENT_STATUS = "blank_content";
 // blank-content refusal turns into a real failure instead of a silently
 // "successful" {ok: false} result no caller happens to check.
 export function assertNotBlankContentRefusal(result: ToolOperationResult): ToolOperationResult {
-  if (result.status === BLANK_CONTENT_STATUS) {
+  if (result?.status === BLANK_CONTENT_STATUS) {
     throw new ValidationError(typeof result.error === "string" ? result.error : BLANK_CONTENT_ERROR);
   }
 
@@ -47,7 +47,7 @@ export function assertNotBlankContentRefusal(result: ToolOperationResult): ToolO
 // otherwise fall through to a fabricated message id or a silent response timeout.
 export function assertMessageSent(result: ToolOperationResult, context: string): ToolOperationResult {
   if (result?.ok === false) {
-    const reason = typeof result.error === "string" ? result.error : String(result.status ?? "unknown error");
+    const reason = typeof result.error === "string" ? result.error : String(result.status || "unknown error");
     throw new ValidationError(`${context}: ${reason}`);
   }
 

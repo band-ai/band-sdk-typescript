@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { FernRestAdapter } from "../src/client/rest/FernRestAdapter";
-import { EVENT_EMPTY_CONTENT_PLACEHOLDER } from "../src/contracts/content";
+import { BLANK_CONTENT_ERROR, BLANK_CONTENT_STATUS, EVENT_EMPTY_CONTENT_PLACEHOLDER } from "../src/contracts/content";
 import type { Logger } from "../src/core/logger";
 
 // Root-cause regression guard: a blank chat_result event used to reach the
@@ -33,7 +33,7 @@ describe("FernRestAdapter: blank content handling", () => {
 
       const result = await adapter.createChatMessage("room-1", { content, mentions: [] });
 
-      expect(result).toEqual({ ok: false, status: "blank_content", error: "content can't be blank" });
+      expect(result).toEqual({ ok: false, status: BLANK_CONTENT_STATUS, error: `content ${BLANK_CONTENT_ERROR}` });
       expect(createAgentChatMessage).not.toHaveBeenCalled();
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toMatchObject({ context: { chatId: "room-1" } });
