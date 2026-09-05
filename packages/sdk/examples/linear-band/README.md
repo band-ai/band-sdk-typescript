@@ -40,12 +40,9 @@ CODEX_MODEL=gpt-5.3-codex
 PORT=8787
 ```
 
-Legacy `LINEAR_THENVOI_*` names are accepted as per-field fallback with a
-once-per-variable deprecation warning.
-
 Recommended agent config key:
 
-- `linear_band_bridge` (legacy: `linear_thenvoi_bridge`)
+- `linear_band_bridge`
 
 ## Run
 
