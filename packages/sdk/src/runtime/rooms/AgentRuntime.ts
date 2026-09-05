@@ -212,6 +212,10 @@ export class AgentRuntime {
 
   public async bootstrapRoomMessage(roomId: string, message: PlatformMessage): Promise<void> {
     await this.presence.admitRoom(roomId, {}, false);
+    // A concurrent room_added admission may still own the ticket: wait for it
+    // to settle before judging membership, so this doesn't spuriously throw
+    // for a room that is merely still Admitting.
+    await this.presence.waitForPendingAdmission(roomId);
     if (this.presence.roster.roomMembership(roomId) !== "admitted") {
       throw new TransportError(`Failed to subscribe to room ${roomId}`);
     }

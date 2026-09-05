@@ -209,6 +209,57 @@ describe("RoomPresence", () => {
     await presence.stop();
   });
 
+  it("lets a caller that lost the admission race wait for the winner's outcome instead of failing prematurely", async () => {
+    const transport = new FakeTransport();
+    let releaseJoin!: () => void;
+    const joinGate = new Promise<void>((resolve) => {
+      releaseJoin = resolve;
+    });
+    const joinSpy = vi.spyOn(transport, "join").mockImplementation(async (topic, handlers) => {
+      if (topic === "chat_room:room-1") {
+        await joinGate;
+      }
+      return FakeTransport.prototype.join.call(transport, topic, handlers);
+    });
+
+    const presence = new RoomPresence({
+      link: new BandLink({
+        agentId: "agent-1",
+        apiKey: "key",
+        transport,
+        restApi: new FakeRestApi({ listChats: async () => ({ data: [] }) }),
+      }),
+      autoSubscribeExistingRooms: false,
+    });
+
+    await presence.start();
+
+    const winner = presence.admitRoom("room-1", {});
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(presence.roster.roomMembership("room-1")).toBe("admitting");
+
+    // Loses the ticket race: no-ops immediately instead of joining a second time.
+    const loserAdmitted = await presence.admitRoom("room-1", {}, false);
+    expect(loserAdmitted).toBe(false);
+
+    let settled = false;
+    const waitDone = presence.waitForPendingAdmission("room-1").then(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false); // winner's subscribeRoom is still gated
+
+    releaseJoin();
+    await waitDone;
+
+    expect(settled).toBe(true);
+    expect(presence.roster.roomMembership("room-1")).toBe("admitted");
+    expect(await winner).toBe(true);
+
+    joinSpy.mockRestore();
+    await presence.stop();
+  });
+
   it("does not fire onRoomLeft for a room that was never admitted", async () => {
     const transport = new FakeTransport();
     const left: string[] = [];
@@ -369,5 +420,52 @@ describe("RoomPresence", () => {
 
     failingJoin.mockRestore();
     await presence.stop();
+  });
+
+  it("still tears down admitted rooms during stop() when unsubscribeAgentContacts fails", async () => {
+    const transport = new FakeTransport();
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const left: string[] = [];
+
+    const presence = new RoomPresence({
+      link: new BandLink({
+        agentId: "agent-1",
+        apiKey: "key",
+        transport,
+        restApi: new FakeRestApi({ listChats: async () => ({ data: [] }) }),
+        capabilities: { contacts: true },
+      }),
+      autoSubscribeExistingRooms: false,
+      logger,
+    });
+    presence.onRoomLeft = async (roomId) => {
+      left.push(roomId);
+    };
+
+    await presence.start();
+    await presence.admitRoom("room-1", {});
+
+    const failingLeave = vi.spyOn(transport, "leave").mockImplementation(async (topic) => {
+      if (topic === "agent_contacts:agent-1") {
+        throw new Error("contacts leave failed");
+      }
+      return FakeTransport.prototype.leave.call(transport, topic);
+    });
+
+    await presence.stop();
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "RoomPresence failed to unsubscribe agent_contacts channel",
+      expect.objectContaining({ error: expect.any(Error) }),
+    );
+    expect(left).toEqual(["room-1"]);
+    expect(presence.roster.trackedRoomIds()).toEqual([]);
+
+    failingLeave.mockRestore();
   });
 });

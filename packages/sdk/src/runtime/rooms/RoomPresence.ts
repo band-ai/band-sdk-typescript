@@ -43,6 +43,7 @@ export class RoomPresence {
   private eventTask: Promise<void> | null = null;
   private contactsSubscribed = false;
   private lifecycle: Promise<void> = Promise.resolve();
+  private readonly admissionInFlight = new Map<string, Promise<boolean>>();
 
   public constructor(options: RoomPresenceOptions) {
     this.link = options.link;
@@ -73,6 +74,33 @@ export class RoomPresence {
       return false;
     }
 
+    const admission = this.completeAdmission(roomId, ticket, payload, notify);
+    this.admissionInFlight.set(roomId, admission);
+    try {
+      return await admission;
+    } finally {
+      if (this.admissionInFlight.get(roomId) === admission) {
+        this.admissionInFlight.delete(roomId);
+      }
+    }
+  }
+
+  /**
+   * Lets a caller that lost the admission race (no ticket claimed, so its own
+   * `admitRoom` no-oped) wait for the in-flight winner to settle before
+   * reading final roster membership, instead of observing a still-"admitting"
+   * room as a failure.
+   */
+  public async waitForPendingAdmission(roomId: string): Promise<void> {
+    await this.admissionInFlight.get(roomId)?.catch(() => undefined);
+  }
+
+  private async completeAdmission(
+    roomId: string,
+    ticket: bigint,
+    payload: MetadataMap,
+    notify: boolean,
+  ): Promise<boolean> {
     let succeeded = false;
     let admitted = false;
     try {
@@ -151,8 +179,13 @@ export class RoomPresence {
     this.eventController = null;
 
     if (this.contactsSubscribed) {
-      await this.link.unsubscribeAgentContacts();
-      this.contactsSubscribed = false;
+      try {
+        await this.link.unsubscribeAgentContacts();
+      } catch (error) {
+        this.logger.warn("RoomPresence failed to unsubscribe agent_contacts channel", { error });
+      } finally {
+        this.contactsSubscribed = false;
+      }
     }
 
     const roomIds = this.roster.trackedRoomIds();
