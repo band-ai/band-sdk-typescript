@@ -1101,6 +1101,9 @@ function validateToolArgs(toolName: string, args: Record<string, unknown>): Tool
 
   if (toolName === "band_send_message") {
     // band_send_event has no equivalent check -- it's repaired downstream, not rejected.
+    // Guarded the same way as the mentions check below: only shape-checked when
+    // present as the expected type, so a missing field reports once (as
+    // "Field required" above) instead of doubling up with this message too.
     const content = args.content;
     if (typeof content === "string" && !hasVisibleContent(content)) {
       errors.push(`content: ${BLANK_CONTENT_ERROR}`);

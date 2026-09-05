@@ -26,7 +26,7 @@ describe("hasVisibleContent", () => {
   // A non-string reaching the regex stringifies (`undefined` -> "undefined")
   // and would read as visible, letting a blank send through to the platform.
   it.each([undefined, null, 42, {}])("is not fooled by non-string input (%j)", (input) => {
-    expect(hasVisibleContent(input as unknown as string)).toBe(false);
+    expect(hasVisibleContent(input)).toBe(false);
   });
 });
 

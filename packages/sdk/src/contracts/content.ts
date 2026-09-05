@@ -12,7 +12,7 @@ import type { ToolOperationResult } from "./dtos";
 // formatting, marks) does not.
 const VISIBLE_CONTENT_PATTERN = /[\p{L}\p{N}\p{P}\p{S}]/u;
 
-export function hasVisibleContent(value: string): boolean {
+export function hasVisibleContent(value: unknown): boolean {
   // A non-string would stringify into the regex (`undefined` -> "undefined")
   // and read as visible, quietly restoring the platform-422 behaviour this
   // guard exists to prevent.
@@ -50,10 +50,11 @@ export function withVisibleEventContent(value: string): string {
   return hasVisibleContent(value) ? value : EVENT_EMPTY_CONTENT_PLACEHOLDER;
 }
 
-// sendEvent's counterpart to assertNotBlankContentRefusal: absorbs a genuine
-// transport failure (network error, exhausted retries) so a failed send
-// resolves instead of aborting the turn. Blank content never reaches this as
-// a refusal -- withVisibleEventContent repairs it upstream.
+// Absorbs a thrown transport failure (network error, exhausted retries) so a
+// failed sendEvent resolves instead of aborting the turn, the way a failed
+// sendMessage does. Only catches thrown errors -- a RestApi that resolves a
+// blank-content refusal instead of repairing it (unlike FernRestAdapter, via
+// withVisibleEventContent) would pass straight through unchanged.
 export async function resolveEventSend(
   send: () => Promise<ToolOperationResult>,
   logger: Logger,
