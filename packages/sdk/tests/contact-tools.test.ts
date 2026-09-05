@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ContactCallbackTools } from "../src/runtime/tools/ContactCallbackTools";
 import { ContactToolsImpl } from "../src/runtime/tools/ContactToolsImpl";
+import { BLANK_CONTENT_ERROR, BLANK_CONTENT_STATUS, EVENT_SEND_FAILED_STATUS } from "../src/contracts/content";
+import { isToolExecutorError, toLegacyToolExecutorErrorMessage } from "../src/contracts/protocols";
 import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
 
 describe("ContactToolsImpl", () => {
@@ -216,6 +218,21 @@ describe("ContactCallbackTools", () => {
 
       expect(createChatMessage).toHaveBeenCalledWith("room-1", { content: "hi" });
     });
+
+    it("throws instead of silently accepting a transport blank-content refusal", async () => {
+      const createChatMessage = vi.fn().mockResolvedValue({
+        ok: false,
+        status: BLANK_CONTENT_STATUS,
+        error: `content ${BLANK_CONTENT_ERROR}`,
+      });
+      const tools = new ContactCallbackTools({ createChat: vi.fn(), createChatMessage } as never, "room-1");
+
+      // Zero-width space: a real-world blank the platform rejects; the fake refuses unconditionally regardless.
+      const zeroWidthSpace = "\u200B";
+      const error = await tools.sendMessage(zeroWidthSpace).catch((caught) => caught);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as Error).message).toBe(`content ${BLANK_CONTENT_ERROR}`);
+    });
   });
 
   describe("sendEvent", () => {
@@ -244,6 +261,33 @@ describe("ContactCallbackTools", () => {
         "room-1",
         { content: "hi", messageType: "task" },
       );
+    });
+
+    it("resolves a transport blank-content refusal instead of throwing (room telemetry, not the agent's answer)", async () => {
+      const createChatEvent = vi.fn().mockResolvedValue({
+        ok: false,
+        status: BLANK_CONTENT_STATUS,
+        error: `content ${BLANK_CONTENT_ERROR}`,
+      });
+      const tools = new ContactCallbackTools({ createChat: vi.fn(), createChatEvent } as never, "room-1");
+
+      const zeroWidthSpace = "\u200B";
+      await expect(tools.sendEvent(zeroWidthSpace, "task")).resolves.toEqual({
+        ok: false,
+        status: BLANK_CONTENT_STATUS,
+        error: `content ${BLANK_CONTENT_ERROR}`,
+      });
+    });
+
+    it("resolves instead of throwing when the transport call itself rejects", async () => {
+      const createChatEvent = vi.fn().mockRejectedValue(new Error("network error"));
+      const tools = new ContactCallbackTools({ createChat: vi.fn(), createChatEvent } as never, "room-1");
+
+      await expect(tools.sendEvent("thinking", "thought")).resolves.toEqual({
+        ok: false,
+        status: EVENT_SEND_FAILED_STATUS,
+        message: "network error",
+      });
     });
   });
 
@@ -529,9 +573,16 @@ describe("ContactCallbackTools", () => {
       expect(rest.archiveMemory).toHaveBeenCalledWith("m-1", expect.anything());
     });
 
-    it("throws UnsupportedFeatureError for an unrecognized tool name", async () => {
+    it("resolves a ToolNotFoundError for an unrecognized tool name, matching AgentTools", async () => {
       const { tools } = toolsWithFullRest();
-      await expect(tools.executeToolCall("band_unknown_tool", {})).rejects.toThrow(UnsupportedFeatureError);
+      const result = await tools.executeToolCall("band_unknown_tool", {});
+      expect(isToolExecutorError(result)).toBe(true);
+      expect(result).toMatchObject({
+        ok: false,
+        errorType: "ToolNotFoundError",
+        toolName: "band_unknown_tool",
+      });
+      expect(toLegacyToolExecutorErrorMessage(result)).toContain("band_unknown_tool");
     });
   });
 });

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { FernRestAdapter } from "../src/client/rest/FernRestAdapter";
+import { EVENT_SEND_FAILED_STATUS } from "../src/contracts/content";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 import { ContactCallbackTools } from "../src/runtime/tools/ContactCallbackTools";
 import { SUSTAINED_429 } from "./support/fakeFetchServer";
@@ -22,38 +23,34 @@ interface SendPath {
   name: string;
   urlSegment: "messages" | "events";
   send: (rest: FernRestAdapter) => Promise<unknown>;
-  // `AgentTools.sendEvent` alone absorbs a send failure instead of rejecting
-  // with it — room telemetry, not the agent's answer — so its settled outcome
-  // differs from the other three paths, which all still reject.
-  assertOutcome: (settled: Promise<unknown>) => Promise<void>;
 }
 
-const rejectsWith429 = (settled: Promise<unknown>) => expect(settled).rejects.toMatchObject({ statusCode: 429 });
-
-const SEND_PATHS: SendPath[] = [
+// sendMessage is the agent's answer, so exhausted retries reject. sendEvent is room
+// telemetry: AgentTools/ContactCallbackTools absorb any transport failure and resolve
+// { ok: false, status: "failed" } instead.
+const MESSAGE_SEND_PATHS: SendPath[] = [
   {
     name: "AgentTools.sendMessage",
     urlSegment: "messages",
     send: (rest) => new AgentTools({ roomId: "room-1", rest }).sendMessage("hi"),
-    assertOutcome: rejectsWith429,
-  },
-  {
-    name: "AgentTools.sendEvent",
-    urlSegment: "events",
-    send: (rest) => new AgentTools({ roomId: "room-1", rest }).sendEvent("hi", "task"),
-    assertOutcome: (settled) => expect(settled).resolves.toMatchObject({ ok: false, status: "failed" }),
   },
   {
     name: "ContactCallbackTools.sendMessage",
     urlSegment: "messages",
     send: (rest) => new ContactCallbackTools(rest, "room-1").sendMessage("hi"),
-    assertOutcome: rejectsWith429,
+  },
+];
+
+const EVENT_SEND_PATHS: SendPath[] = [
+  {
+    name: "AgentTools.sendEvent",
+    urlSegment: "events",
+    send: (rest) => new AgentTools({ roomId: "room-1", rest }).sendEvent("hi", "task"),
   },
   {
     name: "ContactCallbackTools.sendEvent",
     urlSegment: "events",
     send: (rest) => new ContactCallbackTools(rest, "room-1").sendEvent("hi", "task"),
-    assertOutcome: rejectsWith429,
   },
 ];
 
@@ -66,12 +63,28 @@ describe("message-send retry cap holds through the tool layer", () => {
     vi.useRealTimers();
   });
 
-  it.each(SEND_PATHS)(
-    "$name makes 3 attempts, not 4, on a sustained 429, over its own /$urlSegment route",
-    async ({ urlSegment, send, assertOutcome }) => {
+  it.each(MESSAGE_SEND_PATHS)(
+    "$name makes 3 attempts, not 4, on a sustained 429, over its own /$urlSegment route, and rejects",
+    async ({ urlSegment, send }) => {
       const { rest, calls } = buildFakeRestAdapter(SUSTAINED_429(3));
 
-      await assertOutcome(settleThroughRetries(send(rest)));
+      await expect(settleThroughRetries(send(rest))).rejects.toMatchObject({ statusCode: 429 });
+
+      expect(calls).toHaveLength(3);
+      expect(calls.every((call) => call.url.includes(`/${urlSegment}`))).toBe(true);
+    },
+  );
+
+  it.each(EVENT_SEND_PATHS)(
+    "$name makes 3 attempts, not 4, on a sustained 429, over its own /$urlSegment route, and resolves { ok: false }",
+    async ({ urlSegment, send }) => {
+      const { rest, calls } = buildFakeRestAdapter(SUSTAINED_429(3));
+
+      await expect(settleThroughRetries(send(rest))).resolves.toEqual({
+        ok: false,
+        status: EVENT_SEND_FAILED_STATUS,
+        message: "Status code: 429",
+      });
 
       expect(calls).toHaveLength(3);
       expect(calls.every((call) => call.url.includes(`/${urlSegment}`))).toBe(true);

@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
+import { EVENT_EMPTY_CONTENT_PLACEHOLDER, FernRestAdapter } from "@band-ai/sdk/rest";
 import {
   bandTools,
   getBandTool,
@@ -175,6 +176,34 @@ describe("band_get_participants / band_create_chatroom / band_send_event", () =>
       run("band_send_event", makeCtx({ createChatEvent }), { room_id: "r1", content: "x", message_type: "BOGUS" }),
     ).rejects.toThrow(/invalid message_type/i);
     expect(createChatEvent).not.toHaveBeenCalled();
+  });
+
+  // Uses the real FernRestAdapter (not a hand-copied shape) since it's the one that substitutes the placeholder.
+  it("send_event substitutes a placeholder for blank content instead of dropping the event", async () => {
+    const createAgentChatEvent = vi.fn().mockResolvedValue({ data: { ok: true, id: "evt-1" } });
+    const transport = new FernRestAdapter({ agentApiEvents: { createAgentChatEvent } });
+    const createChatEvent = (roomId: string, event: Parameters<typeof transport.createChatEvent>[1]) =>
+      transport.createChatEvent(roomId, event);
+
+    const result = (await run("band_send_event", makeCtx({ createChatEvent }), {
+      room_id: "r1",
+      content: "\u200b",
+      message_type: "thought",
+    })) as { success: boolean; event_id: string };
+
+    expect(result).toEqual({ success: true, event_id: "evt-1", message_type: "thought" });
+    expect(createAgentChatEvent).toHaveBeenCalledWith(
+      "r1",
+      expect.objectContaining({ event: expect.objectContaining({ content: EVENT_EMPTY_CONTENT_PLACEHOLDER }) }),
+      expect.any(Object),
+    );
+  });
+
+  it("send_event throws instead of reporting success when the platform resolves a genuine ok:false", async () => {
+    const createChatEvent = vi.fn().mockResolvedValue({ ok: false, status: "moderation_rejected", error: "flagged" });
+    await expect(
+      run("band_send_event", makeCtx({ createChatEvent }), { room_id: "r1", content: "hi", message_type: "thought" }),
+    ).rejects.toThrow(/flagged/i);
   });
 
   it("list_chats maps room id/name/type and clamps pagination", async () => {

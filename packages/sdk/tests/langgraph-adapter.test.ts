@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { LangGraphAdapter } from "../src/adapters/langgraph";
 import { HistoryProvider } from "../src/runtime/types";
-import { FakeTools, makeMessage } from "./testUtils";
+import { expectNoVisibleReplySent, FakeTools, makeMessage, streamFrom } from "./testUtils";
 
 const langGraphMocks = vi.hoisted(() => ({
   createReactAgent: vi.fn(),
@@ -16,14 +16,6 @@ vi.mock("@langchain/langgraph/prebuilt", () => ({
 vi.mock("@langchain/core/tools", () => ({
   tool: langGraphMocks.tool,
 }));
-
-function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
-  return (async function* generator(): AsyncGenerator<T, void> {
-    for (const item of items) {
-      yield item;
-    }
-  })();
-}
 
 describe("LangGraphAdapter", () => {
   it("constructs a graph with official LangGraph SDK when llm is provided", async () => {
@@ -122,6 +114,31 @@ describe("LangGraphAdapter", () => {
       "hello",
     ]);
     expect(tools.messages).toEqual(["LangGraph reply"]);
+  });
+
+  it("does not send an invisible-only assistant reply", async () => {
+    const graph = {
+      async invoke() {
+        return {
+          messages: [["assistant", "​"]],
+        };
+      },
+    };
+
+    const adapter = new LangGraphAdapter({ graph });
+    await adapter.onStarted("LangGraph Agent", "Graph-backed assistant");
+
+    const tools = new FakeTools();
+    await adapter.onMessage(
+      makeMessage("say nothing visible"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-invisible-reply" },
+    );
+
+    expectNoVisibleReplySent(tools);
   });
 
   it("replays history on follow-ups with the triggering message kept exactly once, last", async () => {

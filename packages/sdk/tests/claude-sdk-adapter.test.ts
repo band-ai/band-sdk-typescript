@@ -5,16 +5,8 @@ import {
   type ClaudeSDKQuery,
 } from "../src/adapters/claude-sdk/ClaudeSDKAdapter";
 import { HistoryProvider } from "../src/runtime/types";
-import { FakeTools, makeMessage } from "./testUtils";
+import { eventsOfType, expectNoVisibleReplySent, FakeTools, makeMessage, streamFrom } from "./testUtils";
 import { MCP_SERVER_NAME } from "../src/runtime/tools/schemas";
-
-function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
-  return (async function* generator(): AsyncGenerator<T, void> {
-    for (const item of items) {
-      yield item;
-    }
-  })();
-}
 
 describe("ClaudeSDKAdapter", () => {
   it("uses the stable query API and resumes by session id", async () => {
@@ -108,6 +100,35 @@ describe("ClaudeSDKAdapter", () => {
     expect(calls[1]?.options?.resume).toBe("session-1");
   });
 
+  it("does not send an invisible-only final reply", async () => {
+    const queryFn: ClaudeSDKQuery = () =>
+      streamFrom([
+        {
+          type: "result",
+          subtype: "success",
+          result: "​",
+          session_id: "session-1",
+        } as never,
+      ]) as never;
+
+    const adapter = new ClaudeSDKAdapter({ queryFn });
+    await adapter.onStarted("Parity Agent", "Parity test agent");
+
+    const tools = new FakeTools();
+    await expect(
+      adapter.onMessage(
+        makeMessage("say nothing visible"),
+        tools,
+        new HistoryProvider([]),
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-invisible-reply" },
+      ),
+    ).resolves.toBeUndefined();
+
+    expectNoVisibleReplySent(tools);
+  });
+
   it("reports tool summary events when execution reporting is enabled", async () => {
     const queryFn: ClaudeSDKQuery = () =>
       streamFrom([
@@ -143,7 +164,7 @@ describe("ClaudeSDKAdapter", () => {
     );
 
     expect(tools.messages).toEqual(["done"]);
-    const toolCallEvents = tools.events.filter((event) => event.messageType === "tool_call");
+    const toolCallEvents = eventsOfType(tools, "tool_call");
     expect(toolCallEvents).toHaveLength(1);
     const payload = JSON.parse(toolCallEvents[0]?.content ?? "{}");
     expect(payload.type).toBe("tool_use_summary");
@@ -186,7 +207,7 @@ describe("ClaudeSDKAdapter", () => {
     );
 
     expect(calls[0]?.options?.resume).toBe("session-from-history");
-    expect(tools.events.some((event) => event.messageType === "task")).toBe(true);
+    expect(eventsOfType(tools, "task")).not.toHaveLength(0);
   });
 
   it("rehydrates legacy Claude session markers from bootstrap task metadata", async () => {

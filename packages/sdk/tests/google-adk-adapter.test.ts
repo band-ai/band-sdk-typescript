@@ -4,7 +4,7 @@ import { z } from "zod";
 import { GoogleADKAdapter } from "../src/adapters";
 import { GoogleADKHistoryConverter } from "../src/converters";
 import type { AgentToolsProtocol } from "../src/core";
-import { FakeTools, makeMessage } from "./testUtils";
+import { expectNoVisibleReplySent, FakeTools, makeMessage } from "./testUtils";
 
 class GoogleAdkTestTools extends FakeTools {
   public readonly executedCalls: Array<{ toolName: string; args: Record<string, unknown> }> = [];
@@ -138,6 +138,30 @@ describe("GoogleADKAdapter", () => {
     expect(seenPrompts[0]).toContain("[Previous conversation context]");
     expect(seenPrompts[0]).toContain("Participants changed");
     expect(seenPrompts[0]).toContain("Contacts changed");
+  });
+
+  it("does not send an invisible-only final response", async () => {
+    const tools = new GoogleAdkTestTools();
+
+    const adapter = new GoogleADKAdapter({
+      sdkFactory: createFakeGoogleAdkSdk(async function* () {
+        yield { final: true, text: "​" };
+      }),
+    });
+
+    await adapter.onStarted("Weather Agent", "Answers weather questions");
+    await expect(
+      adapter.onMessage(
+        makeMessage("say nothing visible"),
+        tools,
+        [],
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-invisible-reply" },
+      ),
+    ).resolves.toBeUndefined();
+
+    expectNoVisibleReplySent(tools);
   });
 
   it("logs a warning instead of silently swallowing a failed tool-call/tool-result event send", async () => {

@@ -1,8 +1,9 @@
+import { expect } from "vitest";
 import { ParticipantRoster } from "@band-ai/band-sdk-core";
 import type { PlatformMessage } from "../src/runtime";
 import type { AgentToolsProtocol } from "../src/core";
 import { DEFAULT_AGENT_TOOLS_CAPABILITIES } from "../src/contracts/protocols";
-import { isBlankEventContent } from "../src/contracts/chatEvents";
+import { withVisibleEventContent } from "../src/contracts/content";
 import type {
   AgentIdentity,
   PaginatedResponse,
@@ -15,7 +16,12 @@ import type {
   PeerRecord,
 } from "../src/contracts/dtos";
 
-interface CapturedToolEvent {
+export interface CapturedMessage {
+  content: string;
+  mentions?: string[] | Array<{ id: string; handle?: string }>;
+}
+
+export interface CapturedToolEvent {
   content: string;
   messageType: string;
   metadata?: Record<string, unknown>;
@@ -31,10 +37,13 @@ interface FakeToolsOptions {
 export class FakeTools implements AgentToolsProtocol {
   public readonly capabilities = { ...DEFAULT_AGENT_TOOLS_CAPABILITIES };
   public readonly messages: string[] = [];
+  public readonly sentMessages: CapturedMessage[] = [];
   public readonly events: CapturedToolEvent[] = [];
   public rest?: Pick<RestApi, "getAgentMe" | "listChats">;
   private readonly failOn: Set<FakeToolMethod>;
   private readonly errorFactory: (method: FakeToolMethod) => Error;
+  private messageCounter = 0;
+  private eventCounter = 0;
 
   public constructor(options?: FakeToolsOptions) {
     this.failOn = new Set(options?.failOn ?? []);
@@ -45,11 +54,12 @@ export class FakeTools implements AgentToolsProtocol {
 
   public async sendMessage(
     content: string,
-    _mentions?: string[] | Array<{ id: string; handle?: string }>,
+    mentions?: string[] | Array<{ id: string; handle?: string }>,
   ): Promise<Record<string, unknown>> {
     this.maybeFail("sendMessage");
     this.messages.push(content);
-    return { ok: true };
+    this.sentMessages.push({ content, mentions });
+    return { id: `msg-${this.messageCounter++}`, status: "sent" };
   }
 
   public async sendEvent(
@@ -58,13 +68,10 @@ export class FakeTools implements AgentToolsProtocol {
     metadata?: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     this.maybeFail("sendEvent");
-    // Mirrors the platform's own rejection, so a test posting a blank chunk
-    // is an actual regression test rather than a vacuous pass.
-    if (isBlankEventContent(content)) {
-      return { ok: false, status: "failed" };
-    }
-    this.events.push({ content, messageType, metadata });
-    return { ok: true };
+    // Mirrors the real transport: blank content is repaired with the placeholder,
+    // not rejected, so a test posting a blank chunk still gets a delivered event.
+    this.events.push({ content: withVisibleEventContent(content), messageType, metadata });
+    return { id: `evt-${this.eventCounter++}`, status: "sent" };
   }
 
   public async addParticipant(_name: string, _role?: string): Promise<Record<string, unknown>> {
@@ -120,6 +127,24 @@ export class FakeTools implements AgentToolsProtocol {
       throw this.errorFactory(method);
     }
   }
+}
+
+// Every framework's fake client reaches a blank final reply differently, so driving it
+// stays adapter-specific; this is the one outcome every adapter must share once it gets there.
+export function expectNoVisibleReplySent(tools: FakeTools): void {
+  expect(tools.messages).toHaveLength(0);
+}
+
+export function eventsOfType(tools: FakeTools, messageType: string): CapturedToolEvent[] {
+  return tools.events.filter((event) => event.messageType === messageType);
+}
+
+export function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
+  return (async function* generator(): AsyncGenerator<T, void> {
+    for (const item of items) {
+      yield item;
+    }
+  })();
 }
 
 export function makeRoster(participants: ParticipantRecord[]): ParticipantRoster {

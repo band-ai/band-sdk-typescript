@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { ACPClientAdapter, type ACPClientAdapterOptions } from "../src/adapters/acp";
-import { FakeTools, makeMessage } from "./testUtils";
+import { AgentTools } from "../src/runtime/tools/AgentTools";
+import { FernRestAdapter } from "../src/client/rest/FernRestAdapter";
+import { hasVisibleContent } from "../src/contracts/content";
+import { eventsOfType, FakeTools, makeMessage } from "./testUtils";
 
 describe("ACPClientAdapter", () => {
   it("restores ACP sessions, auto-injects MCP, and fans out ACP updates", async () => {
@@ -204,6 +207,93 @@ describe("ACPClientAdapter", () => {
     expect(promptTexts[2]).not.toContain("[System Context]")
   })
 
+  // Text and event chunks share one filter (flushChunks, via hasVisibleContent): a blank
+  // chunk of either kind is dropped before it ever reaches sendMessage/sendEvent, not
+  // repaired with a placeholder. This covers the text side; the next test covers events.
+  it("keeps answering after a whitespace-only agent_message_chunk collects as blank text", async () => {
+    const createAgentChatMessage = vi.fn(async (_chatId: string, payload: { message: { content: string } }) => {
+      if (!hasVisibleContent(payload.message.content)) {
+        throw new Error("422 Unprocessable Entity: content can't be blank");
+      }
+      return { data: { ok: true, id: "msg-1" } };
+    });
+    const createAgentChatEvent = vi.fn(async () => ({ data: { ok: true, id: "evt-1" } }));
+    const rest = new FernRestAdapter({
+      agentApiMessages: { createAgentChatMessage },
+      agentApiEvents: { createAgentChatEvent },
+    });
+    const tools = new AgentTools({ roomId: "room-blank-text", rest }).getAdapterTools();
+
+    let clientHandle: { sessionUpdate: (params: Record<string, unknown>) => Promise<void> } | null = null;
+    let turn = 0;
+    const prompt = vi.fn(async (params: { sessionId: string }) => {
+      turn += 1;
+      await clientHandle?.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: turn === 1 ? "   " : "still here" },
+        },
+      });
+      return { stopReason: "end_turn" };
+    });
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      connectionFactory: async (client) => {
+        clientHandle = client as unknown as typeof clientHandle;
+        const controller = new AbortController();
+        return {
+          connection: {
+            signal: controller.signal,
+            closed: new Promise<void>(() => undefined),
+            initialize: vi.fn(async () => ({
+              protocolVersion: 1,
+              agentCapabilities: { mcpCapabilities: { http: true } },
+            })),
+            authenticate: vi.fn(async () => ({})),
+            loadSession: vi.fn(),
+            unstable_resumeSession: vi.fn(),
+            newSession: vi.fn(async () => ({ sessionId: "session-blank-text" })),
+            prompt,
+          } as never,
+          stop: async () => {
+            controller.abort();
+          },
+        };
+      },
+    });
+
+    await adapter.onStarted("Blank Text Agent", "blank text test");
+
+    await expect(adapter.onMessage(
+      makeMessage("first", "room-blank-text"),
+      tools,
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-blank-text" },
+    )).resolves.toBeUndefined();
+
+    await adapter.onMessage(
+      makeMessage("second", "room-blank-text"),
+      tools,
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-blank-text" },
+    );
+
+    // The blank text chunk never reached the platform.
+    expect(createAgentChatMessage).not.toHaveBeenCalledWith(
+      "room-blank-text",
+      expect.objectContaining({ message: expect.objectContaining({ content: "   " }) }),
+      expect.any(Object),
+    );
+    // And the turn survived it: the second turn's message still made it out.
+    expect(createAgentChatMessage.mock.calls.map((call) => call[1].message.content)).toEqual(["still here"]);
+  });
+
   it("completes the turn without posting a blank event, when a tool update carries no output", async () => {
     let clientHandle: {
       sessionUpdate: (params: Record<string, unknown>) => Promise<void>;
@@ -278,7 +368,7 @@ describe("ACPClientAdapter", () => {
     // The blank status update must never even reach sendEvent — not just be
     // dropped once it gets there.
     expect(sendEventSpy.mock.calls.some(([content]) => content.trim().length === 0)).toBe(false)
-    expect(tools.events.some((event) => event.messageType === "tool_result")).toBe(false)
+    expect(eventsOfType(tools, "tool_result")).toHaveLength(0)
     expect(tools.messages).toEqual(["done"])
     expect(tools.events).toEqual(expect.arrayContaining([
       expect.objectContaining({ messageType: "task", content: "ACP client session" }),

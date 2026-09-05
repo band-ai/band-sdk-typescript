@@ -10,6 +10,7 @@ import type {
 import { ACPServerHistoryConverter, type ACPServerSessionState } from "../../converters/acp-server";
 import type { ChatMessageMention, RestApi } from "../../client/rest/types";
 import { SimpleAdapter } from "../../core/simpleAdapter";
+import { assertMessageSent } from "../../contracts/content";
 import type { MessagingTools } from "../../contracts/protocols";
 import type { PlatformMessage } from "../../runtime/types";
 import { ensureHandlePrefix } from "../../runtime/types";
@@ -235,10 +236,14 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
     const mentions = this.resolveMentions(participants, resolved.targetPeer)
 
     try {
-      await this.bandRest.createChatMessage(roomId, {
+      const sent = await this.bandRest.createChatMessage(roomId, {
         content: promptText,
         mentions,
       })
+
+      // The prompt never reached the room, so no reply is coming; fail now instead
+      // of waiting out the response timeout.
+      assertMessageSent(sent, "ACP prompt was not sent")
 
       await Promise.race([
         pending.done,

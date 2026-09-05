@@ -16,11 +16,11 @@ import { ACPClientHistoryConverter, type ACPClientSessionState } from "../../con
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import { NoopLogger, type Logger } from "../../core/logger";
 import { ValidationError } from "../../core/errors";
+import { hasVisibleContent } from "../../contracts/content";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { mentionSubjectsFromMetadata, replaceUuidMentions } from "../../runtime/formatters";
 import { systemUpdateParts } from "../shared/conversationPrompt";
-import { isBlankEventContent } from "../../contracts/chatEvents";
 import type { PlatformMessage } from "../../runtime/types";
 import type { McpToolRegistration } from "../../mcp/registrations";
 import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
@@ -668,7 +668,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     for (const chunk of client.getCollectedChunks(input.sessionId)) {
       // A status-only ACP update carries its meaning in metadata and has
       // nothing to post.
-      if (isBlankEventContent(chunk.content)) {
+      if (!hasVisibleContent(chunk.content)) {
         continue
       }
 

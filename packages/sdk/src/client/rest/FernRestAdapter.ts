@@ -1,5 +1,13 @@
 import { UnsupportedFeatureError } from "../../core/errors";
+import type { Logger } from "../../core/logger";
+import { NoopLogger } from "../../core/logger";
 import { asNullableString, asOptionalRecord, asString } from "../../adapters/shared/coercion";
+import {
+  BLANK_CONTENT_ERROR,
+  BLANK_CONTENT_STATUS,
+  hasVisibleContent,
+  withVisibleEventContent,
+} from "../../contracts/content";
 import type {
   AddContactArgs,
   ContactRecord,
@@ -184,6 +192,16 @@ function normalizeToolOperationResult(response: unknown): ToolOperationResult {
   return asMetadataMap(extractEnvelopeData(response)) ?? {};
 }
 
+// normalizeToolOperationResult never sets ok:true, so this needs its own status/error
+// or a bare {ok: false} would be indistinguishable from any other failure.
+function blankContentRefusal(): ToolOperationResult {
+  return {
+    ok: false,
+    status: BLANK_CONTENT_STATUS,
+    error: `content ${BLANK_CONTENT_ERROR}`,
+  };
+}
+
 function normalizeMemoryRecord(response: unknown): MemoryRecord {
   const payload = asMetadataMap(extractEnvelopeData(response));
   return payload ? normalizeMemoryRecordItem(payload) ?? {} : {};
@@ -348,9 +366,11 @@ function normalizePlatformChatMessage(value: unknown): PlatformChatMessage | nul
 
 export class FernRestAdapter implements RestApi {
   private readonly client: FernBandClientLike;
+  private readonly logger: Logger;
 
-  public constructor(client: FernBandClientLike) {
+  public constructor(client: FernBandClientLike, logger?: Logger) {
     this.client = client;
+    this.logger = logger ?? new NoopLogger();
   }
 
   public async getAgentMe(options?: RestRequestOptions): Promise<AgentIdentity> {
@@ -392,6 +412,13 @@ export class FernRestAdapter implements RestApi {
       throw new UnsupportedFeatureError("Fern client missing chat message creation endpoint");
     }
 
+    // Checked after resolving the client method, so a misconfigured client still
+    // surfaces UnsupportedFeatureError instead of a masking blank-content refusal.
+    if (!hasVisibleContent(message.content)) {
+      this.logger.warn("Refusing to send a chat message with no visible content", { chatId });
+      return blankContentRefusal();
+    }
+
     const response = await api(
       chatId,
       {
@@ -416,6 +443,14 @@ export class FernRestAdapter implements RestApi {
     },
     options?: RestRequestOptions,
   ): Promise<ToolOperationResult> {
+    const content = withVisibleEventContent(event.content);
+    if (content !== event.content) {
+      this.logger.warn("Substituting placeholder for blank chat event content", {
+        chatId,
+        messageType: event.messageType,
+      });
+    }
+
     const createAgentChatEvent = this.client.agentApiEvents?.createAgentChatEvent
       ?.bind(this.client.agentApiEvents);
     if (createAgentChatEvent) {
@@ -423,7 +458,7 @@ export class FernRestAdapter implements RestApi {
         chatId,
         {
           event: {
-            content: event.content,
+            content,
             message_type: event.messageType,
             metadata: event.metadata,
           },
@@ -433,7 +468,7 @@ export class FernRestAdapter implements RestApi {
       return normalizeToolOperationResult(response);
     }
 
-    return this.createChatMessage(chatId, event, options);
+    return this.createChatMessage(chatId, { ...event, content }, options);
   }
 
   public async createChat(taskId?: string, options?: RestRequestOptions): Promise<{ id: string }> {

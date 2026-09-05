@@ -1,5 +1,6 @@
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { MentionInput } from "../../contracts/dtos";
+import { hasVisibleContent } from "../../contracts/content";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
@@ -918,7 +919,9 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       .join("\n")
       .trim();
 
-    if (text.length > 0) {
+    // watchTurnCompletion isn't reliably awaited by its caller, so a throw here
+    // becomes an unhandled rejection instead of a turn failure.
+    if (hasVisibleContent(text)) {
       await roomState.tools.sendMessage(text, roomState.pendingMentions);
       roomState.pendingMentions = [];
       return;

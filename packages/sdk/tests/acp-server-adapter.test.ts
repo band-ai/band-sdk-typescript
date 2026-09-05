@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   BandACPServerAdapter,
 } from "../src/adapters/acp";
+import { FernRestAdapter } from "../src/client/rest/FernRestAdapter";
+import { ValidationError } from "../src/core/errors";
 import { FakeRestApi, FakeTools, makeMessage } from "./testUtils";
 
 describe("BandACPServerAdapter", () => {
@@ -213,5 +215,75 @@ describe("BandACPServerAdapter", () => {
     )
 
     await expect(promptPromise).resolves.toBeUndefined()
+  })
+
+  // A rehydrated session with no `acp_cwd` sends a whitespace-only prompt; the
+  // transport refuses it, so no reply is ever coming. Uses the real FernRestAdapter
+  // (not a hand-copied result shape) since it's the one that produces the refusal.
+  it("fails a blank prompt immediately instead of waiting out the response timeout", async () => {
+    const createAgentChatMessage = vi.fn()
+    const transport = new FernRestAdapter({ agentApiMessages: { createAgentChatMessage } })
+    const adapter = new BandACPServerAdapter({
+      bandRest: new FakeRestApi({
+        createChatMessage: (chatId, message) => transport.createChatMessage(chatId, message),
+        listChatParticipants: async () => [
+          { id: "agent-1", name: "Band Agent", type: "Agent", handle: "band" },
+          { id: "peer-1", name: "Codex", type: "Agent", handle: "codex" },
+        ],
+      }, { id: "agent-1", name: "Band Agent", description: null }),
+      responseTimeoutMs: 60_000,
+    })
+    await adapter.onStarted("Band Agent", "ACP server")
+
+    await adapter.onMessage(
+      makeMessage("hello", "room-rehydrated"),
+      new FakeTools(),
+      {
+        sessionToRoom: { "session-rehydrated": "room-rehydrated" },
+        sessionCwd: {},
+        sessionMcpServers: {},
+      },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-rehydrated" },
+    )
+
+    const error = await adapter.handlePrompt("session-rehydrated", "   ").catch((caught) => caught)
+    expect(error).toBeInstanceOf(ValidationError)
+    expect((error as Error).message).toMatch(/blank/i)
+    expect(createAgentChatMessage).not.toHaveBeenCalled()
+  })
+
+  // Any resolved ok:false must surface immediately, not just blank-content refusals,
+  // or it silently degrades into a response timeout.
+  it("fails a genuinely rejected prompt immediately, not just a blank one", async () => {
+    const adapter = new BandACPServerAdapter({
+      bandRest: new FakeRestApi({
+        createChatMessage: async () => ({ ok: false, status: "moderation_rejected", error: "flagged content" }),
+        listChatParticipants: async () => [
+          { id: "agent-1", name: "Band Agent", type: "Agent", handle: "band" },
+          { id: "peer-1", name: "Codex", type: "Agent", handle: "codex" },
+        ],
+      }, { id: "agent-1", name: "Band Agent", description: null }),
+      responseTimeoutMs: 60_000,
+    })
+    await adapter.onStarted("Band Agent", "ACP server")
+
+    await adapter.onMessage(
+      makeMessage("hello", "room-rejected"),
+      new FakeTools(),
+      {
+        sessionToRoom: { "session-rejected": "room-rejected" },
+        sessionCwd: {},
+        sessionMcpServers: {},
+      },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-rejected" },
+    )
+
+    const error = await adapter.handlePrompt("session-rejected", "fix this bug").catch((caught) => caught)
+    expect(error).toBeInstanceOf(ValidationError)
+    expect((error as Error).message).toMatch(/flagged content/)
   })
 });

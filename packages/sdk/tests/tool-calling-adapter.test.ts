@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
 import { OpenAIAdapter } from "../src/index";
+import { RestFacade } from "../src/client/rest/RestFacade";
+import { BLANK_CONTENT_ERROR, BLANK_CONTENT_STATUS } from "../src/contracts/content";
+import { AgentTools } from "../src/runtime/tools/AgentTools";
 import type { HistoryProvider, PlatformMessage } from "../src/runtime";
 import type { CustomToolDef } from "../src/runtime/tools/customTools";
 import type { AgentToolsProtocol } from "../src/core";
@@ -15,6 +18,7 @@ import type {
   ParticipantRecord,
   PeerRecord,
 } from "../src/contracts/dtos";
+import { FakeRestApi } from "./testUtils";
 
 class FakeTools implements AgentToolsProtocol {
   public readonly capabilities = { peers: false, contacts: false, memory: false };
@@ -334,5 +338,42 @@ describe("ToolCallingAdapter", () => {
     });
 
     expect(tools.messages).toEqual(["error_caught"]);
+  });
+
+  it("does not send an invisible-only final response", async () => {
+    // A zero-width space survives response.text?.trim() but has no visible content;
+    // sendMessage throws on it and onMessage has no try/catch, so an unguarded call
+    // here would kill the entire agent runtime.
+    class BlankFinalResponseModel implements ToolCallingModel {
+      public async complete(): Promise<{ text?: string }> {
+        return { text: "\u200B" };
+      }
+    }
+
+    let createChatMessageCalls = 0;
+    const rest = new FakeRestApi(
+      {
+        createChatMessage: async () => {
+          createChatMessageCalls += 1;
+          return { ok: false, status: BLANK_CONTENT_STATUS, error: `content ${BLANK_CONTENT_ERROR}` };
+        },
+      },
+      { id: "a1", name: "Agent", description: null },
+    );
+
+    const adapter = new OpenAIAdapter({ model: new BlankFinalResponseModel() });
+    const tools = new AgentTools({
+      roomId: "r1",
+      rest: new RestFacade({ api: rest }),
+    });
+
+    await expect(
+      adapter.onMessage(fakeMessage, tools, fakeHistory, null, null, {
+        isSessionBootstrap: true,
+        roomId: "r1",
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(createChatMessageCalls).toBe(0);
   });
 });

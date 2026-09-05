@@ -1,5 +1,6 @@
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
+import { hasVisibleContent } from "../../contracts/content";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import { RuntimeStateError, UnsupportedFeatureError } from "../../core/errors";
@@ -384,7 +385,8 @@ export class LettaAdapter extends SimpleAdapter<
         signal,
       );
 
-      if (!assistantText) {
+      // The catch below re-throws after logging, so a throw here still kills the room.
+      if (!hasVisibleContent(assistantText)) {
         await tools.sendEvent(
           "Letta did not return a response.",
           "error",

@@ -8,7 +8,7 @@ import type {
   LettaMessageCreateParams,
 } from "../src/adapters/letta/LettaAdapter";
 import { LettaHistoryConverter } from "../src/adapters/letta/types";
-import { FakeTools, makeMessage } from "./testUtils";
+import { eventsOfType, expectNoVisibleReplySent, FakeTools, makeMessage } from "./testUtils";
 
 // ---------------------------------------------------------------------------
 // Fake Letta client
@@ -456,7 +456,7 @@ describe("LettaAdapter", () => {
     );
 
     expect(tools.messages).toEqual(["Here's my answer"]);
-    const thoughtEvents = tools.events.filter((e) => e.messageType === "thought");
+    const thoughtEvents = eventsOfType(tools, "thought");
     expect(thoughtEvents).toHaveLength(1);
     expect(thoughtEvents[0].content).toBe("Let me think about this...");
   });
@@ -485,7 +485,7 @@ describe("LettaAdapter", () => {
     );
 
     expect(tools.messages).toEqual(["Public answer"]);
-    expect(tools.events.filter((e) => e.messageType === "thought")).toHaveLength(0);
+    expect(eventsOfType(tools, "thought")).toHaveLength(0);
   });
 
   it("injects history on bootstrap", async () => {
@@ -612,7 +612,31 @@ describe("LettaAdapter", () => {
     );
 
     expect(tools.messages).toEqual([]);
-    expect(tools.events.some((e) => e.messageType === "error")).toBe(true);
+    expect(eventsOfType(tools, "error")).not.toHaveLength(0);
+  });
+
+  it("emits error event instead of sending an invisible-only assistant reply", async () => {
+    const client = new FakeLettaClient();
+    client.responseBatches.push(assistantResponse("​"));
+
+    const adapter = new LettaAdapter({
+      clientFactory: async () => client,
+    });
+
+    await adapter.onStarted("Agent", "An agent");
+
+    const tools = new FakeTools();
+    await adapter.onMessage(
+      makeMessage("Hi", "room-invisible"),
+      tools,
+      [],
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-invisible" },
+    );
+
+    expectNoVisibleReplySent(tools);
+    expect(eventsOfType(tools, "error")).not.toHaveLength(0);
   });
 
   it("logs and re-throws on client error", async () => {
@@ -647,7 +671,7 @@ describe("LettaAdapter", () => {
       ),
     ).rejects.toThrow("Letta API error");
 
-    expect(tools.events.some((e) => e.messageType === "error")).toBe(true);
+    expect(eventsOfType(tools, "error")).not.toHaveLength(0);
     expect(logger.error).toHaveBeenCalledWith(
       "Letta adapter request failed",
       expect.objectContaining({ roomId: "room-err" }),
@@ -935,7 +959,7 @@ describe("LettaAdapter", () => {
     );
     expect(tools.messages).toEqual(["Response after failed injection"]);
 
-    const warningEvents = tools.events.filter((e) => e.messageType === "warning");
+    const warningEvents = eventsOfType(tools, "warning");
     expect(warningEvents).toHaveLength(1);
     expect(warningEvents[0].content).toContain("history injection failed");
     expect(warningEvents[0].metadata).toEqual(

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
+import { assertMessageSent } from "../../contracts/content";
 import type { PeerRecord } from "../../contracts/dtos";
 import type { MessagingTools } from "../../contracts/protocols";
 import type { ChatMessageMention } from "../../client/rest/types";
@@ -262,7 +263,7 @@ export class A2AGatewayAdapter
       await this.emitContextEvent(roomId, contextId);
 
       const content = extractMessageText(request.message) ?? "";
-      await this.bandRest.createChatMessage(roomId, {
+      const sent = await this.bandRest.createChatMessage(roomId, {
         content: buildMentionedContent(peer.name, content),
         mentions: buildMentions(peer),
         metadata: {
@@ -273,6 +274,9 @@ export class A2AGatewayAdapter
           gateway_peer_slug: peer.slug,
         },
       });
+      // The routed message never reached the peer's room, so fail now instead of
+      // waiting out the response timeout below for a reply that was never sent.
+      assertMessageSent(sent, "Routed message was not sent");
     } catch (error) {
       this.removePending(pending);
       yield buildStatusEvent({

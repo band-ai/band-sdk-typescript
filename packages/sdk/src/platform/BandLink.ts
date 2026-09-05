@@ -123,6 +123,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
           apiKey: this.apiKey,
           baseUrl: this.restUrl,
         }) as unknown as FernBandClientLike,
+        this.logger,
       );
 
     this.rest = restApi;

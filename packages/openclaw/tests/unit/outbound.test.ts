@@ -10,6 +10,8 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
+import { ValidationError } from "@band-ai/sdk/core";
+import { FernRestAdapter } from "@band-ai/sdk/rest";
 import { sendText, sendMedia, type OutboundDeps } from "../../src/outbound.js";
 
 const SELF = "agent-self";
@@ -77,6 +79,33 @@ describe("sendText", () => {
     };
     await expect(sendText(deps, { to: "room-1", text: "hello" })).rejects.toThrow(/mention/i);
     expect(createChatMessage).not.toHaveBeenCalled();
+  });
+
+  // Uses the real FernRestAdapter, not a hand-copied result shape, since it's the
+  // one that resolves (rather than throws) a blank-content refusal.
+  it("throws on a blank-content refusal instead of returning a fabricated messageId", async () => {
+    const createAgentChatMessage = vi.fn();
+    const transport = new FernRestAdapter({ agentApiMessages: { createAgentChatMessage } });
+    const deps = makeDeps({
+      createChatMessage: (roomId: string, message: Parameters<typeof transport.createChatMessage>[1]) =>
+        transport.createChatMessage(roomId, message),
+    });
+
+    const error = await sendText(deps, { to: "room-1", text: "   " }).catch((caught) => caught);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as Error).message).toMatch(/can't be blank/i);
+    expect(createAgentChatMessage).not.toHaveBeenCalled();
+  });
+
+  // Any resolved ok:false must surface, not just blank-content refusals, or it
+  // falls through to the id-presence check below and reports a fabricated messageId.
+  it("throws on a genuine rejection that isn't a blank-content refusal", async () => {
+    const createChatMessage = vi.fn().mockResolvedValue({ ok: false, status: "moderation_rejected", error: "flagged content" });
+    const deps = makeDeps({ createChatMessage });
+
+    const error = await sendText(deps, { to: "room-1", text: "@Amy please review" }).catch((caught) => caught);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as Error).message).toMatch(/flagged content/);
   });
 
   it("throws when no room/target is given", async () => {

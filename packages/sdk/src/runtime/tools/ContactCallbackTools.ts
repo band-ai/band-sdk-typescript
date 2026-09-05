@@ -5,6 +5,7 @@ import type {
   ChatRoomRestApi,
   ContactRestApi,
 } from "../../client/rest/types";
+import { assertNotBlankContentRefusal, resolveEventSend } from "../../contracts/content";
 import type {
   AddContactArgs,
   ContactRecord,
@@ -24,11 +25,14 @@ import type {
   ToolOperationResult,
   ToolSchemaRecord,
 } from "../../contracts/dtos";
-import type {
-  AdapterToolsProtocol,
-  AgentToolsCapabilities,
+import {
+  type AdapterToolsProtocol,
+  type AgentToolsCapabilities,
+  createToolExecutorError,
+  isToolExecutorError,
 } from "../../contracts/protocols";
-import { UnsupportedFeatureError } from "../../core/errors";
+import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
+import { NoopLogger, type Logger } from "../../core/logger";
 import { toParticipantRecordFromRest } from "../formatters";
 import { ContactToolsImpl } from "./ContactToolsImpl";
 
@@ -55,10 +59,12 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
   private readonly rest: ContactCallbackRestApi;
   private readonly roomId: string | null;
   private readonly contactTools: ContactToolsImpl | null;
+  private readonly logger: Logger;
 
-  public constructor(rest: ContactCallbackRestApi, roomId: string | null) {
+  public constructor(rest: ContactCallbackRestApi, roomId: string | null, logger?: Logger) {
     this.rest = rest;
     this.roomId = roomId;
+    this.logger = logger ?? new NoopLogger();
 
     const hasContactMethods = Boolean(
       rest.listContacts
@@ -100,13 +106,14 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
 
     // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
     // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
-    return this.rest.createChatMessage(
+    const result = await this.rest.createChatMessage(
       roomId,
       {
         content,
         ...(normalizedMentions ? { mentions: normalizedMentions } : {}),
       },
     );
+    return assertNotBlankContentRefusal(result);
   }
 
   public async sendEvent(
@@ -115,18 +122,16 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
     metadata?: MetadataMap,
   ): Promise<ToolOperationResult> {
     const roomId = requireRoomId(this.roomId, "sendEvent");
-    if (!this.rest.createChatEvent) {
+    const createChatEvent = this.rest.createChatEvent?.bind(this.rest);
+    if (!createChatEvent) {
       throw new UnsupportedFeatureError("Event sending is not available in current REST adapter");
     }
     // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
     // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
-    return this.rest.createChatEvent(
-      roomId,
-      {
-        content,
-        messageType,
-        ...(metadata ? { metadata } : {}),
-      },
+    return resolveEventSend(
+      () => createChatEvent(roomId, { content, messageType, ...(metadata ? { metadata } : {}) }),
+      this.logger,
+      { roomId, messageType },
     );
   }
 
@@ -259,6 +264,33 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
   }
 
   public async executeToolCall(toolName: string, toolArgs: MetadataMap): Promise<unknown> {
+    try {
+      return await this.dispatchToolCall(toolName, toolArgs);
+    } catch (error) {
+      if (isToolExecutorError(error)) {
+        return error;
+      }
+
+      if (error instanceof ValidationError) {
+        return createToolExecutorError({
+          errorType: "ToolArgumentsValidationError",
+          toolName,
+          message: error.message,
+          legacyMessage: `Invalid arguments for ${toolName}: ${error.message}`,
+        });
+      }
+
+      const message = error instanceof Error ? error.message : String(error);
+      return createToolExecutorError({
+        errorType: "ToolExecutionError",
+        toolName,
+        message,
+        legacyMessage: `Error executing ${toolName}: ${message}`,
+      });
+    }
+  }
+
+  private async dispatchToolCall(toolName: string, toolArgs: MetadataMap): Promise<unknown> {
     switch (toolName) {
       case "band_send_message":
         return this.sendMessage(
@@ -325,7 +357,11 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
       case "band_archive_memory":
         return this.archiveMemory(String(toolArgs.memory_id ?? ""));
       default:
-        throw new UnsupportedFeatureError(`Unsupported tool call for contact callback: ${toolName}`);
+        return createToolExecutorError({
+          errorType: "ToolNotFoundError",
+          toolName,
+          message: `Unsupported tool call for contact callback: ${toolName}`,
+        });
     }
   }
 }

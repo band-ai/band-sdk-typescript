@@ -6,7 +6,7 @@ import type {
   MemoryTools,
 } from "../contracts/protocols";
 import { DEFAULT_AGENT_TOOLS_CAPABILITIES } from "../contracts/protocols";
-import { isBlankEventContent } from "../contracts/chatEvents";
+import { withVisibleEventContent } from "../contracts/content";
 import type {
   AddContactArgs,
   ContactRecord,
@@ -98,12 +98,10 @@ export class FakeAgentTools
     metadata?: MetadataMap,
   ): Promise<ToolOperationResult> {
     this.maybeFail("sendEvent");
-    // Mirrors the platform's own rejection, so a test posting a blank chunk
-    // is an actual regression test rather than a vacuous pass.
-    if (isBlankEventContent(content)) {
-      return { ok: false, status: "failed" };
-    }
-    this.eventsSent.push({ content, messageType, metadata });
+    // Mirrors the real transport: blank content is repaired with the placeholder,
+    // not rejected, so a test posting a blank chunk still gets a delivered event.
+    const visibleContent = withVisibleEventContent(content);
+    this.eventsSent.push({ content: visibleContent, messageType, metadata });
     const id = `evt-${this.eventCounter++}`;
     return { id, status: "sent" };
   }

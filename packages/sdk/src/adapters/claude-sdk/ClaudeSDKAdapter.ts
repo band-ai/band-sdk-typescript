@@ -1,5 +1,6 @@
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
+import { hasVisibleContent } from "../../contracts/content";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import { UnsupportedFeatureError } from "../../core/errors";
@@ -329,7 +330,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
       }
     }
 
-    if (finalText.trim()) {
+    if (hasVisibleContent(finalText)) {
       await tools.sendMessage(finalText.trim(), [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
     }
   }

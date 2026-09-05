@@ -185,6 +185,7 @@ export class PlatformRuntime {
       this.contactHandler = new ContactEventHandler({
         config: this.contactConfig ?? { strategy: "disabled" },
         rest: this.link.rest,
+        logger: this.logger,
         onBroadcast: (message) => {
           const runtime = this.runtime;
           if (!runtime) return;

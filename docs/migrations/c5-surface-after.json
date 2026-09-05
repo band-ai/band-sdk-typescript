@@ -497,17 +497,23 @@
     },
     "./rest": {
       "runtime": [
+        "BLANK_CONTENT_STATUS",
         "DEFAULT_REQUEST_OPTIONS",
+        "EVENT_EMPTY_CONTENT_PLACEHOLDER",
         "FernRestAdapter",
         "RestFacade",
+        "assertMessageSent",
+        "assertNotBlankContentRefusal",
         "fetchPaginated",
         "normalizePaginationMetadata"
       ],
       "declarations": [
         "AgentIdentity",
+        "BLANK_CONTENT_STATUS",
         "ChatMessageMention",
         "ChatParticipant",
         "DEFAULT_REQUEST_OPTIONS",
+        "EVENT_EMPTY_CONTENT_PLACEHOLDER",
         "FernBandClientLike",
         "FernRestAdapter",
         "PaginatedResponse",
@@ -515,6 +521,8 @@
         "PlatformChatMessage",
         "RestApi",
         "RestFacade",
+        "assertMessageSent",
+        "assertNotBlankContentRefusal",
         "fetchPaginated",
         "normalizePaginationMetadata"
       ]

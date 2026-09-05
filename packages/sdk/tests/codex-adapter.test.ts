@@ -9,7 +9,7 @@ import {
 } from "../src/adapters/codex/appServerClient";
 import type { InitializeParams } from "../src/adapters/codex/appServerProtocol";
 import { HistoryProvider } from "../src/runtime/types";
-import { FakeTools, makeMessage } from "./testUtils";
+import { eventsOfType, expectNoVisibleReplySent, FakeTools, makeMessage } from "./testUtils";
 
 class FakeCodexClient implements CodexClientLike {
   public readonly requestCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
@@ -314,9 +314,9 @@ describe("CodexAdapter", () => {
       },
     ]);
     expect(tools.messages).toEqual([]);
-    expect(tools.events.some((event) => event.messageType === "thought" && event.content === "thinking")).toBe(true);
-    expect(tools.events.some((event) => event.messageType === "tool_call" && event.content.includes("\"name\":\"exec\""))).toBe(true);
-    expect(tools.events.some((event) => event.messageType === "task" && event.metadata?.codex_thread_id === "thread-1")).toBe(true);
+    expect(eventsOfType(tools, "thought").some((event) => event.content === "thinking")).toBe(true);
+    expect(eventsOfType(tools, "tool_call").some((event) => event.content.includes("\"name\":\"exec\""))).toBe(true);
+    expect(eventsOfType(tools, "task").some((event) => event.metadata?.codex_thread_id === "thread-1")).toBe(true);
   });
 
   it("falls back to a new thread and injects history when resume fails", async () => {
@@ -510,7 +510,55 @@ describe("CodexAdapter", () => {
       { isSessionBootstrap: true, roomId: "room-empty-reasoning" },
     );
 
-    expect(tools.events.some((event) => event.messageType === "thought" && event.content === "(reasoning)")).toBe(false);
+    expect(eventsOfType(tools, "thought").some((event) => event.content === "(reasoning)")).toBe(false);
+  });
+
+  it("does not fall back to sendMessage for an invisible-only final reply", async () => {
+    const tools = new ToolSchemaFakeTools();
+    const fakeClient = new FakeCodexClient({
+      events: [
+        {
+          kind: "notification",
+          method: "item/completed",
+          params: {
+            item: {
+              type: "agentMessage",
+              id: "msg-invisible",
+              text: "​",
+            },
+          },
+        },
+        {
+          kind: "notification",
+          method: "turn/completed",
+          params: {
+            turn: {
+              id: "turn-1",
+              status: "completed",
+              error: null,
+            },
+          },
+        },
+      ],
+    });
+
+    const adapter = new CodexAdapter({
+      factory: async () => fakeClient,
+    });
+
+    await adapter.onStarted("Codex Agent", "Codex parity adapter");
+    await expect(
+      adapter.onMessage(
+        makeMessage("say nothing visible"),
+        tools,
+        new HistoryProvider([]),
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-invisible-reply" },
+      ),
+    ).resolves.toBeUndefined();
+
+    expectNoVisibleReplySent(tools);
   });
 
   it("renders default Band prompt and appends customSection when no full override is set", async () => {
@@ -760,7 +808,7 @@ describe("CodexAdapter", () => {
       },
     });
 
-    const toolResultEvent = tools.events.find((event) => event.messageType === "tool_result");
+    const toolResultEvent = eventsOfType(tools, "tool_result")[0];
     expect(toolResultEvent).toBeDefined();
     if (!toolResultEvent) {
       throw new Error("Expected a tool_result event");

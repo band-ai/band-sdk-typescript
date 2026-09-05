@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { RestFacade } from "../src/client/rest/RestFacade";
 import type { RestApi } from "../src/client/rest/types";
+import { BLANK_CONTENT_ERROR, BLANK_CONTENT_STATUS, EVENT_SEND_FAILED_STATUS } from "../src/contracts/content";
 import type {
   ContactRequestAction,
   ListMemoriesArgs,
@@ -222,6 +223,65 @@ describe("AgentTools", () => {
     expect(resultByName).toEqual({ ok: true });
   });
 
+  it("sendMessage throws instead of silently accepting a transport blank-content refusal", async () => {
+    class BlankContentRestApi extends FakeRestApi {
+      public override async createChatMessage() {
+        return { ok: false, status: BLANK_CONTENT_STATUS, error: `content ${BLANK_CONTENT_ERROR}` };
+      }
+    }
+
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api: new BlankContentRestApi() }),
+      roster: makeRoster([{ id: "u1", handle: "@jane", name: "Jane", type: "User" }]),
+    });
+
+    // Zero-width space: a real-world blank the platform rejects; the fake refuses unconditionally regardless.
+    const zeroWidthSpace = "\u200B";
+    const error = await tools.sendMessage(zeroWidthSpace, ["@jane"]).catch((caught) => caught);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as Error).message).toBe(`content ${BLANK_CONTENT_ERROR}`);
+  });
+
+  it("sendEvent resolves a transport blank-content refusal instead of throwing (room telemetry, not the agent's answer)", async () => {
+    class BlankContentRestApi extends FakeRestApi {
+      public override async createChatEvent() {
+        return { ok: false, status: BLANK_CONTENT_STATUS, error: `content ${BLANK_CONTENT_ERROR}` };
+      }
+    }
+
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api: new BlankContentRestApi() }),
+    });
+
+    const zeroWidthSpace = "\u200B";
+    await expect(tools.sendEvent(zeroWidthSpace, "task")).resolves.toEqual({
+      ok: false,
+      status: BLANK_CONTENT_STATUS,
+      error: `content ${BLANK_CONTENT_ERROR}`,
+    });
+  });
+
+  it("sendEvent resolves instead of throwing when the transport call itself rejects", async () => {
+    class FailingRestApi extends FakeRestApi {
+      public override async createChatEvent(): Promise<{ ok: boolean }> {
+        throw new Error("network error");
+      }
+    }
+
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api: new FailingRestApi() }),
+    });
+
+    await expect(tools.sendEvent("thinking", "thought")).resolves.toEqual({
+      ok: false,
+      status: EVENT_SEND_FAILED_STATUS,
+      message: "network error",
+    });
+  });
+
   it("gates peers endpoint when disabled", async () => {
     const tools = new AgentTools({
       roomId: "room-1",
@@ -404,6 +464,40 @@ describe("AgentTools", () => {
     });
     expect(toLegacyToolExecutorErrorMessage(result)).toContain("Invalid arguments for band_send_message");
     expect(toLegacyToolExecutorErrorMessage(result)).toContain("content: Field required");
+  });
+
+  it("validates send_message rejects content with no visible characters", async () => {
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api: new FakeRestApi() }),
+    });
+
+    const result = await tools.executeToolCall("band_send_message", {
+      content: "   \n\t ",
+      mentions: ["@jane"],
+    });
+    expect(isToolExecutorError(result)).toBe(true);
+    expect(result).toMatchObject({
+      ok: false,
+      errorType: "ToolArgumentsValidationError",
+      toolName: "band_send_message",
+    });
+    expect(toLegacyToolExecutorErrorMessage(result)).toContain("Invalid arguments for band_send_message");
+    expect(toLegacyToolExecutorErrorMessage(result)).toContain("content: can't be blank");
+  });
+
+  // Unlike band_send_message, blank content isn't rejected here -- it's repaired downstream instead.
+  it("does not reject send_event content with no visible characters at the argument-validation layer", async () => {
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api: new FakeRestApi() }),
+    });
+
+    const result = await tools.executeToolCall("band_send_event", {
+      content: "   ",
+      message_type: "thought",
+    });
+    expect(isToolExecutorError(result)).toBe(false);
   });
 
   it("validates send_event rejects invalid message_type", async () => {

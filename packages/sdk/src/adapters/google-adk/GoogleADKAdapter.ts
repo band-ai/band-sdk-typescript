@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import { SimpleAdapter } from "../../core/simpleAdapter";
+import { hasVisibleContent } from "../../contracts/content";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { MetadataMap, ToolOperationResult } from "../../contracts/dtos";
 import { formatMessageForLlm } from "../../runtime/formatters";
@@ -286,7 +287,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
       role: "user",
       content: this.formatIncomingMessage(message),
     });
-    if (finalResponseText.length > 0) {
+    if (hasVisibleContent(finalResponseText)) {
       nextHistory.push({
         role: "model",
         content: finalResponseText,

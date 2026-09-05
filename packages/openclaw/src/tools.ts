@@ -13,6 +13,7 @@
  */
 
 import type { BandLink } from "@band-ai/sdk";
+import { assertMessageSent } from "@band-ai/sdk/rest";
 
 type BandRest = BandLink["rest"];
 
@@ -281,6 +282,9 @@ const sendEventTool: BandTool = {
       );
     }
     const response = await ctx.rest.createChatEvent(room_id, { content, messageType: message_type, metadata });
+    // createChatEvent only repairs blank content; a genuine ok:false still has to
+    // surface here instead of a fabricated event_id.
+    assertMessageSent(response, "Event not sent");
     return { success: true, event_id: response.id, message_type };
   },
 };

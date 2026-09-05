@@ -355,7 +355,7 @@ empty string — is used exactly, with no fallback.
 
 - `BAND_AGENT_ID` (legacy `THENVOI_AGENT_ID`): agent UUID (required)
 - `BAND_API_KEY` (legacy `THENVOI_API_KEY`): agent API key (required)
-- `BAND_WS_URL` (legacy `THENVOI_WS_URL`): WebSocket base URL (optional; default: `wss://app.band.ai/api/v1/socket` — the `phoenix` lib appends `/websocket`)
+- `BAND_WS_URL` (legacy `THENVOI_WS_URL`): WebSocket base URL (optional; default and `phoenix`'s `/websocket` suffix behavior are documented under "WebSocket Channels & Events" above)
 - `BAND_REST_URL` (legacy `THENVOI_REST_URL`): REST API URL (optional; derived from the WS URL if not set, via `deriveDefaultRestUrl`)
 
 LLM API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`/`GEMINI_API_KEY`, etc.) are read directly by the underlying provider SDKs and passed via adapter options. For Gemini, `@google/genai` accepts both `GOOGLE_API_KEY` and `GEMINI_API_KEY` (it prefers `GOOGLE_API_KEY` if both are set; verified in `@google/genai`'s `getApiKeyFromEnv`, peer range `>=1.44.0`).
@@ -435,7 +435,7 @@ Each example is a standalone TypeScript script runnable with `tsx`. Folders incl
 - Runtime validation matches static types — a schema library (Zod) is the single source of truth for both, so "compiles" and "actually valid" never drift apart.
 - Factories over constructors — prefer `createX(config)` over `new X(...)` for anything with defaults to apply or dependencies to inject; it's more testable and composable. Applies to new top-level entry points (like `Agent.create`); existing adapters keep their established `new <Framework>Adapter(options)` constructor pattern (see "Adding a New Framework Adapter").
 - Interceptors for cross-cutting concerns — auth, retries, and error-wrapping live in one shared place every request passes through, not copy-pasted per method.
-- Custom error types — wrap raw HTTP/protocol errors in typed errors so callers can `instanceof`-check instead of parsing status codes or message strings.
+- Custom error types — wrap raw HTTP/protocol errors in typed errors (the `BandSdkError` hierarchy in `core/errors.ts`) so callers can `instanceof`-check instead of parsing status codes or message strings. Attach HTTP status, request id, and the native `cause` where available; never let an auth header or API key leak into an error's message, properties, or string representation.
 - Consistency across the surface — the same kind of operation should look and behave the same way everywhere in the SDK.
 - Classes for namespacing, functions for helpers — give callers both a low-level client and high-level convenience helpers; don't force one style.
 - Modular types at scale — split types by domain as the surface grows; don't let one file become the bottleneck.
@@ -452,13 +452,26 @@ Each example is a standalone TypeScript script runnable with `tsx`. Folders incl
 - Use `import type` for type-only imports (enforced by `verbatimModuleSyntax`).
 - No `any` in `src/` — `@typescript-eslint/no-explicit-any` is `error` for `src/**/*.ts` (relaxed for tests/examples).
 - Prefer named exports; avoid default exports.
-- All public adapter options use named interfaces (`<Framework>AdapterOptions`).
+- All public adapter options use named interfaces (`<Framework>AdapterOptions`), every field `readonly` unless the shape is meant to be mutated after construction.
+- Reserve `interface` for a public option or response shape; use `type` for unions, primitives, branded types, and type-level compositions (`Pick`/`Partial`/intersections — see `ContactCallbackRestApi` in `runtime/tools/ContactCallbackTools.ts`).
+- Prefer a single options object over positional parameters for a new constructor or method; favor `unknown` plus a type guard over a loosely-typed parameter (see `hasVisibleContent` in `contracts/content.ts`). Existing positional signatures (e.g. `FernRestAdapter`'s `(client, logger?)`) aren't retrofitted without a breaking-change decision.
+- A new network-bound method accepts `signal?: AbortSignal` and threads it to the underlying `fetch`/REST call.
+- No new runtime dependency without explicit approval — optional framework SDKs stay peer dependencies (see "Package & Subpath Exports"); don't add to `dependencies`.
 - Use the `Logger` interface from `@band-ai/sdk/core` instead of `console.*` in library code (`console.warn`/`console.error` allowed only when there is no logger context).
 - Validate external input at boundaries with Zod schemas (`packages/sdk/src/platform/streaming/payloadSchemas.ts` is the model).
 - Never bundle peer dependencies — they must remain `external` in `tsup.config.ts`.
 - Async/await everywhere; do not return raw promises from non-async functions in library code.
 - Keep node compatibility at `>=22` (`engines.node` in both root and SDK package.json).
 - Never put issue-tracker references in code — no Linear issue IDs (e.g. `INT-123`), Linear URLs, or ticket numbers in comments, docstrings, or strings. Explain the *why* in plain terms instead. (Branch names, commit messages, and PR descriptions may reference issues.)
+
+### Proposed Conventions (Not Yet Adopted)
+
+An external TypeScript SDK style guide was reviewed against this codebase. Most of it either already matches (see above) or was folded in; these items don't fit without a breaking migration decision, so they stay listed here as proposals rather than getting silently applied or silently dropped:
+
+- **`SDKError` base + `AuthenticationError`/`RateLimitError`/`APIValidationError` taxonomy** — conflicts with the real, publicly-exported hierarchy (`BandSdkError` → `ValidationError` / `TransportError` / `RuntimeStateError` / `UnsupportedFeatureError` in `core/errors.ts`). Adopting the proposed names would rename a public export, breaking every consumer's `instanceof` check.
+- **Public surface strictly via `index.ts` + `src/internal/`** — conflicts with the deliberate multi-subpath export design ("Package & Subpath Exports" above); collapsing it breaks every consumer importing `/adapters`, `/rest`, `/testing`, etc. today.
+- **Web-API-only runtime primitives** (`fetch`/`Headers`/`ReadableStream`/`AbortSignal` instead of Node modules) — the real-time transport core (`BandLink`, `PhoenixChannelsTransport`) is built on `phoenix` + `ws`, both Node-oriented. Swapping them is a transport rewrite, not a style pass.
+- **`AsyncIterableIterator` for every paginated endpoint** — the REST layer wraps a Fern-generated client (`@band-ai/rest-client`) from an external spec; today's shape is page objects plus `fetchPaginated`/`normalizePaginationMetadata` (`client/rest/pagination.ts`). The SDK can't unilaterally reshape what Fern emits — an iterator convenience wrapper on top is a viable future addition, not a drop-in replacement.
 
 ## Pre-Commit Checklist
 

@@ -1,5 +1,6 @@
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { MessagingTools } from "../../contracts/protocols";
+import { hasVisibleContent } from "../../contracts/content";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import { UnsupportedFeatureError } from "../../core/errors";
@@ -206,7 +207,8 @@ export class ParlantAdapter
         createdEvent.offset,
       );
 
-      if (!reply) {
+      // The catch below re-throws after logging, so a throw here still kills the room.
+      if (!hasVisibleContent(reply)) {
         await tools.sendEvent(
           "Parlant did not return a response before timeout.",
           "error",

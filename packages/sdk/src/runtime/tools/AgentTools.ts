@@ -6,6 +6,12 @@ import type { AgentToolsRestApi } from "../../client/rest/types";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
 import { assertCapability } from "../../contracts/capabilities";
 import { assertChatEventType, CHAT_EVENT_TYPES } from "../../contracts/chatEvents";
+import {
+  assertNotBlankContentRefusal,
+  BLANK_CONTENT_ERROR,
+  hasVisibleContent,
+  resolveEventSend,
+} from "../../contracts/content";
 import type {
   AddContactArgs,
   ContactRecord,
@@ -178,13 +184,14 @@ export class AgentTools implements AgentToolsProtocol {
 
     // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
     // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
-    return this.rest.createChatMessage(
+    const result = await this.rest.createChatMessage(
       this.roomId,
       {
         content,
         mentions: resolvedMentions,
       },
     );
+    return assertNotBlankContentRefusal(result);
   }
 
   public async sendEvent(
@@ -193,30 +200,13 @@ export class AgentTools implements AgentToolsProtocol {
     metadata?: MetadataMap,
   ): Promise<ToolOperationResult> {
     assertChatEventType(messageType);
-    try {
-      // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
-      // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
-      return await this.rest.createChatEvent(
-        this.roomId,
-        {
-          content,
-          messageType,
-          metadata,
-        },
-      );
-    } catch (error) {
-      // Room telemetry, not the agent's answer: a failed post here must never
-      // abort the turn the way a failed sendMessage should. See sendMessage,
-      // which is deliberately left to reject.
-      try {
-        this.logger.warn("chat event send failed", { roomId: this.roomId, messageType, error });
-      } catch {
-        // A caller-supplied logger that itself throws must not turn this
-        // telemetry failure into a rejection in its place — see above.
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      return { ok: false, status: "failed", message };
-    }
+    // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
+    // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
+    return resolveEventSend(
+      () => this.rest.createChatEvent(this.roomId, { content, messageType, metadata }),
+      this.logger,
+      { roomId: this.roomId, messageType },
+    );
   }
 
   public async createChatroom(taskId?: string): Promise<string> {
@@ -1125,6 +1115,14 @@ function validateToolArgs(toolName: string, args: Record<string, unknown>): Tool
   }
 
   if (toolName === "band_send_message") {
+    // Checked only when content is already a string, so a missing field reports once
+    // ("Field required") instead of doubling with this message. band_send_event has no
+    // equivalent, since its blank content is repaired downstream, not rejected.
+    const content = args.content;
+    if (typeof content === "string" && !hasVisibleContent(content)) {
+      errors.push(`content: ${BLANK_CONTENT_ERROR}`);
+    }
+
     const mentions = args.mentions;
     if (Array.isArray(mentions) && mentions.length === 0) {
       errors.push("mentions: At least one mention is required");
