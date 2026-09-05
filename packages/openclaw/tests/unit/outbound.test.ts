@@ -10,6 +10,7 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
+import { ValidationError } from "@band-ai/sdk/core";
 import { FernRestAdapter } from "@band-ai/sdk/rest";
 import { sendText, sendMedia, type OutboundDeps } from "../../src/outbound.js";
 
@@ -93,7 +94,9 @@ describe("sendText", () => {
         transport.createChatMessage(roomId, message),
     });
 
-    await expect(sendText(deps, { to: "room-1", text: "   " })).rejects.toThrow(/can't be blank/i);
+    const error = await sendText(deps, { to: "room-1", text: "   " }).catch((caught) => caught);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect((error as Error).message).toMatch(/can't be blank/i);
     expect(createAgentChatMessage).not.toHaveBeenCalled();
   });
 

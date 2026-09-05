@@ -200,6 +200,13 @@ describe("band_get_participants / band_create_chatroom / band_send_event", () =>
     );
   });
 
+  it("send_event throws instead of reporting success when the platform resolves a genuine ok:false", async () => {
+    const createChatEvent = vi.fn().mockResolvedValue({ ok: false, status: "moderation_rejected", error: "flagged" });
+    await expect(
+      run("band_send_event", makeCtx({ createChatEvent }), { room_id: "r1", content: "hi", message_type: "thought" }),
+    ).rejects.toThrow(/flagged/i);
+  });
+
   it("list_chats maps room id/name/type and clamps pagination", async () => {
     const listChats = vi.fn().mockResolvedValue({
       data: [{ id: "room-1", name: "Room One", type: "group" }],

@@ -4,6 +4,7 @@ import {
   BandACPServerAdapter,
 } from "../src/adapters/acp";
 import { FernRestAdapter } from "../src/client/rest/FernRestAdapter";
+import { ValidationError } from "../src/core/errors";
 import { FakeRestApi, FakeTools, makeMessage } from "./testUtils";
 
 describe("BandACPServerAdapter", () => {
@@ -250,7 +251,9 @@ describe("BandACPServerAdapter", () => {
       { isSessionBootstrap: true, roomId: "room-rehydrated" },
     )
 
-    await expect(adapter.handlePrompt("session-rehydrated", "   ")).rejects.toThrow(/blank/i)
+    const error = await adapter.handlePrompt("session-rehydrated", "   ").catch((caught) => caught)
+    expect(error).toBeInstanceOf(ValidationError)
+    expect((error as Error).message).toMatch(/blank/i)
     expect(createAgentChatMessage).not.toHaveBeenCalled()
   })
 });

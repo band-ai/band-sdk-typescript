@@ -50,6 +50,10 @@ export function withVisibleEventContent(value: string): string {
   return hasVisibleContent(value) ? value : EVENT_EMPTY_CONTENT_PLACEHOLDER;
 }
 
+// The `status` resolveEventSend's own failure carries, so callers/tests can
+// recognise it by name instead of matching a string literal.
+export const EVENT_SEND_FAILED_STATUS = "failed";
+
 // Absorbs a thrown transport failure (network error, exhausted retries) so a
 // failed sendEvent resolves instead of aborting the turn, the way a failed
 // sendMessage does. Only catches thrown errors -- a RestApi that resolves a
@@ -64,6 +68,6 @@ export async function resolveEventSend(
     return await send();
   } catch (error) {
     logger.warn("chat event send failed", { ...logContext, error });
-    return { ok: false, status: "failed" };
+    return { ok: false, status: EVENT_SEND_FAILED_STATUS };
   }
 }

@@ -281,6 +281,13 @@ const sendEventTool: BandTool = {
       );
     }
     const response = await ctx.rest.createChatEvent(room_id, { content, messageType: message_type, metadata });
+    // createChatEvent never refuses blank content anymore (it substitutes a
+    // placeholder), but the platform can still resolve a genuine ok:false
+    // instead of throwing -- report that honestly instead of a fabricated
+    // success with no event_id.
+    if (response?.ok === false) {
+      throw new Error(`Event not sent: ${String(response.error ?? response.status ?? "unknown error")}`);
+    }
     return { success: true, event_id: response.id, message_type };
   },
 };

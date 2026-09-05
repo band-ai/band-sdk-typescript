@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { FernRestAdapter } from "../src/client/rest/FernRestAdapter";
+import { EVENT_SEND_FAILED_STATUS } from "../src/contracts/content";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 import { ContactCallbackTools } from "../src/runtime/tools/ContactCallbackTools";
 import { SUSTAINED_429 } from "./support/fakeFetchServer";
@@ -81,7 +82,10 @@ describe("message-send retry cap holds through the tool layer", () => {
     async ({ urlSegment, send }) => {
       const { rest, calls } = buildFakeRestAdapter(SUSTAINED_429(3));
 
-      await expect(settleThroughRetries(send(rest))).resolves.toEqual({ ok: false, status: "failed" });
+      await expect(settleThroughRetries(send(rest))).resolves.toEqual({
+        ok: false,
+        status: EVENT_SEND_FAILED_STATUS,
+      });
 
       expect(calls).toHaveLength(3);
       expect(calls.every((call) => call.url.includes(`/${urlSegment}`))).toBe(true);

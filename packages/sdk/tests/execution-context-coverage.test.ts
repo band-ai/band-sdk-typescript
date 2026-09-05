@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { EVENT_SEND_FAILED_STATUS } from "../src/contracts/content";
 import { UnsupportedFeatureError } from "../src/core/errors";
 import type { Logger } from "../src/core/logger";
 import { ExecutionContext } from "../src/runtime/ExecutionContext";
@@ -166,7 +167,7 @@ describe("ExecutionContext coverage", () => {
 
     await expect(ctx.getTools().sendEvent("thinking", "thought")).resolves.toEqual({
       ok: false,
-      status: "failed",
+      status: EVENT_SEND_FAILED_STATUS,
     });
 
     expect(logger.warn).toHaveBeenCalledWith(

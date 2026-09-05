@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ContactCallbackTools } from "../src/runtime/tools/ContactCallbackTools";
 import { ContactToolsImpl } from "../src/runtime/tools/ContactToolsImpl";
-import { BLANK_CONTENT_ERROR, BLANK_CONTENT_STATUS } from "../src/contracts/content";
+import { BLANK_CONTENT_ERROR, BLANK_CONTENT_STATUS, EVENT_SEND_FAILED_STATUS } from "../src/contracts/content";
 import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
 
 describe("ContactToolsImpl", () => {
@@ -282,7 +282,10 @@ describe("ContactCallbackTools", () => {
       const createChatEvent = vi.fn().mockRejectedValue(new Error("network error"));
       const tools = new ContactCallbackTools({ createChat: vi.fn(), createChatEvent } as never, "room-1");
 
-      await expect(tools.sendEvent("thinking", "thought")).resolves.toEqual({ ok: false, status: "failed" });
+      await expect(tools.sendEvent("thinking", "thought")).resolves.toEqual({
+        ok: false,
+        status: EVENT_SEND_FAILED_STATUS,
+      });
     });
   });
 

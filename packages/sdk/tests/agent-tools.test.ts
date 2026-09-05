@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { RestFacade } from "../src/client/rest/RestFacade";
 import type { RestApi } from "../src/client/rest/types";
-import { BLANK_CONTENT_ERROR, BLANK_CONTENT_STATUS } from "../src/contracts/content";
+import { BLANK_CONTENT_ERROR, BLANK_CONTENT_STATUS, EVENT_SEND_FAILED_STATUS } from "../src/contracts/content";
 import type {
   ContactRequestAction,
   ListMemoriesArgs,
@@ -274,7 +274,10 @@ describe("AgentTools", () => {
       rest: new RestFacade({ api: new FailingRestApi() }),
     });
 
-    await expect(tools.sendEvent("thinking", "thought")).resolves.toEqual({ ok: false, status: "failed" });
+    await expect(tools.sendEvent("thinking", "thought")).resolves.toEqual({
+      ok: false,
+      status: EVENT_SEND_FAILED_STATUS,
+    });
   });
 
   it("gates peers endpoint when disabled", async () => {
