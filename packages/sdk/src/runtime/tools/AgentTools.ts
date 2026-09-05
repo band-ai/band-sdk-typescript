@@ -43,6 +43,7 @@ import {
   DEFAULT_AGENT_TOOLS_CAPABILITIES,
   type AgentToolsCapabilities,
   type AgentToolsProtocol,
+  isStructuredToolFailure,
   isToolExecutorError,
   type ToolExecutorError,
 } from "../../contracts/protocols";
@@ -327,7 +328,21 @@ export class AgentTools implements AgentToolsProtocol {
     }
 
     try {
-      return await handler(arguments_);
+      const result = await handler(arguments_);
+      // sendEvent fails by resolving `{ok: false}` instead of throwing (it must
+      // never reject — see its own comment). Route that failure through the
+      // same ToolExecutorError conversion a thrown error gets below, so every
+      // consumer of executeToolCall recognizes it. Scoped to sendEvent: other
+      // handlers' `ok` fields are legitimate business-result data, not errors.
+      if (toolName === "band_send_event" && isStructuredToolFailure(result) && !isToolExecutorError(result)) {
+        return createToolExecutorError({
+          errorType: "ToolExecutionError",
+          toolName,
+          message: result.message,
+          legacyMessage: `Error executing ${toolName}: ${result.message}`,
+        });
+      }
+      return result;
     } catch (error) {
       if (isToolExecutorError(error)) {
         return error;

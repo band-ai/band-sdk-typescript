@@ -53,7 +53,8 @@ export const EVENT_SEND_FAILED_STATUS = "failed";
 
 // Absorbs a thrown transport failure so sendEvent resolves {ok: false} instead of aborting
 // the turn. Only catches throws -- a RestApi that resolves a blank-content refusal instead
-// of repairing it would still pass straight through unchanged.
+// of repairing it would still pass straight through unchanged. A caller-supplied logger that
+// itself throws must not turn this telemetry failure into a rejection in its place.
 export async function resolveEventSend(
   send: () => Promise<ToolOperationResult>,
   logger: Logger,
@@ -62,7 +63,12 @@ export async function resolveEventSend(
   try {
     return await send();
   } catch (error) {
-    logger.warn("chat event send failed", { ...logContext, error });
-    return { ok: false, status: EVENT_SEND_FAILED_STATUS };
+    const message = error instanceof Error ? error.message : String(error);
+    try {
+      logger.warn("chat event send failed", { ...logContext, error });
+    } catch {
+      // See function comment.
+    }
+    return { ok: false, status: EVENT_SEND_FAILED_STATUS, message };
   }
 }

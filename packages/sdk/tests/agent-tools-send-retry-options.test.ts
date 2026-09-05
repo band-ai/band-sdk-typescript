@@ -83,6 +83,7 @@ describe("message-send retry cap holds through the tool layer", () => {
       await expect(settleThroughRetries(send(rest))).resolves.toEqual({
         ok: false,
         status: EVENT_SEND_FAILED_STATUS,
+        message: "Status code: 429",
       });
 
       expect(calls).toHaveLength(3);

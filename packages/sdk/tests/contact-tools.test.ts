@@ -285,6 +285,7 @@ describe("ContactCallbackTools", () => {
       await expect(tools.sendEvent("thinking", "thought")).resolves.toEqual({
         ok: false,
         status: EVENT_SEND_FAILED_STATUS,
+        message: "network error",
       });
     });
   });

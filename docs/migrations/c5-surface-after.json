@@ -567,6 +567,7 @@
         "getToolDescription",
         "isChatEventType",
         "mcpToolNames",
+        "mentionSubjectsFromMetadata",
         "renderSystemPrompt",
         "replaceUuidMentions",
         "runWithGracefulShutdown"
@@ -624,6 +625,7 @@
         "getToolDescription",
         "isChatEventType",
         "mcpToolNames",
+        "mentionSubjectsFromMetadata",
         "renderSystemPrompt",
         "replaceUuidMentions",
         "runWithGracefulShutdown"

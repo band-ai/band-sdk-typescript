@@ -148,6 +148,16 @@ export function isToolExecutorError(value: unknown): value is ToolExecutorError 
   );
 }
 
+/** An `{ok:false}` result carrying a human-readable `message`, not yet shaped as a `ToolExecutorError`. */
+export function isStructuredToolFailure(value: unknown): value is { ok: false; message: string } {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const payload = value as Record<string, unknown>;
+  return payload.ok === false && typeof payload.message === "string";
+}
+
 export function toLegacyToolExecutorErrorMessage(value: unknown): string | null {
   if (typeof value === "string") {
     return value;

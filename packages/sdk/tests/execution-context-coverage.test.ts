@@ -168,6 +168,7 @@ describe("ExecutionContext coverage", () => {
     await expect(ctx.getTools().sendEvent("thinking", "thought")).resolves.toEqual({
       ok: false,
       status: EVENT_SEND_FAILED_STATUS,
+      message: "network error",
     });
 
     expect(logger.warn).toHaveBeenCalledWith(
