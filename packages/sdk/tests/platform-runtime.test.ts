@@ -2,58 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 
 import { GenericAdapter } from "../src/adapters/GenericAdapter";
 import { FernRestAdapter, RestFacade } from "../src/client/rest/RestFacade";
-import { ValidationError } from "../src/core/errors";
+import { TransportError, ValidationError } from "../src/core/errors";
 import { PlatformRuntime } from "../src/runtime/PlatformRuntime";
 import { ExecutionContext } from "../src/runtime/ExecutionContext";
 import { HUB_ROOM_SYSTEM_PROMPT } from "../src/runtime/ContactEventHandler";
-import type { StreamingTransport, TopicHandlers } from "../src/platform/streaming/transport";
+import type { StreamingTransport } from "../src/platform/streaming/transport";
 import { BandLink } from "../src/platform/BandLink";
-import { FakeRestApi } from "./testUtils";
-
-class FakeTransport implements StreamingTransport {
-  private handlers = new Map<string, TopicHandlers>();
-  private connected = false;
-
-  public async connect() {
-    this.connected = true;
-  }
-
-  public async disconnect() {
-    this.connected = false;
-  }
-
-  public async join(topic: string, handlers: TopicHandlers) {
-    this.handlers.set(topic, handlers);
-  }
-
-  public async leave(topic: string) {
-    this.handlers.delete(topic);
-  }
-
-  public async runForever(signal?: AbortSignal): Promise<void> {
-    if (!signal) {
-      return;
-    }
-    await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
-  }
-
-  public isConnected() {
-    return this.connected;
-  }
-
-  public async emit(topic: string, event: string, payload: Record<string, unknown>): Promise<void> {
-    const topicHandlers = this.handlers.get(topic);
-    if (!topicHandlers?.[event]) {
-      throw new Error(`No handler for ${topic}/${event}`);
-    }
-
-    await Promise.resolve(topicHandlers[event](payload));
-  }
-
-  public hasTopic(topic: string): boolean {
-    return this.handlers.has(topic);
-  }
-}
+import { FakeRestApi, FakeTransport, makeMessage } from "./testUtils";
 
 describe("PlatformRuntime", () => {
   it("initializes and dispatches message to adapter", async () => {
@@ -293,6 +248,140 @@ describe("PlatformRuntime", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(factoryCalls).toEqual(["room-1"]);
+
+    await runtime.stop();
+  });
+
+  it("dispatches participant events to the room context and message events to its execution", async () => {
+    const transport = new FakeTransport();
+    const added: string[] = [];
+    const removed: string[] = [];
+    const seenMessages: string[] = [];
+
+    const adapter = new GenericAdapter(async ({ message }) => {
+      seenMessages.push(message.content);
+    });
+
+    const runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      link: new BandLink({
+        agentId: "a1",
+        apiKey: "k",
+        transport,
+        restApi: new FakeRestApi(),
+      }),
+      onParticipantAdded: (roomId, participant) => {
+        added.push(`${roomId}:${String(participant.id)}`);
+      },
+      onParticipantRemoved: (roomId, participantId) => {
+        removed.push(`${roomId}:${participantId}`);
+      },
+    });
+
+    await runtime.start(adapter);
+
+    await transport.emit("agent_rooms:a1", "room_added", {
+      id: "room-1",
+      status: "active",
+      type: "direct",
+      title: "Room",
+      removed_at: "",
+    });
+    // Admission joins `chat_room` then `room_participants` sequentially
+    // (BandLink.joinRoomTopics), so both topics need a tick to settle
+    // before either can be driven.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await transport.emit("room_participants:room-1", "participant_added", {
+      id: "participant-1",
+      name: "Jane",
+      type: "User",
+      handle: "jane",
+    });
+    await transport.emit("chat_room:room-1", "message_created", {
+      id: "m1",
+      content: "hello",
+      message_type: "text",
+      sender_id: "u1",
+      sender_type: "User",
+      sender_name: "Jane",
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    await transport.emit("room_participants:room-1", "participant_removed", {
+      id: "participant-1",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(added).toEqual(["room-1:participant-1"]);
+    expect(seenMessages).toEqual(["hello"]);
+    expect(removed).toEqual(["room-1:participant-1"]);
+
+    await runtime.stop();
+  });
+
+  it("cleans up admitted rooms via onCleanup when the runtime stops, without a prior room_removed", async () => {
+    const transport = new FakeTransport();
+    const adapter = {
+      onEvent: vi.fn(async () => undefined),
+      onCleanup: vi.fn(async () => undefined),
+      onStarted: vi.fn(async () => undefined),
+      onRuntimeStop: vi.fn(async () => undefined),
+    };
+
+    const runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      link: new BandLink({
+        agentId: "a1",
+        apiKey: "k",
+        transport,
+        restApi: new FakeRestApi(),
+      }),
+    });
+
+    await runtime.start(adapter);
+    await transport.emit("agent_rooms:a1", "room_added", {
+      id: "room-1",
+      status: "active",
+      type: "direct",
+      title: "Room",
+      removed_at: "",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await runtime.stop();
+
+    expect(adapter.onCleanup).toHaveBeenCalledWith("room-1");
+  });
+
+  it("throws when bootstrapRoomMessage's room subscribe fails, and leaves the topic unjoined", async () => {
+    const transport = new FakeTransport();
+    const adapter = new GenericAdapter(async () => {});
+
+    const runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      link: new BandLink({
+        agentId: "a1",
+        apiKey: "k",
+        transport,
+        restApi: new FakeRestApi(),
+      }),
+    });
+
+    await runtime.start(adapter);
+
+    vi.spyOn(transport, "join").mockRejectedValueOnce(new Error("join failed"));
+
+    await expect(
+      runtime.bootstrapRoomMessage("room-bootstrap", makeMessage("hello", "room-bootstrap")),
+    ).rejects.toThrow(TransportError);
+
+    await expect(transport.emit("chat_room:room-bootstrap", "message_created", {})).rejects.toThrow(
+      "No handler for chat_room:room-bootstrap/message_created",
+    );
 
     await runtime.stop();
   });

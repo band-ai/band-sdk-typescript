@@ -1,51 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { TopicHandlers, StreamingTransport } from "../src/platform/streaming/transport";
 import { RoomPresence } from "../src/runtime/rooms/RoomPresence";
 import { BandLink } from "../src/platform/BandLink";
-import { FakeRestApi } from "./testUtils";
-
-class FakeTransport implements StreamingTransport {
-  private readonly handlers = new Map<string, TopicHandlers>();
-  private connected = false;
-
-  public async connect(): Promise<void> {
-    this.connected = true;
-  }
-
-  public async disconnect(): Promise<void> {
-    this.connected = false;
-  }
-
-  public async join(topic: string, handlers: TopicHandlers): Promise<void> {
-    this.handlers.set(topic, handlers);
-  }
-
-  public async leave(topic: string): Promise<void> {
-    this.handlers.delete(topic);
-  }
-
-  public async runForever(signal?: AbortSignal): Promise<void> {
-    if (!signal) {
-      return;
-    }
-    await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
-  }
-
-  public async emit(topic: string, event: string, payload: Record<string, unknown>): Promise<void> {
-    const topicHandlers = this.handlers.get(topic);
-    const handler = topicHandlers?.[event];
-    if (!handler) {
-      throw new Error(`No handler for ${topic}/${event}`);
-    }
-
-    await Promise.resolve(handler(payload));
-  }
-
-  public isConnected(): boolean {
-    return this.connected;
-  }
-}
+import { FakeRestApi, FakeTransport } from "./testUtils";
 
 async function waitFor(check: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -99,9 +56,12 @@ describe("RoomPresence", () => {
       title: "New Room",
       removed_at: new Date().toISOString(),
     });
-    await waitFor(() => joined.length === 2 && left.length === 1 && presence.rooms.size === 1);
+    await waitFor(
+      () => joined.length === 2 && left.length === 1 && presence.roster.trackedRoomIds().length === 1,
+    );
 
-    expect([...presence.rooms]).toEqual(["room-existing"]);
+    expect(presence.roster.trackedRoomIds()).toEqual(["room-existing"]);
+    expect(presence.roster.roomMembership("room-existing")).toBe("admitted");
     expect(joined).toEqual(["room-existing", "room-new"]);
     expect(left).toEqual(["room-new"]);
 
@@ -175,7 +135,7 @@ describe("RoomPresence", () => {
     await presence.start();
 
     expect(joined).toEqual(["room-1", "room-2"]);
-    expect([...presence.rooms]).toEqual(["room-1", "room-2"]);
+    expect(presence.roster.trackedRoomIds()).toEqual(["room-1", "room-2"]);
 
     await presence.stop();
   });
@@ -212,6 +172,202 @@ describe("RoomPresence", () => {
       }),
     );
 
+    await presence.stop();
+  });
+
+  it("admits a room only once under concurrent admission attempts", async () => {
+    const transport = new FakeTransport();
+    const joined: string[] = [];
+
+    const presence = new RoomPresence({
+      link: new BandLink({
+        agentId: "agent-1",
+        apiKey: "key",
+        transport,
+        restApi: new FakeRestApi({ listChats: async () => ({ data: [] }) }),
+      }),
+      autoSubscribeExistingRooms: false,
+    });
+    presence.onRoomJoined = async (roomId) => {
+      joined.push(roomId);
+    };
+
+    await presence.start();
+
+    const [first, second] = await Promise.all([
+      presence.admitRoom("room-1", {}),
+      presence.admitRoom("room-1", {}),
+    ]);
+
+    // Both calls race `beginRoomAdmission` before either awaits the
+    // transport join, so exactly one of them claims the ticket.
+    expect([first, second].filter(Boolean)).toHaveLength(1);
+    expect(joined).toEqual(["room-1"]);
+    expect(transport.hasTopic("chat_room:room-1")).toBe(true);
+    expect(presence.roster.roomMembership("room-1")).toBe("admitted");
+
+    await presence.stop();
+  });
+
+  it("does not fire onRoomLeft for a room that was never admitted", async () => {
+    const transport = new FakeTransport();
+    const left: string[] = [];
+
+    const presence = new RoomPresence({
+      link: new BandLink({
+        agentId: "agent-1",
+        apiKey: "key",
+        transport,
+        restApi: new FakeRestApi({ listChats: async () => ({ data: [] }) }),
+      }),
+      autoSubscribeExistingRooms: false,
+    });
+    presence.onRoomLeft = async (roomId) => {
+      left.push(roomId);
+    };
+
+    await presence.start();
+    await transport.emit("agent_rooms:agent-1", "room_removed", {
+      id: "room-untracked",
+      status: "inactive",
+      type: "direct",
+      title: "Untracked Room",
+      removed_at: new Date().toISOString(),
+    });
+
+    expect(left).toEqual([]);
+    expect(presence.roster.roomMembership("room-untracked")).toBe("unadmitted");
+
+    await presence.stop();
+  });
+
+  it("leaves a room unadmitted and fires no onRoomJoined when subscribeRoom fails", async () => {
+    const transport = new FakeTransport();
+    const joined: string[] = [];
+    const restApi = new FakeRestApi({ listChats: async () => ({ data: [] }) });
+
+    const presence = new RoomPresence({
+      link: new BandLink({
+        agentId: "agent-1",
+        apiKey: "key",
+        transport,
+        restApi,
+      }),
+      autoSubscribeExistingRooms: false,
+    });
+    presence.onRoomJoined = async (roomId) => {
+      joined.push(roomId);
+    };
+
+    await presence.start();
+
+    const failingTopicJoin = vi.spyOn(transport, "join").mockRejectedValueOnce(new Error("join failed"));
+    const admitted = await presence.admitRoom("room-1", {});
+
+    expect(admitted).toBe(false);
+    expect(joined).toEqual([]);
+    expect(presence.roster.roomMembership("room-1")).toBe("unadmitted");
+
+    failingTopicJoin.mockRestore();
+    await presence.stop();
+  });
+
+  it("fires onRoomLeft during stop() only for rooms that reached Admitted", async () => {
+    const transport = new FakeTransport();
+    const left: string[] = [];
+    const restApi = new FakeRestApi({ listChats: async () => ({ data: [] }) });
+
+    const presence = new RoomPresence({
+      link: new BandLink({
+        agentId: "agent-1",
+        apiKey: "key",
+        transport,
+        restApi,
+      }),
+      autoSubscribeExistingRooms: false,
+    });
+    presence.onRoomLeft = async (roomId) => {
+      left.push(roomId);
+    };
+
+    await presence.start();
+    await presence.admitRoom("room-admitted", {});
+    presence.roster.beginRoomAdmission("room-admitting", true);
+
+    await presence.stop();
+
+    expect(left).toEqual(["room-admitted"]);
+  });
+
+  it("rejects a second concurrent start() without disrupting the first event loop", async () => {
+    const transport = new FakeTransport();
+    const joined: string[] = [];
+
+    const presence = new RoomPresence({
+      link: new BandLink({
+        agentId: "agent-1",
+        apiKey: "key",
+        transport,
+        restApi: new FakeRestApi({ listChats: async () => ({ data: [] }) }),
+      }),
+      autoSubscribeExistingRooms: false,
+    });
+    presence.onRoomJoined = async (roomId) => {
+      joined.push(roomId);
+    };
+
+    const firstStart = presence.start();
+    const secondStart = presence.start();
+    await expect(secondStart).rejects.toThrow("already started");
+    await firstStart;
+
+    await transport.emit("agent_rooms:agent-1", "room_added", {
+      id: "room-after-rejection",
+      status: "active",
+      type: "direct",
+      title: "Room",
+      removed_at: "",
+    });
+    await waitFor(() => joined.length === 1);
+
+    expect(joined).toEqual(["room-after-rejection"]);
+
+    await presence.stop();
+  });
+
+  it("warns and continues start() when the agent_contacts subscribe fails", async () => {
+    const transport = new FakeTransport();
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const failingJoin = vi.spyOn(transport, "join").mockImplementation(async (topic, handlers) => {
+      if (topic === "agent_contacts:agent-1") {
+        throw new Error("contacts join failed");
+      }
+      return FakeTransport.prototype.join.call(transport, topic, handlers);
+    });
+
+    const presence = new RoomPresence({
+      link: new BandLink({
+        agentId: "agent-1",
+        apiKey: "key",
+        transport,
+        restApi: new FakeRestApi({ listChats: async () => ({ data: [] }) }),
+        capabilities: { contacts: true },
+      }),
+      logger,
+    });
+
+    await expect(presence.start()).resolves.toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      "RoomPresence failed to subscribe agent_contacts channel, continuing without it",
+      expect.objectContaining({ error: expect.any(Error) }),
+    );
+
+    failingJoin.mockRestore();
     await presence.stop();
   });
 });

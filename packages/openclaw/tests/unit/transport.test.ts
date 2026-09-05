@@ -193,10 +193,19 @@ import {
 } from "../../src/state.js";
 
 function makeLink(overrides: Record<string, unknown> = {}) {
+  // Real BandLink.isConnected() reflects connect()/disconnect() calls; the
+  // real AgentRuntime now checks it before reconnecting (RoomPresence.start),
+  // so the fake must track the same state rather than stubbing a constant.
+  let connected = false;
   return {
     agentId: "agent-self",
-    connect: vi.fn().mockResolvedValue(undefined),
-    disconnect: vi.fn().mockResolvedValue(undefined),
+    connect: vi.fn(async () => {
+      connected = true;
+    }),
+    disconnect: vi.fn(async () => {
+      connected = false;
+    }),
+    isConnected: vi.fn(() => connected),
     markProcessing: vi.fn().mockResolvedValue(undefined),
     markProcessed: vi.fn().mockResolvedValue(undefined),
     rest: { getAgentMe: vi.fn().mockResolvedValue({ id: "agent-self", ownerUuid: "owner-1" }) },
@@ -514,11 +523,20 @@ function makeIntegrationLink(overrides: Record<string, unknown> = {}) {
     createdAt: new Date("2026-01-01T00:00:00.000Z"),
   };
   let served = false;
+  // Real BandLink.isConnected() reflects connect()/disconnect() calls; the
+  // real AgentRuntime now checks it before reconnecting (RoomPresence.start),
+  // so the fake must track the same state rather than stubbing a constant.
+  let connected = false;
   return {
     agentId: "agent-self",
     capabilities: { contacts: false },
-    connect: vi.fn().mockResolvedValue(undefined),
-    disconnect: vi.fn().mockResolvedValue(undefined),
+    connect: vi.fn(async () => {
+      connected = true;
+    }),
+    disconnect: vi.fn(async () => {
+      connected = false;
+    }),
+    isConnected: vi.fn(() => connected),
     subscribeAgentRooms: vi.fn().mockResolvedValue(undefined),
     subscribeAgentContacts: vi.fn().mockResolvedValue(undefined),
     unsubscribeAgentContacts: vi.fn().mockResolvedValue(undefined),

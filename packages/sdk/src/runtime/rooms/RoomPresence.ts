@@ -1,10 +1,17 @@
 import type { MetadataMap } from "../../contracts/dtos";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
+import { RuntimeStateError } from "../../core/errors";
 import type { BandLink } from "../../platform/BandLink";
-import type { ContactEvent, PlatformEvent } from "../../platform/events";
+import type {
+  ContactEvent,
+  MessageEvent,
+  ParticipantAddedEvent,
+  ParticipantRemovedEvent,
+} from "../../platform/events";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
-import { hydrateTrackedRooms, trackRoomJoin, trackRoomLeave } from "./subscriptions";
+import { RoomRoster } from "@band-ai/band-sdk-core";
+import { hydrateExistingRooms } from "./subscriptions";
 
 interface RoomPresenceOptions {
   link: BandLink;
@@ -15,11 +22,14 @@ interface RoomPresenceOptions {
 
 type RoomPresenceJoinHandler = (roomId: string, payload: MetadataMap) => Promise<void>;
 type RoomPresenceLeaveHandler = (roomId: string) => Promise<void>;
-type RoomPresenceEventHandler = (roomId: string, event: PlatformEvent) => Promise<void>;
+type RoomPresenceEventHandler = (
+  roomId: string,
+  event: MessageEvent | ParticipantAddedEvent | ParticipantRemovedEvent,
+) => Promise<void>;
 type RoomPresenceContactHandler = (event: ContactEvent) => Promise<void>;
 
 export class RoomPresence {
-  public readonly rooms = new Set<string>();
+  public readonly roster = new RoomRoster();
   public onRoomJoined: RoomPresenceJoinHandler | null = null;
   public onRoomLeft: RoomPresenceLeaveHandler | null = null;
   public onRoomEvent: RoomPresenceEventHandler | null = null;
@@ -32,6 +42,7 @@ export class RoomPresence {
   private eventController: AbortController | null = null;
   private eventTask: Promise<void> | null = null;
   private contactsSubscribed = false;
+  private lifecycle: Promise<void> = Promise.resolve();
 
   public constructor(options: RoomPresenceOptions) {
     this.link = options.link;
@@ -41,8 +52,65 @@ export class RoomPresence {
   }
 
   public async start(): Promise<void> {
+    return this.serialize(() => this.startBody());
+  }
+
+  public async stop(): Promise<void> {
+    return this.serialize(() => this.stopBody());
+  }
+
+  public abortEventLoop(): void {
+    this.eventController?.abort();
+  }
+
+  public async waitUntilStopped(): Promise<void> {
+    await this.eventTask;
+  }
+
+  public async admitRoom(roomId: string, payload: MetadataMap, notify = true): Promise<boolean> {
+    const ticket = this.roster.beginRoomAdmission(roomId, true);
+    if (ticket === undefined) {
+      return false;
+    }
+
+    let succeeded = false;
+    let admitted = false;
+    try {
+      await this.link.subscribeRoom(roomId);
+      succeeded = true;
+    } catch (error) {
+      this.logger.warn("RoomPresence failed to subscribe room", { roomId, error });
+    } finally {
+      admitted = this.roster.recordRoomAdmission(roomId, ticket, succeeded);
+    }
+
+    if (succeeded && !admitted) {
+      this.logger.debug("RoomPresence admission ticket went stale", { roomId });
+      await this.unsubscribeRoom(roomId);
+    }
+
+    if (!admitted) {
+      return false;
+    }
+
+    if (notify) {
+      await this.onRoomJoined?.(roomId, payload);
+    }
+    return true;
+  }
+
+  private serialize<T>(body: () => Promise<T>): Promise<T> {
+    const run = this.lifecycle.then(body, body);
+    this.lifecycle = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async startBody(): Promise<void> {
     if (this.eventTask) {
-      return;
+      throw new RuntimeStateError("RoomPresence is already started");
     }
 
     if (!this.link.isConnected()) {
@@ -51,25 +119,34 @@ export class RoomPresence {
 
     try {
       await this.link.subscribeAgentRooms();
-    } catch {
-      // Best-effort — rooms can still be subscribed on demand.
+    } catch (error) {
+      this.logger.warn("RoomPresence failed to subscribe agent_rooms channel, continuing without it", {
+        error,
+      });
     }
+
     if (this.autoSubscribeExistingRooms) {
       await this.subscribeExistingRooms();
     }
 
     if (this.link.capabilities.contacts) {
-      await this.link.subscribeAgentContacts();
-      this.contactsSubscribed = true;
+      try {
+        await this.link.subscribeAgentContacts();
+        this.contactsSubscribed = true;
+      } catch (error) {
+        this.logger.warn("RoomPresence failed to subscribe agent_contacts channel, continuing without it", {
+          error,
+        });
+      }
     }
 
     this.eventController = new AbortController();
     this.eventTask = this.consumeEvents(this.eventController.signal);
   }
 
-  public async stop(): Promise<void> {
-    this.eventController?.abort();
-    await this.eventTask;
+  private async stopBody(): Promise<void> {
+    this.abortEventLoop();
+    await this.eventTask?.catch(() => undefined);
     this.eventTask = null;
     this.eventController = null;
 
@@ -78,13 +155,11 @@ export class RoomPresence {
       this.contactsSubscribed = false;
     }
 
-    for (const roomId of [...this.rooms]) {
-      await trackRoomLeave({
-        link: this.link,
-        roomId,
-        trackedRooms: this.rooms,
-        onLeft: this.onRoomLeft ?? undefined,
-      });
+    const roomIds = this.roster.trackedRoomIds();
+    this.roster.clear();
+    for (const roomId of roomIds) {
+      await this.unsubscribeRoom(roomId);
+      await this.onRoomLeft?.(roomId);
     }
   }
 
@@ -109,47 +184,65 @@ export class RoomPresence {
         case "contact_removed":
           await this.onContactEvent?.(event);
           break;
-        default:
-          if (event.roomId && this.rooms.has(event.roomId)) {
+        case "message_created":
+        case "participant_added":
+        case "participant_removed":
+          if (event.roomId && this.roster.roomMembership(event.roomId) === "admitted") {
             await this.onRoomEvent?.(event.roomId, event);
           }
           break;
+        default:
+          assertNever(event);
       }
     }
   }
 
   private async handleRoomAdded(roomId: string | null, payload: MetadataMap): Promise<void> {
-    await trackRoomJoin({
-      link: this.link,
-      roomId,
-      payload,
-      trackedRooms: this.rooms,
-      roomFilter: this.roomFilter,
-      onJoined: this.onRoomJoined ?? undefined,
-    });
+    if (!roomId) {
+      return;
+    }
+    if (this.roomFilter && !this.roomFilter(payload)) {
+      return;
+    }
+    await this.admitRoom(roomId, payload);
   }
 
   private async handleRoomRemoved(roomId: string | null): Promise<void> {
-    await trackRoomLeave({
-      link: this.link,
-      roomId,
-      trackedRooms: this.rooms,
-      onLeft: this.onRoomLeft ?? undefined,
-    });
+    if (!roomId) {
+      return;
+    }
+
+    await this.unsubscribeRoom(roomId);
+    if (!this.roster.recordRoomRemoved(roomId)) {
+      this.logger.debug("RoomPresence ignoring removal for untracked room", { roomId });
+      return;
+    }
+    await this.onRoomLeft?.(roomId);
+  }
+
+  private async unsubscribeRoom(roomId: string): Promise<void> {
+    try {
+      await this.link.unsubscribeRoom(roomId);
+    } catch (error) {
+      this.logger.warn("RoomPresence failed to unsubscribe room", { roomId, error });
+    }
   }
 
   private async subscribeExistingRooms(): Promise<void> {
-    await hydrateTrackedRooms({
+    await hydrateExistingRooms({
       link: this.link,
-      trackedRooms: this.rooms,
-      requestOptions: DEFAULT_REQUEST_OPTIONS,
       roomFilter: this.roomFilter,
-      onJoined: this.onRoomJoined ?? undefined,
-      onError: async (error) => {
-        this.logger.warn("RoomPresence failed to subscribe existing rooms", {
-          error,
-        });
+      requestOptions: DEFAULT_REQUEST_OPTIONS,
+      onRoom: async (roomId, payload) => {
+        await this.admitRoom(roomId, payload);
+      },
+      onError: (error) => {
+        this.logger.warn("RoomPresence failed to subscribe existing rooms", { error });
       },
     });
   }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled platform event: ${JSON.stringify(value)}`);
 }
