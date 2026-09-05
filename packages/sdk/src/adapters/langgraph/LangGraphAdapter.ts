@@ -173,9 +173,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
 
     if (this.emitExecutionEvents && graph.streamEvents) {
       const text = await this.forwardStreamEvents(graph, input, graphConfig, tools);
-      // hasVisibleContent, not truthiness: sendMessage throws on invisible-only
-      // content and this call has no surrounding try/catch, so a weaker guard
-      // would let that throw kill the room.
+      // Invisible-only content throws in sendMessage; nothing here catches it.
       if (text && hasVisibleContent(text)) {
         await tools.sendMessage(text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
       }

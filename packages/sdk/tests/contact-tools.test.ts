@@ -226,8 +226,7 @@ describe("ContactCallbackTools", () => {
       });
       const tools = new ContactCallbackTools({ createChat: vi.fn(), createChatMessage } as never, "room-1");
 
-      // Zero-width space: a real-world blank the platform still rejects, chosen
-      // to document the scenario even though the fake refuses unconditionally.
+      // Zero-width space: a real-world blank the platform rejects; the fake refuses unconditionally regardless.
       const zeroWidthSpace = "\u200B";
       const error = await tools.sendMessage(zeroWidthSpace).catch((caught) => caught);
       expect(error).toBeInstanceOf(ValidationError);

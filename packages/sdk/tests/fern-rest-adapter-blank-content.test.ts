@@ -4,12 +4,10 @@ import { FernRestAdapter } from "../src/client/rest/FernRestAdapter";
 import { BLANK_CONTENT_ERROR, BLANK_CONTENT_STATUS, EVENT_EMPTY_CONTENT_PLACEHOLDER } from "../src/contracts/content";
 import type { Logger } from "../src/core/logger";
 
-// Root-cause regression guard: a blank chat_result event used to reach the
-// platform and 422, which escaped ACPClientAdapter's prompt-only try/catch
-// and permanently killed the agent's runtime. Every send path (AgentTools,
-// the ACP/A2A relays, every other direct caller) funnels through
-// FernRestAdapter.createChatMessage/createChatEvent, so guarding here covers
-// all of them at once.
+// A blank event reaching the platform 422s past ACPClientAdapter's prompt-only
+// try/catch, killing the runtime. Every send path (AgentTools, the ACP/A2A relays,
+// every other direct caller) funnels through createChatMessage/createChatEvent here,
+// so guarding at this one point covers all of them.
 function recordingLogger(): { logger: Logger; warnings: Array<{ message: string; context?: Record<string, unknown> }> } {
   const warnings: Array<{ message: string; context?: Record<string, unknown> }> = [];
   return {

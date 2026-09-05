@@ -186,9 +186,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     }
 
     const text = response.text?.trim();
-    // hasVisibleContent, not truthiness: sendMessage throws on invisible-only
-    // content and this call has no surrounding try/catch, so a weaker guard
-    // would let that throw kill the room.
+    // Invisible-only content throws in sendMessage; nothing here catches it.
     if (text && hasVisibleContent(text)) {
       await tools.sendMessage(text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
     } else if ((response.toolCalls?.length ?? 0) === 0) {

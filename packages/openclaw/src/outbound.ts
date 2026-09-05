@@ -64,9 +64,7 @@ export async function sendText(deps: OutboundDeps, params: SendParams): Promise<
   }
 
   const result = await deps.rest.createChatMessage(roomId, { content: params.text, mentions });
-  // A resolved ok:false (refused blank content or otherwise) reporting a
-  // fabricated message id here would tell the caller a message it never sent
-  // went out.
+  // Catch ok:false here, or it falls through to the id-null check below as a fabricated success.
   assertMessageSent(result, `Cannot send to room ${roomId}`);
   if (result?.id == null) {
     // A posted message with no id is an API-contract anomaly; surface it rather

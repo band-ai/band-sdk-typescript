@@ -235,8 +235,7 @@ describe("AgentTools", () => {
       roster: makeRoster([{ id: "u1", handle: "@jane", name: "Jane", type: "User" }]),
     });
 
-    // Zero-width space: a real-world blank the platform still rejects, chosen
-    // to document the scenario even though the fake refuses unconditionally.
+    // Zero-width space: a real-world blank the platform rejects; the fake refuses unconditionally regardless.
     const zeroWidthSpace = "\u200B";
     const error = await tools.sendMessage(zeroWidthSpace, ["@jane"]).catch((caught) => caught);
     expect(error).toBeInstanceOf(ValidationError);

@@ -385,10 +385,8 @@ export class LettaAdapter extends SimpleAdapter<
         signal,
       );
 
-      // hasVisibleContent, not falsy: sendMessage throws on invisible-only
-      // content, and while this call is wrapped in a try/catch, that catch
-      // re-throws after logging, so the room still dies -- better to never
-      // call it at all for a reply with nothing visible in it.
+      // Invisible-only content throws in sendMessage; the catch below re-throws
+      // after logging, so it still kills the room.
       if (!assistantText || !hasVisibleContent(assistantText)) {
         await tools.sendEvent(
           "Letta did not return a response.",

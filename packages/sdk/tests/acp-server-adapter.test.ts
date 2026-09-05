@@ -217,12 +217,9 @@ describe("BandACPServerAdapter", () => {
     await expect(promptPromise).resolves.toBeUndefined()
   })
 
-  // A rehydrated session whose bootstrap event carried no `acp_cwd` gets no
-  // session-context preamble, so a whitespace-only prompt reaches the send
-  // path blank; the transport refuses it and no reply can ever arrive. The
-  // adapter has to say that, not sit out `responseTimeoutMs` and blame a slow
-  // peer. The real FernRestAdapter produces the refusal so the test can't pass
-  // against a hand-copied result shape.
+  // A rehydrated session with no `acp_cwd` sends a whitespace-only prompt; the
+  // transport refuses it, so no reply is ever coming. Uses the real FernRestAdapter
+  // (not a hand-copied result shape) since it's the one that produces the refusal.
   it("fails a blank prompt immediately instead of waiting out the response timeout", async () => {
     const createAgentChatMessage = vi.fn()
     const transport = new FernRestAdapter({ agentApiMessages: { createAgentChatMessage } })
@@ -257,9 +254,8 @@ describe("BandACPServerAdapter", () => {
     expect(createAgentChatMessage).not.toHaveBeenCalled()
   })
 
-  // A resolved ok:false isn't only a blank-content refusal -- the platform can
-  // reject a send for other reasons too, and that must surface just as
-  // immediately instead of silently degrading into a response timeout.
+  // Any resolved ok:false must surface immediately, not just blank-content refusals,
+  // or it silently degrades into a response timeout.
   it("fails a genuinely rejected prompt immediately, not just a blank one", async () => {
     const adapter = new BandACPServerAdapter({
       bandRest: new FakeRestApi({

@@ -992,9 +992,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     const mention = this.currentMention(input.message);
 
     if (input.turnStatus === "completed") {
-      // hasVisibleContent, not .trim() truthiness: sendMessage throws on
-      // invisible-only content and this fallback path has no surrounding
-      // try/catch, so a weaker guard would let that throw kill the room.
+      // Invisible-only content throws in sendMessage; nothing here catches it.
       if (input.fallbackSendAgentText && hasVisibleContent(input.finalText) && !input.sawSendMessageTool) {
         await input.tools.sendMessage(input.finalText.trim(), mention);
       }

@@ -330,9 +330,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
       }
     }
 
-    // hasVisibleContent, not .trim() truthiness: sendMessage throws on
-    // invisible-only content and this call has no surrounding try/catch, so
-    // a weaker guard would let that throw kill the room.
+    // Invisible-only content throws in sendMessage; nothing here catches it.
     if (hasVisibleContent(finalText)) {
       await tools.sendMessage(finalText.trim(), [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
     }

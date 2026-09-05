@@ -286,9 +286,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
       role: "user",
       content: this.formatIncomingMessage(message),
     });
-    // hasVisibleContent, not .length > 0: sendMessage throws on invisible-only
-    // content and this call has no surrounding try/catch, so a weaker guard
-    // would let that throw kill the room.
+    // Invisible-only content throws in sendMessage; nothing here catches it.
     if (hasVisibleContent(finalResponseText)) {
       nextHistory.push({
         role: "model",

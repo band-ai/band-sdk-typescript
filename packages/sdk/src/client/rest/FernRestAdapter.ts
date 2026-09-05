@@ -192,9 +192,8 @@ function normalizeToolOperationResult(response: unknown): ToolOperationResult {
   return asMetadataMap(extractEnvelopeData(response)) ?? {};
 }
 
-// `normalizeToolOperationResult` never adds `ok: true` on a real send (it just
-// returns the envelope data), so this has to be self-describing rather than a
-// bare `{ ok: false }` a caller could mistake for some other failure.
+// normalizeToolOperationResult never sets ok:true, so this needs its own status/error
+// or a bare {ok: false} would be indistinguishable from any other failure.
 function blankContentRefusal(): ToolOperationResult {
   return {
     ok: false,

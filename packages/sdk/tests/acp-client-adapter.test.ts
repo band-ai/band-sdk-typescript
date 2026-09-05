@@ -209,11 +209,11 @@ describe("ACPClientAdapter", () => {
 
   // Recreates the original trigger sequence (AgentTools -> FernRestAdapter): a
   // status-only `tool_call_update` collects as a blank `tool_result` chunk,
-  // which now gets a placeholder substituted instead of refused. The fake
-  // below still 422s on truly blank content, so the test fails if that regresses.
+  // repaired with a placeholder rather than refused. The fake below still
+  // 422s on truly blank content, so the test fails if that regresses.
   it("substitutes a placeholder for a status-only tool_call_update that collects as a blank event, and keeps answering", async () => {
-    // Stands in for the platform's own `validate_has_visible_content`; should
-    // never actually see blank content once the substitution runs.
+    // Stands in for the platform's validate_has_visible_content; should never
+    // see blank content once the substitution runs.
     const createAgentChatEvent = vi.fn(async (_chatId: string, payload: { event: { content: string } }) => {
       if (!hasVisibleContent(payload.event.content)) {
         throw new Error("422 Unprocessable Entity: content can't be blank");
@@ -314,12 +314,9 @@ describe("ACPClientAdapter", () => {
     ]);
   });
 
-  // Same failure class as the blank-event regression above, but via the "text"
-  // branch: unlike sendEvent, AgentTools.sendMessage rejects on a blank-content
-  // refusal, and flushChunks runs outside the try/catch around
-  // connection.prompt. Without the flushChunks filter, a whitespace-only
-  // agent_message_chunk would reach sendMessage and reject onMessage itself,
-  // not just skip a room post.
+  // Same failure class as the blank-event test above, but via the "text" branch:
+  // sendMessage rejects blank content and flushChunks has no surrounding try/catch,
+  // so without the filter this would reject onMessage itself, not just skip a room post.
   it("keeps answering after a whitespace-only agent_message_chunk collects as blank text", async () => {
     const createAgentChatMessage = vi.fn(async (_chatId: string, payload: { message: { content: string } }) => {
       if (!hasVisibleContent(payload.message.content)) {

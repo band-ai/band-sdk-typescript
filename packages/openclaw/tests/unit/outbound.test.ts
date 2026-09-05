@@ -81,11 +81,8 @@ describe("sendText", () => {
     expect(createChatMessage).not.toHaveBeenCalled();
   });
 
-  // The transport refuses blank content before the network call and RESOLVES
-  // with a refusal rather than throwing, so a send that never happened would
-  // otherwise be reported to OpenClaw as a success carrying a fabricated id.
-  // The real FernRestAdapter produces the refusal, so this cannot pass against
-  // a hand-copied result shape.
+  // Uses the real FernRestAdapter, not a hand-copied result shape, since it's the
+  // one that resolves (rather than throws) a blank-content refusal.
   it("throws on a blank-content refusal instead of returning a fabricated messageId", async () => {
     const createAgentChatMessage = vi.fn();
     const transport = new FernRestAdapter({ agentApiMessages: { createAgentChatMessage } });
@@ -100,9 +97,8 @@ describe("sendText", () => {
     expect(createAgentChatMessage).not.toHaveBeenCalled();
   });
 
-  // A resolved ok:false isn't only a blank-content refusal -- any other
-  // platform-side rejection must surface too, instead of falling through to
-  // the id-presence check below and returning a fabricated messageId.
+  // Any resolved ok:false must surface, not just blank-content refusals, or it
+  // falls through to the id-presence check below and reports a fabricated messageId.
   it("throws on a genuine rejection that isn't a blank-content refusal", async () => {
     const createChatMessage = vi.fn().mockResolvedValue({ ok: false, status: "moderation_rejected", error: "flagged content" });
     const deps = makeDeps({ createChatMessage });

@@ -241,8 +241,8 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
         mentions,
       })
 
-      // The prompt never reached the room, so no reply is coming: say why now
-      // instead of waiting out the response timeout and blaming a slow peer.
+      // The prompt never reached the room, so no reply is coming; fail now instead
+      // of waiting out the response timeout.
       assertMessageSent(sent, "ACP prompt was not sent")
 
       await Promise.race([

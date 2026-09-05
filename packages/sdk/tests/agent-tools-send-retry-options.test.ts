@@ -25,11 +25,9 @@ interface SendPath {
   send: (rest: FernRestAdapter) => Promise<unknown>;
 }
 
-// sendMessage is the agent's answer, so retry exhaustion is fatal and rejects.
-// sendEvent is room telemetry -- AgentTools.sendEvent/ContactCallbackTools.sendEvent
-// absorb any transport failure, including exhausted retries, and resolve
-// { ok: false, status: "failed" } instead, so a dropped event can never abort
-// the caller's turn the way a dropped message should.
+// sendMessage is the agent's answer, so exhausted retries reject. sendEvent is room
+// telemetry: AgentTools/ContactCallbackTools absorb any transport failure and resolve
+// { ok: false, status: "failed" } instead.
 const MESSAGE_SEND_PATHS: SendPath[] = [
   {
     name: "AgentTools.sendMessage",

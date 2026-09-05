@@ -162,12 +162,9 @@ class FakeModel implements ToolCallingModel {
 }
 
 /**
- * Minimal RestApi whose createChatMessage mirrors FernRestAdapter's blank-content
- * refusal, so AgentTools (the real class, not FakeTools) can be wired into the
- * adapter under test. createChatEvent is never exercised by this file's tests
- * (they only drive the final-response/message path) -- it just satisfies the
- * RestApi interface, so it returns an ordinary success rather than simulating
- * a refusal FernRestAdapter no longer produces for events.
+ * Minimal RestApi mirroring FernRestAdapter's blank-content refusal, so the real
+ * AgentTools (not FakeTools) can be wired into the adapter under test.
+ * createChatEvent isn't exercised by this file's tests, so it just returns success.
  */
 class BlankContentRestApi implements RestApi {
   public async getAgentMe() {
@@ -391,12 +388,9 @@ describe("ToolCallingAdapter", () => {
   });
 
   it("does not send an invisible-only final response", async () => {
-    // A zero-width space survives response.text?.trim() (it isn't whitespace
-    // by that check) but still has no visible content. sendMessage throws for
-    // exactly this shape of reply, and onMessage has no surrounding try/catch,
-    // so letting the call through would propagate the throw to
-    // Execution.ts/AgentRuntime.failRuntime and kill the entire agent
-    // runtime over one turn's invisible reply -- guard before calling instead.
+    // A zero-width space survives response.text?.trim() but has no visible content;
+    // sendMessage throws on it and onMessage has no try/catch, so an unguarded call
+    // here would kill the entire agent runtime.
     class BlankFinalResponseModel implements ToolCallingModel {
       public async complete(): Promise<{ text?: string }> {
         return { text: "\u200B" };

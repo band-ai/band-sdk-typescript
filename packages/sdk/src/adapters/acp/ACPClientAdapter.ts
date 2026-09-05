@@ -654,8 +654,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
     for (const chunk of client.getCollectedChunks(input.sessionId)) {
       if (chunk.chunkType === "text") {
-        // sendMessage throws on blank content, and flushChunks has no
-        // surrounding try/catch, so filter here or it kills the runtime.
+        // sendMessage throws on blank content and flushChunks has no try/catch, so filter here or it kills the runtime.
         if (!hasVisibleContent(chunk.content)) {
           continue
         }

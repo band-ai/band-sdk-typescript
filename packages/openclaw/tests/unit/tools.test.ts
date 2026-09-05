@@ -178,8 +178,7 @@ describe("band_get_participants / band_create_chatroom / band_send_event", () =>
     expect(createChatEvent).not.toHaveBeenCalled();
   });
 
-  // Uses the real FernRestAdapter (not a hand-copied result shape) since it's
-  // the one that substitutes the placeholder.
+  // Uses the real FernRestAdapter (not a hand-copied shape) since it's the one that substitutes the placeholder.
   it("send_event substitutes a placeholder for blank content instead of dropping the event", async () => {
     const createAgentChatEvent = vi.fn().mockResolvedValue({ data: { ok: true, id: "evt-1" } });
     const transport = new FernRestAdapter({ agentApiEvents: { createAgentChatEvent } });
