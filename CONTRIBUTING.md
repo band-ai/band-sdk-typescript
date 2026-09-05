@@ -76,6 +76,19 @@ This is a pnpm workspace with two published packages:
    pnpm --filter @band-ai/sdk run coverage
    ```
 
+   The suite is expected to be **green on Windows, macOS, and Linux alike**. A
+   few tests skip themselves when the environment genuinely cannot run them, and
+   they say so rather than failing:
+
+   - the SQLite store tests need `node:sqlite`, which is unflagged only from Node
+     22.13 (the pinned toolchain is well past that, so they normally run);
+   - the release-publisher tests in `scripts/release-hardening.test.mjs` drive a
+     `#!/bin/sh` npm stub and are skipped off POSIX.
+
+   Anything else red is a real failure — please do not merge past it. Some proofs
+   compile a consumer against `dist/`, so run a build first if you are iterating
+   on them directly.
+
 4. **Commit your changes**
 
    Write commit messages following

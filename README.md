@@ -366,7 +366,9 @@ Agent.create({ adapter, config })
 
 ```bash
 pnpm install
+pnpm build       # build dist/ — some tests compile a consumer against it
 pnpm test        # unit tests
 pnpm typecheck   # tsc --noEmit
-pnpm build       # build dist/
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for which tests need that build and why.

@@ -3,20 +3,20 @@
  * compile proofs, dispatch reuse, and legacy fallback behavior.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { writeFileSync, mkdtempSync, rmSync, existsSync, mkdirSync, cpSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { writeFileSync, mkdtempSync, rmSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { spawnSync } from "node:child_process";
-import type { Logger } from "../src/core";
 
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+
+import { COMPILE_PROOF_OPTS, compileConsumer, linkBuiltSdk, type CompileResult } from "./support/compileProof";
+import { SKIP_WITHOUT_NODE_SQLITE } from "./support/nodeSqlite";
 import {
   handleAgentSessionEvent,
   createSqliteSessionRoomStore,
 } from "../src/linear";
 import { LinearBandExampleRestApi } from "../examples/linear-band/linear-band-rest-stub";
-
-const SDK_ROOT = resolve(__dirname, "..");
+import type { Logger } from "../src/core";
 
 // Module namespace types for the example entry modules. A top-level `typeof
 // import()` alias is the canonical way to type a dynamically-imported module;
@@ -43,7 +43,7 @@ async function freshModules(): Promise<FreshModules> {
 
 // ── P-C3-1: Export rename compile proof ──────────────────────────────────────
 
-describe("P-C3-1: new Band type names compile and old names fail", () => {
+describe("P-C3-1: new Band type names compile and old names fail", COMPILE_PROOF_OPTS, () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -57,44 +57,25 @@ describe("P-C3-1: new Band type names compile and old names fail", () => {
   // Compile a consumer that resolves `@band-ai/sdk/linear` through the package's
   // real `exports` map under NodeNext — a temp node_modules link, no `paths`
   // alias to a declaration file. `.mts` exercises ESM resolution, `.cts` CJS.
-  function compileConsumer(filename: string, code: string): { status: number; output: string } {
-    const nmDir = join(tmpDir, "node_modules/@band-ai/sdk");
-    mkdirSync(nmDir, { recursive: true });
-    cpSync(join(SDK_ROOT, "dist"), join(nmDir, "dist"), { recursive: true });
-    cpSync(join(SDK_ROOT, "package.json"), join(nmDir, "package.json"));
-
-    writeFileSync(join(tmpDir, "tsconfig.json"), JSON.stringify({
-      compilerOptions: {
-        strict: true,
-        module: "nodenext",
-        moduleResolution: "nodenext",
-        target: "es2022",
-        noEmit: true,
-        skipLibCheck: true,
-        typeRoots: [join(SDK_ROOT, "node_modules/@types")],
-      },
-      include: [filename],
-    }));
-    writeFileSync(join(tmpDir, filename), code);
-    const result = spawnSync(
-      join(SDK_ROOT, "node_modules/.bin/tsc"),
-      ["-p", join(tmpDir, "tsconfig.json")],
-      { encoding: "utf8" },
-    );
-    return { status: result.status ?? 1, output: (result.stdout ?? "") + (result.stderr ?? "") };
+  //
+  // `linkBuiltSdk` runs per call rather than in a `beforeAll` because `tmpDir`
+  // is recreated for every test, so the link would not survive between them.
+  function compile(filename: string, code: string): CompileResult {
+    linkBuiltSdk(tmpDir);
+    return compileConsumer(tmpDir, filename, code);
   }
 
   it("ESM consumer: new Band types compile via NodeNext package exports", () => {
-    const result = compileConsumer("consumer.mts", `
+    const result = compile("consumer.mts", `
       import type { LinearBandBridgeConfig, LinearBandBridgeDeps } from "@band-ai/sdk/linear";
       const _cfg = {} as LinearBandBridgeConfig;
       const _deps = {} as LinearBandBridgeDeps;
     `);
-    expect(result.status).toBe(0);
+    expect(result.status, result.output).toBe(0);
   });
 
   it("ESM consumer: old types fail with missing-export diagnostic", () => {
-    const result = compileConsumer("old.mts", `
+    const result = compile("old.mts", `
       import type { LinearThenvoiBridgeConfig } from "@band-ai/sdk/linear";
       const _cfg = {} as LinearThenvoiBridgeConfig;
     `);
@@ -103,16 +84,16 @@ describe("P-C3-1: new Band type names compile and old names fail", () => {
   });
 
   it("CJS consumer: new Band types compile via NodeNext package exports", () => {
-    const result = compileConsumer("consumer.cts", `
+    const result = compile("consumer.cts", `
       import type { LinearBandBridgeConfig, LinearBandBridgeDeps } from "@band-ai/sdk/linear";
       const _cfg = {} as LinearBandBridgeConfig;
       const _deps = {} as LinearBandBridgeDeps;
     `);
-    expect(result.status).toBe(0);
+    expect(result.status, result.output).toBe(0);
   });
 
   it("CJS consumer: old types fail with missing-export diagnostic", () => {
-    const result = compileConsumer("old.cts", `
+    const result = compile("old.cts", `
       import type { LinearThenvoiBridgeConfig } from "@band-ai/sdk/linear";
       const _cfg = {} as LinearThenvoiBridgeConfig;
     `);
@@ -330,7 +311,7 @@ describe("P-C3-3B: readLinearEnv", () => {
 
 // ── P-C3-3: SQLite path resolution, reuse, and dispatch ──────────────────────
 
-describe("P-C3-3: SQLite dispatch through saved binding", () => {
+describe.skipIf(SKIP_WITHOUT_NODE_SQLITE)("P-C3-3: SQLite dispatch through saved binding", () => {
   let savedStateDb: string | undefined;
   let savedBandStateDb: string | undefined;
   let warnSpy: ReturnType<typeof vi.spyOn>;

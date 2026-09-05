@@ -41,7 +41,7 @@ Protection is enforced with GitHub Rulesets, not classic branch protection.
 
 | Branch | Merge Method | Required Reviews | Stale Dismissed | Thread Resolution | Strict Checks | Merge Queue |
 |--------|--------------|------------------|-----------------|-------------------|---------------|-------------|
-| `main` | Squash (ordinary features) / Merge or approved history-preserving exception | 1 | Yes | Yes | No | No |
+| `main` | Squash (ordinary features) / Merge or approved history-preserving exception | 1 | Yes | Yes | Yes | No |
 
 `main` blocks deletion and non-fast-forward (force) pushes.
 
@@ -50,13 +50,12 @@ release-intent check independently compares the full PR or push range against
 GitHub's authoritative base SHA, preventing an earlier commit in a multi-commit
 topology from hiding a version transition.
 
-**Intended required status check:** `ci-status` — and only that one.
+**Required status check:** `ci-status` — and only that one.
 
-The workflow provides this check, but repository rulesets are external state.
-During rollout, first observe `ci-status` on this PR, then an administrator must
-require that exact context in the live `main` ruleset and verify the setting.
-Until that step is complete, this document must not be treated as proof that CI
-is enforced by GitHub.
+Rulesets are external GitHub state that no file in this repository can assert, so
+this section describes the intended configuration rather than proving what is
+live. Check the real thing with
+`gh api repos/band-ai/band-sdk-typescript/rulesets`.
 
 `ci-status` is an aggregate job that always runs and fails unless every other CI
 job passed or was legitimately skipped. Requiring it instead of the individual
@@ -72,14 +71,24 @@ jobs matters for two reasons:
    `scripts/release-hardening.test.mjs` asserts `ci-status` depends on every
    other job in `ci.yml`, so a new job cannot silently escape the gate.
 
-Checks are deliberately **non-strict** (a PR branch need not be up to date with
-`main` before merging), and there is **no merge queue**. Given this repo's PR
-volume, the update-branch churn and per-merge queue latency cost more than they
-buy. If concurrent-merge breakage ever becomes real, the escalation path is to
-turn on strict checks and the merge queue — at which point `ci.yml` and
-`pr-title.yml` both need a `merge_group:` trigger, and `pr-title.yml` needs its
-validation step guarded with `if: github.event_name == 'pull_request'` (a merge
-group carries no PR title), or the queue will deadlock.
+### Strict checks
+
+Checks are **strict**: a PR branch must be up to date with `main` before it
+merges. This guards against semantic conflicts — two PRs that each pass alone and
+break once combined, with no textual conflict for git to catch. The `C3`–`C7`
+guards assert over global state (export-surface snapshots, whole-tree text scans,
+byte-identical doc regeneration), so that failure mode is realistic here rather
+than theoretical.
+
+There is **no merge queue**, so on a busy day a branch can go stale between
+updating and merging and the update is simply retried. If that becomes a real
+cost, adding the queue means giving `ci.yml` and `pr-title.yml` both a
+`merge_group:` trigger and guarding `pr-title.yml`'s validation step with
+`if: github.event_name == 'pull_request'` — a merge group carries no PR title, so
+without that guard the queue deadlocks.
+
+Dependabot PRs go stale on every merge to `main`. Dependabot rebases its own
+branches, so this is visible noise rather than work.
 
 ## PR Workflows
 
@@ -88,6 +97,26 @@ group carries no PR title), or the queue will deadlock.
 Runs on every PR to `main` and, as a compatibility measure, every PR to `dev`.
 Passing CI on `dev` does not make that branch releasable; viable work should be
 retargeted to `main`.
+
+It also runs on every **push to `main`**, so the trunk is re-validated after a
+merge. Without that trigger the suite only ever saw a PR's merge commit: a red
+build that landed anyway stopped being reported the moment it merged, and "CI is
+green on `main`" said nothing about `main`'s actual tree. Three details make the
+trunk run meaningful rather than decorative:
+
+- **Path filtering is skipped.** `dorny/paths-filter` runs only on pull
+  requests; on a push both package outputs are forced `true`. Trunk validation
+  exercises the whole tree, not the slice one merge happened to touch —
+  otherwise `ci-status` could go green having skipped `lint` and `test`.
+- **Runs are not cancelled.** `cancel-in-progress` is on for pull requests only.
+  Superseding a PR run is free; superseding a trunk run would leave that commit
+  of `main` with no verdict at all.
+- **Release intent is PR-only.** `assert-release-intent.mjs` is a merge gate and
+  needs `github.event.pull_request.base.sha` as its baseline. A push has no such
+  baseline, and the merge it would gate has already happened.
+
+`scripts/release-hardening.test.mjs` asserts each of these, so the trunk trigger
+cannot be quietly removed or hollowed out.
 
 The workflow-level `GITHUB_TOKEN` is least-privilege: `contents: read` supports
 checkout and `pull-requests: read` supports changed-file detection. CI receives
