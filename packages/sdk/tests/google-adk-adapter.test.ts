@@ -140,6 +140,30 @@ describe("GoogleADKAdapter", () => {
     expect(seenPrompts[0]).toContain("Contacts changed");
   });
 
+  it("does not send an invisible-only final response", async () => {
+    const tools = new GoogleAdkTestTools();
+
+    const adapter = new GoogleADKAdapter({
+      sdkFactory: createFakeGoogleAdkSdk(async function* () {
+        yield { final: true, text: "​" };
+      }),
+    });
+
+    await adapter.onStarted("Weather Agent", "Answers weather questions");
+    await expect(
+      adapter.onMessage(
+        makeMessage("say nothing visible"),
+        tools,
+        [],
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-invisible-reply" },
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(tools.messages).toHaveLength(0);
+  });
+
   it("bridges custom tools through ADK function tools", async () => {
     const tools = new GoogleAdkTestTools();
 

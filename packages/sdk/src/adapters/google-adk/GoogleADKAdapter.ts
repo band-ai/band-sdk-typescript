@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import { SimpleAdapter } from "../../core/simpleAdapter";
+import { hasVisibleContent } from "../../contracts/content";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { formatMessageForLlm } from "../../runtime/formatters";
 import { renderSystemPrompt } from "../../runtime/prompts";
@@ -285,7 +286,10 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
       role: "user",
       content: this.formatIncomingMessage(message),
     });
-    if (finalResponseText.length > 0) {
+    // hasVisibleContent, not .length > 0: sendMessage throws on invisible-only
+    // content and this call has no surrounding try/catch, so a weaker guard
+    // would let that throw kill the room.
+    if (hasVisibleContent(finalResponseText)) {
       nextHistory.push({
         role: "model",
         content: finalResponseText,

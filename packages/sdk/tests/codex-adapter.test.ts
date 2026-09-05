@@ -513,6 +513,54 @@ describe("CodexAdapter", () => {
     expect(tools.events.some((event) => event.messageType === "thought" && event.content === "(reasoning)")).toBe(false);
   });
 
+  it("does not fall back to sendMessage for an invisible-only final reply", async () => {
+    const tools = new ToolSchemaFakeTools();
+    const fakeClient = new FakeCodexClient({
+      events: [
+        {
+          kind: "notification",
+          method: "item/completed",
+          params: {
+            item: {
+              type: "agentMessage",
+              id: "msg-invisible",
+              text: "​",
+            },
+          },
+        },
+        {
+          kind: "notification",
+          method: "turn/completed",
+          params: {
+            turn: {
+              id: "turn-1",
+              status: "completed",
+              error: null,
+            },
+          },
+        },
+      ],
+    });
+
+    const adapter = new CodexAdapter({
+      factory: async () => fakeClient,
+    });
+
+    await adapter.onStarted("Codex Agent", "Codex parity adapter");
+    await expect(
+      adapter.onMessage(
+        makeMessage("say nothing visible"),
+        tools,
+        new HistoryProvider([]),
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-invisible-reply" },
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(tools.messages).toHaveLength(0);
+  });
+
   it("renders default Band prompt and appends customSection when no full override is set", async () => {
     const tools = new ToolSchemaFakeTools();
     const fakeClient = new FakeCodexClient({

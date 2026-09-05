@@ -108,6 +108,35 @@ describe("ClaudeSDKAdapter", () => {
     expect(calls[1]?.options?.resume).toBe("session-1");
   });
 
+  it("does not send an invisible-only final reply", async () => {
+    const queryFn: ClaudeSDKQuery = () =>
+      streamFrom([
+        {
+          type: "result",
+          subtype: "success",
+          result: "​",
+          session_id: "session-1",
+        } as never,
+      ]) as never;
+
+    const adapter = new ClaudeSDKAdapter({ queryFn });
+    await adapter.onStarted("Parity Agent", "Parity test agent");
+
+    const tools = new FakeTools();
+    await expect(
+      adapter.onMessage(
+        makeMessage("say nothing visible"),
+        tools,
+        new HistoryProvider([]),
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-invisible-reply" },
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(tools.messages).toHaveLength(0);
+  });
+
   it("reports tool summary events when execution reporting is enabled", async () => {
     const queryFn: ClaudeSDKQuery = () =>
       streamFrom([
