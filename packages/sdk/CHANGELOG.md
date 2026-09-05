@@ -1,6 +1,13 @@
 # Changelog
 
 
+## [0.2.2](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.2.1...sdk-v0.2.2) (2026-09-05)
+
+
+### Bug Fixes
+
+* **sdk:** stabilize ACP relay, prompting, and room context ([#171](https://github.com/band-ai/band-sdk-typescript/issues/171)) ([d3cb29a](https://github.com/band-ai/band-sdk-typescript/commit/d3cb29a83938ebeb8f51cf885e3f4986adb5ab1c))
+
 ## [0.2.1](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.2.0...sdk-v0.2.1) (2026-09-03)
 
 
