@@ -1,11 +1,12 @@
 import type { BandLink } from "../../platform/BandLink";
 import type { ContactEvent, PlatformEvent } from "../../platform/events";
+import { TransportError } from "../../core/errors";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import type { MetadataMap, ParticipantRecord } from "../../contracts/dtos";
 import { Execution } from "../Execution";
 import { ExecutionContext, type ExecutionContextOptions } from "../ExecutionContext";
-import { hydrateTrackedRooms, trackRoomJoin, trackRoomLeave } from "./subscriptions";
+import { RoomPresence } from "./RoomPresence";
 import type { AgentConfig, SessionConfig } from "../types";
 import type { PlatformMessage } from "../types";
 
@@ -28,29 +29,25 @@ interface AgentRuntimeOptions {
 }
 
 export class AgentRuntime {
+  public readonly presence: RoomPresence;
   private readonly link: BandLink;
   private readonly agentId: string;
-  private readonly onExecute: (context: ExecutionContext, event: PlatformEvent) => Promise<void>;
-  private readonly onSessionCleanup: (roomId: string) => Promise<void>;
-  private readonly onRoomJoined?: (roomId: string, payload: MetadataMap) => Promise<void> | void;
-  private readonly onRoomLeft?: (roomId: string) => Promise<void> | void;
-  private readonly onContactEvent?: (event: ContactEvent) => Promise<void>;
-  private readonly onParticipantAdded?: (roomId: string, participant: ParticipantRecord) => Promise<void> | void;
-  private readonly onParticipantRemoved?: (roomId: string, participantId: string) => Promise<void> | void;
-  private readonly onError?: (error: unknown, event: PlatformEvent) => void;
-  private readonly roomFilter?: (room: MetadataMap) => boolean;
-  private readonly contextFactory?: (roomId: string, defaults: ExecutionContextOptions) => ExecutionContext;
+  private readonly onExecute: AgentRuntimeOptions["onExecute"];
+  private readonly onSessionCleanup: NonNullable<AgentRuntimeOptions["onSessionCleanup"]>;
+  private readonly onRoomJoined?: AgentRuntimeOptions["onRoomJoined"];
+  private readonly onRoomLeft?: AgentRuntimeOptions["onRoomLeft"];
+  private readonly onContactEvent?: AgentRuntimeOptions["onContactEvent"];
+  private readonly onParticipantAdded?: AgentRuntimeOptions["onParticipantAdded"];
+  private readonly onParticipantRemoved?: AgentRuntimeOptions["onParticipantRemoved"];
+  private readonly onError?: AgentRuntimeOptions["onError"];
+  private readonly contextFactory?: AgentRuntimeOptions["contextFactory"];
   private readonly sessionConfig: Required<SessionConfig>;
-  private readonly autoSubscribeExistingRooms: boolean;
-  private readonly subscribedRooms = new Set<string>();
   private readonly contexts = new Map<string, ExecutionContext>();
   private readonly executions = new Map<string, Execution>();
   private readonly executionWatchers = new Map<string, Promise<void>>();
   private readonly logger: Logger;
   private running = false;
   private stopping = false;
-  private stopController = new AbortController();
-  private consumeTask: Promise<void> | null = null;
   private fatalError: unknown = null;
 
   public constructor(options: AgentRuntimeOptions) {
@@ -65,7 +62,6 @@ export class AgentRuntime {
     this.onContactEvent = options.onContactEvent;
     this.onParticipantAdded = options.onParticipantAdded;
     this.onParticipantRemoved = options.onParticipantRemoved;
-    this.roomFilter = options.roomFilter;
     this.contextFactory = options.contextFactory;
     this.sessionConfig = {
       enableContextCache: options.sessionConfig?.enableContextCache ?? true,
@@ -74,7 +70,47 @@ export class AgentRuntime {
       maxMessageRetries: options.sessionConfig?.maxMessageRetries ?? 1,
       enableContextHydration: options.sessionConfig?.enableContextHydration ?? true,
     };
-    this.autoSubscribeExistingRooms = options.agentConfig?.autoSubscribeExistingRooms ?? false;
+
+    this.presence = new RoomPresence({
+      link: this.link,
+      roomFilter: options.roomFilter,
+      autoSubscribeExistingRooms: options.agentConfig?.autoSubscribeExistingRooms ?? false,
+      logger: this.logger,
+    });
+    this.presence.onRoomJoined = async (roomId, payload) => {
+      this.getOrCreateExecution(roomId);
+      await this.onRoomJoined?.(roomId, payload);
+    };
+    this.presence.onRoomLeft = async (roomId) => {
+      await this.teardownExecution(roomId);
+      await this.onRoomLeft?.(roomId);
+    };
+    this.presence.onRoomEvent = async (roomId, event) => {
+      switch (event.type) {
+        case "participant_added": {
+          const context = this.getOrCreateContext(roomId);
+          const participant = {
+            id: event.payload.id,
+            name: event.payload.name,
+            type: event.payload.type,
+            handle: event.payload.handle,
+          };
+          context.addParticipant(participant);
+          await this.onParticipantAdded?.(roomId, participant);
+          return;
+        }
+        case "participant_removed": {
+          const context = this.getOrCreateContext(roomId);
+          context.removeParticipant(event.payload.id);
+          await this.onParticipantRemoved?.(roomId, event.payload.id);
+          return;
+        }
+        case "message_created":
+          await this.getOrCreateExecution(roomId).enqueue(event);
+          return;
+      }
+    };
+    this.presence.onContactEvent = this.onContactEvent ?? null;
   }
 
   public async start(): Promise<void> {
@@ -85,52 +121,22 @@ export class AgentRuntime {
     this.running = true;
     this.stopping = false;
     this.fatalError = null;
-    if (!this.stopController.signal.aborted) {
-      this.stopController.abort();
-    }
-    this.stopController = new AbortController();
 
     try {
-      await this.link.connect();
+      await this.presence.start();
     } catch (error) {
       await this.handleStartFailure();
       throw error;
     }
 
-    try {
-      await this.link.subscribeAgentRooms();
-    } catch {
-      this.logger.warn("AgentRuntime failed to subscribe agent_rooms channel, continuing without it");
-    }
-
-    try {
-      await this.subscribeExistingRooms();
-    } catch (error) {
-      await this.handleStartFailure();
-      throw error;
-    }
-
-    this.consumeTask = this.consumeLoop(this.stopController.signal);
-
-    if (!this.link.capabilities.contacts) {
-      return;
-    }
-
-    try {
-      await this.link.subscribeAgentContacts();
-    } catch {
-      this.logger.warn("AgentRuntime failed to subscribe agent_contacts channel, continuing without it");
-    }
+    void this.presence
+      .waitUntilStopped()
+      .catch((error: unknown) => this.failRuntime(error, syntheticRuntimeFailureEvent(this.agentId)));
   }
 
   private async handleStartFailure(): Promise<void> {
     this.running = false;
     this.stopping = false;
-    this.stopController.abort();
-    if (this.consumeTask) {
-      await this.consumeTask;
-      this.consumeTask = null;
-    }
     await this.link.disconnect();
   }
 
@@ -141,40 +147,37 @@ export class AgentRuntime {
 
     this.stopping = true;
     this.running = false;
-    this.stopController.abort();
-    if (this.consumeTask) {
-      await this.consumeTask;
-      this.consumeTask = null;
-    }
 
-    const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
+    this.presence.abortEventLoop();
+    await this.presence.waitUntilStopped().catch(() => undefined);
+
     let graceful = true;
 
-    for (const execution of this.executions.values()) {
-      const remaining = deadline === undefined ? undefined : Math.max(0, deadline - Date.now());
-      const stopped = await execution.stop(remaining);
-      if (!stopped) {
-        graceful = false;
-      }
-    }
+    // All stopped (and deleted) before `presence.stop()` runs below, so its
+    // onRoomLeft callback finds nothing left to stop and never re-blocks an
+    // already-timed-out execution on a second, unbounded `waitForIdle`. Each
+    // execution owns fully independent state, so stopping them concurrently
+    // (sharing one `timeoutMs` budget rather than a shrinking per-iteration
+    // remainder) is both safe and fair regardless of iteration order.
+    await Promise.all(
+      [...this.executions].map(async ([roomId, execution]) => {
+        const stopped = await execution.stop(timeoutMs);
+        if (!stopped) {
+          graceful = false;
+        }
+        this.executions.delete(roomId);
+      }),
+    );
 
-    for (const roomId of [...this.subscribedRooms]) {
-      const remaining = deadline === undefined ? undefined : Math.max(0, deadline - Date.now());
-      await this.leaveTrackedRoom(roomId, remaining);
-    }
+    await this.presence.stop();
 
     for (const roomId of [...this.contexts.keys()]) {
       await this.onSessionCleanup(roomId);
     }
 
-    this.subscribedRooms.clear();
     this.contexts.clear();
     this.executions.clear();
     this.executionWatchers.clear();
-
-    if (this.link.capabilities.contacts) {
-      await this.link.unsubscribeAgentContacts();
-    }
 
     await this.link.disconnect();
     if (this.fatalError) {
@@ -188,11 +191,7 @@ export class AgentRuntime {
   }
 
   public async waitUntilStopped(): Promise<void> {
-    if (this.consumeTask) {
-      await this.consumeTask;
-    } else {
-      await this.link.runForever(this.stopController.signal);
-    }
+    await this.presence.waitUntilStopped().catch(() => undefined);
 
     if (this.fatalError) {
       throw this.fatalError instanceof Error ? this.fatalError : new Error(String(this.fatalError));
@@ -203,105 +202,24 @@ export class AgentRuntime {
     return [...this.contexts.values()];
   }
 
-  private async consumeLoop(signal: AbortSignal): Promise<void> {
-    while (!signal.aborted) {
-      let event: PlatformEvent | null;
-      try {
-        event = await this.link.nextEvent(signal);
-      } catch (error: unknown) {
-        await this.failRuntime(error, syntheticRuntimeFailureEvent(this.agentId));
-        return;
-      }
-
-      if (!event) {
-        return;
-      }
-      try {
-        await this.handleEvent(event);
-      } catch (error: unknown) {
-        await this.failRuntime(error, event);
-        return;
-      }
-    }
-  }
-
-  private async handleEvent(event: PlatformEvent): Promise<void> {
-    switch (event.type) {
-      case "room_added":
-        await trackRoomJoin({
-          link: this.link,
-          roomId: event.roomId,
-          payload: event.payload as MetadataMap,
-          trackedRooms: this.subscribedRooms,
-          roomFilter: this.roomFilter,
-          onJoined: async (roomId) => {
-            this.getOrCreateExecution(roomId);
-            await this.onRoomJoined?.(roomId, event.payload as MetadataMap);
-          },
-        });
-        return;
-      case "room_removed":
-      case "room_deleted":
-        if (event.roomId) {
-          await this.onRoomLeft?.(event.roomId);
-          await this.leaveTrackedRoom(event.roomId);
-        }
-        return;
-      case "participant_added":
-        if (event.roomId) {
-          const context = this.getOrCreateContext(event.roomId);
-          const participant = {
-            id: event.payload.id,
-            name: event.payload.name,
-            type: event.payload.type,
-            handle: event.payload.handle,
-          };
-          context.addParticipant(participant);
-          await this.onParticipantAdded?.(event.roomId, participant);
-        }
-        return;
-      case "participant_removed":
-        if (event.roomId) {
-          const context = this.getOrCreateContext(event.roomId);
-          context.removeParticipant(event.payload.id);
-          await this.onParticipantRemoved?.(event.roomId, event.payload.id);
-        }
-        return;
-      case "contact_request_received":
-      case "contact_request_updated":
-      case "contact_added":
-      case "contact_removed":
-        await this.onContactEvent?.(event);
-        return;
-      case "message_created":
-        if (!event.roomId) {
-          return;
-        }
-
-        await this.getOrCreateExecution(event.roomId).enqueue(event);
-        return;
-    }
-
-    return assertNever(event);
-  }
-
   public async enqueueEvent(roomId: string, event: PlatformEvent): Promise<void> {
     await this.getOrCreateExecution(roomId).enqueue(event);
   }
 
   public async bootstrapRoomMessage(roomId: string, message: PlatformMessage): Promise<void> {
-    await this.link.subscribeRoom(roomId);
-    this.subscribedRooms.add(roomId);
+    if (!(await this.presence.admitRoom(roomId, {}, false))) {
+      throw new TransportError(`Failed to subscribe to room ${roomId}`);
+    }
     await this.getOrCreateExecution(roomId).bootstrapMessage(message);
   }
 
   public async resetRoomSession(roomId: string, timeoutMs?: number): Promise<boolean> {
-    const execution = this.executions.get(roomId);
-    let graceful = true;
-    if (execution) {
-      graceful = await execution.stop(timeoutMs);
-    }
+    return this.teardownExecution(roomId, timeoutMs);
+  }
 
+  private async teardownExecution(roomId: string, timeoutMs?: number): Promise<boolean> {
+    const execution = this.executions.get(roomId);
+    const graceful = execution ? await execution.stop(timeoutMs) : true;
     this.executions.delete(roomId);
     this.contexts.delete(roomId);
     await this.onSessionCleanup(roomId);
@@ -373,41 +291,6 @@ export class AgentRuntime {
     return context;
   }
 
-  private async subscribeExistingRooms(): Promise<void> {
-    if (!this.autoSubscribeExistingRooms) {
-      return;
-    }
-
-    await hydrateTrackedRooms({
-      link: this.link,
-      trackedRooms: this.subscribedRooms,
-      roomFilter: this.roomFilter,
-      onJoined: async (roomId, payload) => {
-        this.getOrCreateExecution(roomId);
-        await this.onRoomJoined?.(roomId, payload);
-      },
-      onError: async (error) => {
-        this.logger.warn("AgentRuntime failed to subscribe existing rooms", {
-          error,
-        });
-      },
-    });
-  }
-
-  private async leaveTrackedRoom(roomId: string, timeoutMs?: number): Promise<void> {
-    await trackRoomLeave({
-      link: this.link,
-      roomId,
-      trackedRooms: this.subscribedRooms,
-      onLeft: async (leftRoomId) => {
-        await this.executions.get(leftRoomId)?.stop(timeoutMs);
-        this.contexts.delete(leftRoomId);
-        this.executions.delete(leftRoomId);
-        await this.onSessionCleanup(leftRoomId);
-      },
-    });
-  }
-
   private async failRuntime(error: unknown, event: PlatformEvent): Promise<void> {
     if (!this.fatalError) {
       this.fatalError = error;
@@ -420,9 +303,7 @@ export class AgentRuntime {
       this.notifyOnError(error, event);
     }
 
-    if (!this.stopController.signal.aborted) {
-      this.stopController.abort();
-    }
+    this.presence.abortEventLoop();
   }
 
   private notifyOnError(error: unknown, event: PlatformEvent): void {
@@ -458,8 +339,4 @@ function syntheticRuntimeFailureEvent(agentId: string): PlatformEvent {
       updated_at: new Date(0).toISOString(),
     },
   };
-}
-
-function assertNever(value: never): never {
-  throw new Error(`Unhandled platform event: ${JSON.stringify(value)}`);
 }

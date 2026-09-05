@@ -14,6 +14,7 @@ import type {
   ParticipantRecord,
   PeerRecord,
 } from "../src/contracts/dtos";
+import type { StreamingTransport, TopicHandlers } from "../src/platform/streaming/transport";
 
 interface CapturedToolEvent {
   content: string;
@@ -126,6 +127,53 @@ export function makeRoster(participants: ParticipantRecord[]): ParticipantRoster
   const roster = new ParticipantRoster();
   roster.setAll(participants);
   return roster;
+}
+
+/** Fake `StreamingTransport` driven by `emit(...)`, standing in for the network only. */
+export class FakeTransport implements StreamingTransport {
+  private readonly handlers = new Map<string, TopicHandlers>();
+  private connected = false;
+
+  public async connect(): Promise<void> {
+    this.connected = true;
+  }
+
+  public async disconnect(): Promise<void> {
+    this.connected = false;
+  }
+
+  public async join(topic: string, handlers: TopicHandlers): Promise<void> {
+    this.handlers.set(topic, handlers);
+  }
+
+  public async leave(topic: string): Promise<void> {
+    this.handlers.delete(topic);
+  }
+
+  public async runForever(signal?: AbortSignal): Promise<void> {
+    if (!signal) {
+      return;
+    }
+    await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+  }
+
+  public async emit(topic: string, event: string, payload: Record<string, unknown>): Promise<void> {
+    const topicHandlers = this.handlers.get(topic);
+    const handler = topicHandlers?.[event];
+    if (!handler) {
+      throw new Error(`No handler for ${topic}/${event}`);
+    }
+
+    await Promise.resolve(handler(payload));
+  }
+
+  public isConnected(): boolean {
+    return this.connected;
+  }
+
+  public hasTopic(topic: string): boolean {
+    return this.handlers.has(topic);
+  }
 }
 
 export function makeMessage(content: string, roomId = "room-1", metadata: Record<string, unknown> = {}): PlatformMessage {
