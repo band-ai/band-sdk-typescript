@@ -18,6 +18,9 @@ import { NoopLogger, type Logger } from "../../core/logger";
 import { ValidationError } from "../../core/errors";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { renderSystemPrompt } from "../../runtime/prompts";
+import { mentionSubjectsFromMetadata, replaceUuidMentions } from "../../runtime/formatters";
+import { systemUpdateParts } from "../shared/conversationPrompt";
+import { isBlankEventContent } from "../../contracts/chatEvents";
 import type { PlatformMessage } from "../../runtime/types";
 import type { McpToolRegistration } from "../../mcp/registrations";
 import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
@@ -159,8 +162,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     message: PlatformMessage,
     tools: AdapterToolsProtocol,
     history: ACPClientSessionState,
-    _participantsMessage: string | null,
-    _contactsMessage: string | null,
+    participantsMessage: string | null,
+    contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
     if (context.isSessionBootstrap) {
@@ -182,9 +185,20 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       (params) => this.handlePermissionRequest(tools, context.roomId, params),
     )
 
+    // The platform stores a typed mention as @[[participant_id]]; nothing else
+    // in ACP resolves that back to a handle, so the agent reads a bare id as
+    // an MCP protocol token instead of as being spoken to.
+    const content = replaceUuidMentions(message.content, mentionSubjectsFromMetadata(message.metadata))
+
+    // ExecutionContext.consumeParticipantsMessage is edge-triggered: it only
+    // returns a value on the turn the roster actually changed, then clears
+    // itself. Injecting it here, on every turn it's non-null, is the only
+    // chance ACP gets to see it at all.
+    const messageWithContext = [...systemUpdateParts(participantsMessage, contactsMessage), content].join("\n\n")
+
     const promptText = this.bootstrappedSessions.has(sessionId)
-      ? message.content
-      : `${this.buildSystemContext(context.roomId, message)}\n\n${message.content}`
+      ? messageWithContext
+      : `${this.buildSystemContext(context.roomId, message)}\n\n${messageWithContext}`
 
     this.bootstrappedSessions.add(sessionId)
 
@@ -652,13 +666,17 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     }
 
     for (const chunk of client.getCollectedChunks(input.sessionId)) {
+      // A status-only ACP update carries its meaning in metadata and has
+      // nothing to post.
+      if (isBlankEventContent(chunk.content)) {
+        continue
+      }
+
       if (chunk.chunkType === "text") {
-        if (chunk.content.length > 0) {
-          await input.tools.sendMessage(chunk.content, [{
-            id: input.senderId,
-            handle: input.senderHandle,
-          }])
-        }
+        await input.tools.sendMessage(chunk.content, [{
+          id: input.senderId,
+          handle: input.senderHandle,
+        }])
         continue
       }
 

@@ -204,6 +204,192 @@ describe("ACPClientAdapter", () => {
     expect(promptTexts[2]).not.toContain("[System Context]")
   })
 
+  it("completes the turn without posting a blank event, when a tool update carries no output", async () => {
+    let clientHandle: {
+      sessionUpdate: (params: Record<string, unknown>) => Promise<void>;
+      requestPermission: (params: Record<string, unknown>) => Promise<unknown>;
+    } | null = null
+
+    const initialize = vi.fn(async () => ({
+      protocolVersion: 1,
+      agentCapabilities: {
+        mcpCapabilities: { http: true },
+      },
+    }))
+    const newSession = vi.fn(async () => ({ sessionId: "session-blank-update" }))
+    const prompt = vi.fn(async (params: { sessionId: string }) => {
+      // A status-only update: no rawOutput and no content, the shape a tool
+      // that reports completion without a result produces.
+      await clientHandle?.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "call-1",
+          status: "completed",
+        },
+      })
+      await clientHandle?.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "done" },
+        },
+      })
+      return { stopReason: "end_turn" }
+    })
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      connectionFactory: async (client) => {
+        clientHandle = client as typeof clientHandle
+        const controller = new AbortController()
+        return {
+          connection: {
+            signal: controller.signal,
+            closed: new Promise<void>(() => undefined),
+            initialize,
+            authenticate: vi.fn(async () => ({})),
+            loadSession: vi.fn(),
+            unstable_resumeSession: vi.fn(),
+            newSession,
+            prompt,
+          } as never,
+          stop: async () => {
+            controller.abort()
+          },
+        }
+      },
+    })
+
+    await adapter.onStarted("Blank Update Agent", "ACP blank chunk test")
+
+    const tools = new FakeTools()
+    const sendEventSpy = vi.spyOn(tools, "sendEvent")
+
+    await adapter.onMessage(
+      makeMessage("run the tool", "room-blank-update"),
+      tools,
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-blank-update" },
+    )
+
+    // The blank status update must never even reach sendEvent — not just be
+    // dropped once it gets there.
+    expect(sendEventSpy.mock.calls.some(([content]) => content.trim().length === 0)).toBe(false)
+    expect(tools.events.some((event) => event.messageType === "tool_result")).toBe(false)
+    expect(tools.messages).toEqual(["done"])
+    expect(tools.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ messageType: "task", content: "ACP client session" }),
+    ]))
+  })
+
+  it("resolves a mention token to a handle before prompting the agent", async () => {
+    const promptTexts: string[] = []
+    const prompt = vi.fn(async (params: { sessionId: string; prompt: Array<{ text?: string }> }) => {
+      promptTexts.push(params.prompt[0]?.text ?? "")
+      return { stopReason: "end_turn" }
+    })
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      connectionFactory: async () => {
+        const controller = new AbortController()
+        return {
+          connection: {
+            signal: controller.signal,
+            closed: new Promise<void>(() => undefined),
+            initialize: vi.fn(async () => ({
+              protocolVersion: 1,
+              agentCapabilities: { mcpCapabilities: { http: true } },
+            })),
+            authenticate: vi.fn(async () => ({})),
+            loadSession: vi.fn(),
+            unstable_resumeSession: vi.fn(),
+            newSession: vi.fn(async () => ({ sessionId: "session-mentions" })),
+            prompt,
+          } as never,
+          stop: async () => {
+            controller.abort()
+          },
+        }
+      },
+    })
+
+    await adapter.onStarted("Mention Agent", "ACP mention test")
+
+    const REVIEWER_ID = "65044b09-fd04-4a34-a94f-51fe413bd2cb"
+    await adapter.onMessage(
+      makeMessage(`@[[${REVIEWER_ID}]] are you there?`, "room-mentions", {
+        mentions: [{ id: REVIEWER_ID, username: "reviewer-bot" }],
+      }),
+      new FakeTools(),
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-mentions" },
+    )
+
+    expect(promptTexts[0]).toContain("@reviewer-bot are you there?")
+    expect(promptTexts[0]).not.toContain("@[[")
+  })
+
+  it("carries a room-context update to the agent, on a warm turn as well as a bootstrap one", async () => {
+    const promptTexts: string[] = []
+    const prompt = vi.fn(async (params: { sessionId: string; prompt: Array<{ text?: string }> }) => {
+      promptTexts.push(params.prompt[0]?.text ?? "")
+      return { stopReason: "end_turn" }
+    })
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      connectionFactory: async () => {
+        const controller = new AbortController()
+        return {
+          connection: {
+            signal: controller.signal,
+            closed: new Promise<void>(() => undefined),
+            initialize: vi.fn(async () => ({
+              protocolVersion: 1,
+              agentCapabilities: { mcpCapabilities: { http: true } },
+            })),
+            authenticate: vi.fn(async () => ({})),
+            loadSession: vi.fn(),
+            unstable_resumeSession: vi.fn(),
+            newSession: vi.fn(async () => ({ sessionId: "session-room-context" })),
+            prompt,
+          } as never,
+          stop: async () => {
+            controller.abort()
+          },
+        }
+      },
+    })
+
+    await adapter.onStarted("Room Context Agent", "ACP room context test")
+
+    await adapter.onMessage(
+      makeMessage("hello", "room-context"),
+      new FakeTools(),
+      { roomToSession: {} },
+      "Alice joined the room.",
+      null,
+      { isSessionBootstrap: true, roomId: "room-context" },
+    )
+    await adapter.onMessage(
+      makeMessage("still here?", "room-context"),
+      new FakeTools(),
+      { roomToSession: {} },
+      "Bob joined the room.",
+      null,
+      { isSessionBootstrap: false, roomId: "room-context" },
+    )
+
+    expect(promptTexts[0]).toContain("[System]: Alice joined the room.")
+    expect(promptTexts[1]).toContain("[System]: Bob joined the room.")
+  })
+
   it("fails loudly instead of guessing when the agent advertises no MCP transport", async () => {
     const initialize = vi.fn(async () => ({
       protocolVersion: 1,

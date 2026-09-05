@@ -2,6 +2,7 @@ import { ParticipantRoster } from "@band-ai/band-sdk-core";
 import type { PlatformMessage } from "../src/runtime";
 import type { AgentToolsProtocol } from "../src/core";
 import { DEFAULT_AGENT_TOOLS_CAPABILITIES } from "../src/contracts/protocols";
+import { isBlankEventContent } from "../src/contracts/chatEvents";
 import type {
   AgentIdentity,
   PaginatedResponse,
@@ -57,6 +58,11 @@ export class FakeTools implements AgentToolsProtocol {
     metadata?: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     this.maybeFail("sendEvent");
+    // Mirrors the platform's own rejection, so a test posting a blank chunk
+    // is an actual regression test rather than a vacuous pass.
+    if (isBlankEventContent(content)) {
+      return { ok: false, status: "failed" };
+    }
     this.events.push({ content, messageType, metadata });
     return { ok: true };
   }
@@ -122,7 +128,7 @@ export function makeRoster(participants: ParticipantRecord[]): ParticipantRoster
   return roster;
 }
 
-export function makeMessage(content: string, roomId = "room-1"): PlatformMessage {
+export function makeMessage(content: string, roomId = "room-1", metadata: Record<string, unknown> = {}): PlatformMessage {
   return {
     id: "msg-1",
     roomId,
@@ -131,7 +137,7 @@ export function makeMessage(content: string, roomId = "room-1"): PlatformMessage
     senderType: "User",
     senderName: "User",
     messageType: "text",
-    metadata: {},
+    metadata,
     createdAt: new Date("2026-03-02T00:00:00.000Z"),
   };
 }

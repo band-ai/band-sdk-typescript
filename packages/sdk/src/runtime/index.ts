@@ -55,6 +55,7 @@ export {
 
 export {
   replaceUuidMentions,
+  mentionSubjectsFromMetadata,
   formatMessageForLlm,
   formatHistoryForLlm,
   buildParticipantsMessage,

@@ -22,28 +22,38 @@ interface SendPath {
   name: string;
   urlSegment: "messages" | "events";
   send: (rest: FernRestAdapter) => Promise<unknown>;
+  // `AgentTools.sendEvent` alone absorbs a send failure instead of rejecting
+  // with it — room telemetry, not the agent's answer — so its settled outcome
+  // differs from the other three paths, which all still reject.
+  assertOutcome: (settled: Promise<unknown>) => Promise<void>;
 }
+
+const rejectsWith429 = (settled: Promise<unknown>) => expect(settled).rejects.toMatchObject({ statusCode: 429 });
 
 const SEND_PATHS: SendPath[] = [
   {
     name: "AgentTools.sendMessage",
     urlSegment: "messages",
     send: (rest) => new AgentTools({ roomId: "room-1", rest }).sendMessage("hi"),
+    assertOutcome: rejectsWith429,
   },
   {
     name: "AgentTools.sendEvent",
     urlSegment: "events",
     send: (rest) => new AgentTools({ roomId: "room-1", rest }).sendEvent("hi", "task"),
+    assertOutcome: (settled) => expect(settled).resolves.toMatchObject({ ok: false, status: "failed" }),
   },
   {
     name: "ContactCallbackTools.sendMessage",
     urlSegment: "messages",
     send: (rest) => new ContactCallbackTools(rest, "room-1").sendMessage("hi"),
+    assertOutcome: rejectsWith429,
   },
   {
     name: "ContactCallbackTools.sendEvent",
     urlSegment: "events",
     send: (rest) => new ContactCallbackTools(rest, "room-1").sendEvent("hi", "task"),
+    assertOutcome: rejectsWith429,
   },
 ];
 
@@ -58,10 +68,10 @@ describe("message-send retry cap holds through the tool layer", () => {
 
   it.each(SEND_PATHS)(
     "$name makes 3 attempts, not 4, on a sustained 429, over its own /$urlSegment route",
-    async ({ urlSegment, send }) => {
+    async ({ urlSegment, send, assertOutcome }) => {
       const { rest, calls } = buildFakeRestAdapter(SUSTAINED_429(3));
 
-      await expect(settleThroughRetries(send(rest))).rejects.toMatchObject({ statusCode: 429 });
+      await assertOutcome(settleThroughRetries(send(rest)));
 
       expect(calls).toHaveLength(3);
       expect(calls.every((call) => call.url.includes(`/${urlSegment}`))).toBe(true);
