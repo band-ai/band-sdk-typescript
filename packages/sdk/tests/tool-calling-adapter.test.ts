@@ -164,7 +164,10 @@ class FakeModel implements ToolCallingModel {
 /**
  * Minimal RestApi whose createChatMessage mirrors FernRestAdapter's blank-content
  * refusal, so AgentTools (the real class, not FakeTools) can be wired into the
- * adapter under test.
+ * adapter under test. createChatEvent is never exercised by this file's tests
+ * (they only drive the final-response/message path) -- it just satisfies the
+ * RestApi interface, so it returns an ordinary success rather than simulating
+ * a refusal FernRestAdapter no longer produces for events.
  */
 class BlankContentRestApi implements RestApi {
   public async getAgentMe() {
@@ -176,7 +179,7 @@ class BlankContentRestApi implements RestApi {
   }
 
   public async createChatEvent() {
-    return { ok: false, status: BLANK_CONTENT_STATUS, error: `content ${BLANK_CONTENT_ERROR}` };
+    return { ok: true, id: "evt-1" };
   }
 
   public async createChat() {
