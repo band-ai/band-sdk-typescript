@@ -15,7 +15,6 @@ import type {
   PeerRecord,
 } from "../src/contracts/dtos";
 import type { StreamingTransport, TopicHandlers } from "../src/platform/streaming/transport";
-import type { RoomPresence } from "../src/runtime/rooms/RoomPresence";
 
 interface CapturedToolEvent {
   content: string;
@@ -175,20 +174,6 @@ export class FakeTransport implements StreamingTransport {
   public hasTopic(topic: string): boolean {
     return this.handlers.has(topic);
   }
-}
-
-/**
- * Seeds `roomId` as already `Admitted` on a presence's roster, for tests
- * about dispatch/routing rather than the join flow itself. Goes through
- * RoomRoster's own public methods, not a private attribute — mirrors
- * band-sdk-python's `conftest.py::admit_room`.
- */
-export function admitRoom(presence: RoomPresence, roomId: string): void {
-  const ticket = presence.roster.beginRoomAdmission(roomId, true);
-  if (ticket === undefined) {
-    throw new Error(`room ${roomId} is already admitted`);
-  }
-  presence.roster.recordRoomAdmission(roomId, ticket, true);
 }
 
 export function makeMessage(content: string, roomId = "room-1", metadata: Record<string, unknown> = {}): PlatformMessage {

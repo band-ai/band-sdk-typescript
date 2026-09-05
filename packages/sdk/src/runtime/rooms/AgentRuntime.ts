@@ -48,7 +48,6 @@ export class AgentRuntime {
   private readonly logger: Logger;
   private running = false;
   private stopping = false;
-  private presenceWatcher: Promise<void> | null = null;
   private fatalError: unknown = null;
 
   public constructor(options: AgentRuntimeOptions) {
@@ -83,10 +82,7 @@ export class AgentRuntime {
       await this.onRoomJoined?.(roomId, payload);
     };
     this.presence.onRoomLeft = async (roomId) => {
-      await this.executions.get(roomId)?.stop();
-      this.contexts.delete(roomId);
-      this.executions.delete(roomId);
-      await this.onSessionCleanup(roomId);
+      await this.teardownExecution(roomId);
       await this.onRoomLeft?.(roomId);
     };
     this.presence.onRoomEvent = async (roomId, event) => {
@@ -133,12 +129,9 @@ export class AgentRuntime {
       throw error;
     }
 
-    this.presenceWatcher = this.presence
+    void this.presence
       .waitUntilStopped()
-      .catch((error: unknown) => this.failRuntime(error, syntheticRuntimeFailureEvent(this.agentId)))
-      .finally(() => {
-        this.presenceWatcher = null;
-      });
+      .catch((error: unknown) => this.failRuntime(error, syntheticRuntimeFailureEvent(this.agentId)));
   }
 
   private async handleStartFailure(): Promise<void> {
@@ -158,20 +151,23 @@ export class AgentRuntime {
     this.presence.abortEventLoop();
     await this.presence.waitUntilStopped().catch(() => undefined);
 
-    const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
     let graceful = true;
 
-    // Deleted as each stops, so `presence.stop()`'s onRoomLeft callback below
-    // finds nothing left to stop and never re-blocks an already-timed-out
-    // execution on a second, unbounded `waitForIdle`.
-    for (const [roomId, execution] of [...this.executions]) {
-      const remaining = deadline === undefined ? undefined : Math.max(0, deadline - Date.now());
-      const stopped = await execution.stop(remaining);
-      if (!stopped) {
-        graceful = false;
-      }
-      this.executions.delete(roomId);
-    }
+    // All stopped (and deleted) before `presence.stop()` runs below, so its
+    // onRoomLeft callback finds nothing left to stop and never re-blocks an
+    // already-timed-out execution on a second, unbounded `waitForIdle`. Each
+    // execution owns fully independent state, so stopping them concurrently
+    // (sharing one `timeoutMs` budget rather than a shrinking per-iteration
+    // remainder) is both safe and fair regardless of iteration order.
+    await Promise.all(
+      [...this.executions].map(async ([roomId, execution]) => {
+        const stopped = await execution.stop(timeoutMs);
+        if (!stopped) {
+          graceful = false;
+        }
+        this.executions.delete(roomId);
+      }),
+    );
 
     await this.presence.stop();
 
@@ -211,24 +207,19 @@ export class AgentRuntime {
   }
 
   public async bootstrapRoomMessage(roomId: string, message: PlatformMessage): Promise<void> {
-    await this.presence.admitRoom(roomId, {}, false);
-    // A concurrent room_added admission may still own the ticket: wait for it
-    // to settle before judging membership, so this doesn't spuriously throw
-    // for a room that is merely still Admitting.
-    await this.presence.waitForPendingAdmission(roomId);
-    if (this.presence.roster.roomMembership(roomId) !== "admitted") {
+    if (!(await this.presence.admitRoom(roomId, {}, false))) {
       throw new TransportError(`Failed to subscribe to room ${roomId}`);
     }
     await this.getOrCreateExecution(roomId).bootstrapMessage(message);
   }
 
   public async resetRoomSession(roomId: string, timeoutMs?: number): Promise<boolean> {
-    const execution = this.executions.get(roomId);
-    let graceful = true;
-    if (execution) {
-      graceful = await execution.stop(timeoutMs);
-    }
+    return this.teardownExecution(roomId, timeoutMs);
+  }
 
+  private async teardownExecution(roomId: string, timeoutMs?: number): Promise<boolean> {
+    const execution = this.executions.get(roomId);
+    const graceful = execution ? await execution.stop(timeoutMs) : true;
     this.executions.delete(roomId);
     this.contexts.delete(roomId);
     await this.onSessionCleanup(roomId);

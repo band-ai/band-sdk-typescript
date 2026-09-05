@@ -199,64 +199,15 @@ describe("RoomPresence", () => {
       presence.admitRoom("room-1", {}),
     ]);
 
-    // Both calls race `beginRoomAdmission` before either awaits the
-    // transport join, so exactly one of them claims the ticket.
-    expect([first, second].filter(Boolean)).toHaveLength(1);
+    // Both calls race `beginRoomAdmission` before either awaits the transport
+    // join, so exactly one claims the ticket and actually joins — but the
+    // loser awaits that winner's result rather than reporting a hardcoded
+    // false, so both resolve to the same true outcome.
+    expect([first, second]).toEqual([true, true]);
     expect(joined).toEqual(["room-1"]);
     expect(transport.hasTopic("chat_room:room-1")).toBe(true);
     expect(presence.roster.roomMembership("room-1")).toBe("admitted");
 
-    await presence.stop();
-  });
-
-  it("lets a caller that lost the admission race wait for the winner's outcome instead of failing prematurely", async () => {
-    const transport = new FakeTransport();
-    let releaseJoin!: () => void;
-    const joinGate = new Promise<void>((resolve) => {
-      releaseJoin = resolve;
-    });
-    const joinSpy = vi.spyOn(transport, "join").mockImplementation(async (topic, handlers) => {
-      if (topic === "chat_room:room-1") {
-        await joinGate;
-      }
-      return FakeTransport.prototype.join.call(transport, topic, handlers);
-    });
-
-    const presence = new RoomPresence({
-      link: new BandLink({
-        agentId: "agent-1",
-        apiKey: "key",
-        transport,
-        restApi: new FakeRestApi({ listChats: async () => ({ data: [] }) }),
-      }),
-      autoSubscribeExistingRooms: false,
-    });
-
-    await presence.start();
-
-    const winner = presence.admitRoom("room-1", {});
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(presence.roster.roomMembership("room-1")).toBe("admitting");
-
-    // Loses the ticket race: no-ops immediately instead of joining a second time.
-    const loserAdmitted = await presence.admitRoom("room-1", {}, false);
-    expect(loserAdmitted).toBe(false);
-
-    let settled = false;
-    const waitDone = presence.waitForPendingAdmission("room-1").then(() => {
-      settled = true;
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(settled).toBe(false); // winner's subscribeRoom is still gated
-
-    releaseJoin();
-    await waitDone;
-
-    expect(settled).toBe(true);
-    expect(presence.roster.roomMembership("room-1")).toBe("admitted");
-    expect(await winner).toBe(true);
-
-    joinSpy.mockRestore();
     await presence.stop();
   });
 

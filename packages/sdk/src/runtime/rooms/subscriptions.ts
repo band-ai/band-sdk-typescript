@@ -7,21 +7,15 @@ export interface ExistingRoomsOptions {
   link: BandLink;
   roomFilter?: (room: MetadataMap) => boolean;
   onRoom: (roomId: string, payload: MetadataMap) => Promise<void>;
-  pageSize?: number;
-  maxPages?: number;
   requestOptions?: RestRequestOptions;
   onError?: (error: unknown) => Promise<void> | void;
 }
 
 export async function hydrateExistingRooms(options: ExistingRoomsOptions): Promise<void> {
-  const pageSize = options.pageSize ?? 100;
-  const maxPages = options.maxPages ?? 100;
-
   try {
-    const rooms = await options.link.listAllChats(
-      { pageSize, maxPages },
-      options.requestOptions,
-    );
+    // No caller has ever needed non-default pagination here; `listAllChats`
+    // already applies its own pageSize/maxPages defaults when omitted.
+    const rooms = await options.link.listAllChats(undefined, options.requestOptions);
 
     for (const room of rooms) {
       const roomId = typeof room.id === "string" ? room.id : null;

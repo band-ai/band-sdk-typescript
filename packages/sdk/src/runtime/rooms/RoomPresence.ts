@@ -71,7 +71,11 @@ export class RoomPresence {
   public async admitRoom(roomId: string, payload: MetadataMap, notify = true): Promise<boolean> {
     const ticket = this.roster.beginRoomAdmission(roomId, true);
     if (ticket === undefined) {
-      return false;
+      // Someone else already holds the ticket: report their real outcome
+      // instead of a hardcoded false, so every racing caller learns the
+      // truth rather than only the winner.
+      const inFlight = this.admissionInFlight.get(roomId);
+      return inFlight ? await inFlight : this.roster.roomMembership(roomId) === "admitted";
     }
 
     const admission = this.completeAdmission(roomId, ticket, payload, notify);
@@ -83,16 +87,6 @@ export class RoomPresence {
         this.admissionInFlight.delete(roomId);
       }
     }
-  }
-
-  /**
-   * Lets a caller that lost the admission race (no ticket claimed, so its own
-   * `admitRoom` no-oped) wait for the in-flight winner to settle before
-   * reading final roster membership, instead of observing a still-"admitting"
-   * room as a failure.
-   */
-  public async waitForPendingAdmission(roomId: string): Promise<void> {
-    await this.admissionInFlight.get(roomId)?.catch(() => undefined);
   }
 
   private async completeAdmission(
@@ -127,7 +121,7 @@ export class RoomPresence {
     return true;
   }
 
-  private serialize<T>(body: () => Promise<T>): Promise<T> {
+  private serialize(body: () => Promise<void>): Promise<void> {
     const run = this.lifecycle.then(body, body);
     this.lifecycle = run.then(
       () => undefined,
@@ -145,6 +139,11 @@ export class RoomPresence {
       await this.link.connect();
     }
 
+    // Independent of the rooms channel/REST hydration below (no shared
+    // state), so it runs concurrently instead of adding its latency to the
+    // room-hydration critical path.
+    const contactsReady = this.subscribeContacts();
+
     try {
       await this.link.subscribeAgentRooms();
     } catch (error) {
@@ -157,19 +156,25 @@ export class RoomPresence {
       await this.subscribeExistingRooms();
     }
 
-    if (this.link.capabilities.contacts) {
-      try {
-        await this.link.subscribeAgentContacts();
-        this.contactsSubscribed = true;
-      } catch (error) {
-        this.logger.warn("RoomPresence failed to subscribe agent_contacts channel, continuing without it", {
-          error,
-        });
-      }
-    }
+    await contactsReady;
 
     this.eventController = new AbortController();
     this.eventTask = this.consumeEvents(this.eventController.signal);
+  }
+
+  private async subscribeContacts(): Promise<void> {
+    if (!this.link.capabilities.contacts) {
+      return;
+    }
+
+    try {
+      await this.link.subscribeAgentContacts();
+      this.contactsSubscribed = true;
+    } catch (error) {
+      this.logger.warn("RoomPresence failed to subscribe agent_contacts channel, continuing without it", {
+        error,
+      });
+    }
   }
 
   private async stopBody(): Promise<void> {
@@ -190,10 +195,15 @@ export class RoomPresence {
 
     const roomIds = this.roster.trackedRoomIds();
     this.roster.clear();
-    for (const roomId of roomIds) {
-      await this.unsubscribeRoom(roomId);
-      await this.onRoomLeft?.(roomId);
-    }
+    // Each room's unsubscribe + onRoomLeft only touches that room's own
+    // transport topic and (via AgentRuntime's handler) its own map entries,
+    // so nothing here races across rooms.
+    await Promise.all(
+      roomIds.map(async (roomId) => {
+        await this.unsubscribeRoom(roomId);
+        await this.onRoomLeft?.(roomId);
+      }),
+    );
   }
 
   private async consumeEvents(signal: AbortSignal): Promise<void> {
