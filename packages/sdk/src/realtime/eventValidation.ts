@@ -4,9 +4,9 @@ import {
   eventCreatedPayloadSchema,
   messageCreatedPayloadSchema,
 } from "../platform/streaming/payloadSchemas";
+import { isChatEventType } from "../contracts/chatEvents";
 import { canonicalizeUuid } from "./activity";
-
-const roomIdSchema = z.string().min(1);
+import { REALTIME_MAX_IDENTITY_BYTES } from "../platform/streaming/resourceLimits";
 
 const messageDeletedSchema = z.object({
   id: z.string().min(1),
@@ -40,11 +40,14 @@ function roomMatches(payloadRoomId: string, roomId: string): boolean {
 }
 
 export function isValidRoomId(roomId: string): boolean {
-  return roomIdSchema.safeParse(roomId).success && !roomId.includes(":");
+  return isValidTopicIdentity(roomId);
 }
 
 export function isValidTopicIdentity(value: string): boolean {
-  return value.trim().length > 0 && !value.includes(":");
+  if (value !== value.trim() || value.length === 0 || value.includes(":")) {
+    return false;
+  }
+  return Buffer.byteLength(value, "utf8") <= REALTIME_MAX_IDENTITY_BYTES;
 }
 
 export function validateChatPayload(
@@ -61,8 +64,14 @@ export function validateChatPayload(
     return parsed.success && roomMatches(parsed.data.chat_room_id, roomId);
   }
   if (event === "event_created") {
+    // Grounded in contracts/chatEvents.ts + messageCreatedPayloadSchema:
+    // chat events are chat messages whose message_type is a ChatEventType.
     const parsed = eventCreatedPayloadSchema.safeParse(payload);
-    return parsed.success && roomMatches(parsed.data.chat_room_id, roomId);
+    return (
+      parsed.success &&
+      isChatEventType(parsed.data.message_type) &&
+      roomMatches(parsed.data.chat_room_id, roomId)
+    );
   }
   const parsed = messageCreatedPayloadSchema.safeParse(payload);
   return (

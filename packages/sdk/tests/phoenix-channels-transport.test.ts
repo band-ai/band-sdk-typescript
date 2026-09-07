@@ -111,6 +111,12 @@ const phoenixMock = vi.hoisted(() => {
       | null = null;
     private errorHandler: ((payload: unknown) => void) | null = null;
 
+    public reconnectTimer = {
+      reset(): void {},
+      scheduleTimeout(): void {},
+    };
+    private nextRef = 0;
+
     public constructor(
       url: string,
       options: {
@@ -122,6 +128,11 @@ const phoenixMock = vi.hoisted(() => {
       this.params = options.params;
       this.reconnectAfterMs = options.reconnectAfterMs;
       FakeSocket.instances.push(this);
+    }
+
+    public makeRef(): string {
+      this.nextRef += 1;
+      return String(this.nextRef);
     }
 
     public onOpen(handler: () => void): void {
@@ -402,7 +413,7 @@ describe("PhoenixChannelsTransport", () => {
     });
     expect(onTerminalDisconnect).toHaveBeenCalledWith(reason);
     expect(socket?.disconnectCount).toBeGreaterThan(0);
-    expect(socket?.reconnectAfterMs?.(1)).toBe(Number.POSITIVE_INFINITY);
+    expect(socket?.reconnectAfterMs?.(1)).toBe(2_147_483_647);
     await expect(transport.connect()).rejects.toBeInstanceOf(
       WebSocketDisconnectError,
     );
@@ -518,7 +529,7 @@ describe("PhoenixChannelsTransport", () => {
       WebSocketDisconnectError,
     );
     expect(socket?.disconnectCount).toBeGreaterThan(0);
-    expect(socket?.reconnectAfterMs?.(1)).toBe(Number.POSITIVE_INFINITY);
+    expect(socket?.reconnectAfterMs?.(1)).toBe(2_147_483_647);
     await expect(transport.connect()).rejects.toBeInstanceOf(
       WebSocketDisconnectError,
     );

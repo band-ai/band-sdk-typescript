@@ -3,7 +3,8 @@ import type { Logger } from "../core/logger";
 import { NoopLogger } from "../core/logger";
 import { PhoenixChannelsTransport } from "../platform/streaming/PhoenixChannelsTransport";
 import type { TopicHandlers } from "../platform/streaming/transport";
-import type { WebSocketDisconnectReason } from "../platform/streaming/disconnectReason";
+import type { WebSocketConflictPolicy, WebSocketDisconnectReason } from "../platform/streaming/disconnectReason";
+import { REALTIME_MAX_IDENTITY_BYTES } from "../platform/streaming/resourceLimits";
 import {
   ActivityState,
   canonicalizeUuid,
@@ -29,6 +30,18 @@ import type {
 
 const DEFAULT_WS_URL = "wss://app.band.ai/api/v1/socket";
 const RECONNECT_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000] as const;
+const CONFLICT_POLICIES = new Set<WebSocketConflictPolicy>(["supersede", "reject"]);
+
+function boundedIdentity(value: string, label: string): string {
+  const trimmed = value.trim();
+  if (!isValidTopicIdentity(trimmed)) {
+    throw new ValidationError(`Invalid ${label}`);
+  }
+  if (Buffer.byteLength(trimmed, "utf8") > REALTIME_MAX_IDENTITY_BYTES) {
+    throw new ValidationError(`${label} exceeds ${REALTIME_MAX_IDENTITY_BYTES} bytes`);
+  }
+  return trimmed;
+}
 
 function snapshotPrincipal(principal: RealtimePrincipal): RealtimePrincipal {
   if (principal.kind === "human") {
@@ -37,12 +50,12 @@ function snapshotPrincipal(principal: RealtimePrincipal): RealtimePrincipal {
         "Human principal does not accept a conflict policy or agentId",
       );
     }
-    if (!isValidTopicIdentity(principal.userId) || !principal.apiKey) {
+    if (!principal.apiKey) {
       throw new ValidationError("Human principal requires userId and apiKey");
     }
     return Object.freeze({
       kind: "human",
-      userId: principal.userId.trim(),
+      userId: boundedIdentity(principal.userId, "userId"),
       apiKey: principal.apiKey,
     });
   }
@@ -52,6 +65,12 @@ function snapshotPrincipal(principal: RealtimePrincipal): RealtimePrincipal {
   const agentId = canonicalizeUuid(principal.agentId);
   if (!agentId || !principal.apiKey) {
     throw new ValidationError("Agent principal requires agentId and apiKey");
+  }
+  if (
+    principal.conflictPolicy !== undefined &&
+    !CONFLICT_POLICIES.has(principal.conflictPolicy)
+  ) {
+    throw new ValidationError("Invalid websocket conflict policy");
   }
   return Object.freeze({
     kind: "agent",
@@ -83,6 +102,8 @@ export class PrincipalRealtimeConnectionImpl
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private selectionTail: Promise<void> = Promise.resolve();
   private joinAbort: AbortController | null = null;
+  private unavailableEmitted = false;
+  private terminal = false;
   private readonly onAbort = (): void => {
     void this.dispose();
   };
@@ -106,13 +127,14 @@ export class PrincipalRealtimeConnectionImpl
       logger: this.logger,
       conflictPolicy,
       heartbeatIntervalMs: 30_000,
-      reconnectAfterMs: () => Number.POSITIVE_INFINITY,
+      reconnectMode: "manual",
+      joinAgentControl: false,
       abortSignal: this.abortSignal,
       onSocketClose: (reason) => {
         this.handleTransportClose(reason);
       },
       onTerminalDisconnect: (reason) => {
-        this.markUnavailable(reason);
+        this.enterTerminal(reason);
       },
     });
 
@@ -141,18 +163,23 @@ export class PrincipalRealtimeConnectionImpl
 
   public async start(): Promise<void> {
     this.assertLive();
+    if (this.terminal) {
+      throw new TransportError("Realtime connection is terminal");
+    }
     if (this.startSucceeded && this.state === "ready") {
       return;
     }
     if (this.startPromise) {
       return this.startPromise;
     }
+    this.clearReconnect();
     this.startPromise = this.connectAndJoin();
     try {
       await this.startPromise;
       this.startSucceeded = true;
     } catch (error) {
       this.startSucceeded = false;
+      await this.transport.disconnect().catch(() => undefined);
       this.markUnavailable();
       throw error;
     } finally {
@@ -170,11 +197,13 @@ export class PrincipalRealtimeConnectionImpl
     if (roomId !== null && !isValidRoomId(roomId)) {
       throw new ValidationError("Invalid selected room id");
     }
+    this.joinAbort?.abort();
+    this.joinAbort = new AbortController();
     this.selectionGeneration += 1;
     const generation = this.selectionGeneration;
     this.selectionTail = this.selectionTail
       .catch(() => undefined)
-      .then(() => this.applySelection(roomId, generation));
+      .then(() => this.applySelection(roomId, generation, this.joinAbort!.signal));
     return this.selectionTail;
   }
 
@@ -183,6 +212,7 @@ export class PrincipalRealtimeConnectionImpl
       return;
     }
     this.disposed = true;
+    this.terminal = true;
     this.socketGeneration += 1;
     this.selectionGeneration += 1;
     this.clearReconnect();
@@ -202,13 +232,12 @@ export class PrincipalRealtimeConnectionImpl
   private async applySelection(
     roomId: string | null,
     generation: number,
+    signal: AbortSignal,
   ): Promise<void> {
     if (generation !== this.selectionGeneration || this.disposed) {
       return;
     }
     const previous = this.selectedRoom;
-    this.joinAbort?.abort();
-    this.joinAbort = new AbortController();
     await this.leaveRoomTopics(previous);
     if (generation !== this.selectionGeneration) {
       return;
@@ -225,7 +254,7 @@ export class PrincipalRealtimeConnectionImpl
     if (roomId === null || !this.startSucceeded) {
       return;
     }
-    await this.joinSelectedRoom(roomId, generation, this.joinAbort.signal);
+    await this.joinSelectedRoom(roomId, generation, signal);
   }
 
   private async connectAndJoin(): Promise<void> {
@@ -238,57 +267,79 @@ export class PrincipalRealtimeConnectionImpl
     this.emit({ type: "connection", state: "connecting" });
     this.joinAbort?.abort();
     this.joinAbort = new AbortController();
-    await this.transport.connect();
+    await this.transport.connect(this.joinAbort.signal);
     if (this.disposed || generation !== this.socketGeneration) {
-      return;
+      throw new TransportError("Realtime connection aborted");
     }
     await this.joinMandatory(generation, this.joinAbort.signal);
     if (this.disposed || generation !== this.socketGeneration) {
-      return;
+      throw new TransportError("Realtime connection aborted");
     }
+    this.unavailableEmitted = false;
     this.setState("ready");
     this.emit({ type: "connection", state: "ready" });
   }
 
   private handleTransportClose(reason: WebSocketDisconnectReason | null): void {
-    if (this.disposed) {
+    if (this.disposed || this.terminal) {
       return;
     }
     this.markUnavailable(reason ?? undefined);
     if (reason?.retryable === false) {
+      this.terminal = true;
+      this.clearReconnect();
       return;
     }
     this.socketGeneration += 1;
     this.scheduleReconnect();
   }
 
+  private enterTerminal(reason: WebSocketDisconnectReason): void {
+    if (this.disposed) {
+      return;
+    }
+    this.terminal = true;
+    this.clearReconnect();
+    this.markUnavailable(reason);
+  }
+
   private scheduleReconnect(): void {
-    if (this.disposed || this.abortSignal?.aborted) {
+    if (this.disposed || this.terminal || this.abortSignal?.aborted) {
       return;
     }
     this.clearReconnect();
     const delay =
-      RECONNECT_BACKOFF_MS[
-        Math.min(this.reconnectAttempt, RECONNECT_BACKOFF_MS.length - 1)
-      ] ?? 30_000;
+      this.reconnectAttempt === 0
+        ? 0
+        : RECONNECT_BACKOFF_MS[
+            Math.min(this.reconnectAttempt, RECONNECT_BACKOFF_MS.length - 1)
+          ] ?? 30_000;
     this.reconnectAttempt += 1;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       void this.reconnect();
-    }, this.reconnectAttempt === 1 ? 0 : delay);
+    }, delay);
   }
 
   private async reconnect(): Promise<void> {
-    if (this.disposed) {
+    if (this.disposed || this.terminal) {
       return;
     }
+    if (this.startPromise) {
+      return;
+    }
+    this.startPromise = this.connectAndJoin();
     try {
-      await this.connectAndJoin();
+      await this.startPromise;
       this.startSucceeded = true;
       this.reconnectAttempt = 0;
     } catch {
+      this.startSucceeded = false;
+      await this.transport.disconnect().catch(() => undefined);
       this.markUnavailable();
       this.scheduleReconnect();
+    } finally {
+      this.startPromise = null;
     }
   }
 
@@ -315,14 +366,18 @@ export class PrincipalRealtimeConnectionImpl
     }
     try {
       this.listener(event);
-    } catch (error) {
-      this.logger.error("Realtime observer failed", { error });
+    } catch {
+      this.logger.error("Realtime observer failed", { code: "observer.error" });
     }
   }
 
   private markUnavailable(reason?: WebSocketDisconnectReason): void {
     this.activity.clear();
     this.setState("unavailable");
+    if (this.unavailableEmitted) {
+      return;
+    }
+    this.unavailableEmitted = true;
     if (this.selectedRoom) {
       this.emit({
         type: "room_activity",
@@ -409,9 +464,15 @@ export class PrincipalRealtimeConnectionImpl
     } catch (error) {
       await this.leaveRoomTopics(roomId);
       this.activity.clear();
-      this.emit({ type: "room_activity", roomId, state: "unavailable" });
-      this.setState("unavailable");
-      this.emit({ type: "connection", state: "unavailable" });
+      if (
+        this.disposed ||
+        selectionGeneration !== this.selectionGeneration ||
+        this.selectedRoom !== roomId
+      ) {
+        return;
+      }
+      await this.transport.disconnect().catch(() => undefined);
+      this.markUnavailable();
       throw error;
     }
   }
@@ -438,7 +499,7 @@ export class PrincipalRealtimeConnectionImpl
       handlers,
       signal,
     );
-    if (this.disposed || generation !== this.socketGeneration) {
+    if (this.disposed || generation !== this.socketGeneration || signal.aborted) {
       await this.transport.leave(topic).catch(() => undefined);
       return undefined;
     }
@@ -599,7 +660,7 @@ export class PrincipalRealtimeConnectionImpl
       return;
     }
     this.activity.clear();
-    this.emit({ type: "room_activity", roomId, state: "unavailable" });
+    throw new TransportError("Invalid required activity snapshot");
   }
 
   private isCurrentRoom(roomId: string, generation: number): boolean {

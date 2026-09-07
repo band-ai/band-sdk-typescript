@@ -9,6 +9,7 @@ export {
   REALTIME_MAX_PENDING_CONTROLS,
   REALTIME_MAX_REFS,
   REALTIME_WORKING_AGENT_EXECUTION_MAX,
+  REALTIME_MAX_IDENTITY_BYTES,
 } from "../platform/streaming/resourceLimits";
 
 export type RealtimePrincipal =

@@ -59,9 +59,15 @@ const phoenixMock = vi.hoisted(() => {
     public readonly channels = new FakeChannelList();
     private openHandler: (() => void) | null = null;
     private closeHandler: ((event?: { code?: number; reason?: string }) => void) | null = null;
+    public reconnectTimer = { reset(): void {}, scheduleTimeout(): void {} };
+    private nextRef = 0;
     public constructor(_url: string, options: { params: Record<string, unknown> }) {
       this.params = options.params;
       FakeSocket.instances.push(this);
+    }
+    public makeRef(): string {
+      this.nextRef += 1;
+      return String(this.nextRef);
     }
     public onOpen(handler: () => void): void {
       this.openHandler = handler;
@@ -171,11 +177,13 @@ describe("principal realtime", () => {
     chat?.emit("message_created", chatPayload());
     chat?.emit("event_created", {
       id: "e1",
+      content: "thinking",
       message_type: "thought",
       sender_id: "u1",
       sender_type: "User",
       chat_room_id: ROOM_ID,
       inserted_at: "2026-01-01T00:00:00.000Z",
+      updated_at: "2026-01-01T00:00:00.000Z",
     });
     const parts = socket.channels.get(`room_participants:${ROOM_ID}`);
     parts?.emit("participant_added", { id: PARTICIPANT_ID, name: "Agent", type: "agent" });
@@ -248,9 +256,16 @@ describe("principal realtime", () => {
       working: true as const,
     });
     phoenixMock.activityJoinPayload = { working_agents: Array.from({ length: 33 }, (_, i) => mk(i + 1)) };
-    const first = await startHuman(ROOM_ID);
-    expect(first.events).toContainEqual({ type: "room_activity", roomId: ROOM_ID, state: "unavailable" });
-    await first.connection.dispose();
+    const first = createPrincipalRealtimeConnection({
+      principal: { kind: "human", userId: "user-1", apiKey: "human-key" },
+    });
+    const firstEvents: Array<{ type: string; [key: string]: unknown }> = [];
+    first.subscribe((event) => firstEvents.push(event));
+    await first.setSelectedRoom(ROOM_ID);
+    await expect(first.start()).rejects.toBeTruthy();
+    expect(first.getState()).toBe("unavailable");
+    expect(firstEvents.some((event) => event.type === "connection" && event.state === "ready")).toBe(false);
+    await first.dispose();
     phoenixMock.resetAll();
     phoenixMock.activityJoinPayload = { working_agents: Array.from({ length: 32 }, (_, i) => mk(i + 1)) };
     const second = await startHuman(ROOM_ID);

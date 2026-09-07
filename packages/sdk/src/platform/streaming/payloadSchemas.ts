@@ -24,15 +24,11 @@ export const messageCreatedPayloadSchema = z.object({
   updated_at: z.string(),
 }).passthrough();
 
-export const eventCreatedPayloadSchema = z.object({
-  id: z.string().min(1),
-  message_type: z.string().min(1),
-  sender_id: z.string().min(1),
-  sender_type: z.string().min(1),
+// Same bounded fields as message_created: chat events share the chat-message
+// wire row (contracts/chatEvents.ts) with a ChatEventType message_type.
+export const eventCreatedPayloadSchema = messageCreatedPayloadSchema.extend({
   chat_room_id: z.string().min(1),
-  inserted_at: z.string().min(1),
-  content: z.string().nullish(),
-}).passthrough();
+});
 
 const roomOwnerSchema = z.object({
   id: z.string(),
