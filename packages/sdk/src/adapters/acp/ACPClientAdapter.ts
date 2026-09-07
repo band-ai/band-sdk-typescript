@@ -10,7 +10,7 @@ import type {
   PermissionOption,
   RequestPermissionRequest,
   RequestPermissionResponse,
-  SessionModeId,
+  SessionMode,
   SessionModeState,
 } from "@agentclientprotocol/sdk";
 
@@ -67,6 +67,13 @@ const DEFAULT_PERMISSION_TIMEOUT_MS = 5 * 60_000;
 // process acknowledging an administrative call, not doing model inference.
 const SET_SESSION_MODE_TIMEOUT_MS = 10_000;
 
+export interface ACPModeRequest {
+  roomId: string;
+  sessionId: string;
+  currentModeId: string;
+  modes: readonly SessionMode[];
+}
+
 export interface ACPClientAdapterOptions {
   command: string | string[];
   cwd?: string;
@@ -88,12 +95,15 @@ export interface ACPClientAdapterOptions {
   // Only meaningful when `resolvePermission` is set. Defaults to
   // `DEFAULT_PERMISSION_TIMEOUT_MS`.
   permissionTimeoutMs?: number;
-  // Applied via ACP's `session/set_mode` once a session is (re)established —
-  // `newSession` has no field for this. Ignored if the agent doesn't
-  // advertise this mode id. Best-effort and one-time: a failed switch only
-  // logs a warning, and an agent that later changes mode on its own (ACP's
-  // `current_mode_update`) is neither tracked nor re-asserted.
-  requestedPermissionMode?: SessionModeId;
+  // ACP advertises session modes once a session is (re)established. This
+  // callback receives that harness-owned catalog and may select one before
+  // the session's first prompt. Omit it to preserve the harness's advertised
+  // current mode. Applied via ACP's `session/set_mode`; ignored if the
+  // resolved id isn't advertised. Best-effort and one-time per session: a
+  // failed switch only logs a warning, and an agent that later changes mode
+  // on its own (ACP's `current_mode_update`) is neither tracked nor
+  // re-asserted.
+  resolveSessionMode?: (request: ACPModeRequest, signal: AbortSignal) => Promise<string | undefined>;
   logger?: Logger;
 }
 
@@ -116,8 +126,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private readonly pendingPermissions = new Map<string /* sessionId */, Set<AbortController>>()
 
   private readonly resolvePermission?: (request: RequestPermissionRequest, signal: AbortSignal) => Promise<string | undefined>
+  private readonly resolveSessionMode?: (request: ACPModeRequest, signal: AbortSignal) => Promise<string | undefined>
   private readonly permissionTimeoutMs: number
-  private readonly requestedPermissionMode?: SessionModeId
   private readonly logger: Logger
 
   private backend: InjectedMcpBackend | null = null
@@ -151,20 +161,14 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.connectionFactory = options.connectionFactory ?? createSubprocessConnection
 
     this.resolvePermission = options.resolvePermission
+    this.resolveSessionMode = options.resolveSessionMode
     this.logger = options.logger ?? new NoopLogger()
     this.permissionTimeoutMs = options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
-    this.requestedPermissionMode = options.requestedPermissionMode
-    // An empty string is falsy, so `applyRequestedPermissionMode` would
-    // silently treat it as "unset" with no warning — reject it here instead,
-    // the same posture `permissionTimeoutMs` below takes with a bad value.
-    if (this.requestedPermissionMode !== undefined && this.requestedPermissionMode.length === 0) {
-      throw new ValidationError("requestedPermissionMode must be a non-empty mode id, got an empty string")
-    }
     // Only meaningful when `resolvePermission` is actually set — the
     // auto-allow path never reads it, so an irrelevant/default value here
     // shouldn't reject an otherwise-valid config for a caller not using
     // manual mode at all.
-    if (this.resolvePermission && (!Number.isFinite(this.permissionTimeoutMs) || this.permissionTimeoutMs <= 0)) {
+    if ((this.resolvePermission || this.resolveSessionMode) && (!Number.isFinite(this.permissionTimeoutMs) || this.permissionTimeoutMs <= 0)) {
       throw new ValidationError(`permissionTimeoutMs must be a positive finite number, got ${options.permissionTimeoutMs}`)
     }
   }
@@ -379,14 +383,14 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       const restored = await this.tryRestoreSession(connection, existingSessionId, mcpServers)
       if (restored.ok) {
         // Marked active/bootstrapped before the best-effort mode switch below
-        // is awaited: `applyRequestedPermissionMode` makes a real RPC call,
-        // and a connection drop mid-call clears `activeSessions` (see
+        // is awaited: `configureSessionMode` makes a real RPC call, and a
+        // connection drop mid-call clears `activeSessions` (see
         // `spawnConnection`'s `closed.finally()`) — running this after that
         // await would let a stale add silently re-admit a session whose
         // connection just died.
         this.activeSessions.add(existingSessionId)
         this.bootstrappedSessions.add(existingSessionId)
-        await this.applyRequestedPermissionMode(connection, existingSessionId, restored.modes)
+        await this.configureSessionMode(roomId, existingSessionId, restored.modes, connection)
         return existingSessionId
       }
     }
@@ -399,8 +403,100 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     // Same ordering reason as the restored-session branch above.
     this.roomToSession.set(roomId, created.sessionId)
     this.activeSessions.add(created.sessionId)
-    await this.applyRequestedPermissionMode(connection, created.sessionId, created.modes)
+    await this.configureSessionMode(roomId, created.sessionId, created.modes, connection)
     return created.sessionId
+  }
+
+  // Best-effort: never throws, so a mode switch going wrong can't take a
+  // session establishment down with it.
+  private async configureSessionMode(
+    roomId: string,
+    sessionId: string,
+    modes: SessionModeState | null | undefined,
+    connection: ClientSideConnection,
+  ): Promise<void> {
+    if (!this.resolveSessionMode || !modes) {
+      return
+    }
+
+    // Defensive, not just typed: `modes` comes straight off an unvalidated
+    // JSON-RPC response from the spawned agent process (the ACP client does
+    // no runtime schema check), so a non-conforming agent can send
+    // `availableModes` missing, null, or containing a null entry despite the
+    // type guaranteeing an `Array<SessionMode>`.
+    const availableModes = Array.isArray(modes.availableModes) ? modes.availableModes : []
+    if (availableModes.length === 0) {
+      return
+    }
+
+    const selectedModeId = await this.resolveSessionModeManually(
+      (signal) => this.resolveSessionMode!({
+        roomId,
+        sessionId,
+        currentModeId: modes.currentModeId,
+        modes: availableModes,
+      }, signal),
+      connection.signal,
+    )
+    if (!selectedModeId || selectedModeId === modes.currentModeId) {
+      return
+    }
+
+    if (!availableModes.some((mode) => mode?.id === selectedModeId)) {
+      // Warned, not silent: otherwise a caller-selected mode id silently
+      // failing to apply has no signal at all.
+      this.safeWarn("resolveSessionMode selected a mode id this session does not advertise", {
+        sessionId,
+        selectedModeId,
+        availableModeIds: availableModes.map((mode) => mode?.id),
+      })
+      return
+    }
+
+    try {
+      await withTimeout(
+        connection.setSessionMode({ sessionId, modeId: selectedModeId }),
+        SET_SESSION_MODE_TIMEOUT_MS,
+        `setSessionMode did not respond within ${SET_SESSION_MODE_TIMEOUT_MS}ms`,
+      )
+    } catch (error) {
+      this.safeWarn("failed to switch session into the selected mode", {
+        sessionId,
+        selectedModeId,
+        error: String(error),
+      })
+    }
+  }
+
+  private async resolveSessionModeManually(
+    resolver: (signal: AbortSignal) => Promise<string | undefined>,
+    signal: AbortSignal,
+  ): Promise<string | undefined> {
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    signal.addEventListener("abort", abort, { once: true })
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    try {
+      const cancelled = new Promise<undefined>((resolve) => {
+        controller.signal.addEventListener("abort", () => resolve(undefined), { once: true })
+      })
+      const timeout = new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), this.permissionTimeoutMs)
+      })
+      return await Promise.race([
+        Promise.resolve().then(() => resolver(controller.signal)).catch((error) => {
+          this.safeWarn("resolveSessionMode threw; preserving the harness default", { error: String(error) })
+          return undefined
+        }),
+        timeout,
+        cancelled,
+      ])
+    } finally {
+      clearTimeout(timer)
+      signal.removeEventListener("abort", abort)
+      controller.abort()
+    }
   }
 
   private async tryRestoreSession(
@@ -434,50 +530,6 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       return { ok: true, modes: restored?.modes }
     } catch {
       return { ok: false }
-    }
-  }
-
-  // Best-effort: never throws, so a mode switch going wrong can't take a
-  // session establishment down with it.
-  private async applyRequestedPermissionMode(
-    connection: ClientSideConnection,
-    sessionId: string,
-    modes: SessionModeState | null | undefined,
-  ): Promise<void> {
-    const requestedModeId = this.requestedPermissionMode
-    if (!requestedModeId || !modes || modes.currentModeId === requestedModeId) {
-      return
-    }
-
-    // Defensive, not just typed: `modes` comes straight off an unvalidated
-    // JSON-RPC response from the spawned agent process (the ACP client does
-    // no runtime schema check), so a non-conforming agent can send
-    // `availableModes` missing, null, or containing a null entry despite the
-    // type guaranteeing an `Array<SessionMode>`.
-    const availableModes = Array.isArray(modes.availableModes) ? modes.availableModes : []
-    if (!availableModes.some((mode) => mode?.id === requestedModeId)) {
-      // Warned, not silent: otherwise a renamed/dropped mode id silently
-      // stops "ask before every tool" from working, with no signal at all.
-      this.safeWarn("requested permission mode is not advertised by this session", {
-        sessionId,
-        requestedModeId,
-        availableModeIds: availableModes.map((mode) => mode?.id),
-      })
-      return
-    }
-
-    try {
-      await withTimeout(
-        connection.setSessionMode({ sessionId, modeId: requestedModeId }),
-        SET_SESSION_MODE_TIMEOUT_MS,
-        `setSessionMode did not respond within ${SET_SESSION_MODE_TIMEOUT_MS}ms`,
-      )
-    } catch (error) {
-      this.safeWarn("failed to switch session into the requested permission mode", {
-        sessionId,
-        requestedModeId,
-        error: String(error),
-      })
     }
   }
 
