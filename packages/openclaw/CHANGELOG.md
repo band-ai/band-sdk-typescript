@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/band-ai/band-sdk-typescript/compare/openclaw-channel-band-v0.2.0...openclaw-channel-band-v0.2.1) (2026-09-07)
+
+
+### Features
+
+* **runtime:** integrate RoomRoster into the TypeScript room lifecycle ([#177](https://github.com/band-ai/band-sdk-typescript/issues/177)) ([aa3a5f0](https://github.com/band-ai/band-sdk-typescript/commit/aa3a5f0d0378ead7b0c3aa823f525abe857d735e))
+
 ## [0.2.0](https://github.com/band-ai/band-sdk-typescript/compare/openclaw-channel-band-v0.1.11...openclaw-channel-band-v0.2.0) (2026-09-01)
 
 
