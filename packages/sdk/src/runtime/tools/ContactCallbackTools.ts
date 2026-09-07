@@ -26,7 +26,7 @@ import type {
 } from "../../contracts/dtos";
 import type { AgentFailure } from "@band-ai/band-sdk-core";
 import {
-  toFailureEvent,
+  sendFailureViaEvent,
   type AdapterToolsProtocol,
   type AgentToolsCapabilities,
 } from "../../contracts/protocols";
@@ -145,8 +145,7 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
   }
 
   public async sendFailure(failure: AgentFailure): Promise<ToolOperationResult> {
-    const { content, messageType, metadata } = toFailureEvent(failure);
-    return this.sendEvent(content, messageType, metadata);
+    return sendFailureViaEvent(this.sendEvent.bind(this), failure);
   }
 
   public async addParticipant(): Promise<ToolOperationResult> {

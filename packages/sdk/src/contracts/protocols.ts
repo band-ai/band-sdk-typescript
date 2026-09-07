@@ -77,6 +77,19 @@ export const FAILURE_EVENT_TYPE: ChatEventType = "error";
  */
 export const FAILURE_METADATA_KEY = "failure";
 
+/**
+ * Default `sendFailure` body: turn the failure into its wire event and post
+ * it through the caller's own `sendEvent`. Every in-tree `MessagingTools`
+ * implementation delegates here instead of re-deriving the event itself.
+ */
+export function sendFailureViaEvent(
+  sendEvent: MessagingTools["sendEvent"],
+  failure: AgentFailure,
+): Promise<ToolOperationResult> {
+  const { content, messageType, metadata } = toFailureEvent(failure);
+  return sendEvent(content, messageType, metadata);
+}
+
 /** The complete event every `sendFailure` implementation posts for a failure. */
 export function toFailureEvent(failure: AgentFailure): {
   content: string;

@@ -2,6 +2,7 @@ import { AgentFailure } from "@band-ai/band-sdk-core";
 
 import type { MessagingTools } from "../../contracts/protocols";
 import { RecoverableTurnError } from "../../core/errors";
+import type { Logger } from "../../core/logger";
 
 /**
  * `AgentFailure.code` for a provider that failed to respond before its own
@@ -36,6 +37,32 @@ export async function reportTurnFailure(
 ): Promise<never> {
   await tools.sendFailure(failure);
   throw new ProviderTurnFailedError(failure);
+}
+
+/**
+ * Reports a failure without letting `sendFailure` itself take the turn down.
+ *
+ * `sendFailure` is not unconditionally non-throwing (see `MessagingTools`),
+ * so a caller reporting from a failure path — one that can't afford a new
+ * throw here to replace the failure it's reporting — swallows and logs it
+ * instead. One shared guard rather than a copy of this try/catch per adapter.
+ */
+export async function safeSendFailure(
+  tools: MessagingTools,
+  failure: AgentFailure,
+  logger: Logger,
+  logContext?: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await tools.sendFailure(failure);
+  } catch (error) {
+    logger.warn("provider_failure.report_failed", {
+      provider: failure.provider,
+      code: failure.code,
+      ...logContext,
+      error,
+    });
+  }
 }
 
 /**

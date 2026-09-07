@@ -624,13 +624,14 @@ function verifyBearerAuthorization(
  * every other `sendFailure` implementation uses ({@link toFailureEvent} in
  * `contracts/protocols.ts`). `code` overrides the default `error.name`
  * derivation for call sites that know a more specific failure code (e.g. a
- * timeout).
+ * timeout). `message` overrides the default sanitization of `error`, for a
+ * caller that already sanitized it for the event's own `text` field.
  */
 export function buildGatewayFailureMetadata(
   error: unknown,
   code?: string,
+  message: string = sanitizeGatewayErrorMessage(error),
 ): Record<string, unknown> {
-  const message = sanitizeGatewayErrorMessage(error);
   return {
     [FAILURE_METADATA_KEY]: new AgentFailure(
       PROVIDER,

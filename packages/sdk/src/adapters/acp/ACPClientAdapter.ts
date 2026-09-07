@@ -393,31 +393,35 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       senderHandle: message.senderName ?? message.senderType,
     })
 
-    // Bookkeeping, not a success signal: this event's metadata is the only
-    // record `ACPClientHistoryConverter` rebuilds room→session from, so it has
-    // to be written for any outcome that leaves the session alive. A turn that
-    // ends on max_tokens would otherwise lose the room's whole session at the
-    // next restart, silently starting a fresh one.
-    await tools.sendEvent("ACP client session", "task", {
-      acp_client_session_id: sessionId,
-      acp_client_room_id: roomId,
-    })
-
     // A *resolved* prompt() isn't automatically a success — max_tokens/
     // max_turn_requests/refusal/cancelled are real provider-declared
     // non-success outcomes today silently treated as end_turn. Whatever
     // partial content the turn produced is still flushed above, unchanged.
     // `?.` despite the non-nullable type: response is a deserialized wire
     // value from an external agent process, and a missing body must not
-    // throw here — it belongs in the failure branch below instead.
+    // throw here — it belongs in the failure send below instead.
     const stopReason: string | undefined = response?.stopReason
-    if (stopReason !== "end_turn") {
-      await tools.sendFailure(new AgentFailure(
-        this.provider,
-        `ACP turn ended with stop reason: ${stopReason ?? "unknown"}.`,
-        stopReason,
-      ))
-    }
+
+    // Bookkeeping and failure reporting are independent posts to the room, so
+    // they run concurrently rather than paying two round-trips in serial.
+    await Promise.all([
+      // This event's metadata is the only record `ACPClientHistoryConverter`
+      // rebuilds room→session from, so it has to be written for any outcome
+      // that leaves the session alive. A turn that ends on max_tokens would
+      // otherwise lose the room's whole session at the next restart, silently
+      // starting a fresh one.
+      tools.sendEvent("ACP client session", "task", {
+        acp_client_session_id: sessionId,
+        acp_client_room_id: roomId,
+      }),
+      stopReason !== "end_turn"
+        ? tools.sendFailure(new AgentFailure(
+          this.provider,
+          `ACP turn ended with stop reason: ${stopReason ?? "unknown"}.`,
+          stopReason,
+        ))
+        : Promise.resolve(),
+    ])
   }
 
   public async onCleanup(roomId: string): Promise<void> {

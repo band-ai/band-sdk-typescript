@@ -1,5 +1,3 @@
-import type { AgentFailure } from "@band-ai/band-sdk-core";
-
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { MessagingTools } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
@@ -8,7 +6,12 @@ import { UnsupportedFeatureError } from "../../core/errors";
 import type { PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { asErrorMessage, asNonEmptyString, asOptionalRecord } from "../shared/coercion";
-import { FAILURE_CODE_TIMEOUT, ProviderTurnFailedError, agentFailure } from "../shared/providerFailure";
+import {
+  FAILURE_CODE_TIMEOUT,
+  ProviderTurnFailedError,
+  agentFailure,
+  safeSendFailure,
+} from "../shared/providerFailure";
 import { deliverReply, rethrowIfDeliveryFailure } from "../shared/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import {
@@ -214,7 +217,7 @@ export class ParlantAdapter
 
       if (!reply) {
         const failure = agentFailure(this.provider, "Parlant did not return a response before timeout.", FAILURE_CODE_TIMEOUT);
-        await this.safeSendFailure(tools, failure, context.roomId);
+        await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId, agentId: this.agentId });
         throw new ProviderTurnFailedError(failure);
       }
 
@@ -229,24 +232,8 @@ export class ParlantAdapter
         error,
       });
       const failure = agentFailure(this.provider, errorMessage);
-      await this.safeSendFailure(tools, failure, context.roomId);
+      await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId, agentId: this.agentId });
       throw new ProviderTurnFailedError(failure);
-    }
-  }
-
-  private async safeSendFailure(
-    tools: MessagingTools,
-    failure: AgentFailure,
-    roomId: string,
-  ): Promise<void> {
-    try {
-      await tools.sendFailure(failure);
-    } catch (eventError) {
-      this.logger.warn("Parlant adapter failed to emit error event", {
-        roomId,
-        agentId: this.agentId,
-        error: eventError,
-      });
     }
   }
 

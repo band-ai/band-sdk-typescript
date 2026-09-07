@@ -56,7 +56,6 @@ export class PlatformRuntime implements AsyncDisposable {
     description?: string | null;
   };
   private readonly logger: Logger;
-  private readonly linkLogger?: Logger;
   private readonly _onParticipantAdded?: (roomId: string, participant: ParticipantRecord) => Promise<void> | void;
   private readonly _onParticipantRemoved?: (roomId: string, participantId: string) => Promise<void> | void;
   private readonly _roomFilter?: (room: MetadataMap) => boolean;
@@ -99,13 +98,18 @@ export class PlatformRuntime implements AsyncDisposable {
     this._wsUrl = options.wsUrl;
     this._restUrl = options.restUrl;
     this.linkInstance = options.link;
-    this.linkOptions = options.linkOptions;
+    // An explicit top-level logger wins over a link-specific one; absent
+    // both, `logger` stays unset so `BandLink` falls back to its own default
+    // rather than being forced into this runtime's `NoopLogger`.
+    this.linkOptions = {
+      ...options.linkOptions,
+      logger: options.logger ?? options.linkOptions?.logger,
+    };
     this.preprocessor = options.preprocessor ?? new DefaultPreprocessor();
     this.sessionConfig = options.sessionConfig;
     this.contactConfig = options.contactConfig;
     this.agentConfig = options.agentConfig;
     this.logger = options.logger ?? new NoopLogger();
-    this.linkLogger = options.logger ?? options.linkOptions?.logger;
     this.configuredIdentity = options.identity;
     this._onParticipantAdded = options.onParticipantAdded;
     this._onParticipantRemoved = options.onParticipantRemoved;
@@ -163,7 +167,6 @@ export class PlatformRuntime implements AsyncDisposable {
         apiKey: this._apiKey,
         wsUrl: this._wsUrl,
         restUrl: this._restUrl,
-        logger: this.linkLogger,
       });
     }
 

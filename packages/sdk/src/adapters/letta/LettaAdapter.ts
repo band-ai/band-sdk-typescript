@@ -1,5 +1,3 @@
-import type { AgentFailure } from "@band-ai/band-sdk-core";
-
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
@@ -8,7 +6,7 @@ import { RuntimeStateError, UnsupportedFeatureError } from "../../core/errors";
 import type { PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { asErrorMessage, toWireString } from "../shared/coercion";
-import { ProviderTurnFailedError, agentFailure } from "../shared/providerFailure";
+import { ProviderTurnFailedError, agentFailure, safeSendFailure } from "../shared/providerFailure";
 import { deliverReply, rethrowIfDeliveryFailure } from "../shared/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import type { LettaMessages } from "./types";
@@ -392,7 +390,7 @@ export class LettaAdapter extends SimpleAdapter<
 
       if (!assistantText) {
         const failure = agentFailure(this.provider, "Letta did not return a response.");
-        await this.safeSendFailure(tools, failure, context.roomId);
+        await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId });
         throw new ProviderTurnFailedError(failure);
       }
 
@@ -407,23 +405,8 @@ export class LettaAdapter extends SimpleAdapter<
       });
 
       const failure = agentFailure(this.provider, errorMessage);
-      await this.safeSendFailure(tools, failure, context.roomId);
+      await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId });
       throw new ProviderTurnFailedError(failure);
-    }
-  }
-
-  private async safeSendFailure(
-    tools: AdapterToolsProtocol,
-    failure: AgentFailure,
-    roomId: string,
-  ): Promise<void> {
-    try {
-      await tools.sendFailure(failure);
-    } catch (eventError) {
-      this.logger.warn("Letta adapter failed to emit error event", {
-        roomId,
-        error: eventError,
-      });
     }
   }
 

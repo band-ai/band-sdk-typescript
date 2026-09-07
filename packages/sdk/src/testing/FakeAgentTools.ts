@@ -6,7 +6,7 @@ import type {
   ContactTools,
   MemoryTools,
 } from "../contracts/protocols";
-import { DEFAULT_AGENT_TOOLS_CAPABILITIES, toFailureEvent } from "../contracts/protocols";
+import { DEFAULT_AGENT_TOOLS_CAPABILITIES, sendFailureViaEvent } from "../contracts/protocols";
 import { isBlankEventContent } from "../contracts/chatEvents";
 import type {
   AddContactArgs,
@@ -111,8 +111,7 @@ export class FakeAgentTools
 
   public async sendFailure(failure: AgentFailure): Promise<ToolOperationResult> {
     this.maybeFail("sendFailure");
-    const { content, messageType, metadata } = toFailureEvent(failure);
-    return this.sendEvent(content, messageType, metadata);
+    return sendFailureViaEvent(this.sendEvent.bind(this), failure);
   }
 
   public async addParticipant(

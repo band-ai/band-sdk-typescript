@@ -280,13 +280,14 @@ export class A2AGatewayAdapter
       });
     } catch (error) {
       this.removePending(pending);
+      const text = sanitizeGatewayErrorMessage(error);
       yield buildStatusEvent({
         taskId: pending.taskId,
         contextId: pending.contextId,
         state: "failed",
         final: true,
-        text: sanitizeGatewayErrorMessage(error),
-        metadata: buildGatewayFailureMetadata(error),
+        text,
+        metadata: buildGatewayFailureMetadata(error, undefined, text),
       });
       return;
     }

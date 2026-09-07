@@ -39,7 +39,7 @@ import {
   type AgentToolsProtocol,
   isStructuredToolFailure,
   isToolExecutorError,
-  toFailureEvent,
+  sendFailureViaEvent,
   type ToolExecutorError,
 } from "../../contracts/protocols";
 import {
@@ -197,8 +197,7 @@ export class AgentTools implements AgentToolsProtocol {
   }
 
   public async sendFailure(failure: AgentFailure): Promise<ToolOperationResult> {
-    const { content, messageType, metadata } = toFailureEvent(failure);
-    return this.sendEvent(content, messageType, metadata);
+    return sendFailureViaEvent(this.sendEvent.bind(this), failure);
   }
 
   public async createChatroom(taskId?: string): Promise<string> {

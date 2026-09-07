@@ -14,6 +14,7 @@ import { resolveLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { SEND_MESSAGE_TOOL_NAME, SEND_EVENT_TOOL_NAME } from "../../runtime/tools/schemas";
+import { abandon } from "../shared/abandon";
 import { systemUpdateParts } from "../shared/conversationPrompt";
 import {
   CustomToolExecutionError,
@@ -25,7 +26,7 @@ import {
   findCustomToolInIndex,
 } from "../../runtime/tools/customTools";
 import { asErrorMessage, asNonEmptyString, asOptionalRecord, asRecord, asString, toWireString } from "../shared/coercion";
-import { ProviderTurnFailedError, agentFailure } from "../shared/providerFailure";
+import { ProviderTurnFailedError, agentFailure, safeSendFailure } from "../shared/providerFailure";
 import { deliverReply } from "../shared/deliveryFailedError";
 import { findLatestTaskMetadata } from "../shared/history";
 import {
@@ -309,7 +310,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       return { client, threadId };
     } catch (error) {
       const failure = agentFailure(this.provider, asErrorMessage(error));
-      await this.safeSendFailure(tools, failure);
+      await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId });
       throw new ProviderTurnFailedError(failure);
     }
   }
@@ -330,12 +331,12 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       ));
     } catch (error) {
       const failure = agentFailure(this.provider, asErrorMessage(error));
-      await this.safeSendFailure(tools, failure);
+      await safeSendFailure(tools, failure, this.logger);
       throw new ProviderTurnFailedError(failure);
     }
     if (!turnStarted) {
       const failure = agentFailure(this.provider, "Codex returned an invalid turn/start payload.");
-      await this.safeSendFailure(tools, failure);
+      await safeSendFailure(tools, failure, this.logger);
       throw new ProviderTurnFailedError(failure);
     }
     return turnStarted;
@@ -367,16 +368,23 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
         event = await client.recvEvent(config.turnTimeoutMs);
       } catch {
         if (turnId) {
-          try {
-            const interrupt: TurnInterruptParams = { threadId, turnId };
-            await client.request("turn/interrupt", toRpcParams(interrupt));
-          } catch (interruptError) {
-            this.logger.warn("codex_adapter.turn_interrupt_failed", {
-              threadId,
-              turnId,
-              error: interruptError,
-            });
-          }
+          // A server wedged enough to blow the turn timeout can leave this
+          // interrupt request pending too, and awaiting it would block the
+          // very cleanup and failure report this timeout exists to produce.
+          // See `abandon`.
+          abandon(
+            () => {
+              const interrupt: TurnInterruptParams = { threadId, turnId };
+              return client.request("turn/interrupt", toRpcParams(interrupt));
+            },
+            (interruptError) => {
+              this.logger.warn("codex_adapter.turn_interrupt_failed", {
+                threadId,
+                turnId,
+                error: interruptError,
+              });
+            },
+          );
         }
         turnStatus = "interrupted";
         turnError = "Turn timed out";
@@ -410,7 +418,12 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
         if (params.willRetry === true) {
           this.logger.warn("codex_adapter.retryable_error", { error: errorMessage, roomId });
         } else {
-          await this.safeSendFailure(tools, agentFailure(this.provider, errorMessage, asString(error.code), error));
+          await safeSendFailure(
+            tools,
+            agentFailure(this.provider, errorMessage, asString(error.code), error),
+            this.logger,
+            { roomId },
+          );
           reportedFailureInLoop = true;
         }
         continue;
@@ -1072,11 +1085,15 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     // machine-readable record lands even when the reply after it does not.
     if (input.turnStatus === "interrupted") {
       const interrupted = "I stopped before completing this request.";
-      await this.safeSendFailure(
-        input.tools,
-        new AgentFailure(this.provider, input.turnError || interrupted, input.turnStatus),
-      );
-      await deliverReply(input.tools, interrupted, mention);
+      await Promise.all([
+        safeSendFailure(
+          input.tools,
+          new AgentFailure(this.provider, input.turnError || interrupted, input.turnStatus),
+          this.logger,
+          { roomId: input.roomId },
+        ),
+        deliverReply(input.tools, interrupted, mention),
+      ]);
       return;
     }
 
@@ -1085,10 +1102,15 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       : `I couldn't complete this request (${input.turnStatus}).`;
     // An `error` event already reported this incident during the loop; the
     // terminal `turn/completed` status is the same failure, not a new one.
-    if (!input.reportedFailureInLoop) {
-      await this.safeSendFailure(input.tools, new AgentFailure(this.provider, errorText, input.turnStatus));
-    }
-    await deliverReply(input.tools, errorText, mention);
+    const failureReport = input.reportedFailureInLoop
+      ? Promise.resolve()
+      : safeSendFailure(
+        input.tools,
+        new AgentFailure(this.provider, errorText, input.turnStatus),
+        this.logger,
+        { roomId: input.roomId },
+      );
+    await Promise.all([failureReport, deliverReply(input.tools, errorText, mention)]);
   }
 
   private extractTurnError(error: TurnErrorInfo | null | undefined): string {
@@ -1209,7 +1231,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       response = await client.request<unknown>("model/list", {});
     } catch (error) {
       const failure = agentFailure(this.provider, asErrorMessage(error));
-      await this.safeSendFailure(tools, failure);
+      await safeSendFailure(tools, failure, this.logger);
       throw new ProviderTurnFailedError(failure);
     }
     const result = parseModelListResponse(response);
@@ -1287,17 +1309,6 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     }
   }
 
-  private async safeSendFailure(tools: AgentToolsProtocol, failure: AgentFailure): Promise<void> {
-    try {
-      await tools.sendFailure(failure);
-    } catch (error) {
-      this.logger.warn("codex_adapter.failure_emit_failed", {
-        provider: failure.provider,
-        code: failure.code,
-        error,
-      });
-    }
-  }
 }
 
 function isToolLikeItem(item: ThreadItem): item is ToolLikeItem {

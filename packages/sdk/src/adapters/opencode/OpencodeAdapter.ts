@@ -22,7 +22,7 @@ import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
 import { abandon } from "../shared/abandon";
 import { asErrorMessage, asOptionalRecord } from "../shared/coercion";
 import { deliverReply, rethrowIfDeliveryFailure } from "../shared/deliveryFailedError";
-import { FAILURE_CODE_TIMEOUT, agentFailure } from "../shared/providerFailure";
+import { FAILURE_CODE_TIMEOUT, agentFailure, safeSendFailure } from "../shared/providerFailure";
 import {
   type OpencodeSessionState,
   OpencodeHistoryConverter,
@@ -914,19 +914,15 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       abandon(() => client.abortSession(abortedSessionId));
     }
     if (roomState.tools) {
-      try {
-        await roomState.tools.sendFailure(
-          new AgentFailure(this.provider, "OpenCode timed out before completing the turn.", FAILURE_CODE_TIMEOUT),
-        );
-      } catch (eventError) {
-        // Best-effort: the timeout itself is the truth we already know,
-        // and failing to report it must not leave the room's turn wait
-        // released forever.
-        this.logger.warn("OpenCode adapter failed to emit timeout failure event", {
-          roomId: roomState.roomId,
-          error: eventError,
-        });
-      }
+      // Best-effort: the timeout itself is the truth we already know, and
+      // failing to report it must not leave the room's turn wait released
+      // forever.
+      await safeSendFailure(
+        roomState.tools,
+        new AgentFailure(this.provider, "OpenCode timed out before completing the turn.", FAILURE_CODE_TIMEOUT),
+        this.logger,
+        { roomId: roomState.roomId },
+      );
     }
     this.releaseTurnWait(roomState);
   }
