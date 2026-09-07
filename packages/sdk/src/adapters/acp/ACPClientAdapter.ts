@@ -22,6 +22,7 @@ import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { mentionSubjectsFromMetadata, replaceUuidMentions } from "../../runtime/formatters";
 import { systemUpdateParts } from "../shared/conversationPrompt";
+import { withTimeout } from "../shared/withTimeout";
 import { isBlankEventContent } from "../../contracts/chatEvents";
 import type { PlatformMessage } from "../../runtime/types";
 import type { McpToolRegistration } from "../../mcp/registrations";
@@ -89,7 +90,9 @@ export interface ACPClientAdapterOptions {
   permissionTimeoutMs?: number;
   // Applied via ACP's `session/set_mode` once a session is (re)established —
   // `newSession` has no field for this. Ignored if the agent doesn't
-  // advertise this mode id.
+  // advertise this mode id. Best-effort and one-time: a failed switch only
+  // logs a warning, and an agent that later changes mode on its own (ACP's
+  // `current_mode_update`) is neither tracked nor re-asserted.
   requestedPermissionMode?: SessionModeId;
   logger?: Logger;
 }
@@ -151,6 +154,12 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.logger = options.logger ?? new NoopLogger()
     this.permissionTimeoutMs = options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
     this.requestedPermissionMode = options.requestedPermissionMode
+    // An empty string is falsy, so `applyRequestedPermissionMode` would
+    // silently treat it as "unset" with no warning — reject it here instead,
+    // the same posture `permissionTimeoutMs` below takes with a bad value.
+    if (this.requestedPermissionMode !== undefined && this.requestedPermissionMode.length === 0) {
+      throw new ValidationError("requestedPermissionMode must be a non-empty mode id, got an empty string")
+    }
     // Only meaningful when `resolvePermission` is actually set — the
     // auto-allow path never reads it, so an irrelevant/default value here
     // shouldn't reject an otherwise-valid config for a caller not using
@@ -402,26 +411,30 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     const capabilities = this.connectionState?.agentCapabilities
     const params = { cwd: this.cwd, mcpServers, sessionId }
 
-    try {
-      if (capabilities?.loadSession) {
-        // `?.`: the ACP client doesn't runtime-validate this response, and
-        // the installed SDK's own `unstable_resumeSession` (below) has no
-        // fallback for a nullish resolution the way its `loadSession` does —
-        // a restore that genuinely succeeded must not be miscategorized as
-        // failed just because no mode state came back with it.
-        const loaded = await connection.loadSession(params)
-        return { ok: true, modes: loaded?.modes }
-      }
+    // `loadSession`/`unstable_resumeSession` share both their params and
+    // their response shape (`{ ...; modes?: SessionModeState | null }`);
+    // resolve which one applies once, then handle the result once.
+    const restore = capabilities?.loadSession
+      ? () => connection.loadSession(params)
+      : capabilities?.sessionCapabilities?.resume
+        ? () => connection.unstable_resumeSession(params)
+        : null
 
-      if (capabilities?.sessionCapabilities?.resume) {
-        const resumed = await connection.unstable_resumeSession(params)
-        return { ok: true, modes: resumed?.modes }
-      }
-    } catch {
+    if (!restore) {
       return { ok: false }
     }
 
-    return { ok: false }
+    try {
+      // `?.`: the ACP client doesn't runtime-validate this response, and the
+      // installed SDK's own `unstable_resumeSession` has no fallback for a
+      // nullish resolution the way its `loadSession` does — a restore that
+      // genuinely succeeded must not be miscategorized as failed just
+      // because no mode state came back with it.
+      const restored = await restore()
+      return { ok: true, modes: restored?.modes }
+    } catch {
+      return { ok: false }
+    }
   }
 
   // Best-effort: never throws, so a mode switch going wrong can't take a
@@ -431,7 +444,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     sessionId: string,
     modes: SessionModeState | null | undefined,
   ): Promise<void> {
-    if (!this.requestedPermissionMode || !modes || modes.currentModeId === this.requestedPermissionMode) {
+    const requestedModeId = this.requestedPermissionMode
+    if (!requestedModeId || !modes || modes.currentModeId === requestedModeId) {
       return
     }
 
@@ -441,46 +455,29 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     // `availableModes` missing, null, or containing a null entry despite the
     // type guaranteeing an `Array<SessionMode>`.
     const availableModes = Array.isArray(modes.availableModes) ? modes.availableModes : []
-    if (!availableModes.some((mode) => mode?.id === this.requestedPermissionMode)) {
+    if (!availableModes.some((mode) => mode?.id === requestedModeId)) {
       // Warned, not silent: otherwise a renamed/dropped mode id silently
       // stops "ask before every tool" from working, with no signal at all.
       this.safeWarn("requested permission mode is not advertised by this session", {
         sessionId,
-        requestedModeId: this.requestedPermissionMode,
+        requestedModeId,
         availableModeIds: availableModes.map((mode) => mode?.id),
       })
       return
     }
 
     try {
-      await this.withTimeout(
-        connection.setSessionMode({ sessionId, modeId: this.requestedPermissionMode }),
+      await withTimeout(
+        connection.setSessionMode({ sessionId, modeId: requestedModeId }),
         SET_SESSION_MODE_TIMEOUT_MS,
         `setSessionMode did not respond within ${SET_SESSION_MODE_TIMEOUT_MS}ms`,
       )
     } catch (error) {
       this.safeWarn("failed to switch session into the requested permission mode", {
         sessionId,
-        requestedModeId: this.requestedPermissionMode,
+        requestedModeId,
         error: String(error),
       })
-    }
-  }
-
-  // Bounds an RPC that has no timeout of its own (see `SET_SESSION_MODE_TIMEOUT_MS`
-  // above) — the awaited promise isn't actually cancelled, since ACP gives no
-  // way to do that, only stopped waiting on.
-  private async withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-    let timer: ReturnType<typeof setTimeout> | undefined
-    try {
-      return await Promise.race([
-        promise,
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error(message)), timeoutMs)
-        }),
-      ])
-    } finally {
-      clearTimeout(timer)
     }
   }
 
@@ -662,12 +659,15 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       : { outcome: { outcome: "cancelled" } }
   }
 
-  // A caller-supplied `Logger` isn't guaranteed not to throw. Every
-  // best-effort warning in this file routes through here so one failing
-  // sink can't turn a warning into an unhandled rejection in its place.
+  // A caller-supplied `Logger` isn't guaranteed to be synchronous or
+  // non-throwing. Every best-effort warning in this file routes through here
+  // so one failing sink — a synchronous throw, or an `async` implementation
+  // rejecting (the `Logger` interface's `void` return type permits either;
+  // a bare try/catch only ever catches the former) — can't turn a warning
+  // into an unhandled rejection in its place.
   private safeWarn(message: string, context?: Record<string, unknown>): void {
     try {
-      this.logger.warn(message, context)
+      Promise.resolve(this.logger.warn(message, context)).catch(() => undefined)
     } catch {
       // ignore — see comment above
     }

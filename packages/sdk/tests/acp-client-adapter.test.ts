@@ -3,6 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import { ACPClientAdapter, type ACPClientAdapterOptions } from "../src/adapters/acp";
 import { FakeTools, makeMessage } from "./testUtils";
 
+function makeLoggerSpy() {
+  return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+}
+
 describe("ACPClientAdapter", () => {
   it("restores ACP sessions, auto-injects MCP, and fans out ACP updates", async () => {
     let clientHandle: {
@@ -619,7 +623,7 @@ describe("ACPClientAdapter", () => {
     })
 
     it("(d) resolvePermission rejecting falls back to cancelled and is logged, not thrown", async () => {
-      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+      const logger = makeLoggerSpy()
       const { adapter, getPermissionResult } = buildHarness({
         resolvePermission: async () => {
           throw new Error("host UI call failed")
@@ -807,8 +811,9 @@ describe("ACPClientAdapter", () => {
     // isolation.
     function buildHarness(input: {
       adapterOptions?: Partial<ACPClientAdapterOptions>;
-      newSessionModes?: { currentModeId: string; availableModes: Array<{ id: string; name: string }> };
-      loadSessionModes?: { currentModeId: string; availableModes: Array<{ id: string; name: string }> };
+      agentCapabilities?: Record<string, unknown>;
+      newSessionModes?: { currentModeId: string; availableModes?: Array<{ id: string; name: string }> };
+      loadSessionModes?: { currentModeId: string; availableModes?: Array<{ id: string; name: string }> };
       raisePermissionRequest?: boolean;
     } = {}) {
       let clientHandle: { requestPermission: (params: Record<string, unknown>) => Promise<unknown> } | null = null
@@ -822,6 +827,7 @@ describe("ACPClientAdapter", () => {
       const loadSession = vi.fn(async () => ({
         ...(input.loadSessionModes ? { modes: input.loadSessionModes } : {}),
       }))
+      const unstable_resumeSession = vi.fn()
       const prompt = vi.fn(async (params: { sessionId: string }) => {
         if (input.raisePermissionRequest) {
           permissionResult = await clientHandle?.requestPermission({
@@ -848,11 +854,11 @@ describe("ACPClientAdapter", () => {
               closed: new Promise<void>(() => undefined),
               initialize: vi.fn(async () => ({
                 protocolVersion: 1,
-                agentCapabilities: { loadSession: true },
+                agentCapabilities: input.agentCapabilities ?? { loadSession: true },
               })),
               authenticate: vi.fn(async () => ({})),
               loadSession,
-              unstable_resumeSession: vi.fn(),
+              unstable_resumeSession,
               newSession,
               setSessionMode,
               prompt,
@@ -865,7 +871,7 @@ describe("ACPClientAdapter", () => {
         ...input.adapterOptions,
       })
 
-      return { adapter, setSessionMode, loadSession, getPermissionResult: () => permissionResult }
+      return { adapter, setSessionMode, loadSession, newSession, getPermissionResult: () => permissionResult }
     }
 
     async function send(adapter: ACPClientAdapter, roomId = "room-1", history: Record<string, string> = {}): Promise<void> {
@@ -880,14 +886,7 @@ describe("ACPClientAdapter", () => {
       )
     }
 
-    function makeLoggerSpy() {
-      return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
-    }
-
-    it.each([
-      ["allow", "allow"],
-      ["deny", "deny"],
-    ] as const)("switching into ask mode surfaces a real %s decision on the next tool call", async (pick, expectedOptionId) => {
+    it.each(["allow", "deny"] as const)("switching into ask mode surfaces a real %s decision on the next tool call", async (pick) => {
       const { adapter, setSessionMode, getPermissionResult } = buildHarness({
         adapterOptions: { requestedPermissionMode: "default", resolvePermission: async () => pick },
         newSessionModes: { currentModeId: "auto", availableModes: [{ id: "auto", name: "auto" }, { id: "default", name: "default" }] },
@@ -895,7 +894,14 @@ describe("ACPClientAdapter", () => {
       })
       await send(adapter)
       expect(setSessionMode).toHaveBeenCalledWith({ sessionId: "session-1", modeId: "default" })
-      expect(getPermissionResult()).toEqual({ outcome: { outcome: "selected", optionId: expectedOptionId } })
+      expect(getPermissionResult()).toEqual({ outcome: { outcome: "selected", optionId: pick } })
+    })
+
+    it("constructing with an empty-string requestedPermissionMode throws instead of silently no-opping", () => {
+      expect(() => new ACPClientAdapter({
+        command: ["acp-agent"],
+        requestedPermissionMode: "",
+      })).toThrow(/requestedPermissionMode must be a non-empty mode id/)
     })
 
     it("does nothing when requestedPermissionMode is unset, regardless of what the session advertises", async () => {
@@ -930,6 +936,42 @@ describe("ACPClientAdapter", () => {
         "requested permission mode is not advertised by this session",
         expect.objectContaining({ requestedModeId: "default" }),
       )
+    })
+
+    it("does not surface an unhandled rejection when the logger's own warn() is async and rejects", async () => {
+      // `Logger.warn` is typed to return `void`, but TS's void-return
+      // bivariance lets an `async` implementation satisfy it — safeWarn's
+      // try/catch alone would only catch a synchronous throw, not this.
+      // Deliberately a plain function, not `vi.fn()`: vitest's mock wrapper
+      // attaches its own handler to track `mock.results`, which incidentally
+      // marks the rejection "handled" and would hide a regression here.
+      const unhandled: unknown[] = []
+      const onUnhandledRejection = (reason: unknown): void => {
+        unhandled.push(reason)
+      }
+      process.on("unhandledRejection", onUnhandledRejection)
+
+      try {
+        const logger = {
+          ...makeLoggerSpy(),
+          warn: async () => {
+            throw new Error("logging sink is down")
+          },
+        }
+        const { adapter } = buildHarness({
+          adapterOptions: { requestedPermissionMode: "default", logger },
+          newSessionModes: { currentModeId: "auto", availableModes: [{ id: "auto", name: "auto" }] },
+        })
+
+        await expect(send(adapter)).resolves.toBeUndefined()
+        // Give the rejected `warn()` promise a turn to surface as an
+        // `unhandledRejection` if safeWarn didn't actually catch it.
+        await new Promise((resolve) => setImmediate(resolve))
+
+        expect(unhandled).toEqual([])
+      } finally {
+        process.off("unhandledRejection", onUnhandledRejection)
+      }
     })
 
     it("is a no-op when the session is already in the requested mode", async () => {
@@ -972,30 +1014,9 @@ describe("ACPClientAdapter", () => {
     // non-conforming responses that `SessionModeState`'s type promises can't
     // happen but nothing actually prevents.
     it("does not throw when the agent's modes response omits availableModes", async () => {
-      const setSessionMode = vi.fn(async () => ({}))
-      const adapter = new ACPClientAdapter({
-        command: ["acp-agent"],
-        enableMcpTools: false,
-        requestedPermissionMode: "default",
-        connectionFactory: async () => {
-          const controller = new AbortController()
-          return {
-            connection: {
-              signal: controller.signal,
-              closed: new Promise<void>(() => undefined),
-              initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
-              authenticate: vi.fn(async () => ({})),
-              loadSession: vi.fn(),
-              unstable_resumeSession: vi.fn(),
-              newSession: vi.fn(async () => ({ sessionId: "session-1", modes: { currentModeId: "auto" } })),
-              setSessionMode,
-              prompt: vi.fn(async () => ({ stopReason: "end_turn" })),
-            } as never,
-            stop: async () => {
-              controller.abort()
-            },
-          }
-        },
+      const { adapter, setSessionMode } = buildHarness({
+        adapterOptions: { requestedPermissionMode: "default" },
+        newSessionModes: { currentModeId: "auto" },
       })
 
       await expect(send(adapter)).resolves.toBeUndefined()
@@ -1006,31 +1027,8 @@ describe("ACPClientAdapter", () => {
       // The installed ACP SDK's own `unstable_resumeSession` has no `?? {}`
       // fallback the way its `loadSession` does, so resolving to `undefined`
       // on success is a real possibility here, not just a hypothetical.
-      const newSession = vi.fn(async () => ({ sessionId: "should-not-be-created" }))
-      const adapter = new ACPClientAdapter({
-        command: ["acp-agent"],
-        enableMcpTools: false,
-        connectionFactory: async () => {
-          const controller = new AbortController()
-          return {
-            connection: {
-              signal: controller.signal,
-              closed: new Promise<void>(() => undefined),
-              initialize: vi.fn(async () => ({
-                protocolVersion: 1,
-                agentCapabilities: { sessionCapabilities: { resume: true } },
-              })),
-              authenticate: vi.fn(async () => ({})),
-              loadSession: vi.fn(),
-              unstable_resumeSession: vi.fn(async () => undefined),
-              newSession,
-              prompt: vi.fn(async () => ({ stopReason: "end_turn" })),
-            } as never,
-            stop: async () => {
-              controller.abort()
-            },
-          }
-        },
+      const { adapter, newSession } = buildHarness({
+        agentCapabilities: { sessionCapabilities: { resume: true } },
       })
 
       await expect(send(adapter, "room-restored", { "room-restored": "session-restored" })).resolves.toBeUndefined()
