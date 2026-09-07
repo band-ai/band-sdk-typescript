@@ -166,6 +166,22 @@ describe("phoenix manual reconnect ownership", () => {
     await transport.disconnect();
   });
 
+  it("join, leave, rejoin, and leave again remove the topic both times", async () => {
+    const transport = createTransport();
+    await transport.connect();
+    await transport.join("topic:test", { ping: () => undefined });
+    expect(transport.getSocketChannelTopics()).toContain("topic:test");
+    await transport.leave("topic:test");
+    expect(transport.getSocketChannelTopics()).not.toContain("topic:test");
+    expect(transport.getPendingLeaveTopics()).toEqual([]);
+    await transport.join("topic:test", { ping: () => undefined });
+    expect(transport.getSocketChannelTopics()).toContain("topic:test");
+    await transport.leave("topic:test");
+    expect(transport.getSocketChannelTopics()).not.toContain("topic:test");
+    expect(transport.getPendingLeaveTopics()).toEqual([]);
+    await transport.disconnect();
+  });
+
   it("aborts waitForConnection without hanging", async () => {
     const abort = new AbortController();
     const transport = new PhoenixChannelsTransport({

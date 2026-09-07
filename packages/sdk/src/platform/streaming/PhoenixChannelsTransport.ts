@@ -389,6 +389,10 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     }
   }
 
+  public getPendingLeaveTopics(): string[] {
+    return [...this.pendingLeaves.keys()];
+  }
+
   public async leave(topic: string): Promise<void> {
     const pendingJoin = this.pendingJoins.get(topic);
     pendingJoin?.abort(new TransportError(`Join for ${topic} was cancelled`));
@@ -412,34 +416,35 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     }
     this.socket.remove(channel);
 
+    const { promise, resolve } = createVoidResolvers();
     const owned: OwnedLeave = {
       topic,
-      promise: Promise.resolve(),
+      promise,
       abort: () => undefined,
     };
-    owned.promise = new Promise<void>((resolve) => {
-      let settled = false;
-      const finish = (): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        this.pendingLeaves.delete(topic);
-        this.logger.debug("Left topic", { topic });
-        resolve();
-      };
-      owned.abort = finish;
-      try {
-        channel
-          .leave()
-          .receive("ok", finish)
-          .receive("error", finish)
-          .receive("timeout", finish);
-      } catch {
-        finish();
+    let settled = false;
+    const finish = (): void => {
+      if (settled) {
+        return;
       }
-    });
+      settled = true;
+      if (this.pendingLeaves.get(topic) === owned) {
+        this.pendingLeaves.delete(topic);
+      }
+      this.logger.debug("Left topic", { topic });
+      resolve();
+    };
+    owned.abort = finish;
     this.pendingLeaves.set(topic, owned);
+    try {
+      channel
+        .leave()
+        .receive("ok", finish)
+        .receive("error", finish)
+        .receive("timeout", finish);
+    } catch {
+      finish();
+    }
     return owned.promise;
   }
 
@@ -711,6 +716,15 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       };
     });
   }
+}
+
+
+function createVoidResolvers(): { promise: Promise<void>; resolve: () => void } {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
 }
 
 function wrapInboundFrameLimit(
