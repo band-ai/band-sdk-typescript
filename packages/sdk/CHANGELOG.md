@@ -1,6 +1,13 @@
 # Changelog
 
 
+## [0.3.1](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.3.0...sdk-v0.3.1) (2026-09-07)
+
+
+### Features
+
+* **acp:** configure advertised session modes ([#179](https://github.com/band-ai/band-sdk-typescript/issues/179)) ([a793110](https://github.com/band-ai/band-sdk-typescript/commit/a7931103476fa461b41b5fdc20be5ac3f41b7b58))
+
 ## [0.3.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.2.1...sdk-v0.3.0) (2026-09-07)
 
 
