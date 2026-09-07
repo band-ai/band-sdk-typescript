@@ -509,6 +509,59 @@ describe("ACPClientAdapter", () => {
     expect(firstServer?.headers[0]?.value).toEqual(secondServer?.headers[0]?.value)
   })
 
+  it("selects only a mode advertised by the connected ACP harness", async () => {
+    const setSessionMode = vi.fn(async () => ({}))
+    const resolveSessionMode = vi.fn(async () => "plan")
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      resolveSessionMode,
+      connectionFactory: async () => {
+        const controller = new AbortController()
+        return {
+          connection: {
+            signal: controller.signal,
+            closed: new Promise<void>(() => undefined),
+            initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+            authenticate: vi.fn(async () => ({})),
+            loadSession: vi.fn(),
+            unstable_resumeSession: vi.fn(),
+            newSession: vi.fn(async () => ({
+              sessionId: "session-modes",
+              modes: {
+                currentModeId: "ask",
+                availableModes: [
+                  { id: "ask", name: "Ask" },
+                  { id: "plan", name: "Plan", description: "Plan before editing" },
+                ],
+              },
+            })),
+            setSessionMode,
+            prompt: vi.fn(async () => ({ stopReason: "end_turn" })),
+          } as never,
+          stop: async () => controller.abort(),
+        }
+      },
+    })
+
+    await adapter.onStarted("Agent", "desc")
+    await adapter.onMessage(makeMessage("hi", "room-modes"), new FakeTools(), { roomToSession: {} }, null, null, {
+      isSessionBootstrap: true,
+      roomId: "room-modes",
+    })
+
+    expect(resolveSessionMode).toHaveBeenCalledWith({
+      roomId: "room-modes",
+      sessionId: "session-modes",
+      currentModeId: "ask",
+      modes: [
+        { id: "ask", name: "Ask" },
+        { id: "plan", name: "Plan", description: "Plan before editing" },
+      ],
+    }, expect.any(AbortSignal))
+    expect(setSessionMode).toHaveBeenCalledWith({ sessionId: "session-modes", modeId: "plan" })
+  })
+
   describe("resolvePermission (manual approval)", () => {
     // Shared harness: a connection whose `prompt` drives exactly one
     // `requestPermission` call, scripted with one allow-kind and one
@@ -801,7 +854,7 @@ describe("ACPClientAdapter", () => {
     })
   })
 
-  describe("requestedPermissionMode", () => {
+  describe("resolveSessionMode", () => {
     // Shared harness: a connection whose newSession/loadSession return a
     // given `modes` state, a `setSessionMode` spy, and (opt-in) a `prompt`
     // that raises one real permission request — the same request/response
@@ -888,7 +941,7 @@ describe("ACPClientAdapter", () => {
 
     it.each(["allow", "deny"] as const)("switching into ask mode surfaces a real %s decision on the next tool call", async (pick) => {
       const { adapter, setSessionMode, getPermissionResult } = buildHarness({
-        adapterOptions: { requestedPermissionMode: "default", resolvePermission: async () => pick },
+        adapterOptions: { resolveSessionMode: async () => "default", resolvePermission: async () => pick },
         newSessionModes: { currentModeId: "auto", availableModes: [{ id: "auto", name: "auto" }, { id: "default", name: "default" }] },
         raisePermissionRequest: true,
       })
@@ -897,14 +950,7 @@ describe("ACPClientAdapter", () => {
       expect(getPermissionResult()).toEqual({ outcome: { outcome: "selected", optionId: pick } })
     })
 
-    it("constructing with an empty-string requestedPermissionMode throws instead of silently no-opping", () => {
-      expect(() => new ACPClientAdapter({
-        command: ["acp-agent"],
-        requestedPermissionMode: "",
-      })).toThrow(/requestedPermissionMode must be a non-empty mode id/)
-    })
-
-    it("does nothing when requestedPermissionMode is unset, regardless of what the session advertises", async () => {
+    it("does nothing when resolveSessionMode is unset, regardless of what the session advertises", async () => {
       const { adapter, setSessionMode } = buildHarness({
         newSessionModes: { currentModeId: "auto", availableModes: [{ id: "auto", name: "auto" }, { id: "default", name: "default" }] },
       })
@@ -912,29 +958,31 @@ describe("ACPClientAdapter", () => {
       expect(setSessionMode).not.toHaveBeenCalled()
     })
 
-    it("does nothing when the backend advertises no modes at all", async () => {
+    it("does nothing, and never calls the resolver, when the backend advertises no modes at all", async () => {
       const logger = makeLoggerSpy()
+      const resolveSessionMode = vi.fn(async () => "default")
       const { adapter, setSessionMode } = buildHarness({
-        adapterOptions: { requestedPermissionMode: "default", logger },
+        adapterOptions: { resolveSessionMode, logger },
       })
       await send(adapter)
+      expect(resolveSessionMode).not.toHaveBeenCalled()
       expect(setSessionMode).not.toHaveBeenCalled()
       // Not advertising modes at all is expected and silent; advertising
-      // modes but missing this one (below) is not.
+      // modes but missing the resolved one (below) is not.
       expect(logger.warn).not.toHaveBeenCalled()
     })
 
-    it("warns, but does not throw, when the requested mode id isn't advertised", async () => {
+    it("warns, but does not throw, when the resolved mode id isn't advertised", async () => {
       const logger = makeLoggerSpy()
       const { adapter, setSessionMode } = buildHarness({
-        adapterOptions: { requestedPermissionMode: "default", logger },
+        adapterOptions: { resolveSessionMode: async () => "default", logger },
         newSessionModes: { currentModeId: "auto", availableModes: [{ id: "auto", name: "auto" }] },
       })
       await expect(send(adapter)).resolves.toBeUndefined()
       expect(setSessionMode).not.toHaveBeenCalled()
       expect(logger.warn).toHaveBeenCalledWith(
-        "requested permission mode is not advertised by this session",
-        expect.objectContaining({ requestedModeId: "default" }),
+        "resolveSessionMode selected a mode id this session does not advertise",
+        expect.objectContaining({ selectedModeId: "default" }),
       )
     })
 
@@ -959,7 +1007,7 @@ describe("ACPClientAdapter", () => {
           },
         }
         const { adapter } = buildHarness({
-          adapterOptions: { requestedPermissionMode: "default", logger },
+          adapterOptions: { resolveSessionMode: async () => "default", logger },
           newSessionModes: { currentModeId: "auto", availableModes: [{ id: "auto", name: "auto" }] },
         })
 
@@ -974,9 +1022,9 @@ describe("ACPClientAdapter", () => {
       }
     })
 
-    it("is a no-op when the session is already in the requested mode", async () => {
+    it("is a no-op when the session is already in the resolved mode", async () => {
       const { adapter, setSessionMode } = buildHarness({
-        adapterOptions: { requestedPermissionMode: "default" },
+        adapterOptions: { resolveSessionMode: async () => "default" },
         newSessionModes: { currentModeId: "default", availableModes: [{ id: "default", name: "default" }] },
       })
       await send(adapter)
@@ -986,21 +1034,21 @@ describe("ACPClientAdapter", () => {
     it("logs a warning and leaves the session usable when setSessionMode itself rejects", async () => {
       const logger = makeLoggerSpy()
       const { adapter, setSessionMode } = buildHarness({
-        adapterOptions: { requestedPermissionMode: "default", logger },
+        adapterOptions: { resolveSessionMode: async () => "default", logger },
         newSessionModes: { currentModeId: "auto", availableModes: [{ id: "auto", name: "auto" }, { id: "default", name: "default" }] },
       })
       setSessionMode.mockRejectedValueOnce(new Error("agent rejected the mode switch"))
 
       await expect(send(adapter)).resolves.toBeUndefined()
       expect(logger.warn).toHaveBeenCalledWith(
-        "failed to switch session into the requested permission mode",
+        "failed to switch session into the selected mode",
         expect.objectContaining({ error: expect.stringContaining("agent rejected the mode switch") }),
       )
     })
 
-    it("re-applies the requested mode on a restored session, not just a freshly created one", async () => {
+    it("re-applies the resolved mode on a restored session, not just a freshly created one", async () => {
       const { adapter, setSessionMode, loadSession } = buildHarness({
-        adapterOptions: { requestedPermissionMode: "default" },
+        adapterOptions: { resolveSessionMode: async () => "default" },
         loadSessionModes: { currentModeId: "auto", availableModes: [{ id: "auto", name: "auto" }, { id: "default", name: "default" }] },
       })
       await send(adapter, "room-restored", { "room-restored": "session-restored" })
@@ -1015,7 +1063,7 @@ describe("ACPClientAdapter", () => {
     // happen but nothing actually prevents.
     it("does not throw when the agent's modes response omits availableModes", async () => {
       const { adapter, setSessionMode } = buildHarness({
-        adapterOptions: { requestedPermissionMode: "default" },
+        adapterOptions: { resolveSessionMode: async () => "default" },
         newSessionModes: { currentModeId: "auto" },
       })
 
@@ -1035,13 +1083,13 @@ describe("ACPClientAdapter", () => {
       expect(newSession).not.toHaveBeenCalled()
     })
 
-    it("applies the requested mode only once per session, not on every subsequent message", async () => {
+    it("applies the resolved mode only once per session, not on every subsequent message", async () => {
       // The `activeSessions` fast path in `getOrCreateSession` is what makes
       // this establishment-only, not per-turn — a regression that moved the
       // call so it re-runs every message would add a `setSessionMode` round
       // trip (and any of its failure-warning noise) to every single turn.
       const { adapter, setSessionMode } = buildHarness({
-        adapterOptions: { requestedPermissionMode: "default" },
+        adapterOptions: { resolveSessionMode: async () => "default" },
         newSessionModes: { currentModeId: "auto", availableModes: [{ id: "auto", name: "auto" }, { id: "default", name: "default" }] },
       })
       await send(adapter)
@@ -1060,7 +1108,7 @@ describe("ACPClientAdapter", () => {
 
         const logger = makeLoggerSpy()
         const { adapter, setSessionMode } = buildHarness({
-          adapterOptions: { requestedPermissionMode: "default", logger },
+          adapterOptions: { resolveSessionMode: async () => "default", logger },
           newSessionModes: { currentModeId: "auto", availableModes: [{ id: "auto", name: "auto" }, { id: "default", name: "default" }] },
         })
         setSessionMode.mockImplementationOnce(() => {
@@ -1074,7 +1122,7 @@ describe("ACPClientAdapter", () => {
         await onMessage
 
         expect(logger.warn).toHaveBeenCalledWith(
-          "failed to switch session into the requested permission mode",
+          "failed to switch session into the selected mode",
           expect.objectContaining({ error: expect.stringContaining("did not respond within") }),
         )
       } finally {
