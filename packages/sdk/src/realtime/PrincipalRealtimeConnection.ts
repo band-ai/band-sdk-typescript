@@ -6,27 +6,62 @@ import type { TopicHandlers } from "../platform/streaming/transport";
 import type { WebSocketDisconnectReason } from "../platform/streaming/disconnectReason";
 import {
   ActivityState,
+  canonicalizeUuid,
   decodeActivitySnapshot,
   decodeActivityStart,
   decodeActivityStop,
 } from "./activity";
 import {
   isValidRoomId,
+  isValidTopicIdentity,
   validateChatPayload,
   validateParticipantMutation,
   validatePresencePayload,
   validateRoomDeletedPayload,
   validateTitlePayload,
 } from "./eventValidation";
-import {
-  REALTIME_MAX_REFS,
-  type PrincipalRealtimeConnection,
-  type PrincipalRealtimeEvent,
-  type PrincipalRealtimeOptions,
-  type RealtimePrincipal,
+import type {
+  PrincipalRealtimeConnection,
+  PrincipalRealtimeEvent,
+  PrincipalRealtimeOptions,
+  RealtimePrincipal,
 } from "./types";
 
 const DEFAULT_WS_URL = "wss://app.band.ai/api/v1/socket";
+const RECONNECT_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000] as const;
+
+function snapshotPrincipal(principal: RealtimePrincipal): RealtimePrincipal {
+  if (principal.kind === "human") {
+    if ("conflictPolicy" in principal || "agentId" in principal) {
+      throw new ValidationError(
+        "Human principal does not accept a conflict policy or agentId",
+      );
+    }
+    if (!isValidTopicIdentity(principal.userId) || !principal.apiKey) {
+      throw new ValidationError("Human principal requires userId and apiKey");
+    }
+    return Object.freeze({
+      kind: "human",
+      userId: principal.userId.trim(),
+      apiKey: principal.apiKey,
+    });
+  }
+  if (principal.kind !== "agent") {
+    throw new ValidationError("Unsupported realtime principal");
+  }
+  const agentId = canonicalizeUuid(principal.agentId);
+  if (!agentId || !principal.apiKey) {
+    throw new ValidationError("Agent principal requires agentId and apiKey");
+  }
+  return Object.freeze({
+    kind: "agent",
+    agentId,
+    apiKey: principal.apiKey,
+    ...(principal.conflictPolicy
+      ? { conflictPolicy: principal.conflictPolicy }
+      : {}),
+  });
+}
 
 export class PrincipalRealtimeConnectionImpl
   implements PrincipalRealtimeConnection
@@ -41,28 +76,27 @@ export class PrincipalRealtimeConnectionImpl
   private selectedRoom: string | null = null;
   private selectionGeneration = 0;
   private socketGeneration = 0;
-  private joinRef = 0;
   private disposed = false;
-  private started = false;
+  private startSucceeded = false;
+  private startPromise: Promise<void> | null = null;
+  private reconnectAttempt = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private selectionTail: Promise<void> = Promise.resolve();
+  private joinAbort: AbortController | null = null;
   private readonly onAbort = (): void => {
     void this.dispose();
   };
 
   public constructor(options: PrincipalRealtimeOptions) {
-    this.principal = options.principal;
+    this.principal = snapshotPrincipal(options.principal);
     this.logger = options.logger ?? new NoopLogger();
     this.abortSignal = options.abortSignal;
-    this.assertPrincipal(options.principal);
-
-    const apiKey =
-      options.principal.kind === "human"
-        ? options.principal.apiKey
-        : options.principal.apiKey;
+    const apiKey = this.principal.apiKey;
     const agentId =
-      options.principal.kind === "agent" ? options.principal.agentId : undefined;
+      this.principal.kind === "agent" ? this.principal.agentId : undefined;
     const conflictPolicy =
-      options.principal.kind === "agent"
-        ? options.principal.conflictPolicy
+      this.principal.kind === "agent"
+        ? this.principal.conflictPolicy
         : undefined;
 
     this.transport = new PhoenixChannelsTransport({
@@ -72,10 +106,13 @@ export class PrincipalRealtimeConnectionImpl
       logger: this.logger,
       conflictPolicy,
       heartbeatIntervalMs: 30_000,
+      reconnectAfterMs: () => Number.POSITIVE_INFINITY,
+      abortSignal: this.abortSignal,
+      onSocketClose: (reason) => {
+        this.handleTransportClose(reason);
+      },
       onTerminalDisconnect: (reason) => {
-        this.emit({ type: "connection", state: "unavailable", reason });
-        this.state = "unavailable";
-        this.activity.clear();
+        this.markUnavailable(reason);
       },
     });
 
@@ -104,25 +141,22 @@ export class PrincipalRealtimeConnectionImpl
 
   public async start(): Promise<void> {
     this.assertLive();
-    if (this.abortSignal?.aborted) {
-      throw new TransportError("Realtime connection aborted before start");
+    if (this.startSucceeded && this.state === "ready") {
+      return;
     }
-    this.started = true;
-    this.socketGeneration += 1;
-    const generation = this.socketGeneration;
-    this.setState("connecting");
-    this.emit({ type: "connection", state: "connecting" });
+    if (this.startPromise) {
+      return this.startPromise;
+    }
+    this.startPromise = this.connectAndJoin();
     try {
-      await this.transport.connect();
-      await this.joinMandatory(generation);
-      if (this.disposed || generation !== this.socketGeneration) {
-        return;
-      }
-      this.setState("ready");
-      this.emit({ type: "connection", state: "ready" });
+      await this.startPromise;
+      this.startSucceeded = true;
     } catch (error) {
+      this.startSucceeded = false;
       this.markUnavailable();
       throw error;
+    } finally {
+      this.startPromise = null;
     }
   }
 
@@ -136,34 +170,12 @@ export class PrincipalRealtimeConnectionImpl
     if (roomId !== null && !isValidRoomId(roomId)) {
       throw new ValidationError("Invalid selected room id");
     }
-    const previous = this.selectedRoom;
     this.selectionGeneration += 1;
     const generation = this.selectionGeneration;
-    await this.leaveRoomTopics(previous);
-    this.selectedRoom = roomId;
-    if (previous !== null && previous !== roomId) {
-      this.activity.clear();
-      this.emit({
-        type: "room_activity",
-        roomId: previous,
-        state: "unavailable",
-      });
-    }
-    if (roomId === null) {
-      this.activity.clear();
-      if (previous !== null) {
-        this.emit({
-          type: "room_activity",
-          roomId: previous,
-          state: "unavailable",
-        });
-      }
-      return;
-    }
-    if (!this.started) {
-      return;
-    }
-    await this.joinSelectedRoom(roomId, generation);
+    this.selectionTail = this.selectionTail
+      .catch(() => undefined)
+      .then(() => this.applySelection(roomId, generation));
+    return this.selectionTail;
   }
 
   public async dispose(): Promise<void> {
@@ -173,6 +185,8 @@ export class PrincipalRealtimeConnectionImpl
     this.disposed = true;
     this.socketGeneration += 1;
     this.selectionGeneration += 1;
+    this.clearReconnect();
+    this.joinAbort?.abort();
     this.abortSignal?.removeEventListener("abort", this.onAbort);
     this.listener = null;
     this.activity.clear();
@@ -185,32 +199,109 @@ export class PrincipalRealtimeConnectionImpl
     await this.dispose();
   }
 
-  private assertPrincipal(principal: RealtimePrincipal): void {
-    if (principal.kind === "human") {
-      if (!principal.userId || !principal.apiKey) {
-        throw new ValidationError("Human principal requires userId and apiKey");
-      }
-      if ("conflictPolicy" in principal) {
-        throw new ValidationError(
-          "Human principal does not accept a conflict policy",
-        );
-      }
-      if ("agentId" in principal) {
-        throw new ValidationError("Human principal must not include agentId");
-      }
+  private async applySelection(
+    roomId: string | null,
+    generation: number,
+  ): Promise<void> {
+    if (generation !== this.selectionGeneration || this.disposed) {
       return;
     }
-    if (principal.kind !== "agent" || !principal.agentId || !principal.apiKey) {
-      throw new ValidationError("Agent principal requires agentId and apiKey");
+    const previous = this.selectedRoom;
+    this.joinAbort?.abort();
+    this.joinAbort = new AbortController();
+    await this.leaveRoomTopics(previous);
+    if (generation !== this.selectionGeneration) {
+      return;
+    }
+    this.selectedRoom = roomId;
+    if (previous !== null) {
+      this.activity.clear();
+      this.emit({
+        type: "room_activity",
+        roomId: previous,
+        state: "unavailable",
+      });
+    }
+    if (roomId === null || !this.startSucceeded) {
+      return;
+    }
+    await this.joinSelectedRoom(roomId, generation, this.joinAbort.signal);
+  }
+
+  private async connectAndJoin(): Promise<void> {
+    if (this.abortSignal?.aborted) {
+      throw new TransportError("Realtime connection aborted before start");
+    }
+    this.socketGeneration += 1;
+    const generation = this.socketGeneration;
+    this.setState("connecting");
+    this.emit({ type: "connection", state: "connecting" });
+    this.joinAbort?.abort();
+    this.joinAbort = new AbortController();
+    await this.transport.connect();
+    if (this.disposed || generation !== this.socketGeneration) {
+      return;
+    }
+    await this.joinMandatory(generation, this.joinAbort.signal);
+    if (this.disposed || generation !== this.socketGeneration) {
+      return;
+    }
+    this.setState("ready");
+    this.emit({ type: "connection", state: "ready" });
+  }
+
+  private handleTransportClose(reason: WebSocketDisconnectReason | null): void {
+    if (this.disposed) {
+      return;
+    }
+    this.markUnavailable(reason ?? undefined);
+    if (reason?.retryable === false) {
+      return;
+    }
+    this.socketGeneration += 1;
+    this.scheduleReconnect();
+  }
+
+  private scheduleReconnect(): void {
+    if (this.disposed || this.abortSignal?.aborted) {
+      return;
+    }
+    this.clearReconnect();
+    const delay =
+      RECONNECT_BACKOFF_MS[
+        Math.min(this.reconnectAttempt, RECONNECT_BACKOFF_MS.length - 1)
+      ] ?? 30_000;
+    this.reconnectAttempt += 1;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.reconnect();
+    }, this.reconnectAttempt === 1 ? 0 : delay);
+  }
+
+  private async reconnect(): Promise<void> {
+    if (this.disposed) {
+      return;
+    }
+    try {
+      await this.connectAndJoin();
+      this.startSucceeded = true;
+      this.reconnectAttempt = 0;
+    } catch {
+      this.markUnavailable();
+      this.scheduleReconnect();
+    }
+  }
+
+  private clearReconnect(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
     }
   }
 
   private assertLive(): void {
     if (this.disposed) {
       throw new TransportError("Realtime connection is disposed");
-    }
-    if (this.joinRef >= REALTIME_MAX_REFS) {
-      throw new TransportError("Realtime join ref ceiling reached");
     }
   }
 
@@ -242,15 +333,23 @@ export class PrincipalRealtimeConnectionImpl
     this.emit({ type: "connection", state: "unavailable", reason });
   }
 
-  private async joinMandatory(generation: number): Promise<void> {
+  private async joinMandatory(
+    generation: number,
+    signal: AbortSignal,
+  ): Promise<void> {
     if (this.principal.kind === "human") {
       await this.joinTopic(
         `user_agents:${this.principal.userId}`,
         this.userAgentHandlers(),
         generation,
+        signal,
       );
       if (this.selectedRoom) {
-        await this.joinSelectedRoom(this.selectedRoom, this.selectionGeneration);
+        await this.joinSelectedRoom(
+          this.selectedRoom,
+          this.selectionGeneration,
+          signal,
+        );
       }
       return;
     }
@@ -258,6 +357,7 @@ export class PrincipalRealtimeConnectionImpl
       `agent_control:${this.principal.agentId}`,
       {},
       generation,
+      signal,
     );
   }
 
@@ -275,31 +375,45 @@ export class PrincipalRealtimeConnectionImpl
   private async joinSelectedRoom(
     roomId: string,
     selectionGeneration: number,
+    signal: AbortSignal,
   ): Promise<void> {
     const socketGeneration = this.socketGeneration;
-    await this.joinTopic(
-      `chat_room:${roomId}`,
-      this.chatHandlers(roomId, selectionGeneration),
-      socketGeneration,
-    );
-    await this.joinTopic(
-      `room_participants:${roomId}`,
-      this.participantHandlers(roomId, selectionGeneration),
-      socketGeneration,
-    );
-    const payload = await this.joinTopic(
-      `room_activity:${roomId}`,
-      this.activityHandlers(roomId, selectionGeneration),
-      socketGeneration,
-    );
-    if (
-      this.disposed ||
-      selectionGeneration !== this.selectionGeneration ||
-      this.selectedRoom !== roomId
-    ) {
-      return;
+    try {
+      await this.joinTopic(
+        `chat_room:${roomId}`,
+        this.chatHandlers(roomId, selectionGeneration),
+        socketGeneration,
+        signal,
+      );
+      await this.joinTopic(
+        `room_participants:${roomId}`,
+        this.participantHandlers(roomId, selectionGeneration),
+        socketGeneration,
+        signal,
+      );
+      const payload = await this.joinTopic(
+        `room_activity:${roomId}`,
+        this.activityHandlers(roomId, selectionGeneration),
+        socketGeneration,
+        signal,
+      );
+      if (
+        this.disposed ||
+        selectionGeneration !== this.selectionGeneration ||
+        this.selectedRoom !== roomId
+      ) {
+        await this.leaveRoomTopics(roomId);
+        return;
+      }
+      this.applyActivitySnapshot(roomId, payload);
+    } catch (error) {
+      await this.leaveRoomTopics(roomId);
+      this.activity.clear();
+      this.emit({ type: "room_activity", roomId, state: "unavailable" });
+      this.setState("unavailable");
+      this.emit({ type: "connection", state: "unavailable" });
+      throw error;
     }
-    this.applyActivitySnapshot(roomId, payload);
   }
 
   private async leaveRoomTopics(roomId: string | null): Promise<void> {
@@ -317,17 +431,17 @@ export class PrincipalRealtimeConnectionImpl
     topic: string,
     handlers: TopicHandlers,
     generation: number,
+    signal: AbortSignal,
   ): Promise<unknown> {
-    this.joinRef += 1;
-    if (this.joinRef > REALTIME_MAX_REFS) {
-      throw new TransportError("Realtime join ref ceiling reached");
-    }
-    const currentJoin = this.joinRef;
-    const payload = await this.transport.joinWithResponse(topic, handlers);
+    const payload = await this.transport.joinWithResponse(
+      topic,
+      handlers,
+      signal,
+    );
     if (this.disposed || generation !== this.socketGeneration) {
+      await this.transport.leave(topic).catch(() => undefined);
       return undefined;
     }
-    void currentJoin;
     return payload;
   }
 
@@ -361,7 +475,7 @@ export class PrincipalRealtimeConnectionImpl
       participant_added: (payload) => {
         if (
           this.isCurrentRoom(roomId, generation) &&
-          validateParticipantMutation(payload, roomId)
+          validateParticipantMutation(payload, roomId, "added")
         ) {
           this.emit({
             type: "participants_changed",
@@ -373,7 +487,7 @@ export class PrincipalRealtimeConnectionImpl
       participant_removed: (payload) => {
         if (
           this.isCurrentRoom(roomId, generation) &&
-          validateParticipantMutation(payload, roomId)
+          validateParticipantMutation(payload, roomId, "removed")
         ) {
           this.emit({
             type: "participants_changed",

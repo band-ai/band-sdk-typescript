@@ -4,7 +4,8 @@ export type WebSocketConflictPolicy = "supersede" | "reject";
 export type WebSocketDisconnectSource =
   | "agent_control"
   | "upgrade"
-  | "websocket_close";
+  | "websocket_close"
+  | "inbound_frame";
 
 export interface AgentControlSupersedeDisconnectReason {
   source: "agent_control";
@@ -39,10 +40,19 @@ export interface GenericWebSocketCloseReason {
   closeReason: string | null;
 }
 
+export interface OversizeFrameDisconnectReason {
+  source: "inbound_frame";
+  code: "websocket.oversize_frame";
+  message: string;
+  retryable: false;
+  byteLength: number;
+}
+
 export type WebSocketDisconnectReason =
   | AgentControlSupersedeDisconnectReason
   | WebSocketUpgradeDisconnectReason
-  | GenericWebSocketCloseReason;
+  | GenericWebSocketCloseReason
+  | OversizeFrameDisconnectReason;
 
 const UPGRADE_CODES = [
   "invalid_on_conflict",
@@ -192,6 +202,18 @@ export function genericCloseReason(event?: {
       typeof event?.reason === "string" && event.reason.length > 0
         ? event.reason
         : null,
+  };
+}
+
+export function oversizeFrameReason(
+  byteLength: number,
+): OversizeFrameDisconnectReason {
+  return {
+    source: "inbound_frame",
+    code: "websocket.oversize_frame",
+    message: "Inbound Phoenix frame exceeded the SDK byte ceiling.",
+    retryable: false,
+    byteLength,
   };
 }
 

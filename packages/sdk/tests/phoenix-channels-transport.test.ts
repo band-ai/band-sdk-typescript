@@ -32,8 +32,8 @@ const phoenixMock = vi.hoisted(() => {
       return this.nextRef++;
     }
 
-    public off(_event: string, _ref?: number): void {
-      // In a real implementation this would remove the specific handler
+    public off(event: string, _ref?: number): void {
+      this.handlers.delete(event);
     }
 
     public emit(event: string, payload: Record<string, unknown>): void {

@@ -3,8 +3,14 @@ import { TransportError } from "../../core/errors";
 import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import {
+  REALTIME_MAX_FRAME_BYTES,
+  REALTIME_MAX_PENDING_CONTROLS,
+  REALTIME_MAX_REFS,
+} from "./resourceLimits";
+import {
   WebSocketDisconnectError,
   genericCloseReason,
+  oversizeFrameReason,
   parseSupersedeDisconnectReason,
   parseUpgradeDisconnectReason,
   type WebSocketConflictPolicy,
@@ -23,10 +29,18 @@ interface PhoenixChannelsTransportOptions {
   websocketFactory?: typeof WebSocket;
   conflictPolicy?: WebSocketConflictPolicy;
   onTerminalDisconnect?: (reason: WebSocketDisconnectReason) => void;
+  onSocketClose?: (reason: WebSocketDisconnectReason | null) => void;
+  onSocketOpen?: () => void;
+  abortSignal?: AbortSignal;
 }
 
 interface PendingRunForever {
   reject(error: Error): void;
+}
+
+interface PendingJoin {
+  promise: Promise<unknown>;
+  abort: (reason?: Error) => void;
 }
 
 export class PhoenixChannelsTransport implements StreamingTransport {
@@ -34,12 +48,20 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private readonly agentId?: string;
   private readonly channels = new Map<string, Channel>();
   private readonly channelRefs = new Map<string, Array<[string, number]>>();
-  private readonly pendingJoins = new Map<string, Promise<unknown>>();
+  private readonly pendingJoins = new Map<string, PendingJoin>();
   private readonly maxPendingControls: number;
+  private readonly maxProtocolRefs: number;
+  private readonly maxFrameBytes: number;
+  private protocolRefCount = 0;
   private readonly logger: Logger;
   private readonly onTerminalDisconnect?: (
     reason: WebSocketDisconnectReason,
   ) => void;
+  private readonly onSocketClose?: (
+    reason: WebSocketDisconnectReason | null,
+  ) => void;
+  private readonly onSocketOpen?: () => void;
+  private readonly abortSignal?: AbortSignal;
   private onHandlerError?: (error: unknown) => void;
   private connected = false;
   private connectPromise: Promise<void> | null = null;
@@ -55,7 +77,12 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     this.logger = options.logger ?? new NoopLogger();
     this.agentId = options.agentId;
     this.onTerminalDisconnect = options.onTerminalDisconnect;
-    this.maxPendingControls = 16;
+    this.onSocketClose = options.onSocketClose;
+    this.onSocketOpen = options.onSocketOpen;
+    this.abortSignal = options.abortSignal;
+    this.maxPendingControls = REALTIME_MAX_PENDING_CONTROLS;
+    this.maxProtocolRefs = REALTIME_MAX_REFS;
+    this.maxFrameBytes = REALTIME_MAX_FRAME_BYTES;
 
     // The phoenix JS library appends /websocket to the endpoint URL.
     // Strip it if the user-provided URL already includes it.
@@ -88,6 +115,10 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       },
       transport: wrapInboundFrameLimit(
         options.websocketFactory ?? resolveWebSocketFactory(options.apiKey),
+        this.maxFrameBytes,
+        (byteLength) => {
+          this.recordTerminalDisconnect(oversizeFrameReason(byteLength));
+        },
       ),
     });
 
@@ -155,6 +186,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   public async disconnect(): Promise<void> {
+    for (const pending of this.pendingJoins.values()) {
+      pending.abort(new TransportError("Transport disconnected"));
+    }
     const results = await Promise.allSettled(
       [...this.channels.keys()].map((topic) => this.leave(topic)),
     );
@@ -192,6 +226,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   public async joinWithResponse(
     topic: string,
     handlers: TopicHandlers,
+    signal?: AbortSignal,
   ): Promise<unknown> {
     if (this.channels.has(topic)) {
       return undefined;
@@ -199,7 +234,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
 
     const pendingJoin = this.pendingJoins.get(topic);
     if (pendingJoin) {
-      return pendingJoin;
+      return pendingJoin.promise;
     }
 
     if (this.pendingJoins.size >= this.maxPendingControls) {
@@ -208,19 +243,48 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       );
     }
 
-    const joinPromise = this.doJoin(topic, handlers).finally(() => {
+    this.allocateProtocolRef();
+    let abortJoin: (reason?: Error) => void = () => undefined;
+    const joinPromise = new Promise<unknown>((resolve, reject) => {
+      abortJoin = (reason) => {
+        reject(
+          reason ?? new TransportError(`Join for ${topic} was cancelled`),
+        );
+      };
+      void this.doJoin(topic, handlers, signal, abortJoin).then(resolve, reject);
+    }).finally(() => {
       this.pendingJoins.delete(topic);
     });
-    this.pendingJoins.set(topic, joinPromise);
+    this.pendingJoins.set(topic, { promise: joinPromise, abort: abortJoin });
     return joinPromise;
   }
 
-  private async doJoin(topic: string, handlers: TopicHandlers): Promise<unknown> {
-    const channel = this.socket.channel(topic, {});
+  private allocateProtocolRef(): void {
+    this.protocolRefCount += 1;
+    if (this.protocolRefCount > this.maxProtocolRefs) {
+      throw new TransportError("Realtime join ref ceiling reached");
+    }
+  }
 
+  public getProtocolRefCount(): number {
+    return this.protocolRefCount;
+  }
+
+  private async doJoin(
+    topic: string,
+    handlers: TopicHandlers,
+    signal?: AbortSignal,
+    abortJoin?: (reason?: Error) => void,
+  ): Promise<unknown> {
+    if (signal?.aborted || this.abortSignal?.aborted) {
+      throw new TransportError(`Join for ${topic} was cancelled`);
+    }
+
+    const channel = this.socket.channel(topic, {});
     const refs: Array<[string, number]> = [];
 
     for (const [event, handler] of Object.entries(handlers)) {
+      this.allocateProtocolRef();
       const ref = channel.on(event, (payload: Record<string, unknown>) => {
         Promise.resolve(handler(payload)).catch((error: unknown) => {
           this.logger.error("Unhandled topic handler error", {
@@ -234,8 +298,24 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       refs.push([event, ref]);
     }
 
+    const cleanup = (): void => {
+      for (const [event, ref] of refs) {
+        channel.off(event, ref);
+      }
+      channel.leave();
+      removeSocketChannel(this.socket, channel);
+    };
+
+    const onAbort = (): void => {
+      cleanup();
+      abortJoin?.(new TransportError(`Join for ${topic} was cancelled`));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    this.abortSignal?.addEventListener("abort", onAbort, { once: true });
+
     let joinPayload: unknown;
     try {
+      this.allocateProtocolRef();
       joinPayload = await new Promise<unknown>((resolve, reject) => {
         channel
           .join()
@@ -248,13 +328,16 @@ export class PhoenixChannelsTransport implements StreamingTransport {
           );
       });
     } catch (error) {
-      for (const [event, ref] of refs) {
-        channel.off(event, ref);
-      }
-      // Leave and remove the channel so it doesn't get rejoined on reconnect.
-      channel.leave();
-      removeSocketChannel(this.socket, channel);
+      cleanup();
       throw error;
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+      this.abortSignal?.removeEventListener("abort", onAbort);
+    }
+
+    if (signal?.aborted || this.abortSignal?.aborted) {
+      cleanup();
+      throw new TransportError(`Join for ${topic} was cancelled`);
     }
 
     this.channels.set(topic, channel);
@@ -264,6 +347,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   public async leave(topic: string): Promise<void> {
+    const pending = this.pendingJoins.get(topic);
+    pending?.abort(new TransportError(`Join for ${topic} was cancelled`));
+
     const channel = this.channels.get(topic);
     if (!channel) {
       return;
@@ -353,6 +439,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     this.logger.info("Phoenix socket opened", {
       channels: getSocketChannelCount(this.socket),
     });
+    this.onSocketOpen?.();
   }
 
   private stopReconnectIfNoChannels(
@@ -391,6 +478,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     this.connected = false;
     const suppressCloseReason = this.suppressNextCloseReason;
     this.suppressNextCloseReason = false;
+    this.forgetLocalChannels();
     this.stopReconnectIfNoChannels();
     if (
       !suppressCloseReason &&
@@ -405,6 +493,16 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       reason: event?.reason ?? null,
       platformReason: this.lastDisconnectReason,
     });
+    this.onSocketClose?.(this.lastDisconnectReason);
+  }
+
+  private forgetLocalChannels(): void {
+    for (const pending of this.pendingJoins.values()) {
+      pending.abort(new TransportError("Transport disconnected"));
+    }
+    this.pendingJoins.clear();
+    this.channels.clear();
+    this.channelRefs.clear();
   }
 
   private recordTerminalDisconnect(reason: WebSocketDisconnectReason): void {
@@ -456,27 +554,35 @@ export class PhoenixChannelsTransport implements StreamingTransport {
 }
 
 
-const MAX_INBOUND_FRAME_BYTES = 65_536;
-
-function wrapInboundFrameLimit(factory: typeof WebSocket): typeof WebSocket {
+function wrapInboundFrameLimit(
+  factory: typeof WebSocket,
+  maxFrameBytes: number,
+  onOversize: (byteLength: number) => void,
+): typeof WebSocket {
   const WebSocketImpl = factory;
   class BoundedWebSocket {
     public constructor(address: string | URL, protocols?: string | string[]) {
       const socket = new WebSocketImpl(address, protocols);
-      socket.addEventListener("message", (event: MessageEvent<unknown>) => {
-        const data: unknown = event.data;
-        const size =
-          typeof data === "string"
-            ? Buffer.byteLength(data)
-            : data instanceof ArrayBuffer
-              ? data.byteLength
-              : ArrayBuffer.isView(data)
+      socket.addEventListener(
+        "message",
+        (event: MessageEvent<unknown>) => {
+          const data: unknown = event.data;
+          const size =
+            typeof data === "string"
+              ? Buffer.byteLength(data)
+              : data instanceof ArrayBuffer
                 ? data.byteLength
-                : MAX_INBOUND_FRAME_BYTES + 1;
-        if (size > MAX_INBOUND_FRAME_BYTES) {
-          socket.close();
-        }
-      });
+                : ArrayBuffer.isView(data)
+                  ? data.byteLength
+                  : maxFrameBytes + 1;
+          if (size > maxFrameBytes) {
+            event.stopImmediatePropagation();
+            onOversize(size);
+            socket.close();
+          }
+        },
+        { capture: true },
+      );
       return socket;
     }
   }

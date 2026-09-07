@@ -4,10 +4,12 @@ import type {
   WebSocketDisconnectReason,
 } from "../platform/streaming/disconnectReason";
 
-export const REALTIME_WORKING_AGENT_EXECUTION_MAX = 32;
-export const REALTIME_MAX_FRAME_BYTES = 65_536;
-export const REALTIME_MAX_PENDING_CONTROLS = 16;
-export const REALTIME_MAX_REFS = 1_000_000;
+export {
+  REALTIME_MAX_FRAME_BYTES,
+  REALTIME_MAX_PENDING_CONTROLS,
+  REALTIME_MAX_REFS,
+  REALTIME_WORKING_AGENT_EXECUTION_MAX,
+} from "../platform/streaming/resourceLimits";
 
 export type RealtimePrincipal =
   | { kind: "human"; userId: string; apiKey: string }

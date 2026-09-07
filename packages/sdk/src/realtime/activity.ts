@@ -37,8 +37,7 @@ const stopSchema = z.object({
 
 export type ActivityDecode =
   | { kind: "ready"; snapshot: WorkingAgentExecution[] }
-  | { kind: "unavailable" }
-  | { kind: "drop" };
+  | { kind: "unavailable" };
 
 function tupleKey(entry: WorkingAgentExecution): string {
   return `${entry.agentId}\0${entry.executionId}`;
