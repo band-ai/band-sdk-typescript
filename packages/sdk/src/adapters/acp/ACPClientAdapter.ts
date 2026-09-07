@@ -10,6 +10,7 @@ import type {
   PermissionOption,
   RequestPermissionRequest,
   RequestPermissionResponse,
+  SessionModeState,
 } from "@agentclientprotocol/sdk";
 
 import { ACPClientHistoryConverter, type ACPClientSessionState } from "../../converters/acp-client";
@@ -77,6 +78,15 @@ export interface ACPClientAdapterOptions {
   // Only meaningful when `resolvePermission` is set. Defaults to
   // `DEFAULT_PERMISSION_TIMEOUT_MS`.
   permissionTimeoutMs?: number;
+  // Omitted ⇒ a session is left in whatever mode the agent resolves on its
+  // own (today's behavior). Set ⇒ once a session reports this id among its
+  // `modes.availableModes`, this adapter switches it there via ACP's
+  // `session/set_mode` — not a `newSession` parameter, because the wire
+  // protocol has no field to request a mode at creation time itself. A
+  // backend that doesn't advertise this id (or advertises no modes at all)
+  // is left alone rather than erroring: this is a best-effort nudge, not a
+  // contract every agent must honor.
+  initialPermissionMode?: string;
   logger?: Logger;
 }
 
@@ -100,6 +110,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
   private readonly resolvePermission?: (request: RequestPermissionRequest, signal: AbortSignal) => Promise<string | undefined>
   private readonly permissionTimeoutMs: number
+  private readonly initialPermissionMode?: string
   private readonly logger: Logger
 
   private backend: InjectedMcpBackend | null = null
@@ -135,6 +146,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.resolvePermission = options.resolvePermission
     this.logger = options.logger ?? new NoopLogger()
     this.permissionTimeoutMs = options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
+    this.initialPermissionMode = options.initialPermissionMode
     // Only meaningful when `resolvePermission` is actually set — the
     // auto-allow path never reads it, so an irrelevant/default value here
     // shouldn't reject an otherwise-valid config for a caller not using
@@ -364,6 +376,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       mcpServers,
     })
 
+    await this.applyInitialPermissionMode(connection, created.sessionId, created.modes)
+
     this.roomToSession.set(roomId, created.sessionId)
     this.activeSessions.add(created.sessionId)
     return created.sessionId
@@ -376,20 +390,22 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   ): Promise<boolean> {
     try {
       if (this.connectionState?.agentCapabilities?.loadSession) {
-        await connection.loadSession({
+        const loaded = await connection.loadSession({
           cwd: this.cwd,
           mcpServers,
           sessionId,
         })
+        await this.applyInitialPermissionMode(connection, sessionId, loaded.modes)
         return true
       }
 
       if (this.connectionState?.agentCapabilities?.sessionCapabilities?.resume) {
-        await connection.unstable_resumeSession({
+        const resumed = await connection.unstable_resumeSession({
           cwd: this.cwd,
           mcpServers,
           sessionId,
         })
+        await this.applyInitialPermissionMode(connection, sessionId, resumed.modes)
         return true
       }
     } catch {
@@ -397,6 +413,44 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     }
 
     return false
+  }
+
+  // Best-effort: a session that ends up in the wrong mode must still be
+  // usable, not fail here and take the whole (re)connection down with it.
+  // Every branch of this — the mode already current, the backend not
+  // advertising it, or the `setSessionMode` call itself failing — degrades to
+  // "session stays in whatever mode it started in," never to an unhandled
+  // rejection.
+  private async applyInitialPermissionMode(
+    connection: ClientSideConnection,
+    sessionId: string,
+    modes: SessionModeState | null | undefined,
+  ): Promise<void> {
+    if (!this.initialPermissionMode || !modes || modes.currentModeId === this.initialPermissionMode) {
+      return
+    }
+
+    if (!modes.availableModes.some((mode) => mode.id === this.initialPermissionMode)) {
+      // Not silent: a caller configured this id expecting it to actually
+      // apply. If a future agent build renames or drops it, this is the only
+      // signal that "ask before every tool" quietly stopped working again.
+      this.logger.warn("requested initial permission mode is not advertised by this session", {
+        sessionId,
+        requestedModeId: this.initialPermissionMode,
+        availableModeIds: modes.availableModes.map((mode) => mode.id).join(","),
+      })
+      return
+    }
+
+    try {
+      await connection.setSessionMode({ sessionId, modeId: this.initialPermissionMode })
+    } catch (error) {
+      this.logger.warn("failed to switch session into the requested initial permission mode", {
+        sessionId,
+        requestedModeId: this.initialPermissionMode,
+        error: String(error),
+      })
+    }
   }
 
   private async buildSessionMcpServers(): Promise<McpServer[]> {
