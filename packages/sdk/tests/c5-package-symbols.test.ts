@@ -428,10 +428,12 @@ describe("P-C5-2: committed inventory + migration doc cannot drift from the live
     const committed = JSON.parse(readFileSync(join(MIG_DIR, "c5-surface-after.json"), "utf8")) as Surface;
     // dump-sdk-surface sorts both sets; committed was produced the same way.
     // The dump also carries `version`, which tracks the SDK release rather than
-    // the export surface; comparing it refailed this check on every
-    // release-please bump (INT-1373), so assert only the surface itself.
-    expect(committed.package).toBe(live.package);
-    expect(committed.subpaths).toEqual(live.subpaths);
+    // the export surface: comparing it refailed this check on every
+    // release-please bump (INT-1373). Drop it so everything else still matches
+    // exactly, including any field added to the dump later.
+    delete (committed as { version?: string }).version;
+    delete (live as { version?: string }).version;
+    expect(committed).toEqual(live);
   });
 
   it("regenerating the map and migration doc from live surfaces produces no change (byte-identical)", () => {
