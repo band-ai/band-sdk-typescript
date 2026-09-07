@@ -30,10 +30,15 @@ const phoenixMock = vi.hoisted(() => {
     public off(event: string): void {
       this.handlers.delete(event);
     }
+    public emit(event: string, payload: Record<string, unknown>): void {
+      this.handlers.get(event)?.(payload);
+    }
+    public leaveCount = 0;
     public join() {
       return this.receiver(this.joinOutcome, this.joinPayload);
     }
     public leave() {
+      this.leaveCount += 1;
       return this.receiver(this.leaveOutcome, {});
     }
     private receiver(outcome: Outcome, payload: unknown) {
@@ -54,6 +59,7 @@ const phoenixMock = vi.hoisted(() => {
     public reconnectTimer = { reset(): void {}, scheduleTimeout(): void {} };
     private nextRef = 0;
     private openHandler: (() => void) | null = null;
+    private closeHandler: ((event?: { code?: number; reason?: string }) => void) | null = null;
     public constructor(_url: string, _options: { params: Record<string, unknown> }) {
       FakeSocket.instances.push(this);
     }
@@ -64,12 +70,19 @@ const phoenixMock = vi.hoisted(() => {
     public onOpen(handler: () => void): void {
       this.openHandler = handler;
     }
-    public onClose(): void {}
+    public onClose(handler: (event?: { code?: number; reason?: string }) => void): void {
+      this.closeHandler = handler;
+    }
     public onError(): void {}
     public connect(): void {
       queueMicrotask(() => this.openHandler?.());
     }
-    public disconnect(): void {}
+    public disconnect(): void {
+      this.closeHandler?.();
+    }
+    public emitClose(event?: { code?: number; reason?: string }): void {
+      this.closeHandler?.(event);
+    }
     public channel(topic: string): FakeChannel {
       const channel = new FakeChannel(topic);
       this.channels.push(channel);
@@ -154,6 +167,57 @@ describe("principal realtime held regressions", () => {
     );
     const serialized = JSON.stringify(error.mock.calls);
     expect(serialized).not.toContain("secret-token-value");
+    await connection.dispose();
+  });
+
+  it("classifies public agent supersede as one terminal unavailable", async () => {
+    const connection = createPrincipalRealtimeConnection({
+      principal: { kind: "agent", agentId: AGENT_ID, apiKey: "agent-key" },
+    });
+    const events: Array<{ type: string; state?: string; reason?: { code?: string } }> = [];
+    connection.subscribe((event) => events.push(event));
+    await connection.start();
+    expect(connection.getState()).toBe("ready");
+    const control = phoenixMock.FakeSocket.instances.at(-1)?.channels.find(
+      (channel) => channel.topic === `agent_control:${AGENT_ID}`,
+    );
+    expect(control).toBeDefined();
+    const controlCount = (): number =>
+      phoenixMock.FakeSocket.instances.at(-1)?.channels.filter(
+        (channel) => channel.topic === `agent_control:${AGENT_ID}`,
+      ).length ?? 0;
+    expect(controlCount()).toBe(1);
+    control?.emit("supersede", {
+      reason: "session.already_connected",
+      message: "This connection has been superseded by a newer session for this agent.",
+      retryable: false,
+    });
+    await vi.waitFor(() => {
+      expect(connection.getState()).toBe("unavailable");
+    });
+    const unavailable = events.filter(
+      (event) => event.type === "connection" && event.state === "unavailable",
+    );
+    expect(unavailable).toHaveLength(1);
+    expect(unavailable[0]?.reason?.code).toBe("session.already_connected");
+    await expect(connection.start()).rejects.toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(controlCount()).toBeLessThanOrEqual(1);
+    await connection.dispose();
+  });
+
+  it("emits generic unavailable then a later terminal reason", async () => {
+    const connection = createPrincipalRealtimeConnection({
+      principal: { kind: "human", userId: "user-1", apiKey: "human-key" },
+    });
+    const events: Array<{ type: string; state?: string; reason?: { code?: string } }> = [];
+    connection.subscribe((event) => events.push(event));
+    await connection.start();
+    phoenixMock.FakeSocket.instances.at(-1)?.emitClose({ code: 1006, reason: "" });
+    await vi.waitFor(() => expect(connection.getState()).toBe("unavailable"));
+    const first = events.filter((event) => event.type === "connection" && event.state === "unavailable");
+    expect(first).toHaveLength(1);
+    expect(first[0]?.reason?.code).toBe("websocket.closed");
     await connection.dispose();
   });
 });

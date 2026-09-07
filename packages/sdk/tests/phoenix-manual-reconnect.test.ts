@@ -123,6 +123,49 @@ describe("phoenix manual reconnect ownership", () => {
     await transport.disconnect();
   });
 
+  it("keeps default-mode topics after Phoenix reconnects", async () => {
+    FakeWebSocket.instances.splice(0, FakeWebSocket.instances.length);
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+      agentId: "agent-1",
+      websocketFactory: FakeWebSocket as unknown as typeof WebSocket,
+      reconnectAfterMs: () => 10,
+      heartbeatIntervalMs: 60_000,
+    });
+    const seen: string[] = [];
+    await transport.connect();
+    await transport.join("agent_rooms:agent-1", {
+      room_added: (payload) => {
+        seen.push(String(payload.id ?? ""));
+      },
+    });
+    expect(transport.getSocketChannelTopics()).toEqual(
+      expect.arrayContaining(["agent_control:agent-1", "agent_rooms:agent-1"]),
+    );
+    FakeWebSocket.instances.at(-1)?.close(1006, "drop");
+    await vi.waitFor(() => {
+      expect(FakeWebSocket.instances.length).toBeGreaterThan(1);
+    });
+    await vi.waitFor(() => {
+      expect(transport.isConnected()).toBe(true);
+    });
+    expect(
+      transport.getSocketChannelTopics().filter((topic) => topic === "agent_rooms:agent-1"),
+    ).toHaveLength(1);
+    expect(
+      transport.getSocketChannelTopics().filter((topic) => topic === "agent_control:agent-1"),
+    ).toHaveLength(1);
+    const socket = FakeWebSocket.instances.at(-1);
+    socket?.onmessage?.({
+      data: JSON.stringify([null, "1", "agent_rooms:agent-1", "room_added", { id: "room-live" }]),
+    });
+    await vi.waitFor(() => {
+      expect(seen).toContain("room-live");
+    });
+    await transport.disconnect();
+  });
+
   it("aborts waitForConnection without hanging", async () => {
     const abort = new AbortController();
     const transport = new PhoenixChannelsTransport({

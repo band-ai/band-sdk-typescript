@@ -49,12 +49,14 @@ const phoenixMock = vi.hoisted(() => {
       return this.receiver(this.joinOutcome);
     }
 
+    public leaveCount = 0;
     public leave(): {
       receive: (
         kind: Outcome,
         callback: (payload?: unknown) => void,
       ) => unknown;
     } {
+      this.leaveCount += 1;
       return this.receiver(this.leaveOutcome);
     }
 
@@ -675,5 +677,24 @@ describe("PhoenixChannelsTransport", () => {
 
     releaseExecution?.();
     await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  it("settles a pending leave exactly once on disconnect", async () => {
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+      agentId: "agent-1",
+    });
+    await transport.connect();
+    await transport.join("room:1", { message: () => undefined });
+    const socket = phoenixMock.FakeSocket.instances[0];
+    const channel = socket?.channels.get("room:1");
+    expect(channel).toBeDefined();
+    if (channel) channel.leaveOutcome = "pending";
+    const leaving = transport.leave("room:1");
+    expect(channel?.leaveCount).toBe(1);
+    await transport.disconnect();
+    await leaving;
+    expect(channel?.leaveCount).toBe(1);
   });
 });

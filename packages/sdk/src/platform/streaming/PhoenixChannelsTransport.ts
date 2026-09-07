@@ -35,6 +35,7 @@ interface PhoenixChannelsTransportOptions {
   abortSignal?: AbortSignal;
   reconnectMode?: "phoenix" | "manual";
   joinAgentControl?: boolean;
+  maxProtocolRefs?: number;
 }
 
 interface PendingRunForever {
@@ -48,6 +49,12 @@ interface OwnedJoin {
   cleanup: () => void;
 }
 
+interface OwnedLeave {
+  topic: string;
+  promise: Promise<void>;
+  abort: () => void;
+}
+
 const CONFLICT_POLICIES = new Set<WebSocketConflictPolicy>([
   "supersede",
   "reject",
@@ -59,10 +66,12 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private readonly channels = new Map<string, Channel>();
   private readonly channelRefs = new Map<string, Array<[string, number]>>();
   private readonly pendingJoins = new Map<string, OwnedJoin>();
+  private readonly pendingLeaves = new Map<string, OwnedLeave>();
   private readonly maxPendingControls: number;
   private readonly maxProtocolRefs: number;
   private readonly maxFrameBytes: number;
   private protocolRefCount = 0;
+  private lastProtocolRef = "0";
   private readonly logger: Logger;
   private readonly onTerminalDisconnect?: (
     reason: WebSocketDisconnectReason,
@@ -74,7 +83,6 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private readonly abortSignal?: AbortSignal;
   private readonly reconnectMode: "phoenix" | "manual";
   private readonly joinAgentControl: boolean;
-  private onHandlerError?: (error: unknown) => void;
   private connected = false;
   private connectPromise: Promise<void> | null = null;
   private connectResolve: (() => void) | null = null;
@@ -96,7 +104,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     this.reconnectMode = options.reconnectMode ?? "phoenix";
     this.joinAgentControl = options.joinAgentControl ?? true;
     this.maxPendingControls = REALTIME_MAX_PENDING_CONTROLS;
-    this.maxProtocolRefs = REALTIME_MAX_REFS;
+    this.maxProtocolRefs = options.maxProtocolRefs ?? REALTIME_MAX_REFS;
     this.maxFrameBytes = REALTIME_MAX_FRAME_BYTES;
 
     let wsUrl = options.wsUrl;
@@ -216,31 +224,19 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   public async disconnect(): Promise<void> {
     for (const pending of [...this.pendingJoins.values()]) {
       pending.abort(new TransportError("Transport disconnected"));
-      pending.cleanup();
     }
     this.pendingJoins.clear();
+    for (const pending of [...this.pendingLeaves.values()]) {
+      pending.abort();
+    }
     this.connectReject?.(new TransportError("Transport disconnected"));
     const topics = [...this.channels.keys()];
-    const results = await Promise.allSettled(
-      topics.map((topic) => this.leave(topic)),
-    );
-    this.detachAllSocketChannels();
+    await Promise.allSettled(topics.map((topic) => this.leave(topic)));
+    if (this.reconnectMode === "manual") {
+      this.detachAllSocketChannels();
+    }
     this.socket.disconnect();
     this.connected = false;
-
-    const failures: unknown[] = [];
-    for (const result of results) {
-      if (result.status === "rejected") {
-        failures.push(result.reason);
-      }
-    }
-
-    if (failures.length > 0) {
-      throw new AggregateError(
-        failures,
-        "Failed to leave one or more Phoenix topics during disconnect",
-      );
-    }
   }
 
   public isConnected(): boolean {
@@ -325,10 +321,12 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     const refs: Array<[string, number]> = [];
     let installed = false;
 
+    let cleaned = false;
     const cleanup = (): void => {
-      if (installed) {
+      if (cleaned || installed) {
         return;
       }
+      cleaned = true;
       for (const [event, ref] of refs) {
         channel.off(event, ref);
       }
@@ -350,7 +348,6 @@ export class PhoenixChannelsTransport implements StreamingTransport {
             topic,
             event,
           });
-          this.onHandlerError?.(undefined);
         });
       });
       refs.push([event, ref]);
@@ -393,9 +390,13 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   public async leave(topic: string): Promise<void> {
-    const pending = this.pendingJoins.get(topic);
-    pending?.abort(new TransportError(`Join for ${topic} was cancelled`));
-    pending?.cleanup();
+    const pendingJoin = this.pendingJoins.get(topic);
+    pendingJoin?.abort(new TransportError(`Join for ${topic} was cancelled`));
+
+    const pendingLeave = this.pendingLeaves.get(topic);
+    if (pendingLeave) {
+      return pendingLeave.promise;
+    }
 
     const channel = this.channels.get(topic);
     this.channels.delete(topic);
@@ -411,18 +412,35 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     }
     this.socket.remove(channel);
 
-    await new Promise<void>((resolve) => {
+    const owned: OwnedLeave = {
+      topic,
+      promise: Promise.resolve(),
+      abort: () => undefined,
+    };
+    owned.promise = new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = (): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        this.pendingLeaves.delete(topic);
+        this.logger.debug("Left topic", { topic });
+        resolve();
+      };
+      owned.abort = finish;
       try {
         channel
           .leave()
-          .receive("ok", () => resolve())
-          .receive("error", () => resolve())
-          .receive("timeout", () => resolve());
+          .receive("ok", finish)
+          .receive("error", finish)
+          .receive("timeout", finish);
       } catch {
-        resolve();
+        finish();
       }
     });
-    this.logger.debug("Left topic", { topic });
+    this.pendingLeaves.set(topic, owned);
+    return owned.promise;
   }
 
   public async runForever(signal: AbortSignal): Promise<void> {
@@ -477,10 +495,11 @@ export class PhoenixChannelsTransport implements StreamingTransport {
           closeCode: null,
           closeReason: "ref_ceiling",
         });
-        throw new TransportError("Realtime join ref ceiling reached");
+        return this.lastProtocolRef;
       }
       this.protocolRefCount += 1;
-      return original();
+      this.lastProtocolRef = original();
+      return this.lastProtocolRef;
     };
   }
 
@@ -565,17 +584,17 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     ) {
       this.lastDisconnectReason = genericCloseReason(event);
     }
-    this.forgetLocalChannels();
-    this.detachAllSocketChannels();
-    this.socket.reconnectTimer?.reset();
     if (this.reconnectMode === "manual") {
+      this.forgetLocalChannels();
+      this.detachAllSocketChannels();
+      this.socket.reconnectTimer?.reset();
       if (!this.stoppingReconnect) {
         this.stoppingReconnect = true;
         this.socket.disconnect();
         this.stoppingReconnect = false;
       }
     } else {
-      this.stopReconnectIfNoChannels();
+      this.abortPendingJoinsOnly();
     }
 
     this.logger.info("Phoenix socket closed", {
@@ -588,12 +607,15 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     }
   }
 
-  private forgetLocalChannels(): void {
+  private abortPendingJoinsOnly(): void {
     for (const pending of [...this.pendingJoins.values()]) {
       pending.abort(new TransportError("Transport disconnected"));
-      pending.cleanup();
     }
     this.pendingJoins.clear();
+  }
+
+  private forgetLocalChannels(): void {
+    this.abortPendingJoinsOnly();
     this.channels.clear();
     this.channelRefs.clear();
   }

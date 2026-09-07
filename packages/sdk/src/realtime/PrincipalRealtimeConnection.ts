@@ -101,8 +101,9 @@ export class PrincipalRealtimeConnectionImpl
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private selectionTail: Promise<void> = Promise.resolve();
-  private joinAbort: AbortController | null = null;
-  private unavailableEmitted = false;
+  private connectAbort: AbortController | null = null;
+  private selectionAbort: AbortController | null = null;
+  private lastConnectionKey: string | null = null;
   private terminal = false;
   private readonly onAbort = (): void => {
     void this.dispose();
@@ -128,7 +129,7 @@ export class PrincipalRealtimeConnectionImpl
       conflictPolicy,
       heartbeatIntervalMs: 30_000,
       reconnectMode: "manual",
-      joinAgentControl: false,
+      joinAgentControl: this.principal.kind === "agent",
       abortSignal: this.abortSignal,
       onSocketClose: (reason) => {
         this.handleTransportClose(reason);
@@ -197,13 +198,14 @@ export class PrincipalRealtimeConnectionImpl
     if (roomId !== null && !isValidRoomId(roomId)) {
       throw new ValidationError("Invalid selected room id");
     }
-    this.joinAbort?.abort();
-    this.joinAbort = new AbortController();
+    this.selectionAbort?.abort();
+    this.selectionAbort = new AbortController();
     this.selectionGeneration += 1;
     const generation = this.selectionGeneration;
+    const signal = this.selectionAbort.signal;
     this.selectionTail = this.selectionTail
       .catch(() => undefined)
-      .then(() => this.applySelection(roomId, generation, this.joinAbort!.signal));
+      .then(() => this.applySelection(roomId, generation, signal));
     return this.selectionTail;
   }
 
@@ -216,7 +218,8 @@ export class PrincipalRealtimeConnectionImpl
     this.socketGeneration += 1;
     this.selectionGeneration += 1;
     this.clearReconnect();
-    this.joinAbort?.abort();
+    this.connectAbort?.abort();
+    this.selectionAbort?.abort();
     this.abortSignal?.removeEventListener("abort", this.onAbort);
     this.listener = null;
     this.activity.clear();
@@ -263,27 +266,26 @@ export class PrincipalRealtimeConnectionImpl
     }
     this.socketGeneration += 1;
     const generation = this.socketGeneration;
-    this.setState("connecting");
-    this.emit({ type: "connection", state: "connecting" });
-    this.joinAbort?.abort();
-    this.joinAbort = new AbortController();
-    await this.transport.connect(this.joinAbort.signal);
+    this.emitConnection("connecting");
+    this.connectAbort?.abort();
+    this.connectAbort = new AbortController();
+    await this.transport.connect(this.connectAbort.signal);
     if (this.disposed || generation !== this.socketGeneration) {
       throw new TransportError("Realtime connection aborted");
     }
-    await this.joinMandatory(generation, this.joinAbort.signal);
+    await this.joinMandatory(generation, this.connectAbort.signal);
     if (this.disposed || generation !== this.socketGeneration) {
       throw new TransportError("Realtime connection aborted");
     }
-    this.unavailableEmitted = false;
-    this.setState("ready");
-    this.emit({ type: "connection", state: "ready" });
+    this.startSucceeded = true;
+    this.emitConnection("ready");
   }
 
   private handleTransportClose(reason: WebSocketDisconnectReason | null): void {
     if (this.disposed || this.terminal) {
       return;
     }
+    this.startSucceeded = false;
     this.markUnavailable(reason ?? undefined);
     if (reason?.retryable === false) {
       this.terminal = true;
@@ -360,6 +362,19 @@ export class PrincipalRealtimeConnectionImpl
     this.state = state;
   }
 
+  private emitConnection(
+    state: "connecting" | "ready" | "unavailable",
+    reason?: WebSocketDisconnectReason,
+  ): void {
+    this.setState(state);
+    const key = `${state}:${reason?.code ?? ""}`;
+    if (this.lastConnectionKey === key) {
+      return;
+    }
+    this.lastConnectionKey = key;
+    this.emit({ type: "connection", state, reason });
+  }
+
   private emit(event: PrincipalRealtimeEvent): void {
     if (this.disposed || !this.listener) {
       return;
@@ -373,19 +388,16 @@ export class PrincipalRealtimeConnectionImpl
 
   private markUnavailable(reason?: WebSocketDisconnectReason): void {
     this.activity.clear();
-    this.setState("unavailable");
-    if (this.unavailableEmitted) {
-      return;
-    }
-    this.unavailableEmitted = true;
-    if (this.selectedRoom) {
+    this.startSucceeded = false;
+    const previous = this.state;
+    if (this.selectedRoom && previous !== "unavailable") {
       this.emit({
         type: "room_activity",
         roomId: this.selectedRoom,
         state: "unavailable",
       });
     }
-    this.emit({ type: "connection", state: "unavailable", reason });
+    this.emitConnection("unavailable", reason);
   }
 
   private async joinMandatory(
@@ -408,12 +420,7 @@ export class PrincipalRealtimeConnectionImpl
       }
       return;
     }
-    await this.joinTopic(
-      `agent_control:${this.principal.agentId}`,
-      {},
-      generation,
-      signal,
-    );
+    return;
   }
 
   private userAgentHandlers(): TopicHandlers {
