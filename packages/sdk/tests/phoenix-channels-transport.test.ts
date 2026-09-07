@@ -235,6 +235,17 @@ describe("PhoenixChannelsTransport", () => {
     });
   });
 
+  it("omits agent_id when no agent principal is configured", () => {
+    new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+    });
+
+    expect(phoenixMock.FakeSocket.instances[0]?.params).not.toHaveProperty(
+      "agent_id",
+    );
+  });
+
   it("joins and leaves topics and dispatches topic handlers", async () => {
     const onMessage = vi.fn(async () => {});
     const transport = new PhoenixChannelsTransport({

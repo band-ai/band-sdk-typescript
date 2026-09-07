@@ -29,6 +29,7 @@ The SDK ships from `@band-ai/sdk` with multiple ESM/CJS subpath entries.
 | `@band-ai/sdk/linear` | Linear tools plus bridge runtime, webhook handler, dispatchers, session room store |
 | `@band-ai/sdk/mcp` | Generic MCP registrations and HTTP/SSE/stdio backends without Claude-specific dependencies |
 | `@band-ai/sdk/mcp/claude` | Claude Agent SDK MCP bridge (`createBandSdkMcpServer`) |
+| `@band-ai/sdk/realtime` | Principal-scoped Phoenix connection (`createPrincipalRealtimeConnection`) |
 
 Adapters' upstream LLM SDKs are declared as **optional peer dependencies**. Install only the ones you use (e.g., `pnpm add @anthropic-ai/sdk` to use `AnthropicAdapter`).
 

@@ -682,6 +682,27 @@
         "GetSystemPromptContextResult",
         "createBandSdkMcpServer"
       ]
+    },
+    "./realtime": {
+      "runtime": [
+        "REALTIME_MAX_FRAME_BYTES",
+        "REALTIME_MAX_PENDING_CONTROLS",
+        "REALTIME_MAX_REFS",
+        "REALTIME_WORKING_AGENT_EXECUTION_MAX",
+        "createPrincipalRealtimeConnection"
+      ],
+      "declarations": [
+        "PrincipalRealtimeConnection",
+        "PrincipalRealtimeEvent",
+        "PrincipalRealtimeOptions",
+        "REALTIME_MAX_FRAME_BYTES",
+        "REALTIME_MAX_PENDING_CONTROLS",
+        "REALTIME_MAX_REFS",
+        "REALTIME_WORKING_AGENT_EXECUTION_MAX",
+        "RealtimePrincipal",
+        "WorkingAgentExecution",
+        "createPrincipalRealtimeConnection"
+      ]
     }
   }
 }

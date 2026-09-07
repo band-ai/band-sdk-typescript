@@ -34,7 +34,8 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private readonly agentId?: string;
   private readonly channels = new Map<string, Channel>();
   private readonly channelRefs = new Map<string, Array<[string, number]>>();
-  private readonly pendingJoins = new Map<string, Promise<void>>();
+  private readonly pendingJoins = new Map<string, Promise<unknown>>();
+  private readonly maxPendingControls: number;
   private readonly logger: Logger;
   private readonly onTerminalDisconnect?: (
     reason: WebSocketDisconnectReason,
@@ -54,6 +55,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     this.logger = options.logger ?? new NoopLogger();
     this.agentId = options.agentId;
     this.onTerminalDisconnect = options.onTerminalDisconnect;
+    this.maxPendingControls = 16;
 
     // The phoenix JS library appends /websocket to the endpoint URL.
     // Strip it if the user-provided URL already includes it.
@@ -67,22 +69,26 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       ((tries: number) =>
         [1_000, 2_000, 5_000, 10_000, 30_000][tries - 1] ?? 30_000);
 
+    const params: Record<string, unknown> = {};
+    if (options.agentId !== undefined) {
+      params.agent_id = options.agentId;
+    }
+    if (options.conflictPolicy !== undefined) {
+      params.on_conflict = options.conflictPolicy;
+    }
+
     this.socket = new Socket(wsUrl, {
-      params: {
-        agent_id: options.agentId,
-        ...(options.conflictPolicy
-          ? { on_conflict: options.conflictPolicy }
-          : {}),
-      },
-      heartbeatIntervalMs: options.heartbeatIntervalMs,
+      params,
+      heartbeatIntervalMs: options.heartbeatIntervalMs ?? 30_000,
       reconnectAfterMs: (tries: number) => {
         if (this.terminalDisconnectError) {
           return Number.POSITIVE_INFINITY;
         }
         return reconnectAfterMs(tries);
       },
-      transport:
+      transport: wrapInboundFrameLimit(
         options.websocketFactory ?? resolveWebSocketFactory(options.apiKey),
+      ),
     });
 
     this.socket.onOpen(() => {
@@ -180,13 +186,26 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   public async join(topic: string, handlers: TopicHandlers): Promise<void> {
+    await this.joinWithResponse(topic, handlers);
+  }
+
+  public async joinWithResponse(
+    topic: string,
+    handlers: TopicHandlers,
+  ): Promise<unknown> {
     if (this.channels.has(topic)) {
-      return;
+      return undefined;
     }
 
     const pendingJoin = this.pendingJoins.get(topic);
     if (pendingJoin) {
       return pendingJoin;
+    }
+
+    if (this.pendingJoins.size >= this.maxPendingControls) {
+      throw new TransportError(
+        `Rejected join for ${topic}: pending control ceiling reached`,
+      );
     }
 
     const joinPromise = this.doJoin(topic, handlers).finally(() => {
@@ -196,7 +215,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     return joinPromise;
   }
 
-  private async doJoin(topic: string, handlers: TopicHandlers): Promise<void> {
+  private async doJoin(topic: string, handlers: TopicHandlers): Promise<unknown> {
     const channel = this.socket.channel(topic, {});
 
     const refs: Array<[string, number]> = [];
@@ -215,11 +234,12 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       refs.push([event, ref]);
     }
 
+    let joinPayload: unknown;
     try {
-      await new Promise<void>((resolve, reject) => {
+      joinPayload = await new Promise<unknown>((resolve, reject) => {
         channel
           .join()
-          .receive("ok", () => resolve())
+          .receive("ok", (payload?: unknown) => resolve(payload))
           .receive("error", (error: unknown) =>
             reject(new TransportError(`Failed to join topic ${topic}`, error)),
           )
@@ -240,6 +260,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     this.channels.set(topic, channel);
     this.channelRefs.set(topic, refs);
     this.logger.debug("Joined topic", { topic });
+    return joinPayload;
   }
 
   public async leave(topic: string): Promise<void> {
@@ -432,6 +453,34 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       };
     });
   }
+}
+
+
+const MAX_INBOUND_FRAME_BYTES = 65_536;
+
+function wrapInboundFrameLimit(factory: typeof WebSocket): typeof WebSocket {
+  const WebSocketImpl = factory;
+  class BoundedWebSocket {
+    public constructor(address: string | URL, protocols?: string | string[]) {
+      const socket = new WebSocketImpl(address, protocols);
+      socket.addEventListener("message", (event: MessageEvent<unknown>) => {
+        const data: unknown = event.data;
+        const size =
+          typeof data === "string"
+            ? Buffer.byteLength(data)
+            : data instanceof ArrayBuffer
+              ? data.byteLength
+              : ArrayBuffer.isView(data)
+                ? data.byteLength
+                : MAX_INBOUND_FRAME_BYTES + 1;
+        if (size > MAX_INBOUND_FRAME_BYTES) {
+          socket.close();
+        }
+      });
+      return socket;
+    }
+  }
+  return BoundedWebSocket as unknown as typeof WebSocket;
 }
 
 function resolveWebSocketFactory(apiKey: string): typeof WebSocket {

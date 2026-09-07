@@ -71,6 +71,11 @@
       "types": "./dist/mcp-claude.d.ts",
       "import": "./dist/mcp-claude.js",
       "require": "./dist/mcp-claude.cjs"
+    },
+    "./realtime": {
+      "types": "./dist/realtime.d.ts",
+      "import": "./dist/realtime.js",
+      "require": "./dist/realtime.cjs"
     }
   },
   "scripts": {

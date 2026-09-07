@@ -14,7 +14,10 @@
     "resolveJsonModule": true,
     "verbatimModuleSyntax": true,
     "types": ["node", "vitest/globals"],
-    "outDir": "dist"
+    "outDir": "dist",
+    "paths": {
+      "@band-ai/sdk/realtime": ["./src/realtime/index.ts"]
+    }
   },
   "include": ["src", "tests", "examples"],
   "exclude": ["dist", "tests/integration"]

@@ -41,6 +41,7 @@ export default defineConfig({
     mcp: "src/mcp/index.ts",
     "mcp-claude": "src/mcp/sdk.ts",
     testing: "src/testing/index.ts",
+    realtime: "src/realtime/index.ts",
   },
   external: EXTERNAL,
   format: ["esm", "cjs"],
