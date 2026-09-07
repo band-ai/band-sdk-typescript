@@ -34,6 +34,9 @@ jobs:
           filters: |
             sdk:
               - 'packages/sdk/**'
+              # The C5 drift proofs assert against these committed fixtures, so
+              # a PR that only edits one still has to run the SDK suite.
+              - 'docs/migrations/**'
               - '.github/**'
               - 'scripts/**'
               - 'package.json'
