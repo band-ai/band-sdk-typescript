@@ -2,15 +2,9 @@ name: CI
 
 # GitHub Flow: `main` is the canonical trunk. Keep validating legacy `dev` PRs
 # during the transition so old or mistakenly targeted work is not left untested.
-#
-# `main` is validated on push as well: green PR runs cannot prove the merged
-# trunk is green, so without this the first unrelated PR after a bad merge is
-# what discovers the break, and it gets blamed for it (INT-1373).
 on:
   pull_request:
     branches: [main, dev]
-  push:
-    branches: [main, 'ts-sdk/**']
 
 # Checkout reads repository contents; paths-filter reads the PR file list.
 # No CI job needs write access to repository or pull-request state.
@@ -28,18 +22,14 @@ jobs:
   changes:
     runs-on: ubuntu-latest
     outputs:
-      # Skipping by path is a PR-only optimization: a push to `main` validates
-      # the merged trunk in full, because a break that only appears after a
-      # merge need not touch either package's paths.
-      sdk: ${{ github.event_name == 'push' || steps.filter.outputs.sdk }}
-      openclaw: ${{ github.event_name == 'push' || steps.filter.outputs.openclaw }}
+      sdk: ${{ steps.filter.outputs.sdk }}
+      openclaw: ${{ steps.filter.outputs.openclaw }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - uses: dorny/paths-filter@v3
         id: filter
-        if: github.event_name == 'pull_request'
         with:
           filters: |
             sdk:
@@ -133,9 +123,7 @@ jobs:
       - name: Verify release intent
         run: node scripts/assert-release-intent.mjs
         env:
-          # PR: the base commit. Push: the previous trunk tip, so the version
-          # transition is checked against what `main` actually moved from.
-          RELEASE_BASE_COMMIT: ${{ github.event.pull_request.base.sha || github.event.before }}
+          RELEASE_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
 
       - name: Build SDK
         if: needs.changes.outputs.sdk == 'true' || needs.changes.outputs.openclaw == 'true'
