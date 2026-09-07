@@ -8,7 +8,7 @@ import { UnsupportedFeatureError } from "../../core/errors";
 import type { PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { asErrorMessage, asNonEmptyString, asOptionalRecord } from "../shared/coercion";
-import { ProviderTurnFailedError, agentFailure } from "../shared/providerFailure";
+import { FAILURE_CODE_TIMEOUT, ProviderTurnFailedError, agentFailure } from "../shared/providerFailure";
 import { deliverReply, rethrowIfDeliveryFailure } from "../shared/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import {
@@ -213,7 +213,7 @@ export class ParlantAdapter
       );
 
       if (!reply) {
-        const failure = agentFailure(this.provider, "Parlant did not return a response before timeout.", "timeout");
+        const failure = agentFailure(this.provider, "Parlant did not return a response before timeout.", FAILURE_CODE_TIMEOUT);
         await this.safeSendFailure(tools, failure, context.roomId);
         throw new ProviderTurnFailedError(failure);
       }

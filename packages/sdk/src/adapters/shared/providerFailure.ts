@@ -4,6 +4,13 @@ import type { MessagingTools } from "../../contracts/protocols";
 import { RecoverableTurnError } from "../../core/errors";
 
 /**
+ * `AgentFailure.code` for a provider that failed to respond before its own
+ * turn timeout. One constant so every adapter's timeout path reports the
+ * same code instead of retyping the literal.
+ */
+export const FAILURE_CODE_TIMEOUT = "timeout";
+
+/**
  * A provider failure that has already been reported to the room.
  *
  * Thrown, not returned, so the turn still *fails*: `PlatformRuntime` marks a

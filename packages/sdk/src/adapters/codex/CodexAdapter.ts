@@ -256,7 +256,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     });
 
     const turnId = turnStarted.turn.id;
-    const { finalText, sawSendMessageTool, turnStatus, turnError } = await this.runEventLoop(
+    const { finalText, sawSendMessageTool, turnStatus, turnError, reportedFailureInLoop } = await this.runEventLoop(
       client,
       threadId,
       turnId,
@@ -275,6 +275,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       turnError,
       finalText,
       sawSendMessageTool,
+      reportedFailureInLoop,
       fallbackSendAgentText: config.fallbackSendAgentText ?? true,
     });
     this.debug("codex_adapter.turn.completed", {
@@ -347,11 +348,18 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     tools: AgentToolsProtocol,
     config: CodexAdapterConfig,
     roomId: string,
-  ): Promise<{ finalText: string; sawSendMessageTool: boolean; turnStatus: TurnStatus; turnError: string }> {
+  ): Promise<{
+    finalText: string;
+    sawSendMessageTool: boolean;
+    turnStatus: TurnStatus;
+    turnError: string;
+    reportedFailureInLoop: boolean;
+  }> {
     let finalText = "";
     let sawSendMessageTool = false;
     let turnStatus: TurnStatus = "failed";
     let turnError = "";
+    let reportedFailureInLoop = false;
 
     while (true) {
       let event: CodexRpcEvent;
@@ -403,6 +411,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
           this.logger.warn("codex_adapter.retryable_error", { error: errorMessage, roomId });
         } else {
           await this.safeSendFailure(tools, agentFailure(this.provider, errorMessage, asString(error.code), error));
+          reportedFailureInLoop = true;
         }
         continue;
       }
@@ -457,7 +466,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       }
     }
 
-    return { finalText, sawSendMessageTool, turnStatus, turnError };
+    return { finalText, sawSendMessageTool, turnStatus, turnError, reportedFailureInLoop };
   }
 
   public override async onCleanup(roomId: string): Promise<void> {
@@ -1043,6 +1052,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     turnError: string;
     finalText: string;
     sawSendMessageTool: boolean;
+    reportedFailureInLoop: boolean;
     fallbackSendAgentText: boolean;
   }): Promise<void> {
     const mention = this.currentMention(input.message);
@@ -1073,7 +1083,11 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     const errorText = input.turnError
       ? `I couldn't complete this request (${input.turnStatus}): ${input.turnError}`
       : `I couldn't complete this request (${input.turnStatus}).`;
-    await this.safeSendFailure(input.tools, new AgentFailure(this.provider, errorText, input.turnStatus));
+    // An `error` event already reported this incident during the loop; the
+    // terminal `turn/completed` status is the same failure, not a new one.
+    if (!input.reportedFailureInLoop) {
+      await this.safeSendFailure(input.tools, new AgentFailure(this.provider, errorText, input.turnStatus));
+    }
     await deliverReply(input.tools, errorText, mention);
   }
 

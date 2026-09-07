@@ -22,7 +22,7 @@ import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
 import { abandon } from "../shared/abandon";
 import { asErrorMessage, asOptionalRecord } from "../shared/coercion";
 import { deliverReply, rethrowIfDeliveryFailure } from "../shared/deliveryFailedError";
-import { agentFailure } from "../shared/providerFailure";
+import { FAILURE_CODE_TIMEOUT, agentFailure } from "../shared/providerFailure";
 import {
   type OpencodeSessionState,
   OpencodeHistoryConverter,
@@ -916,7 +916,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     if (roomState.tools) {
       try {
         await roomState.tools.sendFailure(
-          new AgentFailure(this.provider, "OpenCode timed out before completing the turn.", "timeout"),
+          new AgentFailure(this.provider, "OpenCode timed out before completing the turn.", FAILURE_CODE_TIMEOUT),
         );
       } catch (eventError) {
         // Best-effort: the timeout itself is the truth we already know,

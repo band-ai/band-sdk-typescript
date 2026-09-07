@@ -12,6 +12,7 @@ import type {
 } from "./types";
 import { buildStatusEvent } from "./statusEvent";
 import { asNonEmptyString } from "../shared/coercion";
+import { FAILURE_METADATA_KEY } from "../../contracts/protocols";
 
 /** This gateway's `AgentFailure.provider` identity. */
 const PROVIDER = "a2a-gateway";
@@ -130,7 +131,7 @@ class GatewayPeerExecutor {
           state: "failed",
           final: true,
           text: "Peer request failed.",
-          metadata: buildGatewayExecutionFailureMetadata(error),
+          metadata: buildGatewayFailureMetadata(error),
         }),
       );
     } finally {
@@ -617,27 +618,48 @@ function verifyBearerAuthorization(
   return safeHeaderEquals(authorization, `Bearer ${authToken}`);
 }
 
-function buildGatewayExecutionFailureMetadata(
+/**
+ * Builds the `metadata.failure` payload every gateway failure event posts,
+ * nested under {@link FAILURE_METADATA_KEY} to match the same convention
+ * every other `sendFailure` implementation uses ({@link toFailureEvent} in
+ * `contracts/protocols.ts`). `code` overrides the default `error.name`
+ * derivation for call sites that know a more specific failure code (e.g. a
+ * timeout).
+ */
+export function buildGatewayFailureMetadata(
   error: unknown,
+  code?: string,
 ): Record<string, unknown> {
   const message = sanitizeGatewayErrorMessage(error);
-  return new AgentFailure(
-    PROVIDER,
-    message,
-    error instanceof Error ? error.name : "UnknownError",
-  ).toObject();
+  return {
+    [FAILURE_METADATA_KEY]: new AgentFailure(
+      PROVIDER,
+      message,
+      code ?? (error instanceof Error ? error.name : "UnknownError"),
+    ).toObject(),
+  };
 }
 
-function sanitizeGatewayErrorMessage(error: unknown): string {
+/**
+ * Redacts credential-shaped substrings from an upstream error before it
+ * reaches an external A2A client. Exported so every failure site in this
+ * gateway (including the peer-forwarded relay in `A2AGatewayAdapter`) shares
+ * one redaction rule instead of drifting.
+ */
+export function sanitizeGatewayErrorMessage(error: unknown): string {
   const rawMessage = error instanceof Error ? error.message : String(error);
   const trimmed = rawMessage.trim();
   if (!trimmed) {
     return "Unknown error";
   }
 
+  // The value group excludes only `,`/`;` (not whitespace): a scheme-prefixed
+  // credential like "Authorization: ApiKey sk-..." has a space between the
+  // header name and the value, and a value stopped at the first space would
+  // redact "ApiKey" and leave the actual secret untouched.
   const withBearerRedaction = trimmed
     .replace(/Bearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
-    .replace(/(token|authorization|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]");
+    .replace(/(token|authorization|api[_-]?key)\s*[:=]\s*[^,;]+/gi, "$1=[REDACTED]");
 
   const maxLength = 240;
   if (withBearerRedaction.length <= maxLength) {

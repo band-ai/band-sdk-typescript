@@ -24,7 +24,7 @@ import { mentionSubjectsFromMetadata, replaceUuidMentions } from "../../runtime/
 import { abandon } from "../shared/abandon";
 import { asErrorMessage } from "../shared/coercion";
 import { deliverReply } from "../shared/deliveryFailedError";
-import { agentFailure } from "../shared/providerFailure";
+import { FAILURE_CODE_TIMEOUT, agentFailure } from "../shared/providerFailure";
 import { systemUpdateParts } from "../shared/conversationPrompt";
 import { isBlankEventContent } from "../../contracts/chatEvents";
 import type { PlatformMessage } from "../../runtime/types";
@@ -372,7 +372,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     }
     await tools.sendFailure(
       isTimeout
-        ? new AgentFailure(this.provider, "ACP turn timed out.", "timeout")
+        ? new AgentFailure(this.provider, "ACP turn timed out.", FAILURE_CODE_TIMEOUT)
         : isAcpErrorResponse(error)
           ? agentFailure(this.provider, error.message, String(error.code), error.data)
           : new AgentFailure(this.provider, asErrorMessage(error)),
