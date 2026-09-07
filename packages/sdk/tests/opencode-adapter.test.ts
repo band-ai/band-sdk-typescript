@@ -349,6 +349,48 @@ describe("OpencodeAdapter", () => {
     ]);
   });
 
+  it("still releases the turn wait when delivering the permission prompt itself fails, instead of stalling until turnTimeoutMs", async () => {
+    const tools = new FakeTools({ failOn: ["sendMessage"] });
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as any,
+      // Deliberately much larger than how long this test should actually
+      // take — proves releaseTurnWait fired on its own, not via this watchdog.
+      config: { turnTimeoutMs: 3_000 },
+      mcpBackendFactory: httpMcpBackend(),
+    });
+    adapters.push(adapter);
+
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+
+    const startedAt = Date.now();
+    const firstTurn = adapter.onMessage(
+      makeMessage("Need approval flow"),
+      tools,
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-prompt-delivery-fails" },
+    );
+
+    await waitFor(() => client.createdSessions.length === 1);
+    const sessionId = client.createdSessions[0]!;
+    client.eventQueue.push({
+      type: "permission.asked",
+      properties: {
+        id: "perm-1",
+        sessionID: sessionId,
+        permission: "bash",
+        patterns: ["npm test"],
+      },
+    });
+
+    await firstTurn;
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(tools.messages).toEqual([]);
+  });
+
   it("observes a turn that outlives its request, so a failed background delivery cannot end the process", async () => {
     // A permission ask returns `onMessage` with the turn still open, so the
     // reply arrives from the background loop with no turn left to fail. The
@@ -633,6 +675,50 @@ describe("OpencodeAdapter", () => {
       code: "timeout",
       message: "OpenCode timed out before completing the turn.",
     });
+  });
+
+  it("opens a fresh session for the next turn in a room after a timeout, instead of resuming the timed-out one", async () => {
+    // The abort after a timeout is fire-and-forget (see `abandon`), so the
+    // timed-out session may still be settling server-side — the next turn in
+    // this room must not race a new prompt against it by resuming the same
+    // session id.
+    const tools = new FakeTools();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as any,
+      config: { turnTimeoutMs: 30 },
+      mcpBackendFactory: httpMcpBackend(),
+    });
+    adapters.push(adapter);
+
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+    await adapter.onMessage(
+      makeMessage("Never responds", "room-timeout-reuse"),
+      tools,
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-timeout-reuse" },
+    );
+    const timedOutSessionId = client.createdSessions[0]!;
+    expect(client.aborts).toContain(timedOutSessionId);
+
+    // client.getSession happily "restores" any session id that isn't marked
+    // missing, so this next turn getting a *second* created session (not a
+    // restore of the first) proves ensureSession skipped the restore path.
+    await adapter.onMessage(
+      makeMessage("Second message", "room-timeout-reuse"),
+      new FakeTools(),
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-timeout-reuse" },
+    );
+
+    expect(client.createdSessions).toHaveLength(2);
+    expect(client.createdSessions[1]).not.toBe(timedOutSessionId);
+    expect(client.promptCalls.map((call) => call.sessionId)).toContain(client.createdSessions[1]);
   });
 
   it("reports its turn timeout without waiting on an abort the wedged server never answers", async () => {

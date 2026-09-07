@@ -6,7 +6,12 @@ import { RuntimeStateError, UnsupportedFeatureError } from "../../core/errors";
 import type { PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { asErrorMessage, toWireString } from "../shared/coercion";
-import { ProviderTurnFailedError, agentFailure, safeSendFailure } from "../shared/providerFailure";
+import {
+  ProviderTurnFailedError,
+  agentFailure,
+  rethrowIfProviderTurnFailure,
+  safeSendFailure,
+} from "../shared/providerFailure";
 import { deliverReply, rethrowIfDeliveryFailure } from "../shared/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import type { LettaMessages } from "./types";
@@ -397,6 +402,7 @@ export class LettaAdapter extends SimpleAdapter<
       await deliverReply(tools, assistantText, [{ id: message.senderId }]);
     } catch (error) {
       rethrowIfDeliveryFailure(error);
+      rethrowIfProviderTurnFailure(error);
 
       const errorMessage = asErrorMessage(error);
       this.logger.error("Letta adapter request failed", {

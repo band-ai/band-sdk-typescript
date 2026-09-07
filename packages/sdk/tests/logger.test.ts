@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ConsoleLogger } from "../src/core/logger";
+import { ConsoleLogger, NoopLogger, resolveLogger, type Logger } from "../src/core/logger";
 
 describe("ConsoleLogger", () => {
   afterEach(() => {
@@ -39,5 +39,32 @@ describe("ConsoleLogger", () => {
 
     expect(writeSpy).toHaveBeenCalledOnce();
     expect(String(writeSpy.mock.calls[0]?.[0])).toContain("[Circular]");
+  });
+});
+
+describe("resolveLogger", () => {
+  it("returns a NoopLogger when no logger is given", () => {
+    expect(resolveLogger()).toBeInstanceOf(NoopLogger);
+  });
+
+  it("is idempotent: resolving an already-resolved logger returns the same instance instead of wrapping it again", () => {
+    const inner: Logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const once = resolveLogger(inner);
+    const twice = resolveLogger(once);
+    expect(twice).toBe(once);
+  });
+
+  it("still guards a throwing inner logger's error, even after being resolved twice", () => {
+    const inner: Logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(() => {
+        throw new Error("logger boom");
+      }),
+    };
+    const guarded = resolveLogger(resolveLogger(inner));
+    expect(() => guarded.error("boom")).not.toThrow();
+    expect(inner.error).toHaveBeenCalledTimes(1);
   });
 });

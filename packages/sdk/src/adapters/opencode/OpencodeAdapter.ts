@@ -107,6 +107,11 @@ interface RoomState {
   pendingQuestion: PendingQuestion | null;
   lastErrorMessage: string | null;
   persistedSessionId: string | null;
+  // Set when a turn times out: its session's abort is fired-and-forgotten
+  // (see `abandon`), so the session may still be settling server-side. The
+  // next turn in this room must not resume it — `ensureSession` consumes
+  // this to force a brand-new session instead of restoring the old one.
+  forceFreshSession: boolean;
 }
 
 interface OpencodeAdapterOptions {
@@ -376,6 +381,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       pendingQuestion: null,
       lastErrorMessage: null,
       persistedSessionId: null,
+      forceFreshSession: false,
     };
     this.rooms.set(roomId, created);
     return created;
@@ -660,9 +666,20 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     }, this.config.approvalWaitTimeoutMs);
     if (roomState.tools) {
       const patterns = roomState.pendingPermission.patterns.join(", ") || "n/a";
-      await roomState.tools.sendMessage(
-        `OpenCode approval requested for \`${roomState.pendingPermission.permission}\` (${patterns}). Reply with \`approve ${requestId}\`, \`always ${requestId}\`, or \`reject ${requestId}\`.`,
-      );
+      // Best-effort: a failure to ask must not leave the room's turn wait
+      // released only after the unrelated turnTimeoutMs watchdog eventually
+      // fires — the same reasoning as handleTurnTimeout's own report below.
+      try {
+        await roomState.tools.sendMessage(
+          `OpenCode approval requested for \`${roomState.pendingPermission.permission}\` (${patterns}). Reply with \`approve ${requestId}\`, \`always ${requestId}\`, or \`reject ${requestId}\`.`,
+        );
+      } catch (error) {
+        this.logger.warn("opencode_adapter.permission_prompt_delivery_failed", {
+          roomId: roomState.roomId,
+          requestId,
+          error,
+        });
+      }
     }
     this.releaseTurnWait(roomState);
   }
@@ -692,7 +709,16 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       void this.expireQuestion(roomState, requestId);
     }, this.config.questionWaitTimeoutMs);
     if (roomState.tools) {
-      await roomState.tools.sendMessage(this.formatQuestionPrompt(questions, requestId));
+      // Best-effort, same reasoning as handlePermissionAsked above.
+      try {
+        await roomState.tools.sendMessage(this.formatQuestionPrompt(questions, requestId));
+      } catch (error) {
+        this.logger.warn("opencode_adapter.question_prompt_delivery_failed", {
+          roomId: roomState.roomId,
+          requestId,
+          error,
+        });
+      }
     }
     this.releaseTurnWait(roomState);
   }
@@ -827,7 +853,14 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       throw new Error("OpenCode client is not initialized.");
     }
 
-    const restoredSessionId = roomState.sessionId ?? history.sessionId;
+    // A timed-out turn's abort is fire-and-forget (see handleTurnTimeout) —
+    // this room's session may still be settling server-side, so this turn
+    // must not resume it, however history or in-memory state would otherwise
+    // resolve it. Consumed once: only the very next session lookup forces a
+    // fresh session, not every one after.
+    const forceFreshSession = roomState.forceFreshSession;
+    roomState.forceFreshSession = false;
+    const restoredSessionId = forceFreshSession ? null : (roomState.sessionId ?? history.sessionId);
     let created = false;
     let restoredMissingSession = false;
     let session: Record<string, unknown>;
@@ -912,6 +945,10 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       // request pending too, and everything below frees the room. See
       // `abandon`.
       abandon(() => client.abortSession(abortedSessionId));
+      // The abort above is fire-and-forget, so this session may still be
+      // settling server-side when the room's next turn starts — that turn
+      // must open a fresh session rather than racing a prompt against it.
+      roomState.forceFreshSession = true;
     }
     if (roomState.tools) {
       // Best-effort: the timeout itself is the truth we already know, and

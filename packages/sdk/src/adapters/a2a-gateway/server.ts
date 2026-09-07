@@ -654,13 +654,14 @@ export function sanitizeGatewayErrorMessage(error: unknown): string {
     return "Unknown error";
   }
 
-  // The value group excludes only `,`/`;` (not whitespace): a scheme-prefixed
-  // credential like "Authorization: ApiKey sk-..." has a space between the
-  // header name and the value, and a value stopped at the first space would
-  // redact "ApiKey" and leave the actual secret untouched.
+  // A scheme-prefixed credential like "Authorization: ApiKey sk-..." has a
+  // space between the header name and the value, so the value group has to
+  // tolerate one optional leading scheme word — but only one: matching
+  // everything up to the next comma/semicolon (no whitespace boundary at
+  // all) also swallows unrelated trailing prose past the real secret.
   const withBearerRedaction = trimmed
     .replace(/Bearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
-    .replace(/(token|authorization|api[_-]?key)\s*[:=]\s*[^,;]+/gi, "$1=[REDACTED]");
+    .replace(/(token|authorization|api[_-]?key)\s*[:=]\s*(?:[A-Za-z][\w-]*\s+)?[^\s,;]+/gi, "$1=[REDACTED]");
 
   const maxLength = 240;
   if (withBearerRedaction.length <= maxLength) {

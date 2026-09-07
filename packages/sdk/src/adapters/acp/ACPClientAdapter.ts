@@ -24,7 +24,7 @@ import { mentionSubjectsFromMetadata, replaceUuidMentions } from "../../runtime/
 import { abandon } from "../shared/abandon";
 import { asErrorMessage } from "../shared/coercion";
 import { deliverReply } from "../shared/deliveryFailedError";
-import { FAILURE_CODE_TIMEOUT, agentFailure } from "../shared/providerFailure";
+import { FAILURE_CODE_TIMEOUT, agentFailure, reportTurnFailure } from "../shared/providerFailure";
 import { systemUpdateParts } from "../shared/conversationPrompt";
 import { isBlankEventContent } from "../../contracts/chatEvents";
 import type { PlatformMessage } from "../../runtime/types";
@@ -69,9 +69,9 @@ const DEFAULT_PERMISSION_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_TURN_TIMEOUT_MS = 60 * 60_000;
 
 // `setTimeout` silently clamps any larger delay to 1ms rather than erroring,
-// so a finite `turnTimeoutMs` meant to mean "effectively unbounded" would fire
-// almost immediately instead. `Infinity` is the only value that means that.
-const MAX_TURN_TIMEOUT_MS = 2_147_483_647;
+// so a finite timeout meant to mean "effectively unbounded" would fire almost
+// immediately instead. Shared by every `setTimeout`-backed timeout below.
+const MAX_SETTIMEOUT_DELAY_MS = 2_147_483_647;
 
 export interface ACPClientAdapterOptions {
   command: string | string[];
@@ -172,6 +172,12 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     if (this.resolvePermission && (!Number.isFinite(this.permissionTimeoutMs) || this.permissionTimeoutMs <= 0)) {
       throw new ValidationError(`permissionTimeoutMs must be a positive finite number, got ${options.permissionTimeoutMs}`)
     }
+    // Same `setTimeout` clamp hazard as turnTimeoutMs below: unlike that field,
+    // permissionTimeoutMs has no `Infinity` opt-out, so this is unconditional
+    // wherever the finite/positive check above already applies.
+    if (this.resolvePermission && this.permissionTimeoutMs > MAX_SETTIMEOUT_DELAY_MS) {
+      throw new ValidationError(`permissionTimeoutMs must be at most ${MAX_SETTIMEOUT_DELAY_MS}, got ${options.permissionTimeoutMs}`)
+    }
 
     this.turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS
     // Unconditional, unlike permissionTimeoutMs's gated check above: every
@@ -183,8 +189,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     if (Number.isNaN(this.turnTimeoutMs) || this.turnTimeoutMs <= 0) {
       throw new ValidationError(`turnTimeoutMs must be a positive number or Infinity, got ${options.turnTimeoutMs}`)
     }
-    if (Number.isFinite(this.turnTimeoutMs) && this.turnTimeoutMs > MAX_TURN_TIMEOUT_MS) {
-      throw new ValidationError(`turnTimeoutMs must be Infinity or at most ${MAX_TURN_TIMEOUT_MS}, got ${options.turnTimeoutMs}`)
+    if (Number.isFinite(this.turnTimeoutMs) && this.turnTimeoutMs > MAX_SETTIMEOUT_DELAY_MS) {
+      throw new ValidationError(`turnTimeoutMs must be Infinity or at most ${MAX_SETTIMEOUT_DELAY_MS}, got ${options.turnTimeoutMs}`)
     }
   }
 
@@ -216,11 +222,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
     this.roomTools.set(context.roomId, tools)
 
-    const session = await this.establishSession(tools, context)
-    if (!session) {
-      return
-    }
-    const { connection, sessionId } = session
+    const { connection, sessionId } = await this.establishSession(tools, context)
 
     const promptText = this.buildPromptText(message, participantsMessage, contactsMessage, context.roomId, sessionId)
     this.bootstrappedSessions.add(sessionId)
@@ -229,8 +231,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     try {
       response = await this.sendPromptWithTimeout(connection, sessionId, promptText)
     } catch (error) {
-      await this.failTurn(error, connection, sessionId, tools, message, context)
-      return
+      response = await this.failTurn(error, connection, sessionId, tools, message, context)
     }
 
     await this.finishTurn(tools, sessionId, context.roomId, message, response)
@@ -242,7 +243,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private async establishSession(
     tools: AdapterToolsProtocol,
     context: { roomId: string },
-  ): Promise<{ connection: ClientSideConnection; sessionId: string } | null> {
+  ): Promise<{ connection: ClientSideConnection; sessionId: string }> {
     // Captured before the connection is touched: the catch below tears down
     // what every room shares, so it has to know which connection this turn
     // was actually working against.
@@ -264,8 +265,11 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       return { connection, sessionId }
     } catch (error) {
       await this.stopOwnedConnection(generation, context.roomId)
-      await tools.sendFailure(new AgentFailure(this.provider, asErrorMessage(error)))
-      return null
+      // Reports and throws: a connection/session-establishment failure is a
+      // provider failure like any other, and must fail the turn so
+      // PlatformRuntime marks the message failed and retries it instead of
+      // silently treating it as processed.
+      return reportTurnFailure(tools, new AgentFailure(this.provider, asErrorMessage(error)))
     }
   }
 
@@ -335,7 +339,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     tools: AdapterToolsProtocol,
     message: PlatformMessage,
     context: { roomId: string },
-  ): Promise<void> {
+  ): Promise<never> {
     const isTimeout = error instanceof AcpTurnTimeoutError
     if (isTimeout) {
       // `cancel` is a notification whose write can stay pending indefinitely
@@ -370,7 +374,12 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     } catch (cleanupError) {
       this.logger.warn("ACP onCleanup after turn failure itself failed", { roomId: context.roomId, sessionId, error: cleanupError })
     }
-    await tools.sendFailure(
+    // Reports and throws, like every other terminal provider failure in this
+    // file: a turn-level failure (timeout, rejected prompt) must fail the turn
+    // so PlatformRuntime marks the message failed and retries it, instead of
+    // returning here and silently dropping that retry.
+    return reportTurnFailure(
+      tools,
       isTimeout
         ? new AgentFailure(this.provider, "ACP turn timed out.", FAILURE_CODE_TIMEOUT)
         : isAcpErrorResponse(error)
@@ -573,6 +582,13 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       throw new Error("ACP connection attempt superseded by stop()")
     }
 
+    // Bumped here too, not just in stop(): this may be a silent reconnect
+    // (the previous connection died and this replaces it without anyone
+    // calling stop()) rather than a fresh start. Without this, a generation
+    // captured against the now-dead connection would still match here, and a
+    // turn that failed against that dead connection could tear down the
+    // brand-new one installed below out from under every other room.
+    this.connectionGeneration++
     this.client = client
     this.connection = connection
     this.connectionHandle = handle

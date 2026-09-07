@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ACPClientAdapter, type ACPClientAdapterOptions } from "../src/adapters/acp";
 import { ACPClientHistoryConverter } from "../src/converters/acp-client";
-import { FakeTools, findFailureEvent, makeMessage } from "./testUtils";
+import { FakeTools, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
 
 interface FakeConnectionOverrides {
@@ -477,13 +477,15 @@ describe("ACPClientAdapter", () => {
     await adapter.onStarted("No Transport Agent", "ACP fallback test")
 
     const tools = new FakeTools()
-    await adapter.onMessage(
-      makeMessage("hello", "room-untransported"),
-      tools,
-      { roomToSession: {} },
-      null,
-      null,
-      { isSessionBootstrap: true, roomId: "room-untransported" },
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("hello", "room-untransported"),
+        tools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-untransported" },
+      ),
     )
 
     expect(newSession).not.toHaveBeenCalled()
@@ -790,6 +792,18 @@ describe("ACPClientAdapter", () => {
       })).toThrow(/permissionTimeoutMs must be a positive finite number/)
     })
 
+    it("(k) constructing with a permissionTimeoutMs past the setTimeout clamp throws, like turnTimeoutMs", () => {
+      // setTimeout silently clamps delays over ~24.8 days to 1ms instead of
+      // erroring — a permissionTimeoutMs meant to mean "wait a long time"
+      // must be rejected at construction, not silently auto-resolve almost
+      // instantly at runtime.
+      expect(() => new ACPClientAdapter({
+        command: ["acp-agent"],
+        resolvePermission: async () => "allow",
+        permissionTimeoutMs: 5_000_000_000,
+      })).toThrow(/permissionTimeoutMs must be at most 2147483647/)
+    })
+
     it("(l) resolvePermission throwing synchronously still falls back to cancelled, not an uncaught throw", async () => {
       const { adapter, getPermissionResult } = buildHarness({
         resolvePermission: () => {
@@ -869,13 +883,15 @@ describe("ACPClientAdapter", () => {
       })
       await adapter.onStarted("Agent", "desc")
       const tools = new FakeTools()
-      await adapter.onMessage(
-        makeMessage("hello", "room-err"),
-        tools,
-        { roomToSession: {} },
-        null,
-        null,
-        { isSessionBootstrap: true, roomId: "room-err" },
+      await expectTurnFailed(
+        adapter.onMessage(
+          makeMessage("hello", "room-err"),
+          tools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: true, roomId: "room-err" },
+        ),
       )
 
       const failureEvent = findFailureEvent(tools)
@@ -937,13 +953,15 @@ describe("ACPClientAdapter", () => {
 
       const stopSpy = vi.spyOn(adapter, "stop")
       const tools = new FakeTools()
-      await adapter.onMessage(
-        makeMessage("hello", "room-reconnect"),
-        tools,
-        { roomToSession: {} },
-        null,
-        null,
-        { isSessionBootstrap: true, roomId: "room-reconnect" },
+      await expectTurnFailed(
+        adapter.onMessage(
+          makeMessage("hello", "room-reconnect"),
+          tools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: true, roomId: "room-reconnect" },
+        ),
       )
 
       expect(stopSpy).toHaveBeenCalledTimes(1)
@@ -1109,7 +1127,7 @@ describe("ACPClientAdapter", () => {
 
       // Only now does the stale attempt reject, into room-stale's catch.
       resolveSlowInit({ protocolVersion: 1, agentCapabilities: {} })
-      await staleTurn
+      await expectTurnFailed(staleTurn)
 
       expect(staleHandleStop).toHaveBeenCalledTimes(1)
       expect(freshHandleStop).not.toHaveBeenCalled()
@@ -1148,13 +1166,15 @@ describe("ACPClientAdapter", () => {
       })
       await adapter.onStarted("Agent", "desc")
       const tools = new FakeTools()
-      await adapter.onMessage(
-        makeMessage("hello", "room-cleanup-fail"),
-        tools,
-        { roomToSession: {} },
-        null,
-        null,
-        { isSessionBootstrap: true, roomId: "room-cleanup-fail" },
+      await expectTurnFailed(
+        adapter.onMessage(
+          makeMessage("hello", "room-cleanup-fail"),
+          tools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: true, roomId: "room-cleanup-fail" },
+        ),
       )
 
       expect(rejectingStop).toHaveBeenCalledTimes(1)
@@ -1165,6 +1185,81 @@ describe("ACPClientAdapter", () => {
         code: null,
         detail: null,
       })
+    })
+
+    it("a silent reconnect (no explicit stop()) bumps the generation, so a stale turn's own failure does not tear down the fresh connection", async () => {
+      // Unlike the generation-token tests above, nothing calls adapter.stop()
+      // here — the first connection just dies (subprocess crash / stream
+      // EOF), and ensureConnection() reconnects on its own the next time a
+      // turn needs it. That silent reconnect has to bump the generation
+      // counter itself, or a turn that captured the *old* generation before
+      // reconnecting — and then fails for an unrelated reason — would still
+      // match and tear the brand-new connection down.
+      let attempt = 0
+      const firstConnectionController = new AbortController()
+      const secondStop = vi.fn(async () => undefined)
+      let secondConnNewSessionCalls = 0
+      const newSessionOnSecondConnection = vi.fn(async () => {
+        secondConnNewSessionCalls += 1
+        if (secondConnNewSessionCalls === 1) {
+          // room-a's own session-establishment request fails for a reason
+          // that has nothing to do with the (freshly reconnected) connection.
+          throw new Error("room-a session create failed")
+        }
+        return { sessionId: `session-${secondConnNewSessionCalls}` }
+      })
+
+      const adapter = new ACPClientAdapter({
+        command: ["acp-agent"],
+        enableMcpTools: false,
+        connectionFactory: async () => {
+          attempt += 1
+          if (attempt === 1) {
+            return {
+              connection: fakeConnection({ signal: firstConnectionController.signal }),
+              stop: vi.fn(async () => undefined),
+            }
+          }
+          return {
+            connection: fakeConnection({ newSession: newSessionOnSecondConnection }),
+            stop: secondStop,
+          }
+        },
+      })
+
+      await adapter.onStarted("Agent", "desc")
+      // Connection 1 dies without anyone calling stop().
+      firstConnectionController.abort()
+
+      const tools = new FakeTools()
+      await expectTurnFailed(
+        adapter.onMessage(
+          makeMessage("hello", "room-a"),
+          tools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: true, roomId: "room-a" },
+        ),
+      )
+
+      // room-a's own failure must not have torn down the connection it just
+      // silently reconnected to.
+      expect(secondStop).not.toHaveBeenCalled()
+      expect(attempt).toBe(2)
+
+      // The fresh connection is still live and usable by another room.
+      const toolsB = new FakeTools()
+      await adapter.onMessage(
+        makeMessage("hello", "room-b"),
+        toolsB,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-b" },
+      )
+      expect(toolsB.events.some((event) => event.messageType === "task")).toBe(true)
+      expect(attempt).toBe(2)
     })
 
     it("a hang past turnTimeoutMs produces code: 'timeout', calls connection.cancel, and does not call this.stop() (only onCleanup for that room)", async () => {
@@ -1214,8 +1309,12 @@ describe("ACPClientAdapter", () => {
           { isSessionBootstrap: true, roomId: "room-timeout" },
         )
         await promptStartedSignal
+        // Attached before the timer fires: `advanceTimersByTimeAsync` drives
+        // the rejection synchronously within this tick, and a handler must
+        // already be on the promise by then or Node flags it as unhandled.
+        const failed = expectTurnFailed(onMessage)
         await vi.advanceTimersByTimeAsync(1_000)
-        await onMessage
+        await failed
 
         expect(cancel).toHaveBeenCalledWith({ sessionId: "session-timeout" })
         expect(stopSpy).not.toHaveBeenCalled()
@@ -1277,8 +1376,9 @@ describe("ACPClientAdapter", () => {
           { isSessionBootstrap: true, roomId: "room-wedged" },
         )
         await promptStartedSignal
+        const failed = expectTurnFailed(onMessage)
         await vi.advanceTimersByTimeAsync(1_000)
-        await onMessage
+        await failed
 
         expect(cancel).toHaveBeenCalledWith({ sessionId: "session-0" })
         expect(findFailureEvent(tools)?.metadata?.failure)
@@ -1336,13 +1436,15 @@ describe("ACPClientAdapter", () => {
 
       for (let turn = 0; turn < 3; turn++) {
         const tools = new FakeTools()
-        await adapter.onMessage(
-          makeMessage("hello", "room-leak"),
-          tools,
-          { roomToSession: {} },
-          null,
-          null,
-          { isSessionBootstrap: turn === 0, roomId: "room-leak" },
+        await expectTurnFailed(
+          adapter.onMessage(
+            makeMessage("hello", "room-leak"),
+            tools,
+            { roomToSession: {} },
+            null,
+            null,
+            { isSessionBootstrap: turn === 0, roomId: "room-leak" },
+          ),
         )
         expect(findFailureEvent(tools)?.metadata?.failure)
           .toMatchObject({ provider: "acp", message: "prompt failed" })
@@ -1401,8 +1503,9 @@ describe("ACPClientAdapter", () => {
           { isSessionBootstrap: true, roomId: "room-b" },
         )
         await onMessageB
+        const failedA = expectTurnFailed(onMessageA)
         await vi.advanceTimersByTimeAsync(1_000)
-        await onMessageA
+        await failedA
 
         // Only ever one connection established — a stray reconnect here would
         // mean room A's timeout tore down the shared connection.
@@ -1529,8 +1632,9 @@ describe("ACPClientAdapter", () => {
           { isSessionBootstrap: true, roomId: "room-late" },
         )
         await promptStartedSignal
+        const failed = expectTurnFailed(onMessage)
         await vi.advanceTimersByTimeAsync(1_000)
-        await onMessage
+        await failed
 
         expect(tools.events.filter((event) => event.messageType === "error")).toHaveLength(1)
         // Buffered before the timeout fired, so the timeout flushes it on the

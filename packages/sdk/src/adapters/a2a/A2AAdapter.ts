@@ -8,7 +8,7 @@ import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import type { PlatformMessage } from "../../runtime/types";
 import { asErrorMessage } from "../shared/coercion";
-import { reportTurnFailure, agentFailure } from "../shared/providerFailure";
+import { reportTurnFailure, agentFailure, rethrowIfProviderTurnFailure } from "../shared/providerFailure";
 import { deliverReply, rethrowIfDeliveryFailure } from "../shared/deliveryFailedError";
 import {
   A2AHistoryConverter,
@@ -171,10 +171,14 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
             await this.handleEvent(event, tools, context.roomId, message.senderId);
           } catch (handleError) {
             // One unusable event must not abort the rest of the stream — but a
-            // failed *delivery* is not an event-handling failure. Swallowing it
-            // here would resolve the turn as processed with the reply lost, the
-            // one outcome this whole path exists to prevent.
+            // failed *delivery*, or a terminal task-state failure already
+            // reported to the room, is not an event-handling failure to log
+            // and skip past. Swallowing either here would resolve the turn as
+            // processed with the reply lost, or double-report the same
+            // incident on the next stream event — the outcomes this whole
+            // path exists to prevent.
             rethrowIfDeliveryFailure(handleError);
+            rethrowIfProviderTurnFailure(handleError);
 
             this.logger.error("A2A stream event handling failed; continuing stream", {
               roomId: context.roomId,
@@ -191,6 +195,7 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
       await this.handleEvent(response, tools, context.roomId, message.senderId);
     } catch (error) {
       rethrowIfDeliveryFailure(error);
+      rethrowIfProviderTurnFailure(error);
 
       const errorMessage = asErrorMessage(error);
       this.logger.error("A2A adapter request failed", {
@@ -367,9 +372,13 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
 
     if (TERMINAL_STATES.has(input.state)) {
       const text = extractMessageText(input.statusMessage) ?? `A2A task ${input.state}`;
-      await input.tools.sendFailure(new AgentFailure(this.provider, text, input.state));
       await this.emitTaskEvent(input.tools, input.contextId, input.taskId, input.state);
       this.clearTaskTracking(input.key, input.roomId);
+      // Reports and throws, like every other terminal provider failure in this
+      // adapter: a remote task ending failed/canceled/rejected/auth-required is
+      // exactly that, and must fail the turn so PlatformRuntime retries it
+      // instead of marking it processed.
+      await reportTurnFailure(input.tools, new AgentFailure(this.provider, text, input.state));
     }
   }
 

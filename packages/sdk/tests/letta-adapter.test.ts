@@ -10,6 +10,7 @@ import type {
 import { LettaHistoryConverter } from "../src/adapters/letta/types";
 import { FakeTools, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
+import { FAILURE_EVENT_TYPE } from "../src/contracts/protocols";
 
 // ---------------------------------------------------------------------------
 // Fake Letta client
@@ -657,6 +658,10 @@ describe("LettaAdapter", () => {
       message: "Letta did not return a response.",
       code: null,
     });
+    // The no-response branch throws from inside the same try its own catch
+    // guards — without rethrowIfProviderTurnFailure, the catch re-reports the
+    // identical failure a second time.
+    expect(tools.events.filter((event) => event.messageType === FAILURE_EVENT_TYPE)).toHaveLength(1);
   });
 
   it("reports, then fails the turn, on a client error", async () => {

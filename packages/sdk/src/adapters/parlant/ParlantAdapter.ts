@@ -10,6 +10,7 @@ import {
   FAILURE_CODE_TIMEOUT,
   ProviderTurnFailedError,
   agentFailure,
+  rethrowIfProviderTurnFailure,
   safeSendFailure,
 } from "../shared/providerFailure";
 import { deliverReply, rethrowIfDeliveryFailure } from "../shared/deliveryFailedError";
@@ -224,6 +225,7 @@ export class ParlantAdapter
       await deliverReply(tools, reply, [{ id: message.senderId }]);
     } catch (error) {
       rethrowIfDeliveryFailure(error);
+      rethrowIfProviderTurnFailure(error);
 
       const errorMessage = asErrorMessage(error);
       this.logger.error("Parlant adapter request failed", {

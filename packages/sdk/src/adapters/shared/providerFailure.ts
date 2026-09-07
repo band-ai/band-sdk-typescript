@@ -35,8 +35,24 @@ export async function reportTurnFailure(
   tools: MessagingTools,
   failure: AgentFailure,
 ): Promise<never> {
-  await tools.sendFailure(failure);
+  // A rejecting sendFailure must not replace the ProviderTurnFailedError below
+  // with a raw, unrecognized rejection — that would escalate past the turn
+  // and take the whole runtime down instead of just failing this turn.
+  await tools.sendFailure(failure).catch(() => undefined);
   throw new ProviderTurnFailedError(failure);
+}
+
+/**
+ * Call first in any catch that would otherwise report a provider failure a
+ * second time. `reportTurnFailure`/`ProviderTurnFailedError` already reported
+ * this incident before throwing; rethrowing intact — rather than rebuilding
+ * and reporting a fresh `AgentFailure` from its message — is what keeps a
+ * terminal-failure branch nested inside a broader try from double-posting.
+ */
+export function rethrowIfProviderTurnFailure(error: unknown): void {
+  if (error instanceof ProviderTurnFailedError) {
+    throw error;
+  }
 }
 
 /**

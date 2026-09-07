@@ -871,6 +871,43 @@ describe("CodexAdapter", () => {
     });
   });
 
+  it("reports a mid-turn error notification only once, even when the turn is then interrupted", async () => {
+    const tools = new ToolSchemaFakeTools();
+    const fakeClient = new FakeCodexClient({
+      events: [
+        {
+          kind: "notification",
+          method: "error",
+          params: {
+            error: { code: "invalid_request", message: "bad turn input" },
+          },
+        },
+        // recvEvent's queue is exhausted after this: the fake throws on the
+        // next call, exactly like a real recvEvent timeout, driving
+        // emitTurnOutcome's "interrupted" branch.
+      ],
+    });
+    const adapter = new CodexAdapter({ factory: async () => fakeClient });
+    await adapter.onStarted("Codex Agent", "Codex parity adapter");
+
+    await adapter.onMessage(
+      makeMessage("hello"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-double-report-interrupted" },
+    );
+
+    const failureEvents = tools.events.filter((event) => event.messageType === "error");
+    expect(failureEvents).toHaveLength(1);
+    expect(failureEvents[0]?.metadata?.failure).toMatchObject({
+      provider: "codex",
+      code: "invalid_request",
+      message: "bad turn input",
+    });
+  });
+
   it("emits a structured sendFailure with code 'interrupted' when the turn is interrupted (e.g. a recvEvent timeout)", async () => {
     const tools = new ToolSchemaFakeTools();
     const fakeClient = new FakeCodexClient({ events: [] });

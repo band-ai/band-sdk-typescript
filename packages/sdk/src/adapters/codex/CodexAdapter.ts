@@ -1085,15 +1085,17 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     // machine-readable record lands even when the reply after it does not.
     if (input.turnStatus === "interrupted") {
       const interrupted = "I stopped before completing this request.";
-      await Promise.all([
-        safeSendFailure(
+      // Same incident as a mid-loop `error` event already reported, not a new
+      // one — matches the fallback branch below.
+      const failureReport = input.reportedFailureInLoop
+        ? Promise.resolve()
+        : safeSendFailure(
           input.tools,
           new AgentFailure(this.provider, input.turnError || interrupted, input.turnStatus),
           this.logger,
           { roomId: input.roomId },
-        ),
-        deliverReply(input.tools, interrupted, mention),
-      ]);
+        );
+      await Promise.all([failureReport, deliverReply(input.tools, interrupted, mention)]);
       return;
     }
 

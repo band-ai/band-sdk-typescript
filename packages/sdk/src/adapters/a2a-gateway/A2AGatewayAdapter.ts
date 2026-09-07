@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import type { PeerRecord } from "../../contracts/dtos";
-import type { MessagingTools } from "../../contracts/protocols";
+import { FAILURE_METADATA_KEY, type MessagingTools } from "../../contracts/protocols";
 import type { ChatMessageMention } from "../../client/rest/types";
 import type { PlatformMessage } from "../../runtime/types";
 import { FAILURE_CODE_TIMEOUT } from "../shared/providerFailure";
@@ -670,6 +670,13 @@ function toStatusUpdateEvent(
     state = "working";
   }
 
+  // The room's own adapter already attached a structured AgentFailure here
+  // (via sendFailure) when this is an "error" message — forward it as-is so
+  // this relay carries the same code/provider/detail structure every other
+  // gateway failure site does, instead of leaving the external A2A client
+  // with only sanitized free text.
+  const failure = message.metadata?.[FAILURE_METADATA_KEY];
+
   return buildStatusEvent({
     taskId,
     contextId,
@@ -684,6 +691,7 @@ function toStatusUpdateEvent(
       band_message_type: message.messageType,
       band_sender_id: message.senderId,
       band_room_id: message.roomId,
+      ...(failure !== undefined ? { [FAILURE_METADATA_KEY]: failure } : {}),
     },
   });
 }

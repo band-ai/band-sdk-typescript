@@ -35,7 +35,15 @@ export class NoopLogger implements Logger {
  * separately, not an oversight to report.
  */
 export function resolveLogger(logger?: Logger): Logger {
-  return logger ? new GuardedLogger(logger) : new NoopLogger();
+  if (!logger) {
+    return new NoopLogger();
+  }
+
+  // Idempotent: a logger a caller already passed through this once (e.g. an
+  // adapter wrapping its own `options.logger` before handing it to an inner
+  // client that resolves it again) must not gain a second, redundant guard
+  // layer — this is the single place that guarantee is meant to hold.
+  return logger instanceof GuardedLogger ? logger : new GuardedLogger(logger);
 }
 
 class GuardedLogger implements Logger {

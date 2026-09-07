@@ -584,13 +584,17 @@ describe("A2AAdapter", () => {
     });
 
     const tools = new FakeTools();
-    await adapter.onMessage(
-      makeMessage("first", "room-failed"),
-      tools,
-      { contextId: null, taskId: null, taskState: null },
-      null,
-      null,
-      { isSessionBootstrap: false, roomId: "room-failed" },
+    // A terminal task state reports and fails the turn, like any other
+    // provider failure — PlatformRuntime must retry it, not mark it processed.
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("first", "room-failed"),
+        tools,
+        { contextId: null, taskId: null, taskState: null },
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-failed" },
+      ),
     );
     await adapter.onMessage(
       makeMessage("second", "room-failed"),

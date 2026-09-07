@@ -1030,4 +1030,61 @@ describe("A2AGatewayAdapter", () => {
     expect(text).toContain("[REDACTED]");
     expect(text).not.toContain("sk-realsecret");
   });
+
+  it("forwards the room's own structured failure metadata when relaying its error content", async () => {
+    const rest = new FakeRestApi();
+
+    let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
+    const adapter = new A2AGatewayAdapter({
+      bandRest: rest,
+      serverFactory: (options) => {
+        onRequest = options.onRequest;
+        return {
+          start: async () => undefined,
+          stop: async () => undefined,
+        };
+      },
+      responseTimeoutMs: 2_000,
+    });
+
+    await adapter.onStarted("Gateway", "A2A gateway");
+
+    const stream = onRequest!({
+      peerId: "peer-weather",
+      taskId: "task-relay-failure-metadata",
+      contextId: "ctx-relay-failure-metadata",
+      message: {
+        kind: "message",
+        messageId: "m-relay-failure-metadata",
+        role: "user",
+        parts: [{ kind: "text", text: "Hello" }],
+      },
+    });
+
+    const iterator = stream[Symbol.asyncIterator]();
+    await iterator.next(); // working
+
+    // The shape a room-level sendFailure attaches (toFailureEvent), e.g. from
+    // the room's own adapter reporting a provider failure via `sendFailure`.
+    await adapter.onMessage(
+      makePeerMessage({
+        content: "Provider call failed: quota exceeded",
+        roomId: "room-1",
+        senderId: "peer-weather",
+        messageType: "error",
+        metadata: {
+          failure: { provider: "letta", code: "quota_exceeded", message: "Provider call failed: quota exceeded", detail: null },
+        },
+      }),
+      new FakeTools(),
+      { contextToRoom: {}, roomParticipants: {} },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    );
+
+    const finalEvent = await iterator.next();
+    expect((finalEvent.value as { metadata?: Record<string, unknown> })?.metadata?.failure)
+      .toEqual({ provider: "letta", code: "quota_exceeded", message: "Provider call failed: quota exceeded", detail: null });
+  });
 });

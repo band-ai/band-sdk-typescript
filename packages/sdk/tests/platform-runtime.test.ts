@@ -6,6 +6,7 @@ import { TransportError, ValidationError } from "../src/core/errors";
 import { PlatformRuntime } from "../src/runtime/PlatformRuntime";
 import { ExecutionContext } from "../src/runtime/ExecutionContext";
 import { HUB_ROOM_SYSTEM_PROMPT } from "../src/runtime/ContactEventHandler";
+import type { FrameworkAdapter, FrameworkAdapterInput } from "../src/contracts/protocols";
 import type { StreamingTransport } from "../src/platform/streaming/transport";
 import { BandLink } from "../src/platform/BandLink";
 import { FakeRestApi, FakeTransport, makeMessage } from "./testUtils";
@@ -380,10 +381,20 @@ describe("PlatformRuntime", () => {
   });
 
   it("propagates fatal adapter failures through runForever", async () => {
+    // A GenericAdapter handler bug no longer reaches this far — GenericAdapter
+    // reports and fails just the turn now, like every other adapter. This
+    // test is about PlatformRuntime/AgentRuntime's own fatal-failure
+    // propagation, so it drives that with a raw FrameworkAdapter whose
+    // onEvent throws unguarded, the same shape a genuinely broken adapter
+    // implementation (not going through SimpleAdapter) would have.
     const transport = new FakeTransport();
-    const adapter = new GenericAdapter(async () => {
-      throw new Error("adapter exploded");
-    });
+    const adapter: FrameworkAdapter = {
+      onEvent: async (_input: FrameworkAdapterInput) => {
+        throw new Error("adapter exploded");
+      },
+      onCleanup: async () => undefined,
+      onStarted: async () => undefined,
+    };
 
     const runtime = new PlatformRuntime({
       agentId: "a1",
