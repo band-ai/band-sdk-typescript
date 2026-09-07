@@ -48,9 +48,9 @@ export function createLinearTools(options: CreateLinearToolsOptions): CustomTool
     session_id: z.string().describe("The Linear agent session ID"),
     body: z.string().describe("The message body in Markdown format"),
   });
-  const issueIdInputSchema = z.object({
+  const issueIdInputSchema = z.looseObject({
     issue_id: z.string().optional().describe("The Linear issue ID (UUID) from the session context"),
-  }).passthrough();
+  });
   const issueCommentLimitSchema = z.number().int().min(1).max(50).optional()
     .describe("Maximum number of recent comments to return");
   const requiredIssueIdSchema = issueIdInputSchema;
@@ -286,8 +286,8 @@ export function createLinearTools(options: CreateLinearToolsOptions): CustomTool
 function addIssueTools(input: {
   tools: CustomToolDef[];
   client: LinearActivityClient;
-  requiredIssueIdSchema: z.AnyZodObject;
-  optionalIssueIdSchema: z.AnyZodObject;
+  requiredIssueIdSchema: z.ZodObject;
+  optionalIssueIdSchema: z.ZodObject;
   issueCommentLimitSchema: z.ZodOptional<z.ZodNumber>;
 }): void {
   const {
