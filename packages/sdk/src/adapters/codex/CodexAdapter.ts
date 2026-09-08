@@ -375,7 +375,10 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
           abandon(
             () => {
               const interrupt: TurnInterruptParams = { threadId, turnId };
-              return client.request("turn/interrupt", toRpcParams(interrupt));
+              // Bounded so a peer that never answers doesn't leak this
+              // request's entry in the client's pending-request map for the
+              // rest of the connection's lifetime — see `request`'s timeoutMs.
+              return client.request("turn/interrupt", toRpcParams(interrupt), config.turnTimeoutMs);
             },
             (interruptError) => {
               this.logger.warn("codex_adapter.turn_interrupt_failed", {

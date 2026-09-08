@@ -22,7 +22,14 @@ import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
 import { abandon } from "../shared/abandon";
 import { asErrorMessage, asOptionalRecord } from "../shared/coercion";
 import { deliverReply, rethrowIfDeliveryFailure } from "../shared/deliveryFailedError";
-import { FAILURE_CODE_TIMEOUT, agentFailure, reportTurnFailure, safeSendFailure } from "../shared/providerFailure";
+import {
+  FAILURE_CODE_TIMEOUT,
+  ProviderTurnFailedError,
+  agentFailure,
+  reportTurnFailure,
+  rethrowIfProviderTurnFailure,
+  safeSendFailure,
+} from "../shared/providerFailure";
 import {
   type OpencodeSessionState,
   OpencodeHistoryConverter,
@@ -93,6 +100,12 @@ interface RoomState {
   // cleanup. It decides who observes `turnTask`: this call, when the turn
   // finished inside it, or a background catch when the turn outlives it.
   turnDoneSettled: boolean;
+  // Distinguishes "releaseWait resolved because this turn timed out" from
+  // "releaseWait resolved because OpenCode asked for a permission/question
+  // reply" — both leave turnDoneSettled false, but only the former must make
+  // startTurn await (and thus propagate) turnTask's now-rejecting outcome
+  // instead of detaching it to run in the background.
+  turnTimedOut: boolean;
   resolveTurnDone: (() => void) | null;
   releaseWait: Promise<void> | null;
   resolveReleaseWait: (() => void) | null;
@@ -279,6 +292,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       await this.startTurn(roomState, client, sessionId, message, participantsMessage, contactsMessage, history, needsHistoryReplay, context.roomId);
     } catch (error) {
       rethrowIfDeliveryFailure(error);
+      rethrowIfProviderTurnFailure(error);
 
       this.logger.error("OpenCode adapter request failed", {
         error,
@@ -328,6 +342,13 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       await turnTask;
       return;
     }
+    if (roomState.turnTimedOut) {
+      // handleTurnTimeout throws after reporting, so turnTask now rejects —
+      // awaiting it here is what makes onMessage fail (and PlatformRuntime
+      // retry) instead of returning as if the turn had processed.
+      await turnTask;
+      return;
+    }
 
     // The turn outlives this call — OpenCode asked for permission, so its
     // reply is delivered from the background completion instead. No turn is
@@ -371,6 +392,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       tools: null,
       turnDone: null,
       turnDoneSettled: false,
+      turnTimedOut: false,
       resolveTurnDone: null,
       releaseWait: null,
       resolveReleaseWait: null,
@@ -911,6 +933,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     const releaseWait = createDeferred();
     roomState.turnDone = turnDone.promise;
     roomState.turnDoneSettled = false;
+    roomState.turnTimedOut = false;
     roomState.resolveTurnDone = () => {
       roomState.turnDoneSettled = true;
       turnDone.resolve();
@@ -966,18 +989,19 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       // must open a fresh session rather than racing a prompt against it.
       roomState.forceFreshSession = true;
     }
+    roomState.turnTimedOut = true;
+    const failure = new AgentFailure(this.provider, "OpenCode timed out before completing the turn.", FAILURE_CODE_TIMEOUT);
     if (roomState.tools) {
       // Best-effort: the timeout itself is the truth we already know, and
       // failing to report it must not leave the room's turn wait released
       // forever.
-      await safeSendFailure(
-        roomState.tools,
-        new AgentFailure(this.provider, "OpenCode timed out before completing the turn.", FAILURE_CODE_TIMEOUT),
-        this.logger,
-        { roomId: roomState.roomId },
-      );
+      await safeSendFailure(roomState.tools, failure, this.logger, { roomId: roomState.roomId });
     }
     this.releaseTurnWait(roomState);
+    // Thrown, not returned: PlatformRuntime marks a message failed — and
+    // retries it — only when onMessage throws. Matches every other terminal
+    // provider failure in this adapter (see ProviderTurnFailedError).
+    throw new ProviderTurnFailedError(failure);
   }
 
   private releaseTurnWait(roomState: RoomState): void {

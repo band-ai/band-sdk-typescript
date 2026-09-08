@@ -668,13 +668,15 @@ describe("OpencodeAdapter", () => {
     adapters.push(adapter);
 
     await adapter.onStarted("OpenCode Agent", "Writes code");
-    await adapter.onMessage(
-      makeMessage("Never responds"),
-      tools,
-      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
-      null,
-      null,
-      { isSessionBootstrap: true, roomId: "room-timeout" },
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("Never responds"),
+        tools,
+        { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-timeout" },
+      ),
     );
 
     const sessionId = client.createdSessions[0]!;
@@ -686,6 +688,32 @@ describe("OpencodeAdapter", () => {
       code: "timeout",
       message: "OpenCode timed out before completing the turn.",
     });
+  });
+
+  it("fails the turn (so PlatformRuntime retries it) when the turn times out, instead of resolving as if it processed", async () => {
+    // The room-failure event above is best-effort reporting; PlatformRuntime's
+    // own retry tracking depends on onMessage actually rejecting.
+    const tools = new FakeTools();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as any,
+      config: { turnTimeoutMs: 30 },
+      mcpBackendFactory: httpMcpBackend(),
+    });
+    adapters.push(adapter);
+
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("Never responds"),
+        tools,
+        { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-timeout-retry" },
+      ),
+    );
   });
 
   it("opens a fresh session for the next turn in a room after a timeout, instead of resuming the timed-out one", async () => {
@@ -704,13 +732,15 @@ describe("OpencodeAdapter", () => {
     adapters.push(adapter);
 
     await adapter.onStarted("OpenCode Agent", "Writes code");
-    await adapter.onMessage(
-      makeMessage("Never responds", "room-timeout-reuse"),
-      tools,
-      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
-      null,
-      null,
-      { isSessionBootstrap: true, roomId: "room-timeout-reuse" },
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("Never responds", "room-timeout-reuse"),
+        tools,
+        { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-timeout-reuse" },
+      ),
     );
     const timedOutSessionId = client.createdSessions[0]!;
     expect(client.aborts).toContain(timedOutSessionId);
@@ -718,13 +748,16 @@ describe("OpencodeAdapter", () => {
     // client.getSession happily "restores" any session id that isn't marked
     // missing, so this next turn getting a *second* created session (not a
     // restore of the first) proves ensureSession skipped the restore path.
-    await adapter.onMessage(
-      makeMessage("Second message", "room-timeout-reuse"),
-      new FakeTools(),
-      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
-      null,
-      null,
-      { isSessionBootstrap: false, roomId: "room-timeout-reuse" },
+    // This turn also times out (no completion event is pushed for it either).
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("Second message", "room-timeout-reuse"),
+        new FakeTools(),
+        { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-timeout-reuse" },
+      ),
     );
 
     expect(client.createdSessions).toHaveLength(2);
@@ -747,13 +780,15 @@ describe("OpencodeAdapter", () => {
     adapters.push(adapter);
 
     await adapter.onStarted("OpenCode Agent", "Writes code");
-    await adapter.onMessage(
-      makeMessage("Never responds", "room-timeout-replay"),
-      tools,
-      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
-      null,
-      null,
-      { isSessionBootstrap: true, roomId: "room-timeout-replay" },
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("Never responds", "room-timeout-replay"),
+        tools,
+        { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-timeout-replay" },
+      ),
     );
     expect(client.aborts).toContain(client.createdSessions[0]);
 
@@ -793,13 +828,15 @@ describe("OpencodeAdapter", () => {
     adapters.push(adapter);
 
     await adapter.onStarted("OpenCode Agent", "Writes code");
-    await adapter.onMessage(
-      makeMessage("Never responds", "room-timeout-rearm"),
-      tools,
-      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
-      null,
-      null,
-      { isSessionBootstrap: true, roomId: "room-timeout-rearm" },
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("Never responds", "room-timeout-rearm"),
+        tools,
+        { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-timeout-rearm" },
+      ),
     );
     const timedOutSessionId = client.createdSessions[0]!;
     expect(client.aborts).toContain(timedOutSessionId);
@@ -850,13 +887,15 @@ describe("OpencodeAdapter", () => {
     adapters.push(adapter);
 
     await adapter.onStarted("OpenCode Agent", "Writes code");
-    await adapter.onMessage(
-      makeMessage("Never responds"),
-      tools,
-      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
-      null,
-      null,
-      { isSessionBootstrap: true, roomId: "room-wedged-abort" },
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("Never responds"),
+        tools,
+        { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-wedged-abort" },
+      ),
     );
 
     expect(client.aborts).toEqual([client.createdSessions[0]!]);

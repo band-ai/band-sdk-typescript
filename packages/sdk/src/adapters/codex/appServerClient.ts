@@ -29,7 +29,7 @@ export type CodexRpcEvent = CodexRpcRequestEvent | CodexRpcNotificationEvent;
 export interface CodexClientLike {
   connect(): Promise<void>;
   initialize(params: InitializeParams): Promise<void>;
-  request<TResult>(method: string, params?: Record<string, unknown>): Promise<TResult>;
+  request<TResult>(method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<TResult>;
   notify(method: string, params?: Record<string, unknown>): Promise<void>;
   respond(requestId: RequestId, result: Record<string, unknown> | DynamicToolCallResponse): Promise<void>;
   respondError(requestId: RequestId, code: number, message: string, data?: unknown): Promise<void>;
@@ -147,11 +147,39 @@ export class CodexAppServerStdioClient implements CodexClientLike {
   public async request<TResult>(
     method: string,
     params?: Record<string, unknown>,
+    timeoutMs?: number,
   ): Promise<TResult> {
     const id = ++this.nextRequestId;
     const response = await new Promise<TResult>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      // A caller that abandons this call (see `abandon`) never reads the
+      // result, so nothing else ever clears `this.pending`'s entry for a
+      // request whose response never arrives — on a long-lived connection,
+      // each abandoned call permanently leaks one entry. `timeoutMs` bounds
+      // that lifetime so the entry is always eventually reclaimed.
+      const timer = timeoutMs !== undefined
+        ? setTimeout(() => {
+          this.pending.delete(id);
+          reject(new Error(`Codex app-server request "${method}" timed out after ${timeoutMs}ms.`));
+        }, timeoutMs)
+        : null;
+      this.pending.set(id, {
+        resolve: (value) => {
+          if (timer) {
+            clearTimeout(timer);
+          }
+          resolve(value as TResult);
+        },
+        reject: (error) => {
+          if (timer) {
+            clearTimeout(timer);
+          }
+          reject(error);
+        },
+      });
       void this.sendJson({ id, method, params: params ?? {} }).catch((error) => {
+        if (timer) {
+          clearTimeout(timer);
+        }
         this.pending.delete(id);
         reject(error instanceof Error ? error : new Error(String(error)));
       });
