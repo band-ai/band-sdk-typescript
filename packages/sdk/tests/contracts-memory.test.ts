@@ -1,5 +1,6 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 import { validateMemoryTypeForSystem } from "@band-ai/band-sdk-core";
+import type { ValidationIssue } from "@band-ai/band-sdk-core";
 
 import {
   isMemoryTypeForSystem,
@@ -10,8 +11,10 @@ import {
 import type { MemorySystem, MemoryType } from "../src/contracts/memory";
 import type { MemorySystem as DtoMemorySystem, MemoryType as DtoMemoryType } from "../src/contracts/dtos";
 
+const INVALID_VALUE: ValidationIssue["code"] = "invalid_value";
+
 type MemoryValidationError = Error & {
-  issues: Array<{ path: string; code: string; message: string }>;
+  issues: ValidationIssue[];
   traceContext: string | null;
 };
 
@@ -50,7 +53,7 @@ describe("contracts/memory", () => {
       expect(error.issues).toEqual([
         {
           path: "type",
-          code: "invalid_value",
+          code: INVALID_VALUE,
           message: expect.stringContaining("not valid for system"),
         },
       ]);
@@ -61,7 +64,7 @@ describe("contracts/memory", () => {
 
       expect(error.traceContext).toBeNull();
       expect(error.issues.map((issue) => issue.path)).toEqual(["system", "type"]);
-      expect(error.issues.every((issue) => issue.code === "invalid_value")).toBe(true);
+      expect(error.issues.every((issue) => issue.code === INVALID_VALUE)).toBe(true);
     });
   });
 
