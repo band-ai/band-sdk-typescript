@@ -19,6 +19,19 @@ describe("reportTurnFailure", () => {
 
     await expect(reportTurnFailure(tools, failure)).rejects.toBeInstanceOf(ProviderTurnFailedError);
   });
+
+  it("still throws ProviderTurnFailedError, not a raw error, when a custom sendFailure throws synchronously instead of returning a rejecting promise", async () => {
+    const failure = new AgentFailure("test", "boom");
+    const tools = {
+      // A non-`async` implementation can throw before ever returning a
+      // promise -- `.catch()` on the call expression would never see this.
+      sendFailure: () => {
+        throw new Error("sendFailure threw before returning a promise");
+      },
+    } as unknown as MessagingTools;
+
+    await expect(reportTurnFailure(tools, failure)).rejects.toBeInstanceOf(ProviderTurnFailedError);
+  });
 });
 
 describe("rethrowIfProviderTurnFailure", () => {

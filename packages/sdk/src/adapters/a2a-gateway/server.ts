@@ -11,7 +11,7 @@ import type {
   GatewayServerOptions,
 } from "./types";
 import { buildStatusEvent } from "./statusEvent";
-import { asNonEmptyString } from "../shared/coercion";
+import { asNonEmptyString, asOptionalRecord, asString } from "../shared/coercion";
 import { FAILURE_METADATA_KEY } from "../../contracts/protocols";
 
 /** This gateway's `AgentFailure.provider` identity. */
@@ -659,9 +659,16 @@ export function sanitizeGatewayErrorMessage(error: unknown): string {
   // tolerate one optional leading scheme word — but only one: matching
   // everything up to the next comma/semicolon (no whitespace boundary at
   // all) also swallows unrelated trailing prose past the real secret.
+  // A JSON-embedded credential quotes both the key and the value
+  // (`"api_key":"sk-..."`), so the key/value boundary needs an optional
+  // quote on each side — without it the quote right after the key breaks
+  // the `[:=]` match and the whole credential survives unredacted.
   const withBearerRedaction = trimmed
     .replace(/Bearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
-    .replace(/(token|authorization|api[_-]?key)\s*[:=]\s*(?:[A-Za-z][\w-]*\s+)?[^\s,;]+/gi, "$1=[REDACTED]");
+    .replace(
+      /(token|authorization|api[_-]?key)"?\s*[:=]\s*"?(?:[A-Za-z][\w-]*\s+)?[^\s,;"]+/gi,
+      "$1=[REDACTED]",
+    );
 
   const maxLength = 240;
   if (withBearerRedaction.length <= maxLength) {
@@ -669,6 +676,27 @@ export function sanitizeGatewayErrorMessage(error: unknown): string {
   }
 
   return `${withBearerRedaction.slice(0, maxLength - 3)}...`;
+}
+
+/**
+ * Rebuilds a room's own `AgentFailure` (already-serialized via `toObject()`)
+ * into the shape safe to forward to an external A2A client: `provider` and
+ * `code` are narrow, adapter-chosen identifiers, so they pass through, but
+ * `message` gets this gateway's own redaction independently of whatever the
+ * originating adapter already did to it, and `detail` — which routinely
+ * carries a raw provider payload (an HTTP body, an RPC error object) with no
+ * redaction of its own — is dropped rather than forwarded unfiltered.
+ */
+export function sanitizeForwardedFailure(value: unknown): Record<string, unknown> | undefined {
+  const record = asOptionalRecord(value);
+  if (!record) {
+    return undefined;
+  }
+
+  const provider = asString(record.provider) ?? "unknown";
+  const code = asString(record.code) ?? undefined;
+  const message = sanitizeGatewayErrorMessage(asString(record.message) ?? record.message);
+  return new AgentFailure(provider, message, code).toObject();
 }
 
 function safeHeaderEquals(left: string, right: string): boolean {

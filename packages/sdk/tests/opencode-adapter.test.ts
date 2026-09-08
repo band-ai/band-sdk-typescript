@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { HttpStatusError, OpencodeAdapter, type OpencodeClientLike } from "../src/adapters";
 import type { OpencodeSessionState } from "../src/converters";
-import { FakeTools, findFailureEvent, makeMessage } from "./testUtils";
+import { FakeTools, expectTurnFailed, findFailureEvent, makeMessage } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
 
 /**
@@ -76,6 +76,8 @@ class FakeOpencodeClient {
   public readonly createdSessionTitles: string[] = [];
   public readonly eventQueue = new EventQueue();
   public promptError: Error | null = null;
+  /** Consumed once, like `promptError` — fails the next `createSession` call only. */
+  public createSessionError: Error | null = null;
   /** Stands in for a server that accepts the abort and never answers it. */
   public abortNeverSettles = false;
   private readonly missingSessions = new Set<string>();
@@ -86,6 +88,11 @@ class FakeOpencodeClient {
   }
 
   public async createSession(input?: { title?: string }): Promise<Record<string, unknown>> {
+    if (this.createSessionError) {
+      const error = this.createSessionError;
+      this.createSessionError = null;
+      throw error;
+    }
     this.sessionCounter += 1;
     const sessionId = `session-${this.sessionCounter}`;
     this.createdSessions.push(sessionId);
@@ -596,13 +603,15 @@ describe("OpencodeAdapter", () => {
     adapters.push(adapter);
 
     await adapter.onStarted("OpenCode Agent", "Writes code");
-    await adapter.onMessage(
-      makeMessage("Trigger a status error"),
-      tools,
-      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
-      null,
-      null,
-      { isSessionBootstrap: true, roomId: "room-http-error" },
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("Trigger a status error"),
+        tools,
+        { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-http-error" },
+      ),
     );
 
     const failureEvent = findFailureEvent(tools);
@@ -627,13 +636,15 @@ describe("OpencodeAdapter", () => {
     adapters.push(adapter);
 
     await adapter.onStarted("OpenCode Agent", "Writes code");
-    await adapter.onMessage(
-      makeMessage("Trigger a generic error"),
-      tools,
-      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
-      null,
-      null,
-      { isSessionBootstrap: true, roomId: "room-generic-error" },
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("Trigger a generic error"),
+        tools,
+        { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-generic-error" },
+      ),
     );
 
     const failureEvent = findFailureEvent(tools);
@@ -721,6 +732,108 @@ describe("OpencodeAdapter", () => {
     expect(client.promptCalls.map((call) => call.sessionId)).toContain(client.createdSessions[1]);
   });
 
+  it("replays the room's prior conversation into a forced-fresh session, not just a restored one", async () => {
+    // A forced-fresh session (after a timeout) is a brand-new OpenCode session,
+    // but not a new conversation from the room's perspective — the room's real
+    // prior history must still reach it, the same as a missing-session restore.
+    const tools = new FakeTools();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as any,
+      config: { turnTimeoutMs: 30 },
+      mcpBackendFactory: httpMcpBackend(),
+    });
+    adapters.push(adapter);
+
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+    await adapter.onMessage(
+      makeMessage("Never responds", "room-timeout-replay"),
+      tools,
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-timeout-replay" },
+    );
+    expect(client.aborts).toContain(client.createdSessions[0]);
+
+    const pending = adapter.onMessage(
+      makeMessage("Second message", "room-timeout-replay"),
+      new FakeTools(),
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: ["[Jane]: previous context"] },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-timeout-replay" },
+    );
+
+    await waitFor(() => client.createdSessions.length === 2);
+    const freshSessionId = client.createdSessions[1]!;
+    client.eventQueue.push({ type: "session.idle", properties: { sessionID: freshSessionId } });
+    await pending;
+
+    expect(client.promptCalls[1]?.payload.parts).toEqual([{
+      type: "text",
+      text: "Previous OpenCode session state was missing. Recovered room history:\n[Jane]: previous context\n[User]: Second message",
+    }]);
+  });
+
+  it("keeps forcing a fresh session for the next turn when the first replacement attempt itself fails to create", async () => {
+    // ensureSession must not clear forceFreshSession until a replacement
+    // session actually exists server-side -- otherwise a failed createSession
+    // permanently loses the flag, and the *next* turn silently resumes the
+    // very session this one was trying to abandon.
+    const tools = new FakeTools();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as any,
+      config: { turnTimeoutMs: 30 },
+      mcpBackendFactory: httpMcpBackend(),
+    });
+    adapters.push(adapter);
+
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+    await adapter.onMessage(
+      makeMessage("Never responds", "room-timeout-rearm"),
+      tools,
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-timeout-rearm" },
+    );
+    const timedOutSessionId = client.createdSessions[0]!;
+    expect(client.aborts).toContain(timedOutSessionId);
+
+    client.createSessionError = new Error("transient create failure");
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("Second message", "room-timeout-rearm"),
+        new FakeTools(),
+        { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-timeout-rearm" },
+      ),
+    );
+    expect(client.createdSessions).toHaveLength(1);
+
+    const pending = adapter.onMessage(
+      makeMessage("Third message", "room-timeout-rearm"),
+      new FakeTools(),
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-timeout-rearm" },
+    );
+
+    await waitFor(() => client.createdSessions.length === 2);
+    const freshSessionId = client.createdSessions[1]!;
+    client.eventQueue.push({ type: "session.idle", properties: { sessionID: freshSessionId } });
+    await pending;
+
+    expect(client.createdSessions[1]).not.toBe(timedOutSessionId);
+  });
+
   it("reports its turn timeout without waiting on an abort the wedged server never answers", async () => {
     const tools = new FakeTools();
     const client = new FakeOpencodeClient();
@@ -794,7 +907,7 @@ describe("OpencodeAdapter", () => {
     });
   });
 
-  it("does not reach ensureClientStarted before the failure boundary — a client-startup throw reaches sendFailure instead of propagating uncaught", async () => {
+  it("reports and fails the turn when client startup throws, instead of resolving as if it processed", async () => {
     const tools = new FakeTools();
     const adapter = new OpencodeAdapter({
       clientFactory: () => {
@@ -804,7 +917,7 @@ describe("OpencodeAdapter", () => {
     adapters.push(adapter);
 
     await adapter.onStarted("OpenCode Agent", "Writes code");
-    await expect(
+    await expectTurnFailed(
       adapter.onMessage(
         makeMessage("First message"),
         tools,
@@ -813,7 +926,7 @@ describe("OpencodeAdapter", () => {
         null,
         { isSessionBootstrap: true, roomId: "room-client-start-error" },
       ),
-    ).resolves.toBeUndefined();
+    );
 
     const failureEvent = findFailureEvent(tools);
     expect(failureEvent).toBeDefined();

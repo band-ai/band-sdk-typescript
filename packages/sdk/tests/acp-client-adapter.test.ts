@@ -1401,6 +1401,88 @@ describe("ACPClientAdapter", () => {
       }
     })
 
+    it("a stale turn's own timeout cleanup does not clobber a replacement session that already took over the same room", async () => {
+      // The race this guards: something outside this adapter (AgentRuntime,
+      // on its own reset path) can tear a stuck room down and let a
+      // replacement turn open a fresh session for it before the original,
+      // still-hanging turn ever hits its own timeout. That stale timeout's
+      // cleanup is keyed by roomId alone and must not blow away the
+      // replacement's session just because it shares the same room.
+      vi.useFakeTimers()
+      try {
+        const cancel = vi.fn(async () => undefined)
+        let sessionCounter = 0
+        const staleHangingPrompt = new Promise<{ stopReason: string }>(() => undefined)
+        let staleStarted: () => void = () => undefined
+        const staleStartedSignal = new Promise<void>((resolve) => { staleStarted = resolve })
+
+        const adapter = new ACPClientAdapter({
+          command: ["acp-agent"],
+          enableMcpTools: false,
+          turnTimeoutMs: 1_000,
+          connectionFactory: async () => ({
+            connection: fakeConnection({
+              newSession: vi.fn(async () => ({ sessionId: `session-${sessionCounter++}` })),
+              prompt: vi.fn(async (params: { sessionId: string }) => {
+                if (params.sessionId === "session-0") {
+                  staleStarted()
+                  return staleHangingPrompt
+                }
+                return { stopReason: "end_turn" }
+              }),
+              cancel,
+            }),
+            stop: vi.fn(async () => undefined),
+          }),
+        })
+        await adapter.onStarted("Agent", "desc")
+
+        const staleTurn = adapter.onMessage(
+          makeMessage("hello", "room-race"),
+          new FakeTools(),
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: true, roomId: "room-race" },
+        )
+        await staleStartedSignal
+
+        // Simulates the external teardown-and-replace: the stuck room is
+        // reset and a replacement execution opens a fresh session for it,
+        // both well ahead of the stale turn's own timeout below.
+        await adapter.onCleanup("room-race")
+        await adapter.onMessage(
+          makeMessage("replacement turn", "room-race"),
+          new FakeTools(),
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: true, roomId: "room-race" },
+        )
+        expect(sessionCounter).toBe(2)
+
+        const failed = expectTurnFailed(staleTurn)
+        await vi.advanceTimersByTimeAsync(1_000)
+        await failed
+        expect(cancel).toHaveBeenCalledWith({ sessionId: "session-0" })
+
+        // The replacement's session must still be the one this room resolves
+        // to -- a third turn reusing it (no new session created) is the
+        // observable proof the stale cleanup didn't delete its mapping.
+        await adapter.onMessage(
+          makeMessage("third turn", "room-race"),
+          new FakeTools(),
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-race" },
+        )
+        expect(sessionCounter).toBe(2)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it("repeatedly failed turns do not accumulate their sessions' buffered output", async () => {
       // A failed turn used to stop() the adapter, which discarded the whole
       // ACP client along with its buffers. Now the client outlives the turn to
@@ -1528,7 +1610,7 @@ describe("ACPClientAdapter", () => {
       })).toThrow(/turnTimeoutMs must be a positive number or Infinity/)
     })
 
-    it("a resolved prompt() with a non-end_turn stopReason reaches sendFailure with code: stopReason, after flushing any partial content", async () => {
+    it("a resolved prompt() with a non-end_turn stopReason fails the turn, after flushing any partial content and reporting stopReason as the failure code", async () => {
       let clientHandle: { sessionUpdate: (params: Record<string, unknown>) => Promise<void> } | null = null
       const prompt = vi.fn(async (params: { sessionId: string }) => {
         await clientHandle?.sessionUpdate({
@@ -1556,13 +1638,15 @@ describe("ACPClientAdapter", () => {
       })
       await adapter.onStarted("Agent", "desc")
       const tools = new FakeTools()
-      await adapter.onMessage(
-        makeMessage("hello", "room-maxtok"),
-        tools,
-        { roomToSession: {} },
-        null,
-        null,
-        { isSessionBootstrap: true, roomId: "room-maxtok" },
+      await expectTurnFailed(
+        adapter.onMessage(
+          makeMessage("hello", "room-maxtok"),
+          tools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: true, roomId: "room-maxtok" },
+        ),
       )
 
       expect(tools.messages).toEqual(["partial answer"])

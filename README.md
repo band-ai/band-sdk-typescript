@@ -204,6 +204,8 @@ import { Agent, SimpleAdapter, loadAgentConfig } from "@band-ai/sdk";
 import type { AdapterToolsProtocol, HistoryProvider, PlatformMessage } from "@band-ai/sdk";
 
 class MyAdapter extends SimpleAdapter<HistoryProvider> {
+  protected readonly provider = "my-adapter";
+
   async onMessage(message: PlatformMessage, tools: AdapterToolsProtocol): Promise<void> {
     await tools.sendMessage("Hello from my custom adapter!");
   }

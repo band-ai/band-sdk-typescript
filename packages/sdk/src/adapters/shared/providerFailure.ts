@@ -35,10 +35,16 @@ export async function reportTurnFailure(
   tools: MessagingTools,
   failure: AgentFailure,
 ): Promise<never> {
-  // A rejecting sendFailure must not replace the ProviderTurnFailedError below
-  // with a raw, unrecognized rejection — that would escalate past the turn
-  // and take the whole runtime down instead of just failing this turn.
-  await tools.sendFailure(failure).catch(() => undefined);
+  // A throwing sendFailure — synchronous or a rejection — must not replace
+  // the ProviderTurnFailedError below with a raw, unrecognized error: that
+  // would escalate past the turn and take the whole runtime down instead of
+  // just failing this turn. `.catch()` alone only catches a rejection; a
+  // synchronous throw happens before it ever returns a promise to attach to.
+  try {
+    await tools.sendFailure(failure);
+  } catch {
+    // Reported best-effort; the ProviderTurnFailedError below is what matters.
+  }
   throw new ProviderTurnFailedError(failure);
 }
 

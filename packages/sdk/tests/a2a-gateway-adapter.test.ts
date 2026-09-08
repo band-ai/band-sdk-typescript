@@ -1087,4 +1087,72 @@ describe("A2AGatewayAdapter", () => {
     expect((finalEvent.value as { metadata?: Record<string, unknown> })?.metadata?.failure)
       .toEqual({ provider: "letta", code: "quota_exceeded", message: "Provider call failed: quota exceeded", detail: null });
   });
+
+  it("drops a room's raw failure detail and independently re-sanitizes its message when relaying to an external A2A client", async () => {
+    const rest = new FakeRestApi();
+
+    let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
+    const adapter = new A2AGatewayAdapter({
+      bandRest: rest,
+      serverFactory: (options) => {
+        onRequest = options.onRequest;
+        return {
+          start: async () => undefined,
+          stop: async () => undefined,
+        };
+      },
+      responseTimeoutMs: 2_000,
+    });
+
+    await adapter.onStarted("Gateway", "A2A gateway");
+
+    const stream = onRequest!({
+      peerId: "peer-weather",
+      taskId: "task-relay-raw-detail",
+      contextId: "ctx-relay-raw-detail",
+      message: {
+        kind: "message",
+        messageId: "m-relay-raw-detail",
+        role: "user",
+        parts: [{ kind: "text", text: "Hello" }],
+      },
+    });
+
+    const iterator = stream[Symbol.asyncIterator]();
+    await iterator.next(); // working
+
+    // The shape an adapter like OpenCode's own toAgentFailure attaches: a raw
+    // provider HTTP body in `detail`, unredacted -- and a `message` embedding
+    // the same secret in JSON, which this gateway's own sanitizer must catch
+    // independently of whatever the originating adapter already did to it.
+    await adapter.onMessage(
+      makePeerMessage({
+        content: "Provider call failed",
+        roomId: "room-1",
+        senderId: "peer-weather",
+        messageType: "error",
+        metadata: {
+          failure: {
+            provider: "opencode",
+            code: "401",
+            message: 'HTTP 401 {"api_key":"sk-json-secret"}',
+            detail: { api_key: "sk-json-secret" },
+          },
+        },
+      }),
+      new FakeTools(),
+      { contextToRoom: {}, roomParticipants: {} },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    );
+
+    const finalEvent = await iterator.next();
+    const failure = (finalEvent.value as { metadata?: Record<string, unknown> })?.metadata?.failure as
+      | Record<string, unknown>
+      | undefined;
+    expect(failure).toMatchObject({ provider: "opencode", code: "401" });
+    expect(failure?.detail).toBeNull();
+    expect(JSON.stringify(failure)).not.toContain("sk-json-secret");
+  });
 });

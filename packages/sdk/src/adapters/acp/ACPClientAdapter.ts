@@ -366,13 +366,17 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     } catch (flushError) {
       this.logger.warn("ACP partial output lost after turn failure", { roomId: context.roomId, sessionId, error: flushError })
     }
-    // Best-effort, same reasoning as establishSession's failure path: onCleanup's
-    // own operations are simple/local today, but must never be allowed to
-    // swallow the original failure if that changes.
+    // Best-effort, same reasoning as establishSession's failure path: this
+    // cleanup is simple/local today, but must never be allowed to swallow the
+    // original failure if that changes. Scoped to `sessionId`, not the
+    // room-wide `onCleanup(roomId)`: this call can run long after a stuck
+    // `resetRoomSession` already tore the room down and a replacement turn
+    // opened a fresh session for it, and an unconditional roomId-keyed clear
+    // here would delete the replacement's mapping instead of this turn's own.
     try {
-      await this.onCleanup(context.roomId)
+      this.cleanupOwnSession(context.roomId, sessionId)
     } catch (cleanupError) {
-      this.logger.warn("ACP onCleanup after turn failure itself failed", { roomId: context.roomId, sessionId, error: cleanupError })
+      this.logger.warn("ACP session cleanup after turn failure itself failed", { roomId: context.roomId, sessionId, error: cleanupError })
     }
     // Reports and throws, like every other terminal provider failure in this
     // file: a turn-level failure (timeout, rejected prompt) must fail the turn
@@ -404,49 +408,71 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
     // A *resolved* prompt() isn't automatically a success — max_tokens/
     // max_turn_requests/refusal/cancelled are real provider-declared
-    // non-success outcomes today silently treated as end_turn. Whatever
-    // partial content the turn produced is still flushed above, unchanged.
-    // `?.` despite the non-nullable type: response is a deserialized wire
-    // value from an external agent process, and a missing body must not
-    // throw here — it belongs in the failure send below instead.
+    // non-success outcomes. Whatever partial content the turn produced is
+    // still flushed above, unchanged. `?.` despite the non-nullable type:
+    // response is a deserialized wire value from an external agent process,
+    // and a missing body must not throw here — it belongs in the failure
+    // report below instead.
     const stopReason: string | undefined = response?.stopReason
 
-    // Bookkeeping and failure reporting are independent posts to the room, so
-    // they run concurrently rather than paying two round-trips in serial.
-    await Promise.all([
-      // This event's metadata is the only record `ACPClientHistoryConverter`
-      // rebuilds room→session from, so it has to be written for any outcome
-      // that leaves the session alive. A turn that ends on max_tokens would
-      // otherwise lose the room's whole session at the next restart, silently
-      // starting a fresh one.
-      tools.sendEvent("ACP client session", "task", {
-        acp_client_session_id: sessionId,
-        acp_client_room_id: roomId,
-      }),
-      stopReason !== "end_turn"
-        ? tools.sendFailure(new AgentFailure(
-          this.provider,
-          `ACP turn ended with stop reason: ${stopReason ?? "unknown"}.`,
-          stopReason,
-        ))
-        : Promise.resolve(),
-    ])
+    // This event's metadata is the only record `ACPClientHistoryConverter`
+    // rebuilds room→session from, so it has to be written for any outcome
+    // that leaves the session alive — including the non-success report
+    // below, which fails the turn but does not tear the session down the
+    // way `failTurn`'s timeout path does.
+    await tools.sendEvent("ACP client session", "task", {
+      acp_client_session_id: sessionId,
+      acp_client_room_id: roomId,
+    })
+
+    if (stopReason === "end_turn") {
+      return
+    }
+
+    // Reports and throws, like every other terminal provider failure in this
+    // file: a non-success stop reason must fail the turn so PlatformRuntime
+    // marks the message failed and retries it, instead of returning here and
+    // silently counting a stalled/refused/cancelled turn as processed.
+    return reportTurnFailure(
+      tools,
+      new AgentFailure(
+        this.provider,
+        `ACP turn ended with stop reason: ${stopReason ?? "unknown"}.`,
+        stopReason,
+      ),
+    )
   }
 
   public async onCleanup(roomId: string): Promise<void> {
     const sessionId = this.roomToSession.get(roomId)
+    if (sessionId) {
+      this.cleanupOwnSession(roomId, sessionId)
+    } else {
+      this.roomToSession.delete(roomId)
+      this.roomTools.delete(roomId)
+    }
+  }
+
+  /**
+   * Clears a room's session bookkeeping, but only if `roomId` still maps to
+   * `sessionId` — the mapping is the room's single ownership record, so a
+   * caller that no longer matches it no longer owns the room and must not
+   * clear anything (see `failTurn`'s use, the reason this check exists).
+   */
+  private cleanupOwnSession(roomId: string, sessionId: string): void {
+    if (this.roomToSession.get(roomId) !== sessionId) {
+      return
+    }
     this.roomToSession.delete(roomId)
     this.roomTools.delete(roomId)
-    if (sessionId) {
-      this.activeSessions.delete(sessionId)
-      this.bootstrappedSessions.delete(sessionId)
-      // Drops this session's buffered chunks along with its permission
-      // handler. The chunks matter now that a failed turn cleans up its room
-      // rather than stopping the adapter: the client survives that, and a
-      // session no room can reach again would hold its output forever.
-      this.client?.resetSession(sessionId)
-      this.cancelPendingPermissions(sessionId)
-    }
+    this.activeSessions.delete(sessionId)
+    this.bootstrappedSessions.delete(sessionId)
+    // Drops this session's buffered chunks along with its permission
+    // handler. The chunks matter now that a failed turn cleans up its room
+    // rather than stopping the adapter: the client survives that, and a
+    // session no room can reach again would hold its output forever.
+    this.client?.resetSession(sessionId)
+    this.cancelPendingPermissions(sessionId)
   }
 
   public async onRuntimeStop(): Promise<void> {
@@ -1031,4 +1057,3 @@ function isAcpErrorResponse(error: unknown): error is { code: number; message: s
     && typeof (error as { code?: unknown }).code === "number"
     && typeof (error as { message?: unknown }).message === "string"
 }
-

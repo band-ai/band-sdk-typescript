@@ -464,6 +464,13 @@ describe("GatewayServer", () => {
       expect(sanitized).toContain("sent to https://api.example.com/v1/chat was rejected");
       expect(sanitized).toContain("please check your configuration");
     });
+
+    it("redacts a credential embedded in a JSON-quoted key/value pair, not just a bare key: value pair", () => {
+      const sanitized = sanitizeGatewayErrorMessage(
+        new Error('HTTP 401 body {"api_key":"sk-json-secret"}'),
+      );
+      expect(sanitized).not.toContain("sk-json-secret");
+    });
   });
 
   it("builds agent card skills tagged with band and gateway", async () => {

@@ -3,7 +3,33 @@ import { RecoverableTurnError } from "../core/errors";
 import type { AdapterToolsProtocol } from "../contracts/protocols";
 import type { HistoryProvider, PlatformMessage } from "../runtime/types";
 import { asErrorMessage } from "./shared/coercion";
+import { deliverReply } from "./shared/deliveryFailedError";
 import { agentFailure, reportTurnFailure } from "./shared/providerFailure";
+
+/**
+ * The handler is arbitrary caller code with no other way to reach
+ * `deliverReply` — routing its `sendMessage` calls through it here means a
+ * Band-delivery rejection reaches `onMessage`'s catch as a `DeliveryFailedError`
+ * (a `RecoverableTurnError`, already rethrown as-is below) instead of an
+ * opaque `Error` that gets misreported as a `"generic"` provider failure.
+ * Every other property is forwarded to the real `tools` unchanged, bound to
+ * it so an implementation's internal `this` usage still resolves correctly.
+ */
+function toolsWithDeliverySafeSendMessage(tools: AdapterToolsProtocol): AdapterToolsProtocol {
+  return new Proxy(tools, {
+    get(target, prop, receiver): unknown {
+      if (prop === "sendMessage") {
+        return (content: string, mentions?: Parameters<AdapterToolsProtocol["sendMessage"]>[1]) =>
+          deliverReply(target, content, mentions);
+      }
+      const value: unknown = Reflect.get(target, prop, receiver);
+      if (typeof value === "function") {
+        return (value as (...args: unknown[]) => unknown).bind(target);
+      }
+      return value;
+    },
+  });
+}
 
 export type GenericAdapterHandler = (args: {
   message: PlatformMessage;
@@ -38,7 +64,7 @@ export class GenericAdapter extends SimpleAdapter<HistoryProvider> {
     try {
       await this.handler({
         message,
-        tools,
+        tools: toolsWithDeliverySafeSendMessage(tools),
         history,
         participantsMessage,
         contactsMessage,

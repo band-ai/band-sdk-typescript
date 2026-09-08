@@ -9,7 +9,12 @@ import type { PlatformMessage } from "../../runtime/types";
 import { FAILURE_CODE_TIMEOUT } from "../shared/providerFailure";
 import { asNonEmptyString } from "../shared/coercion";
 import { GatewayHistoryConverter } from "./history";
-import { buildGatewayFailureMetadata, createGatewayServer, sanitizeGatewayErrorMessage } from "./server";
+import {
+  buildGatewayFailureMetadata,
+  createGatewayServer,
+  sanitizeForwardedFailure,
+  sanitizeGatewayErrorMessage,
+} from "./server";
 import { buildStatusEvent } from "./statusEvent";
 import type {
   A2AGatewayAdapterOptions,
@@ -671,11 +676,13 @@ function toStatusUpdateEvent(
   }
 
   // The room's own adapter already attached a structured AgentFailure here
-  // (via sendFailure) when this is an "error" message — forward it as-is so
-  // this relay carries the same code/provider/detail structure every other
-  // gateway failure site does, instead of leaving the external A2A client
-  // with only sanitized free text.
-  const failure = message.metadata?.[FAILURE_METADATA_KEY];
+  // (via sendFailure) when this is an "error" message — forward its
+  // provider/code, but rebuild `message` and drop `detail` through
+  // `sanitizeForwardedFailure` rather than copy it verbatim: `detail`
+  // routinely carries a raw provider payload (an HTTP body, an RPC error
+  // object) with no redaction of its own, and forwarding it unfiltered would
+  // leak whatever it contains straight to an external A2A client.
+  const failure = sanitizeForwardedFailure(message.metadata?.[FAILURE_METADATA_KEY]);
 
   return buildStatusEvent({
     taskId,
