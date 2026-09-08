@@ -78,6 +78,13 @@ describe("contracts/memory", () => {
       expect(isMemoryTypeForSystem("sensory", "semantic")).toBe(false);
       expect(isMemoryTypeForSystem("long_term", "iconic")).toBe(false);
     });
+
+    it("rethrows a non-validation error instead of collapsing it to false", () => {
+      // A non-string `type` reaching this boundary (e.g. malformed tool-call
+      // arguments) throws a plain Error with no `.issues`, unlike a real
+      // system/type mismatch - that must surface, not read as "invalid pair".
+      expect(() => isMemoryTypeForSystem("sensory", 42 as unknown as MemoryType)).toThrow();
+    });
   });
 
   it("keeps MemorySystem/MemoryType re-exported from contracts/dtos in sync with band-sdk-core", () => {

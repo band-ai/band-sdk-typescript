@@ -98,8 +98,14 @@ export function isMemoryTypeForSystem(system: MemorySystem, type: MemoryType): b
   try {
     validateMemoryTypeForSystem(system, type);
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    // Only a documented `.issues`-bearing validation failure means "not valid" -
+    // anything else (a non-string reaching this boundary, an internal core bug)
+    // must surface rather than be misreported as a bad system/type pairing.
+    if (err instanceof Error && "issues" in err) {
+      return false;
+    }
+    throw err;
   }
 }
 
