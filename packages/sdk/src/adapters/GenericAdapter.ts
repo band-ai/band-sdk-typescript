@@ -12,63 +12,45 @@ import { agentFailure, reportTurnFailure } from "./shared/providerFailure";
  * Band-delivery rejection reaches `onMessage`'s catch as a `DeliveryFailedError`
  * (a `RecoverableTurnError`, already rethrown as-is below) instead of an
  * opaque `Error` that gets misreported as a `"generic"` provider failure.
- * Every other method is forwarded bound to the real `tools`, so it runs with
- * its original receiver; every other property reads through the prototype
- * chain unchanged.
+ * Every other property is resolved against the real `tools` — as receiver,
+ * not just as lookup target — so a method runs with its original `this` and
+ * an accessor's getter/setter runs with its original receiver too.
  *
- * Not a `Proxy` over `tools`: `AgentTools.buildAdapterTools()` hands adapters
- * an `Object.freeze`d object, and a `Proxy` `get` trap returning anything
- * other than a frozen own property's exact stored value — as the
- * `sendMessage` override below must — violates the Proxy invariant for
- * non-configurable, non-writable data properties and throws a `TypeError`.
+ * A `Proxy` whose *target* is `tools` itself doesn't work: `AgentTools.
+ * buildAdapterTools()` hands adapters an `Object.freeze`d object, and a
+ * `get` trap returning anything other than a frozen own property's exact
+ * stored value — as the `sendMessage` override below must — violates the
+ * Proxy invariant for non-configurable, non-writable data properties and
+ * throws a `TypeError`. The target here is instead a fresh, ordinary,
+ * unfrozen object with no properties of its own, so it imposes no such
+ * invariant — every trap is free to return whatever `tools` actually holds.
  *
- * Not a bare `Object.create(tools)` delegate either: reading a forwarded
- * method off it would still work, but *calling* it runs with `this` bound to
- * the facade, not `tools` — for a class-based `AdapterToolsProtocol`
- * implementation whose methods use real (`#`) private fields, that throws
- * even for an unmodified method like `sendEvent`, since a private field is
- * inaccessible on any object other than a genuine instance of its declaring
- * class. Explicitly binding each forwarded method to `tools` keeps every
- * call's receiver the real instance regardless.
- *
- * `keys` covers both shapes a caller might have handed in without hardcoding
- * `AdapterToolsProtocol`'s member list: `tools`' own enumerable keys catch
- * `AgentTools`' frozen plain-object shape, and its prototype's own keys catch
- * a class-based implementation's methods (skipped when the prototype is the
- * default `Object.prototype`, so unrelated built-ins like `toString` aren't
- * forwarded). `Object.defineProperty`, not plain assignment, for every
- * forwarded key: assigning through a prototype chain onto a frozen own
- * property throws for the same reason a `Proxy` trap would.
+ * Nor does this statically enumerate `tools`' own/prototype keys and copy
+ * bound functions onto a delegate: that misses methods more than one
+ * prototype level up an inheritance chain (`Reflect.get` walks the *whole*
+ * chain, not just the immediate prototype), misses accessor properties
+ * entirely (their value is only known at access time, not enumeration
+ * time), and — since a delegate's own shadowing assignment on a later call
+ * would land on the delegate, not `tools` — silently drops state a called
+ * method mutates on `this` for any method it did miss. Resolving every
+ * property lazily through `Reflect.get(tools, key, tools)` handles methods,
+ * inherited methods at any depth, and accessors uniformly, with `tools` as
+ * the receiver throughout.
  */
 function toolsWithDeliverySafeSendMessage(tools: AdapterToolsProtocol): AdapterToolsProtocol {
-  const facade = Object.create(tools) as AdapterToolsProtocol;
-
-  const prototype: unknown = Object.getPrototypeOf(tools);
-  const prototypeKeys = prototype && prototype !== Object.prototype
-    ? Object.getOwnPropertyNames(prototype)
-    : [];
-  const keys = new Set([...Object.keys(tools), ...prototypeKeys]);
-  keys.delete("constructor");
-  for (const key of keys) {
-    const value: unknown = (tools as unknown as Record<string, unknown>)[key];
-    if (typeof value === "function") {
-      Object.defineProperty(facade, key, {
-        value: value.bind(tools),
-        enumerable: true,
-        writable: true,
-        configurable: true,
-      });
-    }
-  }
-
-  Object.defineProperty(facade, "sendMessage", {
-    value: (content: string, mentions?: Parameters<AdapterToolsProtocol["sendMessage"]>[1]) =>
-      deliverReply(tools, content, mentions),
-    enumerable: true,
-    writable: true,
-    configurable: true,
+  return new Proxy({} as AdapterToolsProtocol, {
+    has(_target, key) {
+      return Reflect.has(tools, key);
+    },
+    get(_target, key) {
+      if (key === "sendMessage") {
+        return (content: string, mentions?: Parameters<AdapterToolsProtocol["sendMessage"]>[1]) =>
+          deliverReply(tools, content, mentions);
+      }
+      const value: unknown = Reflect.get(tools, key, tools);
+      return typeof value === "function" ? (value.bind(tools) as unknown) : value;
+    },
   });
-  return facade;
 }
 
 export type GenericAdapterHandler = (args: {

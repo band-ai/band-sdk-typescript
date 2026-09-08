@@ -913,6 +913,117 @@ describe("ACPClientAdapter", () => {
 
       expect(getPermissionResult()).toEqual({ outcome: { outcome: "cancelled" } })
     })
+
+    it("a stale generation's cleanup does not cancel a live permission request on a different generation sharing the same session id", async () => {
+      // pendingPermissions used to be keyed by bare sessionId. An ACP agent
+      // can reissue the identical session id across a reconnect (see
+      // roomToSession's comment) — two different generations' sessions can
+      // legitimately share one id string, and cancelling one generation's
+      // pending permission must not reach into the other's.
+      let attempt = 0
+      let clientHandleA: { requestPermission: (params: Record<string, unknown>) => Promise<unknown> } | null = null
+      let clientHandleB: { requestPermission: (params: Record<string, unknown>) => Promise<unknown> } | null = null
+      let permissionResultA: unknown
+      let permissionResultB: unknown
+      let resolveARequested: () => void = () => undefined
+      const aRequested = new Promise<void>((resolve) => { resolveARequested = resolve })
+      let resolveBRequested: () => void = () => undefined
+      const bRequested = new Promise<void>((resolve) => { resolveBRequested = resolve })
+      const firstConnectionController = new AbortController()
+
+      const promptA = vi.fn(async (params: { sessionId: string }) => {
+        permissionResultA = await clientHandleA?.requestPermission({
+          sessionId: params.sessionId,
+          toolCall: { toolCallId: "call-a", title: "Edit file" },
+          options: [{ kind: "allow_once", name: "Allow once", optionId: "allow" }],
+        })
+        return { stopReason: "end_turn" }
+      })
+      const promptB = vi.fn(async (params: { sessionId: string }) => {
+        permissionResultB = await clientHandleB?.requestPermission({
+          sessionId: params.sessionId,
+          toolCall: { toolCallId: "call-b", title: "Edit file" },
+          options: [{ kind: "allow_once", name: "Allow once", optionId: "allow" }],
+        })
+        return { stopReason: "end_turn" }
+      })
+
+      const adapter = new ACPClientAdapter({
+        command: ["acp-agent"],
+        enableMcpTools: false,
+        resolvePermission: async (request) => {
+          if (request.toolCall.toolCallId === "call-a") {
+            resolveARequested()
+          } else if (request.toolCall.toolCallId === "call-b") {
+            resolveBRequested()
+          }
+          return new Promise<string | undefined>(() => undefined) // hangs until cancelled
+        },
+        permissionTimeoutMs: 60_000,
+        connectionFactory: async (client) => {
+          attempt += 1
+          if (attempt === 1) {
+            clientHandleA = client as unknown as typeof clientHandleA
+            return {
+              connection: fakeConnection({
+                signal: firstConnectionController.signal,
+                newSession: vi.fn(async () => ({ sessionId: "shared-session" })),
+                prompt: promptA,
+              }),
+              stop: vi.fn(async () => undefined),
+            }
+          }
+          clientHandleB = client as unknown as typeof clientHandleB
+          return {
+            connection: fakeConnection({
+              newSession: vi.fn(async () => ({ sessionId: "shared-session" })),
+              prompt: promptB,
+            }),
+            stop: vi.fn(async () => undefined),
+          }
+        },
+      })
+      await adapter.onStarted("Agent", "desc")
+
+      // room-a, generation 1: its permission request is tracked and hangs.
+      const turnA = adapter.onMessage(
+        makeMessage("hello", "room-a"),
+        new FakeTools(),
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-a" },
+      )
+      await aRequested
+
+      // Connection 1 dies silently (no explicit stop()) — the next turn
+      // reconnects on its own, and the replacement agent reissues the exact
+      // same session id for a different room.
+      firstConnectionController.abort()
+
+      const turnB = adapter.onMessage(
+        makeMessage("hello", "room-b"),
+        new FakeTools(),
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-b" },
+      )
+      await bRequested
+
+      // room-a's own (stale-generation) cleanup fires — must cancel only
+      // its own permission, not room-b's live one sharing the same id.
+      await adapter.onCleanup("room-a")
+      await turnA
+      expect(permissionResultA).toEqual({ outcome: { outcome: "cancelled" } })
+      expect(permissionResultB).toBeUndefined()
+
+      // room-b's request is still genuinely live and independently
+      // cancellable — proof it was never touched, not just not-yet-checked.
+      await adapter.onCleanup("room-b")
+      await turnB
+      expect(permissionResultB).toEqual({ outcome: { outcome: "cancelled" } })
+    })
   })
 
   describe("turnTimeoutMs and the two-scope catch", () => {
@@ -1732,6 +1843,79 @@ describe("ACPClientAdapter", () => {
       } finally {
         vi.useRealTimers()
       }
+    })
+
+    it("a session establishment that completes after a concurrent stop() stamps its own generation, not the counter's later value, so a fresh turn afterward doesn't collide with it", async () => {
+      // setRoomSession used to read the mutable this.connectionGeneration
+      // fresh, at the end of getOrCreateSession's own async work (newSession/
+      // restore/mode configuration). If a concurrent stop() bumped the
+      // counter while that work was still in flight, a turn whose session
+      // establishment only *finishes* afterward would get mislabeled with
+      // a generation number that belongs to whatever connection is current
+      // by then, not the one it actually established against.
+      let attempt = 0
+      let staleNewSessionStarted: () => void = () => undefined
+      const staleNewSessionStartedSignal = new Promise<void>((resolve) => { staleNewSessionStarted = resolve })
+      let resolveStaleNewSession: (value: { sessionId: string }) => void = () => undefined
+      const staleNewSessionPromise = new Promise<{ sessionId: string }>((resolve) => { resolveStaleNewSession = resolve })
+      const freshNewSession = vi.fn(async () => ({ sessionId: "session-fresh" }))
+
+      const adapter = new ACPClientAdapter({
+        command: ["acp-agent"],
+        enableMcpTools: false,
+        connectionFactory: async () => {
+          attempt += 1
+          if (attempt === 1) {
+            return {
+              connection: fakeConnection({
+                newSession: vi.fn(async () => {
+                  staleNewSessionStarted()
+                  return staleNewSessionPromise
+                }),
+              }),
+              stop: vi.fn(async () => undefined),
+            }
+          }
+          return {
+            connection: fakeConnection({ newSession: freshNewSession }),
+            stop: vi.fn(async () => undefined),
+          }
+        },
+      })
+      await adapter.onStarted("Agent", "desc")
+
+      const staleTurn = adapter.onMessage(
+        makeMessage("hello", "room-race"),
+        new FakeTools(),
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-race" },
+      )
+      await staleNewSessionStartedSignal
+
+      // Something outside this turn tears the whole connection down while
+      // its own newSession() is still pending.
+      await adapter.stop()
+
+      // The peer answers the stale request just before its process would
+      // actually have been killed.
+      resolveStaleNewSession({ sessionId: "session-stale" })
+      await staleTurn
+
+      // A genuinely new turn for the same room must reconnect and establish
+      // a real session on the fresh connection — not be short-circuited by
+      // the stale turn's own (correctly non-colliding) bookkeeping.
+      await adapter.onMessage(
+        makeMessage("hello again", "room-race"),
+        new FakeTools(),
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-race" },
+      )
+
+      expect(freshNewSession).toHaveBeenCalledTimes(1)
     })
 
     it("repeatedly failed turns do not accumulate their sessions' buffered output", async () => {

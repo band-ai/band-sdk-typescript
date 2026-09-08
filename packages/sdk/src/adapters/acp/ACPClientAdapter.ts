@@ -148,9 +148,15 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   // comment for why matching `sessionId` alone isn't ownership proof.
   private readonly roomToSession = new Map<string, { sessionId: string; generation: number }>()
   private readonly roomTools = new Map<string, AdapterToolsProtocol>()
+  // Keyed by `sessionKey(generation, sessionId)`, not bare `sessionId`: an
+  // ACP agent can reissue the identical session id for a room across a
+  // reconnect (see `roomToSession`'s comment above), and these three sets/
+  // maps have no other ownership record of their own the way `roomToSession`
+  // does — a bare-id key would let a stale generation's entry alias a
+  // same-id session that is genuinely live on a newer connection.
   private readonly activeSessions = new Set<string>()
   private readonly bootstrappedSessions = new Set<string>()
-  private readonly pendingPermissions = new Map<string /* sessionId */, Set<AbortController>>()
+  private readonly pendingPermissions = new Map<string, Set<AbortController>>()
 
   private readonly resolvePermission?: (request: RequestPermissionRequest, signal: AbortSignal) => Promise<string | undefined>
   private readonly resolveSessionMode?: (request: ACPModeRequest, signal: AbortSignal) => Promise<string | undefined>
@@ -256,8 +262,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
     const { connection, client, sessionId, generation } = await this.establishSession(tools, context)
 
-    const promptText = this.buildPromptText(message, participantsMessage, contactsMessage, context.roomId, sessionId)
-    this.bootstrappedSessions.add(sessionId)
+    const promptText = this.buildPromptText(message, participantsMessage, contactsMessage, context.roomId, sessionId, generation)
+    this.bootstrappedSessions.add(this.sessionKey(generation, sessionId))
 
     let response: PromptResponse
     try {
@@ -276,29 +282,38 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     tools: AdapterToolsProtocol,
     context: { roomId: string },
   ): Promise<{ connection: ClientSideConnection; client: BandACPClient; sessionId: string; generation: number }> {
-    // Captured before the connection is touched: the catch below tears down
-    // what every room shares, so it has to know which connection this turn
-    // was actually working against.
+    // Captured before the connection is touched, and never reassigned:
+    // `stopOwnedConnection` below must stay conservative about tearing down
+    // what every room shares, so a mismatch against the generation in scope
+    // *before this attempt even started* — whether from a reconnect this
+    // same call's own `ensureConnection()` just performed, or one some other
+    // concurrent turn did — is reason enough to skip it. `generation` below
+    // is the separate, precise value actually threaded through this
+    // session's own bookkeeping; the two serve different purposes and must
+    // not be conflated into one variable.
     const attemptGeneration = this.connectionGeneration
 
     try {
-      const connection = await this.ensureConnection()
+      const { connection, generation } = await this.ensureConnection()
       const client = this.client
       if (!client) {
         throw new Error("ACP client was not initialized")
       }
 
-      const sessionId = await this.getOrCreateSession(context.roomId, connection)
+      const sessionId = await this.getOrCreateSession(context.roomId, connection, generation)
       client.beginSession(sessionId)
       client.setPermissionHandler(
         sessionId,
-        (params) => this.handlePermissionRequest(tools, context.roomId, params),
+        (params) => this.handlePermissionRequest(tools, context.roomId, generation, params),
       )
-      // Read fresh, not `attemptGeneration`: a reconnect inside
-      // `ensureConnection()` above already bumps it before this point, and
-      // this is the generation this turn's session was actually stamped
-      // with in `roomToSession` (see `getOrCreateSession`'s `setRoomSession`).
-      return { connection, client, sessionId, generation: this.connectionGeneration }
+      // `generation` throughout, never a later read of the mutable
+      // `this.connectionGeneration`: `getOrCreateSession`'s own async RPC
+      // work (newSession/restore/mode configuration) can outlive this exact
+      // connection if it dies mid-call, during which another turn can
+      // legitimately reconnect and bump the counter further — returning that
+      // later value here would mislabel this session with a generation it
+      // was never actually established against.
+      return { connection, client, sessionId, generation }
     } catch (error) {
       await this.stopOwnedConnection(attemptGeneration, context.roomId)
       // Reports and throws: a connection/session-establishment failure is a
@@ -315,6 +330,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     contactsMessage: string | null,
     roomId: string,
     sessionId: string,
+    generation: number,
   ): string {
     // The platform stores a typed mention as @[[participant_id]]; nothing else
     // in ACP resolves that back to a handle, so the agent reads a bare id as
@@ -327,7 +343,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     // chance ACP gets to see it at all.
     const messageWithContext = [...systemUpdateParts(participantsMessage, contactsMessage), content].join("\n\n")
 
-    return this.bootstrappedSessions.has(sessionId)
+    return this.bootstrappedSessions.has(this.sessionKey(generation, sessionId))
       ? messageWithContext
       : `${this.buildSystemContext(roomId, message)}\n\n${messageWithContext}`
   }
@@ -542,14 +558,14 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     }
     this.roomToSession.delete(roomId)
     this.roomTools.delete(roomId)
-    this.activeSessions.delete(sessionId)
-    this.bootstrappedSessions.delete(sessionId)
+    this.activeSessions.delete(this.sessionKey(generation, sessionId))
+    this.bootstrappedSessions.delete(this.sessionKey(generation, sessionId))
     // Drops this session's buffered chunks along with its permission
     // handler. The chunks matter now that a failed turn cleans up its room
     // rather than stopping the adapter: the client survives that, and a
     // session no room can reach again would hold its output forever.
     client?.resetSession(sessionId)
-    this.cancelPendingPermissions(sessionId)
+    this.cancelPendingPermissions(sessionId, generation)
   }
 
   public async onRuntimeStop(): Promise<void> {
@@ -617,9 +633,16 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     }
   }
 
-  private async ensureConnection(): Promise<ClientSideConnection> {
+  // Returns `generation` alongside `connection` as one atomic pair, read in
+  // the same synchronous continuation the connection itself is obtained in —
+  // callers must thread this value through rather than reading
+  // `this.connectionGeneration` again later, after their own further await:
+  // a reconnect elsewhere can bump the counter in the meantime, and a late
+  // read would then mislabel work done against *this* connection with a
+  // generation number that belongs to a different one.
+  private async ensureConnection(): Promise<{ connection: ClientSideConnection; generation: number }> {
     if (this.connection && !this.connection.signal.aborted) {
-      return this.connection
+      return { connection: this.connection, generation: this.connectionGeneration }
     }
 
     if (!this.started) {
@@ -633,7 +656,12 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     const spawnPromise = this.spawnPromise!
 
     try {
-      return await spawnPromise
+      const connection = await spawnPromise
+      // No await between spawnPromise resolving and this read: `spawnConnection`
+      // installs `this.connection` and bumps `this.connectionGeneration` in the
+      // same synchronous stretch before its promise settles, so this is
+      // guaranteed to be the exact generation `connection` was installed at.
+      return { connection, generation: this.connectionGeneration }
     } finally {
       // Only the creator clears the slot, and only if it still holds the
       // promise created above — `stop()` (or a newer attempt superseding
@@ -715,14 +743,22 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private async getOrCreateSession(
     roomId: string,
     connection: ClientSideConnection,
+    generation: number,
   ): Promise<string> {
-    const existingSessionId = this.roomToSession.get(roomId)?.sessionId
+    const owner = this.roomToSession.get(roomId)
 
-    if (existingSessionId && this.activeSessions.has(existingSessionId)) {
-      return existingSessionId
+    // Requires the owner's *own* generation to match this call's, not just
+    // `activeSessions` membership: `activeSessions` is cleared wholesale on
+    // any connection loss, but a session id an agent reissues identically
+    // across a reconnect could otherwise get re-admitted into a freshly
+    // (re)populated set under a stale room's still-cached id — see
+    // `roomToSession`'s comment.
+    if (owner && owner.generation === generation && this.activeSessions.has(this.sessionKey(generation, owner.sessionId))) {
+      return owner.sessionId
     }
 
     const mcpServers = await this.buildSessionMcpServers()
+    const existingSessionId = owner?.sessionId
 
     if (existingSessionId) {
       const restored = await this.tryRestoreSession(connection, existingSessionId, mcpServers)
@@ -733,13 +769,13 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         // `spawnConnection`'s `closed.finally()`) — running this after that
         // await would let a stale add silently re-admit a session whose
         // connection just died.
-        this.activeSessions.add(existingSessionId)
-        this.bootstrappedSessions.add(existingSessionId)
+        this.activeSessions.add(this.sessionKey(generation, existingSessionId))
+        this.bootstrappedSessions.add(this.sessionKey(generation, existingSessionId))
         // Re-stamps the generation even though `sessionId` is unchanged: a
         // restore can land on a different connection than last time, and a
         // stale turn from the *previous* connection must not be able to
         // pass `cleanupOwnSession`'s ownership check against this one.
-        this.setRoomSession(roomId, existingSessionId)
+        this.setRoomSession(roomId, existingSessionId, generation)
         await this.configureSessionMode(roomId, existingSessionId, restored.modes, connection)
         return existingSessionId
       }
@@ -751,19 +787,31 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     })
 
     // Same ordering reason as the restored-session branch above.
-    this.setRoomSession(roomId, created.sessionId)
-    this.activeSessions.add(created.sessionId)
+    this.setRoomSession(roomId, created.sessionId, generation)
+    this.activeSessions.add(this.sessionKey(generation, created.sessionId))
     await this.configureSessionMode(roomId, created.sessionId, created.modes, connection)
     return created.sessionId
   }
 
   /**
+   * Composite key so `activeSessions`/`bootstrappedSessions`/
+   * `pendingPermissions` can't alias an identical session id reissued on a
+   * different connection generation — see `roomToSession`'s comment.
+   */
+  private sessionKey(generation: number, sessionId: string): string {
+    return `${generation}:${sessionId}`
+  }
+
+  /**
    * Records which connection generation currently owns a room's session —
    * see `cleanupOwnSession`'s doc comment for why `sessionId` alone can't
-   * tell a stale turn's session apart from a same-id replacement.
+   * tell a stale turn's session apart from a same-id replacement. `generation`
+   * is always the caller's own immutable value from `ensureConnection`, never
+   * a fresh read of the mutable `this.connectionGeneration` — see
+   * `establishSession`'s comment on why a late read can mislabel a session.
    */
-  private setRoomSession(roomId: string, sessionId: string): void {
-    this.roomToSession.set(roomId, { sessionId, generation: this.connectionGeneration })
+  private setRoomSession(roomId: string, sessionId: string, generation: number): void {
+    this.roomToSession.set(roomId, { sessionId, generation })
   }
 
   // Best-effort: never throws, so a mode switch going wrong can't take a
@@ -1020,6 +1068,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private async handlePermissionRequest(
     tools: AdapterToolsProtocol,
     roomId: string,
+    generation: number,
     params: RequestPermissionRequest,
   ): Promise<RequestPermissionResponse> {
     const toolName = params.toolCall.title ?? "unknown"
@@ -1037,7 +1086,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     // cancellable immediately, not only once `resolveManually` itself runs.
     const controller = this.resolvePermission ? new AbortController() : undefined
     if (controller) {
-      this.trackPending(params.sessionId, controller)
+      this.trackPending(params.sessionId, generation, controller)
     }
 
     const [, chosenId] = await Promise.all([
@@ -1053,7 +1102,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         auto_allowed: autoSelection !== undefined && autoSelection !== null,
       }),
       controller
-        ? this.resolveManually(params.sessionId, params, controller)
+        ? this.resolveManually(params.sessionId, generation, params, controller)
         : Promise.resolve(autoSelection?.optionId),
     ])
 
@@ -1079,6 +1128,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   // channel here, not a second hand-rolled one alongside it.
   private async resolveManually(
     sessionId: string,
+    generation: number,
     params: RequestPermissionRequest,
     controller: AbortController,
   ): Promise<string | undefined> {
@@ -1109,35 +1159,45 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       ])
     } finally {
       clearTimeout(timer)
-      this.untrackPending(sessionId, controller)
+      this.untrackPending(sessionId, generation, controller)
       controller.abort()
     }
   }
 
-  private trackPending(sessionId: string, controller: AbortController): void {
-    const pending = this.pendingPermissions.get(sessionId) ?? new Set<AbortController>()
+  private trackPending(sessionId: string, generation: number, controller: AbortController): void {
+    const key = this.sessionKey(generation, sessionId)
+    const pending = this.pendingPermissions.get(key) ?? new Set<AbortController>()
     pending.add(controller)
-    this.pendingPermissions.set(sessionId, pending)
+    this.pendingPermissions.set(key, pending)
   }
 
-  private untrackPending(sessionId: string, controller: AbortController): void {
-    const pending = this.pendingPermissions.get(sessionId)
+  private untrackPending(sessionId: string, generation: number, controller: AbortController): void {
+    const key = this.sessionKey(generation, sessionId)
+    const pending = this.pendingPermissions.get(key)
     pending?.delete(controller)
     if (pending?.size === 0) {
-      this.pendingPermissions.delete(sessionId)
+      this.pendingPermissions.delete(key)
     }
   }
 
-  private cancelPendingPermissions(sessionId: string): void {
-    for (const controller of this.pendingPermissions.get(sessionId) ?? []) {
+  private cancelPendingPermissions(sessionId: string, generation: number): void {
+    const key = this.sessionKey(generation, sessionId)
+    for (const controller of this.pendingPermissions.get(key) ?? []) {
       controller.abort()
     }
   }
 
+  // A full teardown, not scoped to one generation: every still-pending
+  // permission request on any connection this adapter has ever owned must be
+  // cancelled, so this iterates the map directly rather than reconstructing
+  // per-generation keys.
   private cancelAllPendingPermissions(): void {
-    for (const sessionId of this.pendingPermissions.keys()) {
-      this.cancelPendingPermissions(sessionId)
+    for (const pending of this.pendingPermissions.values()) {
+      for (const controller of pending) {
+        controller.abort()
+      }
     }
+    this.pendingPermissions.clear()
   }
 
   private async flushChunks(input: {

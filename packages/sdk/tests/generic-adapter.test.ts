@@ -140,6 +140,143 @@ describe("GenericAdapter", () => {
     expect((tools as unknown as FakeAgentTools).messages).toEqual(["the answer"]);
   });
 
+  it("works when a forwarded method lives two prototype levels up (inheritance), without throwing on a real private field", async () => {
+    // Object.getPrototypeOf(tools) only reaches DerivedTools.prototype;
+    // sendEvent is inherited from BaseAgentTools.prototype, one level
+    // further up. A facade that only rebinds methods it can enumerate at
+    // that one level would miss sendEvent entirely, so calling it falls
+    // through the facade's own prototype chain and runs with `this` bound
+    // to the facade — a real #private field then throws even though
+    // sendEvent is a completely unmodified, inherited method.
+    class BaseAgentTools {
+      #eventCount = 0;
+      public readonly messages: string[] = [];
+
+      public async sendMessage(content: string): Promise<{ ok: true }> {
+        this.messages.push(content);
+        return { ok: true };
+      }
+
+      public async sendEvent(): Promise<{ ok: true; count: number }> {
+        this.#eventCount += 1;
+        return { ok: true, count: this.#eventCount };
+      }
+    }
+    class DerivedTools extends BaseAgentTools {}
+
+    const tools = new DerivedTools() as unknown as AdapterToolsProtocol;
+    const observed: unknown[] = [];
+    const adapter = new GenericAdapter(async ({ tools: handlerTools }) => {
+      observed.push(await handlerTools.sendEvent("note", "task"));
+    });
+    await adapter.onStarted("Agent", "An agent");
+
+    for (let i = 0; i < 2; i += 1) {
+      await adapter.onMessage(
+        makeMessage("hello"),
+        tools,
+        new HistoryProvider([]),
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-1" },
+      );
+    }
+
+    expect(observed).toEqual([
+      { ok: true, count: 1 },
+      { ok: true, count: 2 },
+    ]);
+  });
+
+  it("mutates the real tools instance's state across turns instead of shadowing it on a disposable per-turn facade", async () => {
+    // Same inheritance-depth gap as above, but with a plain (non-#) field:
+    // instead of throwing, a facade that misses this method and calls it
+    // with `this` bound to a fresh facade each turn would let `this.count =
+    // ...` create a shadow own-property on the facade rather than mutating
+    // the real instance — every turn would see the field reset to 0 and
+    // independently become 1, instead of the count genuinely advancing.
+    class BaseAgentTools {
+      public count = 0;
+
+      public async sendMessage(): Promise<{ ok: true }> {
+        return { ok: true };
+      }
+
+      public async sendEvent(): Promise<{ ok: true; count: number }> {
+        this.count += 1;
+        return { ok: true, count: this.count };
+      }
+    }
+    class DerivedTools extends BaseAgentTools {}
+
+    const tools = new DerivedTools() as unknown as AdapterToolsProtocol;
+    const observed: unknown[] = [];
+    const adapter = new GenericAdapter(async ({ tools: handlerTools }) => {
+      observed.push(await handlerTools.sendEvent("note", "task"));
+    });
+    await adapter.onStarted("Agent", "An agent");
+
+    for (let i = 0; i < 2; i += 1) {
+      await adapter.onMessage(
+        makeMessage("hello"),
+        tools,
+        new HistoryProvider([]),
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-1" },
+      );
+    }
+
+    expect(observed).toEqual([
+      { ok: true, count: 1 },
+      { ok: true, count: 2 },
+    ]);
+    expect((tools as unknown as DerivedTools).count).toBe(2);
+  });
+
+  it("forwards an inherited accessor with the real tools instance as receiver, not the facade", async () => {
+    // Accessors are never functions themselves, so a facade that only
+    // rebinds properties whose *current value* happens to be a function
+    // (peeked once, at construction time) never installs a forwarding
+    // override for a getter at all — access falls through to the facade's
+    // own prototype chain and re-invokes the getter with `this` bound to
+    // the facade instead of the real instance.
+    class BaseAgentTools {
+      #label = "base-label";
+
+      public get label(): string {
+        return this.#label;
+      }
+
+      public async sendMessage(): Promise<{ ok: true }> {
+        return { ok: true };
+      }
+
+      public async sendEvent(): Promise<{ ok: true }> {
+        return { ok: true };
+      }
+    }
+    class DerivedTools extends BaseAgentTools {}
+
+    const tools = new DerivedTools() as unknown as AdapterToolsProtocol & { label: string };
+    let observedLabel: unknown;
+    const adapter = new GenericAdapter(async ({ tools: handlerTools }) => {
+      observedLabel = (handlerTools as unknown as { label: string }).label;
+    });
+    await adapter.onStarted("Agent", "An agent");
+
+    await adapter.onMessage(
+      makeMessage("hello"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    );
+
+    expect(observedLabel).toBe("base-label");
+  });
+
   it("does not run the handler's onMessage body twice for successful turns", async () => {
     const calls: string[] = [];
     const adapter = new GenericAdapter(async ({ message }) => {
