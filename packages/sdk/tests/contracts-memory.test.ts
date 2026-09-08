@@ -10,6 +10,21 @@ import {
 import type { MemorySystem, MemoryType } from "../src/contracts/memory";
 import type { MemorySystem as DtoMemorySystem, MemoryType as DtoMemoryType } from "../src/contracts/dtos";
 
+type MemoryValidationError = Error & {
+  issues: Array<{ path: string; code: string; message: string }>;
+  traceContext: string | null;
+};
+
+function captureThrow(fn: () => void): MemoryValidationError {
+  try {
+    fn();
+  } catch (err) {
+    expect(err).toBeInstanceOf(Error);
+    return err as MemoryValidationError;
+  }
+  throw new Error("expected fn to throw");
+}
+
 describe("contracts/memory", () => {
   describe("MEMORY_SYSTEM_TYPES parity with band-sdk-core's own validation", () => {
     for (const system of MEMORY_SYSTEMS) {
@@ -28,22 +43,9 @@ describe("contracts/memory", () => {
   });
 
   describe("validateMemoryTypeForSystem", () => {
-    it("accepts every type paired with its own system, and passes traceContext through as null when omitted", () => {
-      expect(() => validateMemoryTypeForSystem("sensory", "iconic")).not.toThrow();
-      expect(() => validateMemoryTypeForSystem("working", "episodic")).not.toThrow();
-      expect(() => validateMemoryTypeForSystem("long_term", "semantic")).not.toThrow();
-    });
-
     it("throws with a `type` issue and the given traceContext for a wrong-tier type", () => {
-      let caught: unknown;
-      try {
-        validateMemoryTypeForSystem("sensory", "semantic", "trace-123");
-      } catch (err) {
-        caught = err;
-      }
+      const error = captureThrow(() => validateMemoryTypeForSystem("sensory", "semantic", "trace-123"));
 
-      expect(caught).toBeInstanceOf(Error);
-      const error = caught as Error & { issues: Array<{ path: string; code: string; message: string }>; traceContext: string | null };
       expect(error.traceContext).toBe("trace-123");
       expect(error.issues).toEqual([
         {
@@ -55,15 +57,8 @@ describe("contracts/memory", () => {
     });
 
     it("reports system and type as independent issues, and defaults traceContext to null", () => {
-      let caught: unknown;
-      try {
-        validateMemoryTypeForSystem("nonsense-system", "nonsense-type");
-      } catch (err) {
-        caught = err;
-      }
+      const error = captureThrow(() => validateMemoryTypeForSystem("nonsense-system", "nonsense-type"));
 
-      expect(caught).toBeInstanceOf(Error);
-      const error = caught as Error & { issues: Array<{ path: string; code: string }>; traceContext: string | null };
       expect(error.traceContext).toBeNull();
       expect(error.issues.map((issue) => issue.path)).toEqual(["system", "type"]);
       expect(error.issues.every((issue) => issue.code === "invalid_value")).toBe(true);
