@@ -37,6 +37,9 @@ import {
   choosePermissionOption,
   type ACPClientConnectionFactory,
   type ACPClientConnectionHandle,
+  type ACPPermissionAbandonReason,
+  type ACPPermissionEndReason,
+  type ACPPermissionRequest,
 } from "./types";
 import { acpModule } from "./loader";
 
@@ -91,7 +94,11 @@ export interface ACPClientAdapterOptions {
   // (including a reject-kind id — that's a real deny, not a cancel).
   // `undefined` means only a genuine non-answer: dismissed, timed out,
   // threw, or resolved to an id absent from this request's own options.
-  resolvePermission?: (request: RequestPermissionRequest, signal: AbortSignal) => Promise<string | undefined>;
+  // `signal` aborts with an `ACPPermissionEndReason`: one of the four
+  // `ACPPermissionAbandonReason`s when the request is given up on, or
+  // `"settled"` once an answer has been taken. An answer arriving after the
+  // abort is discarded.
+  resolvePermission?: (request: ACPPermissionRequest, signal: AbortSignal) => Promise<string | undefined>;
   // Only meaningful when `resolvePermission` is set. Defaults to
   // `DEFAULT_PERMISSION_TIMEOUT_MS`.
   permissionTimeoutMs?: number;
@@ -102,7 +109,8 @@ export interface ACPClientAdapterOptions {
   // resolved id isn't advertised. Best-effort and one-time per session: a
   // failed switch only logs a warning, and an agent that later changes mode
   // on its own (ACP's `current_mode_update`) is neither tracked nor
-  // re-asserted.
+  // re-asserted. A session's mode is therefore fixed for its lifetime —
+  // changing it means tearing the session down and establishing a new one.
   resolveSessionMode?: (request: ACPModeRequest, signal: AbortSignal) => Promise<string | undefined>;
   logger?: Logger;
 }
@@ -120,12 +128,14 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private readonly connectionFactory: ACPClientConnectionFactory
 
   private readonly roomToSession = new Map<string, string>()
+  private readonly sessionToRoom = new Map<string, string>()
   private readonly roomTools = new Map<string, AdapterToolsProtocol>()
   private readonly activeSessions = new Set<string>()
   private readonly bootstrappedSessions = new Set<string>()
   private readonly pendingPermissions = new Map<string /* sessionId */, Set<AbortController>>()
+  private readonly sessionsInFlight = new Map<string /* roomId */, Promise<string>>()
 
-  private readonly resolvePermission?: (request: RequestPermissionRequest, signal: AbortSignal) => Promise<string | undefined>
+  private readonly resolvePermission?: (request: ACPPermissionRequest, signal: AbortSignal) => Promise<string | undefined>
   private readonly resolveSessionMode?: (request: ACPModeRequest, signal: AbortSignal) => Promise<string | undefined>
   private readonly permissionTimeoutMs: number
   private readonly logger: Logger
@@ -208,11 +218,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     }
 
     const sessionId = await this.getOrCreateSession(context.roomId, connection)
-    client.resetSession(sessionId)
-    client.setPermissionHandler(
-      sessionId,
-      (params) => this.handlePermissionRequest(tools, context.roomId, params),
-    )
+    client.resetChunks(sessionId)
 
     // The platform stores a typed mention as @[[participant_id]]; nothing else
     // in ACP resolves that back to a handle, so the agent reads a bare id as
@@ -261,14 +267,13 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   }
 
   public async onCleanup(roomId: string): Promise<void> {
-    const sessionId = this.roomToSession.get(roomId)
-    this.roomToSession.delete(roomId)
+    const sessionId = this.unlinkRoom(roomId)
     this.roomTools.delete(roomId)
+    this.sessionsInFlight.delete(roomId)
     if (sessionId) {
       this.activeSessions.delete(sessionId)
       this.bootstrappedSessions.delete(sessionId)
-      this.client?.setPermissionHandler(sessionId, undefined)
-      this.cancelPendingPermissions(sessionId)
+      this.cancelPendingPermissions(sessionId, "room-closed")
     }
   }
 
@@ -282,8 +287,10 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.activeSessions.clear()
     this.bootstrappedSessions.clear()
     this.roomToSession.clear()
+    this.sessionToRoom.clear()
     this.roomTools.clear()
-    this.cancelAllPendingPermissions()
+    this.sessionsInFlight.clear()
+    this.cancelAllPendingPermissions("adapter-stopped")
 
     this.client = null
     this.connection = null
@@ -304,9 +311,44 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private rehydrate(history: ACPClientSessionState): void {
     for (const [roomId, sessionId] of Object.entries(history.roomToSession)) {
       if (!this.roomToSession.has(roomId)) {
-        this.roomToSession.set(roomId, sessionId)
+        this.linkSession(roomId, sessionId)
       }
     }
+  }
+
+  // The only writer of both session maps, so they cannot drift: replacing a
+  // room's session drops the old session's route, and a session id already
+  // routed to another room is refused rather than silently re-pointed — two
+  // rooms sharing one session id would make its permission requests
+  // unattributable.
+  private linkSession(roomId: string, sessionId: string): void {
+    const routedRoomId = this.sessionToRoom.get(sessionId)
+    if (routedRoomId !== undefined && routedRoomId !== roomId) {
+      this.safeWarn("refusing to route one ACP session to a second room", {
+        sessionId,
+        roomId,
+        routedRoomId,
+      })
+      return
+    }
+
+    const replacedSessionId = this.roomToSession.get(roomId)
+    if (replacedSessionId !== undefined && replacedSessionId !== sessionId) {
+      this.sessionToRoom.delete(replacedSessionId)
+    }
+
+    this.roomToSession.set(roomId, sessionId)
+    this.sessionToRoom.set(sessionId, roomId)
+  }
+
+  private unlinkRoom(roomId: string): string | undefined {
+    const sessionId = this.roomToSession.get(roomId)
+    this.roomToSession.delete(roomId)
+    if (sessionId !== undefined) {
+      this.sessionToRoom.delete(sessionId)
+    }
+
+    return sessionId
   }
 
   private async ensureConnection(): Promise<ClientSideConnection> {
@@ -332,7 +374,9 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
   private async spawnConnection(): Promise<ClientSideConnection> {
     const acp = await acpModule.get()
-    const client = new BandACPClient()
+    // Handed its permission handler here, one line before the process it will
+    // serve even exists — no session can out-race its own route.
+    const client = new BandACPClient((params) => this.routePermissionRequest(params))
     const handle = await this.connectionFactory(client as Client, {
       command: this.command,
       cwd: this.cwd,
@@ -361,6 +405,9 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         this.connectionHandle = null
         this.connectionState = null
         this.activeSessions.clear()
+        // Nothing can answer these any more: the agent that asked is gone.
+        // Without this they'd sit on screen for the full permission timeout.
+        this.cancelAllPendingPermissions("connection-lost")
       }
     })
 
@@ -377,17 +424,40 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       return existingSessionId
     }
 
+    // A single room really can re-enter here concurrently — `Execution` runs a
+    // bootstrap message alongside the sync loop it starts in its constructor —
+    // and two establishments for one room would leave the loser's session
+    // routed nowhere. Same shape as `ensureConnection`'s `spawnPromise`.
+    const inFlight = this.sessionsInFlight.get(roomId)
+    if (inFlight) {
+      return inFlight
+    }
+
+    const establishing = this.establishSession(roomId, connection).finally(() => {
+      this.sessionsInFlight.delete(roomId)
+    })
+    this.sessionsInFlight.set(roomId, establishing)
+    return establishing
+  }
+
+  private async establishSession(
+    roomId: string,
+    connection: ClientSideConnection,
+  ): Promise<string> {
+    const existingSessionId = this.roomToSession.get(roomId)
     const mcpServers = await this.buildSessionMcpServers()
 
     if (existingSessionId) {
       const restored = await this.tryRestoreSession(connection, existingSessionId, mcpServers)
       if (restored.ok) {
-        // Marked active/bootstrapped before the best-effort mode switch below
-        // is awaited: `configureSessionMode` makes a real RPC call, and a
-        // connection drop mid-call clears `activeSessions` (see
+        // Linked and marked active/bootstrapped before the best-effort mode
+        // switch below is awaited: `configureSessionMode` makes a real RPC
+        // call, and a connection drop mid-call clears `activeSessions` (see
         // `spawnConnection`'s `closed.finally()`) — running this after that
         // await would let a stale add silently re-admit a session whose
-        // connection just died.
+        // connection just died, and would leave the session unroutable for
+        // the whole duration of the call.
+        this.linkSession(roomId, existingSessionId)
         this.activeSessions.add(existingSessionId)
         this.bootstrappedSessions.add(existingSessionId)
         await this.configureSessionMode(roomId, existingSessionId, restored.modes, connection)
@@ -401,7 +471,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     })
 
     // Same ordering reason as the restored-session branch above.
-    this.roomToSession.set(roomId, created.sessionId)
+    this.linkSession(roomId, created.sessionId)
     this.activeSessions.add(created.sessionId)
     await this.configureSessionMode(roomId, created.sessionId, created.modes, connection)
     return created.sessionId
@@ -658,6 +728,41 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     ].join("\n")
   }
 
+  // The connection's single permission entry point, and total by
+  // construction: every path resolves, nothing throws, and a request that
+  // can't be attributed to a live room is cancelled *and* warned rather than
+  // silently declined. `activeSessions` is the gate that keeps a dead
+  // session from raising a live prompt — `roomToSession` deliberately
+  // outlives a dropped connection so the session can be restored later.
+  private async routePermissionRequest(
+    params: RequestPermissionRequest,
+  ): Promise<RequestPermissionResponse> {
+    const isActive = this.activeSessions.has(params.sessionId)
+    const roomId = isActive ? this.sessionToRoom.get(params.sessionId) : undefined
+    const tools = roomId === undefined ? undefined : this.roomTools.get(roomId)
+
+    if (roomId === undefined || !tools) {
+      this.safeWarn("cancelling a permission request that maps to no live room", {
+        sessionId: params.sessionId,
+        toolName: params.toolCall?.title,
+        sessionActive: isActive,
+        roomId,
+      })
+      return { outcome: { outcome: "cancelled" } }
+    }
+
+    try {
+      return await this.handlePermissionRequest(tools, roomId, params)
+    } catch (error) {
+      this.safeWarn("permission handling failed; cancelling the request", {
+        sessionId: params.sessionId,
+        roomId,
+        error: String(error),
+      })
+      return { outcome: { outcome: "cancelled" } }
+    }
+  }
+
   private async handlePermissionRequest(
     tools: AdapterToolsProtocol,
     roomId: string,
@@ -694,21 +799,37 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         auto_allowed: autoSelection !== undefined && autoSelection !== null,
       }),
       controller
-        ? this.resolveManually(params.sessionId, params, controller)
+        ? this.resolveManually(roomId, params, controller)
         : Promise.resolve(autoSelection?.optionId),
     ])
 
-    return this.toResponse(chosenId, params.options)
+    return this.toResponse(chosenId, params.options, { roomId, sessionId: params.sessionId })
   }
 
   // `undefined`, or an id absent from this request's own `options` (a buggy
   // or stale caller), both map to `cancelled` — never silently treated as a
   // deny. A real match, reject-kind options included, maps to `selected`.
-  private toResponse(chosenId: string | undefined, options: PermissionOption[]): RequestPermissionResponse {
-    const matched = chosenId !== undefined && options.some((option) => option.optionId === chosenId)
-    return matched
-      ? { outcome: { outcome: "selected", optionId: chosenId } }
-      : { outcome: { outcome: "cancelled" } }
+  private toResponse(
+    chosenId: string | undefined,
+    options: PermissionOption[],
+    context: { roomId: string; sessionId: string },
+  ): RequestPermissionResponse {
+    if (chosenId === undefined) {
+      return { outcome: { outcome: "cancelled" } }
+    }
+
+    if (!options.some((option) => option.optionId === chosenId)) {
+      // Warned, not silent: a consumer whose chosen id never applies looks
+      // exactly like a user who dismissed the prompt.
+      this.safeWarn("resolvePermission chose an option this request does not offer", {
+        ...context,
+        chosenId,
+        optionIds: options.map((option) => option.optionId),
+      })
+      return { outcome: { outcome: "cancelled" } }
+    }
+
+    return { outcome: { outcome: "selected", optionId: chosenId } }
   }
 
   // A caller-supplied `Logger` isn't guaranteed to be synchronous or
@@ -725,28 +846,24 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     }
   }
 
-  // Races the caller-supplied resolver against a timeout and against
-  // `controller`'s own abort signal — aborted externally by
-  // `cancelPendingPermissions`/`cancelAllPendingPermissions` (fired from
-  // `onCleanup`/`stop()` below) when a room or the whole adapter tears down
-  // while this is still pending. `controller` is the same object tracked in
-  // `pendingPermissions` by the caller, so there is exactly one cancellation
-  // channel here, not a second hand-rolled one alongside it.
+  // Races the caller-supplied resolver against `controller`'s abort signal,
+  // which is the request's single termination channel: the timeout below
+  // fires it with `"timeout"`, and `cancelPendingPermissions` /
+  // `cancelAllPendingPermissions` fire it with the reason their caller
+  // supplies. `controller` is the same object tracked in `pendingPermissions`,
+  // so there is exactly one cancellation channel here, not a second
+  // hand-rolled one alongside it.
   private async resolveManually(
-    sessionId: string,
+    roomId: string,
     params: RequestPermissionRequest,
     controller: AbortController,
   ): Promise<string | undefined> {
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const cancelled = new Promise<undefined>((resolve) => {
+    const abandoned = new Promise<undefined>((resolve) => {
       controller.signal.addEventListener("abort", () => resolve(undefined))
     })
+    const timer = setTimeout(() => this.abandon(controller, "timeout"), this.permissionTimeoutMs)
 
     try {
-      const timeout = new Promise<undefined>((resolve) => {
-        timer = setTimeout(() => resolve(undefined), this.permissionTimeoutMs)
-      })
-
       return await Promise.race([
         // `resolvePermission` is caller-supplied; nothing guarantees it's
         // `async` or otherwise well-behaved. `Promise.resolve().then(...)`
@@ -754,19 +871,50 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         // rejected promise, so both land in the `.catch` below rather than
         // escaping this race uncaught.
         Promise.resolve()
-          .then(() => this.resolvePermission!(params, controller.signal))
+          .then(() => this.resolvePermission!({ ...params, roomId }, controller.signal))
+          .then((chosenId) => this.discardLateAnswer(chosenId, controller, roomId, params.sessionId))
           .catch((error) => {
             this.safeWarn("resolvePermission threw; treating as no answer", { error: String(error) })
             return undefined
           }),
-        timeout,
-        cancelled,
+        abandoned,
       ])
     } finally {
       clearTimeout(timer)
-      this.untrackPending(sessionId, controller)
-      controller.abort()
+      this.untrackPending(params.sessionId, controller)
+      // Abort is idempotent, so a request already abandoned keeps the reason
+      // it was abandoned with; only a request that ran to an answer gets
+      // `"settled"`, which is what tells a consumer the two apart.
+      this.abandon(controller, "settled")
     }
+  }
+
+  // An answer that lands after the request was given up on can no longer be
+  // honoured — the response has already gone back to the agent. It is dropped
+  // either way; warning is what makes "my click did nothing" explicable.
+  private discardLateAnswer(
+    chosenId: string | undefined,
+    controller: AbortController,
+    roomId: string,
+    sessionId: string,
+  ): string | undefined {
+    if (!controller.signal.aborted || chosenId === undefined) {
+      return chosenId
+    }
+
+    this.safeWarn("resolvePermission answered after the request was abandoned; discarding", {
+      roomId,
+      sessionId,
+      chosenId,
+      reason: String(controller.signal.reason),
+    })
+    return undefined
+  }
+
+  // The only place a permission's controller is ever aborted, so every
+  // `signal.reason` a consumer can observe comes from the documented union.
+  private abandon(controller: AbortController, reason: ACPPermissionEndReason): void {
+    controller.abort(reason)
   }
 
   private trackPending(sessionId: string, controller: AbortController): void {
@@ -783,15 +931,15 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     }
   }
 
-  private cancelPendingPermissions(sessionId: string): void {
+  private cancelPendingPermissions(sessionId: string, reason: ACPPermissionAbandonReason): void {
     for (const controller of this.pendingPermissions.get(sessionId) ?? []) {
-      controller.abort()
+      this.abandon(controller, reason)
     }
   }
 
-  private cancelAllPendingPermissions(): void {
+  private cancelAllPendingPermissions(reason: ACPPermissionAbandonReason): void {
     for (const sessionId of this.pendingPermissions.keys()) {
-      this.cancelPendingPermissions(sessionId)
+      this.cancelPendingPermissions(sessionId, reason)
     }
   }
 

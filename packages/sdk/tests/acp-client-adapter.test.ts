@@ -563,26 +563,63 @@ describe("ACPClientAdapter", () => {
   })
 
   describe("resolvePermission (manual approval)", () => {
-    // Shared harness: a connection whose `prompt` drives exactly one
-    // `requestPermission` call, scripted with one allow-kind and one
-    // reject-kind option — the shape every case below needs to distinguish
-    // "denied" from "cancelled" and to pick a specific id.
-    function buildHarness(adapterOptions: Partial<ACPClientAdapterOptions> = {}) {
-      let clientHandle: {
-        sessionUpdate: (params: Record<string, unknown>) => Promise<void>;
-        requestPermission: (params: Record<string, unknown>) => Promise<unknown>;
-      } | null = null
+    // One allow-kind and one reject-kind option — the shape every case below
+    // needs to distinguish "denied" from "cancelled" and to pick a specific id.
+    const ASK_OPTIONS = [
+      { kind: "allow_once", name: "Allow once", optionId: "allow" },
+      { kind: "reject_once", name: "Deny", optionId: "deny" },
+    ]
+
+    const CANCELLED = { outcome: { outcome: "cancelled" } }
+    const UNROUTABLE_WARNING = "cancelling a permission request that maps to no live room"
+
+    type Ask = (sessionId: string, toolCallId?: string) => Promise<unknown>
+    type Modes = { currentModeId: string; availableModes: Array<{ id: string; name: string }> }
+
+    function isPermissionEvent(event: { metadata?: Record<string, unknown> }): boolean {
+      return event.metadata?.permission_request === true
+    }
+
+    // Lets a `closed.finally` handler (and any microtask chain behind it) run
+    // before the next assertion, without advancing any clock.
+    function flush(): Promise<void> {
+      return new Promise((resolve) => setImmediate(resolve))
+    }
+
+    // Shared harness: a scriptable subprocess whose `prompt` drives a real
+    // `session/request_permission` round trip, plus the knobs the routing and
+    // abandonment cases need — every spawned connection kept (a reconnect
+    // exposes both generations) and closable on demand, a queue of session
+    // ids, and a restore that can be made to fail.
+    function buildHarness(input: {
+      adapterOptions?: Partial<ACPClientAdapterOptions>;
+      sessionIds?: string[];
+      canRestore?: boolean;
+      restoreFails?: boolean;
+      modes?: Modes;
+      onPrompt?: (turn: { sessionId: string; ask: Ask }) => Promise<void>;
+    } = {}) {
+      const sessionIds = [...(input.sessionIds ?? ["session-1"])]
+      const connections: Array<{ ask: Ask; close: () => void }> = []
       let permissionResult: unknown
 
+      const setSessionMode = vi.fn(async () => ({}))
+      const newSession = vi.fn(async () => ({
+        sessionId: sessionIds.shift() ?? "session-exhausted",
+        ...(input.modes ? { modes: input.modes } : {}),
+      }))
+      const loadSession = vi.fn(async () => {
+        if (input.restoreFails) {
+          throw new Error("the agent no longer holds that session")
+        }
+        return input.modes ? { modes: input.modes } : {}
+      })
+
+      const onPrompt = input.onPrompt ?? (async ({ sessionId, ask }) => {
+        permissionResult = await ask(sessionId)
+      })
       const prompt = vi.fn(async (params: { sessionId: string }) => {
-        permissionResult = await clientHandle?.requestPermission({
-          sessionId: params.sessionId,
-          toolCall: { toolCallId: "call-1", title: "Edit file" },
-          options: [
-            { kind: "allow_once", name: "Allow once", optionId: "allow" },
-            { kind: "reject_once", name: "Deny", optionId: "deny" },
-          ],
-        })
+        await onPrompt({ sessionId: params.sessionId, ask: connections[connections.length - 1].ask })
         return { stopReason: "end_turn" }
       })
 
@@ -594,39 +631,73 @@ describe("ACPClientAdapter", () => {
         // `vi.getTimerCount()` assertions under fake timers).
         enableMcpTools: false,
         connectionFactory: async (client) => {
-          clientHandle = client as typeof clientHandle
           const controller = new AbortController()
+          let markClosed: () => void = () => undefined
+          const closed = new Promise<void>((resolve) => { markClosed = resolve })
+          const close = (): void => {
+            controller.abort()
+            markClosed()
+          }
+
+          connections.push({
+            close,
+            ask: (sessionId, toolCallId = "call-1") => (client as unknown as {
+              requestPermission: (params: Record<string, unknown>) => Promise<unknown>;
+            }).requestPermission({
+              sessionId,
+              toolCall: { toolCallId, title: "Edit file" },
+              options: ASK_OPTIONS,
+            }),
+          })
+
           return {
             connection: {
               signal: controller.signal,
-              closed: new Promise<void>(() => undefined),
+              closed,
               initialize: vi.fn(async () => ({
                 protocolVersion: 1,
-                agentCapabilities: {},
+                agentCapabilities: input.canRestore ? { loadSession: true } : {},
               })),
               authenticate: vi.fn(async () => ({})),
-              loadSession: vi.fn(),
+              loadSession,
               unstable_resumeSession: vi.fn(),
-              newSession: vi.fn(async () => ({ sessionId: "session-1" })),
+              newSession,
+              setSessionMode,
               prompt,
             } as never,
             stop: async () => {
-              controller.abort()
+              close()
             },
           }
         },
-        ...adapterOptions,
+        ...input.adapterOptions,
       })
 
-      return { adapter, getPermissionResult: () => permissionResult }
+      return {
+        adapter,
+        connections,
+        newSession,
+        loadSession,
+        setSessionMode,
+        getPermissionResult: () => permissionResult,
+        // Injects a request over the newest connection, the way a live agent
+        // can at any moment — not only from inside a `prompt` call.
+        ask: (sessionId: string, toolCallId?: string) =>
+          connections[connections.length - 1].ask(sessionId, toolCallId),
+      }
     }
 
-    async function send(adapter: ACPClientAdapter, tools: FakeTools, roomId = "room-1"): Promise<void> {
+    async function send(
+      adapter: ACPClientAdapter,
+      tools: FakeTools,
+      roomId = "room-1",
+      history: Record<string, string> = {},
+    ): Promise<void> {
       await adapter.onStarted("Agent", "desc")
       await adapter.onMessage(
         makeMessage("hi", roomId),
         tools,
-        { roomToSession: {} },
+        { roomToSession: history },
         null,
         null,
         { isSessionBootstrap: true, roomId },
@@ -640,7 +711,9 @@ describe("ACPClientAdapter", () => {
     })
 
     it("(b) resolvePermission resolving an allow-kind id is used", async () => {
-      const { adapter, getPermissionResult } = buildHarness({ resolvePermission: async () => "allow" })
+      const { adapter, getPermissionResult } = buildHarness({
+        adapterOptions: { resolvePermission: async () => "allow" },
+      })
       await send(adapter, new FakeTools())
       expect(getPermissionResult()).toEqual({ outcome: { outcome: "selected", optionId: "allow" } })
     })
@@ -657,19 +730,24 @@ describe("ACPClientAdapter", () => {
         // jumps, and gets scheduled to fire *after* the jump — hanging.
         let permissionRequested: () => void = () => undefined
         const requested = new Promise<void>((resolve) => { permissionRequested = resolve })
+        const signals: AbortSignal[] = []
 
         const { adapter, getPermissionResult } = buildHarness({
-          resolvePermission: async () => {
-            permissionRequested()
-            return new Promise<string | undefined>(() => undefined)
+          adapterOptions: {
+            resolvePermission: async (_request, signal) => {
+              signals.push(signal)
+              permissionRequested()
+              return new Promise<string | undefined>(() => undefined)
+            },
+            permissionTimeoutMs: 1_000,
           },
-          permissionTimeoutMs: 1_000,
         })
         const onMessage = send(adapter, new FakeTools())
         await requested
         await vi.advanceTimersByTimeAsync(1_000)
         await onMessage
-        expect(getPermissionResult()).toEqual({ outcome: { outcome: "cancelled" } })
+        expect(getPermissionResult()).toEqual(CANCELLED)
+        expect(signals[0]?.reason).toBe("timeout")
       } finally {
         vi.useRealTimers()
       }
@@ -678,10 +756,12 @@ describe("ACPClientAdapter", () => {
     it("(d) resolvePermission rejecting falls back to cancelled and is logged, not thrown", async () => {
       const logger = makeLoggerSpy()
       const { adapter, getPermissionResult } = buildHarness({
-        resolvePermission: async () => {
-          throw new Error("host UI call failed")
+        adapterOptions: {
+          resolvePermission: async () => {
+            throw new Error("host UI call failed")
+          },
+          logger,
         },
-        logger,
       })
       await expect(send(adapter, new FakeTools())).resolves.toBeUndefined()
       expect(getPermissionResult()).toEqual({ outcome: { outcome: "cancelled" } })
@@ -695,8 +775,10 @@ describe("ACPClientAdapter", () => {
       vi.useFakeTimers()
       try {
         const { adapter } = buildHarness({
-          resolvePermission: async () => "allow",
-          permissionTimeoutMs: 5_000,
+          adapterOptions: {
+            resolvePermission: async () => "allow",
+            permissionTimeoutMs: 5_000,
+          },
         })
         await send(adapter, new FakeTools())
         expect(vi.getTimerCount()).toBe(0)
@@ -706,27 +788,40 @@ describe("ACPClientAdapter", () => {
     })
 
     it("(f) resolvePermission resolving a reject-kind id is a real deny, not cancelled", async () => {
-      const { adapter, getPermissionResult } = buildHarness({ resolvePermission: async () => "deny" })
+      const { adapter, getPermissionResult } = buildHarness({
+        adapterOptions: { resolvePermission: async () => "deny" },
+      })
       await send(adapter, new FakeTools())
       expect(getPermissionResult()).toEqual({ outcome: { outcome: "selected", optionId: "deny" } })
     })
 
-    it("(g) an id absent from this request's own options falls back to cancelled", async () => {
-      const { adapter, getPermissionResult } = buildHarness({ resolvePermission: async () => "not-a-real-option" })
+    it("(g) an id absent from this request's own options falls back to cancelled, and warns", async () => {
+      const logger = makeLoggerSpy()
+      const { adapter, getPermissionResult } = buildHarness({
+        adapterOptions: { resolvePermission: async () => "not-a-real-option", logger },
+      })
       await send(adapter, new FakeTools())
-      expect(getPermissionResult()).toEqual({ outcome: { outcome: "cancelled" } })
+      expect(getPermissionResult()).toEqual(CANCELLED)
+      expect(logger.warn).toHaveBeenCalledWith(
+        "resolvePermission chose an option this request does not offer",
+        expect.objectContaining({ roomId: "room-1", chosenId: "not-a-real-option" }),
+      )
     })
 
     it("(h) onCleanup(roomId) while a request for that room is pending resolves it cancelled immediately", async () => {
       let permissionRequested: () => void = () => undefined
       const requested = new Promise<void>((resolve) => { permissionRequested = resolve })
+      const signals: AbortSignal[] = []
 
       const { adapter, getPermissionResult } = buildHarness({
-        resolvePermission: async () => {
-          permissionRequested()
-          return new Promise<string | undefined>(() => undefined) // hangs until cleanup cancels it
+        adapterOptions: {
+          resolvePermission: async (_request, signal) => {
+            signals.push(signal)
+            permissionRequested()
+            return new Promise<string | undefined>(() => undefined) // hangs until cleanup cancels it
+          },
+          permissionTimeoutMs: 60_000,
         },
-        permissionTimeoutMs: 60_000,
       })
 
       const onMessage = send(adapter, new FakeTools())
@@ -734,19 +829,24 @@ describe("ACPClientAdapter", () => {
       await adapter.onCleanup("room-1")
       await onMessage
 
-      expect(getPermissionResult()).toEqual({ outcome: { outcome: "cancelled" } })
+      expect(getPermissionResult()).toEqual(CANCELLED)
+      expect(signals[0]?.reason).toBe("room-closed")
     })
 
     it("(h) stop() with a pending request in any room resolves it cancelled immediately", async () => {
       let permissionRequested: () => void = () => undefined
       const requested = new Promise<void>((resolve) => { permissionRequested = resolve })
+      const signals: AbortSignal[] = []
 
       const { adapter, getPermissionResult } = buildHarness({
-        resolvePermission: async () => {
-          permissionRequested()
-          return new Promise<string | undefined>(() => undefined)
+        adapterOptions: {
+          resolvePermission: async (_request, signal) => {
+            signals.push(signal)
+            permissionRequested()
+            return new Promise<string | undefined>(() => undefined)
+          },
+          permissionTimeoutMs: 60_000,
         },
-        permissionTimeoutMs: 60_000,
       })
 
       const onMessage = send(adapter, new FakeTools())
@@ -754,13 +854,16 @@ describe("ACPClientAdapter", () => {
       await adapter.stop()
       await onMessage
 
-      expect(getPermissionResult()).toEqual({ outcome: { outcome: "cancelled" } })
+      expect(getPermissionResult()).toEqual(CANCELLED)
+      expect(signals[0]?.reason).toBe("adapter-stopped")
     })
 
     it("(i) resolvePermission resolving promptly to undefined (a dismissed popup) ⇒ cancelled", async () => {
-      const { adapter, getPermissionResult } = buildHarness({ resolvePermission: async () => undefined })
+      const { adapter, getPermissionResult } = buildHarness({
+        adapterOptions: { resolvePermission: async () => undefined },
+      })
       await send(adapter, new FakeTools())
-      expect(getPermissionResult()).toEqual({ outcome: { outcome: "cancelled" } })
+      expect(getPermissionResult()).toEqual(CANCELLED)
     })
 
     it("(j) the permission-requested event fires before a slow resolver settles, with auto_allowed:false", async () => {
@@ -770,9 +873,11 @@ describe("ACPClientAdapter", () => {
       const pending = new Promise<string | undefined>((resolve) => { releasePermission = resolve })
 
       const { adapter } = buildHarness({
-        resolvePermission: async () => {
-          permissionRequested()
-          return pending
+        adapterOptions: {
+          resolvePermission: async () => {
+            permissionRequested()
+            return pending
+          },
         },
       })
 
@@ -802,12 +907,14 @@ describe("ACPClientAdapter", () => {
 
     it("(l) resolvePermission throwing synchronously still falls back to cancelled, not an uncaught throw", async () => {
       const { adapter, getPermissionResult } = buildHarness({
-        resolvePermission: () => {
-          throw new Error("sync boom")
+        adapterOptions: {
+          resolvePermission: () => {
+            throw new Error("sync boom")
+          },
         },
       })
       await expect(send(adapter, new FakeTools())).resolves.toBeUndefined()
-      expect(getPermissionResult()).toEqual({ outcome: { outcome: "cancelled" } })
+      expect(getPermissionResult()).toEqual(CANCELLED)
     })
 
     it("(m) onCleanup fired while the permission-requested event is still in flight still cancels promptly", async () => {
@@ -836,12 +943,14 @@ describe("ACPClientAdapter", () => {
       }
 
       const { adapter, getPermissionResult } = buildHarness({
-        // Never actually invoked in this test — onCleanup below cancels the
-        // request before resolveManually's race would ever call it — kept
-        // async-and-hanging only so a regression (the old, buggy ordering)
-        // fails by timing out rather than by a misleading assertion error.
-        resolvePermission: async () => new Promise<string | undefined>(() => undefined),
-        permissionTimeoutMs: 60_000,
+        adapterOptions: {
+          // Never actually invoked in this test — onCleanup below cancels the
+          // request before resolveManually's race would ever call it — kept
+          // async-and-hanging only so a regression (the old, buggy ordering)
+          // fails by timing out rather than by a misleading assertion error.
+          resolvePermission: async () => new Promise<string | undefined>(() => undefined),
+          permissionTimeoutMs: 60_000,
+        },
       })
 
       const onMessage = send(adapter, new DelayedTools())
@@ -850,7 +959,302 @@ describe("ACPClientAdapter", () => {
       releaseSendEvent()
       await onMessage
 
-      expect(getPermissionResult()).toEqual({ outcome: { outcome: "cancelled" } })
+      expect(getPermissionResult()).toEqual(CANCELLED)
+    })
+
+    it("(n) an answered request reads as settled, not as abandoned", async () => {
+      const signals: AbortSignal[] = []
+      const { adapter, getPermissionResult } = buildHarness({
+        adapterOptions: {
+          resolvePermission: async (_request, signal) => {
+            signals.push(signal)
+            return "allow"
+          },
+        },
+      })
+
+      await send(adapter, new FakeTools())
+
+      expect(getPermissionResult()).toEqual({ outcome: { outcome: "selected", optionId: "allow" } })
+      expect(signals[0]?.reason).toBe("settled")
+    })
+
+    it("(o) an answer arriving after the request was abandoned is discarded and warned about", async () => {
+      const logger = makeLoggerSpy()
+      let answer: (optionId: string) => void = () => undefined
+      const answered = new Promise<string>((resolve) => { answer = resolve })
+      let permissionRequested: () => void = () => undefined
+      const requested = new Promise<void>((resolve) => { permissionRequested = resolve })
+
+      const { adapter, getPermissionResult } = buildHarness({
+        adapterOptions: {
+          logger,
+          resolvePermission: async () => {
+            permissionRequested()
+            return answered
+          },
+          permissionTimeoutMs: 60_000,
+        },
+      })
+
+      const onMessage = send(adapter, new FakeTools())
+      await requested
+      await adapter.onCleanup("room-1")
+      answer("allow")
+      await onMessage
+      await flush()
+
+      expect(getPermissionResult()).toEqual(CANCELLED)
+      expect(logger.warn).toHaveBeenCalledWith(
+        "resolvePermission answered after the request was abandoned; discarding",
+        expect.objectContaining({ roomId: "room-1", chosenId: "allow", reason: "room-closed" }),
+      )
+    })
+
+    const ASK_MODES: Modes = {
+      currentModeId: "auto",
+      availableModes: [{ id: "auto", name: "auto" }, { id: "ask", name: "ask" }],
+    }
+
+    it("(p) routes a request that arrives before the turn's prompt, on a restored session", async () => {
+      // The exact window the per-turn handler registration used to leave
+      // open: the session already exists in the agent and the mode RPC is
+      // still in flight, so a real `session/request_permission` can land
+      // here. Injecting from inside `resolveSessionMode` reproduces that
+      // moment without reaching into adapter internals.
+      let injected: unknown
+      let ask: Ask = async () => undefined
+
+      const harness = buildHarness({
+        canRestore: true,
+        modes: ASK_MODES,
+        adapterOptions: {
+          resolvePermission: async () => "allow",
+          resolveSessionMode: async ({ sessionId }) => {
+            injected = await ask(sessionId)
+            return "ask"
+          },
+        },
+        onPrompt: async () => undefined,
+      })
+      ask = harness.ask
+
+      await send(harness.adapter, new FakeTools(), "room-1", { "room-1": "session-restored" })
+
+      expect(injected).toEqual({ outcome: { outcome: "selected", optionId: "allow" } })
+      expect(harness.setSessionMode).toHaveBeenCalledWith({ sessionId: "session-restored", modeId: "ask" })
+    })
+
+    it("(q) cancels and warns about a request for a session it has never seen", async () => {
+      const logger = makeLoggerSpy()
+      const resolvePermission = vi.fn(async () => "allow")
+      const harness = buildHarness({ adapterOptions: { logger, resolvePermission } })
+
+      await send(harness.adapter, new FakeTools())
+      resolvePermission.mockClear()
+
+      expect(await harness.ask("session-nobody-knows")).toEqual(CANCELLED)
+      expect(resolvePermission).not.toHaveBeenCalled()
+      expect(logger.warn).toHaveBeenCalledWith(
+        UNROUTABLE_WARNING,
+        expect.objectContaining({ sessionId: "session-nobody-knows", sessionActive: false }),
+      )
+    })
+
+    it("(r) refuses a request on a session whose connection dropped, without prompting anyone", async () => {
+      const logger = makeLoggerSpy()
+      const resolvePermission = vi.fn(async () => "allow")
+      const harness = buildHarness({ adapterOptions: { logger, resolvePermission } })
+
+      const tools = new FakeTools()
+      await send(harness.adapter, tools)
+      resolvePermission.mockClear()
+      const eventsBefore = tools.events.length
+
+      harness.connections[0].close()
+      await flush()
+
+      expect(await harness.ask("session-1")).toEqual(CANCELLED)
+      expect(resolvePermission).not.toHaveBeenCalled()
+      expect(tools.events).toHaveLength(eventsBefore)
+      expect(logger.warn).toHaveBeenCalledWith(
+        UNROUTABLE_WARNING,
+        expect.objectContaining({ sessionId: "session-1", sessionActive: false }),
+      )
+    })
+
+    it("(s) stops routing a room's previous session id once it has been replaced", async () => {
+      const harness = buildHarness({
+        sessionIds: ["session-1", "session-2"],
+        adapterOptions: { resolvePermission: async () => "allow" },
+      })
+
+      const tools = new FakeTools()
+      await send(harness.adapter, tools)
+      harness.connections[0].close()
+      await flush()
+      await send(harness.adapter, tools)
+
+      expect(harness.newSession).toHaveBeenCalledTimes(2)
+      expect(await harness.ask("session-2")).toEqual({ outcome: { outcome: "selected", optionId: "allow" } })
+      expect(await harness.ask("session-1")).toEqual(CANCELLED)
+    })
+
+    it("(t) gives each room its own tools and roomId, on one shared connection", async () => {
+      const seen: Array<{ roomId: string; sessionId: string }> = []
+      const harness = buildHarness({
+        sessionIds: ["session-a", "session-b"],
+        adapterOptions: {
+          resolvePermission: async (request) => {
+            seen.push({ roomId: request.roomId, sessionId: request.sessionId })
+            return "allow"
+          },
+        },
+      })
+
+      const roomA = new FakeTools()
+      const roomB = new FakeTools()
+      await send(harness.adapter, roomA, "room-a")
+      await send(harness.adapter, roomB, "room-b")
+
+      expect(harness.connections).toHaveLength(1)
+      expect(seen).toEqual([
+        { roomId: "room-a", sessionId: "session-a" },
+        { roomId: "room-b", sessionId: "session-b" },
+      ])
+      expect(roomA.events.filter(isPermissionEvent)).toHaveLength(1)
+      expect(roomB.events.filter(isPermissionEvent)).toHaveLength(1)
+    })
+
+    it("(u) refuses to route one restored session id to a second room", async () => {
+      const logger = makeLoggerSpy()
+      const harness = buildHarness({
+        canRestore: true,
+        adapterOptions: { logger, resolvePermission: async () => "allow" },
+      })
+
+      const tools = new FakeTools()
+      await send(harness.adapter, tools, "room-1", {
+        "room-1": "shared-session",
+        "room-2": "shared-session",
+      })
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        "refusing to route one ACP session to a second room",
+        expect.objectContaining({ sessionId: "shared-session", roomId: "room-2", routedRoomId: "room-1" }),
+      )
+      // The room that got there first keeps the route; nothing is re-pointed.
+      expect(await harness.ask("shared-session")).toEqual({ outcome: { outcome: "selected", optionId: "allow" } })
+      expect(tools.events.filter(isPermissionEvent)).toHaveLength(2)
+    })
+
+    it("(v) establishes one session when a room's first two turns run concurrently", async () => {
+      const harness = buildHarness({
+        sessionIds: ["session-1", "session-2"],
+        adapterOptions: { resolvePermission: async () => "allow" },
+      })
+
+      await harness.adapter.onStarted("Agent", "desc")
+      const tools = new FakeTools()
+      const turn = (): Promise<void> => harness.adapter.onMessage(
+        makeMessage("hi", "room-1"),
+        tools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-1" },
+      )
+      await Promise.all([turn(), turn()])
+
+      expect(harness.newSession).toHaveBeenCalledTimes(1)
+      expect(await harness.ask("session-1")).toEqual({ outcome: { outcome: "selected", optionId: "allow" } })
+    })
+
+    it("(w) keeps two rooms answering their own permissions across approve, deny, a drop, and a reconnect", async () => {
+      // Deliberately on real timers with a long permission timeout: nothing
+      // here may depend on a clock advancing, so a request that stops being
+      // answered promptly fails this test by exhausting the test timeout.
+      const logger = makeLoggerSpy()
+      const script = ["allow", "deny", "drop", "allow", "allow"]
+      const resolvedRooms: string[] = []
+      const outcomes: unknown[] = []
+      const droppedSignals: AbortSignal[] = []
+      let dropConnection: () => void = () => undefined
+      let injectDuringModeSetup: (() => Promise<void>) | null = null
+      let injectedOnLiveSession: unknown
+      let injectedOnDeadSession: unknown
+
+      const harness = buildHarness({
+        sessionIds: ["session-a1", "session-b1", "session-a2"],
+        canRestore: true,
+        restoreFails: true,
+        modes: ASK_MODES,
+        adapterOptions: {
+          logger,
+          permissionTimeoutMs: 60_000,
+          resolveSessionMode: async () => {
+            const inject = injectDuringModeSetup
+            injectDuringModeSetup = null
+            await inject?.()
+            return "ask"
+          },
+          resolvePermission: async (request, signal) => {
+            resolvedRooms.push(request.roomId)
+            const step = script.shift()
+            if (step !== "drop") {
+              return step
+            }
+
+            droppedSignals.push(signal)
+            dropConnection()
+            return new Promise<string | undefined>(() => undefined)
+          },
+        },
+        onPrompt: async ({ sessionId, ask }) => {
+          outcomes.push(await ask(sessionId))
+        },
+      })
+      dropConnection = () => harness.connections[0].close()
+
+      const roomA = new FakeTools()
+      const roomB = new FakeTools()
+
+      await send(harness.adapter, roomA, "room-a")
+      await send(harness.adapter, roomB, "room-b")
+      await send(harness.adapter, roomA, "room-a")
+      await flush()
+
+      injectDuringModeSetup = async () => {
+        injectedOnLiveSession = await harness.ask("session-a2")
+        injectedOnDeadSession = await harness.ask("session-a1")
+      }
+      await send(harness.adapter, roomA, "room-a")
+
+      expect(outcomes).toEqual([
+        { outcome: { outcome: "selected", optionId: "allow" } },
+        { outcome: { outcome: "selected", optionId: "deny" } },
+        CANCELLED,
+        { outcome: { outcome: "selected", optionId: "allow" } },
+      ])
+      expect(droppedSignals[0]?.reason).toBe("connection-lost")
+
+      // The reconnect: restore is refused by the agent, so a fresh session
+      // replaces the dead one and is configured before its first prompt.
+      expect(harness.loadSession).toHaveBeenCalledTimes(1)
+      expect(harness.newSession).toHaveBeenCalledTimes(3)
+      expect(harness.setSessionMode).toHaveBeenCalledWith({ sessionId: "session-a2", modeId: "ask" })
+      expect(injectedOnLiveSession).toEqual({ outcome: { outcome: "selected", optionId: "allow" } })
+      expect(injectedOnDeadSession).toEqual(CANCELLED)
+      expect(logger.warn).toHaveBeenCalledWith(
+        UNROUTABLE_WARNING,
+        expect.objectContaining({ sessionId: "session-a1" }),
+      )
+
+      // Isolation: every request was attributed to the room that owns its
+      // session, and room B never saw one of room A's.
+      expect(resolvedRooms).toEqual(["room-a", "room-b", "room-a", "room-a", "room-a"])
+      expect(roomA.events.filter(isPermissionEvent)).toHaveLength(4)
+      expect(roomB.events.filter(isPermissionEvent)).toHaveLength(1)
     })
   })
 
