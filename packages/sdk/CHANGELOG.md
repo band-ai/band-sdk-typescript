@@ -1,6 +1,13 @@
 # Changelog
 
 
+## [0.3.2](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.3.1...sdk-v0.3.2) (2026-09-08)
+
+
+### Bug Fixes
+
+* **adapters:** Register the ACP permission handler once per connection ([#185](https://github.com/band-ai/band-sdk-typescript/issues/185)) ([f1069b3](https://github.com/band-ai/band-sdk-typescript/commit/f1069b3ac95cd11b5391766edcf221712a84375b))
+
 ## [0.3.1](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.3.0...sdk-v0.3.1) (2026-09-07)
 
 
