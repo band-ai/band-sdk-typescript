@@ -13,10 +13,19 @@ import type {
 import { buildStatusEvent } from "./statusEvent";
 import { asNonEmptyString, asOptionalRecord, asString } from "../shared/coercion";
 import { FAILURE_METADATA_KEY } from "../../contracts/protocols";
-import { SENSITIVE_KEY_TERMS } from "../../core/logger";
+import { SENSITIVE_KEY_TERMS } from "../../core/sensitiveTerms";
 
 /** This gateway's `AgentFailure.provider` identity. */
 const PROVIDER = "a2a-gateway";
+
+// Compiled once at module load, not per call: this fires on every gateway
+// failure. Matches key=value/key:value credentials in free-form error text —
+// see `SENSITIVE_KEY_TERMS`'s doc comment for why this needs its own shape
+// rather than sharing a compiled regex with `logger.ts`'s isolated-key match.
+const SENSITIVE_VALUE_PATTERN = new RegExp(
+  `(${SENSITIVE_KEY_TERMS})"?\\s*[:=]\\s*"?(?:[A-Za-z][\\w-]*\\s+)?[^\\s,;"]+`,
+  "gi",
+);
 
 interface ExpressAppLike {
   use: (...args: unknown[]) => void;
@@ -666,10 +675,7 @@ export function sanitizeGatewayErrorMessage(error: unknown): string {
   // the `[:=]` match and the whole credential survives unredacted.
   const withBearerRedaction = trimmed
     .replace(/Bearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
-    .replace(
-      new RegExp(`(${SENSITIVE_KEY_TERMS})"?\\s*[:=]\\s*"?(?:[A-Za-z][\\w-]*\\s+)?[^\\s,;"]+`, "gi"),
-      "$1=[REDACTED]",
-    );
+    .replace(SENSITIVE_VALUE_PATTERN, "$1=[REDACTED]");
 
   const maxLength = 240;
   if (withBearerRedaction.length <= maxLength) {

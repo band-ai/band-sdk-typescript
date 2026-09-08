@@ -2022,8 +2022,9 @@ describe("ACPClientAdapter", () => {
 
     it("does not surface an unhandled rejection when the logger's own warn() is async and rejects", async () => {
       // `Logger.warn` is typed to return `void`, but TS's void-return
-      // bivariance lets an `async` implementation satisfy it — safeWarn's
-      // try/catch alone would only catch a synchronous throw, not this.
+      // bivariance lets an `async` implementation satisfy it — a bare
+      // try/catch around the call alone would only catch a synchronous
+      // throw, not this; `GuardedLogger.emit` guards both.
       // Deliberately a plain function, not `vi.fn()`: vitest's mock wrapper
       // attaches its own handler to track `mock.results`, which incidentally
       // marks the rejection "handled" and would hide a regression here.
@@ -2047,7 +2048,7 @@ describe("ACPClientAdapter", () => {
 
         await expect(send(adapter)).resolves.toBeUndefined()
         // Give the rejected `warn()` promise a turn to surface as an
-        // `unhandledRejection` if safeWarn didn't actually catch it.
+        // `unhandledRejection` if the guard didn't actually catch it.
         await new Promise((resolve) => setImmediate(resolve))
 
         expect(unhandled).toEqual([])

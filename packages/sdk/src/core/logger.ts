@@ -1,3 +1,5 @@
+import { SENSITIVE_KEY_TERMS } from "./sensitiveTerms";
+
 export interface Logger {
   debug(message: string, context?: Record<string, unknown>): void;
   info(message: string, context?: Record<string, unknown>): void;
@@ -8,16 +10,6 @@ export interface Logger {
 const noop = (): void => undefined;
 const REDACTED_VALUE = "[REDACTED]";
 const CIRCULAR_VALUE = "[Circular]";
-
-/**
- * Case-insensitive credential-shaped key names, as raw alternation source
- * rather than a compiled `RegExp`: the only other consumer (the A2A
- * gateway's `sanitizeGatewayErrorMessage`) matches these against free-form
- * error text, not isolated object keys, so it needs a differently-shaped
- * pattern built from the same word list rather than this module's compiled
- * `SENSITIVE_KEY_PATTERN`.
- */
-export const SENSITIVE_KEY_TERMS = "authorization|api[-_]?key|token|secret|password|cookie";
 const SENSITIVE_KEY_PATTERN = new RegExp(`(${SENSITIVE_KEY_TERMS})`, "i");
 
 export class NoopLogger implements Logger {
@@ -80,26 +72,24 @@ class GuardedLogger implements Logger {
     message: string,
     context?: Record<string, unknown>,
   ): void {
-    let result: unknown;
     try {
-      result = this.inner[level](message, context);
+      // `Logger.warn` etc. are typed `void`, but an `async` implementation
+      // still returns a real promise at runtime — typed `unknown` here, not
+      // the declared `void`, so the `instanceof` check below can see it.
+      // Attaching a swallowing catch — rather than trusting every
+      // fire-and-forget call site to do it — is what keeps a rejecting
+      // caller-supplied logger from becoming an unhandled rejection on the
+      // failure path it was reporting. The original promise is still
+      // returned so a caller that wants to await completion can do so; this
+      // attaches an additional, harmless handler rather than replacing it.
+      const result: unknown = this.inner[level](message, context);
+      if (result instanceof Promise) {
+        result.catch(noop);
+      }
+      return result as void;
     } catch {
       // Swallowed deliberately — see resolveLogger.
-      return;
     }
-
-    // `Logger.warn` etc. are typed `void`, but an `async` implementation
-    // still returns a real promise at runtime. Attaching a swallowing catch
-    // here — rather than trusting every fire-and-forget call site to do it —
-    // is what keeps a rejecting caller-supplied logger from becoming an
-    // unhandled rejection on the failure path it was reporting. The original
-    // promise is still returned so a caller like `safeWarn` that wants to
-    // await completion can do so; this attaches an additional, harmless
-    // handler rather than replacing the value.
-    if (result instanceof Promise) {
-      result.catch(() => undefined);
-    }
-    return result as void;
   }
 }
 

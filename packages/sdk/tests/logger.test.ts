@@ -70,11 +70,11 @@ describe("resolveLogger", () => {
 
   it("propagates an async inner logger's real promise, so a caller can still catch its rejection", async () => {
     // `Logger.warn` is typed `void`, but TS's void-return bivariance lets an
-    // `async` implementation satisfy it. A caller like `safeWarn` guards a
-    // rejection by `.catch()`-ing whatever `logger.warn(...)` actually
-    // returns -- if the guard here drops that return value instead of
-    // forwarding it, the rejection has nothing attached to it anywhere and
-    // surfaces as an unhandled rejection instead.
+    // `async` implementation satisfy it. A caller that wants to know about a
+    // rejection guards it by `.catch()`-ing whatever `logger.warn(...)`
+    // actually returns -- if the guard here drops that return value instead
+    // of forwarding it, the rejection has nothing attached to it anywhere
+    // and surfaces as an unhandled rejection instead.
     const inner: Logger = {
       debug: vi.fn(),
       info: vi.fn(),

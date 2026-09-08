@@ -412,7 +412,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     // opened a fresh session for it, and an unconditional roomId-keyed clear
     // here would delete the replacement's mapping instead of this turn's own.
     try {
-      this.cleanupOwnSession(context.roomId, sessionId)
+      this.cleanupOwnSession(context.roomId, sessionId, client)
     } catch (cleanupError) {
       this.logger.warn("ACP session cleanup after turn failure itself failed", { roomId: context.roomId, sessionId, error: cleanupError })
     }
@@ -498,8 +498,16 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
    * `sessionId` — the mapping is the room's single ownership record, so a
    * caller that no longer matches it no longer owns the room and must not
    * clear anything (see `failTurn`'s use, the reason this check exists).
+   *
+   * `client` defaults to the live `this.client` for `onCleanup`'s room-level
+   * call, which has no turn to have captured one from — but `failTurn`
+   * passes the exact client its turn established its session against, for
+   * the same reason `flushChunks` does: a reconnect between then and now may
+   * already have replaced `this.client`, and resetting the wrong instance's
+   * session state would silently no-op instead of releasing this session's
+   * buffered chunks and permission handler.
    */
-  private cleanupOwnSession(roomId: string, sessionId: string): void {
+  private cleanupOwnSession(roomId: string, sessionId: string, client: BandACPClient | null = this.client): void {
     if (this.roomToSession.get(roomId) !== sessionId) {
       return
     }
@@ -511,7 +519,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     // handler. The chunks matter now that a failed turn cleans up its room
     // rather than stopping the adapter: the client survives that, and a
     // session no room can reach again would hold its output forever.
-    this.client?.resetSession(sessionId)
+    client?.resetSession(sessionId)
     this.cancelPendingPermissions(sessionId)
   }
 
@@ -750,7 +758,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     if (!availableModes.some((mode) => mode?.id === selectedModeId)) {
       // Warned, not silent: otherwise a caller-selected mode id silently
       // failing to apply has no signal at all.
-      this.safeWarn("resolveSessionMode selected a mode id this session does not advertise", {
+      this.logger.warn("resolveSessionMode selected a mode id this session does not advertise", {
         sessionId,
         selectedModeId,
         availableModeIds: availableModes.map((mode) => mode?.id),
@@ -765,7 +773,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         `setSessionMode did not respond within ${SET_SESSION_MODE_TIMEOUT_MS}ms`,
       )
     } catch (error) {
-      this.safeWarn("failed to switch session into the selected mode", {
+      this.logger.warn("failed to switch session into the selected mode", {
         sessionId,
         selectedModeId,
         error: String(error),
@@ -791,7 +799,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       })
       return await Promise.race([
         Promise.resolve().then(() => resolver(controller.signal)).catch((error) => {
-          this.safeWarn("resolveSessionMode threw; preserving the harness default", { error: String(error) })
+          this.logger.warn("resolveSessionMode threw; preserving the harness default", { error: String(error) })
           return undefined
         }),
         timeout,
@@ -1016,20 +1024,6 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       : { outcome: { outcome: "cancelled" } }
   }
 
-  // A caller-supplied `Logger` isn't guaranteed to be synchronous or
-  // non-throwing. Every best-effort warning in this file routes through here
-  // so one failing sink — a synchronous throw, or an `async` implementation
-  // rejecting (the `Logger` interface's `void` return type permits either;
-  // a bare try/catch only ever catches the former) — can't turn a warning
-  // into an unhandled rejection in its place.
-  private safeWarn(message: string, context?: Record<string, unknown>): void {
-    try {
-      Promise.resolve(this.logger.warn(message, context)).catch(() => undefined)
-    } catch {
-      // ignore — see comment above
-    }
-  }
-
   // Races the caller-supplied resolver against a timeout and against
   // `controller`'s own abort signal — aborted externally by
   // `cancelPendingPermissions`/`cancelAllPendingPermissions` (fired from
@@ -1061,7 +1055,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         Promise.resolve()
           .then(() => this.resolvePermission!(params, controller.signal))
           .catch((error) => {
-            this.safeWarn("resolvePermission threw; treating as no answer", { error: String(error) })
+            this.logger.warn("resolvePermission threw; treating as no answer", { error: String(error) })
             return undefined
           }),
         timeout,
