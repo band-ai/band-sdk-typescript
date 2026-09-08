@@ -1,6 +1,31 @@
 # Changelog
 
 
+## [0.3.1](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.3.0...sdk-v0.3.1) (2026-09-07)
+
+
+### Features
+
+* **acp:** configure advertised session modes ([#179](https://github.com/band-ai/band-sdk-typescript/issues/179)) ([a793110](https://github.com/band-ai/band-sdk-typescript/commit/a7931103476fa461b41b5fdc20be5ac3f41b7b58))
+
+## [0.3.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.2.1...sdk-v0.3.0) (2026-09-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* linear_thenvoi_bridge/linear_thenvoi_transport are no longer recognized as config-key aliases, and LINEAR_THENVOI_* env vars no longer fall back for the Linear bridge example. Use linear_band_bridge and LINEAR_BAND_* instead.
+
+### Features
+
+* **runtime:** integrate RoomRoster into the TypeScript room lifecycle ([#177](https://github.com/band-ai/band-sdk-typescript/issues/177)) ([aa3a5f0](https://github.com/band-ai/band-sdk-typescript/commit/aa3a5f0d0378ead7b0c3aa823f525abe857d735e))
+
+
+### Bug Fixes
+
+* **adapters:** switch a session into its requested permission mode ([#181](https://github.com/band-ai/band-sdk-typescript/issues/181)) ([107de93](https://github.com/band-ai/band-sdk-typescript/commit/107de937002ae6b64acb3993d1232724ad605cd9))
+* remove legacy Thenvoi config-key and env-var fallbacks from the Linear bridge example ([#175](https://github.com/band-ai/band-sdk-typescript/issues/175)) ([b28e799](https://github.com/band-ai/band-sdk-typescript/commit/b28e7999f4d7231e73a4456c2e99d2e8eeb18b39))
+* **sdk:** stabilize ACP relay, prompting, and room context ([#171](https://github.com/band-ai/band-sdk-typescript/issues/171)) ([d3cb29a](https://github.com/band-ai/band-sdk-typescript/commit/d3cb29a83938ebeb8f51cf885e3f4986adb5ab1c))
+
 ## [0.2.1](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.2.0...sdk-v0.2.1) (2026-09-03)
 
 

@@ -11,6 +11,8 @@ import type {
   PromptResponse,
   RequestPermissionRequest,
   RequestPermissionResponse,
+  SessionMode,
+  SessionModeState,
 } from "@agentclientprotocol/sdk";
 import { AgentFailure } from "@band-ai/band-sdk-core";
 
@@ -26,6 +28,7 @@ import { asErrorMessage } from "../shared/coercion";
 import { deliverReply } from "../shared/deliveryFailedError";
 import { FAILURE_CODE_TIMEOUT, agentFailure, reportTurnFailure } from "../shared/providerFailure";
 import { systemUpdateParts } from "../shared/conversationPrompt";
+import { withTimeout } from "../shared/withTimeout";
 import { isBlankEventContent } from "../../contracts/chatEvents";
 import type { PlatformMessage } from "../../runtime/types";
 import type { McpToolRegistration } from "../../mcp/registrations";
@@ -73,6 +76,21 @@ const DEFAULT_TURN_TIMEOUT_MS = 60 * 60_000;
 // immediately instead. Shared by every `setTimeout`-backed timeout below.
 const MAX_SETTIMEOUT_DELAY_MS = 2_147_483_647;
 
+// The installed ACP SDK's `ClientSideConnection#sendRequest` has no timeout
+// of its own — it waits forever for a matching response id — so an RPC that
+// isn't waiting on a human (unlike `permissionTimeoutMs` above) still needs
+// its own bound. Order-of-magnitude match for `OpencodeAdapter`'s own
+// subprocess-handshake timeout: this is the same kind of wait, a local agent
+// process acknowledging an administrative call, not doing model inference.
+const SET_SESSION_MODE_TIMEOUT_MS = 10_000;
+
+export interface ACPModeRequest {
+  roomId: string;
+  sessionId: string;
+  currentModeId: string;
+  modes: readonly SessionMode[];
+}
+
 export interface ACPClientAdapterOptions {
   command: string | string[];
   cwd?: string;
@@ -99,6 +117,15 @@ export interface ACPClientAdapterOptions {
   // is unconditional: every turn is raced against it. Defaults to
   // `DEFAULT_TURN_TIMEOUT_MS`.
   turnTimeoutMs?: number;
+  // ACP advertises session modes once a session is (re)established. This
+  // callback receives that harness-owned catalog and may select one before
+  // the session's first prompt. Omit it to preserve the harness's advertised
+  // current mode. Applied via ACP's `session/set_mode`; ignored if the
+  // resolved id isn't advertised. Best-effort and one-time per session: a
+  // failed switch only logs a warning, and an agent that later changes mode
+  // on its own (ACP's `current_mode_update`) is neither tracked nor
+  // re-asserted.
+  resolveSessionMode?: (request: ACPModeRequest, signal: AbortSignal) => Promise<string | undefined>;
   logger?: Logger;
 }
 
@@ -123,6 +150,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private readonly pendingPermissions = new Map<string /* sessionId */, Set<AbortController>>()
 
   private readonly resolvePermission?: (request: RequestPermissionRequest, signal: AbortSignal) => Promise<string | undefined>
+  private readonly resolveSessionMode?: (request: ACPModeRequest, signal: AbortSignal) => Promise<string | undefined>
   private readonly permissionTimeoutMs: number
   private readonly turnTimeoutMs: number
   private readonly logger: Logger
@@ -163,13 +191,14 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.connectionFactory = options.connectionFactory ?? createSubprocessConnection
 
     this.resolvePermission = options.resolvePermission
+    this.resolveSessionMode = options.resolveSessionMode
     this.logger = resolveLogger(options.logger)
     this.permissionTimeoutMs = options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
     // Only meaningful when `resolvePermission` is actually set — the
     // auto-allow path never reads it, so an irrelevant/default value here
     // shouldn't reject an otherwise-valid config for a caller not using
     // manual mode at all.
-    if (this.resolvePermission && (!Number.isFinite(this.permissionTimeoutMs) || this.permissionTimeoutMs <= 0)) {
+    if ((this.resolvePermission || this.resolveSessionMode) && (!Number.isFinite(this.permissionTimeoutMs) || this.permissionTimeoutMs <= 0)) {
       throw new ValidationError(`permissionTimeoutMs must be a positive finite number, got ${options.permissionTimeoutMs}`)
     }
     // Same `setTimeout` clamp hazard as turnTimeoutMs below: unlike that field,
@@ -646,9 +675,16 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
     if (existingSessionId) {
       const restored = await this.tryRestoreSession(connection, existingSessionId, mcpServers)
-      if (restored) {
+      if (restored.ok) {
+        // Marked active/bootstrapped before the best-effort mode switch below
+        // is awaited: `configureSessionMode` makes a real RPC call, and a
+        // connection drop mid-call clears `activeSessions` (see
+        // `spawnConnection`'s `closed.finally()`) — running this after that
+        // await would let a stale add silently re-admit a session whose
+        // connection just died.
         this.activeSessions.add(existingSessionId)
         this.bootstrappedSessions.add(existingSessionId)
+        await this.configureSessionMode(roomId, existingSessionId, restored.modes, connection)
         return existingSessionId
       }
     }
@@ -658,39 +694,137 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       mcpServers,
     })
 
+    // Same ordering reason as the restored-session branch above.
     this.roomToSession.set(roomId, created.sessionId)
     this.activeSessions.add(created.sessionId)
+    await this.configureSessionMode(roomId, created.sessionId, created.modes, connection)
     return created.sessionId
+  }
+
+  // Best-effort: never throws, so a mode switch going wrong can't take a
+  // session establishment down with it.
+  private async configureSessionMode(
+    roomId: string,
+    sessionId: string,
+    modes: SessionModeState | null | undefined,
+    connection: ClientSideConnection,
+  ): Promise<void> {
+    if (!this.resolveSessionMode || !modes) {
+      return
+    }
+
+    // Defensive, not just typed: `modes` comes straight off an unvalidated
+    // JSON-RPC response from the spawned agent process (the ACP client does
+    // no runtime schema check), so a non-conforming agent can send
+    // `availableModes` missing, null, or containing a null entry despite the
+    // type guaranteeing an `Array<SessionMode>`.
+    const availableModes = Array.isArray(modes.availableModes) ? modes.availableModes : []
+    if (availableModes.length === 0) {
+      return
+    }
+
+    const selectedModeId = await this.resolveSessionModeManually(
+      (signal) => this.resolveSessionMode!({
+        roomId,
+        sessionId,
+        currentModeId: modes.currentModeId,
+        modes: availableModes,
+      }, signal),
+      connection.signal,
+    )
+    if (!selectedModeId || selectedModeId === modes.currentModeId) {
+      return
+    }
+
+    if (!availableModes.some((mode) => mode?.id === selectedModeId)) {
+      // Warned, not silent: otherwise a caller-selected mode id silently
+      // failing to apply has no signal at all.
+      this.safeWarn("resolveSessionMode selected a mode id this session does not advertise", {
+        sessionId,
+        selectedModeId,
+        availableModeIds: availableModes.map((mode) => mode?.id),
+      })
+      return
+    }
+
+    try {
+      await withTimeout(
+        connection.setSessionMode({ sessionId, modeId: selectedModeId }),
+        SET_SESSION_MODE_TIMEOUT_MS,
+        `setSessionMode did not respond within ${SET_SESSION_MODE_TIMEOUT_MS}ms`,
+      )
+    } catch (error) {
+      this.safeWarn("failed to switch session into the selected mode", {
+        sessionId,
+        selectedModeId,
+        error: String(error),
+      })
+    }
+  }
+
+  private async resolveSessionModeManually(
+    resolver: (signal: AbortSignal) => Promise<string | undefined>,
+    signal: AbortSignal,
+  ): Promise<string | undefined> {
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    signal.addEventListener("abort", abort, { once: true })
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    try {
+      const cancelled = new Promise<undefined>((resolve) => {
+        controller.signal.addEventListener("abort", () => resolve(undefined), { once: true })
+      })
+      const timeout = new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), this.permissionTimeoutMs)
+      })
+      return await Promise.race([
+        Promise.resolve().then(() => resolver(controller.signal)).catch((error) => {
+          this.safeWarn("resolveSessionMode threw; preserving the harness default", { error: String(error) })
+          return undefined
+        }),
+        timeout,
+        cancelled,
+      ])
+    } finally {
+      clearTimeout(timer)
+      signal.removeEventListener("abort", abort)
+      controller.abort()
+    }
   }
 
   private async tryRestoreSession(
     connection: ClientSideConnection,
     sessionId: string,
     mcpServers: McpServer[],
-  ): Promise<boolean> {
-    try {
-      if (this.connectionState?.agentCapabilities?.loadSession) {
-        await connection.loadSession({
-          cwd: this.cwd,
-          mcpServers,
-          sessionId,
-        })
-        return true
-      }
+  ): Promise<{ ok: true; modes?: SessionModeState | null } | { ok: false }> {
+    const capabilities = this.connectionState?.agentCapabilities
+    const params = { cwd: this.cwd, mcpServers, sessionId }
 
-      if (this.connectionState?.agentCapabilities?.sessionCapabilities?.resume) {
-        await connection.unstable_resumeSession({
-          cwd: this.cwd,
-          mcpServers,
-          sessionId,
-        })
-        return true
-      }
-    } catch {
-      return false
+    // `loadSession`/`unstable_resumeSession` share both their params and
+    // their response shape (`{ ...; modes?: SessionModeState | null }`);
+    // resolve which one applies once, then handle the result once.
+    const restore = capabilities?.loadSession
+      ? () => connection.loadSession(params)
+      : capabilities?.sessionCapabilities?.resume
+        ? () => connection.unstable_resumeSession(params)
+        : null
+
+    if (!restore) {
+      return { ok: false }
     }
 
-    return false
+    try {
+      // `?.`: the ACP client doesn't runtime-validate this response, and the
+      // installed SDK's own `unstable_resumeSession` has no fallback for a
+      // nullish resolution the way its `loadSession` does — a restore that
+      // genuinely succeeded must not be miscategorized as failed just
+      // because no mode state came back with it.
+      const restored = await restore()
+      return { ok: true, modes: restored?.modes }
+    } catch {
+      return { ok: false }
+    }
   }
 
   private async buildSessionMcpServers(): Promise<McpServer[]> {
@@ -871,6 +1005,20 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       : { outcome: { outcome: "cancelled" } }
   }
 
+  // A caller-supplied `Logger` isn't guaranteed to be synchronous or
+  // non-throwing. Every best-effort warning in this file routes through here
+  // so one failing sink — a synchronous throw, or an `async` implementation
+  // rejecting (the `Logger` interface's `void` return type permits either;
+  // a bare try/catch only ever catches the former) — can't turn a warning
+  // into an unhandled rejection in its place.
+  private safeWarn(message: string, context?: Record<string, unknown>): void {
+    try {
+      Promise.resolve(this.logger.warn(message, context)).catch(() => undefined)
+    } catch {
+      // ignore — see comment above
+    }
+  }
+
   // Races the caller-supplied resolver against a timeout and against
   // `controller`'s own abort signal — aborted externally by
   // `cancelPendingPermissions`/`cancelAllPendingPermissions` (fired from
@@ -902,7 +1050,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         Promise.resolve()
           .then(() => this.resolvePermission!(params, controller.signal))
           .catch((error) => {
-            this.logger.warn("resolvePermission threw; treating as no answer", { error: String(error) })
+            this.safeWarn("resolvePermission threw; treating as no answer", { error: String(error) })
             return undefined
           }),
         timeout,

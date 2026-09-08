@@ -50,19 +50,19 @@ class GuardedLogger implements Logger {
   public constructor(private readonly inner: Logger) {}
 
   public debug(message: string, context?: Record<string, unknown>): void {
-    this.emit("debug", message, context);
+    return this.emit("debug", message, context);
   }
 
   public info(message: string, context?: Record<string, unknown>): void {
-    this.emit("info", message, context);
+    return this.emit("info", message, context);
   }
 
   public warn(message: string, context?: Record<string, unknown>): void {
-    this.emit("warn", message, context);
+    return this.emit("warn", message, context);
   }
 
   public error(message: string, context?: Record<string, unknown>): void {
-    this.emit("error", message, context);
+    return this.emit("error", message, context);
   }
 
   private emit(
@@ -71,7 +71,13 @@ class GuardedLogger implements Logger {
     context?: Record<string, unknown>,
   ): void {
     try {
-      this.inner[level](message, context);
+      // Returned, not just invoked: `Logger.warn` is typed `void`, but an
+      // `async` implementation still returns a real promise at runtime, and
+      // a caller like `safeWarn` needs that actual value to `.catch()` its
+      // rejection — swallowing it here (as a bare call would) strands that
+      // rejection unhandled instead. This `try` only ever catches a
+      // synchronous throw, per resolveLogger's own doc comment.
+      return this.inner[level](message, context);
     } catch {
       // Swallowed deliberately — see resolveLogger.
     }
