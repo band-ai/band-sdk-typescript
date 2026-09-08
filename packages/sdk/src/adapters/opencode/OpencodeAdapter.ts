@@ -963,6 +963,14 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
           throw new Error("timeout");
         }),
       ]);
+      if (roomState.lastErrorMessage) {
+        // OpenCode's own session.error resolved turnDone the same way
+        // session.idle does (see the event handler), so this is only
+        // reachable here, not via the timeout branch below — handle it as
+        // its own terminal failure rather than falling into the success path.
+        await this.handleSessionError(roomState);
+        return;
+      }
       await this.deliverFallbackText(roomState);
       this.releaseTurnWait(roomState);
     } catch (error) {
@@ -991,8 +999,24 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     }
     roomState.turnTimedOut = true;
     const failure = new AgentFailure(this.provider, "OpenCode timed out before completing the turn.", FAILURE_CODE_TIMEOUT);
+    await this.reportTerminalFailure(roomState, failure);
+  }
+
+  private async handleSessionError(roomState: RoomState): Promise<void> {
+    // OpenCode's session.error is a terminal provider failure exactly like
+    // turnTimeoutMs expiring: flush whatever text the turn produced first
+    // (same as a clean completion would), then fail the turn so
+    // PlatformRuntime retries it — independent of fallbackSendAgentText and
+    // regardless of any partial text, unlike deliverFallbackText's own
+    // best-effort, non-throwing sendFailure for this same message.
+    await this.flushTurnText(roomState);
+    const failure = new AgentFailure(this.provider, roomState.lastErrorMessage ?? "OpenCode reported a session error.");
+    await this.reportTerminalFailure(roomState, failure);
+  }
+
+  private async reportTerminalFailure(roomState: RoomState, failure: AgentFailure): Promise<never> {
     if (roomState.tools) {
-      // Best-effort: the timeout itself is the truth we already know, and
+      // Best-effort: the failure itself is the truth we already know, and
       // failing to report it must not leave the room's turn wait released
       // forever.
       await safeSendFailure(roomState.tools, failure, this.logger, { roomId: roomState.roomId });
@@ -1023,6 +1047,13 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     roomState.pendingQuestion = null;
     roomState.turnDone = null;
     roomState.resolveTurnDone = null;
+    // onCleanup() can race a still-active turn (e.g. the runtime tearing the
+    // room down while startTurn() is mid-flight): resolve any releaseWait a
+    // concurrent startTurn() is still awaiting before dropping its resolver,
+    // or that await — and the turnTask rejection it exists to observe —
+    // hangs/goes unhandled forever instead of falling through to startTurn()'s
+    // own background-completion handler.
+    roomState.resolveReleaseWait?.();
     roomState.releaseWait = null;
     roomState.resolveReleaseWait = null;
     roomState.turnTask = null;
@@ -1046,9 +1077,9 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     roomState.persistedSessionId = roomState.sessionId;
   }
 
-  private async deliverFallbackText(roomState: RoomState): Promise<void> {
+  private async flushTurnText(roomState: RoomState): Promise<boolean> {
     if (!roomState.tools || !this.config.fallbackSendAgentText) {
-      return;
+      return false;
     }
 
     const text = [...roomState.textParts.values()]
@@ -1057,15 +1088,21 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       .join("\n")
       .trim();
 
-    if (text.length > 0) {
-      await deliverReply(roomState.tools, text, roomState.pendingMentions);
-      roomState.pendingMentions = [];
+    if (text.length === 0) {
+      return false;
+    }
+
+    await deliverReply(roomState.tools, text, roomState.pendingMentions);
+    roomState.pendingMentions = [];
+    return true;
+  }
+
+  private async deliverFallbackText(roomState: RoomState): Promise<void> {
+    if (await this.flushTurnText(roomState)) {
       return;
     }
 
-    if (roomState.lastErrorMessage) {
-      await roomState.tools.sendFailure(new AgentFailure(this.provider, roomState.lastErrorMessage));
-      roomState.pendingMentions = [];
+    if (!roomState.tools || !this.config.fallbackSendAgentText) {
       return;
     }
 

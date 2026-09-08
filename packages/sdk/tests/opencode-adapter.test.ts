@@ -445,6 +445,52 @@ describe("OpencodeAdapter", () => {
     );
   });
 
+  it("resolves onMessage instead of hanging when onCleanup fires on a still-active turn, and observes rather than leaves unhandled its later timeout rejection", async () => {
+    // onCleanup() can race a still-active turn (e.g. the runtime tearing the
+    // room down while startTurn() is still awaiting releaseWait). Before the
+    // fix, clearTurnState() discarded resolveReleaseWait without ever calling
+    // it, orphaning that await forever — and once the watchdog later rejected
+    // turnTask, nothing was left observing it: a genuine unhandled rejection.
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const tools = new FakeTools();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as any,
+      mcpBackendFactory: httpMcpBackend(),
+      config: { turnTimeoutMs: 30 },
+      logger,
+    });
+    adapters.push(adapter);
+
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+    const pending = adapter.onMessage(
+      makeMessage("hello"),
+      tools,
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-cleanup-race" },
+    );
+
+    await waitFor(() => client.createdSessions.length === 1);
+    // The turn is active here: promptAsync resolved, but no session.idle/
+    // session.error event has arrived and the watchdog hasn't fired yet.
+    await adapter.onCleanup("room-cleanup-race");
+
+    // Must resolve promptly instead of hanging forever on the now-orphaned
+    // releaseWait this turn is still awaiting.
+    await pending;
+
+    // The watchdog still fires in the background for the cleaned-up room —
+    // its rejection must be observed (logged), not unhandled.
+    await waitFor(() => logger.error.mock.calls.length > 0);
+    expect(logger.error).toHaveBeenCalledWith(
+      "OpenCode turn failed after the request returned",
+      expect.objectContaining({ roomId: "room-cleanup-race" }),
+    );
+  });
+
   it("recreates missing sessions and injects replay history", async () => {
     const tools = new FakeTools();
     const client = new FakeOpencodeClient();
@@ -905,7 +951,7 @@ describe("OpencodeAdapter", () => {
     });
   });
 
-  it("migrates OpenCode's own session.error signal (no text produced) to a generic sendFailure fallback", async () => {
+  it("fails the turn (so PlatformRuntime retries it) on OpenCode's own session.error signal, instead of resolving as if it processed", async () => {
     const tools = new FakeTools();
     const client = new FakeOpencodeClient();
     createdClients.push(client);
@@ -935,13 +981,94 @@ describe("OpencodeAdapter", () => {
       },
     });
 
-    await pending;
+    await expectTurnFailed(pending);
 
     const failureEvent = findFailureEvent(tools);
     expect(failureEvent).toBeDefined();
     expect((failureEvent?.metadata as any)?.failure).toMatchObject({
       provider: "opencode",
       code: null,
+      message: "ProviderError: The model is unavailable.",
+    });
+  });
+
+  it("fails the turn on session.error even when fallbackSendAgentText is disabled, instead of silently dropping the failure", async () => {
+    const tools = new FakeTools();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as any,
+      mcpBackendFactory: httpMcpBackend(),
+      config: { fallbackSendAgentText: false },
+    });
+    adapters.push(adapter);
+
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+    const pending = adapter.onMessage(
+      makeMessage("Trigger a provider-level error"),
+      tools,
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-session-error-no-fallback" },
+    );
+
+    await waitFor(() => client.createdSessions.length === 1);
+    const sessionId = client.createdSessions[0]!;
+    client.eventQueue.push({
+      type: "session.error",
+      properties: {
+        sessionID: sessionId,
+        error: { name: "ProviderError", data: { message: "The model is unavailable." } },
+      },
+    });
+
+    await expectTurnFailed(pending);
+
+    const failureEvent = findFailureEvent(tools);
+    expect((failureEvent?.metadata as any)?.failure).toMatchObject({
+      provider: "opencode",
+      message: "ProviderError: The model is unavailable.",
+    });
+  });
+
+  it("fails the turn on session.error even when partial text streamed first, after delivering that partial text", async () => {
+    const tools = new FakeTools();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as any,
+      mcpBackendFactory: httpMcpBackend(),
+    });
+    adapters.push(adapter);
+
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+    const pending = adapter.onMessage(
+      makeMessage("Trigger a provider-level error after some text"),
+      tools,
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-session-error-partial-text" },
+    );
+
+    await waitFor(() => client.createdSessions.length === 1);
+    const sessionId = client.createdSessions[0]!;
+    emitAssistantText(client, sessionId, "partial progress");
+    client.eventQueue.push({
+      type: "session.error",
+      properties: {
+        sessionID: sessionId,
+        error: { name: "ProviderError", data: { message: "The model is unavailable." } },
+      },
+    });
+
+    await expectTurnFailed(pending);
+
+    expect(tools.messages).toContain("partial progress");
+    const failureEvent = findFailureEvent(tools);
+    expect((failureEvent?.metadata as any)?.failure).toMatchObject({
+      provider: "opencode",
       message: "ProviderError: The model is unavailable.",
     });
   });
