@@ -433,18 +433,31 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       return inFlight
     }
 
-    const establishing = this.establishSession(roomId, connection).finally(() => {
-      this.sessionsInFlight.delete(roomId)
-    })
+    const establishing = this.establishSession(roomId, existingSessionId, connection)
+    // Compare-and-delete: if this room was torn down and re-entered while
+    // `establishing` was still pending, a newer promise is already stored at
+    // `roomId` by the time this one settles. Deleting unconditionally would
+    // evict that newer entry instead of this one, silently defeating the
+    // dedup guard above for the room's very next call.
+    //
+    // `establishing` itself — not this `.finally()`'s own derived promise —
+    // is what's stored and returned below, so its rejection stays that
+    // promise's alone to handle; the `.catch` here only silences the
+    // separate promise `.finally()` produces, which nothing else observes.
+    establishing.finally(() => {
+      if (this.sessionsInFlight.get(roomId) === establishing) {
+        this.sessionsInFlight.delete(roomId)
+      }
+    }).catch(() => undefined)
     this.sessionsInFlight.set(roomId, establishing)
     return establishing
   }
 
   private async establishSession(
     roomId: string,
+    existingSessionId: string | undefined,
     connection: ClientSideConnection,
   ): Promise<string> {
-    const existingSessionId = this.roomToSession.get(roomId)
     const mcpServers = await this.buildSessionMcpServers()
 
     if (existingSessionId) {

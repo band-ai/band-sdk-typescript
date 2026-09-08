@@ -509,6 +509,84 @@ describe("ACPClientAdapter", () => {
     expect(firstServer?.headers[0]?.value).toEqual(secondServer?.headers[0]?.value)
   })
 
+  it("does not let a stale, failed session establishment evict a newer one still in flight for the same room", async () => {
+    // Regression guard: `getOrCreateSession`'s in-flight guard used to clear
+    // whatever promise was stored for a room, not specifically the one that
+    // just settled. A room torn down (`onCleanup`) while its establishment
+    // was still pending, then re-entered before that stale promise resolves,
+    // could have the stale settle's `finally` evict the *newer* promise from
+    // the map — reopening the exact duplicate-establishment race the guard
+    // exists to close.
+    let firstStarted: () => void = () => undefined
+    const firstStartedPromise = new Promise<void>((resolve) => { firstStarted = resolve })
+    let rejectFirst: (error: Error) => void = () => undefined
+    const firstGate = new Promise<{ sessionId: string }>((_resolve, reject) => { rejectFirst = reject })
+
+    let secondStarted: () => void = () => undefined
+    const secondStartedPromise = new Promise<void>((resolve) => { secondStarted = resolve })
+    let resolveSecond: (value: { sessionId: string }) => void = () => undefined
+    const secondGate = new Promise<{ sessionId: string }>((resolve) => { resolveSecond = resolve })
+
+    const newSession = vi.fn()
+      .mockImplementationOnce(async () => { firstStarted(); return firstGate })
+      .mockImplementationOnce(async () => { secondStarted(); return secondGate })
+      .mockImplementation(async () => ({ sessionId: "session-should-not-happen" }))
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      connectionFactory: async () => {
+        const controller = new AbortController()
+        return {
+          connection: {
+            signal: controller.signal,
+            closed: new Promise<void>(() => undefined),
+            initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+            authenticate: vi.fn(async () => ({})),
+            loadSession: vi.fn(),
+            unstable_resumeSession: vi.fn(),
+            newSession,
+            prompt: vi.fn(async () => ({ stopReason: "end_turn" })),
+          } as never,
+          stop: async () => controller.abort(),
+        }
+      },
+    })
+
+    await adapter.onStarted("Agent", "desc")
+    const turn = (): Promise<void> => adapter.onMessage(
+      makeMessage("hi", "room-1"),
+      new FakeTools(),
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-1" },
+    )
+
+    const turn1 = turn()
+    await firstStartedPromise
+    // Tears down the room while turn1's establishment is still pending —
+    // this is what clears the in-flight guard's entry for "room-1" without
+    // touching turn1's own promise.
+    await adapter.onCleanup("room-1")
+
+    const turn2 = turn()
+    await secondStartedPromise // turn2's establishment is now the one stored in the guard.
+
+    rejectFirst(new Error("agent process died mid-establishment"))
+    await expect(turn1).rejects.toThrow("agent process died mid-establishment")
+
+    // While turn2 is still pending, a third turn must reuse it rather than
+    // starting its own — the failure above must not have evicted it.
+    const turn3 = turn()
+
+    resolveSecond({ sessionId: "session-second" })
+    await turn2
+    await turn3
+
+    expect(newSession).toHaveBeenCalledTimes(2)
+  })
+
   it("selects only a mode advertised by the connected ACP harness", async () => {
     const setSessionMode = vi.fn(async () => ({}))
     const resolveSessionMode = vi.fn(async () => "plan")
