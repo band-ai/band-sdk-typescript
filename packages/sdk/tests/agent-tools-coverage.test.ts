@@ -118,6 +118,23 @@ describe("AgentTools coverage", () => {
     expect(adapterTools.listMemories).toBeUndefined();
   });
 
+  // Adapters never touch an AgentTools instance directly — ExecutionContext
+  // hands them getAdapterTools()'s frozen object. A messaging method missing
+  // from it is a TypeError on the exact path that reports failures, and the
+  // cast inside buildAdapterTools means the compiler cannot say so.
+  it("binds every ungated messaging method onto the object adapters actually receive", () => {
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: createFacade(new CoverageRestApi()),
+      capabilities: { peers: false, contacts: false, memory: false },
+    });
+
+    const adapterTools = tools.getAdapterTools() as unknown as Record<string, unknown>;
+    for (const methodName of ["sendMessage", "sendEvent", "sendFailure"]) {
+      expect(typeof adapterTools[methodName], `${methodName} missing from adapter tools`).toBe("function");
+    }
+  });
+
   it("paginates peer lookup when adding a participant by name", async () => {
     const rest = new CoverageRestApi();
     const tools = new AgentTools({

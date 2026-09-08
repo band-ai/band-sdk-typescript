@@ -165,7 +165,7 @@ export class ContactEventHandler {
       return;
     }
 
-    const callbackTools = tools ?? new ContactCallbackTools(this.rest, event.roomId);
+    const callbackTools = tools ?? new ContactCallbackTools(this.rest, event.roomId, this.logger);
 
     try {
       await callback(event, callbackTools);

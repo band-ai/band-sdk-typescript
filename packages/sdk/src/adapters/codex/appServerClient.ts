@@ -2,7 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, type Interface as ReadLineInterface } from "node:readline";
 
 import type { Logger } from "../../core/logger";
-import { NoopLogger } from "../../core/logger";
+import { resolveLogger } from "../../core/logger";
 import type {
   DynamicToolCallResponse,
   InitializeParams,
@@ -90,7 +90,7 @@ export class CodexAppServerStdioClient implements CodexClientLike {
     } else {
       this.env = undefined;
     }
-    this.logger = options?.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options?.logger);
   }
 
   public async connect(): Promise<void> {

@@ -135,6 +135,7 @@ function makePeerMessage(options: {
   roomId?: string;
   senderId?: string;
   metadata?: Record<string, unknown>;
+  messageType?: string;
 }) {
   return {
     ...makeMessage(options.content, options.roomId),
@@ -142,6 +143,7 @@ function makePeerMessage(options: {
     senderType: "Agent",
     senderName: "Peer Agent",
     metadata: options.metadata ?? {},
+    messageType: options.messageType ?? "text",
   };
 }
 
@@ -494,6 +496,8 @@ describe("A2AGatewayAdapter", () => {
       status: { state: "failed" },
     });
     expect(rest.createMessageCalls).toHaveLength(0);
+    const failure = (result.value as { metadata?: { failure?: Record<string, unknown> } }).metadata?.failure;
+    expect(failure).toMatchObject({ provider: "a2a-gateway", code: "peer_not_found" });
   });
 
   it("ignores unrelated participant updates for pending tasks", async () => {
@@ -925,5 +929,230 @@ describe("A2AGatewayAdapter", () => {
     expect(finalEvent.value?.status?.message?.parts?.[0]?.text).toBe(
       "Timed out waiting for a Band peer response.",
     );
+    const failure = (finalEvent.value as { metadata?: { failure?: Record<string, unknown> } }).metadata?.failure;
+    expect(failure).toMatchObject({ provider: "a2a-gateway", code: "timeout" });
+  });
+
+  it("reports structured failure metadata when routing the request into Band fails", async () => {
+    const rest = new FakeRestApi();
+    rest.createChatMessage = async () => {
+      throw new Error("Authorization: Bearer sk-realsecret failed to post");
+    };
+
+    let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
+    const adapter = new A2AGatewayAdapter({
+      bandRest: rest,
+      serverFactory: (options) => {
+        onRequest = options.onRequest;
+        return {
+          start: async () => undefined,
+          stop: async () => undefined,
+        };
+      },
+    });
+
+    await adapter.onStarted("Gateway", "A2A gateway");
+
+    const stream = onRequest!({
+      peerId: "peer-weather",
+      taskId: "task-post-fail",
+      contextId: "ctx-post-fail",
+      message: {
+        kind: "message",
+        messageId: "m-post-fail",
+        role: "user",
+        parts: [{ kind: "text", text: "Hello" }],
+      },
+    });
+
+    const iterator = stream[Symbol.asyncIterator]();
+    await iterator.next(); // working
+    const finalEvent = await iterator.next();
+
+    expect(finalEvent.value?.final).toBe(true);
+    expect(finalEvent.value?.status?.state).toBe("failed");
+    const text = finalEvent.value?.status?.message?.parts?.[0]?.text as string;
+    expect(text).not.toContain("sk-realsecret");
+    const failure = (finalEvent.value as { metadata?: { failure?: Record<string, unknown> } }).metadata?.failure;
+    expect(failure).toMatchObject({ provider: "a2a-gateway" });
+    expect(String(failure?.message)).not.toContain("sk-realsecret");
+  });
+
+  it("redacts a room's own error content before relaying it to the external A2A client", async () => {
+    const rest = new FakeRestApi();
+
+    let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
+    const adapter = new A2AGatewayAdapter({
+      bandRest: rest,
+      serverFactory: (options) => {
+        onRequest = options.onRequest;
+        return {
+          start: async () => undefined,
+          stop: async () => undefined,
+        };
+      },
+      responseTimeoutMs: 2_000,
+    });
+
+    await adapter.onStarted("Gateway", "A2A gateway");
+
+    const stream = onRequest!({
+      peerId: "peer-weather",
+      taskId: "task-relay-error",
+      contextId: "ctx-relay-error",
+      message: {
+        kind: "message",
+        messageId: "m-relay-error",
+        role: "user",
+        parts: [{ kind: "text", text: "Hello" }],
+      },
+    });
+
+    const iterator = stream[Symbol.asyncIterator]();
+    await iterator.next(); // working
+
+    await adapter.onMessage(
+      makePeerMessage({
+        content: "Provider call failed: Authorization: Bearer sk-realsecret",
+        roomId: "room-1",
+        senderId: "peer-weather",
+        messageType: "error",
+      }),
+      new FakeTools(),
+      { contextToRoom: {}, roomParticipants: {} },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    );
+
+    const finalEvent = await iterator.next();
+    const text = finalEvent.value?.status?.message?.parts?.[0]?.text as string;
+    expect(text).toContain("[REDACTED]");
+    expect(text).not.toContain("sk-realsecret");
+  });
+
+  it("forwards the room's own structured failure metadata when relaying its error content", async () => {
+    const rest = new FakeRestApi();
+
+    let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
+    const adapter = new A2AGatewayAdapter({
+      bandRest: rest,
+      serverFactory: (options) => {
+        onRequest = options.onRequest;
+        return {
+          start: async () => undefined,
+          stop: async () => undefined,
+        };
+      },
+      responseTimeoutMs: 2_000,
+    });
+
+    await adapter.onStarted("Gateway", "A2A gateway");
+
+    const stream = onRequest!({
+      peerId: "peer-weather",
+      taskId: "task-relay-failure-metadata",
+      contextId: "ctx-relay-failure-metadata",
+      message: {
+        kind: "message",
+        messageId: "m-relay-failure-metadata",
+        role: "user",
+        parts: [{ kind: "text", text: "Hello" }],
+      },
+    });
+
+    const iterator = stream[Symbol.asyncIterator]();
+    await iterator.next(); // working
+
+    // The shape a room-level sendFailure attaches (toFailureEvent), e.g. from
+    // the room's own adapter reporting a provider failure via `sendFailure`.
+    await adapter.onMessage(
+      makePeerMessage({
+        content: "Provider call failed: quota exceeded",
+        roomId: "room-1",
+        senderId: "peer-weather",
+        messageType: "error",
+        metadata: {
+          failure: { provider: "letta", code: "quota_exceeded", message: "Provider call failed: quota exceeded", detail: null },
+        },
+      }),
+      new FakeTools(),
+      { contextToRoom: {}, roomParticipants: {} },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    );
+
+    const finalEvent = await iterator.next();
+    expect((finalEvent.value as { metadata?: Record<string, unknown> })?.metadata?.failure)
+      .toEqual({ provider: "letta", code: "quota_exceeded", message: "Provider call failed: quota exceeded", detail: null });
+  });
+
+  it("drops a room's raw failure detail and independently re-sanitizes its message when relaying to an external A2A client", async () => {
+    const rest = new FakeRestApi();
+
+    let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
+    const adapter = new A2AGatewayAdapter({
+      bandRest: rest,
+      serverFactory: (options) => {
+        onRequest = options.onRequest;
+        return {
+          start: async () => undefined,
+          stop: async () => undefined,
+        };
+      },
+      responseTimeoutMs: 2_000,
+    });
+
+    await adapter.onStarted("Gateway", "A2A gateway");
+
+    const stream = onRequest!({
+      peerId: "peer-weather",
+      taskId: "task-relay-raw-detail",
+      contextId: "ctx-relay-raw-detail",
+      message: {
+        kind: "message",
+        messageId: "m-relay-raw-detail",
+        role: "user",
+        parts: [{ kind: "text", text: "Hello" }],
+      },
+    });
+
+    const iterator = stream[Symbol.asyncIterator]();
+    await iterator.next(); // working
+
+    // The shape an adapter like OpenCode's own toAgentFailure attaches: a raw
+    // provider HTTP body in `detail`, unredacted -- and a `message` embedding
+    // the same secret in JSON, which this gateway's own sanitizer must catch
+    // independently of whatever the originating adapter already did to it.
+    await adapter.onMessage(
+      makePeerMessage({
+        content: "Provider call failed",
+        roomId: "room-1",
+        senderId: "peer-weather",
+        messageType: "error",
+        metadata: {
+          failure: {
+            provider: "opencode",
+            code: "401",
+            message: 'HTTP 401 {"api_key":"sk-json-secret"}',
+            detail: { api_key: "sk-json-secret" },
+          },
+        },
+      }),
+      new FakeTools(),
+      { contextToRoom: {}, roomParticipants: {} },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    );
+
+    const finalEvent = await iterator.next();
+    const failure = (finalEvent.value as { metadata?: Record<string, unknown> })?.metadata?.failure as
+      | Record<string, unknown>
+      | undefined;
+    expect(failure).toMatchObject({ provider: "opencode", code: "401" });
+    expect(failure?.detail).toBeNull();
+    expect(JSON.stringify(failure)).not.toContain("sk-json-secret");
   });
 });

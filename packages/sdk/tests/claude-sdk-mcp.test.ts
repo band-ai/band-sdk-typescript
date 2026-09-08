@@ -10,6 +10,7 @@ describe("createBandSdkMcpServer", () => {
       capabilities: { peers: false, contacts: false, memory: false },
       sendMessage: async () => ({ ok: true }),
       sendEvent: async () => ({ ok: true }),
+      sendFailure: async () => ({ ok: true }),
       addParticipant: async () => ({ ok: true }),
       removeParticipant: async () => ({ ok: true }),
       getParticipants: async () => [],
@@ -83,6 +84,7 @@ describe("createBandSdkMcpServer", () => {
         capabilities: { peers: false, contacts: false, memory: false },
         sendMessage: async () => ({ ok: true }),
         sendEvent: async () => ({ ok: true }),
+      sendFailure: async () => ({ ok: true }),
         addParticipant: async () => ({ ok: true }),
         removeParticipant: async () => ({ ok: true }),
         getParticipants: async () => {
@@ -168,6 +170,7 @@ describe("createBandSdkMcpServer", () => {
         capabilities: { peers: false, contacts: false, memory: false },
         sendMessage: async () => ({ ok: true }),
         sendEvent: async () => ({ ok: true }),
+      sendFailure: async () => ({ ok: true }),
         addParticipant: async () => ({ ok: true }),
         removeParticipant: async () => ({ ok: true }),
         getParticipants: async () => [

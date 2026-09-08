@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { Logger } from "../../core/logger";
-import { NoopLogger } from "../../core/logger";
+import { resolveLogger } from "../../core/logger";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { MetadataMap, ToolOperationResult } from "../../contracts/dtos";
@@ -14,6 +14,8 @@ import {
   type CustomToolDef,
 } from "../../runtime/tools/customTools";
 import { asErrorMessage, asOptionalRecord } from "../shared/coercion";
+import { reportTurnFailure, agentFailure } from "../shared/providerFailure";
+import { deliverReply } from "../shared/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import {
   GoogleADKHistoryConverter,
@@ -170,6 +172,8 @@ async function loadGoogleAdkSdk(): Promise<GoogleAdkSdkLike> {
 }
 
 export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterToolsProtocol> {
+  protected readonly provider = "google-adk";
+
   private readonly model: string;
   private readonly systemPromptOverride?: string;
   private readonly customSection: string;
@@ -197,7 +201,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
     this.customTools = [...(options.additionalTools ?? [])];
     this.maxHistoryMessages = options.maxHistoryMessages ?? DEFAULT_MAX_HISTORY_MESSAGES;
     this.maxTranscriptChars = options.maxTranscriptChars ?? DEFAULT_MAX_TRANSCRIPT_CHARS;
-    this.logger = options.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options.logger);
     this.historyConverterInstance = historyConverter;
     this.sdkLoader = new LazyAsyncValue({
       load: async () => (options.sdkFactory ? options.sdkFactory() : loadGoogleAdkSdk()),
@@ -228,24 +232,11 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
     contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
-    const sdk = await this.sdkLoader.get();
     if (context.isSessionBootstrap) {
       this.roomHistory.set(context.roomId, [...history]);
     } else if (!this.roomHistory.has(context.roomId)) {
       this.roomHistory.set(context.roomId, []);
     }
-
-    const runner = sdk.createRunner({
-      agent: this.buildAgent(sdk, tools),
-      appName: APP_NAME,
-    });
-    const sessionId = randomUUID();
-    this.roomSessions.set(context.roomId, sessionId);
-    await runner.sessionService.createSession({
-      appName: APP_NAME,
-      userId: context.roomId,
-      sessionId,
-    });
 
     const prompt = this.buildPrompt(
       message,
@@ -256,6 +247,19 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
 
     let finalResponseText = "";
     try {
+      const sdk = await this.sdkLoader.get();
+      const runner = sdk.createRunner({
+        agent: this.buildAgent(sdk, tools),
+        appName: APP_NAME,
+      });
+      const sessionId = randomUUID();
+      this.roomSessions.set(context.roomId, sessionId);
+      await runner.sessionService.createSession({
+        appName: APP_NAME,
+        userId: context.roomId,
+        sessionId,
+      });
+
       for await (const event of runner.runAsync({
         userId: context.roomId,
         sessionId,
@@ -277,8 +281,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
         error,
         roomId: context.roomId,
       });
-      await tools.sendEvent(`Google ADK adapter error: ${messageText}`, "error");
-      throw error instanceof Error ? error : new Error(messageText);
+      await reportTurnFailure(tools, agentFailure(this.provider, messageText));
     }
 
     const nextHistory = this.roomHistory.get(context.roomId) ?? [];
@@ -291,7 +294,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
         role: "model",
         content: finalResponseText,
       });
-      await tools.sendMessage(finalResponseText, [{ id: message.senderId }]);
+      await deliverReply(tools, finalResponseText, [{ id: message.senderId }]);
     }
     this.roomHistory.set(context.roomId, trimRoomHistory(nextHistory, this.maxHistoryMessages));
   }
@@ -427,13 +430,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
 
   private warnOnFailedSend(result: ToolOperationResult, message: string, meta: MetadataMap): void {
     if (result.ok === false) {
-      // A caller-supplied logger that itself throws must not turn this
-      // telemetry failure into a rejection — see AgentTools.sendEvent.
-      try {
-        this.logger.warn(message, meta);
-      } catch {
-        // Swallow deliberately, per the comment above.
-      }
+      this.logger.warn(message, meta);
     }
   }
 }

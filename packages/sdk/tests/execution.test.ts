@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { RecoverableTurnError } from "../src/core/errors";
 import type { PlatformEvent } from "../src/platform/events";
 import { Execution } from "../src/runtime/Execution";
 import type { ExecutionState } from "../src/runtime/ExecutionContext";
@@ -118,6 +119,27 @@ describe("Execution", () => {
     await expect(execution.waitUntilStopped()).rejects.toThrow("boom");
     expect(processed).toEqual(["m1"]);
     await expect(execution.stop()).rejects.toThrow("boom");
+  });
+
+  it("keeps serving the room when one turn fails recoverably", async () => {
+    // The contrast with the test above is the point. A reply that could not be
+    // posted fails its own turn — the message is already marked failed by the
+    // time we get here — and the queued messages behind it are unrelated. Only
+    // a failure the room cannot recover from should cost the room its loop,
+    // and through onFailure, the whole runtime.
+    const { execution, processed } = createExecution({
+      onExecute: async (event) => {
+        if (event.type === "message_created" && event.payload.id === "m1") {
+          throw new RecoverableTurnError("could not post the reply");
+        }
+      },
+    });
+
+    await execution.enqueue(makeEvent("m1"));
+    await execution.enqueue(makeEvent("m2"));
+    await execution.stop();
+
+    expect(processed).toEqual(["m1", "m2"]);
   });
 
   it("sets state to processing then idle around execution", async () => {

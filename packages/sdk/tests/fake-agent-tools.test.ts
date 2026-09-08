@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { AgentFailure } from "@band-ai/band-sdk-core";
 
 import { FakeAgentTools } from "../src/testing/FakeAgentTools";
 
@@ -26,6 +27,30 @@ describe("FakeAgentTools", () => {
     expect(tools.eventsSent).toEqual([
       { content: "typing", messageType: "status", metadata: { key: "val" } },
     ]);
+  });
+
+  it("sendFailure posts an error event whose metadata nests the failure under `failure`", async () => {
+    const tools = new FakeAgentTools();
+
+    const result = await tools.sendFailure(new AgentFailure("acp", "agent went away", "timeout", { raw: true }));
+
+    expect(result).toEqual({ id: "evt-0", status: "sent" });
+    expect(tools.eventsSent).toEqual([
+      {
+        content: "agent went away",
+        messageType: "error",
+        metadata: { failure: { provider: "acp", message: "agent went away", code: "timeout", detail: { raw: true } } },
+      },
+    ]);
+  });
+
+  it("sendFailure honors failOn/errorFactory like every other tracked method", async () => {
+    const tools = new FakeAgentTools({ failOn: ["sendFailure"] });
+
+    await expect(tools.sendFailure(new AgentFailure("acp", "agent went away"))).rejects.toThrow(
+      "FakeAgentTools configured failure for sendFailure",
+    );
+    expect(tools.eventsSent).toEqual([]);
   });
 
   it("tracks participants added and removed", async () => {

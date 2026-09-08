@@ -77,8 +77,8 @@ importers:
         specifier: '>=0.91.1 <1.0.0'
         version: 0.95.1(zod@3.25.76)
       '@band-ai/band-sdk-core':
-        specifier: 2.0.0
-        version: 2.0.0
+        specifier: 2.3.0
+        version: 2.3.0
       '@band-ai/rest-client':
         specifier: 0.0.118
         version: 0.0.118
@@ -340,8 +340,8 @@ packages:
     resolution: {integrity: sha512-LwdZHpScM4Qz8Xw2iKSzS+cfglZzJGvofQICy7W7v4caru4EaAmyUuO6BGrbyQ2mYV11W0U8j5mBhd14dd3B0A==}
     engines: {node: '>=6.9.0'}
 
-  '@band-ai/band-sdk-core@2.0.0':
-    resolution: {integrity: sha512-yPgba25N4a3XHeG0y3Ic90Z9zAt2fwIXVAt7AmlryqvsEvc9kvZ8xg0ILkRj5K6HdvuiXo7QtpMd6t8lnrjRNA==}
+  '@band-ai/band-sdk-core@2.3.0':
+    resolution: {integrity: sha512-Q4yJ67Bm4r6u0MajUR9MbUg7gfpqp2fVRC5Sy1+9sPx01PZ74KYrlKJFCPQkC6xpikOPcpfcAMvrKiz5lHbwfg==}
 
   '@band-ai/rest-client@0.0.118':
     resolution: {integrity: sha512-psizi+1ASQ89E+PbPIn1N/vTK3DrIzjiGaUWLPM0k9YRkD4PTVpbPcSNLIpm/DY8EPlq2eMwdPvroC5XUiG+yQ==}
@@ -2136,6 +2136,7 @@ packages:
   eslint@9.39.4:
     resolution: {integrity: sha512-XoMjdBOwe/esVgEvLmNsD3IRHkm7fbKIUGvrleloJXUZgDHig2IPWNniv+GwjyJXzuNqVjlr5+4yVUZjycJwfQ==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+    deprecated: This version is no longer supported. Please see https://eslint.org/version-support for other options.
     hasBin: true
     peerDependencies:
       jiti: '*'
@@ -4435,7 +4436,7 @@ snapshots:
       '@babel/helper-string-parser': 7.27.1
       '@babel/helper-validator-identifier': 7.28.5
 
-  '@band-ai/band-sdk-core@2.0.0': {}
+  '@band-ai/band-sdk-core@2.3.0': {}
 
   '@band-ai/rest-client@0.0.118': {}
 

@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
+import type { AgentFailure } from "@band-ai/band-sdk-core";
 
 import { OpenAIAdapter } from "../src/index";
 import type { HistoryProvider, PlatformMessage } from "../src/runtime";
 import type { CustomToolDef } from "../src/runtime/tools/customTools";
 import type { AgentToolsProtocol } from "../src/core";
+import { toFailureEvent } from "../src/contracts/protocols";
 import type { ToolCallingModel } from "../src/adapters";
+import { describeDeliveryContract } from "./deliveryContract";
+import { expectTurnFailed } from "./testUtils";
 import type {
   ContactRequestsResult,
   ContactRecord,
@@ -26,9 +30,14 @@ class FakeTools implements AgentToolsProtocol {
     return { ok: true };
   }
 
-  public async sendEvent(content: string, messageType: string): Promise<Record<string, unknown>> {
-    this.events.push({ content, messageType });
+  public async sendEvent(content: string, messageType: string, metadata?: MetadataMap): Promise<Record<string, unknown>> {
+    this.events.push({ content, messageType, metadata });
     return { ok: true };
+  }
+
+  public async sendFailure(failure: AgentFailure): Promise<Record<string, unknown>> {
+    const { content, messageType, metadata } = toFailureEvent(failure);
+    return this.sendEvent(content, messageType, metadata);
   }
 
   public async addParticipant(): Promise<Record<string, unknown>> {
@@ -335,4 +344,70 @@ describe("ToolCallingAdapter", () => {
 
     expect(tools.messages).toEqual(["error_caught"]);
   });
+
+  it("routes a provider failure through sendFailure, then fails the turn", async () => {
+    class ThrowingModel implements ToolCallingModel {
+      public async complete(): Promise<{
+        text?: string;
+        toolCalls?: Array<{ id: string; name: string; input: Record<string, unknown> }>;
+      }> {
+        throw new Error("provider exploded");
+      }
+    }
+
+    const adapter = new OpenAIAdapter({ model: new ThrowingModel() });
+    const tools = new FakeTools();
+
+    await expectTurnFailed(
+      adapter.onMessage(fakeMessage, tools, fakeHistory, null, null, {
+        isSessionBootstrap: true,
+        roomId: "r1",
+      }),
+    );
+
+    expect(tools.messages).toEqual([]);
+    expect(tools.events).toHaveLength(1);
+    expect(tools.events[0]?.messageType).toBe("error");
+    expect(tools.events[0]?.content).toBe("provider exploded");
+    expect((tools.events[0]?.metadata as { failure?: Record<string, unknown> })?.failure).toMatchObject({
+      provider: "openai",
+      message: "provider exploded",
+    });
+  });
+
+  it("stops the tool loop after maxToolRounds and reports a single sendFailure, not a double report", async () => {
+    class InfiniteToolCallModel implements ToolCallingModel {
+      public async complete(): Promise<{
+        text?: string;
+        toolCalls?: Array<{ id: string; name: string; input: Record<string, unknown> }>;
+      }> {
+        return { toolCalls: [{ id: "tc1", name: "band_send_message", input: {} }] };
+      }
+    }
+
+    const adapter = new OpenAIAdapter({ model: new InfiniteToolCallModel(), maxToolRounds: 1 });
+    const tools = new FakeTools();
+
+    await expectTurnFailed(adapter.onMessage(fakeMessage, tools, fakeHistory, null, null, {
+      isSessionBootstrap: true,
+      roomId: "r1",
+    }));
+
+    expect(tools.events).toHaveLength(1);
+    expect(tools.events[0]?.messageType).toBe("error");
+    expect((tools.events[0]?.metadata as { failure?: { message?: string } })?.failure?.message).toContain(
+      "Stopped tool loop after 1 rounds",
+    );
+  });
+
+  describeDeliveryContract([{
+    path: "model reply (shared by every ToolCalling-based adapter)",
+    turn: async (tools) => {
+      const adapter = new OpenAIAdapter({ model: new FakeModel() });
+      await adapter.onMessage(fakeMessage, tools, fakeHistory, null, null, {
+        isSessionBootstrap: true,
+        roomId: "r1",
+      });
+    },
+  }]);
 });

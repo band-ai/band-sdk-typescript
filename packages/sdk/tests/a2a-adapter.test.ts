@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { A2AAdapter } from "../src/adapters/a2a/A2AAdapter";
 import { A2AHistoryConverter, buildA2AAuthHeaders } from "../src/adapters/a2a/types";
-import { FakeTools, makeMessage } from "./testUtils";
+import { FakeTools, makeMessage, expectTurnFailed } from "./testUtils";
+import { describeDeliveryContract } from "./deliveryContract";
 
 function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
   return (async function* generator(): AsyncGenerator<T, void> {
@@ -99,6 +100,49 @@ describe("A2AHistoryConverter", () => {
 });
 
 describe("A2AAdapter", () => {
+  describeDeliveryContract([
+    {
+      path: "message-event reply",
+      turn: async (tools) => {
+        const client = new FakeA2AClient({
+          sendResponses: [{ kind: "message", parts: [{ kind: "text", text: "reply text" }] }],
+        });
+        const adapter = new A2AAdapter({ remoteUrl: "a2a-remote", streaming: false, clientFactory: async () => client });
+        await adapter.onMessage(
+          makeMessage("hello", "room-delivery-failure"),
+          tools,
+          { contextId: null, taskId: null, taskState: null },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-delivery-failure" },
+        );
+      },
+    },
+    {
+      path: "completed task's artifact reply",
+      turn: async (tools) => {
+        const client = new FakeA2AClient({
+          sendResponses: [{
+            kind: "task",
+            id: "task-delivery",
+            contextId: "ctx-delivery",
+            status: { state: "completed" },
+            artifacts: [{ parts: [{ kind: "text", text: "final answer" }] }],
+          }],
+        });
+        const adapter = new A2AAdapter({ remoteUrl: "a2a-remote", streaming: false, clientFactory: async () => client });
+        await adapter.onMessage(
+          makeMessage("hello", "room-completed-delivery-failure"),
+          tools,
+          { contextId: null, taskId: null, taskState: null },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-completed-delivery-failure" },
+        );
+      },
+    },
+  ]);
+
   it("builds auth headers and rejects CRLF header values", () => {
     expect(
       buildA2AAuthHeaders({
@@ -262,7 +306,7 @@ describe("A2AAdapter", () => {
     expect(second.message?.taskId).toBeUndefined();
   });
 
-  it("reports adapter errors to the room and rethrows", async () => {
+  it("reports adapter failures as a structured AgentFailure, then fails the turn", async () => {
     const client = new FakeA2AClient({
       sendErrors: [new Error("upstream failure")],
     });
@@ -274,7 +318,7 @@ describe("A2AAdapter", () => {
     });
 
     const tools = new FakeTools();
-    await expect(
+    await expectTurnFailed(
       adapter.onMessage(
         makeMessage("hello"),
         tools,
@@ -283,12 +327,14 @@ describe("A2AAdapter", () => {
         null,
         { isSessionBootstrap: false, roomId: "room-3" },
       ),
-    ).rejects.toThrow("upstream failure");
+    );
 
     expect(tools.events).toHaveLength(1);
     expect(tools.events[0]?.messageType).toBe("error");
-    expect(tools.events[0]?.content).toContain("upstream failure");
-    expect(tools.events[0]?.metadata).toMatchObject({ a2a_error: "upstream failure" });
+    expect(tools.events[0]?.content).toBe("upstream failure");
+    expect(tools.events[0]?.metadata).toMatchObject({
+      failure: { provider: "a2a", code: null, message: "upstream failure", detail: null },
+    });
   });
 
   it("honors a custom maxStreamEvents limit and logs the failure", async () => {
@@ -321,7 +367,7 @@ describe("A2AAdapter", () => {
     });
 
     const tools = new FakeTools();
-    await expect(
+    await expectTurnFailed(
       adapter.onMessage(
         makeMessage("hello", "room-limit"),
         tools,
@@ -330,7 +376,7 @@ describe("A2AAdapter", () => {
         null,
         { isSessionBootstrap: false, roomId: "room-limit" },
       ),
-    ).rejects.toThrow("maximum event limit (1)");
+    );
 
     expect(tools.messages).toEqual(["first chunk"]);
     expect(tools.events).toHaveLength(1);
@@ -345,13 +391,24 @@ describe("A2AAdapter", () => {
     );
   });
 
+  // The failing event posts a "thought" via sendEvent, so this exercises a
+  // genuine event-handling failure. A failed *reply delivery* is deliberately
+  // not the lever here — that one must abort the turn, asserted below.
   it("logs per-event handler failures and continues streaming later events", async () => {
     const client = new FakeA2AClient({
       streamBatches: [
         [
           {
-            kind: "message",
-            parts: [{ kind: "text", text: "first chunk" }],
+            kind: "status-update",
+            taskId: "task-stream",
+            contextId: "ctx-stream",
+            status: {
+              state: "working",
+              message: {
+                kind: "message",
+                parts: [{ kind: "text", text: "Thinking..." }],
+              },
+            },
           },
           {
             kind: "message",
@@ -372,15 +429,8 @@ describe("A2AAdapter", () => {
       logger,
     });
     const tools = new FakeTools({
-      failOn: ["sendMessage"],
-      errorFactory: () => {
-        const error = new Error("downstream send failed");
-        tools.sendMessage = vi.fn(async (content: string) => {
-          tools.messages.push(content);
-          return { ok: true };
-        }) as typeof tools.sendMessage;
-        return error;
-      },
+      failOn: ["sendEvent"],
+      errorFactory: () => new Error("downstream send failed"),
     });
 
     await expect(
@@ -403,6 +453,42 @@ describe("A2AAdapter", () => {
         streamEventCount: 1,
       }),
     );
+  });
+
+  // Streaming is the default, so swallowing this the way a per-event handler
+  // failure is swallowed would resolve the turn as processed with the reply
+  // lost and no error event — silently, on the default path.
+  it("propagates a delivery failure from a streamed reply instead of continuing the stream", async () => {
+    const client = new FakeA2AClient({
+      streamBatches: [
+        [
+          { kind: "message", parts: [{ kind: "text", text: "first chunk" }] },
+          { kind: "message", parts: [{ kind: "text", text: "second chunk" }] },
+        ],
+      ],
+    });
+    const adapter = new A2AAdapter({
+      remoteUrl: "a2a-remote",
+      clientFactory: async () => client,
+    });
+    const tools = new FakeTools({
+      failOn: ["sendMessage"],
+      errorFactory: () => new Error("room is gone"),
+    });
+
+    await expect(
+      adapter.onMessage(
+        makeMessage("hello", "room-stream"),
+        tools,
+        { contextId: null, taskId: null, taskState: null },
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-stream" },
+      ),
+    ).rejects.toThrow("room is gone");
+
+    // Not relabeled as an "a2a" provider failure, and the stream stopped.
+    expect(tools.events).toEqual([]);
   });
 
   it("rejects invalid maxStreamEvents values", () => {
@@ -470,6 +556,7 @@ describe("A2AAdapter", () => {
     expect(client.sendMessageCalls[1]?.message?.taskId).toBeUndefined();
   });
 
+
   it("clears failed tasks and starts a fresh task on the next turn", async () => {
     const client = new FakeA2AClient({
       streamBatches: [
@@ -497,13 +584,17 @@ describe("A2AAdapter", () => {
     });
 
     const tools = new FakeTools();
-    await adapter.onMessage(
-      makeMessage("first", "room-failed"),
-      tools,
-      { contextId: null, taskId: null, taskState: null },
-      null,
-      null,
-      { isSessionBootstrap: false, roomId: "room-failed" },
+    // A terminal task state reports and fails the turn, like any other
+    // provider failure — PlatformRuntime must retry it, not mark it processed.
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("first", "room-failed"),
+        tools,
+        { contextId: null, taskId: null, taskState: null },
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-failed" },
+      ),
     );
     await adapter.onMessage(
       makeMessage("second", "room-failed"),
@@ -517,7 +608,14 @@ describe("A2AAdapter", () => {
     expect(tools.events).toContainEqual(
       expect.objectContaining({
         messageType: "error",
-        metadata: { a2a_state: "failed" },
+        metadata: {
+          failure: {
+            provider: "a2a",
+            code: "failed",
+            message: "The upstream request failed.",
+            detail: null,
+          },
+        },
       }),
     );
     expect(client.sendMessageCalls[1]?.message?.contextId).toBe("ctx-failed");

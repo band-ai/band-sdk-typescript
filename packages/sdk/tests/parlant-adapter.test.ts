@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { ParlantAdapter } from "../src/adapters/parlant/ParlantAdapter";
-import { FakeTools, makeMessage } from "./testUtils";
+import { FakeTools, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
+import { describeDeliveryContract } from "./deliveryContract";
+import { FAILURE_EVENT_TYPE } from "../src/contracts/protocols";
 
 class FakeParlantClient {
   public readonly customers = {
@@ -101,6 +103,29 @@ describe("ParlantAdapter", () => {
     expect(tools.messages).toEqual(["Parlant says hello"]);
   });
 
+  describeDeliveryContract([{
+    path: "agent message",
+    turn: async (tools) => {
+      const client = new FakeParlantClient();
+      client.eventPollBatches.push([
+        { kind: "message", offset: 10, data: { message: "Parlant says hello" } },
+      ]);
+
+      const adapter = new ParlantAdapter({
+        environment: "https://parlant.example",
+        agentId: "agent-1",
+        clientFactory: async () => client,
+        responseTimeoutSeconds: 1,
+      });
+      await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
+
+      await adapter.onMessage(makeMessage("Hi", "room-1"), tools, [], null, null, {
+        isSessionBootstrap: false,
+        roomId: "room-1",
+      });
+    },
+  }]);
+
   it("injects history once on bootstrap and does not duplicate later", async () => {
     const client = new FakeParlantClient();
     client.eventPollBatches.push([
@@ -188,17 +213,29 @@ describe("ParlantAdapter", () => {
     await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
 
     const tools = new FakeTools();
-    await adapter.onMessage(
-      makeMessage("Hi", "room-timeout"),
-      tools,
-      [],
-      null,
-      null,
-      { isSessionBootstrap: false, roomId: "room-timeout" },
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("Hi", "room-timeout"),
+        tools,
+        [],
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-timeout" },
+      ),
     );
 
     expect(tools.messages).toEqual([]);
-    expect(tools.events.some((event) => event.messageType === "error")).toBe(true);
+    const failureEvent = findFailureEvent(tools);
+    expect(failureEvent).toBeDefined();
+    expect(failureEvent?.metadata?.failure).toMatchObject({
+      provider: "parlant",
+      message: "Parlant did not return a response before timeout.",
+      code: "timeout",
+    });
+    // The timeout branch throws from inside the same try its own catch
+    // guards — without rethrowIfProviderTurnFailure, the catch re-reports a
+    // second, code-less duplicate.
+    expect(tools.events.filter((event) => event.messageType === FAILURE_EVENT_TYPE)).toHaveLength(1);
   });
 
   it("serializes bootstrap initialization for concurrent first messages in one room", async () => {
@@ -347,7 +384,7 @@ describe("ParlantAdapter", () => {
     );
   });
 
-  it("logs adapter request failures before surfacing them to the room", async () => {
+  it("reports, then fails the turn, on adapter request failures", async () => {
     const client = new FakeParlantClient();
     client.sessions.listEvents = async () => {
       throw new Error("poll failed");
@@ -371,7 +408,7 @@ describe("ParlantAdapter", () => {
     await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
 
     const tools = new FakeTools();
-    await expect(
+    await expectTurnFailed(
       adapter.onMessage(
         makeMessage("Hi", "room-error"),
         tools,
@@ -380,11 +417,16 @@ describe("ParlantAdapter", () => {
         null,
         { isSessionBootstrap: false, roomId: "room-error" },
       ),
-    ).rejects.toThrow("poll failed");
+    );
 
     expect(tools.events).toHaveLength(1);
     expect(tools.events[0]?.messageType).toBe("error");
     expect(tools.events[0]?.content).toContain("poll failed");
+    expect(tools.events[0]?.metadata?.failure).toMatchObject({
+      provider: "parlant",
+      message: expect.stringContaining("poll failed"),
+      code: null,
+    });
     expect(logger.error).toHaveBeenCalledWith(
       "Parlant adapter request failed",
       expect.objectContaining({
@@ -394,7 +436,7 @@ describe("ParlantAdapter", () => {
     );
   });
 
-  it("logs client initialization failures before surfacing adapter errors", async () => {
+  it("reports, then fails the turn, on a client initialization failure", async () => {
     const logger = {
       debug: vi.fn(),
       info: vi.fn(),
@@ -414,7 +456,7 @@ describe("ParlantAdapter", () => {
     await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
 
     const tools = new FakeTools();
-    await expect(
+    await expectTurnFailed(
       adapter.onMessage(
         makeMessage("Hi", "room-init"),
         tools,
@@ -423,7 +465,7 @@ describe("ParlantAdapter", () => {
         null,
         { isSessionBootstrap: false, roomId: "room-init" },
       ),
-    ).rejects.toThrow("parlant init failed");
+    );
 
     expect(logger.error).toHaveBeenCalledWith(
       "Parlant client initialization failed",
@@ -431,7 +473,13 @@ describe("ParlantAdapter", () => {
         error: expect.any(Error),
       }),
     );
-    expect(tools.events.some((event) => event.messageType === "error")).toBe(true);
+    const failureEvent = findFailureEvent(tools);
+    expect(failureEvent).toBeDefined();
+    expect(failureEvent?.metadata?.failure).toMatchObject({
+      provider: "parlant",
+      message: "parlant init failed",
+      code: null,
+    });
   });
 
   it("stamps band_room_id metadata and a \"Band Room \" title on session creation", async () => {

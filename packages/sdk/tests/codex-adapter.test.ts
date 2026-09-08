@@ -9,7 +9,8 @@ import {
 } from "../src/adapters/codex/appServerClient";
 import type { InitializeParams } from "../src/adapters/codex/appServerProtocol";
 import { HistoryProvider } from "../src/runtime/types";
-import { FakeTools, makeMessage } from "./testUtils";
+import { FakeTools, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
+import { describeDeliveryContract } from "./deliveryContract";
 
 class FakeCodexClient implements CodexClientLike {
   public readonly requestCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
@@ -153,6 +154,84 @@ function defaultRequestHandler(method: string, params: Record<string, unknown>):
 }
 
 describe("CodexAdapter", () => {
+  it("a /model list against a downed app server reports a failure and fails only that turn", async () => {
+    // `/model list` is the one local command that reaches Codex, and local
+    // commands run before onMessage's failure catch — so a bare rejection here
+    // escaped to failRuntime and stopped every room.
+    const adapter = new CodexAdapter({
+      factory: async () => new FakeCodexClient({
+        requestHandler: (method, params) => {
+          if (method === "model/list") {
+            throw new Error("app server is down");
+          }
+          return defaultRequestHandler(method, params);
+        },
+      }),
+    });
+
+    const tools = new FakeTools();
+    await expectTurnFailed(adapter.onMessage(
+      makeMessage("/model list", "room-models"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-models" },
+    ));
+
+    expect(tools.messages).toEqual([]);
+    expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({
+      provider: "codex",
+      message: "app server is down",
+    });
+  });
+
+  describeDeliveryContract([{
+    path: "final agent message",
+    turn: async (tools) => {
+      const fakeClient = new FakeCodexClient({
+        events: [
+          {
+            kind: "notification",
+            method: "item/completed",
+            params: { item: { type: "agentMessage", id: "msg-1", text: "the answer" } },
+          },
+          {
+            kind: "notification",
+            method: "turn/completed",
+            params: { turn: { id: "turn-1", status: "completed", error: null } },
+          },
+        ],
+      });
+
+      const adapter = new CodexAdapter({ factory: async () => fakeClient });
+      await adapter.onMessage(
+        makeMessage("question"),
+        tools,
+        new HistoryProvider([]),
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-delivery" },
+      );
+    },
+  }, {
+    path: "local /help command reply",
+    turn: async (tools) => {
+      // Local commands are answered before the Codex client is ever reached,
+      // and outside onMessage's failure catch — so this path had its own way
+      // of escaping, and its own way of taking the runtime down.
+      const adapter = new CodexAdapter({ factory: async () => new FakeCodexClient() });
+      await adapter.onMessage(
+        makeMessage("/help"),
+        tools,
+        new HistoryProvider([]),
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-help" },
+      );
+    },
+  }]);
+
   it("registers platform and custom tools and executes them through the app-server", async () => {
     const tools = new ToolSchemaFakeTools();
     const fakeClient = new FakeCodexClient({
@@ -607,7 +686,7 @@ describe("CodexAdapter", () => {
     expect(tools.messages[3]).toContain("Invalid reasoning effort `nope`");
   });
 
-  it("logs client initialization failures before surfacing them", async () => {
+  it("logs client initialization failures, surfaces them via sendFailure, then fails the turn", async () => {
     const logger = {
       debug: vi.fn(),
       info: vi.fn(),
@@ -620,17 +699,16 @@ describe("CodexAdapter", () => {
       },
       logger,
     });
+    const tools = new ToolSchemaFakeTools();
 
-    await expect(
-      adapter.onMessage(
-        makeMessage("hello"),
-        new ToolSchemaFakeTools(),
-        new HistoryProvider([]),
-        null,
-        null,
-        { isSessionBootstrap: false, roomId: "room-init" },
-      ),
-    ).rejects.toThrow("codex init failed");
+    await expectTurnFailed(adapter.onMessage(
+      makeMessage("hello"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-init" },
+    ));
 
     expect(logger.error).toHaveBeenCalledWith(
       "Codex client initialization failed",
@@ -638,6 +716,257 @@ describe("CodexAdapter", () => {
         error: expect.any(Error),
       }),
     );
+    const failureEvent = findFailureEvent(tools);
+    expect(failureEvent?.metadata?.failure).toMatchObject({
+      provider: "codex",
+      message: "codex init failed",
+      code: null,
+      detail: null,
+    });
+    expect(tools.messages).toEqual([]);
+  });
+
+  it("emits a structured sendFailure for a getOrCreateThread failure (thread/start rejecting after a resume miss)", async () => {
+    const tools = new ToolSchemaFakeTools();
+    const fakeClient = new FakeCodexClient({
+      requestHandler: (method, params) => {
+        if (method === "thread/start") {
+          throw new Error("thread/start failed");
+        }
+        return defaultRequestHandler(method, params);
+      },
+    });
+    const adapter = new CodexAdapter({ factory: async () => fakeClient });
+    await adapter.onStarted("Codex Agent", "Codex parity adapter");
+
+    await expectTurnFailed(adapter.onMessage(
+      makeMessage("hello"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-thread-fail" },
+    ));
+
+    const failureEvent = findFailureEvent(tools);
+    expect(failureEvent?.metadata?.failure).toMatchObject({
+      provider: "codex",
+      message: "thread/start failed",
+      code: null,
+      detail: null,
+    });
+    expect(tools.messages).toEqual([]);
+    expect(fakeClient.requestCalls.some((call) => call.method === "turn/start")).toBe(false);
+  });
+
+  it("passes a Codex protocol-level error notification through to sendFailure with its code and detail", async () => {
+    const tools = new ToolSchemaFakeTools();
+    const fakeClient = new FakeCodexClient({
+      events: [
+        {
+          kind: "notification",
+          method: "error",
+          params: {
+            error: { code: "invalid_request", message: "bad turn input" },
+          },
+        },
+        {
+          kind: "notification",
+          method: "turn/completed",
+          params: { turn: { id: "turn-1", status: "completed", error: null } },
+        },
+      ],
+    });
+    const adapter = new CodexAdapter({ factory: async () => fakeClient });
+    await adapter.onStarted("Codex Agent", "Codex parity adapter");
+
+    await adapter.onMessage(
+      makeMessage("hello"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-proto-error" },
+    );
+
+    const failureEvent = findFailureEvent(tools);
+    expect(failureEvent?.metadata?.failure).toMatchObject({
+      provider: "codex",
+      code: "invalid_request",
+      message: "bad turn input",
+      detail: { code: "invalid_request", message: "bad turn input" },
+    });
+  });
+
+  it("does not surface a retryable protocol-level error notification as a failure", async () => {
+    const tools = new ToolSchemaFakeTools();
+    const fakeClient = new FakeCodexClient({
+      events: [
+        {
+          kind: "notification",
+          method: "error",
+          params: {
+            error: { message: "transient hiccup" },
+            willRetry: true,
+          },
+        },
+        {
+          kind: "notification",
+          method: "turn/completed",
+          params: { turn: { id: "turn-1", status: "completed", error: null } },
+        },
+      ],
+    });
+    const adapter = new CodexAdapter({ factory: async () => fakeClient });
+    await adapter.onStarted("Codex Agent", "Codex parity adapter");
+
+    await adapter.onMessage(
+      makeMessage("hello"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-retry-error" },
+    );
+
+    expect(tools.events.some((event) => event.messageType === "error")).toBe(false);
+  });
+
+  it("reports a mid-turn error notification only once, even when turn/completed also ends in failure", async () => {
+    const tools = new ToolSchemaFakeTools();
+    const fakeClient = new FakeCodexClient({
+      events: [
+        {
+          kind: "notification",
+          method: "error",
+          params: {
+            error: { code: "invalid_request", message: "bad turn input" },
+          },
+        },
+        {
+          kind: "notification",
+          method: "turn/completed",
+          params: { turn: { id: "turn-1", status: "failed", error: null } },
+        },
+      ],
+    });
+    const adapter = new CodexAdapter({ factory: async () => fakeClient });
+    await adapter.onStarted("Codex Agent", "Codex parity adapter");
+
+    await adapter.onMessage(
+      makeMessage("hello"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-double-report" },
+    );
+
+    const failureEvents = tools.events.filter((event) => event.messageType === "error");
+    expect(failureEvents).toHaveLength(1);
+    expect(failureEvents[0]?.metadata?.failure).toMatchObject({
+      provider: "codex",
+      code: "invalid_request",
+      message: "bad turn input",
+    });
+  });
+
+  it("reports a mid-turn error notification only once, even when the turn is then interrupted", async () => {
+    const tools = new ToolSchemaFakeTools();
+    const fakeClient = new FakeCodexClient({
+      events: [
+        {
+          kind: "notification",
+          method: "error",
+          params: {
+            error: { code: "invalid_request", message: "bad turn input" },
+          },
+        },
+        // recvEvent's queue is exhausted after this: the fake throws on the
+        // next call, exactly like a real recvEvent timeout, driving
+        // emitTurnOutcome's "interrupted" branch.
+      ],
+    });
+    const adapter = new CodexAdapter({ factory: async () => fakeClient });
+    await adapter.onStarted("Codex Agent", "Codex parity adapter");
+
+    await adapter.onMessage(
+      makeMessage("hello"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-double-report-interrupted" },
+    );
+
+    const failureEvents = tools.events.filter((event) => event.messageType === "error");
+    expect(failureEvents).toHaveLength(1);
+    expect(failureEvents[0]?.metadata?.failure).toMatchObject({
+      provider: "codex",
+      code: "invalid_request",
+      message: "bad turn input",
+    });
+  });
+
+  it("emits a structured sendFailure with code 'interrupted' when the turn is interrupted (e.g. a recvEvent timeout)", async () => {
+    const tools = new ToolSchemaFakeTools();
+    const fakeClient = new FakeCodexClient({ events: [] });
+    const adapter = new CodexAdapter({ factory: async () => fakeClient });
+    await adapter.onStarted("Codex Agent", "Codex parity adapter");
+
+    await adapter.onMessage(
+      makeMessage("hello"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-interrupt" },
+    );
+
+    const failureEvent = findFailureEvent(tools);
+    expect(failureEvent?.metadata?.failure).toMatchObject({
+      provider: "codex",
+      code: "interrupted",
+      message: "Turn timed out",
+    });
+    // Posted alongside the structured event, not replaced by it: this is the
+    // one reply that has always notified the requester their turn failed, and
+    // mentions ride on messages only. The friendly sentence stays the visible
+    // text while the raw provider message goes in the event.
+    expect(tools.messages).toEqual(["I stopped before completing this request."]);
+    expect(fakeClient.requestCalls.some((call) => call.method === "turn/interrupt")).toBe(true);
+  });
+
+  it("emits a structured sendFailure with the codex-declared turnStatus when the transport closes mid-turn", async () => {
+    const tools = new ToolSchemaFakeTools();
+    const fakeClient = new FakeCodexClient({
+      events: [
+        { kind: "notification", method: "transport/closed", params: {} },
+      ],
+    });
+    const adapter = new CodexAdapter({ factory: async () => fakeClient });
+    await adapter.onStarted("Codex Agent", "Codex parity adapter");
+
+    await adapter.onMessage(
+      makeMessage("hello"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-transport-closed" },
+    );
+
+    const failureEvent = findFailureEvent(tools);
+    expect(failureEvent?.metadata?.failure).toMatchObject({
+      provider: "codex",
+      code: "failed",
+      message: expect.stringContaining("Codex transport closed unexpectedly"),
+    });
+    // Same text in both, as before this contract existed — the event adds
+    // structure without taking the requester's notification away.
+    expect(tools.messages).toEqual([
+      "I couldn't complete this request (failed): Codex transport closed unexpectedly",
+    ]);
   });
 
   it("rejects malformed item/tool/call payloads", async () => {

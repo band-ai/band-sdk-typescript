@@ -1,11 +1,14 @@
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
-import { NoopLogger } from "../../core/logger";
+import { resolveLogger } from "../../core/logger";
 import { UnsupportedFeatureError } from "../../core/errors";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { mcpToolNames, MCP_SERVER_NAME } from "../../runtime/tools/schemas";
+import { asErrorMessage } from "../shared/coercion";
+import { reportTurnFailure, agentFailure } from "../shared/providerFailure";
+import { deliverReply } from "../shared/deliveryFailedError";
 import { buildConversationPrompt } from "../shared/conversationPrompt";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { extractClaudeSessionId } from "../../converters/claude-sdk";
@@ -156,6 +159,8 @@ const bandMcpBridgeFactory = new LazyAsyncValue<BandMcpBridgeFactory>({
 })
 
 export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterToolsProtocol> {
+  protected readonly provider = "claude-sdk";
+
   private readonly model: string;
   private readonly customSection?: string;
   private readonly includeBaseInstructions: boolean;
@@ -187,7 +192,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     this.additionalMcpTools = options?.additionalMcpTools ?? [];
     this.cwd = options?.cwd;
     this.queryFnOverride = options?.queryFn;
-    this.logger = options?.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options?.logger);
   }
 
   public async onStarted(agentName: string, agentDescription: string): Promise<void> {
@@ -246,6 +251,31 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
+    let finalText = "";
+    try {
+      const query = await this.startQuery(message, history, participantsMessage, contactsMessage, context, tools);
+      finalText = await this.consumeQueryEvents(query, tools, context.roomId);
+    } catch (error) {
+      this.logger.error("Claude SDK adapter request failed", {
+        roomId: context.roomId,
+        error,
+      });
+      await reportTurnFailure(tools, agentFailure(this.provider, asErrorMessage(error)));
+    }
+
+    if (finalText.trim()) {
+      await deliverReply(tools, finalText.trim(), [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
+    }
+  }
+
+  private async startQuery(
+    message: PlatformMessage,
+    history: HistoryProvider,
+    participantsMessage: string | null,
+    contactsMessage: string | null,
+    context: { isSessionBootstrap: boolean; roomId: string },
+    tools: AdapterToolsProtocol,
+  ): Promise<AsyncIterable<ClaudeSDKMessageLike>> {
     const queryFn = this.queryFnOverride ?? (await loadClaudeQuery());
 
     const options: ClaudeQueryOptions = {
@@ -280,7 +310,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
       ? `\n\n[Tooling note]: For any mcp__band__* tool call, pass room_id="${context.roomId}".`
       : "";
 
-    const query = queryFn({
+    return queryFn({
       prompt: buildConversationPrompt({
         history,
         isSessionBootstrap: context.isSessionBootstrap,
@@ -292,16 +322,22 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
       }) + roomToolHint,
       options,
     });
+  }
 
+  private async consumeQueryEvents(
+    query: AsyncIterable<ClaudeSDKMessageLike>,
+    tools: AdapterToolsProtocol,
+    roomId: string,
+  ): Promise<string> {
     let finalText = "";
     for await (const event of query) {
       const type = event.type;
       const sessionId = event.session_id;
       if (typeof sessionId === "string" && sessionId) {
-        const previousSessionId = this.sessionIds.get(context.roomId) ?? null;
-        this.sessionIds.set(context.roomId, sessionId);
+        const previousSessionId = this.sessionIds.get(roomId) ?? null;
+        this.sessionIds.set(roomId, sessionId);
         if (sessionId !== previousSessionId) {
-          await this.reportSessionId(tools, context.roomId, sessionId);
+          await this.reportSessionId(tools, roomId, sessionId);
         }
       }
 
@@ -321,17 +357,14 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
           await tools.sendEvent(JSON.stringify(event), "tool_call");
         } catch (error) {
           this.logger.warn("Claude SDK execution reporting failed", {
-            roomId: context.roomId,
-            sessionId: this.sessionIds.get(context.roomId) ?? null,
+            roomId,
+            sessionId: this.sessionIds.get(roomId) ?? null,
             error,
           });
         }
       }
     }
-
-    if (finalText.trim()) {
-      await tools.sendMessage(finalText.trim(), [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
-    }
+    return finalText;
   }
 
   public async onCleanup(roomId: string): Promise<void> {

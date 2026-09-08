@@ -1,6 +1,6 @@
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
-import { NoopLogger, type Logger } from "../../core/logger";
-import { ParticipantRoster, type ParticipantFields } from "@band-ai/band-sdk-core";
+import { resolveLogger, type Logger } from "../../core/logger";
+import { ParticipantRoster, type AgentFailure, type ParticipantFields } from "@band-ai/band-sdk-core";
 import { toParticipantRecord, toParticipantRecordFromRest } from "../formatters";
 import type { AgentToolsRestApi } from "../../client/rest/types";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
@@ -39,6 +39,7 @@ import {
   type AgentToolsProtocol,
   isStructuredToolFailure,
   isToolExecutorError,
+  sendFailureViaEvent,
   type ToolExecutorError,
 } from "../../contracts/protocols";
 import {
@@ -76,58 +77,38 @@ interface AgentToolsOptions {
 
 type ToolHandler = (arguments_: MetadataMap) => Promise<unknown>;
 
-type AdapterToolMethodName =
-  | "sendMessage"
-  | "sendEvent"
-  | "addParticipant"
-  | "removeParticipant"
-  | "getParticipants"
-  | "createChatroom"
-  | "getToolSchemas"
-  | "getAnthropicToolSchemas"
-  | "getOpenAIToolSchemas"
-  | "executeToolCall"
-  | "lookupPeers"
-  | "listContacts"
-  | "addContact"
-  | "removeContact"
-  | "listContactRequests"
-  | "respondContactRequest"
-  | "listMemories"
-  | "storeMemory"
-  | "getMemory"
-  | "supersedeMemory"
-  | "archiveMemory";
+type AdapterToolMethodName = Exclude<keyof AdapterToolsProtocol, "capabilities">;
 
-const REQUIRED_ADAPTER_TOOL_METHODS = [
-  "sendMessage",
-  "sendEvent",
-  "addParticipant",
-  "removeParticipant",
-  "getParticipants",
-  "createChatroom",
-  "getToolSchemas",
-  "getAnthropicToolSchemas",
-  "getOpenAIToolSchemas",
-  "executeToolCall",
-] as const satisfies readonly AdapterToolMethodName[];
-
-const OPTIONAL_ADAPTER_TOOL_METHODS: Record<keyof AgentToolsCapabilities, readonly AdapterToolMethodName[]> = {
-  peers: ["lookupPeers"],
-  contacts: [
-    "listContacts",
-    "addContact",
-    "removeContact",
-    "listContactRequests",
-    "respondContactRequest",
-  ],
-  memory: [
-    "listMemories",
-    "storeMemory",
-    "getMemory",
-    "supersedeMemory",
-    "archiveMemory",
-  ],
+/**
+ * Every adapter-facing method, mapped to the capability gating it (`null` =
+ * always bound). The `Record` is the point: a method added to
+ * `AdapterToolsProtocol` becomes a compile error here, rather than one that is
+ * silently absent from the frozen object `buildAdapterTools` hands adapters —
+ * a gap that cast cannot catch and only surfaces as a TypeError in production.
+ */
+const ADAPTER_TOOL_METHODS: Record<AdapterToolMethodName, keyof AgentToolsCapabilities | null> = {
+  sendMessage: null,
+  sendEvent: null,
+  sendFailure: null,
+  addParticipant: null,
+  removeParticipant: null,
+  getParticipants: null,
+  createChatroom: null,
+  getToolSchemas: null,
+  getAnthropicToolSchemas: null,
+  getOpenAIToolSchemas: null,
+  executeToolCall: null,
+  lookupPeers: "peers",
+  listContacts: "contacts",
+  addContact: "contacts",
+  removeContact: "contacts",
+  listContactRequests: "contacts",
+  respondContactRequest: "contacts",
+  listMemories: "memory",
+  storeMemory: "memory",
+  getMemory: "memory",
+  supersedeMemory: "memory",
+  archiveMemory: "memory",
 };
 
 const CONTACT_REQUEST_ACTIONS: ReadonlySet<RespondContactRequestArgs["action"]> = new Set([
@@ -149,7 +130,7 @@ export class AgentTools implements AgentToolsProtocol {
     this.roomId = options.roomId;
     this.rest = options.rest;
     this.roster = options.roster ?? new ParticipantRoster();
-    this.logger = options.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options.logger);
     this.capabilities = {
       ...DEFAULT_AGENT_TOOLS_CAPABILITIES,
       ...options.capabilities,
@@ -207,16 +188,16 @@ export class AgentTools implements AgentToolsProtocol {
     } catch (error) {
       // Room telemetry, not the agent's answer: a failed post here must never
       // abort the turn the way a failed sendMessage should. See sendMessage,
-      // which is deliberately left to reject.
-      try {
-        this.logger.warn("chat event send failed", { roomId: this.roomId, messageType, error });
-      } catch {
-        // A caller-supplied logger that itself throws must not turn this
-        // telemetry failure into a rejection in its place — see above.
-      }
+      // which is deliberately left to reject. (`resolveLogger` already keeps a
+      // throwing caller-supplied logger from becoming that rejection.)
+      this.logger.warn("chat event send failed", { roomId: this.roomId, messageType, error });
       const message = error instanceof Error ? error.message : String(error);
       return { ok: false, status: "failed", message };
     }
+  }
+
+  public async sendFailure(failure: AgentFailure): Promise<ToolOperationResult> {
+    return sendFailureViaEvent(this.sendEvent.bind(this), failure);
   }
 
   public async createChatroom(taskId?: string): Promise<string> {
@@ -718,18 +699,12 @@ export class AgentTools implements AgentToolsProtocol {
       capabilities: this.capabilities,
     };
 
-    for (const methodName of REQUIRED_ADAPTER_TOOL_METHODS) {
-      (tools as Record<string, unknown>)[methodName] = this.bindAdapterToolMethod(methodName);
-    }
-
-    for (const [capabilityKey, methodNames] of Object.entries(OPTIONAL_ADAPTER_TOOL_METHODS) as
-      Array<[keyof AgentToolsCapabilities, readonly AdapterToolMethodName[]]>) {
-      if (!this.capabilities[capabilityKey]) {
+    for (const [methodName, capability] of Object.entries(ADAPTER_TOOL_METHODS) as
+      Array<[AdapterToolMethodName, keyof AgentToolsCapabilities | null]>) {
+      if (capability !== null && !this.capabilities[capability]) {
         continue;
       }
-      for (const methodName of methodNames) {
-        (tools as Record<string, unknown>)[methodName] = this.bindAdapterToolMethod(methodName);
-      }
+      (tools as Record<string, unknown>)[methodName] = this.bindAdapterToolMethod(methodName);
     }
 
     return Object.freeze(tools) as AdapterToolsProtocol;

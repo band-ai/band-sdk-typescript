@@ -1,7 +1,9 @@
-import { ParticipantRoster } from "@band-ai/band-sdk-core";
+import { ProviderTurnFailedError } from "../src/adapters/shared/providerFailure";
+import { expect } from "vitest";
+import { ParticipantRoster, type AgentFailure } from "@band-ai/band-sdk-core";
 import type { PlatformMessage } from "../src/runtime";
 import type { AgentToolsProtocol } from "../src/core";
-import { DEFAULT_AGENT_TOOLS_CAPABILITIES } from "../src/contracts/protocols";
+import { DEFAULT_AGENT_TOOLS_CAPABILITIES, FAILURE_EVENT_TYPE, toFailureEvent } from "../src/contracts/protocols";
 import { isBlankEventContent } from "../src/contracts/chatEvents";
 import type {
   AgentIdentity,
@@ -68,6 +70,12 @@ export class FakeTools implements AgentToolsProtocol {
     return { ok: true };
   }
 
+  public async sendFailure(failure: AgentFailure): Promise<Record<string, unknown>> {
+    this.maybeFail("sendFailure");
+    const { content, messageType, metadata } = toFailureEvent(failure);
+    return this.sendEvent(content, messageType, metadata);
+  }
+
   public async addParticipant(_name: string, _role?: string): Promise<Record<string, unknown>> {
     this.maybeFail("addParticipant");
     return { ok: true };
@@ -121,6 +129,11 @@ export class FakeTools implements AgentToolsProtocol {
       throw this.errorFactory(method);
     }
   }
+}
+
+/** The failure event an adapter posted, located the way a client locates one. */
+export function findFailureEvent(tools: FakeTools): CapturedToolEvent | undefined {
+  return tools.events.find((event) => event.messageType === FAILURE_EVENT_TYPE);
 }
 
 export function makeRoster(participants: ParticipantRecord[]): ParticipantRoster {
@@ -312,4 +325,14 @@ export class FakeRestApi implements RestApi {
     return this.overrides.getNextMessage?.(request, options) ?? null;
   }
 
+}
+
+/**
+ * A terminal provider failure reports to the room and then fails the turn, so
+ * `PlatformRuntime` still marks the message failed and the platform still
+ * re-syncs it. Returning instead would silently flip a failed turn to
+ * `processed` and drop its retry — see `ProviderTurnFailedError`.
+ */
+export async function expectTurnFailed(turn: Promise<unknown>): Promise<void> {
+  await expect(turn).rejects.toBeInstanceOf(ProviderTurnFailedError);
 }

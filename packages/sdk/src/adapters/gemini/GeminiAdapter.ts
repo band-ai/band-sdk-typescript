@@ -6,7 +6,7 @@ import {
 } from "./model";
 
 export interface GeminiAdapterOptions
-  extends Omit<ToolCallingAdapterOptions, "toolFormat" | "model"> {
+  extends Omit<ToolCallingAdapterOptions, "toolFormat" | "model" | "provider"> {
   model?: ToolCallingModel;
   geminiModel?: string;
   apiKey?: string;
@@ -34,6 +34,7 @@ export class GeminiAdapter extends ToolCallingAdapter {
       model: resolvedModel,
       // Gemini's OpenAI-compatible endpoint accepts OpenAI-format tool schemas.
       toolFormat: "openai",
+      provider: "gemini",
     });
   }
 }

@@ -2,13 +2,16 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, expect, expectTypeOf, it } from "vitest";
+import { AgentFailure } from "@band-ai/band-sdk-core";
 
 import {
   createToolExecutorError,
   DEFAULT_AGENT_TOOLS_CAPABILITIES,
   isToolExecutorError,
+  toFailureEvent,
   toLegacyToolExecutorErrorMessage,
 } from "../src/contracts/protocols";
+import { isBlankEventContent } from "../src/contracts/chatEvents";
 import type {
   AgentToolsCapabilities,
   PlatformMessageLike,
@@ -91,5 +94,40 @@ describe("contracts/protocols", () => {
     );
     expect(toLegacyToolExecutorErrorMessage("already string")).toBe("already string");
     expect(toLegacyToolExecutorErrorMessage({ ok: true })).toBeNull();
+  });
+
+  describe("toFailureEvent", () => {
+    it("uses the failure's message verbatim as content, with no adapter-added prefix", () => {
+      const failure = new AgentFailure("acp", "agent went away", "timeout", { raw: true });
+
+      expect(toFailureEvent(failure)).toEqual({
+        content: "agent went away",
+        messageType: "error",
+        metadata: {
+          failure: { provider: "acp", message: "agent went away", code: "timeout", detail: { raw: true } },
+        },
+      });
+    });
+
+    it("serializes an absent code/detail as null (AgentFailure.toObject()'s own contract), not undefined", () => {
+      const failure = new AgentFailure("acp", "agent went away");
+
+      expect(toFailureEvent(failure)).toEqual({
+        content: "agent went away",
+        messageType: "error",
+        metadata: {
+          failure: { provider: "acp", message: "agent went away", code: null, detail: null },
+        },
+      });
+    });
+
+    it("substitutes visible content for a blank provider message, which the platform would reject outright", () => {
+      // `new Error()` reaches every adapter's failure path with message "".
+      const event = toFailureEvent(new AgentFailure("letta", new Error().message));
+
+      expect(isBlankEventContent(event.content)).toBe(false);
+      // The unusable original is still preserved verbatim in the metadata.
+      expect(event.metadata.failure).toMatchObject({ provider: "letta", message: "" });
+    });
   });
 });

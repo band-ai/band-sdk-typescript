@@ -1,11 +1,18 @@
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
-import { NoopLogger } from "../../core/logger";
+import { resolveLogger } from "../../core/logger";
 import { RuntimeStateError, UnsupportedFeatureError } from "../../core/errors";
 import type { PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { asErrorMessage, toWireString } from "../shared/coercion";
+import {
+  ProviderTurnFailedError,
+  agentFailure,
+  rethrowIfProviderTurnFailure,
+  safeSendFailure,
+} from "../shared/providerFailure";
+import { deliverReply, rethrowIfDeliveryFailure } from "../shared/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import type { LettaMessages } from "./types";
 import { LettaHistoryConverter } from "./types";
@@ -236,6 +243,8 @@ export class LettaAdapter extends SimpleAdapter<
   LettaMessages,
   AdapterToolsProtocol
 > {
+  protected readonly provider = "letta";
+
   private readonly model: string;
   private readonly lettaApiKey?: string;
   private readonly lettaBaseUrl?: string;
@@ -299,7 +308,7 @@ export class LettaAdapter extends SimpleAdapter<
       options.maxHistoryMessages ?? DEFAULT_MAX_HISTORY_MESSAGES;
     this.emitReasoningEvents = options.emitReasoningEvents ?? false;
     this.clientFactory = options.clientFactory;
-    this.logger = options.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options.logger);
     this.clientLoader = new LazyAsyncValue({
       load: async () => this.createClient(),
       retryBackoffMs: 2_000,
@@ -385,36 +394,25 @@ export class LettaAdapter extends SimpleAdapter<
       );
 
       if (!assistantText) {
-        await tools.sendEvent(
-          "Letta did not return a response.",
-          "error",
-          { letta_agent_id: agentId },
-        );
-        return;
+        const failure = agentFailure(this.provider, "Letta did not return a response.");
+        await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId });
+        throw new ProviderTurnFailedError(failure);
       }
 
-      await tools.sendMessage(assistantText, [{ id: message.senderId }]);
+      await deliverReply(tools, assistantText, [{ id: message.senderId }]);
     } catch (error) {
+      rethrowIfDeliveryFailure(error);
+      rethrowIfProviderTurnFailure(error);
+
       const errorMessage = asErrorMessage(error);
       this.logger.error("Letta adapter request failed", {
         roomId: context.roomId,
         error,
       });
 
-      try {
-        await tools.sendEvent(
-          `Letta adapter error: ${errorMessage}`,
-          "error",
-          { letta_error: errorMessage },
-        );
-      } catch (eventError) {
-        this.logger.warn("Letta adapter failed to emit error event", {
-          roomId: context.roomId,
-          error: eventError,
-        });
-      }
-
-      throw error instanceof Error ? error : new Error(errorMessage);
+      const failure = agentFailure(this.provider, errorMessage);
+      await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId });
+      throw new ProviderTurnFailedError(failure);
     }
   }
 

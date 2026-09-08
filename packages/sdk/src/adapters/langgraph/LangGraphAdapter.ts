@@ -1,11 +1,13 @@
 import { RuntimeStateError, UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import type { Logger } from "../../core/logger";
-import { NoopLogger } from "../../core/logger";
+import { resolveLogger } from "../../core/logger";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { asErrorMessage, asOptionalRecord, asRecord } from "../shared/coercion";
+import { reportTurnFailure, agentFailure } from "../shared/providerFailure";
+import { deliverReply } from "../shared/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 
 type LangGraphRole = "system" | "user" | "assistant";
@@ -59,6 +61,8 @@ export interface LangGraphAdapterOptions {
 }
 
 export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterToolsProtocol> {
+  protected readonly provider = "langgraph";
+
   private readonly llm?: unknown;
   private readonly checkpointer?: unknown;
   private readonly graph?: LangGraphGraph;
@@ -93,7 +97,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     this.maxHistoryMessages = options.maxHistoryMessages ?? 100;
     this.emitExecutionEvents = options.emitExecutionEvents ?? true;
     this.includeMemoryTools = options.includeMemoryTools ?? false;
-    this.logger = options.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options.logger);
     this.sdkLoader = new LazyAsyncValue({
       load: async () => loadLangGraphSdk(),
       onRejected: (error: unknown) => {
@@ -122,70 +126,74 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
-    let sdk: LangGraphSdk | undefined;
-    let langGraphTools = [...this.additionalTools];
-    if (!this.graph || this.graphFactory) {
-      sdk = await this.sdkLoader.get();
-      langGraphTools = [
-        ...buildLangGraphTools({
-          sdk,
-          tools,
-          includeMemoryTools: this.includeMemoryTools,
-          logger: this.logger,
-        }),
-        ...this.additionalTools,
-      ];
-    }
-
-    const graph = await this.resolveGraph(sdk, langGraphTools);
-
-    const usesCheckpointer = Boolean(this.checkpointer);
-
-    // First bootstrap for a room (not a later reconnect of the same room).
-    const isFirstBootstrap =
-      context.isSessionBootstrap && !this.bootstrappedRooms.has(context.roomId);
-
-    // Stateless graphs replay history every turn; with a checkpointer, seed once on first bootstrap
-    // and rely on persisted state after. The guard is in-memory, so a durable checkpointer reused
-    // across restarts may re-seed once.
-    const replayHistory = !usesCheckpointer || isFirstBootstrap;
-
-    // createReactAgent gets the prompt via `prompt`; only custom graphs need it as a message —
-    // every turn when stateless, once per room when checkpointed (same signal as replay).
-    const includeSystemPrompt = this.usesCustomGraph && (!usesCheckpointer || isFirstBootstrap);
-
-    if (context.isSessionBootstrap) {
-      this.bootstrappedRooms.add(context.roomId);
-    }
-
-    const messages = this.buildMessages(history, message, participantsMessage, contactsMessage, {
-      replayHistory,
-      includeSystemPrompt,
-    });
-    const input = { messages };
-    const graphConfig = {
-      configurable: {
-        thread_id: context.roomId,
-      },
-      recursion_limit: this.recursionLimit,
-    };
-
-    if (this.emitExecutionEvents && graph.streamEvents) {
-      const text = await this.forwardStreamEvents(graph, input, graphConfig, tools);
-      if (text) {
-        await tools.sendMessage(text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
+    let text: string | null = null;
+    try {
+      let sdk: LangGraphSdk | undefined;
+      let langGraphTools = [...this.additionalTools];
+      if (!this.graph || this.graphFactory) {
+        sdk = await this.sdkLoader.get();
+        langGraphTools = [
+          ...buildLangGraphTools({
+            sdk,
+            tools,
+            includeMemoryTools: this.includeMemoryTools,
+            logger: this.logger,
+          }),
+          ...this.additionalTools,
+        ];
       }
-      return;
+
+      const graph = await this.resolveGraph(sdk, langGraphTools);
+
+      const usesCheckpointer = Boolean(this.checkpointer);
+
+      // First bootstrap for a room (not a later reconnect of the same room).
+      const isFirstBootstrap =
+        context.isSessionBootstrap && !this.bootstrappedRooms.has(context.roomId);
+
+      // Stateless graphs replay history every turn; with a checkpointer, seed once on first bootstrap
+      // and rely on persisted state after. The guard is in-memory, so a durable checkpointer reused
+      // across restarts may re-seed once.
+      const replayHistory = !usesCheckpointer || isFirstBootstrap;
+
+      // createReactAgent gets the prompt via `prompt`; only custom graphs need it as a message —
+      // every turn when stateless, once per room when checkpointed (same signal as replay).
+      const includeSystemPrompt = this.usesCustomGraph && (!usesCheckpointer || isFirstBootstrap);
+
+      if (context.isSessionBootstrap) {
+        this.bootstrappedRooms.add(context.roomId);
+      }
+
+      const messages = this.buildMessages(history, message, participantsMessage, contactsMessage, {
+        replayHistory,
+        includeSystemPrompt,
+      });
+      const input = { messages };
+      const graphConfig = {
+        configurable: {
+          thread_id: context.roomId,
+        },
+        recursion_limit: this.recursionLimit,
+      };
+
+      if (this.emitExecutionEvents && graph.streamEvents) {
+        text = await this.forwardStreamEvents(graph, input, graphConfig, tools);
+      } else if (!graph.invoke) {
+        return;
+      } else {
+        const result = await graph.invoke(input, graphConfig);
+        text = extractAssistantText(result);
+      }
+    } catch (error) {
+      this.logger.error("LangGraph adapter request failed", {
+        roomId: context.roomId,
+        error,
+      });
+      await reportTurnFailure(tools, agentFailure(this.provider, asErrorMessage(error)));
     }
 
-    if (!graph.invoke) {
-      return;
-    }
-
-    const result = await graph.invoke(input, graphConfig);
-    const text = extractAssistantText(result);
     if (text) {
-      await tools.sendMessage(text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
+      await deliverReply(tools, text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
     }
   }
 

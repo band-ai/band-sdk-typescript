@@ -17,6 +17,73 @@ export class NoopLogger implements Logger {
   public error = noop;
 }
 
+/**
+ * Wraps a caller-supplied logger so a throwing implementation cannot replace
+ * the failure being logged. Nearly every log call in the SDK sits in a `catch`
+ * or on a failure path, where a throw from the logger would take the place of
+ * the error it was reporting — or, from a floating `catch`, become an
+ * unhandled rejection instead of it.
+ *
+ * Use this wherever an optional caller-supplied `Logger` enters the SDK, so
+ * the guard lives here once rather than at each site that remembers it.
+ *
+ * Adoption is deliberately partial: every adapter entry point and `Execution`
+ * are converted, because those log from inside the failure paths this
+ * feature added. Thirteen entry points under `runtime/`, `platform/`,
+ * `integrations/` and `client/` still build their logger with
+ * `?? new NoopLogger()` — a known, pre-existing inconsistency tracked
+ * separately, not an oversight to report.
+ */
+export function resolveLogger(logger?: Logger): Logger {
+  if (!logger) {
+    return new NoopLogger();
+  }
+
+  // Idempotent: a logger a caller already passed through this once (e.g. an
+  // adapter wrapping its own `options.logger` before handing it to an inner
+  // client that resolves it again) must not gain a second, redundant guard
+  // layer — this is the single place that guarantee is meant to hold.
+  return logger instanceof GuardedLogger ? logger : new GuardedLogger(logger);
+}
+
+class GuardedLogger implements Logger {
+  public constructor(private readonly inner: Logger) {}
+
+  public debug(message: string, context?: Record<string, unknown>): void {
+    return this.emit("debug", message, context);
+  }
+
+  public info(message: string, context?: Record<string, unknown>): void {
+    return this.emit("info", message, context);
+  }
+
+  public warn(message: string, context?: Record<string, unknown>): void {
+    return this.emit("warn", message, context);
+  }
+
+  public error(message: string, context?: Record<string, unknown>): void {
+    return this.emit("error", message, context);
+  }
+
+  private emit(
+    level: keyof Logger,
+    message: string,
+    context?: Record<string, unknown>,
+  ): void {
+    try {
+      // Returned, not just invoked: `Logger.warn` is typed `void`, but an
+      // `async` implementation still returns a real promise at runtime, and
+      // a caller like `safeWarn` needs that actual value to `.catch()` its
+      // rejection — swallowing it here (as a bare call would) strands that
+      // rejection unhandled instead. This `try` only ever catches a
+      // synchronous throw, per resolveLogger's own doc comment.
+      return this.inner[level](message, context);
+    } catch {
+      // Swallowed deliberately — see resolveLogger.
+    }
+  }
+}
+
 export class ConsoleLogger implements Logger {
   public debug(message: string, context?: Record<string, unknown>): void {
     this.emit("debug", message, context);

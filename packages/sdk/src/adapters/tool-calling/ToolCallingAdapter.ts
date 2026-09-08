@@ -7,9 +7,12 @@ import {
 } from "../../contracts/protocols";
 import type { ToolModelMessage } from "../../contracts/dtos";
 import type { Logger } from "../../core/logger";
-import { NoopLogger } from "../../core/logger";
+import { resolveLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { formatHistoryForLlm } from "../../runtime/formatters";
+import { asErrorMessage } from "../shared/coercion";
+import { reportTurnFailure, agentFailure } from "../shared/providerFailure";
+import { deliverReply } from "../shared/deliveryFailedError";
 import {
   CustomToolExecutionError,
   CustomToolValidationError,
@@ -27,9 +30,14 @@ import type {
   ToolRound,
 } from "./types";
 
+/** `AgentFailure.provider` for a subclass that does not name itself. */
+const DEFAULT_PROVIDER = "tool-calling";
+
 export interface ToolCallingAdapterOptions {
   model: ToolCallingModel;
   toolFormat: "openai" | "anthropic";
+  /** Passed through as `AgentFailure.provider` on a provider failure. Defaults to `DEFAULT_PROVIDER` when omitted. */
+  provider?: string;
   systemPrompt?: string;
   includeMemoryTools?: boolean;
   maxToolRounds?: number;
@@ -43,6 +51,7 @@ type ToolCallingTools = MessagingTools & ToolExecutor & ToolSchemaProvider;
 export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCallingTools> {
   private readonly model: ToolCallingModel;
   private readonly toolFormat: "openai" | "anthropic";
+  protected readonly provider: string;
   private readonly systemPrompt?: string;
   private readonly includeMemoryTools: boolean;
   private readonly maxToolRounds: number;
@@ -55,13 +64,14 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     super();
     this.model = options.model;
     this.toolFormat = options.toolFormat;
+    this.provider = options.provider ?? DEFAULT_PROVIDER;
     this.systemPrompt = options.systemPrompt;
     this.includeMemoryTools = options.includeMemoryTools ?? false;
     this.maxToolRounds = options.maxToolRounds ?? 8;
     this.enableExecutionReporting = options.enableExecutionReporting ?? false;
     this.customTools = options.customTools ?? [];
     this.customToolIndex = buildCustomToolIndex(this.customTools);
-    this.logger = options.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options.logger);
   }
 
   public async onMessage(
@@ -72,125 +82,131 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     contactsMessage: string | null,
     _context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
-    const platformSchemas = tools.getToolSchemas(this.toolFormat, {
-      includeMemory: this.includeMemoryTools,
-    });
-    const customSchemas = customToolsToSchemas(this.customTools, this.toolFormat);
-    const schemas = [...platformSchemas, ...customSchemas];
+    let text: string | undefined;
+    try {
+      const platformSchemas = tools.getToolSchemas(this.toolFormat, {
+        includeMemory: this.includeMemoryTools,
+      });
+      const customSchemas = customToolsToSchemas(this.customTools, this.toolFormat);
+      const schemas = [...platformSchemas, ...customSchemas];
 
-    const messages = this.buildMessages(history, message, participantsMessage, contactsMessage);
+      const messages = this.buildMessages(history, message, participantsMessage, contactsMessage);
 
-    const toolRounds: ToolRound[] = [];
+      const toolRounds: ToolRound[] = [];
 
-    let response = await this.model.complete({
-      systemPrompt: this.systemPrompt,
-      messages,
-      tools: schemas,
-    });
-
-    let roundCount = 0;
-    while ((response.toolCalls?.length ?? 0) > 0) {
-      roundCount += 1;
-      if (roundCount > this.maxToolRounds) {
-        const maxRoundsError = new Error(
-          `Stopped tool loop after ${this.maxToolRounds} rounds to prevent infinite recursion.`,
-        );
-        await tools.sendEvent(
-          maxRoundsError.message,
-          "error",
-        );
-        throw maxRoundsError;
-      }
-
-      const roundToolCalls = response.toolCalls ?? [];
-
-      const roundToolResults: ToolResult[] = [];
-      for (const call of roundToolCalls) {
-        if (this.enableExecutionReporting) {
-          await this.reportExecutionEvent(
-            tools,
-            {
-              name: call.name,
-              args: call.input,
-              tool_call_id: call.id,
-            },
-            "tool_call",
-          );
-        }
-
-        let output: unknown;
-        if (call.inputParseError) {
-          output = {
-            ok: false,
-            errorType: "ToolCallArgumentsParseError",
-            message: call.inputParseError,
-            toolName: call.name,
-            toolCallId: call.id,
-          };
-        } else {
-          const customTool = findCustomToolInIndex(this.customToolIndex, call.name);
-          if (customTool) {
-            try {
-              output = await executeCustomTool(customTool, call.input);
-            } catch (error) {
-              if (error instanceof CustomToolValidationError || error instanceof CustomToolExecutionError) {
-                output = {
-                  ok: false,
-                  errorType: error.name,
-                  message: error.message,
-                  toolName: error.toolName,
-                };
-              } else {
-                output = {
-                  ok: false,
-                  errorType: "CustomToolUnknownError",
-                  message: error instanceof Error ? error.message : String(error),
-                  toolName: call.name,
-                };
-              }
-            }
-          } else {
-            output = await tools.executeToolCall(call.name, call.input);
-          }
-        }
-        const isError = isToolOutputError(output);
-        roundToolResults.push({
-          toolCallId: call.id,
-          name: call.name,
-          output,
-          isError,
-        });
-
-        if (this.enableExecutionReporting) {
-          await this.reportExecutionEvent(
-            tools,
-            {
-              name: call.name,
-              output,
-              tool_call_id: call.id,
-            },
-            "tool_result",
-          );
-        }
-      }
-
-      toolRounds.push({ toolCalls: roundToolCalls, toolResults: roundToolResults });
-
-      response = await this.model.complete({
+      let response = await this.model.complete({
         systemPrompt: this.systemPrompt,
         messages,
         tools: schemas,
-        toolRounds,
       });
+
+      let roundCount = 0;
+      while ((response.toolCalls?.length ?? 0) > 0) {
+        roundCount += 1;
+        if (roundCount > this.maxToolRounds) {
+          throw new Error(
+            `Stopped tool loop after ${this.maxToolRounds} rounds to prevent infinite recursion.`,
+          );
+        }
+
+        const roundToolCalls = response.toolCalls ?? [];
+
+        const roundToolResults: ToolResult[] = [];
+        for (const call of roundToolCalls) {
+          if (this.enableExecutionReporting) {
+            await this.reportExecutionEvent(
+              tools,
+              {
+                name: call.name,
+                args: call.input,
+                tool_call_id: call.id,
+              },
+              "tool_call",
+            );
+          }
+
+          let output: unknown;
+          if (call.inputParseError) {
+            output = {
+              ok: false,
+              errorType: "ToolCallArgumentsParseError",
+              message: call.inputParseError,
+              toolName: call.name,
+              toolCallId: call.id,
+            };
+          } else {
+            const customTool = findCustomToolInIndex(this.customToolIndex, call.name);
+            if (customTool) {
+              try {
+                output = await executeCustomTool(customTool, call.input);
+              } catch (error) {
+                if (error instanceof CustomToolValidationError || error instanceof CustomToolExecutionError) {
+                  output = {
+                    ok: false,
+                    errorType: error.name,
+                    message: error.message,
+                    toolName: error.toolName,
+                  };
+                } else {
+                  output = {
+                    ok: false,
+                    errorType: "CustomToolUnknownError",
+                    message: asErrorMessage(error),
+                    toolName: call.name,
+                  };
+                }
+              }
+            } else {
+              output = await tools.executeToolCall(call.name, call.input);
+            }
+          }
+          const isError = isToolOutputError(output);
+          roundToolResults.push({
+            toolCallId: call.id,
+            name: call.name,
+            output,
+            isError,
+          });
+
+          if (this.enableExecutionReporting) {
+            await this.reportExecutionEvent(
+              tools,
+              {
+                name: call.name,
+                output,
+                tool_call_id: call.id,
+              },
+              "tool_result",
+            );
+          }
+        }
+
+        toolRounds.push({ toolCalls: roundToolCalls, toolResults: roundToolResults });
+
+        response = await this.model.complete({
+          systemPrompt: this.systemPrompt,
+          messages,
+          tools: schemas,
+          toolRounds,
+        });
+      }
+
+      text = response.text?.trim();
+      if (!text && (response.toolCalls?.length ?? 0) === 0) {
+        this.logger.warn("Model returned empty response with no tool calls", {
+          messageId: message.id,
+        });
+      }
+    } catch (error) {
+      this.logger.error("Tool-calling adapter request failed", {
+        messageId: message.id,
+        error,
+      });
+      await reportTurnFailure(tools, agentFailure(this.provider, asErrorMessage(error)));
     }
 
-    const text = response.text?.trim();
     if (text) {
-      await tools.sendMessage(text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
-    } else if ((response.toolCalls?.length ?? 0) === 0) {
-      this.logger.warn("Model returned empty response with no tool calls", {
-        messageId: message.id,
-      });
+      await deliverReply(tools, text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
     }
   }
 

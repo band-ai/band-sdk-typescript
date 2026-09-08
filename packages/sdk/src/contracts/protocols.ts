@@ -1,3 +1,5 @@
+import type { AgentFailure } from "@band-ai/band-sdk-core";
+import { isBlankEventContent, type ChatEventType } from "./chatEvents";
 import type {
   AddContactArgs,
   ContactRequestsResult,
@@ -45,11 +47,67 @@ export interface MessagingTools {
     content: string,
     mentions?: MentionInput,
   ): Promise<ToolOperationResult>;
+  /**
+   * Room telemetry, unlike `sendMessage`: a *failed post* resolves
+   * `{ ok: false, status: "failed" }` rather than rejecting, so reporting
+   * something about a turn can never abort the turn over a transport error.
+   * `sendFailure`, which delegates here, inherits that.
+   *
+   * It is not unconditionally non-throwing: an implementation still rejects
+   * when it cannot post at all — `ContactCallbackTools` throws for an event
+   * with no room context, and for a REST adapter without the endpoint. A
+   * caller reporting from a `catch` on such a path has to guard it, the way
+   * `CodexAdapter.safeSendFailure` does.
+   */
   sendEvent(
     content: string,
     messageType: string,
     metadata?: MetadataMap,
   ): Promise<ToolOperationResult>;
+  sendFailure(failure: AgentFailure): Promise<ToolOperationResult>;
+}
+
+/** The chat event type every failure is posted as. */
+export const FAILURE_EVENT_TYPE: ChatEventType = "error";
+
+/**
+ * Metadata key nesting the serialized `AgentFailure`. Part of the wire
+ * contract — clients read `metadata.failure` to render a failure — so it is
+ * defined here once rather than spelled out at each posting site.
+ */
+export const FAILURE_METADATA_KEY = "failure";
+
+/**
+ * Default `sendFailure` body: turn the failure into its wire event and post
+ * it through the caller's own `sendEvent`. Every in-tree `MessagingTools`
+ * implementation delegates here instead of re-deriving the event itself.
+ */
+export function sendFailureViaEvent(
+  sendEvent: MessagingTools["sendEvent"],
+  failure: AgentFailure,
+): Promise<ToolOperationResult> {
+  const { content, messageType, metadata } = toFailureEvent(failure);
+  return sendEvent(content, messageType, metadata);
+}
+
+/** The complete event every `sendFailure` implementation posts for a failure. */
+export function toFailureEvent(failure: AgentFailure): {
+  content: string;
+  messageType: ChatEventType;
+  metadata: MetadataMap;
+} {
+  // A provider message is whatever the provider gave us, and `new Error()` /
+  // `String("")` both reach here blank. The platform rejects a blank chat
+  // event and `sendEvent` swallows that rejection, so an unguarded blank
+  // message would make the failure vanish from the room entirely.
+  const content = isBlankEventContent(failure.message)
+    ? `${failure.provider} failed without an error message.`
+    : failure.message;
+  return {
+    content,
+    messageType: FAILURE_EVENT_TYPE,
+    metadata: { [FAILURE_METADATA_KEY]: failure.toObject() },
+  };
 }
 
 export interface RoomParticipantTools {

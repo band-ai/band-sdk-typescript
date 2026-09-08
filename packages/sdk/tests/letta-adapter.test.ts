@@ -8,7 +8,9 @@ import type {
   LettaMessageCreateParams,
 } from "../src/adapters/letta/LettaAdapter";
 import { LettaHistoryConverter } from "../src/adapters/letta/types";
-import { FakeTools, makeMessage } from "./testUtils";
+import { FakeTools, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
+import { describeDeliveryContract } from "./deliveryContract";
+import { FAILURE_EVENT_TYPE } from "../src/contracts/protocols";
 
 // ---------------------------------------------------------------------------
 // Fake Letta client
@@ -134,6 +136,25 @@ describe("LettaAdapter", () => {
     expect(client.messageCreateCalls[0].agentId).toBe("letta-agent-1");
     expect(tools.messages).toEqual(["Hello from Letta!"]);
   });
+
+  describeDeliveryContract([{
+    path: "assistant reply",
+    turn: async (tools) => {
+      const client = new FakeLettaClient();
+      client.responseBatches.push(assistantResponse("Hello from Letta!"));
+
+      const adapter = new LettaAdapter({
+        model: "openai/gpt-4o",
+        clientFactory: async () => client,
+      });
+      await adapter.onStarted("Letta Bridge", "Bridge to Letta");
+
+      await adapter.onMessage(makeMessage("Hi", "room-1"), tools, [], null, null, {
+        isSessionBootstrap: false,
+        roomId: "room-1",
+      });
+    },
+  }]);
 
   it("reuses the same agent for the same room", async () => {
     const client = new FakeLettaClient();
@@ -286,13 +307,15 @@ describe("LettaAdapter", () => {
     await adapter.onStarted("Agent", "An agent");
 
     const tools = new FakeTools();
-    await adapter.onMessage(
-      makeMessage("Loop", "room-limit"),
-      tools,
-      [],
-      null,
-      null,
-      { isSessionBootstrap: false, roomId: "room-limit" },
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("Loop", "room-limit"),
+        tools,
+        [],
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-limit" },
+      ),
     );
 
     const toolCalls = client.messageCreateCalls.filter((c) =>
@@ -374,7 +397,7 @@ describe("LettaAdapter", () => {
     expect(tools.messages).toEqual(["Both done"]);
   });
 
-  it("throws when per-call API timeout is exceeded", async () => {
+  it("reports, then fails the turn, when the per-call API timeout is exceeded", async () => {
     const client = new FakeLettaClient();
     // Make the API call hang indefinitely
     client.agents.messages.create = async () => {
@@ -391,7 +414,7 @@ describe("LettaAdapter", () => {
     await adapter.onStarted("Agent", "An agent");
 
     const tools = new FakeTools();
-    await expect(
+    await expectTurnFailed(
       adapter.onMessage(
         makeMessage("Hang", "room-api-timeout"),
         tools,
@@ -400,10 +423,17 @@ describe("LettaAdapter", () => {
         null,
         { isSessionBootstrap: false, roomId: "room-api-timeout" },
       ),
-    ).rejects.toThrow("Letta API call timed out");
+    );
+
+    const failureEvent = findFailureEvent(tools);
+    expect(failureEvent?.metadata?.failure).toMatchObject({
+      provider: "letta",
+      message: "Letta API call timed out",
+      code: null,
+    });
   });
 
-  it("throws when agent creation hangs past responseTimeoutSeconds", async () => {
+  it("reports, then fails the turn, when agent creation hangs past responseTimeoutSeconds", async () => {
     const client = new FakeLettaClient();
     // Make agent creation hang indefinitely
     client.agents.create = async () => {
@@ -420,7 +450,7 @@ describe("LettaAdapter", () => {
     await adapter.onStarted("Agent", "An agent");
 
     const tools = new FakeTools();
-    await expect(
+    await expectTurnFailed(
       adapter.onMessage(
         makeMessage("Hi", "room-create-timeout"),
         tools,
@@ -429,7 +459,14 @@ describe("LettaAdapter", () => {
         null,
         { isSessionBootstrap: false, roomId: "room-create-timeout" },
       ),
-    ).rejects.toThrow("Letta agent creation timed out");
+    );
+
+    const failureEvent = findFailureEvent(tools);
+    expect(failureEvent?.metadata?.failure).toMatchObject({
+      provider: "letta",
+      message: "Letta agent creation timed out",
+      code: null,
+    });
   });
 
   it("emits reasoning messages as thought events", async () => {
@@ -602,20 +639,32 @@ describe("LettaAdapter", () => {
     await adapter.onStarted("Agent", "An agent");
 
     const tools = new FakeTools();
-    await adapter.onMessage(
-      makeMessage("Hi", "room-empty"),
-      tools,
-      [],
-      null,
-      null,
-      { isSessionBootstrap: false, roomId: "room-empty" },
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("Hi", "room-empty"),
+        tools,
+        [],
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-empty" },
+      ),
     );
 
     expect(tools.messages).toEqual([]);
-    expect(tools.events.some((e) => e.messageType === "error")).toBe(true);
+    const failureEvent = findFailureEvent(tools);
+    expect(failureEvent).toBeDefined();
+    expect(failureEvent?.metadata?.failure).toMatchObject({
+      provider: "letta",
+      message: "Letta did not return a response.",
+      code: null,
+    });
+    // The no-response branch throws from inside the same try its own catch
+    // guards — without rethrowIfProviderTurnFailure, the catch re-reports the
+    // identical failure a second time.
+    expect(tools.events.filter((event) => event.messageType === FAILURE_EVENT_TYPE)).toHaveLength(1);
   });
 
-  it("logs and re-throws on client error", async () => {
+  it("reports, then fails the turn, on a client error", async () => {
     const client = new FakeLettaClient();
     client.agents.messages.create = async () => {
       throw new Error("Letta API error");
@@ -636,7 +685,7 @@ describe("LettaAdapter", () => {
     await adapter.onStarted("Agent", "An agent");
 
     const tools = new FakeTools();
-    await expect(
+    await expectTurnFailed(
       adapter.onMessage(
         makeMessage("Hi", "room-err"),
         tools,
@@ -645,16 +694,22 @@ describe("LettaAdapter", () => {
         null,
         { isSessionBootstrap: false, roomId: "room-err" },
       ),
-    ).rejects.toThrow("Letta API error");
+    );
 
-    expect(tools.events.some((e) => e.messageType === "error")).toBe(true);
+    const failureEvent = findFailureEvent(tools);
+    expect(failureEvent).toBeDefined();
+    expect(failureEvent?.metadata?.failure).toMatchObject({
+      provider: "letta",
+      message: "Letta API error",
+      code: null,
+    });
     expect(logger.error).toHaveBeenCalledWith(
       "Letta adapter request failed",
       expect.objectContaining({ roomId: "room-err" }),
     );
   });
 
-  it("logs client initialization failures", async () => {
+  it("reports, then fails the turn, on a client initialization failure", async () => {
     const logger = {
       debug: vi.fn(),
       info: vi.fn(),
@@ -672,7 +727,7 @@ describe("LettaAdapter", () => {
     await adapter.onStarted("Agent", "An agent");
 
     const tools = new FakeTools();
-    await expect(
+    await expectTurnFailed(
       adapter.onMessage(
         makeMessage("Hi", "room-init"),
         tools,
@@ -681,8 +736,15 @@ describe("LettaAdapter", () => {
         null,
         { isSessionBootstrap: false, roomId: "room-init" },
       ),
-    ).rejects.toThrow("init failed");
+    );
 
+    const failureEvent = findFailureEvent(tools);
+    expect(failureEvent).toBeDefined();
+    expect(failureEvent?.metadata?.failure).toMatchObject({
+      provider: "letta",
+      message: "init failed",
+      code: null,
+    });
     expect(logger.error).toHaveBeenCalledWith(
       "Letta client initialization failed",
       expect.objectContaining({ error: expect.any(Error) }),
@@ -1044,7 +1106,7 @@ describe("LettaAdapter", () => {
     expect(historyCall.params.max_steps).toBe(1);
   });
 
-  it("stops the tool loop when responseTimeoutSeconds is exceeded", async () => {
+  it("reports, then fails the turn, when the tool loop stops on responseTimeoutSeconds", async () => {
     vi.useFakeTimers();
     try {
       const client = new FakeLettaClient();
@@ -1079,7 +1141,7 @@ describe("LettaAdapter", () => {
       // With 5s timeout and 2s per call: initial call (2s, remaining 5s OK) +
       // round 1 tool result call (2s, remaining 3s OK) + round 2 tool result
       // call (2s > remaining 1s) → per-call timeout fires and aborts the request.
-      await expect(
+      await expectTurnFailed(
         adapter.onMessage(
           makeMessage("Tick", "room-timeout"),
           tools,
@@ -1088,7 +1150,14 @@ describe("LettaAdapter", () => {
           null,
           { isSessionBootstrap: false, roomId: "room-timeout" },
         ),
-      ).rejects.toThrow("Letta API call timed out");
+      );
+
+      const failureEvent = findFailureEvent(tools);
+      expect(failureEvent?.metadata?.failure).toMatchObject({
+        provider: "letta",
+        message: "Letta API call timed out",
+        code: null,
+      });
 
       // Some tool rounds should have completed before the timeout
       const toolCalls = client.messageCreateCalls.filter((c) =>
@@ -1438,7 +1507,7 @@ describe("LettaAdapter", () => {
     expect(client.agentDeleteCount).toBe(1);
   });
 
-  it("enforces cooldown after client init failure", async () => {
+  it("enforces cooldown after a client init failure, reporting and then failing the turn", async () => {
     let attempts = 0;
     const logger = {
       debug: vi.fn(),
@@ -1460,7 +1529,7 @@ describe("LettaAdapter", () => {
     const tools = new FakeTools();
 
     // First call triggers init failure
-    await expect(
+    await expectTurnFailed(
       adapter.onMessage(
         makeMessage("Hi", "room-cooldown"),
         tools,
@@ -1469,11 +1538,17 @@ describe("LettaAdapter", () => {
         null,
         { isSessionBootstrap: false, roomId: "room-cooldown" },
       ),
-    ).rejects.toThrow("init failed");
+    );
     expect(attempts).toBe(1);
+    expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({
+      provider: "letta",
+      message: "init failed",
+      code: null,
+    });
 
-    // Immediate second call should hit cooldown
-    await expect(
+    // Immediate second call should hit cooldown — still a reported provider
+    // failure, so still a failed turn rather than a quietly processed one.
+    await expectTurnFailed(
       adapter.onMessage(
         makeMessage("Hi again", "room-cooldown"),
         tools,
@@ -1482,9 +1557,15 @@ describe("LettaAdapter", () => {
         null,
         { isSessionBootstrap: false, roomId: "room-cooldown" },
       ),
-    ).rejects.toThrow(/load failed recently/);
+    );
     // Should not have attempted init again
     expect(attempts).toBe(1);
+    const cooldownFailure = tools.events.filter((e) => e.messageType === "error")[1];
+    expect(cooldownFailure?.metadata?.failure).toMatchObject({
+      provider: "letta",
+      code: null,
+    });
+    expect((cooldownFailure?.metadata?.failure as { message?: string })?.message).toMatch(/load failed recently/);
   });
 
   it("gives up history injection after 3 consecutive failures", async () => {

@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { LangGraphAdapter } from "../src/adapters/langgraph";
 import { HistoryProvider } from "../src/runtime/types";
-import { FakeTools, makeMessage } from "./testUtils";
+import { FakeTools, makeMessage, expectTurnFailed } from "./testUtils";
+import { describeDeliveryContract } from "./deliveryContract";
 
 const langGraphMocks = vi.hoisted(() => ({
   createReactAgent: vi.fn(),
@@ -26,6 +27,27 @@ function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
 }
 
 describe("LangGraphAdapter", () => {
+  describeDeliveryContract([{
+    path: "graph reply",
+    turn: async (tools) => {
+      const graph = {
+        async invoke() {
+          return { messages: [["assistant", "LangGraph reply"]] };
+        },
+      };
+      const adapter = new LangGraphAdapter({ graph });
+      await adapter.onStarted("LangGraph Agent", "Graph-backed assistant");
+      await adapter.onMessage(
+        makeMessage("hello"),
+        tools,
+        new HistoryProvider([]),
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-delivery" },
+      );
+    },
+  }]);
+
   it("constructs a graph with official LangGraph SDK when llm is provided", async () => {
     langGraphMocks.createReactAgent.mockReset();
     langGraphMocks.tool.mockReset();
@@ -464,5 +486,41 @@ describe("LangGraphAdapter", () => {
     );
 
     expect(tools.messages).toEqual(["Hello there!"]);
+  });
+
+  it("reports a provider failure via sendFailure, then fails the turn", async () => {
+    const graph = {
+      async invoke() {
+        throw new Error("langgraph invoke exploded");
+      },
+    };
+
+    const adapter = new LangGraphAdapter({ graph });
+    await adapter.onStarted("LangGraph Agent", "Graph-backed assistant");
+
+    const tools = new FakeTools();
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("hello"),
+        tools,
+        new HistoryProvider([]),
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-failure" },
+      ),
+    );
+
+    expect(tools.messages).toEqual([]);
+    expect(tools.events).toHaveLength(1);
+    expect(tools.events[0]?.messageType).toBe("error");
+    expect(tools.events[0]?.content).toBe("langgraph invoke exploded");
+    expect(tools.events[0]?.metadata).toMatchObject({
+      failure: {
+        provider: "langgraph",
+        message: "langgraph invoke exploded",
+        code: null,
+        detail: null,
+      },
+    });
   });
 });

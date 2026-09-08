@@ -39,6 +39,8 @@ export interface BandACPServerAdapterOptions {
 }
 
 export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, MessagingTools> {
+  protected readonly provider = "acp-server";
+
   private readonly bandRest: RestApi
   private readonly maxSessions: number
   private readonly responseTimeoutMs: number

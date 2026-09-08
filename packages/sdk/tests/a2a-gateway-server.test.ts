@@ -2,7 +2,7 @@ import type { Server as HttpServer } from "node:http";
 
 import { describe, expect, it } from "vitest";
 
-import { createGatewayServer } from "../src/adapters/a2a-gateway/server";
+import { createGatewayServer, sanitizeGatewayErrorMessage } from "../src/adapters/a2a-gateway/server";
 import type {
   GatewayCancelRequest,
   GatewayRequest,
@@ -393,12 +393,84 @@ describe("GatewayServer", () => {
     expect(event.kind).toBe("status-update");
     expect(event.final).toBe(true);
     expect(event.status?.state).toBe("failed");
-    expect(event.metadata?.error_type).toBe("Error");
-    expect(typeof event.metadata?.error_message).toBe("string");
-    expect(String(event.metadata?.error_message)).toContain("[REDACTED]");
-    expect(String(event.metadata?.error_message)).not.toContain("secret-token");
-    expect(String(event.metadata?.error_message)).not.toContain("abc123");
-    expect(String(event.metadata?.error_message)).not.toContain("xyz");
+    const failure = event.metadata?.failure as Record<string, unknown> | undefined;
+    expect(failure?.provider).toBe("a2a-gateway");
+    expect(failure?.code).toBe("Error");
+    expect(typeof failure?.message).toBe("string");
+    expect(String(failure?.message)).toContain("[REDACTED]");
+    expect(String(failure?.message)).not.toContain("secret-token");
+    expect(String(failure?.message)).not.toContain("abc123");
+    expect(String(failure?.message)).not.toContain("xyz");
+  });
+
+  it("redacts a scheme-prefixed credential value, not just its scheme word", async () => {
+    const { recordedExecutors, loadModules } = createModulesRecorder();
+    const server = createGatewayServer(makeServerOptions({
+      allowUnauthenticatedLoopback: true,
+      loadModules,
+      onRequest: async function* () {
+        throw new Error("upstream failed Authorization: ApiKey sk-actualSecretValue1234");
+      },
+    }));
+
+    await server.start();
+    const executor = recordedExecutors[0];
+    expect(executor).toBeDefined();
+    if (!executor) {
+      throw new Error("Expected a recorded gateway executor");
+    }
+
+    const publishedEvents: unknown[] = [];
+    await executor.execute(
+      {
+        taskId: "task-fail-scheme",
+        contextId: "ctx-fail-scheme",
+        userMessage: {
+          kind: "message",
+          messageId: "m-fail-scheme",
+          role: "user",
+          parts: [],
+        },
+      },
+      {
+        publish: (event) => {
+          publishedEvents.push(event);
+        },
+        finished: () => undefined,
+      },
+    );
+    await server.stop();
+
+    const event = publishedEvents[0] as { metadata?: Record<string, unknown> };
+    const failure = event.metadata?.failure as Record<string, unknown> | undefined;
+    expect(String(failure?.message)).not.toContain("sk-actualSecretValue1234");
+  });
+
+  describe("sanitizeGatewayErrorMessage", () => {
+    it("redacts a scheme-prefixed credential value, not just its scheme word", () => {
+      const sanitized = sanitizeGatewayErrorMessage(
+        new Error("upstream failed Authorization: ApiKey sk-actualSecretValue1234"),
+      );
+      expect(sanitized).not.toContain("sk-actualSecretValue1234");
+    });
+
+    it("redacts the credential but preserves trailing prose past it, instead of swallowing everything up to the next comma", () => {
+      const sanitized = sanitizeGatewayErrorMessage(
+        new Error(
+          "Invalid token: eyJhbGciOiJIUzI1NiJ9.abc sent to https://api.example.com/v1/chat was rejected, please check your configuration",
+        ),
+      );
+      expect(sanitized).not.toContain("eyJhbGciOiJIUzI1NiJ9.abc");
+      expect(sanitized).toContain("sent to https://api.example.com/v1/chat was rejected");
+      expect(sanitized).toContain("please check your configuration");
+    });
+
+    it("redacts a credential embedded in a JSON-quoted key/value pair, not just a bare key: value pair", () => {
+      const sanitized = sanitizeGatewayErrorMessage(
+        new Error('HTTP 401 body {"api_key":"sk-json-secret"}'),
+      );
+      expect(sanitized).not.toContain("sk-json-secret");
+    });
   });
 
   it("builds agent card skills tagged with band and gateway", async () => {

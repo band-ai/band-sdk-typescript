@@ -6,6 +6,7 @@ import { TransportError, ValidationError } from "../src/core/errors";
 import { PlatformRuntime } from "../src/runtime/PlatformRuntime";
 import { ExecutionContext } from "../src/runtime/ExecutionContext";
 import { HUB_ROOM_SYSTEM_PROMPT } from "../src/runtime/ContactEventHandler";
+import type { FrameworkAdapter, FrameworkAdapterInput } from "../src/contracts/protocols";
 import type { StreamingTransport } from "../src/platform/streaming/transport";
 import { BandLink } from "../src/platform/BandLink";
 import { FakeRestApi, FakeTransport, makeMessage } from "./testUtils";
@@ -380,10 +381,20 @@ describe("PlatformRuntime", () => {
   });
 
   it("propagates fatal adapter failures through runForever", async () => {
+    // A GenericAdapter handler bug no longer reaches this far — GenericAdapter
+    // reports and fails just the turn now, like every other adapter. This
+    // test is about PlatformRuntime/AgentRuntime's own fatal-failure
+    // propagation, so it drives that with a raw FrameworkAdapter whose
+    // onEvent throws unguarded, the same shape a genuinely broken adapter
+    // implementation (not going through SimpleAdapter) would have.
     const transport = new FakeTransport();
-    const adapter = new GenericAdapter(async () => {
-      throw new Error("adapter exploded");
-    });
+    const adapter: FrameworkAdapter = {
+      onEvent: async (_input: FrameworkAdapterInput) => {
+        throw new Error("adapter exploded");
+      },
+      onCleanup: async () => undefined,
+      onStarted: async () => undefined,
+    };
 
     const runtime = new PlatformRuntime({
       agentId: "a1",
@@ -665,8 +676,14 @@ describe("PlatformRuntime", () => {
     ).toThrow("loadAgentConfig()");
   });
 
-  it("forwards logger to lazily-constructed BandLink", async () => {
+  it("prefers the runtime logger for a lazily-constructed BandLink", async () => {
     const spyLogger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const linkLogger = {
       debug: vi.fn(),
       info: vi.fn(),
       warn: vi.fn(),
@@ -680,11 +697,33 @@ describe("PlatformRuntime", () => {
       apiKey: "k",
       wsUrl: "wss://example.test/socket",
       logger: spyLogger,
-      linkOptions: { transport, restApi },
+      linkOptions: { transport, restApi, logger: linkLogger },
     });
 
     await runtime.initialize();
 
     expect((runtime.link as unknown as { logger: unknown }).logger).toBe(spyLogger);
+  });
+
+  it("preserves a BandLink logger when no runtime logger is configured", async () => {
+    const linkLogger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const transport = new FakeTransport();
+    const restApi = new FakeRestApi();
+
+    const runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      wsUrl: "wss://example.test/socket",
+      linkOptions: { transport, restApi, logger: linkLogger },
+    });
+
+    await runtime.initialize();
+
+    expect((runtime.link as unknown as { logger: unknown }).logger).toBe(linkLogger);
   });
 });

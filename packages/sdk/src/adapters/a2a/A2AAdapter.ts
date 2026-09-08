@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
 
+import { AgentFailure } from "@band-ai/band-sdk-core";
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { MessagingTools } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
-import { NoopLogger } from "../../core/logger";
+import { resolveLogger } from "../../core/logger";
 import type { PlatformMessage } from "../../runtime/types";
 import { asErrorMessage } from "../shared/coercion";
+import { reportTurnFailure, agentFailure, rethrowIfProviderTurnFailure } from "../shared/providerFailure";
+import { deliverReply, rethrowIfDeliveryFailure } from "../shared/deliveryFailedError";
 import {
   A2AHistoryConverter,
   buildA2AAuthHeaders,
@@ -110,6 +113,8 @@ export type A2AClientFactory = (input: {
 }) => Promise<A2AClientLike>;
 
 export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
+  protected readonly provider = "a2a";
+
   private readonly remoteUrl: string;
   private readonly authHeaders: Record<string, string>;
   private readonly streaming: boolean;
@@ -130,7 +135,7 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
     this.streaming = options.streaming ?? true;
     this.clientFactory = options.clientFactory;
     this.maxStreamEvents = normalizeMaxStreamEvents(options.maxStreamEvents);
-    this.logger = options.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options.logger);
   }
 
   public async onStarted(agentName: string, agentDescription: string): Promise<void> {
@@ -146,15 +151,15 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
     _contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
-    const client = this.client ?? (await this.createClient());
-    this.client = client;
-
-    if (context.isSessionBootstrap) {
-      await this.rehydrateFromHistory(context.roomId, history, client);
-    }
-
-    const request = this.toSendParams(message, context.roomId);
     try {
+      const client = this.client ?? (await this.createClient());
+      this.client = client;
+
+      if (context.isSessionBootstrap) {
+        await this.rehydrateFromHistory(context.roomId, history, client);
+      }
+
+      const request = this.toSendParams(message, context.roomId);
       if (this.streaming) {
         let streamEventCount = 0;
         for await (const event of client.sendMessageStream(request)) {
@@ -165,6 +170,16 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
           try {
             await this.handleEvent(event, tools, context.roomId, message.senderId);
           } catch (handleError) {
+            // One unusable event must not abort the rest of the stream — but a
+            // failed *delivery*, or a terminal task-state failure already
+            // reported to the room, is not an event-handling failure to log
+            // and skip past. Swallowing either here would resolve the turn as
+            // processed with the reply lost, or double-report the same
+            // incident on the next stream event — the outcomes this whole
+            // path exists to prevent.
+            rethrowIfDeliveryFailure(handleError);
+            rethrowIfProviderTurnFailure(handleError);
+
             this.logger.error("A2A stream event handling failed; continuing stream", {
               roomId: context.roomId,
               remoteUrl: this.remoteUrl,
@@ -179,25 +194,16 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
       const response = await client.sendMessage(request);
       await this.handleEvent(response, tools, context.roomId, message.senderId);
     } catch (error) {
+      rethrowIfDeliveryFailure(error);
+      rethrowIfProviderTurnFailure(error);
+
       const errorMessage = asErrorMessage(error);
       this.logger.error("A2A adapter request failed", {
         roomId: context.roomId,
         remoteUrl: this.remoteUrl,
         error,
       });
-      try {
-        await tools.sendEvent(`A2A agent error: ${errorMessage}`, "error", {
-          a2a_error: errorMessage,
-        });
-      } catch (eventError) {
-        this.logger.warn("A2A adapter failed to emit error event", {
-          roomId: context.roomId,
-          remoteUrl: this.remoteUrl,
-          error: eventError,
-        });
-      }
-
-      throw error instanceof Error ? error : new Error(errorMessage);
+      await reportTurnFailure(tools, agentFailure(this.provider, errorMessage));
     }
   }
 
@@ -226,7 +232,7 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
     if (isMessageEvent(event)) {
       const text = extractMessageText(event);
       if (text) {
-        await tools.sendMessage(text, [{ id: senderId }]);
+        await deliverReply(tools, text, [{ id: senderId }]);
       }
       return;
     }
@@ -244,7 +250,7 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
     if (isArtifactUpdateEvent(event)) {
       const text = extractArtifactText(event.artifact);
       if (text) {
-        await tools.sendMessage(text, [{ id: senderId }]);
+        await deliverReply(tools, text, [{ id: senderId }]);
       }
     }
   }
@@ -350,14 +356,14 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
 
     if (input.state === "input-required") {
       const text = extractMessageText(input.statusMessage) ?? "Please provide more information.";
-      await input.tools.sendMessage(text, [input.sender]);
+      await deliverReply(input.tools, text, [input.sender]);
       await this.emitTaskEvent(input.tools, input.contextId, input.taskId, input.state);
       return;
     }
 
     if (input.state === "completed") {
       if (input.completedMessage) {
-        await input.tools.sendMessage(input.completedMessage, [input.sender]);
+        await deliverReply(input.tools, input.completedMessage, [input.sender]);
       }
       await this.emitTaskEvent(input.tools, input.contextId, input.taskId, input.state);
       this.clearTaskTracking(input.key, input.roomId);
@@ -366,9 +372,13 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
 
     if (TERMINAL_STATES.has(input.state)) {
       const text = extractMessageText(input.statusMessage) ?? `A2A task ${input.state}`;
-      await input.tools.sendEvent(text, "error", { a2a_state: input.state });
       await this.emitTaskEvent(input.tools, input.contextId, input.taskId, input.state);
       this.clearTaskTracking(input.key, input.roomId);
+      // Reports and throws, like every other terminal provider failure in this
+      // adapter: a remote task ending failed/canceled/rejected/auth-required is
+      // exactly that, and must fail the turn so PlatformRuntime retries it
+      // instead of marking it processed.
+      await reportTurnFailure(input.tools, new AgentFailure(this.provider, text, input.state));
     }
   }
 

@@ -18,15 +18,25 @@ export class BandACPClient implements Client {
   private readonly sessionChunks = new Map<string, CollectedChunk[]>()
   private readonly permissionHandlers = new Map<string, ACPPermissionHandler>()
 
+  /**
+   * Opens the buffer a turn's chunks collect into. Buffering is opt-in so that
+   * `resetSession` is final: an agent that keeps streaming into a session the
+   * adapter has already released — the wedged agent a turn timeout escapes —
+   * would otherwise re-create its buffer and grow it for the process lifetime.
+   */
+  public beginSession(sessionId: string): void {
+    this.sessionChunks.set(sessionId, [])
+  }
+
   public async sessionUpdate(params: SessionNotification): Promise<void> {
-    const chunk = toCollectedChunk(params.update)
-    if (!chunk) {
+    if (!this.sessionChunks.has(params.sessionId)) {
       return
     }
 
-    const existing = this.sessionChunks.get(params.sessionId) ?? []
-    existing.push(chunk)
-    this.sessionChunks.set(params.sessionId, existing)
+    const chunk = toCollectedChunk(params.update)
+    if (chunk) {
+      this.appendChunk(params.sessionId, chunk)
+    }
   }
 
   public async requestPermission(
@@ -46,13 +56,8 @@ export class BandACPClient implements Client {
 
   public setPermissionHandler(
     sessionId: string,
-    handler?: ACPPermissionHandler,
+    handler: ACPPermissionHandler,
   ): void {
-    if (!handler) {
-      this.permissionHandlers.delete(sessionId)
-      return
-    }
-
     this.permissionHandlers.set(sessionId, handler)
   }
 
@@ -153,10 +158,9 @@ export class BandACPClient implements Client {
     }
   }
 
+  /** The only writer, so no notification can resurrect a released buffer. */
   private appendChunk(sessionId: string, chunk: CollectedChunk): void {
-    const existing = this.sessionChunks.get(sessionId) ?? []
-    existing.push(chunk)
-    this.sessionChunks.set(sessionId, existing)
+    this.sessionChunks.get(sessionId)?.push(chunk)
   }
 }
 

@@ -5,7 +5,8 @@ import {
   type ClaudeSDKQuery,
 } from "../src/adapters/claude-sdk/ClaudeSDKAdapter";
 import { HistoryProvider } from "../src/runtime/types";
-import { FakeTools, makeMessage } from "./testUtils";
+import { FakeTools, makeMessage, expectTurnFailed } from "./testUtils";
+import { describeDeliveryContract } from "./deliveryContract";
 import { MCP_SERVER_NAME } from "../src/runtime/tools/schemas";
 
 function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
@@ -270,4 +271,62 @@ describe("ClaudeSDKAdapter", () => {
       }),
     );
   });
+
+  it("surfaces a query-loop failure as a structured sendFailure event", async () => {
+    const queryFn: ClaudeSDKQuery = () => {
+      throw new Error("claude query blew up");
+    };
+
+    const adapter = new ClaudeSDKAdapter({ queryFn });
+    await adapter.onStarted("Parity Agent", "Parity test agent");
+
+    const tools = new FakeTools();
+    await expectTurnFailed(adapter.onMessage(
+      makeMessage("hello", "room-fail"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-fail" },
+    ));
+
+    expect(tools.messages).toEqual([]);
+    const failureEvents = tools.events.filter((event) => event.messageType === "error");
+    expect(failureEvents).toHaveLength(1);
+    expect(failureEvents[0]?.content).toBe("claude query blew up");
+    expect(failureEvents[0]?.metadata?.failure).toMatchObject({
+      provider: "claude-sdk",
+      message: "claude query blew up",
+      code: null,
+      detail: null,
+    });
+  });
+
+  describeDeliveryContract([{
+    path: "final assistant text",
+    turn: async (tools) => {
+      const queryFn: ClaudeSDKQuery = () =>
+        streamFrom([
+          {
+            type: "assistant",
+            session_id: "session-delivery",
+            message: {
+              content: [{ type: "text", text: "final answer" }],
+            },
+          } as never,
+        ]) as never;
+
+      const adapter = new ClaudeSDKAdapter({ queryFn });
+      await adapter.onStarted("Parity Agent", "Parity test agent");
+
+      await adapter.onMessage(
+        makeMessage("hello", "room-delivery"),
+        tools,
+        new HistoryProvider([]),
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-delivery" },
+      );
+    },
+  }]);
 });
