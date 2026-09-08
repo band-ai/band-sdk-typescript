@@ -251,7 +251,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
     this.roomTools.set(context.roomId, tools)
 
-    const { connection, sessionId } = await this.establishSession(tools, context)
+    const { connection, client, sessionId } = await this.establishSession(tools, context)
 
     const promptText = this.buildPromptText(message, participantsMessage, contactsMessage, context.roomId, sessionId)
     this.bootstrappedSessions.add(sessionId)
@@ -260,10 +260,10 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     try {
       response = await this.sendPromptWithTimeout(connection, sessionId, promptText)
     } catch (error) {
-      response = await this.failTurn(error, connection, sessionId, tools, message, context)
+      response = await this.failTurn(error, connection, client, sessionId, tools, message, context)
     }
 
-    await this.finishTurn(tools, sessionId, context.roomId, message, response)
+    await this.finishTurn(client, tools, sessionId, context.roomId, message, response)
   }
 
   // Connection/session establishment is genuinely connection-level: on
@@ -272,7 +272,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private async establishSession(
     tools: AdapterToolsProtocol,
     context: { roomId: string },
-  ): Promise<{ connection: ClientSideConnection; sessionId: string }> {
+  ): Promise<{ connection: ClientSideConnection; client: BandACPClient; sessionId: string }> {
     // Captured before the connection is touched: the catch below tears down
     // what every room shares, so it has to know which connection this turn
     // was actually working against.
@@ -291,7 +291,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         sessionId,
         (params) => this.handlePermissionRequest(tools, context.roomId, params),
       )
-      return { connection, sessionId }
+      return { connection, client, sessionId }
     } catch (error) {
       await this.stopOwnedConnection(generation, context.roomId)
       // Reports and throws: a connection/session-establishment failure is a
@@ -364,6 +364,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private async failTurn(
     error: unknown,
     connection: ClientSideConnection,
+    client: BandACPClient,
     sessionId: string,
     tools: AdapterToolsProtocol,
     message: PlatformMessage,
@@ -385,8 +386,16 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     // 60-minute timeout that can be an hour of a coding agent's output — and
     // onCleanup below drops the buffer with the session. Best-effort: a reply
     // that will not post must not displace the failure reported after it.
+    // `client` is the exact instance this turn established its session
+    // against, captured in `establishSession` — not `this.client`, which may
+    // already point at a reconnected replacement by the time this runs. Flushing
+    // the live client's buffer here would either lose this turn's real output
+    // (empty buffer on the new client) or, worse, if the replacement session
+    // reused the same session id, hand a later turn's streamed content to this
+    // turn's sender.
     try {
       await this.flushChunks({
+        client,
         tools,
         sessionId,
         senderId: message.senderId,
@@ -422,6 +431,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   }
 
   private async finishTurn(
+    client: BandACPClient,
     tools: AdapterToolsProtocol,
     sessionId: string,
     roomId: string,
@@ -429,6 +439,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     response: PromptResponse,
   ): Promise<void> {
     await this.flushChunks({
+      client,
       tools,
       sessionId,
       senderId: message.senderId,
@@ -1090,17 +1101,13 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   }
 
   private async flushChunks(input: {
+    client: BandACPClient;
     tools: AdapterToolsProtocol;
     sessionId: string;
     senderId: string;
     senderHandle: string;
   }): Promise<void> {
-    const client = this.client
-    if (!client) {
-      return
-    }
-
-    for (const chunk of client.getCollectedChunks(input.sessionId)) {
+    for (const chunk of input.client.getCollectedChunks(input.sessionId)) {
       // A status-only ACP update carries its meaning in metadata and has
       // nothing to post.
       if (isBlankEventContent(chunk.content)) {

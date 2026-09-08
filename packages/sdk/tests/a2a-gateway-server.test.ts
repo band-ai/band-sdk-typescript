@@ -471,6 +471,18 @@ describe("GatewayServer", () => {
       );
       expect(sanitized).not.toContain("sk-json-secret");
     });
+
+    it("redacts password, client_secret, and cookie/session values, not just token/authorization/api-key", () => {
+      // The denylist only covered token/authorization/api-key spellings;
+      // provider bodies routinely carry credentials under these other names
+      // too (raw HTTP bodies flow into this via GatewayFailureMetadata).
+      expect(sanitizeGatewayErrorMessage(new Error("login failed password=hunter2")))
+        .not.toContain("hunter2");
+      expect(sanitizeGatewayErrorMessage(new Error("oauth client_secret=sk-client-secret")))
+        .not.toContain("sk-client-secret");
+      expect(sanitizeGatewayErrorMessage(new Error("Set-Cookie: session=supersecret")))
+        .not.toContain("supersecret");
+    });
   });
 
   it("builds agent card skills tagged with band and gateway", async () => {

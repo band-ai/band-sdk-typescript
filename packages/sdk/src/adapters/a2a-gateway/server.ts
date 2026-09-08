@@ -13,6 +13,7 @@ import type {
 import { buildStatusEvent } from "./statusEvent";
 import { asNonEmptyString, asOptionalRecord, asString } from "../shared/coercion";
 import { FAILURE_METADATA_KEY } from "../../contracts/protocols";
+import { SENSITIVE_KEY_TERMS } from "../../core/logger";
 
 /** This gateway's `AgentFailure.provider` identity. */
 const PROVIDER = "a2a-gateway";
@@ -666,7 +667,7 @@ export function sanitizeGatewayErrorMessage(error: unknown): string {
   const withBearerRedaction = trimmed
     .replace(/Bearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
     .replace(
-      /(token|authorization|api[_-]?key)"?\s*[:=]\s*"?(?:[A-Za-z][\w-]*\s+)?[^\s,;"]+/gi,
+      new RegExp(`(${SENSITIVE_KEY_TERMS})"?\\s*[:=]\\s*"?(?:[A-Za-z][\\w-]*\\s+)?[^\\s,;"]+`, "gi"),
       "$1=[REDACTED]",
     );
 

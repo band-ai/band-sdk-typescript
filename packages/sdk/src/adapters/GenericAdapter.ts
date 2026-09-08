@@ -12,23 +12,34 @@ import { agentFailure, reportTurnFailure } from "./shared/providerFailure";
  * Band-delivery rejection reaches `onMessage`'s catch as a `DeliveryFailedError`
  * (a `RecoverableTurnError`, already rethrown as-is below) instead of an
  * opaque `Error` that gets misreported as a `"generic"` provider failure.
- * Every other property is forwarded to the real `tools` unchanged, bound to
- * it so an implementation's internal `this` usage still resolves correctly.
+ * Every other property reads through to the real `tools` via the prototype
+ * chain, unchanged.
+ *
+ * `Object.create(tools)`, not a `Proxy` over it: `AgentTools.buildAdapterTools()`
+ * hands adapters an `Object.freeze`d object, and a `Proxy` `get` trap returning
+ * anything other than a frozen own property's exact stored value — as the
+ * `sendMessage` override below must — violates the Proxy invariant for
+ * non-configurable, non-writable data properties and throws a `TypeError`.
+ * Delegating through the prototype chain instead has no such invariant:
+ * reads for every other property fall through to `tools` regardless of
+ * whether it holds them as frozen own properties (this SDK's own
+ * `AgentTools`) or as prototype methods (a class-based `AdapterToolsProtocol`
+ * implementation, e.g. a test double) — an ordinary property copy would miss
+ * the latter, since prototype methods aren't own-enumerable.
+ * `Object.defineProperty`, not plain assignment, for the one property this
+ * shadows: assigning through a prototype chain onto a non-writable inherited
+ * data property throws, the same restriction this exists to route around.
  */
 function toolsWithDeliverySafeSendMessage(tools: AdapterToolsProtocol): AdapterToolsProtocol {
-  return new Proxy(tools, {
-    get(target, prop, receiver): unknown {
-      if (prop === "sendMessage") {
-        return (content: string, mentions?: Parameters<AdapterToolsProtocol["sendMessage"]>[1]) =>
-          deliverReply(target, content, mentions);
-      }
-      const value: unknown = Reflect.get(target, prop, receiver);
-      if (typeof value === "function") {
-        return (value as (...args: unknown[]) => unknown).bind(target);
-      }
-      return value;
-    },
+  const facade = Object.create(tools) as AdapterToolsProtocol;
+  Object.defineProperty(facade, "sendMessage", {
+    value: (content: string, mentions?: Parameters<AdapterToolsProtocol["sendMessage"]>[1]) =>
+      deliverReply(tools, content, mentions),
+    enumerable: true,
+    writable: true,
+    configurable: true,
   });
+  return facade;
 }
 
 export type GenericAdapterHandler = (args: {

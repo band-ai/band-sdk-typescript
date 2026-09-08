@@ -1540,6 +1540,96 @@ describe("ACPClientAdapter", () => {
       }
     })
 
+    it("a stale turn's timeout flush reads the client it actually streamed through, not one a reconnect installed after it started", async () => {
+      // `flushChunks` used to read `this.client` — the *live* client — at
+      // cleanup time, rather than the one this turn's session was actually
+      // established against. A silent reconnect between "turn starts
+      // streaming" and "turn times out" (subprocess crash / stream EOF, the
+      // same trigger as the silent-reconnect test above) swaps `this.client`
+      // out from under it: the new client never saw this turn's session, so
+      // flushing against it silently drops whatever the old client had
+      // buffered instead of posting it.
+      vi.useFakeTimers()
+      try {
+        const firstConnectionController = new AbortController()
+        let attempt = 0
+        let staleStarted: () => void = () => undefined
+        const staleStartedSignal = new Promise<void>((resolve) => { staleStarted = resolve })
+        const staleHangingPrompt = new Promise<{ stopReason: string }>(() => undefined)
+
+        const adapter = new ACPClientAdapter({
+          command: ["acp-agent"],
+          enableMcpTools: false,
+          turnTimeoutMs: 1_000,
+          connectionFactory: async (client) => {
+            attempt += 1
+            if (attempt === 1) {
+              return {
+                connection: fakeConnection({
+                  signal: firstConnectionController.signal,
+                  newSession: vi.fn(async () => ({ sessionId: "session-stale" })),
+                  prompt: vi.fn(async (params: { sessionId: string }) => {
+                    await (client as { sessionUpdate(p: Record<string, unknown>): Promise<void> }).sessionUpdate({
+                      sessionId: params.sessionId,
+                      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "work done before wedging" } },
+                    })
+                    staleStarted()
+                    return staleHangingPrompt
+                  }),
+                }),
+                stop: vi.fn(async () => undefined),
+              }
+            }
+            return {
+              connection: fakeConnection({
+                newSession: vi.fn(async () => ({ sessionId: "session-fresh" })),
+              }),
+              stop: vi.fn(async () => undefined),
+            }
+          },
+        })
+        await adapter.onStarted("Agent", "desc")
+
+        const staleTools = new FakeTools()
+        const staleTurn = adapter.onMessage(
+          makeMessage("hello", "room-stale"),
+          staleTools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: true, roomId: "room-stale" },
+        )
+        await staleStartedSignal
+
+        // Connection 1 dies (crash / EOF) while room-stale's turn is still
+        // hanging on it — nothing calls adapter.stop().
+        firstConnectionController.abort()
+
+        // A different room's turn forces ensureConnection() to reconnect
+        // (attempt 2), installing a brand-new `this.client` before
+        // room-stale's own timeout ever fires.
+        await adapter.onMessage(
+          makeMessage("hello", "room-other"),
+          new FakeTools(),
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: true, roomId: "room-other" },
+        )
+        expect(attempt).toBe(2)
+
+        const failed = expectTurnFailed(staleTurn)
+        await vi.advanceTimersByTimeAsync(1_000)
+        await failed
+
+        // The stale turn's own buffered output — captured on connection 1's
+        // client before it was swapped out — must still reach the room.
+        expect(staleTools.messages).toEqual(["work done before wedging"])
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it("repeatedly failed turns do not accumulate their sessions' buffered output", async () => {
       // A failed turn used to stop() the adapter, which discarded the whole
       // ACP client along with its buffers. Now the client outlives the turn to

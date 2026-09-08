@@ -8,7 +8,17 @@ export interface Logger {
 const noop = (): void => undefined;
 const REDACTED_VALUE = "[REDACTED]";
 const CIRCULAR_VALUE = "[Circular]";
-const SENSITIVE_KEY_PATTERN = /(authorization|api[-_]?key|token|secret|password|cookie)/i;
+
+/**
+ * Case-insensitive credential-shaped key names, as raw alternation source
+ * rather than a compiled `RegExp`: the only other consumer (the A2A
+ * gateway's `sanitizeGatewayErrorMessage`) matches these against free-form
+ * error text, not isolated object keys, so it needs a differently-shaped
+ * pattern built from the same word list rather than this module's compiled
+ * `SENSITIVE_KEY_PATTERN`.
+ */
+export const SENSITIVE_KEY_TERMS = "authorization|api[-_]?key|token|secret|password|cookie";
+const SENSITIVE_KEY_PATTERN = new RegExp(`(${SENSITIVE_KEY_TERMS})`, "i");
 
 export class NoopLogger implements Logger {
   public debug = noop;
@@ -70,17 +80,26 @@ class GuardedLogger implements Logger {
     message: string,
     context?: Record<string, unknown>,
   ): void {
+    let result: unknown;
     try {
-      // Returned, not just invoked: `Logger.warn` is typed `void`, but an
-      // `async` implementation still returns a real promise at runtime, and
-      // a caller like `safeWarn` needs that actual value to `.catch()` its
-      // rejection — swallowing it here (as a bare call would) strands that
-      // rejection unhandled instead. This `try` only ever catches a
-      // synchronous throw, per resolveLogger's own doc comment.
-      return this.inner[level](message, context);
+      result = this.inner[level](message, context);
     } catch {
       // Swallowed deliberately — see resolveLogger.
+      return;
     }
+
+    // `Logger.warn` etc. are typed `void`, but an `async` implementation
+    // still returns a real promise at runtime. Attaching a swallowing catch
+    // here — rather than trusting every fire-and-forget call site to do it —
+    // is what keeps a rejecting caller-supplied logger from becoming an
+    // unhandled rejection on the failure path it was reporting. The original
+    // promise is still returned so a caller like `safeWarn` that wants to
+    // await completion can do so; this attaches an additional, harmless
+    // handler rather than replacing the value.
+    if (result instanceof Promise) {
+      result.catch(() => undefined);
+    }
+    return result as void;
   }
 }
 

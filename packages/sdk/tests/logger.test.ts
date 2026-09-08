@@ -88,4 +88,35 @@ describe("resolveLogger", () => {
     await expect(Promise.resolve(guarded.warn("boom")).catch((error: unknown) => error))
       .resolves.toBeInstanceOf(Error);
   });
+
+  it("does not surface an unhandled rejection when a caller never attaches its own catch", async () => {
+    // Most fire-and-forget `logger.warn(...)` call sites across the SDK's
+    // failure paths never consume the promise `guarded.warn(...)` returns
+    // (`Logger.warn` is typed `void`) -- if `GuardedLogger` didn't guard the
+    // async case itself, every one of those call sites would leak an
+    // unhandled rejection whenever a caller-supplied async logger rejects.
+    //
+    // Asserted by spying on the inner promise's own `.catch`, not on Node's
+    // `unhandledRejection` event: vitest's worker sandbox does not deliver
+    // that event to a test's own `process.on` listener, so a promise-level
+    // assertion is what actually distinguishes "guarded internally" from
+    // "silently leaked".
+    let rejectInner!: (error: unknown) => void;
+    const innerPromise = new Promise<void>((_, reject) => { rejectInner = reject; });
+    const catchSpy = vi.spyOn(innerPromise, "catch");
+    const inner: Logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(() => innerPromise as unknown as void),
+      error: vi.fn(),
+    };
+    const guarded = resolveLogger(inner);
+
+    guarded.warn("boom");
+    expect(catchSpy).toHaveBeenCalledTimes(1);
+
+    // Settle the promise so it doesn't dangle past the test.
+    rejectInner(new Error("logging sink is down"));
+    await innerPromise.catch(() => undefined);
+  });
 });

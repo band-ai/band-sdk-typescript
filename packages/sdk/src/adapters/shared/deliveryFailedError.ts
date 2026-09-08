@@ -1,4 +1,4 @@
-import type { MentionInput } from "../../contracts/dtos";
+import type { MentionInput, ToolOperationResult } from "../../contracts/dtos";
 import type { MessagingTools } from "../../contracts/protocols";
 import { RecoverableTurnError } from "../../core/errors";
 import { asErrorMessage } from "./coercion";
@@ -24,9 +24,9 @@ export async function deliverReply(
   tools: MessagingTools,
   content: string,
   mentions: MentionInput = [],
-): Promise<void> {
+): Promise<ToolOperationResult> {
   try {
-    await tools.sendMessage(content, mentions);
+    return await tools.sendMessage(content, mentions);
   } catch (error) {
     throw new DeliveryFailedError(error);
   }
