@@ -77,6 +77,19 @@ async function main() {
   }
   pass("ParticipantRoster.add runs against the real wasm binding");
 
+  try {
+    core.validateMemoryTypeForSystem("sensory", "iconic");
+    pass("validateMemoryTypeForSystem accepts a valid pair against the real wasm binding");
+  } catch (err) {
+    fail("validateMemoryTypeForSystem valid pair", String(err));
+  }
+  try {
+    core.validateMemoryTypeForSystem("sensory", "semantic");
+    fail("validateMemoryTypeForSystem mismatched pair", "expected a throw");
+  } catch {
+    pass("validateMemoryTypeForSystem rejects a mismatched pair against the real wasm binding");
+  }
+
   console.log("bundler PASSED");
 }
 

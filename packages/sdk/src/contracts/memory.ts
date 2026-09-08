@@ -1,3 +1,5 @@
+import { type MemorySystem, type MemoryType, validateMemoryTypeForSystem } from "@band-ai/band-sdk-core";
+
 /** Canonical memory enums; DTOs, tool schemas, and validation derive from these constants. */
 
 const SENSORY_MEMORY_TYPES = [
@@ -25,10 +27,9 @@ export const MEMORY_SYSTEM_TYPES = {
   sensory: SENSORY_MEMORY_TYPES, // Brief sensory inputs
   working: COGNITIVE_MEMORY_TYPES, // Short-term session context
   long_term: COGNITIVE_MEMORY_TYPES, // Persistent cross-conversation memory
-} as const;
+} as const satisfies Record<MemorySystem, readonly MemoryType[]>;
 
-export type MemorySystem = keyof typeof MEMORY_SYSTEM_TYPES;
-export type MemoryType = (typeof MEMORY_SYSTEM_TYPES)[MemorySystem][number];
+export type { MemorySystem, MemoryType };
 
 /** Memory tier; constrains valid `type` values via {@link MEMORY_SYSTEM_TYPES}. */
 export const MEMORY_SYSTEMS = Object.keys(MEMORY_SYSTEM_TYPES) as readonly MemorySystem[];
@@ -93,11 +94,13 @@ export function isMemoryType(value: string): value is MemoryType {
 }
 
 /** Guards against pairing sensory systems with cognitive types, or vice versa. */
-export function isMemoryTypeForSystem(
-  system: MemorySystem,
-  type: MemoryType,
-): boolean {
-  return (MEMORY_SYSTEM_TYPES[system] as readonly string[]).includes(type);
+export function isMemoryTypeForSystem(system: MemorySystem, type: MemoryType): boolean {
+  try {
+    validateMemoryTypeForSystem(system, type);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function isMemorySegment(value: string): value is MemorySegment {
