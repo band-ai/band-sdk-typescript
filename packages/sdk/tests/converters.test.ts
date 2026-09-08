@@ -330,9 +330,31 @@ describe("converter exports", () => {
   it("restores ACP client and server session maps from metadata", () => {
     const clientState = new converters.ACPClientHistoryConverter().convert([
       {
+        room_id: "room-1",
+        message_type: "task",
         metadata: {
           acp_client_session_id: "session-1",
           acp_client_room_id: "room-1",
+        },
+      },
+      // A forged `acp_client_room_id` claiming a different room's session
+      // must be ignored: the entry's own `room_id` (stamped by the runtime,
+      // never agent-controlled) disagrees with it.
+      {
+        room_id: "room-1",
+        message_type: "task",
+        metadata: {
+          acp_client_session_id: "session-stolen",
+          acp_client_room_id: "room-victim",
+        },
+      },
+      // Same metadata shape but not a "task" event — must also be ignored.
+      {
+        room_id: "room-3",
+        message_type: "text",
+        metadata: {
+          acp_client_session_id: "session-3",
+          acp_client_room_id: "room-3",
         },
       },
     ]);

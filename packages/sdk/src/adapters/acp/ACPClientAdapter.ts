@@ -134,6 +134,12 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private readonly bootstrappedSessions = new Set<string>()
   private readonly pendingPermissions = new Map<string /* sessionId */, Set<AbortController>>()
   private readonly sessionsInFlight = new Map<string /* roomId */, Promise<string>>()
+  private readonly roomTurnLocks = new Map<string /* roomId */, Promise<unknown>>()
+  // Bumped each time a room starts a *new* establishment (never on a
+  // coalesced reuse) and whenever a room is torn down. An establishment
+  // captures its own value at the start; if the room has moved on by the
+  // time it would link/activate a session, it was superseded and must not.
+  private readonly roomGeneration = new Map<string /* roomId */, number>()
 
   private readonly resolvePermission?: (request: ACPPermissionRequest, signal: AbortSignal) => Promise<string | undefined>
   private readonly resolveSessionMode?: (request: ACPModeRequest, signal: AbortSignal) => Promise<string | undefined>
@@ -211,6 +217,25 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
     this.roomTools.set(context.roomId, tools)
 
+    // `Execution.bootstrapMessage` runs outside its own room's serialized
+    // `processLoop`, alongside the sync loop its constructor starts — so two
+    // turns for one room really can reach here concurrently. Establishing a
+    // session tolerates that (`getOrCreateSession`'s `sessionsInFlight`
+    // guard), but `resetChunks → prompt → flushChunks` does not: two
+    // concurrent `prompt` calls on the same session share one chunk buffer,
+    // so one turn's `resetChunks` can wipe output the other is still
+    // collecting. Serializing the whole turn body per room, not just
+    // establishment, is what actually makes concurrent same-room turns safe.
+    await this.withRoomTurnLock(context.roomId, () => this.runTurn(message, tools, participantsMessage, contactsMessage, context))
+  }
+
+  private async runTurn(
+    message: PlatformMessage,
+    tools: AdapterToolsProtocol,
+    participantsMessage: string | null,
+    contactsMessage: string | null,
+    context: { isSessionBootstrap: boolean; roomId: string },
+  ): Promise<void> {
     const connection = await this.ensureConnection()
     const client = this.client
     if (!client) {
@@ -266,10 +291,28 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     })
   }
 
+  // A per-room async mutex: `fn` for a given `roomId` never overlaps another
+  // call for that same room, while different rooms stay fully concurrent.
+  // The tracked tail (`this.roomTurnLocks`) always settles — via the
+  // trailing `.catch` — so one turn's failure can't wedge every later turn
+  // for the room; the real result/rejection is still `run`, returned to this
+  // call's own caller.
+  private async withRoomTurnLock<T>(roomId: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.roomTurnLocks.get(roomId) ?? Promise.resolve()
+    const run = previous.then(fn, fn)
+    this.roomTurnLocks.set(roomId, run.catch(() => undefined))
+    return run
+  }
+
   public async onCleanup(roomId: string): Promise<void> {
     const sessionId = this.unlinkRoom(roomId)
     this.roomTools.delete(roomId)
     this.sessionsInFlight.delete(roomId)
+    this.roomTurnLocks.delete(roomId)
+    // Invalidates any establishment for this room still in flight — it may
+    // finish later (nothing cancels the real RPC), but must not link or
+    // activate on behalf of a room that has already moved on.
+    this.nextRoomGeneration(roomId)
     if (sessionId) {
       this.activeSessions.delete(sessionId)
       this.bootstrappedSessions.delete(sessionId)
@@ -290,6 +333,13 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.sessionToRoom.clear()
     this.roomTools.clear()
     this.sessionsInFlight.clear()
+    this.roomTurnLocks.clear()
+    // Same reasoning as `onCleanup`, for every room at once: a still-pending
+    // establishment from before `stop()` must not link into state this call
+    // is in the middle of tearing down.
+    for (const roomId of this.roomGeneration.keys()) {
+      this.nextRoomGeneration(roomId)
+    }
     this.cancelAllPendingPermissions("adapter-stopped")
 
     this.client = null
@@ -320,8 +370,11 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   // room's session drops the old session's route, and a session id already
   // routed to another room is refused rather than silently re-pointed — two
   // rooms sharing one session id would make its permission requests
-  // unattributable.
-  private linkSession(roomId: string, sessionId: string): void {
+  // unattributable. Returns whether the link was made — a caller that goes
+  // on to activate/configure/prompt a session regardless of a `false` here
+  // would use a session this room was refused, not just fail to route its
+  // permissions.
+  private linkSession(roomId: string, sessionId: string): boolean {
     const routedRoomId = this.sessionToRoom.get(sessionId)
     if (routedRoomId !== undefined && routedRoomId !== roomId) {
       this.safeWarn("refusing to route one ACP session to a second room", {
@@ -329,7 +382,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         roomId,
         routedRoomId,
       })
-      return
+      return false
     }
 
     const replacedSessionId = this.roomToSession.get(roomId)
@@ -339,6 +392,34 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
     this.roomToSession.set(roomId, sessionId)
     this.sessionToRoom.set(sessionId, roomId)
+    return true
+  }
+
+  private nextRoomGeneration(roomId: string): number {
+    const next = (this.roomGeneration.get(roomId) ?? 0) + 1
+    this.roomGeneration.set(roomId, next)
+    return next
+  }
+
+  private isCurrentGeneration(roomId: string, generation: number): boolean {
+    return this.roomGeneration.get(roomId) === generation
+  }
+
+  // The installed ACP SDK's `sendRequest` never rejects a pending call when
+  // its connection closes (no server response ever arrives to reject it
+  // with) — so a session-establishment RPC in flight when the subprocess
+  // dies would otherwise hang forever, wedging the room's `sessionsInFlight`
+  // entry along with it. Racing every such RPC against the connection's own
+  // `closed` promise gives it a real, prompt failure instead.
+  private raceAgainstConnectionClose<T>(connection: ClientSideConnection, operation: Promise<T>): Promise<T> {
+    let reject: (error: Error) => void = () => undefined
+    const closedRejection = new Promise<never>((_resolve, rejectFn) => {
+      reject = rejectFn
+    })
+    // A plain callback, not a thrown error inside the `.then` — so this
+    // derived promise itself never rejects and needs no `.catch` of its own.
+    void connection.closed.then(() => reject(new Error("ACP connection closed while a session operation was still in flight")))
+    return Promise.race([operation, closedRejection])
   }
 
   private unlinkRoom(roomId: string): string | undefined {
@@ -433,7 +514,11 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       return inFlight
     }
 
-    const establishing = this.establishSession(roomId, existingSessionId, connection)
+    // Captured now, before anything is awaited: this establishment belongs
+    // to the room's *current* generation, and stays pinned to it even if
+    // `onCleanup`/`stop` bump the counter while it's still in flight.
+    const generation = this.nextRoomGeneration(roomId)
+    const establishing = this.establishSession(roomId, existingSessionId, connection, generation)
     // Compare-and-delete: if this room was torn down and re-entered while
     // `establishing` was still pending, a newer promise is already stored at
     // `roomId` by the time this one settles. Deleting unconditionally would
@@ -457,6 +542,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     roomId: string,
     existingSessionId: string | undefined,
     connection: ClientSideConnection,
+    generation: number,
   ): Promise<string> {
     const mcpServers = await this.buildSessionMcpServers()
 
@@ -470,7 +556,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         // await would let a stale add silently re-admit a session whose
         // connection just died, and would leave the session unroutable for
         // the whole duration of the call.
-        this.linkSession(roomId, existingSessionId)
+        this.linkOrAbandon(roomId, existingSessionId, generation)
         this.activeSessions.add(existingSessionId)
         this.bootstrappedSessions.add(existingSessionId)
         await this.configureSessionMode(roomId, existingSessionId, restored.modes, connection)
@@ -478,16 +564,37 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       }
     }
 
-    const created = await connection.newSession({
+    // Raced: `newSession` otherwise waits forever on a connection that died
+    // mid-call (see `raceAgainstConnectionClose`'s own doc comment), which
+    // would leave this room's `sessionsInFlight` entry — and the turn
+    // awaiting it — permanently wedged.
+    const created = await this.raceAgainstConnectionClose(connection, connection.newSession({
       cwd: this.cwd,
       mcpServers,
-    })
+    }))
 
     // Same ordering reason as the restored-session branch above.
-    this.linkSession(roomId, created.sessionId)
+    this.linkOrAbandon(roomId, created.sessionId, generation)
     this.activeSessions.add(created.sessionId)
     await this.configureSessionMode(roomId, created.sessionId, created.modes, connection)
     return created.sessionId
+  }
+
+  // The single gate an establishment must pass before it's allowed to claim
+  // the room: it must still be the room's current generation (not
+  // superseded by a teardown or a fresher establishment while this one was
+  // awaiting an RPC), and its session id must not already belong to another
+  // room. Either failure throws — this establishment cannot silently
+  // continue to activate, configure, and prompt a session it has no right
+  // to use for this room.
+  private linkOrAbandon(roomId: string, sessionId: string, generation: number): void {
+    if (!this.isCurrentGeneration(roomId, generation)) {
+      throw new Error(`ACP session establishment for room "${roomId}" was superseded before it could be linked`)
+    }
+
+    if (!this.linkSession(roomId, sessionId)) {
+      throw new Error(`ACP session "${sessionId}" could not be linked to room "${roomId}": already routed elsewhere`)
+    }
   }
 
   // Best-effort: never throws, so a mode switch going wrong can't take a
@@ -609,7 +716,13 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       // nullish resolution the way its `loadSession` does — a restore that
       // genuinely succeeded must not be miscategorized as failed just
       // because no mode state came back with it.
-      const restored = await restore()
+      //
+      // Raced against connection close for the same reason as `newSession`
+      // below: a dead connection otherwise leaves this hanging forever. The
+      // catch-all here already treats any failure as "restore didn't work",
+      // so a raced-out rejection correctly falls through to establishing a
+      // fresh session instead.
+      const restored = await this.raceAgainstConnectionClose(connection, restore())
       return { ok: true, modes: restored?.modes }
     } catch {
       return { ok: false }
@@ -799,24 +912,58 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       this.trackPending(params.sessionId, controller)
     }
 
-    const [, chosenId] = await Promise.all([
-      // This is the room's only "a permission request is pending" signal,
-      // and the only one other room participants ever see — started
-      // immediately rather than serialized in front of a manual wait that
-      // can take up to `permissionTimeoutMs`.
+    // A room's only way to learn a request is pending at all — if it never
+    // posts, no human can honestly be said to have been asked, so this
+    // request must end cancelled regardless of what `resolveManually`
+    // separately produces (it may already be racing toward a real answer).
+    // Tracked outside the `Promise.all` below rather than inferred from
+    // timing, so a resolver that happens to answer before this rejection is
+    // even observed still can't slip a `selected` outcome past it.
+    let requestEventFailed = false
+
+    const [, resolvedChosenId] = await Promise.all([
+      // Started immediately rather than serialized in front of a manual
+      // wait that can take up to `permissionTimeoutMs`.
       tools.sendEvent(`Permission requested: ${toolName}`, "tool_call", {
         permission_request: true,
         tool_name: toolName,
         tool_call_id: params.toolCall.toolCallId,
         acp_session_id: params.sessionId,
         auto_allowed: autoSelection !== undefined && autoSelection !== null,
+      }).catch((error) => {
+        requestEventFailed = true
+        this.safeWarn("failed to post the permission-requested event; cancelling the request", {
+          roomId,
+          sessionId: params.sessionId,
+          error: String(error),
+        })
+        // Unblocks `resolveManually` immediately rather than leaving it to
+        // run out the full `permissionTimeoutMs` for a request that's
+        // already decided.
+        if (controller) {
+          this.abandon(controller, "no-answer")
+        }
       }),
       controller
         ? this.resolveManually(roomId, params, controller)
         : Promise.resolve(autoSelection?.optionId),
     ])
 
-    return this.toResponse(chosenId, params.options, { roomId, sessionId: params.sessionId })
+    const chosenId = requestEventFailed ? undefined : resolvedChosenId
+    const response = this.toResponse(chosenId, params.options, { roomId, sessionId: params.sessionId })
+
+    // Derived from the same response just computed, not from a separate
+    // "did resolveManually run to an answer" check: `settled` means this
+    // request's own outcome was a real, offered selection; anything else
+    // that wasn't already an external teardown (`cancelPendingPermissions` /
+    // `cancelAllPendingPermissions` / the timeout above, all of which abort
+    // before this point is ever reached) is `no-answer` — the request ran
+    // its own course without producing a usable one.
+    if (controller && !controller.signal.aborted) {
+      this.abandon(controller, response.outcome.outcome === "selected" ? "settled" : "no-answer")
+    }
+
+    return response
   }
 
   // `undefined`, or an id absent from this request's own `options` (a buggy
@@ -895,10 +1042,12 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     } finally {
       clearTimeout(timer)
       this.untrackPending(params.sessionId, controller)
-      // Abort is idempotent, so a request already abandoned keeps the reason
-      // it was abandoned with; only a request that ran to an answer gets
-      // `"settled"`, which is what tells a consumer the two apart.
-      this.abandon(controller, "settled")
+      // The final abort reason is decided by `handlePermissionRequest`, once
+      // the actual `RequestPermissionResponse` is known — not here, and not
+      // unconditionally `"settled"`: that would contradict a response that
+      // ends up `cancelled` for a reason other than external teardown (an
+      // invalid/missing answer, or the permission-requested event itself
+      // failing to post).
     }
   }
 

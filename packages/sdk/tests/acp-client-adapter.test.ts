@@ -587,6 +587,259 @@ describe("ACPClientAdapter", () => {
     expect(newSession).toHaveBeenCalledTimes(2)
   })
 
+  it("never lets two concurrent turns for one room interleave their chunk collection (ACR-001)", async () => {
+    // Regression guard: before per-room turn serialization, `onMessage` ran
+    // `resetChunks → prompt → flushChunks` with no lock at all. A second
+    // turn for the same room, entering while the first was still mid-prompt,
+    // could `resetChunks` the shared session buffer out from under the first
+    // turn's still-in-progress collection — losing its output entirely (or,
+    // as here, replaying the second turn's own output a second time).
+    let clientHandle: { sessionUpdate: (params: Record<string, unknown>) => Promise<void> } | null = null
+    let releaseFirstPrompt: () => void = () => undefined
+    const firstPromptGate = new Promise<void>((resolve) => { releaseFirstPrompt = resolve })
+    let firstPromptStarted: () => void = () => undefined
+    const firstPromptStartedPromise = new Promise<void>((resolve) => { firstPromptStarted = resolve })
+    let promptCount = 0
+
+    const prompt = vi.fn(async (params: { sessionId: string }) => {
+      const isFirst = promptCount === 0
+      promptCount += 1
+      await clientHandle?.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: isFirst ? "first-response" : "second-response" },
+        },
+      })
+      if (isFirst) {
+        firstPromptStarted()
+        await firstPromptGate
+      }
+      return { stopReason: "end_turn" }
+    })
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      connectionFactory: async (client) => {
+        clientHandle = client as unknown as typeof clientHandle
+        const controller = new AbortController()
+        return {
+          connection: {
+            signal: controller.signal,
+            closed: new Promise<void>(() => undefined),
+            initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+            authenticate: vi.fn(async () => ({})),
+            loadSession: vi.fn(),
+            unstable_resumeSession: vi.fn(),
+            newSession: vi.fn(async () => ({ sessionId: "session-1" })),
+            prompt,
+          } as never,
+          stop: async () => controller.abort(),
+        }
+      },
+    })
+
+    await adapter.onStarted("Agent", "desc")
+    const tools = new FakeTools()
+
+    const turn1 = adapter.onMessage(
+      makeMessage("first message", "room-1"),
+      tools,
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-1" },
+    )
+    await firstPromptStartedPromise
+
+    const turn2 = adapter.onMessage(
+      makeMessage("second message", "room-1"),
+      tools,
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    )
+    // Gives a regressed (unlocked) turn2 room to race ahead of turn1 before
+    // it's released, without depending on any real clock.
+    await new Promise((resolve) => setImmediate(resolve))
+    releaseFirstPrompt()
+
+    await turn1
+    await turn2
+
+    expect(tools.messages).toEqual(["first-response", "second-response"])
+  })
+
+  it("fails a session establishment instead of hanging forever, when the connection closes mid-establishment (ACR-002a)", async () => {
+    // The installed ACP SDK's `sendRequest` never rejects a pending call when
+    // its connection closes, so `newSession` here is built to hang forever —
+    // exactly what a real dead subprocess looks like. Without racing it
+    // against `connection.closed`, this turn would never settle at all.
+    let markClosed: () => void = () => undefined
+    const closed = new Promise<void>((resolve) => { markClosed = resolve })
+    const newSession = vi.fn(() => new Promise<never>(() => undefined))
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      connectionFactory: async () => ({
+        connection: {
+          signal: new AbortController().signal,
+          closed,
+          initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+          authenticate: vi.fn(async () => ({})),
+          loadSession: vi.fn(),
+          unstable_resumeSession: vi.fn(),
+          newSession,
+          prompt: vi.fn(async () => ({ stopReason: "end_turn" })),
+        } as never,
+        stop: async () => undefined,
+      }),
+    })
+
+    await adapter.onStarted("Agent", "desc")
+    const onMessage = adapter.onMessage(
+      makeMessage("hi", "room-1"),
+      new FakeTools(),
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-1" },
+    )
+
+    markClosed()
+    await expect(onMessage).rejects.toThrow("ACP connection closed while a session operation was still in flight")
+  })
+
+  it("refuses to let a superseded establishment re-link a room that has already moved on to a fresher session (ACR-002b)", async () => {
+    let resolveFirst: (value: { sessionId: string }) => void = () => undefined
+    const firstGate = new Promise<{ sessionId: string }>((resolve) => { resolveFirst = resolve })
+    let firstStarted: () => void = () => undefined
+    const firstStartedPromise = new Promise<void>((resolve) => { firstStarted = resolve })
+
+    const newSession = vi.fn()
+      .mockImplementationOnce(async () => { firstStarted(); return firstGate })
+      .mockImplementationOnce(async () => ({ sessionId: "session-fresh" }))
+      .mockImplementation(async () => ({ sessionId: "session-should-not-happen" }))
+
+    const promptedSessionIds: string[] = []
+    const prompt = vi.fn(async (params: { sessionId: string }) => {
+      promptedSessionIds.push(params.sessionId)
+      return { stopReason: "end_turn" }
+    })
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      connectionFactory: async () => {
+        const controller = new AbortController()
+        return {
+          connection: {
+            signal: controller.signal,
+            closed: new Promise<void>(() => undefined),
+            initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+            authenticate: vi.fn(async () => ({})),
+            loadSession: vi.fn(),
+            unstable_resumeSession: vi.fn(),
+            newSession,
+            prompt,
+          } as never,
+          stop: async () => controller.abort(),
+        }
+      },
+    })
+
+    await adapter.onStarted("Agent", "desc")
+    const turn = (): Promise<void> => adapter.onMessage(
+      makeMessage("hi", "room-1"),
+      new FakeTools(),
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-1" },
+    )
+
+    const turn1 = turn()
+    await firstStartedPromise
+    // The room moves on (torn down and re-entered) before turn1's
+    // establishment ever resolves — this bumps the room's generation, so
+    // turn1 no longer belongs to it.
+    await adapter.onCleanup("room-1")
+
+    const turn2 = turn()
+    await turn2
+
+    // turn1's establishment finally resolves, long after the room moved on —
+    // it must be rejected, not silently re-link the room onto its session.
+    resolveFirst({ sessionId: "session-stale" })
+    await expect(turn1).rejects.toThrow(/superseded/)
+
+    // A third turn must still find the room routed to the fresh session from
+    // turn2, not to turn1's stale one and not establishing yet another.
+    await turn()
+
+    expect(newSession).toHaveBeenCalledTimes(2)
+    expect(promptedSessionIds).toEqual(["session-fresh", "session-fresh"])
+  })
+
+  it("throws instead of activating a session for a room whose new session id already belongs to another room (ACR-003)", async () => {
+    const newSession = vi.fn(async () => ({ sessionId: "session-shared" }))
+    const promptedSessionIds: string[] = []
+    const prompt = vi.fn(async (params: { sessionId: string }) => {
+      promptedSessionIds.push(params.sessionId)
+      return { stopReason: "end_turn" }
+    })
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      connectionFactory: async () => {
+        const controller = new AbortController()
+        return {
+          connection: {
+            signal: controller.signal,
+            closed: new Promise<void>(() => undefined),
+            initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+            authenticate: vi.fn(async () => ({})),
+            loadSession: vi.fn(),
+            unstable_resumeSession: vi.fn(),
+            newSession,
+            prompt,
+          } as never,
+          stop: async () => controller.abort(),
+        }
+      },
+    })
+
+    await adapter.onStarted("Agent", "desc")
+
+    await adapter.onMessage(
+      makeMessage("hi from room A", "room-a"),
+      new FakeTools(),
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-a" },
+    )
+
+    await expect(
+      adapter.onMessage(
+        makeMessage("hi from room B", "room-b"),
+        new FakeTools(),
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-b" },
+      ),
+    ).rejects.toThrow(/already routed elsewhere/)
+
+    // Room B's establishment threw before ever prompting — room A's session
+    // was never used on room B's behalf.
+    expect(promptedSessionIds).toEqual(["session-shared"])
+  })
+
   it("selects only a mode advertised by the connected ACP harness", async () => {
     const setSessionMode = vi.fn(async () => ({}))
     const resolveSessionMode = vi.fn(async () => "plan")
@@ -936,12 +1189,62 @@ describe("ACPClientAdapter", () => {
       expect(signals[0]?.reason).toBe("adapter-stopped")
     })
 
-    it("(i) resolvePermission resolving promptly to undefined (a dismissed popup) ⇒ cancelled", async () => {
+    it("(i) resolvePermission resolving promptly to undefined (a dismissed popup) ⇒ cancelled, as no-answer not settled (ACR-005)", async () => {
+      const signals: AbortSignal[] = []
       const { adapter, getPermissionResult } = buildHarness({
-        adapterOptions: { resolvePermission: async () => undefined },
+        adapterOptions: {
+          resolvePermission: async (_request, signal) => {
+            signals.push(signal)
+            return undefined
+          },
+        },
       })
       await send(adapter, new FakeTools())
       expect(getPermissionResult()).toEqual(CANCELLED)
+      // This request ran its own course to a real (if unusable) outcome — it
+      // was never externally torn down — so `settled` would misreport it as
+      // "the consumer picked one of the offered options".
+      expect(signals[0]?.reason).toBe("no-answer")
+    })
+
+    it("(x) a permission-requested event that fails to post forces cancellation, even when resolvePermission answers validly (ACR-005)", async () => {
+      const logger = makeLoggerSpy()
+      const signals: AbortSignal[] = []
+
+      // Only the permission-requested event fails — everything else (the
+      // final "ACP client session" event, any flushed chunks) must keep
+      // working normally.
+      class UnpostableRequestTools extends FakeTools {
+        public override async sendEvent(
+          content: string,
+          messageType: string,
+          metadata?: Record<string, unknown>,
+        ): Promise<Record<string, unknown>> {
+          if (metadata?.permission_request === true) {
+            throw new Error("platform rejected the event")
+          }
+          return super.sendEvent(content, messageType, metadata)
+        }
+      }
+
+      const { adapter, getPermissionResult } = buildHarness({
+        adapterOptions: {
+          logger,
+          resolvePermission: async (_request, signal) => {
+            signals.push(signal)
+            return "allow" // a real, valid answer — must still lose to the failed event.
+          },
+        },
+      })
+
+      await send(adapter, new UnpostableRequestTools())
+
+      expect(getPermissionResult()).toEqual(CANCELLED)
+      expect(signals[0]?.reason).toBe("no-answer")
+      expect(logger.warn).toHaveBeenCalledWith(
+        "failed to post the permission-requested event; cancelling the request",
+        expect.objectContaining({ roomId: "room-1" }),
+      )
     })
 
     it("(j) the permission-requested event fires before a slow resolver settles, with auto_allowed:false", async () => {

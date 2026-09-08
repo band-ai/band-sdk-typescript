@@ -55,11 +55,18 @@ export type ACPPermissionAbandonReason =
   | "adapter-stopped"
   | "connection-lost";
 
-// `settled` is bookkeeping, not abandonment: the consumer did answer, and the
-// request's abort controller is simply being tidied up afterwards. Keeping it
-// out of `ACPPermissionAbandonReason` is what lets a consumer rendering
-// `signal.reason` tell a click that worked from one that was given up on.
-export type ACPPermissionEndReason = ACPPermissionAbandonReason | "settled";
+// `settled` is bookkeeping, not abandonment: the consumer chose one of this
+// request's own offered options, and the abort controller is simply being
+// tidied up afterwards. `no-answer` is the request's own outcome too — it
+// ran to completion (or the room event announcing it failed to post) without
+// producing a usable selection: `resolvePermission` returned `undefined`,
+// threw, or chose an id this request didn't offer. Neither is an
+// `ACPPermissionAbandonReason`: those are exclusively external teardown that
+// cut a request off before it could run its own course. Keeping all three
+// apart is what lets a consumer rendering `signal.reason` tell "the user
+// picked one" from "the user (or the request itself) never produced a real
+// answer" from "something outside this request killed it".
+export type ACPPermissionEndReason = ACPPermissionAbandonReason | "settled" | "no-answer";
 
 export const DEFAULT_ACP_SERVER_MODES: Array<{
   id: string;
