@@ -95,6 +95,51 @@ describe("GenericAdapter", () => {
     expect(events).toEqual([{ content: "note", messageType: "task" }]);
   });
 
+  it("works against a class-based tools implementation whose methods use real private fields", async () => {
+    // A bare `Object.create(tools)` delegate reads a forwarded method
+    // correctly, but *calling* it runs with `this` bound to the facade, not
+    // `tools` — a class whose methods use genuine `#private` fields throws
+    // on any object other than a real instance of that class, even for an
+    // unmodified, non-overridden method like sendEvent.
+    class FakeAgentTools {
+      #calls = 0;
+      public readonly messages: string[] = [];
+
+      public async sendMessage(content: string): Promise<{ ok: true }> {
+        this.messages.push(content);
+        return { ok: true };
+      }
+
+      public async sendEvent(): Promise<{ ok: true; calls: number }> {
+        this.#calls += 1;
+        return { ok: true, calls: this.#calls };
+      }
+    }
+
+    const tools = new FakeAgentTools() as unknown as AdapterToolsProtocol;
+
+    let observedResult: unknown;
+    let observedEventResult: unknown;
+    const adapter = new GenericAdapter(async ({ tools: handlerTools }) => {
+      observedResult = await handlerTools.sendMessage("the answer");
+      observedEventResult = await handlerTools.sendEvent("note", "task");
+    });
+    await adapter.onStarted("Agent", "An agent");
+
+    await adapter.onMessage(
+      makeMessage("hello"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    );
+
+    expect(observedResult).toEqual({ ok: true });
+    expect(observedEventResult).toEqual({ ok: true, calls: 1 });
+    expect((tools as unknown as FakeAgentTools).messages).toEqual(["the answer"]);
+  });
+
   it("does not run the handler's onMessage body twice for successful turns", async () => {
     const calls: string[] = [];
     const adapter = new GenericAdapter(async ({ message }) => {

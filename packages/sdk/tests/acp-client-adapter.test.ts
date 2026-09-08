@@ -1630,6 +1630,110 @@ describe("ACPClientAdapter", () => {
       }
     })
 
+    it("a stale turn's cleanup does not clobber a replacement that reused the same session id on a new connection", async () => {
+      // cleanupOwnSession's ownership guard used to key on sessionId alone.
+      // An ACP agent that persists conversation state by directory (rather
+      // than minting a fresh random id per connection) can reissue the
+      // *identical* session id for a room across a reconnect — so a stale
+      // turn's own id can still string-match a replacement's session
+      // without actually being it, and the guard let the stale cleanup
+      // delete the replacement's live room mapping.
+      vi.useFakeTimers()
+      try {
+        const firstConnectionController = new AbortController()
+        let attempt = 0
+        let newSessionCalls = 0
+        let staleStarted: () => void = () => undefined
+        const staleStartedSignal = new Promise<void>((resolve) => { staleStarted = resolve })
+        const staleHangingPrompt = new Promise<{ stopReason: string }>(() => undefined)
+
+        const adapter = new ACPClientAdapter({
+          command: ["acp-agent"],
+          enableMcpTools: false,
+          turnTimeoutMs: 1_000,
+          connectionFactory: async () => {
+            attempt += 1
+            if (attempt === 1) {
+              return {
+                connection: fakeConnection({
+                  signal: firstConnectionController.signal,
+                  newSession: vi.fn(async () => {
+                    newSessionCalls += 1
+                    return { sessionId: "session-persist" }
+                  }),
+                  prompt: vi.fn(async () => {
+                    staleStarted()
+                    return staleHangingPrompt
+                  }),
+                }),
+                stop: vi.fn(async () => undefined),
+              }
+            }
+            // The replacement connection's agent reissues the same session
+            // id for this room.
+            return {
+              connection: fakeConnection({
+                newSession: vi.fn(async () => {
+                  newSessionCalls += 1
+                  return { sessionId: "session-persist" }
+                }),
+              }),
+              stop: vi.fn(async () => undefined),
+            }
+          },
+        })
+        await adapter.onStarted("Agent", "desc")
+
+        const staleTurn = adapter.onMessage(
+          makeMessage("hello", "room-race"),
+          new FakeTools(),
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: true, roomId: "room-race" },
+        )
+        await staleStartedSignal
+        expect(newSessionCalls).toBe(1)
+
+        // Something outside the adapter (AgentRuntime's reset path) tears
+        // the stuck room down while the stale turn is still hanging.
+        await adapter.onCleanup("room-race")
+
+        // Connection 1 is considered dead; the replacement turn forces a
+        // reconnect, whose agent reissues "session-persist" for this room.
+        firstConnectionController.abort()
+        await adapter.onMessage(
+          makeMessage("replacement", "room-race"),
+          new FakeTools(),
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: true, roomId: "room-race" },
+        )
+        expect(newSessionCalls).toBe(2)
+
+        // The stale turn's own timeout now fires and runs its cleanup.
+        const failed = expectTurnFailed(staleTurn)
+        await vi.advanceTimersByTimeAsync(1_000)
+        await failed
+
+        // A third turn for the same room must still resolve to the
+        // replacement's live "session-persist" — no new session call is the
+        // observable proof the stale cleanup didn't delete its mapping.
+        await adapter.onMessage(
+          makeMessage("third", "room-race"),
+          new FakeTools(),
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-race" },
+        )
+        expect(newSessionCalls).toBe(2)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it("repeatedly failed turns do not accumulate their sessions' buffered output", async () => {
       // A failed turn used to stop() the adapter, which discarded the whole
       // ACP client along with its buffers. Now the client outlives the turn to
