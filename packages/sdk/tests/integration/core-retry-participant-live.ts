@@ -26,111 +26,24 @@ import { BandClient } from "@band-ai/rest-client";
 
 import { Agent, GenericAdapter } from "../../src/index";
 import { FernRestAdapter } from "../../src/rest";
+import {
+  createReporter,
+  loadLiveEnv,
+  provisionAgent,
+  reapProvisioned,
+  sleep,
+  sweepOrphans,
+  type ProvisionedAgent,
+} from "./support/liveHarness";
 
-const DEFAULT_REST_URL = "https://app.band.ai/";
-const NAME_PREFIX = "e2e-ts-core-";
-const ORPHAN_MAX_AGE_MINUTES = 60;
+const TEST_NAME = "core-retry";
 
-interface TestResult { name: string; passed: boolean; error?: string }
-const results: TestResult[] = [];
-
-function pass(name: string) { results.push({ name, passed: true }); console.log(`  ✅ ${name}`); }
-function fail(name: string, error: string) { results.push({ name, passed: false, error }); console.log(`  ❌ ${name}: ${error}`); }
-function assert(name: string, condition: boolean, errorMsg: string) { condition ? pass(name) : fail(name, errorMsg); }
-function sleep(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, ms)); }
-
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(`${name} is required — see this file's header for the run command`);
-  }
-  return value;
-}
-
-interface ProvisionedAgent { id: string; name: string; apiKey: string }
-
-async function provisionAgent(userClient: BandClient, runId: string, label: string): Promise<ProvisionedAgent> {
-  const name = `${NAME_PREFIX}${runId}-${label}`;
-  const response = await userClient.humanApiAgents.registerMyAgent({
-    agent: { name, description: `TS SDK core-retry E2E (${label})` },
-  });
-  const agent = response.data.agent;
-  const credentials = response.data.credentials;
-  if (!agent?.id || !credentials?.api_key) {
-    throw new Error(`registerMyAgent returned no agent id/credentials for "${label}"`);
-  }
-  return { id: agent.id, name, apiKey: credentials.api_key };
-}
-
-/**
- * Bulk-deletes chat rooms via the raw `/me/chats/bulk-delete` endpoint —
- * `@band-ai/rest-client` has no generated method for it yet. Replace this
- * with the generated client call once one ships. Enterprise-plan-gated on
- * some accounts, so callers should treat failure as non-fatal cleanup.
- */
-async function deleteRoomsBulk(restUrl: string, apiKey: string, roomIds: string[]): Promise<void> {
-  if (roomIds.length === 0) {
-    return;
-  }
-  const response = await fetch(new URL("api/v1/me/chats/bulk-delete", restUrl), {
-    method: "POST",
-    headers: { "X-API-Key": apiKey, "Content-Type": "application/json" },
-    body: JSON.stringify({ ids: roomIds }),
-  });
-  if (!response.ok) {
-    throw new Error(`bulk-delete rooms failed: ${response.status} ${await response.text()}`);
-  }
-  const body = await response.json();
-  console.log(`core-retry Room bulk-delete job accepted: ${body?.data?.id} (status=${body?.data?.status})`);
-}
-
-/**
- * Force-deletes leftover `NAME_PREFIX`-named agents from a run that crashed
- * before its own `finally` reap ran (e.g. the process was killed) — the same
- * failure mode band-sdk-python's orphan sweep exists for. Never touches an
- * agent from the *current* run or anything younger than
- * `ORPHAN_MAX_AGE_MINUTES` (a concurrent run in flight).
- */
-async function sweepOrphans(userClient: BandClient, runId: string): Promise<void> {
-  const cutoff = Date.now() - ORPHAN_MAX_AGE_MINUTES * 60_000;
-  const orphanIds: string[] = [];
-  let cursor: string | undefined;
-
-  for (let page = 0; page < 20; page++) {
-    const response = await userClient.humanApiAgents.listMyAgents({ name: NAME_PREFIX, limit: 100, cursor });
-    for (const candidate of response.data) {
-      if (!candidate.name.startsWith(NAME_PREFIX)) continue; // name filter is a contains-match
-      if (candidate.name.includes(`-${runId}-`)) continue; // never reap our own run
-      const insertedAt = Date.parse(candidate.inserted_at);
-      if (Number.isNaN(insertedAt) || insertedAt > cutoff) continue; // unknown age or too fresh — could be concurrent
-      orphanIds.push(candidate.id);
-    }
-    cursor = response.metadata.next_cursor;
-    if (!response.metadata.has_more || !cursor) break;
-  }
-
-  if (orphanIds.length === 0) {
-    return;
-  }
-  console.log(`core-retry Sweeping ${orphanIds.length} orphaned test agent(s) from a prior run...`);
-  await Promise.all(
-    orphanIds.map((id) =>
-      userClient.humanApiAgents.deleteMyAgent(id, { force: true }).catch((err: unknown) => {
-        console.warn(`core-retry Failed to sweep orphan agent ${id}:`, err);
-      }),
-    ),
-  );
-}
+const { assert, summarize } = createReporter();
 
 async function main() {
   console.log("core-retry === retry exhaustion via sync-recovery ===");
 
-  // `||`, not `??`: an unset GitHub Actions secret expands to "", which `??`
-  // would pass through as a real URL.
-  const restUrl = process.env.BAND_REST_URL || DEFAULT_REST_URL;
-  const wsUrl = process.env.BAND_WS_URL || undefined;
-  const userApiKey = requireEnv("BAND_API_KEY_USER");
-  const userClient = new BandClient({ baseUrl: restUrl, apiKey: userApiKey });
+  const { restUrl, wsUrl, userApiKey, userClient } = loadLiveEnv();
 
   const runId = randomUUID().slice(0, 8);
   await sweepOrphans(userClient, runId);
@@ -140,9 +53,9 @@ async function main() {
   const roomIds: string[] = [];
 
   try {
-    const testAgent = await provisionAgent(userClient, runId, "basic");
+    const testAgent = await provisionAgent(userClient, runId, TEST_NAME, "basic");
     provisioned.push(testAgent);
-    const senderAgent = await provisionAgent(userClient, runId, "planner");
+    const senderAgent = await provisionAgent(userClient, runId, TEST_NAME, "planner");
     provisioned.push(senderAgent);
     console.log(`core-retry Provisioned test agent "${testAgent.name}" (${testAgent.id}) and sender "${senderAgent.name}" (${senderAgent.id})`);
 
@@ -206,24 +119,10 @@ async function main() {
       `error=${markMessageFailedCalls[0]?.error}`,
     );
   } finally {
-    console.log("core-retry Reaping provisioned agents and rooms...");
-    await Promise.all([
-      ...provisioned.map((agent) =>
-        userClient.humanApiAgents.deleteMyAgent(agent.id, { force: true }).catch((err: unknown) => {
-          console.warn(`core-retry Failed to reap agent ${agent.id}:`, err);
-        }),
-      ),
-      deleteRoomsBulk(restUrl, userApiKey, roomIds).catch((err: unknown) => {
-        console.warn("core-retry Failed to bulk-delete rooms:", err);
-      }),
-    ]);
+    await reapProvisioned(userClient, restUrl, userApiKey, provisioned, roomIds, "core-retry");
   }
 
-  const failed = results.filter((r) => !r.passed);
-  console.log(`\ncore-retry ${results.length - failed.length}/${results.length} passed`);
-  if (failed.length > 0) {
-    process.exitCode = 1;
-  }
+  summarize("core-retry");
 }
 
 main().catch((err) => {
