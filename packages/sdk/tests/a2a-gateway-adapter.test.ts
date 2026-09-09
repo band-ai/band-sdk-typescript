@@ -1031,6 +1031,63 @@ describe("A2AGatewayAdapter", () => {
     expect(text).not.toContain("sk-realsecret");
   });
 
+  it("relays an ordinary room reply verbatim, without applying the error-content redaction", async () => {
+    const rest = new FakeRestApi();
+
+    let onRequest: ((request: GatewayRequest) => AsyncIterable<unknown>) | null = null;
+    const adapter = new A2AGatewayAdapter({
+      bandRest: rest,
+      serverFactory: (options) => {
+        onRequest = options.onRequest;
+        return {
+          start: async () => undefined,
+          stop: async () => undefined,
+        };
+      },
+      responseTimeoutMs: 2_000,
+    });
+
+    await adapter.onStarted("Gateway", "A2A gateway");
+
+    const stream = onRequest!({
+      peerId: "peer-weather",
+      taskId: "task-relay-text",
+      contextId: "ctx-relay-text",
+      message: {
+        kind: "message",
+        messageId: "m-relay-text",
+        role: "user",
+        parts: [{ kind: "text", text: "Hello" }],
+      },
+    });
+
+    const iterator = stream[Symbol.asyncIterator]();
+    await iterator.next(); // working
+
+    // Same sensitive-looking content the redaction test above uses, but as
+    // an ordinary reply (messageType "text", not "error") -- the sanitizer
+    // must not touch it, since it's the agent's own real answer, not an
+    // incident report that might carry leaked provider/transport detail.
+    await adapter.onMessage(
+      makePeerMessage({
+        content: "Your API key is Authorization: Bearer sk-realsecret",
+        roomId: "room-1",
+        senderId: "peer-weather",
+        messageType: "text",
+      }),
+      new FakeTools(),
+      { contextToRoom: {}, roomParticipants: {} },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    );
+
+    const finalEvent = await iterator.next();
+    const text = finalEvent.value?.status?.message?.parts?.[0]?.text as string;
+    expect(text).toBe("Your API key is Authorization: Bearer sk-realsecret");
+    expect(text).not.toContain("[REDACTED]");
+  });
+
   it("forwards the room's own structured failure metadata when relaying its error content", async () => {
     const rest = new FakeRestApi();
 
