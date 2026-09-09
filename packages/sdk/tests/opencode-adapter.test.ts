@@ -1326,5 +1326,40 @@ describe("OpencodeAdapter", () => {
 
       await pending;
     },
+  }, {
+    path: "interactive approval prompt",
+    turn: async (tools) => {
+      const client = new FakeOpencodeClient();
+      createdClients.push(client);
+      const adapter = new OpencodeAdapter({
+        clientFactory: () => client as any,
+        mcpBackendFactory: httpMcpBackend(),
+      });
+      adapters.push(adapter);
+
+      await adapter.onStarted("OpenCode Agent", "Writes code");
+      const pending = adapter.onMessage(
+        makeMessage("Need approval flow"),
+        tools,
+        { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-delivery-failure-permission" },
+      );
+
+      await waitFor(() => client.createdSessions.length === 1);
+      const sessionId = client.createdSessions[0]!;
+      client.eventQueue.push({
+        type: "permission.asked",
+        properties: {
+          id: "perm-1",
+          sessionID: sessionId,
+          permission: "bash",
+          patterns: ["npm test"],
+        },
+      });
+
+      await pending;
+    },
   }]);
 });
