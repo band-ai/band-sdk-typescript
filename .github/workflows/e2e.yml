@@ -2,6 +2,13 @@ name: E2E (live)
 
 # Live E2E against the real Band platform. Provisions real agents, hits
 # live REST/WS — nightly/on-demand only, never per-PR.
+#
+# Live scripts are DISCOVERED, not hand-listed here: any
+# packages/sdk/tests/integration/*-live.ts file is picked up by the
+# `discover` job below and run as its own matrix cell in `e2e` — adding a new
+# live test needs no edit to this file. Mirrors band-sdk-python's
+# lanes -> e2e pattern (see its e2e.yml): derive the CI matrix from a source
+# of truth instead of hand-listing jobs.
 
 on:
   schedule:
@@ -12,19 +19,42 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  # Never cancel in progress: a killed run skips its `finally` reap, orphaning
-  # the agents and rooms it provisioned on the real platform. Queue instead.
-  # Partial protection — `sweepOrphans` recovers stale agents on a later run,
-  # but nothing reaps rooms, and a job timeout skips the reap just the same.
-  group: e2e-live-${{ github.event_name }}
-  cancel-in-progress: false
-
 jobs:
+  discover:
+    name: discover live tests
+    runs-on: ubuntu-latest
+    outputs:
+      files: ${{ steps.find.outputs.files }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Find *-live.ts scripts
+        id: find
+        working-directory: packages/sdk/tests/integration
+        run: |
+          files=$(ls *-live.ts | jq -R -s -c 'split("\n")[:-1]')
+          echo "files=$files" >> "$GITHUB_OUTPUT"
+
   e2e:
-    name: e2e
+    name: e2e (${{ matrix.file }})
+    needs: discover
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      # A red script must not cancel the others in flight.
+      fail-fast: false
+      matrix:
+        file: ${{ fromJSON(needs.discover.outputs.files) }}
+    concurrency:
+      # Never cancel in progress: a killed run skips its `finally` reap,
+      # orphaning the agents and rooms it provisioned on the real platform.
+      # Queue instead. Partial protection — `sweepOrphans` recovers stale
+      # agents on a later run, but nothing reaps rooms, and a job timeout
+      # skips the reap just the same. Scoped per file so rerunning one live
+      # test never queues behind, or cancels, another's run.
+      group: e2e-live-${{ github.event_name }}-${{ matrix.file }}
+      cancel-in-progress: false
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -45,18 +75,10 @@ jobs:
       # e2e.yml uses (its E2E_BAND_API_KEY_USER secret) to dynamically
       # provision/reap its own test agents — same secret name/shape here so
       # the value can be shared across both repos' E2E secrets.
-      - name: Run core retry/participant live test
+      - name: Run ${{ matrix.file }}
         working-directory: packages/sdk
         env:
           BAND_API_KEY_USER: ${{ secrets.E2E_BAND_API_KEY_USER }}
           BAND_REST_URL: ${{ secrets.E2E_BAND_REST_URL }}
           BAND_WS_URL: ${{ secrets.E2E_BAND_WS_URL }}
-        run: npx tsx tests/integration/core-retry-participant-live.ts
-
-      - name: Run topic-naming live test
-        working-directory: packages/sdk
-        env:
-          BAND_API_KEY_USER: ${{ secrets.E2E_BAND_API_KEY_USER }}
-          BAND_REST_URL: ${{ secrets.E2E_BAND_REST_URL }}
-          BAND_WS_URL: ${{ secrets.E2E_BAND_WS_URL }}
-        run: npx tsx tests/integration/topic-naming-live.ts
+        run: npx tsx tests/integration/${{ matrix.file }}
