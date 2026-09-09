@@ -115,6 +115,13 @@ interface RoomState {
   releaseWait: Promise<TurnReleaseOutcome> | null;
   resolveReleaseWait: ((outcome: TurnReleaseOutcome) => void) | null;
   turnTask: Promise<void> | null;
+  // Set by `failInteractivePromptDelivery`. `releaseWait` is a one-shot
+  // channel: once a turn has already backgrounded on an earlier interactive
+  // prompt, a later prompt's own delivery failure has no live `releaseWait`
+  // left to carry it to `startTurn`'s caller — `watchTurnCompletion`'s
+  // "cancelled" branch re-throws this instead, so `turnTask`'s own background
+  // observer (see `startTurn`) still sees the failure.
+  pendingDeliveryFailure: DeliveryFailedError | null;
   pendingMentions: MentionInput;
   textParts: Map<string, string>;
   assistantMessageIds: Set<string>;
@@ -124,6 +131,11 @@ interface RoomState {
   pendingPermission: PendingPermission | null;
   pendingQuestion: PendingQuestion | null;
   lastErrorMessage: string | null;
+  // Distinct from a truthy `lastErrorMessage`: a `message.updated` event can set
+  // that for a single assistant message's own reported error without the
+  // session as a whole failing, but only a real `session.error` event may mark
+  // the turn itself as terminally failed.
+  sessionErrored: boolean;
   persistedSessionId: string | null;
   // Set when a turn times out: its session's abort is fired-and-forgotten
   // (see `abandon`), so the session may still be settling server-side. The
@@ -396,6 +408,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       releaseWait: null,
       resolveReleaseWait: null,
       turnTask: null,
+      pendingDeliveryFailure: null,
       pendingMentions: [],
       textParts: new Map(),
       assistantMessageIds: new Set(),
@@ -405,6 +418,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       pendingPermission: null,
       pendingQuestion: null,
       lastErrorMessage: null,
+      sessionErrored: false,
       persistedSessionId: null,
       forceFreshSession: false,
     };
@@ -556,6 +570,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
 
     if (eventType === "session.error") {
       roomState.lastErrorMessage = this.formatOpenCodeError(properties.error);
+      roomState.sessionErrored = true;
       this.finishTurn(roomState);
       return;
     }
@@ -945,12 +960,14 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     roomState.resolveReleaseWait = releaseWait.resolve;
     roomState.pendingMentions = senderId ? [{ id: senderId }] : [];
     roomState.turnTask = null;
+    roomState.pendingDeliveryFailure = null;
     roomState.textParts.clear();
     roomState.assistantMessageIds.clear();
     roomState.assistantPartTypes.clear();
     roomState.reportedToolCalls.clear();
     roomState.reportedToolResults.clear();
     roomState.lastErrorMessage = null;
+    roomState.sessionErrored = false;
     return releaseWait.promise;
   }
 
@@ -966,13 +983,22 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
         delay(this.config.turnTimeoutMs).then(() => "timed_out" as const),
       ]);
       if (outcome === "cancelled") {
+        // A still-live turn's own interactive-prompt delivery failed after it
+        // had already backgrounded (see `failInteractivePromptDelivery`):
+        // `releaseWait` was already spent on the earlier "background" release,
+        // so this is the only channel left to surface it to `startTurn`'s
+        // `void turnTask.catch(...)` observer. A room-cleanup cancellation
+        // (`onCleanup`) leaves this unset and returns quietly, as before.
+        if (roomState.pendingDeliveryFailure) {
+          throw roomState.pendingDeliveryFailure;
+        }
         return;
       }
       if (outcome === "timed_out") {
         await this.handleTurnTimeout(roomState);
         return;
       }
-      if (roomState.lastErrorMessage) {
+      if (roomState.sessionErrored) {
         // OpenCode's own session.error resolved turnOutcome the same way
         // session.idle does (see the event handler), so this is only
         // reachable here, not via the timeout branch below — handle it as
@@ -1059,10 +1085,13 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
         });
       });
     }
-    this.releaseTurnWait(roomState, {
-      kind: "delivery_failed",
-      error: new DeliveryFailedError(error),
-    });
+    const deliveryFailure = new DeliveryFailedError(error);
+    // Reaches `startTurn`'s caller if it's still awaiting `releaseWait` (the
+    // turn's first interactive prompt); otherwise a no-op, since that one-shot
+    // channel was already spent on an earlier "background" release — in which
+    // case `pendingDeliveryFailure` below is what actually surfaces this.
+    this.releaseTurnWait(roomState, { kind: "delivery_failed", error: deliveryFailure });
+    roomState.pendingDeliveryFailure = deliveryFailure;
     // Settles a still-running watchTurnCompletion's race quietly (see
     // TurnEndOutcome) instead of letting it run to its timeout branch for a
     // turn that's already ending here.

@@ -483,6 +483,61 @@ describe("OpencodeAdapter", () => {
     );
   });
 
+  it("still surfaces a second interactive prompt's own delivery failure after the turn has already backgrounded", async () => {
+    // The turn's first permission prompt delivers fine and backgrounds the
+    // turn (releaseWait is spent). A second prompt in the same turn then
+    // fails to deliver: releaseWait has nothing left to carry that failure
+    // to, so it must reach the turn's background observer instead of
+    // vanishing silently.
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const tools = new ChatLostAfterFirstReply();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as unknown as OpencodeClientLike,
+      mcpBackendFactory: httpMcpBackend(),
+      logger,
+    });
+    adapters.push(adapter);
+
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+
+    const firstTurn = adapter.onMessage(
+      makeMessage("Need two approvals"),
+      tools,
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-second-prompt-delivery-fails" },
+    );
+
+    await waitFor(() => client.createdSessions.length === 1);
+    const sessionId = client.createdSessions[0]!;
+    client.eventQueue.push({
+      type: "permission.asked",
+      properties: { id: "perm-1", sessionID: sessionId, permission: "bash", patterns: ["npm test"] },
+    });
+
+    await firstTurn;
+    expect(tools.messages).toHaveLength(1);
+
+    client.eventQueue.push({
+      type: "permission.asked",
+      properties: { id: "perm-2", sessionID: sessionId, permission: "bash", patterns: ["npm build"] },
+    });
+
+    await waitFor(() => logger.error.mock.calls.length > 0);
+    expect(logger.error).toHaveBeenCalledWith(
+      "OpenCode turn failed after the request returned",
+      expect.objectContaining({ roomId: "room-second-prompt-delivery-fails" }),
+    );
+    await waitFor(() => client.permissionReplies.length === 1);
+    expect(client.permissionReplies).toEqual([
+      { sessionId, permissionId: "perm-2", response: "reject" },
+    ]);
+    expect(findFailureEvent(tools)).toBeUndefined();
+  });
+
   it("resolves onMessage instead of hanging when onCleanup fires on a still-active turn, and quietly cancels its background watchdog instead of leaving it to fail later", async () => {
     // onCleanup() can race a still-active turn (e.g. the runtime tearing the
     // room down while startTurn() is still awaiting releaseWait). Its
@@ -1287,6 +1342,48 @@ describe("OpencodeAdapter", () => {
       provider: "opencode",
       message: "ProviderError: The model is unavailable.",
     });
+  });
+
+  it("resolves the turn normally when a message carries its own error but the session still completes via session.idle", async () => {
+    const tools = new FakeTools();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as any,
+      mcpBackendFactory: httpMcpBackend(),
+    });
+    adapters.push(adapter);
+
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+    const pending = adapter.onMessage(
+      makeMessage("Recover from one message's own reported error"),
+      tools,
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-message-level-error" },
+    );
+
+    await waitFor(() => client.createdSessions.length === 1);
+    const sessionId = client.createdSessions[0]!;
+    client.eventQueue.push({
+      type: "message.updated",
+      properties: {
+        info: {
+          id: "assistant-message-1",
+          role: "assistant",
+          sessionID: sessionId,
+          error: { name: "ToolError", data: { message: "tool timed out, retrying" } },
+        },
+      },
+    });
+    emitAssistantText(client, sessionId, "recovered and finished the task");
+    client.eventQueue.push({ type: "session.idle", properties: { sessionID: sessionId } });
+
+    await pending;
+
+    expect(tools.messages).toContain("recovered and finished the task");
+    expect(findFailureEvent(tools)).toBeUndefined();
   });
 
   it("reports and fails the turn when client startup throws, instead of resolving as if it processed", async () => {
