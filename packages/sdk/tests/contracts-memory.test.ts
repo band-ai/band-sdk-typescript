@@ -28,21 +28,21 @@ function captureThrow(fn: () => void): MemoryValidationError {
   throw new Error("expected fn to throw");
 }
 
+const SYSTEM_TYPE_CASES = MEMORY_SYSTEMS.flatMap((system) =>
+  MEMORY_TYPES.map(
+    (type) => [system, type, !(MEMORY_SYSTEM_TYPES[system] as readonly string[]).includes(type)] as const,
+  ),
+);
+
 describe("contracts/memory", () => {
   describe("MEMORY_SYSTEM_TYPES parity with band-sdk-core's own validation", () => {
-    for (const system of MEMORY_SYSTEMS) {
-      for (const type of MEMORY_TYPES) {
-        const expectedValid = (MEMORY_SYSTEM_TYPES[system] as readonly string[]).includes(type);
-
-        it(`"${system}" + "${type}" is ${expectedValid ? "accepted" : "rejected"} by validateMemoryTypeForSystem`, () => {
-          if (expectedValid) {
-            expect(() => validateMemoryTypeForSystem(system, type)).not.toThrow();
-          } else {
-            expect(() => validateMemoryTypeForSystem(system, type)).toThrow();
-          }
-        });
+    it.each(SYSTEM_TYPE_CASES)("validateMemoryTypeForSystem(%s, %s) throws=%s", (system, type, shouldThrow) => {
+      if (shouldThrow) {
+        expect(() => validateMemoryTypeForSystem(system, type)).toThrow();
+      } else {
+        expect(() => validateMemoryTypeForSystem(system, type)).not.toThrow();
       }
-    }
+    });
   });
 
   describe("validateMemoryTypeForSystem", () => {
