@@ -367,6 +367,10 @@ export class AgentTools implements AgentToolsProtocol {
         });
       }
 
+      // Unlike the two branches above (routine, expected failures), reaching
+      // here means something unclassified broke - log it so it's debuggable,
+      // since createToolExecutorError below only returns it as tool-call data.
+      this.logger.error("unexpected tool execution error", { toolName, error });
       const message = error instanceof Error ? error.message : String(error);
       return createToolExecutorError({
         errorType: "ToolExecutionError",
