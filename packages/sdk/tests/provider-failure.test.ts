@@ -5,9 +5,10 @@ import {
   ProviderTurnFailedError,
   agentFailure,
   reportTurnFailure,
-  rethrowIfProviderTurnFailure,
   safeSendFailure,
 } from "../src/adapters/shared/providerFailure";
+import { DeliveryFailedError } from "../src/adapters/shared/deliveryFailedError";
+import { rethrowIfRecoverableTurnFailure } from "../src/core/errors";
 import type { MessagingTools } from "../src/contracts/protocols";
 
 describe("reportTurnFailure", () => {
@@ -120,13 +121,18 @@ describe("agentFailure", () => {
   });
 });
 
-describe("rethrowIfProviderTurnFailure", () => {
+describe("rethrowIfRecoverableTurnFailure", () => {
   it("rethrows a ProviderTurnFailedError", () => {
     const error = new ProviderTurnFailedError(new AgentFailure("test", "boom"));
-    expect(() => rethrowIfProviderTurnFailure(error)).toThrow(error);
+    expect(() => rethrowIfRecoverableTurnFailure(error)).toThrow(error);
+  });
+
+  it("rethrows a DeliveryFailedError", () => {
+    const error = new DeliveryFailedError(new Error("post failed"));
+    expect(() => rethrowIfRecoverableTurnFailure(error)).toThrow(error);
   });
 
   it("does nothing for any other error", () => {
-    expect(() => rethrowIfProviderTurnFailure(new Error("unrelated"))).not.toThrow();
+    expect(() => rethrowIfRecoverableTurnFailure(new Error("unrelated"))).not.toThrow();
   });
 });

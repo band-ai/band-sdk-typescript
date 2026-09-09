@@ -31,20 +31,3 @@ export async function deliverReply(
     throw new DeliveryFailedError(error);
   }
 }
-
-/**
- * Call first in any catch that would otherwise report a provider failure, and
- * in any intermediate catch a delivery failure must travel through. Failing to
- * deliver an answer the provider already produced is not a provider failure:
- * rethrowing rejects the turn, so the runtime marks the message failed instead
- * of reporting an `AgentFailure` and losing the answer.
- *
- * The marker is rethrown intact, never unwrapped to its cause — it already
- * carries the cause's message, and both `Execution` and every catch further
- * out need the type to tell this apart from a provider failure.
- */
-export function rethrowIfDeliveryFailure(error: unknown): void {
-  if (error instanceof DeliveryFailedError) {
-    throw error;
-  }
-}

@@ -4,6 +4,7 @@ import type { MentionInput } from "../../contracts/dtos";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
+import { rethrowIfRecoverableTurnFailure } from "../../core/errors";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import type { PlatformMessage } from "../../runtime/types";
 import {
@@ -24,14 +25,12 @@ import { asErrorMessage, asOptionalRecord, toDisplayText } from "../shared/coerc
 import {
   DeliveryFailedError,
   deliverReply,
-  rethrowIfDeliveryFailure,
 } from "../shared/deliveryFailedError";
 import {
   FAILURE_CODE_TIMEOUT,
   ProviderTurnFailedError,
   agentFailure,
   reportTurnFailure,
-  rethrowIfProviderTurnFailure,
   safeSendFailure,
 } from "../shared/providerFailure";
 import {
@@ -308,8 +307,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
 
       await this.startTurn(roomState, client, sessionId, message, participantsMessage, contactsMessage, history, needsHistoryReplay, context.roomId);
     } catch (error) {
-      rethrowIfDeliveryFailure(error);
-      rethrowIfProviderTurnFailure(error);
+      rethrowIfRecoverableTurnFailure(error);
 
       this.logger.error("OpenCode adapter request failed", {
         error,

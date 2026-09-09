@@ -2,7 +2,7 @@ import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { MessagingTools } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
-import { UnsupportedFeatureError } from "../../core/errors";
+import { UnsupportedFeatureError, rethrowIfRecoverableTurnFailure } from "../../core/errors";
 import type { PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { asErrorMessage, asNonEmptyString, asOptionalRecord } from "../shared/coercion";
@@ -10,10 +10,9 @@ import {
   FAILURE_CODE_TIMEOUT,
   ProviderTurnFailedError,
   agentFailure,
-  rethrowIfProviderTurnFailure,
   safeSendFailure,
 } from "../shared/providerFailure";
-import { deliverReply, rethrowIfDeliveryFailure } from "../shared/deliveryFailedError";
+import { deliverReply } from "../shared/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import {
   ParlantHistoryConverter,
@@ -224,8 +223,7 @@ export class ParlantAdapter
 
       await deliverReply(tools, reply, [{ id: message.senderId }]);
     } catch (error) {
-      rethrowIfDeliveryFailure(error);
-      rethrowIfProviderTurnFailure(error);
+      rethrowIfRecoverableTurnFailure(error);
 
       const errorMessage = asErrorMessage(error);
       this.logger.error("Parlant adapter request failed", {

@@ -2,17 +2,16 @@ import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
-import { RuntimeStateError, UnsupportedFeatureError } from "../../core/errors";
+import { RuntimeStateError, UnsupportedFeatureError, rethrowIfRecoverableTurnFailure } from "../../core/errors";
 import type { PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { asErrorMessage, toWireString } from "../shared/coercion";
 import {
   ProviderTurnFailedError,
   agentFailure,
-  rethrowIfProviderTurnFailure,
   safeSendFailure,
 } from "../shared/providerFailure";
-import { deliverReply, rethrowIfDeliveryFailure } from "../shared/deliveryFailedError";
+import { deliverReply } from "../shared/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import type { LettaMessages } from "./types";
 import { LettaHistoryConverter } from "./types";
@@ -401,8 +400,7 @@ export class LettaAdapter extends SimpleAdapter<
 
       await deliverReply(tools, assistantText, [{ id: message.senderId }]);
     } catch (error) {
-      rethrowIfDeliveryFailure(error);
-      rethrowIfProviderTurnFailure(error);
+      rethrowIfRecoverableTurnFailure(error);
 
       const errorMessage = asErrorMessage(error);
       this.logger.error("Letta adapter request failed", {

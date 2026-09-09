@@ -49,3 +49,19 @@ export class RecoverableTurnError extends BandSdkError {
     this.name = "RecoverableTurnError";
   }
 }
+
+/**
+ * Call first in any catch that would otherwise report a provider failure a
+ * second time, or misreport a delivery failure as one. Both
+ * `DeliveryFailedError` and `ProviderTurnFailedError` mean this turn's
+ * outcome is already decided and already reported (or intentionally never
+ * reported, for a delivery failure) — rethrowing intact, rather than
+ * rebuilding a fresh `AgentFailure` from either's message, is what keeps a
+ * terminal-failure branch nested inside a broader try from double-reporting
+ * or reclassifying it.
+ */
+export function rethrowIfRecoverableTurnFailure(error: unknown): void {
+  if (error instanceof RecoverableTurnError) {
+    throw error;
+  }
+}

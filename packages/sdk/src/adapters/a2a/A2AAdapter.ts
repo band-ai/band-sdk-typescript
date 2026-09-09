@@ -1,15 +1,15 @@
 import { randomUUID } from "node:crypto";
 
 import { AgentFailure } from "@band-ai/band-sdk-core";
-import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
+import { UnsupportedFeatureError, ValidationError, rethrowIfRecoverableTurnFailure } from "../../core/errors";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { MessagingTools } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import type { PlatformMessage } from "../../runtime/types";
 import { asErrorMessage } from "../shared/coercion";
-import { reportTurnFailure, agentFailure, rethrowIfProviderTurnFailure } from "../shared/providerFailure";
-import { deliverReply, rethrowIfDeliveryFailure } from "../shared/deliveryFailedError";
+import { reportTurnFailure, agentFailure } from "../shared/providerFailure";
+import { deliverReply } from "../shared/deliveryFailedError";
 import {
   A2AHistoryConverter,
   buildA2AAuthHeaders,
@@ -177,8 +177,7 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
             // processed with the reply lost, or double-report the same
             // incident on the next stream event — the outcomes this whole
             // path exists to prevent.
-            rethrowIfDeliveryFailure(handleError);
-            rethrowIfProviderTurnFailure(handleError);
+            rethrowIfRecoverableTurnFailure(handleError);
 
             this.logger.error("A2A stream event handling failed; continuing stream", {
               roomId: context.roomId,
@@ -194,8 +193,7 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
       const response = await client.sendMessage(request);
       await this.handleEvent(response, tools, context.roomId, message.senderId);
     } catch (error) {
-      rethrowIfDeliveryFailure(error);
-      rethrowIfProviderTurnFailure(error);
+      rethrowIfRecoverableTurnFailure(error);
 
       const errorMessage = asErrorMessage(error);
       this.logger.error("A2A adapter request failed", {
