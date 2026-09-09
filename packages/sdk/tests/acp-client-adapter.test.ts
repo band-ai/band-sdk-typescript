@@ -620,6 +620,178 @@ describe("ACPClientAdapter", () => {
     expect(setSessionMode).toHaveBeenCalledWith({ sessionId: "session-modes", modeId: "plan" })
   })
 
+  it("onCleanup for a stale generation resets only its own (dead) client, never a live client another room's session shares an id with", async () => {
+    // cleanupOwnSession used to default `client` to the current live
+    // `this.client` for onCleanup's call. A room whose own record still
+    // points at an older generation can, by cleanup time, share the exact
+    // session id string with a genuinely live session a *later* generation
+    // already established on the current client (an ACP agent that persists
+    // conversation state by directory can reissue an identical id) — that
+    // default would reset the wrong room's real client-side session state
+    // (its permission handler and collected chunks) even though the
+    // adapter's own room-ownership bookkeeping was never confused.
+    type PermissionCapableClient = { requestPermission: (params: Record<string, unknown>) => Promise<unknown> }
+    let attempt = 0
+    let clientHandleB = null as PermissionCapableClient | null
+    const firstConnectionController = new AbortController()
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      connectionFactory: async (client) => {
+        attempt += 1
+        if (attempt === 1) {
+          return {
+            connection: fakeConnection({
+              signal: firstConnectionController.signal,
+              newSession: vi.fn(async () => ({ sessionId: "shared-session" })),
+            }),
+            stop: vi.fn(async () => undefined),
+          }
+        }
+        clientHandleB = client as unknown as PermissionCapableClient
+        return {
+          connection: fakeConnection({
+            newSession: vi.fn(async () => ({ sessionId: "shared-session" })),
+          }),
+          stop: vi.fn(async () => undefined),
+        }
+      },
+    })
+    await adapter.onStarted("Agent", "desc")
+
+    // room-a, generation 1: establishes "shared-session" and completes
+    // normally — its mapping stays in roomToSession until onCleanup.
+    await adapter.onMessage(
+      makeMessage("hello", "room-a"),
+      new FakeTools(),
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-a" },
+    )
+
+    // Connection 1 dies silently — the next turn reconnects on its own, and
+    // the replacement agent reissues the exact same session id for a
+    // different room, live on the new (current) client.
+    firstConnectionController.abort()
+    await adapter.onMessage(
+      makeMessage("hello", "room-b"),
+      new FakeTools(),
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-b" },
+    )
+
+    const permissionRequest = {
+      sessionId: "shared-session",
+      toolCall: { toolCallId: "call-b", title: "Edit file" },
+      options: [{ kind: "allow_once", name: "Allow once", optionId: "allow" }],
+    }
+    // Confirm room-b's session is genuinely live before the stale cleanup.
+    await expect(clientHandleB?.requestPermission(permissionRequest)).resolves.toEqual({
+      outcome: { outcome: "selected", optionId: "allow" },
+    })
+
+    // room-a's own (stale-generation) cleanup fires. It must reset only its
+    // own dead generation-1 client, never the live generation-2 client
+    // actually serving room-b's identical session id.
+    await adapter.onCleanup("room-a")
+
+    await expect(clientHandleB?.requestPermission(permissionRequest)).resolves.toEqual({
+      outcome: { outcome: "selected", optionId: "allow" },
+    })
+  })
+
+  it("a stale attempt's late-resolving session establishment does not overwrite a room's newer, already-published owner", async () => {
+    // setRoomSession used to publish unconditionally. Two establishment
+    // attempts for the same room can be in flight across different
+    // generations at once (a retry after the first attempt's connection
+    // died mid-newSession) — if the older attempt's RPC finally resolves
+    // after a newer attempt already published its own session for the same
+    // room, the stale write must not clobber the live one.
+    let attempt = 0
+    let resolveStaleNewSession: (value: { sessionId: string }) => void = () => undefined
+    const staleNewSession = new Promise<{ sessionId: string }>((resolve) => { resolveStaleNewSession = resolve })
+    let resolveStaleNewSessionStarted: () => void = () => undefined
+    const staleNewSessionStarted = new Promise<void>((resolve) => { resolveStaleNewSessionStarted = resolve })
+    let newSessionCalls = 0
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      connectionFactory: async () => {
+        attempt += 1
+        if (attempt === 1) {
+          return {
+            connection: fakeConnection({
+              newSession: vi.fn(async () => {
+                newSessionCalls += 1
+                resolveStaleNewSessionStarted()
+                return staleNewSession
+              }),
+            }),
+            stop: vi.fn(async () => undefined),
+          }
+        }
+        return {
+          connection: fakeConnection({
+            newSession: vi.fn(async () => {
+              newSessionCalls += 1
+              return { sessionId: "session-fresh" }
+            }),
+          }),
+          stop: vi.fn(async () => undefined),
+        }
+      },
+    })
+    await adapter.onStarted("Agent", "desc")
+
+    // Generation 1's establishment starts and hangs mid-newSession.
+    const staleTurn = adapter.onMessage(
+      makeMessage("hello", "room-race"),
+      new FakeTools(),
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-race" },
+    )
+    await staleNewSessionStarted
+
+    // The adapter reconnects for the same room (e.g. the first connection
+    // died) and this newer attempt's establishment completes normally.
+    await adapter.stop()
+    await adapter.onMessage(
+      makeMessage("replacement", "room-race"),
+      new FakeTools(),
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-race" },
+    )
+    expect(newSessionCalls).toBe(2)
+
+    // Generation 1's stale newSession call finally resolves — its
+    // publication must lose against the newer, live owner. Its own prompt
+    // still runs against connection 1 and completes independently: the
+    // ownership record, not this turn's own outcome, is what's under test.
+    resolveStaleNewSession({ sessionId: "session-stale" })
+    await staleTurn
+
+    // The next turn for this room must still use the live "session-fresh"
+    // session, not restore or replace it with the stale one.
+    await adapter.onMessage(
+      makeMessage("third", "room-race"),
+      new FakeTools(),
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-race" },
+    )
+    expect(newSessionCalls).toBe(2)
+  })
+
   describe("resolvePermission (manual approval)", () => {
     // Shared harness: a connection whose `prompt` drives exactly one
     // `requestPermission` call, scripted with one allow-kind and one
@@ -857,6 +1029,20 @@ describe("ACPClientAdapter", () => {
       expect(() => new ACPClientAdapter({
         command: ["acp-agent"],
         resolvePermission: async () => "allow",
+        permissionTimeoutMs: 5_000_000_000,
+      })).toThrow(/permissionTimeoutMs must be at most 2147483647/)
+    })
+
+    it("(k) constructing with a mode-only permissionTimeoutMs past the setTimeout clamp throws too, not just when resolvePermission is set", () => {
+      // The finite/positive check above gates on
+      // `resolvePermission || resolveSessionMode`, but the max-bound check
+      // used to gate on `resolvePermission` alone — a mode-only config
+      // (resolveSessionMode set, resolvePermission unset) slipped through
+      // with a value setTimeout silently clamps to ~1ms in
+      // resolveSessionModeManually.
+      expect(() => new ACPClientAdapter({
+        command: ["acp-agent"],
+        resolveSessionMode: async () => "plan",
         permissionTimeoutMs: 5_000_000_000,
       })).toThrow(/permissionTimeoutMs must be at most 2147483647/)
     })

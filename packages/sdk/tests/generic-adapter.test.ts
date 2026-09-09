@@ -277,6 +277,37 @@ describe("GenericAdapter", () => {
     expect(observedLabel).toBe("base-label");
   });
 
+  it("enumerates the real tools' own keys through Object.keys/spread, not the proxy's empty target", async () => {
+    // A Proxy with only `has`/`get` traps reports zero own keys (its target is
+    // an empty object), so handler code that copies or decorates its tools —
+    // `{ ...tools }`, `Object.assign({}, tools)`, `Object.keys(tools)` — would
+    // otherwise silently lose every method.
+    const tools = Object.freeze({
+      sendMessage: async () => ({ ok: true }) as const,
+      sendEvent: async () => ({ ok: true }) as const,
+    }) as unknown as AdapterToolsProtocol;
+
+    let observedKeys: string[] = [];
+    let observedSpreadKeys: string[] = [];
+    const adapter = new GenericAdapter(async ({ tools: handlerTools }) => {
+      observedKeys = Object.keys(handlerTools);
+      observedSpreadKeys = Object.keys({ ...handlerTools });
+    });
+    await adapter.onStarted("Agent", "An agent");
+
+    await adapter.onMessage(
+      makeMessage("hello"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    );
+
+    expect(observedKeys.sort()).toEqual(["sendEvent", "sendMessage"]);
+    expect(observedSpreadKeys.sort()).toEqual(["sendEvent", "sendMessage"]);
+  });
+
   it("does not run the handler's onMessage body twice for successful turns", async () => {
     const calls: string[] = [];
     const adapter = new GenericAdapter(async ({ message }) => {

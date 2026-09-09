@@ -145,8 +145,13 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
   // The value's `generation` is the connection generation the session was
   // last established/restored against — see `cleanupOwnSession`'s doc
-  // comment for why matching `sessionId` alone isn't ownership proof.
-  private readonly roomToSession = new Map<string, { sessionId: string; generation: number }>()
+  // comment for why matching `sessionId` alone isn't ownership proof. `client`
+  // is the exact `BandACPClient` instance the session was established
+  // against, preserved here rather than read from the live `this.client` at
+  // cleanup time — see `cleanupOwnSession`'s doc comment for why the two can
+  // differ. `null` only for a room rehydrated from persisted history, which
+  // has no live connection to record yet.
+  private readonly roomToSession = new Map<string, { sessionId: string; generation: number; client: BandACPClient | null }>()
   private readonly roomTools = new Map<string, AdapterToolsProtocol>()
   // Keyed by `sessionKey(generation, sessionId)`, not bare `sessionId`: an
   // ACP agent can reissue the identical session id for a room across a
@@ -211,9 +216,11 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       throw new ValidationError(`permissionTimeoutMs must be a positive finite number, got ${options.permissionTimeoutMs}`)
     }
     // Same `setTimeout` clamp hazard as turnTimeoutMs below: unlike that field,
-    // permissionTimeoutMs has no `Infinity` opt-out, so this is unconditional
-    // wherever the finite/positive check above already applies.
-    if (this.resolvePermission && this.permissionTimeoutMs > MAX_SETTIMEOUT_DELAY_MS) {
+    // permissionTimeoutMs has no `Infinity` opt-out, so this must gate on the
+    // exact same condition as the finite/positive check above — a mode-only
+    // config (`resolveSessionMode` set, `resolvePermission` unset) still feeds
+    // this value into `resolveSessionModeManually`'s own `setTimeout` call.
+    if ((this.resolvePermission || this.resolveSessionMode) && this.permissionTimeoutMs > MAX_SETTIMEOUT_DELAY_MS) {
       throw new ValidationError(`permissionTimeoutMs must be at most ${MAX_SETTIMEOUT_DELAY_MS}, got ${options.permissionTimeoutMs}`)
     }
 
@@ -300,7 +307,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         throw new Error("ACP client was not initialized")
       }
 
-      const sessionId = await this.getOrCreateSession(context.roomId, connection, generation)
+      const sessionId = await this.getOrCreateSession(context.roomId, connection, generation, client)
       client.beginSession(sessionId)
       client.setPermissionHandler(
         sessionId,
@@ -513,7 +520,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   public async onCleanup(roomId: string): Promise<void> {
     const owner = this.roomToSession.get(roomId)
     if (owner) {
-      this.cleanupOwnSession(roomId, owner.sessionId, owner.generation)
+      this.cleanupOwnSession(roomId, owner.sessionId, owner.generation, owner.client)
     } else {
       this.roomToSession.delete(roomId)
       this.roomTools.delete(roomId)
@@ -538,19 +545,21 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
    * generation, so a stale turn's now-mismatched generation correctly loses
    * the race even though its `sessionId` still matches.
    *
-   * `client` defaults to the live `this.client` for `onCleanup`'s room-level
-   * call, which has no turn to have captured one from — but `failTurn`
-   * passes the exact client its turn established its session against, for
-   * the same reason `flushChunks` does: a reconnect between then and now may
-   * already have replaced `this.client`, and resetting the wrong instance's
-   * session state would silently no-op instead of releasing this session's
-   * buffered chunks and permission handler.
+   * `client` is always the exact instance `sessionId`/`generation` were
+   * established against — `owner.client` from `roomToSession` for
+   * `onCleanup`'s room-level call, or the turn-captured client for
+   * `failTurn` — never the live `this.client`: a reconnect between
+   * establishment and cleanup may already have replaced it with a different
+   * instance that has since started serving a same-id session for a
+   * *different* room (see `roomToSession`'s comment), and resetting that
+   * instance's session state would corrupt the other room's live output and
+   * permission handler instead of just releasing this one's.
    */
   private cleanupOwnSession(
     roomId: string,
     sessionId: string,
     generation: number,
-    client: BandACPClient | null = this.client,
+    client: BandACPClient | null,
   ): void {
     const owner = this.roomToSession.get(roomId)
     if (!owner || owner.sessionId !== sessionId || owner.generation !== generation) {
@@ -628,7 +637,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         // No live connection owns this yet — the room's first real turn
         // re-stamps this via `getOrCreateSession`'s `setRoomSession` once it
         // actually (re)establishes the session, same as any other room.
-        this.roomToSession.set(roomId, { sessionId, generation: this.connectionGeneration })
+        this.roomToSession.set(roomId, { sessionId, generation: this.connectionGeneration, client: null })
       }
     }
   }
@@ -744,6 +753,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     roomId: string,
     connection: ClientSideConnection,
     generation: number,
+    client: BandACPClient,
   ): Promise<string> {
     const owner = this.roomToSession.get(roomId)
 
@@ -775,7 +785,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         // restore can land on a different connection than last time, and a
         // stale turn from the *previous* connection must not be able to
         // pass `cleanupOwnSession`'s ownership check against this one.
-        this.setRoomSession(roomId, existingSessionId, generation)
+        this.setRoomSession(roomId, existingSessionId, generation, client)
         await this.configureSessionMode(roomId, existingSessionId, restored.modes, connection)
         return existingSessionId
       }
@@ -787,7 +797,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     })
 
     // Same ordering reason as the restored-session branch above.
-    this.setRoomSession(roomId, created.sessionId, generation)
+    this.setRoomSession(roomId, created.sessionId, generation, client)
     this.activeSessions.add(this.sessionKey(generation, created.sessionId))
     await this.configureSessionMode(roomId, created.sessionId, created.modes, connection)
     return created.sessionId
@@ -809,9 +819,21 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
    * is always the caller's own immutable value from `ensureConnection`, never
    * a fresh read of the mutable `this.connectionGeneration` — see
    * `establishSession`'s comment on why a late read can mislabel a session.
+   *
+   * Never publishes over a newer generation: `getOrCreateSession`'s own
+   * newSession/loadSession RPC can still be in flight when a *later* call for
+   * the same room, on a newer generation, already published its own session —
+   * that later publish must win. Without this guard, the earlier attempt's
+   * late-resolving write would overwrite a live session with a stale one the
+   * next turn would then needlessly abandon (see `getOrCreateSession`'s
+   * generation-match fast path).
    */
-  private setRoomSession(roomId: string, sessionId: string, generation: number): void {
-    this.roomToSession.set(roomId, { sessionId, generation })
+  private setRoomSession(roomId: string, sessionId: string, generation: number, client: BandACPClient | null): void {
+    const currentOwner = this.roomToSession.get(roomId)
+    if (currentOwner && currentOwner.generation > generation) {
+      return
+    }
+    this.roomToSession.set(roomId, { sessionId, generation, client })
   }
 
   // Best-effort: never throws, so a mode switch going wrong can't take a

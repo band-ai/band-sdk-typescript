@@ -445,12 +445,15 @@ describe("OpencodeAdapter", () => {
     );
   });
 
-  it("resolves onMessage instead of hanging when onCleanup fires on a still-active turn, and observes rather than leaves unhandled its later timeout rejection", async () => {
+  it("resolves onMessage instead of hanging when onCleanup fires on a still-active turn, and quietly cancels its background watchdog instead of leaving it to fail later", async () => {
     // onCleanup() can race a still-active turn (e.g. the runtime tearing the
-    // room down while startTurn() is still awaiting releaseWait). Before the
-    // fix, clearTurnState() discarded resolveReleaseWait without ever calling
-    // it, orphaning that await forever — and once the watchdog later rejected
-    // turnTask, nothing was left observing it: a genuine unhandled rejection.
+    // room down while startTurn() is still awaiting releaseWait). Its
+    // background watchdog must settle through an explicit cancellation
+    // outcome rather than eventually reaching its own timeout: a
+    // timed-out-after-cleanup watchdog calls client.abortSession() and
+    // reports a failure against whatever session id a later, unrelated turn
+    // goes on to reuse for this or another room (see the dedicated test
+    // below).
     const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const tools = new FakeTools();
     const client = new FakeOpencodeClient();
@@ -482,13 +485,76 @@ describe("OpencodeAdapter", () => {
     // releaseWait this turn is still awaiting.
     await pending;
 
-    // The watchdog still fires in the background for the cleaned-up room —
-    // its rejection must be observed (logged), not unhandled.
-    await waitFor(() => logger.error.mock.calls.length > 0);
-    expect(logger.error).toHaveBeenCalledWith(
-      "OpenCode turn failed after the request returned",
-      expect.objectContaining({ roomId: "room-cleanup-race" }),
+    // Let the watchdog's turnTimeoutMs window pass in the background — it
+    // must have been cancelled, not merely delayed, so nothing fires once
+    // it would otherwise have timed out.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(client.aborts).toEqual([]);
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it("does not abort a replacement turn's session when a cleaned-up turn's watchdog would otherwise reach its original deadline", async () => {
+    // handleTurnTimeout reads the *current* this.client and the stale
+    // roomState's own sessionId. If onCleanup only released startTurn but
+    // left the watchdog running, a later turn's fresh client minting the
+    // identical session id (e.g. deterministic, directory-based ids) would
+    // have its live session aborted once the old watchdog's original
+    // deadline arrived.
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const clients: FakeOpencodeClient[] = [];
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => {
+        const client = new FakeOpencodeClient();
+        clients.push(client);
+        createdClients.push(client);
+        return client as any;
+      },
+      mcpBackendFactory: httpMcpBackend(),
+      // Long enough that neither turn's own watchdog could naturally fire
+      // during this test — the fix's point is that cleanup cancels the
+      // first turn's watchdog immediately, not merely delays it.
+      config: { turnTimeoutMs: 10_000 },
+      logger,
+    });
+    adapters.push(adapter);
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+
+    const firstTurn = adapter.onMessage(
+      makeMessage("hello"),
+      new FakeTools(),
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-x" },
     );
+    await waitFor(() => (clients[0]?.createdSessions.length ?? 0) === 1);
+    expect(clients[0]?.createdSessions).toEqual(["session-1"]);
+
+    // room-x is the only room, so cleaning it up also shuts its client down.
+    await adapter.onCleanup("room-x");
+    await firstTurn;
+
+    // room-x rejoins on a fresh client that happens to mint the identical
+    // session id.
+    const secondTurn = adapter.onMessage(
+      makeMessage("hello again"),
+      new FakeTools(),
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-x" },
+    );
+    await waitFor(() => (clients[1]?.createdSessions.length ?? 0) === 1);
+    expect(clients[1]?.createdSessions).toEqual(["session-1"]);
+
+    // Let the first turn's cancelled watchdog fully settle in the
+    // background, then confirm it never touched the replacement's client.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(clients[1]?.aborts).toEqual([]);
+    expect(logger.error).not.toHaveBeenCalled();
+
+    clients[1]!.eventQueue.push({ type: "session.idle", properties: { sessionID: "session-1" } });
+    await secondTurn;
   });
 
   it("recreates missing sessions and injects replay history", async () => {
@@ -915,6 +981,73 @@ describe("OpencodeAdapter", () => {
     await pending;
 
     expect(client.createdSessions[1]).not.toBe(timedOutSessionId);
+  });
+
+  it("keeps forcing a fresh session with history replay when the forced-fresh session's own prompt submission fails", async () => {
+    // ensureSession must not clear forceFreshSession just because the
+    // replacement session was created -- until promptAsync actually submits
+    // its history replay, a rejection there must leave the flag set, or the
+    // *next* retry resumes the history-less fresh session as if it were
+    // ordinary, silently losing the room's prior conversation for good.
+    const tools = new FakeTools();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as any,
+      config: { turnTimeoutMs: 30 },
+      mcpBackendFactory: httpMcpBackend(),
+    });
+    adapters.push(adapter);
+
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("Never responds", "room-timeout-replay-retry"),
+        tools,
+        { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-timeout-replay-retry" },
+      ),
+    );
+    const timedOutSessionId = client.createdSessions[0]!;
+    expect(client.aborts).toContain(timedOutSessionId);
+
+    // The forced-fresh session is created, but submitting its prompt fails.
+    client.promptError = new Error("delivery hiccup");
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("Second message", "room-timeout-replay-retry"),
+        new FakeTools(),
+        { sessionId: null, roomId: null, createdAt: null, replayMessages: ["[Jane]: previous context"] },
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-timeout-replay-retry" },
+      ),
+    );
+    expect(client.createdSessions).toHaveLength(2);
+    expect(client.createdSessions[1]).not.toBe(timedOutSessionId);
+
+    // The retry must still force a fresh session (abandoning the one whose
+    // prompt never went out) and still replay the room's real history into it.
+    const pending = adapter.onMessage(
+      makeMessage("Third message", "room-timeout-replay-retry"),
+      new FakeTools(),
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: ["[Jane]: previous context"] },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-timeout-replay-retry" },
+    );
+
+    await waitFor(() => client.createdSessions.length === 3);
+    const freshSessionId = client.createdSessions[2]!;
+    client.eventQueue.push({ type: "session.idle", properties: { sessionID: freshSessionId } });
+    await pending;
+
+    expect(client.promptCalls[client.promptCalls.length - 1]?.payload.parts).toEqual([{
+      type: "text",
+      text: "Previous OpenCode session state was missing. Recovered room history:\n[Jane]: previous context\n[User]: Third message",
+    }]);
   });
 
   it("reports its turn timeout without waiting on an abort the wedged server never answers", async () => {

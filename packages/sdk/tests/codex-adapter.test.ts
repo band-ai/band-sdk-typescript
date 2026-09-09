@@ -759,6 +759,93 @@ describe("CodexAdapter", () => {
     expect(fakeClient.requestCalls.some((call) => call.method === "turn/start")).toBe(false);
   });
 
+  it("evicts a client whose thread/start rejected with a transport-level error, so the next turn gets a fresh one instead of retrying a dead client forever", async () => {
+    const tools = new ToolSchemaFakeTools();
+    let factoryCalls = 0;
+    const clients: FakeCodexClient[] = [];
+    const adapter = new CodexAdapter({
+      factory: async () => {
+        factoryCalls += 1;
+        const client = new FakeCodexClient({
+          requestHandler: (method, params) => {
+            if (method === "thread/start" && factoryCalls === 1) {
+              throw new Error("app-server transport closed");
+            }
+            return defaultRequestHandler(method, params);
+          },
+        });
+        clients.push(client);
+        return client;
+      },
+    });
+    await adapter.onStarted("Codex Agent", "Codex parity adapter");
+
+    await expectTurnFailed(adapter.onMessage(
+      makeMessage("hello"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-transport-fail" },
+    ));
+    expect(factoryCalls).toBe(1);
+
+    await adapter.onMessage(
+      makeMessage("hello again"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-transport-fail" },
+    );
+
+    expect(factoryCalls).toBe(2);
+    expect(clients[1].requestCalls.some((call) => call.method === "turn/start")).toBe(true);
+  });
+
+  it("keeps a client whose thread/start rejected with an ordinary Codex JSON-RPC error, since the transport itself is still healthy", async () => {
+    const tools = new ToolSchemaFakeTools();
+    let factoryCalls = 0;
+    let failNext = true;
+    const fakeClient = new FakeCodexClient({
+      requestHandler: (method, params) => {
+        if (method === "thread/start" && failNext) {
+          failNext = false;
+          throw new CodexJsonRpcError(-32001, "invalid thread/start params");
+        }
+        return defaultRequestHandler(method, params);
+      },
+    });
+    const adapter = new CodexAdapter({
+      factory: async () => {
+        factoryCalls += 1;
+        return fakeClient;
+      },
+    });
+    await adapter.onStarted("Codex Agent", "Codex parity adapter");
+
+    await expectTurnFailed(adapter.onMessage(
+      makeMessage("hello"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-json-rpc-error" },
+    ));
+    expect(factoryCalls).toBe(1);
+
+    await adapter.onMessage(
+      makeMessage("hello again"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-json-rpc-error" },
+    );
+
+    expect(factoryCalls).toBe(1);
+  });
+
   it("passes a Codex protocol-level error notification through to sendFailure with its code and detail", async () => {
     const tools = new ToolSchemaFakeTools();
     const fakeClient = new FakeCodexClient({

@@ -110,6 +110,12 @@ interface RoomState {
   releaseWait: Promise<void> | null;
   resolveReleaseWait: (() => void) | null;
   turnTask: Promise<void> | null;
+  // Resolved by `clearTurnState` to settle a still-running `watchTurnCompletion`
+  // race without it ever reaching its timeout branch — a turn torn down by
+  // room cleanup (`onCleanup`) must not abort or fail whatever session id a
+  // later, unrelated turn goes on to reuse for this or another room.
+  turnCancelled: Promise<void> | null;
+  resolveTurnCancelled: (() => void) | null;
   pendingMentions: MentionInput;
   textParts: Map<string, string>;
   assistantMessageIds: Set<string>;
@@ -143,6 +149,11 @@ function createDeferred(): { promise: Promise<void>; resolve: () => void } {
   });
   return { promise, resolve };
 }
+
+// Both used only to tell `watchTurnCompletion`'s race branches apart in its
+// own catch — neither ever crosses a process boundary.
+class TurnTimeoutError extends Error {}
+class TurnCancelledError extends Error {}
 
 function withDefaults(config?: OpencodeAdapterConfig): Required<OpencodeAdapterConfig> {
   return {
@@ -332,6 +343,10 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       this.clearTurnState(roomState);
       throw error;
     }
+    // Only now has a forced-fresh replacement's history replay actually been
+    // submitted — see `ensureSession`'s comment on why clearing the flag
+    // can't happen there, before this call was known to succeed.
+    roomState.forceFreshSession = false;
 
     const turnTask = this.watchTurnCompletion(roomState);
     roomState.turnTask = turnTask;
@@ -397,6 +412,8 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       releaseWait: null,
       resolveReleaseWait: null,
       turnTask: null,
+      turnCancelled: null,
+      resolveTurnCancelled: null,
       pendingMentions: [],
       textParts: new Map(),
       assistantMessageIds: new Set(),
@@ -882,7 +899,11 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     // A timed-out turn's abort is fire-and-forget (see handleTurnTimeout) —
     // this room's session may still be settling server-side, so this turn
     // must not resume it, however history or in-memory state would otherwise
-    // resolve it.
+    // resolve it. Not cleared here: `startTurn` only clears it once this
+    // turn's `promptAsync` actually submits the history replay it forces
+    // below — if that submission itself fails, the *next* turn must still
+    // force a fresh session and replay history, not silently resume the
+    // history-less session just created.
     const forceFreshSession = roomState.forceFreshSession;
     const priorSessionId = roomState.sessionId ?? history.sessionId;
     const restoredSessionId = forceFreshSession ? null : priorSessionId;
@@ -911,14 +932,6 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       needsHistoryReplay = forceFreshSession && Boolean(priorSessionId);
     }
 
-    // Cleared only now that a session genuinely exists server-side: a forced
-    // fresh session whose own createSession call above throws must leave the
-    // flag set, or the next turn would resume the very session this one was
-    // trying to abandon.
-    if (forceFreshSession) {
-      roomState.forceFreshSession = false;
-    }
-
     const sessionId = typeof session.id === "string" ? session.id : String(session.id ?? "");
     if (roomState.sessionId && roomState.sessionId !== sessionId) {
       this.roomBySession.delete(roomState.sessionId);
@@ -931,6 +944,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   private beginTurn(roomState: RoomState, senderId: string | null): void {
     const turnDone = createDeferred();
     const releaseWait = createDeferred();
+    const turnCancelled = createDeferred();
     roomState.turnDone = turnDone.promise;
     roomState.turnDoneSettled = false;
     roomState.turnTimedOut = false;
@@ -940,6 +954,8 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     };
     roomState.releaseWait = releaseWait.promise;
     roomState.resolveReleaseWait = releaseWait.resolve;
+    roomState.turnCancelled = turnCancelled.promise;
+    roomState.resolveTurnCancelled = turnCancelled.resolve;
     roomState.pendingMentions = senderId ? [{ id: senderId }] : [];
     roomState.turnTask = null;
     roomState.textParts.clear();
@@ -952,7 +968,8 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
 
   private async watchTurnCompletion(roomState: RoomState): Promise<void> {
     const turnDone = roomState.turnDone;
-    if (!turnDone) {
+    const turnCancelled = roomState.turnCancelled;
+    if (!turnDone || !turnCancelled) {
       return;
     }
 
@@ -960,7 +977,15 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       await Promise.race([
         turnDone,
         delay(this.config.turnTimeoutMs).then(() => {
-          throw new Error("timeout");
+          throw new TurnTimeoutError();
+        }),
+        // Resolved by `clearTurnState` when `onCleanup` tears this room down
+        // while this turn is still outstanding — that must settle this race
+        // quietly, not through the timeout branch below, which would abort
+        // and fail whatever session id a later, unrelated turn goes on to
+        // reuse for this or another room.
+        turnCancelled.then(() => {
+          throw new TurnCancelledError();
         }),
       ]);
       if (roomState.lastErrorMessage) {
@@ -974,7 +999,10 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       await this.deliverFallbackText(roomState);
       this.releaseTurnWait(roomState);
     } catch (error) {
-      if (error instanceof Error && error.message === "timeout") {
+      if (error instanceof TurnCancelledError) {
+        return;
+      }
+      if (error instanceof TurnTimeoutError) {
         await this.handleTurnTimeout(roomState);
         return;
       }
@@ -1057,6 +1085,13 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     roomState.releaseWait = null;
     roomState.resolveReleaseWait = null;
     roomState.turnTask = null;
+    // Settles a still-running watchTurnCompletion's race (see its own
+    // comment) — a no-op once that race has already settled through
+    // turnDone or the timeout, which is exactly what happens when this runs
+    // from watchTurnCompletion's own `finally` for the turn it belongs to.
+    roomState.resolveTurnCancelled?.();
+    roomState.turnCancelled = null;
+    roomState.resolveTurnCancelled = null;
   }
 
   private async emitSessionTaskEvent(roomState: RoomState, status: "created" | "resumed"): Promise<void> {

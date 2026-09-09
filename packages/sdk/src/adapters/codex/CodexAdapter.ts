@@ -31,6 +31,7 @@ import { deliverReply } from "../shared/deliveryFailedError";
 import { findLatestTaskMetadata } from "../shared/history";
 import {
   CodexAppServerStdioClient,
+  CodexJsonRpcError,
   type CodexClientLike,
   type CodexRpcEvent,
 } from "./appServerClient";
@@ -309,6 +310,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       );
       return { client, threadId };
     } catch (error) {
+      await this.evictOnTransportFailure(error);
       const failure = agentFailure(this.provider, asErrorMessage(error));
       await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId });
       throw new ProviderTurnFailedError(failure);
@@ -330,6 +332,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
         toRpcParams(turnParams),
       ));
     } catch (error) {
+      await this.evictOnTransportFailure(error);
       const failure = agentFailure(this.provider, asErrorMessage(error));
       await safeSendFailure(tools, failure, this.logger);
       throw new ProviderTurnFailedError(failure);
@@ -585,6 +588,22 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
           error,
         });
       }
+    }
+  }
+
+  // `CodexJsonRpcError` is a real answer from a live app-server — only this
+  // specific request was rejected (bad model id, revoked auth, ...), so the
+  // client is still healthy and every other room's turn can keep using it.
+  // Anything else — the transport closing mid-request, a write failing on a
+  // dead pipe, `request`'s own timeout — means this client can no longer be
+  // trusted for any future call, and must not be handed to the next turn by
+  // `ensureClient()`. `runEventLoop`'s own `transport/closed` handling only
+  // catches this once a turn reaches the event loop at all; a closure that
+  // instead rejects `getOrCreateThread`'s or `startTurn`'s RPC first (before
+  // any turn gets that far) would otherwise never evict the closed client.
+  private async evictOnTransportFailure(error: unknown): Promise<void> {
+    if (!(error instanceof CodexJsonRpcError)) {
+      await this.resetClient();
     }
   }
 
