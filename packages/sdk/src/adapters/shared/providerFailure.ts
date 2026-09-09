@@ -31,24 +31,24 @@ export class ProviderTurnFailedError extends RecoverableTurnError {
 }
 
 /**
- * Reports a terminal provider failure, then fails the turn that hit it.
+ * Posts `failure` via `tools.sendFailure`, swallowing and logging its own
+ * failure instead of letting it replace or escalate past whatever the caller
+ * does next. A throwing `sendFailure` — synchronous or a rejection — must not
+ * surface as a raw, unrecognized error: `.catch()` alone only catches a
+ * rejection, so this needs the `try` too. Shared by `reportTurnFailure` and
+ * `safeSendFailure`, which differ only in whether they throw afterward.
  *
  * `logger` is optional — not defaulted to a `NoopLogger` here, since that
  * would just relocate the tracked `?? new NoopLogger()` inconsistency into a
  * shared helper instead of an adapter entry point — so a caller with no
  * logger (e.g. `GenericAdapter`) keeps today's silent-on-failure behavior.
  */
-export async function reportTurnFailure(
+async function trySendFailure(
   tools: MessagingTools,
   failure: AgentFailure,
   logger?: Logger,
   logContext?: Record<string, unknown>,
-): Promise<never> {
-  // A throwing sendFailure — synchronous or a rejection — must not replace
-  // the ProviderTurnFailedError below with a raw, unrecognized error: that
-  // would escalate past the turn and take the whole runtime down instead of
-  // just failing this turn. `.catch()` alone only catches a rejection; a
-  // synchronous throw happens before it ever returns a promise to attach to.
+): Promise<void> {
   try {
     await tools.sendFailure(failure);
   } catch (error) {
@@ -59,16 +59,26 @@ export async function reportTurnFailure(
       error,
     });
   }
+}
+
+/**
+ * Reports a terminal provider failure, then fails the turn that hit it.
+ */
+export async function reportTurnFailure(
+  tools: MessagingTools,
+  failure: AgentFailure,
+  logger?: Logger,
+  logContext?: Record<string, unknown>,
+): Promise<never> {
+  await trySendFailure(tools, failure, logger, logContext);
   throw new ProviderTurnFailedError(failure);
 }
 
 /**
  * Reports a failure without letting `sendFailure` itself take the turn down.
  *
- * `sendFailure` is not unconditionally non-throwing (see `MessagingTools`),
- * so a caller reporting from a failure path — one that can't afford a new
- * throw here to replace the failure it's reporting — swallows and logs it
- * instead. One shared guard rather than a copy of this try/catch per adapter.
+ * For a caller reporting from a failure path that can't afford a new throw
+ * here to replace the failure it's already reporting.
  */
 export async function safeSendFailure(
   tools: MessagingTools,
@@ -76,16 +86,7 @@ export async function safeSendFailure(
   logger: Logger,
   logContext?: Record<string, unknown>,
 ): Promise<void> {
-  try {
-    await tools.sendFailure(failure);
-  } catch (error) {
-    logger.warn("provider_failure.report_failed", {
-      provider: failure.provider,
-      code: failure.code,
-      ...logContext,
-      error,
-    });
-  }
+  await trySendFailure(tools, failure, logger, logContext);
 }
 
 /**
