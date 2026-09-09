@@ -11,7 +11,6 @@ import {
   toFailureEvent,
   toLegacyToolExecutorErrorMessage,
 } from "../src/contracts/protocols";
-import { isBlankEventContent } from "../src/contracts/chatEvents";
 import type {
   AgentToolsCapabilities,
   PlatformMessageLike,
@@ -125,7 +124,7 @@ describe("contracts/protocols", () => {
       // `new Error()` reaches every adapter's failure path with message "".
       const event = toFailureEvent(new AgentFailure("letta", new Error().message));
 
-      expect(isBlankEventContent(event.content)).toBe(false);
+      expect(event.content).toBe("letta failed without an error message.");
       // The unusable original is still preserved verbatim in the metadata.
       expect(event.metadata.failure).toMatchObject({ provider: "letta", message: "" });
     });
