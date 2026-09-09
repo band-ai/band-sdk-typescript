@@ -48,7 +48,6 @@ import {
   TOOL_MODELS
 } from "./schemas";
 import {
-  expectedMemoryTypesForSystem,
   expectedList,
   memoryTypeForSystemError,
   isMemoryListScope,
@@ -1154,30 +1153,9 @@ function validateToolArgs(toolName: string, args: Record<string, unknown>): Tool
     }
   }
 
-  if (toolName === "band_store_memory") {
-    if (typeof args.system === "string" && !isMemorySystem(args.system)) {
-      errors.push(`system: Invalid value '${args.system}'. Expected one of: ${expectedList(MEMORY_SYSTEMS)}`);
-    }
-    if (typeof args.type === "string" && !isMemoryType(args.type)) {
-      errors.push(`type: Invalid value '${args.type}'. Expected one of: ${expectedList(MEMORY_TYPES)}`);
-    }
-    // Return a structured tool error before the normalized handler reaches REST.
-    if (
-      typeof args.system === "string"
-      && isMemorySystem(args.system)
-      && typeof args.type === "string"
-      && isMemoryType(args.type)
-      && !isMemoryTypeForSystem(args.system, args.type)
-    ) {
-      errors.push(
-        `type: Invalid value '${args.type}' for system '${args.system}'. ` +
-          `Expected one of: ${expectedMemoryTypesForSystem(args.system)}`,
-      );
-    }
-    if (typeof args.segment === "string" && !isMemorySegment(args.segment)) {
-      errors.push(`segment: Invalid value '${args.segment}'. Expected one of: ${expectedList(MEMORY_SEGMENTS)}`);
-    }
-  }
+  // band_store_memory's system/type/segment validate only in
+  // toStoreMemoryArgs, which normalizes the value first - duplicating the
+  // check here on the raw value would reject valid whitespace-padded input.
 
   if (errors.length > 0) {
     const message = `Invalid arguments for ${toolName}: ${errors.join("; ")}`;

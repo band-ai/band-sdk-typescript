@@ -141,7 +141,15 @@ describe("AgentTools coverage", () => {
     );
   });
 
-  it("returns a structured validation error for invalid memory tool arguments", async () => {
+  it.each([
+    ["system", { system: "bad-system", type: "semantic", segment: "user" }, "system must be one of: sensory, working, long_term"],
+    [
+      "type",
+      { system: "long_term", type: "bad-type", segment: "user" },
+      "type must be one of: iconic, echoic, haptic, episodic, semantic, procedural",
+    ],
+    ["segment", { system: "long_term", type: "semantic", segment: "bad-segment" }, "segment must be one of: user, agent, tool, guideline"],
+  ] as const)("returns a structured validation error for an invalid %s on band_store_memory", async (_field, overrides, expectedMessage) => {
     const tools = new AgentTools({
       roomId: "room-1",
       rest: createFacade(new CoverageRestApi()),
@@ -153,22 +161,14 @@ describe("AgentTools coverage", () => {
     const result = await tools.executeToolCall("band_store_memory", {
       content: "remember this",
       thought: "reasoning",
-      system: "bad-system",
-      type: "bad-type",
-      segment: "bad-segment",
+      ...overrides,
     });
 
     expect(result).toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
       toolName: "band_store_memory",
-      details: {
-        validationErrors: expect.arrayContaining([
-          expect.stringContaining("system: Invalid value 'bad-system'"),
-          expect.stringContaining("type: Invalid value 'bad-type'"),
-          expect.stringContaining("segment: Invalid value 'bad-segment'"),
-        ]),
-      },
+      message: expectedMessage,
     });
   });
 
@@ -604,7 +604,7 @@ describe("AgentTools coverage", () => {
       ok: false,
       errorType: "ToolArgumentsValidationError",
       toolName: "band_store_memory",
-      message: expect.stringContaining("Invalid value 'semantic' for system 'sensory'"),
+      message: expect.stringContaining('for system "sensory"'),
     });
 
     await expect(
