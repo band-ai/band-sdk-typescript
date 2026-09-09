@@ -28,26 +28,22 @@ import { Agent, GenericAdapter } from "../../src/index";
 import { FernRestAdapter } from "../../src/rest";
 import {
   createReporter,
-  DEFAULT_REST_URL,
-  deleteRoomsBulk,
+  loadLiveEnv,
   provisionAgent,
-  requireEnv,
+  reapProvisioned,
   sleep,
   sweepOrphans,
   type ProvisionedAgent,
 } from "./support/liveHarness";
+
+const TEST_NAME = "core-retry";
 
 const { assert, summarize } = createReporter();
 
 async function main() {
   console.log("core-retry === retry exhaustion via sync-recovery ===");
 
-  // `||`, not `??`: an unset GitHub Actions secret expands to "", which `??`
-  // would pass through as a real URL.
-  const restUrl = process.env.BAND_REST_URL || DEFAULT_REST_URL;
-  const wsUrl = process.env.BAND_WS_URL || undefined;
-  const userApiKey = requireEnv("BAND_API_KEY_USER");
-  const userClient = new BandClient({ baseUrl: restUrl, apiKey: userApiKey });
+  const { restUrl, wsUrl, userApiKey, userClient } = loadLiveEnv();
 
   const runId = randomUUID().slice(0, 8);
   await sweepOrphans(userClient, runId);
@@ -57,9 +53,9 @@ async function main() {
   const roomIds: string[] = [];
 
   try {
-    const testAgent = await provisionAgent(userClient, runId, "basic", "TS SDK core-retry E2E (basic)");
+    const testAgent = await provisionAgent(userClient, runId, TEST_NAME, "basic");
     provisioned.push(testAgent);
-    const senderAgent = await provisionAgent(userClient, runId, "planner", "TS SDK core-retry E2E (planner)");
+    const senderAgent = await provisionAgent(userClient, runId, TEST_NAME, "planner");
     provisioned.push(senderAgent);
     console.log(`core-retry Provisioned test agent "${testAgent.name}" (${testAgent.id}) and sender "${senderAgent.name}" (${senderAgent.id})`);
 
@@ -123,17 +119,7 @@ async function main() {
       `error=${markMessageFailedCalls[0]?.error}`,
     );
   } finally {
-    console.log("core-retry Reaping provisioned agents and rooms...");
-    await Promise.all([
-      ...provisioned.map((agent) =>
-        userClient.humanApiAgents.deleteMyAgent(agent.id, { force: true }).catch((err: unknown) => {
-          console.warn(`core-retry Failed to reap agent ${agent.id}:`, err);
-        }),
-      ),
-      deleteRoomsBulk(restUrl, userApiKey, roomIds).catch((err: unknown) => {
-        console.warn("core-retry Failed to bulk-delete rooms:", err);
-      }),
-    ]);
+    await reapProvisioned(userClient, restUrl, userApiKey, provisioned, roomIds, "core-retry");
   }
 
   summarize("core-retry");

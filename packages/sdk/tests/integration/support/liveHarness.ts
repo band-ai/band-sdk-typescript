@@ -7,7 +7,7 @@
  */
 import { BandClient } from "@band-ai/rest-client";
 
-export const NAME_PREFIX = "e2e-ts-core-";
+export const NAME_PREFIX = "e2e-ts-";
 export const DEFAULT_REST_URL = "https://app.band.ai/";
 const ORPHAN_MAX_AGE_MINUTES = 60;
 
@@ -21,7 +21,6 @@ export interface Reporter {
   pass(name: string): void;
   fail(name: string, error: string): void;
   assert(name: string, condition: boolean, errorMsg: string): void;
-  results: TestResult[];
   /** Prints the `${passed}/${total} passed` summary and sets a failing exit code if any failed. */
   summarize(label: string): void;
 }
@@ -51,7 +50,7 @@ export function createReporter(): Reporter {
     }
   };
 
-  return { pass, fail, assert, results, summarize };
+  return { pass, fail, assert, summarize };
 }
 
 export function sleep(ms: number): Promise<void> {
@@ -75,12 +74,46 @@ export async function waitUntil(
   }
 }
 
+/** `waitUntil`, reported through `reporter` (pass/fail) instead of throwing on timeout. */
+export async function assertEventually(
+  reporter: Pick<Reporter, "pass" | "fail">,
+  name: string,
+  predicate: () => boolean,
+  describeState: () => string,
+  options?: { timeoutMs?: number; intervalMs?: number },
+): Promise<void> {
+  try {
+    await waitUntil(predicate, options);
+    reporter.pass(name);
+  } catch (error) {
+    reporter.fail(name, `${describeState()} error=${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 export function requireEnv(name: string): string {
   const value = process.env[name];
   if (!value) {
     throw new Error(`${name} is required — see the calling script's header for the run command`);
   }
   return value;
+}
+
+export interface LiveEnv {
+  restUrl: string;
+  wsUrl: string | undefined;
+  userApiKey: string;
+  userClient: BandClient;
+}
+
+/** Reads the env vars every live script needs and builds a user-scoped REST client from them. */
+export function loadLiveEnv(): LiveEnv {
+  // `||`, not `??`: an unset GitHub Actions secret expands to "", which `??`
+  // would pass through as a real URL.
+  const restUrl = process.env.BAND_REST_URL || DEFAULT_REST_URL;
+  const wsUrl = process.env.BAND_WS_URL || undefined;
+  const userApiKey = requireEnv("BAND_API_KEY_USER");
+  const userClient = new BandClient({ baseUrl: restUrl, apiKey: userApiKey });
+  return { restUrl, wsUrl, userApiKey, userClient };
 }
 
 export interface ProvisionedAgent {
@@ -92,12 +125,12 @@ export interface ProvisionedAgent {
 export async function provisionAgent(
   userClient: BandClient,
   runId: string,
+  testName: string,
   label: string,
-  description: string,
 ): Promise<ProvisionedAgent> {
-  const name = `${NAME_PREFIX}${runId}-${label}`;
+  const name = `${NAME_PREFIX}${testName}-${runId}-${label}`;
   const response = await userClient.humanApiAgents.registerMyAgent({
-    agent: { name, description },
+    agent: { name, description: `TS SDK ${testName} E2E (${label})` },
   });
   const agent = response.data.agent;
   const credentials = response.data.credentials;
@@ -164,4 +197,26 @@ export async function sweepOrphans(userClient: BandClient, runId: string): Promi
       }),
     ),
   );
+}
+
+/** Force-deletes provisioned agents and bulk-deletes provisioned rooms, tolerating individual failures. */
+export async function reapProvisioned(
+  userClient: BandClient,
+  restUrl: string,
+  userApiKey: string,
+  provisioned: ProvisionedAgent[],
+  roomIds: string[],
+  logLabel: string,
+): Promise<void> {
+  console.log(`${logLabel} Reaping provisioned agents and rooms...`);
+  await Promise.all([
+    ...provisioned.map((agent) =>
+      userClient.humanApiAgents.deleteMyAgent(agent.id, { force: true }).catch((err: unknown) => {
+        console.warn(`${logLabel} Failed to reap agent ${agent.id}:`, err);
+      }),
+    ),
+    deleteRoomsBulk(restUrl, userApiKey, roomIds).catch((err: unknown) => {
+      console.warn(`${logLabel} Failed to bulk-delete rooms:`, err);
+    }),
+  ]);
 }

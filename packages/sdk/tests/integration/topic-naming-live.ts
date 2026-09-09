@@ -34,27 +34,23 @@ import { BandClient } from "@band-ai/rest-client";
 import { Agent, GenericAdapter } from "../../src/index";
 import { FernRestAdapter } from "../../src/rest";
 import {
+  assertEventually,
   createReporter,
-  DEFAULT_REST_URL,
-  deleteRoomsBulk,
+  loadLiveEnv,
   provisionAgent,
-  requireEnv,
+  reapProvisioned,
   sweepOrphans,
-  waitUntil,
   type ProvisionedAgent,
 } from "./support/liveHarness";
+
+const TEST_NAME = "topic-naming";
 
 const { pass, fail, summarize } = createReporter();
 
 async function main() {
   console.log("topic-naming === live channel routing for the refactored topic functions ===");
 
-  // `||`, not `??`: an unset GitHub Actions secret expands to "", which `??`
-  // would pass through as a real URL.
-  const restUrl = process.env.BAND_REST_URL || DEFAULT_REST_URL;
-  const wsUrl = process.env.BAND_WS_URL || undefined;
-  const userApiKey = requireEnv("BAND_API_KEY_USER");
-  const userClient = new BandClient({ baseUrl: restUrl, apiKey: userApiKey });
+  const { restUrl, wsUrl, userApiKey, userClient } = loadLiveEnv();
 
   const runId = randomUUID().slice(0, 8);
   await sweepOrphans(userClient, runId);
@@ -65,9 +61,9 @@ async function main() {
   let runningAgentB: Agent | null = null;
 
   try {
-    const agentA = await provisionAgent(userClient, runId, "sender", "TS SDK topic-naming E2E (sender)");
+    const agentA = await provisionAgent(userClient, runId, TEST_NAME, "sender");
     provisioned.push(agentA);
-    const agentB = await provisionAgent(userClient, runId, "receiver", "TS SDK topic-naming E2E (receiver)");
+    const agentB = await provisionAgent(userClient, runId, TEST_NAME, "receiver");
     provisioned.push(agentB);
     console.log(`topic-naming Provisioned sender "${agentA.name}" (${agentA.id}) and receiver "${agentB.name}" (${agentB.id})`);
 
@@ -77,16 +73,18 @@ async function main() {
     // `AddContactArgs.handle` is the platform's `owner_handle/agent_slug`
     // identifier (`AgentMe.handle`), not the plain `name` passed at
     // registration — verified live against `agentApiIdentity.getAgentMe()`.
-    const agentBHandle = (await restB.getAgentMe()).handle;
+    // Fetched concurrently with creating the chat below: different agents'
+    // credentials, no dependency between the two calls.
+    const [agentBIdentity, chat] = await Promise.all([restB.getAgentMe(), restA.createChat()]);
+    const agentBHandle = agentBIdentity.handle;
     if (!agentBHandle) {
       throw new Error(`receiver agent has no handle: ${JSON.stringify(agentB)}`);
     }
+    roomIds.push(chat.id);
 
     // Agent B is added before it starts, so its live receipt of the message
     // below depends on `autoSubscribeExistingRooms` picking up this room —
     // not on a `room_added` event delivered after connect.
-    const chat = await restA.createChat();
-    roomIds.push(chat.id);
     await restA.addChatParticipant(chat.id, { participantId: agentB.id, role: "member" });
     console.log(`topic-naming Created chat: ${chat.id}`);
 
@@ -119,42 +117,28 @@ async function main() {
       content: `@${agentB.name} hello from A`,
       mentions: [{ id: agentB.id, handle: agentB.name }],
     });
-    try {
-      await waitUntil(() => received.messages.some((m) => m.includes("hello from A")), { timeoutMs: 15_000 });
-      pass("receiver got the sender's message over its real chat_room/agent_rooms/room_participants joins");
-    } catch (error) {
-      fail(
-        "receiver got the sender's message over its real chat_room/agent_rooms/room_participants joins",
-        `messages=${JSON.stringify(received.messages)} error=${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
+    await assertEventually(
+      { pass, fail },
+      "receiver got the sender's message over its real chat_room/agent_rooms/room_participants joins",
+      () => received.messages.some((m) => m.includes("hello from A")),
+      () => `messages=${JSON.stringify(received.messages)}`,
+      { timeoutMs: 15_000 },
+    );
 
     console.log("topic-naming Sending a contact request from the sender...");
     await restA.addContact({ handle: agentBHandle });
-    try {
-      await waitUntil(() => received.contactEvents.includes("contact_request_received"), { timeoutMs: 15_000 });
-      pass("receiver got a live contact_request_received event over its real agent_contacts join");
-    } catch (error) {
-      fail(
-        "receiver got a live contact_request_received event over its real agent_contacts join",
-        `contactEvents=${JSON.stringify(received.contactEvents)} error=${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
+    await assertEventually(
+      { pass, fail },
+      "receiver got a live contact_request_received event over its real agent_contacts join",
+      () => received.contactEvents.includes("contact_request_received"),
+      () => `contactEvents=${JSON.stringify(received.contactEvents)}`,
+      { timeoutMs: 15_000 },
+    );
   } finally {
     if (runningAgentB) {
       await runningAgentB.stop(5000);
     }
-    console.log("topic-naming Reaping provisioned agents and rooms...");
-    await Promise.all([
-      ...provisioned.map((agent) =>
-        userClient.humanApiAgents.deleteMyAgent(agent.id, { force: true }).catch((err: unknown) => {
-          console.warn(`topic-naming Failed to reap agent ${agent.id}:`, err);
-        }),
-      ),
-      deleteRoomsBulk(restUrl, userApiKey, roomIds).catch((err: unknown) => {
-        console.warn("topic-naming Failed to bulk-delete rooms:", err);
-      }),
-    ]);
+    await reapProvisioned(userClient, restUrl, userApiKey, provisioned, roomIds, "topic-naming");
   }
 
   summarize("topic-naming");
