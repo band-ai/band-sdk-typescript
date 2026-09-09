@@ -1118,9 +1118,14 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     roomState.persistedSessionId = roomState.sessionId;
   }
 
-  private async flushTurnText(roomState: RoomState): Promise<boolean> {
+  /**
+   * "blocked" and "empty" are both a no-op today, but `deliverFallbackText`
+   * needs to tell them apart: only "empty" means the shared guard already
+   * passed, so it's safe to go on and send its own fallback message.
+   */
+  private async flushTurnText(roomState: RoomState): Promise<"sent" | "empty" | "blocked"> {
     if (!roomState.tools || !this.config.fallbackSendAgentText) {
-      return false;
+      return "blocked";
     }
 
     const text = [...roomState.textParts.values()]
@@ -1130,20 +1135,17 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       .trim();
 
     if (text.length === 0) {
-      return false;
+      return "empty";
     }
 
     await deliverReply(roomState.tools, text, roomState.pendingMentions);
     roomState.pendingMentions = [];
-    return true;
+    return "sent";
   }
 
   private async deliverFallbackText(roomState: RoomState): Promise<void> {
-    if (await this.flushTurnText(roomState)) {
-      return;
-    }
-
-    if (!roomState.tools || !this.config.fallbackSendAgentText) {
+    const outcome = await this.flushTurnText(roomState);
+    if (outcome !== "empty" || !roomState.tools) {
       return;
     }
 
