@@ -3,8 +3,10 @@ import { AgentFailure } from "@band-ai/band-sdk-core";
 
 import {
   ProviderTurnFailedError,
+  agentFailure,
   reportTurnFailure,
   rethrowIfProviderTurnFailure,
+  safeSendFailure,
 } from "../src/adapters/shared/providerFailure";
 import type { MessagingTools } from "../src/contracts/protocols";
 
@@ -53,6 +55,68 @@ describe("reportTurnFailure", () => {
       roomId: "room-1",
       error: sendFailureError,
     });
+  });
+});
+
+describe("safeSendFailure", () => {
+  it("resolves instead of throwing/rejecting when tools.sendFailure rejects, and logs the failure", async () => {
+    const failure = new AgentFailure("test", "boom", "some_code");
+    const sendFailureError = new Error("sendFailure transport error");
+    const tools = {
+      sendFailure: async () => {
+        throw sendFailureError;
+      },
+    } as unknown as MessagingTools;
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+    await expect(safeSendFailure(tools, failure, logger, { roomId: "room-1" })).resolves.toBeUndefined();
+
+    expect(logger.warn).toHaveBeenCalledWith("provider_failure.report_failed", {
+      provider: "test",
+      code: "some_code",
+      roomId: "room-1",
+      error: sendFailureError,
+    });
+  });
+
+  it("resolves without logging anything when tools.sendFailure succeeds", async () => {
+    const failure = new AgentFailure("test", "boom");
+    const tools = { sendFailure: vi.fn(async () => ({ ok: true })) } as unknown as MessagingTools;
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+    await expect(safeSendFailure(tools, failure, logger)).resolves.toBeUndefined();
+
+    expect(tools.sendFailure).toHaveBeenCalledWith(failure);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("agentFailure", () => {
+  it("passes a JSON-serializable detail through unchanged", () => {
+    const failure = agentFailure("test", "boom", "code", { httpStatus: 500 });
+
+    expect(failure.detail).toEqual({ httpStatus: 500 });
+  });
+
+  it("falls back to a detail-less AgentFailure, instead of throwing, when detail cannot be serialized", () => {
+    // AgentFailure's WASM-backed constructor genuinely rejects a
+    // function-valued property with a raw Error -- verified directly against
+    // the real @band-ai/band-sdk-core constructor, not assumed from its name.
+    const unserializableDetail = { handler: () => undefined };
+
+    const failure = agentFailure("test", "boom", "code", unserializableDetail);
+
+    expect(failure).toBeInstanceOf(AgentFailure);
+    expect(failure.provider).toBe("test");
+    expect(failure.message).toBe("boom");
+    expect(failure.code).toBe("code");
+    expect(failure.detail).toBeUndefined();
+  });
+
+  it("does not attempt to construct with a detail argument at all when detail is undefined", () => {
+    const failure = agentFailure("test", "boom");
+
+    expect(failure.detail).toBeUndefined();
   });
 });
 
