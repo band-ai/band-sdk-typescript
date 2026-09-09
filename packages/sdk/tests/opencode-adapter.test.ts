@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { HttpStatusError, OpencodeAdapter, type OpencodeClientLike } from "../src/adapters";
+import { DeliveryFailedError } from "../src/adapters/shared/deliveryFailedError";
 import type { OpencodeSessionState } from "../src/converters";
 import { FakeTools, expectTurnFailed, findFailureEvent, makeMessage } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
@@ -356,7 +357,29 @@ describe("OpencodeAdapter", () => {
     ]);
   });
 
-  it("still releases the turn wait when delivering the permission prompt itself fails, instead of stalling until turnTimeoutMs", async () => {
+  it.each([
+    {
+      interaction: "permission",
+      event: {
+        type: "permission.asked",
+        properties: {
+          id: "perm-1",
+          permission: "bash",
+          patterns: ["npm test"],
+        },
+      },
+    },
+    {
+      interaction: "question",
+      event: {
+        type: "question.asked",
+        properties: {
+          id: "question-1",
+          questions: [{ question: "Which approach?" }],
+        },
+      },
+    },
+  ])("fails the turn recoverably when delivering an OpenCode $interaction prompt fails", async ({ interaction, event }) => {
     const tools = new FakeTools({ failOn: ["sendMessage"] });
     const client = new FakeOpencodeClient();
     createdClients.push(client);
@@ -384,18 +407,23 @@ describe("OpencodeAdapter", () => {
     await waitFor(() => client.createdSessions.length === 1);
     const sessionId = client.createdSessions[0]!;
     client.eventQueue.push({
-      type: "permission.asked",
-      properties: {
-        id: "perm-1",
-        sessionID: sessionId,
-        permission: "bash",
-        patterns: ["npm test"],
-      },
+      ...event,
+      properties: { ...event.properties, sessionID: sessionId },
     });
 
-    await firstTurn;
+    await expect(firstTurn).rejects.toBeInstanceOf(DeliveryFailedError);
     expect(Date.now() - startedAt).toBeLessThan(1_000);
     expect(tools.messages).toEqual([]);
+    await waitFor(() => interaction === "permission"
+      ? client.permissionReplies.length === 1
+      : client.rejectedQuestions.length === 1);
+    if (interaction === "permission") {
+      expect(client.permissionReplies).toEqual([
+        { sessionId, permissionId: "perm-1", response: "reject" },
+      ]);
+    } else {
+      expect(client.rejectedQuestions).toEqual(["question-1"]);
+    }
   });
 
   it("observes a turn that outlives its request, so a failed background delivery cannot end the process", async () => {
