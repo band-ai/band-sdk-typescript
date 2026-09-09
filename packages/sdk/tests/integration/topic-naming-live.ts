@@ -76,11 +76,11 @@ async function main() {
     // Fetched concurrently with creating the chat below: different agents'
     // credentials, no dependency between the two calls.
     const [agentBIdentity, chat] = await Promise.all([restB.getAgentMe(), restA.createChat()]);
+    roomIds.push(chat.id);
     const agentBHandle = agentBIdentity.handle;
     if (!agentBHandle) {
-      throw new Error(`receiver agent has no handle: ${JSON.stringify(agentB)}`);
+      throw new Error(`receiver agent has no handle: id=${agentB.id} name=${agentB.name}`);
     }
-    roomIds.push(chat.id);
 
     // Agent B is added before it starts, so its live receipt of the message
     // below depends on `autoSubscribeExistingRooms` picking up this room —
@@ -115,7 +115,7 @@ async function main() {
     console.log("topic-naming Sending a chat message from the sender...");
     await restA.createChatMessage(chat.id, {
       content: `@${agentB.name} hello from A`,
-      mentions: [{ id: agentB.id, handle: agentB.name }],
+      mentions: [{ id: agentB.id, handle: agentBHandle }],
     });
     await assertEventually(
       { pass, fail },
