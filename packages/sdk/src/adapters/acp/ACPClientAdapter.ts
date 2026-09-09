@@ -362,7 +362,6 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     sessionId: string,
     promptText: string,
   ): Promise<PromptResponse> {
-    let timer: ReturnType<typeof setTimeout> | undefined
     const promptPromise = connection.prompt({
       sessionId,
       prompt: [{
@@ -370,25 +369,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         text: promptText,
       }],
     })
-    // Prevent an unhandled rejection if this settles after the race below
-    // has already moved on via the timeout branch — Promise.race never
-    // cancels the loser, so this promise is still live either way.
-    promptPromise.catch(() => {})
 
-    try {
-      // `setTimeout` coerces `Infinity` to 1ms, so an unbounded turn has to
-      // skip the race outright rather than pass the delay through.
-      return Number.isFinite(this.turnTimeoutMs)
-        ? await Promise.race([
-          promptPromise,
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(() => reject(new AcpTurnTimeoutError()), this.turnTimeoutMs)
-          }),
-        ])
-        : await promptPromise
-    } finally {
-      clearTimeout(timer)
-    }
+    return withTimeout(promptPromise, this.turnTimeoutMs, () => new AcpTurnTimeoutError())
   }
 
   private async failTurn(
