@@ -20,7 +20,7 @@ import type { McpToolRegistration } from "../../mcp/registrations";
 import { errorResult, successResult } from "../../mcp/registrations";
 import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
 import { abandon } from "../shared/abandon";
-import { asErrorMessage, asOptionalRecord } from "../shared/coercion";
+import { asErrorMessage, asOptionalRecord, toDisplayText } from "../shared/coercion";
 import {
   DeliveryFailedError,
   deliverReply,
@@ -1289,15 +1289,10 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
 
   private toAgentFailure(error: unknown): AgentFailure {
     if (error instanceof HttpStatusError) {
-      // `error.body` is an untyped provider payload — JSON.stringify throws on
-      // a cycle or a BigInt, and this is building the report for a failure
-      // that must never itself throw.
-      let body: string;
-      try {
-        body = typeof error.body === "string" ? error.body : JSON.stringify(error.body);
-      } catch {
-        body = "<unserializable body>";
-      }
+      // `error.body` is an untyped provider payload; toDisplayText already
+      // handles the string-passthrough/safe-JSON.stringify-with-fallback
+      // shape this needs, and never throws on a cycle or a BigInt.
+      const body = typeof error.body === "string" ? error.body : toDisplayText(error.body);
       const message = `OpenCode request failed (${error.status}): ${body}`;
       return agentFailure(this.provider, message, String(error.status), error.body);
     }
