@@ -826,7 +826,42 @@ describe("OpencodeAdapter", () => {
     expect((failureEvent?.metadata as any)?.failure).toMatchObject({
       provider: "opencode",
       code: "timeout",
-      message: "OpenCode timed out before completing the turn.",
+    });
+  });
+
+  it("logs a warning instead of silently dropping it when the fire-and-forget session abort itself fails after a turn timeout", async () => {
+    const tools = new FakeTools();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const abortError = new Error("opencode transport unreachable");
+    vi.spyOn(client, "abortSession").mockRejectedValue(abortError);
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as any,
+      config: { turnTimeoutMs: 30 },
+      mcpBackendFactory: httpMcpBackend(),
+      logger,
+    });
+    adapters.push(adapter);
+
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("Never responds"),
+        tools,
+        { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-abort-fails" },
+      ),
+    );
+
+    const sessionId = client.createdSessions[0]!;
+    await waitFor(() => logger.warn.mock.calls.length > 0);
+    expect(logger.warn).toHaveBeenCalledWith("opencode_adapter.turn_abort_failed", {
+      roomId: "room-abort-fails",
+      sessionId,
+      error: abortError,
     });
   });
 

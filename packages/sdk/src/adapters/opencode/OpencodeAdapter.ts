@@ -1004,7 +1004,16 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       // A server wedged enough to blow the turn timeout can leave this
       // request pending too, and everything below frees the room. See
       // `abandon`.
-      abandon(() => client.abortSession(abortedSessionId));
+      abandon(
+        () => client.abortSession(abortedSessionId),
+        (abortError) => {
+          this.logger.warn("opencode_adapter.turn_abort_failed", {
+            roomId: roomState.roomId,
+            sessionId: abortedSessionId,
+            error: abortError,
+          });
+        },
+      );
       // The abort above is fire-and-forget, so this session may still be
       // settling server-side when the room's next turn starts — that turn
       // must open a fresh session rather than racing a prompt against it.
