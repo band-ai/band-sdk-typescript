@@ -296,11 +296,13 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     message: PlatformMessage,
     config: CodexAdapterConfig,
   ): Promise<{ client: CodexClientLike; threadId: string }> {
+    let client: CodexClientLike | null = null;
     try {
       this.debug("codex_adapter.client.ensure.start", { roomId: context.roomId });
-      const client = await this.ensureClient();
+      client = await this.ensureClient();
       this.debug("codex_adapter.client.ensure.done", { roomId: context.roomId });
       const threadId = await this.getOrCreateThread(
+        client,
         context.roomId,
         tools,
         history,
@@ -310,7 +312,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       );
       return { client, threadId };
     } catch (error) {
-      await this.evictOnTransportFailure(error);
+      await this.evictOnTransportFailure(error, client);
       const failure = agentFailure(this.provider, asErrorMessage(error));
       await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId });
       throw new ProviderTurnFailedError(failure);
@@ -332,7 +334,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
         toRpcParams(turnParams),
       ));
     } catch (error) {
-      await this.evictOnTransportFailure(error);
+      await this.evictOnTransportFailure(error, client);
       const failure = agentFailure(this.provider, asErrorMessage(error));
       await safeSendFailure(tools, failure, this.logger);
       throw new ProviderTurnFailedError(failure);
@@ -412,7 +414,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       if (event.method === "transport/closed") {
         turnStatus = "failed";
         turnError = "Codex transport closed unexpectedly";
-        await this.resetClient();
+        await this.resetClient(client);
         break;
       }
 
@@ -575,10 +577,22 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     return await this.clientPromise;
   }
 
-  private async resetClient(): Promise<void> {
+  private async resetClient(expectedClient?: CodexClientLike): Promise<void> {
     const client = this.client;
+    if (expectedClient && client !== expectedClient) {
+      return;
+    }
+
     this.client = null;
     this.clientPromise = null;
+    for (const roomId of [
+      ...this.roomThreadIds.keys(),
+      ...this.roomThreadInitPromises.keys(),
+    ]) {
+      this.needsHistoryInjection.add(roomId);
+    }
+    this.roomThreadIds.clear();
+    this.roomThreadInitPromises.clear();
 
     if (client) {
       try {
@@ -601,9 +615,12 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
   // catches this once a turn reaches the event loop at all; a closure that
   // instead rejects `getOrCreateThread`'s or `startTurn`'s RPC first (before
   // any turn gets that far) would otherwise never evict the closed client.
-  private async evictOnTransportFailure(error: unknown): Promise<void> {
-    if (!(error instanceof CodexJsonRpcError)) {
-      await this.resetClient();
+  private async evictOnTransportFailure(
+    error: unknown,
+    failedClient: CodexClientLike | null,
+  ): Promise<void> {
+    if (failedClient && !(error instanceof CodexJsonRpcError)) {
+      await this.resetClient(failedClient);
     }
   }
 
@@ -615,6 +632,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
   }
 
   private async getOrCreateThread(
+    client: CodexClientLike,
     roomId: string,
     tools: AgentToolsProtocol,
     history: HistoryProvider,
@@ -633,7 +651,6 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     }
 
     const initPromise = (async (): Promise<string> => {
-      const client = await this.ensureClient();
       const resumeThreadId = isSessionBootstrap && allowHistoryThreadResume
         ? extractThreadIdFromHistory(history.raw)
         : null;
@@ -648,10 +665,15 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
             throw new Error("Codex returned an invalid thread/resume payload");
           }
           const threadId = resumed.thread.id;
+          this.assertCurrentClient(client);
           this.roomThreadIds.set(roomId, threadId);
           await this.sendThreadMappingEvent(tools, roomId, threadId, "resumed");
+          this.assertCurrentClient(client);
           return threadId;
         } catch (error) {
+          if (this.client !== client) {
+            throw error;
+          }
           this.logger.warn("codex_adapter.thread_resume_failed", {
             roomId,
             threadId: resumeThreadId,
@@ -673,8 +695,10 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
         throw new Error("Codex returned an invalid thread/start payload");
       }
       const threadId = started.thread.id;
+      this.assertCurrentClient(client);
       this.roomThreadIds.set(roomId, threadId);
       await this.sendThreadMappingEvent(tools, roomId, threadId, "mapped");
+      this.assertCurrentClient(client);
       return threadId;
     })();
 
@@ -685,6 +709,12 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       if (this.roomThreadInitPromises.get(roomId) === initPromise) {
         this.roomThreadInitPromises.delete(roomId);
       }
+    }
+  }
+
+  private assertCurrentClient(client: CodexClientLike): void {
+    if (this.client !== client) {
+      throw new Error("Codex client was replaced during thread initialization.");
     }
   }
 
@@ -1250,10 +1280,12 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
   // against a downed app server stops every room.
   private async handleModelListCommand(tools: AgentToolsProtocol, mention: MentionInput): Promise<void> {
     let response: unknown;
+    let client: CodexClientLike | null = null;
     try {
-      const client = await this.ensureClient();
+      client = await this.ensureClient();
       response = await client.request<unknown>("model/list", {});
     } catch (error) {
+      await this.evictOnTransportFailure(error, client);
       const failure = agentFailure(this.provider, asErrorMessage(error));
       await safeSendFailure(tools, failure, this.logger);
       throw new ProviderTurnFailedError(failure);

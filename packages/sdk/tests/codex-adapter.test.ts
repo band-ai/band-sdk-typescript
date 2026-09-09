@@ -803,6 +803,146 @@ describe("CodexAdapter", () => {
     expect(clients[1].requestCalls.some((call) => call.method === "turn/start")).toBe(true);
   });
 
+  it("starts a new thread after turn/start evicts the client that owned the old thread", async () => {
+    const tools = new ToolSchemaFakeTools();
+    let factoryCalls = 0;
+    const clients: FakeCodexClient[] = [];
+    const adapter = new CodexAdapter({
+      factory: async () => {
+        factoryCalls += 1;
+        const clientNumber = factoryCalls;
+        const client = new FakeCodexClient({
+          events: clientNumber === 2
+            ? [{
+              kind: "notification",
+              method: "turn/completed",
+              params: { turn: { id: "turn-1", status: "completed", error: null } },
+            }]
+            : [],
+          requestHandler: (method, params) => {
+            if (method === "thread/start") {
+              return { thread: { id: `thread-${clientNumber}` }, model: "gpt-5.3-codex", params };
+            }
+            if (method === "turn/start" && clientNumber === 1) {
+              throw new Error("app-server transport closed");
+            }
+            return defaultRequestHandler(method, params);
+          },
+        });
+        clients.push(client);
+        return client;
+      },
+    });
+    await adapter.onStarted("Codex Agent", "Codex parity adapter");
+
+    await expectTurnFailed(adapter.onMessage(
+      makeMessage("hello"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-turn-transport-fail" },
+    ));
+
+    await adapter.onMessage(
+      makeMessage("hello again"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-turn-transport-fail" },
+    );
+
+    expect(factoryCalls).toBe(2);
+    expect(clients[1].requestCalls.filter((call) => call.method === "thread/start")).toHaveLength(1);
+    expect(clients[1].requestCalls.find((call) => call.method === "turn/start")?.params).toMatchObject({
+      threadId: "thread-2",
+    });
+  });
+
+  it("does not let a stale thread initialization close a replacement client", async () => {
+    let releaseMapping!: () => void;
+    const mappingRelease = new Promise<void>((resolve) => {
+      releaseMapping = resolve;
+    });
+    let mappingStarted!: () => void;
+    const mappingStart = new Promise<void>((resolve) => {
+      mappingStarted = resolve;
+    });
+    const roomBTools = new ToolSchemaFakeTools();
+    const sendEvent = roomBTools.sendEvent.bind(roomBTools);
+    vi.spyOn(roomBTools, "sendEvent").mockImplementation(async (...args) => {
+      if (args[1] === "task") {
+        mappingStarted();
+        await mappingRelease;
+      }
+      return await sendEvent(...args);
+    });
+
+    let threadStarts = 0;
+    const firstClient = new FakeCodexClient({
+      requestHandler: (method, params) => {
+        if (method === "thread/start") {
+          threadStarts += 1;
+          return { thread: { id: `first-thread-${threadStarts}` }, model: "gpt-5.3-codex", params };
+        }
+        if (method === "turn/start") {
+          throw new Error("app-server transport closed");
+        }
+        return defaultRequestHandler(method, params);
+      },
+    });
+    const replacementClient = new FakeCodexClient({
+      events: [{
+        kind: "notification",
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed", error: null } },
+      }],
+    });
+    let factoryCalls = 0;
+    const adapter = new CodexAdapter({
+      factory: async () => {
+        factoryCalls += 1;
+        return factoryCalls === 1 ? firstClient : replacementClient;
+      },
+    });
+    await adapter.onStarted("Codex Agent", "Codex parity adapter");
+
+    const staleTurn = adapter.onMessage(
+      makeMessage("room B"),
+      roomBTools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-b" },
+    );
+    await mappingStart;
+
+    await expectTurnFailed(adapter.onMessage(
+      makeMessage("room A"),
+      new ToolSchemaFakeTools(),
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-a" },
+    ));
+    await adapter.onMessage(
+      makeMessage("room C"),
+      new ToolSchemaFakeTools(),
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-c" },
+    );
+
+    releaseMapping();
+    await expectTurnFailed(staleTurn);
+
+    expect(factoryCalls).toBe(2);
+    expect(firstClient.closeCalls).toBe(1);
+    expect(replacementClient.closeCalls).toBe(0);
+  });
+
   it("keeps a client whose thread/start rejected with an ordinary Codex JSON-RPC error, since the transport itself is still healthy", async () => {
     const tools = new ToolSchemaFakeTools();
     let factoryCalls = 0;
