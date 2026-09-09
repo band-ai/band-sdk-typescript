@@ -201,6 +201,16 @@ async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void>
   }
 }
 
+/** waitFor's fake-timer counterpart: nothing here waits on the real clock. */
+async function advanceFakeTimersUntil(predicate: () => boolean, maxSteps = 50): Promise<void> {
+  for (let step = 0; step < maxSteps && !predicate(); step += 1) {
+    await vi.advanceTimersByTimeAsync(0);
+  }
+  if (!predicate()) {
+    throw new Error("Timed out waiting for condition under fake timers.");
+  }
+}
+
 describe("OpencodeAdapter", () => {
   const createdClients: FakeOpencodeClient[] = [];
   const adapters: OpencodeAdapter[] = [];
@@ -482,43 +492,48 @@ describe("OpencodeAdapter", () => {
     // reports a failure against whatever session id a later, unrelated turn
     // goes on to reuse for this or another room (see the dedicated test
     // below).
-    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-    const tools = new FakeTools();
-    const client = new FakeOpencodeClient();
-    createdClients.push(client);
-    const adapter = new OpencodeAdapter({
-      clientFactory: () => client as any,
-      mcpBackendFactory: httpMcpBackend(),
-      config: { turnTimeoutMs: 30 },
-      logger,
-    });
-    adapters.push(adapter);
+    vi.useFakeTimers();
+    try {
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const tools = new FakeTools();
+      const client = new FakeOpencodeClient();
+      createdClients.push(client);
+      const adapter = new OpencodeAdapter({
+        clientFactory: () => client as any,
+        mcpBackendFactory: httpMcpBackend(),
+        config: { turnTimeoutMs: 30 },
+        logger,
+      });
+      adapters.push(adapter);
 
-    await adapter.onStarted("OpenCode Agent", "Writes code");
-    const pending = adapter.onMessage(
-      makeMessage("hello"),
-      tools,
-      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
-      null,
-      null,
-      { isSessionBootstrap: true, roomId: "room-cleanup-race" },
-    );
+      await adapter.onStarted("OpenCode Agent", "Writes code");
+      const pending = adapter.onMessage(
+        makeMessage("hello"),
+        tools,
+        { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-cleanup-race" },
+      );
 
-    await waitFor(() => client.createdSessions.length === 1);
-    // The turn is active here: promptAsync resolved, but no session.idle/
-    // session.error event has arrived and the watchdog hasn't fired yet.
-    await adapter.onCleanup("room-cleanup-race");
+      await advanceFakeTimersUntil(() => client.createdSessions.length === 1);
+      // The turn is active here: promptAsync resolved, but no session.idle/
+      // session.error event has arrived and the watchdog hasn't fired yet.
+      await adapter.onCleanup("room-cleanup-race");
 
-    // Must resolve promptly instead of hanging forever on the now-orphaned
-    // releaseWait this turn is still awaiting.
-    await pending;
+      // Must resolve promptly instead of hanging forever on the now-orphaned
+      // releaseWait this turn is still awaiting.
+      await pending;
 
-    // Let the watchdog's turnTimeoutMs window pass in the background — it
-    // must have been cancelled, not merely delayed, so nothing fires once
-    // it would otherwise have timed out.
-    await new Promise((resolve) => setTimeout(resolve, 60));
-    expect(client.aborts).toEqual([]);
-    expect(logger.error).not.toHaveBeenCalled();
+      // Advance exactly past the watchdog's turnTimeoutMs deadline -- it
+      // must have been cancelled, not merely delayed, so nothing fires once
+      // it would otherwise have timed out.
+      await vi.advanceTimersByTimeAsync(60);
+      expect(client.aborts).toEqual([]);
+      expect(logger.error).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not abort a replacement turn's session when a cleaned-up turn's watchdog would otherwise reach its original deadline", async () => {
@@ -528,61 +543,66 @@ describe("OpencodeAdapter", () => {
     // identical session id (e.g. deterministic, directory-based ids) would
     // have its live session aborted once the old watchdog's original
     // deadline arrived.
-    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-    const clients: FakeOpencodeClient[] = [];
-    const adapter = new OpencodeAdapter({
-      clientFactory: () => {
-        const client = new FakeOpencodeClient();
-        clients.push(client);
-        createdClients.push(client);
-        return client as any;
-      },
-      mcpBackendFactory: httpMcpBackend(),
-      // Long enough that neither turn's own watchdog could naturally fire
-      // during this test — the fix's point is that cleanup cancels the
-      // first turn's watchdog immediately, not merely delays it.
-      config: { turnTimeoutMs: 10_000 },
-      logger,
-    });
-    adapters.push(adapter);
-    await adapter.onStarted("OpenCode Agent", "Writes code");
+    vi.useFakeTimers();
+    try {
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const clients: FakeOpencodeClient[] = [];
+      const adapter = new OpencodeAdapter({
+        clientFactory: () => {
+          const client = new FakeOpencodeClient();
+          clients.push(client);
+          createdClients.push(client);
+          return client as any;
+        },
+        mcpBackendFactory: httpMcpBackend(),
+        // Long enough that neither turn's own watchdog could naturally fire
+        // during this test — the fix's point is that cleanup cancels the
+        // first turn's watchdog immediately, not merely delays it.
+        config: { turnTimeoutMs: 10_000 },
+        logger,
+      });
+      adapters.push(adapter);
+      await adapter.onStarted("OpenCode Agent", "Writes code");
 
-    const firstTurn = adapter.onMessage(
-      makeMessage("hello"),
-      new FakeTools(),
-      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
-      null,
-      null,
-      { isSessionBootstrap: true, roomId: "room-x" },
-    );
-    await waitFor(() => (clients[0]?.createdSessions.length ?? 0) === 1);
-    expect(clients[0]?.createdSessions).toEqual(["session-1"]);
+      const firstTurn = adapter.onMessage(
+        makeMessage("hello"),
+        new FakeTools(),
+        { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-x" },
+      );
+      await advanceFakeTimersUntil(() => (clients[0]?.createdSessions.length ?? 0) === 1);
+      expect(clients[0]?.createdSessions).toEqual(["session-1"]);
 
-    // room-x is the only room, so cleaning it up also shuts its client down.
-    await adapter.onCleanup("room-x");
-    await firstTurn;
+      // room-x is the only room, so cleaning it up also shuts its client down.
+      await adapter.onCleanup("room-x");
+      await firstTurn;
 
-    // room-x rejoins on a fresh client that happens to mint the identical
-    // session id.
-    const secondTurn = adapter.onMessage(
-      makeMessage("hello again"),
-      new FakeTools(),
-      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
-      null,
-      null,
-      { isSessionBootstrap: true, roomId: "room-x" },
-    );
-    await waitFor(() => (clients[1]?.createdSessions.length ?? 0) === 1);
-    expect(clients[1]?.createdSessions).toEqual(["session-1"]);
+      // room-x rejoins on a fresh client that happens to mint the identical
+      // session id.
+      const secondTurn = adapter.onMessage(
+        makeMessage("hello again"),
+        new FakeTools(),
+        { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-x" },
+      );
+      await advanceFakeTimersUntil(() => (clients[1]?.createdSessions.length ?? 0) === 1);
+      expect(clients[1]?.createdSessions).toEqual(["session-1"]);
 
-    // Let the first turn's cancelled watchdog fully settle in the
-    // background, then confirm it never touched the replacement's client.
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(clients[1]?.aborts).toEqual([]);
-    expect(logger.error).not.toHaveBeenCalled();
+      // Advance well past the first turn's cancelled watchdog deadline, then
+      // confirm it never touched the replacement's client.
+      await vi.advanceTimersByTimeAsync(20);
+      expect(clients[1]?.aborts).toEqual([]);
+      expect(logger.error).not.toHaveBeenCalled();
 
-    clients[1]!.eventQueue.push({ type: "session.idle", properties: { sessionID: "session-1" } });
-    await secondTurn;
+      clients[1]!.eventQueue.push({ type: "session.idle", properties: { sessionID: "session-1" } });
+      await secondTurn;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("recreates missing sessions and injects replay history", async () => {
