@@ -88,6 +88,7 @@ WebSocket transport is Phoenix Channels (`packages/sdk/src/platform/streaming/Ph
 | Chat Room | `chat_room:{chat_room_id}` | `message_created` |
 | Room Participants | `room_participants:{chat_room_id}` | `participant_added`, `participant_removed` |
 | Agent Contacts | `agent_contacts:{agent_id}` | `contact_request_received`, `contact_request_updated`, `contact_added`, `contact_removed` |
+| Agent Control | `agent_control:{agent_id}` | `supersede` |
 
 ### Event Types
 

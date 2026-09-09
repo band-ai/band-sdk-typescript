@@ -33,6 +33,12 @@ import {
   type AgentToolsCapabilities,
 } from "../contracts/protocols";
 import { BandClient } from "@band-ai/rest-client";
+import {
+  agentContactsTopic,
+  agentRoomsTopic,
+  chatRoomTopic,
+  roomParticipantsTopic,
+} from "@band-ai/band-sdk-core";
 
 export interface BandLinkOptions {
   agentId: string;
@@ -66,8 +72,8 @@ export interface MessageMarkOptions {
 
 function roomTopics(roomId: string): { chat: string; participants: string } {
   return {
-    chat: `chat_room:${roomId}`,
-    participants: `room_participants:${roomId}`,
+    chat: chatRoomTopic(roomId),
+    participants: roomParticipantsTopic(roomId),
   };
 }
 
@@ -215,7 +221,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   public async subscribeAgentRooms(): Promise<void> {
-    await this.transport.join(`agent_rooms:${this.agentId}`, {
+    await this.transport.join(agentRoomsTopic(this.agentId), {
       room_added: (payload) => {
         const roomId = typeof payload.id === "string" ? payload.id : "";
         this.emit("room_added", payload, roomId);
@@ -276,7 +282,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
 
   public async subscribeAgentContacts(): Promise<void> {
     assertCapability(this.capabilities, "contacts", "Contacts streaming");
-    await this.transport.join(`agent_contacts:${this.agentId}`, {
+    await this.transport.join(agentContactsTopic(this.agentId), {
       contact_request_received: (payload) => {
         this.emit("contact_request_received", payload, null);
       },
@@ -293,7 +299,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   public async unsubscribeAgentContacts(): Promise<void> {
-    await this.transport.leave(`agent_contacts:${this.agentId}`);
+    await this.transport.leave(agentContactsTopic(this.agentId));
   }
 
   public async nextEvent(signal?: AbortSignal): Promise<PlatformEvent | null> {

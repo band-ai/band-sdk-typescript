@@ -52,3 +52,11 @@ jobs:
           BAND_REST_URL: ${{ secrets.E2E_BAND_REST_URL }}
           BAND_WS_URL: ${{ secrets.E2E_BAND_WS_URL }}
         run: npx tsx tests/integration/core-retry-participant-live.ts
+
+      - name: Run topic-naming live test
+        working-directory: packages/sdk
+        env:
+          BAND_API_KEY_USER: ${{ secrets.E2E_BAND_API_KEY_USER }}
+          BAND_REST_URL: ${{ secrets.E2E_BAND_REST_URL }}
+          BAND_WS_URL: ${{ secrets.E2E_BAND_WS_URL }}
+        run: npx tsx tests/integration/topic-naming-live.ts
