@@ -98,21 +98,23 @@ type TurnReleaseOutcome =
   | { kind: "cancelled" }
   | { kind: "delivery_failed"; error: DeliveryFailedError };
 
+// "completed": OpenCode itself finished the turn (session.idle/session.error).
+// "cancelled": something else ended it first — room cleanup (`onCleanup`) tore
+// the turn down, or an interactive prompt's own delivery failed — so
+// `watchTurnCompletion`'s race must exit quietly rather than through its
+// timeout branch, which would abort and fail whatever session id a later,
+// unrelated turn goes on to reuse for this or another room.
+type TurnEndOutcome = "completed" | "cancelled";
+
 interface RoomState {
   roomId: string;
   sessionId: string | null;
   tools: AdapterToolsProtocol | null;
-  turnDone: Promise<void> | null;
-  resolveTurnDone: (() => void) | null;
+  turnOutcome: Promise<TurnEndOutcome> | null;
+  resolveTurnOutcome: ((outcome: TurnEndOutcome) => void) | null;
   releaseWait: Promise<TurnReleaseOutcome> | null;
   resolveReleaseWait: ((outcome: TurnReleaseOutcome) => void) | null;
   turnTask: Promise<void> | null;
-  // Resolved by `clearTurnState` to settle a still-running `watchTurnCompletion`
-  // race without it ever reaching its timeout branch — a turn torn down by
-  // room cleanup (`onCleanup`) must not abort or fail whatever session id a
-  // later, unrelated turn goes on to reuse for this or another room.
-  turnCancelled: Promise<void> | null;
-  resolveTurnCancelled: (() => void) | null;
   pendingMentions: MentionInput;
   textParts: Map<string, string>;
   assistantMessageIds: Set<string>;
@@ -272,7 +274,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       return;
     }
 
-    if (roomState.turnDone) {
+    if (roomState.turnOutcome) {
       await tools.sendEvent(
         "OpenCode is still processing the previous request in this room.",
         "error",
@@ -389,13 +391,11 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       roomId,
       sessionId: null,
       tools: null,
-      turnDone: null,
-      resolveTurnDone: null,
+      turnOutcome: null,
+      resolveTurnOutcome: null,
       releaseWait: null,
       resolveReleaseWait: null,
       turnTask: null,
-      turnCancelled: null,
-      resolveTurnCancelled: null,
       pendingMentions: [],
       textParts: new Map(),
       assistantMessageIds: new Set(),
@@ -937,15 +937,12 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   }
 
   private beginTurn(roomState: RoomState, senderId: string | null): Promise<TurnReleaseOutcome> {
-    const turnDone = createDeferred();
+    const turnOutcome = createDeferred<TurnEndOutcome>();
     const releaseWait = createDeferred<TurnReleaseOutcome>();
-    const turnCancelled = createDeferred();
-    roomState.turnDone = turnDone.promise;
-    roomState.resolveTurnDone = turnDone.resolve;
+    roomState.turnOutcome = turnOutcome.promise;
+    roomState.resolveTurnOutcome = turnOutcome.resolve;
     roomState.releaseWait = releaseWait.promise;
     roomState.resolveReleaseWait = releaseWait.resolve;
-    roomState.turnCancelled = turnCancelled.promise;
-    roomState.resolveTurnCancelled = turnCancelled.resolve;
     roomState.pendingMentions = senderId ? [{ id: senderId }] : [];
     roomState.turnTask = null;
     roomState.textParts.clear();
@@ -958,22 +955,15 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   }
 
   private async watchTurnCompletion(roomState: RoomState): Promise<void> {
-    const turnDone = roomState.turnDone;
-    const turnCancelled = roomState.turnCancelled;
-    if (!turnDone || !turnCancelled) {
+    const turnOutcome = roomState.turnOutcome;
+    if (!turnOutcome) {
       return;
     }
 
     try {
       const outcome = await Promise.race([
-        turnDone.then(() => "completed" as const),
+        turnOutcome,
         delay(this.config.turnTimeoutMs).then(() => "timed_out" as const),
-        // Resolved by `clearTurnState` when `onCleanup` tears this room down
-        // while this turn is still outstanding — that must settle this race
-        // quietly, not through the timeout branch below, which would abort
-        // and fail whatever session id a later, unrelated turn goes on to
-        // reuse for this or another room.
-        turnCancelled.then(() => "cancelled" as const),
       ]);
       if (outcome === "cancelled") {
         return;
@@ -983,7 +973,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
         return;
       }
       if (roomState.lastErrorMessage) {
-        // OpenCode's own session.error resolved turnDone the same way
+        // OpenCode's own session.error resolved turnOutcome the same way
         // session.idle does (see the event handler), so this is only
         // reachable here, not via the timeout branch below — handle it as
         // its own terminal failure rather than falling into the success path.
@@ -993,7 +983,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       await this.deliverFallbackText(roomState);
     } finally {
       this.releaseTurnWait(roomState, { kind: "foreground" });
-      this.clearTurnState(roomState, turnDone);
+      this.clearTurnState(roomState, turnOutcome);
     }
   }
 
@@ -1053,7 +1043,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   }
 
   private finishTurn(roomState: RoomState): void {
-    roomState.resolveTurnDone?.();
+    roomState.resolveTurnOutcome?.("completed");
   }
 
   private failInteractivePromptDelivery(
@@ -1073,31 +1063,32 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       kind: "delivery_failed",
       error: new DeliveryFailedError(error),
     });
-    roomState.resolveTurnCancelled?.();
+    // Settles a still-running watchTurnCompletion's race quietly (see
+    // TurnEndOutcome) instead of letting it run to its timeout branch for a
+    // turn that's already ending here.
+    roomState.resolveTurnOutcome?.("cancelled");
   }
 
-  private clearTurnState(roomState: RoomState, expectedTurn?: Promise<void>): void {
-    if (expectedTurn && roomState.turnDone !== expectedTurn) {
+  private clearTurnState(roomState: RoomState, expectedTurn?: Promise<TurnEndOutcome>): void {
+    if (expectedTurn && roomState.turnOutcome !== expectedTurn) {
       return;
     }
     this.cancelPendingTimeout(roomState.pendingPermission);
     this.cancelPendingTimeout(roomState.pendingQuestion);
     roomState.pendingPermission = null;
     roomState.pendingQuestion = null;
-    roomState.turnDone = null;
-    roomState.resolveTurnDone = null;
+    // Settles a still-running watchTurnCompletion's race (see TurnEndOutcome)
+    // — a no-op once that race has already settled through session.idle,
+    // session.error, or the timeout, which is exactly what happens when this
+    // runs from watchTurnCompletion's own `finally` for the turn it belongs to.
+    roomState.resolveTurnOutcome?.("cancelled");
+    roomState.turnOutcome = null;
+    roomState.resolveTurnOutcome = null;
     // Release a startTurn still waiting while room cleanup cancels its watcher.
     roomState.resolveReleaseWait?.({ kind: "cancelled" });
     roomState.releaseWait = null;
     roomState.resolveReleaseWait = null;
     roomState.turnTask = null;
-    // Settles a still-running watchTurnCompletion's race (see its own
-    // comment) — a no-op once that race has already settled through
-    // turnDone or the timeout, which is exactly what happens when this runs
-    // from watchTurnCompletion's own `finally` for the turn it belongs to.
-    roomState.resolveTurnCancelled?.();
-    roomState.turnCancelled = null;
-    roomState.resolveTurnCancelled = null;
   }
 
   private async emitSessionTaskEvent(roomState: RoomState, status: "created" | "resumed"): Promise<void> {
