@@ -250,7 +250,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       threadId,
       toolNames,
     });
-    const turnStarted = await this.startTurn(client, turnParams, tools);
+    const turnStarted = await this.startTurn(client, turnParams, tools, context.roomId);
     this.debug("codex_adapter.turn.started", {
       roomId: context.roomId,
       threadId,
@@ -326,7 +326,9 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     client: CodexClientLike,
     turnParams: TurnStartParams,
     tools: AgentToolsProtocol,
+    roomId: string,
   ): Promise<TurnStartResponse> {
+    const logContext = { roomId, threadId: turnParams.threadId };
     let turnStarted: TurnStartResponse | null;
     try {
       turnStarted = parseTurnStartResponse(await client.request<unknown>(
@@ -336,12 +338,12 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     } catch (error) {
       await this.evictOnTransportFailure(error, client);
       const failure = agentFailure(this.provider, asErrorMessage(error));
-      await safeSendFailure(tools, failure, this.logger);
+      await safeSendFailure(tools, failure, this.logger, logContext);
       throw new ProviderTurnFailedError(failure);
     }
     if (!turnStarted) {
       const failure = agentFailure(this.provider, "Codex returned an invalid turn/start payload.");
-      await safeSendFailure(tools, failure, this.logger);
+      await safeSendFailure(tools, failure, this.logger, logContext);
       throw new ProviderTurnFailedError(failure);
     }
     return turnStarted;
@@ -1258,7 +1260,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     }
 
     if (arg === "list" || arg === "ls") {
-      await this.handleModelListCommand(tools, mention);
+      await this.handleModelListCommand(tools, roomId, mention);
       return;
     }
 
@@ -1275,7 +1277,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
   // The one local command that reaches Codex, and local commands run before
   // onMessage's failure catch — so it reports its own, or a `/model list`
   // against a downed app server stops every room.
-  private async handleModelListCommand(tools: AgentToolsProtocol, mention: MentionInput): Promise<void> {
+  private async handleModelListCommand(tools: AgentToolsProtocol, roomId: string, mention: MentionInput): Promise<void> {
     let response: unknown;
     let client: CodexClientLike | null = null;
     try {
@@ -1284,7 +1286,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     } catch (error) {
       await this.evictOnTransportFailure(error, client);
       const failure = agentFailure(this.provider, asErrorMessage(error));
-      await safeSendFailure(tools, failure, this.logger);
+      await safeSendFailure(tools, failure, this.logger, { roomId });
       throw new ProviderTurnFailedError(failure);
     }
     const result = parseModelListResponse(response);
