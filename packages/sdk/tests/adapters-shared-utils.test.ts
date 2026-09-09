@@ -74,5 +74,33 @@ describe("adapter shared utilities", () => {
         vi.useRealTimers();
       }
     });
+
+    it("rejects with the error factory's own error, not a generic one, once the timeout elapses", async () => {
+      class CustomTimeoutError extends Error {}
+      vi.useFakeTimers();
+      try {
+        const hung = new Promise<never>(() => undefined);
+        const assertion = expect(withTimeout(hung, 1_000, () => new CustomTimeoutError("custom"))).rejects
+          .toBeInstanceOf(CustomTimeoutError);
+        await vi.advanceTimersByTimeAsync(1_000);
+        await assertion;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("never races a promise against the timeout when timeoutMs is Infinity, however long it takes to settle", async () => {
+      vi.useFakeTimers();
+      try {
+        const late = new Promise((resolve) => {
+          setTimeout(() => resolve("finally done"), 1_000_000);
+        });
+        const assertion = expect(withTimeout(late, Infinity, "unreachable")).resolves.toBe("finally done");
+        await vi.advanceTimersByTimeAsync(1_000_000);
+        await assertion;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

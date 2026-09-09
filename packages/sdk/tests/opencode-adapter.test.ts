@@ -901,6 +901,7 @@ describe("OpencodeAdapter", () => {
     expect((failureEvent?.metadata as any)?.failure).toMatchObject({
       provider: "opencode",
       code: "timeout",
+      message: "OpenCode timed out before completing the turn.",
     });
   });
 
