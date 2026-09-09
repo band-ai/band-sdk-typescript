@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { HistoryProvider } from "../src/runtime";
 import { VercelAISDKAdapter } from "../src/index";
-import { FakeTools, makeMessage } from "./testUtils";
+import { FakeTools, expectTurnFailed, makeMessage } from "./testUtils";
 
 class VercelAISDKTestTools extends FakeTools {
   public readonly executed: Array<{ name: string; input: Record<string, unknown> }> = [];
@@ -157,5 +157,28 @@ describe("VercelAISDKAdapter", () => {
     );
 
     expect(tools.messages).toEqual(["alias works"]);
+  });
+
+  it("routes a provider failure through sendFailure with provider: 'vercel-ai-sdk', then fails the turn", async () => {
+    const adapter = new VercelAISDKAdapter({
+      model: { id: "test-model" },
+      generateText: async () => {
+        throw new Error("Vercel AI SDK exploded");
+      },
+      toolFactory: (definition) => definition,
+    });
+    const tools = new VercelAISDKTestTools();
+
+    await expectTurnFailed(
+      adapter.onMessage(makeMessage("hello"), tools, history, null, null, {
+        isSessionBootstrap: true,
+        roomId: "room-3",
+      }),
+    );
+
+    expect((tools.events[0]?.metadata as { failure?: Record<string, unknown> })?.failure).toMatchObject({
+      provider: "vercel-ai-sdk",
+      message: "Vercel AI SDK exploded",
+    });
   });
 });

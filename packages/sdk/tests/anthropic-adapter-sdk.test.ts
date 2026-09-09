@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { HistoryProvider } from "../src/runtime";
 import { AnthropicAdapter } from "../src/index";
-import { FakeTools, makeMessage } from "./testUtils";
+import { FakeTools, expectTurnFailed, makeMessage } from "./testUtils";
 
 class AnthropicTestTools extends FakeTools {
   public readonly executed: Array<{ name: string; input: Record<string, unknown> }> = [];
@@ -136,5 +136,33 @@ describe("AnthropicAdapter", () => {
         is_error: false,
       },
     ]);
+  });
+
+  it("routes a provider failure through sendFailure with provider: 'anthropic', then fails the turn", async () => {
+    const client = {
+      messages: {
+        create: async () => {
+          throw new Error("Anthropic API exploded");
+        },
+      },
+    };
+
+    const adapter = new AnthropicAdapter({
+      anthropicModel: "claude-sonnet-4-6",
+      clientFactory: async () => client,
+    });
+    const tools = new AnthropicTestTools();
+
+    await expectTurnFailed(
+      adapter.onMessage(makeMessage("hello"), tools, history, null, null, {
+        isSessionBootstrap: true,
+        roomId: "room-1",
+      }),
+    );
+
+    expect((tools.events[0]?.metadata as { failure?: Record<string, unknown> })?.failure).toMatchObject({
+      provider: "anthropic",
+      message: "Anthropic API exploded",
+    });
   });
 });

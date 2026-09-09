@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { HistoryProvider } from "../src/runtime";
 import { GeminiAdapter } from "../src/index";
 import { GeminiToolCallingModel } from "../src/adapters";
-import { FakeTools, makeMessage } from "./testUtils";
+import { FakeTools, expectTurnFailed, makeMessage } from "./testUtils";
 
 class GeminiTestTools extends FakeTools {
   public readonly executed: Array<{ name: string; input: Record<string, unknown> }> = [];
@@ -154,5 +154,37 @@ describe("GeminiAdapter", () => {
           JSON.stringify(entry.parts).includes("\"functionResponse\""),
       ),
     ).toBe(true);
+  });
+
+  it("routes a provider failure through sendFailure with provider: 'gemini', then fails the turn", async () => {
+    const model = new GeminiToolCallingModel({
+      model: "gemini-3-flash-preview",
+      clientFactory: async () => ({
+        models: {
+          generateContent: async () => {
+            throw new Error("Gemini API exploded");
+          },
+        },
+      }),
+      partFactory: {
+        createPartFromFunctionCall: (name, args) => ({ functionCall: { name, args } }),
+        createPartFromFunctionResponse: (id, name, response) => ({ functionResponse: { id, name, response } }),
+      },
+    });
+
+    const adapter = new GeminiAdapter({ model });
+    const tools = new GeminiTestTools();
+
+    await expectTurnFailed(
+      adapter.onMessage(makeMessage("hello"), tools, history, null, null, {
+        isSessionBootstrap: true,
+        roomId: "room-1",
+      }),
+    );
+
+    expect((tools.events[0]?.metadata as { failure?: Record<string, unknown> })?.failure).toMatchObject({
+      provider: "gemini",
+      message: "Gemini API exploded",
+    });
   });
 });
