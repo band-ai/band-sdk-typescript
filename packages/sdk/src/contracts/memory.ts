@@ -39,6 +39,15 @@ export const MEMORY_TYPES = [
   ...SENSORY_MEMORY_TYPES,
   ...COGNITIVE_MEMORY_TYPES,
 ] as const satisfies readonly MemoryType[];
+
+/**
+ * Fails to compile if band-sdk-core ever adds a MemoryType this file's
+ * hand-copied arrays don't cover - `satisfies` above only checks the
+ * reverse direction (every listed value is a valid MemoryType).
+ */
+type _MemoryTypesExhaustive<
+  Ok extends true = MemoryType extends (typeof MEMORY_TYPES)[number] ? true : false,
+> = Ok;
 /** Logical subject category (user/agent/tool/guideline); not scope `subject` or `subject_id`. */
 export const MEMORY_SEGMENTS = [
   "user", // User preferences or profile info
@@ -93,7 +102,11 @@ export function isMemoryType(value: string): value is MemoryType {
   return (MEMORY_TYPES as readonly string[]).includes(value);
 }
 
-/** Guards against pairing sensory systems with cognitive types, or vice versa. */
+/**
+ * Guards against pairing sensory systems with cognitive types, or vice versa.
+ * Rethrows anything other than a documented validation failure (e.g. a
+ * non-string reaching this boundary) instead of reporting it as false.
+ */
 export function isMemoryTypeForSystem(system: MemorySystem, type: MemoryType): boolean {
   try {
     validateMemoryTypeForSystem(system, type);
