@@ -81,6 +81,157 @@ describe("PlatformRuntime", () => {
     expect(lifecycle).toEqual(["processing", "adapter", "processed"]);
   });
 
+  it("posts a provider failure through the real AgentTools -> REST wiring, and keeps the room serving afterward", async () => {
+    // Unlike the adapter-boundary tests (which call reportTurnFailure/sendFailure
+    // directly against FakeTools), this drives a real adapter through
+    // PlatformRuntime/ExecutionContext/AgentTools.getAdapterTools(), the actual
+    // production path a provider failure travels before it reaches REST.
+    const transport = new FakeTransport();
+    const lifecycle: string[] = [];
+    const chatEvents: Array<{ chatId: string; event: unknown }> = [];
+    const rest = new FakeRestApi(
+      {
+        markMessageProcessing: async () => {
+          lifecycle.push("processing");
+          return {};
+        },
+        markMessageProcessed: async () => {
+          lifecycle.push("processed");
+          return {};
+        },
+        markMessageFailed: async () => {
+          lifecycle.push("failed");
+          return {};
+        },
+        createChatEvent: async (chatId, event) => {
+          chatEvents.push({ chatId, event });
+          return {};
+        },
+      },
+      { id: "a1", name: "Agent", description: "Agent description" },
+    );
+
+    let calls = 0;
+    const adapter = new GenericAdapter(async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error("provider exploded");
+      }
+    });
+
+    await using runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      link: new BandLink({ agentId: "a1", apiKey: "k", transport, restApi: rest }),
+    });
+    await runtime.start(adapter);
+
+    await transport.emit("agent_rooms:a1", "room_added", { id: "room-1", status: "active", type: "direct", title: "Room", removed_at: "" });
+    await transport.emit("chat_room:room-1", "message_created", {
+      id: "m1",
+      content: "trigger a provider failure",
+      message_type: "text",
+      sender_id: "u1",
+      sender_type: "User",
+      sender_name: "Jane",
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    await transport.emit("chat_room:room-1", "message_created", {
+      id: "m2",
+      content: "a later message in the same room",
+      message_type: "text",
+      sender_id: "u1",
+      sender_type: "User",
+      sender_name: "Jane",
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    await vi.waitFor(() => expect(lifecycle).toEqual(["processing", "failed", "processing", "processed"]));
+
+    expect(chatEvents).toHaveLength(1);
+    expect(chatEvents[0]?.chatId).toBe("room-1");
+    expect(chatEvents[0]?.event).toMatchObject({
+      messageType: "error",
+      metadata: { failure: expect.objectContaining({ provider: "generic", message: "provider exploded" }) },
+    });
+    expect(calls).toBe(2);
+  });
+
+  it("does not post a provider-failure event for a Band-side delivery failure, and keeps the room serving afterward", async () => {
+    const transport = new FakeTransport();
+    const lifecycle: string[] = [];
+    const chatEvents: Array<{ chatId: string; event: unknown }> = [];
+    let messageAttempts = 0;
+    const rest = new FakeRestApi(
+      {
+        markMessageProcessing: async () => {
+          lifecycle.push("processing");
+          return {};
+        },
+        markMessageProcessed: async () => {
+          lifecycle.push("processed");
+          return {};
+        },
+        markMessageFailed: async () => {
+          lifecycle.push("failed");
+          return {};
+        },
+        createChatEvent: async (chatId, event) => {
+          chatEvents.push({ chatId, event });
+          return {};
+        },
+        createChatMessage: async () => {
+          messageAttempts += 1;
+          if (messageAttempts === 1) {
+            throw new Error("chat delivery failed");
+          }
+          return {};
+        },
+      },
+      { id: "a1", name: "Agent", description: "Agent description" },
+    );
+
+    const adapter = new GenericAdapter(async ({ tools }) => {
+      await tools.sendMessage("a reply Band will not accept");
+    });
+
+    await using runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      link: new BandLink({ agentId: "a1", apiKey: "k", transport, restApi: rest }),
+    });
+    await runtime.start(adapter);
+
+    await transport.emit("agent_rooms:a1", "room_added", { id: "room-1", status: "active", type: "direct", title: "Room", removed_at: "" });
+    await transport.emit("chat_room:room-1", "message_created", {
+      id: "m1",
+      content: "trigger a delivery failure",
+      message_type: "text",
+      sender_id: "u1",
+      sender_type: "User",
+      sender_name: "Jane",
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    await transport.emit("chat_room:room-1", "message_created", {
+      id: "m2",
+      content: "a later message in the same room",
+      message_type: "text",
+      sender_id: "u1",
+      sender_type: "User",
+      sender_name: "Jane",
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    await vi.waitFor(() => expect(lifecycle).toEqual(["processing", "failed", "processing", "processed"]));
+
+    expect(chatEvents, "a Band-side delivery failure was reported as a provider failure").toEqual([]);
+    expect(messageAttempts).toBe(2);
+  });
+
   it("exposes fern adapter for duck-typed client", async () => {
     const adapter = new FernRestAdapter({
       agentApiIdentity: {
