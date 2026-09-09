@@ -327,7 +327,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       // provider failure like any other, and must fail the turn so
       // PlatformRuntime marks the message failed and retries it instead of
       // silently treating it as processed.
-      return reportTurnFailure(tools, new AgentFailure(this.provider, asErrorMessage(error)))
+      return reportTurnFailure(tools, new AgentFailure(this.provider, asErrorMessage(error)), this.logger, { roomId: context.roomId })
     }
   }
 
@@ -461,6 +461,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         : isAcpErrorResponse(error)
           ? agentFailure(this.provider, error.message, String(error.code), error.data)
           : new AgentFailure(this.provider, asErrorMessage(error)),
+      this.logger,
+      { roomId: context.roomId, sessionId },
     )
   }
 
@@ -514,6 +516,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         `ACP turn ended with stop reason: ${stopReason ?? "unknown"}.`,
         stopReason,
       ),
+      this.logger,
+      { roomId, sessionId },
     )
   }
 

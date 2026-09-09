@@ -202,7 +202,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
         messageId: message.id,
         error,
       });
-      await reportTurnFailure(tools, agentFailure(this.provider, asErrorMessage(error)));
+      await reportTurnFailure(tools, agentFailure(this.provider, asErrorMessage(error)), this.logger, { messageId: message.id });
     }
 
     if (text) {

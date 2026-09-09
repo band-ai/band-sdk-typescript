@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentFailure } from "@band-ai/band-sdk-core";
 
 import {
@@ -31,6 +31,28 @@ describe("reportTurnFailure", () => {
     } as unknown as MessagingTools;
 
     await expect(reportTurnFailure(tools, failure)).rejects.toBeInstanceOf(ProviderTurnFailedError);
+  });
+
+  it("logs the swallowed sendFailure error via the given logger, so a lost terminal-failure report leaves a trace", async () => {
+    const failure = new AgentFailure("test", "boom", "some_code");
+    const sendFailureError = new Error("sendFailure transport error");
+    const tools = {
+      sendFailure: async () => {
+        throw sendFailureError;
+      },
+    } as unknown as MessagingTools;
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+    await expect(reportTurnFailure(tools, failure, logger, { roomId: "room-1" })).rejects.toBeInstanceOf(
+      ProviderTurnFailedError,
+    );
+
+    expect(logger.warn).toHaveBeenCalledWith("provider_failure.report_failed", {
+      provider: "test",
+      code: "some_code",
+      roomId: "room-1",
+      error: sendFailureError,
+    });
   });
 });
 

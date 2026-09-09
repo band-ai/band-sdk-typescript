@@ -281,7 +281,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
         error,
         roomId: context.roomId,
       });
-      await reportTurnFailure(tools, agentFailure(this.provider, messageText));
+      await reportTurnFailure(tools, agentFailure(this.provider, messageText), this.logger, { roomId: context.roomId });
     }
 
     const nextHistory = this.roomHistory.get(context.roomId) ?? [];

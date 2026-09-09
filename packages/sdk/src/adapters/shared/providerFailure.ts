@@ -30,10 +30,19 @@ export class ProviderTurnFailedError extends RecoverableTurnError {
   }
 }
 
-/** Reports a terminal provider failure, then fails the turn that hit it. */
+/**
+ * Reports a terminal provider failure, then fails the turn that hit it.
+ *
+ * `logger` is optional — not defaulted to a `NoopLogger` here, since that
+ * would just relocate the tracked `?? new NoopLogger()` inconsistency into a
+ * shared helper instead of an adapter entry point — so a caller with no
+ * logger (e.g. `GenericAdapter`) keeps today's silent-on-failure behavior.
+ */
 export async function reportTurnFailure(
   tools: MessagingTools,
   failure: AgentFailure,
+  logger?: Logger,
+  logContext?: Record<string, unknown>,
 ): Promise<never> {
   // A throwing sendFailure — synchronous or a rejection — must not replace
   // the ProviderTurnFailedError below with a raw, unrecognized error: that
@@ -42,8 +51,13 @@ export async function reportTurnFailure(
   // synchronous throw happens before it ever returns a promise to attach to.
   try {
     await tools.sendFailure(failure);
-  } catch {
-    // Reported best-effort; the ProviderTurnFailedError below is what matters.
+  } catch (error) {
+    logger?.warn("provider_failure.report_failed", {
+      provider: failure.provider,
+      code: failure.code,
+      ...logContext,
+      error,
+    });
   }
   throw new ProviderTurnFailedError(failure);
 }

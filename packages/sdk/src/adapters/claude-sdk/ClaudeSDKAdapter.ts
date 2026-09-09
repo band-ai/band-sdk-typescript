@@ -260,7 +260,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
         roomId: context.roomId,
         error,
       });
-      await reportTurnFailure(tools, agentFailure(this.provider, asErrorMessage(error)));
+      await reportTurnFailure(tools, agentFailure(this.provider, asErrorMessage(error)), this.logger, { roomId: context.roomId });
     }
 
     if (finalText.trim()) {

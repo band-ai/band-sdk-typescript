@@ -305,7 +305,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       // returning here would mark this message processed even though the
       // turn — startup, session establishment, or the prompt itself — never
       // actually completed, dropping PlatformRuntime's retry along with it.
-      return reportTurnFailure(tools, this.toAgentFailure(error));
+      return reportTurnFailure(tools, this.toAgentFailure(error), this.logger, { roomId: context.roomId });
     }
   }
 

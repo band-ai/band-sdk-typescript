@@ -203,7 +203,7 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
         remoteUrl: this.remoteUrl,
         error,
       });
-      await reportTurnFailure(tools, agentFailure(this.provider, errorMessage));
+      await reportTurnFailure(tools, agentFailure(this.provider, errorMessage), this.logger, { roomId: context.roomId });
     }
   }
 
@@ -378,7 +378,7 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
       // adapter: a remote task ending failed/canceled/rejected/auth-required is
       // exactly that, and must fail the turn so PlatformRuntime retries it
       // instead of marking it processed.
-      await reportTurnFailure(input.tools, new AgentFailure(this.provider, text, input.state));
+      await reportTurnFailure(input.tools, new AgentFailure(this.provider, text, input.state), this.logger, { roomId: input.roomId });
     }
   }
 
