@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 
-import { AgentFailure } from "@band-ai/band-sdk-core";
 import { UnsupportedFeatureError, ValidationError, rethrowIfRecoverableTurnFailure } from "../../core/errors";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { MessagingTools } from "../../contracts/protocols";
@@ -376,7 +375,7 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
       // adapter: a remote task ending failed/canceled/rejected/auth-required is
       // exactly that, and must fail the turn so PlatformRuntime retries it
       // instead of marking it processed.
-      await reportTurnFailure(input.tools, new AgentFailure(this.provider, text, input.state), this.logger, { roomId: input.roomId });
+      await reportTurnFailure(input.tools, agentFailure(this.provider, text, input.state), this.logger, { roomId: input.roomId });
     }
   }
 

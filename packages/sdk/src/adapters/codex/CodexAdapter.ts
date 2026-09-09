@@ -1,5 +1,4 @@
 import type { ModelReasoningEffort, WebSearchMode } from "@openai/codex-sdk";
-import { AgentFailure } from "@band-ai/band-sdk-core";
 
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import {
@@ -1139,7 +1138,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     // machine-readable record lands even when the reply after it does not.
     if (input.turnStatus === "interrupted") {
       const interrupted = "I stopped before completing this request.";
-      const failure = new AgentFailure(this.provider, input.turnError || interrupted, FAILURE_CODE_TIMEOUT);
+      const failure = agentFailure(this.provider, input.turnError || interrupted, FAILURE_CODE_TIMEOUT);
       // Same incident as a mid-loop `error` event already reported, not a new
       // one — matches the fallback branch below.
       const failureReport = input.reportedFailureInLoop
@@ -1156,7 +1155,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     const errorText = input.turnError
       ? `I couldn't complete this request (${input.turnStatus}): ${input.turnError}`
       : `I couldn't complete this request (${input.turnStatus}).`;
-    const failure = new AgentFailure(this.provider, errorText, input.turnStatus);
+    const failure = agentFailure(this.provider, errorText, input.turnStatus);
     // An `error` event already reported this incident during the loop; the
     // terminal `turn/completed` status is the same failure, not a new one.
     const failureReport = input.reportedFailureInLoop

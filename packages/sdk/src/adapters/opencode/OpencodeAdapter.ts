@@ -1033,7 +1033,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       // must open a fresh session rather than racing a prompt against it.
       roomState.forceFreshSession = true;
     }
-    const failure = new AgentFailure(this.provider, "OpenCode timed out before completing the turn.", FAILURE_CODE_TIMEOUT);
+    const failure = agentFailure(this.provider, "OpenCode timed out before completing the turn.", FAILURE_CODE_TIMEOUT);
     await this.reportTerminalFailure(roomState, failure);
   }
 
@@ -1045,7 +1045,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     // regardless of any partial text, unlike deliverFallbackText's own
     // best-effort, non-throwing sendFailure for this same message.
     await this.flushTurnText(roomState);
-    const failure = new AgentFailure(this.provider, roomState.lastErrorMessage ?? "OpenCode reported a session error.");
+    const failure = agentFailure(this.provider, roomState.lastErrorMessage ?? "OpenCode reported a session error.");
     await this.reportTerminalFailure(roomState, failure);
   }
 
@@ -1316,7 +1316,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       const message = `OpenCode request failed (${error.status}): ${body}`;
       return agentFailure(this.provider, message, String(error.status), error.body);
     }
-    return new AgentFailure(this.provider, `OpenCode failed while processing the message: ${asErrorMessage(error)}`);
+    return agentFailure(this.provider, `OpenCode failed while processing the message: ${asErrorMessage(error)}`);
   }
 
   private formatOpenCodeError(error: unknown): string {

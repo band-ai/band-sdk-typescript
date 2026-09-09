@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { HistoryProvider } from "../src/runtime";
 import { VercelAISDKAdapter } from "../src/index";
-import { FakeTools, expectTurnFailed, makeMessage } from "./testUtils";
+import { FakeTools, expectTurnFailed, findFailureEvent, makeMessage } from "./testUtils";
 
 class VercelAISDKTestTools extends FakeTools {
   public readonly executed: Array<{ name: string; input: Record<string, unknown> }> = [];
@@ -176,7 +176,9 @@ describe("VercelAISDKAdapter", () => {
       }),
     );
 
-    expect((tools.events[0]?.metadata as { failure?: Record<string, unknown> })?.failure).toMatchObject({
+    expect(tools.messages).toEqual([]);
+    expect(tools.events).toHaveLength(1);
+    expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({
       provider: "vercel-ai-sdk",
       message: "Vercel AI SDK exploded",
     });

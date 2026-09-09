@@ -14,7 +14,6 @@ import type {
   SessionMode,
   SessionModeState,
 } from "@agentclientprotocol/sdk";
-import { AgentFailure } from "@band-ai/band-sdk-core";
 
 import { ACPClientHistoryConverter, type ACPClientSessionState } from "../../converters/acp-client";
 import { SimpleAdapter } from "../../core/simpleAdapter";
@@ -327,7 +326,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       // provider failure like any other, and must fail the turn so
       // PlatformRuntime marks the message failed and retries it instead of
       // silently treating it as processed.
-      return reportTurnFailure(tools, new AgentFailure(this.provider, asErrorMessage(error)), this.logger, { roomId: context.roomId })
+      return reportTurnFailure(tools, agentFailure(this.provider, asErrorMessage(error)), this.logger, { roomId: context.roomId })
     }
   }
 
@@ -439,10 +438,10 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     return reportTurnFailure(
       tools,
       isTimeout
-        ? new AgentFailure(this.provider, "ACP turn timed out.", FAILURE_CODE_TIMEOUT)
+        ? agentFailure(this.provider, "ACP turn timed out.", FAILURE_CODE_TIMEOUT)
         : isAcpErrorResponse(error)
           ? agentFailure(this.provider, error.message, String(error.code), error.data)
-          : new AgentFailure(this.provider, asErrorMessage(error)),
+          : agentFailure(this.provider, asErrorMessage(error)),
       this.logger,
       { roomId: context.roomId, sessionId },
     )
@@ -493,7 +492,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     // silently counting a stalled/refused/cancelled turn as processed.
     return reportTurnFailure(
       tools,
-      new AgentFailure(
+      agentFailure(
         this.provider,
         `ACP turn ended with stop reason: ${stopReason ?? "unknown"}.`,
         stopReason,

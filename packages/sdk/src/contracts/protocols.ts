@@ -57,7 +57,7 @@ export interface MessagingTools {
    * when it cannot post at all — `ContactCallbackTools` throws for an event
    * with no room context, and for a REST adapter without the endpoint. A
    * caller reporting from a `catch` on such a path has to guard it, the way
-   * `CodexAdapter.safeSendFailure` does.
+   * `safeSendFailure` (adapters/shared/providerFailure.ts) does.
    */
   sendEvent(
     content: string,
