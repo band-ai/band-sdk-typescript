@@ -1,3 +1,4 @@
+import { asErrorMessage } from "../../core/coercion";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
 import type {
   AgentToolsRestApi,
@@ -139,8 +140,7 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
       // makes: a failed post must never abort the turn, but it must still
       // leave a trace, or a dropped failure event is invisible everywhere.
       this.logger.warn("contact callback chat event send failed", { roomId, messageType, error });
-      const message = error instanceof Error ? error.message : String(error);
-      return { ok: false, status: "failed", message };
+      return { ok: false, status: "failed", message: asErrorMessage(error) };
     }
   }
 
