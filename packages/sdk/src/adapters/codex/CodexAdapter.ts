@@ -26,7 +26,7 @@ import {
   findCustomToolInIndex,
 } from "../../runtime/tools/customTools";
 import { asErrorMessage, asNonEmptyString, asOptionalRecord, asRecord, asString, toWireString } from "../shared/coercion";
-import { ProviderTurnFailedError, agentFailure, safeSendFailure } from "../shared/providerFailure";
+import { FAILURE_CODE_TIMEOUT, ProviderTurnFailedError, agentFailure, safeSendFailure } from "../shared/providerFailure";
 import { deliverReply } from "../shared/deliveryFailedError";
 import { findLatestTaskMetadata } from "../shared/history";
 import {
@@ -1137,34 +1137,31 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     // machine-readable record lands even when the reply after it does not.
     if (input.turnStatus === "interrupted") {
       const interrupted = "I stopped before completing this request.";
+      const failure = new AgentFailure(this.provider, input.turnError || interrupted, FAILURE_CODE_TIMEOUT);
       // Same incident as a mid-loop `error` event already reported, not a new
       // one — matches the fallback branch below.
       const failureReport = input.reportedFailureInLoop
         ? Promise.resolve()
-        : safeSendFailure(
-          input.tools,
-          new AgentFailure(this.provider, input.turnError || interrupted, input.turnStatus),
-          this.logger,
-          { roomId: input.roomId },
-        );
+        : safeSendFailure(input.tools, failure, this.logger, { roomId: input.roomId });
       await Promise.all([failureReport, deliverReply(input.tools, interrupted, mention)]);
-      return;
+      // Every other terminal-failure path in this adapter throws after
+      // reporting so PlatformRuntime marks the turn failed and retries it;
+      // returning here would flip this timeout to "processed" and drop the
+      // retry along with it.
+      throw new ProviderTurnFailedError(failure);
     }
 
     const errorText = input.turnError
       ? `I couldn't complete this request (${input.turnStatus}): ${input.turnError}`
       : `I couldn't complete this request (${input.turnStatus}).`;
+    const failure = new AgentFailure(this.provider, errorText, input.turnStatus);
     // An `error` event already reported this incident during the loop; the
     // terminal `turn/completed` status is the same failure, not a new one.
     const failureReport = input.reportedFailureInLoop
       ? Promise.resolve()
-      : safeSendFailure(
-        input.tools,
-        new AgentFailure(this.provider, errorText, input.turnStatus),
-        this.logger,
-        { roomId: input.roomId },
-      );
+      : safeSendFailure(input.tools, failure, this.logger, { roomId: input.roomId });
     await Promise.all([failureReport, deliverReply(input.tools, errorText, mention)]);
+    throw new ProviderTurnFailedError(failure);
   }
 
   private extractTurnError(error: TurnErrorInfo | null | undefined): string {

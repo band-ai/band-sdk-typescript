@@ -320,8 +320,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     needsHistoryReplay: boolean,
     roomId: string,
   ): Promise<void> {
-    this.beginTurn(roomState, message.senderId);
-    const releaseWait = roomState.releaseWait;
+    const releaseWait = this.beginTurn(roomState, message.senderId);
     try {
       await client.promptAsync(sessionId, {
         parts: this.buildPromptParts(message, participantsMessage, contactsMessage, {
@@ -937,7 +936,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     return { sessionId, created, needsHistoryReplay };
   }
 
-  private beginTurn(roomState: RoomState, senderId: string | null): void {
+  private beginTurn(roomState: RoomState, senderId: string | null): Promise<TurnReleaseOutcome> {
     const turnDone = createDeferred();
     const releaseWait = createDeferred<TurnReleaseOutcome>();
     const turnCancelled = createDeferred();
@@ -955,6 +954,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     roomState.reportedToolCalls.clear();
     roomState.reportedToolResults.clear();
     roomState.lastErrorMessage = null;
+    return releaseWait.promise;
   }
 
   private async watchTurnCompletion(roomState: RoomState): Promise<void> {

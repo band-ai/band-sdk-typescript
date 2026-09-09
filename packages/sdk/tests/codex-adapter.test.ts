@@ -767,6 +767,13 @@ describe("CodexAdapter", () => {
       factory: async () => {
         factoryCalls += 1;
         const client = new FakeCodexClient({
+          events: factoryCalls === 1
+            ? []
+            : [{
+              kind: "notification",
+              method: "turn/completed",
+              params: { turn: { id: "turn-1", status: "completed", error: null } },
+            }],
           requestHandler: (method, params) => {
             if (method === "thread/start" && factoryCalls === 1) {
               throw new Error("app-server transport closed");
@@ -948,6 +955,11 @@ describe("CodexAdapter", () => {
     let factoryCalls = 0;
     let failNext = true;
     const fakeClient = new FakeCodexClient({
+      events: [{
+        kind: "notification",
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed", error: null } },
+      }],
       requestHandler: (method, params) => {
         if (method === "thread/start" && failNext) {
           failNext = false;
@@ -1080,14 +1092,14 @@ describe("CodexAdapter", () => {
     const adapter = new CodexAdapter({ factory: async () => fakeClient });
     await adapter.onStarted("Codex Agent", "Codex parity adapter");
 
-    await adapter.onMessage(
+    await expectTurnFailed(adapter.onMessage(
       makeMessage("hello"),
       tools,
       new HistoryProvider([]),
       null,
       null,
       { isSessionBootstrap: false, roomId: "room-double-report" },
-    );
+    ));
 
     const failureEvents = tools.events.filter((event) => event.messageType === "error");
     expect(failureEvents).toHaveLength(1);
@@ -1117,14 +1129,14 @@ describe("CodexAdapter", () => {
     const adapter = new CodexAdapter({ factory: async () => fakeClient });
     await adapter.onStarted("Codex Agent", "Codex parity adapter");
 
-    await adapter.onMessage(
+    await expectTurnFailed(adapter.onMessage(
       makeMessage("hello"),
       tools,
       new HistoryProvider([]),
       null,
       null,
       { isSessionBootstrap: false, roomId: "room-double-report-interrupted" },
-    );
+    ));
 
     const failureEvents = tools.events.filter((event) => event.messageType === "error");
     expect(failureEvents).toHaveLength(1);
@@ -1135,25 +1147,25 @@ describe("CodexAdapter", () => {
     });
   });
 
-  it("emits a structured sendFailure with code 'interrupted' when the turn is interrupted (e.g. a recvEvent timeout)", async () => {
+  it("emits a structured sendFailure with code 'timeout' and fails the turn when interrupted (e.g. a recvEvent timeout)", async () => {
     const tools = new ToolSchemaFakeTools();
     const fakeClient = new FakeCodexClient({ events: [] });
     const adapter = new CodexAdapter({ factory: async () => fakeClient });
     await adapter.onStarted("Codex Agent", "Codex parity adapter");
 
-    await adapter.onMessage(
+    await expectTurnFailed(adapter.onMessage(
       makeMessage("hello"),
       tools,
       new HistoryProvider([]),
       null,
       null,
       { isSessionBootstrap: false, roomId: "room-interrupt" },
-    );
+    ));
 
     const failureEvent = findFailureEvent(tools);
     expect(failureEvent?.metadata?.failure).toMatchObject({
       provider: "codex",
-      code: "interrupted",
+      code: "timeout",
       message: "Turn timed out",
     });
     // Posted alongside the structured event, not replaced by it: this is the
@@ -1174,14 +1186,14 @@ describe("CodexAdapter", () => {
     const adapter = new CodexAdapter({ factory: async () => fakeClient });
     await adapter.onStarted("Codex Agent", "Codex parity adapter");
 
-    await adapter.onMessage(
+    await expectTurnFailed(adapter.onMessage(
       makeMessage("hello"),
       tools,
       new HistoryProvider([]),
       null,
       null,
       { isSessionBootstrap: false, roomId: "room-transport-closed" },
-    );
+    ));
 
     const failureEvent = findFailureEvent(tools);
     expect(failureEvent?.metadata?.failure).toMatchObject({
