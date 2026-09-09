@@ -342,6 +342,41 @@ describe("AgentTools", () => {
     expect(toLegacyToolExecutorErrorMessage(result)).toContain("Error executing band_send_event");
   });
 
+  it("logs an unclassified tool execution failure instead of only returning it as data", async () => {
+    class FailingRestApi extends FakeRestApi {
+      public override async listMemories(): ReturnType<FakeRestApi["listMemories"]> {
+        throw new Error("memory service unavailable");
+      }
+    }
+
+    const errorLogs: Array<{ message: string; context?: Record<string, unknown> }> = [];
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api: new FailingRestApi() }),
+      capabilities: { memory: true },
+      logger: {
+        debug: () => {},
+        info: () => {},
+        warn: () => {},
+        error: (message, context) => errorLogs.push({ message, context }),
+      },
+    });
+
+    const result = await tools.executeToolCall("band_list_memories", {});
+    expect(result).toMatchObject({
+      ok: false,
+      errorType: "ToolExecutionError",
+      toolName: "band_list_memories",
+      message: "memory service unavailable",
+    });
+
+    // An unclassified execution failure must be debuggable from the logs, not
+    // just visible in the tool-call result the LLM sees.
+    expect(errorLogs).toHaveLength(1);
+    expect(errorLogs[0]?.message).toBe("unexpected tool execution error");
+    expect(errorLogs[0]?.context).toMatchObject({ toolName: "band_list_memories" });
+  });
+
   it("leaves another handler's own {ok:false} business result untouched, unlike send_event", async () => {
     class ContactBusinessResultRestApi extends FakeRestApi {
       public override async respondContactRequest(
