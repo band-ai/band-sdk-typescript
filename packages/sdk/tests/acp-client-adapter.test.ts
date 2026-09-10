@@ -421,6 +421,34 @@ describe("ACPClientAdapter", () => {
     ])
   })
 
+  it("cursor/update_todos posts a non-streamed plan chunk that does not merge into an adjacent streamed text run", async () => {
+    const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+
+    await client.sessionUpdate({
+      sessionId: "session-x",
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Working on it" } },
+    })
+    await client.extNotification("cursor/update_todos", {
+      sessionId: "session-x",
+      todos: [
+        { content: "Read the file", completed: true },
+        { content: "Write the fix", completed: false },
+      ],
+    })
+
+    const chunks = client.getCollectedChunks("session-x")
+    expect(chunks.map((chunk) => chunk.chunkType)).toEqual(["text", "plan"])
+    expect(chunks[1].content).toBe("- [x] Read the file\n- [ ] Write the fix")
+  })
+
+  it("cursor/update_todos with no non-blank todo lines posts nothing", async () => {
+    const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+
+    await client.extNotification("cursor/update_todos", { sessionId: "session-x", todos: [] })
+
+    expect(client.getCollectedChunks("session-x")).toEqual([])
+  })
+
   it("BandACPClient.getCollectedChunks() with no sessionId coalesces each session independently, not across sessions", async () => {
     const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
 
