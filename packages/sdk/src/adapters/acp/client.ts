@@ -57,10 +57,10 @@ export class BandACPClient implements Client {
 
   public getCollectedChunks(sessionId?: string): CollectedChunk[] {
     if (sessionId) {
-      return [...(this.sessionChunks.get(sessionId) ?? [])]
+      return coalesceChunks(this.sessionChunks.get(sessionId) ?? [])
     }
 
-    return [...this.sessionChunks.values()].flatMap((chunks) => chunks)
+    return [...this.sessionChunks.values()].flatMap((chunks) => coalesceChunks(chunks))
   }
 
   public async extMethod(
@@ -144,6 +144,64 @@ export class BandACPClient implements Client {
     const existing = this.sessionChunks.get(sessionId) ?? []
     existing.push(chunk)
     this.sessionChunks.set(sessionId, existing)
+  }
+}
+
+// `agent_message_chunk`/`agent_thought_chunk` stream one delta per token or
+// phrase; posting each verbatim would flood the room with a dozen one-word
+// messages for a single reply. Adjacent chunks of the same streamed type
+// merge into one. `tool_call` and `plan` arrive once per event and stay
+// discrete.
+const STREAMED_CHUNK_TYPES = new Set<CollectedChunk["chunkType"]>(["text", "thought"])
+
+// Collapses a session's raw, one-per-notification chunk stream into the
+// chunks actually worth posting: adjacent streamed runs merged into one, and
+// a tool call's `tool_call_update` frames (partial output, then a terminal
+// one) folded into a single result keyed by `tool_call_id`. Never mutates
+// `chunks` or the objects in it — every pushed/folded entry is its own clone.
+function coalesceChunks(chunks: readonly CollectedChunk[]): CollectedChunk[] {
+  const result: CollectedChunk[] = []
+  const resultIndexByToolCallId = new Map<string, number>()
+
+  for (const chunk of chunks) {
+    if (STREAMED_CHUNK_TYPES.has(chunk.chunkType)) {
+      const last = result[result.length - 1]
+      if (last && last.chunkType === chunk.chunkType) {
+        last.content += chunk.content
+        continue
+      }
+      result.push({ ...chunk })
+      continue
+    }
+
+    if (chunk.chunkType === "tool_result") {
+      const toolCallId = chunk.metadata.tool_call_id
+      if (typeof toolCallId === "string" && toolCallId.length > 0) {
+        const existingIndex = resultIndexByToolCallId.get(toolCallId)
+        if (existingIndex !== undefined) {
+          foldToolResult(result[existingIndex], chunk)
+          continue
+        }
+        resultIndexByToolCallId.set(toolCallId, result.length)
+      }
+    }
+
+    result.push({ ...chunk, metadata: { ...chunk.metadata } })
+  }
+
+  return result
+}
+
+// The latest non-empty content and the latest reported status both win: a
+// call's terminal frame commonly replaces earlier partial output outright
+// (e.g. "still running..." superseded by "OK"), and ACP's status is
+// optional, so a frame that omits it must not blank out an already-known one.
+function foldToolResult(canonical: CollectedChunk, chunk: CollectedChunk): void {
+  if (chunk.metadata.status !== undefined) {
+    canonical.metadata.status = chunk.metadata.status
+  }
+  if (chunk.content.length > 0) {
+    canonical.content = chunk.content
   }
 }
 

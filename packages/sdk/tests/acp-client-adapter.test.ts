@@ -208,6 +208,107 @@ describe("ACPClientAdapter", () => {
     expect(promptTexts[2]).not.toContain("[System Context]")
   })
 
+  it("coalesces adjacent streamed chunks and folds a tool call's result frames into one message each", async () => {
+    let clientHandle: {
+      sessionUpdate: (params: Record<string, unknown>) => Promise<void>;
+    } | null = null
+
+    const prompt = vi.fn(async (params: { sessionId: string }) => {
+      // Two text deltas in a row — the shape a streaming agent actually sends
+      // for one reply, one delta per token or phrase.
+      await clientHandle?.sessionUpdate({
+        sessionId: params.sessionId,
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Hello" } },
+      })
+      await clientHandle?.sessionUpdate({
+        sessionId: params.sessionId,
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: " world" } },
+      })
+
+      // A tool call reporting its result over two frames sharing one
+      // tool_call_id: a partial in-progress frame, then the terminal one.
+      await clientHandle?.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "call-1",
+          status: "in_progress",
+          rawOutput: "still running...",
+        },
+      })
+      await clientHandle?.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "call-1",
+          status: "completed",
+          rawOutput: "done",
+        },
+      })
+
+      // Text resumes after the tool call — a separate run, not merged with
+      // the one before the tool_call_update boundary.
+      await clientHandle?.sessionUpdate({
+        sessionId: params.sessionId,
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "All" } },
+      })
+      await clientHandle?.sessionUpdate({
+        sessionId: params.sessionId,
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: " done" } },
+      })
+
+      return { stopReason: "end_turn" }
+    })
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      connectionFactory: async (client) => {
+        clientHandle = client as typeof clientHandle
+        const controller = new AbortController()
+        return {
+          connection: {
+            signal: controller.signal,
+            closed: new Promise<void>(() => undefined),
+            initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+            authenticate: vi.fn(async () => ({})),
+            loadSession: vi.fn(),
+            unstable_resumeSession: vi.fn(),
+            newSession: vi.fn(async () => ({ sessionId: "session-coalesce" })),
+            prompt,
+          } as never,
+          stop: async () => {
+            controller.abort()
+          },
+        }
+      },
+    })
+
+    await adapter.onStarted("Coalescing Agent", "ACP chunk coalescing test")
+
+    const tools = new FakeTools()
+    await adapter.onMessage(
+      makeMessage("go", "room-coalesce"),
+      tools,
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-coalesce" },
+    )
+
+    // Six streamed text deltas and two tool_call_update frames collapse into
+    // two room messages and one tool_result event — not eight room posts.
+    expect(tools.messages).toEqual(["Hello world", "All done"])
+
+    const toolResultEvents = tools.events.filter((event) => event.messageType === "tool_result")
+    expect(toolResultEvents).toEqual([
+      expect.objectContaining({
+        content: "done",
+        metadata: expect.objectContaining({ tool_call_id: "call-1", status: "completed" }),
+      }),
+    ])
+  })
+
   it("completes the turn without posting a blank event, when a tool update carries no output", async () => {
     let clientHandle: {
       sessionUpdate: (params: Record<string, unknown>) => Promise<void>;
