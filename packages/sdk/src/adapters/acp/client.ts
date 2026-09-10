@@ -123,6 +123,7 @@ export class BandACPClient implements Client {
           chunkType: "plan",
           content: lines.join("\n"),
           metadata: {},
+          streamed: false,
         })
       }
       return
@@ -135,6 +136,7 @@ export class BandACPClient implements Client {
           chunkType: "text",
           content: `[Task completed] ${result}`,
           metadata: {},
+          streamed: false,
         })
       }
     }
@@ -147,16 +149,12 @@ export class BandACPClient implements Client {
   }
 }
 
-// `agent_message_chunk`/`agent_thought_chunk` stream one delta per token or
-// phrase; posting each verbatim would flood the room with a dozen one-word
-// messages for a single reply. Adjacent chunks merge into one only when both
-// are marked `streamed` (set solely by `toCollectedChunk`'s two delta cases)
-// and share a `chunkType` — `chunkType` alone isn't enough, since a same-typed
-// one-shot chunk from elsewhere (e.g. the `cursor/task` completion marker,
-// also `chunkType: "text"`) must never be glued onto a streamed run it
-// happens to sit next to. Never mutates `chunks` or its objects — each
-// pushed entry is its own shallow clone, and only a clone's `content` is
-// ever mutated afterward.
+// Posting every collected chunk verbatim would flood the room with a dozen
+// one-word messages for a single streamed reply, so adjacent chunks merge
+// into one when they're both genuine deltas of the same run — see
+// `CollectedChunk.streamed` for why that can't be judged from `chunkType`
+// alone. Never mutates `chunks` or its objects — each pushed entry is its
+// own shallow clone, and only a clone's `content` is ever mutated afterward.
 function coalesceChunks(chunks: readonly CollectedChunk[]): CollectedChunk[] {
   const result: CollectedChunk[] = []
 
@@ -197,6 +195,7 @@ function toCollectedChunk(update: SessionUpdate): CollectedChunk | null {
           raw_input: update.rawInput,
           status: update.status ?? "pending",
         },
+        streamed: false,
       }
     case "tool_call_update":
       return {
@@ -206,12 +205,14 @@ function toCollectedChunk(update: SessionUpdate): CollectedChunk | null {
           tool_call_id: update.toolCallId,
           status: update.status ?? "completed",
         },
+        streamed: false,
       }
     case "plan":
       return {
         chunkType: "plan",
         content: update.entries.map((entry) => entry.content).join("\n"),
         metadata: {},
+        streamed: false,
       }
     default:
       return null

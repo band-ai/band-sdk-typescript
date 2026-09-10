@@ -15,8 +15,10 @@ export interface CollectedChunk {
   // (`agent_message_chunk`/`agent_thought_chunk`). `chunkType` alone isn't
   // reliable provenance: a same-typed one-shot chunk from elsewhere (e.g. a
   // cursor/task completion marker, also `chunkType: "text"`) must never be
-  // mistaken for part of a streamed run and merged into it.
-  streamed?: boolean;
+  // mistaken for part of a streamed run and merged into it. Required, not
+  // optional, so every construction site states it explicitly rather than
+  // relying on an implicit `undefined` default.
+  streamed: boolean;
 }
 
 export interface PendingACPPrompt {

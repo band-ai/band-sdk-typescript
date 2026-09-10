@@ -403,6 +403,24 @@ describe("ACPClientAdapter", () => {
     ])
   })
 
+  it("does not merge a cursor/task completion marker with a streamed text chunk that follows it", async () => {
+    const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+
+    // Same hazard as the marker-after-stream case above, in the opposite
+    // order: the marker is non-streamed, so it must not become the seed a
+    // later genuine delta merges into either.
+    await client.extNotification("cursor/task", { sessionId: "session-x", result: "done" })
+    await client.sessionUpdate({
+      sessionId: "session-x",
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Starting the next step" } },
+    })
+
+    expect(client.getCollectedChunks("session-x").map((chunk) => chunk.content)).toEqual([
+      "[Task completed] done",
+      "Starting the next step",
+    ])
+  })
+
   it("BandACPClient.getCollectedChunks() with no sessionId coalesces each session independently, not across sessions", async () => {
     const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
 
