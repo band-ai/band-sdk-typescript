@@ -11,6 +11,12 @@ export interface CollectedChunk {
   chunkType: "text" | "thought" | "tool_call" | "tool_result" | "plan";
   content: string;
   metadata: Record<string, unknown>;
+  // True only for a genuine per-token/phrase ACP streaming delta
+  // (`agent_message_chunk`/`agent_thought_chunk`). `chunkType` alone isn't
+  // reliable provenance: a same-typed one-shot chunk from elsewhere (e.g. a
+  // cursor/task completion marker, also `chunkType: "text"`) must never be
+  // mistaken for part of a streamed run and merged into it.
+  streamed?: boolean;
 }
 
 export interface PendingACPPrompt {

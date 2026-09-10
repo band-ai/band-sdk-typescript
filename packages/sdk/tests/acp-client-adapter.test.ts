@@ -228,8 +228,10 @@ describe("ACPClientAdapter", () => {
 
       // A tool call reporting two frames sharing one tool_call_id: a failed
       // terminal frame, then a later frame that omits `status` entirely (a
-      // legal ACP partial patch). Each must post as its own event, and the
-      // second must never overwrite the first's already-reported "failed".
+      // legal ACP partial patch). `tool_result` isn't a streamed chunk type,
+      // so each frame always pushes its own entry — the second's status can
+      // never end up attached to the first's, unlike two adjacent text/
+      // thought deltas.
       await clientHandle?.sessionUpdate({
         sessionId: params.sessionId,
         update: {
@@ -315,12 +317,18 @@ describe("ACPClientAdapter", () => {
     ])
   })
 
-  it("coalesces adjacent thought chunks, without merging them into an adjacent text run", async () => {
+  it("coalesces adjacent thought chunks, without merging them into an adjacent text run on either side", async () => {
     let clientHandle: {
       sessionUpdate: (params: Record<string, unknown>) => Promise<void>;
     } | null = null
 
     const prompt = vi.fn(async (params: { sessionId: string }) => {
+      // text → thought boundary (no merge), then two thought deltas that do
+      // merge, then a thought → text boundary (no merge either direction).
+      await clientHandle?.sessionUpdate({
+        sessionId: params.sessionId,
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Hi" } },
+      })
       await clientHandle?.sessionUpdate({
         sessionId: params.sessionId,
         update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "Thinking" } },
@@ -374,7 +382,25 @@ describe("ACPClientAdapter", () => {
 
     const thoughtEvents = tools.events.filter((event) => event.messageType === "thought")
     expect(thoughtEvents).toEqual([expect.objectContaining({ content: "Thinking it over" })])
-    expect(tools.messages).toEqual(["Done"])
+    expect(tools.messages).toEqual(["Hi", "Done"])
+  })
+
+  it("does not merge a streamed text chunk with an adjacent, unrelated cursor/task completion marker sharing the same chunkType", async () => {
+    const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+
+    await client.sessionUpdate({
+      sessionId: "session-x",
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Building your report" } },
+    })
+    // cursor/task delivers a one-shot completion marker as chunkType "text",
+    // the same type a streamed reply uses — it must never be mistaken for
+    // part of that stream just because the type string matches.
+    await client.extNotification("cursor/task", { sessionId: "session-x", result: "done" })
+
+    expect(client.getCollectedChunks("session-x").map((chunk) => chunk.content)).toEqual([
+      "Building your report",
+      "[Task completed] done",
+    ])
   })
 
   it("BandACPClient.getCollectedChunks() with no sessionId coalesces each session independently, not across sessions", async () => {

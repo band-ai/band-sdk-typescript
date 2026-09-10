@@ -149,19 +149,20 @@ export class BandACPClient implements Client {
 
 // `agent_message_chunk`/`agent_thought_chunk` stream one delta per token or
 // phrase; posting each verbatim would flood the room with a dozen one-word
-// messages for a single reply. Adjacent chunks of the same streamed type
-// merge into one; `tool_call`, `tool_result`, and `plan` arrive once per
-// event and stay discrete. Never mutates `chunks` or its objects — each
+// messages for a single reply. Adjacent chunks merge into one only when both
+// are marked `streamed` (set solely by `toCollectedChunk`'s two delta cases)
+// and share a `chunkType` — `chunkType` alone isn't enough, since a same-typed
+// one-shot chunk from elsewhere (e.g. the `cursor/task` completion marker,
+// also `chunkType: "text"`) must never be glued onto a streamed run it
+// happens to sit next to. Never mutates `chunks` or its objects — each
 // pushed entry is its own shallow clone, and only a clone's `content` is
 // ever mutated afterward.
-const STREAMED_CHUNK_TYPES = new Set<CollectedChunk["chunkType"]>(["text", "thought"])
-
 function coalesceChunks(chunks: readonly CollectedChunk[]): CollectedChunk[] {
   const result: CollectedChunk[] = []
 
   for (const chunk of chunks) {
     const last = result[result.length - 1]
-    if (STREAMED_CHUNK_TYPES.has(chunk.chunkType) && last?.chunkType === chunk.chunkType) {
+    if (chunk.streamed && last?.streamed && last.chunkType === chunk.chunkType) {
       last.content += chunk.content
       continue
     }
@@ -178,12 +179,14 @@ function toCollectedChunk(update: SessionUpdate): CollectedChunk | null {
         chunkType: "text",
         content: extractTextFromContent(update.content),
         metadata: {},
+        streamed: true,
       }
     case "agent_thought_chunk":
       return {
         chunkType: "thought",
         content: extractTextFromContent(update.content),
         metadata: {},
+        streamed: true,
       }
     case "tool_call":
       return {
