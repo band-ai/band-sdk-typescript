@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { ACPClientAdapter, type ACPClientAdapterOptions } from "../src/adapters/acp";
+import { BandACPClient } from "../src/adapters/acp/client";
 import { FakeTools, makeMessage } from "./testUtils";
 
 function makeLoggerSpy() {
@@ -208,7 +209,7 @@ describe("ACPClientAdapter", () => {
     expect(promptTexts[2]).not.toContain("[System Context]")
   })
 
-  it("coalesces adjacent streamed chunks and folds a tool call's result frames into one message each", async () => {
+  it("coalesces adjacent streamed text chunks; leaves each tool_call_update frame its own event with its own reported status", async () => {
     let clientHandle: {
       sessionUpdate: (params: Record<string, unknown>) => Promise<void>;
     } | null = null
@@ -225,15 +226,17 @@ describe("ACPClientAdapter", () => {
         update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: " world" } },
       })
 
-      // A tool call reporting its result over two frames sharing one
-      // tool_call_id: a partial in-progress frame, then the terminal one.
+      // A tool call reporting two frames sharing one tool_call_id: a failed
+      // terminal frame, then a later frame that omits `status` entirely (a
+      // legal ACP partial patch). Each must post as its own event, and the
+      // second must never overwrite the first's already-reported "failed".
       await clientHandle?.sessionUpdate({
         sessionId: params.sessionId,
         update: {
           sessionUpdate: "tool_call_update",
           toolCallId: "call-1",
-          status: "in_progress",
-          rawOutput: "still running...",
+          status: "failed",
+          rawOutput: "boom",
         },
       })
       await clientHandle?.sessionUpdate({
@@ -241,8 +244,7 @@ describe("ACPClientAdapter", () => {
         update: {
           sessionUpdate: "tool_call_update",
           toolCallId: "call-1",
-          status: "completed",
-          rawOutput: "done",
+          rawOutput: "cleanup finished",
         },
       })
 
@@ -264,7 +266,7 @@ describe("ACPClientAdapter", () => {
       command: ["acp-agent"],
       enableMcpTools: false,
       connectionFactory: async (client) => {
-        clientHandle = client as typeof clientHandle
+        clientHandle = client as unknown as typeof clientHandle
         const controller = new AbortController()
         return {
           connection: {
@@ -296,17 +298,102 @@ describe("ACPClientAdapter", () => {
       { isSessionBootstrap: true, roomId: "room-coalesce" },
     )
 
-    // Six streamed text deltas and two tool_call_update frames collapse into
-    // two room messages and one tool_result event — not eight room posts.
+    // Four streamed text deltas collapse into two room messages; the two
+    // tool_call_update frames stay two separate events, not eight room posts.
     expect(tools.messages).toEqual(["Hello world", "All done"])
 
     const toolResultEvents = tools.events.filter((event) => event.messageType === "tool_result")
     expect(toolResultEvents).toEqual([
       expect.objectContaining({
-        content: "done",
+        content: "boom",
+        metadata: expect.objectContaining({ tool_call_id: "call-1", status: "failed" }),
+      }),
+      expect.objectContaining({
+        content: "cleanup finished",
         metadata: expect.objectContaining({ tool_call_id: "call-1", status: "completed" }),
       }),
     ])
+  })
+
+  it("coalesces adjacent thought chunks, without merging them into an adjacent text run", async () => {
+    let clientHandle: {
+      sessionUpdate: (params: Record<string, unknown>) => Promise<void>;
+    } | null = null
+
+    const prompt = vi.fn(async (params: { sessionId: string }) => {
+      await clientHandle?.sessionUpdate({
+        sessionId: params.sessionId,
+        update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "Thinking" } },
+      })
+      await clientHandle?.sessionUpdate({
+        sessionId: params.sessionId,
+        update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: " it over" } },
+      })
+      await clientHandle?.sessionUpdate({
+        sessionId: params.sessionId,
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done" } },
+      })
+      return { stopReason: "end_turn" }
+    })
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      connectionFactory: async (client) => {
+        clientHandle = client as unknown as typeof clientHandle
+        const controller = new AbortController()
+        return {
+          connection: {
+            signal: controller.signal,
+            closed: new Promise<void>(() => undefined),
+            initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+            authenticate: vi.fn(async () => ({})),
+            loadSession: vi.fn(),
+            unstable_resumeSession: vi.fn(),
+            newSession: vi.fn(async () => ({ sessionId: "session-thought" })),
+            prompt,
+          } as never,
+          stop: async () => {
+            controller.abort()
+          },
+        }
+      },
+    })
+
+    await adapter.onStarted("Thought Agent", "ACP thought coalescing test")
+
+    const tools = new FakeTools()
+    await adapter.onMessage(
+      makeMessage("go", "room-thought"),
+      tools,
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-thought" },
+    )
+
+    const thoughtEvents = tools.events.filter((event) => event.messageType === "thought")
+    expect(thoughtEvents).toEqual([expect.objectContaining({ content: "Thinking it over" })])
+    expect(tools.messages).toEqual(["Done"])
+  })
+
+  it("BandACPClient.getCollectedChunks() with no sessionId coalesces each session independently, not across sessions", async () => {
+    const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+
+    await client.sessionUpdate({
+      sessionId: "session-a",
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "A1" } },
+    })
+    await client.sessionUpdate({
+      sessionId: "session-a",
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "A2" } },
+    })
+    await client.sessionUpdate({
+      sessionId: "session-b",
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "B1" } },
+    })
+
+    expect(client.getCollectedChunks().map((chunk) => chunk.content)).toEqual(["A1A2", "B1"])
   })
 
   it("completes the turn without posting a blank event, when a tool update carries no output", async () => {
