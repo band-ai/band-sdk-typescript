@@ -1,6 +1,6 @@
 import type { HistoryConverter } from "../contracts/protocols";
 import { findLatestTaskMetadata } from "../adapters/shared/history";
-import { asOptionalString } from "./shared";
+import { asOptionalString, parseToolCall, parseToolResult } from "./shared";
 
 export interface ClaudeSDKSessionState {
   text: string;
@@ -63,8 +63,22 @@ function buildClaudeSdkText(raw: Array<Record<string, unknown>>, agentName: stri
       continue;
     }
 
-    if (messageType === "tool_call" || messageType === "tool_result") {
-      lines.push(content);
+    // Room history is untrusted: tool rows carry whatever a peer published, and
+    // their arguments and output are themselves tool-authored. Emitting an
+    // unrecognized payload would splice it into the prompt verbatim, so only a
+    // row that parses as this SDK's own tool envelope is forwarded — matching
+    // every other converter, which drops what it cannot parse.
+    if (messageType === "tool_call") {
+      if (parseToolCall(content)) {
+        lines.push(content);
+      }
+      continue;
+    }
+
+    if (messageType === "tool_result") {
+      if (parseToolResult(content)) {
+        lines.push(content);
+      }
     }
   }
 
