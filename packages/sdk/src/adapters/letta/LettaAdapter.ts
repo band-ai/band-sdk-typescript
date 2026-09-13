@@ -216,8 +216,11 @@ export interface LettaAdapterOptions {
   includeBaseInstructions?: boolean;
   /**
    * Most turns of prior conversation to replay into a new session.
-   * Defaults to 100.  `0` replays none; the value is a cap, not a
-   * toggle.
+   * Defaults to 100.  The value is a cap, not a toggle: `0` replays none.
+   *
+   * A reply is never replayed without the question it answers, so the result
+   * can be one turn shorter than the cap - and `1` replays nothing whenever
+   * the newest turn is an answer.
    */
   maxHistoryMessages?: number;
   emitReasoningEvents?: boolean;

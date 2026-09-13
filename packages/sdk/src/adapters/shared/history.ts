@@ -25,6 +25,9 @@ export function findLatestTaskMetadata(
  * type.  Adapters extend it with their own fields (sender, senderType,
  * ...); the generic parameter preserves those through each call.
  */
+/** Stands in for a speaker a turn does not name, so a run never absorbs them silently. */
+const UNKNOWN_SENDER = "Unknown";
+
 export interface ChatTurn {
   role: "user" | "assistant";
   content: string;
@@ -43,10 +46,16 @@ export interface ChatTurn {
  * A run can span several speakers, and the merged turn carries only one
  * identity downstream: `LettaAdapter` prefixes the whole block with
  * `item.sender`, `ParlantAdapter` sends it under one participant's
- * `displayName`.  A later speaker's name therefore has to travel inside the
- * text, or their message is replayed under the wrong name.  Assistant turns
- * get that `[name]: ` prefix here; user turns already carry one from the
- * history converters, which would double it.
+ * `displayName`.  Any later speaker's name therefore has to travel inside
+ * the text, or their lines are replayed under whoever the block is currently
+ * attributed to - which is the last speaker *named* in it, not the one who
+ * opened it.  A three-speaker run A -> B -> A has to name A again on return,
+ * or A's second message reads as B's.
+ *
+ * The history converters already write `[name]: ` into user content, so a
+ * turn that names its own speaker is appended untouched rather than labelled
+ * twice.  A turn with no sender at all is still marked, since merging it in
+ * silently would hand it to the previous speaker.
  *
  * Not the same operation as `mergeConsecutiveSameRole` in
  * `adapters/tool-calling/valueUtils.ts`: that one rewrites provider wire
@@ -55,6 +64,9 @@ export interface ChatTurn {
  */
 function mergeConsecutiveSameRole<T extends ChatTurn>(turns: readonly T[]): T[] {
   const merged: T[] = [];
+  // Whoever an unlabelled line in the open block would be read as: the turn
+  // that opened it, until a later speaker is named inside it.
+  let attributedTo = "";
 
   for (const turn of turns) {
     if (!turn.content) {
@@ -62,29 +74,36 @@ function mergeConsecutiveSameRole<T extends ChatTurn>(turns: readonly T[]): T[] 
     }
 
     const previous = merged[merged.length - 1];
-    if (previous && previous.role === turn.role) {
-      previous.content += `\n${contributionOf(turn, previous)}`;
-    } else {
+    if (!previous || previous.role !== turn.role) {
       merged.push({ ...turn });
+      attributedTo = turn.sender ?? "";
+      continue;
     }
+
+    const speaker = turn.sender ?? "";
+    previous.content +=
+      speaker === attributedTo
+        ? `\n${turn.content}`
+        : `\n${nameContribution(turn.content, speaker)}`;
+    attributedTo = speaker;
   }
 
   return merged;
 }
 
 /**
- * The text `turn` contributes when folded into the block led by `blockLead`,
- * named when it is a different assistant than the one the block is
- * attributed to.
+ * Label `content` with `speaker` unless it already opens with that name -
+ * the shape the history converters give user turns, which would otherwise be
+ * written twice.
  */
-function contributionOf(turn: ChatTurn, blockLead: ChatTurn): string {
-  const speakerChanged =
-    turn.role === "assistant" &&
-    !!turn.sender &&
-    turn.sender !== blockLead.sender;
+function nameContribution(content: string, speaker: string): string {
+  if (speaker !== "" && content.startsWith(`[${speaker}]: `)) {
+    return content;
+  }
 
-  return speakerChanged ? `[${turn.sender}]: ${turn.content}` : turn.content;
+  return `[${speaker || UNKNOWN_SENDER}]: ${content}`;
 }
+
 
 /**
  * Keep user->assistant pairs, plus a trailing user turn that has no reply
@@ -123,35 +142,44 @@ function pairUserAssistantTurns<T extends ChatTurn>(turns: readonly T[]): T[] {
 /**
  * Keep the most recent `limit` turns.  A plain `slice(-limit)` can land
  * between a question and its answer, so an assistant turn left leading by
- * the cut is dropped rather than replayed without the question it answers
- * — which is why the result can be one turn shorter than `limit`.
+ * the cut is dropped rather than replayed without the question it answers -
+ * which is why the result can be one turn shorter than `limit`, and why a
+ * `limit` of `1` selects nothing whenever the newest turn is an answer.
  *
  * A `limit` of `0` or less selects nothing, reading the option as the cap it
  * is named for.  The call site this replaced ended in `.slice(-limit)`, where
- * `-0 === 0` made `slice(0)` return the whole history — so `0` used to mean
+ * `-0 === 0` made `slice(0)` return the whole history - so `0` used to mean
  * "everything" and a negative meant "drop that many from the front".  Both
  * were artefacts of the expression rather than anything chosen, and neither
  * is a reading of `maxHistoryMessages` a caller could arrive at on purpose.
+ *
+ * `NaN` is the same artefact once removed: it fails every comparison and
+ * reaches `slice(-NaN)`, which is `slice(0)` - the entire history, unbounded.
+ * It arrives from things like `Number(someEnvVar)` on a malformed value, so
+ * it is treated as the mistake it is rather than as "no limit".
  */
 function takeRecentTurns<T extends ChatTurn>(
   turns: readonly T[],
   limit: number,
 ): T[] {
-  if (limit <= 0) {
+  const cap = Number.isNaN(limit) ? 0 : Math.floor(limit);
+
+  if (cap <= 0) {
     return [];
   }
 
-  if (turns.length <= limit) {
+  if (turns.length <= cap) {
     return [...turns];
   }
 
-  const truncated = turns.slice(-limit);
+  const truncated = turns.slice(-cap);
   if (truncated[0]?.role === "assistant") {
     truncated.shift();
   }
 
   return truncated;
 }
+
 
 /**
  * Select the conversation history to replay to an agent, keeping at most

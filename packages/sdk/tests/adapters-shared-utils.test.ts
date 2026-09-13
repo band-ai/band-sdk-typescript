@@ -141,6 +141,38 @@ describe("selectCompleteExchanges", () => {
     ]);
   });
 
+  it("names a returning assistant again so the block does not read as the last one named", () => {
+    // A -> B -> A.  Comparing against the turn that opened the block instead
+    // of the last speaker named in it leaves A's second message unlabelled
+    // directly under B's labelled line, where it reads as B's.
+    const result = selectCompleteExchanges(
+      [
+        turn("user", "Question", "Alice"),
+        turn("assistant", "first from A", "BotA"),
+        turn("assistant", "from B", "BotB"),
+        turn("assistant", "second from A", "BotA"),
+      ],
+      NO_LIMIT,
+    );
+
+    expect(result[1].content).toBe(
+      "first from A\n[BotB]: from B\n[BotA]: second from A",
+    );
+  });
+
+  it("marks a turn that names no sender rather than folding it into the previous speaker", () => {
+    const result = selectCompleteExchanges(
+      [
+        turn("user", "[Alice]: hey", "Alice"),
+        turn("user", "anonymous line", ""),
+        turn("assistant", "Hello", "Bot"),
+      ],
+      NO_LIMIT,
+    );
+
+    expect(result[0].content).toBe("[Alice]: hey\n[Unknown]: anonymous line");
+  });
+
   it("does not name a user run, whose identities the converter already wrote", () => {
     // The history converters prefix user content with `[sender]: ` already;
     // prefixing again here would double it.
@@ -249,6 +281,41 @@ describe("selectCompleteExchanges", () => {
     const result = selectCompleteExchanges(
       [turn("user", "Q", "Alice"), turn("assistant", "A", "Bot")],
       0,
+    );
+
+    expect(result).toEqual([]);
+  });
+
+  it("treats NaN as a mistake rather than as no limit", () => {
+    // NaN fails every comparison and reaches `slice(-NaN)`, i.e. `slice(0)`,
+    // which would return the whole history unbounded.
+    const result = selectCompleteExchanges(
+      [turn("user", "Q", "Alice"), turn("assistant", "A", "Bot")],
+      Number.NaN,
+    );
+
+    expect(result).toEqual([]);
+  });
+
+  it("floors a fractional `limit` instead of letting slice round it", () => {
+    const history = [
+      turn("user", "Q1", "Alice"),
+      turn("assistant", "A1", "Bot"),
+      turn("user", "Q2", "Alice"),
+      turn("assistant", "A2", "Bot"),
+    ];
+
+    expect(selectCompleteExchanges(history, 2.9).map((e) => e.content)).toEqual(
+      selectCompleteExchanges(history, 2).map((e) => e.content),
+    );
+  });
+
+  it("selects nothing for `limit` 1 when the newest turn is an answer", () => {
+    // The single most recent turn is an assistant reply, and a reply is never
+    // replayed without its question, so no one-turn window is valid.
+    const result = selectCompleteExchanges(
+      [turn("user", "Q", "Alice"), turn("assistant", "A", "Bot")],
+      1,
     );
 
     expect(result).toEqual([]);
