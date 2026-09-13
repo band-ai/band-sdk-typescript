@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { renderSystemPrompt, BASE_INSTRUCTIONS, TEMPLATES } from "../src/runtime/prompts";
-import { MEMORY_TOOL_NAME } from "../src/runtime/tools/schemas";
+import { TOOL_NAME } from "../src/runtime/tools/schemas";
 
 describe("renderSystemPrompt", () => {
   it("renders default prompt with agent name and description", () => {
@@ -89,7 +89,7 @@ describe("renderSystemPrompt", () => {
     });
 
     expect(result).toContain("## Memory Tools");
-    expect(result).toContain(MEMORY_TOOL_NAME.storeMemory);
+    expect(result).toContain(TOOL_NAME.storeMemory);
     expect(result).toContain('scope="agent"');
     expect(result).toContain("private to this agent");
     expect(result).toContain("defaults to agent scope");

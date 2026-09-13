@@ -1,4 +1,5 @@
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
+import { TOOL_NAME } from "./schemas";
 import type {
   AgentToolsRestApi,
   ChatMessagingRestApi,
@@ -260,48 +261,48 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
 
   public async executeToolCall(toolName: string, toolArgs: MetadataMap): Promise<unknown> {
     switch (toolName) {
-      case "band_send_message":
+      case TOOL_NAME.sendMessage:
         return this.sendMessage(
           String(toolArgs.content ?? ""),
           toolArgs.mentions as MentionInput | undefined,
         );
-      case "band_send_event":
+      case TOOL_NAME.sendEvent:
         return this.sendEvent(
           String(toolArgs.content ?? ""),
           String(toolArgs.message_type ?? "task"),
           toolArgs.metadata as MetadataMap | undefined,
         );
-      case "band_get_participants":
+      case TOOL_NAME.getParticipants:
         return this.getParticipants();
-      case "band_create_chatroom":
+      case TOOL_NAME.createChatroom:
         return this.createChatroom(typeof toolArgs.task_id === "string" ? toolArgs.task_id : undefined);
-      case "band_lookup_peers":
+      case TOOL_NAME.lookupPeers:
         return this.lookupPeers(
           typeof toolArgs.page === "number" ? toolArgs.page : undefined,
           typeof toolArgs.page_size === "number" ? toolArgs.page_size : undefined,
         );
-      case "band_list_contacts":
+      case TOOL_NAME.listContacts:
         return this.listContacts({
           page: typeof toolArgs.page === "number" ? toolArgs.page : undefined,
           pageSize: typeof toolArgs.page_size === "number" ? toolArgs.page_size : undefined,
         });
-      case "band_add_contact":
+      case TOOL_NAME.addContact:
         return this.addContact({
           handle: String(toolArgs.handle ?? ""),
           ...(typeof toolArgs.message === "string" ? { message: toolArgs.message } : {}),
         });
-      case "band_remove_contact":
+      case TOOL_NAME.removeContact:
         if (typeof toolArgs.contact_id === "string") {
           return this.removeContact({ target: "contactId", contactId: toolArgs.contact_id });
         }
         return this.removeContact({ target: "handle", handle: String(toolArgs.handle ?? "") });
-      case "band_list_contact_requests":
+      case TOOL_NAME.listContactRequests:
         return this.listContactRequests({
           page: typeof toolArgs.page === "number" ? toolArgs.page : undefined,
           pageSize: typeof toolArgs.page_size === "number" ? toolArgs.page_size : undefined,
           sentStatus: typeof toolArgs.sent_status === "string" ? toolArgs.sent_status : undefined,
         });
-      case "band_respond_contact_request":
+      case TOOL_NAME.respondContactRequest:
         if (typeof toolArgs.request_id === "string") {
           return this.respondContactRequest({
             action: String(toolArgs.action ?? "approve") as RespondContactRequestArgs["action"],
@@ -314,15 +315,15 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
           target: "handle",
           handle: String(toolArgs.handle ?? ""),
         });
-      case "band_list_memories":
+      case TOOL_NAME.listMemories:
         return this.listMemories(toolArgs as ListMemoriesArgs);
-      case "band_store_memory":
+      case TOOL_NAME.storeMemory:
         return this.storeMemory(toolArgs as unknown as StoreMemoryArgs);
-      case "band_get_memory":
+      case TOOL_NAME.getMemory:
         return this.getMemory(String(toolArgs.memory_id ?? ""));
-      case "band_supersede_memory":
+      case TOOL_NAME.supersedeMemory:
         return this.supersedeMemory(String(toolArgs.memory_id ?? ""));
-      case "band_archive_memory":
+      case TOOL_NAME.archiveMemory:
         return this.archiveMemory(String(toolArgs.memory_id ?? ""));
       default:
         throw new UnsupportedFeatureError(`Unsupported tool call for contact callback: ${toolName}`);

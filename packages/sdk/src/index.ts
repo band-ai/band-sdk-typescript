@@ -104,4 +104,13 @@ export type {
 } from "./adapters";
 
 export { SimpleAdapter } from "./core/simpleAdapter";
-export { MCP_TOOL_PREFIX, MCP_SERVER_NAME, TOOL_MODELS } from "./runtime/tools/schemas";
+export {
+  CHAT_TOOL_NAME,
+  CONTACT_TOOL_NAME,
+  MCP_TOOL_PREFIX,
+  MCP_SERVER_NAME,
+  MEMORY_TOOL_NAME,
+  TOOL_MODELS,
+  TOOL_NAME,
+  type PlatformToolName,
+} from "./runtime/tools/schemas";

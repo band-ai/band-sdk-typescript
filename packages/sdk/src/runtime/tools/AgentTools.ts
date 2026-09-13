@@ -43,8 +43,8 @@ import {
 } from "../../contracts/protocols";
 import {
   CHAT_TOOL_NAMES,
-  MEMORY_TOOL_NAME,
   MEMORY_TOOL_NAMES,
+  TOOL_NAME,
   getToolDescription,
   TOOL_MODELS
 } from "./schemas";
@@ -346,7 +346,7 @@ export class AgentTools implements AgentToolsProtocol {
       // same ToolExecutorError conversion a thrown error gets below, so every
       // consumer of executeToolCall recognizes it. Scoped to sendEvent: other
       // handlers' `ok` fields are legitimate business-result data, not errors.
-      if (toolName === "band_send_event" && isStructuredToolFailure(result) && !isToolExecutorError(result)) {
+      if (toolName === TOOL_NAME.sendEvent && isStructuredToolFailure(result) && !isToolExecutorError(result)) {
         return createToolExecutorError({
           errorType: "ToolExecutionError",
           toolName,
@@ -392,7 +392,7 @@ export class AgentTools implements AgentToolsProtocol {
           return false;
         }
 
-        if (name === "band_lookup_peers" && !this.capabilities.peers) {
+        if (name === TOOL_NAME.lookupPeers && !this.capabilities.peers) {
           return false;
         }
 
@@ -752,68 +752,68 @@ export class AgentTools implements AgentToolsProtocol {
 
   private buildMessagingToolHandlers(): Record<string, ToolHandler> {
     return {
-      band_send_message: async (arguments_) =>
+      [TOOL_NAME.sendMessage]: async (arguments_) =>
         this.sendMessage(
           String(arguments_.content ?? ""),
           this.normalizeMentionInput(arguments_.mentions),
         ),
-      band_send_event: async (arguments_) =>
+      [TOOL_NAME.sendEvent]: async (arguments_) =>
         this.sendEvent(
           String(arguments_.content ?? ""),
           String(arguments_.message_type ?? "task"),
           this.normalizeOptionalMetadata(arguments_.metadata),
         ),
-      band_add_participant: async (arguments_) =>
+      [TOOL_NAME.addParticipant]: async (arguments_) =>
         this.addParticipant(String(arguments_.name ?? ""), String(arguments_.role ?? "member")),
-      band_remove_participant: async (arguments_) =>
+      [TOOL_NAME.removeParticipant]: async (arguments_) =>
         this.removeParticipant(String(arguments_.name ?? "")),
-      band_lookup_peers: async (arguments_) =>
+      [TOOL_NAME.lookupPeers]: async (arguments_) =>
         this.lookupPeers(
           coercePositiveInt(arguments_.page, 1),
           coercePositiveInt(arguments_.page_size, 50),
         ),
-      band_get_participants: async () => this.getParticipants(),
-      band_create_chatroom: async (arguments_) =>
+      [TOOL_NAME.getParticipants]: async () => this.getParticipants(),
+      [TOOL_NAME.createChatroom]: async (arguments_) =>
         this.createChatroom(this.normalizeOptionalString(arguments_.task_id)),
     };
   }
 
   private buildContactToolHandlers(): Record<string, ToolHandler> {
     return {
-      band_list_contacts: async (arguments_) =>
+      [TOOL_NAME.listContacts]: async (arguments_) =>
         this.listContacts({
           page: coercePositiveInt(arguments_.page, 1),
           pageSize: coercePositiveInt(arguments_.page_size, 50),
         }),
-      band_add_contact: async (arguments_) =>
+      [TOOL_NAME.addContact]: async (arguments_) =>
         this.addContact({
           handle: String(arguments_.handle ?? ""),
           ...(typeof arguments_.message === "string" ? { message: arguments_.message } : {}),
         }),
-      band_remove_contact: async (arguments_) =>
+      [TOOL_NAME.removeContact]: async (arguments_) =>
         this.removeContact(this.toRemoveContactArgs(arguments_)),
-      band_list_contact_requests: async (arguments_) =>
+      [TOOL_NAME.listContactRequests]: async (arguments_) =>
         this.listContactRequests({
           page: coercePositiveInt(arguments_.page, 1),
           pageSize: coercePositiveInt(arguments_.page_size, 50),
           sentStatus: String(arguments_.sent_status ?? "pending"),
         }),
-      band_respond_contact_request: async (arguments_) =>
+      [TOOL_NAME.respondContactRequest]: async (arguments_) =>
         this.respondContactRequest(this.toRespondContactRequestArgs(arguments_)),
     };
   }
 
   private buildMemoryToolHandlers(): Record<string, ToolHandler> {
     return {
-      [MEMORY_TOOL_NAME.listMemories]: async (arguments_) =>
+      [TOOL_NAME.listMemories]: async (arguments_) =>
         this.listMemories(this.toListMemoriesArgs(arguments_)),
-      [MEMORY_TOOL_NAME.storeMemory]: async (arguments_) =>
+      [TOOL_NAME.storeMemory]: async (arguments_) =>
         this.storeMemory(this.toStoreMemoryArgs(arguments_)),
-      [MEMORY_TOOL_NAME.getMemory]: async (arguments_) =>
+      [TOOL_NAME.getMemory]: async (arguments_) =>
         this.getMemory(String(arguments_.memory_id ?? "")),
-      [MEMORY_TOOL_NAME.supersedeMemory]: async (arguments_) =>
+      [TOOL_NAME.supersedeMemory]: async (arguments_) =>
         this.supersedeMemory(String(arguments_.memory_id ?? "")),
-      [MEMORY_TOOL_NAME.archiveMemory]: async (arguments_) =>
+      [TOOL_NAME.archiveMemory]: async (arguments_) =>
         this.archiveMemory(String(arguments_.memory_id ?? "")),
     };
   }
@@ -1126,14 +1126,14 @@ function validateToolArgs(toolName: string, args: Record<string, unknown>): Tool
     }
   }
 
-  if (toolName === "band_send_message") {
+  if (toolName === TOOL_NAME.sendMessage) {
     const mentions = args.mentions;
     if (Array.isArray(mentions) && mentions.length === 0) {
       errors.push("mentions: At least one mention is required");
     }
   }
 
-  if (toolName === "band_send_event") {
+  if (toolName === TOOL_NAME.sendEvent) {
     const messageType = args.message_type;
     if (typeof messageType === "string" && !(CHAT_EVENT_TYPES as readonly string[]).includes(messageType)) {
       errors.push(
@@ -1142,7 +1142,7 @@ function validateToolArgs(toolName: string, args: Record<string, unknown>): Tool
     }
   }
 
-  if (toolName === "band_respond_contact_request") {
+  if (toolName === TOOL_NAME.respondContactRequest) {
     const action = args.action;
     const validActions = ["approve", "reject", "cancel"];
     if (typeof action === "string" && !validActions.includes(action)) {
@@ -1152,7 +1152,7 @@ function validateToolArgs(toolName: string, args: Record<string, unknown>): Tool
     }
   }
 
-  if (toolName === MEMORY_TOOL_NAME.storeMemory) {
+  if (toolName === TOOL_NAME.storeMemory) {
     if (typeof args.system === "string" && !isMemorySystem(args.system)) {
       errors.push(`system: Invalid value '${args.system}'. Expected one of: ${expectedList(MEMORY_SYSTEMS)}`);
     }
