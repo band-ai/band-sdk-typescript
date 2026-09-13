@@ -1,17 +1,17 @@
 import { z } from "zod";
 
-const mentionSchema = z.object({
+const mentionSchema = z.looseObject({
   id: z.string(),
   handle: z.string().nullish(),
   name: z.string().nullish(),
   username: z.string().nullish(),
-}).passthrough();
+});
 
-const messageMetadataSchema = z.object({
+const messageMetadataSchema = z.looseObject({
   mentions: z.array(mentionSchema).nullish(),
-}).passthrough();
+});
 
-export const messageCreatedPayloadSchema = z.object({
+export const messageCreatedPayloadSchema = z.looseObject({
   id: z.string(),
   content: z.string(),
   message_type: z.string(),
@@ -22,15 +22,15 @@ export const messageCreatedPayloadSchema = z.object({
   chat_room_id: z.string().nullish(),
   inserted_at: z.string(),
   updated_at: z.string(),
-}).passthrough();
+});
 
-const roomOwnerSchema = z.object({
+const roomOwnerSchema = z.looseObject({
   id: z.string(),
   name: z.string(),
   type: z.string(),
-}).passthrough();
+});
 
-export const roomAddedPayloadSchema = z.object({
+export const roomAddedPayloadSchema = z.looseObject({
   id: z.string(),
   title: z.string().nullish(),
   task_id: z.string().nullish(),
@@ -41,46 +41,46 @@ export const roomAddedPayloadSchema = z.object({
   type: z.string().nullish(),
   created_at: z.string().nullish(),
   participant_role: z.string().nullish(),
-}).passthrough();
+});
 
-export const roomRemovedPayloadSchema = z.object({
+export const roomRemovedPayloadSchema = z.looseObject({
   id: z.string(),
   status: z.string(),
   type: z.string(),
   title: z.string(),
   removed_at: z.string(),
-}).passthrough();
+});
 
-export const participantAddedPayloadSchema = z.object({
+export const participantAddedPayloadSchema = z.looseObject({
   id: z.string(),
   name: z.string(),
   type: z.string(),
   handle: z.string().nullish(),
-}).passthrough();
+});
 
-export const participantRemovedPayloadSchema = z.object({
+export const participantRemovedPayloadSchema = z.looseObject({
   id: z.string(),
-}).passthrough();
+});
 
-export const roomDeletedPayloadSchema = z.object({
+export const roomDeletedPayloadSchema = z.looseObject({
   id: z.string(),
-}).passthrough();
+});
 
-export const contactRequestReceivedPayloadSchema = z.object({
+export const contactRequestReceivedPayloadSchema = z.looseObject({
   id: z.string(),
   from_handle: z.string(),
   from_name: z.string(),
   message: z.string().nullish(),
   status: z.string(),
   inserted_at: z.string(),
-}).passthrough();
+});
 
-export const contactRequestUpdatedPayloadSchema = z.object({
+export const contactRequestUpdatedPayloadSchema = z.looseObject({
   id: z.string(),
   status: z.string(),
-}).passthrough();
+});
 
-export const contactAddedPayloadSchema = z.object({
+export const contactAddedPayloadSchema = z.looseObject({
   id: z.string(),
   handle: z.string(),
   name: z.string(),
@@ -88,11 +88,11 @@ export const contactAddedPayloadSchema = z.object({
   description: z.string().nullish(),
   is_external: z.boolean().nullish(),
   inserted_at: z.string(),
-}).passthrough();
+});
 
-export const contactRemovedPayloadSchema = z.object({
+export const contactRemovedPayloadSchema = z.looseObject({
   id: z.string(),
-}).passthrough();
+});
 
 export type MessageCreatedPayload = z.infer<typeof messageCreatedPayloadSchema>;
 export type RoomAddedPayload = z.infer<typeof roomAddedPayloadSchema>;
