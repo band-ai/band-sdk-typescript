@@ -61,10 +61,10 @@ export class BandACPClient implements Client {
 
   public getCollectedChunks(sessionId?: string): CollectedChunk[] {
     if (sessionId) {
-      return [...(this.sessionChunks.get(sessionId) ?? [])]
+      return coalesceChunks(this.sessionChunks.get(sessionId) ?? [])
     }
 
-    return [...this.sessionChunks.values()].flatMap((chunks) => chunks)
+    return [...this.sessionChunks.values()].flatMap((chunks) => coalesceChunks(chunks))
   }
 
   public async extMethod(
@@ -127,6 +127,7 @@ export class BandACPClient implements Client {
           chunkType: "plan",
           content: lines.join("\n"),
           metadata: {},
+          streamed: false,
         })
       }
       return
@@ -139,6 +140,7 @@ export class BandACPClient implements Client {
           chunkType: "text",
           content: `[Task completed] ${result}`,
           metadata: {},
+          streamed: false,
         })
       }
     }
@@ -149,6 +151,27 @@ export class BandACPClient implements Client {
   }
 }
 
+// Posting every collected chunk verbatim would flood the room with a dozen
+// one-word messages for a single streamed reply, so adjacent chunks merge
+// into one when they're both genuine deltas of the same run — see
+// `CollectedChunk.streamed` for why that can't be judged from `chunkType`
+// alone. Never mutates `chunks` or its objects — each pushed entry is its
+// own shallow clone, and only a clone's `content` is ever mutated afterward.
+function coalesceChunks(chunks: readonly CollectedChunk[]): CollectedChunk[] {
+  const result: CollectedChunk[] = []
+
+  for (const chunk of chunks) {
+    const last = result[result.length - 1]
+    if (chunk.streamed && last?.streamed && last.chunkType === chunk.chunkType) {
+      last.content += chunk.content
+      continue
+    }
+    result.push({ ...chunk })
+  }
+
+  return result
+}
+
 function toCollectedChunk(update: SessionUpdate): CollectedChunk | null {
   switch (update.sessionUpdate) {
     case "agent_message_chunk":
@@ -156,12 +179,14 @@ function toCollectedChunk(update: SessionUpdate): CollectedChunk | null {
         chunkType: "text",
         content: extractTextFromContent(update.content),
         metadata: {},
+        streamed: true,
       }
     case "agent_thought_chunk":
       return {
         chunkType: "thought",
         content: extractTextFromContent(update.content),
         metadata: {},
+        streamed: true,
       }
     case "tool_call":
       return {
@@ -172,6 +197,7 @@ function toCollectedChunk(update: SessionUpdate): CollectedChunk | null {
           raw_input: update.rawInput,
           status: update.status ?? "pending",
         },
+        streamed: false,
       }
     case "tool_call_update":
       return {
@@ -181,12 +207,14 @@ function toCollectedChunk(update: SessionUpdate): CollectedChunk | null {
           tool_call_id: update.toolCallId,
           status: update.status ?? "completed",
         },
+        streamed: false,
       }
     case "plan":
       return {
         chunkType: "plan",
         content: update.entries.map((entry) => entry.content).join("\n"),
         metadata: {},
+        streamed: false,
       }
     default:
       return null
