@@ -76,6 +76,11 @@ export interface ParlantAdapterOptions {
   customSection?: string;
   includeBaseInstructions?: boolean;
   responseTimeoutSeconds?: number;
+  /**
+   * Most turns of prior conversation to replay into a new session.
+   * Defaults to 100.  `0` replays none; the value is a cap, not a
+   * toggle.
+   */
   maxHistoryMessages?: number;
   historyConverter?: ParlantHistoryConverter;
   clientFactory?: ParlantClientFactory;

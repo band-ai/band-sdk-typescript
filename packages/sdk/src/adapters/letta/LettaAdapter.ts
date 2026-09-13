@@ -214,6 +214,11 @@ export interface LettaAdapterOptions {
   systemPrompt?: string;
   customSection?: string;
   includeBaseInstructions?: boolean;
+  /**
+   * Most turns of prior conversation to replay into a new session.
+   * Defaults to 100.  `0` replays none; the value is a cap, not a
+   * toggle.
+   */
   maxHistoryMessages?: number;
   emitReasoningEvents?: boolean;
   historyConverter?: LettaHistoryConverter;

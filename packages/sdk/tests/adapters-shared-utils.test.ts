@@ -122,6 +122,40 @@ describe("selectCompleteExchanges", () => {
     ]);
   });
 
+  it("names a second assistant when one run spans two of them", () => {
+    // The merged turn is attributed to a single sender downstream, so the
+    // second bot's name has to survive inside the text or its reply is
+    // replayed as the first bot's.
+    const result = selectCompleteExchanges(
+      [
+        turn("user", "Question", "Alice"),
+        turn("assistant", "From the first", "BotA"),
+        turn("assistant", "From the second", "BotB"),
+      ],
+      NO_LIMIT,
+    );
+
+    expect(result).toEqual([
+      turn("user", "Question", "Alice"),
+      turn("assistant", "From the first\n[BotB]: From the second", "BotA"),
+    ]);
+  });
+
+  it("does not name a user run, whose identities the converter already wrote", () => {
+    // The history converters prefix user content with `[sender]: ` already;
+    // prefixing again here would double it.
+    const result = selectCompleteExchanges(
+      [
+        turn("user", "[Alice]: Hey", "Alice"),
+        turn("user", "[Bob]: Hi", "Bob"),
+        turn("assistant", "Hello", "Bot"),
+      ],
+      NO_LIMIT,
+    );
+
+    expect(result[0].content).toBe("[Alice]: Hey\n[Bob]: Hi");
+  });
+
   it("keeps a trailing user message that has no assistant reply yet", () => {
     const result = selectCompleteExchanges(
       [
@@ -215,6 +249,17 @@ describe("selectCompleteExchanges", () => {
     const result = selectCompleteExchanges(
       [turn("user", "Q", "Alice"), turn("assistant", "A", "Bot")],
       0,
+    );
+
+    expect(result).toEqual([]);
+  });
+
+  it("returns nothing when `limit` is negative", () => {
+    // The old `.slice(-limit)` turned a negative into a positive index and
+    // dropped that many turns off the front instead.
+    const result = selectCompleteExchanges(
+      [turn("user", "Q", "Alice"), turn("assistant", "A", "Bot")],
+      -1,
     );
 
     expect(result).toEqual([]);
