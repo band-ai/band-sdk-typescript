@@ -1,6 +1,6 @@
 {
   "name": "@band-ai/sdk",
-  "version": "0.1.10",
+  "version": "0.3.2",
   "description": "Band TypeScript SDK core runtime",
   "license": "MIT",
   "repository": {
@@ -81,13 +81,14 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "clean": "rm -rf dist",
-    "dev:linear": "tsx examples/linear-band/linear-band-bridge-server.ts",
+    "dev:linear": "tsx --env-file-if-exists=.env.local examples/linear-band/linear-band-bridge-server.ts",
     "start:linear": "tsx examples/linear-band/linear-band-bridge-server.ts"
   },
   "engines": {
     "node": ">=22.12"
   },
   "dependencies": {
+    "@band-ai/band-sdk-core": "2.0.0",
     "@band-ai/rest-client": "0.0.118",
     "js-yaml": "^4.1.1",
     "phoenix": "^1.8.4",
@@ -178,7 +179,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.13.14",
     "@typescript-eslint/eslint-plugin": "^8.26.0",
-    "@typescript-eslint/parser": "^8.26.0",
+    "@typescript-eslint/parser": "^8.65.0",
     "@vitest/coverage-v8": "3.2.4",
     "ai": "^6.0.137",
     "eslint": "^9.22.0",

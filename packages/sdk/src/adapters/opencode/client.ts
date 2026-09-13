@@ -24,7 +24,7 @@ export interface OpencodeClientLike {
   ): Promise<void>;
   rejectQuestion(requestId: string): Promise<void>;
   abortSession(sessionId: string): Promise<void>;
-  registerMcpServer(input: { name: string; url: string }): Promise<Record<string, unknown>>;
+  registerMcpServer(input: { name: string; url: string; headers?: Record<string, string> }): Promise<Record<string, unknown>>;
   deregisterMcpServer(name: string): Promise<void>;
   iterEvents(): AsyncIterable<Record<string, unknown>>;
   close(): Promise<void>;
@@ -208,13 +208,13 @@ abstract class SdkOpencodeClientBase implements OpencodeClientLike {
     }));
   }
 
-  public async registerMcpServer(input: { name: string; url: string }): Promise<Record<string, unknown>> {
+  public async registerMcpServer(input: { name: string; url: string; headers?: Record<string, string> }): Promise<Record<string, unknown>> {
     const runtime = await this.getRuntime();
     await this.deleteMcpServer(input.name).catch(() => undefined);
     const result = await runtime.client.mcp.add({
       ...this.scope(),
       name: input.name,
-      config: { type: "remote", url: input.url },
+      config: { type: "remote", url: input.url, headers: input.headers },
     });
     return expectRecord(result);
   }

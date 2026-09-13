@@ -1,4 +1,7 @@
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
+import { NoopLogger, type Logger } from "../../core/logger";
+import { ParticipantRoster, type ParticipantFields } from "@band-ai/band-sdk-core";
+import { toParticipantRecord, toParticipantRecordFromRest } from "../formatters";
 import type { AgentToolsRestApi } from "../../client/rest/types";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
 import { assertCapability } from "../../contracts/capabilities";
@@ -34,6 +37,7 @@ import {
   DEFAULT_AGENT_TOOLS_CAPABILITIES,
   type AgentToolsCapabilities,
   type AgentToolsProtocol,
+  isStructuredToolFailure,
   isToolExecutorError,
   type ToolExecutorError,
 } from "../../contracts/protocols";
@@ -65,8 +69,9 @@ import {
 interface AgentToolsOptions {
   roomId: string;
   rest: AgentToolsRestApi;
-  participants?: ParticipantRecord[];
+  roster?: ParticipantRoster;
   capabilities?: Partial<AgentToolsCapabilities>;
+  logger?: Logger;
 }
 
 type ToolHandler = (arguments_: MetadataMap) => Promise<unknown>;
@@ -135,14 +140,16 @@ export class AgentTools implements AgentToolsProtocol {
   public readonly roomId: string;
   public readonly capabilities: Readonly<AgentToolsCapabilities>;
   private readonly rest: AgentToolsRestApi;
-  private participants: ParticipantRecord[];
+  private readonly roster: ParticipantRoster;
   private readonly adapterTools: AdapterToolsProtocol;
   private readonly toolHandlers: Record<string, ToolHandler>;
+  private readonly logger: Logger;
 
   public constructor(options: AgentToolsOptions) {
     this.roomId = options.roomId;
     this.rest = options.rest;
-    this.participants = options.participants ?? [];
+    this.roster = options.roster ?? new ParticipantRoster();
+    this.logger = options.logger ?? new NoopLogger();
     this.capabilities = {
       ...DEFAULT_AGENT_TOOLS_CAPABILITIES,
       ...options.capabilities,
@@ -159,11 +166,15 @@ export class AgentTools implements AgentToolsProtocol {
     content: string,
     mentions: MentionInput = [],
   ): Promise<ToolOperationResult> {
-    if (mentions.length > 0 && typeof mentions[0] === "string" && this.participants.length === 0) {
-      await this.syncParticipants();
+    let participants: ParticipantFields[] | undefined;
+    if (mentions.length > 0 && typeof mentions[0] === "string") {
+      participants = this.roster.list();
+      if (participants.length === 0) {
+        participants = await this.syncParticipants();
+      }
     }
 
-    const resolvedMentions = this.resolveMentions(mentions);
+    const resolvedMentions = this.resolveMentions(mentions, participants);
 
     // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
     // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
@@ -182,16 +193,30 @@ export class AgentTools implements AgentToolsProtocol {
     metadata?: MetadataMap,
   ): Promise<ToolOperationResult> {
     assertChatEventType(messageType);
-    // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
-    // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
-    return this.rest.createChatEvent(
-      this.roomId,
-      {
-        content,
-        messageType,
-        metadata,
-      },
-    );
+    try {
+      // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
+      // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
+      return await this.rest.createChatEvent(
+        this.roomId,
+        {
+          content,
+          messageType,
+          metadata,
+        },
+      );
+    } catch (error) {
+      // Room telemetry, not the agent's answer: a failed post here must never
+      // abort the turn the way a failed sendMessage should. See sendMessage,
+      // which is deliberately left to reject.
+      try {
+        this.logger.warn("chat event send failed", { roomId: this.roomId, messageType, error });
+      } catch {
+        // A caller-supplied logger that itself throws must not turn this
+        // telemetry failure into a rejection in its place — see above.
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, status: "failed", message };
+    }
   }
 
   public async createChatroom(taskId?: string): Promise<string> {
@@ -235,7 +260,7 @@ export class AgentTools implements AgentToolsProtocol {
       handle: typeof peer.handle === "string" ? peer.handle : null,
     };
 
-    this.participants.push(participantRecord);
+    this.roster.add(participantRecord);
 
     return {
       ...participantRecord,
@@ -254,7 +279,7 @@ export class AgentTools implements AgentToolsProtocol {
     }
 
     await this.rest.removeChatParticipant(this.roomId, String(participant.id), DEFAULT_REQUEST_OPTIONS);
-    this.replaceParticipants(this.participants.filter((entry) => entry.id !== participant.id));
+    this.roster.remove(participant.id);
 
     return {
       id: participant.id,
@@ -287,18 +312,13 @@ export class AgentTools implements AgentToolsProtocol {
 
   private async fetchParticipants(): Promise<ParticipantRecord[]> {
     const participants = await this.rest.listChatParticipants(this.roomId, DEFAULT_REQUEST_OPTIONS);
-    return participants.map((participant) => ({
-      id: participant.id,
-      name: participant.name,
-      type: participant.type,
-      handle: participant.handle ?? null,
-    }));
+    return participants.map(toParticipantRecordFromRest);
   }
 
   private async syncParticipants(): Promise<ParticipantRecord[]> {
     const participants = await this.fetchParticipants();
-    this.replaceParticipants(participants);
-    return [...this.participants];
+    this.roster.setAll(participants);
+    return this.roster.list().map(toParticipantRecord);
   }
 
   public async executeToolCall(toolName: string, arguments_: MetadataMap): Promise<unknown> {
@@ -318,7 +338,21 @@ export class AgentTools implements AgentToolsProtocol {
     }
 
     try {
-      return await handler(arguments_);
+      const result = await handler(arguments_);
+      // sendEvent fails by resolving `{ok: false}` instead of throwing (it must
+      // never reject — see its own comment). Route that failure through the
+      // same ToolExecutorError conversion a thrown error gets below, so every
+      // consumer of executeToolCall recognizes it. Scoped to sendEvent: other
+      // handlers' `ok` fields are legitimate business-result data, not errors.
+      if (toolName === "band_send_event" && isStructuredToolFailure(result) && !isToolExecutorError(result)) {
+        return createToolExecutorError({
+          errorType: "ToolExecutionError",
+          toolName,
+          message: result.message,
+          legacyMessage: `Error executing ${toolName}: ${result.message}`,
+        });
+      }
+      return result;
     } catch (error) {
       if (isToolExecutorError(error)) {
         return error;
@@ -594,6 +628,7 @@ export class AgentTools implements AgentToolsProtocol {
 
   private resolveMentions(
     mentions: MentionInput,
+    participants: ParticipantFields[] | undefined,
   ): MentionReference[] {
     if (mentions.length === 0) {
       return [];
@@ -610,7 +645,7 @@ export class AgentTools implements AgentToolsProtocol {
     const participantsByHandle = new Map<string, MentionReference>();
     const participantsById = new Map<string, MentionReference>();
     const participantsByName = new Map<string, MentionReference>();
-    for (const participant of this.participants) {
+    for (const participant of participants ?? []) {
       const ref: MentionReference = {
         id: String(participant.id),
         handle: typeof participant.handle === "string" ? participant.handle : undefined,
@@ -676,10 +711,6 @@ export class AgentTools implements AgentToolsProtocol {
 
   private normalizeMentionHandle(handle: string): string {
     return handle.trim().replace(/^@+/, "").toLowerCase();
-  }
-
-  private replaceParticipants(participants: ParticipantRecord[]): void {
-    this.participants.splice(0, this.participants.length, ...participants);
   }
 
   private buildAdapterTools(): AdapterToolsProtocol {

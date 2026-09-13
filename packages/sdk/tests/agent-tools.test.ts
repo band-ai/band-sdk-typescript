@@ -8,6 +8,7 @@ import type {
   RemoveContactArgs,
   RespondContactRequestArgs,
   StoreMemoryArgs,
+  ToolOperationResult,
 } from "../src/contracts/dtos";
 import {
   isToolExecutorError,
@@ -15,6 +16,7 @@ import {
 } from "../src/contracts/protocols";
 import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
+import { makeRoster } from "./testUtils";
 
 class FakeRestApi implements RestApi {
   public readonly chatMessages: Array<{ chatId: string; content: string; mentions?: unknown[] }> = [];
@@ -144,7 +146,7 @@ class FakeRestApi implements RestApi {
     };
   }
 
-  public async respondContactRequest(request: RespondContactRequestArgs) {
+  public async respondContactRequest(request: RespondContactRequestArgs): Promise<ToolOperationResult> {
     this.contactRequestResponses.push(request);
     const statusByAction: Record<ContactRequestAction, string> = {
       approve: "approved",
@@ -207,7 +209,7 @@ describe("AgentTools", () => {
     const tools = new AgentTools({
       roomId: "room-1",
       rest: new RestFacade({ api: new FakeRestApi() }),
-      participants: [{ id: "u1", handle: "@jane", name: "Jane", type: "User" }],
+      roster: makeRoster([{ id: "u1", handle: "@jane", name: "Jane", type: "User" }]),
     });
 
     const result = await tools.sendMessage("hi", ["@jane"]);
@@ -251,6 +253,118 @@ describe("AgentTools", () => {
     });
 
     await expect(tools.sendEvent("hello", "message_created")).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it("reports a failed chat event instead of throwing, unlike a failed message", async () => {
+    class FailingRestApi extends FakeRestApi {
+      public override async createChatEvent(): ReturnType<FakeRestApi["createChatEvent"]> {
+        throw new Error("network down");
+      }
+
+      public override async createChatMessage(): ReturnType<FakeRestApi["createChatMessage"]> {
+        throw new Error("network down");
+      }
+    }
+
+    const warnings: Array<[string, Record<string, unknown> | undefined]> = [];
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api: new FailingRestApi() }),
+      logger: {
+        debug: () => {},
+        info: () => {},
+        warn: (message, context) => warnings.push([message, context]),
+        error: () => {},
+      },
+    });
+
+    await expect(tools.sendEvent("hello", "task")).resolves.toEqual({
+      ok: false,
+      status: "failed",
+      message: "network down",
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0][0]).toBe("chat event send failed");
+
+    await expect(tools.sendMessage("hello")).rejects.toThrow("network down");
+  });
+
+  it("still absorbs a failed chat event when the caller-supplied logger itself throws", async () => {
+    class FailingRestApi extends FakeRestApi {
+      public override async createChatEvent(): ReturnType<FakeRestApi["createChatEvent"]> {
+        throw new Error("network down");
+      }
+    }
+
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api: new FailingRestApi() }),
+      logger: {
+        debug: () => {},
+        info: () => {},
+        warn: () => {
+          throw new Error("logger is broken");
+        },
+        error: () => {},
+      },
+    });
+
+    await expect(tools.sendEvent("hello", "task")).resolves.toEqual({
+      ok: false,
+      status: "failed",
+      message: "network down",
+    });
+  });
+
+  it("wraps a failed send_event as a ToolExecutorError instead of reporting success", async () => {
+    class FailingRestApi extends FakeRestApi {
+      public override async createChatEvent(): ReturnType<FakeRestApi["createChatEvent"]> {
+        throw new Error("network down");
+      }
+    }
+
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api: new FailingRestApi() }),
+    });
+
+    const result = await tools.executeToolCall("band_send_event", {
+      content: "hello",
+      message_type: "task",
+    });
+    expect(isToolExecutorError(result)).toBe(true);
+    expect(result).toMatchObject({
+      ok: false,
+      errorType: "ToolExecutionError",
+      toolName: "band_send_event",
+      message: "network down",
+    });
+    expect(toLegacyToolExecutorErrorMessage(result)).toContain("Error executing band_send_event");
+  });
+
+  it("leaves another handler's own {ok:false} business result untouched, unlike send_event", async () => {
+    class ContactBusinessResultRestApi extends FakeRestApi {
+      public override async respondContactRequest(
+        request: RespondContactRequestArgs,
+      ): Promise<ToolOperationResult> {
+        this.contactRequestResponses.push(request);
+        return { ok: false, message: "request already resolved" };
+      }
+    }
+
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api: new ContactBusinessResultRestApi() }),
+      capabilities: { contacts: true },
+    });
+
+    const result = await tools.executeToolCall("band_respond_contact_request", {
+      action: "approve",
+      handle: "jane",
+    });
+
+    expect(isToolExecutorError(result)).toBe(false);
+    expect(result).toEqual({ ok: false, message: "request already resolved" });
   });
 
   it("validates send_message requires mentions", async () => {
@@ -316,7 +430,7 @@ describe("AgentTools", () => {
     const tools = new AgentTools({
       roomId: "room-1",
       rest: new RestFacade({ api: new FakeRestApi() }),
-      participants: [],
+      roster: makeRoster([]),
     });
 
     const result = await tools.executeToolCall("band_send_message", {
@@ -361,6 +475,44 @@ describe("AgentTools", () => {
     expect(api.addedParticipants).toEqual([
       { chatId: "room-1", participantId: "p1", role: "member" },
     ]);
+  });
+
+  it("works standalone with no roster option, adding and removing participants via its own owned ParticipantRoster", async () => {
+    class StatefulRestApi extends FakeRestApi {
+      private joined = false;
+
+      public override async listChatParticipants() {
+        return this.joined
+          ? [{ id: "p1", name: "Weather", type: "Agent", handle: "@sam/weather" }]
+          : [];
+      }
+
+      public override async addChatParticipant(
+        chatId: string,
+        participant: { participantId: string; role: string },
+      ) {
+        this.joined = true;
+        return super.addChatParticipant(chatId, participant);
+      }
+    }
+
+    const api = new StatefulRestApi();
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api }),
+    });
+
+    const added = await tools.addParticipant("Weather");
+    expect(added).toMatchObject({ id: "p1", name: "Weather", status: "added" });
+
+    const mentionResult = await tools.executeToolCall("band_send_message", {
+      content: "hello",
+      mentions: ["@sam/weather"],
+    });
+    expect(isToolExecutorError(mentionResult)).toBe(false);
+
+    const removed = await tools.removeParticipant("Weather");
+    expect(removed).toMatchObject({ id: "p1", status: "removed" });
   });
 
   it("delegates contact tools to the REST adapter when enabled", async () => {
@@ -476,7 +628,7 @@ describe("AgentTools", () => {
     const tools = new AgentTools({
       roomId: "room-1",
       rest: new RestFacade({ api }),
-      participants: [{ id: "u1", handle: "@jane", name: "Jane", type: "User" }],
+      roster: makeRoster([{ id: "u1", handle: "@jane", name: "Jane", type: "User" }]),
     });
 
     await expect(

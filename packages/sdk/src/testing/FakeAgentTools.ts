@@ -6,6 +6,7 @@ import type {
   MemoryTools,
 } from "../contracts/protocols";
 import { DEFAULT_AGENT_TOOLS_CAPABILITIES } from "../contracts/protocols";
+import { isBlankEventContent } from "../contracts/chatEvents";
 import type {
   AddContactArgs,
   ContactRecord,
@@ -97,6 +98,11 @@ export class FakeAgentTools
     metadata?: MetadataMap,
   ): Promise<ToolOperationResult> {
     this.maybeFail("sendEvent");
+    // Mirrors the platform's own rejection, so a test posting a blank chunk
+    // is an actual regression test rather than a vacuous pass.
+    if (isBlankEventContent(content)) {
+      return { ok: false, status: "failed" };
+    }
     this.eventsSent.push({ content, messageType, metadata });
     const id = `evt-${this.eventCounter++}`;
     return { id, status: "sent" };

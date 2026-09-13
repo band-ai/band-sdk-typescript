@@ -9,6 +9,7 @@ import {
 } from "./registrations";
 import { buildZodShape } from "./zod";
 import { MCP_SERVER_NAME } from "../runtime/tools/schemas";
+import { isAuthorizedRequest } from "./auth";
 
 export interface BandMcpSseServerOptions {
   tools: AdapterToolsProtocol | ((roomId: string) => AdapterToolsProtocol | undefined);
@@ -17,6 +18,13 @@ export interface BandMcpSseServerOptions {
   enableMemoryTools?: boolean;
   enableContactTools?: boolean;
   additionalTools?: McpToolRegistration[];
+  /**
+   * When set, every `/sse` and `/messages` request must carry
+   * `Authorization: Bearer <authToken>` or is rejected with a 401. Unset (the
+   * default) leaves the server open, matching prior behavior for callers that
+   * don't opt in.
+   */
+  authToken?: string;
 }
 
 interface SessionRecord {
@@ -88,7 +96,12 @@ export class BandMcpSseServer {
       res.json({ status: "ok" })
     })
 
-    app.get("/sse", async (_req, res) => {
+    app.get("/sse", async (req, res) => {
+      if (!isAuthorizedRequest(req.headers.authorization, this.options.authToken)) {
+        res.status(401).send("Unauthorized")
+        return
+      }
+
       const transport = new SSEServerTransport("/messages", res)
       const mcpServer = new McpServer({
         name: this.options.name ?? MCP_SERVER_NAME,
@@ -117,6 +130,11 @@ export class BandMcpSseServer {
     })
 
     app.post("/messages", async (req, res) => {
+      if (!isAuthorizedRequest(req.headers.authorization, this.options.authToken)) {
+        res.status(401).send("Unauthorized")
+        return
+      }
+
       const sessionId = typeof req.query.sessionId === "string" ? req.query.sessionId : null
       if (!sessionId) {
         res.status(400).send("Missing sessionId")

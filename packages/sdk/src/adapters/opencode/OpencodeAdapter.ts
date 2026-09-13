@@ -382,6 +382,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       await client.registerMcpServer({
         name: this.config.mcpServerName,
         url: server.url,
+        headers: backend.authToken ? { Authorization: `Bearer ${backend.authToken}` } : undefined,
       });
     } catch (error) {
       this.logger.warn("Failed to register OpenCode MCP backend", { error });

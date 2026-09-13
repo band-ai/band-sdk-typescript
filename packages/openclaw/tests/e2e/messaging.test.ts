@@ -182,10 +182,10 @@ describe("E2E: Messaging", () => {
         const room = await link.rest.createChat();
 
         // Wait for room to be joined
-        await waitFor(() => roomJoined || presence!.rooms.has(room.id), 5000);
+        await waitFor(() => roomJoined || presence!.roster.roomMembership(room.id) === "admitted", 5000);
 
         // The room should be tracked
-        expect(presence.rooms.size).toBeGreaterThanOrEqual(0); // May or may not have rooms depending on setup
+        expect(presence.roster.trackedRoomIds().length).toBeGreaterThanOrEqual(0); // May or may not have rooms depending on setup
       },
     );
   });
@@ -216,7 +216,7 @@ describe("E2E: Messaging", () => {
         await presence.start();
 
         // Wait for presence to subscribe rooms
-        await waitFor(() => roomJoined || presence!.rooms.size > 0, 10000);
+        await waitFor(() => roomJoined || presence!.roster.trackedRoomIds().length > 0, 10000);
 
         // If we got here, connection and room subscription succeeded
         expect(presenceLink.isConnected()).toBe(true);
