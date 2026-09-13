@@ -2,6 +2,7 @@ import { ParticipantRoster } from "@band-ai/band-sdk-core";
 import type { PlatformMessage } from "../src/runtime";
 import type { AgentToolsProtocol } from "../src/core";
 import { DEFAULT_AGENT_TOOLS_CAPABILITIES } from "../src/contracts/protocols";
+import { isBlankEventContent } from "../src/contracts/chatEvents";
 import type {
   AgentIdentity,
   PaginatedResponse,
@@ -13,6 +14,7 @@ import type {
   ParticipantRecord,
   PeerRecord,
 } from "../src/contracts/dtos";
+import type { StreamingTransport, TopicHandlers } from "../src/platform/streaming/transport";
 
 interface CapturedToolEvent {
   content: string;
@@ -57,6 +59,11 @@ export class FakeTools implements AgentToolsProtocol {
     metadata?: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     this.maybeFail("sendEvent");
+    // Mirrors the platform's own rejection, so a test posting a blank chunk
+    // is an actual regression test rather than a vacuous pass.
+    if (isBlankEventContent(content)) {
+      return { ok: false, status: "failed" };
+    }
     this.events.push({ content, messageType, metadata });
     return { ok: true };
   }
@@ -122,7 +129,54 @@ export function makeRoster(participants: ParticipantRecord[]): ParticipantRoster
   return roster;
 }
 
-export function makeMessage(content: string, roomId = "room-1"): PlatformMessage {
+/** Fake `StreamingTransport` driven by `emit(...)`, standing in for the network only. */
+export class FakeTransport implements StreamingTransport {
+  private readonly handlers = new Map<string, TopicHandlers>();
+  private connected = false;
+
+  public async connect(): Promise<void> {
+    this.connected = true;
+  }
+
+  public async disconnect(): Promise<void> {
+    this.connected = false;
+  }
+
+  public async join(topic: string, handlers: TopicHandlers): Promise<void> {
+    this.handlers.set(topic, handlers);
+  }
+
+  public async leave(topic: string): Promise<void> {
+    this.handlers.delete(topic);
+  }
+
+  public async runForever(signal?: AbortSignal): Promise<void> {
+    if (!signal) {
+      return;
+    }
+    await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+  }
+
+  public async emit(topic: string, event: string, payload: Record<string, unknown>): Promise<void> {
+    const topicHandlers = this.handlers.get(topic);
+    const handler = topicHandlers?.[event];
+    if (!handler) {
+      throw new Error(`No handler for ${topic}/${event}`);
+    }
+
+    await Promise.resolve(handler(payload));
+  }
+
+  public isConnected(): boolean {
+    return this.connected;
+  }
+
+  public hasTopic(topic: string): boolean {
+    return this.handlers.has(topic);
+  }
+}
+
+export function makeMessage(content: string, roomId = "room-1", metadata: Record<string, unknown> = {}): PlatformMessage {
   return {
     id: "msg-1",
     roomId,
@@ -131,7 +185,7 @@ export function makeMessage(content: string, roomId = "room-1"): PlatformMessage
     senderType: "User",
     senderName: "User",
     messageType: "text",
-    metadata: {},
+    metadata,
     createdAt: new Date("2026-03-02T00:00:00.000Z"),
   };
 }

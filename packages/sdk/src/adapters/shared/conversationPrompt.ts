@@ -10,6 +10,24 @@ interface BuildConversationPromptOptions {
   maxHistoryMessages?: number;
 }
 
+// The current-turn roster/contacts update: `ExecutionContext.consumeParticipantsMessage`
+// is edge-triggered, returning a value only on the turn the roster actually
+// changed, so every adapter must inject whatever it's handed rather than
+// gating on session bootstrap.
+export function systemUpdateParts(participantsMessage: string | null, contactsMessage: string | null): string[] {
+  const parts: string[] = [];
+
+  if (participantsMessage) {
+    parts.push(`[System]: ${participantsMessage}`);
+  }
+
+  if (contactsMessage) {
+    parts.push(`[System]: ${contactsMessage}`);
+  }
+
+  return parts;
+}
+
 export function buildConversationPrompt(options: BuildConversationPromptOptions): string {
   const parts: string[] = [];
 
@@ -21,13 +39,7 @@ export function buildConversationPrompt(options: BuildConversationPromptOptions)
     parts.push(`${options.historyHeader}\n${historyText}`);
   }
 
-  if (options.participantsMessage) {
-    parts.push(`[System]: ${options.participantsMessage}`);
-  }
-
-  if (options.contactsMessage) {
-    parts.push(`[System]: ${options.contactsMessage}`);
-  }
+  parts.push(...systemUpdateParts(options.participantsMessage, options.contactsMessage));
 
   parts.push(options.currentMessage);
   return parts.join("\n\n");

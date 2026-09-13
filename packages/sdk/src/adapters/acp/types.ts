@@ -39,6 +39,35 @@ export type ACPPermissionHandler = (
   params: RequestPermissionRequest,
 ) => Promise<RequestPermissionResponse>;
 
+// ACP has no room concept, but one `ACPClientAdapter` serves many rooms, so a
+// consumer resolving a permission needs to know which room is asking.
+export type ACPPermissionRequest = RequestPermissionRequest & {
+  roomId: string;
+};
+
+// Why a pending permission request was given up on without a consumer answer.
+// ACP's outcome vocabulary is only `selected | cancelled`, so every reason here
+// reaches the agent as `cancelled` — the reason exists to tell the *user* what
+// happened, and is deliberately not plumbed into the protocol.
+export type ACPPermissionAbandonReason =
+  | "timeout"
+  | "room-closed"
+  | "adapter-stopped"
+  | "connection-lost";
+
+// `settled` is bookkeeping, not abandonment: the consumer chose one of this
+// request's own offered options, and the abort controller is simply being
+// tidied up afterwards. `no-answer` is the request's own outcome too — it
+// ran to completion (or the room event announcing it failed to post) without
+// producing a usable selection: `resolvePermission` returned `undefined`,
+// threw, or chose an id this request didn't offer. Neither is an
+// `ACPPermissionAbandonReason`: those are exclusively external teardown that
+// cut a request off before it could run its own course. Keeping all three
+// apart is what lets a consumer rendering `signal.reason` tell "the user
+// picked one" from "the user (or the request itself) never produced a real
+// answer" from "something outside this request killed it".
+export type ACPPermissionEndReason = ACPPermissionAbandonReason | "settled" | "no-answer";
+
 export const DEFAULT_ACP_SERVER_MODES: Array<{
   id: string;
   name: string;

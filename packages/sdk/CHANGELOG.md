@@ -1,6 +1,65 @@
 # Changelog
 
 
+## [0.3.2](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.3.1...sdk-v0.3.2) (2026-09-08)
+
+
+### Bug Fixes
+
+* **adapters:** Register the ACP permission handler once per connection ([#185](https://github.com/band-ai/band-sdk-typescript/issues/185)) ([f1069b3](https://github.com/band-ai/band-sdk-typescript/commit/f1069b3ac95cd11b5391766edcf221712a84375b))
+
+## [0.3.1](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.3.0...sdk-v0.3.1) (2026-09-07)
+
+
+### Features
+
+* **acp:** configure advertised session modes ([#179](https://github.com/band-ai/band-sdk-typescript/issues/179)) ([a793110](https://github.com/band-ai/band-sdk-typescript/commit/a7931103476fa461b41b5fdc20be5ac3f41b7b58))
+
+## [0.3.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.2.1...sdk-v0.3.0) (2026-09-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* linear_thenvoi_bridge/linear_thenvoi_transport are no longer recognized as config-key aliases, and LINEAR_THENVOI_* env vars no longer fall back for the Linear bridge example. Use linear_band_bridge and LINEAR_BAND_* instead.
+
+### Features
+
+* **runtime:** integrate RoomRoster into the TypeScript room lifecycle ([#177](https://github.com/band-ai/band-sdk-typescript/issues/177)) ([aa3a5f0](https://github.com/band-ai/band-sdk-typescript/commit/aa3a5f0d0378ead7b0c3aa823f525abe857d735e))
+
+
+### Bug Fixes
+
+* **adapters:** switch a session into its requested permission mode ([#181](https://github.com/band-ai/band-sdk-typescript/issues/181)) ([107de93](https://github.com/band-ai/band-sdk-typescript/commit/107de937002ae6b64acb3993d1232724ad605cd9))
+* remove legacy Thenvoi config-key and env-var fallbacks from the Linear bridge example ([#175](https://github.com/band-ai/band-sdk-typescript/issues/175)) ([b28e799](https://github.com/band-ai/band-sdk-typescript/commit/b28e7999f4d7231e73a4456c2e99d2e8eeb18b39))
+* **sdk:** stabilize ACP relay, prompting, and room context ([#171](https://github.com/band-ai/band-sdk-typescript/issues/171)) ([d3cb29a](https://github.com/band-ai/band-sdk-typescript/commit/d3cb29a83938ebeb8f51cf885e3f4986adb5ab1c))
+
+## [0.2.1](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.2.0...sdk-v0.2.1) (2026-09-03)
+
+
+### Features
+
+* **adapters:** add resolvePermission extension point for manual permission approval ([#170](https://github.com/band-ai/band-sdk-typescript/issues/170)) ([624983a](https://github.com/band-ai/band-sdk-typescript/commit/624983a70172d1ce2d94d5c44d4cf18bd773be86))
+
+## [0.2.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.1.10...sdk-v0.2.0) (2026-09-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sdk:** MessageRetryTracker and ParticipantTracker are removed from the public runtime barrel with no back-compat shim -- band-sdk-core's RetryTracker/ParticipantRoster replace them, with an identical method surface. AgentTools's `participants?: ParticipantRecord[]` constructor option is replaced by `roster?: ParticipantRoster` (still optional, defaulting to an owned instance) -- only a caller passing `participants:` explicitly needs to migrate to `roster:`.
+* **sdk:** LinearThenvoiBridgeConfig → LinearBandBridgeConfig, LinearThenvoiBridgeDeps → LinearBandBridgeDeps (field thenvoiRest → bandRest). LinearThenvoiExampleRestApi → LinearBandExampleRestApi.
+
+### Features
+
+* **sdk:** integrate band-sdk-core retry and participant roster (INT-1246) ([#163](https://github.com/band-ai/band-sdk-typescript/issues/163)) ([212339e](https://github.com/band-ai/band-sdk-typescript/commit/212339eb06f42fb5ee9e1939559dd55413da580d))
+* **sdk:** rename Thenvoi SDK surfaces to Band ([#150](https://github.com/band-ai/band-sdk-typescript/issues/150)) ([3173431](https://github.com/band-ai/band-sdk-typescript/commit/3173431029c8938158af17d3523e484d62aeedb5))
+
+
+### Bug Fixes
+
+* **sdk:** authenticate the ACP MCP bridge and fail loudly on unadvertised transport (INT-1356) ([#168](https://github.com/band-ai/band-sdk-typescript/issues/168)) ([6fbcd8b](https://github.com/band-ai/band-sdk-typescript/commit/6fbcd8bca04ee5b755dcd507a498c123d4d47493))
+* **sdk:** close remaining MCP-bridge gaps found in review of [#168](https://github.com/band-ai/band-sdk-typescript/issues/168) ([#169](https://github.com/band-ai/band-sdk-typescript/issues/169)) ([58fd81f](https://github.com/band-ai/band-sdk-typescript/commit/58fd81ffe1e3a752fc088e087abd1458c5e6b28b))
+* **sdk:** remove duplicate 429 retry loop in FernRestAdapter ([#162](https://github.com/band-ai/band-sdk-typescript/issues/162)) ([831dbf1](https://github.com/band-ai/band-sdk-typescript/commit/831dbf1ec69a1e96d41c29a7286f8fca226c861b))
+
 ## [0.1.10](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.1.9...sdk-v0.1.10) (2026-08-09)
 
 

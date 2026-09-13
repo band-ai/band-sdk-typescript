@@ -6,6 +6,7 @@ import {
   buildParticipantsMessage,
   formatHistoryForLlm,
   formatMessageForLlm,
+  mentionSubjectsFromMetadata,
   renderSystemPrompt,
   replaceUuidMentions,
 } from "../src/runtime";
@@ -28,6 +29,46 @@ describe("runtime utilities", () => {
       { id: "u1", handle: "@john" },
     ]);
     expect(replaced).toBe("hello @john");
+  });
+
+  describe("mentionSubjectsFromMetadata", () => {
+    it("prefers handle over username and name", () => {
+      expect(
+        mentionSubjectsFromMetadata({
+          mentions: [{ id: "u1", handle: "john", username: "jsmith", name: "John Smith" }],
+        }),
+      ).toEqual([{ id: "u1", handle: "john" }]);
+    });
+
+    it("resolves from username alone when handle is absent", () => {
+      expect(
+        mentionSubjectsFromMetadata({ mentions: [{ id: "u1", username: "jsmith" }] }),
+      ).toEqual([{ id: "u1", handle: "jsmith" }]);
+    });
+
+    it("resolves from name alone when handle and username are absent", () => {
+      expect(
+        mentionSubjectsFromMetadata({ mentions: [{ id: "u1", name: "John Smith" }] }),
+      ).toEqual([{ id: "u1", handle: "John Smith" }]);
+    });
+
+    it("falls through an empty-string handle to the next field instead of deleting the mention", () => {
+      expect(
+        mentionSubjectsFromMetadata({ mentions: [{ id: "u1", handle: "", username: "jsmith" }] }),
+      ).toEqual([{ id: "u1", handle: "jsmith" }]);
+    });
+
+    it("omits a mention with no usable label at all, leaving its token unresolved", () => {
+      expect(
+        mentionSubjectsFromMetadata({ mentions: [{ id: "u1", handle: "", username: null, name: undefined }] }),
+      ).toEqual([]);
+    });
+
+    it("ignores metadata that isn't shaped like a mention list", () => {
+      for (const metadata of [undefined, {}, { mentions: "u1" }, { mentions: [{}, { id: 7 }] }]) {
+        expect(mentionSubjectsFromMetadata(metadata)).toEqual([]);
+      }
+    });
   });
 
   it("formats message and history for llm", () => {

@@ -122,6 +122,7 @@ interface LinkLike {
   agentId: string;
   connect: () => Promise<unknown>;
   disconnect: () => Promise<unknown>;
+  isConnected: () => boolean;
   rest: {
     getAgentMe: () => Promise<{ id: string; ownerUuid?: string | null }>;
     listChatParticipants?: (

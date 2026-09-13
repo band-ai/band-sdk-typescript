@@ -3,6 +3,7 @@ import { DEFAULT_REQUEST_OPTIONS } from "../client/rest/requestOptions";
 import type { AdapterToolsProtocol, AgentToolsCapabilities } from "../contracts/protocols";
 import type { MetadataMap, ParticipantRecord } from "../contracts/dtos";
 import { UnsupportedFeatureError } from "../core/errors";
+import { NoopLogger, type Logger } from "../core/logger";
 import type { ConversationContext, PlatformMessage } from "./types";
 import { AgentTools } from "./tools/AgentTools";
 import { ParticipantRoster, RetryTracker } from "@band-ai/band-sdk-core";
@@ -23,6 +24,7 @@ export interface ExecutionContextOptions {
   enableContextCache?: boolean;
   contextCacheTtlSeconds?: number;
   enableContextHydration?: boolean;
+  logger?: Logger;
 }
 
 const DEDUP_CACHE_MAX = 500;
@@ -63,6 +65,7 @@ export class ExecutionContext {
       rest: this.link.rest,
       roster: this.roster,
       capabilities: this.link.capabilities,
+      logger: options.logger ?? new NoopLogger(),
     });
     this.adapterTools = this.tools.getAdapterTools();
   }

@@ -7,6 +7,40 @@ function isMetadataMap(value: unknown): value is MetadataMap {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+// `metadata.mentions` entries are validated against payloadSchemas.ts's
+// mentionSchema, where `handle`, `name` and `username` are all independently
+// nullish — any one of them can be the only field present on a given mention.
+export function mentionSubjectsFromMetadata(metadata: MetadataMap | undefined): Array<Record<string, unknown>> {
+  const mentions = metadata?.mentions;
+  if (!Array.isArray(mentions)) {
+    return [];
+  }
+
+  const subjects: Array<Record<string, unknown>> = [];
+  for (const mention of mentions) {
+    if (!isMetadataMap(mention) || typeof mention.id !== "string") {
+      continue;
+    }
+
+    // `handle` first, then `username`: both are single-token identifiers, so
+    // they read as a mention. A display name is the last resort — it can
+    // contain spaces, which makes a poorer `@` token, but still beats a bare
+    // id. A non-empty check, not just presence, matters here: `ensureHandlePrefix`
+    // turns an empty-string handle into `null`, so replaceUuidMentions would
+    // otherwise delete the mention outright instead of leaving it unresolved.
+    const label = [mention.handle, mention.username, mention.name].find(
+      (value): value is string => typeof value === "string" && value.trim().length > 0,
+    );
+    if (label === undefined) {
+      continue;
+    }
+
+    subjects.push({ id: mention.id, handle: label });
+  }
+
+  return subjects;
+}
+
 export function replaceUuidMentions(
   content: string,
   participants: Array<Record<string, unknown>>,

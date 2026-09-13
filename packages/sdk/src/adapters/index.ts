@@ -4,6 +4,9 @@ export {
   ACPServer,
   BandACPServerAdapter,
   type ACPClientAdapterOptions,
+  type ACPPermissionAbandonReason,
+  type ACPPermissionEndReason,
+  type ACPPermissionRequest,
   type ACPServerOptions,
   type BandACPServerAdapterOptions,
 } from "./acp";

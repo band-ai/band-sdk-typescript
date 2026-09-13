@@ -41,7 +41,7 @@ export interface PlatformRuntimeOptions {
   };
 }
 
-export class PlatformRuntime {
+export class PlatformRuntime implements AsyncDisposable {
   private readonly _agentId: string;
   private readonly _apiKey: string;
   private readonly _wsUrl?: string;
@@ -280,6 +280,10 @@ export class PlatformRuntime {
 
     this.stopping = false;
     return graceful;
+  }
+
+  public async [Symbol.asyncDispose](): Promise<void> {
+    await this.stop();
   }
 
   public async runForever(): Promise<void> {

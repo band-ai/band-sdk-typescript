@@ -6,6 +6,7 @@ import {
   buildSingleContextRegistrations,
   resolveSingleRoomTools,
 } from "./registrations";
+import { generateAuthToken } from "./auth";
 import { BandMcpStdioServer } from "./stdio";
 import { BandMcpServer } from "./server";
 import { BandMcpSseServer } from "./sse";
@@ -17,6 +18,8 @@ export interface BandMcpBackend {
   kind: BandMcpBackendKind;
   server: unknown;
   allowedTools: string[];
+  /** Bearer token callers must present to reach `server`. Set for "http"/"sse", which listen on a loopback network port. */
+  authToken?: string;
   stop(): Promise<void>;
 }
 
@@ -89,12 +92,17 @@ export async function createBandMcpBackend(
     };
   }
 
+  // "http" and "sse" are the only kinds that listen on a loopback network port,
+  // so both need a bearer token to authenticate requests to it.
+  const authToken = generateAuthToken();
+
   if (options.kind === "sse") {
     const server = new BandMcpSseServer({
       tools: resolvedTools,
       enableMemoryTools: options.enableMemoryTools,
       enableContactTools: true,
       additionalTools: options.additionalTools,
+      authToken,
     });
     await server.start();
 
@@ -102,6 +110,7 @@ export async function createBandMcpBackend(
       kind: "sse",
       server,
       allowedTools,
+      authToken,
       stop: async () => {
         await server.stop();
       },
@@ -113,6 +122,7 @@ export async function createBandMcpBackend(
     enableMemoryTools: options.enableMemoryTools,
     enableContactTools: true,
     additionalTools: options.additionalTools,
+    authToken,
   });
   await server.start();
 
@@ -120,6 +130,7 @@ export async function createBandMcpBackend(
     kind: "http",
     server,
     allowedTools,
+    authToken,
     stop: async () => {
       await server.stop();
     },

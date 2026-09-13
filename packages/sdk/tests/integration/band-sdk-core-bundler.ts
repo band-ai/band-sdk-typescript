@@ -60,6 +60,26 @@ async function main() {
   }
   pass("dist/runtime.js (ESM) resolved the CommonJS wasm dependency's named exports");
 
+  const builtIndexCjsPath = resolve(PACKAGE_ROOT, "dist/index.cjs");
+  if (!existsSync(builtIndexCjsPath)) {
+    fail("index build output exists", `${builtIndexCjsPath} not found — run 'pnpm build' first`);
+  }
+  const indexRuntime = require(builtIndexCjsPath) as Record<string, unknown>;
+  if (typeof indexRuntime.BandLink !== "function" || typeof indexRuntime.deriveDefaultRestUrl !== "function") {
+    fail("built index exposes expected exports", "BandLink/deriveDefaultRestUrl missing from dist/index.cjs");
+  }
+  pass("dist/index.cjs loaded and resolved @band-ai/band-sdk-core as external without throwing");
+
+  const builtIndexEsmPath = resolve(PACKAGE_ROOT, "dist/index.js");
+  if (!existsSync(builtIndexEsmPath)) {
+    fail("index ESM build output exists", `${builtIndexEsmPath} not found — run 'pnpm build' first`);
+  }
+  const indexEsm = await import(pathToFileURL(builtIndexEsmPath).href) as Record<string, unknown>;
+  if (typeof indexEsm.BandLink !== "function" || typeof indexEsm.deriveDefaultRestUrl !== "function") {
+    fail("built ESM index exposes expected exports", "BandLink/deriveDefaultRestUrl missing from dist/index.js");
+  }
+  pass("dist/index.js (ESM) resolved the CommonJS wasm dependency's named exports");
+
   // Exercise the same package instance the built output would resolve.
   const core = require("@band-ai/band-sdk-core") as typeof import("@band-ai/band-sdk-core");
 
@@ -76,6 +96,20 @@ async function main() {
     fail("ParticipantRoster.add", `expected a new participant to be added, got list length ${roster.list().length}`);
   }
   pass("ParticipantRoster.add runs against the real wasm binding");
+
+  const topicChecks: Array<[string, string]> = [
+    [core.chatRoomTopic("room-1"), "chat_room:room-1"],
+    [core.roomParticipantsTopic("room-1"), "room_participants:room-1"],
+    [core.agentRoomsTopic("agent-1"), "agent_rooms:agent-1"],
+    [core.agentContactsTopic("agent-1"), "agent_contacts:agent-1"],
+    [core.agentControlTopic("agent-1"), "agent_control:agent-1"],
+  ];
+  for (const [actual, expected] of topicChecks) {
+    if (actual !== expected) {
+      fail(`topic function output for ${expected}`, `expected "${expected}", got "${actual}"`);
+    }
+  }
+  pass("all 5 topic functions produce the expected wire strings against the real wasm binding");
 
   console.log("bundler PASSED");
 }
