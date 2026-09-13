@@ -921,11 +921,18 @@ export class AgentTools implements AgentToolsProtocol {
       throw new ValidationError(`segment must be one of: ${expectedList(MEMORY_SEGMENTS)}`);
     }
 
-    if (scope === "subject" && !subjectId) {
+    if (scope === MEMORY_STORE_SCOPE.subject && !subjectId) {
       throw new ValidationError(
-        'scope="subject" requires a subject_id (the UUID of the person or agent the memory is about). ' +
+        `scope="${MEMORY_STORE_SCOPE.subject}" requires a subject_id (the UUID of the person or agent the memory is about). ` +
           `If you do not have a concrete subject UUID, retry with scope="${MEMORY_STORE_SCOPE.agent}" and omit subject_id. ` +
           "Do not invent a UUID.",
+      );
+    }
+
+    if (scope === MEMORY_STORE_SCOPE.agent && subjectId) {
+      throw new ValidationError(
+        `scope="${MEMORY_STORE_SCOPE.agent}" is private to this agent and must not include subject_id. ` +
+          `If the memory is about a specific person or agent, use scope="${MEMORY_STORE_SCOPE.subject}" with their UUID.`,
       );
     }
 

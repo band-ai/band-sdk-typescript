@@ -658,6 +658,38 @@ describe("AgentTools coverage", () => {
     ).toEqual([...MEMORY_LIST_SCOPES]);
   });
 
+  it("forwards memory store without scope when omitted (platform default)", async () => {
+    const rest = new CoverageRestApi();
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: createFacade(rest),
+      capabilities: {
+        memory: true,
+      },
+    });
+
+    await tools.executeToolCall(TOOL_NAME.storeMemory, {
+      content: "Private note",
+      thought: "Default agent scope",
+      system: "long_term",
+      type: "semantic",
+      segment: "user",
+    });
+
+    expect(rest.storeMemory).toHaveBeenCalledWith(
+      {
+        content: "Private note",
+        thought: "Default agent scope",
+        system: "long_term",
+        type: "semantic",
+        segment: "user",
+      },
+      expect.any(Object),
+    );
+    expect(rest.storeMemory.mock.calls[0]?.[0]).not.toHaveProperty("scope");
+    expect(rest.storeMemory.mock.calls[0]?.[0]).not.toHaveProperty("subject_id");
+  });
+
   it("forwards agent-scoped memory store without subject_id", async () => {
     const rest = new CoverageRestApi();
     const tools = new AgentTools({
@@ -709,6 +741,36 @@ describe("AgentTools coverage", () => {
       { scope: "agent" },
       expect.any(Object),
     );
+  });
+
+  it("rejects agent-scoped store_memory with subject_id", async () => {
+    const rest = new CoverageRestApi();
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: createFacade(rest),
+      capabilities: {
+        memory: true,
+      },
+    });
+
+    const result = await tools.executeToolCall(TOOL_NAME.storeMemory, {
+      content: "Contradictory",
+      thought: "Should fail",
+      system: "long_term",
+      type: "semantic",
+      segment: "user",
+      scope: "agent",
+      subject_id: "user-uuid-1",
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      errorType: "ToolArgumentsValidationError",
+      toolName: TOOL_NAME.storeMemory,
+    });
+    expect((result as { message?: string }).message).toContain('scope="agent"');
+    expect((result as { message?: string }).message).toContain("must not include subject_id");
+    expect(rest.storeMemory).not.toHaveBeenCalled();
   });
 
   it("rejects subject-scoped store_memory without subject_id", async () => {
