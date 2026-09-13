@@ -366,6 +366,15 @@ test("release intent uses the PR base across a multi-commit release topology", a
   });
 });
 
+// `withFakeNpm` puts a `#!/bin/sh` stub on PATH (joined with ":") to stand in for
+// npm, and `publish-if-needed.mjs` spawns a bare `npm` with no shell. Both are
+// POSIX-only, and the publish job they model only ever runs on ubuntu-latest.
+// Skipping is deliberate: a permanently red suite on Windows is what teaches
+// contributors to stop reading it.
+const SKIP_ON_WINDOWS = process.platform === "win32"
+  ? { skip: "fake-npm stub and bare `npm` lookup require a POSIX shell" }
+  : {};
+
 async function withFakeNpm(viewMode, callback, { createTarball = true } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "release-publish-"));
   const bin = join(directory, "bin");
@@ -402,7 +411,7 @@ async function withFakeNpm(viewMode, callback, { createTarball = true } = {}) {
   }
 }
 
-test("idempotent publisher skips an exact version already on npm", async () => {
+test("idempotent publisher skips an exact version already on npm", SKIP_ON_WINDOWS, async () => {
   await withFakeNpm("found", async (directory, env, log) => {
     const result = run(publishScript, directory, env);
     assert.equal(result.status, 0, result.stderr);
@@ -411,7 +420,7 @@ test("idempotent publisher skips an exact version already on npm", async () => {
   });
 });
 
-test("idempotent publisher publishes only when npm confirms the version is absent", async () => {
+test("idempotent publisher publishes only when npm confirms the version is absent", SKIP_ON_WINDOWS, async () => {
   await withFakeNpm("missing", async (directory, env, log) => {
     const result = run(publishScript, directory, env);
     assert.equal(result.status, 0, result.stderr);
@@ -424,7 +433,7 @@ test("idempotent publisher publishes only when npm confirms the version is absen
   });
 });
 
-test("idempotent publisher fails closed when the npm lookup is inconclusive", async () => {
+test("idempotent publisher fails closed when the npm lookup is inconclusive", SKIP_ON_WINDOWS, async () => {
   await withFakeNpm("error", async (directory, env, log) => {
     const result = run(publishScript, directory, env);
     assert.notEqual(result.status, 0);
@@ -432,7 +441,7 @@ test("idempotent publisher fails closed when the npm lookup is inconclusive", as
   });
 });
 
-test("idempotent publisher fails fast with a named path when the tarball is missing", async () => {
+test("idempotent publisher fails fast with a named path when the tarball is missing", SKIP_ON_WINDOWS, async () => {
   await withFakeNpm("missing", async (directory, env, log) => {
     const result = run(publishScript, directory, env);
     assert.notEqual(result.status, 0);
@@ -768,6 +777,40 @@ test("CI validates pull requests to main and the legacy dev compatibility lane",
   assert.match(
     workflow,
     /RELEASE_BASE_COMMIT: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/,
+  );
+});
+
+test("CI re-validates the trunk after a merge, over the whole tree, without cancelling itself", async () => {
+  const workflow = await readFile(join(root, ".github/workflows/ci.yml"), "utf8");
+
+  // Without a push trigger the suite only ever ran against a PR's merge commit,
+  // so a red build that landed anyway stopped being reported once merged.
+  assert.match(workflow, /\n {2}push:\n {4}branches: \[main\]\n/);
+
+  // A trunk run that gets superseded leaves that commit with no verdict, which
+  // reopens the same gap from the other side.
+  assert.match(
+    workflow,
+    /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/,
+  );
+
+  // Path filtering is a PR-time optimisation. On the trunk both packages must be
+  // selected, or `ci-status` would go green having skipped lint and test.
+  for (const output of ["sdk", "openclaw"]) {
+    assert.match(
+      workflow,
+      new RegExp(
+        `${output}: \\$\\{\\{ github\\.event_name == 'push' && 'true' \\|\\| steps\\.filter\\.outputs\\.${output} \\}\\}`,
+      ),
+      `${output} must be forced true on a push so trunk validation cannot be skipped`,
+    );
+  }
+
+  // Release intent is a merge gate with no baseline on a push; running it there
+  // would fail every trunk build on a missing RELEASE_BASE_COMMIT.
+  assert.match(
+    workflow,
+    /- name: Verify release intent\n {8}if: github\.event_name == 'pull_request'\n/,
   );
 });
 

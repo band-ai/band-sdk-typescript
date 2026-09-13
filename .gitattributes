@@ -1,0 +1,10 @@
+# Check every text file out with LF on every platform.
+#
+# Several guard tests read this repository's own files and assert on exact
+# lines — the C6 brand guard's README heading, and the release-hardening
+# suite's `\n`-anchored workflow regexes. Under Git's default `core.autocrlf`
+# on Windows those files arrive CRLF, so the assertions compare against bytes
+# CI never sees and fail for a reason that has nothing to do with the code.
+#
+# Nothing here needs CRLF; `.sh` and the Dockerfiles positively require LF.
+* text=auto eol=lf

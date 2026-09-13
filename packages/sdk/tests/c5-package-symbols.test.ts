@@ -11,7 +11,6 @@
  * carries no package mutation.
  */
 
-import { describe, it, expect, beforeAll } from "vitest";
 import {
   readFileSync, writeFileSync, mkdirSync, cpSync, rmSync, existsSync, mkdtempSync, symlinkSync, realpathSync, readdirSync,
 } from "node:fs";
@@ -19,6 +18,10 @@ import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
+
+import { describe, it, expect, beforeAll } from "vitest";
+
+import { COMPILE_PROOF_OPTS, COMPILE_PROOF_TIMEOUT_MS, compileConsumer, linkBuiltSdk } from "./support/compileProof";
 
 const SDK_ROOT = resolve(__dirname, "..");
 const REPO_ROOT = resolve(SDK_ROOT, "../..");
@@ -66,6 +69,12 @@ beforeAll(async () => {
     };
   }
 });
+
+interface NpmResult {
+  status: number;
+  stdout: string;
+  stderr: string;
+}
 
 interface Row { old: string; new: string; sub: string; kind: "value" | "type"; c3?: boolean }
 interface MemberRow { ownerOld: string; ownerNew: string; memberOld: string; memberNew: string; subpath: string; provenance: "published-0x" | "source-c4"; sourceFile?: string }
@@ -141,29 +150,15 @@ describe("P-C5-2: before/after export surface migration", () => {
   });
 });
 
-describe("P-C5-2: consumer compile proof (values as value imports)", () => {
+describe("P-C5-2: consumer compile proof (values as value imports)", COMPILE_PROOF_OPTS, () => {
   let tmpDir: string;
 
   beforeAll(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "c5-compile-"));
-    const nm = join(tmpDir, "node_modules/@band-ai/sdk");
-    mkdirSync(nm, { recursive: true });
-    cpSync(join(SDK_ROOT, "dist"), join(nm, "dist"), { recursive: true });
-    cpSync(join(SDK_ROOT, "package.json"), join(nm, "package.json"));
-  });
+    linkBuiltSdk(tmpDir);
+  }, COMPILE_PROOF_TIMEOUT_MS);
 
-  function compile(filename: string, code: string): { status: number; output: string } {
-    writeFileSync(join(tmpDir, filename), code);
-    writeFileSync(join(tmpDir, "tsconfig.json"), JSON.stringify({
-      compilerOptions: {
-        strict: true, module: "nodenext", moduleResolution: "nodenext", target: "es2022",
-        noEmit: true, skipLibCheck: true, typeRoots: [join(SDK_ROOT, "node_modules/@types")],
-      },
-      include: [filename],
-    }));
-    const r = spawnSync(join(SDK_ROOT, "node_modules/.bin/tsc"), ["-p", join(tmpDir, "tsconfig.json")], { encoding: "utf8" });
-    return { status: r.status ?? 1, output: (r.stdout ?? "") + (r.stderr ?? "") };
-  }
+  const compile = (filename: string, code: string) => compileConsumer(tmpDir, filename, code);
 
   function fixture(useNew: boolean): string {
     const valueBySpec = new Map<string, string[]>();
@@ -192,7 +187,7 @@ describe("P-C5-2: consumer compile proof (values as value imports)", () => {
 
   it("a consumer importing every mapped Band name (values as values) compiles", () => {
     const result = compile("new.mts", fixture(true));
-    expect(result.status).toBe(0);
+    expect(result.status, result.output).toBe(0);
   });
 
   it("a consumer importing the old Thenvoi names fails with a diagnostic for each", () => {
@@ -214,7 +209,7 @@ describe("P-C5-2: consumer compile proof (values as value imports)", () => {
     };
     const ok = compile("member-new.mts",
       `${importsFor()}\n` + MEMBERS.map((m, i) => `type _n${i} = Pick<${m.ownerNew}, "${m.memberNew}">;`).join("\n") + "\n");
-    expect(ok.status).toBe(0);
+    expect(ok.status, ok.output).toBe(0);
 
     const bad = compile("member-old.mts",
       `${importsFor()}\n` + MEMBERS.map((m, i) => `type _o${i} = Pick<${m.ownerNew}, "${m.memberOld}">;`).join("\n") + "\n");
@@ -231,7 +226,7 @@ describe("P-C5-2: consumer compile proof (values as value imports)", () => {
   });
 });
 
-describe("P-C5-4b: source-C4-only member provenance (C4-tip compile proof)", () => {
+describe("P-C5-4b: source-C4-only member provenance (C4-tip compile proof)", COMPILE_PROOF_OPTS, () => {
   const C4_TIP = "70a2822";
   const SOURCE_ONLY = MEMBERS.filter((m) => m.provenance === "source-c4");
   const BUILTIN = new Set([
@@ -242,24 +237,10 @@ describe("P-C5-4b: source-C4-only member provenance (C4-tip compile proof)", () 
   let tmpDir: string;
   beforeAll(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "c5-c4tip-"));
-    const nm = join(tmpDir, "node_modules/@band-ai/sdk");
-    mkdirSync(nm, { recursive: true });
-    cpSync(join(SDK_ROOT, "dist"), join(nm, "dist"), { recursive: true });
-    cpSync(join(SDK_ROOT, "package.json"), join(nm, "package.json"));
-  });
+    linkBuiltSdk(tmpDir);
+  }, COMPILE_PROOF_TIMEOUT_MS);
 
-  function compile(filename: string, code: string): { status: number; output: string } {
-    writeFileSync(join(tmpDir, filename), code);
-    writeFileSync(join(tmpDir, "tsconfig.json"), JSON.stringify({
-      compilerOptions: {
-        strict: true, module: "nodenext", moduleResolution: "nodenext", target: "es2022",
-        noEmit: true, skipLibCheck: true, typeRoots: [join(SDK_ROOT, "node_modules/@types")],
-      },
-      include: [filename],
-    }));
-    const r = spawnSync(join(SDK_ROOT, "node_modules/.bin/tsc"), ["-p", join(tmpDir, "tsconfig.json")], { encoding: "utf8" });
-    return { status: r.status ?? 1, output: (r.stdout ?? "") + (r.stderr ?? "") };
-  }
+  const compile = (filename: string, code: string) => compileConsumer(tmpDir, filename, code);
 
   // Extract the real C4-tip interface declaration and stub any non-builtin type
   // references so the actual member declaration compiles standalone.
@@ -317,7 +298,7 @@ describe("P-C5-4b: source-C4-only member provenance (C4-tip compile proof)", () 
   });
 });
 
-describe("P-C5-1: real tarball packs, installs, and runs for ESM and CJS", () => {
+describe("P-C5-1: real tarball packs, installs, and runs for ESM and CJS", COMPILE_PROOF_OPTS, () => {
   // The consumer lives OUTSIDE the repo (an in-repo consumer would trigger
   // Node package self-referencing and resolve the workspace package instead of
   // the installed tarball). Every external the built dist statically imports and
@@ -342,17 +323,71 @@ describe("P-C5-1: real tarball packs, installs, and runs for ESM and CJS", () =>
     return [...ext];
   }
 
+  // On Windows `npm` is `npm.cmd`, and a shell is the only way to reach it.
+  // Both shell-free alternatives were measured and rejected on Node 22:
+  //   spawnSync("npm.cmd", …, { shell: false })                  → EINVAL
+  //     (Node blocks .cmd/.bat without a shell — CVE-2024-27980)
+  //   createRequire(process.execPath).resolve("npm/bin/npm-cli.js")
+  //                                                → ERR_PACKAGE_PATH_NOT_EXPORTED
+  // So quote every argument rather than only those containing spaces, which
+  // also covers `&` and `^`. `mkdtempSync` never returns a trailing separator,
+  // so the one case quoting cannot express — a path ending in `\` — is not
+  // reachable here. POSIX takes the args array untouched.
+  //
+  // Quoting does not stop cmd.exe from expanding a `%VAR%` sequence inside a
+  // quoted segment — that substitution runs as a separate pass from quote
+  // parsing. Reliably escaping it takes more than doubling the `%` (cmd's
+  // handling of `%%` differs between batch files and a `/c` command line), so
+  // rather than ship a half-working escape, fail loudly if an argument could
+  // ever be misinterpreted this way instead of silently packing to the wrong
+  // path.
+  function runNpm(args: string[]): NpmResult {
+    const useShell = process.platform === "win32";
+    if (useShell) {
+      for (const arg of args) {
+        if (arg.includes("%")) {
+          throw new Error(
+            `refusing to run npm with an argument containing '%': ${arg} (cmd.exe may expand it as an environment variable)`,
+          );
+        }
+      }
+    }
+    const result = spawnSync(
+      "npm",
+      useShell ? args.map((arg) => `"${arg}"`) : args,
+      { cwd: SDK_ROOT, encoding: "utf8", shell: useShell, timeout: COMPILE_PROOF_TIMEOUT_MS },
+    );
+    if (result.error) throw result.error;
+    if (result.status === null) throw new Error(`npm ${args[0]} was killed by ${String(result.signal)}`);
+    return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+  }
+
+  // A recursive read rather than `grep -rl`: grep is absent on a stock Windows
+  // box, and a spawn that never ran returns empty stdout — which would satisfy
+  // "no file leaks the legacy scope" without having opened a single file.
+  function filesContaining(dir: string, needle: string): string[] {
+    const hits: string[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) hits.push(...filesContaining(full, needle));
+      else if (readFileSync(full, "utf8").includes(needle)) hits.push(full);
+    }
+    return hits;
+  }
+
   beforeAll(() => {
     const packDir = mkdtempSync(join(tmpdir(), "c5-pack-"));
-    const packed = spawnSync("npm", ["pack", "--ignore-scripts", "--pack-destination", packDir], {
-      cwd: SDK_ROOT, encoding: "utf8",
-    });
+    const packed = runNpm(["pack", "--ignore-scripts", "--pack-destination", packDir]);
     expect(packed.status, packed.stderr).toBe(0);
     const tgz = (packed.stdout.trim().split("\n").pop() ?? "").trim();
     const tgzPath = join(packDir, tgz);
     expect(existsSync(tgzPath), `tarball ${tgzPath} not produced`).toBe(true);
 
-    const untar = spawnSync("tar", ["-xzf", tgzPath, "-C", packDir], { encoding: "utf8" });
+    // Extract by relative name from `packDir` rather than passing absolute
+    // paths: GNU tar reads the `D:` in a Windows path as a remote host and
+    // fails with "Cannot connect to D: resolve failed".
+    const untar = spawnSync("tar", ["-xzf", tgz], { cwd: packDir, encoding: "utf8" });
+    if (untar.error) throw untar.error;
     expect(untar.status, untar.stderr).toBe(0);
     extracted = join(packDir, "package");
 
@@ -368,16 +403,21 @@ describe("P-C5-1: real tarball packs, installs, and runs for ESM and CJS", () =>
       }
       const linkPath = join(nm, dep);
       mkdirSync(resolve(linkPath, ".."), { recursive: true });
-      symlinkSync(target, linkPath);
+      // "junction" so Windows does not demand elevation for a directory link
+      // (a plain symlink there needs Administrator or Developer Mode). The type
+      // argument is ignored on POSIX, and `target` is already absolute, which
+      // junctions require.
+      symlinkSync(target, linkPath, "junction");
     }
-  });
+  }, COMPILE_PROOF_TIMEOUT_MS);
 
   it("the packed tarball is named @band-ai/sdk and carries no legacy scope", () => {
     const packedPkg = JSON.parse(readFileSync(join(extracted, "package.json"), "utf-8")) as { name: string };
     expect(packedPkg.name).toBe("@band-ai/sdk");
     // No packed dist file leaks a legacy import.
-    const grep = spawnSync("grep", ["-rl", "@thenvoi/sdk", join(extracted, "dist")], { encoding: "utf8" });
-    expect(grep.stdout.trim()).toBe("");
+    const distDir = join(extracted, "dist");
+    expect(readdirSync(distDir).length, "packed dist is empty; the scan would be vacuous").toBeGreaterThan(0);
+    expect(filesContaining(distDir, "@thenvoi/sdk")).toEqual([]);
   });
 
   it("every declared subpath imports at runtime under ESM and CJS from the installed tarball", () => {
@@ -400,7 +440,11 @@ describe("P-C5-1: real tarball packs, installs, and runs for ESM and CJS", () =>
     rmSync(join(consumer, "node_modules/@band-ai/sdk/dist/index.js"), { force: true });
     writeFileSync(join(consumer, "probe.mjs"), `await import("@band-ai/sdk");\n`);
     const run = spawnSync(process.execPath, ["probe.mjs"], { cwd: consumer, encoding: "utf8" });
+    // Same discipline as the compile proofs: this is a negative assertion, so a
+    // Node that never started must not be able to satisfy it.
+    if (run.error) throw run.error;
     expect(run.status).not.toBe(0);
+    expect(run.stderr).toMatch(/ERR_MODULE_NOT_FOUND|Cannot find module/);
   });
 
   it("cleanup", () => {
