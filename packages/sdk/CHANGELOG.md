@@ -1,6 +1,13 @@
 # Changelog
 
 
+## [0.3.3](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.3.2...sdk-v0.3.3) (2026-09-13)
+
+
+### Bug Fixes
+
+* **adapters:** coalesce streamed ACP chunks before posting to the room ([#189](https://github.com/band-ai/band-sdk-typescript/issues/189)) ([c0dccf4](https://github.com/band-ai/band-sdk-typescript/commit/c0dccf42cfd4f74ccb71ddd61fb009f2d9a8c74c))
+
 ## [0.3.2](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.3.1...sdk-v0.3.2) (2026-09-08)
 
 
