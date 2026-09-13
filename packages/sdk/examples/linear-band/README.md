@@ -40,12 +40,9 @@ CODEX_MODEL=gpt-5.3-codex
 PORT=8787
 ```
 
-Legacy `LINEAR_THENVOI_*` names are accepted as per-field fallback with a
-once-per-variable deprecation warning.
-
 Recommended agent config key:
 
-- `linear_band_bridge` (legacy: `linear_thenvoi_bridge`)
+- `linear_band_bridge`
 
 ## Run
 
@@ -53,7 +50,12 @@ Recommended agent config key:
 pnpm dev:linear
 ```
 
-That starts the webhook server and the embedded Band Linear PM agent in one process.
+That starts the webhook server and the embedded Band Linear PM agent in one process,
+loading `.env.local` via Node's built-in `--env-file-if-exists` (no dotenv needed; the
+file is optional, so credentials from `agent_config.yaml` or the shell work too).
+
+`start:linear` deliberately skips that — supply env directly in production, as the
+Docker commands below do.
 
 Health check:
 

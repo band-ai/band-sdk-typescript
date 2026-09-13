@@ -33,7 +33,9 @@ function dtsNamedExports(dtsText) {
   return [...names].sort();
 }
 
-const surface = { package: pkg.name, version: pkg.version, subpaths: {} };
+// No `version`: the release number is not part of the export surface, and
+// embedding it desynced the committed fixture on every release bump (INT-1373).
+const surface = { package: pkg.name, subpaths: {} };
 for (const [sub, entry] of Object.entries(pkg.exports)) {
   const mod = await import(pathToFileURL(resolve(sdkRoot, entry.import)).href);
   surface.subpaths[sub] = {

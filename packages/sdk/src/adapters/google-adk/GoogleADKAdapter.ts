@@ -4,6 +4,7 @@ import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
+import type { MetadataMap, ToolOperationResult } from "../../contracts/dtos";
 import { formatMessageForLlm } from "../../runtime/formatters";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import type { PlatformMessage } from "../../runtime/types";
@@ -406,19 +407,33 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
     tools: AdapterToolsProtocol,
   ): Promise<void> {
     for (const functionCall of sdk.getFunctionCalls(event)) {
-      await tools.sendEvent(JSON.stringify({
+      const result = await tools.sendEvent(JSON.stringify({
         name: functionCall.name ?? "unknown",
         args: asToolArgs(functionCall.args),
         tool_call_id: functionCall.id ?? "",
       }), "tool_call");
+      this.warnOnFailedSend(result, "Google ADK tool_call event send failed", { toolCallId: functionCall.id ?? "" });
     }
 
     for (const functionResponse of sdk.getFunctionResponses(event)) {
-      await tools.sendEvent(JSON.stringify({
+      const result = await tools.sendEvent(JSON.stringify({
         name: functionResponse.name ?? "unknown",
         output: String(functionResponse.response ?? ""),
         tool_call_id: functionResponse.id ?? "",
       }), "tool_result");
+      this.warnOnFailedSend(result, "Google ADK tool_result event send failed", { toolCallId: functionResponse.id ?? "" });
+    }
+  }
+
+  private warnOnFailedSend(result: ToolOperationResult, message: string, meta: MetadataMap): void {
+    if (result.ok === false) {
+      // A caller-supplied logger that itself throws must not turn this
+      // telemetry failure into a rejection — see AgentTools.sendEvent.
+      try {
+        this.logger.warn(message, meta);
+      } catch {
+        // Swallow deliberately, per the comment above.
+      }
     }
   }
 }

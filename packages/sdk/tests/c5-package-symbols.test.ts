@@ -8,7 +8,7 @@
  * new/old consumer fixtures (values as value imports). P-C5-1 packs a real
  * tarball, installs it into ESM and CJS consumers, and executes runtime imports
  * of every subpath with an inverse probe. P-C5-3 checks the release workflow
- * carries no package mutation and the hold is present.
+ * carries no package mutation.
  */
 
 import { describe, it, expect, beforeAll } from "vitest";
@@ -436,11 +436,11 @@ describe("P-C5-2: committed inventory + migration doc cannot drift from the live
     const genDoc = spawnSync(process.execPath, ["scripts/generate-c5-migration-doc.mjs"], { cwd: REPO_ROOT, encoding: "utf8" });
     expect(genDoc.status, genDoc.stderr).toBe(0);
     const diff = spawnSync("git", [
-      "diff", "--quiet", "--",
+      "diff", "--quiet", "HEAD", "--",
       "docs/migrations/c5-migration-map.json",
       "docs/migrations/1.0-public-symbol-migration.md",
       "docs/migrations/c5-surface-after.json",
     ], { cwd: REPO_ROOT, encoding: "utf8" });
-    expect(diff.status, "committed map/doc/after-surface differ from regeneration").toBe(0);
+    expect(diff.status, "regenerated map/doc or hand-edited after-surface differ from HEAD").toBe(0);
   });
 });

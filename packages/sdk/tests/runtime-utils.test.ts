@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 
+import { RetryTracker } from "@band-ai/band-sdk-core";
 import {
   BASE_INSTRUCTIONS,
-  MessageRetryTracker,
-  ParticipantTracker,
   buildParticipantsMessage,
   formatHistoryForLlm,
   formatMessageForLlm,
+  mentionSubjectsFromMetadata,
   renderSystemPrompt,
   replaceUuidMentions,
 } from "../src/runtime";
@@ -29,6 +29,46 @@ describe("runtime utilities", () => {
       { id: "u1", handle: "@john" },
     ]);
     expect(replaced).toBe("hello @john");
+  });
+
+  describe("mentionSubjectsFromMetadata", () => {
+    it("prefers handle over username and name", () => {
+      expect(
+        mentionSubjectsFromMetadata({
+          mentions: [{ id: "u1", handle: "john", username: "jsmith", name: "John Smith" }],
+        }),
+      ).toEqual([{ id: "u1", handle: "john" }]);
+    });
+
+    it("resolves from username alone when handle is absent", () => {
+      expect(
+        mentionSubjectsFromMetadata({ mentions: [{ id: "u1", username: "jsmith" }] }),
+      ).toEqual([{ id: "u1", handle: "jsmith" }]);
+    });
+
+    it("resolves from name alone when handle and username are absent", () => {
+      expect(
+        mentionSubjectsFromMetadata({ mentions: [{ id: "u1", name: "John Smith" }] }),
+      ).toEqual([{ id: "u1", handle: "John Smith" }]);
+    });
+
+    it("falls through an empty-string handle to the next field instead of deleting the mention", () => {
+      expect(
+        mentionSubjectsFromMetadata({ mentions: [{ id: "u1", handle: "", username: "jsmith" }] }),
+      ).toEqual([{ id: "u1", handle: "jsmith" }]);
+    });
+
+    it("omits a mention with no usable label at all, leaving its token unresolved", () => {
+      expect(
+        mentionSubjectsFromMetadata({ mentions: [{ id: "u1", handle: "", username: null, name: undefined }] }),
+      ).toEqual([]);
+    });
+
+    it("ignores metadata that isn't shaped like a mention list", () => {
+      for (const metadata of [undefined, {}, { mentions: "u1" }, { mentions: [{}, { id: 7 }] }]) {
+        expect(mentionSubjectsFromMetadata(metadata)).toEqual([]);
+      }
+    });
   });
 
   it("formats message and history for llm", () => {
@@ -75,67 +115,11 @@ describe("runtime utilities", () => {
     expect(prompt).toContain(BASE_INSTRUCTIONS.trim().slice(0, 20));
   });
 
-  it("tracks participants and retries", () => {
-    const tracker = new ParticipantTracker();
-    expect(tracker.changed()).toBe(true);
-    tracker.add({ id: "u1", name: "Jane" });
-    expect(tracker.changed()).toBe(true);
-    tracker.markSent();
-    expect(tracker.changed()).toBe(false);
-
-    const retry = new MessageRetryTracker(1);
+  it("tracks message retries", () => {
+    const retry = new RetryTracker(1);
     expect(retry.recordAttempt("m1")).toEqual([1, false]);
     expect(retry.recordAttempt("m1")).toEqual([2, true]);
     expect(retry.isPermanentlyFailed("m1")).toBe(true);
-  });
-
-  it("covers participant tracker load, remove, and change detection branches", () => {
-    const tracker = new ParticipantTracker();
-
-    tracker.setLoaded([
-      { id: "u1", name: "Jane", type: "User", handle: "@jane" },
-      { id: "u2", name: "Planner", type: "Agent", handle: "@planner" },
-    ]);
-    expect(tracker.isLoaded).toBe(true);
-    expect(tracker.participants).toEqual([
-      { id: "u1", name: "Jane", type: "User", handle: "@jane" },
-      { id: "u2", name: "Planner", type: "Agent", handle: "@planner" },
-    ]);
-
-    const snapshot = tracker.participants;
-    snapshot[0] = { id: "mutated" };
-    expect(tracker.participants[0]).toMatchObject({ id: "u1" });
-
-    tracker.markSent();
-    expect(tracker.changed()).toBe(false);
-    expect(tracker.add({ id: "u1", name: "Duplicate" })).toBe(false);
-    expect(tracker.remove("missing")).toBe(false);
-    expect(tracker.remove("u2")).toBe(true);
-    expect(tracker.changed()).toBe(true);
-  });
-
-  it("covers participant tracker cloning and no-op branches", () => {
-    const tracker = new ParticipantTracker();
-    const seed = [{ id: "u1", name: "Jane", type: "User", handle: "jane" }];
-
-    tracker.setLoaded(seed);
-    expect(tracker.isLoaded).toBe(true);
-
-    seed[0]!.name = "Changed";
-    const snapshot = tracker.participants;
-    expect(snapshot[0]?.name).toBe("Jane");
-
-    snapshot.push({ id: "u2", name: "Extra" });
-    expect(tracker.participants).toHaveLength(1);
-
-    expect(tracker.add({ id: "u1", name: "Jane" })).toBe(false);
-    expect(tracker.remove("missing")).toBe(false);
-
-    tracker.markSent();
-    expect(tracker.changed()).toBe(false);
-
-    expect(tracker.remove("u1")).toBe(true);
-    expect(tracker.changed()).toBe(true);
   });
 
   it("provides chat event type guards", () => {
