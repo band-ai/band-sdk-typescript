@@ -16,14 +16,15 @@ import { choosePermissionOption } from "./types";
 
 export class BandACPClient implements Client {
   private readonly sessionChunks = new Map<string, CollectedChunk[]>()
-  private readonly permissionHandlers = new Map<string, ACPPermissionHandler>()
+  private readonly permissionHandler: ACPPermissionHandler
 
-  /**
-   * Opens the buffer a turn's chunks collect into. Buffering is opt-in so that
-   * `resetSession` is final: an agent that keeps streaming into a session the
-   * adapter has already released — the wedged agent a turn timeout escapes —
-   * would otherwise re-create its buffer and grow it for the process lifetime.
-   */
+  // The handler is connection-scoped and required at construction, so it is
+  // already in place before the agent process is spawned: there is no window
+  // in which a `session/request_permission` has nowhere to go.
+  public constructor(permissionHandler: ACPPermissionHandler) {
+    this.permissionHandler = permissionHandler
+  }
+
   public beginSession(sessionId: string): void {
     this.sessionChunks.set(sessionId, [])
   }
@@ -42,28 +43,13 @@ export class BandACPClient implements Client {
   public async requestPermission(
     params: RequestPermissionRequest,
   ): Promise<RequestPermissionResponse> {
-    const handler = this.permissionHandlers.get(params.sessionId)
-    if (handler) {
-      return handler(params)
-    }
-
-    return {
-      outcome: {
-        outcome: "cancelled",
-      },
-    }
+    return this.permissionHandler(params)
   }
 
-  public setPermissionHandler(
-    sessionId: string,
-    handler: ACPPermissionHandler,
-  ): void {
-    this.permissionHandlers.set(sessionId, handler)
-  }
-
-  public resetSession(sessionId: string): void {
+  // Named for the one thing it clears: collected chunks are per-turn, and a
+  // per-turn caller must not be able to reach anything with a longer life.
+  public resetChunks(sessionId: string): void {
     this.sessionChunks.delete(sessionId)
-    this.permissionHandlers.delete(sessionId)
   }
 
   public getCollectedText(sessionId?: string): string {
@@ -158,7 +144,6 @@ export class BandACPClient implements Client {
     }
   }
 
-  /** The only writer, so no notification can resurrect a released buffer. */
   private appendChunk(sessionId: string, chunk: CollectedChunk): void {
     this.sessionChunks.get(sessionId)?.push(chunk)
   }

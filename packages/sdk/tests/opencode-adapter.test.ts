@@ -23,6 +23,21 @@ class ChatLostAfterFirstReply extends FakeTools {
   }
 }
 
+class ChatFailsOnce extends FakeTools {
+  private failed = false;
+
+  public override async sendMessage(
+    content: string,
+    mentions?: string[] | Array<{ id: string; handle?: string }>,
+  ): Promise<Record<string, unknown>> {
+    if (!this.failed) {
+      this.failed = true;
+      throw new Error("chat delivery failed");
+    }
+    return super.sendMessage(content, mentions);
+  }
+}
+
 /** The HTTP MCP backend every OpenCode test injects; `extra` adds what one test needs. */
 function httpMcpBackend(extra: Record<string, unknown> = {}) {
   return async () => ({
@@ -434,6 +449,48 @@ describe("OpencodeAdapter", () => {
     } else {
       expect(client.rejectedQuestions).toEqual(["question-1"]);
     }
+  });
+
+  it("opens a fresh session after an interactive prompt delivery failure", async () => {
+    const tools = new ChatFailsOnce();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as unknown as OpencodeClientLike,
+      mcpBackendFactory: httpMcpBackend(),
+    });
+    adapters.push(adapter);
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+
+    const roomId = "room-fresh-session-after-delivery-failure";
+    const firstTurn = adapter.onMessage(
+      makeMessage("Need approval"), tools,
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null, null, { isSessionBootstrap: true, roomId },
+    );
+    await waitFor(() => client.createdSessions.length === 1);
+    const abandonedSessionId = client.createdSessions[0]!;
+    client.eventQueue.push({
+      type: "permission.asked",
+      properties: { id: "perm-1", sessionID: abandonedSessionId, permission: "bash", patterns: ["npm test"] },
+    });
+    await expect(firstTurn).rejects.toBeInstanceOf(DeliveryFailedError);
+
+    const secondTurn = adapter.onMessage(
+      makeMessage("Try again"), tools,
+      { sessionId: abandonedSessionId, roomId, createdAt: null, replayMessages: [] },
+      null, null, { isSessionBootstrap: true, roomId },
+    );
+    await waitFor(() => client.createdSessions.length === 2);
+    const retrySessionId = client.createdSessions[1]!;
+    expect(retrySessionId).not.toBe(abandonedSessionId);
+
+    client.eventQueue.push({ type: "session.idle", properties: { sessionID: abandonedSessionId } });
+    emitAssistantText(client, retrySessionId, "Retry completed.");
+    client.eventQueue.push({ type: "session.idle", properties: { sessionID: retrySessionId } });
+    await secondTurn;
+
+    expect(tools.messages).toEqual(["Retry completed."]);
   });
 
   it("observes a turn that outlives its request, so a failed background delivery cannot end the process", async () => {

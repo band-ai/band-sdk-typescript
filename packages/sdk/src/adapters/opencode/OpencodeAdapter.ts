@@ -1075,6 +1075,10 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     error: unknown,
     rejectInteraction: (() => Promise<void>) | null,
   ): void {
+    // The aborted provider turn can still emit an idle/error event after its
+    // prompt delivery failed. A retry must own a new session so that late
+    // events remain attributable to the abandoned turn.
+    roomState.forceFreshSession = true;
     if (rejectInteraction) {
       abandon(rejectInteraction, (rejectionError) => {
         this.logger.warn("opencode_adapter.interaction_rejection_failed", {

@@ -12,6 +12,7 @@ import {
 } from "./disconnectReason";
 import { createNodeWebSocketFactory } from "./nodeWebSocketFactory";
 import type { StreamingTransport, TopicHandlers } from "./transport";
+import { agentControlTopic } from "@band-ai/band-sdk-core";
 
 interface PhoenixChannelsTransportOptions {
   wsUrl: string;
@@ -352,7 +353,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       return;
     }
 
-    await this.join(`agent_control:${this.agentId}`, {
+    await this.join(agentControlTopic(this.agentId), {
       supersede: (payload) => {
         const reason = parseSupersedeDisconnectReason(payload);
         if (!reason) {
