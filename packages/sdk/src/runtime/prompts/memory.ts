@@ -44,7 +44,7 @@ function longTermPattern(
 }
 
 const COMMON_MEMORY_PATTERNS = [
-  longTermPattern("Private notes for this agent only", MEMORY_TYPE.semantic, MEMORY_SEGMENT.session, MEMORY_STORE_SCOPE.agent),
+  longTermPattern("Private notes for this agent only", MEMORY_TYPE.semantic, MEMORY_SEGMENT.guideline, MEMORY_STORE_SCOPE.agent),
   longTermPattern("Facts learned about a specific agent/entity", MEMORY_TYPE.semantic, MEMORY_SEGMENT.agent, MEMORY_STORE_SCOPE.subject),
   longTermPattern("Events involving a specific person/agent", MEMORY_TYPE.episodic, MEMORY_SEGMENT.agent, MEMORY_STORE_SCOPE.subject),
   longTermPattern("A user's preferences or profile info", MEMORY_TYPE.semantic, MEMORY_SEGMENT.user, MEMORY_STORE_SCOPE.subject),
