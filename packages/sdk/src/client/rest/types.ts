@@ -228,6 +228,11 @@ export interface FernUserProfile {
   username?: string;
 }
 
+/** Fern create-memory payload; excludes agent scope until generated client enums catch up. */
+export type FernClientStoreMemoryRequest = Omit<StoreMemoryArgs, "scope"> & {
+  scope?: Exclude<StoreMemoryArgs["scope"], "agent">;
+};
+
 // Method syntax (not property-function syntax) is used intentionally so that
 // TypeScript checks parameter types bivariantly.
 export interface FernBandClientLike {
@@ -302,7 +307,7 @@ export interface FernBandClientLike {
       options?: RestRequestOptions,
     ): Promise<unknown>;
     createAgentMemory?(
-      request: { memory: StoreMemoryArgs },
+      request: { memory: FernClientStoreMemoryRequest },
       options?: RestRequestOptions,
     ): Promise<unknown>;
     getAgentMemory?(
@@ -324,7 +329,7 @@ export interface FernBandClientLike {
       options?: RestRequestOptions,
     ): Promise<unknown>;
     createAgentMemory?(
-      request: { memory: StoreMemoryArgs },
+      request: { memory: FernClientStoreMemoryRequest },
       options?: RestRequestOptions,
     ): Promise<unknown>;
     getAgentMemory?(

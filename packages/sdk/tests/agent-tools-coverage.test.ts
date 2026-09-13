@@ -395,7 +395,7 @@ describe("AgentTools coverage", () => {
     ).resolves.toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
-      message: "scope must be one of: subject, organization, all",
+      message: "scope must be one of: agent, subject, organization, all",
     });
   });
 
@@ -577,7 +577,7 @@ describe("AgentTools coverage", () => {
     ).resolves.toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
-      message: expect.stringContaining("scope must be one of: subject, organization"),
+      message: expect.stringContaining("scope must be one of: agent, subject, organization"),
     });
   });
 
@@ -623,6 +623,72 @@ describe("AgentTools coverage", () => {
     expect(rest.listMemories).not.toHaveBeenCalled();
   });
 
+  it("exposes agent in generated memory tool scope enums", () => {
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: createFacade(new CoverageRestApi()),
+      capabilities: {
+        memory: true,
+      },
+    });
+
+    const openaiSchemas = tools.getToolSchemas("openai", { includeMemory: true });
+    const storeSchema = openaiSchemas.find(
+      (entry) => (entry.function as { name?: string } | undefined)?.name === "band_store_memory",
+    );
+    const listSchema = openaiSchemas.find(
+      (entry) => (entry.function as { name?: string } | undefined)?.name === "band_list_memories",
+    );
+
+    expect(
+      (storeSchema?.function as { parameters?: { properties?: { scope?: { enum?: string[] } } } })
+        ?.parameters?.properties?.scope?.enum,
+    ).toEqual(expect.arrayContaining(["agent"]));
+    expect(
+      (listSchema?.function as { parameters?: { properties?: { scope?: { enum?: string[] } } } })
+        ?.parameters?.properties?.scope?.enum,
+    ).toEqual(expect.arrayContaining(["agent"]));
+  });
+
+  it("forwards agent-scoped memory store and list calls", async () => {
+    const rest = new CoverageRestApi();
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: createFacade(rest),
+      capabilities: {
+        memory: true,
+      },
+    });
+
+    await tools.executeToolCall("band_store_memory", {
+      content: "Private note",
+      thought: "Only for this agent",
+      system: "long_term",
+      type: "semantic",
+      segment: "agent",
+      scope: "agent",
+    });
+    await tools.executeToolCall("band_list_memories", {
+      scope: "agent",
+    });
+
+    expect(rest.storeMemory).toHaveBeenCalledWith(
+      {
+        content: "Private note",
+        thought: "Only for this agent",
+        system: "long_term",
+        type: "semantic",
+        segment: "agent",
+        scope: "agent",
+      },
+      expect.any(Object),
+    );
+    expect(rest.listMemories).toHaveBeenCalledWith(
+      { scope: "agent" },
+      expect.any(Object),
+    );
+  });
+
   it("rejects subject-scoped store_memory without subject_id", async () => {
     const rest = new CoverageRestApi();
     const tools = new AgentTools({
@@ -633,21 +699,22 @@ describe("AgentTools coverage", () => {
       },
     });
 
-    await expect(
-      tools.executeToolCall("band_store_memory", {
-        content: "User prefers concise updates",
-        thought: "Durable user preference",
-        system: "long_term",
-        type: "semantic",
-        segment: "user",
-        scope: "subject",
-      }),
-    ).resolves.toMatchObject({
+    const result = await tools.executeToolCall("band_store_memory", {
+      content: "User prefers concise updates",
+      thought: "Durable user preference",
+      system: "long_term",
+      type: "semantic",
+      segment: "user",
+      scope: "subject",
+    });
+
+    expect(result).toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
       toolName: "band_store_memory",
-      message: expect.stringContaining("requires a subject_id"),
     });
+    expect((result as { message?: string }).message).toContain("requires a subject_id");
+    expect((result as { message?: string }).message).toContain('scope="agent"');
 
     expect(rest.storeMemory).not.toHaveBeenCalled();
   });

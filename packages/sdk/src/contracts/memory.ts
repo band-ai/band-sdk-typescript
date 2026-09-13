@@ -47,14 +47,16 @@ export const MEMORY_SEGMENTS = [
 ] as const;
 /** Visibility scope for `band_store_memory`. */
 export const MEMORY_STORE_SCOPES = [
+  "agent", // Private to the storing agent; omit subject_id
   "subject", // About one person/agent; requires subject_id
   "organization", // Shared org-wide
 ] as const;
 /** Scope filter for `band_list_memories`. */
 export const MEMORY_LIST_SCOPES = [
+  "agent", // Caller's private agent-scoped memories only
   "subject", // Subject-scoped memories only
   "organization", // Organization-scoped memories only
-  "all", // Both scopes (no scope filter)
+  "all", // All scopes (no scope filter)
 ] as const;
 /** Lifecycle state; list filter and set by supersede/archive tools. */
 export const MEMORY_STATUSES = [
