@@ -43,6 +43,7 @@ import {
 } from "../../contracts/protocols";
 import {
   CHAT_TOOL_NAMES,
+  MEMORY_TOOL_NAME,
   MEMORY_TOOL_NAMES,
   getToolDescription,
   TOOL_MODELS
@@ -804,15 +805,15 @@ export class AgentTools implements AgentToolsProtocol {
 
   private buildMemoryToolHandlers(): Record<string, ToolHandler> {
     return {
-      band_list_memories: async (arguments_) =>
+      [MEMORY_TOOL_NAME.listMemories]: async (arguments_) =>
         this.listMemories(this.toListMemoriesArgs(arguments_)),
-      band_store_memory: async (arguments_) =>
+      [MEMORY_TOOL_NAME.storeMemory]: async (arguments_) =>
         this.storeMemory(this.toStoreMemoryArgs(arguments_)),
-      band_get_memory: async (arguments_) =>
+      [MEMORY_TOOL_NAME.getMemory]: async (arguments_) =>
         this.getMemory(String(arguments_.memory_id ?? "")),
-      band_supersede_memory: async (arguments_) =>
+      [MEMORY_TOOL_NAME.supersedeMemory]: async (arguments_) =>
         this.supersedeMemory(String(arguments_.memory_id ?? "")),
-      band_archive_memory: async (arguments_) =>
+      [MEMORY_TOOL_NAME.archiveMemory]: async (arguments_) =>
         this.archiveMemory(String(arguments_.memory_id ?? "")),
     };
   }
@@ -1151,7 +1152,7 @@ function validateToolArgs(toolName: string, args: Record<string, unknown>): Tool
     }
   }
 
-  if (toolName === "band_store_memory") {
+  if (toolName === MEMORY_TOOL_NAME.storeMemory) {
     if (typeof args.system === "string" && !isMemorySystem(args.system)) {
       errors.push(`system: Invalid value '${args.system}'. Expected one of: ${expectedList(MEMORY_SYSTEMS)}`);
     }

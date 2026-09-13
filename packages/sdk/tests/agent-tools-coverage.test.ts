@@ -9,6 +9,7 @@ import {
   MEMORY_STORE_SCOPES,
 } from "../src/contracts/memory";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
+import { MEMORY_TOOL_NAME } from "../src/runtime/tools/schemas";
 
 class CoverageRestApi {
   public readonly createChatMessage = vi.fn(async () => ({ ok: true }));
@@ -155,7 +156,7 @@ describe("AgentTools coverage", () => {
       },
     });
 
-    const result = await tools.executeToolCall("band_store_memory", {
+    const result = await tools.executeToolCall(MEMORY_TOOL_NAME.storeMemory, {
       content: "remember this",
       thought: "reasoning",
       system: "bad-system",
@@ -166,7 +167,7 @@ describe("AgentTools coverage", () => {
     expect(result).toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
-      toolName: "band_store_memory",
+      toolName: MEMORY_TOOL_NAME.storeMemory,
       details: {
         validationErrors: expect.arrayContaining([
           expect.stringContaining("system: Invalid value 'bad-system'"),
@@ -291,10 +292,10 @@ describe("AgentTools coverage", () => {
     const withMemory = toolsWithMemory.getToolSchemas("openai", { includeMemory: true });
 
     expect(withoutMemory.some((entry) =>
-      (entry.function as { name?: string } | undefined)?.name === "band_store_memory"
+      (entry.function as { name?: string } | undefined)?.name === MEMORY_TOOL_NAME.storeMemory
     )).toBe(false);
     expect(withMemory.some((entry) =>
-      (entry.function as { name?: string } | undefined)?.name === "band_store_memory"
+      (entry.function as { name?: string } | undefined)?.name === MEMORY_TOOL_NAME.storeMemory
     )).toBe(true);
   });
 
@@ -354,7 +355,7 @@ describe("AgentTools coverage", () => {
     });
 
     const anthropicSchemas = tools.getToolSchemas("anthropic", { includeMemory: true });
-    expect(anthropicSchemas.some((entry) => entry.name === "band_store_memory")).toBe(true);
+    expect(anthropicSchemas.some((entry) => entry.name === MEMORY_TOOL_NAME.storeMemory)).toBe(true);
     expect(anthropicSchemas.every((entry) => "input_schema" in entry)).toBe(true);
 
     await tools.listContacts();
@@ -393,7 +394,7 @@ describe("AgentTools coverage", () => {
     });
 
     await expect(
-      tools.executeToolCall("band_list_memories", {
+      tools.executeToolCall(MEMORY_TOOL_NAME.listMemories, {
         scope: "bad-scope",
         status: "bad-status",
       }),
@@ -506,7 +507,7 @@ describe("AgentTools coverage", () => {
       },
     });
 
-    await tools.executeToolCall("band_list_memories", {
+    await tools.executeToolCall(MEMORY_TOOL_NAME.listMemories, {
       subject_id: " subject-1 ",
       scope: "all",
       system: "working",
@@ -516,7 +517,7 @@ describe("AgentTools coverage", () => {
       page_size: "12",
       status: "archived",
     });
-    await tools.executeToolCall("band_store_memory", {
+    await tools.executeToolCall(MEMORY_TOOL_NAME.storeMemory, {
       content: " keep this ",
       thought: " because ",
       system: "working",
@@ -526,9 +527,9 @@ describe("AgentTools coverage", () => {
       subject_id: " subject-1 ",
       metadata: { source: "test" },
     });
-    await tools.executeToolCall("band_get_memory", { memory_id: " memory-7 " });
-    await tools.executeToolCall("band_supersede_memory", { memory_id: " memory-7 " });
-    await tools.executeToolCall("band_archive_memory", { memory_id: " memory-7 " });
+    await tools.executeToolCall(MEMORY_TOOL_NAME.getMemory, { memory_id: " memory-7 " });
+    await tools.executeToolCall(MEMORY_TOOL_NAME.supersedeMemory, { memory_id: " memory-7 " });
+    await tools.executeToolCall(MEMORY_TOOL_NAME.archiveMemory, { memory_id: " memory-7 " });
 
     expect(rest.listMemories).toHaveBeenCalledWith(
       {
@@ -571,7 +572,7 @@ describe("AgentTools coverage", () => {
     });
 
     await expect(
-      tools.executeToolCall("band_store_memory", {
+      tools.executeToolCall(MEMORY_TOOL_NAME.storeMemory, {
         content: "remember",
         thought: "reason",
         system: "working",
@@ -599,7 +600,7 @@ describe("AgentTools coverage", () => {
     });
 
     await expect(
-      tools.executeToolCall("band_store_memory", {
+      tools.executeToolCall(MEMORY_TOOL_NAME.storeMemory, {
         content: "User prefers concise updates",
         thought: "Durable user preference",
         system: "sensory",
@@ -610,19 +611,19 @@ describe("AgentTools coverage", () => {
     ).resolves.toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
-      toolName: "band_store_memory",
+      toolName: MEMORY_TOOL_NAME.storeMemory,
       message: expect.stringContaining("Invalid value 'semantic' for system 'sensory'"),
     });
 
     await expect(
-      tools.executeToolCall("band_list_memories", {
+      tools.executeToolCall(MEMORY_TOOL_NAME.listMemories, {
         system: "sensory",
         type: "semantic",
       }),
     ).resolves.toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
-      toolName: "band_list_memories",
+      toolName: MEMORY_TOOL_NAME.listMemories,
       message: expect.stringContaining('for system "sensory"'),
     });
 
@@ -641,10 +642,10 @@ describe("AgentTools coverage", () => {
 
     const openaiSchemas = tools.getToolSchemas("openai", { includeMemory: true });
     const storeSchema = openaiSchemas.find(
-      (entry) => (entry.function as { name?: string } | undefined)?.name === "band_store_memory",
+      (entry) => (entry.function as { name?: string } | undefined)?.name === MEMORY_TOOL_NAME.storeMemory,
     );
     const listSchema = openaiSchemas.find(
-      (entry) => (entry.function as { name?: string } | undefined)?.name === "band_list_memories",
+      (entry) => (entry.function as { name?: string } | undefined)?.name === MEMORY_TOOL_NAME.listMemories,
     );
 
     expect(
@@ -667,7 +668,7 @@ describe("AgentTools coverage", () => {
       },
     });
 
-    await tools.executeToolCall("band_store_memory", {
+    await tools.executeToolCall(MEMORY_TOOL_NAME.storeMemory, {
       content: "Private note",
       thought: "Only for this agent",
       system: "long_term",
@@ -700,7 +701,7 @@ describe("AgentTools coverage", () => {
       },
     });
 
-    await tools.executeToolCall("band_list_memories", {
+    await tools.executeToolCall(MEMORY_TOOL_NAME.listMemories, {
       scope: "agent",
     });
 
@@ -720,7 +721,7 @@ describe("AgentTools coverage", () => {
       },
     });
 
-    const result = await tools.executeToolCall("band_store_memory", {
+    const result = await tools.executeToolCall(MEMORY_TOOL_NAME.storeMemory, {
       content: "User prefers concise updates",
       thought: "Durable user preference",
       system: "long_term",
@@ -732,7 +733,7 @@ describe("AgentTools coverage", () => {
     expect(result).toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
-      toolName: "band_store_memory",
+      toolName: MEMORY_TOOL_NAME.storeMemory,
     });
     expect((result as { message?: string }).message).toContain("requires a subject_id");
     expect((result as { message?: string }).message).toContain('scope="agent"');

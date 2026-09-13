@@ -361,13 +361,16 @@ export const TOOL_MODELS = {
 
 export const ALL_TOOL_NAMES = new Set(Object.keys(TOOL_MODELS));
 
-export const MEMORY_TOOL_NAMES = new Set<string>([
-  "band_list_memories",
-  "band_store_memory",
-  "band_get_memory",
-  "band_supersede_memory",
-  "band_archive_memory",
-]);
+/** Canonical names for memory platform tools. */
+export const MEMORY_TOOL_NAME = {
+  listMemories: "band_list_memories",
+  storeMemory: "band_store_memory",
+  getMemory: "band_get_memory",
+  supersedeMemory: "band_supersede_memory",
+  archiveMemory: "band_archive_memory",
+} as const satisfies Record<string, keyof typeof TOOL_MODELS>;
+
+export const MEMORY_TOOL_NAMES = new Set<string>(Object.values(MEMORY_TOOL_NAME));
 
 export const CONTACT_TOOL_NAMES = new Set<string>([
   "band_list_contacts",
