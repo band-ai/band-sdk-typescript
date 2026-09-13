@@ -3,6 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import { RestFacade } from "../src/client/rest/RestFacade";
 import type { RestApi } from "../src/client/rest/types";
 import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
+import {
+  expectedList,
+  MEMORY_LIST_SCOPES,
+  MEMORY_STORE_SCOPES,
+} from "../src/contracts/memory";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 
 class CoverageRestApi {
@@ -395,7 +400,7 @@ describe("AgentTools coverage", () => {
     ).resolves.toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
-      message: "scope must be one of: agent, subject, organization, all",
+      message: `scope must be one of: ${expectedList(MEMORY_LIST_SCOPES)}`,
     });
   });
 
@@ -577,7 +582,9 @@ describe("AgentTools coverage", () => {
     ).resolves.toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
-      message: expect.stringContaining("scope must be one of: agent, subject, organization"),
+      message: expect.stringContaining(
+        `scope must be one of: ${expectedList(MEMORY_STORE_SCOPES)}`,
+      ),
     });
   });
 
@@ -643,14 +650,14 @@ describe("AgentTools coverage", () => {
     expect(
       (storeSchema?.function as { parameters?: { properties?: { scope?: { enum?: string[] } } } })
         ?.parameters?.properties?.scope?.enum,
-    ).toEqual(expect.arrayContaining(["agent"]));
+    ).toEqual([...MEMORY_STORE_SCOPES]);
     expect(
       (listSchema?.function as { parameters?: { properties?: { scope?: { enum?: string[] } } } })
         ?.parameters?.properties?.scope?.enum,
-    ).toEqual(expect.arrayContaining(["agent"]));
+    ).toEqual([...MEMORY_LIST_SCOPES]);
   });
 
-  it("forwards agent-scoped memory store and list calls", async () => {
+  it("forwards agent-scoped memory store without subject_id", async () => {
     const rest = new CoverageRestApi();
     const tools = new AgentTools({
       roomId: "room-1",
@@ -668,9 +675,6 @@ describe("AgentTools coverage", () => {
       segment: "agent",
       scope: "agent",
     });
-    await tools.executeToolCall("band_list_memories", {
-      scope: "agent",
-    });
 
     expect(rest.storeMemory).toHaveBeenCalledWith(
       {
@@ -683,6 +687,23 @@ describe("AgentTools coverage", () => {
       },
       expect.any(Object),
     );
+    expect(rest.storeMemory.mock.calls[0]?.[0]).not.toHaveProperty("subject_id");
+  });
+
+  it("forwards agent-scoped memory list filter", async () => {
+    const rest = new CoverageRestApi();
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: createFacade(rest),
+      capabilities: {
+        memory: true,
+      },
+    });
+
+    await tools.executeToolCall("band_list_memories", {
+      scope: "agent",
+    });
+
     expect(rest.listMemories).toHaveBeenCalledWith(
       { scope: "agent" },
       expect.any(Object),

@@ -61,6 +61,7 @@ import {
   MEMORY_LIST_SCOPES,
   MEMORY_SEGMENTS,
   MEMORY_STATUSES,
+  MEMORY_STORE_SCOPE,
   MEMORY_STORE_SCOPES,
   MEMORY_SYSTEMS,
   MEMORY_TYPES,
@@ -922,7 +923,7 @@ export class AgentTools implements AgentToolsProtocol {
     if (scope === "subject" && !subjectId) {
       throw new ValidationError(
         'scope="subject" requires a subject_id (the UUID of the person or agent the memory is about). ' +
-          'If you do not have a concrete subject UUID, retry with scope="agent" and omit subject_id. ' +
+          `If you do not have a concrete subject UUID, retry with scope="${MEMORY_STORE_SCOPE.agent}" and omit subject_id. ` +
           "Do not invent a UUID.",
       );
     }
