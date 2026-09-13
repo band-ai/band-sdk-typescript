@@ -8,6 +8,13 @@ function makeLoggerSpy() {
   return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
 }
 
+function requireAcpClient(client: BandACPClient | null): BandACPClient {
+  if (!client) {
+    throw new Error("ACP connection factory did not receive a client")
+  }
+  return client
+}
+
 describe("ACPClientAdapter", () => {
   it("restores ACP sessions, auto-injects MCP, and fans out ACP updates", async () => {
     let clientHandle: {
@@ -210,9 +217,7 @@ describe("ACPClientAdapter", () => {
   })
 
   it("coalesces adjacent streamed text chunks; leaves each tool_call_update frame its own event with its own reported status", async () => {
-    let clientHandle: {
-      sessionUpdate: (params: Record<string, unknown>) => Promise<void>;
-    } | null = null
+    let clientHandle: BandACPClient | null = null
 
     const prompt = vi.fn(async (params: { sessionId: string }) => {
       // Two text deltas in a row — the shape a streaming agent actually sends
@@ -268,7 +273,7 @@ describe("ACPClientAdapter", () => {
       command: ["acp-agent"],
       enableMcpTools: false,
       connectionFactory: async (client) => {
-        clientHandle = client as unknown as typeof clientHandle
+        clientHandle = client as BandACPClient
         const controller = new AbortController()
         return {
           connection: {
@@ -315,6 +320,14 @@ describe("ACPClientAdapter", () => {
         metadata: expect.objectContaining({ tool_call_id: "call-1", status: "completed" }),
       }),
     ])
+
+    await adapter.onCleanup("room-coalesce")
+    const client = requireAcpClient(clientHandle)
+    await client.sessionUpdate({
+      sessionId: "session-coalesce",
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "late output" } },
+    })
+    expect(client.getCollectedChunks("session-coalesce")).toEqual([])
   })
 
   it("coalesces adjacent thought chunks, without merging them into an adjacent text run on either side", async () => {
@@ -387,6 +400,7 @@ describe("ACPClientAdapter", () => {
 
   it("does not merge a streamed text chunk with an adjacent, unrelated cursor/task completion marker sharing the same chunkType", async () => {
     const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+    client.beginSession("session-x")
 
     await client.sessionUpdate({
       sessionId: "session-x",
@@ -405,6 +419,7 @@ describe("ACPClientAdapter", () => {
 
   it("does not merge a cursor/task completion marker with a streamed text chunk that follows it", async () => {
     const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+    client.beginSession("session-x")
 
     // Same hazard as the marker-after-stream case above, in the opposite
     // order: the marker is non-streamed, so it must not become the seed a
@@ -423,6 +438,7 @@ describe("ACPClientAdapter", () => {
 
   it("cursor/update_todos posts a non-streamed plan chunk that does not merge into an adjacent streamed text run", async () => {
     const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+    client.beginSession("session-x")
 
     await client.sessionUpdate({
       sessionId: "session-x",
@@ -451,6 +467,8 @@ describe("ACPClientAdapter", () => {
 
   it("BandACPClient.getCollectedChunks() with no sessionId coalesces each session independently, not across sessions", async () => {
     const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+    client.beginSession("session-a")
+    client.beginSession("session-b")
 
     await client.sessionUpdate({
       sessionId: "session-a",

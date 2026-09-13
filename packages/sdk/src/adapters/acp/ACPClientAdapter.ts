@@ -335,6 +335,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     // activate on behalf of a room that has already moved on.
     this.nextRoomGeneration(roomId)
     if (sessionId) {
+      this.client?.resetChunks(sessionId)
       this.activeSessions.delete(sessionId)
       this.bootstrappedSessions.delete(sessionId)
       this.cancelPendingPermissions(sessionId, "room-closed")
