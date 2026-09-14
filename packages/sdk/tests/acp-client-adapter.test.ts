@@ -2429,6 +2429,43 @@ describe("ACPClientAdapter", () => {
       expect(setSessionConfigOption).toHaveBeenCalledWith({ sessionId: "session-1", configId: "model", value: "sonnet" })
     })
 
+    it("resolves promptly instead of hanging the full timeout when the connection signal starts already aborted", async () => {
+      const preAbortedController = new AbortController()
+      preAbortedController.abort()
+      const setSessionConfigOption = vi.fn(async () => ({ configOptions: [] }))
+      const newSession = vi.fn(async () => ({
+        sessionId: "session-1",
+        configOptions: [modelConfigOption()],
+      }))
+      const adapter = new ACPClientAdapter({
+        command: ["acp-agent"],
+        enableMcpTools: false,
+        resolveSessionModel: () => new Promise<string | undefined>(() => undefined),
+        connectionFactory: async () => ({
+          connection: {
+            signal: preAbortedController.signal,
+            closed: new Promise<void>(() => undefined),
+            initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: { loadSession: true } })),
+            authenticate: vi.fn(async () => ({})),
+            loadSession: vi.fn(async () => ({})),
+            unstable_resumeSession: vi.fn(),
+            newSession,
+            setSessionMode: vi.fn(async () => ({})),
+            setSessionConfigOption,
+            prompt: vi.fn(async () => ({ stopReason: "end_turn" })),
+          } as never,
+          stop: async () => undefined,
+        }),
+      })
+
+      const timedOut = Symbol("timed-out")
+      const winner = await Promise.race([
+        send(adapter).then(() => "resolved" as const),
+        new Promise((resolve) => setTimeout(() => resolve(timedOut), 50)),
+      ])
+      expect(winner).toBe("resolved")
+    })
+
     it("warns but does not call setSessionConfigOption when resolveSessionModel throws", async () => {
       const logger = makeLoggerSpy()
       const { adapter, setSessionConfigOption } = buildHarness({

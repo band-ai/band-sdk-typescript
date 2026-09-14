@@ -768,22 +768,26 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     const controller = new AbortController()
     const abort = () => controller.abort()
     signal.addEventListener("abort", abort, { once: true })
-    // `addEventListener` only catches a *future* abort. `signal` (the
-    // connection's) can already be aborted by the time this runs — mode and
-    // model establishment both race against the same `connection.signal` in
-    // sequence, so a connection drop during the first wait leaves the second
-    // wait registering its listener on an already-fired signal, which never
-    // redelivers the past event. Checked synchronously too, mirroring
-    // `ClientSideConnection.signal`'s own documented usage pattern.
-    if (signal.aborted) {
-      abort()
-    }
     let timer: ReturnType<typeof setTimeout> | undefined
 
     try {
       const cancelled = new Promise<undefined>((resolve) => {
         controller.signal.addEventListener("abort", () => resolve(undefined), { once: true })
       })
+      // `addEventListener` only catches a *future* abort. `signal` (the
+      // connection's) can already be aborted by the time this runs — mode
+      // and model establishment both race against the same
+      // `connection.signal` in sequence, so a connection drop during the
+      // first wait leaves the second wait registering its listener on an
+      // already-fired signal, which never redelivers the past event.
+      // Checked synchronously too, mirroring `ClientSideConnection.signal`'s
+      // own documented usage pattern — but only *after* `cancelled` above
+      // has its own listener on `controller.signal` in place, since
+      // `abort()` fires that signal's one-shot event immediately and a
+      // listener added afterward would miss it the same way.
+      if (signal.aborted) {
+        abort()
+      }
       const timeout = new Promise<undefined>((resolve) => {
         timer = setTimeout(() => resolve(undefined), this.permissionTimeoutMs)
       })
