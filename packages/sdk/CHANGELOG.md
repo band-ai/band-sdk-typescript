@@ -1,6 +1,24 @@
 # Changelog
 
 
+## [0.4.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.3.4...sdk-v0.4.0) (2026-09-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sdk:** A2A gateway status-update failure metadata renames error_type -> code and error_message -> message, and adds provider and detail keys. Remote A2A clients reading the old keys must switch to the new ones.
+
+### Features
+
+* **adapters:** add resolveSessionModel hook to ACPClientAdapter ([#196](https://github.com/band-ai/band-sdk-typescript/issues/196)) ([21c1e39](https://github.com/band-ai/band-sdk-typescript/commit/21c1e393f564a61bf2a466a0f8cf85c0cd4a4ebc))
+* Integrate band-sdk-core memory taxonomy into band-sdk-typescript ([#187](https://github.com/band-ai/band-sdk-typescript/issues/187)) ([1da6b2e](https://github.com/band-ai/band-sdk-typescript/commit/1da6b2e51e35825dfc9a9947f0b156396df3ed0b))
+* **sdk:** Add structured adapter failure reporting ([#178](https://github.com/band-ai/band-sdk-typescript/issues/178)) ([5d9a66a](https://github.com/band-ai/band-sdk-typescript/commit/5d9a66a1dde4989fbc0608200f291f0ca8194052))
+
+
+### Bug Fixes
+
+* **sdk:** surface JSON-RPC error data/cause instead of dropping it ([#195](https://github.com/band-ai/band-sdk-typescript/issues/195)) ([c9d552c](https://github.com/band-ai/band-sdk-typescript/commit/c9d552cdfe9a31b02673f14c42541a3d7a50ba97))
+
 ## [0.3.4](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.3.3...sdk-v0.3.4) (2026-09-14)
 
 
