@@ -43,7 +43,6 @@ import {
 } from "../../contracts/protocols";
 import {
   CHAT_TOOL_NAMES,
-  MEMORY_TOOL_NAME,
   MEMORY_TOOL_NAMES,
   getToolDescription,
   TOOL_MODELS
@@ -808,15 +807,15 @@ export class AgentTools implements AgentToolsProtocol {
 
   private buildMemoryToolHandlers(): Record<string, ToolHandler> {
     return {
-      [MEMORY_TOOL_NAME.listMemories]: async (arguments_) =>
+      band_list_memories: async (arguments_) =>
         this.listMemories(this.toListMemoriesArgs(arguments_)),
-      [MEMORY_TOOL_NAME.storeMemory]: async (arguments_) =>
+      band_store_memory: async (arguments_) =>
         this.storeMemory(this.toStoreMemoryArgs(arguments_)),
-      [MEMORY_TOOL_NAME.getMemory]: async (arguments_) =>
+      band_get_memory: async (arguments_) =>
         this.getMemory(String(arguments_.memory_id ?? "")),
-      [MEMORY_TOOL_NAME.supersedeMemory]: async (arguments_) =>
+      band_supersede_memory: async (arguments_) =>
         this.supersedeMemory(String(arguments_.memory_id ?? "")),
-      [MEMORY_TOOL_NAME.archiveMemory]: async (arguments_) =>
+      band_archive_memory: async (arguments_) =>
         this.archiveMemory(String(arguments_.memory_id ?? "")),
     };
   }

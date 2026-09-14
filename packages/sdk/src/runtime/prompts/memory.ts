@@ -8,15 +8,15 @@ import {
   type MemoryStoreScope,
   type MemorySystem,
 } from "../../contracts/memory";
-import { MEMORY_TOOL_NAME, TOOL_MODELS } from "../tools/schemas";
+import { TOOL_MODELS } from "../tools/schemas";
 
 const MEMORY_INTRO = `## Memory Tools
 
 You have access to memory tools for storing and retrieving information
-across conversations. Use \`${MEMORY_TOOL_NAME.storeMemory}\` to persist important
-information and \`${MEMORY_TOOL_NAME.listMemories}\` / \`${MEMORY_TOOL_NAME.getMemory}\` to recall it.
-Use \`${MEMORY_TOOL_NAME.supersedeMemory}\` to mark outdated memories and
-\`${MEMORY_TOOL_NAME.archiveMemory}\` to hide memories that should be preserved.`;
+across conversations. Use \`band_store_memory\` to persist important
+information and \`band_list_memories\` / \`band_get_memory\` to recall it.
+Use \`band_supersede_memory\` to mark outdated memories and
+\`band_archive_memory\` to hide memories that should be preserved.`;
 
 type MemoryTypeForSystem<S extends MemorySystem> = (typeof MEMORY_SYSTEM_TYPES)[S][number];
 
@@ -79,12 +79,12 @@ function memoryTypeLines(): string {
 }
 
 function buildMemorySection(): string {
-  const storeMemoryProps = TOOL_MODELS[MEMORY_TOOL_NAME.storeMemory].properties;
+  const storeMemoryProps = TOOL_MODELS.band_store_memory.properties;
   const systems = storeMemoryProps.system.enum as readonly string[];
   const segments = storeMemoryProps.segment.enum as readonly string[];
   const scopes = storeMemoryProps.scope.enum as readonly string[];
 
-  const fieldRules = `When calling \`${MEMORY_TOOL_NAME.storeMemory}\`, the \`system\`, \`type\`, \`segment\`, and \`scope\` fields
+  const fieldRules = `When calling \`band_store_memory\`, the \`system\`, \`type\`, \`segment\`, and \`scope\` fields
 must use these exact values (case-sensitive):
 
 - **system**: ${quoteChoices(systems)}
