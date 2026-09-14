@@ -152,13 +152,16 @@ function isPlainObject(value: object): boolean {
   return proto === Object.prototype || proto === null;
 }
 
-// An Error-instance detail delegates to formatCaughtError, whose own message
-// and further detail are already truncated at their own level — its fully-
-// composed "message (detail)" result is never re-truncated here, or a cut
-// could land inside its own parenthetical and leave it unbalanced. Every
-// other detail shape is a single leaf value, truncated exactly once.
+// Anything that itself carries .data/.cause — an Error, or a JSON-RPC-shaped
+// plain object — has to be unwrapped the same way as the top-level error.
+// Stopping at the inner .message would drop the further detail this helper
+// exists to surface (a proxied JSON-RPC error's .data is often itself a
+// JSON-RPC object). The composed "message (detail)" result is never
+// re-truncated here, or a cut could land inside its own parenthetical and
+// leave it unbalanced. Every other detail shape is a single leaf value,
+// truncated exactly once.
 function formatErrorDetail(detail: unknown, depth: number): string {
-  if (detail instanceof Error) {
+  if (detail instanceof Error || selectDetail(asOptionalRecord(detail)) !== undefined) {
     return formatCaughtError(detail, depth);
   }
 
@@ -176,12 +179,33 @@ function formatLeafDetail(detail: unknown): string {
     return String(detail);
   }
 
+  // Date/Map/Set/RegExp store their content outside own-enumerable keys.
+  // JSON.stringify turns Map/Set/RegExp into "{}", which is the empty-looking
+  // output isPresentDetail exists to avoid. Date already round-trips via toJSON.
+  const builtin = formatNonEnumerableDetail(detail);
+  if (builtin !== null) {
+    return builtin;
+  }
+
   const nested = asNestedMessage(detail);
   if (nested !== null) {
     return nested;
   }
 
   return toDisplayText(detail);
+}
+
+function formatNonEnumerableDetail(detail: unknown): string | null {
+  if (detail instanceof RegExp) {
+    return detail.toString();
+  }
+  if (detail instanceof Map) {
+    return `Map ${toDisplayText([...detail])}`;
+  }
+  if (detail instanceof Set) {
+    return `Set ${toDisplayText([...detail])}`;
+  }
+  return null;
 }
 
 export function truncate(text: string): string {

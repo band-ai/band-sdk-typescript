@@ -142,11 +142,21 @@ describe("adapter shared utilities", () => {
       expect(() => asErrorMessage({ message: "boom", cause: function namedFn() {} })).not.toThrow();
     });
 
-    it("does not silently drop a Date, Map, Set, or RegExp detail the way an empty plain object is dropped", () => {
-      expect(asErrorMessage({ message: "boom", data: new Date("2024-01-01T00:00:00.000Z") })).not.toBe("boom");
-      expect(asErrorMessage({ message: "boom", data: new Map([["a", 1]]) })).not.toBe("boom");
-      expect(asErrorMessage({ message: "boom", data: new Set([1, 2, 3]) })).not.toBe("boom");
-      expect(asErrorMessage({ message: "boom", data: /abc/g })).not.toBe("boom");
+    it("unwraps a nested JSON-RPC plain object instead of stopping at its message", () => {
+      expect(asErrorMessage({
+        message: "boom",
+        data: { message: "mid", data: "deep detail" },
+      })).toBe("boom (mid (deep detail))");
+    });
+
+    it("renders Map, Set, and RegExp details instead of JSON.stringify's empty object", () => {
+      expect(asErrorMessage({ message: "boom", data: new Date("2024-01-01T00:00:00.000Z") }))
+        .toBe('boom ("2024-01-01T00:00:00.000Z")');
+      expect(asErrorMessage({ message: "boom", data: new Map([["a", 1], ["b", 2]]) }))
+        .toBe('boom (Map [["a",1],["b",2]])');
+      expect(asErrorMessage({ message: "boom", data: new Set([1, 2, 3]) }))
+        .toBe("boom (Set [1,2,3])");
+      expect(asErrorMessage({ message: "boom", data: /abc/g })).toBe("boom (/abc/g)");
     });
 
     it("treats a blank string data field as absent instead of appending an empty parenthetical", () => {
