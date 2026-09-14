@@ -38,6 +38,7 @@ interface ClaudeSDKMessageLike {
   type: string;
   session_id?: string;
   subtype?: string;
+  is_error?: boolean;
   result?: unknown;
   summary?: string;
   message?: ClaudeAssistantMessage;
@@ -435,12 +436,13 @@ interface ClaudeResultFailure {
 }
 
 function claudeNonSuccessResult(event: ClaudeSDKMessageLike): ClaudeResultFailure | null {
-  if (event.subtype === "success") {
+  const flaggedError = event.is_error === true;
+  if (!flaggedError && event.subtype === "success") {
     return null;
   }
-  const code = typeof event.subtype === "string" && event.subtype.trim().length > 0
-    ? event.subtype
-    : "error";
+  const subtype = typeof event.subtype === "string" ? event.subtype.trim() : "";
+  // `subtype: "success"` with `is_error: true` is still terminal; never use code "success".
+  const code = subtype.length === 0 || subtype === "success" ? "error" : subtype;
   const resultText = typeof event.result === "string" ? event.result.trim() : "";
   const summaryText = typeof event.summary === "string" ? event.summary.trim() : "";
   const message = resultText || summaryText || `Claude Agent SDK result: ${code}`;
@@ -449,6 +451,7 @@ function claudeNonSuccessResult(event: ClaudeSDKMessageLike): ClaudeResultFailur
     message,
     detail: {
       subtype: event.subtype ?? null,
+      is_error: event.is_error ?? null,
       result: event.result ?? null,
       session_id: event.session_id ?? null,
     },

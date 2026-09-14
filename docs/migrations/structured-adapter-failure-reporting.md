@@ -91,3 +91,23 @@ export class MyAdapter extends SimpleAdapter {
 so `PlatformRuntime` marks the message failed without taking the room down.
 `agentFailure` is the safe `AgentFailure` constructor (drops unserializable
 `detail` instead of throwing on the failure path).
+
+
+## 4. A2A terminal states fail the inbound turn
+
+A2A terminal task states `failed`, `canceled`, `rejected`, and `auth-required`
+now fail the inbound Band turn (retryable, structured `AgentFailure`) instead of
+resolving the turn as a successful no-op. Platform resync or retry may replay
+the same inbound. Remote A2A handling must be idempotent for those states.
+
+## 5. CJS import consistency
+
+ESM `import` of helpers from `@band-ai/sdk` and `@band-ai/sdk/core` shares one
+module instance. CJS `require()` of those two entries loads duplicated class
+identities (tsup emits a copy per entry). Mixing them makes `instanceof
+DeliveryFailedError` miss and can reclassify a delivery failure as a provider
+fault.
+
+CJS callers must import the helper/error pair — and any runtime error class used
+for `instanceof` — from **one** entrypoint consistently (`require("@band-ai/sdk")`
+or `require("@band-ai/sdk/core")`, not both).

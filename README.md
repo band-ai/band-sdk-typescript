@@ -364,6 +364,12 @@ Agent.create({ adapter, config })
 
 `agent.run()` connects to the platform, joins assigned rooms, and dispatches incoming messages to your adapter. It handles `SIGINT`/`SIGTERM` for graceful shutdown. Pass `{ signals: false }` to disable signal handling in tests.
 
+## Migration
+
+Adapter failure reporting is structured (`MessagingTools.sendFailure`, required
+`SimpleAdapter.provider`, nested A2A `metadata.failure`). See
+[docs/migrations/structured-adapter-failure-reporting.md](docs/migrations/structured-adapter-failure-reporting.md).
+
 ## Development
 
 ```bash

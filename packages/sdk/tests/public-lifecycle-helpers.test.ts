@@ -2,6 +2,7 @@ import { describe, expect, it, beforeAll } from "vitest";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 
 import { HistoryProvider } from "../src/runtime/types";
 import { FakeTools, makeMessage } from "./testUtils";
@@ -76,6 +77,73 @@ describe("public lifecycle helpers (built package)", () => {
         null,
         null,
         { isSessionBootstrap: false, roomId: "room-custom" },
+      ),
+    ).rejects.toBeInstanceOf(core.DeliveryFailedError);
+    expect(tools.messages).toEqual([]);
+    expect(tools.events).toEqual([]);
+  });
+
+  it("exposes the five helpers from CJS root and core entries", () => {
+    const require = createRequire(import.meta.url);
+    const root = require(resolve(SDK_ROOT, "dist/index.cjs")) as Record<string, unknown>;
+    const core = require(resolve(SDK_ROOT, "dist/core.cjs")) as Record<string, unknown>;
+    for (const name of [
+      "deliverReply",
+      "DeliveryFailedError",
+      "reportTurnFailure",
+      "ProviderTurnFailedError",
+      "agentFailure",
+    ]) {
+      expect(typeof root[name], `cjs root missing ${name}`).toBe("function");
+      expect(typeof core[name], `cjs core missing ${name}`).toBe("function");
+    }
+  });
+
+  it("classifies a rejected sendMessage as delivery failure when CJS helpers share one entry", async () => {
+    const require = createRequire(import.meta.url);
+    const core = require(resolve(SDK_ROOT, "dist/core.cjs")) as {
+      SimpleAdapter: new () => unknown;
+      deliverReply: (tools: unknown, content: string) => Promise<unknown>;
+      DeliveryFailedError: new (...args: unknown[]) => Error;
+      agentFailure: (provider: string, message: string) => unknown;
+      reportTurnFailure: (tools: unknown, failure: unknown) => Promise<never>;
+    };
+
+    class CustomAdapter extends (core.SimpleAdapter as new () => object) {
+      protected readonly provider = "custom-cjs-proof";
+
+      public async onMessage(
+        message: { content: string },
+        tools: unknown,
+      ): Promise<void> {
+        try {
+          await core.deliverReply(tools, `echo: ${message.content}`);
+        } catch (error) {
+          if (error instanceof core.DeliveryFailedError) {
+            throw error;
+          }
+          await core.reportTurnFailure(
+            tools,
+            core.agentFailure(this.provider, error instanceof Error ? error.message : String(error)),
+          );
+        }
+      }
+    }
+
+    const adapter = new CustomAdapter() as unknown as {
+      onStarted: (a: string, b: string) => Promise<void>;
+      onMessage: (...args: unknown[]) => Promise<void>;
+    };
+    await adapter.onStarted("Custom", "CJS proof adapter");
+    const tools = new FakeTools({ failOn: ["sendMessage"] });
+    await expect(
+      adapter.onMessage(
+        makeMessage("hello", "room-custom-cjs"),
+        tools,
+        new HistoryProvider([]),
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-custom-cjs" },
       ),
     ).rejects.toBeInstanceOf(core.DeliveryFailedError);
     expect(tools.messages).toEqual([]);

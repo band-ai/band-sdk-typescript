@@ -417,6 +417,69 @@ describe("ClaudeSDKAdapter", () => {
     });
   });
 
+  it("treats success+is_error as a terminal Claude failure and does not deliver the result", async () => {
+    const queryFn: ClaudeSDKQuery = () =>
+      streamFrom([
+        {
+          type: "result",
+          subtype: "success",
+          is_error: true,
+          result: "Not logged in",
+          session_id: "session-is-error",
+        } as never,
+      ]) as never;
+
+    const adapter = new ClaudeSDKAdapter({ queryFn });
+    await adapter.onStarted("Parity Agent", "Parity test agent");
+
+    const tools = new FakeTools();
+    await expectTurnFailed(adapter.onMessage(
+      makeMessage("hello", "room-is-error"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-is-error" },
+    ));
+
+    expect(tools.messages).toEqual([]);
+    expect(tools.events.filter((event) => event.messageType === "error")).toHaveLength(1);
+    expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({
+      provider: "claude-sdk",
+      code: "error",
+      message: "Not logged in",
+    });
+  });
+
+  it("still delivers a success result when is_error is false", async () => {
+    const queryFn: ClaudeSDKQuery = () =>
+      streamFrom([
+        {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          result: "all good",
+          session_id: "session-is-error-false",
+        } as never,
+      ]) as never;
+
+    const adapter = new ClaudeSDKAdapter({ queryFn });
+    await adapter.onStarted("Parity Agent", "Parity test agent");
+
+    const tools = new FakeTools();
+    await adapter.onMessage(
+      makeMessage("hello", "room-is-error-false"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-is-error-false" },
+    );
+
+    expect(tools.messages).toEqual(["all good"]);
+    expect(tools.events.filter((event) => event.messageType === "error")).toEqual([]);
+  });
+
   describeDeliveryContract([{
     path: "final assistant text",
     turn: async (tools) => {
