@@ -490,4 +490,93 @@ describe("OpencodeAdapter", () => {
     expect(client.registeredMcpServers.some((entry) => entry.name === "thenvoi")).toBe(false);
     expect(client.deregisteredMcpServers).not.toContain("thenvoi");
   });
+
+  it("surfaces the nested data.message on a session.error event", async () => {
+    const tools = new FakeTools();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as any,
+      mcpBackendFactory: async () => ({
+        kind: "http",
+        server: { url: "http://127.0.0.1:5555/mcp" },
+        allowedTools: [],
+        stop: async () => undefined,
+      }),
+    });
+    adapters.push(adapter);
+
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+
+    const pending = adapter.onMessage(
+      makeMessage("Help with this bug"),
+      tools,
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-error" },
+    );
+
+    await waitFor(() => client.createdSessions.length === 1);
+    const sessionId = client.createdSessions[0]!;
+    client.eventQueue.push({
+      type: "session.error",
+      properties: {
+        sessionID: sessionId,
+        error: { name: "ProviderAuthError", data: { message: "invalid API key" } },
+      },
+    });
+
+    await pending;
+
+    expect(tools.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        messageType: "error",
+        content: "ProviderAuthError: invalid API key",
+      }),
+    ]));
+  });
+
+  it("truncates an oversized nested error message on a session.error event", async () => {
+    const tools = new FakeTools();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as any,
+      mcpBackendFactory: async () => ({
+        kind: "http",
+        server: { url: "http://127.0.0.1:5555/mcp" },
+        allowedTools: [],
+        stop: async () => undefined,
+      }),
+    });
+    adapters.push(adapter);
+
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+
+    const pending = adapter.onMessage(
+      makeMessage("Help with this bug"),
+      tools,
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-error-huge" },
+    );
+
+    await waitFor(() => client.createdSessions.length === 1);
+    const sessionId = client.createdSessions[0]!;
+    client.eventQueue.push({
+      type: "session.error",
+      properties: {
+        sessionID: sessionId,
+        error: { name: "ProviderAuthError", data: { message: "x".repeat(1000) } },
+      },
+    });
+
+    await pending;
+
+    const errorEvent = tools.events.find((event) => event.messageType === "error");
+    expect(errorEvent?.content).toContain("... (truncated)");
+    expect(errorEvent?.content.length).toBeLessThan(600);
+  });
 });

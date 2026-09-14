@@ -2238,6 +2238,84 @@ describe("ACPClientAdapter", () => {
     })
   })
 
+  describe("runTurn error reporting", () => {
+    // Minimal harness: only what a fresh (non-restored) session bootstrap
+    // touches — no loadSession/setSessionMode needed since there's no prior
+    // room-to-session history and no session-mode resolution configured.
+    function buildHarness(prompt: ReturnType<typeof vi.fn>) {
+      const adapter = new ACPClientAdapter({
+        command: ["acp-agent"],
+        enableMcpTools: false,
+        connectionFactory: async () => {
+          const controller = new AbortController()
+          return {
+            connection: {
+              signal: controller.signal,
+              closed: new Promise<void>(() => undefined),
+              initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+              authenticate: vi.fn(async () => ({})),
+              newSession: vi.fn(async () => ({ sessionId: "session-1" })),
+              prompt,
+            } as never,
+            stop: async () => {
+              controller.abort()
+            },
+          }
+        },
+      })
+      return { adapter }
+    }
+
+    class RequestError extends Error {
+      public constructor(
+        public readonly code: number,
+        message: string,
+        public readonly data?: unknown,
+      ) {
+        super(message)
+      }
+    }
+
+    async function expectRunTurnError(rejection: unknown, expectedMessage: string): Promise<void> {
+      const prompt = vi.fn(async () => {
+        throw rejection
+      })
+      const { adapter } = buildHarness(prompt)
+      const tools = new FakeTools()
+
+      await adapter.onStarted("Agent", "desc")
+      await adapter.onMessage(
+        makeMessage("hi", "room-1"),
+        tools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-1" },
+      )
+
+      expect(tools.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          messageType: "error",
+          content: `ACP agent error: ${expectedMessage}`,
+          metadata: expect.objectContaining({ acp_error: expectedMessage }),
+        }),
+      ]))
+    }
+
+    it.each([
+      [
+        "a plain JSON-RPC error object",
+        { code: -32603, message: "Internal error", data: "agent crashed: OOM" },
+      ],
+      [
+        "an Error subclass carrying a data field",
+        new RequestError(-32603, "Internal error", { message: "agent crashed: OOM" }),
+      ],
+    ])("surfaces the JSON-RPC error's data alongside the message when the agent rejects with %s", async (_label, rejection) => {
+      await expectRunTurnError(rejection, "Internal error (agent crashed: OOM)")
+    })
+  })
+
   describe("resolveSessionModel", () => {
     // Shared harness: a connection whose newSession/loadSession return a
     // given `configOptions` catalog and a `setSessionConfigOption` spy — the

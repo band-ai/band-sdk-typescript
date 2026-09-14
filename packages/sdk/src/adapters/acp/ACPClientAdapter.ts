@@ -27,7 +27,7 @@ import { renderSystemPrompt } from "../../runtime/prompts";
 import { mentionSubjectsFromMetadata, replaceUuidMentions } from "../../runtime/formatters";
 import { systemUpdateParts } from "../shared/conversationPrompt";
 import { withTimeout } from "../shared/withTimeout";
-import { asOptionalRecord } from "../shared/coercion";
+import { asErrorMessage, asOptionalRecord } from "../shared/coercion";
 import { isBlankEventContent } from "../../contracts/chatEvents";
 import type { PlatformMessage } from "../../runtime/types";
 import type { McpToolRegistration } from "../../mcp/registrations";
@@ -304,8 +304,9 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       })
     } catch (error) {
       await this.stop()
-      await tools.sendEvent(`ACP agent error: ${toErrorMessage(error)}`, "error", {
-        acp_error: toErrorMessage(error),
+      const errorMessage = asErrorMessage(error)
+      await tools.sendEvent(`ACP agent error: ${errorMessage}`, "error", {
+        acp_error: errorMessage,
       })
       return
     }
@@ -1341,14 +1342,6 @@ export async function createSubprocessConnection(
       })
     },
   }
-}
-
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message
-  }
-
-  return String(error)
 }
 
 // Config option id/category convention real agents use for the model
