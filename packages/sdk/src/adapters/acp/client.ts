@@ -73,6 +73,9 @@ export class BandACPClient implements Client {
   // (an empty array, not a deleted one) so a late `sessionUpdate` still has
   // somewhere to collect into.
   public takeCollectedChunks(sessionId: string): CollectedChunk[] {
+    if (!this.sessionChunks.has(sessionId)) {
+      return []
+    }
     const chunks = coalesceChunks(this.sessionChunks.get(sessionId) ?? [])
     this.sessionChunks.set(sessionId, [])
     return chunks

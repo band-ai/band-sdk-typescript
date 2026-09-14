@@ -2630,6 +2630,233 @@ describe("ACPClientAdapter", () => {
         turnTimeoutMs: Infinity,
       })).not.toThrow()
     })
+
+    it("constructing with a non-number turnTimeoutMs throws instead of silently disabling the timeout", () => {
+      expect(() => new ACPClientAdapter({
+        command: ["acp-agent"],
+        turnTimeoutMs: "3000" as unknown as number,
+      })).toThrow(/turnTimeoutMs must be a positive number or Infinity/)
+    })
+
+    it("still evicts and cancels when flushing the timed-out partial fails to deliver", async () => {
+      vi.useFakeTimers()
+      try {
+        const prompt = vi.fn()
+        const { adapter, cancel, loadSession, newSession, getClient } = buildFailureHarness({
+          turnTimeoutMs: 1_000,
+          prompt,
+        })
+        prompt.mockImplementationOnce(async (params: { sessionId: string }) => {
+          await getClient().sessionUpdate({
+            sessionId: params.sessionId,
+            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "partial-before-timeout" } },
+          })
+          return new Promise(() => undefined)
+        })
+        prompt.mockImplementation(async () => ({ stopReason: "end_turn" }))
+
+        await adapter.onStarted("Agent", "desc")
+
+        const tools = new FakeTools({ failOn: ["sendMessage"] })
+        const turn = adapter.onMessage(
+          makeMessage("question", "room-timeout-flush-fail"),
+          tools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-timeout-flush-fail" },
+        )
+        turn.catch(() => undefined)
+        await vi.advanceTimersByTimeAsync(1_000)
+        await expect(turn).rejects.toBeTruthy()
+        expect(cancel).toHaveBeenCalledWith({ sessionId: "session-1" })
+
+        const nextTools = new FakeTools()
+        await adapter.onMessage(
+          makeMessage("follow up", "room-timeout-flush-fail"),
+          nextTools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-timeout-flush-fail" },
+        )
+        expect(loadSession).not.toHaveBeenCalled()
+        expect(newSession).toHaveBeenCalledTimes(2)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("a stale generation's timeout does not reset a replacement that reused the same session id", async () => {
+      let attempt = 0
+      let client2: BandACPClient | null = null
+      let resolveClosed!: () => void
+      const closed = new Promise<void>((resolve) => {
+        resolveClosed = resolve
+      })
+      const stalePromptStarted = (() => { let resolve!: () => void; const promise = new Promise<void>((r) => { resolve = r }); return { promise, resolve } })()
+      const replPromptStarted = (() => { let resolve!: () => void; const promise = new Promise<void>((r) => { resolve = r }); return { promise, resolve } })()
+      const releaseReplacement = (() => { let resolve!: () => void; const promise = new Promise<void>((r) => { resolve = r }); return { promise, resolve } })()
+      const newSession = vi.fn(async () => ({ sessionId: "session-persist" }))
+
+      const adapter = new ACPClientAdapter({
+        command: ["acp-agent"],
+        enableMcpTools: false,
+        turnTimeoutMs: 250,
+        connectionFactory: async (client) => {
+          attempt += 1
+          const controller = new AbortController()
+          if (attempt === 1) {
+            return {
+              connection: {
+                signal: controller.signal,
+                closed,
+                initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+                authenticate: vi.fn(async () => ({})),
+                loadSession: vi.fn(async () => ({})),
+                unstable_resumeSession: vi.fn(),
+                newSession,
+                cancel: vi.fn(async () => undefined),
+                prompt: vi.fn(async () => {
+                  stalePromptStarted.resolve()
+                  return new Promise(() => undefined)
+                }),
+              } as never,
+              stop: async () => {
+                controller.abort()
+              },
+            }
+          }
+          client2 = client as unknown as BandACPClient
+          return {
+            connection: {
+              signal: controller.signal,
+              closed: new Promise<void>(() => undefined),
+              initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+              authenticate: vi.fn(async () => ({})),
+              loadSession: vi.fn(async () => ({})),
+              unstable_resumeSession: vi.fn(),
+              newSession,
+              cancel: vi.fn(async () => undefined),
+              prompt: vi.fn(async (params: { sessionId: string }) => {
+                replPromptStarted.resolve()
+                await client2!.sessionUpdate({
+                  sessionId: params.sessionId,
+                  update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "REPLACEMENT-OUTPUT" } },
+                })
+                await releaseReplacement.promise
+                return { stopReason: "end_turn" }
+              }),
+            } as never,
+            stop: async () => {
+              controller.abort()
+            },
+          }
+        },
+      })
+
+      await adapter.onStarted("Agent", "desc")
+      const staleTools = new FakeTools()
+      const staleTurn = adapter.onMessage(
+        makeMessage("hello", "room-race"),
+        staleTools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-race" },
+      )
+      staleTurn.catch(() => undefined)
+      await stalePromptStarted.promise
+      await adapter.onCleanup("room-race")
+      resolveClosed()
+      await new Promise((resolve) => setTimeout(resolve, 10))
+
+      const replTools = new FakeTools()
+      const replTurn = adapter.onMessage(
+        makeMessage("replacement", "room-race"),
+        replTools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-race" },
+      )
+      await replPromptStarted.promise
+      await expectTurnFailed(staleTurn)
+
+      releaseReplacement.resolve()
+      await replTurn
+      expect(replTools.messages).toEqual(["REPLACEMENT-OUTPUT"])
+
+      const thirdTools = new FakeTools()
+      await adapter.onMessage(
+        makeMessage("third", "room-race"),
+        thirdTools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-race" },
+      )
+      expect(newSession).toHaveBeenCalledTimes(2)
+      await adapter.stop()
+    })
+
+    it("takeCollectedChunks does not resurrect a buffer deleted by onCleanup", async () => {
+      let clientHandle: BandACPClient | null = null
+      const promptStarted = (() => { let resolve!: () => void; const promise = new Promise<void>((r) => { resolve = r }); return { promise, resolve } })()
+      const promptGate = (() => { let resolve!: () => void; const promise = new Promise<void>((r) => { resolve = r }); return { promise, resolve } })()
+      const adapter = new ACPClientAdapter({
+        command: ["acp-agent"],
+        enableMcpTools: false,
+        connectionFactory: async (client) => {
+          clientHandle = client as unknown as BandACPClient
+          const controller = new AbortController()
+          return {
+            connection: {
+              signal: controller.signal,
+              closed: new Promise<void>(() => undefined),
+              initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+              authenticate: vi.fn(async () => ({})),
+              loadSession: vi.fn(async () => ({})),
+              unstable_resumeSession: vi.fn(),
+              newSession: vi.fn(async () => ({ sessionId: "session-1" })),
+              cancel: vi.fn(async () => undefined),
+              prompt: vi.fn(async (params: { sessionId: string }) => {
+                await clientHandle!.sessionUpdate({
+                  sessionId: params.sessionId,
+                  update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "in-flight" } },
+                })
+                promptStarted.resolve()
+                await promptGate.promise
+                return { stopReason: "end_turn" }
+              }),
+            } as never,
+            stop: async () => {
+              controller.abort()
+            },
+          }
+        },
+      })
+      await adapter.onStarted("Agent", "desc")
+      const tools = new FakeTools()
+      const turn = adapter.onMessage(
+        makeMessage("hello", "room-cleanup-inflight"),
+        tools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-cleanup-inflight" },
+      )
+      await promptStarted.promise
+      await adapter.onCleanup("room-cleanup-inflight")
+      promptGate.resolve()
+      await turn.catch(() => undefined)
+      await clientHandle!.sessionUpdate({
+        sessionId: "session-1",
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "late-after-cleanup" } },
+      })
+      expect(clientHandle!.takeCollectedChunks("session-1")).toEqual([])
+      await adapter.stop()
+    })
   })
 
   describe("resolveSessionModel", () => {

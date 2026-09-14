@@ -1587,6 +1587,50 @@ describe("OpencodeAdapter", () => {
     },
   }]);
 
+  it("fails the turn when a message-level provider error is followed by session.idle, instead of treating idle as success", async () => {
+    const tools = new FakeTools();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as any,
+      mcpBackendFactory: httpMcpBackend(),
+    });
+    adapters.push(adapter);
+
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+    const pending = adapter.onMessage(
+      makeMessage("Trigger a provider-level error then idle"),
+      tools,
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-idle-after-message-error" },
+    );
+
+    await waitFor(() => client.createdSessions.length === 1);
+    const sessionId = client.createdSessions[0]!;
+    client.eventQueue.push({
+      type: "message.updated",
+      properties: {
+        info: {
+          id: "msg-1",
+          role: "assistant",
+          sessionID: sessionId,
+          error: { name: "ProviderError", data: { message: "model unavailable" } },
+        },
+      },
+    });
+    client.eventQueue.push({
+      type: "session.idle",
+      properties: { sessionID: sessionId },
+    });
+
+    await expectTurnFailed(pending);
+    const failureEvent = findFailureEvent(tools);
+    expect(failureEvent).toBeDefined();
+    expect((failureEvent?.metadata as any)?.failure?.message).toContain("model unavailable");
+  });
+
   it("truncates an oversized nested error message on a session.error event", async () => {
     const tools = new FakeTools();
     const client = new FakeOpencodeClient();
@@ -1623,6 +1667,194 @@ describe("OpencodeAdapter", () => {
     expect(failureEvent).toBeDefined();
     expect((failureEvent?.metadata as any)?.failure?.message).toContain("... (truncated)");
     expect(String((failureEvent?.metadata as any)?.failure?.message).length).toBeLessThan(600);
+  });
+
+  it("does not let a late permission resolve clear a newer turn's pending permission", async () => {
+    const tools = new FakeTools();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    let releaseReply!: () => void;
+    const replyGate = new Promise<void>((resolve) => {
+      releaseReply = resolve;
+    });
+    const original = client.replyPermission.bind(client);
+    client.replyPermission = async (sessionId, permissionId, input) => {
+      if (permissionId === "perm-1") {
+        await replyGate;
+      }
+      return original(sessionId, permissionId, input);
+    };
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as any,
+      mcpBackendFactory: httpMcpBackend(),
+    });
+    adapters.push(adapter);
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+    const firstTurn = adapter.onMessage(
+      makeMessage("Need approval flow"),
+      tools,
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-late-resolve" },
+    );
+    await waitFor(() => client.createdSessions.length === 1);
+    const sessionId = client.createdSessions[0]!;
+    client.eventQueue.push({
+      type: "permission.asked",
+      properties: { id: "perm-1", sessionID: sessionId, permission: "bash", patterns: ["npm test"] },
+    });
+    await firstTurn;
+    const approveTurn = adapter.onMessage(
+      makeMessage("approve perm-1", "room-late-resolve"),
+      tools,
+      { sessionId, roomId: "room-late-resolve", createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-late-resolve" },
+    );
+    emitAssistantText(client, sessionId, "turn-a-done");
+    client.eventQueue.push({ type: "session.idle", properties: { sessionID: sessionId } });
+    await waitFor(() => tools.messages.includes("turn-a-done"));
+    const secondTurn = adapter.onMessage(
+      makeMessage("second task", "room-late-resolve"),
+      tools,
+      { sessionId, roomId: "room-late-resolve", createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-late-resolve" },
+    );
+    await waitFor(() => client.promptCalls.length >= 2);
+    client.eventQueue.push({
+      type: "permission.asked",
+      properties: { id: "perm-2", sessionID: sessionId, permission: "edit", patterns: ["src"] },
+    });
+    await waitFor(() => tools.messages.some((message) => message.includes("approve perm-2")));
+    releaseReply();
+    await approveTurn;
+    await adapter.onMessage(
+      makeMessage("approve perm-2", "room-late-resolve"),
+      tools,
+      { sessionId, roomId: "room-late-resolve", createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-late-resolve" },
+    );
+    expect(client.permissionReplies.map((entry) => entry.permissionId)).toEqual(["perm-1", "perm-2"]);
+    emitAssistantText(client, sessionId, "done");
+    client.eventQueue.push({ type: "session.idle", properties: { sessionID: sessionId } });
+    await secondTurn;
+  });
+
+  it("does not let a late question reject abort a newer turn's pending question", async () => {
+    const tools = new FakeTools();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    let releaseReject!: () => void;
+    const rejectGate = new Promise<void>((resolve) => {
+      releaseReject = resolve;
+    });
+    const original = client.rejectQuestion.bind(client);
+    client.rejectQuestion = async (requestId) => {
+      if (requestId === "question-1") {
+        await rejectGate;
+      }
+      return original(requestId);
+    };
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as any,
+      mcpBackendFactory: httpMcpBackend(),
+    });
+    adapters.push(adapter);
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+    const firstTurn = adapter.onMessage(
+      makeMessage("Need a question"),
+      tools,
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-late-reject" },
+    );
+    await waitFor(() => client.createdSessions.length === 1);
+    const sessionId = client.createdSessions[0]!;
+    client.eventQueue.push({
+      type: "question.asked",
+      properties: { id: "question-1", sessionID: sessionId, questions: [{ question: "One?" }] },
+    });
+    await firstTurn;
+    const rejectTurn = adapter.onMessage(
+      makeMessage("reject", "room-late-reject"),
+      tools,
+      { sessionId, roomId: "room-late-reject", createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-late-reject" },
+    );
+    emitAssistantText(client, sessionId, "turn-a-done");
+    client.eventQueue.push({ type: "session.idle", properties: { sessionID: sessionId } });
+    await waitFor(() => tools.messages.includes("turn-a-done"));
+    const secondTurn = adapter.onMessage(
+      makeMessage("second task", "room-late-reject"),
+      tools,
+      { sessionId, roomId: "room-late-reject", createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-late-reject" },
+    );
+    await waitFor(() => client.promptCalls.length >= 2);
+    client.eventQueue.push({
+      type: "question.asked",
+      properties: { id: "question-2", sessionID: sessionId, questions: [{ question: "Two?" }] },
+    });
+    await waitFor(() => tools.messages.some((message) => message.includes("question-2")));
+    releaseReject();
+    await rejectTurn;
+    expect(client.rejectedQuestions).toEqual(["question-1"]);
+    emitAssistantText(client, sessionId, "done");
+    client.eventQueue.push({ type: "session.idle", properties: { sessionID: sessionId } });
+    await secondTurn;
+  });
+
+  it("reports a recoverable failure when permission reply HTTP throws", async () => {
+    const tools = new FakeTools();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    client.replyPermission = async () => {
+      throw new Error("permission http 500");
+    };
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as any,
+      mcpBackendFactory: httpMcpBackend(),
+    });
+    adapters.push(adapter);
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+    const firstTurn = adapter.onMessage(
+      makeMessage("Need approval flow"),
+      tools,
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-perm-http" },
+    );
+    await waitFor(() => client.createdSessions.length === 1);
+    const sessionId = client.createdSessions[0]!;
+    client.eventQueue.push({
+      type: "permission.asked",
+      properties: { id: "perm-1", sessionID: sessionId, permission: "bash", patterns: ["npm test"] },
+    });
+    await firstTurn;
+    await expectTurnFailed(adapter.onMessage(
+      makeMessage("approve perm-1", "room-perm-http"),
+      tools,
+      { sessionId, roomId: "room-perm-http", createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-perm-http" },
+    ));
+    expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({
+      provider: "opencode",
+      message: expect.stringContaining("permission http 500"),
+    });
   });
 
 });

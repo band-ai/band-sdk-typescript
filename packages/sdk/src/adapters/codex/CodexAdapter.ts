@@ -11,6 +11,7 @@ import {
 import type { MentionInput } from "../../contracts/dtos";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
+import { rethrowIfRecoverableTurnFailure } from "../../core/errors";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { SEND_MESSAGE_TOOL_NAME, SEND_EVENT_TOOL_NAME } from "../../runtime/tools/schemas";
@@ -402,14 +403,25 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       }
 
       if (event.kind === "request") {
-        const usedSendMessage = await this.handleServerRequest({
-          client,
-          tools,
-          roomId,
-          event,
-          enableExecutionReporting: config.enableExecutionReporting ?? false,
-        });
-        sawSendMessageTool = sawSendMessageTool || usedSendMessage;
+        try {
+          const usedSendMessage = await this.handleServerRequest({
+            client,
+            tools,
+            roomId,
+            event,
+            enableExecutionReporting: config.enableExecutionReporting ?? false,
+          });
+          sawSendMessageTool = sawSendMessageTool || usedSendMessage;
+        } catch (error) {
+          rethrowIfRecoverableTurnFailure(error);
+          await this.evictOnTransportFailure(error, client);
+          return reportTurnFailure(
+            tools,
+            agentFailure(this.provider, asErrorMessage(error)),
+            this.logger,
+            { roomId, threadId, turnId },
+          );
+        }
         continue;
       }
 

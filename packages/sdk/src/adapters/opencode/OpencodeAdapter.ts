@@ -281,7 +281,18 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     const roomState = this.getOrCreateRoomState(context.roomId);
     roomState.tools = tools;
 
-    if (await this.handleControlMessage(roomState, message)) {
+    try {
+      if (await this.handleControlMessage(roomState, message)) {
+        return;
+      }
+    } catch (error) {
+      rethrowIfRecoverableTurnFailure(error);
+      await reportTurnFailure(
+        tools,
+        agentFailure(this.provider, asErrorMessage(error)),
+        this.logger,
+        { roomId: roomState.roomId, sessionId: roomState.sessionId },
+      );
       return;
     }
 
@@ -574,6 +585,10 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     }
 
     if (eventType === "session.idle") {
+      const hasText = [...roomState.textParts.values()].some((value) => value.trim().length > 0);
+      if (roomState.lastErrorMessage && !hasText) {
+        roomState.sessionErrored = true;
+      }
       this.finishTurn(roomState);
     }
   }
@@ -702,6 +717,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     roomState.pendingPermission.timeout = setTimeout(() => {
       void this.expirePermission(roomState, requestId);
     }, this.config.approvalWaitTimeoutMs);
+    const expectedTurn = roomState.turnOutcome;
     if (roomState.tools) {
       const patterns = roomState.pendingPermission.patterns.join(", ") || "n/a";
       try {
@@ -709,6 +725,9 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
           `OpenCode approval requested for \`${roomState.pendingPermission.permission}\` (${patterns}). Reply with \`approve ${requestId}\`, \`always ${requestId}\`, or \`reject ${requestId}\`.`,
         );
       } catch (error) {
+        if (roomState.turnOutcome !== expectedTurn || roomState.pendingPermission?.requestId !== requestId) {
+          return;
+        }
         this.logger.warn("opencode_adapter.permission_prompt_delivery_failed", {
           roomId: roomState.roomId,
           requestId,
@@ -725,6 +744,9 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
         );
         return;
       }
+    }
+    if (roomState.turnOutcome !== expectedTurn || roomState.pendingPermission?.requestId !== requestId) {
+      return;
     }
     this.releaseTurnWait(roomState, { kind: "background" });
   }
@@ -753,10 +775,14 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     roomState.pendingQuestion.timeout = setTimeout(() => {
       void this.expireQuestion(roomState, requestId);
     }, this.config.questionWaitTimeoutMs);
+    const expectedTurn = roomState.turnOutcome;
     if (roomState.tools) {
       try {
         await roomState.tools.sendMessage(this.formatQuestionPrompt(questions, requestId));
       } catch (error) {
+        if (roomState.turnOutcome !== expectedTurn || roomState.pendingQuestion?.requestId !== requestId) {
+          return;
+        }
         this.logger.warn("opencode_adapter.question_prompt_delivery_failed", {
           roomId: roomState.roomId,
           requestId,
@@ -771,6 +797,9 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
         return;
       }
     }
+    if (roomState.turnOutcome !== expectedTurn || roomState.pendingQuestion?.requestId !== requestId) {
+      return;
+    }
     this.releaseTurnWait(roomState, { kind: "background" });
   }
 
@@ -784,10 +813,12 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     if (roomState.pendingPermission) {
       const reply = this.parsePermissionReply(lowered, roomState.pendingPermission);
       if (reply) {
+        const requestId = roomState.pendingPermission.requestId;
+        const expectedTurn = roomState.turnOutcome;
         await this.replyPermission(roomState, reply);
-        if (roomState.tools) {
+        if (roomState.tools && roomState.turnOutcome === expectedTurn) {
           await deliverReply(roomState.tools,
-            `OpenCode approval \`${roomState.pendingPermission?.requestId ?? ""}\` handled with \`${reply}\`.`,
+            `OpenCode approval \`${requestId}\` handled with \`${reply}\`.`,
           );
         }
         return true;
@@ -831,8 +862,13 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       return;
     }
 
+    const requestId = pending.requestId;
+    const expectedTurn = roomState.turnOutcome;
     this.cancelPendingTimeout(pending);
-    await client.replyPermission(roomState.sessionId, pending.requestId, { response: reply });
+    await client.replyPermission(roomState.sessionId, requestId, { response: reply });
+    if (roomState.turnOutcome !== expectedTurn || roomState.pendingPermission?.requestId !== requestId) {
+      return;
+    }
     roomState.pendingPermission = null;
   }
 
@@ -843,8 +879,13 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       return;
     }
 
+    const requestId = pending.requestId;
+    const expectedTurn = roomState.turnOutcome;
     this.cancelPendingTimeout(pending);
-    await client.replyQuestion(pending.requestId, { answers });
+    await client.replyQuestion(requestId, { answers });
+    if (roomState.turnOutcome !== expectedTurn || roomState.pendingQuestion?.requestId !== requestId) {
+      return;
+    }
     roomState.pendingQuestion = null;
   }
 
@@ -855,8 +896,13 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       return;
     }
 
+    const requestId = pending.requestId;
+    const expectedTurn = roomState.turnOutcome;
     this.cancelPendingTimeout(pending);
-    await client.rejectQuestion(pending.requestId);
+    await client.rejectQuestion(requestId);
+    if (roomState.turnOutcome !== expectedTurn || roomState.pendingQuestion?.requestId !== requestId) {
+      return;
+    }
     roomState.pendingQuestion = null;
   }
 

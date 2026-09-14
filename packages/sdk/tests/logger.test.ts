@@ -27,6 +27,20 @@ describe("ConsoleLogger", () => {
     expect(String(writeSpy.mock.calls[0]?.[0])).toContain("\"safe\":\"ok\"");
   });
 
+  it("does not redact ordinary sessionId fields after session was added for gateway free-text redaction", () => {
+    const logger = new ConsoleLogger();
+    const writeSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true);
+
+    logger.error("boom", { sessionId: "sess-live", sessionID: "SESS" });
+
+    expect(writeSpy).toHaveBeenCalledOnce();
+    const payload = String(writeSpy.mock.calls[0]?.[0]);
+    expect(payload).toContain("\"sessionId\":\"sess-live\"");
+    expect(payload).toContain("\"sessionID\":\"SESS\"");
+  });
+
   it("handles circular error context safely", () => {
     const logger = new ConsoleLogger();
     const writeSpy = vi

@@ -2,17 +2,17 @@ import { AgentFailure } from "@band-ai/band-sdk-core";
 
 import { FAILURE_METADATA_KEY } from "../../contracts/protocols";
 import { asOptionalRecord, asString } from "../shared/coercion";
-import { SENSITIVE_KEY_TERMS } from "../../core/sensitiveTerms";
+import { GATEWAY_FREE_TEXT_SENSITIVE_KEY_TERMS } from "../../core/sensitiveTerms";
 
 /** This gateway's `AgentFailure.provider` identity. */
 export const PROVIDER = "a2a-gateway";
 
 // Compiled once at module load, not per call: this fires on every gateway
 // failure. Matches key=value/key:value credentials in free-form error text —
-// see `SENSITIVE_KEY_TERMS`'s doc comment for why this needs its own shape
+// see `GATEWAY_FREE_TEXT_SENSITIVE_KEY_TERMS`'s doc comment for why this needs its own shape
 // rather than sharing a compiled regex with `logger.ts`'s isolated-key match.
 const SENSITIVE_VALUE_PATTERN = new RegExp(
-  `(${SENSITIVE_KEY_TERMS})"?\\s*(?:[A-Za-z]+\\s*)?[:=]\\s*"?(?:[A-Za-z][\\w-]*\\s+)?[^\\s,;"]+`,
+  `(${GATEWAY_FREE_TEXT_SENSITIVE_KEY_TERMS})"?\\s*(?:[A-Za-z]+\\s*)?[:=]\\s*"?(?:[A-Za-z][\\w-]*\\s+)?[^\\s,;"]+`,
   "gi",
 );
 
