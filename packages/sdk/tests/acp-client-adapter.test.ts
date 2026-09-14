@@ -317,17 +317,21 @@ describe("ACPClientAdapter", () => {
     ])
   })
 
-  it("coalesces adjacent thought chunks, without merging them into an adjacent text run on either side", async () => {
+  it("coalesces a text run across an interleaved thought run, since a thought is not an action boundary", async () => {
     let clientHandle: {
       sessionUpdate: (params: Record<string, unknown>) => Promise<void>;
     } | null = null
 
     const prompt = vi.fn(async (params: { sessionId: string }) => {
-      // text → thought boundary (no merge), then two thought deltas that do
-      // merge, then a thought → text boundary (no merge either direction).
+      // Claude/Codex both stream visible reasoning interleaved with the
+      // reply itself: text → thought → thought → text. The thought run
+      // merges on its own (already posted separately as a "thought" event),
+      // and — this is the regression this test guards — it must not fragment
+      // the text run around it: both text deltas belong to one reply and
+      // must still post as a single room message.
       await clientHandle?.sessionUpdate({
         sessionId: params.sessionId,
-        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Hi" } },
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Let me check that. " } },
       })
       await clientHandle?.sessionUpdate({
         sessionId: params.sessionId,
@@ -339,7 +343,7 @@ describe("ACPClientAdapter", () => {
       })
       await clientHandle?.sessionUpdate({
         sessionId: params.sessionId,
-        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Done" } },
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Here's the answer." } },
       })
       return { stopReason: "end_turn" }
     })
@@ -382,7 +386,44 @@ describe("ACPClientAdapter", () => {
 
     const thoughtEvents = tools.events.filter((event) => event.messageType === "thought")
     expect(thoughtEvents).toEqual([expect.objectContaining({ content: "Thinking it over" })])
-    expect(tools.messages).toEqual(["Hi", "Done"])
+    expect(tools.messages).toEqual(["Let me check that. Here's the answer."])
+  })
+
+  it("a non-streamed chunk closes every open streamed run, not just the one sharing its chunkType", async () => {
+    const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+
+    // Both a text run and a thought run are open when the tool call lands —
+    // it must close both, so the text/thought that follow start fresh runs
+    // instead of silently gluing onto content from before the tool call.
+    await client.sessionUpdate({
+      sessionId: "session-x",
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Before" } },
+    })
+    await client.sessionUpdate({
+      sessionId: "session-x",
+      update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "Thinking before" } },
+    })
+    await client.sessionUpdate({
+      sessionId: "session-x",
+      update: { sessionUpdate: "tool_call", toolCallId: "call-1", title: "search", rawInput: {} },
+    })
+    await client.sessionUpdate({
+      sessionId: "session-x",
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "After" } },
+    })
+    await client.sessionUpdate({
+      sessionId: "session-x",
+      update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "Thinking after" } },
+    })
+
+    const chunks = client.getCollectedChunks("session-x")
+    expect(chunks.map((chunk) => ({ chunkType: chunk.chunkType, content: chunk.content }))).toEqual([
+      { chunkType: "text", content: "Before" },
+      { chunkType: "thought", content: "Thinking before" },
+      { chunkType: "tool_call", content: "search" },
+      { chunkType: "text", content: "After" },
+      { chunkType: "thought", content: "Thinking after" },
+    ])
   })
 
   it("does not merge a streamed text chunk with an adjacent, unrelated cursor/task completion marker sharing the same chunkType", async () => {

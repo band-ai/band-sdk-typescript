@@ -150,21 +150,37 @@ export class BandACPClient implements Client {
 }
 
 // Posting every collected chunk verbatim would flood the room with a dozen
-// one-word messages for a single streamed reply, so adjacent chunks merge
-// into one when they're both genuine deltas of the same run — see
+// one-word messages for a single streamed reply. A genuine streamed run (see
 // `CollectedChunk.streamed` for why that can't be judged from `chunkType`
-// alone. Never mutates `chunks` or its objects — each pushed entry is its
-// own shallow clone, and only a clone's `content` is ever mutated afterward.
+// alone) stays open across the *other* streamed chunk type — Claude/Codex
+// both interleave visible reasoning mid-reply (text → thought → thought →
+// text → …), and a thought is not an action, it's already routed to its own
+// room event, so it must not fragment the text run (or vice versa) the way a
+// real action does. Only a non-streamed chunk (tool_call, tool_call_update,
+// plan, or a one-shot same-typed marker) is a real boundary, closing every
+// open run so the next streamed chunk of either type starts a fresh one.
+// Never mutates `chunks` or its objects — each pushed entry is its own
+// shallow clone, and only a clone's `content` is ever mutated afterward.
 function coalesceChunks(chunks: readonly CollectedChunk[]): CollectedChunk[] {
   const result: CollectedChunk[] = []
+  const openRuns = new Map<CollectedChunk["chunkType"], CollectedChunk>()
 
   for (const chunk of chunks) {
-    const last = result[result.length - 1]
-    if (chunk.streamed && last?.streamed && last.chunkType === chunk.chunkType) {
-      last.content += chunk.content
+    if (!chunk.streamed) {
+      openRuns.clear()
+      result.push({ ...chunk })
       continue
     }
-    result.push({ ...chunk })
+
+    const openRun = openRuns.get(chunk.chunkType)
+    if (openRun) {
+      openRun.content += chunk.content
+      continue
+    }
+
+    const clone = { ...chunk }
+    openRuns.set(chunk.chunkType, clone)
+    result.push(clone)
   }
 
   return result
