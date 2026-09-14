@@ -404,11 +404,14 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         }
       }
 
+      const acpError = asAcpJsonRpcError(error)
       await reportTurnFailure(
         tools,
         isTimeout
           ? agentFailure(this.provider, "ACP turn timed out.", FAILURE_CODE_TIMEOUT)
-          : agentFailure(this.provider, asErrorMessage(error)),
+          : acpError
+            ? agentFailure(this.provider, acpError.message, String(acpError.code), acpError.data)
+            : agentFailure(this.provider, asErrorMessage(error)),
         this.logger,
         { roomId: context.roomId, sessionId },
       )
@@ -636,7 +639,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     const acp = await acpModule.get()
     // Handed its permission handler here, one line before the process it will
     // serve even exists — no session can out-race its own route.
-    const client = new BandACPClient((params) => this.routePermissionRequest(params))
+    const owner = { generation: -1 }
+    const client = new BandACPClient((params) => this.routePermissionRequest(params, owner.generation))
     const handle = await this.connectionFactory(client as Client, {
       command: this.command,
       cwd: this.cwd,
@@ -661,6 +665,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       }
 
       this.connectionGeneration++
+      owner.generation = this.connectionGeneration
       this.client = client
       this.connection = connection
       this.connectionHandle = handle
@@ -676,15 +681,13 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       throw error
     }
 
+    const installedGeneration = this.connectionGeneration
     void connection.closed.finally(() => {
+      this.pruneConnectionGeneration(installedGeneration)
       if (this.connection === connection) {
         this.connection = null
         this.connectionHandle = null
         this.connectionState = null
-        this.activeSessions.clear()
-        // Nothing can answer these any more: the agent that asked is gone.
-        // Without this they'd sit on screen for the full permission timeout.
-        this.cancelAllPendingPermissions("connection-lost")
       }
     })
 
@@ -1171,8 +1174,12 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   // outlives a dropped connection so the session can be restored later.
   private async routePermissionRequest(
     params: RequestPermissionRequest,
+    connectionGeneration: number,
   ): Promise<RequestPermissionResponse> {
-    const key = this.sessionKey(this.connectionGeneration, params.sessionId)
+    if (connectionGeneration < 0) {
+      return { outcome: { outcome: "cancelled" } }
+    }
+    const key = this.sessionKey(connectionGeneration, params.sessionId)
     const isActive = this.activeSessions.has(key)
     const roomId = isActive ? this.sessionToRoom.get(key) : undefined
     const tools = roomId === undefined ? undefined : this.roomTools.get(roomId)
@@ -1188,7 +1195,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     }
 
     try {
-      return await this.handlePermissionRequest(tools, roomId, params)
+      return await this.handlePermissionRequest(tools, roomId, params, connectionGeneration)
     } catch (error) {
       this.safeWarn("permission handling failed; cancelling the request", {
         sessionId: params.sessionId,
@@ -1203,6 +1210,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     tools: AdapterToolsProtocol,
     roomId: string,
     params: RequestPermissionRequest,
+    connectionGeneration: number,
   ): Promise<RequestPermissionResponse> {
     const toolName = params.toolCall.title ?? "unknown"
 
@@ -1219,7 +1227,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     // cancellable immediately, not only once `resolveManually` itself runs.
     const controller = this.resolvePermission ? new AbortController() : undefined
     if (controller) {
-      this.trackPending(this.sessionKey(this.connectionGeneration, params.sessionId), controller)
+      this.trackPending(this.sessionKey(connectionGeneration, params.sessionId), controller)
     }
 
     // A room's only way to learn a request is pending at all — if it never
@@ -1255,7 +1263,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         }
       }),
       controller
-        ? this.resolveManually(roomId, params, controller)
+        ? this.resolveManually(roomId, params, controller, connectionGeneration)
         : Promise.resolve(autoSelection?.optionId),
     ])
 
@@ -1327,6 +1335,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     roomId: string,
     params: RequestPermissionRequest,
     controller: AbortController,
+    connectionGeneration: number,
   ): Promise<string | undefined> {
     const abandoned = new Promise<undefined>((resolve) => {
       controller.signal.addEventListener("abort", () => resolve(undefined))
@@ -1351,7 +1360,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       ])
     } finally {
       clearTimeout(timer)
-      this.untrackPending(this.sessionKey(this.connectionGeneration, params.sessionId), controller)
+      this.untrackPending(this.sessionKey(connectionGeneration, params.sessionId), controller)
       // The final abort reason is decided by `handlePermissionRequest`, once
       // the actual `RequestPermissionResponse` is known — not here, and not
       // unconditionally `"settled"`: that would contradict a response that
@@ -1412,6 +1421,30 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private cancelAllPendingPermissions(reason: ACPPermissionAbandonReason): void {
     for (const sessionId of this.pendingPermissions.keys()) {
       this.cancelPendingPermissions(sessionId, reason)
+    }
+  }
+
+  private pruneConnectionGeneration(generation: number): void {
+    const prefix = `${generation}:`
+    for (const key of [...this.abandonedSessions]) {
+      if (key.startsWith(prefix)) {
+        this.abandonedSessions.delete(key)
+      }
+    }
+    for (const key of [...this.activeSessions]) {
+      if (key.startsWith(prefix)) {
+        this.activeSessions.delete(key)
+      }
+    }
+    for (const key of [...this.bootstrappedSessions]) {
+      if (key.startsWith(prefix)) {
+        this.bootstrappedSessions.delete(key)
+      }
+    }
+    for (const key of [...this.pendingPermissions.keys()]) {
+      if (key.startsWith(prefix)) {
+        this.cancelPendingPermissions(key, "connection-lost")
+      }
     }
   }
 
@@ -1584,3 +1617,23 @@ function flattenConfigSelectOptions(
     return [entry]
   })
 }
+
+// Structural guard, not `instanceof RequestError`: `connection.prompt(...)`
+// rejects with the plain deserialized wire object (`{code, message, data?}`),
+// never re-wrapped into a `RequestError` instance (that class is only used
+// on the agent side to *construct* an outgoing error response). Some stacks
+// wrap that payload as `{ error: { code, message, data? } }`.
+function isAcpErrorResponse(error: unknown): error is { code: number; message: string; data?: unknown } {
+  return typeof error === "object" && error !== null
+    && typeof (error as { code?: unknown }).code === "number"
+    && typeof (error as { message?: unknown }).message === "string"
+}
+
+function asAcpJsonRpcError(error: unknown): { code: number; message: string; data?: unknown } | undefined {
+  if (isAcpErrorResponse(error)) {
+    return error
+  }
+  const nested = asOptionalRecord(error)?.error
+  return isAcpErrorResponse(nested) ? nested : undefined
+}
+

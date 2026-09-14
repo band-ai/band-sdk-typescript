@@ -2400,6 +2400,32 @@ describe("ACPClientAdapter", () => {
       })
     })
 
+    it("a fake connection.prompt rejecting with a wire-shaped error reaches sendFailure with code, message, and detail populated", async () => {
+      const { adapter } = buildFailureHarness({
+        prompt: vi.fn(async () => {
+          throw { code: 42, message: "quota exceeded", data: { retryAfterMs: 5000 } }
+        }),
+      })
+      await adapter.onStarted("Agent", "desc")
+
+      const tools = new FakeTools()
+      await expectTurnFailed(adapter.onMessage(
+        makeMessage("question", "room-jsonrpc"),
+        tools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-jsonrpc" },
+      ))
+
+      expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({
+        provider: "acp",
+        code: "42",
+        message: "quota exceeded",
+        detail: { retryAfterMs: 5000 },
+      })
+    })
+
     it("does not redeliver an already-flushed chunk when a later step of the same turn fails", async () => {
       const { adapter, getClient } = buildFailureHarness({
         prompt: vi.fn(async (params: { sessionId: string }) => {
@@ -2797,6 +2823,116 @@ describe("ACPClientAdapter", () => {
         { isSessionBootstrap: false, roomId: "room-race" },
       )
       expect(newSession).toHaveBeenCalledTimes(2)
+      await adapter.stop()
+    })
+
+    it("a stale generation's permission request is cancelled and never delivered to a same-id replacement room", async () => {
+      let attempt = 0
+      let client1: BandACPClient | null = null
+      let resolveClosed!: () => void
+      const closed = new Promise<void>((resolve) => {
+        resolveClosed = resolve
+      })
+      const stalePromptStarted = (() => { let resolve!: () => void; const promise = new Promise<void>((r) => { resolve = r }); return { promise, resolve } })()
+      const replPromptStarted = (() => { let resolve!: () => void; const promise = new Promise<void>((r) => { resolve = r }); return { promise, resolve } })()
+      const releaseReplacement = (() => { let resolve!: () => void; const promise = new Promise<void>((r) => { resolve = r }); return { promise, resolve } })()
+      const resolvedRooms: string[] = []
+      const newSession = vi.fn(async () => ({ sessionId: "session-persist" }))
+      const permissionParams = {
+        sessionId: "session-persist",
+        toolCall: { toolCallId: "call-stale", title: "Edit config" },
+        options: [{ kind: "allow_once" as const, name: "Allow once", optionId: "allow" }],
+      }
+
+      const adapter = new ACPClientAdapter({
+        command: ["acp-agent"],
+        enableMcpTools: false,
+        resolvePermission: async (request) => {
+          resolvedRooms.push(request.roomId)
+          return "allow"
+        },
+        connectionFactory: async (client) => {
+          attempt += 1
+          const controller = new AbortController()
+          if (attempt === 1) {
+            client1 = client as unknown as BandACPClient
+            return {
+              connection: {
+                signal: controller.signal,
+                closed,
+                initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+                authenticate: vi.fn(async () => ({})),
+                loadSession: vi.fn(async () => ({})),
+                unstable_resumeSession: vi.fn(),
+                newSession,
+                cancel: vi.fn(async () => undefined),
+                prompt: vi.fn(async () => {
+                  stalePromptStarted.resolve()
+                  return new Promise(() => undefined)
+                }),
+              } as never,
+              stop: async () => {
+                controller.abort()
+              },
+            }
+          }
+          return {
+            connection: {
+              signal: controller.signal,
+              closed: new Promise<void>(() => undefined),
+              initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+              authenticate: vi.fn(async () => ({})),
+              loadSession: vi.fn(async () => ({})),
+              unstable_resumeSession: vi.fn(),
+              newSession,
+              cancel: vi.fn(async () => undefined),
+              prompt: vi.fn(async () => {
+                replPromptStarted.resolve()
+                await releaseReplacement.promise
+                return { stopReason: "end_turn" }
+              }),
+            } as never,
+            stop: async () => {
+              controller.abort()
+            },
+          }
+        },
+      })
+
+      await adapter.onStarted("Agent", "desc")
+      const staleTools = new FakeTools()
+      const staleTurn = adapter.onMessage(
+        makeMessage("hello", "room-perm-race"),
+        staleTools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-perm-race" },
+      )
+      staleTurn.catch(() => undefined)
+      await stalePromptStarted.promise
+      await adapter.onCleanup("room-perm-race")
+      resolveClosed()
+      await new Promise((resolve) => setTimeout(resolve, 10))
+
+      const replTools = new FakeTools()
+      const replTurn = adapter.onMessage(
+        makeMessage("replacement", "room-perm-race"),
+        replTools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-perm-race" },
+      )
+      await replPromptStarted.promise
+
+      const stalePermission = await client1!.requestPermission(permissionParams)
+      expect(stalePermission).toEqual({ outcome: { outcome: "cancelled" } })
+      expect(replTools.events.filter((event) => event.metadata?.permission_request === true)).toEqual([])
+      expect(resolvedRooms).toEqual([])
+
+      releaseReplacement.resolve()
+      await replTurn
       await adapter.stop()
     })
 
