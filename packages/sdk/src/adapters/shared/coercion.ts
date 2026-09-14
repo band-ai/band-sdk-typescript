@@ -105,9 +105,16 @@ function formatCaughtError(error: unknown, depth: number): string {
   return `${message} (${formatErrorDetail(detail, depth + 1)})`;
 }
 
+// Applies the size cap once, at the single return point, so every branch
+// below — including a nested Error's own fully-formatted message/detail —
+// is capped the same way, rather than truncating some branches and not others.
 function formatErrorDetail(detail: unknown, depth: number): string {
+  return truncate(formatErrorDetailText(detail, depth));
+}
+
+function formatErrorDetailText(detail: unknown, depth: number): string {
   if (typeof detail === "string") {
-    return truncate(detail);
+    return detail;
   }
 
   if (typeof detail === "number" && !Number.isFinite(detail)) {
@@ -122,10 +129,10 @@ function formatErrorDetail(detail: unknown, depth: number): string {
 
   const nested = asNestedMessage(detail);
   if (nested !== null) {
-    return truncate(nested);
+    return nested;
   }
 
-  return truncate(toDisplayText(detail));
+  return toDisplayText(detail);
 }
 
 function truncate(text: string): string {
@@ -136,5 +143,9 @@ function truncate(text: string): string {
 
 export function asNestedMessage(value: unknown): string | null {
   const record = asOptionalRecord(value);
-  return typeof record?.message === "string" ? record.message : null;
+  const message = record?.message;
+  // A blank message is treated the same as a missing one — an empty string
+  // is "present" by strict null-checks but produces the same dangling-
+  // parenthetical artifact a genuinely absent message does.
+  return typeof message === "string" && asNonEmptyString(message) !== null ? message : null;
 }

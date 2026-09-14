@@ -106,6 +106,24 @@ describe("adapter shared utilities", () => {
       const result = asErrorMessage({ data: "detail" });
       expect(result).toContain("detail");
     });
+
+    it("does not treat a blank nested message as present, whether on a plain object or an Error cause", () => {
+      expect(asErrorMessage({ message: "boom", data: { message: "" } })).not.toMatch(/\(\)$/);
+
+      const inner = new Error("");
+      const outer = new Error("boom") as Error & { cause: unknown };
+      outer.cause = inner;
+      expect(asErrorMessage(outer)).not.toMatch(/\(\)$/);
+    });
+
+    it("truncates an oversized message reached through a nested Error's cause, not just a plain string detail", () => {
+      const hugeInner = new Error("A".repeat(100_000));
+      const outer = new Error("boom") as Error & { cause: unknown };
+      outer.cause = hugeInner;
+      const result = asErrorMessage(outer);
+      expect(result).toContain("(truncated)");
+      expect(result.length).toBeLessThan(600);
+    });
   });
 
   describe("asNestedMessage", () => {
