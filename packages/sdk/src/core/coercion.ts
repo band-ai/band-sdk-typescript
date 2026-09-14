@@ -28,7 +28,9 @@ function toDisplayText(value: unknown): string {
     return "";
   }
   try {
-    return JSON.stringify(value);
+    const json = JSON.stringify(value);
+    // JSON.stringify returns undefined for functions/symbols; guard against it.
+    return typeof json === "string" ? json : String(value);
   } catch {
     return String(value);
   }
