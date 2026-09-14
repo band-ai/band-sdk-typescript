@@ -25,7 +25,7 @@ import {
   findCustomToolInIndex,
 } from "../../runtime/tools/customTools";
 import { asErrorMessage, asNonEmptyString, asOptionalRecord, asRecord, asString, toWireString } from "../shared/coercion";
-import { FAILURE_CODE_TIMEOUT, ProviderTurnFailedError, agentFailure, safeSendFailure } from "../shared/providerFailure";
+import { FAILURE_CODE_TIMEOUT, ProviderTurnFailedError, agentFailure, reportTurnFailure, safeSendFailure } from "../shared/providerFailure";
 import { deliverReply } from "../shared/deliveryFailedError";
 import { findLatestTaskMetadata } from "../shared/history";
 import {
@@ -312,9 +312,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       return { client, threadId };
     } catch (error) {
       await this.evictOnTransportFailure(error, client);
-      const failure = agentFailure(this.provider, asErrorMessage(error));
-      await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId });
-      throw new ProviderTurnFailedError(failure);
+      return reportTurnFailure(tools, agentFailure(this.provider, asErrorMessage(error)), this.logger, { roomId: context.roomId });
     }
   }
 
@@ -336,14 +334,10 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       ));
     } catch (error) {
       await this.evictOnTransportFailure(error, client);
-      const failure = agentFailure(this.provider, asErrorMessage(error));
-      await safeSendFailure(tools, failure, this.logger, logContext);
-      throw new ProviderTurnFailedError(failure);
+      return reportTurnFailure(tools, agentFailure(this.provider, asErrorMessage(error)), this.logger, logContext);
     }
     if (!turnStarted) {
-      const failure = agentFailure(this.provider, "Codex returned an invalid turn/start payload.");
-      await safeSendFailure(tools, failure, this.logger, logContext);
-      throw new ProviderTurnFailedError(failure);
+      return reportTurnFailure(tools, agentFailure(this.provider, "Codex returned an invalid turn/start payload."), this.logger, logContext);
     }
     return turnStarted;
   }
@@ -1284,9 +1278,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       response = await client.request<unknown>("model/list", {});
     } catch (error) {
       await this.evictOnTransportFailure(error, client);
-      const failure = agentFailure(this.provider, asErrorMessage(error));
-      await safeSendFailure(tools, failure, this.logger, { roomId });
-      throw new ProviderTurnFailedError(failure);
+      return reportTurnFailure(tools, agentFailure(this.provider, asErrorMessage(error)), this.logger, { roomId });
     }
     const result = parseModelListResponse(response);
     if (!result) {

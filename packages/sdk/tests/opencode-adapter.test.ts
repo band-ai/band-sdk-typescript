@@ -1073,6 +1073,55 @@ describe("OpencodeAdapter", () => {
     expect(client.promptCalls.map((call) => call.sessionId)).toContain(client.createdSessions[1]);
   });
 
+  it("does not attach a late permission.asked event from a timed-out turn's still-settling session to the room's current state", async () => {
+    // The abort after a timeout is fire-and-forget, so the timed-out
+    // session can legitimately keep emitting events after the room has
+    // already been told the turn failed. Nothing else unroutes that
+    // session until the room's *next* turn calls ensureSession -- which may
+    // never come, or come long after such a late event arrives.
+    const tools = new FakeTools();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as any,
+      config: { turnTimeoutMs: 30 },
+      mcpBackendFactory: httpMcpBackend(),
+    });
+    adapters.push(adapter);
+
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("Never responds", "room-stale-permission"),
+        tools,
+        { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-stale-permission" },
+      ),
+    );
+
+    const timedOutSessionId = client.createdSessions[0]!;
+    const messageCountBeforeLateEvent = tools.messages.length;
+
+    client.eventQueue.push({
+      type: "permission.asked",
+      properties: {
+        id: "perm-late",
+        sessionID: timedOutSessionId,
+        permission: "bash",
+        patterns: ["rm -rf /"],
+      },
+    });
+
+    // Nothing in this adapter observes this event synchronously; give its
+    // event loop a turn to process it before asserting nothing happened.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(tools.messages).toHaveLength(messageCountBeforeLateEvent);
+    expect(client.permissionReplies).toEqual([]);
+  });
+
   it("replays the room's prior conversation into a forced-fresh session, not just a restored one", async () => {
     // A forced-fresh session (after a timeout) is a brand-new OpenCode session,
     // but not a new conversation from the room's perspective — the room's real

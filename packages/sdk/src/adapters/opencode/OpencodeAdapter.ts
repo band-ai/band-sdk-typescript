@@ -1032,9 +1032,21 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       // settling server-side when the room's next turn starts — that turn
       // must open a fresh session rather than racing a prompt against it.
       roomState.forceFreshSession = true;
+      this.abandonSession(abortedSessionId);
     }
     const failure = agentFailure(this.provider, "OpenCode timed out before completing the turn.", FAILURE_CODE_TIMEOUT);
     await this.reportTerminalFailure(roomState, failure);
+  }
+
+  // Unroutes a session this room has given up on (a turn timeout, or a
+  // failed interactive-prompt delivery) so a late event the still-settling
+  // turn emits afterward — `roomStateForEvent` resolves purely off
+  // `roomBySession`, with no notion of "this room moved on" of its own — is
+  // dropped instead of attaching to the room's current, unrelated state.
+  // Left to `ensureSession`'s own cleanup, this wouldn't happen until the
+  // room's *next* turn, which can be arbitrarily later than this point.
+  private abandonSession(sessionId: string): void {
+    this.roomBySession.delete(sessionId);
   }
 
   private async handleSessionError(roomState: RoomState): Promise<void> {
@@ -1079,6 +1091,23 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     // prompt delivery failed. A retry must own a new session so that late
     // events remain attributable to the abandoned turn.
     roomState.forceFreshSession = true;
+    const client = this.client;
+    const abandonedSessionId = roomState.sessionId;
+    if (client && abandonedSessionId) {
+      // Same reasoning as `handleTurnTimeout`: nothing else told this turn's
+      // session to stop, so best-effort ask it to.
+      abandon(
+        () => client.abortSession(abandonedSessionId),
+        (abortError) => {
+          this.logger.warn("opencode_adapter.turn_abort_failed", {
+            roomId: roomState.roomId,
+            sessionId: abandonedSessionId,
+            error: abortError,
+          });
+        },
+      );
+      this.abandonSession(abandonedSessionId);
+    }
     if (rejectInteraction) {
       abandon(rejectInteraction, (rejectionError) => {
         this.logger.warn("opencode_adapter.interaction_rejection_failed", {

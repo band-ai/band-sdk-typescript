@@ -1,5 +1,5 @@
 import { SimpleAdapter } from "../core/simpleAdapter";
-import { RecoverableTurnError } from "../core/errors";
+import { rethrowIfRecoverableTurnFailure } from "../core/errors";
 import type { AdapterToolsProtocol } from "../contracts/protocols";
 import type { HistoryProvider, PlatformMessage } from "../runtime/types";
 import { asErrorMessage } from "./shared/coercion";
@@ -112,9 +112,7 @@ export class GenericAdapter extends SimpleAdapter<HistoryProvider> {
       // reportTurnFailure) can legitimately throw an already-reported
       // RecoverableTurnError — rethrow it as-is rather than wrapping it in a
       // second, duplicate failure report.
-      if (error instanceof RecoverableTurnError) {
-        throw error;
-      }
+      rethrowIfRecoverableTurnFailure(error);
 
       // Otherwise unguarded, a handler bug would escape as a plain throw:
       // `SimpleAdapter` has no catch of its own, so it isn't a

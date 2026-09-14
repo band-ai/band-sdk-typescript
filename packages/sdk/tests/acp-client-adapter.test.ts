@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ACPClientAdapter, type ACPClientAdapterOptions } from "../src/adapters/acp";
 import { BandACPClient } from "../src/adapters/acp/client";
-import { FakeTools, makeMessage } from "./testUtils";
+import { FakeTools, expectTurnFailed, findFailureEvent, makeMessage } from "./testUtils";
+import { describeDeliveryContract } from "./deliveryContract";
 
 function makeLoggerSpy() {
   return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
@@ -2191,6 +2192,213 @@ describe("ACPClientAdapter", () => {
       } finally {
         vi.useRealTimers()
       }
+    })
+  })
+
+  describe("failure reporting", () => {
+    function buildFailureHarness(input: {
+      turnTimeoutMs?: number;
+      prompt: ReturnType<typeof vi.fn>;
+      cancel?: ReturnType<typeof vi.fn>;
+    }) {
+      let clientHandle: BandACPClient | null = null
+      const cancel = input.cancel ?? vi.fn(async () => undefined)
+      const loadSession = vi.fn(async () => ({}))
+      const newSession = vi.fn(async () => ({ sessionId: "session-1" }))
+
+      const adapter = new ACPClientAdapter({
+        command: ["acp-agent"],
+        enableMcpTools: false,
+        turnTimeoutMs: input.turnTimeoutMs,
+        connectionFactory: async (client) => {
+          clientHandle = client as unknown as BandACPClient
+          const controller = new AbortController()
+          return {
+            connection: {
+              signal: controller.signal,
+              closed: new Promise<void>(() => undefined),
+              initialize: vi.fn(async () => ({
+                protocolVersion: 1,
+                agentCapabilities: { loadSession: true },
+              })),
+              authenticate: vi.fn(async () => ({})),
+              loadSession,
+              unstable_resumeSession: vi.fn(),
+              newSession,
+              cancel,
+              prompt: input.prompt,
+            } as never,
+            stop: async () => {
+              controller.abort()
+            },
+          }
+        },
+      })
+
+      return { adapter, cancel, loadSession, newSession, getClient: () => requireAcpClient(clientHandle) }
+    }
+
+    describeDeliveryContract([{
+      path: "ACP flushed reply chunk",
+      turn: async (tools) => {
+        const { adapter, getClient } = buildFailureHarness({
+          prompt: vi.fn(async (params: { sessionId: string }) => {
+            await getClient().sessionUpdate({
+              sessionId: params.sessionId,
+              update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "final answer" } },
+            })
+            return { stopReason: "end_turn" }
+          }),
+        })
+        await adapter.onStarted("Agent", "desc")
+        await adapter.onMessage(
+          makeMessage("question", "room-delivery"),
+          tools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-delivery" },
+        )
+      },
+    }])
+
+    it("reports a structured failure, carrying the provider's stop reason, without throwing a raw error", async () => {
+      const { adapter } = buildFailureHarness({
+        prompt: vi.fn(async () => ({ stopReason: "refusal" })),
+      })
+      await adapter.onStarted("Agent", "desc")
+
+      const tools = new FakeTools()
+      await expectTurnFailed(adapter.onMessage(
+        makeMessage("question", "room-refusal"),
+        tools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-refusal" },
+      ))
+
+      expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({
+        provider: "acp",
+        code: "refusal",
+        message: "ACP turn ended with stop reason: refusal.",
+      })
+    })
+
+    it("reports a structured failure when the prompt call itself rejects", async () => {
+      const promptError = new Error("agent process crashed")
+      const { adapter } = buildFailureHarness({
+        prompt: vi.fn(async () => {
+          throw promptError
+        }),
+      })
+      await adapter.onStarted("Agent", "desc")
+
+      const tools = new FakeTools()
+      await expectTurnFailed(adapter.onMessage(
+        makeMessage("question", "room-crash"),
+        tools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-crash" },
+      ))
+
+      expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({
+        provider: "acp",
+        message: "agent process crashed",
+      })
+    })
+
+    it("on a turn timeout: cancels the outstanding prompt, flushes output streamed so far, and evicts the session so the room's next turn restores rather than reuses it", async () => {
+      vi.useFakeTimers()
+      try {
+        const prompt = vi.fn()
+        const { adapter, cancel, loadSession, newSession, getClient } = buildFailureHarness({
+          turnTimeoutMs: 1_000,
+          prompt,
+        })
+        prompt.mockImplementationOnce(async (params: { sessionId: string }) => {
+          await getClient().sessionUpdate({
+            sessionId: params.sessionId,
+            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "partial-before-timeout" } },
+          })
+          // Never settles — the real agent is still working when the turn
+          // gives up waiting on it.
+          return new Promise(() => undefined)
+        })
+        prompt.mockImplementation(async () => ({ stopReason: "end_turn" }))
+
+        await adapter.onStarted("Agent", "desc")
+
+        const tools = new FakeTools()
+        const turn = adapter.onMessage(
+          makeMessage("question", "room-timeout"),
+          tools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-timeout" },
+        )
+        // A safety net only -- `expectTurnFailed` below attaches the real
+        // assertion separately. Without this, the rejection below (once the
+        // timer fires) has no handler yet during the `advanceTimersByTimeAsync`
+        // tick that produces it, which Node flags as unhandled even though
+        // `expectTurnFailed` handles it moments later.
+        turn.catch(() => undefined)
+
+        await vi.advanceTimersByTimeAsync(1_000)
+        await expectTurnFailed(turn)
+
+        // Partial output the agent had already streamed still reaches the
+        // room instead of being silently discarded.
+        expect(tools.messages).toEqual(["partial-before-timeout"])
+        expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({
+          provider: "acp",
+          code: "timeout",
+        })
+        // The abandoned turn is actually told to stop, not just given up on
+        // locally.
+        expect(cancel).toHaveBeenCalledWith({ sessionId: "session-1" })
+
+        // The timed-out session is evicted: the room's next turn restores it
+        // via `loadSession` instead of treating it as still-active and
+        // racing a second prompt against the first, abandoned one.
+        const nextTools = new FakeTools()
+        await adapter.onMessage(
+          makeMessage("follow up", "room-timeout"),
+          nextTools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-timeout" },
+        )
+        expect(loadSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-1" }))
+        expect(newSession).toHaveBeenCalledTimes(1)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it.each([0, -1, NaN])("constructing with an invalid turnTimeoutMs (%s) throws", (invalid) => {
+      expect(() => new ACPClientAdapter({
+        command: ["acp-agent"],
+        turnTimeoutMs: invalid,
+      })).toThrow(/turnTimeoutMs must be a positive number or Infinity/)
+    })
+
+    it("constructing with a turnTimeoutMs beyond setTimeout's max delay throws", () => {
+      expect(() => new ACPClientAdapter({
+        command: ["acp-agent"],
+        turnTimeoutMs: 2_147_483_648,
+      })).toThrow(/turnTimeoutMs must be Infinity or at most 2147483647/)
+    })
+
+    it("accepts Infinity as an explicit, unbounded turnTimeoutMs", () => {
+      expect(() => new ACPClientAdapter({
+        command: ["acp-agent"],
+        turnTimeoutMs: Infinity,
+      })).not.toThrow()
     })
   })
 });

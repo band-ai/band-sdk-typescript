@@ -80,15 +80,23 @@ describe("safeSendFailure", () => {
     });
   });
 
-  it("resolves without logging anything when tools.sendFailure succeeds", async () => {
-    const failure = new AgentFailure("test", "boom");
+  it("still logs the failure via the given logger even when tools.sendFailure succeeds", async () => {
+    const failure = new AgentFailure("test", "boom", "some_code");
     const tools = { sendFailure: vi.fn(async () => ({ ok: true })) } as unknown as MessagingTools;
     const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
-    await expect(safeSendFailure(tools, failure, logger)).resolves.toBeUndefined();
+    await expect(safeSendFailure(tools, failure, logger, { roomId: "room-1" })).resolves.toBeUndefined();
 
     expect(tools.sendFailure).toHaveBeenCalledWith(failure);
-    expect(logger.warn).not.toHaveBeenCalled();
+    // The room event this posts isn't the only place a provider failure
+    // should be visible -- an operator's Logger/observability sink needs its
+    // own record too, independent of whether the room delivery itself
+    // succeeds.
+    expect(logger.warn).toHaveBeenCalledWith("provider_failure.reported", {
+      provider: "test",
+      code: "some_code",
+      roomId: "room-1",
+    });
   });
 });
 

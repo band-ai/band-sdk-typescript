@@ -22,6 +22,7 @@ import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { mentionSubjectsFromMetadata, replaceUuidMentions } from "../../runtime/formatters";
 import { systemUpdateParts } from "../shared/conversationPrompt";
+import { asErrorMessage } from "../shared/coercion";
 import { withTimeout } from "../shared/withTimeout";
 import { deliverReply } from "../shared/deliveryFailedError";
 import { FAILURE_CODE_TIMEOUT, agentFailure, reportTurnFailure } from "../shared/providerFailure";
@@ -73,6 +74,17 @@ const DEFAULT_TURN_TIMEOUT_MS = 60 * 60_000;
 // process acknowledging an administrative call, not doing model inference.
 const SET_SESSION_MODE_TIMEOUT_MS = 10_000;
 const MAX_SETTIMEOUT_DELAY_MS = 2_147_483_647;
+
+// `setTimeout` silently truncates any delay past this to ~1ms, so a config
+// value beyond it must be rejected outright rather than let that surprise
+// through. Shared by every constructor timeout check below; each caller
+// still gates whether the check applies (a value that's currently unused,
+// or Infinity, may skip it) since that condition differs per field.
+function assertWithinSetTimeoutBound(message: string, value: number): void {
+  if (value > MAX_SETTIMEOUT_DELAY_MS) {
+    throw new ValidationError(message)
+  }
+}
 
 export interface ACPModeRequest {
   roomId: string;
@@ -194,16 +206,22 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     if ((this.resolvePermission || this.resolveSessionMode) && (!Number.isFinite(this.permissionTimeoutMs) || this.permissionTimeoutMs <= 0)) {
       throw new ValidationError(`permissionTimeoutMs must be a positive finite number, got ${options.permissionTimeoutMs}`)
     }
-    if ((this.resolvePermission || this.resolveSessionMode) && this.permissionTimeoutMs > MAX_SETTIMEOUT_DELAY_MS) {
-      throw new ValidationError(`permissionTimeoutMs must be at most ${MAX_SETTIMEOUT_DELAY_MS}, got ${options.permissionTimeoutMs}`)
+    if (this.resolvePermission || this.resolveSessionMode) {
+      assertWithinSetTimeoutBound(
+        `permissionTimeoutMs must be at most ${MAX_SETTIMEOUT_DELAY_MS}, got ${options.permissionTimeoutMs}`,
+        this.permissionTimeoutMs,
+      )
     }
 
     this.turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS
     if (Number.isNaN(this.turnTimeoutMs) || this.turnTimeoutMs <= 0) {
       throw new ValidationError(`turnTimeoutMs must be a positive number or Infinity, got ${options.turnTimeoutMs}`)
     }
-    if (Number.isFinite(this.turnTimeoutMs) && this.turnTimeoutMs > MAX_SETTIMEOUT_DELAY_MS) {
-      throw new ValidationError(`turnTimeoutMs must be Infinity or at most ${MAX_SETTIMEOUT_DELAY_MS}, got ${options.turnTimeoutMs}`)
+    if (Number.isFinite(this.turnTimeoutMs)) {
+      assertWithinSetTimeoutBound(
+        `turnTimeoutMs must be Infinity or at most ${MAX_SETTIMEOUT_DELAY_MS}, got ${options.turnTimeoutMs}`,
+        this.turnTimeoutMs,
+      )
     }
   }
 
@@ -254,14 +272,20 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
+    // Hoisted out of the `try` so the `catch` below — specifically the
+    // timeout branch — can still reach the connection/client/session a
+    // timed-out prompt was issued on, to cancel and evict it.
+    let connection: ClientSideConnection | undefined
+    let client: BandACPClient | null = null
+    let sessionId: string | undefined
     try {
-      const connection = await this.ensureConnection()
-      const client = this.client
+      connection = await this.ensureConnection()
+      client = this.client
       if (!client) {
         throw new Error("ACP client was not initialized")
       }
 
-      const sessionId = await this.getOrCreateSession(context.roomId, connection)
+      sessionId = await this.getOrCreateSession(context.roomId, connection)
       client.beginSession(sessionId)
       const content = replaceUuidMentions(message.content, mentionSubjectsFromMetadata(message.metadata))
       const messageWithContext = [...systemUpdateParts(participantsMessage, contactsMessage), content].join("\n\n")
@@ -301,14 +325,61 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       }
     } catch (error) {
       rethrowIfRecoverableTurnFailure(error)
+
+      const isTimeout = error instanceof AcpTurnTimeoutError
+
+      // Deliver whatever the agent had already streamed before the failure —
+      // same as the `stopReason !== "end_turn"` case above delivers partial
+      // content before reporting. A `DeliveryFailedError` this can throw is a
+      // `RecoverableTurnError` and propagates as-is, same as it would from
+      // the success path's own unguarded `flushChunks` call above.
+      if (client && sessionId) {
+        await this.flushChunks({
+          client,
+          tools,
+          sessionId,
+          senderId: message.senderId,
+          senderHandle: message.senderName ?? message.senderType,
+        })
+      }
+
+      // A timed-out turn's `connection.prompt()` call is still running
+      // server-side — nothing else tells the agent to stop, or keeps a
+      // room's next turn from reusing this same session while it's still
+      // writing to it (see `abandonTimedOutTurn`).
+      if (isTimeout && connection && sessionId) {
+        await this.abandonTimedOutTurn(connection, sessionId)
+      }
+
       await reportTurnFailure(
         tools,
-        error instanceof AcpTurnTimeoutError
+        isTimeout
           ? agentFailure(this.provider, "ACP turn timed out.", FAILURE_CODE_TIMEOUT)
-          : agentFailure(this.provider, toErrorMessage(error)),
+          : agentFailure(this.provider, asErrorMessage(error)),
         this.logger,
-        { roomId: context.roomId },
+        { roomId: context.roomId, sessionId },
       )
+    }
+  }
+
+  // Best-effort: tells the agent to stop working on a turn Band has already
+  // given up waiting for (the ACP client has no way to force it), and evicts
+  // the session so the room's next turn re-establishes/restores it (see
+  // `establishSession`'s `tryRestoreSession` path) instead of reusing a
+  // session the abandoned turn may still be writing to. Resetting the
+  // chunk buffer — after the caller has already flushed whatever was
+  // collected — means any further stray notification from the abandoned
+  // turn (the tail the agent may still send after `cancel`, per the ACP
+  // spec) is dropped (`sessionUpdate` only collects into a session it still
+  // has a buffer for) instead of bleeding into whatever turn reuses this
+  // session id next.
+  private async abandonTimedOutTurn(connection: ClientSideConnection, sessionId: string): Promise<void> {
+    this.activeSessions.delete(sessionId)
+    this.client?.resetChunks(sessionId)
+    try {
+      await connection.cancel({ sessionId })
+    } catch (error) {
+      this.safeWarn("acp_client.cancel_failed", { sessionId, error: asErrorMessage(error) })
     }
   }
 
@@ -1226,12 +1297,4 @@ export async function createSubprocessConnection(
       })
     },
   }
-}
-
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message
-  }
-
-  return String(error)
 }

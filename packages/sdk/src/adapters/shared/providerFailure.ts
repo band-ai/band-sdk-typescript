@@ -49,6 +49,15 @@ async function trySendFailure(
   logger?: Logger,
   logContext?: Record<string, unknown>,
 ): Promise<void> {
+  // Logged unconditionally, not only on a failed report below: the room
+  // event is the only other record of a provider failure, so an operator's
+  // Logger/observability sink needs its own copy independent of whether
+  // `sendFailure` itself succeeds.
+  logger?.warn("provider_failure.reported", {
+    provider: failure.provider,
+    code: failure.code,
+    ...logContext,
+  });
   try {
     await tools.sendFailure(failure);
   } catch (error) {

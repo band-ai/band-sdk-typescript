@@ -3,6 +3,7 @@ import { createInterface, type Interface as ReadLineInterface } from "node:readl
 
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
+import { withTimeout } from "../shared/withTimeout";
 import type {
   DynamicToolCallResponse,
   InitializeParams,
@@ -150,41 +151,26 @@ export class CodexAppServerStdioClient implements CodexClientLike {
     timeoutMs?: number,
   ): Promise<TResult> {
     const id = ++this.nextRequestId;
-    const response = await new Promise<TResult>((resolve, reject) => {
-      // A caller that abandons this call (see `abandon`) never reads the
-      // result, so nothing else ever clears `this.pending`'s entry for a
-      // request whose response never arrives — on a long-lived connection,
-      // each abandoned call permanently leaks one entry. `timeoutMs` bounds
-      // that lifetime so the entry is always eventually reclaimed.
-      const timer = timeoutMs !== undefined
-        ? setTimeout(() => {
-          this.pending.delete(id);
-          reject(new Error(`Codex app-server request "${method}" timed out after ${timeoutMs}ms.`));
-        }, timeoutMs)
-        : null;
+    const call = new Promise<TResult>((resolve, reject) => {
       this.pending.set(id, {
-        resolve: (value) => {
-          if (timer) {
-            clearTimeout(timer);
-          }
-          resolve(value as TResult);
-        },
-        reject: (error) => {
-          if (timer) {
-            clearTimeout(timer);
-          }
-          reject(error);
-        },
+        resolve: (value) => resolve(value as TResult),
+        reject,
       });
       void this.sendJson({ id, method, params: params ?? {} }).catch((error) => {
-        if (timer) {
-          clearTimeout(timer);
-        }
-        this.pending.delete(id);
         reject(error instanceof Error ? error : new Error(String(error)));
       });
     });
-    return response;
+    // A caller that abandons this call (see `abandon`) never reads the
+    // result, so nothing else ever clears `this.pending`'s entry for a
+    // request whose response never arrives — on a long-lived connection,
+    // each abandoned call permanently leaks one entry. The `.finally` below
+    // reclaims it regardless of which of `call`'s three settlement paths
+    // (response, `sendJson` rejection, or this timeout) actually ran.
+    return withTimeout(
+      call,
+      timeoutMs ?? Infinity,
+      () => new Error(`Codex app-server request "${method}" timed out after ${timeoutMs}ms.`),
+    ).finally(() => this.pending.delete(id));
   }
 
   public async notify(method: string, params?: Record<string, unknown>): Promise<void> {

@@ -2,7 +2,8 @@ import type { Server as HttpServer } from "node:http";
 
 import { describe, expect, it } from "vitest";
 
-import { createGatewayServer, sanitizeGatewayErrorMessage } from "../src/adapters/a2a-gateway/server";
+import { createGatewayServer } from "../src/adapters/a2a-gateway/server";
+import { sanitizeGatewayErrorMessage } from "../src/adapters/a2a-gateway/failure";
 import type {
   GatewayCancelRequest,
   GatewayRequest,

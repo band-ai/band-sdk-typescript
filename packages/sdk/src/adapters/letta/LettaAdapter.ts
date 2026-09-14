@@ -7,9 +7,8 @@ import type { PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { asErrorMessage, toWireString } from "../shared/coercion";
 import {
-  ProviderTurnFailedError,
   agentFailure,
-  safeSendFailure,
+  reportTurnFailure,
 } from "../shared/providerFailure";
 import { deliverReply } from "../shared/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
@@ -393,24 +392,29 @@ export class LettaAdapter extends SimpleAdapter<
       );
 
       if (!assistantText) {
-        const failure = agentFailure(this.provider, "Letta did not return a response.");
-        await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId });
-        throw new ProviderTurnFailedError(failure);
+        return reportTurnFailure(
+          tools,
+          agentFailure(this.provider, "Letta did not return a response."),
+          this.logger,
+          { roomId: context.roomId },
+        );
       }
 
       await deliverReply(tools, assistantText, [{ id: message.senderId }]);
     } catch (error) {
       rethrowIfRecoverableTurnFailure(error);
 
-      const errorMessage = asErrorMessage(error);
       this.logger.error("Letta adapter request failed", {
         roomId: context.roomId,
         error,
       });
 
-      const failure = agentFailure(this.provider, errorMessage);
-      await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId });
-      throw new ProviderTurnFailedError(failure);
+      await reportTurnFailure(
+        tools,
+        agentFailure(this.provider, asErrorMessage(error)),
+        this.logger,
+        { roomId: context.roomId },
+      );
     }
   }
 

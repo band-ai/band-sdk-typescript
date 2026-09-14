@@ -8,9 +8,8 @@ import { renderSystemPrompt } from "../../runtime/prompts";
 import { asErrorMessage, asNonEmptyString, asOptionalRecord } from "../shared/coercion";
 import {
   FAILURE_CODE_TIMEOUT,
-  ProviderTurnFailedError,
   agentFailure,
-  safeSendFailure,
+  reportTurnFailure,
 } from "../shared/providerFailure";
 import { deliverReply } from "../shared/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
@@ -216,24 +215,29 @@ export class ParlantAdapter
       );
 
       if (!reply) {
-        const failure = agentFailure(this.provider, "Parlant did not return a response before timeout.", FAILURE_CODE_TIMEOUT);
-        await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId, agentId: this.agentId });
-        throw new ProviderTurnFailedError(failure);
+        return reportTurnFailure(
+          tools,
+          agentFailure(this.provider, "Parlant did not return a response before timeout.", FAILURE_CODE_TIMEOUT),
+          this.logger,
+          { roomId: context.roomId, agentId: this.agentId },
+        );
       }
 
       await deliverReply(tools, reply, [{ id: message.senderId }]);
     } catch (error) {
       rethrowIfRecoverableTurnFailure(error);
 
-      const errorMessage = asErrorMessage(error);
       this.logger.error("Parlant adapter request failed", {
         roomId: context.roomId,
         agentId: this.agentId,
         error,
       });
-      const failure = agentFailure(this.provider, errorMessage);
-      await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId, agentId: this.agentId });
-      throw new ProviderTurnFailedError(failure);
+      await reportTurnFailure(
+        tools,
+        agentFailure(this.provider, asErrorMessage(error)),
+        this.logger,
+        { roomId: context.roomId, agentId: this.agentId },
+      );
     }
   }
 
