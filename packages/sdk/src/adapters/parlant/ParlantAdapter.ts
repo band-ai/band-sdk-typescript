@@ -10,8 +10,8 @@ import {
   FAILURE_CODE_TIMEOUT,
   agentFailure,
   reportTurnFailure,
-} from "../shared/providerFailure";
-import { deliverReply } from "../shared/deliveryFailedError";
+} from "../../core/providerFailure";
+import { deliverReply } from "../../core/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import {
   ParlantHistoryConverter,

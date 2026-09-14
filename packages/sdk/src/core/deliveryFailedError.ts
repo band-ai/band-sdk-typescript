@@ -1,6 +1,6 @@
-import type { MentionInput, ToolOperationResult } from "../../contracts/dtos";
-import type { MessagingTools } from "../../contracts/protocols";
-import { RecoverableTurnError } from "../../core/errors";
+import type { MentionInput, ToolOperationResult } from "../contracts/dtos";
+import type { MessagingTools } from "../contracts/protocols";
+import { RecoverableTurnError } from "./errors";
 import { asErrorMessage } from "./coercion";
 
 /**

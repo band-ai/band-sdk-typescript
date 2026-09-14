@@ -11,8 +11,8 @@ import { resolveLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { formatHistoryForLlm } from "../../runtime/formatters";
 import { asErrorMessage } from "../shared/coercion";
-import { reportProviderTurnFailure } from "../shared/providerFailure";
-import { deliverReply } from "../shared/deliveryFailedError";
+import { reportProviderTurnFailure } from "../../core/providerFailure";
+import { deliverReply } from "../../core/deliveryFailedError";
 import {
   CustomToolExecutionError,
   CustomToolValidationError,

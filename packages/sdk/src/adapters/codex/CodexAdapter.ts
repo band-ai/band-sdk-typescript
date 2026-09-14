@@ -28,8 +28,8 @@ import {
   findCustomToolInIndex,
 } from "../../runtime/tools/customTools";
 import { asErrorMessage, asNonEmptyString, asOptionalRecord, asRecord, asString, toWireString } from "../shared/coercion";
-import { FAILURE_CODE_TIMEOUT, ProviderTurnFailedError, agentFailure, reportTurnFailure, safeSendFailure } from "../shared/providerFailure";
-import { deliverReply } from "../shared/deliveryFailedError";
+import { FAILURE_CODE_TIMEOUT, ProviderTurnFailedError, agentFailure, reportTurnFailure, safeSendFailure } from "../../core/providerFailure";
+import { deliverReply } from "../../core/deliveryFailedError";
 import { findLatestTaskMetadata } from "../shared/history";
 import {
   CodexAppServerStdioClient,

@@ -41,3 +41,13 @@ export type {
   WebSocketDisconnectReason,
 } from "../platform/streaming/disconnectReason";
 export { ConsoleLogger, NoopLogger, type Logger } from "./logger";
+
+export {
+  DeliveryFailedError,
+  deliverReply,
+} from "./deliveryFailedError";
+export {
+  ProviderTurnFailedError,
+  agentFailure,
+  reportTurnFailure,
+} from "./providerFailure";

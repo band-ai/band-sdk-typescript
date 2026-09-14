@@ -3,23 +3,14 @@ import { rethrowIfRecoverableTurnFailure } from "../core/errors";
 import type { AdapterToolsProtocol } from "../contracts/protocols";
 import type { HistoryProvider, PlatformMessage } from "../runtime/types";
 import { asErrorMessage } from "./shared/coercion";
-import { deliverReply } from "./shared/deliveryFailedError";
-import { agentFailure, reportTurnFailure } from "./shared/providerFailure";
+import { deliverReply } from "../core/deliveryFailedError";
+import { agentFailure, reportTurnFailure } from "../core/providerFailure";
 
 /**
- * The handler is arbitrary caller code with no other way to reach
- * `deliverReply` — routing its `sendMessage` calls through it here means a
- * Band-delivery rejection reaches `onMessage`'s catch as a `DeliveryFailedError`
- * (a `RecoverableTurnError`, already rethrown as-is below) instead of an
- * opaque `Error` that gets misreported as a `"generic"` provider failure.
- *
- * The target is a fresh, unfrozen, empty object, not `tools` itself: `tools`
- * is `Object.freeze`d (`AgentTools.buildAdapterTools()`), and a `get` trap
- * returning anything but a frozen own property's exact stored value — as the
- * `sendMessage` override here must — violates the Proxy invariant for a
- * non-configurable, non-writable property. Every trap instead resolves
- * against the real `tools`, with `tools` as receiver so a method keeps its
- * original `this` and an accessor its original receiver.
+ * Route handler `sendMessage` through `deliverReply` via a Proxy over a fresh
+ * empty target: `tools` is frozen, so the `sendMessage` override cannot live
+ * on it. `Reflect.get(tools, key, tools)` keeps inherited accessors/methods
+ * bound to the real tools instance.
  */
 function toolsWithDeliverySafeSendMessage(tools: AdapterToolsProtocol): AdapterToolsProtocol {
   return new Proxy({} as AdapterToolsProtocol, {

@@ -301,6 +301,82 @@ describe("ClaudeSDKAdapter", () => {
     });
   });
 
+
+  it("reports a non-success result event as a terminal provider failure without prior assistant text", async () => {
+    const queryFn: ClaudeSDKQuery = () =>
+      streamFrom([
+        {
+          type: "result",
+          subtype: "error_max_turns",
+          result: "hit the turn cap",
+          session_id: "session-fail",
+        } as never,
+      ]) as never;
+
+    const adapter = new ClaudeSDKAdapter({ queryFn });
+    await adapter.onStarted("Parity Agent", "Parity test agent");
+
+    const tools = new FakeTools();
+    await expectTurnFailed(adapter.onMessage(
+      makeMessage("hello", "room-result-fail"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-result-fail" },
+    ));
+
+    expect(tools.messages).toEqual([]);
+    const failureEvent = findFailureEvent(tools);
+    expect(tools.events.filter((event) => event.messageType === "error")).toHaveLength(1);
+    expect(failureEvent?.metadata?.failure).toMatchObject({
+      provider: "claude-sdk",
+      code: "error_max_turns",
+      message: "hit the turn cap",
+    });
+  });
+
+  it("keeps preceding assistant text once, then fails the turn on a non-success result", async () => {
+    const queryFn: ClaudeSDKQuery = () =>
+      streamFrom([
+        {
+          type: "assistant",
+          session_id: "session-partial",
+          message: {
+            content: [{ type: "text", text: "almost done" }],
+          },
+        } as never,
+        {
+          type: "result",
+          subtype: "error_during_execution",
+          summary: "tool crashed",
+          session_id: "session-partial",
+        } as never,
+      ]) as never;
+
+    const adapter = new ClaudeSDKAdapter({ queryFn });
+    await adapter.onStarted("Parity Agent", "Parity test agent");
+
+    const tools = new FakeTools();
+    await expectTurnFailed(adapter.onMessage(
+      makeMessage("hello", "room-result-partial"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-result-partial" },
+    ));
+
+    expect(tools.messages).toEqual(["almost done"]);
+    const failureEvent = findFailureEvent(tools);
+    expect(tools.events.filter((event) => event.messageType === "error")).toHaveLength(1);
+    expect(failureEvent?.metadata?.failure).toMatchObject({
+      provider: "claude-sdk",
+      code: "error_during_execution",
+      message: "tool crashed",
+    });
+  });
+
   describeDeliveryContract([{
     path: "final assistant text",
     turn: async (tools) => {

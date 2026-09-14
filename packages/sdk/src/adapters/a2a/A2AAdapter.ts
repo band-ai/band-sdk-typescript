@@ -7,8 +7,8 @@ import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import type { PlatformMessage } from "../../runtime/types";
 import { asErrorMessage } from "../shared/coercion";
-import { reportTurnFailure, agentFailure, reportProviderTurnFailure } from "../shared/providerFailure";
-import { deliverReply } from "../shared/deliveryFailedError";
+import { reportTurnFailure, agentFailure, reportProviderTurnFailure } from "../../core/providerFailure";
+import { deliverReply } from "../../core/deliveryFailedError";
 import {
   A2AHistoryConverter,
   buildA2AAuthHeaders,

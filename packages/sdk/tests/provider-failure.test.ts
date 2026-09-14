@@ -6,8 +6,8 @@ import {
   agentFailure,
   reportTurnFailure,
   safeSendFailure,
-} from "../src/adapters/shared/providerFailure";
-import { DeliveryFailedError } from "../src/adapters/shared/deliveryFailedError";
+} from "../src/core/providerFailure";
+import { DeliveryFailedError } from "../src/core/deliveryFailedError";
 import { rethrowIfRecoverableTurnFailure } from "../src/core/errors";
 import type { MessagingTools } from "../src/contracts/protocols";
 

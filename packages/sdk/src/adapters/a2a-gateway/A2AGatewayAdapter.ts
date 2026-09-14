@@ -8,7 +8,7 @@ import type { PeerRecord } from "../../contracts/dtos";
 import { FAILURE_METADATA_KEY, type MessagingTools } from "../../contracts/protocols";
 import type { ChatMessageMention } from "../../client/rest/types";
 import type { PlatformMessage } from "../../runtime/types";
-import { FAILURE_CODE_TIMEOUT } from "../shared/providerFailure";
+import { FAILURE_CODE_TIMEOUT } from "../../core/providerFailure";
 import { asNonEmptyString } from "../shared/coercion";
 import { GatewayHistoryConverter } from "./history";
 import { createGatewayServer } from "./server";

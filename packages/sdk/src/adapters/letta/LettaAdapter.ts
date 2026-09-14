@@ -9,8 +9,8 @@ import { asErrorMessage, toWireString } from "../shared/coercion";
 import {
   agentFailure,
   reportTurnFailure,
-} from "../shared/providerFailure";
-import { deliverReply } from "../shared/deliveryFailedError";
+} from "../../core/providerFailure";
+import { deliverReply } from "../../core/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import type { LettaMessages } from "./types";
 import { LettaHistoryConverter } from "./types";

@@ -6,8 +6,8 @@ import { UnsupportedFeatureError } from "../../core/errors";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { mcpToolNames, MCP_SERVER_NAME } from "../../runtime/tools/schemas";
-import { reportProviderTurnFailure } from "../shared/providerFailure";
-import { deliverReply } from "../shared/deliveryFailedError";
+import { agentFailure, reportProviderTurnFailure, reportTurnFailure } from "../../core/providerFailure";
+import { deliverReply } from "../../core/deliveryFailedError";
 import { buildConversationPrompt } from "../shared/conversationPrompt";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { extractClaudeSessionId } from "../../converters/claude-sdk";
@@ -251,15 +251,34 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
     let finalText = "";
+    let resultFailure: ClaudeResultFailure | null = null;
     try {
       const query = await this.startQuery(message, history, participantsMessage, contactsMessage, context, tools);
-      finalText = await this.consumeQueryEvents(query, tools, context.roomId);
+      const consumed = await this.consumeQueryEvents(query, tools, context.roomId);
+      finalText = consumed.finalText;
+      resultFailure = consumed.resultFailure;
     } catch (error) {
       await reportProviderTurnFailure(tools, this.logger, this.provider, "Claude SDK adapter request failed", error, { roomId: context.roomId });
     }
 
-    if (finalText.trim()) {
-      await deliverReply(tools, finalText.trim(), [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
+    const mention = [{ id: message.senderId, handle: message.senderName ?? message.senderType }];
+    const replyText = finalText.trim();
+    if (resultFailure) {
+      // Preceding assistant text is already decided output; posting it must
+      // not flip a non-success result into a successful turn.
+      if (replyText) {
+        await deliverReply(tools, replyText, mention);
+      }
+      await reportTurnFailure(
+        tools,
+        agentFailure(this.provider, resultFailure.message, resultFailure.code, resultFailure.detail),
+        this.logger,
+        { roomId: context.roomId },
+      );
+    }
+
+    if (replyText) {
+      await deliverReply(tools, replyText, mention);
     }
   }
 
@@ -323,8 +342,9 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     query: AsyncIterable<ClaudeSDKMessageLike>,
     tools: AdapterToolsProtocol,
     roomId: string,
-  ): Promise<string> {
+  ): Promise<{ finalText: string; resultFailure: ClaudeResultFailure | null }> {
     let finalText = "";
+    let resultFailure: ClaudeResultFailure | null = null;
     for await (const event of query) {
       const type = event.type;
       const sessionId = event.session_id;
@@ -343,8 +363,11 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
         }
       }
 
-      if (type === "result" && event.subtype === "success" && typeof event.result === "string") {
-        finalText = event.result;
+      if (type === "result") {
+        resultFailure = claudeNonSuccessResult(event);
+        if (!resultFailure && typeof event.result === "string") {
+          finalText = event.result;
+        }
       }
 
       if (this.enableExecutionReporting && type === "tool_use_summary") {
@@ -359,7 +382,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
         }
       }
     }
-    return finalText;
+    return { finalText, resultFailure };
   }
 
   public async onCleanup(roomId: string): Promise<void> {
@@ -403,6 +426,33 @@ async function loadClaudeQuery(): Promise<ClaudeSDKQuery> {
   return module.query;
 }
 
+
+interface ClaudeResultFailure {
+  code: string;
+  message: string;
+  detail: Record<string, unknown>;
+}
+
+function claudeNonSuccessResult(event: ClaudeSDKMessageLike): ClaudeResultFailure | null {
+  if (event.subtype === "success") {
+    return null;
+  }
+  const code = typeof event.subtype === "string" && event.subtype.trim().length > 0
+    ? event.subtype
+    : "error";
+  const resultText = typeof event.result === "string" ? event.result.trim() : "";
+  const summaryText = typeof event.summary === "string" ? event.summary.trim() : "";
+  const message = resultText || summaryText || `Claude Agent SDK result: ${code}`;
+  return {
+    code,
+    message,
+    detail: {
+      subtype: event.subtype ?? null,
+      result: event.result ?? null,
+      session_id: event.session_id ?? null,
+    },
+  };
+}
 function extractAssistantText(event: ClaudeSDKMessageLike): string {
   if (event.type !== "assistant") {
     return "";

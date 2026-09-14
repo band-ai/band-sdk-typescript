@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { HttpStatusError, OpencodeAdapter, type OpencodeClientLike } from "../src/adapters";
-import { DeliveryFailedError } from "../src/adapters/shared/deliveryFailedError";
+import { DeliveryFailedError } from "../src/core/deliveryFailedError";
 import type { OpencodeSessionState } from "../src/converters";
 import { FakeTools, expectTurnFailed, findFailureEvent, makeMessage } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";

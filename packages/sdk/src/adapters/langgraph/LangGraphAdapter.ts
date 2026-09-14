@@ -6,8 +6,8 @@ import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { asErrorMessage, asOptionalRecord, asRecord } from "../shared/coercion";
-import { reportProviderTurnFailure } from "../shared/providerFailure";
-import { deliverReply } from "../shared/deliveryFailedError";
+import { reportProviderTurnFailure } from "../../core/providerFailure";
+import { deliverReply } from "../../core/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 
 type LangGraphRole = "system" | "user" | "assistant";

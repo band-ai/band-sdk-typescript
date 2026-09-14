@@ -14,8 +14,8 @@ import {
   type CustomToolDef,
 } from "../../runtime/tools/customTools";
 import { asOptionalRecord } from "../shared/coercion";
-import { reportProviderTurnFailure } from "../shared/providerFailure";
-import { deliverReply } from "../shared/deliveryFailedError";
+import { reportProviderTurnFailure } from "../../core/providerFailure";
+import { deliverReply } from "../../core/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import {
   GoogleADKHistoryConverter,

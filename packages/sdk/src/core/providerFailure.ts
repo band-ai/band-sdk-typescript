@@ -1,8 +1,8 @@
 import { AgentFailure } from "@band-ai/band-sdk-core";
 
-import type { MessagingTools } from "../../contracts/protocols";
-import { RecoverableTurnError } from "../../core/errors";
-import type { Logger } from "../../core/logger";
+import type { MessagingTools } from "../contracts/protocols";
+import { RecoverableTurnError } from "./errors";
+import type { Logger } from "./logger";
 import { asErrorMessage } from "./coercion";
 
 /**

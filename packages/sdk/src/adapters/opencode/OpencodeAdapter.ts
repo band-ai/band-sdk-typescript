@@ -25,14 +25,14 @@ import { asErrorMessage, asNestedMessage, asOptionalRecord, toDisplayText, trunc
 import {
   DeliveryFailedError,
   deliverReply,
-} from "../shared/deliveryFailedError";
+} from "../../core/deliveryFailedError";
 import {
   FAILURE_CODE_TIMEOUT,
   ProviderTurnFailedError,
   agentFailure,
   reportTurnFailure,
   safeSendFailure,
-} from "../shared/providerFailure";
+} from "../../core/providerFailure";
 import {
   type OpencodeSessionState,
   OpencodeHistoryConverter,

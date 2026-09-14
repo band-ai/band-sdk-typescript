@@ -1,4 +1,4 @@
-import { ProviderTurnFailedError } from "../src/adapters/shared/providerFailure";
+import { ProviderTurnFailedError } from "../src/core/providerFailure";
 import { expect } from "vitest";
 import { ParticipantRoster, type AgentFailure } from "@band-ai/band-sdk-core";
 import type { PlatformMessage } from "../src/runtime";
