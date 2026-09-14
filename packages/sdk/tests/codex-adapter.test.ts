@@ -21,13 +21,17 @@ class FakeCodexClient implements CodexClientLike {
 
   private readonly events: CodexRpcEvent[];
   private readonly requestHandler: (method: string, params: Record<string, unknown>) => unknown | Promise<unknown>;
+  private readonly hangWhenEmpty: boolean;
+  public closeNeverSettles = false;
 
   public constructor(options?: {
     events?: CodexRpcEvent[];
     requestHandler?: (method: string, params: Record<string, unknown>) => unknown | Promise<unknown>;
+    hangWhenEmpty?: boolean;
   }) {
     this.events = [...(options?.events ?? [])];
     this.requestHandler = options?.requestHandler ?? defaultRequestHandler;
+    this.hangWhenEmpty = options?.hangWhenEmpty ?? false;
   }
 
   public async connect(): Promise<void> {
@@ -69,14 +73,20 @@ class FakeCodexClient implements CodexClientLike {
 
   public async recvEvent(): Promise<CodexRpcEvent> {
     const next = this.events.shift();
-    if (!next) {
-      throw new Error("No more fake Codex events available");
+    if (next) {
+      return next;
     }
-    return next;
+    if (this.hangWhenEmpty) {
+      return new Promise(() => undefined);
+    }
+    throw new Error("No more fake Codex events available");
   }
 
   public async close(): Promise<void> {
     this.closeCalls += 1;
+    if (this.closeNeverSettles) {
+      return new Promise(() => undefined);
+    }
   }
 }
 
@@ -1112,56 +1122,67 @@ describe("CodexAdapter", () => {
   });
 
   it("reports a mid-turn error notification only once, even when the turn is then interrupted", async () => {
-    const tools = new ToolSchemaFakeTools();
-    const fakeClient = new FakeCodexClient({
-      events: [
-        {
-          kind: "notification",
-          method: "error",
-          params: {
-            error: { code: "invalid_request", message: "bad turn input" },
+    vi.useFakeTimers();
+    try {
+      const tools = new ToolSchemaFakeTools();
+      const fakeClient = new FakeCodexClient({
+        hangWhenEmpty: true,
+        events: [
+          {
+            kind: "notification",
+            method: "error",
+            params: {
+              error: { code: "invalid_request", message: "bad turn input" },
+            },
           },
-        },
-        // recvEvent's queue is exhausted after this: the fake throws on the
-        // next call, exactly like a real recvEvent timeout, driving
-        // emitTurnOutcome's "interrupted" branch.
-      ],
-    });
-    const adapter = new CodexAdapter({ factory: async () => fakeClient });
-    await adapter.onStarted("Codex Agent", "Codex parity adapter");
+        ],
+      });
+      const adapter = new CodexAdapter({ factory: async () => fakeClient, config: { turnTimeoutMs: 1_000 } });
+      await adapter.onStarted("Codex Agent", "Codex parity adapter");
 
-    await expectTurnFailed(adapter.onMessage(
-      makeMessage("hello"),
-      tools,
-      new HistoryProvider([]),
-      null,
-      null,
-      { isSessionBootstrap: false, roomId: "room-double-report-interrupted" },
-    ));
+      const turn = adapter.onMessage(
+        makeMessage("hello"),
+        tools,
+        new HistoryProvider([]),
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-double-report-interrupted" },
+      );
+      turn.catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expectTurnFailed(turn);
 
-    const failureEvents = tools.events.filter((event) => event.messageType === FAILURE_EVENT_TYPE);
-    expect(failureEvents).toHaveLength(1);
-    expect(failureEvents[0]?.metadata?.failure).toMatchObject({
-      provider: "codex",
-      code: "invalid_request",
-      message: "bad turn input",
-    });
+      const failureEvents = tools.events.filter((event) => event.messageType === FAILURE_EVENT_TYPE);
+      expect(failureEvents).toHaveLength(1);
+      expect(failureEvents[0]?.metadata?.failure).toMatchObject({
+        provider: "codex",
+        code: "invalid_request",
+        message: "bad turn input",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("emits a structured sendFailure with code 'timeout' and fails the turn when interrupted (e.g. a recvEvent timeout)", async () => {
+    vi.useFakeTimers();
+    try {
     const tools = new ToolSchemaFakeTools();
-    const fakeClient = new FakeCodexClient({ events: [] });
-    const adapter = new CodexAdapter({ factory: async () => fakeClient });
+    const fakeClient = new FakeCodexClient({ hangWhenEmpty: true });
+    const adapter = new CodexAdapter({ factory: async () => fakeClient, config: { turnTimeoutMs: 1_000 } });
     await adapter.onStarted("Codex Agent", "Codex parity adapter");
 
-    await expectTurnFailed(adapter.onMessage(
+    const turn = adapter.onMessage(
       makeMessage("hello"),
       tools,
       new HistoryProvider([]),
       null,
       null,
       { isSessionBootstrap: false, roomId: "room-interrupt" },
-    ));
+    );
+    turn.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expectTurnFailed(turn);
 
     const failureEvent = findFailureEvent(tools);
     expect(failureEvent?.metadata?.failure).toMatchObject({
@@ -1175,6 +1196,9 @@ describe("CodexAdapter", () => {
     // text while the raw provider message goes in the event.
     expect(tools.messages).toEqual(["I stopped before completing this request."]);
     expect(fakeClient.requestCalls.some((call) => call.method === "turn/interrupt")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("evicts the shared client on turn timeout so a replacement turn started before the abandoned turn completes cannot lose its events to a stale drain", async () => {
@@ -1317,6 +1341,109 @@ describe("CodexAdapter", () => {
       expect(nextTools.messages).toEqual(["real-turn-2-answer"]);
       expect(factoryCalls).toBe(2);
       expect(abandonedClient.closeCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports a recvEvent transport rejection as a transport failure, not a timeout", async () => {
+    let rejectRecv!: (error: Error) => void;
+    const recvStarted = (() => {
+      let resolve!: () => void;
+      const promise = new Promise<void>((inner) => {
+        resolve = inner;
+      });
+      return { promise, resolve };
+    })();
+    class TransportDeathClient extends FakeCodexClient {
+      public override async recvEvent(): Promise<CodexRpcEvent> {
+        recvStarted.resolve();
+        return await new Promise<CodexRpcEvent>((_, reject) => {
+          rejectRecv = reject;
+        });
+      }
+    }
+    const tools = new ToolSchemaFakeTools();
+    const fakeClient = new TransportDeathClient();
+    const adapter = new CodexAdapter({ factory: async () => fakeClient });
+    await adapter.onStarted("Codex Agent", "Codex parity adapter");
+
+    const turn = adapter.onMessage(
+      makeMessage("hello"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-recv-transport-death" },
+    );
+    turn.catch(() => undefined);
+    await recvStarted.promise;
+    rejectRecv(new Error("Codex app-server closed with code 1."));
+    await expectTurnFailed(turn);
+
+    const failureEvent = findFailureEvent(tools);
+    expect(failureEvent?.metadata?.failure).toMatchObject({
+      provider: "codex",
+      message: expect.stringContaining("Codex app-server closed with code 1."),
+    });
+    expect((failureEvent?.metadata?.failure as { code?: unknown } | undefined)?.code).not.toBe("timeout");
+    expect(fakeClient.closeCalls).toBe(1);
+  });
+
+  it("reports a turn timeout without waiting on a close() that never settles, and the next turn gets a new client", async () => {
+    vi.useFakeTimers();
+    try {
+      const tools = new ToolSchemaFakeTools();
+      const abandonedClient = new FakeCodexClient({ hangWhenEmpty: true });
+      abandonedClient.closeNeverSettles = true;
+      const replacementClient = new FakeCodexClient({
+        events: [
+          {
+            kind: "notification",
+            method: "item/agentMessage/delta",
+            params: { delta: "fresh-client-answer" },
+          },
+          {
+            kind: "notification",
+            method: "turn/completed",
+            params: { turn: { id: "turn-1", status: "completed", error: null } },
+          },
+        ],
+      });
+      let factoryCalls = 0;
+      const adapter = new CodexAdapter({
+        factory: async () => {
+          factoryCalls += 1;
+          return factoryCalls === 1 ? abandonedClient : replacementClient;
+        },
+        config: { turnTimeoutMs: 1_000 },
+      });
+      await adapter.onStarted("Codex Agent", "Codex parity adapter");
+
+      const turn1 = adapter.onMessage(
+        makeMessage("hello"),
+        tools,
+        new HistoryProvider([]),
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-hanging-close" },
+      );
+      turn1.catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expectTurnFailed(turn1);
+      expect(abandonedClient.closeCalls).toBe(1);
+
+      const nextTools = new ToolSchemaFakeTools();
+      await adapter.onMessage(
+        makeMessage("follow up"),
+        nextTools,
+        new HistoryProvider([]),
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-hanging-close" },
+      );
+      expect(nextTools.messages).toEqual(["fresh-client-answer"]);
+      expect(factoryCalls).toBe(2);
     } finally {
       vi.useRealTimers();
     }

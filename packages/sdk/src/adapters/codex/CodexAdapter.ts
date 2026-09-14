@@ -16,6 +16,7 @@ import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { SEND_MESSAGE_TOOL_NAME, SEND_EVENT_TOOL_NAME } from "../../runtime/tools/schemas";
 import { abandon } from "../shared/abandon";
+import { withTimeout } from "../shared/withTimeout";
 import { systemUpdateParts } from "../shared/conversationPrompt";
 import {
   CustomToolExecutionError,
@@ -134,6 +135,13 @@ const SILENT_REPORTING_TOOLS = new Set([
   SEND_MESSAGE_TOOL_NAME,
   SEND_EVENT_TOOL_NAME,
 ]);
+
+class CodexTurnTimeoutError extends Error {
+  public constructor() {
+    super("Turn timed out");
+    this.name = "CodexTurnTimeoutError";
+  }
+}
 
 export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProtocol> {
   protected readonly provider = "codex";
@@ -367,39 +375,56 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     while (true) {
       let event: CodexRpcEvent;
       try {
-        event = await client.recvEvent(config.turnTimeoutMs);
-      } catch {
-        if (turnId) {
-          // A server wedged enough to blow the turn timeout can leave this
-          // interrupt request pending too, and awaiting it would block the
-          // very cleanup and failure report this timeout exists to produce.
-          // See `abandon`.
-          abandon(
-            () => {
-              const interrupt: TurnInterruptParams = { threadId, turnId };
-              // Bounded so a peer that never answers doesn't leak this
-              // request's entry in the client's pending-request map for the
-              // rest of the connection's lifetime — see `request`'s timeoutMs.
-              return client.request("turn/interrupt", toRpcParams(interrupt), config.turnTimeoutMs);
-            },
-            (interruptError) => {
-              this.logger.warn("codex_adapter.turn_interrupt_failed", {
-                threadId,
-                turnId,
-                error: interruptError,
-              });
-            },
-          );
-          // Untagged FIFO items cannot be attributed after abandonment, so a
-          // later turn/start on this same client can have its deltas discarded
-          // by a drain still waiting for the old `turn/completed`. Evict the
-          // identity-matched client instead: the next turn mints a fresh
-          // process and thread (history is reinjected via needsHistoryInjection).
-          await this.resetClient(client);
+        // Adapter-owned timeout around an unbounded recv: failAll()/pipe death
+        // reject the waiter with the real transport error, which must not be
+        // classified as a turn timeout.
+        event = await withTimeout(
+          client.recvEvent(),
+          config.turnTimeoutMs ?? Infinity,
+          () => new CodexTurnTimeoutError(),
+        );
+      } catch (error) {
+        rethrowIfRecoverableTurnFailure(error);
+        if (error instanceof CodexTurnTimeoutError) {
+          if (turnId) {
+            // A server wedged enough to blow the turn timeout can leave this
+            // interrupt request pending too, and awaiting it would block the
+            // very cleanup and failure report this timeout exists to produce.
+            // See `abandon`.
+            abandon(
+              () => {
+                const interrupt: TurnInterruptParams = { threadId, turnId };
+                // Bounded so a peer that never answers doesn't leak this
+                // request's entry in the client's pending-request map for the
+                // rest of the connection's lifetime — see `request`'s timeoutMs.
+                return client.request("turn/interrupt", toRpcParams(interrupt), config.turnTimeoutMs);
+              },
+              (interruptError) => {
+                this.logger.warn("codex_adapter.turn_interrupt_failed", {
+                  threadId,
+                  turnId,
+                  error: interruptError,
+                });
+              },
+            );
+            // Untagged FIFO items cannot be attributed after abandonment, so a
+            // later turn/start on this same client can have its deltas discarded
+            // by a drain still waiting for the old `turn/completed`. Evict the
+            // identity-matched client instead: the next turn mints a fresh
+            // process and thread (history is reinjected via needsHistoryInjection).
+            this.abandonClient(client);
+          }
+          turnStatus = "interrupted";
+          turnError = "Turn timed out";
+          break;
         }
-        turnStatus = "interrupted";
-        turnError = "Turn timed out";
-        break;
+        this.abandonClient(client);
+        return reportTurnFailure(
+          tools,
+          agentFailure(this.provider, asErrorMessage(error)),
+          this.logger,
+          { roomId, threadId, turnId },
+        );
       }
 
       if (event.kind === "request") {
@@ -428,7 +453,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       if (event.method === "transport/closed") {
         turnStatus = "failed";
         turnError = "Codex transport closed unexpectedly";
-        await this.resetClient(client);
+        this.abandonClient(client);
         break;
       }
 
@@ -591,10 +616,10 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     return await this.clientPromise;
   }
 
-  private async resetClient(expectedClient?: CodexClientLike): Promise<void> {
+  private takeClientForReset(expectedClient?: CodexClientLike): CodexClientLike | null {
     const client = this.client;
     if (expectedClient && client !== expectedClient) {
-      return;
+      return null;
     }
 
     this.client = null;
@@ -607,16 +632,37 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     }
     this.roomThreadIds.clear();
     this.roomThreadInitPromises.clear();
+    return client;
+  }
 
-    if (client) {
-      try {
-        await client.close();
-      } catch (error) {
-        this.logger.warn("codex_adapter.client_close_failed", {
-          error,
-        });
-      }
+  // Runtime stop still awaits process exit. Failure/timeout paths must not:
+  // production `close()` only SIGTERMs after 500ms and never SIGKILLs, so a
+  // wedged child would hold the failure report and retry hostage.
+  private async resetClient(expectedClient?: CodexClientLike): Promise<void> {
+    const client = this.takeClientForReset(expectedClient);
+    if (!client) {
+      return;
     }
+    try {
+      await client.close();
+    } catch (error) {
+      this.logger.warn("codex_adapter.client_close_failed", {
+        error,
+      });
+    }
+  }
+
+  private abandonClient(expectedClient?: CodexClientLike): void {
+    const client = this.takeClientForReset(expectedClient);
+    if (!client) {
+      return;
+    }
+    abandon(
+      () => client.close(),
+      (error) => {
+        this.logger.warn("codex_adapter.client_close_failed", { error });
+      },
+    );
   }
 
   // `CodexJsonRpcError` is a real answer from a live app-server — only this
@@ -634,7 +680,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     failedClient: CodexClientLike | null,
   ): Promise<void> {
     if (failedClient && !(error instanceof CodexJsonRpcError)) {
-      await this.resetClient(failedClient);
+      this.abandonClient(failedClient);
     }
   }
 

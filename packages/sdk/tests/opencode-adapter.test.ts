@@ -1815,12 +1815,89 @@ describe("OpencodeAdapter", () => {
     await secondTurn;
   });
 
+  it.each(["reject", "resolve"] as const)("does not let a late permission prompt %s from turn A abort or complete live turn B", async (settle) => {
+    let releaseSend!: () => void;
+    const sendGate = new Promise<void>((resolve) => {
+      releaseSend = resolve;
+    });
+    class GatedPromptDelivery extends FakeTools {
+      public sendEntered = 0;
+      public override async sendMessage(
+        content: string,
+        mentions?: string[] | Array<{ id: string; handle?: string }>,
+      ): Promise<Record<string, unknown>> {
+        this.sendEntered += 1;
+        if (this.sendEntered === 1) {
+          await sendGate;
+          if (settle === "reject") {
+            throw new Error("late permission prompt delivery failed");
+          }
+        }
+        return super.sendMessage(content, mentions);
+      }
+    }
+    const tools = new GatedPromptDelivery();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as any,
+      config: { turnTimeoutMs: 40 },
+      mcpBackendFactory: httpMcpBackend(),
+    });
+    adapters.push(adapter);
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+
+    const firstTurn = adapter.onMessage(
+      makeMessage("Need approval flow"),
+      tools,
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-sendmessage-race" },
+    );
+    firstTurn.catch(() => undefined);
+    await waitFor(() => client.createdSessions.length === 1);
+    const sessionId = client.createdSessions[0]!;
+    client.eventQueue.push({
+      type: "permission.asked",
+      properties: { id: "perm-1", sessionID: sessionId, permission: "bash", patterns: ["npm test"] },
+    });
+    await waitFor(() => tools.sendEntered === 1);
+    await expectTurnFailed(firstTurn);
+
+    const secondTurn = adapter.onMessage(
+      makeMessage("second task", "room-sendmessage-race"),
+      tools,
+      { sessionId: null, roomId: "room-sendmessage-race", createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-sendmessage-race" },
+    );
+    await waitFor(() => client.promptCalls.length >= 2);
+    const sessionB = client.createdSessions[client.createdSessions.length - 1]!;
+
+    let secondSettled = false;
+    void secondTurn.then(() => {
+      secondSettled = true;
+    }, () => {
+      secondSettled = true;
+    });
+    releaseSend();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(secondSettled).toBe(false);
+
+    emitAssistantText(client, sessionB, "turn-b-done");
+    client.eventQueue.push({ type: "session.idle", properties: { sessionID: sessionB } });
+    await secondTurn;
+    expect(tools.messages).toContain("turn-b-done");
+  });
+
   it("reports a recoverable failure when permission reply HTTP throws", async () => {
     const tools = new FakeTools();
     const client = new FakeOpencodeClient();
     createdClients.push(client);
     client.replyPermission = async () => {
-      throw new Error("permission http 500");
+      throw new HttpStatusError(503, { error: "permission http 500" });
     };
     const adapter = new OpencodeAdapter({
       clientFactory: () => client as any,
@@ -1853,7 +1930,9 @@ describe("OpencodeAdapter", () => {
     ));
     expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({
       provider: "opencode",
-      message: expect.stringContaining("permission http 500"),
+      code: "503",
+      message: expect.stringContaining("OpenCode request failed (503)"),
+      detail: { error: "permission http 500" },
     });
   });
 

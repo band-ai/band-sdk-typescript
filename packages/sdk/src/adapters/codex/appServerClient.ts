@@ -235,12 +235,17 @@ export class CodexAppServerStdioClient implements CodexClientLike {
     proc.stdin.end();
 
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
+      const termTimer = setTimeout(() => {
         proc.kill("SIGTERM");
       }, 500);
+      const killTimer = setTimeout(() => {
+        proc.kill("SIGKILL");
+        resolve();
+      }, 1_500);
 
       proc.once("close", () => {
-        clearTimeout(timer);
+        clearTimeout(termTimer);
+        clearTimeout(killTimer);
         resolve();
       });
     });

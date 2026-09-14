@@ -289,7 +289,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       rethrowIfRecoverableTurnFailure(error);
       await reportTurnFailure(
         tools,
-        agentFailure(this.provider, asErrorMessage(error)),
+        this.toAgentFailure(error),
         this.logger,
         { roomId: roomState.roomId, sessionId: roomState.sessionId },
       );
