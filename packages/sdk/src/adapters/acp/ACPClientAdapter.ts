@@ -385,7 +385,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       // cancel/abandon if it ran first, leaving the next turn to restore
       // this still-live session.
       if (isTimeout && connection && sessionId) {
-        await this.abandonTimedOutTurn(connection, sessionId, generation, client)
+        await this.abandonTimedOutTurn(connection, sessionId, generation)
       }
 
       if (client && sessionId) {
@@ -432,7 +432,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   // stopped responding, and `cancel` rides the same transport — awaiting it
   // would risk blocking this room's turn lock forever on the very process
   // that just proved it can hang.
-  private async abandonTimedOutTurn(connection: ClientSideConnection, sessionId: string, generation: number, owningClient: BandACPClient | null): Promise<void> {
+  private async abandonTimedOutTurn(connection: ClientSideConnection, sessionId: string, generation: number): Promise<void> {
     const key = this.sessionKey(generation, sessionId)
     this.activeSessions.delete(key)
     this.abandonedSessions.add(key)
