@@ -228,6 +228,17 @@ export interface FernUserProfile {
   username?: string;
 }
 
+/**
+ * Mention item the generated client accepts on create-message.
+ * `id` is optional: the client resolves `handle` server-side, and either field is enough.
+ */
+export interface FernClientMention {
+  id?: string;
+  handle?: string;
+  name?: string;
+  kind?: "mention" | "reference";
+}
+
 // Method syntax (not property-function syntax) is used intentionally so that
 // TypeScript checks parameter types bivariantly.
 export interface FernBandClientLike {
@@ -353,7 +364,7 @@ export interface FernBandClientLike {
           content: string;
           message_type?: string;
           metadata?: MetadataMap;
-          mentions?: MentionReference[];
+          mentions?: FernClientMention[];
         };
       },
       options?: RestRequestOptions,
@@ -392,7 +403,7 @@ export interface FernBandClientLike {
           content: string;
           message_type?: string;
           metadata?: MetadataMap;
-          mentions?: MentionReference[];
+          mentions?: FernClientMention[];
         };
       },
       options?: RestRequestOptions,
@@ -439,7 +450,7 @@ export interface FernBandClientLike {
           content: string;
           message_type?: string;
           metadata?: MetadataMap;
-          mentions?: MentionReference[];
+          mentions?: FernClientMention[];
         };
       },
       options?: RestRequestOptions,

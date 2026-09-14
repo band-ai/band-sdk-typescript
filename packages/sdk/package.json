@@ -89,7 +89,7 @@
   },
   "dependencies": {
     "@band-ai/band-sdk-core": "2.4.0",
-    "@band-ai/rest-client": "0.0.118",
+    "@band-ai/rest-client": "0.0.143",
     "js-yaml": "^4.1.1",
     "phoenix": "^1.8.4",
     "ws": "^8.19.0",

@@ -1,5 +1,5 @@
 /**
- * Conformance guard: verifies the real @band-ai/rest-client@0.0.118 exports
+ * Conformance guard: verifies the real @band-ai/rest-client@0.0.143 exports
  * every resource and method the SDK consumes, without making network calls.
  *
  * This test catches a removed or renamed generated resource that typecheck
@@ -8,9 +8,9 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { BandClient } from "@band-ai/rest-client";
+import { Band, BandClient } from "@band-ai/rest-client";
 
-describe("BandClient conformance (0.0.118)", () => {
+describe("BandClient conformance (0.0.143)", () => {
   // Instantiate with a dummy key — no network call is made.
   const client = new BandClient({ apiKey: "test-conformance-key" });
 
@@ -66,6 +66,14 @@ describe("BandClient conformance (0.0.118)", () => {
       }
     });
   }
+
+  it("includes agent in the generated store-memory scope enum", () => {
+    expect(Band.AgentMemoryCreateRequest.Scope).toEqual({
+      Agent: "agent",
+      Subject: "subject",
+      Organization: "organization",
+    });
+  });
 
   it("red-check: detects a missing method on a real namespace", () => {
     const resource = (client as unknown as Record<string, unknown>).agentApiIdentity;
