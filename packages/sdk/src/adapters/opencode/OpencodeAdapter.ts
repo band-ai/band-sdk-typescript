@@ -18,7 +18,7 @@ import {
 import type { McpToolRegistration } from "../../mcp/registrations";
 import { errorResult, successResult } from "../../mcp/registrations";
 import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
-import { asErrorMessage, asNestedMessage, asOptionalRecord } from "../shared/coercion";
+import { asErrorMessage, asNestedMessage, asOptionalRecord, truncate } from "../shared/coercion";
 import {
   type OpencodeSessionState,
   OpencodeHistoryConverter,
@@ -1083,7 +1083,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     }
     const name = typeof payload.name === "string" ? payload.name : "OpenCodeError";
     const message = asNestedMessage(payload.data);
-    return message ? `${name}: ${message}` : `${name}: OpenCode reported an error.`;
+    return message ? `${name}: ${truncate(message)}` : `${name}: OpenCode reported an error.`;
   }
 }
 

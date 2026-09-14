@@ -58,14 +58,16 @@ describe("adapter shared utilities", () => {
       expect(asErrorMessage(42)).toBe("42");
     });
 
-    it("terminates on a self-referential cause chain instead of overflowing the stack", () => {
+    it("terminates on a self-referential cause chain, marking where it stopped instead of silently dropping further detail", () => {
       const error = new Error("outer") as Error & { cause: unknown };
       error.cause = error;
       expect(() => asErrorMessage(error)).not.toThrow();
-      expect(asErrorMessage(error)).toMatch(/^outer(?: \(outer)*/);
+      expect(asErrorMessage(error)).toBe(
+        "outer (outer (outer (outer (outer (outer (... (cause chain truncated)))))))",
+      );
     });
 
-    it("terminates on a long non-cyclic cause chain instead of overflowing the stack", () => {
+    it("terminates on a long non-cyclic cause chain, preserving messages up to the depth boundary", () => {
       let error = new Error("root cause");
       for (let i = 0; i < 10_000; i += 1) {
         const wrapper = new Error(`wrap ${i}`) as Error & { cause: unknown };
@@ -73,6 +75,65 @@ describe("adapter shared utilities", () => {
         error = wrapper;
       }
       expect(() => asErrorMessage(error)).not.toThrow();
+      const result = asErrorMessage(error);
+      // The outermost 6 wrappers (depths 0-5) should still be visible by name...
+      expect(result).toBe(
+        "wrap 9999 (wrap 9998 (wrap 9997 (wrap 9996 (wrap 9995 (wrap 9994 (... (cause chain truncated)))))))",
+      );
+      // ...and the marker — not silence — is what signals the other 9,994 were cut.
+      expect(result).toContain("cause chain truncated");
+    });
+
+    it("distinguishes a chain that hits the depth cap with real detail still beyond it from one that naturally ends within budget", () => {
+      function buildChain(depth: number): Error {
+        let error = new Error(`L${depth}`);
+        for (let i = depth - 1; i >= 0; i -= 1) {
+          const wrapper = new Error(`L${i}`) as Error & { cause: unknown };
+          wrapper.cause = error;
+          error = wrapper;
+        }
+        return error;
+      }
+
+      const naturalEnd = buildChain(5);
+      expect(asErrorMessage(naturalEnd)).toBe("L0 (L1 (L2 (L3 (L4 (L5)))))");
+
+      const cutOff = buildChain(5) as Error & { cause: unknown };
+      let deepest: Error = cutOff;
+      while ((deepest as Error & { cause?: unknown }).cause instanceof Error) {
+        deepest = (deepest as Error & { cause: Error }).cause;
+      }
+      deepest.cause = new Error("this should be cut off and marked");
+      expect(asErrorMessage(cutOff)).toBe("L0 (L1 (L2 (L3 (L4 (L5 (... (cause chain truncated)))))))");
+    });
+
+    it("keeps parentheses balanced when truncating a message that already contains its own nested detail", () => {
+      const inner = new Error("Y".repeat(490)) as Error & { cause: unknown };
+      inner.cause = "some detail";
+      const outer = new Error("boom") as Error & { cause: unknown };
+      outer.cause = inner;
+
+      const result = asErrorMessage(outer);
+      const opens = (result.match(/\(/g) ?? []).length;
+      const closes = (result.match(/\)/g) ?? []).length;
+      expect(opens).toBe(closes);
+      expect(result).toBe(`boom (${"Y".repeat(490)} (some detail))`);
+    });
+
+    it("truncates an oversized top-level message, not just a nested detail", () => {
+      const result = asErrorMessage(new Error("A".repeat(100_000)));
+      expect(result).toContain("... (truncated)");
+      expect(result.length).toBeLessThan(600);
+    });
+
+    it("treats an empty object or array data field as absent, like a blank string", () => {
+      expect(asErrorMessage({ message: "boom", data: {} })).toBe("boom");
+      expect(asErrorMessage({ message: "boom", data: [] })).toBe("boom");
+    });
+
+    it("falls back to a present cause when data is blank instead of discarding both", () => {
+      expect(asErrorMessage({ message: "boom", data: "", cause: { message: "fallback cause detail" } }))
+        .toBe("boom (fallback cause detail)");
     });
 
     it("treats a blank string data field as absent instead of appending an empty parenthetical", () => {

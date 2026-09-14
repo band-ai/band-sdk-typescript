@@ -84,6 +84,8 @@ export function toWireString(value: unknown): string {
 // not overflow the stack (see the "runTurn error reporting" regression test).
 const MAX_ERROR_CAUSE_DEPTH = 5;
 const MAX_ERROR_DETAIL_LENGTH = 500;
+const LENGTH_TRUNCATED_MARKER = "... (truncated)";
+const DEPTH_TRUNCATED_MARKER = "... (cause chain truncated)";
 
 export function asErrorMessage(error: unknown): string {
   return formatCaughtError(error, 0);
@@ -91,28 +93,68 @@ export function asErrorMessage(error: unknown): string {
 
 function formatCaughtError(error: unknown, depth: number): string {
   if (typeof error !== "object" || error === null) {
-    return String(error);
+    return truncate(String(error));
   }
 
-  const record = error as { data?: unknown; cause?: unknown };
-  const message = asNestedMessage(error) ?? String(error);
-  const detail = record.data ?? record.cause;
-  const isBlankDetail = typeof detail === "string" && asNonEmptyString(detail) === null;
-  if (detail === undefined || detail === null || isBlankDetail || depth >= MAX_ERROR_CAUSE_DEPTH) {
+  const message = truncate(asNestedMessage(error) ?? String(error));
+  const detail = selectDetail(asOptionalRecord(error));
+  if (detail === undefined) {
     return message;
+  }
+
+  if (depth >= MAX_ERROR_CAUSE_DEPTH) {
+    return `${message} (${DEPTH_TRUNCATED_MARKER})`;
   }
 
   return `${message} (${formatErrorDetail(detail, depth + 1)})`;
 }
 
-// Applies the size cap once, at the single return point, so every branch
-// below — including a nested Error's own fully-formatted message/detail —
-// is capped the same way, rather than truncating some branches and not others.
-function formatErrorDetail(detail: unknown, depth: number): string {
-  return truncate(formatErrorDetailText(detail, depth));
+// Prefers .data (the JSON-RPC convention) over .cause (the native Error
+// convention), falling back to .cause when .data is absent or blank instead
+// of discarding a genuinely present cause just because .data wasn't useful.
+function selectDetail(record: Record<string, unknown> | undefined): unknown {
+  if (isPresentDetail(record?.data)) {
+    return record?.data;
+  }
+  if (isPresentDetail(record?.cause)) {
+    return record?.cause;
+  }
+  return undefined;
 }
 
-function formatErrorDetailText(detail: unknown, depth: number): string {
+function isPresentDetail(value: unknown): boolean {
+  if (value === undefined || value === null) {
+    return false;
+  }
+  if (typeof value === "string") {
+    return asNonEmptyString(value) !== null;
+  }
+  if (value instanceof Error) {
+    return true;
+  }
+  if (Array.isArray(value)) {
+    return value.length > 0;
+  }
+  if (typeof value === "object") {
+    return Object.keys(value).length > 0;
+  }
+  return true;
+}
+
+// An Error-instance detail delegates to formatCaughtError, whose own message
+// and further detail are already truncated at their own level — its fully-
+// composed "message (detail)" result is never re-truncated here, or a cut
+// could land inside its own parenthetical and leave it unbalanced. Every
+// other detail shape is a single leaf value, truncated exactly once.
+function formatErrorDetail(detail: unknown, depth: number): string {
+  if (detail instanceof Error) {
+    return formatCaughtError(detail, depth);
+  }
+
+  return truncate(formatLeafDetail(detail));
+}
+
+function formatLeafDetail(detail: unknown): string {
   if (typeof detail === "string") {
     return detail;
   }
@@ -123,10 +165,6 @@ function formatErrorDetailText(detail: unknown, depth: number): string {
     return String(detail);
   }
 
-  if (detail instanceof Error) {
-    return formatCaughtError(detail, depth);
-  }
-
   const nested = asNestedMessage(detail);
   if (nested !== null) {
     return nested;
@@ -135,17 +173,16 @@ function formatErrorDetailText(detail: unknown, depth: number): string {
   return toDisplayText(detail);
 }
 
-function truncate(text: string): string {
+export function truncate(text: string): string {
   return text.length > MAX_ERROR_DETAIL_LENGTH
-    ? `${text.slice(0, MAX_ERROR_DETAIL_LENGTH)}... (truncated)`
+    ? `${text.slice(0, MAX_ERROR_DETAIL_LENGTH)}${LENGTH_TRUNCATED_MARKER}`
     : text;
 }
 
 export function asNestedMessage(value: unknown): string | null {
   const record = asOptionalRecord(value);
-  const message = record?.message;
   // A blank message is treated the same as a missing one — an empty string
   // is "present" by strict null-checks but produces the same dangling-
   // parenthetical artifact a genuinely absent message does.
-  return typeof message === "string" && asNonEmptyString(message) !== null ? message : null;
+  return asNonEmptyString(record?.message);
 }
