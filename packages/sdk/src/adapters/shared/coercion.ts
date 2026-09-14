@@ -3,7 +3,7 @@ import { toLegacyToolExecutorErrorMessage } from "../../contracts/protocols";
 // Lives in core/, not here, so runtime/ code needing the same conversion
 // (e.g. ContactCallbackTools) can import it without depending on adapters/ --
 // re-exported for every existing adapter import of it from this module.
-export { asErrorMessage } from "../../core/coercion";
+export { asErrorMessage, asNestedMessage, truncate } from "../../core/coercion";
 
 export function asOptionalRecord(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -58,7 +58,9 @@ export function toDisplayText(value: unknown): string {
   }
 
   try {
-    return JSON.stringify(value);
+    const json = JSON.stringify(value);
+    // JSON.stringify returns undefined for functions/symbols; guard against it.
+    return typeof json === "string" ? json : String(value);
   } catch {
     return String(value);
   }

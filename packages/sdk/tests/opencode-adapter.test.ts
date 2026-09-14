@@ -1586,4 +1586,43 @@ describe("OpencodeAdapter", () => {
       await pending;
     },
   }]);
+
+  it("truncates an oversized nested error message on a session.error event", async () => {
+    const tools = new FakeTools();
+    const client = new FakeOpencodeClient();
+    createdClients.push(client);
+    const adapter = new OpencodeAdapter({
+      clientFactory: () => client as any,
+      mcpBackendFactory: httpMcpBackend(),
+    });
+    adapters.push(adapter);
+
+    await adapter.onStarted("OpenCode Agent", "Writes code");
+    const pending = adapter.onMessage(
+      makeMessage("Trigger a provider-level error"),
+      tools,
+      { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-session-error-huge" },
+    );
+
+    await waitFor(() => client.createdSessions.length === 1);
+    const sessionId = client.createdSessions[0]!;
+    client.eventQueue.push({
+      type: "session.error",
+      properties: {
+        sessionID: sessionId,
+        error: { name: "ProviderAuthError", data: { message: "x".repeat(1000) } },
+      },
+    });
+
+    await expectTurnFailed(pending);
+
+    const failureEvent = findFailureEvent(tools);
+    expect(failureEvent).toBeDefined();
+    expect((failureEvent?.metadata as any)?.failure?.message).toContain("... (truncated)");
+    expect(String((failureEvent?.metadata as any)?.failure?.message).length).toBeLessThan(600);
+  });
+
 });

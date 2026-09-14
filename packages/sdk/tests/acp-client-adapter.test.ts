@@ -16,6 +16,53 @@ function requireAcpClient(client: BandACPClient | null): BandACPClient {
   return client
 }
 
+async function send(adapter: ACPClientAdapter, roomId = "room-1", history: Record<string, string> = {}): Promise<void> {
+  await adapter.onStarted("Agent", "desc")
+  await adapter.onMessage(
+    makeMessage("hi", roomId),
+    new FakeTools(),
+    { roomToSession: history },
+    null,
+    null,
+    { isSessionBootstrap: true, roomId },
+  )
+}
+
+// Shared by the `resolveSessionMode` and `resolveSessionModel` test
+// harnesses below: the connection-mock shape every ACP session actually
+// exposes (signal/closed/initialize/authenticate/loadSession/
+// unstable_resumeSession/newSession/prompt), parameterized by whichever
+// extra RPC spies (setSessionMode, setSessionConfigOption) the calling
+// block needs.
+function buildMockConnection(spies: {
+  agentCapabilities?: Record<string, unknown>;
+  loadSession: () => Promise<Record<string, unknown>>;
+  newSession: () => Promise<Record<string, unknown>>;
+  prompt: (params: { sessionId: string }) => Promise<{ stopReason: string }>;
+  extraRpcSpies?: Record<string, unknown>;
+}) {
+  const controller = new AbortController()
+  return {
+    connection: {
+      signal: controller.signal,
+      closed: new Promise<void>(() => undefined),
+      initialize: vi.fn(async () => ({
+        protocolVersion: 1,
+        agentCapabilities: spies.agentCapabilities ?? { loadSession: true },
+      })),
+      authenticate: vi.fn(async () => ({})),
+      loadSession: spies.loadSession,
+      unstable_resumeSession: vi.fn(),
+      newSession: spies.newSession,
+      prompt: spies.prompt,
+      ...spies.extraRpcSpies,
+    } as never,
+    stop: async () => {
+      controller.abort()
+    },
+  }
+}
+
 describe("ACPClientAdapter", () => {
   it("restores ACP sessions, auto-injects MCP, and fans out ACP updates", async () => {
     let clientHandle: {
@@ -2582,6 +2629,410 @@ describe("ACPClientAdapter", () => {
         command: ["acp-agent"],
         turnTimeoutMs: Infinity,
       })).not.toThrow()
+    })
+  })
+
+  describe("resolveSessionModel", () => {
+    // Shared harness: a connection whose newSession/loadSession return a
+    // given `configOptions` catalog and a `setSessionConfigOption` spy — the
+    // model-hook analog of the `resolveSessionMode` harness above. Also
+    // accepts `newSessionModes` and exposes `setSessionMode`, so a test
+    // exercising both hooks together doesn't need its own hand-rolled mock.
+    function buildHarness(input: {
+      adapterOptions?: Partial<ACPClientAdapterOptions>;
+      newSessionModes?: { currentModeId: string; availableModes?: Array<{ id: string; name: string }> };
+      newSessionConfigOptions?: Array<Record<string, unknown>>;
+      loadSessionConfigOptions?: Array<Record<string, unknown>>;
+    } = {}) {
+      const setSessionMode = vi.fn(async () => ({}))
+      const setSessionConfigOption = vi.fn(async () => ({ configOptions: [] }))
+      const newSession = vi.fn(async () => ({
+        sessionId: "session-1",
+        ...(input.newSessionModes ? { modes: input.newSessionModes } : {}),
+        ...(input.newSessionConfigOptions ? { configOptions: input.newSessionConfigOptions } : {}),
+      }))
+      const loadSession = vi.fn(async () => ({
+        ...(input.loadSessionConfigOptions ? { configOptions: input.loadSessionConfigOptions } : {}),
+      }))
+      const prompt = vi.fn(async () => ({ stopReason: "end_turn" }))
+
+      const adapter = new ACPClientAdapter({
+        command: ["acp-agent"],
+        enableMcpTools: false,
+        connectionFactory: async () => buildMockConnection({
+          loadSession,
+          newSession,
+          prompt,
+          extraRpcSpies: { setSessionMode, setSessionConfigOption },
+        }),
+        ...input.adapterOptions,
+      })
+
+      return { adapter, setSessionMode, setSessionConfigOption, loadSession, newSession }
+    }
+
+    // Shaped like the "model" config option real Claude/Codex ACP agents
+    // advertise (see `test/unit/acpAgentContract.test.ts` in band-plugin-vsc).
+    function modelConfigOption(overrides: Partial<{
+      id: string;
+      category: string | null;
+      currentValue: string;
+      options: Array<Record<string, unknown>>;
+    }> = {}) {
+      return {
+        id: "model",
+        name: "Model",
+        category: "model",
+        type: "select",
+        currentValue: "opus",
+        options: [
+          { value: "opus", name: "Opus" },
+          { value: "sonnet", name: "Sonnet" },
+        ],
+        ...overrides,
+      }
+    }
+
+    it("selects an advertised model", async () => {
+      const resolveSessionModel = vi.fn(async () => "sonnet")
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: { resolveSessionModel },
+        newSessionConfigOptions: [modelConfigOption()],
+      })
+      await send(adapter)
+      expect(resolveSessionModel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          models: [{ value: "opus", name: "Opus" }, { value: "sonnet", name: "Sonnet" }],
+        }),
+        expect.anything(),
+      )
+      expect(setSessionConfigOption).toHaveBeenCalledWith({ sessionId: "session-1", configId: "model", value: "sonnet" })
+    })
+
+    it("does nothing when resolveSessionModel is unset, regardless of what's advertised", async () => {
+      const { adapter, setSessionConfigOption } = buildHarness({
+        newSessionConfigOptions: [modelConfigOption()],
+      })
+      await send(adapter)
+      expect(setSessionConfigOption).not.toHaveBeenCalled()
+    })
+
+    it("does nothing, and never calls the resolver, when the backend advertises no configOptions at all", async () => {
+      const logger = makeLoggerSpy()
+      const resolveSessionModel = vi.fn(async () => "sonnet")
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: { resolveSessionModel, logger },
+      })
+      await send(adapter)
+      expect(resolveSessionModel).not.toHaveBeenCalled()
+      expect(setSessionConfigOption).not.toHaveBeenCalled()
+      // Not advertising configOptions at all is expected and silent;
+      // advertising them but missing the resolved one (below) is not.
+      expect(logger.warn).not.toHaveBeenCalled()
+    })
+
+    it("does nothing, and never calls the resolver, when configOptions has no model-categorized/keyed entry", async () => {
+      const resolveSessionModel = vi.fn(async () => "sonnet")
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: { resolveSessionModel },
+        newSessionConfigOptions: [
+          { id: "reasoning", name: "Reasoning", category: "thought_level", type: "select", currentValue: "low", options: [{ value: "low", name: "Low" }] },
+        ],
+      })
+      await send(adapter)
+      expect(resolveSessionModel).not.toHaveBeenCalled()
+      expect(setSessionConfigOption).not.toHaveBeenCalled()
+    })
+
+    it("warns, but does not throw, when the resolved model id isn't advertised", async () => {
+      const logger = makeLoggerSpy()
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: { resolveSessionModel: async () => "gpt-9", logger },
+        newSessionConfigOptions: [modelConfigOption()],
+      })
+      await expect(send(adapter)).resolves.toBeUndefined()
+      expect(setSessionConfigOption).not.toHaveBeenCalled()
+      expect(logger.warn).toHaveBeenCalledWith(
+        "resolveSessionModel selected a model id this session does not advertise",
+        expect.objectContaining({ selectedModelId: "gpt-9" }),
+      )
+    })
+
+    it("is a no-op when the session is already using the resolved model", async () => {
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: { resolveSessionModel: async () => "opus" },
+        newSessionConfigOptions: [modelConfigOption({ currentValue: "opus" })],
+      })
+      await send(adapter)
+      expect(setSessionConfigOption).not.toHaveBeenCalled()
+    })
+
+    it("logs a warning and leaves the session usable when setSessionConfigOption itself rejects", async () => {
+      const logger = makeLoggerSpy()
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: { resolveSessionModel: async () => "sonnet", logger },
+        newSessionConfigOptions: [modelConfigOption()],
+      })
+      setSessionConfigOption.mockRejectedValueOnce(new Error("agent rejected the model switch"))
+
+      await expect(send(adapter)).resolves.toBeUndefined()
+      expect(logger.warn).toHaveBeenCalledWith(
+        "failed to switch session into the selected model",
+        expect.objectContaining({ error: expect.stringContaining("agent rejected the model switch") }),
+      )
+    })
+
+    it("re-applies the resolved model on a restored session, not just a freshly created one", async () => {
+      const { adapter, setSessionConfigOption, loadSession } = buildHarness({
+        adapterOptions: { resolveSessionModel: async () => "sonnet" },
+        loadSessionConfigOptions: [modelConfigOption()],
+      })
+      await send(adapter, "room-restored", { "room-restored": "session-restored" })
+      expect(loadSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-restored" }))
+      expect(setSessionConfigOption).toHaveBeenCalledWith({ sessionId: "session-restored", configId: "model", value: "sonnet" })
+    })
+
+    // The ACP client does not runtime-validate an agent's JSON-RPC response,
+    // so this models a non-conforming response that `SessionConfigSelect`'s
+    // type promises can't happen but nothing actually prevents.
+    it("does not throw when the matched config option's options field is missing", async () => {
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: { resolveSessionModel: async () => "sonnet" },
+        newSessionConfigOptions: [
+          { id: "model", name: "Model", category: "model", type: "select", currentValue: "opus" },
+        ],
+      })
+      await expect(send(adapter)).resolves.toBeUndefined()
+      expect(setSessionConfigOption).not.toHaveBeenCalled()
+    })
+
+    it("flattens a grouped options shape and applies a selection from within a group", async () => {
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: { resolveSessionModel: async () => "sonnet" },
+        newSessionConfigOptions: [modelConfigOption({
+          options: [
+            { group: "anthropic", name: "Anthropic", options: [{ value: "opus", name: "Opus" }, { value: "sonnet", name: "Sonnet" }] },
+          ],
+        })],
+      })
+      await send(adapter)
+      expect(setSessionConfigOption).toHaveBeenCalledWith({ sessionId: "session-1", configId: "model", value: "sonnet" })
+    })
+
+    it("applies the resolved model only once per session, not on every subsequent message", async () => {
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: { resolveSessionModel: async () => "sonnet" },
+        newSessionConfigOptions: [modelConfigOption()],
+      })
+      await send(adapter)
+      await send(adapter)
+      expect(setSessionConfigOption).toHaveBeenCalledTimes(1)
+    })
+
+    it("warns instead of hanging forever when setSessionConfigOption never responds", async () => {
+      vi.useFakeTimers()
+      try {
+        let setSessionConfigOptionCalled: () => void = () => undefined
+        const called = new Promise<void>((resolve) => { setSessionConfigOptionCalled = resolve })
+
+        const logger = makeLoggerSpy()
+        const { adapter, setSessionConfigOption } = buildHarness({
+          adapterOptions: { resolveSessionModel: async () => "sonnet", logger },
+          newSessionConfigOptions: [modelConfigOption()],
+        })
+        setSessionConfigOption.mockImplementationOnce(() => {
+          setSessionConfigOptionCalled()
+          return new Promise(() => undefined)
+        })
+
+        const onMessage = send(adapter)
+        await called
+        await vi.advanceTimersByTimeAsync(10_000)
+        await onMessage
+
+        expect(logger.warn).toHaveBeenCalledWith(
+          "failed to switch session into the selected model",
+          expect.objectContaining({ error: expect.stringContaining("did not respond within") }),
+        )
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("resolveSessionMode and resolveSessionModel configured together on the same session don't interfere with each other", async () => {
+      const { adapter, setSessionMode, setSessionConfigOption } = buildHarness({
+        adapterOptions: {
+          resolveSessionMode: async () => "default",
+          resolveSessionModel: async () => "sonnet",
+        },
+        newSessionModes: { currentModeId: "auto", availableModes: [{ id: "auto", name: "auto" }, { id: "default", name: "default" }] },
+        newSessionConfigOptions: [modelConfigOption()],
+      })
+
+      await send(adapter)
+      expect(setSessionMode).toHaveBeenCalledWith({ sessionId: "session-1", modeId: "default" })
+      expect(setSessionConfigOption).toHaveBeenCalledWith({ sessionId: "session-1", configId: "model", value: "sonnet" })
+    })
+
+    it("resolves promptly instead of hanging the full timeout when the connection signal starts already aborted", async () => {
+      const preAbortedController = new AbortController()
+      preAbortedController.abort()
+      const setSessionConfigOption = vi.fn(async () => ({ configOptions: [] }))
+      const newSession = vi.fn(async () => ({
+        sessionId: "session-1",
+        configOptions: [modelConfigOption()],
+      }))
+      const adapter = new ACPClientAdapter({
+        command: ["acp-agent"],
+        enableMcpTools: false,
+        resolveSessionModel: () => new Promise<string | undefined>(() => undefined),
+        connectionFactory: async () => ({
+          connection: {
+            signal: preAbortedController.signal,
+            closed: new Promise<void>(() => undefined),
+            initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: { loadSession: true } })),
+            authenticate: vi.fn(async () => ({})),
+            loadSession: vi.fn(async () => ({})),
+            unstable_resumeSession: vi.fn(),
+            newSession,
+            setSessionMode: vi.fn(async () => ({})),
+            setSessionConfigOption,
+            prompt: vi.fn(async () => ({ stopReason: "end_turn" })),
+          } as never,
+          stop: async () => undefined,
+        }),
+      })
+
+      const timedOut = Symbol("timed-out")
+      const winner = await Promise.race([
+        send(adapter).then(() => "resolved" as const),
+        new Promise((resolve) => setTimeout(() => resolve(timedOut), 50)),
+      ])
+      expect(winner).toBe("resolved")
+    })
+
+    it("warns but does not call setSessionConfigOption when resolveSessionModel throws", async () => {
+      const logger = makeLoggerSpy()
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: {
+          resolveSessionModel: async () => { throw new Error("boom") },
+          logger,
+        },
+        newSessionConfigOptions: [modelConfigOption()],
+      })
+      await expect(send(adapter)).resolves.toBeUndefined()
+      expect(setSessionConfigOption).not.toHaveBeenCalled()
+      expect(logger.warn).toHaveBeenCalledWith(
+        "resolveSessionModel threw; preserving the harness default",
+        expect.objectContaining({ error: expect.stringContaining("boom") }),
+      )
+    })
+
+    it("warns when resolveSessionModel answers after the request was already abandoned to the timeout", async () => {
+      let resolveLate: (value: string) => void = () => undefined
+      const logger = makeLoggerSpy()
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: {
+          resolveSessionModel: () => new Promise<string | undefined>((resolve) => { resolveLate = resolve }),
+          logger,
+          permissionTimeoutMs: 20,
+        },
+        newSessionConfigOptions: [modelConfigOption()],
+      })
+
+      await send(adapter)
+      expect(setSessionConfigOption).not.toHaveBeenCalled()
+
+      resolveLate("sonnet")
+      await new Promise((resolve) => setTimeout(resolve, 10))
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        "resolveSessionModel answered after the request was abandoned; discarding",
+        { chosenId: "sonnet" },
+      )
+    })
+
+    it("detects the model option by id when category is missing", async () => {
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: { resolveSessionModel: async () => "sonnet" },
+        newSessionConfigOptions: [modelConfigOption({ category: null })],
+      })
+      await send(adapter)
+      expect(setSessionConfigOption).toHaveBeenCalledWith({ sessionId: "session-1", configId: "model", value: "sonnet" })
+    })
+
+    it("prefers the entry actually categorized \"model\" over one merely keyed id:\"model\"", async () => {
+      const resolveSessionModel = vi.fn(async () => "sonnet")
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: { resolveSessionModel },
+        newSessionConfigOptions: [
+          { id: "model", name: "Thought level", category: "thought_level", type: "select", currentValue: "low", options: [{ value: "low", name: "Low" }, { value: "high", name: "High" }] },
+          modelConfigOption({ id: "primary_model" }),
+        ],
+      })
+      await send(adapter)
+      expect(resolveSessionModel).toHaveBeenCalledWith(
+        expect.objectContaining({ currentModelId: "opus" }),
+        expect.anything(),
+      )
+      expect(setSessionConfigOption).toHaveBeenCalledWith({ sessionId: "session-1", configId: "primary_model", value: "sonnet" })
+    })
+
+    it("does not throw when the options array contains a non-object entry", async () => {
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: { resolveSessionModel: async () => "sonnet" },
+        newSessionConfigOptions: [modelConfigOption({
+          // `null` is dropped by the `!entry` half of the guard; the bare
+          // string is dropped by its `typeof entry !== "object"` half —
+          // covering both halves, since a plain object-record check alone
+          // wouldn't exercise the second.
+          options: [null as unknown as Record<string, unknown>, "not-an-object" as unknown as Record<string, unknown>, { value: "sonnet", name: "Sonnet" }],
+        })],
+      })
+      await expect(send(adapter)).resolves.toBeUndefined()
+      expect(setSessionConfigOption).toHaveBeenCalledWith({ sessionId: "session-1", configId: "model", value: "sonnet" })
+    })
+
+    it("skips a malformed top-level configOptions entry and still finds the real model option", async () => {
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: { resolveSessionModel: async () => "sonnet" },
+        newSessionConfigOptions: [null as unknown as Record<string, unknown>, modelConfigOption()],
+      })
+      await expect(send(adapter)).resolves.toBeUndefined()
+      expect(setSessionConfigOption).toHaveBeenCalledWith({ sessionId: "session-1", configId: "model", value: "sonnet" })
+    })
+
+    it("drops a group entry whose own options field is not an array", async () => {
+      const resolveSessionModel = vi.fn(async () => "sonnet")
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: { resolveSessionModel },
+        newSessionConfigOptions: [modelConfigOption({
+          options: [
+            { group: "bad", name: "Bad", options: "not-an-array" },
+            { group: "anthropic", name: "Anthropic", options: [{ value: "sonnet", name: "Sonnet" }] },
+          ],
+        })],
+      })
+      await send(adapter)
+      expect(resolveSessionModel).toHaveBeenCalledWith(
+        expect.objectContaining({ models: [{ value: "sonnet", name: "Sonnet" }] }),
+        expect.anything(),
+      )
+      expect(setSessionConfigOption).toHaveBeenCalledWith({ sessionId: "session-1", configId: "model", value: "sonnet" })
+    })
+
+    it("does not throw when a group entry omits its own options field", async () => {
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: { resolveSessionModel: async () => "sonnet" },
+        newSessionConfigOptions: [modelConfigOption({
+          options: [
+            { group: "empty", name: "Empty" },
+            { group: "anthropic", name: "Anthropic", options: [{ value: "sonnet", name: "Sonnet" }] },
+          ],
+        })],
+      })
+      await expect(send(adapter)).resolves.toBeUndefined()
+      expect(setSessionConfigOption).toHaveBeenCalledWith({ sessionId: "session-1", configId: "model", value: "sonnet" })
     })
   })
 });

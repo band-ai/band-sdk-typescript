@@ -1,3 +1,5 @@
+import { type MemorySystem, type MemoryType, validateMemoryTypeForSystem } from "@band-ai/band-sdk-core";
+
 /** Canonical memory enums; DTOs, tool schemas, and validation derive from these constants. */
 
 const SENSORY_MEMORY_TYPES = [
@@ -25,10 +27,9 @@ export const MEMORY_SYSTEM_TYPES = {
   sensory: SENSORY_MEMORY_TYPES, // Brief sensory inputs
   working: COGNITIVE_MEMORY_TYPES, // Short-term session context
   long_term: COGNITIVE_MEMORY_TYPES, // Persistent cross-conversation memory
-} as const;
+} as const satisfies Record<MemorySystem, readonly MemoryType[]>;
 
-export type MemorySystem = keyof typeof MEMORY_SYSTEM_TYPES;
-export type MemoryType = (typeof MEMORY_SYSTEM_TYPES)[MemorySystem][number];
+export type { MemorySystem, MemoryType };
 
 /** Memory tier; constrains valid `type` values via {@link MEMORY_SYSTEM_TYPES}. */
 export const MEMORY_SYSTEMS = Object.keys(MEMORY_SYSTEM_TYPES) as readonly MemorySystem[];
@@ -38,6 +39,15 @@ export const MEMORY_TYPES = [
   ...SENSORY_MEMORY_TYPES,
   ...COGNITIVE_MEMORY_TYPES,
 ] as const satisfies readonly MemoryType[];
+
+/**
+ * Fails to compile if band-sdk-core ever adds a MemoryType this file's
+ * hand-copied arrays don't cover - `satisfies` above only checks the
+ * reverse direction (every listed value is a valid MemoryType).
+ */
+type _MemoryTypesExhaustive<
+  Ok extends true = MemoryType extends (typeof MEMORY_TYPES)[number] ? true : false,
+> = Ok;
 /** Logical subject category (user/agent/tool/guideline); not scope `subject` or `subject_id`. */
 export const MEMORY_SEGMENTS = [
   "user", // User preferences or profile info
@@ -92,12 +102,24 @@ export function isMemoryType(value: string): value is MemoryType {
   return (MEMORY_TYPES as readonly string[]).includes(value);
 }
 
-/** Guards against pairing sensory systems with cognitive types, or vice versa. */
-export function isMemoryTypeForSystem(
-  system: MemorySystem,
-  type: MemoryType,
-): boolean {
-  return (MEMORY_SYSTEM_TYPES[system] as readonly string[]).includes(type);
+/**
+ * Guards against pairing sensory systems with cognitive types, or vice versa.
+ * Rethrows anything other than a documented validation failure (e.g. a
+ * non-string reaching this boundary) instead of reporting it as false.
+ */
+export function isMemoryTypeForSystem(system: MemorySystem, type: MemoryType): boolean {
+  try {
+    validateMemoryTypeForSystem(system, type);
+    return true;
+  } catch (err) {
+    // Only a documented `.issues`-bearing validation failure means "not valid" -
+    // anything else (a non-string reaching this boundary, an internal core bug)
+    // must surface rather than be misreported as a bad system/type pairing.
+    if (err instanceof Error && "issues" in err) {
+      return false;
+    }
+    throw err;
+  }
 }
 
 export function isMemorySegment(value: string): value is MemorySegment {

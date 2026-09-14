@@ -23,6 +23,25 @@ function fail(name: string, error: string): never {
   throw new Error(`${name}: ${error}`);
 }
 
+function expectNoThrow(fn: () => void, name: string): void {
+  try {
+    fn();
+  } catch (err) {
+    fail(name, String(err));
+  }
+  pass(name);
+}
+
+function expectThrows(fn: () => void, name: string): void {
+  try {
+    fn();
+  } catch {
+    pass(name);
+    return;
+  }
+  fail(name, "expected a throw");
+}
+
 async function main() {
   console.log("bundler === @band-ai/band-sdk-core bundler interop ===");
 
@@ -96,6 +115,15 @@ async function main() {
     fail("ParticipantRoster.add", `expected a new participant to be added, got list length ${roster.list().length}`);
   }
   pass("ParticipantRoster.add runs against the real wasm binding");
+
+  expectNoThrow(
+    () => core.validateMemoryTypeForSystem("sensory", "iconic"),
+    "validateMemoryTypeForSystem accepts a valid pair against the real wasm binding",
+  );
+  expectThrows(
+    () => core.validateMemoryTypeForSystem("sensory", "semantic"),
+    "validateMemoryTypeForSystem rejects a mismatched pair against the real wasm binding",
+  );
 
   const topicChecks: Array<[string, string]> = [
     [core.chatRoomTopic("room-1"), "chat_room:room-1"],

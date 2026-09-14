@@ -21,7 +21,7 @@ import type { McpToolRegistration } from "../../mcp/registrations";
 import { errorResult, successResult } from "../../mcp/registrations";
 import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
 import { abandon } from "../shared/abandon";
-import { asErrorMessage, asOptionalRecord, toDisplayText } from "../shared/coercion";
+import { asErrorMessage, asNestedMessage, asOptionalRecord, toDisplayText, truncate } from "../shared/coercion";
 import {
   DeliveryFailedError,
   deliverReply,
@@ -1346,9 +1346,8 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       return "OpenCode reported an unknown error.";
     }
     const name = typeof payload.name === "string" ? payload.name : "OpenCodeError";
-    const data = asOptionalRecord(payload.data);
-    const message = typeof data?.message === "string" ? data.message : null;
-    return message ? `${name}: ${message}` : `${name}: OpenCode reported an error.`;
+    const message = asNestedMessage(payload.data);
+    return message ? `${name}: ${truncate(message)}` : `${name}: OpenCode reported an error.`;
   }
 }
 
