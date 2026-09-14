@@ -152,13 +152,6 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
   private readonly roomThreadInitPromises = new Map<string, Promise<string>>();
   private readonly needsHistoryInjection = new Set<string>();
   private systemPrompt: string | null = null;
-  // A timed-out turn's client-wide event queue can still hold its stray
-  // leftovers (deltas, item/completed — Codex's protocol tags neither with a
-  // turnId, unlike `turn/completed`) when the very next turn starts reading
-  // from the same shared connection. Set by the timeout path, awaited at the
-  // top of every `runEventLoop` call so a later turn can't read the earlier,
-  // abandoned one's residue — see `drainAbandonedTurnEvents`.
-  private drainingAbandonedTurn: Promise<void> | null = null;
 
   public constructor(options?: CodexAdapterOptions) {
     super();
@@ -370,14 +363,6 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     let turnError = "";
     let reportedFailureInLoop = false;
 
-    // A prior turn's timeout may still be draining this same client's event
-    // queue of that turn's leftovers (see `drainAbandonedTurnEvents`) — this
-    // turn must not start reading until that finishes, or it can dequeue the
-    // abandoned turn's own stray events as if they were its own.
-    if (this.drainingAbandonedTurn) {
-      await this.drainingAbandonedTurn;
-    }
-
     while (true) {
       let event: CodexRpcEvent;
       try {
@@ -404,7 +389,12 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
               });
             },
           );
-          this.drainingAbandonedTurn = this.drainAbandonedTurnEvents(client, turnId, config.turnTimeoutMs);
+          // Untagged FIFO items cannot be attributed after abandonment, so a
+          // later turn/start on this same client can have its deltas discarded
+          // by a drain still waiting for the old `turn/completed`. Evict the
+          // identity-matched client instead: the next turn mints a fresh
+          // process and thread (history is reinjected via needsHistoryInjection).
+          await this.resetClient(client);
         }
         turnStatus = "interrupted";
         turnError = "Turn timed out";
@@ -500,38 +490,6 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     }
 
     return { finalText, sawSendMessageTool, turnStatus, turnError, reportedFailureInLoop };
-  }
-
-  // `client.recvEvent` draws from one connection-wide FIFO queue with no
-  // per-turn scoping, and Codex's protocol tags neither `item/agentMessage/
-  // delta` nor `item/completed` with a turnId (only `turn/completed` carries
-  // one) — so once a turn is abandoned, its still-arriving events cannot be
-  // told apart from a later turn's own by inspecting the event alone. This
-  // reads and discards everything on the queue until it sees the abandoned
-  // turn's own `turn/completed` (confirming the queue is clean of its
-  // residue), or gives up once `recvEvent` itself times out — a lingering
-  // stray event is a smaller risk than blocking every later turn forever on
-  // a peer that never sends one.
-  private async drainAbandonedTurnEvents(client: CodexClientLike, abandonedTurnId: string, timeoutMs: number | undefined): Promise<void> {
-    while (true) {
-      let event: CodexRpcEvent;
-      try {
-        event = await client.recvEvent(timeoutMs);
-      } catch {
-        this.logger.warn("codex_adapter.turn_drain_gave_up", { turnId: abandonedTurnId });
-        return;
-      }
-
-      if (event.kind === "notification" && event.method === "turn/completed") {
-        const turn = parseTurnRef(asOptionalRecord(event.params)?.turn);
-        if (turn && asNonEmptyString(turn.id) === abandonedTurnId) {
-          return;
-        }
-      }
-      // Every other event for the abandoned turn — deltas, item/completed,
-      // requests, errors — is discarded here: Band already reported this
-      // turn failed, so nothing should read or act on its output now.
-    }
   }
 
   public override async onCleanup(roomId: string): Promise<void> {

@@ -1177,17 +1177,14 @@ describe("CodexAdapter", () => {
     expect(fakeClient.requestCalls.some((call) => call.method === "turn/interrupt")).toBe(true);
   });
 
-  it("does not merge a stray event from a timed-out turn into the very next turn's reply on the same shared connection", async () => {
-    // A real recvEvent genuinely waits (a pending stream read, bounded by a
-    // setTimeout) rather than throwing the instant its queue is empty --
-    // unlike `FakeCodexClient` above, which is deliberately synchronous.
-    // This fake models that real waiting behavior so a stray event pushed
-    // while the drain is still pending is actually observed by it.
+  it("evicts the shared client on turn timeout so a replacement turn started before the abandoned turn completes cannot lose its events to a stale drain", async () => {
     class QueueingFakeCodexClient implements CodexClientLike {
       public readonly requestCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+      public closeCalls = 0;
       private readonly queue: CodexRpcEvent[] = [];
       private waiter: { resolve: (event: CodexRpcEvent) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> | null } | null = null;
       private turnCount = 0;
+      private closed = false;
 
       public async connect(): Promise<void> {}
       public async initialize(params: InitializeParams): Promise<void> {
@@ -1210,9 +1207,22 @@ describe("CodexAdapter", () => {
       public async notify(): Promise<void> {}
       public async respond(): Promise<void> {}
       public async respondError(): Promise<void> {}
-      public async close(): Promise<void> {}
+      public async close(): Promise<void> {
+        this.closed = true;
+        this.closeCalls += 1;
+        this.queue.length = 0;
+        if (this.waiter) {
+          const waiter = this.waiter;
+          this.waiter = null;
+          if (waiter.timer) clearTimeout(waiter.timer);
+          waiter.reject(new Error("Codex client closed"));
+        }
+      }
 
       public push(event: CodexRpcEvent): void {
+        if (this.closed) {
+          return;
+        }
         if (this.waiter) {
           const waiter = this.waiter;
           this.waiter = null;
@@ -1224,6 +1234,9 @@ describe("CodexAdapter", () => {
       }
 
       public async recvEvent(timeoutMs?: number): Promise<CodexRpcEvent> {
+        if (this.closed) {
+          throw new Error("Codex client closed");
+        }
         if (this.queue.length > 0) {
           return this.queue.shift() as CodexRpcEvent;
         }
@@ -1240,45 +1253,30 @@ describe("CodexAdapter", () => {
     vi.useFakeTimers();
     try {
       const tools = new ToolSchemaFakeTools();
-      const fakeClient = new QueueingFakeCodexClient();
+      const abandonedClient = new QueueingFakeCodexClient();
+      const replacementClient = new QueueingFakeCodexClient();
+      let factoryCalls = 0;
       const adapter = new CodexAdapter({
-        factory: async () => fakeClient,
+        factory: async () => {
+          factoryCalls += 1;
+          return factoryCalls === 1 ? abandonedClient : replacementClient;
+        },
         config: { turnTimeoutMs: 1_000 },
       });
       await adapter.onStarted("Codex Agent", "Codex parity adapter");
 
-      // Turn 1 times out: recvEvent's fake never receives anything before
-      // the bound elapses.
       const turn1 = adapter.onMessage(
         makeMessage("hello"),
         tools,
         new HistoryProvider([]),
         null,
         null,
-        { isSessionBootstrap: false, roomId: "room-drain" },
+        { isSessionBootstrap: false, roomId: "room-drain-race" },
       );
       turn1.catch(() => undefined);
       await vi.advanceTimersByTimeAsync(1_000);
       await expectTurnFailed(turn1);
 
-      // While the drain this kicked off is still pending, the abandoned
-      // turn's agent process sends one more stray delta tagged with its
-      // OLD turnId, then its own (now-irrelevant) turn/completed -- the
-      // drain should discard the delta and stop draining once it sees that.
-      fakeClient.push({
-        kind: "notification",
-        method: "item/agentMessage/delta",
-        params: { delta: "STRAY-FROM-TURN-1 " },
-      });
-      fakeClient.push({
-        kind: "notification",
-        method: "turn/completed",
-        params: { turn: { id: "turn-1", status: "interrupted", error: null } },
-      });
-
-      // The next turn's own events, pushed only after the above so they sit
-      // behind them in the same queue -- exactly the ordering a real,
-      // still-responding-late agent process would produce.
       const nextTools = new ToolSchemaFakeTools();
       const turn2 = adapter.onMessage(
         makeMessage("follow up"),
@@ -1286,22 +1284,39 @@ describe("CodexAdapter", () => {
         new HistoryProvider([]),
         null,
         null,
-        { isSessionBootstrap: false, roomId: "room-drain" },
+        { isSessionBootstrap: false, roomId: "room-drain-race" },
       );
       await vi.advanceTimersByTimeAsync(0);
-      fakeClient.push({
+
+      abandonedClient.push({
+        kind: "notification",
+        method: "item/agentMessage/delta",
+        params: { delta: "STRAY-FROM-TURN-1 " },
+      });
+      abandonedClient.push({
+        kind: "notification",
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "interrupted", error: null } },
+      });
+
+      await Promise.resolve();
+      await Promise.resolve();
+
+      replacementClient.push({
         kind: "notification",
         method: "item/agentMessage/delta",
         params: { delta: "real-turn-2-answer" },
       });
-      fakeClient.push({
+      replacementClient.push({
         kind: "notification",
         method: "turn/completed",
-        params: { turn: { id: "turn-2", status: "completed", error: null } },
+        params: { turn: { id: "turn-1", status: "completed", error: null } },
       });
       await turn2;
 
       expect(nextTools.messages).toEqual(["real-turn-2-answer"]);
+      expect(factoryCalls).toBe(2);
+      expect(abandonedClient.closeCalls).toBe(1);
     } finally {
       vi.useRealTimers();
     }
