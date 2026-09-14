@@ -91,7 +91,7 @@
     "@band-ai/band-sdk-core": "2.4.0",
     "@band-ai/rest-client": "0.0.118",
     "js-yaml": "^4.1.1",
-    "phoenix": "^1.8.4",
+    "phoenix": "^1.8.13",
     "ws": "^8.19.0",
     "zod": "^3.24.2",
     "zod-to-json-schema": "^3.25.1"
