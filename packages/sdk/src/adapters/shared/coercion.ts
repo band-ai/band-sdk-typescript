@@ -53,7 +53,9 @@ export function toDisplayText(value: unknown): string {
   }
 
   try {
-    return JSON.stringify(value);
+    const json = JSON.stringify(value);
+    // JSON.stringify returns undefined for functions/symbols; guard against it.
+    return typeof json === "string" ? json : String(value);
   } catch {
     return String(value);
   }
@@ -136,9 +138,18 @@ function isPresentDetail(value: unknown): boolean {
     return value.length > 0;
   }
   if (typeof value === "object") {
-    return Object.keys(value).length > 0;
+    return isPlainObject(value) ? Object.keys(value).length > 0 : true;
   }
   return true;
+}
+
+// A plain object literal's own keys are its entire content, so an empty one
+// carries nothing to show. Date/Map/Set/RegExp/etc. store their real content
+// outside own-enumerable keys — treating them the same way would misreport a
+// genuinely present value as blank.
+function isPlainObject(value: object): boolean {
+  const proto = Object.getPrototypeOf(value) as unknown;
+  return proto === Object.prototype || proto === null;
 }
 
 // An Error-instance detail delegates to formatCaughtError, whose own message

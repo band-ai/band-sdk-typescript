@@ -136,6 +136,19 @@ describe("adapter shared utilities", () => {
         .toBe("boom (fallback cause detail)");
     });
 
+    it("does not throw when data is a bare function or symbol", () => {
+      expect(() => asErrorMessage({ message: "boom", data: function namedFn() {} })).not.toThrow();
+      expect(() => asErrorMessage({ message: "boom", data: Symbol("x") })).not.toThrow();
+      expect(() => asErrorMessage({ message: "boom", cause: function namedFn() {} })).not.toThrow();
+    });
+
+    it("does not silently drop a Date, Map, Set, or RegExp detail the way an empty plain object is dropped", () => {
+      expect(asErrorMessage({ message: "boom", data: new Date("2024-01-01T00:00:00.000Z") })).not.toBe("boom");
+      expect(asErrorMessage({ message: "boom", data: new Map([["a", 1]]) })).not.toBe("boom");
+      expect(asErrorMessage({ message: "boom", data: new Set([1, 2, 3]) })).not.toBe("boom");
+      expect(asErrorMessage({ message: "boom", data: /abc/g })).not.toBe("boom");
+    });
+
     it("treats a blank string data field as absent instead of appending an empty parenthetical", () => {
       expect(asErrorMessage({ code: -32603, message: "Internal error", data: "" })).toBe("Internal error");
       expect(asErrorMessage({ message: "Internal error", data: "   " })).toBe("Internal error");
