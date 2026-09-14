@@ -19,10 +19,17 @@ import { AgentRuntime, ContactEventHandler } from "@band-ai/sdk/runtime";
 import type { MsgContext } from "openclaw/plugin-sdk/reply-runtime";
 import { dispatchInboundMessageWithBufferedDispatcher } from "openclaw/plugin-sdk/reply-runtime";
 import { runPassiveAccountLifecycle } from "openclaw/plugin-sdk/channel-lifecycle";
-import type {
-  ChannelGatewayAdapter,
-  ChannelGatewayContext,
-} from "openclaw/plugin-sdk/channel-runtime";
+import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-core";
+import type { ChannelGatewayContext } from "openclaw/plugin-sdk/channel-contract";
+
+// `ChannelGatewayAdapter` is no longer re-exported as a standalone type from
+// any `openclaw/plugin-sdk/*` subpath as of openclaw 2026.9.4 (previously
+// available from the now-removed `channel-runtime` subpath). Derive it
+// structurally from the `gateway` field of the still-exported `ChannelPlugin`
+// contract instead of importing internal package types directly.
+type ChannelGatewayAdapter<ResolvedAccount = unknown> = NonNullable<
+  ChannelPlugin<ResolvedAccount>["gateway"]
+>;
 import { resolveConnectionConfig, DEFAULT_STOP_TIMEOUT_MS, type BandAccountConfig } from "./config.js";
 import {
   setAccount,
