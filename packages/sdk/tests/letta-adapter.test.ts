@@ -659,8 +659,8 @@ describe("LettaAdapter", () => {
       code: null,
     });
     // The no-response branch throws from inside the same try its own catch
-    // guards — without rethrowIfProviderTurnFailure, the catch re-reports the
-    // identical failure a second time.
+    // guards — without rethrowIfRecoverableTurnFailure, the catch re-reports
+    // the identical failure a second time.
     expect(tools.events.filter((event) => event.messageType === FAILURE_EVENT_TYPE)).toHaveLength(1);
   });
 
@@ -1560,7 +1560,7 @@ describe("LettaAdapter", () => {
     );
     // Should not have attempted init again
     expect(attempts).toBe(1);
-    const cooldownFailure = tools.events.filter((e) => e.messageType === "error")[1];
+    const cooldownFailure = tools.events.filter((e) => e.messageType === FAILURE_EVENT_TYPE)[1];
     expect(cooldownFailure?.metadata?.failure).toMatchObject({
       provider: "letta",
       code: null,

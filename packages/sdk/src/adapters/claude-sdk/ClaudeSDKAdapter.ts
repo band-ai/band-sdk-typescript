@@ -6,8 +6,7 @@ import { UnsupportedFeatureError } from "../../core/errors";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { mcpToolNames, MCP_SERVER_NAME } from "../../runtime/tools/schemas";
-import { asErrorMessage } from "../shared/coercion";
-import { reportTurnFailure, agentFailure } from "../shared/providerFailure";
+import { reportProviderTurnFailure } from "../shared/providerFailure";
 import { deliverReply } from "../shared/deliveryFailedError";
 import { buildConversationPrompt } from "../shared/conversationPrompt";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
@@ -256,11 +255,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
       const query = await this.startQuery(message, history, participantsMessage, contactsMessage, context, tools);
       finalText = await this.consumeQueryEvents(query, tools, context.roomId);
     } catch (error) {
-      this.logger.error("Claude SDK adapter request failed", {
-        roomId: context.roomId,
-        error,
-      });
-      await reportTurnFailure(tools, agentFailure(this.provider, asErrorMessage(error)), this.logger, { roomId: context.roomId });
+      await reportProviderTurnFailure(tools, this.logger, this.provider, "Claude SDK adapter request failed", error, { roomId: context.roomId });
     }
 
     if (finalText.trim()) {

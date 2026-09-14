@@ -12,7 +12,7 @@ export const PROVIDER = "a2a-gateway";
 // see `SENSITIVE_KEY_TERMS`'s doc comment for why this needs its own shape
 // rather than sharing a compiled regex with `logger.ts`'s isolated-key match.
 const SENSITIVE_VALUE_PATTERN = new RegExp(
-  `(${SENSITIVE_KEY_TERMS})"?\\s*[:=]\\s*"?(?:[A-Za-z][\\w-]*\\s+)?[^\\s,;"]+`,
+  `(${SENSITIVE_KEY_TERMS})"?\\s*(?:[A-Za-z]+\\s*)?[:=]\\s*"?(?:[A-Za-z][\\w-]*\\s+)?[^\\s,;"]+`,
   "gi",
 );
 
@@ -90,6 +90,6 @@ export function sanitizeForwardedFailure(value: unknown): Record<string, unknown
 
   const provider = asString(record.provider) ?? "unknown";
   const code = asString(record.code) ?? undefined;
-  const message = sanitizeGatewayErrorMessage(asString(record.message) ?? record.message);
+  const message = sanitizeGatewayErrorMessage(asString(record.message) ?? "Unknown error");
   return new AgentFailure(provider, message, code).toObject();
 }

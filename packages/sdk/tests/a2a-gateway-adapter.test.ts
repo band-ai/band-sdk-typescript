@@ -13,6 +13,10 @@ import type {
 } from "../src/client/rest/types";
 import { FakeTools, makeMessage } from "./testUtils";
 
+function getFailureMetadata(event: unknown): Record<string, unknown> | undefined {
+  return (event as { metadata?: { failure?: Record<string, unknown> } } | undefined)?.metadata?.failure;
+}
+
 class FakeRestApi implements RestApi {
   public readonly createChatCalls: string[] = [];
   public readonly addParticipantCalls: Array<{
@@ -496,7 +500,7 @@ describe("A2AGatewayAdapter", () => {
       status: { state: "failed" },
     });
     expect(rest.createMessageCalls).toHaveLength(0);
-    const failure = (result.value as { metadata?: { failure?: Record<string, unknown> } }).metadata?.failure;
+    const failure = getFailureMetadata(result.value);
     expect(failure).toMatchObject({ provider: "a2a-gateway", code: "peer_not_found" });
   });
 
@@ -929,7 +933,7 @@ describe("A2AGatewayAdapter", () => {
     expect(finalEvent.value?.status?.message?.parts?.[0]?.text).toBe(
       "Timed out waiting for a Band peer response.",
     );
-    const failure = (finalEvent.value as { metadata?: { failure?: Record<string, unknown> } }).metadata?.failure;
+    const failure = getFailureMetadata(finalEvent.value);
     expect(failure).toMatchObject({ provider: "a2a-gateway", code: "timeout" });
   });
 
@@ -973,7 +977,7 @@ describe("A2AGatewayAdapter", () => {
     expect(finalEvent.value?.status?.state).toBe("failed");
     const text = finalEvent.value?.status?.message?.parts?.[0]?.text as string;
     expect(text).not.toContain("sk-realsecret");
-    const failure = (finalEvent.value as { metadata?: { failure?: Record<string, unknown> } }).metadata?.failure;
+    const failure = getFailureMetadata(finalEvent.value);
     expect(failure).toMatchObject({ provider: "a2a-gateway" });
     expect(String(failure?.message)).not.toContain("sk-realsecret");
   });
@@ -1141,7 +1145,7 @@ describe("A2AGatewayAdapter", () => {
     );
 
     const finalEvent = await iterator.next();
-    expect((finalEvent.value as { metadata?: Record<string, unknown> })?.metadata?.failure)
+    expect(getFailureMetadata(finalEvent.value))
       .toEqual({ provider: "letta", code: "quota_exceeded", message: "Provider call failed: quota exceeded", detail: null });
   });
 
@@ -1205,9 +1209,7 @@ describe("A2AGatewayAdapter", () => {
     );
 
     const finalEvent = await iterator.next();
-    const failure = (finalEvent.value as { metadata?: Record<string, unknown> })?.metadata?.failure as
-      | Record<string, unknown>
-      | undefined;
+    const failure = getFailureMetadata(finalEvent.value);
     expect(failure).toMatchObject({ provider: "opencode", code: "401" });
     expect(failure?.detail).toBeNull();
     expect(JSON.stringify(failure)).not.toContain("sk-json-secret");

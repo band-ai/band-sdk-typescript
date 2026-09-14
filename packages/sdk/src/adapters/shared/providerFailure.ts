@@ -3,6 +3,7 @@ import { AgentFailure } from "@band-ai/band-sdk-core";
 import type { MessagingTools } from "../../contracts/protocols";
 import { RecoverableTurnError } from "../../core/errors";
 import type { Logger } from "../../core/logger";
+import { asErrorMessage } from "./coercion";
 
 /**
  * `AgentFailure.code` for a provider that failed to respond before its own
@@ -81,6 +82,24 @@ export async function reportTurnFailure(
 ): Promise<never> {
   await trySendFailure(tools, failure, logger, logContext);
   throw new ProviderTurnFailedError(failure);
+}
+
+/**
+ * `logger.error(logLabel, ...)` immediately followed by `reportTurnFailure`
+ * is the same catch-block shape repeated across several adapters — this
+ * folds both into one call for a caller whose failure message is just
+ * `asErrorMessage(error)` and whose log/report context are the same object.
+ */
+export async function reportProviderTurnFailure(
+  tools: MessagingTools,
+  logger: Logger,
+  provider: string,
+  logLabel: string,
+  error: unknown,
+  logContext: Record<string, unknown>,
+): Promise<never> {
+  logger.error(logLabel, { ...logContext, error });
+  return reportTurnFailure(tools, agentFailure(provider, asErrorMessage(error)), logger, logContext);
 }
 
 /**

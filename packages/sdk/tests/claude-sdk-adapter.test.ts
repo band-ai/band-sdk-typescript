@@ -5,7 +5,7 @@ import {
   type ClaudeSDKQuery,
 } from "../src/adapters/claude-sdk/ClaudeSDKAdapter";
 import { HistoryProvider } from "../src/runtime/types";
-import { FakeTools, makeMessage, expectTurnFailed } from "./testUtils";
+import { FakeTools, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
 import { MCP_SERVER_NAME } from "../src/runtime/tools/schemas";
 
@@ -291,10 +291,9 @@ describe("ClaudeSDKAdapter", () => {
     ));
 
     expect(tools.messages).toEqual([]);
-    const failureEvents = tools.events.filter((event) => event.messageType === "error");
-    expect(failureEvents).toHaveLength(1);
-    expect(failureEvents[0]?.content).toBe("claude query blew up");
-    expect(failureEvents[0]?.metadata?.failure).toMatchObject({
+    const failureEvent = findFailureEvent(tools);
+    expect(failureEvent?.content).toBe("claude query blew up");
+    expect(failureEvent?.metadata?.failure).toMatchObject({
       provider: "claude-sdk",
       message: "claude query blew up",
       code: null,

@@ -1012,30 +1012,35 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   }
 
   private async handleTurnTimeout(roomState: RoomState): Promise<void> {
-    const client = this.client;
-    const abortedSessionId = roomState.sessionId;
-    if (client && abortedSessionId) {
-      // A server wedged enough to blow the turn timeout can leave this
-      // request pending too, and everything below frees the room. See
-      // `abandon`.
-      abandon(
-        () => client.abortSession(abortedSessionId),
-        (abortError) => {
-          this.logger.warn("opencode_adapter.turn_abort_failed", {
-            roomId: roomState.roomId,
-            sessionId: abortedSessionId,
-            error: abortError,
-          });
-        },
-      );
-      // The abort above is fire-and-forget, so this session may still be
-      // settling server-side when the room's next turn starts — that turn
-      // must open a fresh session rather than racing a prompt against it.
-      roomState.forceFreshSession = true;
-      this.abandonSession(abortedSessionId);
-    }
+    this.abortAndAbandonSession(roomState);
     const failure = agentFailure(this.provider, "OpenCode timed out before completing the turn.", FAILURE_CODE_TIMEOUT);
     await this.reportTerminalFailure(roomState, failure);
+  }
+
+  // Best-effort aborts the room's current session server-side (see `abandon`)
+  // and unroutes it (see `abandonSession`) so a turn this room has given up
+  // on — a timeout, or a failed interactive-prompt delivery — can't leave a
+  // late event attaching to the room's next, unrelated turn. Also marks the
+  // room to open a fresh session next time, since the abort above is
+  // fire-and-forget and this session may still be settling server-side.
+  private abortAndAbandonSession(roomState: RoomState): void {
+    const client = this.client;
+    const abandonedSessionId = roomState.sessionId;
+    if (!client || !abandonedSessionId) {
+      return;
+    }
+    roomState.forceFreshSession = true;
+    abandon(
+      () => client.abortSession(abandonedSessionId),
+      (abortError) => {
+        this.logger.warn("opencode_adapter.turn_abort_failed", {
+          roomId: roomState.roomId,
+          sessionId: abandonedSessionId,
+          error: abortError,
+        });
+      },
+    );
+    this.abandonSession(abandonedSessionId);
   }
 
   // Unroutes a session this room has given up on (a turn timeout, or a
@@ -1090,24 +1095,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     // The aborted provider turn can still emit an idle/error event after its
     // prompt delivery failed. A retry must own a new session so that late
     // events remain attributable to the abandoned turn.
-    roomState.forceFreshSession = true;
-    const client = this.client;
-    const abandonedSessionId = roomState.sessionId;
-    if (client && abandonedSessionId) {
-      // Same reasoning as `handleTurnTimeout`: nothing else told this turn's
-      // session to stop, so best-effort ask it to.
-      abandon(
-        () => client.abortSession(abandonedSessionId),
-        (abortError) => {
-          this.logger.warn("opencode_adapter.turn_abort_failed", {
-            roomId: roomState.roomId,
-            sessionId: abandonedSessionId,
-            error: abortError,
-          });
-        },
-      );
-      this.abandonSession(abandonedSessionId);
-    }
+    this.abortAndAbandonSession(roomState);
     if (rejectInteraction) {
       abandon(rejectInteraction, (rejectionError) => {
         this.logger.warn("opencode_adapter.interaction_rejection_failed", {

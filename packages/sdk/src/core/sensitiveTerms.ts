@@ -10,4 +10,4 @@
  * "structured log context redaction" nor "gateway error text redaction" owns
  * this vocabulary — both sit on top of it.
  */
-export const SENSITIVE_KEY_TERMS = "authorization|api[-_]?key|token|secret|password|cookie";
+export const SENSITIVE_KEY_TERMS = "authorization|api[-_ ]?key|token|secret|password|cookie|session";

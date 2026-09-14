@@ -10,6 +10,7 @@ import {
 import type { InitializeParams } from "../src/adapters/codex/appServerProtocol";
 import { HistoryProvider } from "../src/runtime/types";
 import { FakeTools, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
+import { FAILURE_EVENT_TYPE } from "../src/contracts/protocols";
 import { describeDeliveryContract } from "./deliveryContract";
 
 class FakeCodexClient implements CodexClientLike {
@@ -1068,7 +1069,7 @@ describe("CodexAdapter", () => {
       { isSessionBootstrap: false, roomId: "room-retry-error" },
     );
 
-    expect(tools.events.some((event) => event.messageType === "error")).toBe(false);
+    expect(findFailureEvent(tools)).toBeUndefined();
   });
 
   it("reports a mid-turn error notification only once, even when turn/completed also ends in failure", async () => {
@@ -1101,7 +1102,7 @@ describe("CodexAdapter", () => {
       { isSessionBootstrap: false, roomId: "room-double-report" },
     ));
 
-    const failureEvents = tools.events.filter((event) => event.messageType === "error");
+    const failureEvents = tools.events.filter((event) => event.messageType === FAILURE_EVENT_TYPE);
     expect(failureEvents).toHaveLength(1);
     expect(failureEvents[0]?.metadata?.failure).toMatchObject({
       provider: "codex",
@@ -1138,7 +1139,7 @@ describe("CodexAdapter", () => {
       { isSessionBootstrap: false, roomId: "room-double-report-interrupted" },
     ));
 
-    const failureEvents = tools.events.filter((event) => event.messageType === "error");
+    const failureEvents = tools.events.filter((event) => event.messageType === FAILURE_EVENT_TYPE);
     expect(failureEvents).toHaveLength(1);
     expect(failureEvents[0]?.metadata?.failure).toMatchObject({
       provider: "codex",
@@ -1174,6 +1175,136 @@ describe("CodexAdapter", () => {
     // text while the raw provider message goes in the event.
     expect(tools.messages).toEqual(["I stopped before completing this request."]);
     expect(fakeClient.requestCalls.some((call) => call.method === "turn/interrupt")).toBe(true);
+  });
+
+  it("does not merge a stray event from a timed-out turn into the very next turn's reply on the same shared connection", async () => {
+    // A real recvEvent genuinely waits (a pending stream read, bounded by a
+    // setTimeout) rather than throwing the instant its queue is empty --
+    // unlike `FakeCodexClient` above, which is deliberately synchronous.
+    // This fake models that real waiting behavior so a stray event pushed
+    // while the drain is still pending is actually observed by it.
+    class QueueingFakeCodexClient implements CodexClientLike {
+      public readonly requestCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+      private readonly queue: CodexRpcEvent[] = [];
+      private waiter: { resolve: (event: CodexRpcEvent) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> | null } | null = null;
+      private turnCount = 0;
+
+      public async connect(): Promise<void> {}
+      public async initialize(params: InitializeParams): Promise<void> {
+        await this.request("initialize", params as unknown as Record<string, unknown>);
+      }
+
+      public async request<TResult>(method: string, params?: Record<string, unknown>): Promise<TResult> {
+        const safeParams = params ?? {};
+        this.requestCalls.push({ method, params: safeParams });
+        if (method === "turn/start") {
+          this.turnCount += 1;
+          return { turn: { id: `turn-${this.turnCount}`, status: "inProgress", error: null } } as TResult;
+        }
+        if (method === "thread/start") {
+          return { thread: { id: "thread-1" }, model: "gpt-5.3-codex" } as TResult;
+        }
+        return {} as TResult;
+      }
+
+      public async notify(): Promise<void> {}
+      public async respond(): Promise<void> {}
+      public async respondError(): Promise<void> {}
+      public async close(): Promise<void> {}
+
+      public push(event: CodexRpcEvent): void {
+        if (this.waiter) {
+          const waiter = this.waiter;
+          this.waiter = null;
+          if (waiter.timer) clearTimeout(waiter.timer);
+          waiter.resolve(event);
+          return;
+        }
+        this.queue.push(event);
+      }
+
+      public async recvEvent(timeoutMs?: number): Promise<CodexRpcEvent> {
+        if (this.queue.length > 0) {
+          return this.queue.shift() as CodexRpcEvent;
+        }
+        return await new Promise<CodexRpcEvent>((resolve, reject) => {
+          const timer = timeoutMs === undefined ? null : setTimeout(() => {
+            this.waiter = null;
+            reject(new Error("Timed out waiting for Codex app-server event"));
+          }, timeoutMs);
+          this.waiter = { resolve, reject, timer };
+        });
+      }
+    }
+
+    vi.useFakeTimers();
+    try {
+      const tools = new ToolSchemaFakeTools();
+      const fakeClient = new QueueingFakeCodexClient();
+      const adapter = new CodexAdapter({
+        factory: async () => fakeClient,
+        config: { turnTimeoutMs: 1_000 },
+      });
+      await adapter.onStarted("Codex Agent", "Codex parity adapter");
+
+      // Turn 1 times out: recvEvent's fake never receives anything before
+      // the bound elapses.
+      const turn1 = adapter.onMessage(
+        makeMessage("hello"),
+        tools,
+        new HistoryProvider([]),
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-drain" },
+      );
+      turn1.catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expectTurnFailed(turn1);
+
+      // While the drain this kicked off is still pending, the abandoned
+      // turn's agent process sends one more stray delta tagged with its
+      // OLD turnId, then its own (now-irrelevant) turn/completed -- the
+      // drain should discard the delta and stop draining once it sees that.
+      fakeClient.push({
+        kind: "notification",
+        method: "item/agentMessage/delta",
+        params: { delta: "STRAY-FROM-TURN-1 " },
+      });
+      fakeClient.push({
+        kind: "notification",
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "interrupted", error: null } },
+      });
+
+      // The next turn's own events, pushed only after the above so they sit
+      // behind them in the same queue -- exactly the ordering a real,
+      // still-responding-late agent process would produce.
+      const nextTools = new ToolSchemaFakeTools();
+      const turn2 = adapter.onMessage(
+        makeMessage("follow up"),
+        nextTools,
+        new HistoryProvider([]),
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-drain" },
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      fakeClient.push({
+        kind: "notification",
+        method: "item/agentMessage/delta",
+        params: { delta: "real-turn-2-answer" },
+      });
+      fakeClient.push({
+        kind: "notification",
+        method: "turn/completed",
+        params: { turn: { id: "turn-2", status: "completed", error: null } },
+      });
+      await turn2;
+
+      expect(nextTools.messages).toEqual(["real-turn-2-answer"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("emits a structured sendFailure with the codex-declared turnStatus when the transport closes mid-turn", async () => {

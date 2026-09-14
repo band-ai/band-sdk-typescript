@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { A2AAdapter } from "../src/adapters/a2a/A2AAdapter";
 import { A2AHistoryConverter, buildA2AAuthHeaders } from "../src/adapters/a2a/types";
+import { RecoverableTurnError } from "../src/core/errors";
 import { FakeTools, makeMessage, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
 
@@ -142,6 +143,46 @@ describe("A2AAdapter", () => {
       },
     },
   ]);
+
+  it("stops tracking a completed task even when delivering its completion text fails, so the next turn does not attach to it", async () => {
+    const client = new FakeA2AClient({
+      sendResponses: [{
+        kind: "task",
+        id: "task-completed",
+        contextId: "ctx-completed",
+        status: { state: "completed" },
+        artifacts: [{ parts: [{ kind: "text", text: "final answer" }] }],
+      }, {
+        kind: "message",
+        parts: [{ kind: "text", text: "second reply" }],
+      }],
+    });
+    const adapter = new A2AAdapter({ remoteUrl: "a2a-remote", streaming: false, clientFactory: async () => client });
+
+    const failingTools = new FakeTools({ failOn: ["sendMessage"], errorFactory: () => new Error("chat delivery failed") });
+    await expect(adapter.onMessage(
+      makeMessage("hello", "room-completed-tracking"),
+      failingTools,
+      { contextId: null, taskId: null, taskState: null },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-completed-tracking" },
+    )).rejects.toBeInstanceOf(RecoverableTurnError);
+
+    const okTools = new FakeTools();
+    await adapter.onMessage(
+      makeMessage("follow up", "room-completed-tracking"),
+      okTools,
+      { contextId: null, taskId: null, taskState: null },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-completed-tracking" },
+    );
+
+    // The completed task's id must not still be attached to the next turn's
+    // request -- that would address a remote task the agent already closed.
+    expect(client.sendMessageCalls[1]?.message?.taskId).toBeUndefined();
+  });
 
   it("builds auth headers and rejects CRLF header values", () => {
     expect(

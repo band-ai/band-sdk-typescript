@@ -24,6 +24,7 @@ import { mentionSubjectsFromMetadata, replaceUuidMentions } from "../../runtime/
 import { systemUpdateParts } from "../shared/conversationPrompt";
 import { asErrorMessage } from "../shared/coercion";
 import { withTimeout } from "../shared/withTimeout";
+import { abandon } from "../shared/abandon";
 import { deliverReply } from "../shared/deliveryFailedError";
 import { FAILURE_CODE_TIMEOUT, agentFailure, reportTurnFailure } from "../shared/providerFailure";
 import { isBlankEventContent } from "../../contracts/chatEvents";
@@ -150,6 +151,13 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private readonly roomTools = new Map<string, AdapterToolsProtocol>()
   private readonly activeSessions = new Set<string>()
   private readonly bootstrappedSessions = new Set<string>()
+  // A timed-out turn's session id, once `cancel()`'d, can never be trusted
+  // for restore again: the ACP spec allows the agent to keep emitting
+  // `session/update` for it after `cancel`, and that stray tail is
+  // indistinguishable — by sessionId alone — from a later turn's own
+  // content once `establishSession` reopens the same id's chunk buffer.
+  // `establishSession` checks this before ever attempting `tryRestoreSession`.
+  private readonly abandonedSessions = new Set<string>()
   private readonly pendingPermissions = new Map<string /* sessionId */, Set<AbortController>>()
   private readonly sessionsInFlight = new Map<string /* roomId */, Promise<string>>()
   private readonly roomTurnLocks = new Map<string /* roomId */, Promise<unknown>>()
@@ -363,24 +371,27 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   }
 
   // Best-effort: tells the agent to stop working on a turn Band has already
-  // given up waiting for (the ACP client has no way to force it), and evicts
-  // the session so the room's next turn re-establishes/restores it (see
-  // `establishSession`'s `tryRestoreSession` path) instead of reusing a
-  // session the abandoned turn may still be writing to. Resetting the
-  // chunk buffer — after the caller has already flushed whatever was
-  // collected — means any further stray notification from the abandoned
-  // turn (the tail the agent may still send after `cancel`, per the ACP
-  // spec) is dropped (`sessionUpdate` only collects into a session it still
-  // has a buffer for) instead of bleeding into whatever turn reuses this
-  // session id next.
+  // given up waiting for (the ACP client has no way to force it), evicts the
+  // session so the room's next turn re-establishes rather than reuses it
+  // (`establishSession` also refuses to restore it — see `abandonedSessions`),
+  // and resets the chunk buffer so a stray notification the agent sends
+  // before the next turn starts (the tail it may still send after `cancel`,
+  // per the ACP spec) has nowhere to land (`sessionUpdate` only collects
+  // into a session it still has a buffer for).
+  //
+  // `connection.cancel()` is fired via the shared `abandon()` helper, not
+  // awaited: the turn only timed out because the underlying agent process
+  // stopped responding, and `cancel` rides the same transport — awaiting it
+  // would risk blocking this room's turn lock forever on the very process
+  // that just proved it can hang.
   private async abandonTimedOutTurn(connection: ClientSideConnection, sessionId: string): Promise<void> {
     this.activeSessions.delete(sessionId)
+    this.abandonedSessions.add(sessionId)
     this.client?.resetChunks(sessionId)
-    try {
-      await connection.cancel({ sessionId })
-    } catch (error) {
-      this.safeWarn("acp_client.cancel_failed", { sessionId, error: asErrorMessage(error) })
-    }
+    abandon(
+      () => connection.cancel({ sessionId }),
+      (error) => this.safeWarn("acp_client.cancel_failed", { sessionId, error: asErrorMessage(error) }),
+    )
   }
 
   // A per-room async mutex: `fn` for a given `roomId` never overlaps another
@@ -409,6 +420,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       this.client?.resetChunks(sessionId)
       this.activeSessions.delete(sessionId)
       this.bootstrappedSessions.delete(sessionId)
+      this.abandonedSessions.delete(sessionId)
       this.cancelPendingPermissions(sessionId, "room-closed")
     }
   }
@@ -422,6 +434,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.connectionState = null
     this.activeSessions.clear()
     this.bootstrappedSessions.clear()
+    this.abandonedSessions.clear()
     this.roomToSession.clear()
     this.sessionToRoom.clear()
     this.roomTools.clear()
@@ -639,7 +652,11 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   ): Promise<string> {
     const mcpServers = await this.buildSessionMcpServers()
 
-    if (existingSessionId) {
+    // A session a timed-out turn abandoned must never be restored: the
+    // agent may still be writing to it (see `abandonTimedOutTurn`), so
+    // reusing its id — rather than falling through to a genuinely fresh
+    // `newSession` below — is what would let that stray output resurface.
+    if (existingSessionId && !this.abandonedSessions.has(existingSessionId)) {
       const restored = await this.tryRestoreSession(connection, existingSessionId, mcpServers)
       if (restored.ok) {
         // Linked and marked active/bootstrapped before the best-effort mode

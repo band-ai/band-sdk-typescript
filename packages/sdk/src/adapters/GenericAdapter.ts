@@ -12,30 +12,14 @@ import { agentFailure, reportTurnFailure } from "./shared/providerFailure";
  * Band-delivery rejection reaches `onMessage`'s catch as a `DeliveryFailedError`
  * (a `RecoverableTurnError`, already rethrown as-is below) instead of an
  * opaque `Error` that gets misreported as a `"generic"` provider failure.
- * Every other property is resolved against the real `tools` — as receiver,
- * not just as lookup target — so a method runs with its original `this` and
- * an accessor's getter/setter runs with its original receiver too.
  *
- * A `Proxy` whose *target* is `tools` itself doesn't work: `AgentTools.
- * buildAdapterTools()` hands adapters an `Object.freeze`d object, and a
- * `get` trap returning anything other than a frozen own property's exact
- * stored value — as the `sendMessage` override below must — violates the
- * Proxy invariant for non-configurable, non-writable data properties and
- * throws a `TypeError`. The target here is instead a fresh, ordinary,
- * unfrozen object with no properties of its own, so it imposes no such
- * invariant — every trap is free to return whatever `tools` actually holds.
- *
- * Nor does this statically enumerate `tools`' own/prototype keys and copy
- * bound functions onto a delegate: that misses methods more than one
- * prototype level up an inheritance chain (`Reflect.get` walks the *whole*
- * chain, not just the immediate prototype), misses accessor properties
- * entirely (their value is only known at access time, not enumeration
- * time), and — since a delegate's own shadowing assignment on a later call
- * would land on the delegate, not `tools` — silently drops state a called
- * method mutates on `this` for any method it did miss. Resolving every
- * property lazily through `Reflect.get(tools, key, tools)` handles methods,
- * inherited methods at any depth, and accessors uniformly, with `tools` as
- * the receiver throughout.
+ * The target is a fresh, unfrozen, empty object, not `tools` itself: `tools`
+ * is `Object.freeze`d (`AgentTools.buildAdapterTools()`), and a `get` trap
+ * returning anything but a frozen own property's exact stored value — as the
+ * `sendMessage` override here must — violates the Proxy invariant for a
+ * non-configurable, non-writable property. Every trap instead resolves
+ * against the real `tools`, with `tools` as receiver so a method keeps its
+ * original `this` and an accessor its original receiver.
  */
 function toolsWithDeliverySafeSendMessage(tools: AdapterToolsProtocol): AdapterToolsProtocol {
   return new Proxy({} as AdapterToolsProtocol, {
@@ -49,6 +33,14 @@ function toolsWithDeliverySafeSendMessage(tools: AdapterToolsProtocol): AdapterT
       }
       const value: unknown = Reflect.get(tools, key, tools);
       return typeof value === "function" ? (value.bind(tools) as unknown) : value;
+    },
+    // Without this, a write against the empty target would silently succeed
+    // and vanish — invisible even to the handler that made it, since `get`
+    // never consults the target. `tools` is frozen, so forwarding here
+    // throws the same `TypeError` a write against the real, unwrapped
+    // `tools` always has.
+    set(_target, key, value) {
+      return Reflect.set(tools, key, value, tools);
     },
     // Without these two traps, `Object.keys`/spread/`Object.assign` fall back
     // to the empty target's own keys — reporting no properties at all, even

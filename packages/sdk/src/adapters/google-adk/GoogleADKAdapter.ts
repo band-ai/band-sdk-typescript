@@ -13,8 +13,8 @@ import {
   executeCustomTool,
   type CustomToolDef,
 } from "../../runtime/tools/customTools";
-import { asErrorMessage, asOptionalRecord } from "../shared/coercion";
-import { reportTurnFailure, agentFailure } from "../shared/providerFailure";
+import { asOptionalRecord } from "../shared/coercion";
+import { reportProviderTurnFailure } from "../shared/providerFailure";
 import { deliverReply } from "../shared/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import {
@@ -276,12 +276,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
         }
       }
     } catch (error) {
-      const messageText = asErrorMessage(error);
-      this.logger.error("Google ADK adapter request failed", {
-        error,
-        roomId: context.roomId,
-      });
-      await reportTurnFailure(tools, agentFailure(this.provider, messageText), this.logger, { roomId: context.roomId });
+      await reportProviderTurnFailure(tools, this.logger, this.provider, "Google ADK adapter request failed", error, { roomId: context.roomId });
     }
 
     const nextHistory = this.roomHistory.get(context.roomId) ?? [];

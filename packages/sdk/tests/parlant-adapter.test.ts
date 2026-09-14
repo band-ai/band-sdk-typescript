@@ -233,8 +233,8 @@ describe("ParlantAdapter", () => {
       code: "timeout",
     });
     // The timeout branch throws from inside the same try its own catch
-    // guards — without rethrowIfProviderTurnFailure, the catch re-reports a
-    // second, code-less duplicate.
+    // guards — without rethrowIfRecoverableTurnFailure, the catch re-reports
+    // a second, code-less duplicate.
     expect(tools.events.filter((event) => event.messageType === FAILURE_EVENT_TYPE)).toHaveLength(1);
   });
 

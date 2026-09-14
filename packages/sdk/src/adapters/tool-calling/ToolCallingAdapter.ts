@@ -11,7 +11,7 @@ import { resolveLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { formatHistoryForLlm } from "../../runtime/formatters";
 import { asErrorMessage } from "../shared/coercion";
-import { reportTurnFailure, agentFailure } from "../shared/providerFailure";
+import { reportProviderTurnFailure } from "../shared/providerFailure";
 import { deliverReply } from "../shared/deliveryFailedError";
 import {
   CustomToolExecutionError,
@@ -198,11 +198,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
         });
       }
     } catch (error) {
-      this.logger.error("Tool-calling adapter request failed", {
-        messageId: message.id,
-        error,
-      });
-      await reportTurnFailure(tools, agentFailure(this.provider, asErrorMessage(error)), this.logger, { messageId: message.id });
+      await reportProviderTurnFailure(tools, this.logger, this.provider, "Tool-calling adapter request failed", error, { messageId: message.id });
     }
 
     if (text) {

@@ -3,7 +3,7 @@ import type { Server as HttpServer } from "node:http";
 import { describe, expect, it } from "vitest";
 
 import { createGatewayServer } from "../src/adapters/a2a-gateway/server";
-import { sanitizeGatewayErrorMessage } from "../src/adapters/a2a-gateway/failure";
+import { sanitizeForwardedFailure, sanitizeGatewayErrorMessage } from "../src/adapters/a2a-gateway/failure";
 import type {
   GatewayCancelRequest,
   GatewayRequest,
@@ -483,6 +483,26 @@ describe("GatewayServer", () => {
         .not.toContain("sk-client-secret");
       expect(sanitizeGatewayErrorMessage(new Error("Set-Cookie: session=supersecret")))
         .not.toContain("supersecret");
+      // A bare session value with no other sensitive keyword nearby --
+      // isolates "session" itself, rather than piggybacking on "Cookie".
+      expect(sanitizeGatewayErrorMessage(new Error("session=supersecret2")))
+        .not.toContain("supersecret2");
+    });
+
+    it("redacts a naturally-spaced credential phrase, not just a contiguous key=value one", () => {
+      const sanitized = sanitizeGatewayErrorMessage(
+        new Error("Incorrect API key provided: sk-test123"),
+      );
+      expect(sanitized).not.toContain("sk-test123");
+    });
+  });
+
+  describe("sanitizeForwardedFailure", () => {
+    it("falls back to a safe placeholder, not the literal coerced value, when message is not a string", () => {
+      expect(sanitizeForwardedFailure({ provider: "openai", code: "bad_request", message: undefined }))
+        .toMatchObject({ message: "Unknown error" });
+      expect(sanitizeForwardedFailure({ provider: "openai", code: "bad_request" }))
+        .toMatchObject({ message: "Unknown error" });
     });
   });
 

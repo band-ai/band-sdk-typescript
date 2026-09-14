@@ -308,7 +308,39 @@ describe("GenericAdapter", () => {
     expect(observedSpreadKeys.sort()).toEqual(["sendEvent", "sendMessage"]);
   });
 
-  it("does not run the handler's onMessage body twice for successful turns", async () => {
+  it("throws instead of silently losing a write to a new property on the tools proxy", async () => {
+    const tools = Object.freeze({
+      sendMessage: async () => ({ ok: true }) as const,
+    }) as unknown as AdapterToolsProtocol;
+
+    let threw = false;
+    let readBack: unknown;
+    const adapter = new GenericAdapter(async ({ tools: handlerTools }) => {
+      try {
+        (handlerTools as unknown as Record<string, unknown>).someHandlerState = "set by handler";
+      } catch {
+        threw = true;
+      }
+      readBack = (handlerTools as unknown as Record<string, unknown>).someHandlerState;
+    });
+    await adapter.onStarted("Agent", "An agent");
+
+    await adapter.onMessage(
+      makeMessage("hello"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    );
+
+    // Matches what writing to the real, frozen `tools` directly would do —
+    // not a silent no-op the handler can't even detect on its own read-back.
+    expect(threw).toBe(true);
+    expect(readBack).toBeUndefined();
+  });
+
+  it("runs the handler exactly once and emits no failure event on a successful turn", async () => {
     const calls: string[] = [];
     const adapter = new GenericAdapter(async ({ message }) => {
       calls.push(message.content);

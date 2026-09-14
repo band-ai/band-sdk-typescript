@@ -7,7 +7,7 @@ import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import type { PlatformMessage } from "../../runtime/types";
 import { asErrorMessage } from "../shared/coercion";
-import { reportTurnFailure, agentFailure } from "../shared/providerFailure";
+import { reportTurnFailure, agentFailure, reportProviderTurnFailure } from "../shared/providerFailure";
 import { deliverReply } from "../shared/deliveryFailedError";
 import {
   A2AHistoryConverter,
@@ -194,13 +194,10 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
     } catch (error) {
       rethrowIfRecoverableTurnFailure(error);
 
-      const errorMessage = asErrorMessage(error);
-      this.logger.error("A2A adapter request failed", {
+      await reportProviderTurnFailure(tools, this.logger, this.provider, "A2A adapter request failed", error, {
         roomId: context.roomId,
         remoteUrl: this.remoteUrl,
-        error,
       });
-      await reportTurnFailure(tools, agentFailure(this.provider, errorMessage), this.logger, { roomId: context.roomId });
     }
   }
 
@@ -359,18 +356,31 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
     }
 
     if (input.state === "completed") {
-      if (input.completedMessage) {
-        await deliverReply(input.tools, input.completedMessage, [input.sender]);
+      // Tracking must clear once the remote task is known terminal
+      // regardless of whether delivering its completion text succeeds: a
+      // `DeliveryFailedError` from `deliverReply` must not leave `tasks`/
+      // `taskSenders` pointing at a task that's already done, ready for a
+      // later turn to attach to as if it were still open.
+      try {
+        if (input.completedMessage) {
+          await deliverReply(input.tools, input.completedMessage, [input.sender]);
+        }
+        await this.emitTaskEvent(input.tools, input.contextId, input.taskId, input.state);
+      } finally {
+        this.clearTaskTracking(input.key, input.roomId);
       }
-      await this.emitTaskEvent(input.tools, input.contextId, input.taskId, input.state);
-      this.clearTaskTracking(input.key, input.roomId);
       return;
     }
 
     if (TERMINAL_STATES.has(input.state)) {
       const text = extractMessageText(input.statusMessage) ?? `A2A task ${input.state}`;
-      await this.emitTaskEvent(input.tools, input.contextId, input.taskId, input.state);
-      this.clearTaskTracking(input.key, input.roomId);
+      // Same reasoning as the "completed" branch above: clear tracking
+      // whether or not emitting this terminal-state event succeeds.
+      try {
+        await this.emitTaskEvent(input.tools, input.contextId, input.taskId, input.state);
+      } finally {
+        this.clearTaskTracking(input.key, input.roomId);
+      }
       // Reports and throws, like every other terminal provider failure in this
       // adapter: a remote task ending failed/canceled/rejected/auth-required is
       // exactly that, and must fail the turn so PlatformRuntime retries it

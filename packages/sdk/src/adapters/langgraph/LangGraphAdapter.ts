@@ -6,7 +6,7 @@ import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { asErrorMessage, asOptionalRecord, asRecord } from "../shared/coercion";
-import { reportTurnFailure, agentFailure } from "../shared/providerFailure";
+import { reportProviderTurnFailure } from "../shared/providerFailure";
 import { deliverReply } from "../shared/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 
@@ -185,11 +185,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
         text = extractAssistantText(result);
       }
     } catch (error) {
-      this.logger.error("LangGraph adapter request failed", {
-        roomId: context.roomId,
-        error,
-      });
-      await reportTurnFailure(tools, agentFailure(this.provider, asErrorMessage(error)), this.logger, { roomId: context.roomId });
+      await reportProviderTurnFailure(tools, this.logger, this.provider, "LangGraph adapter request failed", error, { roomId: context.roomId });
     }
 
     if (text) {

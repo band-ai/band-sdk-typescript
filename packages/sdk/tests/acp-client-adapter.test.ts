@@ -2242,11 +2242,12 @@ describe("ACPClientAdapter", () => {
       turnTimeoutMs?: number;
       prompt: ReturnType<typeof vi.fn>;
       cancel?: ReturnType<typeof vi.fn>;
+      newSession?: ReturnType<typeof vi.fn>;
     }) {
       let clientHandle: BandACPClient | null = null
       const cancel = input.cancel ?? vi.fn(async () => undefined)
       const loadSession = vi.fn(async () => ({}))
-      const newSession = vi.fn(async () => ({ sessionId: "session-1" }))
+      const newSession = input.newSession ?? vi.fn(async () => ({ sessionId: "session-1" }))
 
       const adapter = new ACPClientAdapter({
         command: ["acp-agent"],
@@ -2381,7 +2382,7 @@ describe("ACPClientAdapter", () => {
       expect(tools.messages).toEqual(["final answer"])
     })
 
-    it("on a turn timeout: cancels the outstanding prompt, flushes output streamed so far, and evicts the session so the room's next turn restores rather than reuses it", async () => {
+    it("on a turn timeout: cancels the outstanding prompt, flushes output streamed so far, and evicts the session so the room's next turn establishes a fresh session instead of restoring or reusing it", async () => {
       vi.useFakeTimers()
       try {
         const prompt = vi.fn()
@@ -2432,9 +2433,10 @@ describe("ACPClientAdapter", () => {
         // locally.
         expect(cancel).toHaveBeenCalledWith({ sessionId: "session-1" })
 
-        // The timed-out session is evicted: the room's next turn restores it
-        // via `loadSession` instead of treating it as still-active and
-        // racing a second prompt against the first, abandoned one.
+        // The timed-out session is evicted AND barred from restore: the
+        // room's next turn establishes a genuinely fresh session via
+        // `newSession` instead of `loadSession`-restoring the one the
+        // abandoned turn may still be writing to.
         const nextTools = new FakeTools()
         await adapter.onMessage(
           makeMessage("follow up", "room-timeout"),
@@ -2444,8 +2446,118 @@ describe("ACPClientAdapter", () => {
           null,
           { isSessionBootstrap: false, roomId: "room-timeout" },
         )
-        expect(loadSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-1" }))
-        expect(newSession).toHaveBeenCalledTimes(1)
+        expect(loadSession).not.toHaveBeenCalled()
+        expect(newSession).toHaveBeenCalledTimes(2)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("a stray notification from a timed-out turn's session cannot contaminate the next turn's reply, since the next turn is a genuinely fresh session", async () => {
+      vi.useFakeTimers()
+      try {
+        const prompt = vi.fn()
+        const newSession = vi.fn()
+          .mockResolvedValueOnce({ sessionId: "session-1" })
+          .mockResolvedValueOnce({ sessionId: "session-2" })
+        const { adapter, loadSession, getClient } = buildFailureHarness({
+          turnTimeoutMs: 1_000,
+          prompt,
+          newSession,
+        })
+        prompt.mockImplementationOnce(() => new Promise(() => undefined))
+
+        await adapter.onStarted("Agent", "desc")
+
+        const tools = new FakeTools()
+        const turn = adapter.onMessage(
+          makeMessage("question", "room-stray"),
+          tools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-stray" },
+        )
+        turn.catch(() => undefined)
+        await vi.advanceTimersByTimeAsync(1_000)
+        await expectTurnFailed(turn)
+
+        // The next turn establishes session-2 (a fresh id, not a restore of
+        // session-1) and streams its own real content; a straggler from the
+        // abandoned session-1 turn arrives for the OLD id in between.
+        prompt.mockImplementationOnce(async (params: { sessionId: string }) => {
+          await getClient().sessionUpdate({
+            sessionId: "session-1",
+            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "STALE-FROM-ABANDONED-TURN " } },
+          })
+          await getClient().sessionUpdate({
+            sessionId: params.sessionId,
+            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "real-turn-2-answer" } },
+          })
+          return { stopReason: "end_turn" }
+        })
+
+        const nextTools = new FakeTools()
+        await adapter.onMessage(
+          makeMessage("follow up", "room-stray"),
+          nextTools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-stray" },
+        )
+
+        expect(loadSession).not.toHaveBeenCalled()
+        expect(nextTools.messages).toEqual(["real-turn-2-answer"])
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("does not wedge the room forever waiting on a turn-timeout cancel() that never resolves", async () => {
+      vi.useFakeTimers()
+      try {
+        const prompt = vi.fn()
+        const cancel = vi.fn(() => new Promise(() => undefined))
+        const { adapter } = buildFailureHarness({
+          turnTimeoutMs: 1_000,
+          prompt,
+          cancel,
+        })
+        prompt.mockImplementationOnce(() => new Promise(() => undefined))
+        prompt.mockImplementation(async () => ({ stopReason: "end_turn" }))
+
+        await adapter.onStarted("Agent", "desc")
+
+        const tools = new FakeTools()
+        const turn = adapter.onMessage(
+          makeMessage("question", "room-wedge"),
+          tools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-wedge" },
+        )
+        turn.catch(() => undefined)
+        await vi.advanceTimersByTimeAsync(1_000)
+
+        // The timed-out turn itself still fails promptly -- it does not wait
+        // on `cancel()`, which this test deliberately never resolves.
+        await expectTurnFailed(turn)
+
+        // Nor does the room stay wedged: a follow-up turn on the same room
+        // completes normally instead of hanging behind the unresolved cancel.
+        const nextTools = new FakeTools()
+        await adapter.onMessage(
+          makeMessage("follow up", "room-wedge"),
+          nextTools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-wedge" },
+        )
+        expect(nextTools.messages).toEqual([])
+        expect(findFailureEvent(nextTools)).toBeUndefined()
       } finally {
         vi.useRealTimers()
       }
