@@ -47,6 +47,35 @@ Say up front in your first message which mode you're running in.
   (or note it in your PR body) rather than leaving two competing PRs for the
   same bump.
 
+## Step 0.5 — capture a baseline test run, per package
+
+Before touching any dependency, run each package's test suite once,
+unmodified, and save the result:
+
+```bash
+pnpm --filter <workspace-name> test -- --reporter=json --outputFile=<path>
+```
+
+This repo's suite has at least one pre-existing environment-dependent flake
+(a `linear-c3-compatibility` test that fails without `BAND_API_KEY` set, and
+sometimes even with it) — confirmed by running the *unmodified* suite twice
+and seeing it fail both times with no dependency changes at all. Don't let
+tests like this get pinned on whichever dependency happens to be under test
+when they happen to fail.
+
+Whenever a gate run's test step fails later (step 2 or step 3), compare its
+JSON output against this baseline with
+`node scripts/diff_test_failures.mjs <baseline.json> <candidate.json>` before
+concluding the dependency broke something. Only *new* failures — ones absent
+from the baseline — count as evidence the bump is breaking. A failure that
+was already red on `main` is not this dependency's fault; note it in the
+final report as a pre-existing issue worth a separate look, but don't route
+it into the Linear-issue-and-fix-attempt flow, and don't let it block folding
+an otherwise-clean bump into the safe-updates branch.
+
+Build and typecheck are deterministic (no such flakiness expected) — a
+baseline comparison is only needed for the test step.
+
 ## Step 1 — classify outdated dependencies, per package
 
 For each package directory, run:
