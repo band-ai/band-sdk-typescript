@@ -405,6 +405,7 @@ describe("ACPClientAdapter", () => {
 
   it("a non-streamed chunk closes every open streamed run, not just the one sharing its chunkType", async () => {
     const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+    client.beginSession("session-x")
 
     // Both a text run and a thought run are open when the tool call lands —
     // it must close both, so the text/thought that follow start fresh runs
