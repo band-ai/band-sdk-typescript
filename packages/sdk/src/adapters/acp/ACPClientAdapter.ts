@@ -10,6 +10,10 @@ import type {
   PermissionOption,
   RequestPermissionRequest,
   RequestPermissionResponse,
+  SessionConfigOption,
+  SessionConfigSelect,
+  SessionConfigSelectOption,
+  SessionConfigSelectOptions,
   SessionMode,
   SessionModeState,
 } from "@agentclientprotocol/sdk";
@@ -21,9 +25,9 @@ import { ValidationError } from "../../core/errors";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { mentionSubjectsFromMetadata, replaceUuidMentions } from "../../runtime/formatters";
-import { asErrorMessage } from "../shared/coercion";
 import { systemUpdateParts } from "../shared/conversationPrompt";
 import { withTimeout } from "../shared/withTimeout";
+import { asErrorMessage, asOptionalRecord } from "../shared/coercion";
 import { isBlankEventContent } from "../../contracts/chatEvents";
 import type { PlatformMessage } from "../../runtime/types";
 import type { McpToolRegistration } from "../../mcp/registrations";
@@ -69,13 +73,22 @@ const DEFAULT_PERMISSION_TIMEOUT_MS = 5 * 60_000;
 // its own bound. Order-of-magnitude match for `OpencodeAdapter`'s own
 // subprocess-handshake timeout: this is the same kind of wait, a local agent
 // process acknowledging an administrative call, not doing model inference.
-const SET_SESSION_MODE_TIMEOUT_MS = 10_000;
+// Shared by both `setSessionMode` and `setSessionConfigOption` — the same
+// category of RPC-ack wait, not two identical constants.
+const SET_SESSION_CONFIG_TIMEOUT_MS = 10_000;
 
 export interface ACPModeRequest {
   roomId: string;
   sessionId: string;
   currentModeId: string;
   modes: readonly SessionMode[];
+}
+
+export interface ACPModelRequest {
+  roomId: string;
+  sessionId: string;
+  currentModelId: string;
+  models: readonly SessionConfigSelectOption[];
 }
 
 export interface ACPClientAdapterOptions {
@@ -113,6 +126,21 @@ export interface ACPClientAdapterOptions {
   // re-asserted. A session's mode is therefore fixed for its lifetime —
   // changing it means tearing the session down and establishing a new one.
   resolveSessionMode?: (request: ACPModeRequest, signal: AbortSignal) => Promise<string | undefined>;
+  // ACP advertises a session's model catalog (when the agent exposes one) as
+  // a `configOptions` entry categorized/keyed "model" — not via the SDK's
+  // separate, `@experimental`/`unstable_`-prefixed `SessionModelState`/
+  // `unstable_setSessionModel` API, which real agents (e.g. claude-agent-acp,
+  // pinned to a protocol version past where that API was removed) don't
+  // populate. This callback receives that flattened `configOptions` catalog
+  // and may select a model before the session's first prompt. Omit it to
+  // preserve the harness's advertised current model. Applied via ACP's
+  // `session/set_config_option`; ignored if the resolved id isn't
+  // advertised. Best-effort and one-time per session: a failed switch only
+  // logs a warning, and an agent that later changes its model on its own
+  // (ACP's `config_option_update`) is neither tracked nor re-asserted. A
+  // session's model is therefore fixed for its lifetime — changing it means
+  // tearing the session down and establishing a new one.
+  resolveSessionModel?: (request: ACPModelRequest, signal: AbortSignal) => Promise<string | undefined>;
   logger?: Logger;
 }
 
@@ -144,6 +172,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
   private readonly resolvePermission?: (request: ACPPermissionRequest, signal: AbortSignal) => Promise<string | undefined>
   private readonly resolveSessionMode?: (request: ACPModeRequest, signal: AbortSignal) => Promise<string | undefined>
+  private readonly resolveSessionModel?: (request: ACPModelRequest, signal: AbortSignal) => Promise<string | undefined>
   private readonly permissionTimeoutMs: number
   private readonly logger: Logger
 
@@ -179,13 +208,15 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
     this.resolvePermission = options.resolvePermission
     this.resolveSessionMode = options.resolveSessionMode
+    this.resolveSessionModel = options.resolveSessionModel
     this.logger = options.logger ?? new NoopLogger()
     this.permissionTimeoutMs = options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
-    // Only meaningful when `resolvePermission` is actually set — the
-    // auto-allow path never reads it, so an irrelevant/default value here
-    // shouldn't reject an otherwise-valid config for a caller not using
-    // manual mode at all.
-    if ((this.resolvePermission || this.resolveSessionMode) && (!Number.isFinite(this.permissionTimeoutMs) || this.permissionTimeoutMs <= 0)) {
+    // Only meaningful when `resolvePermission`, `resolveSessionMode`, or
+    // `resolveSessionModel` is actually set — the auto-allow/harness-default
+    // paths never read it, so an irrelevant/default value here shouldn't
+    // reject an otherwise-valid config for a caller not using manual mode at
+    // all.
+    if ((this.resolvePermission || this.resolveSessionMode || this.resolveSessionModel) && (!Number.isFinite(this.permissionTimeoutMs) || this.permissionTimeoutMs <= 0)) {
       throw new ValidationError(`permissionTimeoutMs must be a positive finite number, got ${options.permissionTimeoutMs}`)
     }
   }
@@ -562,6 +593,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         this.activeSessions.add(existingSessionId)
         this.bootstrappedSessions.add(existingSessionId)
         await this.configureSessionMode(roomId, existingSessionId, restored.modes, connection)
+        await this.configureSessionModel(roomId, existingSessionId, restored.configOptions, connection)
         return existingSessionId
       }
     }
@@ -579,6 +611,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.linkOrAbandon(roomId, created.sessionId, generation)
     this.activeSessions.add(created.sessionId)
     await this.configureSessionMode(roomId, created.sessionId, created.modes, connection)
+    await this.configureSessionModel(roomId, created.sessionId, created.configOptions, connection)
     return created.sessionId
   }
 
@@ -621,7 +654,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       return
     }
 
-    const selectedModeId = await this.resolveSessionModeManually(
+    const selectedModeId = await this.resolveManualSelection(
+      "resolveSessionMode",
       (signal) => this.resolveSessionMode!({
         roomId,
         sessionId,
@@ -648,8 +682,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     try {
       await withTimeout(
         connection.setSessionMode({ sessionId, modeId: selectedModeId }),
-        SET_SESSION_MODE_TIMEOUT_MS,
-        `setSessionMode did not respond within ${SET_SESSION_MODE_TIMEOUT_MS}ms`,
+        SET_SESSION_CONFIG_TIMEOUT_MS,
+        `setSessionMode did not respond within ${SET_SESSION_CONFIG_TIMEOUT_MS}ms`,
       )
     } catch (error) {
       this.safeWarn("failed to switch session into the selected mode", {
@@ -660,7 +694,76 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     }
   }
 
-  private async resolveSessionModeManually(
+  // Best-effort, same contract as `configureSessionMode`: never throws, so a
+  // model switch going wrong can't take a session establishment down with
+  // it. Reads the model catalog off `configOptions` (the stable, generic
+  // mechanism every ACP protocol version from this repo's actual pin through
+  // npm's current latest carries), not the separate `unstable_`-prefixed
+  // `SessionModelState` field, which real agents don't populate — see
+  // `ACPModelRequest`'s doc comment for why.
+  private async configureSessionModel(
+    roomId: string,
+    sessionId: string,
+    configOptions: readonly SessionConfigOption[] | null | undefined,
+    connection: ClientSideConnection,
+  ): Promise<void> {
+    if (!this.resolveSessionModel || !Array.isArray(configOptions)) {
+      return
+    }
+
+    const modelOption = configOptions.find(isModelConfigOption) ?? configOptions.find(isModelConfigOptionById)
+    if (!modelOption) {
+      return
+    }
+
+    // Defensive, not just typed: same reasoning as `configureSessionMode`'s
+    // `availableModes` guard above — the ACP client does no runtime schema
+    // check on an agent's JSON-RPC response.
+    const availableModels = flattenConfigSelectOptions(modelOption.options)
+    if (availableModels.length === 0) {
+      return
+    }
+
+    const selectedModelId = await this.resolveManualSelection(
+      "resolveSessionModel",
+      (signal) => this.resolveSessionModel!({
+        roomId,
+        sessionId,
+        currentModelId: modelOption.currentValue,
+        models: availableModels,
+      }, signal),
+      connection.signal,
+    )
+    if (!selectedModelId || selectedModelId === modelOption.currentValue) {
+      return
+    }
+
+    if (!availableModels.some((model) => model?.value === selectedModelId)) {
+      this.safeWarn("resolveSessionModel selected a model id this session does not advertise", {
+        sessionId,
+        selectedModelId,
+        availableModelIds: availableModels.map((model) => model?.value),
+      })
+      return
+    }
+
+    try {
+      await withTimeout(
+        connection.setSessionConfigOption({ sessionId, configId: modelOption.id, value: selectedModelId }),
+        SET_SESSION_CONFIG_TIMEOUT_MS,
+        `setSessionConfigOption did not respond within ${SET_SESSION_CONFIG_TIMEOUT_MS}ms`,
+      )
+    } catch (error) {
+      this.safeWarn("failed to switch session into the selected model", {
+        sessionId,
+        selectedModelId,
+        error: String(error),
+      })
+    }
+  }
+
+  private async resolveManualSelection(
+    hookName: string,
     resolver: (signal: AbortSignal) => Promise<string | undefined>,
     signal: AbortSignal,
   ): Promise<string | undefined> {
@@ -673,17 +776,44 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       const cancelled = new Promise<undefined>((resolve) => {
         controller.signal.addEventListener("abort", () => resolve(undefined), { once: true })
       })
+      // `addEventListener` only catches a *future* abort. `signal` (the
+      // connection's) can already be aborted by the time this runs — mode
+      // and model establishment both race against the same
+      // `connection.signal` in sequence, so a connection drop during the
+      // first wait leaves the second wait registering its listener on an
+      // already-fired signal, which never redelivers the past event.
+      // Checked synchronously too, mirroring `ClientSideConnection.signal`'s
+      // own documented usage pattern — but only *after* `cancelled` above
+      // has its own listener on `controller.signal` in place, since
+      // `abort()` fires that signal's one-shot event immediately and a
+      // listener added afterward would miss it the same way.
+      if (signal.aborted) {
+        abort()
+      }
       const timeout = new Promise<undefined>((resolve) => {
         timer = setTimeout(() => resolve(undefined), this.permissionTimeoutMs)
       })
-      return await Promise.race([
-        Promise.resolve().then(() => resolver(controller.signal)).catch((error) => {
-          this.safeWarn("resolveSessionMode threw; preserving the harness default", { error: String(error) })
+      let settled = false
+      const resolved = await Promise.race([
+        Promise.resolve().then(() => resolver(controller.signal)).then((chosenId) => {
+          // Mirrors `discardLateAnswer`'s reasoning for `resolvePermission`:
+          // a hook that answers after `timeout`/`cancelled` already won the
+          // race can no longer be honoured — `Promise.race` has already
+          // discarded this value either way — but logging is what makes a
+          // "my selection did nothing" report explicable instead of silent.
+          if (settled && chosenId !== undefined) {
+            this.safeWarn(`${hookName} answered after the request was abandoned; discarding`, { chosenId })
+          }
+          return chosenId
+        }).catch((error) => {
+          this.safeWarn(`${hookName} threw; preserving the harness default`, { error: String(error) })
           return undefined
         }),
         timeout,
         cancelled,
       ])
+      settled = true
+      return resolved
     } finally {
       clearTimeout(timer)
       signal.removeEventListener("abort", abort)
@@ -695,13 +825,17 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     connection: ClientSideConnection,
     sessionId: string,
     mcpServers: McpServer[],
-  ): Promise<{ ok: true; modes?: SessionModeState | null } | { ok: false }> {
+  ): Promise<
+    | { ok: true; modes?: SessionModeState | null; configOptions?: Array<SessionConfigOption> | null }
+    | { ok: false }
+  > {
     const capabilities = this.connectionState?.agentCapabilities
     const params = { cwd: this.cwd, mcpServers, sessionId }
 
     // `loadSession`/`unstable_resumeSession` share both their params and
-    // their response shape (`{ ...; modes?: SessionModeState | null }`);
-    // resolve which one applies once, then handle the result once.
+    // their response shape (`{ ...; modes?: SessionModeState | null;
+    // configOptions?: Array<SessionConfigOption> | null }`); resolve which
+    // one applies once, then handle the result once.
     const restore = capabilities?.loadSession
       ? () => connection.loadSession(params)
       : capabilities?.sessionCapabilities?.resume
@@ -725,7 +859,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       // so a raced-out rejection correctly falls through to establishing a
       // fresh session instead.
       const restored = await this.raceAgainstConnectionClose(connection, restore())
-      return { ok: true, modes: restored?.modes }
+      return { ok: true, modes: restored?.modes, configOptions: restored?.configOptions }
     } catch {
       return { ok: false }
     }
@@ -1210,3 +1344,71 @@ export async function createSubprocessConnection(
   }
 }
 
+// Config option id/category convention real agents use for the model
+// selector (see `ACPModelRequest`'s doc comment).
+const MODEL_CONFIG_OPTION_KEY = "model"
+
+// `SessionConfigOption` is a discriminated union — only the `"select"`
+// branch has `.currentValue`/`.options`. `Array.find()`'s plain
+// boolean-returning callback doesn't narrow that union on its own, so
+// `configureSessionModel` needs real type-predicates here rather than an
+// inline arrow.
+function isSessionConfigSelect(
+  option: SessionConfigOption,
+): option is SessionConfigOption & SessionConfigSelect & { type: "select" } {
+  return option?.type === "select"
+}
+
+// `category` is the protocol's documented signal for "this is the model
+// selector" and takes priority; `isModelConfigOptionById` below is
+// consulted only as a fallback for an agent that omits `category` (the spec
+// explicitly allows that) — `category` is an open string, so an unrelated
+// option could otherwise be mismatched if both checks were given equal
+// priority in one predicate.
+function isModelConfigOption(
+  option: SessionConfigOption,
+): option is SessionConfigOption & SessionConfigSelect & { type: "select" } {
+  return isSessionConfigSelect(option) && option.category === MODEL_CONFIG_OPTION_KEY
+}
+
+// Fallback for an agent that omits `category` — real agents (claude-agent-acp)
+// key their model option `id: "model"` too. Only consulted when no entry
+// matches `isModelConfigOption` above.
+function isModelConfigOptionById(
+  option: SessionConfigOption,
+): option is SessionConfigOption & SessionConfigSelect & { type: "select" } {
+  return isSessionConfigSelect(option) && option.id === MODEL_CONFIG_OPTION_KEY
+}
+
+// `SessionConfigSelect.options` is typed as `Array<SessionConfigSelectOption>
+// | Array<SessionConfigSelectGroup>` — a real protocol possibility, even
+// though no agent observed while building this (Claude, Codex) uses the
+// grouped form. `SessionConfigSelectGroup` (`{group, name, options}`) is
+// distinguished from `SessionConfigSelectOption` (`{value, name,
+// description?}`) via `"group" in entry`, the only field unique to the
+// group shape. Entries are otherwise unvalidated JSON-RPC data (same
+// reasoning as `configureSessionMode`'s `availableModes` guard) — `entry`
+// and a group's own `options` are each validated with this codebase's
+// shared `asOptionalRecord`/`Array.isArray` guards (not a bespoke check)
+// before either is trusted, so a non-object or non-array shape is dropped
+// rather than passed to the `in` operator or returned as if it were real
+// catalog data.
+function flattenConfigSelectOptions(
+  options: SessionConfigSelectOptions | null | undefined,
+): SessionConfigSelectOption[] {
+  if (!Array.isArray(options)) {
+    return []
+  }
+
+  return options.flatMap((entry) => {
+    if (!asOptionalRecord(entry)) {
+      return []
+    }
+
+    if ("group" in entry) {
+      return Array.isArray(entry.options) ? entry.options : []
+    }
+
+    return [entry]
+  })
+}
