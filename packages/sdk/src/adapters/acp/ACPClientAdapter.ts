@@ -832,14 +832,14 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     const capabilities = this.connectionState?.agentCapabilities
     const params = { cwd: this.cwd, mcpServers, sessionId }
 
-    // `loadSession`/`unstable_resumeSession` share both their params and
+    // `loadSession`/`resumeSession` share both their params and
     // their response shape (`{ ...; modes?: SessionModeState | null;
     // configOptions?: Array<SessionConfigOption> | null }`); resolve which
     // one applies once, then handle the result once.
     const restore = capabilities?.loadSession
       ? () => connection.loadSession(params)
       : capabilities?.sessionCapabilities?.resume
-        ? () => connection.unstable_resumeSession(params)
+        ? () => connection.resumeSession(params)
         : null
 
     if (!restore) {
@@ -848,7 +848,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
     try {
       // `?.`: the ACP client doesn't runtime-validate this response, and the
-      // installed SDK's own `unstable_resumeSession` has no fallback for a
+      // installed SDK's own `resumeSession` has no fallback for a
       // nullish resolution the way its `loadSession` does — a restore that
       // genuinely succeeded must not be miscategorized as failed just
       // because no mode state came back with it.
