@@ -57,6 +57,55 @@ describe("adapter shared utilities", () => {
       expect(asErrorMessage("plain string")).toBe("plain string");
       expect(asErrorMessage(42)).toBe("42");
     });
+
+    it("terminates on a self-referential cause chain instead of overflowing the stack", () => {
+      const error = new Error("outer") as Error & { cause: unknown };
+      error.cause = error;
+      expect(() => asErrorMessage(error)).not.toThrow();
+      expect(asErrorMessage(error)).toMatch(/^outer(?: \(outer)*/);
+    });
+
+    it("terminates on a long non-cyclic cause chain instead of overflowing the stack", () => {
+      let error = new Error("root cause");
+      for (let i = 0; i < 10_000; i += 1) {
+        const wrapper = new Error(`wrap ${i}`) as Error & { cause: unknown };
+        wrapper.cause = error;
+        error = wrapper;
+      }
+      expect(() => asErrorMessage(error)).not.toThrow();
+    });
+
+    it("treats a blank string data field as absent instead of appending an empty parenthetical", () => {
+      expect(asErrorMessage({ code: -32603, message: "Internal error", data: "" })).toBe("Internal error");
+      expect(asErrorMessage({ message: "Internal error", data: "   " })).toBe("Internal error");
+    });
+
+    it("renders a NaN data field visibly instead of JSON.stringify's silent 'null'", () => {
+      expect(asErrorMessage({ message: "Internal error", data: Number.NaN })).toBe("Internal error (NaN)");
+    });
+
+    it("JSON.stringify's a plain object data field with no message property", () => {
+      expect(asErrorMessage({ message: "Internal error", data: { code: 500, reason: "x" } }))
+        .toBe('Internal error ({"code":500,"reason":"x"})');
+    });
+
+    it("falls back to String() when a circular data object can't be JSON.stringify'd", () => {
+      const circular: Record<string, unknown> = {};
+      circular.self = circular;
+      expect(() => asErrorMessage({ message: "Internal error", data: circular })).not.toThrow();
+      expect(asErrorMessage({ message: "Internal error", data: circular })).toBe("Internal error ([object Object])");
+    });
+
+    it("truncates an oversized detail instead of appending it in full", () => {
+      const result = asErrorMessage({ message: "m", data: "x".repeat(1000) });
+      expect(result).toContain("... (truncated)");
+      expect(result.length).toBeLessThan(600);
+    });
+
+    it("still surfaces present data when the top-level object has no string message", () => {
+      const result = asErrorMessage({ data: "detail" });
+      expect(result).toContain("detail");
+    });
   });
 
   describe("asNestedMessage", () => {

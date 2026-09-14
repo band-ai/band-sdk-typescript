@@ -79,40 +79,59 @@ export function toWireString(value: unknown): string {
   }
 }
 
+// Bounds how many .data/.cause levels asErrorMessage will unwrap — a self-
+// referential or pathologically long cause chain must degrade gracefully,
+// not overflow the stack (see the "runTurn error reporting" regression test).
+const MAX_ERROR_CAUSE_DEPTH = 5;
+const MAX_ERROR_DETAIL_LENGTH = 500;
+
 export function asErrorMessage(error: unknown): string {
+  return formatCaughtError(error, 0);
+}
+
+function formatCaughtError(error: unknown, depth: number): string {
   if (typeof error !== "object" || error === null) {
     return String(error);
   }
 
-  const record = error as { message?: unknown; data?: unknown; cause?: unknown };
-  const message = typeof record.message === "string" ? record.message : String(error);
+  const record = error as { data?: unknown; cause?: unknown };
+  const message = asNestedMessage(error) ?? String(error);
   const detail = record.data ?? record.cause;
-  if (detail === undefined || detail === null) {
+  const isBlankDetail = typeof detail === "string" && asNonEmptyString(detail) === null;
+  if (detail === undefined || detail === null || isBlankDetail || depth >= MAX_ERROR_CAUSE_DEPTH) {
     return message;
   }
 
-  return `${message} (${formatErrorDetail(detail)})`;
+  return `${message} (${formatErrorDetail(detail, depth + 1)})`;
 }
 
-function formatErrorDetail(detail: unknown): string {
+function formatErrorDetail(detail: unknown, depth: number): string {
   if (typeof detail === "string") {
-    return detail;
+    return truncate(detail);
+  }
+
+  if (typeof detail === "number" && !Number.isFinite(detail)) {
+    // JSON.stringify silently coerces NaN/Infinity to the string "null" —
+    // keep them visibly distinct from an actually-absent value instead.
+    return String(detail);
   }
 
   if (detail instanceof Error) {
-    return asErrorMessage(detail);
+    return formatCaughtError(detail, depth);
   }
 
   const nested = asNestedMessage(detail);
   if (nested !== null) {
-    return nested;
+    return truncate(nested);
   }
 
-  try {
-    return JSON.stringify(detail);
-  } catch {
-    return String(detail);
-  }
+  return truncate(toDisplayText(detail));
+}
+
+function truncate(text: string): string {
+  return text.length > MAX_ERROR_DETAIL_LENGTH
+    ? `${text.slice(0, MAX_ERROR_DETAIL_LENGTH)}... (truncated)`
+    : text;
 }
 
 export function asNestedMessage(value: unknown): string | null {

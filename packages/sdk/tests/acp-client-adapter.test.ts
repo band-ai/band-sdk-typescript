@@ -2204,44 +2204,19 @@ describe("ACPClientAdapter", () => {
       return { adapter }
     }
 
-    it("surfaces the JSON-RPC error's data alongside the message when the agent rejects with a plain error object", async () => {
-      const prompt = vi.fn(async () => {
-        throw { code: -32603, message: "Internal error", data: "agent crashed: OOM" }
-      })
-      const { adapter } = buildHarness(prompt)
-      const tools = new FakeTools()
-
-      await adapter.onStarted("Agent", "desc")
-      await adapter.onMessage(
-        makeMessage("hi", "room-1"),
-        tools,
-        { roomToSession: {} },
-        null,
-        null,
-        { isSessionBootstrap: true, roomId: "room-1" },
-      )
-
-      expect(tools.events).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          messageType: "error",
-          content: "ACP agent error: Internal error (agent crashed: OOM)",
-          metadata: expect.objectContaining({ acp_error: "Internal error (agent crashed: OOM)" }),
-        }),
-      ]))
-    })
-
-    it("surfaces the JSON-RPC error's data when the agent rejects with an Error subclass carrying a data field", async () => {
-      class RequestError extends Error {
-        public constructor(
-          public readonly code: number,
-          message: string,
-          public readonly data?: unknown,
-        ) {
-          super(message)
-        }
+    class RequestError extends Error {
+      public constructor(
+        public readonly code: number,
+        message: string,
+        public readonly data?: unknown,
+      ) {
+        super(message)
       }
+    }
+
+    async function expectRunTurnError(rejection: unknown, expectedMessage: string): Promise<void> {
       const prompt = vi.fn(async () => {
-        throw new RequestError(-32603, "Internal error", { message: "agent crashed: OOM" })
+        throw rejection
       })
       const { adapter } = buildHarness(prompt)
       const tools = new FakeTools()
@@ -2259,10 +2234,23 @@ describe("ACPClientAdapter", () => {
       expect(tools.events).toEqual(expect.arrayContaining([
         expect.objectContaining({
           messageType: "error",
-          content: "ACP agent error: Internal error (agent crashed: OOM)",
-          metadata: expect.objectContaining({ acp_error: "Internal error (agent crashed: OOM)" }),
+          content: `ACP agent error: ${expectedMessage}`,
+          metadata: expect.objectContaining({ acp_error: expectedMessage }),
         }),
       ]))
+    }
+
+    it.each([
+      [
+        "a plain JSON-RPC error object",
+        { code: -32603, message: "Internal error", data: "agent crashed: OOM" },
+      ],
+      [
+        "an Error subclass carrying a data field",
+        new RequestError(-32603, "Internal error", { message: "agent crashed: OOM" }),
+      ],
+    ])("surfaces the JSON-RPC error's data alongside the message when the agent rejects with %s", async (_label, rejection) => {
+      await expectRunTurnError(rejection, "Internal error (agent crashed: OOM)")
     })
   })
 });
