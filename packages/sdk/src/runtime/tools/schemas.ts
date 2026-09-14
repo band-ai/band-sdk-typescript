@@ -359,25 +359,7 @@ export const TOOL_MODELS = {
   },
 } as const;
 
-/** Canonical names for chat platform tools. */
-export const CHAT_TOOL_NAME = {
-  sendMessage: "band_send_message",
-  sendEvent: "band_send_event",
-  addParticipant: "band_add_participant",
-  removeParticipant: "band_remove_participant",
-  getParticipants: "band_get_participants",
-  lookupPeers: "band_lookup_peers",
-  createChatroom: "band_create_chatroom",
-} as const satisfies Record<string, keyof typeof TOOL_MODELS>;
-
-/** Canonical names for contact platform tools. */
-export const CONTACT_TOOL_NAME = {
-  listContacts: "band_list_contacts",
-  addContact: "band_add_contact",
-  removeContact: "band_remove_contact",
-  listContactRequests: "band_list_contact_requests",
-  respondContactRequest: "band_respond_contact_request",
-} as const satisfies Record<string, keyof typeof TOOL_MODELS>;
+export const ALL_TOOL_NAMES = new Set(Object.keys(TOOL_MODELS));
 
 /** Canonical names for memory platform tools. */
 export const MEMORY_TOOL_NAME = {
@@ -388,28 +370,32 @@ export const MEMORY_TOOL_NAME = {
   archiveMemory: "band_archive_memory",
 } as const satisfies Record<string, keyof typeof TOOL_MODELS>;
 
-/** Canonical names for all platform tools. */
-export const TOOL_NAME = {
-  ...CHAT_TOOL_NAME,
-  ...CONTACT_TOOL_NAME,
-  ...MEMORY_TOOL_NAME,
-} as const satisfies Record<string, keyof typeof TOOL_MODELS>;
-
-export type PlatformToolName = (typeof TOOL_NAME)[keyof typeof TOOL_NAME];
-
-export const CHAT_TOOL_NAMES = new Set<string>(Object.values(CHAT_TOOL_NAME));
-export const CONTACT_TOOL_NAMES = new Set<string>(Object.values(CONTACT_TOOL_NAME));
 export const MEMORY_TOOL_NAMES = new Set<string>(Object.values(MEMORY_TOOL_NAME));
-export const ALL_TOOL_NAMES = new Set<string>(Object.values(TOOL_NAME));
-export const BASE_TOOL_NAMES = new Set<string>([
-  ...CHAT_TOOL_NAMES,
-  ...CONTACT_TOOL_NAMES,
+
+export const CONTACT_TOOL_NAMES = new Set<string>([
+  "band_list_contacts",
+  "band_add_contact",
+  "band_remove_contact",
+  "band_list_contact_requests",
+  "band_respond_contact_request",
 ]);
+
+export const BASE_TOOL_NAMES = new Set<string>(
+  [...ALL_TOOL_NAMES].filter((name) => !MEMORY_TOOL_NAMES.has(name)),
+);
+
+export const CHAT_TOOL_NAMES = new Set<string>(
+  [...BASE_TOOL_NAMES].filter((name) => !CONTACT_TOOL_NAMES.has(name)),
+);
 
 export const MCP_TOOL_PREFIX = "mcp__band__";
 
 /** The single Band MCP server name; owns every server-name default and integration. */
 export const MCP_SERVER_NAME = "band";
+
+/** Canonical names for the tools with special adapter handling (reporting/reply delivery). */
+export const SEND_MESSAGE_TOOL_NAME = "band_send_message";
+export const SEND_EVENT_TOOL_NAME = "band_send_event";
 
 export function mcpToolNames(names: Set<string>): string[] {
   return [...names].sort((a, b) => a.localeCompare(b)).map((name) => `${MCP_TOOL_PREFIX}${name}`);

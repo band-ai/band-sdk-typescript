@@ -43,8 +43,8 @@ import {
 } from "../../contracts/protocols";
 import {
   CHAT_TOOL_NAMES,
+  MEMORY_TOOL_NAME,
   MEMORY_TOOL_NAMES,
-  TOOL_NAME,
   getToolDescription,
   TOOL_MODELS
 } from "./schemas";
@@ -345,7 +345,7 @@ export class AgentTools implements AgentToolsProtocol {
       // same ToolExecutorError conversion a thrown error gets below, so every
       // consumer of executeToolCall recognizes it. Scoped to sendEvent: other
       // handlers' `ok` fields are legitimate business-result data, not errors.
-      if (toolName === TOOL_NAME.sendEvent && isStructuredToolFailure(result) && !isToolExecutorError(result)) {
+      if (toolName === "band_send_event" && isStructuredToolFailure(result) && !isToolExecutorError(result)) {
         return createToolExecutorError({
           errorType: "ToolExecutionError",
           toolName,
@@ -395,7 +395,7 @@ export class AgentTools implements AgentToolsProtocol {
           return false;
         }
 
-        if (name === TOOL_NAME.lookupPeers && !this.capabilities.peers) {
+        if (name === "band_lookup_peers" && !this.capabilities.peers) {
           return false;
         }
 
@@ -755,68 +755,68 @@ export class AgentTools implements AgentToolsProtocol {
 
   private buildMessagingToolHandlers(): Record<string, ToolHandler> {
     return {
-      [TOOL_NAME.sendMessage]: async (arguments_) =>
+      band_send_message: async (arguments_) =>
         this.sendMessage(
           String(arguments_.content ?? ""),
           this.normalizeMentionInput(arguments_.mentions),
         ),
-      [TOOL_NAME.sendEvent]: async (arguments_) =>
+      band_send_event: async (arguments_) =>
         this.sendEvent(
           String(arguments_.content ?? ""),
           String(arguments_.message_type ?? "task"),
           this.normalizeOptionalMetadata(arguments_.metadata),
         ),
-      [TOOL_NAME.addParticipant]: async (arguments_) =>
+      band_add_participant: async (arguments_) =>
         this.addParticipant(String(arguments_.name ?? ""), String(arguments_.role ?? "member")),
-      [TOOL_NAME.removeParticipant]: async (arguments_) =>
+      band_remove_participant: async (arguments_) =>
         this.removeParticipant(String(arguments_.name ?? "")),
-      [TOOL_NAME.lookupPeers]: async (arguments_) =>
+      band_lookup_peers: async (arguments_) =>
         this.lookupPeers(
           coercePositiveInt(arguments_.page, 1),
           coercePositiveInt(arguments_.page_size, 50),
         ),
-      [TOOL_NAME.getParticipants]: async () => this.getParticipants(),
-      [TOOL_NAME.createChatroom]: async (arguments_) =>
+      band_get_participants: async () => this.getParticipants(),
+      band_create_chatroom: async (arguments_) =>
         this.createChatroom(this.normalizeOptionalString(arguments_.task_id)),
     };
   }
 
   private buildContactToolHandlers(): Record<string, ToolHandler> {
     return {
-      [TOOL_NAME.listContacts]: async (arguments_) =>
+      band_list_contacts: async (arguments_) =>
         this.listContacts({
           page: coercePositiveInt(arguments_.page, 1),
           pageSize: coercePositiveInt(arguments_.page_size, 50),
         }),
-      [TOOL_NAME.addContact]: async (arguments_) =>
+      band_add_contact: async (arguments_) =>
         this.addContact({
           handle: String(arguments_.handle ?? ""),
           ...(typeof arguments_.message === "string" ? { message: arguments_.message } : {}),
         }),
-      [TOOL_NAME.removeContact]: async (arguments_) =>
+      band_remove_contact: async (arguments_) =>
         this.removeContact(this.toRemoveContactArgs(arguments_)),
-      [TOOL_NAME.listContactRequests]: async (arguments_) =>
+      band_list_contact_requests: async (arguments_) =>
         this.listContactRequests({
           page: coercePositiveInt(arguments_.page, 1),
           pageSize: coercePositiveInt(arguments_.page_size, 50),
           sentStatus: String(arguments_.sent_status ?? "pending"),
         }),
-      [TOOL_NAME.respondContactRequest]: async (arguments_) =>
+      band_respond_contact_request: async (arguments_) =>
         this.respondContactRequest(this.toRespondContactRequestArgs(arguments_)),
     };
   }
 
   private buildMemoryToolHandlers(): Record<string, ToolHandler> {
     return {
-      [TOOL_NAME.listMemories]: async (arguments_) =>
+      [MEMORY_TOOL_NAME.listMemories]: async (arguments_) =>
         this.listMemories(this.toListMemoriesArgs(arguments_)),
-      [TOOL_NAME.storeMemory]: async (arguments_) =>
+      [MEMORY_TOOL_NAME.storeMemory]: async (arguments_) =>
         this.storeMemory(this.toStoreMemoryArgs(arguments_)),
-      [TOOL_NAME.getMemory]: async (arguments_) =>
+      [MEMORY_TOOL_NAME.getMemory]: async (arguments_) =>
         this.getMemory(String(arguments_.memory_id ?? "")),
-      [TOOL_NAME.supersedeMemory]: async (arguments_) =>
+      [MEMORY_TOOL_NAME.supersedeMemory]: async (arguments_) =>
         this.supersedeMemory(String(arguments_.memory_id ?? "")),
-      [TOOL_NAME.archiveMemory]: async (arguments_) =>
+      [MEMORY_TOOL_NAME.archiveMemory]: async (arguments_) =>
         this.archiveMemory(String(arguments_.memory_id ?? "")),
     };
   }
@@ -1136,14 +1136,14 @@ function validateToolArgs(toolName: string, args: Record<string, unknown>): Tool
     }
   }
 
-  if (toolName === TOOL_NAME.sendMessage) {
+  if (toolName === "band_send_message") {
     const mentions = args.mentions;
     if (Array.isArray(mentions) && mentions.length === 0) {
       errors.push("mentions: At least one mention is required");
     }
   }
 
-  if (toolName === TOOL_NAME.sendEvent) {
+  if (toolName === "band_send_event") {
     const messageType = args.message_type;
     if (typeof messageType === "string" && !(CHAT_EVENT_TYPES as readonly string[]).includes(messageType)) {
       errors.push(
@@ -1152,7 +1152,7 @@ function validateToolArgs(toolName: string, args: Record<string, unknown>): Tool
     }
   }
 
-  if (toolName === TOOL_NAME.respondContactRequest) {
+  if (toolName === "band_respond_contact_request") {
     const action = args.action;
     const validActions = ["approve", "reject", "cancel"];
     if (typeof action === "string" && !validActions.includes(action)) {

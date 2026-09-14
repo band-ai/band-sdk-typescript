@@ -36,13 +36,10 @@ export { ParticipantRoster, RetryTracker, RoomRoster } from "@band-ai/band-sdk-c
 export type { RoomMembership } from "@band-ai/band-sdk-core";
 export {
   TOOL_MODELS,
-  TOOL_NAME,
-  CHAT_TOOL_NAME,
-  CONTACT_TOOL_NAME,
-  MEMORY_TOOL_NAME,
   MCP_TOOL_PREFIX,
   MCP_SERVER_NAME,
   CHAT_TOOL_NAMES,
+  MEMORY_TOOL_NAME,
   MEMORY_TOOL_NAMES,
   CONTACT_TOOL_NAMES,
   ALL_TOOL_NAMES,

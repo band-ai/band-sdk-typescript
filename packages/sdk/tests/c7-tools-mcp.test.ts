@@ -15,8 +15,6 @@ import { PassThrough } from "node:stream";
 
 import {
   TOOL_MODELS,
-  TOOL_NAME,
-  type PlatformToolName,
   ALL_TOOL_NAMES,
   CHAT_TOOL_NAMES,
   MEMORY_TOOL_NAMES,
@@ -212,27 +210,27 @@ describe("P-TOOL-03: MCP server-name defaults resolve to MCP_SERVER_NAME", () =>
 
 describe("P-TOOL-04: every canonical name reaches a handler; every legacy name is unknown", () => {
   // One authoritative valid-args fixture; its keys must equal TOOL_MODELS exactly.
-  const VALID_ARGS: Record<(typeof TOOL_NAME)[keyof typeof TOOL_NAME], Record<string, unknown>> = {
-    [TOOL_NAME.sendMessage]: { content: "hi", mentions: ["@jane"] },
-    [TOOL_NAME.sendEvent]: { content: "t", message_type: CHAT_EVENT_TYPES[0] },
-    [TOOL_NAME.addParticipant]: { name: "Weather Agent" },
-    [TOOL_NAME.removeParticipant]: { name: "Weather Agent" },
-    [TOOL_NAME.getParticipants]: {},
-    [TOOL_NAME.lookupPeers]: {},
-    [TOOL_NAME.createChatroom]: {},
-    [TOOL_NAME.listContacts]: {},
-    [TOOL_NAME.addContact]: { handle: "@jane" },
-    [TOOL_NAME.removeContact]: { handle: "@jane" },
-    [TOOL_NAME.listContactRequests]: {},
-    [TOOL_NAME.respondContactRequest]: { action: "approve", request_id: "r1" },
-    [TOOL_NAME.listMemories]: {},
-    [TOOL_NAME.storeMemory]: {
+  const VALID_ARGS: Record<string, Record<string, unknown>> = {
+    band_send_message: { content: "hi", mentions: ["@jane"] },
+    band_send_event: { content: "t", message_type: CHAT_EVENT_TYPES[0] },
+    band_add_participant: { name: "Weather Agent" },
+    band_remove_participant: { name: "Weather Agent" },
+    band_get_participants: {},
+    band_lookup_peers: {},
+    band_create_chatroom: {},
+    band_list_contacts: {},
+    band_add_contact: { handle: "@jane" },
+    band_remove_contact: { handle: "@jane" },
+    band_list_contact_requests: {},
+    band_respond_contact_request: { action: "approve", request_id: "r1" },
+    band_list_memories: {},
+    band_store_memory: {
       content: "c", system: MEMORY_SYSTEMS[0], type: MEMORY_TYPES[0],
       segment: MEMORY_SEGMENTS[0], thought: "why",
     },
-    [TOOL_NAME.getMemory]: { memory_id: "m1" },
-    [TOOL_NAME.supersedeMemory]: { memory_id: "m1" },
-    [TOOL_NAME.archiveMemory]: { memory_id: "m1" },
+    band_get_memory: { memory_id: "m1" },
+    band_supersede_memory: { memory_id: "m1" },
+    band_archive_memory: { memory_id: "m1" },
   };
 
   function makeTools(): AgentTools {
@@ -261,31 +259,23 @@ describe("P-TOOL-04: every canonical name reaches a handler; every legacy name i
     | "addContact" | "removeContact" | "listContactRequests" | "respondContactRequest"
     | "listMemories" | "storeMemory" | "getMemory" | "supersedeMemory" | "archiveMemory";
   // Authoritative canonical-name -> handler-method routing.
-  const ROUTING: Record<(typeof TOOL_NAME)[keyof typeof TOOL_NAME], ToolMethod> = {
-    [TOOL_NAME.sendMessage]: "sendMessage",
-    [TOOL_NAME.sendEvent]: "sendEvent",
-    [TOOL_NAME.addParticipant]: "addParticipant",
-    [TOOL_NAME.removeParticipant]: "removeParticipant",
-    [TOOL_NAME.getParticipants]: "getParticipants",
-    [TOOL_NAME.lookupPeers]: "lookupPeers",
-    [TOOL_NAME.createChatroom]: "createChatroom",
-    [TOOL_NAME.listContacts]: "listContacts",
-    [TOOL_NAME.addContact]: "addContact",
-    [TOOL_NAME.removeContact]: "removeContact",
-    [TOOL_NAME.listContactRequests]: "listContactRequests",
-    [TOOL_NAME.respondContactRequest]: "respondContactRequest",
-    [TOOL_NAME.listMemories]: "listMemories",
-    [TOOL_NAME.storeMemory]: "storeMemory",
-    [TOOL_NAME.getMemory]: "getMemory",
-    [TOOL_NAME.supersedeMemory]: "supersedeMemory",
-    [TOOL_NAME.archiveMemory]: "archiveMemory",
+  const ROUTING: Record<string, ToolMethod> = {
+    band_send_message: "sendMessage", band_send_event: "sendEvent",
+    band_add_participant: "addParticipant", band_remove_participant: "removeParticipant",
+    band_get_participants: "getParticipants", band_lookup_peers: "lookupPeers",
+    band_create_chatroom: "createChatroom", band_list_contacts: "listContacts",
+    band_add_contact: "addContact", band_remove_contact: "removeContact",
+    band_list_contact_requests: "listContactRequests", band_respond_contact_request: "respondContactRequest",
+    band_list_memories: "listMemories", band_store_memory: "storeMemory",
+    band_get_memory: "getMemory", band_supersede_memory: "supersedeMemory",
+    band_archive_memory: "archiveMemory",
   };
 
   it("routes every canonical name to its own handler; every legacy name is ToolNotFound", async () => {
     // Coverage is exact — a missing/extra routing row reds here.
     expect(sortedKeys(ROUTING)).toEqual(Object.keys(TOOL_MODELS).sort());
 
-    for (const [band, method] of Object.entries(ROUTING) as Array<[PlatformToolName, ToolMethod]>) {
+    for (const [band, method] of Object.entries(ROUTING)) {
       const tools = makeTools();
       const spy = vi.spyOn(tools, method);
       const res = await tools.executeToolCall(band, VALID_ARGS[band]);

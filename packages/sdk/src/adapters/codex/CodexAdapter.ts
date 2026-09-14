@@ -12,7 +12,7 @@ import type { Logger } from "../../core/logger";
 import { NoopLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import { CHAT_TOOL_NAME } from "../../runtime/tools/schemas";
+import { SEND_MESSAGE_TOOL_NAME, SEND_EVENT_TOOL_NAME } from "../../runtime/tools/schemas";
 import { systemUpdateParts } from "../shared/conversationPrompt";
 import {
   CustomToolExecutionError,
@@ -124,9 +124,9 @@ type ThoughtLikeItem =
   | ContextCompactionItem
   | ReviewModeItem;
 
-const SILENT_REPORTING_TOOLS = new Set<string>([
-  CHAT_TOOL_NAME.sendMessage,
-  CHAT_TOOL_NAME.sendEvent,
+const SILENT_REPORTING_TOOLS = new Set([
+  SEND_MESSAGE_TOOL_NAME,
+  SEND_EVENT_TOOL_NAME,
 ]);
 
 export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProtocol> {
@@ -813,7 +813,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
           }), "tool_result");
         }
 
-        return !isError && toolName === CHAT_TOOL_NAME.sendMessage;
+        return !isError && toolName === SEND_MESSAGE_TOOL_NAME;
       } catch (error) {
         const output = {
           ok: false,
