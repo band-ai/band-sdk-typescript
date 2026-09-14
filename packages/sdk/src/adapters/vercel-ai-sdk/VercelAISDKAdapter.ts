@@ -6,7 +6,7 @@ import {
 } from "./model";
 
 export interface VercelAISDKAdapterOptions
-  extends Omit<ToolCallingAdapterOptions, "toolFormat" | "model">,
+  extends Omit<ToolCallingAdapterOptions, "toolFormat" | "model" | "provider">,
     VercelAISDKToolCallingModelOptions {}
 
 export class VercelAISDKAdapter extends ToolCallingAdapter {
@@ -26,6 +26,7 @@ export class VercelAISDKAdapter extends ToolCallingAdapter {
         toolFactory,
       }),
       toolFormat: "openai",
+      provider: "vercel-ai-sdk",
     });
   }
 }

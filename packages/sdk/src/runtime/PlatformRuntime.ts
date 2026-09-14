@@ -98,7 +98,13 @@ export class PlatformRuntime implements AsyncDisposable {
     this._wsUrl = options.wsUrl;
     this._restUrl = options.restUrl;
     this.linkInstance = options.link;
-    this.linkOptions = options.linkOptions;
+    // An explicit top-level logger wins over a link-specific one; absent
+    // both, `logger` stays unset so `BandLink` falls back to its own default
+    // rather than being forced into this runtime's `NoopLogger`.
+    this.linkOptions = {
+      ...options.linkOptions,
+      logger: options.logger ?? options.linkOptions?.logger,
+    };
     this.preprocessor = options.preprocessor ?? new DefaultPreprocessor();
     this.sessionConfig = options.sessionConfig;
     this.contactConfig = options.contactConfig;
@@ -161,7 +167,6 @@ export class PlatformRuntime implements AsyncDisposable {
         apiKey: this._apiKey,
         wsUrl: this._wsUrl,
         restUrl: this._restUrl,
-        logger: this.logger,
       });
     }
 
@@ -222,16 +227,20 @@ export class PlatformRuntime implements AsyncDisposable {
       await this.runtime.start();
       this.contactsSubscribed = Boolean(this.link.capabilities.contacts);
     } catch (error) {
-      try {
-        await this.stop();
-      } catch (stopError) {
-        throw new AggregateError(
-          [error, stopError],
-          "PlatformRuntime failed to start and cleanup also failed",
-        );
-      }
-      throw error;
+      await this.cleanupAfterFailedStart(error);
     }
+  }
+
+  private async cleanupAfterFailedStart(startError: unknown): Promise<never> {
+    try {
+      await this.stop();
+    } catch (stopError) {
+      throw new AggregateError(
+        [startError, stopError],
+        "PlatformRuntime failed to start and cleanup also failed",
+      );
+    }
+    throw startError;
   }
 
   public async stop(timeoutMs?: number): Promise<boolean> {

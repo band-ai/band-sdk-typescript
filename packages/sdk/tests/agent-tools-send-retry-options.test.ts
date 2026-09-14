@@ -22,9 +22,10 @@ interface SendPath {
   name: string;
   urlSegment: "messages" | "events";
   send: (rest: FernRestAdapter) => Promise<unknown>;
-  // `AgentTools.sendEvent` alone absorbs a send failure instead of rejecting
-  // with it — room telemetry, not the agent's answer — so its settled outcome
-  // differs from the other three paths, which all still reject.
+  // `AgentTools.sendEvent` and `ContactCallbackTools.sendEvent` both absorb a
+  // send failure instead of rejecting with it — room telemetry, not the
+  // agent's answer — so their settled outcome differs from the two
+  // `sendMessage` paths, which still reject.
   assertOutcome: (settled: Promise<unknown>) => Promise<void>;
 }
 
@@ -53,7 +54,7 @@ const SEND_PATHS: SendPath[] = [
     name: "ContactCallbackTools.sendEvent",
     urlSegment: "events",
     send: (rest) => new ContactCallbackTools(rest, "room-1").sendEvent("hi", "task"),
-    assertOutcome: rejectsWith429,
+    assertOutcome: (settled) => expect(settled).resolves.toMatchObject({ ok: false, status: "failed" }),
   },
 ];
 

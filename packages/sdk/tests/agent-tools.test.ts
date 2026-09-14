@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { AgentFailure } from "@band-ai/band-sdk-core";
 
 import { RestFacade } from "../src/client/rest/RestFacade";
 import type { RestApi } from "../src/client/rest/types";
@@ -44,7 +45,10 @@ class FakeRestApi implements RestApi {
     return { ok: true };
   }
 
-  public async createChatEvent() {
+  public async createChatEvent(
+    _chatId: string,
+    _payload: { content: string; messageType: string; metadata?: Record<string, unknown> },
+  ) {
     return { ok: true };
   }
 
@@ -253,6 +257,50 @@ describe("AgentTools", () => {
     });
 
     await expect(tools.sendEvent("hello", "message_created")).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it("sendFailure posts an error event whose metadata nests the failure under `failure`", async () => {
+    const calls: Array<{ chatId: string; content: string; messageType: string; metadata?: Record<string, unknown> }> = [];
+    class RecordingRestApi extends FakeRestApi {
+      public override async createChatEvent(
+        chatId: string,
+        payload: { content: string; messageType: string; metadata?: Record<string, unknown> },
+      ): ReturnType<FakeRestApi["createChatEvent"]> {
+        calls.push({ chatId, content: payload.content, messageType: payload.messageType, metadata: payload.metadata });
+        return { ok: true };
+      }
+    }
+
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api: new RecordingRestApi() }),
+    });
+
+    await tools.sendFailure(new AgentFailure("acp", "agent went away", "timeout", { raw: true }));
+
+    expect(calls).toEqual([{
+      chatId: "room-1",
+      content: "agent went away",
+      messageType: "error",
+      metadata: { failure: { provider: "acp", message: "agent went away", code: "timeout", detail: { raw: true } } },
+    }]);
+  });
+
+  it("sendFailure resolves {ok:false} instead of throwing when the underlying post fails", async () => {
+    class FailingRestApi extends FakeRestApi {
+      public override async createChatEvent(): ReturnType<FakeRestApi["createChatEvent"]> {
+        throw new Error("network down");
+      }
+    }
+
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: new RestFacade({ api: new FailingRestApi() }),
+    });
+
+    await expect(
+      tools.sendFailure(new AgentFailure("acp", "agent went away")),
+    ).resolves.toMatchObject({ ok: false, status: "failed", message: "network down" });
   });
 
   it("reports a failed chat event instead of throwing, unlike a failed message", async () => {

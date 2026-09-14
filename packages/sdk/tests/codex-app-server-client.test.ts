@@ -83,6 +83,22 @@ describe("CodexAppServerStdioClient", () => {
     expect((error as CodexJsonRpcError).data).toEqual({ threadId: "thread-1" });
   });
 
+  it("bounds a request's pending-map lifetime with timeoutMs, instead of leaking it forever when the peer never answers", async () => {
+    const client = new CodexAppServerStdioClient();
+    const internals = getInternals(client);
+    // A connected process whose stdin write succeeds but whose peer never
+    // answers — the exact "wedged" scenario `abandon` exists for. Without a
+    // timeoutMs, this request's entry in `pending` would never be cleared.
+    (client as unknown as { process: unknown }).process = {
+      stdin: { write: (_line: string, callback: (error?: Error) => void) => callback() },
+    };
+
+    const pending = client.request("turn/interrupt", {}, 20);
+
+    await expect(pending).rejects.toThrow('Codex app-server request "turn/interrupt" timed out after 20ms.');
+    expect(internals.pending.size).toBe(0);
+  });
+
   it("rejects pending request/event waiters during explicit close", async () => {
     const client = new CodexAppServerStdioClient();
     const internals = getInternals(client);

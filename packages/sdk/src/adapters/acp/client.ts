@@ -25,15 +25,19 @@ export class BandACPClient implements Client {
     this.permissionHandler = permissionHandler
   }
 
+  public beginSession(sessionId: string): void {
+    this.sessionChunks.set(sessionId, [])
+  }
+
   public async sessionUpdate(params: SessionNotification): Promise<void> {
-    const chunk = toCollectedChunk(params.update)
-    if (!chunk) {
+    if (!this.sessionChunks.has(params.sessionId)) {
       return
     }
 
-    const existing = this.sessionChunks.get(params.sessionId) ?? []
-    existing.push(chunk)
-    this.sessionChunks.set(params.sessionId, existing)
+    const chunk = toCollectedChunk(params.update)
+    if (chunk) {
+      this.appendChunk(params.sessionId, chunk)
+    }
   }
 
   public async requestPermission(
@@ -61,6 +65,20 @@ export class BandACPClient implements Client {
     }
 
     return [...this.sessionChunks.values()].flatMap((chunks) => coalesceChunks(chunks))
+  }
+
+  // Unlike `getCollectedChunks`, this clears the buffer as it reads it — so a
+  // caller that flushes twice for the same turn (success path, then a catch
+  // block) can never redeliver the same chunks. Keeps the session's map entry
+  // (an empty array, not a deleted one) so a late `sessionUpdate` still has
+  // somewhere to collect into.
+  public takeCollectedChunks(sessionId: string): CollectedChunk[] {
+    if (!this.sessionChunks.has(sessionId)) {
+      return []
+    }
+    const chunks = coalesceChunks(this.sessionChunks.get(sessionId) ?? [])
+    this.sessionChunks.set(sessionId, [])
+    return chunks
   }
 
   public async extMethod(
@@ -143,9 +161,7 @@ export class BandACPClient implements Client {
   }
 
   private appendChunk(sessionId: string, chunk: CollectedChunk): void {
-    const existing = this.sessionChunks.get(sessionId) ?? []
-    existing.push(chunk)
-    this.sessionChunks.set(sessionId, existing)
+    this.sessionChunks.get(sessionId)?.push(chunk)
   }
 }
 

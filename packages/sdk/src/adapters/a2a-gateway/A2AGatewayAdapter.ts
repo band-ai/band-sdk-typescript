@@ -2,13 +2,22 @@ import { randomUUID } from "node:crypto";
 
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
+import type { Logger } from "../../core/logger";
+import { resolveLogger } from "../../core/logger";
 import type { PeerRecord } from "../../contracts/dtos";
-import type { MessagingTools } from "../../contracts/protocols";
+import { FAILURE_METADATA_KEY, type MessagingTools } from "../../contracts/protocols";
 import type { ChatMessageMention } from "../../client/rest/types";
 import type { PlatformMessage } from "../../runtime/types";
+import { FAILURE_CODE_TIMEOUT } from "../../core/providerFailure";
 import { asNonEmptyString } from "../shared/coercion";
 import { GatewayHistoryConverter } from "./history";
 import { createGatewayServer } from "./server";
+import {
+  PROVIDER,
+  buildGatewayFailureMetadata,
+  sanitizeForwardedFailure,
+  sanitizeGatewayErrorMessage,
+} from "./failure";
 import { buildStatusEvent } from "./statusEvent";
 import type {
   A2AGatewayAdapterOptions,
@@ -39,6 +48,8 @@ interface PendingTaskRecord extends PendingA2ATask {
 export class A2AGatewayAdapter
   extends SimpleAdapter<GatewaySessionState, MessagingTools>
 {
+  protected readonly provider = PROVIDER;
+
   private readonly bandRest: A2AGatewayAdapterOptions["bandRest"];
   private readonly gatewayUrl: string;
   private readonly host: string;
@@ -49,6 +60,7 @@ export class A2AGatewayAdapter
   private readonly peerPageSize: number;
   private readonly maxPeerPages: number;
   private readonly serverFactory: GatewayServerFactory;
+  private readonly logger: Logger;
 
   private readonly peersBySlug = new Map<string, GatewayPeer>();
   private readonly peersById = new Map<string, GatewayPeer>();
@@ -74,6 +86,7 @@ export class A2AGatewayAdapter
     this.peerPageSize = options.peerPageSize ?? DEFAULT_PEER_PAGE_SIZE;
     this.maxPeerPages = options.maxPeerPages ?? DEFAULT_MAX_PEER_PAGES;
     this.serverFactory = options.serverFactory ?? createGatewayServer;
+    this.logger = resolveLogger(options.logger);
 
     if (this.allowUnauthenticatedLoopback && !isLoopbackHost(this.host)) {
       throw new ValidationError(
@@ -102,6 +115,7 @@ export class A2AGatewayAdapter
         const canonicalPeerId = this.resolveCanonicalPeerId(request);
         this.cancelPendingTask(request.taskId, canonicalPeerId ?? request.peerId);
       },
+      logger: this.logger,
     });
 
     await this.server.start();
@@ -213,12 +227,15 @@ export class A2AGatewayAdapter
   ): AsyncGenerator<GatewayA2AStatusUpdateEvent, void, undefined> {
     const peer = this.resolveGatewayPeer(request);
     if (!peer) {
+      const text = `Peer not found: ${request.peerId}`;
+      this.logger.warn("a2a_gateway.peer_not_found", { peerId: request.peerId, taskId: request.taskId });
       yield buildStatusEvent({
         taskId: request.taskId,
         contextId: request.contextId,
         state: "failed",
         final: true,
-        text: `Peer not found: ${request.peerId}`,
+        text,
+        metadata: buildGatewayFailureMetadata(text, "peer_not_found"),
       });
       return;
     }
@@ -275,12 +292,20 @@ export class A2AGatewayAdapter
       });
     } catch (error) {
       this.removePending(pending);
+      const text = sanitizeGatewayErrorMessage(error);
+      this.logger.warn("a2a_gateway.relay_failed", {
+        roomId,
+        peerId: peer.id,
+        taskId: pending.taskId,
+        error,
+      });
       yield buildStatusEvent({
         taskId: pending.taskId,
         contextId: pending.contextId,
         state: "failed",
         final: true,
-        text: error instanceof Error ? error.message : String(error),
+        text,
+        metadata: buildGatewayFailureMetadata(error, undefined, text),
       });
       return;
     }
@@ -289,12 +314,20 @@ export class A2AGatewayAdapter
       const next = await pending.queue.dequeue(this.responseTimeoutMs);
       if (!next) {
         this.removePending(pending);
+        const text = "Timed out waiting for a Band peer response.";
+        this.logger.warn("a2a_gateway.peer_response_timeout", {
+          roomId,
+          peerId: peer.id,
+          taskId: pending.taskId,
+          responseTimeoutMs: this.responseTimeoutMs,
+        });
         yield buildStatusEvent({
           taskId: pending.taskId,
           contextId: pending.contextId,
           state: "failed",
           final: true,
-          text: "Timed out waiting for a Band peer response.",
+          text,
+          metadata: buildGatewayFailureMetadata(text, FAILURE_CODE_TIMEOUT),
         });
         return;
       }
@@ -661,17 +694,30 @@ function toStatusUpdateEvent(
     state = "working";
   }
 
+  // The room's own adapter already attached a structured AgentFailure here
+  // (via sendFailure) when this is an "error" message — forward its
+  // provider/code, but rebuild `message` and drop `detail` through
+  // `sanitizeForwardedFailure` rather than copy it verbatim: `detail`
+  // routinely carries a raw provider payload (an HTTP body, an RPC error
+  // object) with no redaction of its own, and forwarding it unfiltered would
+  // leak whatever it contains straight to an external A2A client.
+  const failure = sanitizeForwardedFailure(message.metadata?.[FAILURE_METADATA_KEY]);
+
   return buildStatusEvent({
     taskId,
     contextId,
     state,
     final,
-    text: message.content,
+    // A room's own "error" event reaches an external A2A client verbatim
+    // otherwise — sanitize it the same way a gateway-originated failure is,
+    // since neither is guaranteed to be pre-redacted upstream.
+    text: normalizedType === "error" ? sanitizeGatewayErrorMessage(message.content) : message.content,
     metadata: {
       band_message_id: message.id,
       band_message_type: message.messageType,
       band_sender_id: message.senderId,
       band_room_id: message.roomId,
+      ...(failure !== undefined ? { [FAILURE_METADATA_KEY]: failure } : {}),
     },
   });
 }
