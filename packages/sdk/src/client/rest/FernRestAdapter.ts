@@ -24,7 +24,6 @@ import {
 import { normalizePaginationMetadata } from "./pagination";
 import { normalizeContactRequestsResult } from "./responseNormalization";
 import type {
-  FernClientStoreMemoryRequest,
   FernUserProfile,
   FernBandClientLike,
   RestApi,
@@ -755,7 +754,7 @@ export class FernRestAdapter implements RestApi {
 
     return normalizeMemoryRecord(
       await api(
-        { memory: request as FernClientStoreMemoryRequest },
+        { memory: request },
         mergeOptions(options),
       ),
     );

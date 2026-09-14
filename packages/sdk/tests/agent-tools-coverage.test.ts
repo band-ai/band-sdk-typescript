@@ -2,13 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 
 import { RestFacade } from "../src/client/rest/RestFacade";
 import type { RestApi } from "../src/client/rest/types";
-import { MEMORY_SEGMENTS, MEMORY_SYSTEMS, MEMORY_TYPES, expectedList } from "../src/contracts/memory";
-import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
 import {
   expectedList,
   MEMORY_LIST_SCOPES,
+  MEMORY_SEGMENTS,
   MEMORY_STORE_SCOPES,
+  MEMORY_SYSTEMS,
+  MEMORY_TYPES,
 } from "../src/contracts/memory";
+import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 import { TOOL_NAME } from "../src/runtime/tools/schemas";
 
