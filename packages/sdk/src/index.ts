@@ -109,6 +109,7 @@ export {
   FAILURE_EVENT_TYPE,
   FAILURE_METADATA_KEY,
   toFailureEvent,
+  RecoverableTurnError,
   DeliveryFailedError,
   deliverReply,
   ProviderTurnFailedError,

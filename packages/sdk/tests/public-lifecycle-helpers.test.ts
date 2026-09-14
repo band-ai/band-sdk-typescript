@@ -24,6 +24,7 @@ describe("public lifecycle helpers (built package)", () => {
     for (const name of [
       "deliverReply",
       "DeliveryFailedError",
+      "RecoverableTurnError",
       "reportTurnFailure",
       "ProviderTurnFailedError",
       "agentFailure",
@@ -90,6 +91,7 @@ describe("public lifecycle helpers (built package)", () => {
     for (const name of [
       "deliverReply",
       "DeliveryFailedError",
+      "RecoverableTurnError",
       "reportTurnFailure",
       "ProviderTurnFailedError",
       "agentFailure",

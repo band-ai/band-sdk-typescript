@@ -27,8 +27,9 @@ is `AgentFailure.provider` on every structured failure the adapter reports.
 
 ```ts
 import { SimpleAdapter } from "@band-ai/sdk";
+import type { HistoryProvider } from "@band-ai/sdk";
 
-export class MyAdapter extends SimpleAdapter {
+export class MyAdapter extends SimpleAdapter<HistoryProvider> {
   protected readonly provider = "my-adapter";
   // ...
 }
@@ -42,25 +43,27 @@ Omitting it is a TypeScript error.
 `MessagingTools` / adapter tools object that only implemented `sendMessage` /
 `sendEvent` no longer type-checks.
 
-Use the public helpers so a rejected `sendMessage` stays a recoverable delivery
-failure, and a provider error posts exactly one `AgentFailure` then fails the
-turn. Inject a generate function (or equivalent) inside the `try` so the
-provider path is reachable; then post with `deliverReply`.
+Keep generate/provider work in `try`. Guard `RecoverableTurnError` so a delivery
+failure is never reclassified. Call `deliverReply` after the catch so it cannot
+be mistaken for a provider fault.
 
 ```ts
 import {
   SimpleAdapter,
   deliverReply,
-  DeliveryFailedError,
+  RecoverableTurnError,
   reportTurnFailure,
   agentFailure,
 } from "@band-ai/sdk";
-import type { PlatformMessage } from "@band-ai/sdk";
-import type { AdapterToolsProtocol } from "@band-ai/sdk/core";
+import type {
+  HistoryProvider,
+  PlatformMessage,
+  AdapterToolsProtocol,
+} from "@band-ai/sdk";
 
 type GenerateFn = (prompt: string) => Promise<string>;
 
-export class MyAdapter extends SimpleAdapter {
+export class MyAdapter extends SimpleAdapter<HistoryProvider> {
   protected readonly provider = "my-adapter";
 
   public constructor(private readonly generate: GenerateFn) {
@@ -71,18 +74,19 @@ export class MyAdapter extends SimpleAdapter {
     message: PlatformMessage,
     tools: AdapterToolsProtocol,
   ): Promise<void> {
+    let text: string;
     try {
-      const text = await this.generate(message.content);
-      await deliverReply(tools, text);
+      text = await this.generate(message.content);
     } catch (error) {
-      if (error instanceof DeliveryFailedError) {
-        throw error; // recoverable Band-side post failure, not a provider fault
+      if (error instanceof RecoverableTurnError) {
+        throw error;
       }
       await reportTurnFailure(
         tools,
         agentFailure(this.provider, error instanceof Error ? error.message : String(error)),
       );
     }
+    await deliverReply(tools, text);
   }
 }
 ```
@@ -91,7 +95,6 @@ export class MyAdapter extends SimpleAdapter {
 so `PlatformRuntime` marks the message failed without taking the room down.
 `agentFailure` is the safe `AgentFailure` constructor (drops unserializable
 `detail` instead of throwing on the failure path).
-
 
 ## 4. A2A terminal states fail the inbound turn
 
