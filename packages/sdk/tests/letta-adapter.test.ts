@@ -1265,6 +1265,51 @@ describe("LettaAdapter", () => {
     expect(injectedContent).toContain("Reply 3");
   });
 
+  it("drops an assistant left leading by the character-budget trim", async () => {
+    const client = new FakeLettaClient();
+    client.responseBatches.push(
+      assistantResponse("History ack"),
+      assistantResponse("Response"),
+    );
+
+    const adapter = new LettaAdapter({ clientFactory: async () => client });
+
+    await adapter.onStarted("Agent", "An agent");
+
+    // The 32k character budget cuts oldest-first and counts characters, not
+    // exchanges, so a long opening question is dropped while its reply
+    // survives.  That reply must not be replayed without its question.
+    const longQuestion = "Q".repeat(30_000);
+    const history = [
+      { role: "user" as const, content: `[A]: ${longQuestion}`, sender: "A", senderType: "User" },
+      { role: "assistant" as const, content: "R".repeat(9_000), sender: "Bot", senderType: "Agent" },
+      { role: "user" as const, content: "[A]: Short follow-up", sender: "A", senderType: "User" },
+      { role: "assistant" as const, content: "Short reply", sender: "Bot", senderType: "Agent" },
+    ];
+
+    const tools = new FakeTools();
+    await adapter.onMessage(
+      makeMessage("Now", "room-budget"),
+      tools,
+      history,
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-budget" },
+    );
+
+    const historyCall = client.messageCreateCalls[0];
+    const injectedMsg = historyCall.params.messages?.[0] as { content?: string } | undefined;
+    const injectedContent = injectedMsg?.content ?? "";
+
+    // The long question did not fit...
+    expect(injectedContent).not.toContain(longQuestion);
+    // ...so its orphaned reply goes too, rather than leading the block.
+    expect(injectedContent).not.toContain("R".repeat(9_000));
+    // The intact exchange still survives.
+    expect(injectedContent).toContain("Short follow-up");
+    expect(injectedContent).toContain("Short reply");
+  });
+
   it("sanitizes system-like markers in injected history content", async () => {
     const client = new FakeLettaClient();
     client.responseBatches.push(

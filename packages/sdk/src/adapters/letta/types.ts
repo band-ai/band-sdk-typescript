@@ -1,9 +1,8 @@
 import type { HistoryConverter } from "../../contracts/protocols";
 import { asNonEmptyString } from "../shared/coercion";
+import type { ChatTurn } from "../shared/history";
 
-export interface LettaMessage {
-  role: "user" | "assistant";
-  content: string;
+export interface LettaMessage extends ChatTurn {
   sender: string;
   senderType: string;
 }
