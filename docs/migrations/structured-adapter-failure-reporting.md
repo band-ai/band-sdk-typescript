@@ -29,9 +29,8 @@ is `AgentFailure.provider` on every structured failure the adapter reports.
 import { SimpleAdapter } from "@band-ai/sdk";
 import type { HistoryProvider } from "@band-ai/sdk";
 
-export class MyAdapter extends SimpleAdapter<HistoryProvider> {
+export abstract class MyAdapter extends SimpleAdapter<HistoryProvider> {
   protected readonly provider = "my-adapter";
-  // ...
 }
 ```
 
@@ -85,6 +84,7 @@ export class MyAdapter extends SimpleAdapter<HistoryProvider> {
         tools,
         agentFailure(this.provider, error instanceof Error ? error.message : String(error)),
       );
+      return;
     }
     await deliverReply(tools, text);
   }
