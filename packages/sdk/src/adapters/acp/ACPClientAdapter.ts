@@ -1205,7 +1205,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     senderId: string;
     senderHandle: string;
   }): Promise<void> {
-    for (const chunk of input.client.getCollectedChunks(input.sessionId)) {
+    for (const chunk of input.client.takeCollectedChunks(input.sessionId)) {
       // A status-only ACP update carries its meaning in metadata and has
       // nothing to post.
       if (isBlankEventContent(chunk.content)) {

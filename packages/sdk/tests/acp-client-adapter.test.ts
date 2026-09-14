@@ -2310,6 +2310,35 @@ describe("ACPClientAdapter", () => {
       })
     })
 
+    it("does not redeliver an already-flushed chunk when a later step of the same turn fails", async () => {
+      const { adapter, getClient } = buildFailureHarness({
+        prompt: vi.fn(async (params: { sessionId: string }) => {
+          await getClient().sessionUpdate({
+            sessionId: params.sessionId,
+            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "final answer" } },
+          })
+          return { stopReason: "end_turn" }
+        }),
+      })
+      await adapter.onStarted("Agent", "desc")
+
+      // Fails the "ACP client session" task event posted right after the
+      // success-path flush already delivered the chunk above, landing in
+      // `runTurn`'s catch — which used to flush again from the same
+      // (non-draining) buffer and post the same reply twice.
+      const tools = new FakeTools({ failOn: ["sendEvent"] })
+      await expectTurnFailed(adapter.onMessage(
+        makeMessage("question", "room-double-flush"),
+        tools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-double-flush" },
+      ))
+
+      expect(tools.messages).toEqual(["final answer"])
+    })
+
     it("on a turn timeout: cancels the outstanding prompt, flushes output streamed so far, and evicts the session so the room's next turn restores rather than reuses it", async () => {
       vi.useFakeTimers()
       try {

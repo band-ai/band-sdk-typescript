@@ -67,6 +67,17 @@ export class BandACPClient implements Client {
     return [...this.sessionChunks.values()].flatMap((chunks) => coalesceChunks(chunks))
   }
 
+  // Unlike `getCollectedChunks`, this clears the buffer as it reads it — so a
+  // caller that flushes twice for the same turn (success path, then a catch
+  // block) can never redeliver the same chunks. Keeps the session's map entry
+  // (an empty array, not a deleted one) so a late `sessionUpdate` still has
+  // somewhere to collect into.
+  public takeCollectedChunks(sessionId: string): CollectedChunk[] {
+    const chunks = coalesceChunks(this.sessionChunks.get(sessionId) ?? [])
+    this.sessionChunks.set(sessionId, [])
+    return chunks
+  }
+
   public async extMethod(
     method: string,
     params: Record<string, unknown>,
