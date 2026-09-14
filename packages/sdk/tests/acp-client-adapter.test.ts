@@ -20,6 +20,41 @@ async function send(adapter: ACPClientAdapter, roomId = "room-1", history: Recor
   )
 }
 
+// Shared by the `resolveSessionMode` and `resolveSessionModel` test
+// harnesses below: the connection-mock shape every ACP session actually
+// exposes (signal/closed/initialize/authenticate/loadSession/
+// unstable_resumeSession/newSession/prompt), parameterized by whichever
+// extra RPC spies (setSessionMode, setSessionConfigOption) the calling
+// block needs.
+function buildMockConnection(spies: {
+  agentCapabilities?: Record<string, unknown>;
+  loadSession: () => Promise<Record<string, unknown>>;
+  newSession: () => Promise<Record<string, unknown>>;
+  prompt: (params: { sessionId: string }) => Promise<{ stopReason: string }>;
+  extraRpcSpies?: Record<string, unknown>;
+}) {
+  const controller = new AbortController()
+  return {
+    connection: {
+      signal: controller.signal,
+      closed: new Promise<void>(() => undefined),
+      initialize: vi.fn(async () => ({
+        protocolVersion: 1,
+        agentCapabilities: spies.agentCapabilities ?? { loadSession: true },
+      })),
+      authenticate: vi.fn(async () => ({})),
+      loadSession: spies.loadSession,
+      unstable_resumeSession: vi.fn(),
+      newSession: spies.newSession,
+      prompt: spies.prompt,
+      ...spies.extraRpcSpies,
+    } as never,
+    stop: async () => {
+      controller.abort()
+    },
+  }
+}
+
 describe("ACPClientAdapter", () => {
   it("restores ACP sessions, auto-injects MCP, and fans out ACP updates", async () => {
     let clientHandle: {
@@ -1937,7 +1972,6 @@ describe("ACPClientAdapter", () => {
       const loadSession = vi.fn(async () => ({
         ...(input.loadSessionModes ? { modes: input.loadSessionModes } : {}),
       }))
-      const unstable_resumeSession = vi.fn()
       const prompt = vi.fn(async (params: { sessionId: string }) => {
         if (input.raisePermissionRequest) {
           permissionResult = await clientHandle?.requestPermission({
@@ -1957,26 +1991,13 @@ describe("ACPClientAdapter", () => {
         enableMcpTools: false,
         connectionFactory: async (client) => {
           clientHandle = client as unknown as typeof clientHandle
-          const controller = new AbortController()
-          return {
-            connection: {
-              signal: controller.signal,
-              closed: new Promise<void>(() => undefined),
-              initialize: vi.fn(async () => ({
-                protocolVersion: 1,
-                agentCapabilities: input.agentCapabilities ?? { loadSession: true },
-              })),
-              authenticate: vi.fn(async () => ({})),
-              loadSession,
-              unstable_resumeSession,
-              newSession,
-              setSessionMode,
-              prompt,
-            } as never,
-            stop: async () => {
-              controller.abort()
-            },
-          }
+          return buildMockConnection({
+            agentCapabilities: input.agentCapabilities,
+            loadSession,
+            newSession,
+            prompt,
+            extraRpcSpies: { setSessionMode },
+          })
         },
         ...input.adapterOptions,
       })
@@ -2198,35 +2219,17 @@ describe("ACPClientAdapter", () => {
       const loadSession = vi.fn(async () => ({
         ...(input.loadSessionConfigOptions ? { configOptions: input.loadSessionConfigOptions } : {}),
       }))
-      const unstable_resumeSession = vi.fn()
       const prompt = vi.fn(async () => ({ stopReason: "end_turn" }))
 
       const adapter = new ACPClientAdapter({
         command: ["acp-agent"],
         enableMcpTools: false,
-        connectionFactory: async () => {
-          const controller = new AbortController()
-          return {
-            connection: {
-              signal: controller.signal,
-              closed: new Promise<void>(() => undefined),
-              initialize: vi.fn(async () => ({
-                protocolVersion: 1,
-                agentCapabilities: { loadSession: true },
-              })),
-              authenticate: vi.fn(async () => ({})),
-              loadSession,
-              unstable_resumeSession,
-              newSession,
-              setSessionMode,
-              setSessionConfigOption,
-              prompt,
-            } as never,
-            stop: async () => {
-              controller.abort()
-            },
-          }
-        },
+        connectionFactory: async () => buildMockConnection({
+          loadSession,
+          newSession,
+          prompt,
+          extraRpcSpies: { setSessionMode, setSessionConfigOption },
+        }),
         ...input.adapterOptions,
       })
 
@@ -2256,11 +2259,18 @@ describe("ACPClientAdapter", () => {
     }
 
     it("selects an advertised model", async () => {
+      const resolveSessionModel = vi.fn(async () => "sonnet")
       const { adapter, setSessionConfigOption } = buildHarness({
-        adapterOptions: { resolveSessionModel: async () => "sonnet" },
+        adapterOptions: { resolveSessionModel },
         newSessionConfigOptions: [modelConfigOption()],
       })
       await send(adapter)
+      expect(resolveSessionModel).toHaveBeenCalledWith(
+        expect.objectContaining({
+          models: [{ value: "opus", name: "Opus" }, { value: "sonnet", name: "Sonnet" }],
+        }),
+        expect.anything(),
+      )
       expect(setSessionConfigOption).toHaveBeenCalledWith({ sessionId: "session-1", configId: "model", value: "sonnet" })
     })
 
@@ -2483,6 +2493,30 @@ describe("ACPClientAdapter", () => {
       )
     })
 
+    it("warns when resolveSessionModel answers after the request was already abandoned to the timeout", async () => {
+      let resolveLate: (value: string) => void = () => undefined
+      const logger = makeLoggerSpy()
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: {
+          resolveSessionModel: () => new Promise<string | undefined>((resolve) => { resolveLate = resolve }),
+          logger,
+          permissionTimeoutMs: 20,
+        },
+        newSessionConfigOptions: [modelConfigOption()],
+      })
+
+      await send(adapter)
+      expect(setSessionConfigOption).not.toHaveBeenCalled()
+
+      resolveLate("sonnet")
+      await new Promise((resolve) => setTimeout(resolve, 10))
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        "resolveSessionModel answered after the request was abandoned; discarding",
+        { chosenId: "sonnet" },
+      )
+    })
+
     it("detects the model option by id when category is missing", async () => {
       const { adapter, setSessionConfigOption } = buildHarness({
         adapterOptions: { resolveSessionModel: async () => "sonnet" },
@@ -2513,10 +2547,42 @@ describe("ACPClientAdapter", () => {
       const { adapter, setSessionConfigOption } = buildHarness({
         adapterOptions: { resolveSessionModel: async () => "sonnet" },
         newSessionConfigOptions: [modelConfigOption({
-          options: [null as unknown as Record<string, unknown>, { value: "sonnet", name: "Sonnet" }],
+          // `null` is dropped by the `!entry` half of the guard; the bare
+          // string is dropped by its `typeof entry !== "object"` half —
+          // covering both halves, since a plain object-record check alone
+          // wouldn't exercise the second.
+          options: [null as unknown as Record<string, unknown>, "not-an-object" as unknown as Record<string, unknown>, { value: "sonnet", name: "Sonnet" }],
         })],
       })
       await expect(send(adapter)).resolves.toBeUndefined()
+      expect(setSessionConfigOption).toHaveBeenCalledWith({ sessionId: "session-1", configId: "model", value: "sonnet" })
+    })
+
+    it("skips a malformed top-level configOptions entry and still finds the real model option", async () => {
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: { resolveSessionModel: async () => "sonnet" },
+        newSessionConfigOptions: [null as unknown as Record<string, unknown>, modelConfigOption()],
+      })
+      await expect(send(adapter)).resolves.toBeUndefined()
+      expect(setSessionConfigOption).toHaveBeenCalledWith({ sessionId: "session-1", configId: "model", value: "sonnet" })
+    })
+
+    it("drops a group entry whose own options field is not an array", async () => {
+      const resolveSessionModel = vi.fn(async () => "sonnet")
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: { resolveSessionModel },
+        newSessionConfigOptions: [modelConfigOption({
+          options: [
+            { group: "bad", name: "Bad", options: "not-an-array" },
+            { group: "anthropic", name: "Anthropic", options: [{ value: "sonnet", name: "Sonnet" }] },
+          ],
+        })],
+      })
+      await send(adapter)
+      expect(resolveSessionModel).toHaveBeenCalledWith(
+        expect.objectContaining({ models: [{ value: "sonnet", name: "Sonnet" }] }),
+        expect.anything(),
+      )
       expect(setSessionConfigOption).toHaveBeenCalledWith({ sessionId: "session-1", configId: "model", value: "sonnet" })
     })
 

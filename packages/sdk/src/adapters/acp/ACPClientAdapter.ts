@@ -27,6 +27,7 @@ import { renderSystemPrompt } from "../../runtime/prompts";
 import { mentionSubjectsFromMetadata, replaceUuidMentions } from "../../runtime/formatters";
 import { systemUpdateParts } from "../shared/conversationPrompt";
 import { withTimeout } from "../shared/withTimeout";
+import { asOptionalRecord } from "../shared/coercion";
 import { isBlankEventContent } from "../../contracts/chatEvents";
 import type { PlatformMessage } from "../../runtime/types";
 import type { McpToolRegistration } from "../../mcp/registrations";
@@ -791,14 +792,27 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       const timeout = new Promise<undefined>((resolve) => {
         timer = setTimeout(() => resolve(undefined), this.permissionTimeoutMs)
       })
-      return await Promise.race([
-        Promise.resolve().then(() => resolver(controller.signal)).catch((error) => {
+      let settled = false
+      const resolved = await Promise.race([
+        Promise.resolve().then(() => resolver(controller.signal)).then((chosenId) => {
+          // Mirrors `discardLateAnswer`'s reasoning for `resolvePermission`:
+          // a hook that answers after `timeout`/`cancelled` already won the
+          // race can no longer be honoured — `Promise.race` has already
+          // discarded this value either way — but logging is what makes a
+          // "my selection did nothing" report explicable instead of silent.
+          if (settled && chosenId !== undefined) {
+            this.safeWarn(`${hookName} answered after the request was abandoned; discarding`, { chosenId })
+          }
+          return chosenId
+        }).catch((error) => {
           this.safeWarn(`${hookName} threw; preserving the harness default`, { error: String(error) })
           return undefined
         }),
         timeout,
         cancelled,
       ])
+      settled = true
+      return resolved
     } finally {
       clearTimeout(timer)
       signal.removeEventListener("abort", abort)
@@ -1344,9 +1358,16 @@ const MODEL_CONFIG_OPTION_KEY = "model"
 // `SessionConfigOption` is a discriminated union — only the `"select"`
 // branch has `.currentValue`/`.options`. `Array.find()`'s plain
 // boolean-returning callback doesn't narrow that union on its own, so
-// `configureSessionModel` needs a real type-predicate here rather than an
-// inline arrow. `category` is the protocol's documented signal for "this is
-// the model selector" and takes priority; `isModelConfigOptionById` below is
+// `configureSessionModel` needs real type-predicates here rather than an
+// inline arrow.
+function isSessionConfigSelect(
+  option: SessionConfigOption,
+): option is SessionConfigOption & SessionConfigSelect & { type: "select" } {
+  return option?.type === "select"
+}
+
+// `category` is the protocol's documented signal for "this is the model
+// selector" and takes priority; `isModelConfigOptionById` below is
 // consulted only as a fallback for an agent that omits `category` (the spec
 // explicitly allows that) — `category` is an open string, so an unrelated
 // option could otherwise be mismatched if both checks were given equal
@@ -1354,7 +1375,7 @@ const MODEL_CONFIG_OPTION_KEY = "model"
 function isModelConfigOption(
   option: SessionConfigOption,
 ): option is SessionConfigOption & SessionConfigSelect & { type: "select" } {
-  return option?.type === "select" && option.category === MODEL_CONFIG_OPTION_KEY
+  return isSessionConfigSelect(option) && option.category === MODEL_CONFIG_OPTION_KEY
 }
 
 // Fallback for an agent that omits `category` — real agents (claude-agent-acp)
@@ -1363,7 +1384,7 @@ function isModelConfigOption(
 function isModelConfigOptionById(
   option: SessionConfigOption,
 ): option is SessionConfigOption & SessionConfigSelect & { type: "select" } {
-  return option?.type === "select" && option.id === MODEL_CONFIG_OPTION_KEY
+  return isSessionConfigSelect(option) && option.id === MODEL_CONFIG_OPTION_KEY
 }
 
 // `SessionConfigSelect.options` is typed as `Array<SessionConfigSelectOption>
@@ -1373,9 +1394,12 @@ function isModelConfigOptionById(
 // distinguished from `SessionConfigSelectOption` (`{value, name,
 // description?}`) via `"group" in entry`, the only field unique to the
 // group shape. Entries are otherwise unvalidated JSON-RPC data (same
-// reasoning as `configureSessionMode`'s `availableModes` guard) — a
-// non-object entry is dropped rather than passed to the `in` operator,
-// which throws on anything but an object.
+// reasoning as `configureSessionMode`'s `availableModes` guard) — `entry`
+// and a group's own `options` are each validated with this codebase's
+// shared `asOptionalRecord`/`Array.isArray` guards (not a bespoke check)
+// before either is trusted, so a non-object or non-array shape is dropped
+// rather than passed to the `in` operator or returned as if it were real
+// catalog data.
 function flattenConfigSelectOptions(
   options: SessionConfigSelectOptions | null | undefined,
 ): SessionConfigSelectOption[] {
@@ -1384,10 +1408,14 @@ function flattenConfigSelectOptions(
   }
 
   return options.flatMap((entry) => {
-    if (!entry || typeof entry !== "object") {
+    if (!asOptionalRecord(entry)) {
       return []
     }
 
-    return "group" in entry ? entry.options ?? [] : [entry]
+    if ("group" in entry) {
+      return Array.isArray(entry.options) ? entry.options : []
+    }
+
+    return [entry]
   })
 }
