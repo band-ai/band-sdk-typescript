@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { asNonEmptyString, asOptionalRecord, asRecord } from "../src/adapters/shared/coercion";
+import {
+  asErrorMessage,
+  asNestedMessage,
+  asNonEmptyString,
+  asOptionalRecord,
+  asRecord,
+} from "../src/adapters/shared/coercion";
 import { findLatestTaskMetadata } from "../src/adapters/shared/history";
 import { withTimeout } from "../src/adapters/shared/withTimeout";
 import { mapConversationMessages } from "../src/adapters/tool-calling/valueUtils";
@@ -16,6 +22,52 @@ describe("adapter shared utilities", () => {
     expect(asNonEmptyString("  hello  ")).toBe("hello");
     expect(asNonEmptyString("   ")).toBeNull();
     expect(asNonEmptyString(42)).toBeNull();
+  });
+
+  describe("asErrorMessage", () => {
+    it("returns the message of a plain Error", () => {
+      expect(asErrorMessage(new Error("boom"))).toBe("boom");
+    });
+
+    it("appends an Error's cause when present", () => {
+      const error = new Error("boom", { cause: "disk full" });
+      expect(asErrorMessage(error)).toBe("boom (disk full)");
+    });
+
+    it("reads message and data off a plain JSON-RPC-shaped error object", () => {
+      const error = { code: -32603, message: "Internal error", data: "agent crashed: OOM" };
+      expect(asErrorMessage(error)).toBe("Internal error (agent crashed: OOM)");
+    });
+
+    it("reads data off an Error subclass carrying a data field", () => {
+      class RequestError extends Error {
+        public constructor(
+          public readonly code: number,
+          message: string,
+          public readonly data?: unknown,
+        ) {
+          super(message);
+        }
+      }
+      const error = new RequestError(-32603, "Internal error", { message: "agent crashed" });
+      expect(asErrorMessage(error)).toBe("Internal error (agent crashed)");
+    });
+
+    it("falls back to String() for non-object values", () => {
+      expect(asErrorMessage("plain string")).toBe("plain string");
+      expect(asErrorMessage(42)).toBe("42");
+    });
+  });
+
+  describe("asNestedMessage", () => {
+    it("returns the message field of a record", () => {
+      expect(asNestedMessage({ message: "nested detail" })).toBe("nested detail");
+    });
+
+    it("returns null for non-records or a non-string message", () => {
+      expect(asNestedMessage("not a record")).toBeNull();
+      expect(asNestedMessage({ message: 42 })).toBeNull();
+    });
   });
 
   it("finds latest matching task metadata from history", () => {

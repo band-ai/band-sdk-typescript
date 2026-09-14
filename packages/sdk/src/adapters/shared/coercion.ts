@@ -80,9 +80,42 @@ export function toWireString(value: unknown): string {
 }
 
 export function asErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
+  if (typeof error !== "object" || error === null) {
+    return String(error);
   }
 
-  return String(error);
+  const record = error as { message?: unknown; data?: unknown; cause?: unknown };
+  const message = typeof record.message === "string" ? record.message : String(error);
+  const detail = record.data ?? record.cause;
+  if (detail === undefined || detail === null) {
+    return message;
+  }
+
+  return `${message} (${formatErrorDetail(detail)})`;
+}
+
+function formatErrorDetail(detail: unknown): string {
+  if (typeof detail === "string") {
+    return detail;
+  }
+
+  if (detail instanceof Error) {
+    return asErrorMessage(detail);
+  }
+
+  const nested = asNestedMessage(detail);
+  if (nested !== null) {
+    return nested;
+  }
+
+  try {
+    return JSON.stringify(detail);
+  } catch {
+    return String(detail);
+  }
+}
+
+export function asNestedMessage(value: unknown): string | null {
+  const record = asOptionalRecord(value);
+  return typeof record?.message === "string" ? record.message : null;
 }

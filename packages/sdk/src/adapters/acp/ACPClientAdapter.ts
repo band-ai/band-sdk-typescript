@@ -21,6 +21,7 @@ import { ValidationError } from "../../core/errors";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { mentionSubjectsFromMetadata, replaceUuidMentions } from "../../runtime/formatters";
+import { asErrorMessage } from "../shared/coercion";
 import { systemUpdateParts } from "../shared/conversationPrompt";
 import { withTimeout } from "../shared/withTimeout";
 import { isBlankEventContent } from "../../contracts/chatEvents";
@@ -272,8 +273,9 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       })
     } catch (error) {
       await this.stop()
-      await tools.sendEvent(`ACP agent error: ${toErrorMessage(error)}`, "error", {
-        acp_error: toErrorMessage(error),
+      const errorMessage = asErrorMessage(error)
+      await tools.sendEvent(`ACP agent error: ${errorMessage}`, "error", {
+        acp_error: errorMessage,
       })
       return
     }
@@ -1208,10 +1210,3 @@ export async function createSubprocessConnection(
   }
 }
 
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message
-  }
-
-  return String(error)
-}
