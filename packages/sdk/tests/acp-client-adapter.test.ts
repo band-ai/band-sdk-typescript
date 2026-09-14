@@ -31,7 +31,7 @@ async function send(adapter: ACPClientAdapter, roomId = "room-1", history: Recor
 // Shared by the `resolveSessionMode` and `resolveSessionModel` test
 // harnesses below: the connection-mock shape every ACP session actually
 // exposes (signal/closed/initialize/authenticate/loadSession/
-// unstable_resumeSession/newSession/prompt), parameterized by whichever
+// resumeSession/newSession/prompt), parameterized by whichever
 // extra RPC spies (setSessionMode, setSessionConfigOption) the calling
 // block needs.
 function buildMockConnection(spies: {
@@ -52,7 +52,7 @@ function buildMockConnection(spies: {
       })),
       authenticate: vi.fn(async () => ({})),
       loadSession: spies.loadSession,
-      unstable_resumeSession: vi.fn(),
+      resumeSession: vi.fn(),
       newSession: spies.newSession,
       prompt: spies.prompt,
       ...spies.extraRpcSpies,
@@ -178,7 +178,7 @@ describe("ACPClientAdapter", () => {
             initialize,
             authenticate,
             loadSession,
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             prompt,
           } as never,
@@ -330,7 +330,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession: vi.fn(async () => ({ sessionId: "session-coalesce" })),
             prompt,
           } as never,
@@ -422,7 +422,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession: vi.fn(async () => ({ sessionId: "session-thought" })),
             prompt,
           } as never,
@@ -622,7 +622,7 @@ describe("ACPClientAdapter", () => {
             initialize,
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             prompt,
           } as never,
@@ -678,7 +678,7 @@ describe("ACPClientAdapter", () => {
             })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession: vi.fn(async () => ({ sessionId: "session-mentions" })),
             prompt,
           } as never,
@@ -728,7 +728,7 @@ describe("ACPClientAdapter", () => {
             })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession: vi.fn(async () => ({ sessionId: "session-room-context" })),
             prompt,
           } as never,
@@ -784,7 +784,7 @@ describe("ACPClientAdapter", () => {
             initialize,
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             prompt: vi.fn(),
           } as never,
@@ -835,7 +835,7 @@ describe("ACPClientAdapter", () => {
             initialize,
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             prompt,
           } as never,
@@ -912,7 +912,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             prompt: vi.fn(async () => ({ stopReason: "end_turn" })),
           } as never,
@@ -999,7 +999,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession: vi.fn(async () => ({ sessionId: "session-1" })),
             prompt,
           } as never,
@@ -1059,7 +1059,7 @@ describe("ACPClientAdapter", () => {
           initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
           authenticate: vi.fn(async () => ({})),
           loadSession: vi.fn(),
-          unstable_resumeSession: vi.fn(),
+          resumeSession: vi.fn(),
           newSession,
           prompt: vi.fn(async () => ({ stopReason: "end_turn" })),
         } as never,
@@ -1110,7 +1110,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             prompt,
           } as never,
@@ -1172,7 +1172,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             prompt,
           } as never,
@@ -1224,7 +1224,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession: vi.fn(async () => ({
               sessionId: "session-modes",
               modes: {
@@ -1359,7 +1359,7 @@ describe("ACPClientAdapter", () => {
               })),
               authenticate: vi.fn(async () => ({})),
               loadSession,
-              unstable_resumeSession: vi.fn(),
+              resumeSession: vi.fn(),
               newSession,
               setSessionMode,
               prompt,
@@ -2210,7 +2210,7 @@ describe("ACPClientAdapter", () => {
     })
 
     // The ACP client does not runtime-validate an agent's JSON-RPC response
-    // (see `dist/acp.js` — `newSession`/`loadSession`/`unstable_resumeSession`
+    // (see `dist/acp.js` — `newSession`/`loadSession`/`resumeSession`
     // just return the raw parsed result), so the two cases below model
     // non-conforming responses that `SessionModeState`'s type promises can't
     // happen but nothing actually prevents.
@@ -2225,7 +2225,7 @@ describe("ACPClientAdapter", () => {
     })
 
     it("treats a resumed session as restored even when the agent's response carries no modes at all", async () => {
-      // The installed ACP SDK's own `unstable_resumeSession` has no `?? {}`
+      // The installed ACP SDK's own `resumeSession` has no `?? {}`
       // fallback the way its `loadSession` does, so resolving to `undefined`
       // on success is a real possibility here, not just a hypothetical.
       const { adapter, newSession } = buildHarness({
@@ -3256,7 +3256,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: { loadSession: true } })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(async () => ({})),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             setSessionMode: vi.fn(async () => ({})),
             setSessionConfigOption,
