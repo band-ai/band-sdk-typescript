@@ -6,7 +6,7 @@ import { UnsupportedFeatureError } from "../../core/errors";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { mcpToolNames, MCP_SERVER_NAME } from "../../runtime/tools/schemas";
-import { agentFailure, reportProviderTurnFailure, reportTurnFailure } from "../../core/providerFailure";
+import { agentFailure, reportProviderTurnFailure, reportTurnFailure, safeSendFailure } from "../../core/providerFailure";
 import { deliverReply } from "../../core/deliveryFailedError";
 import { buildConversationPrompt } from "../shared/conversationPrompt";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
@@ -264,17 +264,18 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     const mention = [{ id: message.senderId, handle: message.senderName ?? message.senderType }];
     const replyText = finalText.trim();
     if (resultFailure) {
+      const failure = agentFailure(this.provider, resultFailure.message, resultFailure.code, resultFailure.detail);
       // Preceding assistant text is already decided output; posting it must
       // not flip a non-success result into a successful turn.
       if (replyText) {
-        await deliverReply(tools, replyText, mention);
+        try {
+          await deliverReply(tools, replyText, mention);
+        } catch (error) {
+          await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId });
+          throw error;
+        }
       }
-      await reportTurnFailure(
-        tools,
-        agentFailure(this.provider, resultFailure.message, resultFailure.code, resultFailure.detail),
-        this.logger,
-        { roomId: context.roomId },
-      );
+      await reportTurnFailure(tools, failure, this.logger, { roomId: context.roomId });
     }
 
     if (replyText) {

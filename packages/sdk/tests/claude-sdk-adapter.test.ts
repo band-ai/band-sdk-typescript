@@ -5,6 +5,7 @@ import {
   type ClaudeSDKQuery,
 } from "../src/adapters/claude-sdk/ClaudeSDKAdapter";
 import { HistoryProvider } from "../src/runtime/types";
+import { DeliveryFailedError } from "../src/core/deliveryFailedError";
 import { FakeTools, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
 import { MCP_SERVER_NAME } from "../src/runtime/tools/schemas";
@@ -371,6 +372,45 @@ describe("ClaudeSDKAdapter", () => {
     const failureEvent = findFailureEvent(tools);
     expect(tools.events.filter((event) => event.messageType === "error")).toHaveLength(1);
     expect(failureEvent?.metadata?.failure).toMatchObject({
+      provider: "claude-sdk",
+      code: "error_during_execution",
+      message: "tool crashed",
+    });
+  });
+
+  it("reports the Claude result failure even when partial-text delivery is rejected", async () => {
+    const queryFn: ClaudeSDKQuery = () =>
+      streamFrom([
+        {
+          type: "assistant",
+          session_id: "session-partial-delivery",
+          message: {
+            content: [{ type: "text", text: "almost done" }],
+          },
+        } as never,
+        {
+          type: "result",
+          subtype: "error_during_execution",
+          summary: "tool crashed",
+          session_id: "session-partial-delivery",
+        } as never,
+      ]) as never;
+
+    const adapter = new ClaudeSDKAdapter({ queryFn });
+    await adapter.onStarted("Parity Agent", "Parity test agent");
+
+    const tools = new FakeTools({ failOn: ["sendMessage"] });
+    await expect(adapter.onMessage(
+      makeMessage("hello", "room-result-partial-delivery"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-result-partial-delivery" },
+    )).rejects.toBeInstanceOf(DeliveryFailedError);
+    expect(tools.messages).toEqual([]);
+    expect(tools.events.filter((event) => event.messageType === "error")).toHaveLength(1);
+    expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({
       provider: "claude-sdk",
       code: "error_during_execution",
       message: "tool crashed",
