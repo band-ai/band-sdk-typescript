@@ -931,13 +931,6 @@ export class AgentTools implements AgentToolsProtocol {
       );
     }
 
-    if (scope === MEMORY_STORE_SCOPE.agent && subjectId) {
-      throw new ValidationError(
-        `scope="${MEMORY_STORE_SCOPE.agent}" is private to this agent and must not include subject_id. ` +
-          `If the memory is about a specific person or agent, use scope="${MEMORY_STORE_SCOPE.subject}" with their UUID.`,
-      );
-    }
-
     return {
       content,
       thought,

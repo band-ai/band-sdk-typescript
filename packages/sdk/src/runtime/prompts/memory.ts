@@ -64,7 +64,7 @@ const MEMORY_SCOPE_GUIDANCE = `Use \`scope="${MEMORY_STORE_SCOPE.agent}"\` for i
 identified subject. Omitting \`scope\` and \`subject_id\` on store defaults to agent scope on the platform.
 Prefer \`scope="${MEMORY_STORE_SCOPE.subject}"\` whenever the memory is about a specific person or agent, so it
 stays attached to that subject rather than leaking org-wide. Storing with \`scope="${MEMORY_STORE_SCOPE.subject}"\` requires a
-real \`subject_id\` UUID, so resolve it first via \`${TOOL_NAME.lookupPeers}\` or the participant list.
+real \`subject_id\` UUID, so resolve it first via \`band_lookup_peers\` or the participant list.
 Reserve \`scope="${MEMORY_STORE_SCOPE.organization}"\` for knowledge that is genuinely shared across the whole organization and
 is not about any one subject.`;
 
