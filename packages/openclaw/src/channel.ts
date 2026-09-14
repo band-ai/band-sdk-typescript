@@ -16,14 +16,21 @@
  */
 
 import { createChatChannelPlugin, createChannelPluginBase } from "openclaw/plugin-sdk/core";
-import type {
-  ChannelPlugin,
-  ChannelGatewayAdapter,
-  ChannelMentionAdapter,
-  ChannelMessagingAdapter,
-  ChannelCapabilities,
-} from "openclaw/plugin-sdk/channel-runtime";
+import type { ChannelMessagingAdapter } from "openclaw/plugin-sdk/core";
+import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-core";
+import type { ChannelCapabilities } from "openclaw/plugin-sdk/channel-contract";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+
+// `ChannelGatewayAdapter` and `ChannelMentionAdapter` are no longer re-exported
+// as standalone types from any `openclaw/plugin-sdk/*` subpath as of openclaw
+// 2026.9.4 (previously available from the now-removed `channel-runtime`
+// subpath). Derive them structurally from the `gateway`/`mentions` fields of
+// the still-exported `ChannelPlugin` contract instead of importing internal
+// package types directly.
+type ChannelGatewayAdapter<ResolvedAccount = unknown> = NonNullable<
+  ChannelPlugin<ResolvedAccount>["gateway"]
+>;
+type ChannelMentionAdapter = NonNullable<ChannelPlugin["mentions"]>;
 import { buildMentionRegexes } from "openclaw/plugin-sdk/channel-inbound";
 
 import {
