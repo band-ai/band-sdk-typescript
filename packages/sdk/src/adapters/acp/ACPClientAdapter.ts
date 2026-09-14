@@ -705,11 +705,11 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     configOptions: readonly SessionConfigOption[] | null | undefined,
     connection: ClientSideConnection,
   ): Promise<void> {
-    if (!this.resolveSessionModel || !configOptions) {
+    if (!this.resolveSessionModel || !Array.isArray(configOptions)) {
       return
     }
 
-    const modelOption = configOptions.find(isModelConfigOption)
+    const modelOption = configOptions.find(isModelConfigOption) ?? configOptions.find(isModelConfigOptionById)
     if (!modelOption) {
       return
     }
@@ -768,6 +768,16 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     const controller = new AbortController()
     const abort = () => controller.abort()
     signal.addEventListener("abort", abort, { once: true })
+    // `addEventListener` only catches a *future* abort. `signal` (the
+    // connection's) can already be aborted by the time this runs — mode and
+    // model establishment both race against the same `connection.signal` in
+    // sequence, so a connection drop during the first wait leaves the second
+    // wait registering its listener on an already-fired signal, which never
+    // redelivers the past event. Checked synchronously too, mirroring
+    // `ClientSideConnection.signal`'s own documented usage pattern.
+    if (signal.aborted) {
+      abort()
+    }
     let timer: ReturnType<typeof setTimeout> | undefined
 
     try {
@@ -1323,18 +1333,33 @@ function toErrorMessage(error: unknown): string {
   return String(error)
 }
 
+// Config option id/category convention real agents use for the model
+// selector (see `ACPModelRequest`'s doc comment).
+const MODEL_CONFIG_OPTION_KEY = "model"
+
 // `SessionConfigOption` is a discriminated union — only the `"select"`
 // branch has `.currentValue`/`.options`. `Array.find()`'s plain
 // boolean-returning callback doesn't narrow that union on its own, so
 // `configureSessionModel` needs a real type-predicate here rather than an
 // inline arrow. `category` is the protocol's documented signal for "this is
-// the model selector", but the spec explicitly allows an agent to omit it —
-// real agents (claude-agent-acp) key their model option `id: "model"` too,
-// so that's checked as a fallback.
+// the model selector" and takes priority; `isModelConfigOptionById` below is
+// consulted only as a fallback for an agent that omits `category` (the spec
+// explicitly allows that) — `category` is an open string, so an unrelated
+// option could otherwise be mismatched if both checks were given equal
+// priority in one predicate.
 function isModelConfigOption(
   option: SessionConfigOption,
 ): option is SessionConfigOption & SessionConfigSelect & { type: "select" } {
-  return option?.type === "select" && (option.category === "model" || option.id === "model")
+  return option?.type === "select" && option.category === MODEL_CONFIG_OPTION_KEY
+}
+
+// Fallback for an agent that omits `category` — real agents (claude-agent-acp)
+// key their model option `id: "model"` too. Only consulted when no entry
+// matches `isModelConfigOption` above.
+function isModelConfigOptionById(
+  option: SessionConfigOption,
+): option is SessionConfigOption & SessionConfigSelect & { type: "select" } {
+  return option?.type === "select" && option.id === MODEL_CONFIG_OPTION_KEY
 }
 
 // `SessionConfigSelect.options` is typed as `Array<SessionConfigSelectOption>
@@ -1343,7 +1368,10 @@ function isModelConfigOption(
 // grouped form. `SessionConfigSelectGroup` (`{group, name, options}`) is
 // distinguished from `SessionConfigSelectOption` (`{value, name,
 // description?}`) via `"group" in entry`, the only field unique to the
-// group shape.
+// group shape. Entries are otherwise unvalidated JSON-RPC data (same
+// reasoning as `configureSessionMode`'s `availableModes` guard) — a
+// non-object entry is dropped rather than passed to the `in` operator,
+// which throws on anything but an object.
 function flattenConfigSelectOptions(
   options: SessionConfigSelectOptions | null | undefined,
 ): SessionConfigSelectOption[] {
@@ -1351,5 +1379,11 @@ function flattenConfigSelectOptions(
     return []
   }
 
-  return options.flatMap((entry) => ("group" in entry ? entry.options ?? [] : [entry]))
+  return options.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return []
+    }
+
+    return "group" in entry ? entry.options ?? [] : [entry]
+  })
 }
