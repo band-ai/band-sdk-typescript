@@ -1,0 +1,148 @@
+name: TypeScript Core Coverage
+
+# Coverage floor for band-sdk-core-core's wasm-bindgen JS/TS glue, computed
+# from THIS repo's real per-PR test commands -- band-sdk-core owns the
+# packed-tarball build + gate (see its `coverage-typescript-consumer` just
+# recipe); this workflow only resolves the pinned version, checks that tag
+# out as a sibling, and runs it.
+#
+# No explicit Rust-toolchain setup step: band-sdk-core/rust-toolchain.toml
+# is picked up natively by rustup's own directory-walk resolution the first
+# time a `cargo`/`wasm-pack` command runs with that checkout as its cwd, so
+# there is nothing to duplicate here.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'packages/sdk/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '.github/workflows/typescript-core-coverage.yml'
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: typescript-core-coverage-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Single source of truth: crates/wasm/scripts/coverage-typescript-consumer.mjs's
+      # REPORT_DIR, relative to band-sdk-core's checkout root.
+      REPORT_DIR: target/typescript-consumer-coverage/report
+      # Single source of truth for band-sdk-core's git tag naming scheme.
+      CORE_TAG_PREFIX: band-sdk-core-core-v
+    steps:
+      - name: Checkout band-sdk-typescript
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: band-sdk-typescript
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4; immutable pin protects the scoped App token below
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4; immutable pin protects the scoped App token below
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: band-sdk-typescript/pnpm-lock.yaml
+
+      - name: Install band-sdk-typescript dependencies
+        working-directory: band-sdk-typescript
+        run: pnpm install --frozen-lockfile
+
+      - name: Resolve pinned band-sdk-core version
+        id: pin
+        working-directory: band-sdk-typescript
+        run: |
+          version=$(pnpm --filter @band-ai/sdk ls @band-ai/band-sdk-core --json --depth 0 | node -pe '
+            JSON.parse(require("fs").readFileSync(0, "utf8"))[0].dependencies["@band-ai/band-sdk-core"].version
+          ')
+
+          # A failed command substitution inside an assignment does not trip
+          # bash's `set -e`, so the pre-release guard below runs as its own
+          # statement -- a non-zero exit there aborts the step for real,
+          # instead of silently continuing with an empty $version. $version
+          # is passed via the environment, not spliced into the script text,
+          # so it can never break out of the embedded Node literal.
+          VERSION="$version" node -e '
+          const version = process.env.VERSION;
+          const prefix = process.env.CORE_TAG_PREFIX;
+          if (!/^\d+\.\d+\.\d+$/.test(version)) {
+            console.error(
+              `@band-ai/band-sdk-core@${version} is a pre-release: ${prefix}${version} is never tagged ` +
+              "(dev pre-releases publish to npm but are never committed or tagged in git), so this gate " +
+              "cannot check it out. Pin a stable release to run this gate.",
+            );
+            process.exit(1);
+          }
+          '
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Generate GitHub App Token (scoped to band-sdk-core)
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ secrets.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: band-ai
+          repositories: band-sdk-core
+
+      - name: Checkout band-sdk-core at the pinned version
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: band-ai/band-sdk-core
+          ref: ${{ env.CORE_TAG_PREFIX }}${{ steps.pin.outputs.version }}
+          path: band-sdk-core
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Install just and wasm-pack
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8 # v2
+        with:
+          tool: just,wasm-pack
+
+      - name: Run band-sdk-typescript's tests against a locally-packed wasm-bindgen glue
+        working-directory: band-sdk-core
+        run: just coverage-typescript-consumer ../band-sdk-typescript
+
+      - name: Write coverage summary
+        if: always()
+        # No working-directory: band-sdk-core/ may not exist yet (the
+        # pin step's pre-release guard, or any earlier failure, can skip
+        # its checkout) -- a nonexistent step cwd fails the step outright
+        # before this script runs, before the else branch below ever gets
+        # a chance to report that gracefully.
+        run: |
+          summary="band-sdk-core/$REPORT_DIR/summary.txt"
+          if [ -f "$summary" ]; then
+            {
+              echo "## band-sdk-core wasm-bindgen glue coverage from band-sdk-typescript's tests"
+              echo '```'
+              cat "$summary"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No coverage summary produced -- see the coverage step's log above." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: typescript-core-coverage
+          # Unlike cargo-llvm-cov's separate .lcov file / html/ subdirectory /
+          # summary.txt, c8's reporters all write flat into one reports-dir --
+          # lcov.info, coverage-summary.json, summary.txt, and the full
+          # browsable HTML report (index.html + its css/js/image assets) --
+          # so the whole directory is the artifact.
+          path: band-sdk-core/${{ env.REPORT_DIR }}/
+          if-no-files-found: warn
