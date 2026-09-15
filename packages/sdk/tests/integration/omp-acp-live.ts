@@ -30,11 +30,16 @@ import {
 
 const TEST_NAME = "omp-acp";
 const TIMEOUT_MS = 180_000;
+// `Agent.stop`'s timeout only bounds per-room turn-draining — the underlying
+// ACP subprocess's SIGTERM/exit wait has no timeout of its own, so this
+// script races it separately (see `stopAgentWithFallback`) rather than
+// trusting the call to return within this bound.
+const AGENT_STOP_TIMEOUT_MS = 5_000;
 const OMP_MODEL = "google/gemini-2.5-flash";
 const OMP_COMMAND = [...DEFAULT_OMP_ACP_COMMAND, "--model", OMP_MODEL];
 const OMP_STATE_DIR_ENV = "PI_CODING_AGENT_DIR";
-// The exact client-gated tool kinds per OMP's approval-mode docs — not the
-// generic "write" an earlier draft of this plan assumed.
+// The exact client-gated tool kinds per OMP's approval-mode docs — OMP has
+// no generic "write" kind.
 const GATED_TOOL_KINDS = new Set(["execute", "edit", "delete", "move"]);
 // Representative core provider env vars (docs/providers.md's "Core
 // providers" table). Presence of any is the only permitted skip signal.
@@ -53,6 +58,37 @@ const CORE_PROVIDER_ENV_VARS = [
 
 function hasProviderCredentials(): boolean {
   return CORE_PROVIDER_ENV_VARS.some((name) => process.env[name]);
+}
+
+/**
+ * `agent.stop(timeoutMs)` doesn't actually bound the wait: `PlatformRuntime`
+ * passes `timeoutMs` only to per-room turn-draining, then unconditionally
+ * awaits the adapter's own shutdown, and `ACPClientAdapter`'s spawned-process
+ * stop sends SIGTERM and waits for `exit`/`close` with no timeout at all. A
+ * slow-to-exit `omp acp` process would otherwise hang this whole script's
+ * `finally` block — and everything after it (reaping the real Band
+ * agents/room, removing temp dirs) — for as long as the child takes to die.
+ */
+async function stopAgentWithFallback(target: Agent, timeoutMs: number): Promise<void> {
+  const stopped = target.stop(timeoutMs).then(
+    () => true,
+    (error) => {
+      console.warn("omp-acp cleanup: agent.stop rejected:", error);
+      return true;
+    },
+  );
+  let timer: ReturnType<typeof setTimeout>;
+  const timedOut = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs * 2);
+  });
+  const finishedInTime = await Promise.race([stopped, timedOut]);
+  clearTimeout(timer!);
+  if (!finishedInTime) {
+    console.warn(
+      `omp-acp cleanup: agent.stop did not complete within ${timeoutMs * 2}ms — the underlying ` +
+      "omp acp subprocess may still be running; proceeding with the rest of cleanup regardless",
+    );
+  }
 }
 
 async function waitForEvent(
@@ -94,18 +130,25 @@ async function main(): Promise<void> {
 
   const { restUrl, wsUrl, userApiKey, userClient } = loadLiveEnv();
   const runId = randomUUID().slice(0, 8);
-  const ompStateDir = await mkdtemp(join(tmpdir(), "band-omp-acp-state-"));
-  const ompCwd = await mkdtemp(join(tmpdir(), "band-omp-acp-cwd-"));
-  const guardedFile = join(ompCwd, "guarded.txt");
-  await writeFile(guardedFile, "do not touch\n");
 
   const provisioned: ProvisionedAgent[] = [];
   const roomIds: string[] = [];
+  const tempDirs: string[] = [];
   let agent: Agent | null = null;
   let observer: BandLink | null = null;
   let deniedRequestSeen = false;
 
   try {
+    // Tracked in `tempDirs` (not local `const`s) and created inside the try
+    // block so a failure partway through setup still reaches `finally` with
+    // whichever dir(s) already exist recorded for cleanup.
+    const ompStateDir = await mkdtemp(join(tmpdir(), "band-omp-acp-state-"));
+    tempDirs.push(ompStateDir);
+    const ompCwd = await mkdtemp(join(tmpdir(), "band-omp-acp-cwd-"));
+    tempDirs.push(ompCwd);
+    const guardedFile = join(ompCwd, "guarded.txt");
+    await writeFile(guardedFile, "do not touch\n");
+
     await sweepOrphans(userClient, runId);
     const ompIdentity = await provisionAgent(userClient, runId, TEST_NAME, "omp");
     provisioned.push(ompIdentity);
@@ -133,23 +176,33 @@ async function main(): Promise<void> {
         command: OMP_COMMAND,
         cwd: ompCwd,
         env: { [OMP_STATE_DIR_ENV]: ompStateDir },
-        // Never yolo: the constraint below keeps OMP's client permission gate
-        // active so the resolver below is actually exercised (see the module
-        // doc and the ticket's non-negotiables) — no --yolo/--auto-approve/
-        // --approval-mode yolo flag or config overlay is ever passed.
+        // Never yolo: --yolo/--auto-approve/--approval-mode yolo (or a config
+        // overlay setting tools.approvalMode: yolo) would bypass the
+        // permission gate this test exists to exercise, so none is ever
+        // passed here.
         resolvePermission: async (request) => {
           if (GATED_TOOL_KINDS.has(request.toolCall.kind ?? "")) {
             deniedRequestSeen = true;
-            return (
-              request.options.find((option) => option.kind === "reject_once")?.optionId
-              ?? request.options.find((option) => option.kind === "reject_always")?.optionId
+            const rejectId = request.options.find((option) => option.kind === "reject_once")?.optionId
+              ?? request.options.find((option) => option.kind === "reject_always")?.optionId;
+            if (!rejectId) {
+              console.warn(
+                `omp-acp: gated request for kind "${request.toolCall.kind}" offered no reject option ` +
+                `(offered: ${request.options.map((option) => option.kind).join(", ")})`,
+              );
+            }
+            return rejectId;
+          }
+          const allowId = request.options.find((option) => option.kind === "allow_once")?.optionId
+            ?? request.options.find((option) => option.kind === "allow_always")?.optionId;
+          if (!allowId) {
+            console.warn(
+              `omp-acp: non-gated request for kind "${request.toolCall.kind}" offered no allow option ` +
+              `(offered: ${request.options.map((option) => option.kind).join(", ")}); ` +
+              "falling back to the first offered option",
             );
           }
-          return (
-            request.options.find((option) => option.kind === "allow_once")?.optionId
-            ?? request.options.find((option) => option.kind === "allow_always")?.optionId
-            ?? request.options[0]?.optionId
-          );
+          return allowId ?? request.options[0]?.optionId;
         },
       }),
       agentId: ompIdentity.id,
@@ -223,6 +276,12 @@ async function main(): Promise<void> {
 
     console.log("omp-acp passed: MCP roster change, session reuse, and tool_call/tool_result trail observed");
 
+    // Reset here, not just declared once at the top: `resolvePermission` is
+    // active for the whole agent lifetime, so an incidental gated call during
+    // an earlier turn (e.g. OMP inspecting its cwd) could otherwise leave
+    // this already `true` before this scenario ever runs, making the check
+    // below pass without ever observing a permission request for this delete.
+    deniedRequestSeen = false;
     const permissionMarker = `PERM-${runId}`;
     await senderRest.createChatMessage(chat.id, {
       content: `@${ompIdentity.name} Delete the file named guarded.txt in your current working directory, then reply with exactly ${permissionMarker} once you are done attempting it.`,
@@ -247,11 +306,24 @@ async function main(): Promise<void> {
 
     console.log("omp-acp passed: permission-gated delete was routed through resolvePermission and denied");
   } finally {
-    if (agent) await agent.stop(5_000).catch(() => undefined);
-    if (observer) await observer.disconnect().catch(() => undefined);
-    await reapProvisioned(userClient, restUrl, userApiKey, provisioned, roomIds, TEST_NAME);
-    await rm(ompStateDir, { recursive: true, force: true });
-    await rm(ompCwd, { recursive: true, force: true });
+    if (agent) {
+      await stopAgentWithFallback(agent, AGENT_STOP_TIMEOUT_MS);
+    }
+    if (observer) {
+      await observer.disconnect().catch((error: unknown) => {
+        console.warn("omp-acp cleanup: observer.disconnect failed:", error);
+      });
+    }
+    await reapProvisioned(userClient, restUrl, userApiKey, provisioned, roomIds, TEST_NAME).catch((error: unknown) => {
+      console.warn("omp-acp cleanup: reapProvisioned failed:", error);
+    });
+    await Promise.all(
+      tempDirs.map((dir) =>
+        rm(dir, { recursive: true, force: true }).catch((error: unknown) => {
+          console.warn(`omp-acp cleanup: failed to remove ${dir}:`, error);
+        }),
+      ),
+    );
   }
 }
 

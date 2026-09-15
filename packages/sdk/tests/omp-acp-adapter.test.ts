@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ACPClientAdapter } from "../src/adapters/acp";
 import { OmpACPAdapter, DEFAULT_OMP_ACP_COMMAND } from "../src/adapters/omp-acp";
-import { FakeTools, makeMessage } from "./testUtils";
+import { FakeTools, findFailureEvent, makeMessage } from "./testUtils";
 
 function mockConnection(options: { prompt?: () => Promise<{ stopReason: string }> } = {}) {
   const controller = new AbortController();
@@ -33,6 +33,9 @@ interface ExposedOptions {
   enableMcpTools: boolean;
   enableMemoryTools: boolean;
   additionalMcpTools: unknown[];
+  authMethod?: string | null;
+  permissionTimeoutMs: number;
+  turnTimeoutMs: number;
 }
 
 describe("OmpACPAdapter", () => {
@@ -85,6 +88,9 @@ describe("OmpACPAdapter", () => {
       enableMcpTools: false,
       enableMemoryTools: true,
       additionalMcpTools,
+      authMethod: "test-auth-method",
+      permissionTimeoutMs: 12_345,
+      turnTimeoutMs: 999_999,
     });
 
     const exposed = adapter as unknown as ExposedOptions;
@@ -98,6 +104,9 @@ describe("OmpACPAdapter", () => {
     expect(exposed.enableMcpTools).toBe(false);
     expect(exposed.enableMemoryTools).toBe(true);
     expect(exposed.additionalMcpTools).toEqual(additionalMcpTools);
+    expect(exposed.authMethod).toBe("test-auth-method");
+    expect(exposed.permissionTimeoutMs).toBe(12_345);
+    expect(exposed.turnTimeoutMs).toBe(999_999);
   });
 
   it("leaves clientCapabilities undefined when omitted, never defaulting to fs/terminal support", async () => {
@@ -146,7 +155,7 @@ describe("OmpACPAdapter", () => {
       ),
     ).rejects.toThrow("OMP failed");
 
-    expect(tools.events.find((event) => event.messageType === "error")?.metadata?.failure).toMatchObject({
+    expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({
       provider: "omp-acp",
       message: "OMP failed",
     });

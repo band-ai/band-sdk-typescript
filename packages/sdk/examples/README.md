@@ -10,7 +10,7 @@ Folders:
 - `gemini/`
 - `claude-sdk/`
 - `codex/`
-- `omp-acp/` — OMP ACP (requires `@agentclientprotocol/sdk` and the OMP CLI)
+- `omp-acp/`
 - `custom-adapter/`
 - `langgraph/`
 - `parlant/`
