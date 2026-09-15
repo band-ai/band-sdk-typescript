@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { Readable, Writable } from "node:stream";
+import { createConnection } from "node:net";
+import { Duplex, Readable, Writable } from "node:stream";
 
 import type {
   Client,
@@ -45,6 +46,7 @@ import {
   choosePermissionOption,
   type ACPClientConnectionFactory,
   type ACPClientConnectionHandle,
+  type ACPClientTcpEndpoint,
   type ACPPermissionAbandonReason,
   type ACPPermissionEndReason,
   type ACPPermissionRequest,
@@ -79,6 +81,10 @@ const DEFAULT_TURN_TIMEOUT_MS = 60 * 60_000;
 // process acknowledging an administrative call, not doing model inference.
 const SET_SESSION_CONFIG_TIMEOUT_MS = 10_000;
 const MAX_SETTIMEOUT_DELAY_MS = 2_147_483_647;
+const MIN_TCP_PORT = 1;
+const MAX_TCP_PORT = 65_535;
+const CONNECTION_ATTEMPT_SUPERSEDED_ERROR = "ACP connection attempt superseded by stop()";
+const TCP_CONNECTION_ATTEMPT_ABORTED_ERROR = "ACP TCP connection attempt aborted";
 
 // `setTimeout` silently truncates any delay past this to ~1ms, so a config
 // value beyond it must be rejected outright rather than let that surprise
@@ -105,8 +111,7 @@ export interface ACPModelRequest {
   models: readonly SessionConfigSelectOption[];
 }
 
-export interface ACPClientAdapterOptions {
-  command: string | string[];
+export interface ACPClientAdapterBaseOptions {
   cwd?: string;
   env?: Record<string, string>;
   mcpServers?: McpServer[];
@@ -159,8 +164,22 @@ export interface ACPClientAdapterOptions {
   logger?: Logger;
 }
 
+export interface ACPClientStdioOptions extends ACPClientAdapterBaseOptions {
+  command: string | string[];
+  host?: never;
+  port?: never;
+}
+
+export interface ACPClientTcpOptions extends ACPClientAdapterBaseOptions {
+  command?: never;
+  host: string;
+  port: number;
+}
+
+export type ACPClientAdapterOptions = ACPClientStdioOptions | ACPClientTcpOptions;
+
 export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, AdapterToolsProtocol> {
-  protected readonly provider = "acp";
+  protected readonly provider: string = "acp";
   private readonly command: string[]
   private readonly cwd: string
   private readonly env?: Record<string, string>
@@ -170,7 +189,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private readonly enableMcpTools: boolean
   private readonly additionalMcpTools: McpToolRegistration[]
   private readonly clientCapabilities?: ClientCapabilities
-  private readonly connectionFactory: ACPClientConnectionFactory
+  private readonly connectionFactory?: ACPClientConnectionFactory
+  private readonly tcpEndpoint: ACPClientTcpEndpoint | null
 
   // The value's `generation` is the connection generation the session was
   // last established/restored against. `client` is the exact BandACPClient
@@ -208,6 +228,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private backendPromise: Promise<InjectedMcpBackend> | null = null
   private client: BandACPClient | null = null
   private connectionHandle: ACPClientConnectionHandle | null = null
+  private pendingConnectionStop: (() => Promise<void>) | null = null
   private connection: ClientSideConnection | null = null
   private connectionState: InitializeResponse | null = null
   private started = false
@@ -223,10 +244,11 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       historyConverter: new ACPClientHistoryConverter(),
     })
 
-    this.command = Array.isArray(options.command) ? [...options.command] : [options.command]
-    if (this.command.length === 0 || this.command[0].length === 0) {
-      throw new Error("ACPClientAdapter requires a command")
-    }
+    const command = options.command === undefined
+      ? []
+      : Array.isArray(options.command) ? [...options.command] : [options.command]
+    const tcpEndpoint = validateTransport(command, options.host, options.port)
+    this.command = command
 
     this.cwd = options.cwd ?? process.cwd()
     this.env = options.env
@@ -236,7 +258,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.enableMcpTools = options.enableMcpTools ?? true
     this.additionalMcpTools = [...(options.additionalMcpTools ?? [])]
     this.clientCapabilities = options.clientCapabilities
-    this.connectionFactory = options.connectionFactory ?? createSubprocessConnection
+    this.connectionFactory = options.connectionFactory
+    this.tcpEndpoint = tcpEndpoint
 
     this.resolvePermission = options.resolvePermission
     this.resolveSessionMode = options.resolveSessionMode
@@ -277,7 +300,11 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     agentName: string,
     agentDescription: string,
   ): Promise<void> {
+    const generation = this.connectionGeneration
     await super.onStarted(agentName, agentDescription)
+    if (generation !== this.connectionGeneration) {
+      throw new Error("ACP adapter start superseded by stop()")
+    }
     this.started = true
     this.systemPrompt = renderSystemPrompt({
       agentName,
@@ -486,6 +513,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
   public async stop(): Promise<void> {
     this.connectionGeneration++
+    this.started = false
     this.spawnPromise = null
     this.connectionState = null
     this.activeSessions.clear()
@@ -506,6 +534,12 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
     this.client = null
     this.connection = null
+
+    if (this.pendingConnectionStop) {
+      const stopPending = this.pendingConnectionStop
+      this.pendingConnectionStop = null
+      await stopPending()
+    }
 
     if (this.backend) {
       const backend = this.backend
@@ -636,32 +670,55 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
   private async spawnConnection(): Promise<ClientSideConnection> {
     const generation = this.connectionGeneration
-    const acp = await acpModule.get()
-    // Handed its permission handler here, one line before the process it will
-    // serve even exists — no session can out-race its own route.
-    const owner = { generation: -1 }
-    const client = new BandACPClient((params) => this.routePermissionRequest(params, owner.generation))
-    const handle = await this.connectionFactory(client as Client, {
-      command: this.command,
-      cwd: this.cwd,
-      env: this.env,
-    })
-    const connection = handle.connection
+    const attempt = new AbortController()
+    let handle: ACPClientConnectionHandle | null = null
+    const stopAttempt = async (): Promise<void> => {
+      attempt.abort()
+      await handle?.stop()
+    }
+    this.pendingConnectionStop = stopAttempt
+
     try {
-      const initializeResult = await connection.initialize({
+      const acp = await acpModule.get()
+      if (attempt.signal.aborted) {
+        throw new Error(CONNECTION_ATTEMPT_SUPERSEDED_ERROR)
+      }
+      // Handed its permission handler here, one line before the process it will
+      // serve even exists — no session can out-race its own route.
+      const owner = { generation: -1 }
+      const client = new BandACPClient((params) => this.routePermissionRequest(params, owner.generation))
+      handle = await (this.connectionFactory
+        ? this.connectionFactory(client as Client, {
+          command: this.command,
+          cwd: this.cwd,
+          env: this.env,
+        })
+        : this.tcpEndpoint
+          ? createTcpConnection(client as Client, this.tcpEndpoint, attempt.signal)
+          : createSubprocessConnection(client as Client, {
+            command: this.command,
+            cwd: this.cwd,
+            env: this.env,
+          }))
+      const connection = handle.connection
+      if (attempt.signal.aborted) {
+        await handle.stop()
+        throw new Error(CONNECTION_ATTEMPT_SUPERSEDED_ERROR)
+      }
+      const initializeResult = await this.raceAgainstConnectionClose(connection, connection.initialize({
         protocolVersion: acp.PROTOCOL_VERSION,
         clientCapabilities: this.clientCapabilities ?? {},
-      })
+      }))
 
       if (this.authMethod) {
-        await connection.authenticate({
+        await this.raceAgainstConnectionClose(connection, connection.authenticate({
           methodId: this.authMethod,
-        })
+        }))
       }
 
       if (generation !== this.connectionGeneration) {
         await handle.stop()
-        throw new Error("ACP connection attempt superseded by stop()")
+        throw new Error(CONNECTION_ATTEMPT_SUPERSEDED_ERROR)
       }
 
       this.connectionGeneration++
@@ -671,7 +728,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       this.connectionHandle = handle
       this.connectionState = initializeResult
     } catch (error) {
-      if (this.connection !== connection) {
+      if (handle && this.connection !== handle.connection) {
         try {
           await handle.stop()
         } catch (stopError) {
@@ -679,8 +736,13 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         }
       }
       throw error
+    } finally {
+      if (this.pendingConnectionStop === stopAttempt) {
+        this.pendingConnectionStop = null
+      }
     }
 
+    const connection = handle.connection
     const installedGeneration = this.connectionGeneration
     void connection.closed.finally(() => {
       this.pruneConnectionGeneration(installedGeneration)
@@ -1485,6 +1547,40 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
 class AcpTurnTimeoutError extends Error {}
 
+function validateTransport(
+  command: string[],
+  host: string | undefined,
+  port: number | undefined,
+): ACPClientTcpEndpoint | null {
+  const hasHost = host !== undefined
+  const hasPort = port !== undefined
+
+  if (hasHost !== hasPort) {
+    throw new ValidationError("ACPClientAdapter requires both host and port for a TCP connection")
+  }
+
+  if (hasHost && hasPort) {
+    if (command.length > 0) {
+      throw new ValidationError("ACPClientAdapter cannot use command with a TCP connection")
+    }
+    if (typeof host !== "string" || host.trim().length === 0) {
+      throw new ValidationError("ACPClientAdapter TCP host must be a non-empty string")
+    }
+    if (!Number.isInteger(port) || port < MIN_TCP_PORT || port > MAX_TCP_PORT) {
+      throw new ValidationError(
+        `ACPClientAdapter TCP port must be an integer between ${MIN_TCP_PORT} and ${MAX_TCP_PORT}`,
+      )
+    }
+    return { host, port }
+  }
+
+  if (command.length === 0 || typeof command[0] !== "string" || command[0].trim().length === 0) {
+    throw new ValidationError("ACPClientAdapter requires a command or TCP host and port")
+  }
+
+  return null
+}
+
 export async function createSubprocessConnection(
   client: Client,
   options: {
@@ -1545,6 +1641,59 @@ export async function createSubprocessConnection(
           finish()
         }
       })
+    },
+  }
+}
+
+export async function createTcpConnection(
+  client: Client,
+  endpoint: ACPClientTcpEndpoint,
+  signal?: AbortSignal,
+): Promise<ACPClientConnectionHandle> {
+  const acp = await acpModule.get()
+  if (signal?.aborted) {
+    throw new Error(TCP_CONNECTION_ATTEMPT_ABORTED_ERROR)
+  }
+  const socket = await new Promise<Duplex>((resolve, reject) => {
+    const candidate = createConnection(endpoint)
+    const cleanup = (): void => {
+      candidate.off("error", fail)
+      candidate.off("connect", connect)
+      signal?.removeEventListener("abort", abort)
+    }
+    const fail = (error: Error): void => {
+      cleanup()
+      reject(error)
+    }
+    const connect = (): void => {
+      cleanup()
+      resolve(candidate)
+    }
+    const abort = (): void => {
+      candidate.destroy()
+      fail(new Error(TCP_CONNECTION_ATTEMPT_ABORTED_ERROR))
+    }
+    candidate.once("error", fail)
+    candidate.once("connect", connect)
+    signal?.addEventListener("abort", abort, { once: true })
+  })
+  const webSocket = Duplex.toWeb(socket)
+  const stream = acp.ndJsonStream(
+    webSocket.writable as WritableStream<Uint8Array>,
+    webSocket.readable as ReadableStream<Uint8Array>,
+  )
+  const connection = new acp.ClientSideConnection(() => client, stream)
+  let stopped = false
+
+  return {
+    connection,
+    stop: async () => {
+      if (stopped) {
+        return
+      }
+      stopped = true
+      socket.destroy()
+      await connection.closed
     },
   }
 }
@@ -1636,4 +1785,3 @@ function asAcpJsonRpcError(error: unknown): { code: number; message: string; dat
   const nested = asOptionalRecord(error)?.error
   return isAcpErrorResponse(nested) ? nested : undefined
 }
-
