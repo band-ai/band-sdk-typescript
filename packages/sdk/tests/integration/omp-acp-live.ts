@@ -32,6 +32,7 @@ import {
 
 const TEST_NAME = "omp-acp";
 const TIMEOUT_MS = 180_000;
+const OMP_PROBE_TIMEOUT_MS = 10_000;
 // `Agent.stop`'s timeout only bounds per-room turn-draining — the underlying
 // ACP subprocess's SIGTERM/exit wait has no timeout of its own, so this
 // script races it separately (see `stopAgentWithFallback`) rather than
@@ -45,23 +46,9 @@ const OMP_STATE_DIR_ENV = "PI_CODING_AGENT_DIR";
 const GATED_TOOL_KINDS: ReadonlySet<ToolKind> = new Set<ToolKind>(["execute", "edit", "delete", "move"]);
 const GUARDED_FILE_NAME = "guarded.txt";
 const GUARDED_FILE_CONTENTS = "do not touch\n";
-// Representative core provider env vars (docs/providers.md's "Core
-// providers" table). Presence of any is the only permitted skip signal.
-// Deliberately incomplete — OMP supports 60+ providers — so an operator on
-// an uncommon one gets an unneeded local skip, never a false pass.
-const CORE_PROVIDER_ENV_VARS = [
-  "GEMINI_API_KEY",
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_OAUTH_TOKEN",
-  "OPENAI_API_KEY",
-  "OPENAI_CODEX_OAUTH_TOKEN",
-  "GROQ_API_KEY",
-  "OPENROUTER_API_KEY",
-  "XAI_API_KEY",
-] as const;
 
-function hasProviderCredentials(): boolean {
-  return CORE_PROVIDER_ENV_VARS.some((name) => process.env[name]);
+function hasModelCredentials(): boolean {
+  return Boolean(process.env.GEMINI_API_KEY);
 }
 
 // A gated request's `toolCall.kind` alone doesn't say *which* file it's
@@ -130,15 +117,21 @@ async function waitForEvent(
 async function main(): Promise<void> {
   // Governing rule: absence of every listed credential env var is the ONLY
   // permitted skip. Everything from here on is a hard requirement.
-  if (!hasProviderCredentials()) {
-    console.log("omp-acp skipped: no OMP provider credentials configured");
+  if (!hasModelCredentials()) {
+    console.log("omp-acp skipped: GEMINI_API_KEY is not configured for the pinned Google model");
     return;
   }
 
-  if (spawnSync(DEFAULT_OMP_ACP_COMMAND[0], ["--version"], { stdio: "ignore" }).status !== 0) {
+  const ompProbe = spawnSync(DEFAULT_OMP_ACP_COMMAND[0], ["--version"], {
+    stdio: "ignore",
+    timeout: OMP_PROBE_TIMEOUT_MS,
+  });
+  if (ompProbe.error || ompProbe.signal || ompProbe.status !== 0) {
+    const outcome = ompProbe.error?.message
+      ?? (ompProbe.signal ? `terminated by ${ompProbe.signal}` : `exited with status ${ompProbe.status}`);
     throw new Error(
       "omp-acp failed: OMP CLI is not installed or not on PATH, but provider credentials are configured " +
-      "(a credential being configured means this environment is expected to have a working `omp`)",
+      `(a credential being configured means this environment is expected to have a working \`omp\`): ${outcome}`,
     );
   }
 
@@ -248,9 +241,19 @@ async function main(): Promise<void> {
     });
     let helperAdded = false;
     let secondResponseReceived = false;
+    const sessionEventIds: string[] = [];
     await waitForEvent(observer, (event) => {
       if (event.type === "participant_added" && event.payload.id === helperIdentity.id) {
         helperAdded = true;
+      }
+      if (
+        event.type === "message_created"
+        && event.payload.sender_id === ompIdentity.id
+        && event.payload.message_type === "task"
+        && event.payload.content === "ACP client session"
+        && typeof event.payload.metadata?.acp_client_session_id === "string"
+      ) {
+        sessionEventIds.push(event.payload.metadata.acp_client_session_id);
       }
       if (
         event.type === "message_created"
@@ -261,8 +264,8 @@ async function main(): Promise<void> {
       ) {
         secondResponseReceived = true;
       }
-      return helperAdded && secondResponseReceived;
-    }, "OMP did not add the helper through MCP and complete the second response");
+      return helperAdded && secondResponseReceived && sessionEventIds.length >= 2;
+    }, "OMP did not add the helper through MCP, complete the second response, and persist both session markers");
 
     const messagesSoFar = await senderRest.listMessages({ chatId: chat.id, page: 1, pageSize: 100 });
     const toolCallMessage = messagesSoFar.data.find(
@@ -282,9 +285,8 @@ async function main(): Promise<void> {
       throw new Error("OMP's band_add_participant tool_result message was not observed (corroborating evidence)");
     }
 
-    const taskMessages = messagesSoFar.data.filter((message) => message.message_type === "task");
-    const sessionIds = new Set(taskMessages.map((message) => message.metadata?.acp_client_session_id));
-    if (sessionIds.size !== 1 || sessionIds.has(undefined)) {
+    const sessionIds = new Set(sessionEventIds);
+    if (sessionEventIds.length !== 2 || sessionIds.size !== 1) {
       throw new Error(`expected exactly one ACP session id across task events, saw: ${[...sessionIds].join(", ")}`);
     }
 
@@ -329,12 +331,7 @@ async function main(): Promise<void> {
     console.log("omp-acp passed: permission-gated delete was routed through resolvePermission and denied");
   } finally {
     if (agent) {
-      // `stopAgentWithFallback` itself never rejects — this mirrors the other
-      // three cleanup steps below for defensive consistency, not a case that
-      // is currently reachable.
-      await stopAgentWithFallback(agent, AGENT_STOP_TIMEOUT_MS).catch((error: unknown) => {
-        console.warn("omp-acp cleanup: stopAgentWithFallback failed unexpectedly:", error);
-      });
+      await stopAgentWithFallback(agent, AGENT_STOP_TIMEOUT_MS);
     }
     if (observer) {
       await observer.disconnect().catch((error: unknown) => {
