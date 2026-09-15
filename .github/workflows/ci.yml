@@ -154,6 +154,9 @@ jobs:
       - name: Test release hardening
         run: pnpm test:release-hardening
 
+      - name: Test TypeScript core coverage workflow
+        run: pnpm test:typescript-core-coverage-workflow
+
   packaging:
     runs-on: ubuntu-latest
     steps:

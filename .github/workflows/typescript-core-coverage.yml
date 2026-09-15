@@ -10,6 +10,18 @@ name: TypeScript Core Coverage
 # is picked up natively by rustup's own directory-walk resolution the first
 # time a `cargo`/`wasm-pack` command runs with that checkout as its cwd, so
 # there is nothing to duplicate here.
+#
+# packages/sdk's `c8` devDependency (used by the `just` recipe above, not by
+# this workflow directly) is separate from @vitest/coverage-v8 in that
+# package's own vitest suite: it measures coverage of band-sdk-core's
+# externally packed glue, not packages/sdk's own src/, so it isn't
+# redundant with that provider.
+#
+# actions/checkout and actions/upload-artifact below are pinned to match
+# this repo's python-core-coverage.yml sibling, not this repo's own
+# release.yml -- a different privileged workflow with its own, older,
+# independently vetted pins. Don't "reconcile" these to release.yml's SHAs;
+# reconcile release.yml to these instead, if the two are ever unified.
 
 on:
   pull_request:
@@ -39,40 +51,55 @@ jobs:
       REPORT_DIR: target/typescript-consumer-coverage/report
       # Single source of truth for band-sdk-core's git tag naming scheme.
       CORE_TAG_PREFIX: band-sdk-core-core-v
+      # Single source of truth for both sibling checkouts' paths.
+      TS_CHECKOUT_PATH: band-sdk-typescript
+      CORE_CHECKOUT_PATH: band-sdk-core
     steps:
       - name: Checkout band-sdk-typescript
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          path: band-sdk-typescript
+          path: ${{ env.TS_CHECKOUT_PATH }}
 
       - name: Install pnpm
-        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4; immutable pin protects the scoped App token below
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
 
       - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4; immutable pin protects the scoped App token below
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: band-sdk-typescript/pnpm-lock.yaml
+          cache-dependency-path: ${{ env.TS_CHECKOUT_PATH }}/pnpm-lock.yaml
 
       - name: Install band-sdk-typescript dependencies
-        working-directory: band-sdk-typescript
+        working-directory: ${{ env.TS_CHECKOUT_PATH }}
         run: pnpm install --frozen-lockfile
 
       - name: Resolve pinned band-sdk-core version
         id: pin
-        working-directory: band-sdk-typescript
+        working-directory: ${{ env.TS_CHECKOUT_PATH }}
         run: |
-          version=$(pnpm --filter @band-ai/sdk ls @band-ai/band-sdk-core --json --depth 0 | node -pe '
-            JSON.parse(require("fs").readFileSync(0, "utf8"))[0].dependencies["@band-ai/band-sdk-core"].version
-          ')
+          ls_output=$(pnpm --filter @band-ai/sdk ls @band-ai/band-sdk-core --json --depth 0)
+          version=$(echo "$ls_output" | node -pe '
+            const parsed = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            const dependency = parsed[0]?.dependencies?.["@band-ai/band-sdk-core"];
+            if (!dependency) {
+              console.error("@band-ai/band-sdk-core is not a dependency of @band-ai/sdk in pnpm ls output");
+              process.exit(1);
+            }
+            dependency.version;
+          ') || {
+            echo "::error::failed to resolve @band-ai/band-sdk-core version -- raw pnpm ls output:"
+            echo "$ls_output"
+            exit 1
+          }
 
-          # A failed command substitution inside an assignment does not trip
-          # bash's `set -e`, so the pre-release guard below runs as its own
-          # statement -- a non-zero exit there aborts the step for real,
-          # instead of silently continuing with an empty $version. $version
-          # is passed via the environment, not spliced into the script text,
-          # so it can never break out of the embedded Node literal.
+          # A bare (non-`local`) command substitution assignment failure
+          # already trips bash's default `set -e` here (GitHub Actions runs
+          # `run:` blocks as `bash -e {0}` unless a `shell:` override says
+          # otherwise) -- the `||` above is for a clear diagnostic, not to
+          # compensate for `set -e` not firing. $version is passed via the
+          # environment, not spliced into the script text, so it can never
+          # break out of the embedded Node literal.
           VERSION="$version" node -e '
           const version = process.env.VERSION;
           const prefix = process.env.CORE_TAG_PREFIX;
@@ -97,12 +124,15 @@ jobs:
           owner: band-ai
           repositories: band-sdk-core
 
+      # A "couldn't find remote ref" failure here means the pinned version
+      # above passed the stable-semver check but was never tagged in git
+      # (e.g. a publish/tag race, or a hand-edited package.json version).
       - name: Checkout band-sdk-core at the pinned version
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: band-ai/band-sdk-core
           ref: ${{ env.CORE_TAG_PREFIX }}${{ steps.pin.outputs.version }}
-          path: band-sdk-core
+          path: ${{ env.CORE_CHECKOUT_PATH }}
           token: ${{ steps.app-token.outputs.token }}
 
       - name: Install just and wasm-pack
@@ -111,8 +141,8 @@ jobs:
           tool: just,wasm-pack
 
       - name: Run band-sdk-typescript's tests against a locally-packed wasm-bindgen glue
-        working-directory: band-sdk-core
-        run: just coverage-typescript-consumer ../band-sdk-typescript
+        working-directory: ${{ env.CORE_CHECKOUT_PATH }}
+        run: just coverage-typescript-consumer ../${{ env.TS_CHECKOUT_PATH }}
 
       - name: Write coverage summary
         if: always()
@@ -122,7 +152,7 @@ jobs:
         # before this script runs, before the else branch below ever gets
         # a chance to report that gracefully.
         run: |
-          summary="band-sdk-core/$REPORT_DIR/summary.txt"
+          summary="$CORE_CHECKOUT_PATH/$REPORT_DIR/summary.txt"
           if [ -f "$summary" ]; then
             {
               echo "## band-sdk-core wasm-bindgen glue coverage from band-sdk-typescript's tests"
@@ -144,5 +174,5 @@ jobs:
           # lcov.info, coverage-summary.json, summary.txt, and the full
           # browsable HTML report (index.html + its css/js/image assets) --
           # so the whole directory is the artifact.
-          path: band-sdk-core/${{ env.REPORT_DIR }}/
+          path: ${{ env.CORE_CHECKOUT_PATH }}/${{ env.REPORT_DIR }}/
           if-no-files-found: warn
