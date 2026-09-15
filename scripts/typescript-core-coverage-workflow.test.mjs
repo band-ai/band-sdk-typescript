@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { namedWorkflowSteps } from "./workflow-test-utils.mjs";
+import { parseLcov, renderDigest } from "../.github/scripts/post-core-coverage-digest.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workflowPath = join(root, ".github/workflows/typescript-core-coverage.yml");
@@ -109,6 +110,25 @@ test("Core checkout uses the scoped read secret", async () => {
     steps.some((step) => step.name === "Generate GitHub App Token (scoped to band-sdk-core)"),
     false,
   );
+});
+
+test("weekly report schedules a separate mention digest", async () => {
+  const { workflow } = await loadSteps();
+  assert.match(workflow, /^    - cron: "47 4 \* \* 1" # Mondays 04:47 UTC$/m);
+  assert.match(workflow, /report-weekly:\n    name: report weekly coverage\n    needs: coverage\n    if: always\(\) && github\.event_name == 'schedule'/);
+  assert.match(workflow, /permissions:\n      contents: write/);
+  assert.match(workflow, /run: bash \.github\/scripts\/read-integrations-mentions\.sh/);
+  assert.match(workflow, /run: node \.github\/scripts\/post-core-coverage-digest\.mjs/);
+});
+
+test("weekly digest identifies low and completely uncovered files", () => {
+  const lcov = ["SF:/work/crates/core/src/covered.rs", "LF:10", "LH:10", "end_of_record", "SF:/work/crates/core/src/low.rs", "LF:10", "LH:2", "end_of_record", "SF:/work/crates/core/src/none.rs", "LF:4", "LH:0", "end_of_record"].join("\n");
+  assert.deepEqual(parseLcov(lcov).map((record) => record.path), ["crates/core/src/covered.rs", "crates/core/src/low.rs", "crates/core/src/none.rs"]);
+  const digest = renderDigest({ lcov, label: "Core", recipients: "@bandzalkin", runUrl: "https://example.test/run", result: "success" });
+  assert.match(digest, /50\.00% lines/);
+  assert.match(digest, /`crates\/core\/src\/none\.rs` \| 0\.00% \| 4\/4/);
+  assert.match(digest, /`crates\/core\/src\/low\.rs` \| 20\.00% \| 8\/10/);
+  assert.doesNotMatch(digest, /covered\.rs/);
 });
 
 async function withStubbedPnpmLs(lsJson, CORE_TAG_PREFIX, callback) {
