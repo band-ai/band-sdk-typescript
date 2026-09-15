@@ -99,7 +99,7 @@ async function withStubbedPnpmLs(lsJson, CORE_TAG_PREFIX, callback) {
   await mkdir(bin);
   await writeFile(
     join(bin, "pnpm"),
-    `#!/bin/sh\nif [ "$1" = "--filter" ]; then\n  echo '${lsJson}'\n  exit 0\nfi\nexit 1\n`,
+    `#!/bin/sh\nif [ "$1" = "--filter" ] && [ "$2" = "@band-ai/sdk" ] && [ "$3" = "ls" ] && [ "$4" = "@band-ai/band-sdk-core" ] && [ "$5" = "--json" ] && [ "$6" = "--depth" ] && [ "$7" = "0" ]; then\n  echo '${lsJson}'\n  exit 0\nfi\necho "unexpected pnpm ls arguments: $*" >&2\nexit 1\n`,
   );
   await chmod(join(bin, "pnpm"), 0o755);
   const githubOutput = join(directory, "github-output");
