@@ -28,10 +28,6 @@ export type CopilotACPAdapterOptions = CopilotACPStdioOptions | CopilotACPTcpOpt
 export class CopilotACPAdapter extends ACPClientAdapter {
   public constructor(options: CopilotACPAdapterOptions = {}) {
     const isTcp = "host" in options || "port" in options
-    if (isTcp && (options.host === undefined || options.port === undefined)) {
-      throw new Error("CopilotACPAdapter requires both host and port for a TCP connection")
-    }
-
     if (isTcp && options.env) {
       resolveLogger(options.logger).warn(
         "CopilotACPAdapter ignores env for a TCP connection because the remote server owns its environment",

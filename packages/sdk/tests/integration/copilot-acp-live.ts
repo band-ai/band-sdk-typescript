@@ -51,6 +51,17 @@ async function waitFor(
   }
 }
 
+function isBandSendMessageToolCall(message: {
+  message_type: string;
+  metadata?: Record<string, unknown> | null;
+}): boolean {
+  const rawInput = message.metadata?.raw_input;
+  return message.message_type === "tool_call"
+    && typeof rawInput === "object"
+    && rawInput !== null
+    && (rawInput as Record<string, unknown>).tool === "band_send_message";
+}
+
 async function main(): Promise<void> {
   if (!hasCopilotCli()) {
     console.log("copilot-acp skipped: Copilot CLI is not installed");
@@ -109,8 +120,9 @@ async function main(): Promise<void> {
     await waitFor(async () => {
       const messages = (await senderRest.listMessages({ chatId: chat.id, page: 1, pageSize: 100 })).data;
       return messages.some((message) => message.sender_id === copilotIdentity.id && message.content.includes(mcpMarker))
+        && messages.some((message) => message.sender_id === copilotIdentity.id && isBandSendMessageToolCall(message))
         && messages.some((message) => message.sender_id === copilotIdentity.id && message.content.includes(`SECOND-${runId}`));
-    }, "Copilot MCP action or second visible response was not observed");
+    }, "Copilot Band MCP tool call, visible action, or second response was not observed");
 
     const messages = (await senderRest.listMessages({ chatId: chat.id, page: 1, pageSize: 100 })).data;
     const sessionIds = new Set(messages
