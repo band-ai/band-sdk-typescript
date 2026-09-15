@@ -3497,4 +3497,34 @@ describe("ACP client transports", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()))
     }
   })
+
+  it("cancels a connected TCP startup when the adapter stops before initialization", async () => {
+    let socketClosed = false
+    let waitForSocketClose: Promise<void> | null = null
+    const server = createServer((socket) => {
+      socket.on("data", () => undefined)
+      waitForSocketClose = new Promise((resolve) => {
+        socket.once("close", () => {
+          socketClosed = true
+          resolve()
+        })
+      })
+    })
+    server.listen(0, "127.0.0.1")
+    await once(server, "listening")
+    const address = server.address()
+    if (!address || typeof address === "string") throw new Error("TCP test server did not expose a port")
+
+    try {
+      const adapter = new ACPClientAdapter({ host: "127.0.0.1", port: address.port })
+      const starting = adapter.onStarted("Agent", "desc")
+      await once(server, "connection")
+      await adapter.stop()
+      await expect(starting).rejects.toThrow(/ACP (TCP connection attempt aborted|connection closed)/)
+      await waitForSocketClose
+      expect(socketClosed).toBe(true)
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
 })

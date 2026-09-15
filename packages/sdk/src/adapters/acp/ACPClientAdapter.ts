@@ -174,7 +174,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private readonly enableMcpTools: boolean
   private readonly additionalMcpTools: McpToolRegistration[]
   private readonly clientCapabilities?: ClientCapabilities
-  private readonly connectionFactory: ACPClientConnectionFactory
+  private readonly connectionFactory?: ACPClientConnectionFactory
+  private readonly tcpEndpoint: ACPClientTcpEndpoint | null
 
   // The value's `generation` is the connection generation the session was
   // last established/restored against. `client` is the exact BandACPClient
@@ -212,6 +213,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private backendPromise: Promise<InjectedMcpBackend> | null = null
   private client: BandACPClient | null = null
   private connectionHandle: ACPClientConnectionHandle | null = null
+  private pendingConnectionStop: (() => Promise<void>) | null = null
   private connection: ClientSideConnection | null = null
   private connectionState: InitializeResponse | null = null
   private started = false
@@ -242,9 +244,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.additionalMcpTools = [...(options.additionalMcpTools ?? [])]
     this.clientCapabilities = options.clientCapabilities
     this.connectionFactory = options.connectionFactory
-      ?? (tcpEndpoint
-        ? (client) => createTcpConnection(client, tcpEndpoint)
-        : createSubprocessConnection)
+    this.tcpEndpoint = tcpEndpoint
 
     this.resolvePermission = options.resolvePermission
     this.resolveSessionMode = options.resolveSessionMode
@@ -515,6 +515,12 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.client = null
     this.connection = null
 
+    if (this.pendingConnectionStop) {
+      const stopPending = this.pendingConnectionStop
+      this.pendingConnectionStop = null
+      await stopPending()
+    }
+
     if (this.backend) {
       const backend = this.backend
       this.backend = null
@@ -649,22 +655,42 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     // serve even exists — no session can out-race its own route.
     const owner = { generation: -1 }
     const client = new BandACPClient((params) => this.routePermissionRequest(params, owner.generation))
-    const handle = await this.connectionFactory(client as Client, {
-      command: this.command,
-      cwd: this.cwd,
-      env: this.env,
-    })
-    const connection = handle.connection
+    const attempt = new AbortController()
+    let handle: ACPClientConnectionHandle | null = null
+    const stopAttempt = async (): Promise<void> => {
+      attempt.abort()
+      await handle?.stop()
+    }
+    this.pendingConnectionStop = stopAttempt
+
     try {
-      const initializeResult = await connection.initialize({
+      handle = await (this.connectionFactory
+        ? this.connectionFactory(client as Client, {
+          command: this.command,
+          cwd: this.cwd,
+          env: this.env,
+        })
+        : this.tcpEndpoint
+          ? createTcpConnection(client as Client, this.tcpEndpoint, attempt.signal)
+          : createSubprocessConnection(client as Client, {
+            command: this.command,
+            cwd: this.cwd,
+            env: this.env,
+          }))
+      const connection = handle.connection
+      if (attempt.signal.aborted) {
+        await handle.stop()
+        throw new Error("ACP connection attempt superseded by stop()")
+      }
+      const initializeResult = await this.raceAgainstConnectionClose(connection, connection.initialize({
         protocolVersion: acp.PROTOCOL_VERSION,
         clientCapabilities: this.clientCapabilities ?? {},
-      })
+      }))
 
       if (this.authMethod) {
-        await connection.authenticate({
+        await this.raceAgainstConnectionClose(connection, connection.authenticate({
           methodId: this.authMethod,
-        })
+        }))
       }
 
       if (generation !== this.connectionGeneration) {
@@ -679,7 +705,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       this.connectionHandle = handle
       this.connectionState = initializeResult
     } catch (error) {
-      if (this.connection !== connection) {
+      if (handle && this.connection !== handle.connection) {
         try {
           await handle.stop()
         } catch (stopError) {
@@ -687,8 +713,13 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         }
       }
       throw error
+    } finally {
+      if (this.pendingConnectionStop === stopAttempt) {
+        this.pendingConnectionStop = null
+      }
     }
 
+    const connection = handle.connection
     const installedGeneration = this.connectionGeneration
     void connection.closed.finally(() => {
       this.pruneConnectionGeneration(installedGeneration)
@@ -1592,20 +1623,34 @@ export async function createSubprocessConnection(
 export async function createTcpConnection(
   client: Client,
   endpoint: ACPClientTcpEndpoint,
+  signal?: AbortSignal,
 ): Promise<ACPClientConnectionHandle> {
   const acp = await acpModule.get()
+  if (signal?.aborted) {
+    throw new Error("ACP TCP connection attempt aborted")
+  }
   const socket = await new Promise<Duplex>((resolve, reject) => {
     const candidate = createConnection(endpoint)
-    const fail = (error: Error): void => {
+    const cleanup = (): void => {
+      candidate.off("error", fail)
       candidate.off("connect", connect)
+      signal?.removeEventListener("abort", abort)
+    }
+    const fail = (error: Error): void => {
+      cleanup()
       reject(error)
     }
     const connect = (): void => {
-      candidate.off("error", fail)
+      cleanup()
       resolve(candidate)
+    }
+    const abort = (): void => {
+      candidate.destroy()
+      fail(new Error("ACP TCP connection attempt aborted"))
     }
     candidate.once("error", fail)
     candidate.once("connect", connect)
+    signal?.addEventListener("abort", abort, { once: true })
   })
   const webSocket = Duplex.toWeb(socket)
   const stream = acp.ndJsonStream(
