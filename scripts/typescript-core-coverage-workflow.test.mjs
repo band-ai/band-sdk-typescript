@@ -123,12 +123,15 @@ test("weekly report schedules a separate mention digest", async () => {
 });
 
 test("weekly digest identifies low and completely uncovered files", () => {
-  const lcov = ["SF:/work/crates/core/src/covered.rs", "LF:10", "LH:10", "end_of_record", "SF:/work/crates/core/src/low.rs", "LF:10", "LH:2", "end_of_record", "SF:/work/crates/core/src/none.rs", "LF:4", "LH:0", "end_of_record"].join("\n");
+  const lcov = ["SF:/work/crates/core/src/covered.rs", "FNF:2", "FNH:2", "FN:1,covered", "FNDA:1,covered", "DA:1,1", "DA:2,1", "LF:10", "LH:10", "end_of_record", "SF:/work/crates/core/src/low.rs", "FNF:2", "FNH:1", "FN:10,used", "FNDA:1,used", "FN:12,uncovered", "FNDA:0,uncovered", "DA:10,1", "DA:11,1", "DA:12,0", "DA:13,0", "LF:10", "LH:2", "end_of_record", "SF:/work/crates/core/src/none.rs", "FNF:1", "FNH:0", "FN:20,missing", "FNDA:0,missing", "DA:20,0", "DA:21,0", "DA:22,0", "DA:23,0", "LF:4", "LH:0", "end_of_record"].join("\n");
   assert.deepEqual(parseLcov(lcov).map((record) => record.path), ["crates/core/src/covered.rs", "crates/core/src/low.rs", "crates/core/src/none.rs"]);
   const digest = renderDigest({ lcov, label: "Core", recipients: "@bandzalkin", runUrl: "https://example.test/run", result: "success" });
-  assert.match(digest, /50\.00% lines/);
-  assert.match(digest, /`crates\/core\/src\/none\.rs` \| 0\.00% \| 4\/4/);
-  assert.match(digest, /`crates\/core\/src\/low\.rs` \| 20\.00% \| 8\/10/);
+  assert.match(digest, /Weekly Core coverage report/);
+  assert.match(digest, /\| Lines \| 12\/24 \| 12 \| 50\.00% \|/);
+  assert.match(digest, /\| Functions \| 3\/5 \| 2 \| 60\.00% \|/);
+  assert.match(digest, /`crates\/core\/src\/none\.rs` \| 0\/4 \(0\.00%\) \| 20-23/);
+  assert.match(digest, /`crates\/core\/src\/low\.rs` \| 2\/10 \(20\.00%\) \| 12-13/);
+  assert.match(digest, /\| 12 \| `uncovered` \|/);
   assert.doesNotMatch(digest, /covered\.rs/);
 });
 
