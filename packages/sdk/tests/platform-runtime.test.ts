@@ -796,6 +796,57 @@ describe("PlatformRuntime", () => {
     await expect(starting).rejects.toThrow("superseded by stop()");
   });
 
+  it("allows shutdown after pending-start cleanup fails", async () => {
+    const transport = new FakeTransport();
+    let releaseStarted!: () => void;
+    let signalStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    const startGate = new Promise<void>((resolve) => {
+      releaseStarted = resolve;
+    });
+    const failingAdapter = {
+      onEvent: vi.fn(async () => undefined),
+      onCleanup: vi.fn(async () => undefined),
+      onStarted: vi.fn(async () => {
+        signalStarted();
+        await startGate;
+      }),
+      onRuntimeStop: vi.fn(async () => {
+        throw new Error("cleanup failed");
+      }),
+    };
+    const nextAdapter = {
+      onEvent: vi.fn(async () => undefined),
+      onCleanup: vi.fn(async () => undefined),
+      onStarted: vi.fn(async () => undefined),
+      onRuntimeStop: vi.fn(async () => undefined),
+    };
+
+    await using runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      link: new BandLink({
+        agentId: "a1",
+        apiKey: "k",
+        transport,
+        restApi: new FakeRestApi(),
+      }),
+    });
+
+    const starting = runtime.start(failingAdapter);
+    await started;
+    await expect(runtime.stop()).rejects.toThrow("cleanup failed");
+
+    releaseStarted();
+    await expect(starting).rejects.toThrow("superseded by stop()");
+    await runtime.start(nextAdapter);
+    await runtime.stop();
+
+    expect(nextAdapter.onRuntimeStop).toHaveBeenCalledTimes(1);
+  });
+
   it("cleans up adapter runtime hooks when startup fails after onStarted", async () => {
     const adapter = {
       onEvent: vi.fn(async () => undefined),

@@ -104,15 +104,17 @@ async function main(): Promise<void> {
     await waitFor(async () => (await senderRest.listMessages({ chatId: chat.id, page: 1, pageSize: 100 })).data.some((message) => message.sender_id === copilotIdentity.id && message.content.includes(firstMarker)), "first Copilot response was not visible");
 
     await senderRest.createChatMessage(chat.id, {
-      content: `@${copilotIdentity.name} Use the band_add_participant MCP tool to add the available agent named ${helperIdentity.name} to this room as a member. This changes the room roster and cannot be done by replying with text. After it succeeds, reply with exactly ${mcpMarker} and then exactly SECOND-${runId}.`,
+      content: `@${copilotIdentity.name} Use the band_add_participant MCP tool to add the available agent named ${helperIdentity.name} to this room as a member. This changes the room roster and cannot be done by replying with text. After it succeeds, reply in one message with the exact secret word from your previous turn, then ${mcpMarker}, then SECOND-${runId}.`,
       mentions: [{ id: copilotIdentity.id, handle: copilotIdentity.name }],
     });
     await waitFor(async () => {
       const messages = (await senderRest.listMessages({ chatId: chat.id, page: 1, pageSize: 100 })).data;
       const participants = await copilotRest.listChatParticipants(chat.id);
       return participants.some((participant) => participant.id === helperIdentity.id)
-        && messages.some((message) => message.sender_id === copilotIdentity.id && message.content.includes(mcpMarker))
-        && messages.some((message) => message.sender_id === copilotIdentity.id && message.content.includes(`SECOND-${runId}`));
+        && messages.some((message) => message.sender_id === copilotIdentity.id
+          && message.content.includes(firstMarker)
+          && message.content.includes(mcpMarker)
+          && message.content.includes(`SECOND-${runId}`));
     }, "Copilot did not add the helper through MCP and complete the second response");
 
     console.log("copilot-acp passed: MCP roster change and second response observed");

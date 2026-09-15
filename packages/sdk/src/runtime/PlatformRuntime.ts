@@ -274,35 +274,38 @@ export class PlatformRuntime implements AsyncDisposable {
     this.contactsSubscribed = false;
     this.activeAdapter = undefined;
 
-    let graceful = true;
-    let runtimeError: unknown = null;
-
-    if (runtime) {
-      try {
-        graceful = await runtime.stop(timeoutMs);
-      } catch (error) {
-        runtimeError = error;
-      }
-    }
-
     try {
-      await adapter?.onRuntimeStop?.();
-    } catch (error) {
-      if (runtimeError) {
-        throw new AggregateError(
-          [runtimeError, error],
-          "PlatformRuntime stop failed and adapter cleanup also failed",
-        );
+      let graceful = true;
+      let runtimeError: unknown = null;
+
+      if (runtime) {
+        try {
+          graceful = await runtime.stop(timeoutMs);
+        } catch (error) {
+          runtimeError = error;
+        }
       }
-      throw error;
-    }
 
-    if (runtimeError) {
-      throw runtimeError instanceof Error ? runtimeError : new Error(String(runtimeError));
-    }
+      try {
+        await adapter?.onRuntimeStop?.();
+      } catch (error) {
+        if (runtimeError) {
+          throw new AggregateError(
+            [runtimeError, error],
+            "PlatformRuntime stop failed and adapter cleanup also failed",
+          );
+        }
+        throw error;
+      }
 
-    this.stopping = false;
-    return graceful;
+      if (runtimeError) {
+        throw runtimeError instanceof Error ? runtimeError : new Error(String(runtimeError));
+      }
+
+      return graceful;
+    } finally {
+      this.stopping = false;
+    }
   }
 
   public async [Symbol.asyncDispose](): Promise<void> {
