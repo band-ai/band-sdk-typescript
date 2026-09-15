@@ -10,6 +10,7 @@ Folders:
 - `gemini/`
 - `claude-sdk/`
 - `codex/`
+- `omp-acp/`
 - `custom-adapter/`
 - `langgraph/`
 - `parlant/`

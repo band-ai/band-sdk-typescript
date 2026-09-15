@@ -160,6 +160,28 @@ const agent = Agent.create({
 await agent.run();
 ```
 
+### OMP ACP
+
+`OmpACPAdapter` connects Band rooms to [OMP's](https://omp.sh/) ACP server. Install the optional ACP peer alongside OMP itself:
+
+```bash
+pnpm add @agentclientprotocol/sdk
+curl -fsSL https://omp.sh/install | sh
+```
+
+```ts
+import { Agent, OmpACPAdapter, loadAgentConfig } from "@band-ai/sdk";
+
+const agent = Agent.create({
+  adapter: new OmpACPAdapter({ cwd: process.cwd() }),
+  config: loadAgentConfig("my_agent"),
+});
+
+await agent.run();
+```
+
+It launches `omp acp`. OMP performs `read`/`write`/`bash` itself — this SDK's ACP client doesn't implement `fs`/`terminal` handlers, so `clientCapabilities` is left unset — but OMP still gates `bash`/`edit`/`delete`/`move` through `session/request_permission` under its default (non-yolo) ACP approval mode; don't configure OMP with `tools.approvalMode: yolo` if you want that gate to stay active. OMP resolves its own provider credentials (a stored login or one of 60+ provider-specific environment variables — see [OMP's provider docs](https://github.com/can1357/oh-my-pi/blob/main/docs/providers.md)); pass any needed values through `env`. The SDK never reads or logs them.
+
 ### LangGraph
 
 ```ts
@@ -330,6 +352,7 @@ Working examples live in `examples/`. Each folder is self-contained.
 | `examples/gemini/` | Gemini | Gemini 3 Flash |
 | `examples/claude-sdk/` | Claude Agent SDK | MCP tools, room-scoped resume |
 | `examples/codex/` | Codex | Thread mapping, local commands |
+| `examples/omp-acp/` | OMP | ACP stdio, permission-gated writes |
 | `examples/langgraph/` | LangGraph | Graph-based agent |
 | `examples/custom-adapter/` | SimpleAdapter | Custom adapter protocol |
 | `examples/parlant/` | Parlant | Guideline-based behavior |
