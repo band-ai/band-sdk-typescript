@@ -164,7 +164,7 @@ export interface ACPClientAdapterOptions {
 }
 
 export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, AdapterToolsProtocol> {
-  protected readonly provider = "acp";
+  protected readonly provider: string = "acp";
   private readonly command: string[]
   private readonly cwd: string
   private readonly env?: Record<string, string>
@@ -285,7 +285,11 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     agentName: string,
     agentDescription: string,
   ): Promise<void> {
+    const generation = this.connectionGeneration
     await super.onStarted(agentName, agentDescription)
+    if (generation !== this.connectionGeneration) {
+      throw new Error("ACP adapter start superseded by stop()")
+    }
     this.started = true
     this.systemPrompt = renderSystemPrompt({
       agentName,
@@ -494,6 +498,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
   public async stop(): Promise<void> {
     this.connectionGeneration++
+    this.started = false
     this.spawnPromise = null
     this.connectionState = null
     this.activeSessions.clear()
@@ -650,11 +655,6 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
   private async spawnConnection(): Promise<ClientSideConnection> {
     const generation = this.connectionGeneration
-    const acp = await acpModule.get()
-    // Handed its permission handler here, one line before the process it will
-    // serve even exists — no session can out-race its own route.
-    const owner = { generation: -1 }
-    const client = new BandACPClient((params) => this.routePermissionRequest(params, owner.generation))
     const attempt = new AbortController()
     let handle: ACPClientConnectionHandle | null = null
     const stopAttempt = async (): Promise<void> => {
@@ -664,6 +664,14 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.pendingConnectionStop = stopAttempt
 
     try {
+      const acp = await acpModule.get()
+      if (attempt.signal.aborted) {
+        throw new Error("ACP connection attempt superseded by stop()")
+      }
+      // Handed its permission handler here, one line before the process it will
+      // serve even exists — no session can out-race its own route.
+      const owner = { generation: -1 }
+      const client = new BandACPClient((params) => this.routePermissionRequest(params, owner.generation))
       handle = await (this.connectionFactory
         ? this.connectionFactory(client as Client, {
           command: this.command,

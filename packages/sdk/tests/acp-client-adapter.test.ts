@@ -3527,4 +3527,35 @@ describe("ACP client transports", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()))
     }
   })
+
+  it("does not open TCP after stop races lazy ACP loading", async () => {
+    let connected = false
+    const server = createServer((socket) => {
+      connected = true
+      socket.on("data", () => undefined)
+    })
+    server.listen(0, "127.0.0.1")
+    await once(server, "listening")
+    const address = server.address()
+    if (!address || typeof address === "string") throw new Error("TCP test server did not expose a port")
+
+    const adapter = new ACPClientAdapter({ host: "127.0.0.1", port: address.port })
+    const starting = adapter.onStarted("Agent", "desc")
+    const settled = starting.then(
+      () => "resolved",
+      (error: unknown) => error instanceof Error ? error.message : String(error),
+    )
+
+    try {
+      await adapter.stop()
+      await expect(Promise.race([
+        settled,
+        new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 100)),
+      ])).resolves.toContain("superseded by stop")
+      expect(connected).toBe(false)
+    } finally {
+      await adapter.stop()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
 })

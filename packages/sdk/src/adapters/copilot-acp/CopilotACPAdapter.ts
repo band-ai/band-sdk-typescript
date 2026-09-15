@@ -26,6 +26,8 @@ export interface CopilotACPTcpOptions extends CopilotACPBaseOptions {
 export type CopilotACPAdapterOptions = CopilotACPStdioOptions | CopilotACPTcpOptions;
 
 export class CopilotACPAdapter extends ACPClientAdapter {
+  protected readonly provider = "copilot-acp";
+
   public constructor(options: CopilotACPAdapterOptions = {}) {
     const isTcp = "host" in options || "port" in options
     if (isTcp && options.env) {

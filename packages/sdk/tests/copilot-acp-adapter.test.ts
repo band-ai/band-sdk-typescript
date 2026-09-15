@@ -4,8 +4,9 @@ import {
   CopilotACPAdapter,
   DEFAULT_COPILOT_ACP_COMMAND,
 } from "../src/adapters/copilot-acp";
+import { FakeTools, makeMessage } from "./testUtils";
 
-function mockConnection() {
+function mockConnection(options: { prompt?: () => Promise<{ stopReason: string }> } = {}) {
   const controller = new AbortController()
   return {
     connection: {
@@ -13,6 +14,8 @@ function mockConnection() {
       closed: new Promise<void>(() => undefined),
       initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
       authenticate: vi.fn(async () => ({})),
+      newSession: vi.fn(async () => ({ sessionId: "session-1" })),
+      prompt: options.prompt ?? vi.fn(async () => ({ stopReason: "end_turn" })),
     } as never,
     stop: async () => controller.abort(),
   }
@@ -77,5 +80,30 @@ describe("CopilotACPAdapter", () => {
   it("rejects incomplete TCP and contradictory transport options", () => {
     expect(() => new CopilotACPAdapter({ host: "127.0.0.1" } as never)).toThrow("requires both host and port")
     expect(() => new CopilotACPAdapter({ command: ["copilot"], host: "127.0.0.1", port: 3000 } as never)).toThrow("cannot use command")
+  })
+
+  it("reports failures as Copilot ACP", async () => {
+    const adapter = new CopilotACPAdapter({
+      enableMcpTools: false,
+      connectionFactory: async () => mockConnection({
+        prompt: async () => {
+          throw new Error("Copilot failed")
+        },
+      }),
+    })
+    const tools = new FakeTools()
+
+    await adapter.onStarted("Agent", "desc")
+    await expect(adapter.onMessage(
+      makeMessage("hi"),
+      tools,
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    )).rejects.toThrow("Copilot failed")
+
+    expect(tools.events.find((event) => event.messageType === "error")?.metadata?.failure)
+      .toMatchObject({ provider: "copilot-acp", message: "Copilot failed" })
   })
 })
