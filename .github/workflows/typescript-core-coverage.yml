@@ -1,0 +1,226 @@
+name: TypeScript Core Coverage
+
+# Coverage floor for band-sdk-core-core's wasm-bindgen JS/TS glue, computed
+# from THIS repo's real per-PR test commands -- band-sdk-core owns the
+# packed-tarball build + gate (see its `coverage-typescript-consumer` just
+# recipe); this workflow only resolves the pinned version, checks that tag
+# out as a sibling, and runs it.
+#
+# No explicit Rust-toolchain setup step: band-sdk-core/rust-toolchain.toml
+# is picked up natively by rustup's own directory-walk resolution the first
+# time a `cargo`/`wasm-pack` command runs with that checkout as its cwd, so
+# there is nothing to duplicate here.
+#
+# packages/sdk's `c8` devDependency (used by the `just` recipe above, not by
+# this workflow directly) is separate from @vitest/coverage-v8 in that
+# package's own vitest suite: it measures coverage of band-sdk-core's
+# externally packed glue, not packages/sdk's own src/, so it isn't
+# redundant with that provider.
+#
+# actions/checkout and actions/upload-artifact below are pinned to match
+# this repo's python-core-coverage.yml sibling, not this repo's own
+# release.yml -- a different privileged workflow with its own, older,
+# independently vetted pins. Don't "reconcile" these to release.yml's SHAs;
+# reconcile release.yml to these instead, if the two are ever unified.
+
+on:
+  # Weekly consumer coverage report. This observes main's current coverage
+  # without sending notifications for ordinary PR gates.
+  schedule:
+    - cron: "47 20 * * 0" # Sunday night: 23:47 Israel summer time, 22:47 winter time
+  pull_request:
+    branches: [main]
+    paths:
+      - 'packages/sdk/**'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '.github/workflows/typescript-core-coverage.yml'
+      - '.github/scripts/*core*coverage*.mjs'
+      - 'scripts/typescript-core-coverage-workflow.test.mjs'
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: typescript-core-coverage-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Single source of truth: crates/wasm/scripts/coverage-typescript-consumer.mjs's
+      # REPORT_DIR, relative to band-sdk-core's checkout root.
+      REPORT_DIR: target/typescript-consumer-coverage/report
+      # Single source of truth for band-sdk-core's git tag naming scheme.
+      CORE_TAG_PREFIX: band-sdk-core-core-v
+      # Single source of truth for both sibling checkouts' paths.
+      TS_CHECKOUT_PATH: band-sdk-typescript
+      CORE_CHECKOUT_PATH: band-sdk-core
+    steps:
+      - name: Checkout band-sdk-typescript
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: ${{ env.TS_CHECKOUT_PATH }}
+          # SDK contract tests read a historical source snapshot with `git show`.
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          # Defaults to ./package.json (repository root), but band-sdk-typescript
+          # is checked out under TS_CHECKOUT_PATH, not the workspace root.
+          package_json_file: ${{ env.TS_CHECKOUT_PATH }}/package.json
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ${{ env.TS_CHECKOUT_PATH }}/pnpm-lock.yaml
+
+      - name: Install band-sdk-typescript dependencies
+        working-directory: ${{ env.TS_CHECKOUT_PATH }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Resolve pinned band-sdk-core version
+        id: pin
+        working-directory: ${{ env.TS_CHECKOUT_PATH }}
+        run: |
+          ls_output=$(pnpm --filter @band-ai/sdk ls @band-ai/band-sdk-core --json --depth 0) || {
+            echo "::error::pnpm ls for @band-ai/band-sdk-core failed"
+            exit 1
+          }
+          version=$(echo "$ls_output" | node -pe '
+            const parsed = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            const version = parsed[0]?.dependencies?.["@band-ai/band-sdk-core"]?.version;
+            if (!version) {
+              console.error("@band-ai/band-sdk-core has no resolved version in pnpm ls output");
+              process.exit(1);
+            }
+            version;
+          ') || {
+            echo "::error::failed to resolve @band-ai/band-sdk-core version -- raw pnpm ls output:"
+            echo "$ls_output"
+            exit 1
+          }
+
+          # The `|| { ... }` above is the only thing that catches a parse
+          # failure here -- bash suppresses `set -e` for a command that is
+          # the left side of `||` (verified: the same bare assignment with
+          # no trailing `||` does abort via `set -e`, but this one doesn't).
+          # Removing the `||` would let a parse failure fall through with
+          # $version left empty instead of failing loud. $version is passed
+          # via the environment, not spliced into the script text, so it can
+          # never break out of the embedded Node literal.
+          VERSION="$version" node -e '
+          const version = process.env.VERSION;
+          const prefix = process.env.CORE_TAG_PREFIX;
+          if (!/^\d+\.\d+\.\d+$/.test(version)) {
+            console.error(
+              `@band-ai/band-sdk-core@${version} is a pre-release: ${prefix}${version} is never tagged ` +
+              "(dev pre-releases publish to npm but are never committed or tagged in git), so this gate " +
+              "cannot check it out. Pin a stable release to run this gate.",
+            );
+            process.exit(1);
+          }
+          '
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # A "couldn't find remote ref" failure here means the pinned version
+      # above passed the stable-semver check but was never tagged in git
+      # (e.g. a publish/tag race, or a hand-edited package.json version).
+      - name: Checkout band-sdk-core at the pinned version
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: band-ai/band-sdk-core
+          ref: ${{ env.CORE_TAG_PREFIX }}${{ steps.pin.outputs.version }}
+          path: ${{ env.CORE_CHECKOUT_PATH }}
+          token: ${{ secrets.CORE_SDK_READ_KEY }}
+
+      - name: Install just and wasm-pack
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8 # v2
+        with:
+          tool: just,wasm-pack
+
+      - name: Run band-sdk-typescript's tests against a locally-packed wasm-bindgen glue
+        working-directory: ${{ env.CORE_CHECKOUT_PATH }}
+        run: just coverage-typescript-consumer ../${{ env.TS_CHECKOUT_PATH }}
+
+      - name: Write coverage summary
+        if: always()
+        # No working-directory: band-sdk-core/ may not exist yet (the
+        # pin step's pre-release guard, or any earlier failure, can skip
+        # its checkout) -- a nonexistent step cwd fails the step outright
+        # before this script runs, before the else branch below ever gets
+        # a chance to report that gracefully.
+        run: |
+          summary="$CORE_CHECKOUT_PATH/$REPORT_DIR/summary.txt"
+          if [ -f "$summary" ]; then
+            {
+              echo "## band-sdk-core wasm-bindgen glue coverage from band-sdk-typescript's tests"
+              echo '```'
+              cat "$summary"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No coverage summary produced -- see the coverage step's log above." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Map public Core APIs to coverage
+        if: ${{ !cancelled() && hashFiles(format('{0}/{1}/coverage-summary.json', env.CORE_CHECKOUT_PATH, env.REPORT_DIR)) != '' }}
+        run: node "$TS_CHECKOUT_PATH/.github/scripts/build-core-api-coverage.mjs" "$CORE_CHECKOUT_PATH/$REPORT_DIR"
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: typescript-core-coverage
+          # Unlike cargo-llvm-cov's separate .lcov file / html/ subdirectory /
+          # summary.txt, c8's reporters all write flat into one reports-dir --
+          # lcov.info, coverage-summary.json, summary.txt, and the full
+          # browsable HTML report (index.html + its css/js/image assets) --
+          # so the whole directory is the artifact.
+          path: ${{ env.CORE_CHECKOUT_PATH }}/${{ env.REPORT_DIR }}/
+          if-no-files-found: warn
+
+  report-weekly:
+    name: report weekly coverage
+    needs: coverage
+    if: "!cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      SHA: ${{ github.sha }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      WORKFLOW_RESULT: ${{ needs.coverage.result }}
+      REPORT_LABEL: TypeScript SDK → Core public APIs
+      LCOV_PATH: artifacts/lcov.info
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Download coverage report
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: typescript-core-coverage
+          path: artifacts
+          if-no-files-found: warn
+
+      - name: Read integrations mentions list
+        id: mentions
+        if: github.event_name == 'schedule'
+        run: bash .github/scripts/read-integrations-mentions.sh
+
+      - name: Post the weekly coverage digest
+        env:
+          RECIPIENTS: ${{ github.event_name == 'schedule' && steps.mentions.outputs.mentions || format('@{0}', github.triggering_actor) }}
+        run: node .github/scripts/post-core-coverage-digest.mjs
