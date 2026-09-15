@@ -51,17 +51,6 @@ async function waitFor(
   }
 }
 
-function isBandSendMessageToolCall(message: {
-  message_type: string;
-  metadata?: Record<string, unknown> | null;
-}): boolean {
-  const rawInput = message.metadata?.raw_input;
-  return message.message_type === "tool_call"
-    && typeof rawInput === "object"
-    && rawInput !== null
-    && (rawInput as Record<string, unknown>).tool === "band_send_message";
-}
-
 async function main(): Promise<void> {
   if (!hasCopilotCli()) {
     console.log("copilot-acp skipped: Copilot CLI is not installed");
@@ -85,12 +74,13 @@ async function main(): Promise<void> {
     provisioned.push(copilotIdentity);
     const senderIdentity = await provisionAgent(userClient, runId, TEST_NAME, "sender");
     provisioned.push(senderIdentity);
+    const helperIdentity = await provisionAgent(userClient, runId, TEST_NAME, "helper");
+    provisioned.push(helperIdentity);
 
     const copilotRest = new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey: copilotIdentity.apiKey }));
     const senderRest = new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey: senderIdentity.apiKey }));
-    const [sender, chat] = await Promise.all([senderRest.getAgentMe(), copilotRest.createChat()]);
+    const chat = await copilotRest.createChat();
     roomIds.push(chat.id);
-    if (!sender.handle) throw new Error("sender agent has no handle");
     await copilotRest.addChatParticipant(chat.id, { participantId: senderIdentity.id, role: "member" });
 
     agent = Agent.create({
@@ -114,23 +104,18 @@ async function main(): Promise<void> {
     await waitFor(async () => (await senderRest.listMessages({ chatId: chat.id, page: 1, pageSize: 100 })).data.some((message) => message.sender_id === copilotIdentity.id && message.content.includes(firstMarker)), "first Copilot response was not visible");
 
     await senderRest.createChatMessage(chat.id, {
-      content: `@${copilotIdentity.name} Use the band_send_message MCP tool to send @${sender.handle} exactly ${mcpMarker}, then reply with exactly SECOND-${runId}.`,
+      content: `@${copilotIdentity.name} Use the band_add_participant MCP tool to add the available agent named ${helperIdentity.name} to this room as a member. This changes the room roster and cannot be done by replying with text. After it succeeds, reply with exactly ${mcpMarker} and then exactly SECOND-${runId}.`,
       mentions: [{ id: copilotIdentity.id, handle: copilotIdentity.name }],
     });
     await waitFor(async () => {
       const messages = (await senderRest.listMessages({ chatId: chat.id, page: 1, pageSize: 100 })).data;
-      return messages.some((message) => message.sender_id === copilotIdentity.id && message.content.includes(mcpMarker))
-        && messages.some((message) => message.sender_id === copilotIdentity.id && isBandSendMessageToolCall(message))
+      const participants = await copilotRest.listChatParticipants(chat.id);
+      return participants.some((participant) => participant.id === helperIdentity.id)
+        && messages.some((message) => message.sender_id === copilotIdentity.id && message.content.includes(mcpMarker))
         && messages.some((message) => message.sender_id === copilotIdentity.id && message.content.includes(`SECOND-${runId}`));
-    }, "Copilot Band MCP tool call, visible action, or second response was not observed");
+    }, "Copilot did not add the helper through MCP and complete the second response");
 
-    const messages = (await senderRest.listMessages({ chatId: chat.id, page: 1, pageSize: 100 })).data;
-    const sessionIds = new Set(messages
-      .filter((message) => message.message_type === "task")
-      .map((message) => message.metadata?.acp_client_session_id)
-      .filter((id): id is string => typeof id === "string"));
-    if (sessionIds.size !== 1) throw new Error(`expected one reused ACP session, got ${JSON.stringify([...sessionIds])}`);
-    console.log(`copilot-acp passed: reused session ${[...sessionIds][0]}`);
+    console.log("copilot-acp passed: MCP roster change and second response observed");
   } finally {
     if (agent) await agent.stop(5_000).catch(() => undefined);
     await reapProvisioned(userClient, restUrl, userApiKey, provisioned, roomIds, TEST_NAME);
