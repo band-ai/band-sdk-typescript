@@ -39,10 +39,8 @@ export class ProviderTurnFailedError extends RecoverableTurnError {
  * rejection, so this needs the `try` too. Shared by `reportTurnFailure` and
  * `safeSendFailure`, which differ only in whether they throw afterward.
  *
- * `logger` is optional — not defaulted to a `NoopLogger` here, since that
- * would just relocate the tracked `?? new NoopLogger()` inconsistency into a
- * shared helper instead of an adapter entry point — so a caller with no
- * logger (e.g. `GenericAdapter`) keeps today's silent-on-failure behavior.
+ * `logger` stays optional so a caller with no logger (e.g. `GenericAdapter`)
+ * keeps today's silent-on-failure behavior.
  */
 async function trySendFailure(
   tools: MessagingTools,

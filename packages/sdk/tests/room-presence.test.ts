@@ -137,12 +137,14 @@ describe("RoomPresence", () => {
     expect(presence.roster.trackedRoomIds()).toEqual(["room-1", "room-2"]);
   });
 
-  it("logs room discovery failures instead of swallowing them silently", async () => {
+  it("keeps room discovery failures contained when the caller logger throws", async () => {
     const transport = new FakeTransport();
     const logger = {
       debug: vi.fn(),
       info: vi.fn(),
-      warn: vi.fn(),
+      warn: vi.fn(() => {
+        throw new Error("logger is broken");
+      }),
       error: vi.fn(),
     };
 

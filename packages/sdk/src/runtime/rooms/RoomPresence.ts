@@ -8,8 +8,7 @@ import type {
   ParticipantAddedEvent,
   ParticipantRemovedEvent,
 } from "../../platform/events";
-import type { Logger } from "../../core/logger";
-import { NoopLogger } from "../../core/logger";
+import { resolveLogger, type Logger } from "../../core/logger";
 import { RoomRoster } from "@band-ai/band-sdk-core";
 import { hydrateExistingRooms } from "./subscriptions";
 
@@ -53,7 +52,7 @@ export class RoomPresence implements AsyncDisposable {
     this.link = options.link;
     this.roomFilter = options.roomFilter;
     this.autoSubscribeExistingRooms = options.autoSubscribeExistingRooms ?? true;
-    this.logger = options.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options.logger);
   }
 
   public async start(): Promise<void> {
