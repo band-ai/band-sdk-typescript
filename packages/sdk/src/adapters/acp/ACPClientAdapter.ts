@@ -81,6 +81,10 @@ const DEFAULT_TURN_TIMEOUT_MS = 60 * 60_000;
 // process acknowledging an administrative call, not doing model inference.
 const SET_SESSION_CONFIG_TIMEOUT_MS = 10_000;
 const MAX_SETTIMEOUT_DELAY_MS = 2_147_483_647;
+const MIN_TCP_PORT = 1;
+const MAX_TCP_PORT = 65_535;
+const CONNECTION_ATTEMPT_SUPERSEDED_ERROR = "ACP connection attempt superseded by stop()";
+const TCP_CONNECTION_ATTEMPT_ABORTED_ERROR = "ACP TCP connection attempt aborted";
 
 // `setTimeout` silently truncates any delay past this to ~1ms, so a config
 // value beyond it must be rejected outright rather than let that surprise
@@ -677,7 +681,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     try {
       const acp = await acpModule.get()
       if (attempt.signal.aborted) {
-        throw new Error("ACP connection attempt superseded by stop()")
+        throw new Error(CONNECTION_ATTEMPT_SUPERSEDED_ERROR)
       }
       // Handed its permission handler here, one line before the process it will
       // serve even exists — no session can out-race its own route.
@@ -699,7 +703,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       const connection = handle.connection
       if (attempt.signal.aborted) {
         await handle.stop()
-        throw new Error("ACP connection attempt superseded by stop()")
+        throw new Error(CONNECTION_ATTEMPT_SUPERSEDED_ERROR)
       }
       const initializeResult = await this.raceAgainstConnectionClose(connection, connection.initialize({
         protocolVersion: acp.PROTOCOL_VERSION,
@@ -714,7 +718,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
       if (generation !== this.connectionGeneration) {
         await handle.stop()
-        throw new Error("ACP connection attempt superseded by stop()")
+        throw new Error(CONNECTION_ATTEMPT_SUPERSEDED_ERROR)
       }
 
       this.connectionGeneration++
@@ -1562,8 +1566,10 @@ function validateTransport(
     if (typeof host !== "string" || host.trim().length === 0) {
       throw new ValidationError("ACPClientAdapter TCP host must be a non-empty string")
     }
-    if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-      throw new ValidationError("ACPClientAdapter TCP port must be an integer between 1 and 65535")
+    if (!Number.isInteger(port) || port < MIN_TCP_PORT || port > MAX_TCP_PORT) {
+      throw new ValidationError(
+        `ACPClientAdapter TCP port must be an integer between ${MIN_TCP_PORT} and ${MAX_TCP_PORT}`,
+      )
     }
     return { host, port }
   }
@@ -1646,7 +1652,7 @@ export async function createTcpConnection(
 ): Promise<ACPClientConnectionHandle> {
   const acp = await acpModule.get()
   if (signal?.aborted) {
-    throw new Error("ACP TCP connection attempt aborted")
+    throw new Error(TCP_CONNECTION_ATTEMPT_ABORTED_ERROR)
   }
   const socket = await new Promise<Duplex>((resolve, reject) => {
     const candidate = createConnection(endpoint)
@@ -1665,7 +1671,7 @@ export async function createTcpConnection(
     }
     const abort = (): void => {
       candidate.destroy()
-      fail(new Error("ACP TCP connection attempt aborted"))
+      fail(new Error(TCP_CONNECTION_ATTEMPT_ABORTED_ERROR))
     }
     candidate.once("error", fail)
     candidate.once("connect", connect)
