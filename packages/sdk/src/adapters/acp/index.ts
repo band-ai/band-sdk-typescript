@@ -1,5 +1,6 @@
 export {
   ACPClientAdapter,
+  createTcpConnection,
   type ACPClientAdapterOptions,
 } from "./ACPClientAdapter";
 
@@ -17,6 +18,7 @@ export type {
   ACPPermissionAbandonReason,
   ACPPermissionEndReason,
   ACPPermissionRequest,
+  ACPClientTcpEndpoint,
 } from "./types";
 
 export type { ACPExtensionHandler } from "./extensions";

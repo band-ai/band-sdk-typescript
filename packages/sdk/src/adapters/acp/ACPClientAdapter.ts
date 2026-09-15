@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { Readable, Writable } from "node:stream";
+import { createConnection } from "node:net";
+import { Duplex, Readable, Writable } from "node:stream";
 
 import type {
   Client,
@@ -45,6 +46,7 @@ import {
   choosePermissionOption,
   type ACPClientConnectionFactory,
   type ACPClientConnectionHandle,
+  type ACPClientTcpEndpoint,
   type ACPPermissionAbandonReason,
   type ACPPermissionEndReason,
   type ACPPermissionRequest,
@@ -106,7 +108,9 @@ export interface ACPModelRequest {
 }
 
 export interface ACPClientAdapterOptions {
-  command: string | string[];
+  command?: string | string[];
+  host?: string;
+  port?: number;
   cwd?: string;
   env?: Record<string, string>;
   mcpServers?: McpServer[];
@@ -223,10 +227,11 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       historyConverter: new ACPClientHistoryConverter(),
     })
 
-    this.command = Array.isArray(options.command) ? [...options.command] : [options.command]
-    if (this.command.length === 0 || this.command[0].length === 0) {
-      throw new Error("ACPClientAdapter requires a command")
-    }
+    const command = options.command === undefined
+      ? []
+      : Array.isArray(options.command) ? [...options.command] : [options.command]
+    const tcpEndpoint = validateTransport(command, options.host, options.port)
+    this.command = command
 
     this.cwd = options.cwd ?? process.cwd()
     this.env = options.env
@@ -236,7 +241,10 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.enableMcpTools = options.enableMcpTools ?? true
     this.additionalMcpTools = [...(options.additionalMcpTools ?? [])]
     this.clientCapabilities = options.clientCapabilities
-    this.connectionFactory = options.connectionFactory ?? createSubprocessConnection
+    this.connectionFactory = options.connectionFactory
+      ?? (tcpEndpoint
+        ? (client) => createTcpConnection(client, tcpEndpoint)
+        : createSubprocessConnection)
 
     this.resolvePermission = options.resolvePermission
     this.resolveSessionMode = options.resolveSessionMode
@@ -1485,6 +1493,38 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
 class AcpTurnTimeoutError extends Error {}
 
+function validateTransport(
+  command: string[],
+  host: string | undefined,
+  port: number | undefined,
+): ACPClientTcpEndpoint | null {
+  const hasHost = host !== undefined
+  const hasPort = port !== undefined
+
+  if (hasHost !== hasPort) {
+    throw new ValidationError("ACPClientAdapter requires both host and port for a TCP connection")
+  }
+
+  if (hasHost && hasPort) {
+    if (command.length > 0) {
+      throw new ValidationError("ACPClientAdapter cannot use command with a TCP connection")
+    }
+    if (typeof host !== "string" || host.trim().length === 0) {
+      throw new ValidationError("ACPClientAdapter TCP host must be a non-empty string")
+    }
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+      throw new ValidationError("ACPClientAdapter TCP port must be an integer between 1 and 65535")
+    }
+    return { host, port }
+  }
+
+  if (command.length === 0 || typeof command[0] !== "string" || command[0].trim().length === 0) {
+    throw new ValidationError("ACPClientAdapter requires a command or TCP host and port")
+  }
+
+  return null
+}
+
 export async function createSubprocessConnection(
   client: Client,
   options: {
@@ -1545,6 +1585,45 @@ export async function createSubprocessConnection(
           finish()
         }
       })
+    },
+  }
+}
+
+export async function createTcpConnection(
+  client: Client,
+  endpoint: ACPClientTcpEndpoint,
+): Promise<ACPClientConnectionHandle> {
+  const acp = await acpModule.get()
+  const socket = await new Promise<Duplex>((resolve, reject) => {
+    const candidate = createConnection(endpoint)
+    const fail = (error: Error): void => {
+      candidate.off("connect", connect)
+      reject(error)
+    }
+    const connect = (): void => {
+      candidate.off("error", fail)
+      resolve(candidate)
+    }
+    candidate.once("error", fail)
+    candidate.once("connect", connect)
+  })
+  const webSocket = Duplex.toWeb(socket)
+  const stream = acp.ndJsonStream(
+    webSocket.writable as WritableStream<Uint8Array>,
+    webSocket.readable as ReadableStream<Uint8Array>,
+  )
+  const connection = new acp.ClientSideConnection(() => client, stream)
+  let stopped = false
+
+  return {
+    connection,
+    stop: async () => {
+      if (stopped) {
+        return
+      }
+      stopped = true
+      socket.destroy()
+      await connection.closed
     },
   }
 }
@@ -1636,4 +1715,3 @@ function asAcpJsonRpcError(error: unknown): { code: number; message: string; dat
   const nested = asOptionalRecord(error)?.error
   return isAcpErrorResponse(nested) ? nested : undefined
 }
-

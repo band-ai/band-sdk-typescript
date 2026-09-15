@@ -1,6 +1,13 @@
+import { once } from "node:events";
+import { createServer } from "node:net";
+
 import { describe, expect, it, vi } from "vitest";
 
-import { ACPClientAdapter, type ACPClientAdapterOptions } from "../src/adapters/acp";
+import {
+  ACPClientAdapter,
+  createTcpConnection,
+  type ACPClientAdapterOptions,
+} from "../src/adapters/acp";
 import { BandACPClient } from "../src/adapters/acp/client";
 import { FakeTools, expectTurnFailed, findFailureEvent, makeMessage } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
@@ -3399,3 +3406,95 @@ describe("ACPClientAdapter", () => {
     })
   })
 });
+
+describe("ACP client transports", () => {
+  it("rejects incomplete, conflicting, and invalid transport configuration", () => {
+    expect(() => new ACPClientAdapter({})).toThrow("requires a command or TCP host and port")
+    expect(() => new ACPClientAdapter({ host: "127.0.0.1" })).toThrow("requires both host and port")
+    expect(() => new ACPClientAdapter({ command: ["agent"], host: "127.0.0.1", port: 3000 })).toThrow("cannot use command")
+    expect(() => new ACPClientAdapter({ host: "", port: 3000 })).toThrow("host must be a non-empty string")
+    expect(() => new ACPClientAdapter({ host: "127.0.0.1", port: 0 })).toThrow("port must be an integer")
+  })
+
+  it("keeps injected connection factories compatible with TCP selection", async () => {
+    let received: { command: string[]; cwd?: string; env?: Record<string, string> } | null = null
+    const adapter = new ACPClientAdapter({
+      host: "127.0.0.1",
+      port: 3000,
+      connectionFactory: async (_client, options) => {
+        received = options
+        return buildMockConnection({
+          loadSession: async () => ({}),
+          newSession: async () => ({ sessionId: "session-1" }),
+          prompt: async () => ({ stopReason: "end_turn" }),
+        })
+      },
+    })
+
+    await adapter.onStarted("Agent", "desc")
+    expect(received).toEqual({ command: [], cwd: process.cwd(), env: undefined })
+    await adapter.stop()
+  })
+
+  it("connects to an ACP NDJSON TCP server and closes only its client socket", async () => {
+    let socketClosed = false
+    const server = createServer((socket) => {
+      socket.on("close", () => {
+        socketClosed = true
+      })
+      let pending = ""
+      socket.on("data", (chunk: Buffer) => {
+        pending += chunk.toString("utf8")
+        const lines = pending.split("\n")
+        pending = lines.pop() ?? ""
+        for (const line of lines) {
+          if (!line) continue
+          const request = JSON.parse(line) as { id: number }
+          socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: 1, agentCapabilities: {} } })}\n`)
+        }
+      })
+    })
+    server.listen(0, "127.0.0.1")
+    await once(server, "listening")
+    const address = server.address()
+    if (!address || typeof address === "string") throw new Error("TCP test server did not expose a port")
+
+    try {
+      const handle = await createTcpConnection({} as never, { host: "127.0.0.1", port: address.port })
+      await handle.connection.initialize({ protocolVersion: 1, clientCapabilities: {} })
+      await handle.stop()
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(socketClosed).toBe(true)
+      expect(server.listening).toBe(true)
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+
+  it("cleans up a TCP socket when ACP initialization fails", async () => {
+    let socketClosed = false
+    const server = createServer((socket) => {
+      socket.on("close", () => {
+        socketClosed = true
+      })
+      socket.once("data", (chunk: Buffer) => {
+        const request = JSON.parse(chunk.toString("utf8")) as { id: number }
+        socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code: -32000, message: "rejected" } })}\n`)
+      })
+    })
+    server.listen(0, "127.0.0.1")
+    await once(server, "listening")
+    const address = server.address()
+    if (!address || typeof address === "string") throw new Error("TCP test server did not expose a port")
+
+    try {
+      const adapter = new ACPClientAdapter({ host: "127.0.0.1", port: address.port })
+      await expect(adapter.onStarted("Agent", "desc")).rejects.toThrow("rejected")
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(socketClosed).toBe(true)
+      expect(server.listening).toBe(true)
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+})
