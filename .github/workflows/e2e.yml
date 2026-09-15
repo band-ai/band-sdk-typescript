@@ -72,9 +72,11 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Set up Bun
+        if: matrix.file == 'omp-acp-live.ts'
         uses: oven-sh/setup-bun@v2
 
       - name: Install OMP
+        if: matrix.file == 'omp-acp-live.ts'
         run: npm install --global @oh-my-pi/pi-coding-agent
 
       # BAND_API_KEY_USER is the same Band user credential band-sdk-python's

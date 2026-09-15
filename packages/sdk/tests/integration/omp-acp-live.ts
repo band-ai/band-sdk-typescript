@@ -33,10 +33,6 @@ import {
 const TEST_NAME = "omp-acp";
 const TIMEOUT_MS = 180_000;
 const OMP_PROBE_TIMEOUT_MS = 10_000;
-// `Agent.stop`'s timeout only bounds per-room turn-draining — the underlying
-// ACP subprocess's SIGTERM/exit wait has no timeout of its own, so this
-// script races it separately (see `stopAgentWithFallback`) rather than
-// trusting the call to return within this bound.
 const AGENT_STOP_TIMEOUT_MS = 5_000;
 const OMP_MODEL = "google/gemini-2.5-flash";
 const OMP_COMMAND = [...DEFAULT_OMP_ACP_COMMAND, "--model", OMP_MODEL];
@@ -65,19 +61,6 @@ function toolCallTargetsGuardedFile(toolCall: ToolCall): boolean {
   );
 }
 
-/**
- * `agent.stop(timeoutMs)` doesn't actually bound the wait: `PlatformRuntime`
- * passes `timeoutMs` only to per-room turn-draining, then unconditionally
- * awaits the adapter's own shutdown, and `ACPClientAdapter`'s spawned-process
- * stop sends SIGTERM and waits for `exit`/`close` with no timeout at all —
- * and no SIGKILL escalation, so a child that outlives SIGTERM never resolves
- * that wait. This only bounds *this function's own* await chain (via
- * `withTimeout`) so the rest of `finally` (reaping the real Band
- * agents/room, removing temp dirs) still runs; it does not reclaim the
- * subprocess itself. The script's own top-level `process.exit()` (below) is
- * what keeps a still-alive child's open stdio pipes from hanging the whole
- * process afterward.
- */
 async function stopAgentWithFallback(target: Agent, timeoutMs: number): Promise<void> {
   const stopped = target.stop(timeoutMs).catch((error: unknown) => {
     console.warn("omp-acp cleanup: agent.stop rejected:", error);
@@ -90,6 +73,12 @@ async function stopAgentWithFallback(target: Agent, timeoutMs: number): Promise<
       );
     },
   );
+}
+
+function flushOutput(stream: NodeJS.WriteStream): Promise<void> {
+  return new Promise((resolve) => {
+    stream.write("", () => resolve());
+  });
 }
 
 async function waitForEvent(
@@ -356,13 +345,8 @@ main()
     console.error("omp-acp failed:", error);
     process.exitCode = 1;
   })
-  .finally(() => {
-    // A hung `omp acp` child (SIGTERM-only, no SIGKILL escalation — see
-    // createSubprocessConnection in ACPClientAdapter.ts) can outlive
-    // `stopAgentWithFallback` and keep its still-open stdio pipes referenced,
-    // which keeps Node's event loop alive indefinitely. Without forcing exit
-    // here, that turns an already-logged, diagnosable failure into an opaque
-    // 30-minute `e2e.yml` job timeout instead of the fast, clear signal this
-    // script's cleanup is meant to provide.
+  .finally(async () => {
+    await Promise.all([flushOutput(process.stdout), flushOutput(process.stderr)]);
+    // A SIGTERM-resistant OMP child can keep Node alive after cleanup.
     process.exit(process.exitCode ?? 0);
   });

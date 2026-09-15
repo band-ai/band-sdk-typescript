@@ -4,13 +4,16 @@ import { ACPClientAdapter } from "../src/adapters/acp";
 import { OmpACPAdapter, DEFAULT_OMP_ACP_COMMAND } from "../src/adapters/omp-acp";
 import { FakeTools, findFailureEvent, makeMessage } from "./testUtils";
 
-function mockConnection(options: { prompt?: () => Promise<{ stopReason: string }> } = {}) {
+function mockConnection(options: {
+  initialize?: () => Promise<{ protocolVersion: number; agentCapabilities: Record<string, never> }>;
+  prompt?: () => Promise<{ stopReason: string }>;
+} = {}) {
   const controller = new AbortController();
   return {
     connection: {
       signal: controller.signal,
       closed: new Promise<void>(() => undefined),
-      initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+      initialize: options.initialize ?? vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
       authenticate: vi.fn(async () => ({})),
       newSession: vi.fn(async () => ({ sessionId: "session-1" })),
       prompt: options.prompt ?? vi.fn(async () => ({ stopReason: "end_turn" })),
@@ -110,20 +113,9 @@ describe("OmpACPAdapter", () => {
   });
 
   it("leaves clientCapabilities undefined when omitted, never defaulting to fs/terminal support", async () => {
-    const controller = new AbortController();
     const initialize = vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} }));
     const adapter = new OmpACPAdapter({
-      connectionFactory: async () => ({
-        connection: {
-          signal: controller.signal,
-          closed: new Promise<void>(() => undefined),
-          initialize,
-          authenticate: vi.fn(async () => ({})),
-          newSession: vi.fn(async () => ({ sessionId: "session-1" })),
-          prompt: vi.fn(async () => ({ stopReason: "end_turn" })),
-        } as never,
-        stop: async () => controller.abort(),
-      }),
+      connectionFactory: async () => mockConnection({ initialize }),
     });
 
     await adapter.onStarted("Agent", "desc");
