@@ -233,11 +233,14 @@ export class PlatformRuntime implements AsyncDisposable {
       this.assertStartCurrent(lifecycleGeneration);
       this.contactsSubscribed = Boolean(this.link.capabilities.contacts);
     } catch (error) {
-      await this.cleanupAfterFailedStart(error);
+      await this.cleanupAfterFailedStart(error, lifecycleGeneration);
     }
   }
 
-  private async cleanupAfterFailedStart(startError: unknown): Promise<never> {
+  private async cleanupAfterFailedStart(startError: unknown, lifecycleGeneration: number): Promise<never> {
+    if (this.lifecycleGeneration !== lifecycleGeneration) {
+      throw startError;
+    }
     try {
       await this.stop();
     } catch (stopError) {

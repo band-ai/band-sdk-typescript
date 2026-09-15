@@ -796,7 +796,7 @@ describe("PlatformRuntime", () => {
     await expect(starting).rejects.toThrow("superseded by stop()");
   });
 
-  it("allows shutdown after pending-start cleanup fails", async () => {
+  it("does not let stale failed-start cleanup stop a replacement adapter", async () => {
     const transport = new FakeTransport();
     let releaseStarted!: () => void;
     let signalStarted!: () => void;
@@ -839,9 +839,12 @@ describe("PlatformRuntime", () => {
     await started;
     await expect(runtime.stop()).rejects.toThrow("cleanup failed");
 
+    await runtime.start(nextAdapter);
+    expect(nextAdapter.onRuntimeStop).not.toHaveBeenCalled();
+
     releaseStarted();
     await expect(starting).rejects.toThrow("superseded by stop()");
-    await runtime.start(nextAdapter);
+    expect(nextAdapter.onRuntimeStop).not.toHaveBeenCalled();
     await runtime.stop();
 
     expect(nextAdapter.onRuntimeStop).toHaveBeenCalledTimes(1);
