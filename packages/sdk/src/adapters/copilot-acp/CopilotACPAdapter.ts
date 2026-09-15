@@ -15,27 +15,27 @@ export interface CopilotACPTcpOptions extends ACPClientTcpOptions {}
 
 export type CopilotACPAdapterOptions = CopilotACPStdioOptions | CopilotACPTcpOptions;
 
+function isTcpOptions(options: CopilotACPAdapterOptions): options is CopilotACPTcpOptions {
+  return "host" in options || "port" in options
+}
+
 export class CopilotACPAdapter extends ACPClientAdapter {
   protected readonly provider = "copilot-acp";
 
   public constructor(options: CopilotACPAdapterOptions = {}) {
-    const isTcp = "host" in options || "port" in options
-    if (isTcp && options.env) {
-      resolveLogger(options.logger).warn(
-        "CopilotACPAdapter ignores env for a TCP connection because the remote server owns its environment",
-      )
-    }
-
-    if (isTcp) {
-      const tcpOptions = options as CopilotACPTcpOptions
-      super({ ...tcpOptions, env: undefined })
+    if (isTcpOptions(options)) {
+      if (options.env) {
+        resolveLogger(options.logger).warn(
+          "CopilotACPAdapter ignores env for a TCP connection because the remote server owns its environment",
+        )
+      }
+      super({ ...options, env: undefined })
       return
     }
 
-    const stdioOptions = options as CopilotACPStdioOptions
     super({
-      ...stdioOptions,
-      command: stdioOptions.command ?? [...DEFAULT_COPILOT_ACP_COMMAND],
+      ...options,
+      command: options.command ?? [...DEFAULT_COPILOT_ACP_COMMAND],
     })
   }
 }

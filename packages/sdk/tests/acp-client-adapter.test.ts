@@ -1,6 +1,7 @@
 import { once } from "node:events";
 import { createServer } from "node:net";
 
+import type { Client } from "@agentclientprotocol/sdk";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -1336,7 +1337,7 @@ describe("ACPClientAdapter", () => {
         // (and its own housekeeping timers, which would otherwise pollute
         // `vi.getTimerCount()` assertions under fake timers).
         enableMcpTools: false,
-        connectionFactory: async (client) => {
+        connectionFactory: async (client: Client) => {
           const controller = new AbortController()
           let markClosed: () => void = () => undefined
           const closed = new Promise<void>((resolve) => { markClosed = resolve })
@@ -2058,7 +2059,7 @@ describe("ACPClientAdapter", () => {
       const adapter = new ACPClientAdapter({
         command: ["acp-agent"],
         enableMcpTools: false,
-        connectionFactory: async (client) => {
+        connectionFactory: async (client: Client) => {
           clientHandle = client as unknown as typeof clientHandle
           const controller = new AbortController()
           return {
