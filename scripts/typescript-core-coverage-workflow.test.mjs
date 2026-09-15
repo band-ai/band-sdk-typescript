@@ -102,21 +102,26 @@ async function withStubbedPnpmLs(lsJson, callback) {
   }
 }
 
-test("pin step reports a clear diagnostic naming the raw pnpm ls output when the dependency is missing, instead of a raw stack trace", async () => {
-  const { steps } = await loadSteps();
-  const script = extractRunScript(findStep(steps, "Resolve pinned band-sdk-core version").body);
+for (const [scenario, lsJson] of [
+  ["the dependency is missing", "[{}]"],
+  ["the dependency has no version field", JSON.stringify([{ dependencies: { "@band-ai/band-sdk-core": {} } }])],
+]) {
+  test(`pin step reports a clear diagnostic naming the raw pnpm ls output when ${scenario}, instead of a raw stack trace`, async () => {
+    const { steps } = await loadSteps();
+    const script = extractRunScript(findStep(steps, "Resolve pinned band-sdk-core version").body);
 
-  await withStubbedPnpmLs("[{}]", async ({ directory, env }) => {
-    const result = spawnSync("bash", ["-e", "-c", script], { cwd: directory, encoding: "utf8", env });
+    await withStubbedPnpmLs(lsJson, async ({ directory, env }) => {
+      const result = spawnSync("bash", ["-e", "-c", script], { cwd: directory, encoding: "utf8", env });
 
-    assert.notEqual(result.status, 0);
-    // GitHub Actions recognizes `::error::` as a workflow command from stdout.
-    assert.match(result.stdout, /::error::failed to resolve @band-ai\/band-sdk-core version/);
-    assert.match(result.stdout, /\[\{\}\]/, "the raw pnpm ls output must be printed for diagnosis");
-    assert.doesNotMatch(result.stderr, /at \[eval\]|runScriptInThisContext/, "must not leak a raw Node stack trace");
-    assert.equal(await readFile(join(directory, "github-output"), "utf8"), "");
+      assert.notEqual(result.status, 0);
+      // GitHub Actions recognizes `::error::` as a workflow command from stdout.
+      assert.match(result.stdout, /::error::failed to resolve @band-ai\/band-sdk-core version/);
+      assert.match(result.stdout, new RegExp(lsJson.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "the raw pnpm ls output must be printed for diagnosis");
+      assert.doesNotMatch(result.stderr, /at \[eval\]|runScriptInThisContext/, "must not leak a raw Node stack trace");
+      assert.equal(await readFile(join(directory, "github-output"), "utf8"), "");
+    });
   });
-});
+}
 
 test("pin step resolves a well-formed version and writes it to GITHUB_OUTPUT", async () => {
   const { steps } = await loadSteps();

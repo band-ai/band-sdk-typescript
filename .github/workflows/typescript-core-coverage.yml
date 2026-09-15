@@ -81,12 +81,12 @@ jobs:
           ls_output=$(pnpm --filter @band-ai/sdk ls @band-ai/band-sdk-core --json --depth 0)
           version=$(echo "$ls_output" | node -pe '
             const parsed = JSON.parse(require("fs").readFileSync(0, "utf8"));
-            const dependency = parsed[0]?.dependencies?.["@band-ai/band-sdk-core"];
-            if (!dependency) {
-              console.error("@band-ai/band-sdk-core is not a dependency of @band-ai/sdk in pnpm ls output");
+            const version = parsed[0]?.dependencies?.["@band-ai/band-sdk-core"]?.version;
+            if (!version) {
+              console.error("@band-ai/band-sdk-core has no resolved version in pnpm ls output");
               process.exit(1);
             }
-            dependency.version;
+            version;
           ') || {
             echo "::error::failed to resolve @band-ai/band-sdk-core version -- raw pnpm ls output:"
             echo "$ls_output"
