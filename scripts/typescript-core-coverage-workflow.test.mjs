@@ -115,7 +115,7 @@ test("Core checkout uses the scoped read secret", async () => {
 test("weekly report schedules a separate mention digest", async () => {
   const { workflow } = await loadSteps();
   assert.match(workflow, /^    - cron: "47 4 \* \* 1" # Mondays 04:47 UTC$/m);
-  assert.match(workflow, /report-weekly:\n    name: report weekly coverage\n    needs: coverage\n    if: !cancelled\(\) && github\.event_name == 'schedule'/);
+  assert.match(workflow, /report-weekly:\n    name: report weekly coverage\n    needs: coverage\n    if: "!cancelled\(\) && github\.event_name == 'schedule'"/);
   assert.match(workflow, /permissions:\n      contents: write/);
   assert.match(workflow, /run: bash \.github\/scripts\/read-integrations-mentions\.sh/);
   assert.match(workflow, /run: node \.github\/scripts\/post-core-coverage-digest\.mjs/);
