@@ -14,9 +14,11 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 
+import type { ToolCall, ToolKind } from "@agentclientprotocol/sdk";
 import { BandClient } from "@band-ai/rest-client";
 
 import { Agent, OmpACPAdapter, DEFAULT_OMP_ACP_COMMAND } from "../../src/index";
+import { withTimeout } from "../../src/adapters/shared/withTimeout";
 import { BandLink } from "../../src/platform/BandLink";
 import type { PlatformEvent } from "../../src/platform/events";
 import { FernRestAdapter } from "../../src/rest";
@@ -40,7 +42,9 @@ const OMP_COMMAND = [...DEFAULT_OMP_ACP_COMMAND, "--model", OMP_MODEL];
 const OMP_STATE_DIR_ENV = "PI_CODING_AGENT_DIR";
 // The exact client-gated tool kinds per OMP's approval-mode docs — OMP has
 // no generic "write" kind.
-const GATED_TOOL_KINDS = new Set(["execute", "edit", "delete", "move"]);
+const GATED_TOOL_KINDS: ReadonlySet<ToolKind> = new Set<ToolKind>(["execute", "edit", "delete", "move"]);
+const GUARDED_FILE_NAME = "guarded.txt";
+const GUARDED_FILE_CONTENTS = "do not touch\n";
 // Representative core provider env vars (docs/providers.md's "Core
 // providers" table). Presence of any is the only permitted skip signal.
 // Deliberately incomplete — OMP supports 60+ providers — so an operator on
@@ -60,35 +64,45 @@ function hasProviderCredentials(): boolean {
   return CORE_PROVIDER_ENV_VARS.some((name) => process.env[name]);
 }
 
+// A gated request's `toolCall.kind` alone doesn't say *which* file it's
+// about — an incidental gated call unrelated to the guarded-delete scenario
+// would otherwise satisfy that scenario's assertion too. `locations` is the
+// structured signal; `rawInput` is the same substring-matching fallback this
+// file already uses to corroborate the MCP tool_call below, for an agent that
+// doesn't populate `locations`.
+function toolCallTargetsGuardedFile(toolCall: ToolCall): boolean {
+  const locations = toolCall.locations ?? [];
+  return (
+    locations.some((location) => location.path.endsWith(GUARDED_FILE_NAME))
+    || JSON.stringify(toolCall.rawInput ?? "").includes(GUARDED_FILE_NAME)
+  );
+}
+
 /**
  * `agent.stop(timeoutMs)` doesn't actually bound the wait: `PlatformRuntime`
  * passes `timeoutMs` only to per-room turn-draining, then unconditionally
  * awaits the adapter's own shutdown, and `ACPClientAdapter`'s spawned-process
- * stop sends SIGTERM and waits for `exit`/`close` with no timeout at all. A
- * slow-to-exit `omp acp` process would otherwise hang this whole script's
- * `finally` block — and everything after it (reaping the real Band
- * agents/room, removing temp dirs) — for as long as the child takes to die.
+ * stop sends SIGTERM and waits for `exit`/`close` with no timeout at all —
+ * and no SIGKILL escalation, so a child that outlives SIGTERM never resolves
+ * that wait. This only bounds *this function's own* await chain (via
+ * `withTimeout`) so the rest of `finally` (reaping the real Band
+ * agents/room, removing temp dirs) still runs; it does not reclaim the
+ * subprocess itself. The script's own top-level `process.exit()` (below) is
+ * what keeps a still-alive child's open stdio pipes from hanging the whole
+ * process afterward.
  */
 async function stopAgentWithFallback(target: Agent, timeoutMs: number): Promise<void> {
-  const stopped = target.stop(timeoutMs).then(
-    () => true,
-    (error) => {
-      console.warn("omp-acp cleanup: agent.stop rejected:", error);
-      return true;
+  const stopped = target.stop(timeoutMs).catch((error: unknown) => {
+    console.warn("omp-acp cleanup: agent.stop rejected:", error);
+  });
+  await withTimeout(stopped, timeoutMs * 2, `agent.stop did not complete within ${timeoutMs * 2}ms`).catch(
+    (error: unknown) => {
+      console.warn(
+        `omp-acp cleanup: ${(error as Error).message} — the underlying omp acp subprocess may still be ` +
+        "running; proceeding with the rest of cleanup regardless",
+      );
     },
   );
-  let timer: ReturnType<typeof setTimeout>;
-  const timedOut = new Promise<boolean>((resolve) => {
-    timer = setTimeout(() => resolve(false), timeoutMs * 2);
-  });
-  const finishedInTime = await Promise.race([stopped, timedOut]);
-  clearTimeout(timer!);
-  if (!finishedInTime) {
-    console.warn(
-      `omp-acp cleanup: agent.stop did not complete within ${timeoutMs * 2}ms — the underlying ` +
-      "omp acp subprocess may still be running; proceeding with the rest of cleanup regardless",
-    );
-  }
 }
 
 async function waitForEvent(
@@ -137,6 +151,7 @@ async function main(): Promise<void> {
   let agent: Agent | null = null;
   let observer: BandLink | null = null;
   let deniedRequestSeen = false;
+  let permissionMismatch: string | null = null;
 
   try {
     // Tracked in `tempDirs` (not local `const`s) and created inside the try
@@ -146,8 +161,8 @@ async function main(): Promise<void> {
     tempDirs.push(ompStateDir);
     const ompCwd = await mkdtemp(join(tmpdir(), "band-omp-acp-cwd-"));
     tempDirs.push(ompCwd);
-    const guardedFile = join(ompCwd, "guarded.txt");
-    await writeFile(guardedFile, "do not touch\n");
+    const guardedFile = join(ompCwd, GUARDED_FILE_NAME);
+    await writeFile(guardedFile, GUARDED_FILE_CONTENTS);
 
     await sweepOrphans(userClient, runId);
     const ompIdentity = await provisionAgent(userClient, runId, TEST_NAME, "omp");
@@ -181,26 +196,25 @@ async function main(): Promise<void> {
         // permission gate this test exists to exercise, so none is ever
         // passed here.
         resolvePermission: async (request) => {
-          if (GATED_TOOL_KINDS.has(request.toolCall.kind ?? "")) {
-            deniedRequestSeen = true;
+          if (request.toolCall.kind && GATED_TOOL_KINDS.has(request.toolCall.kind)) {
+            if (toolCallTargetsGuardedFile(request.toolCall)) {
+              deniedRequestSeen = true;
+            }
             const rejectId = request.options.find((option) => option.kind === "reject_once")?.optionId
               ?? request.options.find((option) => option.kind === "reject_always")?.optionId;
             if (!rejectId) {
-              console.warn(
-                `omp-acp: gated request for kind "${request.toolCall.kind}" offered no reject option ` +
-                `(offered: ${request.options.map((option) => option.kind).join(", ")})`,
-              );
+              permissionMismatch =
+                `gated request for kind "${request.toolCall.kind}" offered no reject option ` +
+                `(offered: ${request.options.map((option) => option.kind).join(", ")})`;
             }
             return rejectId;
           }
           const allowId = request.options.find((option) => option.kind === "allow_once")?.optionId
             ?? request.options.find((option) => option.kind === "allow_always")?.optionId;
           if (!allowId) {
-            console.warn(
-              `omp-acp: non-gated request for kind "${request.toolCall.kind}" offered no allow option ` +
-              `(offered: ${request.options.map((option) => option.kind).join(", ")}); ` +
-              "falling back to the first offered option",
-            );
+            permissionMismatch =
+              `non-gated request for kind "${request.toolCall.kind}" offered no allow option ` +
+              `(offered: ${request.options.map((option) => option.kind).join(", ")})`;
           }
           return allowId ?? request.options[0]?.optionId;
         },
@@ -284,7 +298,7 @@ async function main(): Promise<void> {
     deniedRequestSeen = false;
     const permissionMarker = `PERM-${runId}`;
     await senderRest.createChatMessage(chat.id, {
-      content: `@${ompIdentity.name} Delete the file named guarded.txt in your current working directory, then reply with exactly ${permissionMarker} once you are done attempting it.`,
+      content: `@${ompIdentity.name} Delete the file named ${GUARDED_FILE_NAME} in your current working directory, then reply with exactly ${permissionMarker} once you are done attempting it.`,
       mentions: [{ id: ompIdentity.id, handle: ompIdentity.name }],
     });
     await waitForEvent(
@@ -297,17 +311,30 @@ async function main(): Promise<void> {
     );
 
     if (!deniedRequestSeen) {
-      throw new Error("OMP never routed the delete through session/request_permission");
+      throw new Error("OMP never routed the guarded-file delete through session/request_permission");
+    }
+    // Checked once, here, rather than at each call site: a mismatch anywhere
+    // in resolvePermission's lifetime (any turn, not just this scenario) must
+    // hard-fail per this file's own governing rule — `resolvePermission`
+    // throwing would not do that, since ACPClientAdapter's `resolveManually`
+    // catches it internally and treats it as a silent "no answer".
+    if (permissionMismatch) {
+      throw new Error(`resolvePermission: ${permissionMismatch}`);
     }
     const guardedFileContents = await readFile(guardedFile, "utf8").catch(() => null);
-    if (guardedFileContents !== "do not touch\n") {
+    if (guardedFileContents !== GUARDED_FILE_CONTENTS) {
       throw new Error("the guarded file was modified despite the permission resolver denying the request");
     }
 
     console.log("omp-acp passed: permission-gated delete was routed through resolvePermission and denied");
   } finally {
     if (agent) {
-      await stopAgentWithFallback(agent, AGENT_STOP_TIMEOUT_MS);
+      // `stopAgentWithFallback` itself never rejects — this mirrors the other
+      // three cleanup steps below for defensive consistency, not a case that
+      // is currently reachable.
+      await stopAgentWithFallback(agent, AGENT_STOP_TIMEOUT_MS).catch((error: unknown) => {
+        console.warn("omp-acp cleanup: stopAgentWithFallback failed unexpectedly:", error);
+      });
     }
     if (observer) {
       await observer.disconnect().catch((error: unknown) => {
@@ -327,7 +354,18 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error("omp-acp failed:", error);
-  process.exitCode = 1;
-});
+main()
+  .catch((error) => {
+    console.error("omp-acp failed:", error);
+    process.exitCode = 1;
+  })
+  .finally(() => {
+    // A hung `omp acp` child (SIGTERM-only, no SIGKILL escalation — see
+    // createSubprocessConnection in ACPClientAdapter.ts) can outlive
+    // `stopAgentWithFallback` and keep its still-open stdio pipes referenced,
+    // which keeps Node's event loop alive indefinitely. Without forcing exit
+    // here, that turns an already-logged, diagnosable failure into an opaque
+    // 30-minute `e2e.yml` job timeout instead of the fast, clear signal this
+    // script's cleanup is meant to provide.
+    process.exit(process.exitCode ?? 0);
+  });
