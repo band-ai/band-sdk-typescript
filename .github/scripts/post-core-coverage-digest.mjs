@@ -15,46 +15,62 @@ function percent(hit, total) {
   return total ? `${(100 * hit / total).toFixed(2)}%` : "N/A";
 }
 
+function coverageMarker(hit, total) {
+  const value = total ? 100 * hit / total : 0;
+  if (value >= 80) return "🟢";
+  if (value >= 50) return "🟠";
+  return "🔴";
+}
+
+function apiNames(apis, limit = 5) {
+  const names = apis.slice(0, limit).map((api) => `\`${api.name}\``).join(", ");
+  return apis.length > limit ? `${names} +${apis.length - limit} more` : names;
+}
+
 function apiGroups(apis) {
   return [...Map.groupBy(apis, (api) => api.group)].sort(([left, a], [right, b]) => {
     const rate = (items) => items.filter((api) => api.status === API_STATUS.EXERCISED).length / items.length;
-    return rate(a) - rate(b) || left.localeCompare(right);
+    return rate(a) - rate(b) || b.length - a.length || left.localeCompare(right);
   });
 }
 
 export function renderDigest({ lcov, apiCoverage, label, recipients, runUrl, result }) {
-  const lines = ["## Weekly Core coverage report", "", recipients, "", `**${label}**`, "", `Workflow: **${result}**`, ""];
-  if (!lcov) return [...lines, "No coverage report was produced. Coverage is unavailable.", "", `[Open run](${runUrl})`].join("\n");
+  const lines = ["## 📊 Weekly Core coverage", "", recipients, "", `**${label}**`, ""];
+  if (!lcov) return [...lines, `⚠️ **Coverage unavailable** · workflow \`${result}\``, "", "No coverage report was produced. Open the run for failure details.", "", `[Open run →](${runUrl})`].join("\n");
+  const records = parseLcov(lcov);
+  const sum = (key) => records.reduce((total, record) => total + record[key], 0);
   if (apiCoverage?.apis?.length) {
     const apis = apiCoverage.apis;
     const exercised = apis.filter((api) => api.status === API_STATUS.EXERCISED).length;
     const missing = apis.filter((api) => api.status === API_STATUS.UNEXERCISED).length;
     const unmapped = apis.filter((api) => api.status === API_STATUS.UNMAPPED).length;
-    lines.push(`### Public API exercise coverage · ${percent(exercised, apis.length)}`, "",
-      `**${exercised} exercised** · **${missing} unexercised** · **${unmapped} unmapped** · ${apis.length} total`, "",
-      `Core ${apiCoverage.version}. “Exercised” means called at least once by this test run; it does not prove every behavior or branch was tested. Unexercised does not mean unused in production.`, "",
-      "| Core component | Exercised / total | API coverage |", "| --- | ---: | ---: |");
+    lines.push("### Coverage snapshot", "",
+      "| Signal | Result |", "| --- | --- |",
+      `| Public APIs | ${coverageMarker(exercised, apis.length)} **${percent(exercised, apis.length)}** · ${exercised}/${apis.length} exercised · ${missing} missing |`,
+      `| Glue lines | ${coverageMarker(sum("hit"), sum("found"))} **${percent(sum("hit"), sum("found"))}** · ${sum("hit")}/${sum("found")} covered |`,
+      `| Glue functions | ${coverageMarker(sum("functionsHit"), sum("functionsFound"))} **${percent(sum("functionsHit"), sum("functionsFound"))}** · ${sum("functionsHit")}/${sum("functionsFound")} covered |`, "");
+    if (unmapped) lines.push(`⚠️ **${unmapped} public APIs could not be mapped.** The measurement is incomplete.`, "");
+    lines.push("### 🎯 Where to focus", "",
+      "| Core component | Public API exercise |", "| --- | --- |");
     for (const [group, members] of apiGroups(apis)) {
       const hit = members.filter((api) => api.status === API_STATUS.EXERCISED).length;
-      lines.push(`| ${group} | ${hit} / ${members.length} | ${percent(hit, members.length)} |`);
+      const absent = members.filter((api) => api.status === API_STATUS.UNEXERCISED);
+      if (absent.length) lines.push(`| ${group} | ${coverageMarker(hit, members.length)} **${percent(hit, members.length)}** · ${hit}/${members.length} exercised · ${absent.length} missing |`);
     }
-    lines.push("", "### What was exercised and what is missing", "");
-    for (const [group, members] of apiGroups(apis)) {
-      lines.push(`**${group}**`, "");
-      for (const [status, title] of [[API_STATUS.UNEXERCISED, "Unexercised"], [API_STATUS.EXERCISED, "Exercised"], [API_STATUS.UNMAPPED, "Unmapped — measurement incomplete"]]) {
-        const names = members.filter((api) => api.status === status).map((api) => `\`${api.name}\``);
-        if (names.length) lines.push(`- ${title}: ${names.join(", ")}`);
-      }
-      lines.push("");
+    const priorities = apiGroups(apis).filter(([, members]) => members.some((api) => api.status === API_STATUS.UNEXERCISED)).slice(0, 6);
+    lines.push("", "### Missing APIs at a glance", "");
+    for (const [group, members] of priorities) {
+      const absent = members.filter((api) => api.status === API_STATUS.UNEXERCISED);
+      lines.push(`- **${group}:** ${apiNames(absent)}`);
     }
+    const coveredGroups = apiGroups(apis).map(([group, members]) => [group, members.filter((api) => api.status === API_STATUS.EXERCISED)]).filter(([, members]) => members.length);
+    lines.push("", "### ✅ Exercised Core surface", "",
+      "| Core component | APIs called by the SDK tests |", "| --- | --- |");
+    for (const [group, members] of coveredGroups) lines.push(`| ${group} | ${apiNames(members, 8)} |`);
+    lines.push("", `Core ${apiCoverage.version}. “Exercised” means called at least once; it does not prove every behavior or branch. Unexercised does not mean unused in production.`, "");
   } else lines.push("**Public API coverage unavailable.** The API manifest was not produced; generated JavaScript totals cannot identify API gaps.", "");
-  const records = parseLcov(lcov);
-  const sum = (key) => records.reduce((total, record) => total + record[key], 0);
-  lines.push("### Generated JavaScript diagnostics", "", "These measure wasm-bindgen glue. Rust/WASM implementation coverage is not measured by this report.", "",
-    "| Measure | Covered / total | Coverage |", "| --- | ---: | ---: |",
-    `| Lines | ${sum("hit")} / ${sum("found")} | ${percent(sum("hit"), sum("found"))} |`,
-    `| Functions (including generated helpers) | ${sum("functionsHit")} / ${sum("functionsFound")} | ${percent(sum("functionsHit"), sum("functionsFound"))} |`, "",
-    `[Open run and full coverage artifact](${runUrl}#artifacts)`);
+  lines.push("_Glue metrics describe generated JavaScript. Rust/WASM implementation coverage is outside this report._", "",
+    `[View the run and full API/HTML coverage artifact →](${runUrl}#artifacts)`);
   return lines.join("\n");
 }
 

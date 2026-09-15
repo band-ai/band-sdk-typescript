@@ -131,17 +131,15 @@ test("weekly digest distinguishes API exercise from glue coverage and missing me
     { group: "Second", name: "get value", status: "unexercised" },
     { group: "Second", name: "newApi", status: "unmapped" },
   ] } });
-  assert.match(digest, /33\.33%/);
-  assert.match(digest, /1 exercised/);
-  assert.match(digest, /1 unexercised/);
-  assert.match(digest, /1 unmapped/);
-  assert.match(digest, /Second[\s\S]*Unexercised: /);
-  assert.match(digest, /First[\s\S]*Exercised: /);
-  assert.match(digest, /Workflow: \*\*failure\*\*/);
-  assert.match(digest, /Lines \| 12 \/ 24 \| 50\.00%/);
-  assert.match(digest, /Rust\/WASM implementation coverage is not measured/);
+  assert.match(digest, /Public APIs \| 🔴 \*\*33\.33%\*\* · 1\/3 exercised · 1 missing/);
+  assert.match(digest, /1 public APIs could not be mapped/);
+  assert.match(digest, /Second \| 🔴 \*\*0\.00%\*\* · 0\/2 exercised · 1 missing/);
+  assert.match(digest, /\*\*Second:\*\* `get value`/);
+  assert.match(digest, /First \| `get value`/);
+  assert.match(digest, /Glue lines \| 🟠 \*\*50\.00%\*\* · 12\/24 covered/);
+  assert.match(digest, /Rust\/WASM implementation coverage is outside this report/);
   assert.match(renderDigest(options), /Public API coverage unavailable/);
-  assert.match(renderDigest({ ...options, lcov: undefined }), /Coverage is unavailable/);
+  assert.match(renderDigest({ ...options, lcov: undefined }), /Coverage unavailable/);
 });
 
 test("real V8 coverage maps duplicate members, constructors and static methods without generated helpers", async () => {
