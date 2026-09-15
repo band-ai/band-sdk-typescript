@@ -93,6 +93,13 @@ test("pin step is named 'pin' and the checkout ref consumes its declared output"
   );
 });
 
+test("SDK checkout fetches history required by its contract tests", async () => {
+  const { steps } = await loadSteps();
+  const checkout = findStep(steps, "Checkout band-sdk-typescript");
+
+  assert.match(checkout.body, /^          fetch-depth: 0$/m);
+});
+
 test("Core checkout uses the scoped read secret", async () => {
   const { steps } = await loadSteps();
   const checkout = findStep(steps, "Checkout band-sdk-core at the pinned version");
