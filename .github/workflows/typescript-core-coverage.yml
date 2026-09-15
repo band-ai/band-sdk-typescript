@@ -123,15 +123,6 @@ jobs:
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Generate GitHub App Token (scoped to band-sdk-core)
-        id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
-        with:
-          client-id: ${{ secrets.APP_CLIENT_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: band-ai
-          repositories: band-sdk-core
-
       # A "couldn't find remote ref" failure here means the pinned version
       # above passed the stable-semver check but was never tagged in git
       # (e.g. a publish/tag race, or a hand-edited package.json version).
@@ -141,7 +132,7 @@ jobs:
           repository: band-ai/band-sdk-core
           ref: ${{ env.CORE_TAG_PREFIX }}${{ steps.pin.outputs.version }}
           path: ${{ env.CORE_CHECKOUT_PATH }}
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ secrets.CORE_SDK_READ_KEY }}
 
       - name: Install just and wasm-pack
         uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8 # v2

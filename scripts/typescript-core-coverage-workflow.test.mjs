@@ -93,6 +93,17 @@ test("pin step is named 'pin' and the checkout ref consumes its declared output"
   );
 });
 
+test("Core checkout uses the scoped read secret", async () => {
+  const { steps } = await loadSteps();
+  const checkout = findStep(steps, "Checkout band-sdk-core at the pinned version");
+
+  assert.match(checkout.body, /token: \$\{\{ secrets\.CORE_SDK_READ_KEY \}\}/);
+  assert.equal(
+    steps.some((step) => step.name === "Generate GitHub App Token (scoped to band-sdk-core)"),
+    false,
+  );
+});
+
 async function withStubbedPnpmLs(lsJson, CORE_TAG_PREFIX, callback) {
   const directory = await mkdtemp(join(tmpdir(), "pin-step-"));
   const bin = join(directory, "bin");
