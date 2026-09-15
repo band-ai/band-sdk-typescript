@@ -1,27 +1,17 @@
 import { resolveLogger } from "../../core/logger";
 import {
   ACPClientAdapter,
-  type ACPClientAdapterOptions,
+  type ACPClientStdioOptions,
+  type ACPClientTcpOptions,
 } from "../acp";
 
 export const DEFAULT_COPILOT_ACP_COMMAND = ["copilot", "--acp", "--stdio"] as const;
 
-type CopilotACPBaseOptions = Omit<
-  ACPClientAdapterOptions,
-  "command" | "host" | "port"
->;
-
-export interface CopilotACPStdioOptions extends CopilotACPBaseOptions {
+export interface CopilotACPStdioOptions extends Omit<ACPClientStdioOptions, "command"> {
   command?: string | string[];
-  host?: never;
-  port?: never;
 }
 
-export interface CopilotACPTcpOptions extends CopilotACPBaseOptions {
-  command?: never;
-  host: string;
-  port: number;
-}
+export interface CopilotACPTcpOptions extends ACPClientTcpOptions {}
 
 export type CopilotACPAdapterOptions = CopilotACPStdioOptions | CopilotACPTcpOptions;
 
@@ -36,8 +26,16 @@ export class CopilotACPAdapter extends ACPClientAdapter {
       )
     }
 
-    super(isTcp
-      ? { ...options, env: undefined }
-      : { ...options, command: options.command ?? [...DEFAULT_COPILOT_ACP_COMMAND] })
+    if (isTcp) {
+      const tcpOptions = options as CopilotACPTcpOptions
+      super({ ...tcpOptions, env: undefined })
+      return
+    }
+
+    const stdioOptions = options as CopilotACPStdioOptions
+    super({
+      ...stdioOptions,
+      command: stdioOptions.command ?? [...DEFAULT_COPILOT_ACP_COMMAND],
+    })
   }
 }

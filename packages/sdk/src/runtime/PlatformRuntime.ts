@@ -67,6 +67,7 @@ export class PlatformRuntime implements AsyncDisposable {
   private contactHandler?: ContactEventHandler;
   private activeAdapter?: FrameworkAdapter;
   private stopping = false;
+  private lifecycleGeneration = 0;
   private _agentName = "";
   private _agentDescription = "";
   private contactsSubscribed = false;
@@ -182,11 +183,15 @@ export class PlatformRuntime implements AsyncDisposable {
   }
 
   public async start(adapter: FrameworkAdapter): Promise<void> {
+    const lifecycleGeneration = this.lifecycleGeneration;
     await this.initialize();
-    await adapter.onStarted(this._agentName, this._agentDescription);
+    this.assertStartCurrent(lifecycleGeneration);
     this.activeAdapter = adapter;
 
     try {
+      await adapter.onStarted(this._agentName, this._agentDescription);
+      this.assertStartCurrent(lifecycleGeneration);
+
       this.contactHandler = new ContactEventHandler({
         config: this.contactConfig ?? { strategy: "disabled" },
         rest: this.link.rest,
@@ -225,6 +230,7 @@ export class PlatformRuntime implements AsyncDisposable {
       });
 
       await this.runtime.start();
+      this.assertStartCurrent(lifecycleGeneration);
       this.contactsSubscribed = Boolean(this.link.capabilities.contacts);
     } catch (error) {
       await this.cleanupAfterFailedStart(error);
@@ -243,10 +249,18 @@ export class PlatformRuntime implements AsyncDisposable {
     throw startError;
   }
 
+  private assertStartCurrent(lifecycleGeneration: number): void {
+    if (this.lifecycleGeneration !== lifecycleGeneration) {
+      throw new RuntimeStateError("PlatformRuntime start was superseded by stop()");
+    }
+  }
+
   public async stop(timeoutMs?: number): Promise<boolean> {
     if (this.stopping) {
       return true;
     }
+
+    this.lifecycleGeneration += 1;
 
     const runtime = this.runtime;
     const adapter = this.activeAdapter;

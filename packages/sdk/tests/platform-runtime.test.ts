@@ -756,6 +756,46 @@ describe("PlatformRuntime", () => {
     expect(adapter.onRuntimeStop).toHaveBeenCalledTimes(1);
   });
 
+  it("stops an adapter whose startup is still pending", async () => {
+    const transport = new FakeTransport();
+    let releaseStarted!: () => void;
+    let signalStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    const startGate = new Promise<void>((resolve) => {
+      releaseStarted = resolve;
+    });
+    const adapter = {
+      onEvent: vi.fn(async () => undefined),
+      onCleanup: vi.fn(async () => undefined),
+      onStarted: vi.fn(async () => {
+        signalStarted();
+        await startGate;
+      }),
+      onRuntimeStop: vi.fn(async () => undefined),
+    };
+
+    await using runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      link: new BandLink({
+        agentId: "a1",
+        apiKey: "k",
+        transport,
+        restApi: new FakeRestApi(),
+      }),
+    });
+
+    const starting = runtime.start(adapter);
+    await started;
+    await expect(runtime.stop()).resolves.toBe(true);
+    expect(adapter.onRuntimeStop).toHaveBeenCalledTimes(1);
+
+    releaseStarted();
+    await expect(starting).rejects.toThrow("superseded by stop()");
+  });
+
   it("cleans up adapter runtime hooks when startup fails after onStarted", async () => {
     const adapter = {
       onEvent: vi.fn(async () => undefined),

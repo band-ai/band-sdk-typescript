@@ -88,11 +88,20 @@ export class Agent {
     }
 
     if (!this.started && this.startPromise) {
+      const starting = this.startPromise;
+      const stopping = this.platformRuntime.stop(timeoutMs ?? undefined);
+
       try {
-        await this.startPromise;
+        await starting;
       } catch {
+        await stopping;
         return true;
+      } finally {
+        this.started = false;
+        this.startPromise = null;
       }
+
+      return await stopping;
     }
 
     try {

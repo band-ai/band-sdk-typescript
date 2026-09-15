@@ -2,6 +2,9 @@ export {
   ACPClientAdapter,
   createTcpConnection,
   type ACPClientAdapterOptions,
+  type ACPClientAdapterBaseOptions,
+  type ACPClientStdioOptions,
+  type ACPClientTcpOptions,
 } from "./ACPClientAdapter";
 
 export {

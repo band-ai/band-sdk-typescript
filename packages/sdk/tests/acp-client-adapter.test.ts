@@ -1377,7 +1377,7 @@ describe("ACPClientAdapter", () => {
           }
         },
         ...input.adapterOptions,
-      })
+      } as never)
 
       return {
         adapter,
@@ -2082,7 +2082,7 @@ describe("ACPClientAdapter", () => {
           }
         },
         ...input.adapterOptions,
-      })
+      } as never)
 
       return { adapter, setSessionMode, loadSession, newSession, getPermissionResult: () => permissionResult }
     }
@@ -3036,7 +3036,7 @@ describe("ACPClientAdapter", () => {
           extraRpcSpies: { setSessionMode, setSessionConfigOption },
         }),
         ...input.adapterOptions,
-      })
+      } as never)
 
       return { adapter, setSessionMode, setSessionConfigOption, loadSession, newSession }
     }
@@ -3409,11 +3409,11 @@ describe("ACPClientAdapter", () => {
 
 describe("ACP client transports", () => {
   it("rejects incomplete, conflicting, and invalid transport configuration", () => {
-    expect(() => new ACPClientAdapter({})).toThrow("requires a command or TCP host and port")
-    expect(() => new ACPClientAdapter({ host: "127.0.0.1" })).toThrow("requires both host and port")
-    expect(() => new ACPClientAdapter({ command: ["agent"], host: "127.0.0.1", port: 3000 })).toThrow("cannot use command")
-    expect(() => new ACPClientAdapter({ host: "", port: 3000 })).toThrow("host must be a non-empty string")
-    expect(() => new ACPClientAdapter({ host: "127.0.0.1", port: 0 })).toThrow("port must be an integer")
+    expect(() => new ACPClientAdapter({} as never)).toThrow("requires a command or TCP host and port")
+    expect(() => new ACPClientAdapter({ host: "127.0.0.1" } as never)).toThrow("requires both host and port")
+    expect(() => new ACPClientAdapter({ command: ["agent"], host: "127.0.0.1", port: 3000 } as never)).toThrow("cannot use command")
+    expect(() => new ACPClientAdapter({ host: "", port: 3000 } as never)).toThrow("host must be a non-empty string")
+    expect(() => new ACPClientAdapter({ host: "127.0.0.1", port: 0 } as never)).toThrow("port must be an integer")
   })
 
   it("keeps injected connection factories compatible with TCP selection", async () => {

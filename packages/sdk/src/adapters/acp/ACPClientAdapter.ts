@@ -107,10 +107,7 @@ export interface ACPModelRequest {
   models: readonly SessionConfigSelectOption[];
 }
 
-export interface ACPClientAdapterOptions {
-  command?: string | string[];
-  host?: string;
-  port?: number;
+export interface ACPClientAdapterBaseOptions {
   cwd?: string;
   env?: Record<string, string>;
   mcpServers?: McpServer[];
@@ -162,6 +159,20 @@ export interface ACPClientAdapterOptions {
   resolveSessionModel?: (request: ACPModelRequest, signal: AbortSignal) => Promise<string | undefined>;
   logger?: Logger;
 }
+
+export interface ACPClientStdioOptions extends ACPClientAdapterBaseOptions {
+  command: string | string[];
+  host?: never;
+  port?: never;
+}
+
+export interface ACPClientTcpOptions extends ACPClientAdapterBaseOptions {
+  command?: never;
+  host: string;
+  port: number;
+}
+
+export type ACPClientAdapterOptions = ACPClientStdioOptions | ACPClientTcpOptions;
 
 export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, AdapterToolsProtocol> {
   protected readonly provider: string = "acp";
