@@ -11,6 +11,10 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workflowPath = join(root, ".github/workflows/typescript-core-coverage.yml");
 const CORE_TAG_PREFIX = "band-sdk-core-core-v";
 
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 async function loadSteps() {
   const workflow = await readFile(workflowPath, "utf8");
   return { workflow, steps: namedWorkflowSteps(workflow) };
@@ -67,7 +71,7 @@ for (const version of ["2.4.0-dev.3", "2.4.0-rc.1"]) {
     });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /is a pre-release/);
-    assert.match(result.stderr, new RegExp(`${CORE_TAG_PREFIX}${version.replace(/\./g, "\\.")}`));
+    assert.match(result.stderr, new RegExp(escapeRegExp(`${CORE_TAG_PREFIX}${version}`)));
   });
 }
 
@@ -116,7 +120,7 @@ for (const [scenario, lsJson] of [
       assert.notEqual(result.status, 0);
       // GitHub Actions recognizes `::error::` as a workflow command from stdout.
       assert.match(result.stdout, /::error::failed to resolve @band-ai\/band-sdk-core version/);
-      assert.match(result.stdout, new RegExp(lsJson.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), "the raw pnpm ls output must be printed for diagnosis");
+      assert.match(result.stdout, new RegExp(escapeRegExp(lsJson)), "the raw pnpm ls output must be printed for diagnosis");
       assert.doesNotMatch(result.stderr, /at \[eval\]|runScriptInThisContext/, "must not leak a raw Node stack trace");
       assert.equal(await readFile(join(directory, "github-output"), "utf8"), "");
     });
