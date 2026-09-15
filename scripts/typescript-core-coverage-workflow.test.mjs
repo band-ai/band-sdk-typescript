@@ -111,6 +111,34 @@ async function withStubbedPnpmLs(lsJson, CORE_TAG_PREFIX, callback) {
   }
 }
 
+async function withFailingPnpmLs(callback) {
+  const directory = await mkdtemp(join(tmpdir(), "pin-step-"));
+  const bin = join(directory, "bin");
+  await mkdir(bin);
+  await writeFile(join(bin, "pnpm"), `#!/bin/sh\necho "simulated pnpm ls failure" >&2\nexit 1\n`);
+  await chmod(join(bin, "pnpm"), 0o755);
+  const githubOutput = join(directory, "github-output");
+  await writeFile(githubOutput, "");
+  try {
+    await callback({ directory, env: { PATH: `${bin}:${process.env.PATH ?? ""}`, GITHUB_OUTPUT: githubOutput } });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+test("pin step reports a clear diagnostic when pnpm ls itself fails, instead of aborting silently", async () => {
+  const { steps } = await loadSteps();
+  const script = extractRunScript(findStep(steps, "Resolve pinned band-sdk-core version").body);
+
+  await withFailingPnpmLs(async ({ directory, env }) => {
+    const result = spawnSync("bash", ["-e", "-c", script], { cwd: directory, encoding: "utf8", env });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout, /::error::pnpm ls for @band-ai\/band-sdk-core failed/);
+    assert.equal(await readFile(join(directory, "github-output"), "utf8"), "");
+  });
+});
+
 for (const [scenario, lsJson] of [
   ["the dependency is missing", "[{}]"],
   ["the dependency has no version field", JSON.stringify([{ dependencies: { "@band-ai/band-sdk-core": {} } }])],

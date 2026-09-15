@@ -82,7 +82,10 @@ jobs:
         id: pin
         working-directory: ${{ env.TS_CHECKOUT_PATH }}
         run: |
-          ls_output=$(pnpm --filter @band-ai/sdk ls @band-ai/band-sdk-core --json --depth 0)
+          ls_output=$(pnpm --filter @band-ai/sdk ls @band-ai/band-sdk-core --json --depth 0) || {
+            echo "::error::pnpm ls for @band-ai/band-sdk-core failed"
+            exit 1
+          }
           version=$(echo "$ls_output" | node -pe '
             const parsed = JSON.parse(require("fs").readFileSync(0, "utf8"));
             const version = parsed[0]?.dependencies?.["@band-ai/band-sdk-core"]?.version;
@@ -97,13 +100,14 @@ jobs:
             exit 1
           }
 
-          # A bare (non-`local`) command substitution assignment failure
-          # already trips bash's default `set -e` here (GitHub Actions runs
-          # `run:` blocks as `bash -e {0}` unless a `shell:` override says
-          # otherwise) -- the `||` above is for a clear diagnostic, not to
-          # compensate for `set -e` not firing. $version is passed via the
-          # environment, not spliced into the script text, so it can never
-          # break out of the embedded Node literal.
+          # The `|| { ... }` above is the only thing that catches a parse
+          # failure here -- bash suppresses `set -e` for a command that is
+          # the left side of `||` (verified: the same bare assignment with
+          # no trailing `||` does abort via `set -e`, but this one doesn't).
+          # Removing the `||` would let a parse failure fall through with
+          # $version left empty instead of failing loud. $version is passed
+          # via the environment, not spliced into the script text, so it can
+          # never break out of the embedded Node literal.
           VERSION="$version" node -e '
           const version = process.env.VERSION;
           const prefix = process.env.CORE_TAG_PREFIX;
