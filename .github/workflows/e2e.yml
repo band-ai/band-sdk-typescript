@@ -71,6 +71,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install OMP
+        run: npm install --global @oh-my-pi/pi-coding-agent
+
       # BAND_API_KEY_USER is the same Band user credential band-sdk-python's
       # e2e.yml uses (its E2E_BAND_API_KEY_USER secret) to dynamically
       # provision/reap its own test agents — same secret name/shape here so
@@ -81,4 +87,5 @@ jobs:
           BAND_API_KEY_USER: ${{ secrets.E2E_BAND_API_KEY_USER }}
           BAND_REST_URL: ${{ secrets.E2E_BAND_REST_URL }}
           BAND_WS_URL: ${{ secrets.E2E_BAND_WS_URL }}
+          GEMINI_API_KEY: ${{ secrets.E2E_GOOGLE_API_KEY }}
         run: npx tsx tests/integration/${{ matrix.file }}

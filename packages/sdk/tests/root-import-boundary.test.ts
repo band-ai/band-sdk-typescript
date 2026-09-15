@@ -20,6 +20,7 @@ describe("root import boundary", () => {
     expect(typeof sdk.AgentRuntime).toBe("function");
     expect(typeof sdk.GenericAdapter).toBe("function");
     expect(typeof sdk.ClaudeSDKAdapter).toBe("function");
+    expect(typeof sdk.OmpACPAdapter).toBe("function");
   });
 
   it("exposes websocket disconnect errors from the core entrypoint", async () => {

@@ -56,6 +56,7 @@ export { LettaAdapter } from "./adapters/letta";
 export { OpencodeAdapter } from "./adapters/opencode";
 export { ClaudeSDKAdapter } from "./adapters/claude-sdk";
 export { CodexAdapter } from "./adapters/codex";
+export { OmpACPAdapter, DEFAULT_OMP_ACP_COMMAND } from "./adapters/omp-acp";
 
 export type {
   AdapterToolsProtocol,
@@ -101,6 +102,7 @@ export type {
   CodexReasoningSummary,
   CodexWebSearchMode,
   ToolCallingModel,
+  OmpACPAdapterOptions,
 } from "./adapters";
 
 export { SimpleAdapter } from "./core/simpleAdapter";

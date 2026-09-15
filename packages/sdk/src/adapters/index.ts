@@ -11,6 +11,11 @@ export {
   type BandACPServerAdapterOptions,
 } from "./acp";
 export {
+  OmpACPAdapter,
+  DEFAULT_OMP_ACP_COMMAND,
+  type OmpACPAdapterOptions,
+} from "./omp-acp";
+export {
   VercelAISDKAdapter,
   VercelAISDKToolCallingModel,
   type VercelAISDKAdapterOptions,

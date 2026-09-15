@@ -160,7 +160,7 @@ export interface ACPClientAdapterOptions {
 }
 
 export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, AdapterToolsProtocol> {
-  protected readonly provider = "acp";
+  protected readonly provider: string = "acp";
   private readonly command: string[]
   private readonly cwd: string
   private readonly env?: Record<string, string>
