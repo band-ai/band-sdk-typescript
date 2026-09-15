@@ -172,7 +172,7 @@ jobs:
           fi
 
       - name: Map public Core APIs to coverage
-        if: ${{ !cancelled() && hashFiles('band-sdk-core/target/typescript-consumer-coverage/report/coverage-summary.json') != '' }}
+        if: ${{ !cancelled() && hashFiles(format('{0}/{1}/coverage-summary.json', env.CORE_CHECKOUT_PATH, env.REPORT_DIR)) != '' }}
         run: node "$TS_CHECKOUT_PATH/.github/scripts/build-core-api-coverage.mjs" "$CORE_CHECKOUT_PATH/$REPORT_DIR"
 
       - name: Upload coverage report

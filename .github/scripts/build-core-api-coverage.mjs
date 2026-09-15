@@ -1,3 +1,4 @@
+import { API_STATUS } from "./core-api-coverage-schema.mjs";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile, realpath, writeFile } from "node:fs/promises";
@@ -64,16 +65,16 @@ export function buildApiCoverage({ declarations, javascript, coverage, version }
   }
   const apis = publicApis(parseSource("index.d.ts", declarations, ts.ScriptKind.TS)).map((api) => {
     const implementation = implementations.get(`${api.group}.${api.name}`);
-    if (!implementation) return { ...api, status: "unmapped", reason: "No matching JavaScript implementation" };
+    if (!implementation) return { ...api, status: API_STATUS.UNMAPPED, reason: "No matching JavaScript implementation" };
     const start = hasModifier(implementation, ts.SyntaxKind.StaticKeyword) ? implementation.name.getStart(source) : implementation.getStart(source);
     const position = source.getLineAndCharacterOfPosition(start);
     const line = position.line + 1;
     // Function names repeat across classes; only source locations identify an API.
     const matches = Object.entries(coverage.fnMap).filter(([, fn]) => fn.loc.start.line === line && fn.loc.start.column === position.character);
-    if (matches.length !== 1) return { ...api, line, status: "unmapped", reason: "No unique coverage function at source location" };
+    if (matches.length !== 1) return { ...api, line, status: API_STATUS.UNMAPPED, reason: "No unique coverage function at source location" };
     const hits = coverage.f[matches[0][0]];
     if (!Number.isFinite(hits) || hits < 0) throw new Error(`Invalid coverage hits for ${api.group}.${api.name}`);
-    return { ...api, line, hits, status: hits > 0 ? "exercised" : "unexercised" };
+    return { ...api, line, hits, status: hits > 0 ? API_STATUS.EXERCISED : API_STATUS.UNEXERCISED };
   });
   return { version, sourceSha256: createHash("sha256").update(javascript).digest("hex"), apis };
 }
@@ -94,7 +95,7 @@ async function main() {
     version: JSON.parse(await readFile(join(packageDirectory, "package.json"), "utf8")).version,
   });
   await writeFile(join(reportDirectory, "api-coverage.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-  if (manifest.apis.some((api) => api.status === "unmapped")) throw new Error("Some public Core APIs could not be mapped; see api-coverage.json");
+  if (manifest.apis.some((api) => api.status === API_STATUS.UNMAPPED)) throw new Error("Some public Core APIs could not be mapped; see api-coverage.json");
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) await main();

@@ -1,3 +1,4 @@
+import { API_STATUS } from "./core-api-coverage-schema.mjs";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -16,7 +17,7 @@ function percent(hit, total) {
 
 function apiGroups(apis) {
   return [...Map.groupBy(apis, (api) => api.group)].sort(([left, a], [right, b]) => {
-    const rate = (items) => items.filter((api) => api.status === "exercised").length / items.length;
+    const rate = (items) => items.filter((api) => api.status === API_STATUS.EXERCISED).length / items.length;
     return rate(a) - rate(b) || left.localeCompare(right);
   });
 }
@@ -26,21 +27,21 @@ export function renderDigest({ lcov, apiCoverage, label, recipients, runUrl, res
   if (!lcov) return [...lines, "No coverage report was produced. Coverage is unavailable.", "", `[Open run](${runUrl})`].join("\n");
   if (apiCoverage?.apis?.length) {
     const apis = apiCoverage.apis;
-    const exercised = apis.filter((api) => api.status === "exercised").length;
-    const missing = apis.filter((api) => api.status === "unexercised").length;
-    const unmapped = apis.filter((api) => api.status === "unmapped").length;
+    const exercised = apis.filter((api) => api.status === API_STATUS.EXERCISED).length;
+    const missing = apis.filter((api) => api.status === API_STATUS.UNEXERCISED).length;
+    const unmapped = apis.filter((api) => api.status === API_STATUS.UNMAPPED).length;
     lines.push(`### Public API exercise coverage · ${percent(exercised, apis.length)}`, "",
       `**${exercised} exercised** · **${missing} unexercised** · **${unmapped} unmapped** · ${apis.length} total`, "",
       `Core ${apiCoverage.version}. “Exercised” means called at least once by this test run; it does not prove every behavior or branch was tested. Unexercised does not mean unused in production.`, "",
       "| Core component | Exercised / total | API coverage |", "| --- | ---: | ---: |");
     for (const [group, members] of apiGroups(apis)) {
-      const hit = members.filter((api) => api.status === "exercised").length;
+      const hit = members.filter((api) => api.status === API_STATUS.EXERCISED).length;
       lines.push(`| ${group} | ${hit} / ${members.length} | ${percent(hit, members.length)} |`);
     }
     lines.push("", "### What was exercised and what is missing", "");
     for (const [group, members] of apiGroups(apis)) {
       lines.push(`**${group}**`, "");
-      for (const [status, title] of [["unexercised", "Unexercised"], ["exercised", "Exercised"], ["unmapped", "Unmapped — measurement incomplete"]]) {
+      for (const [status, title] of [[API_STATUS.UNEXERCISED, "Unexercised"], [API_STATUS.EXERCISED, "Exercised"], [API_STATUS.UNMAPPED, "Unmapped — measurement incomplete"]]) {
         const names = members.filter((api) => api.status === status).map((api) => `\`${api.name}\``);
         if (names.length) lines.push(`- ${title}: ${names.join(", ")}`);
       }
