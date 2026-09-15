@@ -9,15 +9,20 @@ import { namedWorkflowSteps } from "./workflow-test-utils.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workflowPath = join(root, ".github/workflows/typescript-core-coverage.yml");
-const CORE_TAG_PREFIX = "band-sdk-core-core-v";
 
 function escapeRegExp(text) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function coreTagPrefix(workflow) {
+  const match = workflow.match(/^ {6}CORE_TAG_PREFIX: (\S+)$/m);
+  assert.ok(match, "workflow must declare env.CORE_TAG_PREFIX");
+  return match[1];
+}
+
 async function loadSteps() {
   const workflow = await readFile(workflowPath, "utf8");
-  return { workflow, steps: namedWorkflowSteps(workflow) };
+  return { workflow, steps: namedWorkflowSteps(workflow), CORE_TAG_PREFIX: coreTagPrefix(workflow) };
 }
 
 function findStep(steps, name) {
@@ -52,7 +57,7 @@ function extractPreReleaseGuardScript(pinScript) {
 }
 
 test("pin step's pre-release guard accepts a stable version", async () => {
-  const { steps } = await loadSteps();
+  const { steps, CORE_TAG_PREFIX } = await loadSteps();
   const script = extractPreReleaseGuardScript(extractRunScript(findStep(steps, "Resolve pinned band-sdk-core version").body));
   const result = spawnSync(process.execPath, ["-e", script], {
     encoding: "utf8",
@@ -63,7 +68,7 @@ test("pin step's pre-release guard accepts a stable version", async () => {
 
 for (const version of ["2.4.0-dev.3", "2.4.0-rc.1"]) {
   test(`pin step's pre-release guard rejects ${version}`, async () => {
-    const { steps } = await loadSteps();
+    const { steps, CORE_TAG_PREFIX } = await loadSteps();
     const script = extractPreReleaseGuardScript(extractRunScript(findStep(steps, "Resolve pinned band-sdk-core version").body));
     const result = spawnSync(process.execPath, ["-e", script], {
       encoding: "utf8",
@@ -88,7 +93,7 @@ test("pin step is named 'pin' and the checkout ref consumes its declared output"
   );
 });
 
-async function withStubbedPnpmLs(lsJson, callback) {
+async function withStubbedPnpmLs(lsJson, CORE_TAG_PREFIX, callback) {
   const directory = await mkdtemp(join(tmpdir(), "pin-step-"));
   const bin = join(directory, "bin");
   await mkdir(bin);
@@ -111,10 +116,10 @@ for (const [scenario, lsJson] of [
   ["the dependency has no version field", JSON.stringify([{ dependencies: { "@band-ai/band-sdk-core": {} } }])],
 ]) {
   test(`pin step reports a clear diagnostic naming the raw pnpm ls output when ${scenario}, instead of a raw stack trace`, async () => {
-    const { steps } = await loadSteps();
+    const { steps, CORE_TAG_PREFIX } = await loadSteps();
     const script = extractRunScript(findStep(steps, "Resolve pinned band-sdk-core version").body);
 
-    await withStubbedPnpmLs(lsJson, async ({ directory, env }) => {
+    await withStubbedPnpmLs(lsJson, CORE_TAG_PREFIX, async ({ directory, env }) => {
       const result = spawnSync("bash", ["-e", "-c", script], { cwd: directory, encoding: "utf8", env });
 
       assert.notEqual(result.status, 0);
@@ -128,11 +133,11 @@ for (const [scenario, lsJson] of [
 }
 
 test("pin step resolves a well-formed version and writes it to GITHUB_OUTPUT", async () => {
-  const { steps } = await loadSteps();
+  const { steps, CORE_TAG_PREFIX } = await loadSteps();
   const script = extractRunScript(findStep(steps, "Resolve pinned band-sdk-core version").body);
   const lsJson = JSON.stringify([{ dependencies: { "@band-ai/band-sdk-core": { version: "2.4.0" } } }]);
 
-  await withStubbedPnpmLs(lsJson, async ({ directory, env }) => {
+  await withStubbedPnpmLs(lsJson, CORE_TAG_PREFIX, async ({ directory, env }) => {
     const result = spawnSync("bash", ["-e", "-c", script], { cwd: directory, encoding: "utf8", env });
 
     assert.equal(result.status, 0, result.stderr);
