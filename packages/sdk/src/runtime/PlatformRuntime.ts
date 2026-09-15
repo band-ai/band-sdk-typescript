@@ -10,8 +10,7 @@ import { RuntimeStateError, ValidationError } from "../core/errors";
 import { DefaultPreprocessor } from "./preprocessing/DefaultPreprocessor";
 import { ContactEventHandler } from "./ContactEventHandler";
 import type { ExecutionContext, ExecutionContextOptions } from "./ExecutionContext";
-import type { Logger } from "../core/logger";
-import { NoopLogger } from "../core/logger";
+import { resolveLogger, type Logger } from "../core/logger";
 
 /** Upper bound core's `RetryTracker` accepts for `maxRetries` (u32::MAX). */
 export const MAX_MESSAGE_RETRIES = 4_294_967_295;
@@ -109,7 +108,7 @@ export class PlatformRuntime implements AsyncDisposable {
     this.sessionConfig = options.sessionConfig;
     this.contactConfig = options.contactConfig;
     this.agentConfig = options.agentConfig;
-    this.logger = options.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options.logger);
     this.configuredIdentity = options.identity;
     this._onParticipantAdded = options.onParticipantAdded;
     this._onParticipantRemoved = options.onParticipantRemoved;

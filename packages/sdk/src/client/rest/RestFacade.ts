@@ -1,6 +1,5 @@
 import { UnsupportedFeatureError } from "../../core/errors";
-import type { Logger } from "../../core/logger";
-import { NoopLogger } from "../../core/logger";
+import { resolveLogger, type Logger } from "../../core/logger";
 import type {
   AddContactArgs,
   ContactRecord,
@@ -64,7 +63,7 @@ export class RestFacade implements RestApi {
 
   public constructor(options: RestFacadeOptions) {
     this.api = options.api;
-    this.logger = options.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options.logger);
   }
 
   public async getAgentMe(options?: RestRequestOptions): Promise<AgentIdentity> {
