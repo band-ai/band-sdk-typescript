@@ -84,9 +84,8 @@ jobs:
           BAND_API_KEY_USER: ${{ secrets.E2E_BAND_API_KEY_USER }}
           BAND_REST_URL: ${{ secrets.E2E_BAND_REST_URL }}
           BAND_WS_URL: ${{ secrets.E2E_BAND_WS_URL }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.E2E_COPILOT_GITHUB_TOKEN }}
-          COPILOT_PROVIDER_TYPE: ${{ secrets.E2E_COPILOT_PROVIDER_TYPE }}
-          COPILOT_PROVIDER_BASE_URL: ${{ secrets.E2E_COPILOT_PROVIDER_BASE_URL }}
-          COPILOT_MODEL: ${{ secrets.E2E_COPILOT_MODEL }}
-          COPILOT_PROVIDER_API_KEY: ${{ secrets.E2E_COPILOT_PROVIDER_API_KEY }}
+          COPILOT_PROVIDER_TYPE: anthropic
+          COPILOT_PROVIDER_BASE_URL: https://api.anthropic.com
+          COPILOT_PROVIDER_API_KEY: ${{ secrets.E2E_ANTHROPIC_API_KEY }}
+          COPILOT_MODEL: claude-haiku-4-5
         run: npx tsx tests/integration/${{ matrix.file }}
