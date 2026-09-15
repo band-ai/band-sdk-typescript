@@ -27,7 +27,7 @@ on:
   # Weekly consumer coverage report. This observes main's current coverage
   # without sending notifications for ordinary PR gates.
   schedule:
-    - cron: "47 4 * * 1" # Mondays 04:47 UTC
+    - cron: "47 20 * * 0" # Sunday night: 23:47 Israel summer time, 22:47 winter time
   pull_request:
     branches: [main]
     paths:
@@ -35,6 +35,8 @@ on:
       - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
       - '.github/workflows/typescript-core-coverage.yml'
+      - '.github/scripts/*core*coverage*.mjs'
+      - 'scripts/typescript-core-coverage-workflow.test.mjs'
   merge_group:
   workflow_dispatch:
 
@@ -169,6 +171,10 @@ jobs:
             echo "No coverage summary produced -- see the coverage step's log above." >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Map public Core APIs to coverage
+        if: ${{ !cancelled() && hashFiles('band-sdk-core/target/typescript-consumer-coverage/report/coverage-summary.json') != '' }}
+        run: node "$TS_CHECKOUT_PATH/.github/scripts/build-core-api-coverage.mjs" "$CORE_CHECKOUT_PATH/$REPORT_DIR"
+
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -195,7 +201,7 @@ jobs:
       SHA: ${{ github.sha }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       WORKFLOW_RESULT: ${{ needs.coverage.result }}
-      REPORT_LABEL: band-sdk-core wasm-bindgen glue
+      REPORT_LABEL: TypeScript SDK → Core public APIs
       LCOV_PATH: artifacts/lcov.info
     steps:
       - name: Checkout code

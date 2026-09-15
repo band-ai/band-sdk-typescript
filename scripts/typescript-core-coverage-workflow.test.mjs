@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { namedWorkflowSteps } from "./workflow-test-utils.mjs";
-import { parseLcov, renderDigest } from "../.github/scripts/post-core-coverage-digest.mjs";
+import { renderDigest } from "../.github/scripts/post-core-coverage-digest.mjs";
+import { buildApiCoverage } from "../.github/scripts/build-core-api-coverage.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workflowPath = join(root, ".github/workflows/typescript-core-coverage.yml");
@@ -114,7 +115,7 @@ test("Core checkout uses the scoped read secret", async () => {
 
 test("weekly report schedules a separate mention digest", async () => {
   const { workflow } = await loadSteps();
-  assert.match(workflow, /^    - cron: "47 4 \* \* 1" # Mondays 04:47 UTC$/m);
+  assert.match(workflow, /^    - cron: "47 20 \* \* 0" # Sunday night:/m);
   assert.match(workflow, /report-weekly:\n    name: report weekly coverage\n    needs: coverage\n    if: "!cancelled\(\) && \(github\.event_name == 'schedule' \|\| github\.event_name == 'workflow_dispatch'\)"/);
   assert.match(workflow, /permissions:\n      contents: write/);
   assert.match(workflow, /run: bash \.github\/scripts\/read-integrations-mentions\.sh/);
@@ -122,17 +123,72 @@ test("weekly report schedules a separate mention digest", async () => {
   assert.match(workflow, /RECIPIENTS: \$\{\{ github\.event_name == 'schedule' && steps\.mentions\.outputs\.mentions \|\| format\('@\{0\}', github\.triggering_actor\) \}\}/);
 });
 
-test("weekly digest identifies low and completely uncovered files", () => {
-  const lcov = ["SF:/work/crates/core/src/covered.rs", "FNF:2", "FNH:2", "FN:1,covered", "FNDA:1,covered", "DA:1,1", "DA:2,1", "LF:10", "LH:10", "end_of_record", "SF:/work/crates/core/src/low.rs", "FNF:2", "FNH:1", "FN:10,used", "FNDA:1,used", "FN:12,uncovered", "FNDA:0,uncovered", "DA:10,1", "DA:11,1", "DA:12,0", "DA:13,0", "LF:10", "LH:2", "end_of_record", "SF:/work/crates/core/src/none.rs", "FNF:1", "FNH:0", "FN:20,missing", "FNDA:0,missing", "DA:20,0", "DA:21,0", "DA:22,0", "DA:23,0", "LF:4", "LH:0", "end_of_record"].join("\n");
-  assert.deepEqual(parseLcov(lcov).map((record) => record.path), ["crates/core/src/covered.rs", "crates/core/src/low.rs", "crates/core/src/none.rs"]);
-  const digest = renderDigest({ lcov, label: "Core", recipients: "@bandzalkin", runUrl: "https://example.test/run", result: "success" });
-  assert.match(digest, /Weekly Core coverage report/);
-  assert.match(digest, /\| Lines \| 12\/24 \| 12 \| 50\.00% \|/);
-  assert.match(digest, /\| Functions \| 3\/5 \| 2 \| 60\.00% \|/);
-  assert.match(digest, /`crates\/core\/src\/none\.rs` \| 0\/4 \(0\.00%\) \| 20-23/);
-  assert.match(digest, /`crates\/core\/src\/low\.rs` \| 2\/10 \(20\.00%\) \| 12-13/);
-  assert.match(digest, /\| 12 \| `uncovered` \|/);
-  assert.doesNotMatch(digest, /covered\.rs/);
+test("weekly digest distinguishes API exercise from glue coverage and missing measurements", () => {
+  const lcov = "SF:band_sdk_core.js\nLF:24\nLH:12\nFNF:5\nFNH:3\nend_of_record";
+  const options = { lcov, label: "Core", recipients: "@tester", runUrl: "https://example.test/run", result: "failure" };
+  const digest = renderDigest({ ...options, apiCoverage: { version: "2.5.0", apis: [
+    { group: "First", name: "get value", status: "exercised" },
+    { group: "Second", name: "get value", status: "unexercised" },
+    { group: "Second", name: "newApi", status: "unmapped" },
+  ] } });
+  assert.match(digest, /33\.33%/);
+  assert.match(digest, /1 exercised/);
+  assert.match(digest, /1 unexercised/);
+  assert.match(digest, /1 unmapped/);
+  assert.match(digest, /Second[\s\S]*Unexercised: /);
+  assert.match(digest, /First[\s\S]*Exercised: /);
+  assert.match(digest, /Workflow: \*\*failure\*\*/);
+  assert.match(digest, /Lines \| 12 \/ 24 \| 50\.00%/);
+  assert.match(digest, /Rust\/WASM implementation coverage is not measured/);
+  assert.match(renderDigest(options), /Public API coverage unavailable/);
+  assert.match(renderDigest({ ...options, lcov: undefined }), /Coverage is unavailable/);
+});
+
+test("real V8 coverage maps duplicate members, constructors and static methods without generated helpers", async () => {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "core-api-")));
+  const javascript = [
+    "class First {",
+    "  constructor() {}",
+    "  get value() { return 1; }",
+    "  static default() { return new First(); }",
+    "  free() {}",
+    "}",
+    "class Second {",
+    "  constructor() {}",
+    "  get value() { return 2; }",
+    "}",
+    "function standalone() { return 3; }",
+    "new Second();",
+    "First.default().value;",
+  ].join("\n");
+  const declarations = [
+    "export class First { constructor(); readonly value: number; static default(): First; }",
+    "export class Second { constructor(); readonly value: number; }",
+    "export function standalone(): number;",
+  ].join("\n");
+  const sourcePath = join(directory, "fixture.cjs");
+  try {
+    await writeFile(sourcePath, javascript);
+    const run = spawnSync("pnpm", ["exec", "c8", "--temp-directory", join(directory, "v8"), "--allow-external", "--exclude-node-modules=false", "--include", sourcePath, "--reports-dir", directory, "-r", "json", "node", sourcePath], {
+      cwd: join(root, "packages/sdk"), encoding: "utf8",
+    });
+    assert.equal(run.status, 0, run.stderr);
+    const coverage = Object.values(JSON.parse(await readFile(join(directory, "coverage-final.json"), "utf8")))[0];
+    const report = buildApiCoverage({ declarations, javascript, coverage, version: "fixture" });
+    assert.deepEqual(report.apis.map(({ group, name, status }) => [group, name, status]), [
+      ["First", "constructor", "exercised"],
+      ["First", "get value", "exercised"],
+      ["First", "static default", "exercised"],
+      ["Second", "constructor", "exercised"],
+      ["Second", "get value", "unexercised"],
+      ["Functions", "standalone", "unexercised"],
+    ]);
+    const unmapped = buildApiCoverage({ declarations: declarations + "\nexport function missing(): void;", javascript, coverage, version: "fixture" });
+    assert.equal(unmapped.apis.at(-1).status, "unmapped");
+    assert.throws(() => buildApiCoverage({ declarations: "export const unknownApi: number;", javascript, coverage }), /Unsupported public declaration/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 async function withStubbedPnpmLs(lsJson, CORE_TAG_PREFIX, callback) {
