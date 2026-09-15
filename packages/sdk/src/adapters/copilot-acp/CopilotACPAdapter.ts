@@ -11,7 +11,7 @@ export interface CopilotACPStdioOptions extends Omit<ACPClientStdioOptions, "com
   command?: string | string[];
 }
 
-export interface CopilotACPTcpOptions extends ACPClientTcpOptions {}
+export type CopilotACPTcpOptions = ACPClientTcpOptions;
 
 export type CopilotACPAdapterOptions = CopilotACPStdioOptions | CopilotACPTcpOptions;
 
