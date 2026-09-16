@@ -255,7 +255,7 @@ export class RoomPresence implements AsyncDisposable {
 
       switch (event.type) {
         case "room_added":
-          await this.handleRoomAdded(event.roomId, event.payload as MetadataMap);
+          await this.handleRoomAdded(event.roomId, event.payload);
           break;
         case "room_removed":
         case "room_deleted":

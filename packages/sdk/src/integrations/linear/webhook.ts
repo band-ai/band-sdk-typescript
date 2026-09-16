@@ -244,14 +244,14 @@ export function createLinearWebhookHandler(
       return;
     }
 
-    const rawBody = await readRawBody(request as NodeRequestWithBody);
+    const rawBody = await readRawBody(request);
     let parsed: { type?: string };
     try {
       parsed = webhookClient.parseData(
         rawBody,
         signature,
         timestamp,
-      ) as { type?: string };
+      );
     } catch (error) {
       logger.warn("linear_thenvoi_bridge.webhook_invalid_signature", {
         error: error instanceof Error ? error.message : String(error),

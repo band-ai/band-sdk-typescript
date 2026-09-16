@@ -89,7 +89,7 @@ function toPlatformMessage(
     senderType: message.sender_type,
     senderName: message.sender_name ?? null,
     messageType: message.message_type,
-    metadata: (message.metadata ?? {}) as Record<string, unknown>,
+    metadata: (message.metadata ?? {}),
     createdAt: new Date(message.inserted_at),
   };
 }
@@ -128,7 +128,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         new BandClient({
           apiKey: this.apiKey,
           baseUrl: this.restUrl,
-        }) as unknown as FernBandClientLike,
+        }),
       );
 
     this.rest = restApi;

@@ -159,7 +159,7 @@ abstract class SdkOpencodeClientBase implements OpencodeClientLike {
     await expectVoid(runtime.client.session.promptAsync({
       ...this.scope(),
       sessionID: sessionId,
-      parts: input.parts as unknown[],
+      parts: input.parts,
       ...(input.system ? { system: input.system } : {}),
       ...(input.model ? { model: input.model } : {}),
       ...(input.agent ? { agent: input.agent } : {}),
@@ -270,8 +270,8 @@ abstract class SdkOpencodeClientBase implements OpencodeClientLike {
         }
 
         return {
-          createClient: createClient as (config: Record<string, unknown>) => OpencodeSdkClientLike,
-          createServer: createServer as (options: Record<string, unknown>) => Promise<OpencodeServerHandle>,
+          createClient: createClient,
+          createServer: createServer,
         };
       }).catch((error: unknown) => {
         cachedSdkPromise = null;
