@@ -1,4 +1,4 @@
-import { z, type ZodIssue } from "zod";
+import { z } from "zod";
 
 export interface CustomToolDef {
   schema: z.ZodObject;
@@ -75,7 +75,14 @@ export function customToolToAnthropicSchema(def: CustomToolDef): Record<string, 
 }
 
 function toCleanJsonSchema(schema: z.ZodObject): Record<string, unknown> {
-  const jsonSchema = z.toJSONSchema(schema, { target: "draft-7" }) as Record<string, unknown>;
+  // unrepresentable: "any" keeps schemas with JSON-unrepresentable field types
+  // (bigint, symbol, instanceof, ...) from throwing, at the cost of emitting {}
+  // for those fields — the LLM then receives no type constraint for them.
+  const jsonSchema = z.toJSONSchema(schema, {
+    target: "draft-7",
+    io: "input",
+    unrepresentable: "any",
+  }) as Record<string, unknown>;
   delete jsonSchema["$schema"];
   delete jsonSchema["additionalProperties"];
   return jsonSchema;
@@ -142,7 +149,7 @@ export async function executeCustomTool(
   }
 }
 
-function formatZodIssue(issue: ZodIssue): string {
-  const path = issue.path.length > 0 ? issue.path.join(".") : "value";
+function formatZodIssue(issue: z.core.$ZodIssue): string {
+  const path = issue.path.length > 0 ? issue.path.map(String).join(".") : "value";
   return `${path}: ${issue.message}`;
 }

@@ -130,7 +130,7 @@ export default defineConfig({
   // fully self-contained (no `@band-ai/sdk` type import leaking into dist/*.d.ts,
   // hence no SDK dependency needed). openclaw stays an external type import — it's
   // a peer the host provides.
-  dts: { resolve: ["@band-ai/sdk", "@band-ai/rest-client", "zod", "zod-to-json-schema"] },
+  dts: { resolve: ["@band-ai/sdk", "@band-ai/rest-client", "zod"] },
   sourcemap: true,
   clean: true,
   shims: true,
@@ -145,7 +145,7 @@ export default defineConfig({
   // Keep openclaw (and its plugin-sdk subpaths) external — host provides it
   external: ["openclaw", /^openclaw\//],
   // Bundle the SDK and its dependencies into the plugin
-  noExternal: ["phoenix", "@band-ai/sdk", "@band-ai/rest-client", "zod", "zod-to-json-schema", "ws", "js-yaml"],
+  noExternal: ["phoenix", "@band-ai/sdk", "@band-ai/rest-client", "zod", "ws", "js-yaml"],
   esbuildPlugins: [stubOptionalPeers(sdkOptionalPeers)],
   define: {
     __OPENCLAW_PKG_VERSION__: JSON.stringify(openclawPkg.version),
