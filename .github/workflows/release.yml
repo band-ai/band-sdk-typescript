@@ -104,7 +104,7 @@ jobs:
         # workflow that publishes to npm; Dependabot updates this SHA with each
         # v4 release. Staying on v4 is deliberate — the per-package output names
         # this job reads (`packages/sdk--release_created`) are v4's.
-        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4; immutable pin protects tag and release creation
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v4; immutable pin protects tag and release creation
         id: release
         with:
           token: ${{ steps.app_token_generator.outputs.token }}
