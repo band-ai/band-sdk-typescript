@@ -447,7 +447,7 @@ export class Execution {
       return queued;
     }
 
-    if (!this.isActive()) {
+    if (this.closed || !this.isActive()) {
       return null;
     }
 

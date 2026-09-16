@@ -617,7 +617,7 @@ describe("PhoenixChannelsTransport", () => {
       oldChannel.leaveOutcome = "error";
     }
 
-    await expect(transport.disconnect()).rejects.toThrow(AggregateError);
+    await expect(transport.disconnect()).rejects.toBeInstanceOf(TransportError);
     expect(socket?.channels.has("room:failed-leave")).toBe(false);
 
     await transport.connect();

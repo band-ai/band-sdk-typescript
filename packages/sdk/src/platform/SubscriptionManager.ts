@@ -1,8 +1,7 @@
 import { SubscriptionTracker } from "@band-ai/band-sdk-core";
 import type { LeaveOutcome } from "@band-ai/band-sdk-core";
 import { RuntimeStateError, TransportError } from "../core/errors";
-import type { Logger } from "../core/logger";
-import { NoopLogger } from "../core/logger";
+import { resolveLogger, type Logger } from "../core/logger";
 import { Epoch } from "../core/epoch";
 import { ReconciliationCoordinator } from "./ReconciliationCoordinator";
 import { roomTopics, settleRoomLeaves } from "./roomTopics";
@@ -50,7 +49,7 @@ export class SubscriptionManager {
 
   public constructor(options: { transport: StreamingTransport; logger?: Logger }) {
     this.transport = options.transport;
-    this.logger = options.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options.logger);
     this.reconciliation = new ReconciliationCoordinator(
       this.tracker,
       this.transport,
