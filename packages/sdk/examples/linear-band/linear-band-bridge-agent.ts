@@ -1,6 +1,5 @@
 import {
   Agent,
-  type AgentConfigResult,
   type AgentCreateOptions,
   CodexAdapter,
   type SessionConfig,
@@ -14,88 +13,15 @@ import {
   type LinearActivityClient,
   type SessionRoomStore,
 } from "../../src/linear";
-import { readFileSync } from "node:fs";
-import yaml from "js-yaml";
 import type { Logger } from "../../src/core";
 
-// ── Shared Band-first env/config helpers (imported by server) ───────────────
-const _warnedLegacyVars = new Set<string>();
-
-/**
- * Read an env var with Band-first precedence and once-per-variable legacy
- * deprecation warning. Shared by agent and server entry paths.
- */
-export function readLinearEnv(bandKey: string, legacyKey: string): string | undefined {
-  const bandValue = process.env[bandKey]?.trim();
-  if (bandValue) return bandValue;
-  const legacyValue = process.env[legacyKey]?.trim();
-  if (legacyValue && !_warnedLegacyVars.has(legacyKey)) {
-    _warnedLegacyVars.add(legacyKey);
-    console.warn(`[band] ${legacyKey} is deprecated; use ${bandKey} instead`);
-  }
-  return legacyValue || undefined;
+/** Read an env var. Shared by agent and server entry paths. */
+export function readLinearEnv(bandKey: string): string | undefined {
+  return process.env[bandKey]?.trim() || undefined;
 }
 
-const _warnedLegacyConfigKey = new Set<string>();
-
-/** Result of a Band-first config load, including which YAML key was selected. */
-export interface BandLinearConfigSelection {
-  config: AgentConfigResult;
-  /** The YAML key actually loaded — the Band key, or the legacy key on fallback. */
-  selectedKey: string;
-}
-
-/**
- * Load agent config trying Band key first, then legacy Thenvoi key with a
- * once-per-key deprecation warning. Falls back only when the Band key is
- * absent from the YAML; a present but malformed Band key surfaces its error.
- * Returns the actually-selected key so callers can report it accurately
- * instead of assuming the requested Band key.
- */
-export function loadBandLinearConfigWithKey(
-  bandKey: string,
-  legacyKey: string,
-  configPath?: string,
-): BandLinearConfigSelection {
-  const filePath = configPath ?? "./agent_config.yaml";
-  let parsed: Record<string, unknown> | null = null;
-  try {
-    const raw = readFileSync(filePath, "utf-8");
-    const loaded = yaml.load(raw, { schema: yaml.JSON_SCHEMA });
-    if (loaded && typeof loaded === "object") {
-      parsed = loaded as Record<string, unknown>;
-    }
-  } catch {
-    // File missing — loadAgentConfig will throw a clear error
-  }
-
-  // If the Band key is present in the YAML, use it (surfaces validation errors)
-  if (parsed && bandKey in parsed) {
-    return { config: loadAgentConfig(bandKey, configPath), selectedKey: bandKey };
-  }
-
-  // Band key absent — try legacy with warning
-  if (parsed && legacyKey in parsed) {
-    const config = loadAgentConfig(legacyKey, configPath);
-    if (!_warnedLegacyConfigKey.has(legacyKey)) {
-      _warnedLegacyConfigKey.add(legacyKey);
-      console.warn(`[band] YAML config key "${legacyKey}" is deprecated; use "${bandKey}" instead`);
-    }
-    return { config, selectedKey: legacyKey };
-  }
-
-  // Neither key found — let loadAgentConfig produce the standard error
-  return { config: loadAgentConfig(bandKey, configPath), selectedKey: bandKey };
-}
-
-/** Band-first config load returning only the config (key selection discarded). */
-export function loadBandLinearConfig(
-  bandKey: string,
-  legacyKey: string,
-  configPath?: string,
-): AgentConfigResult {
-  return loadBandLinearConfigWithKey(bandKey, legacyKey, configPath).config;
-}
+/** Default `agent_config.yaml` section for the Linear bridge agent. Shared by agent and server entry paths. */
+export const DEFAULT_BRIDGE_CONFIG_KEY = "linear_band_bridge";
 
 interface LinearBandBridgeAgentOptions {
   agentId?: string;
@@ -176,7 +102,7 @@ function createLinearBandBridgeAgentWithStore(
 
 export function createLinearBandBridgeStore(stateDbPath?: string): SessionRoomStore {
   return createSqliteSessionRoomStore(
-    stateDbPath ?? readLinearEnv("LINEAR_BAND_STATE_DB", "LINEAR_THENVOI_STATE_DB") ?? ".linear-thenvoi-example.sqlite",
+    stateDbPath ?? readLinearEnv("LINEAR_BAND_STATE_DB") ?? ".linear-thenvoi-example.sqlite",
   );
 }
 
@@ -313,7 +239,7 @@ async function runLinearBandBridgeDirect(options?: LinearBandBridgeAgentOptions)
 }
 
 if (isDirectExecution(import.meta.url)) {
-  const config = loadBandLinearConfig("linear_band_bridge", "linear_thenvoi_bridge");
+  const config = loadAgentConfig(DEFAULT_BRIDGE_CONFIG_KEY);
   void runLinearBandBridgeDirect({
     ...config,
   });

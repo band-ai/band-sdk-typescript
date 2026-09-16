@@ -1,7 +1,7 @@
 import type { FrameworkAdapter } from "../contracts/protocols";
 import type { AgentCredentials } from "../config";
 import type { Logger } from "../core/logger";
-import { NoopLogger } from "../core/logger";
+import { resolveLogger } from "../core/logger";
 import { PlatformRuntime, type PlatformRuntimeOptions } from "../runtime/PlatformRuntime";
 import type { RuntimeLifecycleState } from "../runtime/lifecycle";
 import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, startWithGate } from "../runtime/lifecycle";
@@ -36,7 +36,7 @@ export class Agent {
   public constructor(runtime: PlatformRuntime, adapter: FrameworkAdapter, logger?: Logger) {
     this.platformRuntime = runtime;
     this.adapter = adapter;
-    this.logger = logger ?? new NoopLogger();
+    this.logger = resolveLogger(logger);
     this.lifecycle = new LifecycleTracker<RuntimeLifecycleState>({ status: "not_started" }, {
       owner: "Agent",
       logContext: { agentId: runtime.agentId },
@@ -120,17 +120,23 @@ export class Agent {
   }
 
   private async runStart(): Promise<void> {
+    // The fresh `"starting"` state `startWithGate` just installed. Comparing
+    // against this instance — not against the status — is what keeps a start
+    // that a `stop()` superseded from reporting on the lifecycle a *later*
+    // start has since taken over.
+    const startState = this.lifecycle.state;
+
     try {
       await this.platformRuntime.start(this.adapter);
     } catch (error) {
       // PlatformRuntime.start() already ran its own cleanup before rejecting.
-      if (this.lifecycle.is("starting")) {
+      if (this.lifecycle.isCurrent(startState)) {
         this.lifecycle.fail(error, "start-failed");
       }
       throw error;
     }
 
-    if (this.lifecycle.is("starting")) {
+    if (this.lifecycle.isCurrent(startState)) {
       this.lifecycle.transition({ status: "running" }, "started");
     }
   }
@@ -148,20 +154,6 @@ export class Agent {
   }
 
   private async runStop(timeoutMs?: number | null): Promise<boolean> {
-    // Only a start that is still in flight has to be awaited; waiting on an
-    // already-settled one would leave a window where start() is still allowed.
-    const pendingStart = this.lifecycle.is("starting") ? this.startGate.pending : null;
-    if (pendingStart) {
-      try {
-        await pendingStart;
-      } catch (error) {
-        // A failed start has already been cleaned up by PlatformRuntime. The
-        // start's own caller sees the rejection, but a fire-and-forget start()
-        // has no such caller, so leave a trace here.
-        this.logger.debug("Agent stop found the in-flight start had already failed", { error });
-      }
-    }
-
     // A start that failed already tore down whatever PlatformRuntime had built,
     // so there is nothing left to stop — but the caller must not be told the
     // agent shut down gracefully while `state` still reads "failed".
@@ -175,11 +167,29 @@ export class Agent {
       return true;
     }
 
+    // Captured before the transition below moves the lifecycle off "starting".
+    const pendingStart = this.lifecycle.is("starting") ? this.startGate.pending : null;
+
     this.startGate.reset();
     this.lifecycle.transition({ status: "stopping" }, "stop");
 
+    // Issued before awaiting that start rather than after it: `PlatformRuntime.stop()`
+    // is what supersedes an in-flight start, so queueing behind it would let an
+    // adapter whose startup never settles block shutdown indefinitely.
+    const stopping = this.platformRuntime.stop(timeoutMs ?? undefined);
+
+    if (pendingStart) {
+      try {
+        await pendingStart;
+      } catch (error) {
+        // The start's own caller sees the rejection, but a fire-and-forget
+        // start() has no such caller, so leave a trace here.
+        this.logger.debug("Agent stop superseded the in-flight start", { error });
+      }
+    }
+
     try {
-      const graceful = await this.platformRuntime.stop(timeoutMs ?? undefined);
+      const graceful = await stopping;
       this.lifecycle.transition({ status: "stopped" }, "stopped");
       return graceful;
     } catch (error) {

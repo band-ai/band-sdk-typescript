@@ -13,8 +13,13 @@ import type { ExecutionContext, ExecutionContextOptions } from "./ExecutionConte
 import type { RuntimeLifecycleState } from "./lifecycle";
 import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, startWithGate, toLifecycleError } from "./lifecycle";
 import { combineTeardownErrors, isolateTeardown } from "../core/teardown";
-import type { Logger } from "../core/logger";
-import { NoopLogger } from "../core/logger";
+import { resolveLogger, type Logger } from "../core/logger";
+
+/** Upper bound core's `RetryTracker` accepts for `maxRetries` (u32::MAX). */
+export const MAX_MESSAGE_RETRIES = 4_294_967_295;
+
+const isValidRetryCount = (value: number): boolean =>
+  Number.isInteger(value) && value >= 0 && value <= MAX_MESSAGE_RETRIES;
 
 /** Trigger of the cleanup `stop()` that `start()` runs on its own failure path. */
 const START_CLEANUP_TRIGGER = "start-failed";
@@ -41,7 +46,7 @@ export interface PlatformRuntimeOptions {
   };
 }
 
-export class PlatformRuntime {
+export class PlatformRuntime implements AsyncDisposable {
   private readonly _agentId: string;
   private readonly _apiKey: string;
   private readonly _wsUrl?: string;
@@ -86,17 +91,32 @@ export class PlatformRuntime {
       );
     }
 
+    // RetryTracker rejects these too, but only once a room's ExecutionContext
+    // is built mid-run — too late to be actionable.
+    const maxMessageRetries = options.sessionConfig?.maxMessageRetries;
+    if (maxMessageRetries !== undefined && !isValidRetryCount(maxMessageRetries)) {
+      throw new ValidationError(
+        `sessionConfig.maxMessageRetries must be an integer between 0 and ${MAX_MESSAGE_RETRIES}, got ${maxMessageRetries}.`,
+      );
+    }
+
     this._agentId = options.agentId;
     this._apiKey = options.apiKey;
     this._wsUrl = options.wsUrl;
     this._restUrl = options.restUrl;
     this.linkInstance = options.link;
-    this.linkOptions = options.linkOptions;
+    // An explicit top-level logger wins over a link-specific one; absent
+    // both, `logger` stays unset so `BandLink` falls back to its own default
+    // rather than being forced into this runtime's `NoopLogger`.
+    this.linkOptions = {
+      ...options.linkOptions,
+      logger: options.logger ?? options.linkOptions?.logger,
+    };
     this.preprocessor = options.preprocessor ?? new DefaultPreprocessor();
     this.sessionConfig = options.sessionConfig;
     this.contactConfig = options.contactConfig;
     this.agentConfig = options.agentConfig;
-    this.logger = options.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options.logger);
     this.configuredIdentity = options.identity;
     this._onParticipantAdded = options.onParticipantAdded;
     this._onParticipantRemoved = options.onParticipantRemoved;
@@ -173,7 +193,6 @@ export class PlatformRuntime {
         apiKey: this._apiKey,
         wsUrl: this._wsUrl,
         restUrl: this._restUrl,
-        logger: this.logger,
       });
     }
 
@@ -207,27 +226,46 @@ export class PlatformRuntime {
   }
 
   private async runStart(adapter: FrameworkAdapter): Promise<void> {
+    // `startWithGate` has just installed a fresh `"starting"` state. Keeping that
+    // exact instance is how every checkpoint below asks "did a stop() take over
+    // while I was awaiting?" — a status comparison cannot, because a stop
+    // followed by a replacement start is back in `"starting"`, just not this one.
+    const startState = this.lifecycle.state;
+
     try {
-      await this.doStart(adapter);
+      await this.doStart(adapter, startState);
     } catch (error) {
-      // A cleanup that already reached a terminal state keeps its own outcome.
-      if (this.lifecycle.is("starting")) {
-        this.lifecycle.fail(error, "start-failed");
+      // A superseded start owns nothing, and a cleanup that already reached a
+      // terminal state keeps its own outcome.
+      if (this.lifecycle.isCurrent(startState)) {
+        this.lifecycle.fail(error, START_CLEANUP_TRIGGER);
       }
       throw error;
     }
 
-    if (this.lifecycle.is("starting")) {
+    if (this.lifecycle.isCurrent(startState)) {
       this.lifecycle.transition({ status: "running" }, "started");
     }
   }
 
-  private async doStart(adapter: FrameworkAdapter): Promise<void> {
+  private async doStart(adapter: FrameworkAdapter, startState: RuntimeLifecycleState): Promise<void> {
+    const assertNotSuperseded = (): void => {
+      if (!this.lifecycle.isCurrent(startState)) {
+        throw new RuntimeStateError("PlatformRuntime start was superseded by stop()");
+      }
+    };
+
     await this.initialize();
-    await adapter.onStarted(this._agentName, this._agentDescription);
+    assertNotSuperseded();
+    // Claimed before `onStarted` so a stop() landing mid-startup still owes this
+    // adapter its `onRuntimeStop` — several adapters only abort a hung startup
+    // when that hook runs.
     this.activeAdapter = adapter;
 
     try {
+      await adapter.onStarted(this._agentName, this._agentDescription);
+      assertNotSuperseded();
+
       this.contactHandler = new ContactEventHandler({
         config: this.contactConfig ?? { strategy: "disabled" },
         rest: this.link.rest,
@@ -281,12 +319,13 @@ export class PlatformRuntime {
       });
 
       await this.runtime.start();
+      assertNotSuperseded();
       this.contactsSubscribed = Boolean(this.link.capabilities.contacts);
     } catch (error) {
-      if (this.stopGate.pending) {
-        // A stop() is already waiting for this start to settle (see runStop)
-        // and will run the teardown itself; joining its single-flight promise
-        // here would deadlock.
+      if (!this.lifecycle.isCurrent(startState)) {
+        // A stop() already superseded this start and owns the teardown of
+        // whatever it had installed. Cleaning up here would tear down the
+        // replacement runtime a later start() has since built.
         throw error;
       }
 
@@ -319,23 +358,16 @@ export class PlatformRuntime {
   }
 
   private async runStop(timeoutMs: number | undefined, trigger: string): Promise<boolean> {
-    // A stop landing during the early window of a start — before `runtime` and
-    // `activeAdapter` exist — would otherwise report a completed teardown while
-    // that start goes on to build a live, connected runtime. The start's own
-    // cleanup stop is exempt: it *is* that start's failure path. Nothing is
-    // awaited when no start is in flight, keeping the transitions below
-    // observable in the caller's own tick.
-    const pendingStart = trigger !== START_CLEANUP_TRIGGER && this.lifecycle.is("starting")
-      ? this.startGate.pending
-      : null;
-    if (pendingStart) {
-      try {
-        await pendingStart;
-      } catch (error) {
-        // The start's own caller sees this rejection; teardown continues here.
-        this.logger.debug("PlatformRuntime stop is proceeding after the in-flight start failed", { error });
-      }
-    }
+    // A start still in flight is superseded from here, rather than waited on:
+    // its next checkpoint sees a lifecycle that moved off the state it began
+    // under and aborts instead of installing a live runtime behind this
+    // teardown's back. Waiting instead would hand shutdown to the adapter —
+    // several only abort a hung `onStarted()` once `onRuntimeStop()` runs
+    // below, which a stop parked on that same start would never reach.
+    // Clearing the gate keeps a later start() from joining the doomed run.
+    // Nothing is awaited before the transitions below, so they stay observable
+    // in the caller's own tick.
+    this.startGate.reset();
 
     const runtime = this.runtime;
     const adapter = this.activeAdapter;
@@ -358,7 +390,6 @@ export class PlatformRuntime {
       return true;
     }
 
-    this.startGate.reset();
     this.lifecycle.transition({ status: "stopping" }, trigger);
     this.runtime = undefined;
     this.contactHandler = undefined;
@@ -384,6 +415,10 @@ export class PlatformRuntime {
 
     this.lifecycle.transition({ status: "stopped" }, "stopped");
     return graceful;
+  }
+
+  public async [Symbol.asyncDispose](): Promise<void> {
+    await this.stop();
   }
 
   private recordStopFailure(error: unknown): Error {

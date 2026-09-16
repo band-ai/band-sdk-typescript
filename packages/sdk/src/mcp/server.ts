@@ -9,6 +9,7 @@ import {
 } from "./registrations";
 import { buildZodShape } from "./zod";
 import { MCP_SERVER_NAME } from "../runtime/tools/schemas";
+import { isAuthorizedRequest } from "./auth";
 
 export interface BandMcpServerOptions {
   /** Single tools instance (no room scoping) or a resolver function for room-scoped tools. */
@@ -23,6 +24,12 @@ export interface BandMcpServerOptions {
   enableContactTools?: boolean;
   /** Additional MCP tool registrations to expose alongside the built-in tools. */
   additionalTools?: McpToolRegistration[];
+  /**
+   * When set, every `/mcp` request must carry `Authorization: Bearer <authToken>`
+   * or is rejected with a 401. Unset (the default) leaves the server open, matching
+   * prior behavior for callers that don't opt in.
+   */
+  authToken?: string;
 }
 
 const PORT_RANGE_START = 50000;
@@ -111,6 +118,11 @@ export class BandMcpServer {
       res: import("express").Response,
     ): Promise<void> => {
       try {
+        if (!isAuthorizedRequest(req.headers.authorization, this.options.authToken)) {
+          sendMcpError(res, 401, "Unauthorized");
+          return;
+        }
+
         const sessionId = getSessionIdHeader(req.headers["mcp-session-id"]);
         let session = sessionId ? this.sessions.get(sessionId) : undefined;
 

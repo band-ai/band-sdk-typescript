@@ -134,7 +134,6 @@ describe("ContactEventHandler", () => {
       expect(rest.createChatMessage).toHaveBeenCalledWith(
         "room-1",
         { content: "hello" },
-        expect.any(Object),
       );
       expect(rest.listContacts).toHaveBeenCalledWith(
         { page: 1, pageSize: 50 },

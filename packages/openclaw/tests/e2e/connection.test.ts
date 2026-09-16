@@ -114,7 +114,7 @@ describe("E2E: Connection", () => {
         await presence.start();
 
         // Wait for presence to subscribe to existing rooms
-        await waitFor(() => roomJoined || presence!.rooms.size > 0, 5000);
+        await waitFor(() => roomJoined || presence!.roster.trackedRoomIds().length > 0, 5000);
 
         expect(link.isConnected()).toBe(true);
       },

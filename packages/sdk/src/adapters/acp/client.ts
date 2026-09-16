@@ -16,49 +16,40 @@ import { choosePermissionOption } from "./types";
 
 export class BandACPClient implements Client {
   private readonly sessionChunks = new Map<string, CollectedChunk[]>()
-  private readonly permissionHandlers = new Map<string, ACPPermissionHandler>()
+  private readonly permissionHandler: ACPPermissionHandler
+
+  // The handler is connection-scoped and required at construction, so it is
+  // already in place before the agent process is spawned: there is no window
+  // in which a `session/request_permission` has nowhere to go.
+  public constructor(permissionHandler: ACPPermissionHandler) {
+    this.permissionHandler = permissionHandler
+  }
+
+  public beginSession(sessionId: string): void {
+    this.sessionChunks.set(sessionId, [])
+  }
 
   public async sessionUpdate(params: SessionNotification): Promise<void> {
-    const chunk = toCollectedChunk(params.update)
-    if (!chunk) {
+    if (!this.sessionChunks.has(params.sessionId)) {
       return
     }
 
-    const existing = this.sessionChunks.get(params.sessionId) ?? []
-    existing.push(chunk)
-    this.sessionChunks.set(params.sessionId, existing)
+    const chunk = toCollectedChunk(params.update)
+    if (chunk) {
+      this.appendChunk(params.sessionId, chunk)
+    }
   }
 
   public async requestPermission(
     params: RequestPermissionRequest,
   ): Promise<RequestPermissionResponse> {
-    const handler = this.permissionHandlers.get(params.sessionId)
-    if (handler) {
-      return handler(params)
-    }
-
-    return {
-      outcome: {
-        outcome: "cancelled",
-      },
-    }
+    return this.permissionHandler(params)
   }
 
-  public setPermissionHandler(
-    sessionId: string,
-    handler?: ACPPermissionHandler,
-  ): void {
-    if (!handler) {
-      this.permissionHandlers.delete(sessionId)
-      return
-    }
-
-    this.permissionHandlers.set(sessionId, handler)
-  }
-
-  public resetSession(sessionId: string): void {
+  // Named for the one thing it clears: collected chunks are per-turn, and a
+  // per-turn caller must not be able to reach anything with a longer life.
+  public resetChunks(sessionId: string): void {
     this.sessionChunks.delete(sessionId)
-    this.permissionHandlers.delete(sessionId)
   }
 
   public getCollectedText(sessionId?: string): string {
@@ -70,10 +61,24 @@ export class BandACPClient implements Client {
 
   public getCollectedChunks(sessionId?: string): CollectedChunk[] {
     if (sessionId) {
-      return [...(this.sessionChunks.get(sessionId) ?? [])]
+      return coalesceChunks(this.sessionChunks.get(sessionId) ?? [])
     }
 
-    return [...this.sessionChunks.values()].flatMap((chunks) => chunks)
+    return [...this.sessionChunks.values()].flatMap((chunks) => coalesceChunks(chunks))
+  }
+
+  // Unlike `getCollectedChunks`, this clears the buffer as it reads it — so a
+  // caller that flushes twice for the same turn (success path, then a catch
+  // block) can never redeliver the same chunks. Keeps the session's map entry
+  // (an empty array, not a deleted one) so a late `sessionUpdate` still has
+  // somewhere to collect into.
+  public takeCollectedChunks(sessionId: string): CollectedChunk[] {
+    if (!this.sessionChunks.has(sessionId)) {
+      return []
+    }
+    const chunks = coalesceChunks(this.sessionChunks.get(sessionId) ?? [])
+    this.sessionChunks.set(sessionId, [])
+    return chunks
   }
 
   public async extMethod(
@@ -136,6 +141,7 @@ export class BandACPClient implements Client {
           chunkType: "plan",
           content: lines.join("\n"),
           metadata: {},
+          streamed: false,
         })
       }
       return
@@ -148,16 +154,52 @@ export class BandACPClient implements Client {
           chunkType: "text",
           content: `[Task completed] ${result}`,
           metadata: {},
+          streamed: false,
         })
       }
     }
   }
 
   private appendChunk(sessionId: string, chunk: CollectedChunk): void {
-    const existing = this.sessionChunks.get(sessionId) ?? []
-    existing.push(chunk)
-    this.sessionChunks.set(sessionId, existing)
+    this.sessionChunks.get(sessionId)?.push(chunk)
   }
+}
+
+// Posting every collected chunk verbatim would flood the room with a dozen
+// one-word messages for a single streamed reply. A genuine streamed run (see
+// `CollectedChunk.streamed` for why that can't be judged from `chunkType`
+// alone) stays open across the *other* streamed chunk type — Claude/Codex
+// both interleave visible reasoning mid-reply (text → thought → thought →
+// text → …), and a thought is not an action, it's already routed to its own
+// room event, so it must not fragment the text run (or vice versa) the way a
+// real action does. Only a non-streamed chunk (tool_call, tool_call_update,
+// plan, or a one-shot same-typed marker) is a real boundary, closing every
+// open run so the next streamed chunk of either type starts a fresh one.
+// Never mutates `chunks` or its objects — each pushed entry is its own
+// shallow clone, and only a clone's `content` is ever mutated afterward.
+function coalesceChunks(chunks: readonly CollectedChunk[]): CollectedChunk[] {
+  const result: CollectedChunk[] = []
+  const openRuns = new Map<CollectedChunk["chunkType"], CollectedChunk>()
+
+  for (const chunk of chunks) {
+    if (!chunk.streamed) {
+      openRuns.clear()
+      result.push({ ...chunk })
+      continue
+    }
+
+    const openRun = openRuns.get(chunk.chunkType)
+    if (openRun) {
+      openRun.content += chunk.content
+      continue
+    }
+
+    const clone = { ...chunk }
+    openRuns.set(chunk.chunkType, clone)
+    result.push(clone)
+  }
+
+  return result
 }
 
 function toCollectedChunk(update: SessionUpdate): CollectedChunk | null {
@@ -167,12 +209,14 @@ function toCollectedChunk(update: SessionUpdate): CollectedChunk | null {
         chunkType: "text",
         content: extractTextFromContent(update.content),
         metadata: {},
+        streamed: true,
       }
     case "agent_thought_chunk":
       return {
         chunkType: "thought",
         content: extractTextFromContent(update.content),
         metadata: {},
+        streamed: true,
       }
     case "tool_call":
       return {
@@ -183,6 +227,7 @@ function toCollectedChunk(update: SessionUpdate): CollectedChunk | null {
           raw_input: update.rawInput,
           status: update.status ?? "pending",
         },
+        streamed: false,
       }
     case "tool_call_update":
       return {
@@ -192,12 +237,14 @@ function toCollectedChunk(update: SessionUpdate): CollectedChunk | null {
           tool_call_id: update.toolCallId,
           status: update.status ?? "completed",
         },
+        streamed: false,
       }
     case "plan":
       return {
         chunkType: "plan",
         content: update.entries.map((entry) => entry.content).join("\n"),
         metadata: {},
+        streamed: false,
       }
     default:
       return null

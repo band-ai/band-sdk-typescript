@@ -1,7 +1,6 @@
 import { Channel, Socket } from "phoenix";
 import { TransportError } from "../../core/errors";
-import type { Logger } from "../../core/logger";
-import { NoopLogger } from "../../core/logger";
+import { resolveLogger, type Logger } from "../../core/logger";
 import { combineTeardownErrors } from "../../core/teardown";
 import {
   WebSocketDisconnectError,
@@ -13,6 +12,7 @@ import {
 } from "./disconnectReason";
 import { createNodeWebSocketFactory } from "./nodeWebSocketFactory";
 import type { StreamingTransport, TopicHandlers } from "./transport";
+import { agentControlTopic } from "@band-ai/band-sdk-core";
 
 interface PhoenixChannelsTransportOptions {
   wsUrl: string;
@@ -52,7 +52,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private suppressNextCloseReason = false;
 
   public constructor(options: PhoenixChannelsTransportOptions) {
-    this.logger = options.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options.logger);
     this.agentId = options.agentId;
     this.onTerminalDisconnect = options.onTerminalDisconnect;
 
@@ -352,7 +352,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       return;
     }
 
-    await this.join(`agent_control:${this.agentId}`, {
+    await this.join(agentControlTopic(this.agentId), {
       supersede: (payload) => {
         const reason = parseSupersedeDisconnectReason(payload);
         if (!reason) {

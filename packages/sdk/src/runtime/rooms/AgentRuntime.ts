@@ -1,7 +1,6 @@
 import type { BandLink } from "../../platform/BandLink";
 import type { ContactEvent, PlatformEvent } from "../../platform/events";
-import type { Logger } from "../../core/logger";
-import { NoopLogger } from "../../core/logger";
+import { resolveLogger, type Logger } from "../../core/logger";
 import type { MetadataMap, ParticipantRecord } from "../../contracts/dtos";
 import { Execution } from "../Execution";
 import { ExecutionContext, type ExecutionContextOptions } from "../ExecutionContext";
@@ -13,8 +12,8 @@ import {
   isLegalRuntimeTransition,
   startWithGate,
 } from "../lifecycle";
-import { hydrateTrackedRooms, trackRoomJoin, trackRoomLeave } from "./subscriptions";
 import { combineTeardownErrors, isolateTeardown } from "../../core/teardown";
+import { RoomPresence } from "./RoomPresence";
 import type { AgentConfig, SessionConfig } from "../types";
 import type { PlatformMessage } from "../types";
 
@@ -37,29 +36,25 @@ interface AgentRuntimeOptions {
 }
 
 export class AgentRuntime {
+  public readonly presence: RoomPresence;
   private readonly link: BandLink;
   private readonly agentId: string;
-  private readonly onExecute: (context: ExecutionContext, event: PlatformEvent) => Promise<void>;
-  private readonly onSessionCleanup: (roomId: string) => Promise<void>;
-  private readonly onRoomJoined?: (roomId: string, payload: MetadataMap) => Promise<void> | void;
-  private readonly onRoomLeft?: (roomId: string) => Promise<void> | void;
-  private readonly onContactEvent?: (event: ContactEvent) => Promise<void>;
-  private readonly onParticipantAdded?: (roomId: string, participant: ParticipantRecord) => Promise<void> | void;
-  private readonly onParticipantRemoved?: (roomId: string, participantId: string) => Promise<void> | void;
-  private readonly onError?: (error: unknown, event: PlatformEvent) => void;
-  private readonly roomFilter?: (room: MetadataMap) => boolean;
-  private readonly contextFactory?: (roomId: string, defaults: ExecutionContextOptions) => ExecutionContext;
+  private readonly onExecute: AgentRuntimeOptions["onExecute"];
+  private readonly onSessionCleanup: NonNullable<AgentRuntimeOptions["onSessionCleanup"]>;
+  private readonly onRoomJoined?: AgentRuntimeOptions["onRoomJoined"];
+  private readonly onRoomLeft?: AgentRuntimeOptions["onRoomLeft"];
+  private readonly onContactEvent?: AgentRuntimeOptions["onContactEvent"];
+  private readonly onParticipantAdded?: AgentRuntimeOptions["onParticipantAdded"];
+  private readonly onParticipantRemoved?: AgentRuntimeOptions["onParticipantRemoved"];
+  private readonly onError?: AgentRuntimeOptions["onError"];
+  private readonly contextFactory?: AgentRuntimeOptions["contextFactory"];
   private readonly sessionConfig: Required<SessionConfig>;
-  private readonly autoSubscribeExistingRooms: boolean;
-  private readonly subscribedRooms = new Set<string>();
   private readonly contexts = new Map<string, ExecutionContext>();
   private readonly executions = new Map<string, Execution>();
   private readonly executionWatchers = new Map<string, Promise<void>>();
   private readonly logger: Logger;
   private readonly stoppedSignal = new TerminalSignal();
   private readonly lifecycle: LifecycleTracker<RuntimeLifecycleState>;
-  private stopController = new AbortController();
-  private consumeTask: Promise<void> | null = null;
   private readonly startGate = new SingleFlight<void>();
   private readonly stopGate = new SingleFlight<boolean>();
 
@@ -71,11 +66,10 @@ export class AgentRuntime {
     this.onRoomJoined = options.onRoomJoined;
     this.onRoomLeft = options.onRoomLeft;
     this.onError = options.onError;
-    this.logger = options.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options.logger);
     this.onContactEvent = options.onContactEvent;
     this.onParticipantAdded = options.onParticipantAdded;
     this.onParticipantRemoved = options.onParticipantRemoved;
-    this.roomFilter = options.roomFilter;
     this.contextFactory = options.contextFactory;
     this.sessionConfig = {
       enableContextCache: options.sessionConfig?.enableContextCache ?? true,
@@ -84,7 +78,6 @@ export class AgentRuntime {
       maxMessageRetries: options.sessionConfig?.maxMessageRetries ?? 1,
       enableContextHydration: options.sessionConfig?.enableContextHydration ?? true,
     };
-    this.autoSubscribeExistingRooms = options.agentConfig?.autoSubscribeExistingRooms ?? false;
     this.lifecycle = new LifecycleTracker<RuntimeLifecycleState>({ status: "not_started" }, {
       owner: "AgentRuntime",
       logContext: { agentId: this.agentId },
@@ -98,6 +91,49 @@ export class AgentRuntime {
         }
       },
     });
+
+    this.presence = new RoomPresence({
+      link: this.link,
+      roomFilter: options.roomFilter,
+      autoSubscribeExistingRooms: options.agentConfig?.autoSubscribeExistingRooms ?? false,
+      logger: this.logger,
+    });
+    this.presence.onRoomJoined = async (roomId, payload) => {
+      this.getOrCreateExecution(roomId);
+      await this.onRoomJoined?.(roomId, payload);
+    };
+    this.presence.onRoomLeft = async (roomId) => {
+      await this.teardownExecution(roomId);
+      await this.onRoomLeft?.(roomId);
+    };
+    this.presence.onRoomEvent = async (roomId, event) => {
+      switch (event.type) {
+        case "participant_added": {
+          const context = this.getOrCreateContext(roomId);
+          const participant = {
+            id: event.payload.id,
+            name: event.payload.name,
+            type: event.payload.type,
+            handle: event.payload.handle,
+          };
+          context.addParticipant(participant);
+          await this.onParticipantAdded?.(roomId, participant);
+          return;
+        }
+        case "participant_removed": {
+          const context = this.getOrCreateContext(roomId);
+          context.removeParticipant(event.payload.id);
+          await this.onParticipantRemoved?.(roomId, event.payload.id);
+          return;
+        }
+        case "message_created":
+          await this.getOrCreateExecution(roomId).enqueue(event);
+          return;
+        default:
+          assertNever(event);
+      }
+    };
+    this.presence.onContactEvent = this.onContactEvent ?? null;
   }
 
   /** Current lifecycle state of this runtime. */
@@ -124,44 +160,21 @@ export class AgentRuntime {
   }
 
   private async runStart(): Promise<void> {
-    // A fresh controller per run; the previous one is never aborted here because
-    // another caller may still be observing it.
-    this.stopController = new AbortController();
-
     try {
-      await this.link.connect();
+      await this.presence.start();
     } catch (error) {
       await this.finishFailedStart();
       throw error;
     }
 
-    try {
-      await this.link.subscribeAgentRooms();
-    } catch {
-      this.logger.warn("AgentRuntime failed to subscribe agent_rooms channel, continuing without it");
-    }
-
-    try {
-      await this.subscribeExistingRooms();
-    } catch (error) {
-      await this.finishFailedStart();
-      throw error;
-    }
-
-    this.consumeTask = this.consumeLoop(this.stopController.signal);
     if (this.lifecycle.is("starting")) {
       this.lifecycle.transition({ status: "running" }, "started");
     }
 
-    if (!this.link.capabilities.contacts) {
-      return;
-    }
-
-    try {
-      await this.link.subscribeAgentContacts();
-    } catch {
-      this.logger.warn("AgentRuntime failed to subscribe agent_contacts channel, continuing without it");
-    }
+    // The event loop outlives start(): its failure is the runtime's failure.
+    void this.presence
+      .waitUntilStopped()
+      .catch((error: unknown) => this.failRuntime(error, syntheticRuntimeFailureEvent(this.agentId)));
   }
 
   private async finishFailedStart(): Promise<void> {
@@ -178,11 +191,7 @@ export class AgentRuntime {
   }
 
   private async handleStartFailure(): Promise<void> {
-    this.stopController.abort();
-    if (this.consumeTask) {
-      await this.consumeTask;
-      this.consumeTask = null;
-    }
+    this.presence.abortEventLoop();
     await this.link.disconnect();
   }
 
@@ -199,9 +208,12 @@ export class AgentRuntime {
 
   private async runStop(timeoutMs?: number): Promise<boolean> {
     // A stop landing mid-start must not report a teardown of resources that
-    // start() has not created yet, so wait for it to settle first. Nothing is
-    // awaited when no start is in flight, keeping the transition below
-    // observable in the caller's own tick.
+    // start() has not created yet, so wait for it to settle first — which is
+    // also what `RoomPresence` does internally, since its own start/stop pair
+    // is serialised. Unlike `PlatformRuntime` there is no third-party adapter
+    // here whose startup could park forever, so waiting cannot strand the
+    // caller. Nothing is awaited when no start is in flight, keeping the
+    // transition below observable in the caller's own tick.
     const pendingStart = this.lifecycle.is("starting") ? this.startGate.pending : null;
     if (pendingStart) {
       try {
@@ -233,44 +245,39 @@ export class AgentRuntime {
 
   private async performStop(timeoutMs: number | undefined, fatalError: Error | null): Promise<boolean> {
     // Every step below is isolated: one room's failed teardown must not skip the
-    // remaining rooms, the map clearing, or the link disconnect.
+    // remaining rooms, the presence teardown, the map clearing, or the link
+    // disconnect.
     const errors: unknown[] = [];
 
-    this.stopController.abort();
-    const consumeTask = this.consumeTask;
-    if (consumeTask) {
-      this.consumeTask = null;
-      await isolateTeardown(errors, () => consumeTask);
-    }
-
-    const deadline = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
-    const remaining = (): number | undefined =>
-      deadline === undefined ? undefined : Math.max(0, deadline - Date.now());
+    this.presence.abortEventLoop();
+    await isolateTeardown(errors, () => this.presence.waitUntilStopped());
 
     let graceful = true;
 
-    for (const execution of this.executions.values()) {
-      await isolateTeardown(errors, async () => {
-        graceful = (await execution.stop(remaining())) && graceful;
-      });
-    }
+    // All stopped (and deleted) before `presence.stop()` runs below, so its
+    // onRoomLeft callback finds nothing left to stop and never re-blocks an
+    // already-timed-out execution on a second, unbounded `waitForIdle`. Each
+    // execution owns fully independent state, so stopping them concurrently
+    // (sharing one `timeoutMs` budget rather than a shrinking per-iteration
+    // remainder) is both safe and fair regardless of iteration order.
+    await Promise.all(
+      [...this.executions].map(async ([roomId, execution]) => {
+        await isolateTeardown(errors, async () => {
+          graceful = (await execution.stop(timeoutMs)) && graceful;
+        });
+        this.executions.delete(roomId);
+      }),
+    );
 
-    for (const roomId of [...this.subscribedRooms]) {
-      await isolateTeardown(errors, () => this.leaveTrackedRoom(roomId, remaining()));
-    }
+    await isolateTeardown(errors, () => this.presence.stop());
 
     for (const roomId of [...this.contexts.keys()]) {
       await isolateTeardown(errors, () => this.onSessionCleanup(roomId));
     }
 
-    this.subscribedRooms.clear();
     this.contexts.clear();
     this.executions.clear();
     this.executionWatchers.clear();
-
-    if (this.link.capabilities.contacts) {
-      await isolateTeardown(errors, () => this.link.unsubscribeAgentContacts());
-    }
 
     await isolateTeardown(errors, () => this.link.disconnect());
 
@@ -302,16 +309,10 @@ export class AgentRuntime {
    * starting it does not resolve a pending wait.
    */
   public async waitUntilStopped(): Promise<void> {
-    const task = this.consumeTask;
-    if (!task) {
-      await this.stoppedSignal.wait();
-      return;
-    }
-
-    await task;
-    if (this.lifecycle.is("failed")) {
-      throw this.lifecycle.state.error;
-    }
+    // Driven by the lifecycle rather than by `presence`'s event task: a runtime
+    // that has not started one yet, or that is between runs, must still park
+    // here until this runtime itself reaches a terminal state.
+    await this.stoppedSignal.wait();
   }
 
   private markFailed(error: unknown, trigger: string): boolean {
@@ -326,99 +327,20 @@ export class AgentRuntime {
     return [...this.contexts.values()];
   }
 
-  private async consumeLoop(signal: AbortSignal): Promise<void> {
-    while (!signal.aborted) {
-      let event: PlatformEvent | null;
-      try {
-        event = await this.link.nextEvent(signal);
-      } catch (error: unknown) {
-        await this.failRuntime(error, syntheticRuntimeFailureEvent(this.agentId));
-        return;
-      }
-
-      if (!event) {
-        return;
-      }
-      try {
-        await this.handleEvent(event);
-      } catch (error: unknown) {
-        await this.failRuntime(error, event);
-        return;
-      }
-    }
-  }
-
-  private async handleEvent(event: PlatformEvent): Promise<void> {
-    switch (event.type) {
-      case "room_added":
-        await trackRoomJoin({
-          link: this.link,
-          roomId: event.roomId,
-          payload: event.payload as MetadataMap,
-          trackedRooms: this.subscribedRooms,
-          roomFilter: this.roomFilter,
-          onJoined: async (roomId) => {
-            this.getOrCreateExecution(roomId);
-            await this.onRoomJoined?.(roomId, event.payload as MetadataMap);
-          },
-        });
-        return;
-      case "room_removed":
-      case "room_deleted":
-        if (event.roomId) {
-          await this.onRoomLeft?.(event.roomId);
-          await this.leaveTrackedRoom(event.roomId);
-        }
-        return;
-      case "participant_added":
-        if (event.roomId) {
-          const context = this.getOrCreateContext(event.roomId);
-          const participant = {
-            id: event.payload.id,
-            name: event.payload.name,
-            type: event.payload.type,
-            handle: event.payload.handle,
-          };
-          context.addParticipant(participant);
-          await this.onParticipantAdded?.(event.roomId, participant);
-        }
-        return;
-      case "participant_removed":
-        if (event.roomId) {
-          const context = this.getOrCreateContext(event.roomId);
-          context.removeParticipant(event.payload.id);
-          await this.onParticipantRemoved?.(event.roomId, event.payload.id);
-        }
-        return;
-      case "contact_request_received":
-      case "contact_request_updated":
-      case "contact_added":
-      case "contact_removed":
-        await this.onContactEvent?.(event);
-        return;
-      case "message_created":
-        if (!event.roomId) {
-          return;
-        }
-
-        await this.getOrCreateExecution(event.roomId).enqueue(event);
-        return;
-    }
-
-    return assertNever(event);
-  }
-
   public async enqueueEvent(roomId: string, event: PlatformEvent): Promise<void> {
     await this.getOrCreateExecution(roomId).enqueue(event);
   }
 
   public async bootstrapRoomMessage(roomId: string, message: PlatformMessage): Promise<void> {
-    await this.link.subscribeRoom(roomId);
-    this.subscribedRooms.add(roomId);
+    await this.presence.admitRoomOrThrow(roomId);
     await this.getOrCreateExecution(roomId).bootstrapMessage(message);
   }
 
   public async resetRoomSession(roomId: string, timeoutMs?: number): Promise<boolean> {
+    return await this.teardownExecution(roomId, timeoutMs);
+  }
+
+  private async teardownExecution(roomId: string, timeoutMs?: number): Promise<boolean> {
     const execution = this.executions.get(roomId);
     const errors: unknown[] = [];
     let graceful = true;
@@ -497,57 +419,13 @@ export class AgentRuntime {
       enableContextCache: this.sessionConfig.enableContextCache,
       contextCacheTtlSeconds: this.sessionConfig.contextCacheTtlSeconds,
       enableContextHydration: this.sessionConfig.enableContextHydration,
+      logger: this.logger,
     };
     const context = this.contextFactory
       ? this.contextFactory(roomId, defaults)
       : new ExecutionContext(defaults);
     this.contexts.set(roomId, context);
     return context;
-  }
-
-  private async subscribeExistingRooms(): Promise<void> {
-    if (!this.autoSubscribeExistingRooms) {
-      return;
-    }
-
-    await hydrateTrackedRooms({
-      link: this.link,
-      trackedRooms: this.subscribedRooms,
-      roomFilter: this.roomFilter,
-      onJoined: async (roomId, payload) => {
-        this.getOrCreateExecution(roomId);
-        await this.onRoomJoined?.(roomId, payload);
-      },
-      onError: async (error) => {
-        this.logger.warn("AgentRuntime failed to subscribe existing rooms", {
-          error,
-        });
-      },
-    });
-  }
-
-  private async leaveTrackedRoom(roomId: string, timeoutMs?: number): Promise<void> {
-    const errors: unknown[] = [];
-    await trackRoomLeave({
-      link: this.link,
-      roomId,
-      trackedRooms: this.subscribedRooms,
-      onLeft: async (leftRoomId) => {
-        const execution = this.executions.get(leftRoomId);
-        if (execution) {
-          // Isolated so a failed execution still gets evicted from the maps.
-          await isolateTeardown(errors, () => execution.stop(timeoutMs));
-        }
-
-        this.contexts.delete(leftRoomId);
-        this.executions.delete(leftRoomId);
-        await isolateTeardown(errors, () => this.onSessionCleanup(leftRoomId));
-      },
-    });
-
-    if (errors.length > 0) {
-      throw combineTeardownErrors(errors, "AgentRuntime failed to tear down cleanly");
-    }
   }
 
   private async failRuntime(error: unknown, event: PlatformEvent): Promise<void> {
@@ -569,9 +447,7 @@ export class AgentRuntime {
       });
     }
 
-    if (!this.stopController.signal.aborted) {
-      this.stopController.abort();
-    }
+    this.presence.abortEventLoop();
   }
 
   private notifyOnError(error: unknown, event: PlatformEvent): void {
@@ -591,6 +467,10 @@ export class AgentRuntime {
   }
 }
 
+function assertNever(value: never): never {
+  throw new Error(`Unhandled room event: ${JSON.stringify(value)}`);
+}
+
 function syntheticRuntimeFailureEvent(agentId: string): PlatformEvent {
   return {
     type: "message_created",
@@ -607,8 +487,4 @@ function syntheticRuntimeFailureEvent(agentId: string): PlatformEvent {
       updated_at: new Date(0).toISOString(),
     },
   };
-}
-
-function assertNever(value: never): never {
-  throw new Error(`Unhandled platform event: ${JSON.stringify(value)}`);
 }

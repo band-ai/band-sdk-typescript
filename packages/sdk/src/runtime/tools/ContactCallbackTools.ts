@@ -1,7 +1,7 @@
+import { asErrorMessage } from "../../core/coercion";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
 import type {
   AgentToolsRestApi,
-  ChatParticipant,
   ChatMessagingRestApi,
   ChatRoomRestApi,
   ContactRestApi,
@@ -25,11 +25,15 @@ import type {
   ToolOperationResult,
   ToolSchemaRecord,
 } from "../../contracts/dtos";
-import type {
-  AdapterToolsProtocol,
-  AgentToolsCapabilities,
+import type { AgentFailure } from "@band-ai/band-sdk-core";
+import {
+  sendFailureViaEvent,
+  type AdapterToolsProtocol,
+  type AgentToolsCapabilities,
 } from "../../contracts/protocols";
 import { UnsupportedFeatureError } from "../../core/errors";
+import { resolveLogger, type Logger } from "../../core/logger";
+import { toParticipantRecordFromRest } from "../formatters";
 import { ContactToolsImpl } from "./ContactToolsImpl";
 
 type ContactCallbackRestApi =
@@ -37,15 +41,6 @@ type ContactCallbackRestApi =
   & Pick<ChatRoomRestApi, "createChat">
   & Partial<Pick<ChatMessagingRestApi, "createChatMessage" | "createChatEvent">>
   & Partial<ContactRestApi>;
-
-function toParticipantRecord(participant: ChatParticipant): ParticipantRecord {
-  return {
-    id: participant.id,
-    name: participant.name,
-    type: participant.type,
-    handle: participant.handle ?? null,
-  };
-}
 
 function normalizePage(value: number | undefined, fallback: number): number {
   return Number.isInteger(value) && value && value > 0 ? value : fallback;
@@ -64,10 +59,12 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
   private readonly rest: ContactCallbackRestApi;
   private readonly roomId: string | null;
   private readonly contactTools: ContactToolsImpl | null;
+  private readonly logger: Logger;
 
-  public constructor(rest: ContactCallbackRestApi, roomId: string | null) {
+  public constructor(rest: ContactCallbackRestApi, roomId: string | null, logger?: Logger) {
     this.rest = rest;
     this.roomId = roomId;
+    this.logger = resolveLogger(logger);
 
     const hasContactMethods = Boolean(
       rest.listContacts
@@ -76,7 +73,7 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
       || rest.listContactRequests
       || rest.respondContactRequest
     );
-    this.contactTools = hasContactMethods ? new ContactToolsImpl(rest as ContactRestApi) : null;
+    this.contactTools = hasContactMethods ? new ContactToolsImpl(rest) : null;
 
     this.capabilities = Object.freeze({
       peers: Boolean(rest.listPeers),
@@ -107,13 +104,14 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
       ? mentions
       : undefined;
 
+    // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
+    // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
     return this.rest.createChatMessage(
       roomId,
       {
         content,
         ...(normalizedMentions ? { mentions: normalizedMentions } : {}),
       },
-      DEFAULT_REQUEST_OPTIONS,
     );
   }
 
@@ -126,15 +124,28 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
     if (!this.rest.createChatEvent) {
       throw new UnsupportedFeatureError("Event sending is not available in current REST adapter");
     }
-    return this.rest.createChatEvent(
-      roomId,
-      {
-        content,
-        messageType,
-        ...(metadata ? { metadata } : {}),
-      },
-      DEFAULT_REQUEST_OPTIONS,
-    );
+    try {
+      // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
+      // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
+      return await this.rest.createChatEvent(
+        roomId,
+        {
+          content,
+          messageType,
+          ...(metadata ? { metadata } : {}),
+        },
+      );
+    } catch (error) {
+      // Room telemetry, not the agent's answer — same trade-off AgentTools
+      // makes: a failed post must never abort the turn, but it must still
+      // leave a trace, or a dropped failure event is invisible everywhere.
+      this.logger.warn("contact callback chat event send failed", { roomId, messageType, error });
+      return { ok: false, status: "failed", message: asErrorMessage(error) };
+    }
+  }
+
+  public async sendFailure(failure: AgentFailure): Promise<ToolOperationResult> {
+    return sendFailureViaEvent(this.sendEvent.bind(this), failure);
   }
 
   public async addParticipant(): Promise<ToolOperationResult> {
@@ -150,7 +161,7 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
     if (!this.rest.listChatParticipants) {
       throw new UnsupportedFeatureError("Participant listing is not available in current REST adapter");
     }
-    return (await this.rest.listChatParticipants(roomId, DEFAULT_REQUEST_OPTIONS)).map(toParticipantRecord);
+    return (await this.rest.listChatParticipants(roomId, DEFAULT_REQUEST_OPTIONS)).map(toParticipantRecordFromRest);
   }
 
   public async createChatroom(taskId?: string): Promise<string> {
@@ -322,7 +333,7 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
           handle: String(toolArgs.handle ?? ""),
         });
       case "band_list_memories":
-        return this.listMemories(toolArgs as ListMemoriesArgs);
+        return this.listMemories(toolArgs);
       case "band_store_memory":
         return this.storeMemory(toolArgs as unknown as StoreMemoryArgs);
       case "band_get_memory":

@@ -251,6 +251,21 @@ export class LifecycleTracker<S extends { readonly status: string }> {
     return this.current;
   }
 
+  /**
+   * Whether `state` is still the instance this tracker holds.
+   *
+   * Every accepted {@link transition} installs a *new* frozen object, so an
+   * async operation that captured the state it began under can ask whether the
+   * lifecycle moved on while it was awaiting — "was I superseded?" — without a
+   * second, parallel generation counter living outside the tracker. A status
+   * comparison cannot answer it: a `stop()` followed by a fresh `start()`
+   * returns to `"starting"`, but not to the *same* `"starting"`.
+   */
+  public isCurrent(state: S): boolean {
+    return this.current === state;
+  }
+
+  /** Records `next` as the state. Callers pass a fresh object — see {@link isCurrent}. */
   public transition(next: S, trigger: string): void {
     const from = this.current.status;
     if (!this.options.isLegalTransition(from, next.status)) {

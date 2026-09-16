@@ -44,6 +44,25 @@ Requires Node.js 22+.
 
 Each adapter wraps a different LLM framework. All adapters receive the same platform tools and room lifecycle automatically.
 
+### GitHub Copilot CLI ACP (public preview)
+
+`CopilotACPAdapter` connects Band rooms to [GitHub Copilot CLI's ACP server](https://docs.github.com/en/copilot/reference/copilot-cli-reference/acp-server). Install the optional ACP peer alongside the CLI, then use the default stdio transport:
+
+```bash
+pnpm add @agentclientprotocol/sdk
+npm install -g @github/copilot
+```
+
+```ts
+import { CopilotACPAdapter } from "@band-ai/sdk";
+
+const adapter = new CopilotACPAdapter({ cwd: process.cwd() });
+```
+
+It launches `copilot --acp --stdio`. For an already-running listener, use `{ host, port }`; the SDK only owns its client socket, never that listener. The default injected Band MCP server is loopback-only, so a remote/containerized Copilot server needs `enableMcpTools: false` and caller-provided reachable `mcpServers`.
+
+Copilot CLI authentication and BYOK remain CLI configuration. Supply auth/BYOK environment variables through `env` only for stdio; a TCP listener already owns its environment. ACP is public preview, and Copilot tool filtering and reasoning effort are server launch-time settings rather than per-session adapter options.
+
 ### Generic
 
 Bring your own logic with a single async callback:
@@ -204,6 +223,8 @@ import { Agent, SimpleAdapter, loadAgentConfig } from "@band-ai/sdk";
 import type { AdapterToolsProtocol, HistoryProvider, PlatformMessage } from "@band-ai/sdk";
 
 class MyAdapter extends SimpleAdapter<HistoryProvider> {
+  protected readonly provider = "my-adapter";
+
   async onMessage(message: PlatformMessage, tools: AdapterToolsProtocol): Promise<void> {
     await tools.sendMessage("Hello from my custom adapter!");
   }
@@ -328,6 +349,7 @@ Working examples live in `examples/`. Each folder is self-contained.
 | `examples/gemini/` | Gemini | Gemini 3 Flash |
 | `examples/claude-sdk/` | Claude Agent SDK | MCP tools, room-scoped resume |
 | `examples/codex/` | Codex | Thread mapping, local commands |
+| `examples/copilot-acp/` | GitHub Copilot CLI | ACP stdio or existing TCP listener |
 | `examples/langgraph/` | LangGraph | Graph-based agent |
 | `examples/custom-adapter/` | SimpleAdapter | Custom adapter protocol |
 | `examples/parlant/` | Parlant | Guideline-based behavior |
@@ -361,6 +383,12 @@ Agent.create({ adapter, config })
 ```
 
 `agent.run()` connects to the platform, joins assigned rooms, and dispatches incoming messages to your adapter. It handles `SIGINT`/`SIGTERM` for graceful shutdown. Pass `{ signals: false }` to disable signal handling in tests.
+
+## Migration
+
+Adapter failure reporting is structured (`MessagingTools.sendFailure`, required
+`SimpleAdapter.provider`, nested A2A `metadata.failure`). See
+[docs/migrations/structured-adapter-failure-reporting.md](docs/migrations/structured-adapter-failure-reporting.md).
 
 ## Development
 

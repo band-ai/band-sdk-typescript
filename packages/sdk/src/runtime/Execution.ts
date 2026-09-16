@@ -1,6 +1,6 @@
-import { RuntimeStateError } from "../core/errors";
+import { RecoverableTurnError, RuntimeStateError } from "../core/errors";
 import type { Logger } from "../core/logger";
-import { NoopLogger } from "../core/logger";
+import { resolveLogger } from "../core/logger";
 import type { BandLink } from "../platform/BandLink";
 import type { PlatformEvent } from "../platform/events";
 import type { PlatformMessage } from "./types";
@@ -12,7 +12,7 @@ import {
   TerminalSignal,
   isLegalExecutionTransition,
 } from "./lifecycle";
-import type { MessageRetryTracker } from "./retryTracker";
+import type { RetryTracker } from "@band-ai/band-sdk-core";
 
 export type ExecutionHandler = (
   context: ExecutionContext,
@@ -52,7 +52,7 @@ export class Execution {
   private readonly roomId: string;
   private readonly link: BandLink;
   private readonly context: ExecutionContext;
-  private readonly retryTracker: MessageRetryTracker;
+  private readonly retryTracker: RetryTracker;
   private readonly onExecute: ExecutionHandler;
   private readonly onFailure?: (error: unknown, event: PlatformEvent) => void | Promise<void>;
   private readonly logger: Logger;
@@ -82,7 +82,7 @@ export class Execution {
     this.retryTracker = this.context.getRetryTracker();
     this.onExecute = options.onExecute;
     this.onFailure = options.onFailure;
-    this.logger = options.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options.logger);
     this.lifecycle = new LifecycleTracker<ExecutionLifecycleState>({ status: "running" }, {
       owner: "Execution",
       logContext: { roomId: this.roomId },
@@ -391,6 +391,20 @@ export class Execution {
     try {
       await this.onExecute(this.context, event);
     } catch (error: unknown) {
+      // Scoped to the turn that raised it: `PlatformRuntime` has already
+      // marked the message failed, and the queue below is every *other*
+      // message in this room. Tearing all of that down — and, through
+      // onFailure, the whole runtime — is the right answer to a broken
+      // adapter and the wrong one to a single reply that would not post.
+      if (error instanceof RecoverableTurnError) {
+        this.logger.warn("Turn failed without stopping the room", {
+          roomId: this.roomId,
+          eventType: event.type,
+          error,
+        });
+        return;
+      }
+
       if (this.onFailure) {
         await this.onFailure(error, event);
       } else {

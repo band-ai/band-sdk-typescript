@@ -11,6 +11,14 @@ export interface CollectedChunk {
   chunkType: "text" | "thought" | "tool_call" | "tool_result" | "plan";
   content: string;
   metadata: Record<string, unknown>;
+  // True only for a genuine per-token/phrase ACP streaming delta
+  // (`agent_message_chunk`/`agent_thought_chunk`). `chunkType` alone isn't
+  // reliable provenance: a same-typed one-shot chunk from elsewhere (e.g. a
+  // cursor/task completion marker, also `chunkType: "text"`) must never be
+  // mistaken for part of a streamed run and merged into it. Required, not
+  // optional, so every construction site states it explicitly rather than
+  // relying on an implicit `undefined` default.
+  streamed: boolean;
 }
 
 export interface PendingACPPrompt {
@@ -26,6 +34,11 @@ export interface ACPClientConnectionHandle {
   stop(): Promise<void>;
 }
 
+export interface ACPClientTcpEndpoint {
+  host: string;
+  port: number;
+}
+
 export type ACPClientConnectionFactory = (
   client: Client,
   options: {
@@ -38,6 +51,35 @@ export type ACPClientConnectionFactory = (
 export type ACPPermissionHandler = (
   params: RequestPermissionRequest,
 ) => Promise<RequestPermissionResponse>;
+
+// ACP has no room concept, but one `ACPClientAdapter` serves many rooms, so a
+// consumer resolving a permission needs to know which room is asking.
+export type ACPPermissionRequest = RequestPermissionRequest & {
+  roomId: string;
+};
+
+// Why a pending permission request was given up on without a consumer answer.
+// ACP's outcome vocabulary is only `selected | cancelled`, so every reason here
+// reaches the agent as `cancelled` — the reason exists to tell the *user* what
+// happened, and is deliberately not plumbed into the protocol.
+export type ACPPermissionAbandonReason =
+  | "timeout"
+  | "room-closed"
+  | "adapter-stopped"
+  | "connection-lost";
+
+// `settled` is bookkeeping, not abandonment: the consumer chose one of this
+// request's own offered options, and the abort controller is simply being
+// tidied up afterwards. `no-answer` is the request's own outcome too — it
+// ran to completion (or the room event announcing it failed to post) without
+// producing a usable selection: `resolvePermission` returned `undefined`,
+// threw, or chose an id this request didn't offer. Neither is an
+// `ACPPermissionAbandonReason`: those are exclusively external teardown that
+// cut a request off before it could run its own course. Keeping all three
+// apart is what lets a consumer rendering `signal.reason` tell "the user
+// picked one" from "the user (or the request itself) never produced a real
+// answer" from "something outside this request killed it".
+export type ACPPermissionEndReason = ACPPermissionAbandonReason | "settled" | "no-answer";
 
 export const DEFAULT_ACP_SERVER_MODES: Array<{
   id: string;

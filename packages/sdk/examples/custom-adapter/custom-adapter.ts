@@ -2,6 +2,8 @@ import { Agent, SimpleAdapter, type HistoryProvider, type PlatformMessage, loadA
 import type { AdapterToolsProtocol } from "../../src/core";
 
 class EchoAdapter extends SimpleAdapter<HistoryProvider> {
+  protected readonly provider = "echo";
+
   public async onMessage(
     message: PlatformMessage,
     tools: AdapterToolsProtocol,

@@ -2,58 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 
 import { GenericAdapter } from "../src/adapters/GenericAdapter";
 import { FernRestAdapter, RestFacade } from "../src/client/rest/RestFacade";
-import { ValidationError } from "../src/core/errors";
+import { TransportError, ValidationError } from "../src/core/errors";
 import { PlatformRuntime } from "../src/runtime/PlatformRuntime";
 import { ExecutionContext } from "../src/runtime/ExecutionContext";
 import { HUB_ROOM_SYSTEM_PROMPT } from "../src/runtime/ContactEventHandler";
-import type { StreamingTransport, TopicHandlers } from "../src/platform/streaming/transport";
+import type { FrameworkAdapter, FrameworkAdapterInput } from "../src/contracts/protocols";
+import type { StreamingTransport } from "../src/platform/streaming/transport";
 import { BandLink } from "../src/platform/BandLink";
-import { FakeRestApi } from "./testUtils";
-
-class FakeTransport implements StreamingTransport {
-  private handlers = new Map<string, TopicHandlers>();
-  private connected = false;
-
-  public async connect() {
-    this.connected = true;
-  }
-
-  public async disconnect() {
-    this.connected = false;
-  }
-
-  public async join(topic: string, handlers: TopicHandlers) {
-    this.handlers.set(topic, handlers);
-  }
-
-  public async leave(topic: string) {
-    this.handlers.delete(topic);
-  }
-
-  public async runForever(signal?: AbortSignal): Promise<void> {
-    if (!signal) {
-      return;
-    }
-    await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
-  }
-
-  public isConnected() {
-    return this.connected;
-  }
-
-  public async emit(topic: string, event: string, payload: Record<string, unknown>): Promise<void> {
-    const topicHandlers = this.handlers.get(topic);
-    if (!topicHandlers?.[event]) {
-      throw new Error(`No handler for ${topic}/${event}`);
-    }
-
-    await Promise.resolve(topicHandlers[event](payload));
-  }
-
-  public hasTopic(topic: string): boolean {
-    return this.handlers.has(topic);
-  }
-}
+import { FakeRestApi, FakeTransport, makeMessage } from "./testUtils";
 
 describe("PlatformRuntime", () => {
   it("initializes and dispatches message to adapter", async () => {
@@ -92,7 +48,7 @@ describe("PlatformRuntime", () => {
       resolveSeen?.();
     });
 
-    const runtime = new PlatformRuntime({
+    await using runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
       link: new BandLink({
@@ -123,8 +79,157 @@ describe("PlatformRuntime", () => {
     expect(runtime.name).toBe("Agent");
     expect(seenMessage).toBe("hello runtime");
     expect(lifecycle).toEqual(["processing", "adapter", "processed"]);
+  });
 
-    await runtime.stop();
+  it("posts a provider failure through the real AgentTools -> REST wiring, and keeps the room serving afterward", async () => {
+    // Unlike the adapter-boundary tests (which call reportTurnFailure/sendFailure
+    // directly against FakeTools), this drives a real adapter through
+    // PlatformRuntime/ExecutionContext/AgentTools.getAdapterTools(), the actual
+    // production path a provider failure travels before it reaches REST.
+    const transport = new FakeTransport();
+    const lifecycle: string[] = [];
+    const chatEvents: Array<{ chatId: string; event: unknown }> = [];
+    const rest = new FakeRestApi(
+      {
+        markMessageProcessing: async () => {
+          lifecycle.push("processing");
+          return {};
+        },
+        markMessageProcessed: async () => {
+          lifecycle.push("processed");
+          return {};
+        },
+        markMessageFailed: async () => {
+          lifecycle.push("failed");
+          return {};
+        },
+        createChatEvent: async (chatId, event) => {
+          chatEvents.push({ chatId, event });
+          return {};
+        },
+      },
+      { id: "a1", name: "Agent", description: "Agent description" },
+    );
+
+    let calls = 0;
+    const adapter = new GenericAdapter(async () => {
+      calls += 1;
+      if (calls === 1) {
+        throw new Error("provider exploded");
+      }
+    });
+
+    await using runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      link: new BandLink({ agentId: "a1", apiKey: "k", transport, restApi: rest }),
+    });
+    await runtime.start(adapter);
+
+    await transport.emit("agent_rooms:a1", "room_added", { id: "room-1", status: "active", type: "direct", title: "Room", removed_at: "" });
+    await transport.emit("chat_room:room-1", "message_created", {
+      id: "m1",
+      content: "trigger a provider failure",
+      message_type: "text",
+      sender_id: "u1",
+      sender_type: "User",
+      sender_name: "Jane",
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    await transport.emit("chat_room:room-1", "message_created", {
+      id: "m2",
+      content: "a later message in the same room",
+      message_type: "text",
+      sender_id: "u1",
+      sender_type: "User",
+      sender_name: "Jane",
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    await vi.waitFor(() => expect(lifecycle).toEqual(["processing", "failed", "processing", "processed"]));
+
+    expect(chatEvents).toHaveLength(1);
+    expect(chatEvents[0]?.chatId).toBe("room-1");
+    expect(chatEvents[0]?.event).toMatchObject({
+      messageType: "error",
+      metadata: { failure: expect.objectContaining({ provider: "generic", message: "provider exploded" }) },
+    });
+    expect(calls).toBe(2);
+  });
+
+  it("does not post a provider-failure event for a Band-side delivery failure, and keeps the room serving afterward", async () => {
+    const transport = new FakeTransport();
+    const lifecycle: string[] = [];
+    const chatEvents: Array<{ chatId: string; event: unknown }> = [];
+    let messageAttempts = 0;
+    const rest = new FakeRestApi(
+      {
+        markMessageProcessing: async () => {
+          lifecycle.push("processing");
+          return {};
+        },
+        markMessageProcessed: async () => {
+          lifecycle.push("processed");
+          return {};
+        },
+        markMessageFailed: async () => {
+          lifecycle.push("failed");
+          return {};
+        },
+        createChatEvent: async (chatId, event) => {
+          chatEvents.push({ chatId, event });
+          return {};
+        },
+        createChatMessage: async () => {
+          messageAttempts += 1;
+          if (messageAttempts === 1) {
+            throw new Error("chat delivery failed");
+          }
+          return {};
+        },
+      },
+      { id: "a1", name: "Agent", description: "Agent description" },
+    );
+
+    const adapter = new GenericAdapter(async ({ tools }) => {
+      await tools.sendMessage("a reply Band will not accept");
+    });
+
+    await using runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      link: new BandLink({ agentId: "a1", apiKey: "k", transport, restApi: rest }),
+    });
+    await runtime.start(adapter);
+
+    await transport.emit("agent_rooms:a1", "room_added", { id: "room-1", status: "active", type: "direct", title: "Room", removed_at: "" });
+    await transport.emit("chat_room:room-1", "message_created", {
+      id: "m1",
+      content: "trigger a delivery failure",
+      message_type: "text",
+      sender_id: "u1",
+      sender_type: "User",
+      sender_name: "Jane",
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    await transport.emit("chat_room:room-1", "message_created", {
+      id: "m2",
+      content: "a later message in the same room",
+      message_type: "text",
+      sender_id: "u1",
+      sender_type: "User",
+      sender_name: "Jane",
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    await vi.waitFor(() => expect(lifecycle).toEqual(["processing", "failed", "processing", "processed"]));
+
+    expect(chatEvents, "a Band-side delivery failure was reported as a provider failure").toEqual([]);
+    expect(messageAttempts).toBe(2);
   });
 
   it("exposes fern adapter for duck-typed client", async () => {
@@ -179,7 +284,7 @@ describe("PlatformRuntime", () => {
       seenMessages.push(message.content);
     });
 
-    const runtime = new PlatformRuntime({
+    await using runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
       link: new BandLink({
@@ -218,15 +323,13 @@ describe("PlatformRuntime", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(transport.hasTopic("chat_room:room-existing")).toBe(false);
     expect(transport.hasTopic("room_participants:room-existing")).toBe(false);
-
-    await runtime.stop();
   });
 
   it("skips rooms rejected by roomFilter", async () => {
     const transport = new FakeTransport();
     const adapter = new GenericAdapter(async () => {});
 
-    const runtime = new PlatformRuntime({
+    await using runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
       link: new BandLink({
@@ -257,8 +360,6 @@ describe("PlatformRuntime", () => {
 
     expect(transport.hasTopic("chat_room:direct-1")).toBe(true);
     expect(transport.hasTopic("chat_room:group-1")).toBe(false);
-
-    await runtime.stop();
   });
 
   it("uses contextFactory when provided", async () => {
@@ -266,7 +367,7 @@ describe("PlatformRuntime", () => {
     const factoryCalls: string[] = [];
     const adapter = new GenericAdapter(async () => {});
 
-    const runtime = new PlatformRuntime({
+    await using runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
       link: new BandLink({
@@ -293,15 +394,158 @@ describe("PlatformRuntime", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(factoryCalls).toEqual(["room-1"]);
+  });
+
+  it("dispatches participant events to the room context and message events to its execution", async () => {
+    const transport = new FakeTransport();
+    const added: string[] = [];
+    const removed: string[] = [];
+    const seenMessages: string[] = [];
+
+    const adapter = new GenericAdapter(async ({ message }) => {
+      seenMessages.push(message.content);
+    });
+
+    await using runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      link: new BandLink({
+        agentId: "a1",
+        apiKey: "k",
+        transport,
+        restApi: new FakeRestApi(),
+      }),
+      onParticipantAdded: (roomId, participant) => {
+        added.push(`${roomId}:${String(participant.id)}`);
+      },
+      onParticipantRemoved: (roomId, participantId) => {
+        removed.push(`${roomId}:${participantId}`);
+      },
+    });
+
+    await runtime.start(adapter);
+
+    await transport.emit("agent_rooms:a1", "room_added", {
+      id: "room-1",
+      status: "active",
+      type: "direct",
+      title: "Room",
+      removed_at: "",
+    });
+    // Admission joins `chat_room` then `room_participants` sequentially
+    // (BandLink.joinRoomTopics), so both topics need a tick to settle
+    // before either can be driven.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    await transport.emit("room_participants:room-1", "participant_added", {
+      id: "participant-1",
+      name: "Jane",
+      type: "User",
+      handle: "jane",
+    });
+    await transport.emit("chat_room:room-1", "message_created", {
+      id: "m1",
+      content: "hello",
+      message_type: "text",
+      sender_id: "u1",
+      sender_type: "User",
+      sender_name: "Jane",
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    await transport.emit("room_participants:room-1", "participant_removed", {
+      id: "participant-1",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(added).toEqual(["room-1:participant-1"]);
+    expect(seenMessages).toEqual(["hello"]);
+    expect(removed).toEqual(["room-1:participant-1"]);
+  });
+
+  it("cleans up admitted rooms via onCleanup when the runtime stops, without a prior room_removed", async () => {
+    const transport = new FakeTransport();
+    const adapter = {
+      onEvent: vi.fn(async () => undefined),
+      onCleanup: vi.fn(async () => undefined),
+      onStarted: vi.fn(async () => undefined),
+      onRuntimeStop: vi.fn(async () => undefined),
+    };
+
+    await using runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      link: new BandLink({
+        agentId: "a1",
+        apiKey: "k",
+        transport,
+        restApi: new FakeRestApi(),
+      }),
+    });
+
+    await runtime.start(adapter);
+    await transport.emit("agent_rooms:a1", "room_added", {
+      id: "room-1",
+      status: "active",
+      type: "direct",
+      title: "Room",
+      removed_at: "",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     await runtime.stop();
+
+    expect(adapter.onCleanup).toHaveBeenCalledWith("room-1");
+  });
+
+  it("throws when bootstrapRoomMessage's room subscribe fails, and leaves the topic unjoined", async () => {
+    const transport = new FakeTransport();
+    const adapter = new GenericAdapter(async () => {});
+
+    await using runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      link: new BandLink({
+        agentId: "a1",
+        apiKey: "k",
+        transport,
+        restApi: new FakeRestApi(),
+      }),
+    });
+
+    await runtime.start(adapter);
+
+    const subscribeError = new Error("join failed");
+    vi.spyOn(transport, "join").mockRejectedValueOnce(subscribeError);
+
+    await expect(
+      runtime.bootstrapRoomMessage("room-bootstrap", makeMessage("hello", "room-bootstrap")),
+    ).rejects.toSatisfy((error: unknown) => {
+      expect(error).toBeInstanceOf(TransportError);
+      expect((error as TransportError).cause).toBe(subscribeError);
+      return true;
+    });
+
+    await expect(transport.emit("chat_room:room-bootstrap", "message_created", {})).rejects.toThrow(
+      "No handler for chat_room:room-bootstrap/message_created",
+    );
   });
 
   it("propagates fatal adapter failures through runForever", async () => {
+    // A GenericAdapter handler bug no longer reaches this far — GenericAdapter
+    // reports and fails just the turn now, like every other adapter. This
+    // test is about PlatformRuntime/AgentRuntime's own fatal-failure
+    // propagation, so it drives that with a raw FrameworkAdapter whose
+    // onEvent throws unguarded, the same shape a genuinely broken adapter
+    // implementation (not going through SimpleAdapter) would have.
     const transport = new FakeTransport();
-    const adapter = new GenericAdapter(async () => {
-      throw new Error("adapter exploded");
-    });
+    const adapter: FrameworkAdapter = {
+      onEvent: async (_input: FrameworkAdapterInput) => {
+        throw new Error("adapter exploded");
+      },
+      onCleanup: async () => undefined,
+      onStarted: async () => undefined,
+    };
 
     const runtime = new PlatformRuntime({
       agentId: "a1",
@@ -384,7 +628,7 @@ describe("PlatformRuntime", () => {
       seenMessages.push(message.content);
     });
 
-    const runtime = new PlatformRuntime({
+    await using runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
       link: new BandLink({
@@ -429,8 +673,6 @@ describe("PlatformRuntime", () => {
       "recover me second",
       "live only",
     ]);
-
-    await runtime.stop();
   });
 
   it("preserves the hub-room system prompt on the first contact event", async () => {
@@ -452,7 +694,7 @@ describe("PlatformRuntime", () => {
       resolveSeen?.();
     });
 
-    const runtime = new PlatformRuntime({
+    await using runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
       link: new BandLink({
@@ -486,8 +728,6 @@ describe("PlatformRuntime", () => {
         content: "[Contact Request] Alice (@alice) wants to connect.\nMessage: \"Hello!\"\nRequest ID: req-1",
       },
     ]);
-
-    await runtime.stop();
   });
 
   it("calls adapter onRuntimeStop when PlatformRuntime stops", async () => {
@@ -499,7 +739,7 @@ describe("PlatformRuntime", () => {
       onRuntimeStop: vi.fn(async () => undefined),
     };
 
-    const runtime = new PlatformRuntime({
+    await using runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
       link: new BandLink({
@@ -514,6 +754,100 @@ describe("PlatformRuntime", () => {
     await runtime.stop();
 
     expect(adapter.onRuntimeStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops an adapter whose startup is still pending", async () => {
+    const transport = new FakeTransport();
+    let releaseStarted!: () => void;
+    let signalStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    const startGate = new Promise<void>((resolve) => {
+      releaseStarted = resolve;
+    });
+    const adapter = {
+      onEvent: vi.fn(async () => undefined),
+      onCleanup: vi.fn(async () => undefined),
+      onStarted: vi.fn(async () => {
+        signalStarted();
+        await startGate;
+      }),
+      onRuntimeStop: vi.fn(async () => undefined),
+    };
+
+    await using runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      link: new BandLink({
+        agentId: "a1",
+        apiKey: "k",
+        transport,
+        restApi: new FakeRestApi(),
+      }),
+    });
+
+    const starting = runtime.start(adapter);
+    await started;
+    await expect(runtime.stop()).resolves.toBe(true);
+    expect(adapter.onRuntimeStop).toHaveBeenCalledTimes(1);
+
+    releaseStarted();
+    await expect(starting).rejects.toThrow("superseded by stop()");
+  });
+
+  it("does not let stale failed-start cleanup stop a replacement adapter", async () => {
+    const transport = new FakeTransport();
+    let releaseStarted!: () => void;
+    let signalStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    const startGate = new Promise<void>((resolve) => {
+      releaseStarted = resolve;
+    });
+    const failingAdapter = {
+      onEvent: vi.fn(async () => undefined),
+      onCleanup: vi.fn(async () => undefined),
+      onStarted: vi.fn(async () => {
+        signalStarted();
+        await startGate;
+      }),
+      onRuntimeStop: vi.fn(async () => {
+        throw new Error("cleanup failed");
+      }),
+    };
+    const nextAdapter = {
+      onEvent: vi.fn(async () => undefined),
+      onCleanup: vi.fn(async () => undefined),
+      onStarted: vi.fn(async () => undefined),
+      onRuntimeStop: vi.fn(async () => undefined),
+    };
+
+    await using runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      link: new BandLink({
+        agentId: "a1",
+        apiKey: "k",
+        transport,
+        restApi: new FakeRestApi(),
+      }),
+    });
+
+    const starting = runtime.start(failingAdapter);
+    await started;
+    await expect(runtime.stop()).rejects.toThrow("cleanup failed");
+
+    await runtime.start(nextAdapter);
+    expect(nextAdapter.onRuntimeStop).not.toHaveBeenCalled();
+
+    releaseStarted();
+    await expect(starting).rejects.toThrow("superseded by stop()");
+    expect(nextAdapter.onRuntimeStop).not.toHaveBeenCalled();
+    await runtime.stop();
+
+    expect(nextAdapter.onRuntimeStop).toHaveBeenCalledTimes(1);
   });
 
   it("cleans up adapter runtime hooks when startup fails after onStarted", async () => {
@@ -534,7 +868,7 @@ describe("PlatformRuntime", () => {
       isConnected: vi.fn(() => false),
     };
 
-    const runtime = new PlatformRuntime({
+    await using runtime = new PlatformRuntime({
       agentId: "a1",
       apiKey: "k",
       link: new BandLink({
@@ -587,8 +921,14 @@ describe("PlatformRuntime", () => {
     ).toThrow("loadAgentConfig()");
   });
 
-  it("forwards logger to lazily-constructed BandLink", async () => {
+  it("prefers the runtime logger for a lazily-constructed BandLink", async () => {
     const spyLogger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const linkLogger = {
       debug: vi.fn(),
       info: vi.fn(),
       warn: vi.fn(),
@@ -602,11 +942,40 @@ describe("PlatformRuntime", () => {
       apiKey: "k",
       wsUrl: "wss://example.test/socket",
       logger: spyLogger,
-      linkOptions: { transport, restApi },
+      linkOptions: { transport, restApi, logger: linkLogger },
     });
 
     await runtime.initialize();
 
-    expect((runtime.link as unknown as { logger: unknown }).logger).toBe(spyLogger);
+    const logger = (runtime.link as unknown as { logger: { error(message: string): void } }).logger;
+    logger.error("test");
+
+    expect(spyLogger.error).toHaveBeenCalledWith("test", undefined);
+    expect(linkLogger.error).not.toHaveBeenCalled();
+  });
+
+  it("preserves a BandLink logger when no runtime logger is configured", async () => {
+    const linkLogger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const transport = new FakeTransport();
+    const restApi = new FakeRestApi();
+
+    const runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      wsUrl: "wss://example.test/socket",
+      linkOptions: { transport, restApi, logger: linkLogger },
+    });
+
+    await runtime.initialize();
+
+    const logger = (runtime.link as unknown as { logger: { error(message: string): void } }).logger;
+    logger.error("test");
+
+    expect(linkLogger.error).toHaveBeenCalledWith("test", undefined);
   });
 });

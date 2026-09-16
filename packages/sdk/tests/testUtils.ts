@@ -1,6 +1,10 @@
+import { ProviderTurnFailedError } from "../src/core/providerFailure";
+import { expect } from "vitest";
+import { ParticipantRoster, type AgentFailure } from "@band-ai/band-sdk-core";
 import type { PlatformMessage } from "../src/runtime";
 import type { AgentToolsProtocol } from "../src/core";
-import { DEFAULT_AGENT_TOOLS_CAPABILITIES } from "../src/contracts/protocols";
+import { DEFAULT_AGENT_TOOLS_CAPABILITIES, FAILURE_EVENT_TYPE, toFailureEvent } from "../src/contracts/protocols";
+import { isBlankEventContent } from "../src/contracts/chatEvents";
 import type {
   AgentIdentity,
   PaginatedResponse,
@@ -12,6 +16,7 @@ import type {
   ParticipantRecord,
   PeerRecord,
 } from "../src/contracts/dtos";
+import type { StreamingTransport, TopicHandlers } from "../src/platform/streaming/transport";
 
 interface CapturedToolEvent {
   content: string;
@@ -56,8 +61,19 @@ export class FakeTools implements AgentToolsProtocol {
     metadata?: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     this.maybeFail("sendEvent");
+    // Mirrors the platform's own rejection, so a test posting a blank chunk
+    // is an actual regression test rather than a vacuous pass.
+    if (isBlankEventContent(content)) {
+      return { ok: false, status: "failed" };
+    }
     this.events.push({ content, messageType, metadata });
     return { ok: true };
+  }
+
+  public async sendFailure(failure: AgentFailure): Promise<Record<string, unknown>> {
+    this.maybeFail("sendFailure");
+    const { content, messageType, metadata } = toFailureEvent(failure);
+    return this.sendEvent(content, messageType, metadata);
   }
 
   public async addParticipant(_name: string, _role?: string): Promise<Record<string, unknown>> {
@@ -115,7 +131,65 @@ export class FakeTools implements AgentToolsProtocol {
   }
 }
 
-export function makeMessage(content: string, roomId = "room-1"): PlatformMessage {
+/** The failure event an adapter posted, located the way a client locates one. */
+export function findFailureEvent(tools: FakeTools): CapturedToolEvent | undefined {
+  return tools.events.find((event) => event.messageType === FAILURE_EVENT_TYPE);
+}
+
+export function makeRoster(participants: ParticipantRecord[]): ParticipantRoster {
+  const roster = new ParticipantRoster();
+  roster.setAll(participants);
+  return roster;
+}
+
+/** Fake `StreamingTransport` driven by `emit(...)`, standing in for the network only. */
+export class FakeTransport implements StreamingTransport {
+  private readonly handlers = new Map<string, TopicHandlers>();
+  private connected = false;
+
+  public async connect(): Promise<void> {
+    this.connected = true;
+  }
+
+  public async disconnect(): Promise<void> {
+    this.connected = false;
+  }
+
+  public async join(topic: string, handlers: TopicHandlers): Promise<void> {
+    this.handlers.set(topic, handlers);
+  }
+
+  public async leave(topic: string): Promise<void> {
+    this.handlers.delete(topic);
+  }
+
+  public async runForever(signal?: AbortSignal): Promise<void> {
+    if (!signal) {
+      return;
+    }
+    await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+  }
+
+  public async emit(topic: string, event: string, payload: Record<string, unknown>): Promise<void> {
+    const topicHandlers = this.handlers.get(topic);
+    const handler = topicHandlers?.[event];
+    if (!handler) {
+      throw new Error(`No handler for ${topic}/${event}`);
+    }
+
+    await Promise.resolve(handler(payload));
+  }
+
+  public isConnected(): boolean {
+    return this.connected;
+  }
+
+  public hasTopic(topic: string): boolean {
+    return this.handlers.has(topic);
+  }
+}
+
+export function makeMessage(content: string, roomId = "room-1", metadata: Record<string, unknown> = {}): PlatformMessage {
   return {
     id: "msg-1",
     roomId,
@@ -124,7 +198,7 @@ export function makeMessage(content: string, roomId = "room-1"): PlatformMessage
     senderType: "User",
     senderName: "User",
     messageType: "text",
-    metadata: {},
+    metadata,
     createdAt: new Date("2026-03-02T00:00:00.000Z"),
   };
 }
@@ -251,4 +325,14 @@ export class FakeRestApi implements RestApi {
     return this.overrides.getNextMessage?.(request, options) ?? null;
   }
 
+}
+
+/**
+ * A terminal provider failure reports to the room and then fails the turn, so
+ * `PlatformRuntime` still marks the message failed and the platform still
+ * re-syncs it. Returning instead would silently flip a failed turn to
+ * `processed` and drop its retry — see `ProviderTurnFailedError`.
+ */
+export async function expectTurnFailed(turn: Promise<unknown>): Promise<void> {
+  await expect(turn).rejects.toBeInstanceOf(ProviderTurnFailedError);
 }

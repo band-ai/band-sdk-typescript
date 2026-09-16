@@ -1,5 +1,4 @@
-import type { Logger } from "../core/logger";
-import { NoopLogger } from "../core/logger";
+import { resolveLogger, type Logger } from "../core/logger";
 import { FernRestAdapter } from "../client/rest/RestFacade";
 import type { FernBandClientLike } from "../client/rest/types";
 import type { RestRequestOptions } from "../client/rest/requestOptions";
@@ -33,6 +32,12 @@ import {
   type AgentToolsCapabilities,
 } from "../contracts/protocols";
 import { BandClient } from "@band-ai/rest-client";
+import {
+  agentContactsTopic,
+  agentRoomsTopic,
+  chatRoomTopic,
+  roomParticipantsTopic,
+} from "@band-ai/band-sdk-core";
 
 export interface BandLinkOptions {
   agentId: string;
@@ -66,8 +71,8 @@ export interface MessageMarkOptions {
 
 function roomTopics(roomId: string): { chat: string; participants: string } {
   return {
-    chat: `chat_room:${roomId}`,
-    participants: `room_participants:${roomId}`,
+    chat: chatRoomTopic(roomId),
+    participants: roomParticipantsTopic(roomId),
   };
 }
 
@@ -83,7 +88,7 @@ function toPlatformMessage(
     senderType: message.sender_type,
     senderName: message.sender_name ?? null,
     messageType: message.message_type,
-    metadata: (message.metadata ?? {}) as Record<string, unknown>,
+    metadata: (message.metadata ?? {}),
     createdAt: new Date(message.inserted_at),
   };
 }
@@ -110,7 +115,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     this.apiKey = options.apiKey;
     this.wsUrl = options.wsUrl ?? DEFAULT_WS_URL;
     this.restUrl = options.restUrl ?? deriveDefaultRestUrl(this.wsUrl);
-    this.logger = options.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options.logger);
     this.capabilities = {
       ...DEFAULT_AGENT_TOOLS_CAPABILITIES,
       ...options.capabilities,
@@ -122,7 +127,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         new BandClient({
           apiKey: this.apiKey,
           baseUrl: this.restUrl,
-        }) as unknown as FernBandClientLike,
+        }),
       );
 
     this.rest = restApi;
@@ -215,7 +220,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   public async subscribeAgentRooms(): Promise<void> {
-    await this.transport.join(`agent_rooms:${this.agentId}`, {
+    await this.transport.join(agentRoomsTopic(this.agentId), {
       room_added: (payload) => {
         const roomId = typeof payload.id === "string" ? payload.id : "";
         this.emit("room_added", payload, roomId);
@@ -276,7 +281,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
 
   public async subscribeAgentContacts(): Promise<void> {
     assertCapability(this.capabilities, "contacts", "Contacts streaming");
-    await this.transport.join(`agent_contacts:${this.agentId}`, {
+    await this.transport.join(agentContactsTopic(this.agentId), {
       contact_request_received: (payload) => {
         this.emit("contact_request_received", payload, null);
       },
@@ -293,7 +298,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   public async unsubscribeAgentContacts(): Promise<void> {
-    await this.transport.leave(`agent_contacts:${this.agentId}`);
+    await this.transport.leave(agentContactsTopic(this.agentId));
   }
 
   public async nextEvent(signal?: AbortSignal): Promise<PlatformEvent | null> {

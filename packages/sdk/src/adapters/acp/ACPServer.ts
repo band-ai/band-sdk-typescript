@@ -22,8 +22,6 @@ import type {
   SetSessionConfigOptionResponse,
   SetSessionModeRequest,
   SetSessionModeResponse,
-  SetSessionModelRequest,
-  SetSessionModelResponse,
   SessionMode,
   Stream,
 } from "@agentclientprotocol/sdk";
@@ -198,7 +196,7 @@ export class ACPServer implements Agent {
     }
   }
 
-  public async unstable_resumeSession(
+  public async resumeSession(
     params: ResumeSessionRequest,
   ): Promise<ResumeSessionResponse> {
     if (!this.adapter.hasSession(params.sessionId)) {
@@ -216,7 +214,7 @@ export class ACPServer implements Agent {
     }
   }
 
-  public async unstable_closeSession(
+  public async closeSession(
     params: import("@agentclientprotocol/sdk").CloseSessionRequest,
   ): Promise<import("@agentclientprotocol/sdk").CloseSessionResponse> {
     await this.adapter.closeSession(params.sessionId)
@@ -235,18 +233,12 @@ export class ACPServer implements Agent {
     return {}
   }
 
-  public async unstable_setSessionModel(
-    params: SetSessionModelRequest,
-  ): Promise<SetSessionModelResponse> {
-    if (!this.adapter.hasSession(params.sessionId)) {
-      const acp = await acpModule.get()
-      throw acp.RequestError.resourceNotFound(params.sessionId)
-    }
-
-    this.adapter.setSessionModel(params.sessionId, params.modelId)
-    return {}
-  }
-
+  // `unstable_setSessionModel`/`SetSessionModelRequest` from ACP <1.0 were
+  // removed outright in v1 rather than renamed: model selection now goes
+  // through the generic `setSessionConfigOption` RPC (a `SessionConfigOption`
+  // with category `"model"`). This server doesn't advertise any config
+  // options yet (see the stub below), so there is nothing for a client to
+  // select and no equivalent call to make here.
   public async setSessionConfigOption(
     _params: SetSessionConfigOptionRequest,
   ): Promise<SetSessionConfigOptionResponse> {

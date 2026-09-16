@@ -1,6 +1,10 @@
 export {
   ACPClientAdapter,
+  createTcpConnection,
   type ACPClientAdapterOptions,
+  type ACPClientAdapterBaseOptions,
+  type ACPClientStdioOptions,
+  type ACPClientTcpOptions,
 } from "./ACPClientAdapter";
 
 export {
@@ -12,6 +16,13 @@ export {
   BandACPServerAdapter,
   type BandACPServerAdapterOptions,
 } from "./BandACPServerAdapter";
+
+export type {
+  ACPPermissionAbandonReason,
+  ACPPermissionEndReason,
+  ACPPermissionRequest,
+  ACPClientTcpEndpoint,
+} from "./types";
 
 export type { ACPExtensionHandler } from "./extensions";
 export { CursorExtensionHandler } from "./cursorExtensions";

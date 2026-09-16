@@ -88,6 +88,7 @@ WebSocket transport is Phoenix Channels (`packages/sdk/src/platform/streaming/Ph
 | Chat Room | `chat_room:{chat_room_id}` | `message_created` |
 | Room Participants | `room_participants:{chat_room_id}` | `participant_added`, `participant_removed` |
 | Agent Contacts | `agent_contacts:{agent_id}` | `contact_request_received`, `contact_request_updated`, `contact_added`, `contact_removed` |
+| Agent Control | `agent_control:{agent_id}` | `supersede` |
 
 ### Event Types
 
@@ -287,8 +288,10 @@ packages/sdk/src/
 ├── runtime/           # PlatformRuntime, ExecutionContext, Execution, ContactEventHandler
 │   ├── tools/         # AgentTools, ContactToolsImpl, ContactCallbackTools, schemas
 │   ├── preprocessing/ # DefaultPreprocessor
+│   ├── prompts/       # System-prompt building (base, memory, templates)
 │   └── rooms/         # AgentRuntime
 ├── testing/           # FakeAgentTools, StubRestApi
+├── types/             # Ambient type shims (google-adk.d.ts, ws.d.ts)
 └── index.ts           # Main barrel export
 ```
 
@@ -315,14 +318,22 @@ not_started ─▶ starting ─▶ running ─▶ stopping ─▶ stopped
 Rules:
 
 - Every transition goes through `LifecycleTracker.transition()`, which validates it against
-  `isLegalRuntimeTransition` / `isLegalExecutionTransition`. Both are `switch` statements with a
-  `never`-typed default, so adding a state without handling it fails `pnpm -r typecheck`.
+  `isLegalRuntimeTransition` / `isLegalExecutionTransition`. Both read a `Record` keyed by the full
+  status union, so adding a state without adding its row fails `pnpm -r typecheck`.
 - `stopped` and `failed` are re-startable for the three runtime owners; `Execution` is terminal.
 - `start()` while a `stop()` is in flight rejects with `RuntimeStateError`.
-- `stop()` while a `start()` is in flight waits for that start to settle, then tears down what it
-  actually created. Reporting `stopped` for a start that is still connecting is the bug this
-  prevents. (The cleanup `stop()` that `start()` runs on its own failure path is exempt — it *is*
-  that start.)
+- `stop()` while a `start()` is in flight **supersedes** that start for `Agent` and
+  `PlatformRuntime`: it tears down what the start had already claimed and returns, and the start
+  aborts at its next checkpoint with `RuntimeStateError` instead of installing a live runtime
+  behind the completed teardown. It does not queue behind the start — several adapters only
+  abandon a parked `onStarted()` once `onRuntimeStop()` runs, so a stop that waited would be
+  waiting on itself. `AgentRuntime.stop()` does wait for its own start, since it drives no
+  third-party adapter that can park indefinitely.
+- "Was I superseded?" is asked through the lifecycle, not a second counter beside it: a start
+  captures the `"starting"` state instance `startWithGate()` installed and later checks
+  `LifecycleTracker.isCurrent()`. Every accepted transition installs a fresh frozen state, so this
+  distinguishes "still my start" from "a replacement start is now running", which a bare status
+  comparison cannot.
 - Teardown steps are isolated from each other: one room's failing `Execution.stop()` never skips
   the remaining rooms, the map clearing, or `link.disconnect()`. Failures are collected and
   rethrown together (a single distinct error is rethrown as-is, keeping error identity intact).
@@ -401,7 +412,7 @@ empty string — is used exactly, with no fallback.
 - `BAND_WS_URL` (legacy `THENVOI_WS_URL`): WebSocket base URL (optional; default: `wss://app.band.ai/api/v1/socket` — the `phoenix` lib appends `/websocket`)
 - `BAND_REST_URL` (legacy `THENVOI_REST_URL`): REST API URL (optional; derived from the WS URL if not set, via `deriveDefaultRestUrl`)
 
-LLM API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`/`GEMINI_API_KEY`, etc.) are read directly by the underlying provider SDKs and passed via adapter options. For Gemini, `@google/genai` accepts both `GOOGLE_API_KEY` and `GEMINI_API_KEY` (it prefers `GOOGLE_API_KEY` if both are set; verified in `@google/genai` 1.50.x `getApiKeyFromEnv`).
+LLM API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`/`GEMINI_API_KEY`, etc.) are read directly by the underlying provider SDKs and passed via adapter options. For Gemini, `@google/genai` accepts both `GOOGLE_API_KEY` and `GEMINI_API_KEY` (it prefers `GOOGLE_API_KEY` if both are set; verified in `@google/genai`'s `getApiKeyFromEnv`, peer range `>=1.44.0`).
 
 ## Adding a New Framework Adapter
 
@@ -471,6 +482,22 @@ Each example is a standalone TypeScript script runnable with `tsx`. Folders incl
 - Throw `ValidationError` (from `@band-ai/sdk/core`) for missing required configuration; do **not** `console.error` + `process.exit`.
 - Top-level `await` is fine; the package is ESM (`"type": "module"`).
 - Examples are excluded from strict ESLint rules but still typechecked.
+
+## SDK Design Guidelines
+
+- Types as the API — design the surface around what TypeScript can infer and enforce; good types should tell a caller what a function does without reading the implementation.
+- Runtime validation matches static types — a schema library (Zod) is the single source of truth for both, so "compiles" and "actually valid" never drift apart.
+- Factories over constructors — prefer `createX(config)` over `new X(...)` for anything with defaults to apply or dependencies to inject; it's more testable and composable. Applies to new top-level entry points (like `Agent.create`); existing adapters keep their established `new <Framework>Adapter(options)` constructor pattern (see "Adding a New Framework Adapter").
+- Interceptors for cross-cutting concerns — auth, retries, and error-wrapping live in one shared place every request passes through, not copy-pasted per method.
+- Custom error types — wrap raw HTTP/protocol errors in typed errors so callers can `instanceof`-check instead of parsing status codes or message strings.
+- Consistency across the surface — the same kind of operation should look and behave the same way everywhere in the SDK.
+- Classes for namespacing, functions for helpers — give callers both a low-level client and high-level convenience helpers; don't force one style.
+- Modular types at scale — split types by domain as the surface grows; don't let one file become the bottleneck.
+- Predictable defaults — a new caller should get a working result with minimal config; sane defaults (timeouts, retries) apply out of the box.
+- Declarative coding style — describe *what* the result should be, not the step-by-step *how*; push imperative control flow into small, named helpers.
+- Comments are factual, not narration — short, state the non-obvious *why* only. Let the code speak for itself.
+- Tests assert real behavior, not the obvious or an assumption — don't assert language/library trivia or a mock echoing back what you told it to return; assert outcomes that would actually fail if the code broke.
+- Tests should strive to assert real-life scenarios and complex flows, not just isolated units in the abstract.
 
 ## Coding Standards
 

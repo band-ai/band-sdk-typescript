@@ -11,7 +11,7 @@ import { Execution } from "../src/runtime/Execution";
 import type { ExecutionState } from "../src/runtime/ExecutionContext";
 import { PlatformRuntime, type PlatformRuntimeOptions } from "../src/runtime/PlatformRuntime";
 import { AgentRuntime } from "../src/runtime/rooms/AgentRuntime";
-import { MessageRetryTracker } from "../src/runtime/retryTracker";
+import { RetryTracker } from "@band-ai/band-sdk-core";
 import {
   isLegalExecutionTransition,
   isLegalRuntimeTransition,
@@ -243,7 +243,7 @@ function makeExecutionEvent(id: string, roomId = ROOM_ID): PlatformEvent {
 }
 
 function makeExecution(onExecute: () => Promise<void> = async () => undefined): Execution {
-  const retryTracker = new MessageRetryTracker(1);
+  const retryTracker = new RetryTracker(1);
   const context = {
     setState: (_state: ExecutionState) => undefined,
     getRetryTracker: () => retryTracker,
@@ -583,7 +583,7 @@ describe("PlatformRuntime lifecycle", () => {
     await runtime.stop();
   });
 
-  it("stop() during the early window of a start does not report a teardown it did not perform", async () => {
+  it("stop() during the early window of a start supersedes it instead of queueing behind it", async () => {
     const transport = new FakeTransport();
     const runtime = makePlatformRuntime(transport);
     const startedGate = createGate();
@@ -592,33 +592,31 @@ describe("PlatformRuntime lifecycle", () => {
       await startedGate.wait();
     });
 
-    // Held before `activeAdapter`/`runtime` are assigned: the window in which
-    // stop() used to short-circuit to "stopped" while start() built a live runtime.
+    // Parked inside `onStarted`, which several adapters only abandon once
+    // `onRuntimeStop` runs — so a stop() that waited for this start to settle
+    // would be waiting on itself.
     const startPromise = runtime.start(adapter as never);
     await yieldToEventLoop();
     expect(runtime.state).toEqual({ status: "starting" });
 
-    const settled: string[] = [];
-    const stopPromise = runtime.stop().then((value) => {
-      settled.push("stop");
-      return value;
-    });
-
-    await settleWindow();
-    expect(settled).toEqual([]);
-    expect(runtime.state).toEqual({ status: "starting" });
-
-    startedGate.release();
-    await startPromise;
-    await expect(stopPromise).resolves.toBe(true);
-
-    // The reported "stopped" is backed by a teardown that actually happened.
+    // Resolves without the gate ever being released.
+    await expect(runtime.stop()).resolves.toBe(true);
     expect(runtime.state).toEqual({ status: "stopped" });
+
+    // The reported "stopped" is backed by a teardown that actually happened:
+    // the adapter was claimed before `onStarted`, so it is owed this hook.
     expect(adapter.onRuntimeStop).toHaveBeenCalledTimes(1);
     expect(transport.isConnected()).toBe(false);
+
+    // And the superseded start aborts rather than installing a live runtime
+    // behind the completed teardown's back.
+    startedGate.release();
+    await expect(startPromise).rejects.toThrow(RuntimeStateError);
+    await expect(startPromise).rejects.toThrow("superseded by stop()");
+    expect(runtime.state).toEqual({ status: "stopped" });
   });
 
-  it("stop() during the early window of a failing start reports the failure, now and on every later call", async () => {
+  it("a superseded start does not run its own cleanup over the stop that replaced it", async () => {
     const transport = new FakeTransport();
     const runtime = makePlatformRuntime(transport);
     const failure = new Error("adapter onStarted failed");
@@ -629,30 +627,27 @@ describe("PlatformRuntime lifecycle", () => {
       throw failure;
     });
 
-    // Fails before `activeAdapter`/`runtime` are assigned, so there is nothing to
-    // tear down — but the parked stop() must not read that as a graceful shutdown.
     const startPromise = runtime.start(adapter as never);
     await yieldToEventLoop();
-    expect(runtime.state).toEqual({ status: "starting" });
-
     const startOutcome = rejectionOf(startPromise);
-    const stopOutcome = rejectionOf(runtime.stop());
-    startedGate.release();
 
-    expect(await startOutcome).toBe(failure);
-    expect(await stopOutcome).toBe(failure);
-    expect(runtime.state).toEqual({ status: "failed", error: failure });
-    expect(adapter.onRuntimeStop).not.toHaveBeenCalled();
-
-    // The masked `true` used to be cached in the single-flight slot and replayed
-    // to every later caller, hiding the failure for the life of the instance.
-    await expect(runtime.stop()).rejects.toBe(failure);
-
-    // A restart re-arms teardown: the failure is reported, not latched.
-    adapter.onStarted.mockImplementation(async () => undefined);
-    await runtime.start(adapter as never);
     await expect(runtime.stop()).resolves.toBe(true);
     expect(adapter.onRuntimeStop).toHaveBeenCalledTimes(1);
+
+    // The start now fails on its own account. Its failure-path cleanup must not
+    // fire: this start no longer owns anything, and a second teardown here
+    // would tear down whatever a later start() has since installed.
+    startedGate.release();
+    expect(await startOutcome).toBe(failure);
+    expect(adapter.onRuntimeStop).toHaveBeenCalledTimes(1);
+    expect(runtime.state).toEqual({ status: "stopped" });
+
+    // The instance stays reusable: the superseded start left nothing latched.
+    adapter.onStarted.mockImplementation(async () => undefined);
+    await runtime.start(adapter as never);
+    expect(runtime.state).toEqual({ status: "running" });
+    await expect(runtime.stop()).resolves.toBe(true);
+    expect(adapter.onRuntimeStop).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -941,7 +936,7 @@ describe("Agent lifecycle", () => {
     expect(runtime.stop).toHaveBeenCalledTimes(1);
   });
 
-  it("stop() parked on a start that then fails reports the failure instead of a masked true", async () => {
+  it("stop() during an in-flight start tears the runtime down without waiting for it", async () => {
     const failure = new Error("platform start failed");
     const startGate = createGate();
     const runtime = makeStubRuntime({
@@ -954,13 +949,21 @@ describe("Agent lifecycle", () => {
 
     const startOutcome = rejectionOf(agent.start());
     expect(agent.state).toEqual({ status: "starting" });
-    const stopOutcome = rejectionOf(agent.stop());
+    const stopPromise = agent.stop();
+
+    // Issued immediately, because `PlatformRuntime.stop()` is what supersedes
+    // the in-flight start — an Agent that queued behind that start would hand
+    // its own shutdown to an adapter that may never finish connecting.
+    expect(runtime.stop).toHaveBeenCalledTimes(1);
+
     startGate.release();
 
+    // The start's own caller still sees the real failure; it is not swallowed
+    // into the stop's result, nor the stop's `true` into the start's.
     expect(await startOutcome).toBe(failure);
-    expect(await stopOutcome).toBe(failure);
-    expect(agent.state).toEqual({ status: "failed", error: failure });
-    expect(runtime.stop).not.toHaveBeenCalled();
+    await expect(stopPromise).resolves.toBe(true);
+    expect(agent.state).toEqual({ status: "stopped" });
+    expect(runtime.stop).toHaveBeenCalledTimes(1);
   });
 
   it("start() while a stop is in flight rejects with RuntimeStateError", async () => {
@@ -1051,13 +1054,26 @@ describe("cross-runtime lifecycle contract: stop() after a failed start", () => 
     {
       name: "PlatformRuntime",
       make: () => {
-        const transport = new FakeTransport();
-        const runtime = makePlatformRuntime(transport);
-        const failure = new Error("adapter onStarted failed");
-        const adapter = makeAdapter();
-        adapter.onStarted.mockImplementation(async () => {
-          throw failure;
+        const failure = new Error("agent identity lookup failed");
+        // Fails in initialize(), before the adapter is claimed — the window in
+        // which a start really does leave nothing behind to tear down. A later
+        // failure hands the adapter over first, so its cleanup stop() legitimately
+        // runs `onRuntimeStop` and lands in "stopped" instead.
+        const runtime = new PlatformRuntime({
+          agentId: AGENT_ID,
+          apiKey: API_KEY,
+          link: new BandLink({
+            agentId: AGENT_ID,
+            apiKey: API_KEY,
+            transport: new FakeTransport(),
+            restApi: new FakeRestApi({
+              getAgentMe: async () => {
+                throw failure;
+              },
+            }),
+          }),
         });
+        const adapter = makeAdapter();
 
         return {
           failure,

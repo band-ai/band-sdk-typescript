@@ -29,6 +29,12 @@ export { RoomPresence } from "./rooms/RoomPresence";
 
 export { AgentTools } from "./tools/AgentTools";
 export { ContactToolsImpl } from "./tools/ContactToolsImpl";
+
+// `AgentTools`'s `roster` option, `ExecutionContext.getRetryTracker()`, and
+// `AgentRuntime.presence.roster` are typed by these, and a consumer cannot
+// import a transitive dependency.
+export { ParticipantRoster, RetryTracker, RoomRoster } from "@band-ai/band-sdk-core";
+export type { RoomMembership } from "@band-ai/band-sdk-core";
 export {
   TOOL_MODELS,
   MCP_TOOL_PREFIX,
@@ -52,6 +58,7 @@ export {
 
 export {
   replaceUuidMentions,
+  mentionSubjectsFromMetadata,
   formatMessageForLlm,
   formatHistoryForLlm,
   buildParticipantsMessage,
@@ -65,7 +72,5 @@ export {
   type RenderSystemPromptOptions,
 } from "./prompts";
 
-export { ParticipantTracker } from "./participantTracker";
-export { MessageRetryTracker } from "./retryTracker";
 export { GracefulShutdown, runWithGracefulShutdown } from "./shutdown";
 export { DefaultPreprocessor } from "./preprocessing/DefaultPreprocessor";

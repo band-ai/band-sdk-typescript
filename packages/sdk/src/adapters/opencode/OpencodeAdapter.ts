@@ -1,8 +1,10 @@
+import { AgentFailure } from "@band-ai/band-sdk-core";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { MentionInput } from "../../contracts/dtos";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
-import { NoopLogger } from "../../core/logger";
+import { resolveLogger } from "../../core/logger";
+import { rethrowIfRecoverableTurnFailure } from "../../core/errors";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import type { PlatformMessage } from "../../runtime/types";
 import {
@@ -18,7 +20,19 @@ import {
 import type { McpToolRegistration } from "../../mcp/registrations";
 import { errorResult, successResult } from "../../mcp/registrations";
 import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
-import { asErrorMessage, asOptionalRecord } from "../shared/coercion";
+import { abandon } from "../shared/abandon";
+import { asErrorMessage, asNestedMessage, asOptionalRecord, toDisplayText, truncate } from "../shared/coercion";
+import {
+  DeliveryFailedError,
+  deliverReply,
+} from "../../core/deliveryFailedError";
+import {
+  FAILURE_CODE_TIMEOUT,
+  ProviderTurnFailedError,
+  agentFailure,
+  reportTurnFailure,
+  safeSendFailure,
+} from "../../core/providerFailure";
 import {
   type OpencodeSessionState,
   OpencodeHistoryConverter,
@@ -77,15 +91,36 @@ interface PendingQuestion {
   timeout: ReturnType<typeof setTimeout> | null;
 }
 
+type TurnReleaseOutcome =
+  | { kind: "foreground" }
+  | { kind: "background" }
+  | { kind: "cancelled" }
+  | { kind: "delivery_failed"; error: DeliveryFailedError };
+
+// "completed": OpenCode itself finished the turn (session.idle/session.error).
+// "cancelled": something else ended it first — room cleanup (`onCleanup`) tore
+// the turn down, or an interactive prompt's own delivery failed — so
+// `watchTurnCompletion`'s race must exit quietly rather than through its
+// timeout branch, which would abort and fail whatever session id a later,
+// unrelated turn goes on to reuse for this or another room.
+type TurnEndOutcome = "completed" | "cancelled";
+
 interface RoomState {
   roomId: string;
   sessionId: string | null;
   tools: AdapterToolsProtocol | null;
-  turnDone: Promise<void> | null;
-  resolveTurnDone: (() => void) | null;
-  releaseWait: Promise<void> | null;
-  resolveReleaseWait: (() => void) | null;
+  turnOutcome: Promise<TurnEndOutcome> | null;
+  resolveTurnOutcome: ((outcome: TurnEndOutcome) => void) | null;
+  releaseWait: Promise<TurnReleaseOutcome> | null;
+  resolveReleaseWait: ((outcome: TurnReleaseOutcome) => void) | null;
   turnTask: Promise<void> | null;
+  // Set by `failInteractivePromptDelivery`. `releaseWait` is a one-shot
+  // channel: once a turn has already backgrounded on an earlier interactive
+  // prompt, a later prompt's own delivery failure has no live `releaseWait`
+  // left to carry it to `startTurn`'s caller — `watchTurnCompletion`'s
+  // "cancelled" branch re-throws this instead, so `turnTask`'s own background
+  // observer (see `startTurn`) still sees the failure.
+  pendingDeliveryFailure: DeliveryFailedError | null;
   pendingMentions: MentionInput;
   textParts: Map<string, string>;
   assistantMessageIds: Set<string>;
@@ -95,7 +130,17 @@ interface RoomState {
   pendingPermission: PendingPermission | null;
   pendingQuestion: PendingQuestion | null;
   lastErrorMessage: string | null;
+  // Distinct from a truthy `lastErrorMessage`: a `message.updated` event can set
+  // that for a single assistant message's own reported error without the
+  // session as a whole failing, but only a real `session.error` event may mark
+  // the turn itself as terminally failed.
+  sessionErrored: boolean;
   persistedSessionId: string | null;
+  // Set when a turn times out: its session's abort is fired-and-forgotten
+  // (see `abandon`), so the session may still be settling server-side. The
+  // next turn in this room must not resume it — `ensureSession` consumes
+  // this to force a brand-new session instead of restoring the old one.
+  forceFreshSession: boolean;
 }
 
 interface OpencodeAdapterOptions {
@@ -107,9 +152,9 @@ interface OpencodeAdapterOptions {
   logger?: Logger;
 }
 
-function createDeferred(): { promise: Promise<void>; resolve: () => void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((innerResolve) => {
+function createDeferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((innerResolve) => {
     resolve = innerResolve;
   });
   return { promise, resolve };
@@ -172,6 +217,8 @@ function buildCustomMcpRegistrations(customTools: CustomToolDef[]): McpToolRegis
 }
 
 export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, AdapterToolsProtocol> {
+  protected readonly provider = "opencode";
+
   private readonly config: Required<OpencodeAdapterConfig>;
   private readonly customTools: CustomToolDef[];
   private readonly clientFactory: (config: Required<OpencodeAdapterConfig>) => OpencodeClientLike;
@@ -204,7 +251,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
         })
     ));
     this.mcpBackendFactory = options.mcpBackendFactory ?? createBandMcpBackend;
-    this.logger = options.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options.logger);
   }
 
   public override async onStarted(agentName: string, agentDescription: string): Promise<void> {
@@ -234,11 +281,22 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     const roomState = this.getOrCreateRoomState(context.roomId);
     roomState.tools = tools;
 
-    if (await this.handleControlMessage(roomState, message)) {
+    try {
+      if (await this.handleControlMessage(roomState, message)) {
+        return;
+      }
+    } catch (error) {
+      rethrowIfRecoverableTurnFailure(error);
+      await reportTurnFailure(
+        tools,
+        this.toAgentFailure(error),
+        this.logger,
+        { roomId: roomState.roomId, sessionId: roomState.sessionId },
+      );
       return;
     }
 
-    if (roomState.turnDone) {
+    if (roomState.turnOutcome) {
       await tools.sendEvent(
         "OpenCode is still processing the previous request in this room.",
         "error",
@@ -246,48 +304,84 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       return;
     }
 
-    await this.ensureClientStarted();
-    const client = this.client;
-    if (!client) {
-      throw new Error("OpenCode client is not initialized.");
-    }
-
     try {
-      const { sessionId, created, restoredMissingSession } = await this.ensureSession(roomState, history);
+      await this.ensureClientStarted();
+      const client = this.client;
+      if (!client) {
+        throw new Error("OpenCode client is not initialized.");
+      }
+
+      const { sessionId, created, needsHistoryReplay } = await this.ensureSession(roomState, history);
       if (this.config.enableTaskEvents && (roomState.persistedSessionId !== sessionId || context.isSessionBootstrap)) {
         await this.emitSessionTaskEvent(roomState, created ? "created" : "resumed");
       }
 
-      this.beginTurn(roomState, message.senderId);
-      try {
-        await client.promptAsync(sessionId, {
-          parts: this.buildPromptParts(message, participantsMessage, contactsMessage, {
-            replayMessages: restoredMissingSession ? history.replayMessages : null,
-          }),
-          system: this.systemPrompt,
-          model: this.buildModelPayload(),
-          agent: this.config.agent || undefined,
-          variant: this.config.variant || undefined,
-        });
-      } catch (error) {
-        this.clearTurnState(roomState);
-        throw error;
-      }
-
-      const turnTask = this.watchTurnCompletion(roomState);
-      roomState.turnTask = turnTask;
-      if (roomState.releaseWait) {
-        await roomState.releaseWait;
-      }
-      if (!roomState.turnDone) {
-        await turnTask;
-      }
+      await this.startTurn(roomState, client, sessionId, message, participantsMessage, contactsMessage, history, needsHistoryReplay, context.roomId);
     } catch (error) {
+      rethrowIfRecoverableTurnFailure(error);
+
       this.logger.error("OpenCode adapter request failed", {
         error,
         roomId: context.roomId,
       });
-      await tools.sendEvent(this.formatError(error), "error");
+      // Reports and throws, like every other adapter this PR converted:
+      // returning here would mark this message processed even though the
+      // turn — startup, session establishment, or the prompt itself — never
+      // actually completed, dropping PlatformRuntime's retry along with it.
+      return reportTurnFailure(tools, this.toAgentFailure(error), this.logger, { roomId: context.roomId });
+    }
+  }
+
+  private async startTurn(
+    roomState: RoomState,
+    client: OpencodeClientLike,
+    sessionId: string,
+    message: PlatformMessage,
+    participantsMessage: string | null,
+    contactsMessage: string | null,
+    history: OpencodeSessionState,
+    needsHistoryReplay: boolean,
+    roomId: string,
+  ): Promise<void> {
+    const releaseWait = this.beginTurn(roomState, message.senderId);
+    try {
+      await client.promptAsync(sessionId, {
+        parts: this.buildPromptParts(message, participantsMessage, contactsMessage, {
+          replayMessages: needsHistoryReplay ? history.replayMessages : null,
+        }),
+        system: this.systemPrompt,
+        model: this.buildModelPayload(),
+        agent: this.config.agent || undefined,
+        variant: this.config.variant || undefined,
+      });
+    } catch (error) {
+      this.clearTurnState(roomState);
+      throw error;
+    }
+    // Only now has a forced-fresh replacement's history replay actually been
+    // submitted — see `ensureSession`'s comment on why clearing the flag
+    // can't happen there, before this call was known to succeed.
+    roomState.forceFreshSession = false;
+
+    const turnTask = this.watchTurnCompletion(roomState);
+    roomState.turnTask = turnTask;
+    const release = await releaseWait;
+
+    if (release.kind === "background") {
+      // The turn outlives this call while OpenCode waits for user input. Its
+      // eventual outcome still needs an observer after this request returns.
+      void turnTask.catch((error: unknown) => {
+        this.logger.error("OpenCode turn failed after the request returned", {
+          error,
+          roomId,
+        });
+      });
+      return;
+    }
+
+    await turnTask;
+    if (release.kind === "delivery_failed") {
+      throw release.error;
     }
   }
 
@@ -318,11 +412,12 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       roomId,
       sessionId: null,
       tools: null,
-      turnDone: null,
-      resolveTurnDone: null,
+      turnOutcome: null,
+      resolveTurnOutcome: null,
       releaseWait: null,
       resolveReleaseWait: null,
       turnTask: null,
+      pendingDeliveryFailure: null,
       pendingMentions: [],
       textParts: new Map(),
       assistantMessageIds: new Set(),
@@ -332,7 +427,9 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       pendingPermission: null,
       pendingQuestion: null,
       lastErrorMessage: null,
+      sessionErrored: false,
       persistedSessionId: null,
+      forceFreshSession: false,
     };
     this.rooms.set(roomId, created);
     return created;
@@ -382,6 +479,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       await client.registerMcpServer({
         name: this.config.mcpServerName,
         url: server.url,
+        headers: backend.authToken ? { Authorization: `Bearer ${backend.authToken}` } : undefined,
       });
     } catch (error) {
       this.logger.warn("Failed to register OpenCode MCP backend", { error });
@@ -481,11 +579,16 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
 
     if (eventType === "session.error") {
       roomState.lastErrorMessage = this.formatOpenCodeError(properties.error);
+      roomState.sessionErrored = true;
       this.finishTurn(roomState);
       return;
     }
 
     if (eventType === "session.idle") {
+      const hasText = [...roomState.textParts.values()].some((value) => value.trim().length > 0);
+      if (roomState.lastErrorMessage && !hasText) {
+        roomState.sessionErrored = true;
+      }
       this.finishTurn(roomState);
     }
   }
@@ -614,13 +717,38 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     roomState.pendingPermission.timeout = setTimeout(() => {
       void this.expirePermission(roomState, requestId);
     }, this.config.approvalWaitTimeoutMs);
+    const expectedTurn = roomState.turnOutcome;
     if (roomState.tools) {
       const patterns = roomState.pendingPermission.patterns.join(", ") || "n/a";
-      await roomState.tools.sendMessage(
-        `OpenCode approval requested for \`${roomState.pendingPermission.permission}\` (${patterns}). Reply with \`approve ${requestId}\`, \`always ${requestId}\`, or \`reject ${requestId}\`.`,
-      );
+      try {
+        await roomState.tools.sendMessage(
+          `OpenCode approval requested for \`${roomState.pendingPermission.permission}\` (${patterns}). Reply with \`approve ${requestId}\`, \`always ${requestId}\`, or \`reject ${requestId}\`.`,
+        );
+      } catch (error) {
+        if (roomState.turnOutcome !== expectedTurn || roomState.pendingPermission?.requestId !== requestId) {
+          return;
+        }
+        this.logger.warn("opencode_adapter.permission_prompt_delivery_failed", {
+          roomId: roomState.roomId,
+          requestId,
+          error,
+        });
+        const client = this.client;
+        const sessionId = roomState.sessionId;
+        this.failInteractivePromptDelivery(
+          roomState,
+          error,
+          client && sessionId
+            ? () => client.replyPermission(sessionId, requestId, { response: "reject" })
+            : null,
+        );
+        return;
+      }
     }
-    this.releaseTurnWait(roomState);
+    if (roomState.turnOutcome !== expectedTurn || roomState.pendingPermission?.requestId !== requestId) {
+      return;
+    }
+    this.releaseTurnWait(roomState, { kind: "background" });
   }
 
   private async handleQuestionAsked(roomState: RoomState, properties: Record<string, unknown>): Promise<void> {
@@ -647,10 +775,32 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     roomState.pendingQuestion.timeout = setTimeout(() => {
       void this.expireQuestion(roomState, requestId);
     }, this.config.questionWaitTimeoutMs);
+    const expectedTurn = roomState.turnOutcome;
     if (roomState.tools) {
-      await roomState.tools.sendMessage(this.formatQuestionPrompt(questions, requestId));
+      try {
+        await roomState.tools.sendMessage(this.formatQuestionPrompt(questions, requestId));
+      } catch (error) {
+        if (roomState.turnOutcome !== expectedTurn || roomState.pendingQuestion?.requestId !== requestId) {
+          return;
+        }
+        this.logger.warn("opencode_adapter.question_prompt_delivery_failed", {
+          roomId: roomState.roomId,
+          requestId,
+          error,
+        });
+        const client = this.client;
+        this.failInteractivePromptDelivery(
+          roomState,
+          error,
+          client ? () => client.rejectQuestion(requestId) : null,
+        );
+        return;
+      }
     }
-    this.releaseTurnWait(roomState);
+    if (roomState.turnOutcome !== expectedTurn || roomState.pendingQuestion?.requestId !== requestId) {
+      return;
+    }
+    this.releaseTurnWait(roomState, { kind: "background" });
   }
 
   private async handleControlMessage(roomState: RoomState, message: PlatformMessage): Promise<boolean> {
@@ -663,10 +813,12 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     if (roomState.pendingPermission) {
       const reply = this.parsePermissionReply(lowered, roomState.pendingPermission);
       if (reply) {
+        const requestId = roomState.pendingPermission.requestId;
+        const expectedTurn = roomState.turnOutcome;
         await this.replyPermission(roomState, reply);
-        if (roomState.tools) {
-          await roomState.tools.sendMessage(
-            `OpenCode approval \`${roomState.pendingPermission?.requestId ?? ""}\` handled with \`${reply}\`.`,
+        if (roomState.tools && roomState.turnOutcome === expectedTurn) {
+          await deliverReply(roomState.tools,
+            `OpenCode approval \`${requestId}\` handled with \`${reply}\`.`,
           );
         }
         return true;
@@ -678,7 +830,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       if (lowered === "reject" || lowered === "/reject") {
         await this.rejectQuestion(roomState);
         if (roomState.tools) {
-          await roomState.tools.sendMessage(`OpenCode question \`${requestId}\` rejected.`);
+          await deliverReply(roomState.tools, `OpenCode question \`${requestId}\` rejected.`);
         }
         return true;
       }
@@ -686,7 +838,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       const answers = this.parseQuestionAnswers(content, roomState.pendingQuestion);
       if (answers === null) {
         if (roomState.tools) {
-          await roomState.tools.sendMessage(
+          await deliverReply(roomState.tools,
             "OpenCode is waiting for answers. Reply with one line per question, or `reject` to reject the question.",
           );
         }
@@ -695,7 +847,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
 
       await this.replyQuestion(roomState, answers);
       if (roomState.tools) {
-        await roomState.tools.sendMessage(`OpenCode question \`${requestId}\` answered.`);
+        await deliverReply(roomState.tools, `OpenCode question \`${requestId}\` answered.`);
       }
       return true;
     }
@@ -710,8 +862,13 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       return;
     }
 
+    const requestId = pending.requestId;
+    const expectedTurn = roomState.turnOutcome;
     this.cancelPendingTimeout(pending);
-    await client.replyPermission(roomState.sessionId, pending.requestId, { response: reply });
+    await client.replyPermission(roomState.sessionId, requestId, { response: reply });
+    if (roomState.turnOutcome !== expectedTurn || roomState.pendingPermission?.requestId !== requestId) {
+      return;
+    }
     roomState.pendingPermission = null;
   }
 
@@ -722,8 +879,13 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       return;
     }
 
+    const requestId = pending.requestId;
+    const expectedTurn = roomState.turnOutcome;
     this.cancelPendingTimeout(pending);
-    await client.replyQuestion(pending.requestId, { answers });
+    await client.replyQuestion(requestId, { answers });
+    if (roomState.turnOutcome !== expectedTurn || roomState.pendingQuestion?.requestId !== requestId) {
+      return;
+    }
     roomState.pendingQuestion = null;
   }
 
@@ -734,8 +896,13 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       return;
     }
 
+    const requestId = pending.requestId;
+    const expectedTurn = roomState.turnOutcome;
     this.cancelPendingTimeout(pending);
-    await client.rejectQuestion(pending.requestId);
+    await client.rejectQuestion(requestId);
+    if (roomState.turnOutcome !== expectedTurn || roomState.pendingQuestion?.requestId !== requestId) {
+      return;
+    }
     roomState.pendingQuestion = null;
   }
 
@@ -777,15 +944,29 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   private async ensureSession(
     roomState: RoomState,
     history: OpencodeSessionState,
-  ): Promise<{ sessionId: string; created: boolean; restoredMissingSession: boolean }> {
+  ): Promise<{ sessionId: string; created: boolean; needsHistoryReplay: boolean }> {
     const client = this.client;
     if (!client) {
       throw new Error("OpenCode client is not initialized.");
     }
 
-    const restoredSessionId = roomState.sessionId ?? history.sessionId;
+    // A timed-out turn's abort is fire-and-forget (see handleTurnTimeout) —
+    // this room's session may still be settling server-side, so this turn
+    // must not resume it, however history or in-memory state would otherwise
+    // resolve it. Not cleared here: `startTurn` only clears it once this
+    // turn's `promptAsync` actually submits the history replay it forces
+    // below — if that submission itself fails, the *next* turn must still
+    // force a fresh session and replay history, not silently resume the
+    // history-less session just created.
+    const forceFreshSession = roomState.forceFreshSession;
+    const priorSessionId = roomState.sessionId ?? history.sessionId;
+    const restoredSessionId = forceFreshSession ? null : priorSessionId;
     let created = false;
-    let restoredMissingSession = false;
+    // True whenever the session this turn ends up with is not the one the
+    // room's prior conversation actually lived in — a missing restore target
+    // and a forced-fresh replacement are both "OpenCode has no memory of this
+    // room's history," so both need it replayed the same way.
+    let needsHistoryReplay = false;
     let session: Record<string, unknown>;
 
     if (restoredSessionId) {
@@ -797,11 +978,12 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
         }
         session = await client.createSession({ title: this.buildSessionTitle(roomState.roomId) });
         created = true;
-        restoredMissingSession = true;
+        needsHistoryReplay = true;
       }
     } else {
       session = await client.createSession({ title: this.buildSessionTitle(roomState.roomId) });
       created = true;
+      needsHistoryReplay = forceFreshSession && Boolean(priorSessionId);
     }
 
     const sessionId = typeof session.id === "string" ? session.id : String(session.id ?? "");
@@ -810,79 +992,194 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     }
     roomState.sessionId = sessionId;
     this.roomBySession.set(sessionId, roomState.roomId);
-    return { sessionId, created, restoredMissingSession };
+    return { sessionId, created, needsHistoryReplay };
   }
 
-  private beginTurn(roomState: RoomState, senderId: string | null): void {
-    const turnDone = createDeferred();
-    const releaseWait = createDeferred();
-    roomState.turnDone = turnDone.promise;
-    roomState.resolveTurnDone = turnDone.resolve;
+  private beginTurn(roomState: RoomState, senderId: string | null): Promise<TurnReleaseOutcome> {
+    const turnOutcome = createDeferred<TurnEndOutcome>();
+    const releaseWait = createDeferred<TurnReleaseOutcome>();
+    roomState.turnOutcome = turnOutcome.promise;
+    roomState.resolveTurnOutcome = turnOutcome.resolve;
     roomState.releaseWait = releaseWait.promise;
     roomState.resolveReleaseWait = releaseWait.resolve;
     roomState.pendingMentions = senderId ? [{ id: senderId }] : [];
     roomState.turnTask = null;
+    roomState.pendingDeliveryFailure = null;
     roomState.textParts.clear();
     roomState.assistantMessageIds.clear();
     roomState.assistantPartTypes.clear();
     roomState.reportedToolCalls.clear();
     roomState.reportedToolResults.clear();
     roomState.lastErrorMessage = null;
+    roomState.sessionErrored = false;
+    return releaseWait.promise;
   }
 
   private async watchTurnCompletion(roomState: RoomState): Promise<void> {
-    const turnDone = roomState.turnDone;
-    if (!turnDone) {
+    const turnOutcome = roomState.turnOutcome;
+    if (!turnOutcome) {
       return;
     }
 
     try {
-      await Promise.race([
-        turnDone,
-        delay(this.config.turnTimeoutMs).then(() => {
-          throw new Error("timeout");
-        }),
+      const outcome = await Promise.race([
+        turnOutcome,
+        delay(this.config.turnTimeoutMs).then(() => "timed_out" as const),
       ]);
-      await this.deliverFallbackText(roomState);
-      this.releaseTurnWait(roomState);
-    } catch (error) {
-      if (error instanceof Error && error.message === "timeout") {
-        if (this.client && roomState.sessionId) {
-          try {
-            await this.client.abortSession(roomState.sessionId);
-          } catch {}
+      if (outcome === "cancelled") {
+        // A still-live turn's own interactive-prompt delivery failed after it
+        // had already backgrounded (see `failInteractivePromptDelivery`):
+        // `releaseWait` was already spent on the earlier "background" release,
+        // so this is the only channel left to surface it to `startTurn`'s
+        // `void turnTask.catch(...)` observer. A room-cleanup cancellation
+        // (`onCleanup`) leaves this unset and returns quietly, as before.
+        if (roomState.pendingDeliveryFailure) {
+          throw roomState.pendingDeliveryFailure;
         }
-        if (roomState.tools) {
-          await roomState.tools.sendEvent("OpenCode timed out before completing the turn.", "error");
-        }
-        this.releaseTurnWait(roomState);
         return;
       }
-      throw error;
+      if (outcome === "timed_out") {
+        await this.handleTurnTimeout(roomState);
+        return;
+      }
+      if (roomState.sessionErrored) {
+        // OpenCode's own session.error resolved turnOutcome the same way
+        // session.idle does (see the event handler), so this is only
+        // reachable here, not via the timeout branch below — handle it as
+        // its own terminal failure rather than falling into the success path.
+        await this.handleSessionError(roomState);
+        return;
+      }
+      await this.deliverFallbackText(roomState);
     } finally {
-      this.clearTurnState(roomState, turnDone);
+      this.releaseTurnWait(roomState, { kind: "foreground" });
+      this.clearTurnState(roomState, turnOutcome);
     }
   }
 
-  private releaseTurnWait(roomState: RoomState): void {
-    roomState.resolveReleaseWait?.();
+  private async handleTurnTimeout(roomState: RoomState): Promise<void> {
+    this.abortAndAbandonSession(roomState);
+    const failure = agentFailure(this.provider, "OpenCode timed out before completing the turn.", FAILURE_CODE_TIMEOUT);
+    await this.reportTerminalFailure(roomState, failure);
+  }
+
+  // Best-effort aborts the room's current session server-side (see `abandon`)
+  // and unroutes it (see `abandonSession`) so a turn this room has given up
+  // on — a timeout, or a failed interactive-prompt delivery — can't leave a
+  // late event attaching to the room's next, unrelated turn. Also marks the
+  // room to open a fresh session next time, since the abort above is
+  // fire-and-forget and this session may still be settling server-side.
+  private abortAndAbandonSession(roomState: RoomState): void {
+    const client = this.client;
+    const abandonedSessionId = roomState.sessionId;
+    if (!client || !abandonedSessionId) {
+      return;
+    }
+    roomState.forceFreshSession = true;
+    abandon(
+      () => client.abortSession(abandonedSessionId),
+      (abortError) => {
+        this.logger.warn("opencode_adapter.turn_abort_failed", {
+          roomId: roomState.roomId,
+          sessionId: abandonedSessionId,
+          error: abortError,
+        });
+      },
+    );
+    this.abandonSession(abandonedSessionId);
+  }
+
+  // Unroutes a session this room has given up on (a turn timeout, or a
+  // failed interactive-prompt delivery) so a late event the still-settling
+  // turn emits afterward — `roomStateForEvent` resolves purely off
+  // `roomBySession`, with no notion of "this room moved on" of its own — is
+  // dropped instead of attaching to the room's current, unrelated state.
+  // Left to `ensureSession`'s own cleanup, this wouldn't happen until the
+  // room's *next* turn, which can be arbitrarily later than this point.
+  private abandonSession(sessionId: string): void {
+    this.roomBySession.delete(sessionId);
+  }
+
+  private async handleSessionError(roomState: RoomState): Promise<void> {
+    // OpenCode's session.error is a terminal provider failure exactly like
+    // turnTimeoutMs expiring: flush whatever text the turn produced first
+    // (same as a clean completion would), then fail the turn so
+    // PlatformRuntime retries it — independent of fallbackSendAgentText and
+    // regardless of any partial text, unlike deliverFallbackText's own
+    // best-effort, non-throwing sendFailure for this same message.
+    await this.flushTurnText(roomState);
+    const failure = agentFailure(this.provider, roomState.lastErrorMessage ?? "OpenCode reported a session error.");
+    await this.reportTerminalFailure(roomState, failure);
+  }
+
+  private async reportTerminalFailure(roomState: RoomState, failure: AgentFailure): Promise<never> {
+    if (roomState.tools) {
+      // Best-effort: the failure itself is the truth we already know, and
+      // failing to report it must not leave the room's turn wait released
+      // forever.
+      await safeSendFailure(roomState.tools, failure, this.logger, { roomId: roomState.roomId });
+    }
+    // Thrown, not returned: PlatformRuntime marks a message failed — and
+    // retries it — only when onMessage throws. Matches every other terminal
+    // provider failure in this adapter (see ProviderTurnFailedError).
+    throw new ProviderTurnFailedError(failure);
+  }
+
+  private releaseTurnWait(roomState: RoomState, outcome: TurnReleaseOutcome): void {
+    roomState.resolveReleaseWait?.(outcome);
   }
 
   private finishTurn(roomState: RoomState): void {
-    roomState.resolveTurnDone?.();
-    roomState.resolveReleaseWait?.();
+    roomState.resolveTurnOutcome?.("completed");
   }
 
-  private clearTurnState(roomState: RoomState, expectedTurn?: Promise<void>): void {
-    if (expectedTurn && roomState.turnDone !== expectedTurn) {
+  private failInteractivePromptDelivery(
+    roomState: RoomState,
+    error: unknown,
+    rejectInteraction: (() => Promise<void>) | null,
+  ): void {
+    // The aborted provider turn can still emit an idle/error event after its
+    // prompt delivery failed. A retry must own a new session so that late
+    // events remain attributable to the abandoned turn.
+    this.abortAndAbandonSession(roomState);
+    if (rejectInteraction) {
+      abandon(rejectInteraction, (rejectionError) => {
+        this.logger.warn("opencode_adapter.interaction_rejection_failed", {
+          roomId: roomState.roomId,
+          error: rejectionError,
+        });
+      });
+    }
+    const deliveryFailure = new DeliveryFailedError(error);
+    // Reaches `startTurn`'s caller if it's still awaiting `releaseWait` (the
+    // turn's first interactive prompt); otherwise a no-op, since that one-shot
+    // channel was already spent on an earlier "background" release — in which
+    // case `pendingDeliveryFailure` below is what actually surfaces this.
+    this.releaseTurnWait(roomState, { kind: "delivery_failed", error: deliveryFailure });
+    roomState.pendingDeliveryFailure = deliveryFailure;
+    // Settles a still-running watchTurnCompletion's race quietly (see
+    // TurnEndOutcome) instead of letting it run to its timeout branch for a
+    // turn that's already ending here.
+    roomState.resolveTurnOutcome?.("cancelled");
+  }
+
+  private clearTurnState(roomState: RoomState, expectedTurn?: Promise<TurnEndOutcome>): void {
+    if (expectedTurn && roomState.turnOutcome !== expectedTurn) {
       return;
     }
     this.cancelPendingTimeout(roomState.pendingPermission);
     this.cancelPendingTimeout(roomState.pendingQuestion);
     roomState.pendingPermission = null;
     roomState.pendingQuestion = null;
-    roomState.turnDone = null;
-    roomState.resolveTurnDone = null;
+    // Settles a still-running watchTurnCompletion's race (see TurnEndOutcome)
+    // — a no-op once that race has already settled through session.idle,
+    // session.error, or the timeout, which is exactly what happens when this
+    // runs from watchTurnCompletion's own `finally` for the turn it belongs to.
+    roomState.resolveTurnOutcome?.("cancelled");
+    roomState.turnOutcome = null;
+    roomState.resolveTurnOutcome = null;
+    // Release a startTurn still waiting while room cleanup cancels its watcher.
+    roomState.resolveReleaseWait?.({ kind: "cancelled" });
     roomState.releaseWait = null;
     roomState.resolveReleaseWait = null;
     roomState.turnTask = null;
@@ -906,9 +1203,14 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     roomState.persistedSessionId = roomState.sessionId;
   }
 
-  private async deliverFallbackText(roomState: RoomState): Promise<void> {
+  /**
+   * "blocked" and "empty" are both a no-op today, but `deliverFallbackText`
+   * needs to tell them apart: only "empty" means the shared guard already
+   * passed, so it's safe to go on and send its own fallback message.
+   */
+  private async flushTurnText(roomState: RoomState): Promise<"sent" | "empty" | "blocked"> {
     if (!roomState.tools || !this.config.fallbackSendAgentText) {
-      return;
+      return "blocked";
     }
 
     const text = [...roomState.textParts.values()]
@@ -917,19 +1219,23 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       .join("\n")
       .trim();
 
-    if (text.length > 0) {
-      await roomState.tools.sendMessage(text, roomState.pendingMentions);
-      roomState.pendingMentions = [];
+    if (text.length === 0) {
+      return "empty";
+    }
+
+    await deliverReply(roomState.tools, text, roomState.pendingMentions);
+    roomState.pendingMentions = [];
+    return "sent";
+  }
+
+  private async deliverFallbackText(roomState: RoomState): Promise<void> {
+    const outcome = await this.flushTurnText(roomState);
+    if (outcome !== "empty" || !roomState.tools) {
       return;
     }
 
-    if (roomState.lastErrorMessage) {
-      await roomState.tools.sendEvent(roomState.lastErrorMessage, "error");
-      roomState.pendingMentions = [];
-      return;
-    }
-
-    await roomState.tools.sendMessage(
+    await deliverReply(
+      roomState.tools,
       "OpenCode completed the turn without a text reply.",
       roomState.pendingMentions,
     );
@@ -1068,11 +1374,16 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     return lines.join("\n");
   }
 
-  private formatError(error: unknown): string {
+  private toAgentFailure(error: unknown): AgentFailure {
     if (error instanceof HttpStatusError) {
-      return `OpenCode request failed (${error.status}): ${typeof error.body === "string" ? error.body : JSON.stringify(error.body)}`;
+      // `error.body` is an untyped provider payload; toDisplayText already
+      // handles the string-passthrough/safe-JSON.stringify-with-fallback
+      // shape this needs, and never throws on a cycle or a BigInt.
+      const body = typeof error.body === "string" ? error.body : toDisplayText(error.body);
+      const message = `OpenCode request failed (${error.status}): ${body}`;
+      return agentFailure(this.provider, message, String(error.status), error.body);
     }
-    return `OpenCode failed while processing the message: ${asErrorMessage(error)}`;
+    return agentFailure(this.provider, `OpenCode failed while processing the message: ${asErrorMessage(error)}`);
   }
 
   private formatOpenCodeError(error: unknown): string {
@@ -1081,9 +1392,8 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       return "OpenCode reported an unknown error.";
     }
     const name = typeof payload.name === "string" ? payload.name : "OpenCodeError";
-    const data = asOptionalRecord(payload.data);
-    const message = typeof data?.message === "string" ? data.message : null;
-    return message ? `${name}: ${message}` : `${name}: OpenCode reported an error.`;
+    const message = asNestedMessage(payload.data);
+    return message ? `${name}: ${truncate(message)}` : `${name}: OpenCode reported an error.`;
   }
 }
 

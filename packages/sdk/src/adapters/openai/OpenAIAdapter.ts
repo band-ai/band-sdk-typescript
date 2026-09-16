@@ -6,7 +6,7 @@ import {
 } from "./model";
 
 export interface OpenAIAdapterOptions
-  extends Omit<ToolCallingAdapterOptions, "toolFormat" | "model"> {
+  extends Omit<ToolCallingAdapterOptions, "toolFormat" | "model" | "provider"> {
   model?: ToolCallingModel;
   openAIModel?: string;
   apiKey?: string;
@@ -33,6 +33,7 @@ export class OpenAIAdapter extends ToolCallingAdapter {
       ...adapterOptions,
       model: resolvedModel,
       toolFormat: "openai",
+      provider: "openai",
     });
   }
 }

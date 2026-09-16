@@ -3,6 +3,7 @@ import type { Server as HttpServer } from "node:http";
 import { describe, expect, it } from "vitest";
 
 import { createGatewayServer } from "../src/adapters/a2a-gateway/server";
+import { sanitizeForwardedFailure, sanitizeGatewayErrorMessage } from "../src/adapters/a2a-gateway/failure";
 import type {
   GatewayCancelRequest,
   GatewayRequest,
@@ -393,12 +394,116 @@ describe("GatewayServer", () => {
     expect(event.kind).toBe("status-update");
     expect(event.final).toBe(true);
     expect(event.status?.state).toBe("failed");
-    expect(event.metadata?.error_type).toBe("Error");
-    expect(typeof event.metadata?.error_message).toBe("string");
-    expect(String(event.metadata?.error_message)).toContain("[REDACTED]");
-    expect(String(event.metadata?.error_message)).not.toContain("secret-token");
-    expect(String(event.metadata?.error_message)).not.toContain("abc123");
-    expect(String(event.metadata?.error_message)).not.toContain("xyz");
+    const failure = event.metadata?.failure as Record<string, unknown> | undefined;
+    expect(failure?.provider).toBe("a2a-gateway");
+    expect(failure?.code).toBe("Error");
+    expect(typeof failure?.message).toBe("string");
+    expect(String(failure?.message)).toContain("[REDACTED]");
+    expect(String(failure?.message)).not.toContain("secret-token");
+    expect(String(failure?.message)).not.toContain("abc123");
+    expect(String(failure?.message)).not.toContain("xyz");
+  });
+
+  it("redacts a scheme-prefixed credential value, not just its scheme word", async () => {
+    const { recordedExecutors, loadModules } = createModulesRecorder();
+    const server = createGatewayServer(makeServerOptions({
+      allowUnauthenticatedLoopback: true,
+      loadModules,
+      onRequest: async function* () {
+        throw new Error("upstream failed Authorization: ApiKey sk-actualSecretValue1234");
+      },
+    }));
+
+    await server.start();
+    const executor = recordedExecutors[0];
+    expect(executor).toBeDefined();
+    if (!executor) {
+      throw new Error("Expected a recorded gateway executor");
+    }
+
+    const publishedEvents: unknown[] = [];
+    await executor.execute(
+      {
+        taskId: "task-fail-scheme",
+        contextId: "ctx-fail-scheme",
+        userMessage: {
+          kind: "message",
+          messageId: "m-fail-scheme",
+          role: "user",
+          parts: [],
+        },
+      },
+      {
+        publish: (event) => {
+          publishedEvents.push(event);
+        },
+        finished: () => undefined,
+      },
+    );
+    await server.stop();
+
+    const event = publishedEvents[0] as { metadata?: Record<string, unknown> };
+    const failure = event.metadata?.failure as Record<string, unknown> | undefined;
+    expect(String(failure?.message)).not.toContain("sk-actualSecretValue1234");
+  });
+
+  describe("sanitizeGatewayErrorMessage", () => {
+    it("redacts a scheme-prefixed credential value, not just its scheme word", () => {
+      const sanitized = sanitizeGatewayErrorMessage(
+        new Error("upstream failed Authorization: ApiKey sk-actualSecretValue1234"),
+      );
+      expect(sanitized).not.toContain("sk-actualSecretValue1234");
+    });
+
+    it("redacts the credential but preserves trailing prose past it, instead of swallowing everything up to the next comma", () => {
+      const sanitized = sanitizeGatewayErrorMessage(
+        new Error(
+          "Invalid token: eyJhbGciOiJIUzI1NiJ9.abc sent to https://api.example.com/v1/chat was rejected, please check your configuration",
+        ),
+      );
+      expect(sanitized).not.toContain("eyJhbGciOiJIUzI1NiJ9.abc");
+      expect(sanitized).toContain("sent to https://api.example.com/v1/chat was rejected");
+      expect(sanitized).toContain("please check your configuration");
+    });
+
+    it("redacts a credential embedded in a JSON-quoted key/value pair, not just a bare key: value pair", () => {
+      const sanitized = sanitizeGatewayErrorMessage(
+        new Error('HTTP 401 body {"api_key":"sk-json-secret"}'),
+      );
+      expect(sanitized).not.toContain("sk-json-secret");
+    });
+
+    it("redacts password, client_secret, and cookie/session values, not just token/authorization/api-key", () => {
+      // The denylist only covered token/authorization/api-key spellings;
+      // provider bodies routinely carry credentials under these other names
+      // too (raw HTTP bodies flow into this via GatewayFailureMetadata).
+      expect(sanitizeGatewayErrorMessage(new Error("login failed password=hunter2")))
+        .not.toContain("hunter2");
+      expect(sanitizeGatewayErrorMessage(new Error("oauth client_secret=sk-client-secret")))
+        .not.toContain("sk-client-secret");
+      expect(sanitizeGatewayErrorMessage(new Error("Set-Cookie: session=supersecret")))
+        .not.toContain("supersecret");
+      // A bare session value with no other sensitive keyword nearby --
+      // isolates "session" itself, rather than piggybacking on "Cookie".
+      expect(sanitizeGatewayErrorMessage(new Error("session=supersecret2")))
+        .not.toContain("supersecret2");
+    });
+
+    it("redacts a naturally-spaced credential phrase, not just a contiguous key=value one", () => {
+      const sanitized = sanitizeGatewayErrorMessage(
+        new Error("Incorrect API key provided: sk-test123"),
+      );
+      expect(sanitized).not.toContain("sk-test123");
+    });
+  });
+
+  describe("sanitizeForwardedFailure", () => {
+    it("falls back to a safe placeholder, not the literal coerced value, when message is not a string", () => {
+      expect(sanitizeForwardedFailure({ provider: "openai", code: "bad_request", message: undefined }))
+        .toMatchObject({ message: "Unknown error" });
+      expect(sanitizeForwardedFailure({ provider: "openai", code: "bad_request" }))
+        .toMatchObject({ message: "Unknown error" });
+    });
   });
 
   it("builds agent card skills tagged with band and gateway", async () => {

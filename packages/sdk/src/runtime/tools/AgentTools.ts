@@ -1,4 +1,7 @@
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
+import { resolveLogger, type Logger } from "../../core/logger";
+import { ParticipantRoster, type AgentFailure, type ParticipantFields } from "@band-ai/band-sdk-core";
+import { toParticipantRecord, toParticipantRecordFromRest } from "../formatters";
 import type { AgentToolsRestApi } from "../../client/rest/types";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
 import { assertCapability } from "../../contracts/capabilities";
@@ -34,7 +37,9 @@ import {
   DEFAULT_AGENT_TOOLS_CAPABILITIES,
   type AgentToolsCapabilities,
   type AgentToolsProtocol,
+  isStructuredToolFailure,
   isToolExecutorError,
+  sendFailureViaEvent,
   type ToolExecutorError,
 } from "../../contracts/protocols";
 import {
@@ -44,7 +49,6 @@ import {
   TOOL_MODELS
 } from "./schemas";
 import {
-  expectedMemoryTypesForSystem,
   expectedList,
   memoryTypeForSystemError,
   isMemoryListScope,
@@ -57,6 +61,7 @@ import {
   MEMORY_LIST_SCOPES,
   MEMORY_SEGMENTS,
   MEMORY_STATUSES,
+  MEMORY_STORE_SCOPE,
   MEMORY_STORE_SCOPES,
   MEMORY_SYSTEMS,
   MEMORY_TYPES,
@@ -65,64 +70,45 @@ import {
 interface AgentToolsOptions {
   roomId: string;
   rest: AgentToolsRestApi;
-  participants?: ParticipantRecord[];
+  roster?: ParticipantRoster;
   capabilities?: Partial<AgentToolsCapabilities>;
+  logger?: Logger;
 }
 
 type ToolHandler = (arguments_: MetadataMap) => Promise<unknown>;
 
-type AdapterToolMethodName =
-  | "sendMessage"
-  | "sendEvent"
-  | "addParticipant"
-  | "removeParticipant"
-  | "getParticipants"
-  | "createChatroom"
-  | "getToolSchemas"
-  | "getAnthropicToolSchemas"
-  | "getOpenAIToolSchemas"
-  | "executeToolCall"
-  | "lookupPeers"
-  | "listContacts"
-  | "addContact"
-  | "removeContact"
-  | "listContactRequests"
-  | "respondContactRequest"
-  | "listMemories"
-  | "storeMemory"
-  | "getMemory"
-  | "supersedeMemory"
-  | "archiveMemory";
+type AdapterToolMethodName = Exclude<keyof AdapterToolsProtocol, "capabilities">;
 
-const REQUIRED_ADAPTER_TOOL_METHODS = [
-  "sendMessage",
-  "sendEvent",
-  "addParticipant",
-  "removeParticipant",
-  "getParticipants",
-  "createChatroom",
-  "getToolSchemas",
-  "getAnthropicToolSchemas",
-  "getOpenAIToolSchemas",
-  "executeToolCall",
-] as const satisfies readonly AdapterToolMethodName[];
-
-const OPTIONAL_ADAPTER_TOOL_METHODS: Record<keyof AgentToolsCapabilities, readonly AdapterToolMethodName[]> = {
-  peers: ["lookupPeers"],
-  contacts: [
-    "listContacts",
-    "addContact",
-    "removeContact",
-    "listContactRequests",
-    "respondContactRequest",
-  ],
-  memory: [
-    "listMemories",
-    "storeMemory",
-    "getMemory",
-    "supersedeMemory",
-    "archiveMemory",
-  ],
+/**
+ * Every adapter-facing method, mapped to the capability gating it (`null` =
+ * always bound). The `Record` is the point: a method added to
+ * `AdapterToolsProtocol` becomes a compile error here, rather than one that is
+ * silently absent from the frozen object `buildAdapterTools` hands adapters —
+ * a gap that cast cannot catch and only surfaces as a TypeError in production.
+ */
+const ADAPTER_TOOL_METHODS: Record<AdapterToolMethodName, keyof AgentToolsCapabilities | null> = {
+  sendMessage: null,
+  sendEvent: null,
+  sendFailure: null,
+  addParticipant: null,
+  removeParticipant: null,
+  getParticipants: null,
+  createChatroom: null,
+  getToolSchemas: null,
+  getAnthropicToolSchemas: null,
+  getOpenAIToolSchemas: null,
+  executeToolCall: null,
+  lookupPeers: "peers",
+  listContacts: "contacts",
+  addContact: "contacts",
+  removeContact: "contacts",
+  listContactRequests: "contacts",
+  respondContactRequest: "contacts",
+  listMemories: "memory",
+  storeMemory: "memory",
+  getMemory: "memory",
+  supersedeMemory: "memory",
+  archiveMemory: "memory",
 };
 
 const CONTACT_REQUEST_ACTIONS: ReadonlySet<RespondContactRequestArgs["action"]> = new Set([
@@ -135,14 +121,16 @@ export class AgentTools implements AgentToolsProtocol {
   public readonly roomId: string;
   public readonly capabilities: Readonly<AgentToolsCapabilities>;
   private readonly rest: AgentToolsRestApi;
-  private participants: ParticipantRecord[];
+  private readonly roster: ParticipantRoster;
   private readonly adapterTools: AdapterToolsProtocol;
   private readonly toolHandlers: Record<string, ToolHandler>;
+  private readonly logger: Logger;
 
   public constructor(options: AgentToolsOptions) {
     this.roomId = options.roomId;
     this.rest = options.rest;
-    this.participants = options.participants ?? [];
+    this.roster = options.roster ?? new ParticipantRoster();
+    this.logger = resolveLogger(options.logger);
     this.capabilities = {
       ...DEFAULT_AGENT_TOOLS_CAPABILITIES,
       ...options.capabilities,
@@ -159,19 +147,24 @@ export class AgentTools implements AgentToolsProtocol {
     content: string,
     mentions: MentionInput = [],
   ): Promise<ToolOperationResult> {
-    if (mentions.length > 0 && typeof mentions[0] === "string" && this.participants.length === 0) {
-      await this.syncParticipants();
+    let participants: ParticipantFields[] | undefined;
+    if (mentions.length > 0 && typeof mentions[0] === "string") {
+      participants = this.roster.list();
+      if (participants.length === 0) {
+        participants = await this.syncParticipants();
+      }
     }
 
-    const resolvedMentions = this.resolveMentions(mentions);
+    const resolvedMentions = this.resolveMentions(mentions, participants);
 
+    // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
+    // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
     return this.rest.createChatMessage(
       this.roomId,
       {
         content,
         mentions: resolvedMentions,
       },
-      DEFAULT_REQUEST_OPTIONS,
     );
   }
 
@@ -181,15 +174,30 @@ export class AgentTools implements AgentToolsProtocol {
     metadata?: MetadataMap,
   ): Promise<ToolOperationResult> {
     assertChatEventType(messageType);
-    return this.rest.createChatEvent(
-      this.roomId,
-      {
-        content,
-        messageType,
-        metadata,
-      },
-      DEFAULT_REQUEST_OPTIONS,
-    );
+    try {
+      // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
+      // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
+      return await this.rest.createChatEvent(
+        this.roomId,
+        {
+          content,
+          messageType,
+          metadata,
+        },
+      );
+    } catch (error) {
+      // Room telemetry, not the agent's answer: a failed post here must never
+      // abort the turn the way a failed sendMessage should. See sendMessage,
+      // which is deliberately left to reject. (`resolveLogger` already keeps a
+      // throwing caller-supplied logger from becoming that rejection.)
+      this.logger.warn("chat event send failed", { roomId: this.roomId, messageType, error });
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, status: "failed", message };
+    }
+  }
+
+  public async sendFailure(failure: AgentFailure): Promise<ToolOperationResult> {
+    return sendFailureViaEvent(this.sendEvent.bind(this), failure);
   }
 
   public async createChatroom(taskId?: string): Promise<string> {
@@ -233,7 +241,7 @@ export class AgentTools implements AgentToolsProtocol {
       handle: typeof peer.handle === "string" ? peer.handle : null,
     };
 
-    this.participants.push(participantRecord);
+    this.roster.add(participantRecord);
 
     return {
       ...participantRecord,
@@ -252,7 +260,7 @@ export class AgentTools implements AgentToolsProtocol {
     }
 
     await this.rest.removeChatParticipant(this.roomId, String(participant.id), DEFAULT_REQUEST_OPTIONS);
-    this.replaceParticipants(this.participants.filter((entry) => entry.id !== participant.id));
+    this.roster.remove(participant.id);
 
     return {
       id: participant.id,
@@ -285,18 +293,13 @@ export class AgentTools implements AgentToolsProtocol {
 
   private async fetchParticipants(): Promise<ParticipantRecord[]> {
     const participants = await this.rest.listChatParticipants(this.roomId, DEFAULT_REQUEST_OPTIONS);
-    return participants.map((participant) => ({
-      id: participant.id,
-      name: participant.name,
-      type: participant.type,
-      handle: participant.handle ?? null,
-    }));
+    return participants.map(toParticipantRecordFromRest);
   }
 
   private async syncParticipants(): Promise<ParticipantRecord[]> {
     const participants = await this.fetchParticipants();
-    this.replaceParticipants(participants);
-    return [...this.participants];
+    this.roster.setAll(participants);
+    return this.roster.list().map(toParticipantRecord);
   }
 
   public async executeToolCall(toolName: string, arguments_: MetadataMap): Promise<unknown> {
@@ -316,7 +319,21 @@ export class AgentTools implements AgentToolsProtocol {
     }
 
     try {
-      return await handler(arguments_);
+      const result = await handler(arguments_);
+      // sendEvent fails by resolving `{ok: false}` instead of throwing (it must
+      // never reject — see its own comment). Route that failure through the
+      // same ToolExecutorError conversion a thrown error gets below, so every
+      // consumer of executeToolCall recognizes it. Scoped to sendEvent: other
+      // handlers' `ok` fields are legitimate business-result data, not errors.
+      if (toolName === "band_send_event" && isStructuredToolFailure(result) && !isToolExecutorError(result)) {
+        return createToolExecutorError({
+          errorType: "ToolExecutionError",
+          toolName,
+          message: result.message,
+          legacyMessage: `Error executing ${toolName}: ${result.message}`,
+        });
+      }
+      return result;
     } catch (error) {
       if (isToolExecutorError(error)) {
         return error;
@@ -331,6 +348,10 @@ export class AgentTools implements AgentToolsProtocol {
         });
       }
 
+      // Unlike the two branches above (routine, expected failures), reaching
+      // here means something unclassified broke - log it so it's debuggable,
+      // since createToolExecutorError below only returns it as tool-call data.
+      this.logger.error("unexpected tool execution error", { toolName, error });
       const message = error instanceof Error ? error.message : String(error);
       return createToolExecutorError({
         errorType: "ToolExecutionError",
@@ -592,6 +613,7 @@ export class AgentTools implements AgentToolsProtocol {
 
   private resolveMentions(
     mentions: MentionInput,
+    participants: ParticipantFields[] | undefined,
   ): MentionReference[] {
     if (mentions.length === 0) {
       return [];
@@ -608,7 +630,7 @@ export class AgentTools implements AgentToolsProtocol {
     const participantsByHandle = new Map<string, MentionReference>();
     const participantsById = new Map<string, MentionReference>();
     const participantsByName = new Map<string, MentionReference>();
-    for (const participant of this.participants) {
+    for (const participant of participants ?? []) {
       const ref: MentionReference = {
         id: String(participant.id),
         handle: typeof participant.handle === "string" ? participant.handle : undefined,
@@ -676,27 +698,17 @@ export class AgentTools implements AgentToolsProtocol {
     return handle.trim().replace(/^@+/, "").toLowerCase();
   }
 
-  private replaceParticipants(participants: ParticipantRecord[]): void {
-    this.participants.splice(0, this.participants.length, ...participants);
-  }
-
   private buildAdapterTools(): AdapterToolsProtocol {
     const tools: Partial<AdapterToolsProtocol> = {
       capabilities: this.capabilities,
     };
 
-    for (const methodName of REQUIRED_ADAPTER_TOOL_METHODS) {
-      (tools as Record<string, unknown>)[methodName] = this.bindAdapterToolMethod(methodName);
-    }
-
-    for (const [capabilityKey, methodNames] of Object.entries(OPTIONAL_ADAPTER_TOOL_METHODS) as
-      Array<[keyof AgentToolsCapabilities, readonly AdapterToolMethodName[]]>) {
-      if (!this.capabilities[capabilityKey]) {
+    for (const [methodName, capability] of Object.entries(ADAPTER_TOOL_METHODS) as
+      Array<[AdapterToolMethodName, keyof AgentToolsCapabilities | null]>) {
+      if (capability !== null && !this.capabilities[capability]) {
         continue;
       }
-      for (const methodName of methodNames) {
-        (tools as Record<string, unknown>)[methodName] = this.bindAdapterToolMethod(methodName);
-      }
+      (tools as Record<string, unknown>)[methodName] = this.bindAdapterToolMethod(methodName);
     }
 
     return Object.freeze(tools) as AdapterToolsProtocol;
@@ -886,10 +898,10 @@ export class AgentTools implements AgentToolsProtocol {
       throw new ValidationError(`segment must be one of: ${expectedList(MEMORY_SEGMENTS)}`);
     }
 
-    if (scope === "subject" && !subjectId) {
+    if (scope === MEMORY_STORE_SCOPE.subject && !subjectId) {
       throw new ValidationError(
-        'scope="subject" requires a subject_id (the UUID of the person or agent the memory is about). ' +
-          'If you do not have a concrete subject UUID, retry with scope="organization" and omit subject_id. ' +
+        `scope="${MEMORY_STORE_SCOPE.subject}" requires a subject_id (the UUID of the person or agent the memory is about). ` +
+          `If you do not have a concrete subject UUID, retry with scope="${MEMORY_STORE_SCOPE.agent}" and omit subject_id. ` +
           "Do not invent a UUID.",
       );
     }
@@ -1117,30 +1129,9 @@ function validateToolArgs(toolName: string, args: Record<string, unknown>): Tool
     }
   }
 
-  if (toolName === "band_store_memory") {
-    if (typeof args.system === "string" && !isMemorySystem(args.system)) {
-      errors.push(`system: Invalid value '${args.system}'. Expected one of: ${expectedList(MEMORY_SYSTEMS)}`);
-    }
-    if (typeof args.type === "string" && !isMemoryType(args.type)) {
-      errors.push(`type: Invalid value '${args.type}'. Expected one of: ${expectedList(MEMORY_TYPES)}`);
-    }
-    // Return a structured tool error before the normalized handler reaches REST.
-    if (
-      typeof args.system === "string"
-      && isMemorySystem(args.system)
-      && typeof args.type === "string"
-      && isMemoryType(args.type)
-      && !isMemoryTypeForSystem(args.system, args.type)
-    ) {
-      errors.push(
-        `type: Invalid value '${args.type}' for system '${args.system}'. ` +
-          `Expected one of: ${expectedMemoryTypesForSystem(args.system)}`,
-      );
-    }
-    if (typeof args.segment === "string" && !isMemorySegment(args.segment)) {
-      errors.push(`segment: Invalid value '${args.segment}'. Expected one of: ${expectedList(MEMORY_SEGMENTS)}`);
-    }
-  }
+  // band_store_memory's system/type/segment validate only in
+  // toStoreMemoryArgs, which normalizes the value first - duplicating the
+  // check here on the raw value would reject valid whitespace-padded input.
 
   if (errors.length > 0) {
     const message = `Invalid arguments for ${toolName}: ${errors.join("; ")}`;
