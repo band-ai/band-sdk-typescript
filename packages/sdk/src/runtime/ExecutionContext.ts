@@ -9,6 +9,13 @@ import { AgentTools } from "./tools/AgentTools";
 import { ParticipantRoster, RetryTracker } from "@band-ai/band-sdk-core";
 import { buildParticipantsMessage, toParticipantRecord, toParticipantRecordFromRest } from "./formatters";
 
+/**
+ * Per-turn activity indicator for a room's context.
+ *
+ * Not a lifecycle — see `ExecutionLifecycleState` in `runtime/lifecycle.ts` for
+ * whether the room's `Execution` is alive. The two vocabularies deliberately do
+ * not overlap.
+ */
 export type ExecutionState = "starting" | "idle" | "processing";
 
 interface ExecutionContextLink {
@@ -70,6 +77,17 @@ export class ExecutionContext {
     this.adapterTools = this.tools.getAdapterTools();
   }
 
+  /**
+   * What this room's turn handler is currently doing.
+   *
+   * This is the *per-turn activity* axis, not a lifecycle: it flips to
+   * `"processing"` while the adapter handles an event and back to `"idle"`
+   * afterwards. To ask whether the room's `Execution` is still alive at all,
+   * read `Execution.state` instead, which reports
+   * `"running" | "stopping" | "stopped" | "failed"`.
+   *
+   * @see Execution.state
+   */
   public get state(): ExecutionState {
     return this._state;
   }

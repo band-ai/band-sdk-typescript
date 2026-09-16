@@ -1,10 +1,17 @@
+import { RecoverableTurnError, RuntimeStateError } from "../core/errors";
 import type { Logger } from "../core/logger";
 import { resolveLogger } from "../core/logger";
-import { RecoverableTurnError } from "../core/errors";
 import type { BandLink } from "../platform/BandLink";
 import type { PlatformEvent } from "../platform/events";
 import type { PlatformMessage } from "./types";
 import type { ExecutionContext } from "./ExecutionContext";
+import type { ExecutionLifecycleState } from "./lifecycle";
+import {
+  LifecycleTracker,
+  SingleFlight,
+  TerminalSignal,
+  isLegalExecutionTransition,
+} from "./lifecycle";
 import type { RetryTracker } from "@band-ai/band-sdk-core";
 
 export type ExecutionHandler = (
@@ -54,11 +61,19 @@ export class Execution {
   private readonly idleWaiters = new Set<() => void>();
   private readonly drainedWsMessageIds = new Set<string>();
   private readonly syncProcessedIds = new Set<string>();
-  private processTask: Promise<void>;
+  private readonly stoppedSignal = new TerminalSignal();
+  private readonly lifecycle: LifecycleTracker<ExecutionLifecycleState>;
+  private readonly processTask: Promise<void>;
+  private readonly stopGate = new SingleFlight<boolean>();
   private firstWsMessageId: string | null = null;
   private syncComplete = false;
-  private running = true;
   private inFlight = 0;
+  /**
+   * Set once the queue stops accepting new events, ahead of the lifecycle
+   * itself reporting `"stopped"` (see {@link runStop}) — closing the queue
+   * cannot wait on the drain it is closing for.
+   */
+  private closed = false;
 
   public constructor(options: ExecutionOptions) {
     this.roomId = options.roomId;
@@ -68,10 +83,49 @@ export class Execution {
     this.onExecute = options.onExecute;
     this.onFailure = options.onFailure;
     this.logger = resolveLogger(options.logger);
-    this.processTask = this.processLoop();
+    this.lifecycle = new LifecycleTracker<ExecutionLifecycleState>({ status: "running" }, {
+      owner: "Execution",
+      logContext: { roomId: this.roomId },
+      logger: this.logger,
+      isLegalTransition: isLegalExecutionTransition,
+      onTransition: (state) => {
+        if (state.status === "stopped") {
+          this.stoppedSignal.settle(null);
+        } else if (state.status === "failed") {
+          this.stoppedSignal.settle(state.error);
+        }
+      },
+    });
+    this.processTask = this.runProcessLoop();
+    // A non-graceful stop deliberately detaches the loop, so keep its outcome
+    // observed here; real callers still see it via waitUntilStopped()/stop().
+    void this.processTask.catch(() => undefined);
   }
 
-  public enqueue(event: PlatformEvent): Promise<void> {
+  /**
+   * Whether this `Execution` is still alive, and if not, why it ended.
+   *
+   * This is the *lifecycle* axis. For "is this turn's handler currently
+   * executing" read `ExecutionContext.state` instead, which reports
+   * `"starting" | "idle" | "processing"` for the room's context.
+   *
+   * @see ExecutionContext.state
+   */
+  public get state(): ExecutionLifecycleState {
+    return this.lifecycle.state;
+  }
+
+  public async enqueue(event: PlatformEvent): Promise<void> {
+    if (this.lifecycle.is("stopped") || this.lifecycle.is("failed") || this.closed) {
+      // `closed` can be true slightly ahead of `status` reaching "stopped" (see
+      // runStop): the queue stops accepting before the final drain it is
+      // closing for has finished, so report the status as-is rather than
+      // claiming "stopped" prematurely.
+      throw new RuntimeStateError(
+        `Execution for room ${this.roomId} has already ended or is stopping (status: ${this.lifecycle.state.status}); enqueue() is a no-op after stop()`,
+      );
+    }
+
     if (event.type === "message_created" && !this.syncComplete && this.firstWsMessageId === null) {
       this.firstWsMessageId = event.payload.id;
     }
@@ -82,8 +136,6 @@ export class Execution {
     } else {
       this.eventQueue.push(event);
     }
-
-    return Promise.resolve();
   }
 
   public async bootstrapMessage(message: PlatformMessage): Promise<void> {
@@ -137,26 +189,69 @@ export class Execution {
   }
 
   public async stop(timeoutMs?: number): Promise<boolean> {
+    return await this.stopGate.run(() => this.runStop(timeoutMs));
+  }
+
+  private async runStop(timeoutMs?: number): Promise<boolean> {
+    if (this.lifecycle.is("failed")) {
+      throw this.lifecycle.state.error;
+    }
+    if (this.lifecycle.is("stopped")) {
+      return this.lifecycle.state.graceful;
+    }
+
+    // stop() is single-flight, so the only remaining state here is "running".
+    this.lifecycle.transition({ status: "stopping" }, "stop");
+
     const graceful = await this.waitForIdle(timeoutMs);
-    this.running = false;
+
+    if (this.lifecycle.is("failed")) {
+      throw this.lifecycle.state.error;
+    }
+
+    // Closing the queue is independent of — and precedes — the lifecycle
+    // itself reporting "stopped": enqueue() must reject from this point on
+    // even though the drain below hasn't finished yet.
+    this.closed = true;
     this.resolveEventWaiters(null);
 
     if (graceful || timeoutMs === undefined) {
       await this.processTask;
     }
 
+    // Only now — after the process loop has actually finished draining, or been
+    // deliberately detached past a timeout — does external state (and
+    // waitUntilStopped()) report "stopped". Transitioning before the drain
+    // completes let a concurrent getOrCreateExecution() observe "stopped" while
+    // this Execution was still mid-teardown.
+    this.lifecycle.transition({ status: "stopped", graceful }, graceful ? "stopped" : "stopped-forced");
+
     return graceful;
   }
 
+  /**
+   * Resolve once this `Execution` has reached a terminal state — including a
+   * forced, non-graceful stop that detached the process loop — or reject with
+   * the error that ended it.
+   */
   public async waitUntilStopped(): Promise<void> {
-    await this.processTask;
+    await this.stoppedSignal.wait();
+  }
+
+  private async runProcessLoop(): Promise<void> {
+    try {
+      await this.processLoop();
+    } catch (error) {
+      this.markFailed(error, "process-loop-failed");
+      throw error;
+    }
   }
 
   private async processLoop(): Promise<void> {
     await this.recoverStaleProcessingMessages();
     await this.synchronizeWithNext();
 
-    while (this.running) {
+    while (this.isActive()) {
       const event = await this.nextQueuedEvent();
       if (!event) {
         return;
@@ -193,7 +288,7 @@ export class Execution {
     });
 
     for (const message of staleMessages) {
-      if (!this.running) {
+      if (!this.isActive()) {
         break;
       }
 
@@ -211,7 +306,7 @@ export class Execution {
   }
 
   private async synchronizeWithNext(): Promise<void> {
-    while (this.running) {
+    while (this.isActive()) {
       const nextMessage = await this.link.getNextMessage(this.roomId);
       if (!nextMessage) {
         break;
@@ -319,7 +414,7 @@ export class Execution {
           error,
         });
       }
-      this.running = false;
+      this.markFailed(error, "execution-failed");
       this.eventQueue.splice(0, this.eventQueue.length);
       this.resolveEventWaiters(null);
       throw error;
@@ -336,13 +431,23 @@ export class Execution {
       return queued;
     }
 
-    if (!this.running) {
+    if (!this.isActive()) {
       return null;
     }
 
     return new Promise<PlatformEvent | null>((resolve) => {
       this.waiters.push(resolve);
     });
+  }
+
+  /** True while the process loop should keep draining (`running` or mid-`stop()`). */
+  private isActive(): boolean {
+    const status = this.lifecycle.state.status;
+    return status === "running" || status === "stopping";
+  }
+
+  private markFailed(error: unknown, trigger: string): void {
+    this.lifecycle.fail(error, trigger);
   }
 
   private notifyIfIdle(): void {

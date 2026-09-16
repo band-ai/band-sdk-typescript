@@ -4,6 +4,15 @@ import { resolveLogger, type Logger } from "../../core/logger";
 import type { MetadataMap, ParticipantRecord } from "../../contracts/dtos";
 import { Execution } from "../Execution";
 import { ExecutionContext, type ExecutionContextOptions } from "../ExecutionContext";
+import type { RuntimeLifecycleState } from "../lifecycle";
+import {
+  LifecycleTracker,
+  SingleFlight,
+  TerminalSignal,
+  isLegalRuntimeTransition,
+  startWithGate,
+} from "../lifecycle";
+import { combineTeardownErrors, isolateTeardown } from "../../core/teardown";
 import { RoomPresence } from "./RoomPresence";
 import type { AgentConfig, SessionConfig } from "../types";
 import type { PlatformMessage } from "../types";
@@ -44,9 +53,10 @@ export class AgentRuntime {
   private readonly executions = new Map<string, Execution>();
   private readonly executionWatchers = new Map<string, Promise<void>>();
   private readonly logger: Logger;
-  private running = false;
-  private stopping = false;
-  private fatalError: unknown = null;
+  private readonly stoppedSignal = new TerminalSignal();
+  private readonly lifecycle: LifecycleTracker<RuntimeLifecycleState>;
+  private readonly startGate = new SingleFlight<void>();
+  private readonly stopGate = new SingleFlight<boolean>();
 
   public constructor(options: AgentRuntimeOptions) {
     this.link = options.link;
@@ -68,6 +78,19 @@ export class AgentRuntime {
       maxMessageRetries: options.sessionConfig?.maxMessageRetries ?? 1,
       enableContextHydration: options.sessionConfig?.enableContextHydration ?? true,
     };
+    this.lifecycle = new LifecycleTracker<RuntimeLifecycleState>({ status: "not_started" }, {
+      owner: "AgentRuntime",
+      logContext: { agentId: this.agentId },
+      logger: this.logger,
+      isLegalTransition: isLegalRuntimeTransition,
+      onTransition: (state) => {
+        if (state.status === "stopped") {
+          this.stoppedSignal.settle(null);
+        } else if (state.status === "failed") {
+          this.stoppedSignal.settle(state.error);
+        }
+      },
+    });
 
     this.presence = new RoomPresence({
       link: this.link,
@@ -113,43 +136,121 @@ export class AgentRuntime {
     this.presence.onContactEvent = this.onContactEvent ?? null;
   }
 
+  /** Current lifecycle state of this runtime. */
+  public get state(): RuntimeLifecycleState {
+    return this.lifecycle.state;
+  }
+
+  /**
+   * Connect, subscribe, and begin consuming platform events.
+   *
+   * Repeated or concurrent calls join the in-flight start instead of starting a
+   * second consume loop. Calling `start()` while a `stop()` is still in flight
+   * rejects with a `RuntimeStateError`.
+   */
   public async start(): Promise<void> {
-    if (this.running) {
-      return;
-    }
+    await startWithGate({
+      lifecycle: this.lifecycle,
+      startGate: this.startGate,
+      stopGate: this.stopGate,
+      stoppedSignal: this.stoppedSignal,
+      ownerName: "AgentRuntime",
+      runStart: () => this.runStart(),
+    });
+  }
 
-    this.running = true;
-    this.stopping = false;
-    this.fatalError = null;
-
+  private async runStart(): Promise<void> {
     try {
       await this.presence.start();
     } catch (error) {
-      await this.handleStartFailure();
+      await this.finishFailedStart();
       throw error;
     }
 
+    if (this.lifecycle.is("starting")) {
+      this.lifecycle.transition({ status: "running" }, "started");
+    }
+
+    // The event loop outlives start(): its failure is the runtime's failure.
     void this.presence
       .waitUntilStopped()
       .catch((error: unknown) => this.failRuntime(error, syntheticRuntimeFailureEvent(this.agentId)));
   }
 
+  private async finishFailedStart(): Promise<void> {
+    try {
+      await this.handleStartFailure();
+    } catch (cleanupError) {
+      this.markFailed(cleanupError, "start-cleanup-failed");
+      throw cleanupError;
+    }
+
+    if (this.lifecycle.is("starting")) {
+      this.lifecycle.transition({ status: "stopped" }, "start-failed");
+    }
+  }
+
   private async handleStartFailure(): Promise<void> {
-    this.running = false;
-    this.stopping = false;
+    this.presence.abortEventLoop();
     await this.link.disconnect();
   }
 
+  /**
+   * Tear the runtime down.
+   *
+   * A concurrent second call joins the in-flight teardown and mirrors its
+   * outcome — including rejecting with the *same* `Error` instance — instead of
+   * reporting a shutdown it did not perform.
+   */
   public async stop(timeoutMs?: number): Promise<boolean> {
-    if (this.stopping || (!this.running && !this.fatalError)) {
+    return await this.stopGate.run(() => this.runStop(timeoutMs));
+  }
+
+  private async runStop(timeoutMs?: number): Promise<boolean> {
+    // A stop landing mid-start must not report a teardown of resources that
+    // start() has not created yet, so wait for it to settle first — which is
+    // also what `RoomPresence` does internally, since its own start/stop pair
+    // is serialised. Unlike `PlatformRuntime` there is no third-party adapter
+    // here whose startup could park forever, so waiting cannot strand the
+    // caller. Nothing is awaited when no start is in flight, keeping the
+    // transition below observable in the caller's own tick.
+    const pendingStart = this.lifecycle.is("starting") ? this.startGate.pending : null;
+    if (pendingStart) {
+      try {
+        await pendingStart;
+      } catch (error) {
+        // The start's own caller sees this rejection; teardown continues here.
+        this.logger.debug("AgentRuntime stop is proceeding after the in-flight start failed", { error });
+      }
+    }
+
+    if (this.lifecycle.is("not_started") || this.lifecycle.is("stopped")) {
       return true;
     }
 
-    this.stopping = true;
-    this.running = false;
+    const fatalError = this.lifecycle.is("failed") ? this.lifecycle.state.error : null;
+
+    this.startGate.reset();
+    this.lifecycle.transition({ status: "stopping" }, "stop");
+
+    try {
+      return await this.performStop(timeoutMs, fatalError);
+    } catch (error) {
+      // Never leave the runtime latched in "stopping": a teardown that blew up
+      // must still be re-attemptable and must not block a later start().
+      this.markFailed(error, "stop-failed");
+      throw error;
+    }
+  }
+
+  private async performStop(timeoutMs: number | undefined, fatalError: Error | null): Promise<boolean> {
+    // Every step below is isolated: one room's failed teardown must not skip the
+    // remaining rooms, the presence teardown, the map clearing, or the link
+    // disconnect.
+    const errors: unknown[] = [];
 
     this.presence.abortEventLoop();
-    await this.presence.waitUntilStopped().catch(() => undefined);
+    await isolateTeardown(errors, () => this.presence.waitUntilStopped());
 
     let graceful = true;
 
@@ -161,28 +262,38 @@ export class AgentRuntime {
     // remainder) is both safe and fair regardless of iteration order.
     await Promise.all(
       [...this.executions].map(async ([roomId, execution]) => {
-        const stopped = await execution.stop(timeoutMs);
-        if (!stopped) {
-          graceful = false;
-        }
+        await isolateTeardown(errors, async () => {
+          graceful = (await execution.stop(timeoutMs)) && graceful;
+        });
         this.executions.delete(roomId);
       }),
     );
 
-    await this.presence.stop();
+    await isolateTeardown(errors, () => this.presence.stop());
 
     for (const roomId of [...this.contexts.keys()]) {
-      await this.onSessionCleanup(roomId);
+      await isolateTeardown(errors, () => this.onSessionCleanup(roomId));
     }
 
     this.contexts.clear();
     this.executions.clear();
     this.executionWatchers.clear();
 
-    await this.link.disconnect();
-    if (this.fatalError) {
-      throw this.fatalError instanceof Error ? this.fatalError : new Error(String(this.fatalError));
+    await isolateTeardown(errors, () => this.link.disconnect());
+
+    const failure = this.lifecycle.is("failed") ? this.lifecycle.state.error : fatalError;
+    if (failure) {
+      if (!this.lifecycle.is("failed")) {
+        this.lifecycle.transition({ status: "failed", error: failure }, "stopped-after-failure");
+      }
+      errors.unshift(failure);
     }
+
+    if (errors.length > 0) {
+      throw combineTeardownErrors(errors, "AgentRuntime failed to tear down cleanly");
+    }
+
+    this.lifecycle.transition({ status: "stopped" }, "stopped");
     return graceful;
   }
 
@@ -190,12 +301,26 @@ export class AgentRuntime {
     return this.contexts.get(roomId);
   }
 
+  /**
+   * Resolve once the runtime has actually stopped, or reject with the fatal
+   * error that ended it.
+   *
+   * A runtime that was never started stays pending until it stops or fails;
+   * starting it does not resolve a pending wait.
+   */
   public async waitUntilStopped(): Promise<void> {
-    await this.presence.waitUntilStopped().catch(() => undefined);
+    // Driven by the lifecycle rather than by `presence`'s event task: a runtime
+    // that has not started one yet, or that is between runs, must still park
+    // here until this runtime itself reaches a terminal state.
+    await this.stoppedSignal.wait();
+  }
 
-    if (this.fatalError) {
-      throw this.fatalError instanceof Error ? this.fatalError : new Error(String(this.fatalError));
+  private markFailed(error: unknown, trigger: string): boolean {
+    if (this.lifecycle.is("not_started")) {
+      return false;
     }
+
+    return this.lifecycle.fail(error, trigger);
   }
 
   public getContexts(): ExecutionContext[] {
@@ -212,15 +337,29 @@ export class AgentRuntime {
   }
 
   public async resetRoomSession(roomId: string, timeoutMs?: number): Promise<boolean> {
-    return this.teardownExecution(roomId, timeoutMs);
+    return await this.teardownExecution(roomId, timeoutMs);
   }
 
   private async teardownExecution(roomId: string, timeoutMs?: number): Promise<boolean> {
     const execution = this.executions.get(roomId);
-    const graceful = execution ? await execution.stop(timeoutMs) : true;
+    const errors: unknown[] = [];
+    let graceful = true;
+
+    if (execution) {
+      // Isolated so a failed execution still gets evicted from the maps.
+      await isolateTeardown(errors, async () => {
+        graceful = await execution.stop(timeoutMs);
+      });
+    }
+
     this.executions.delete(roomId);
     this.contexts.delete(roomId);
-    await this.onSessionCleanup(roomId);
+    await isolateTeardown(errors, () => this.onSessionCleanup(roomId));
+
+    if (errors.length > 0) {
+      throw combineTeardownErrors(errors, "AgentRuntime failed to tear down cleanly");
+    }
+
     return graceful;
   }
 
@@ -290,15 +429,22 @@ export class AgentRuntime {
   }
 
   private async failRuntime(error: unknown, event: PlatformEvent): Promise<void> {
-    if (!this.fatalError) {
-      this.fatalError = error;
-      this.running = false;
+    if (this.markFailed(error, "runtime-error")) {
       this.logger.error("Fatal runtime error handling platform event", {
         eventType: event.type,
         roomId: event.roomId,
         error,
       });
       this.notifyOnError(error, event);
+    } else {
+      // The lifecycle is already terminal, so the transition is a no-op — but the
+      // error itself still deserves a trace instead of being dropped silently.
+      this.logger.debug("Runtime error after the lifecycle already ended", {
+        status: this.lifecycle.state.status,
+        eventType: event.type,
+        roomId: event.roomId,
+        error,
+      });
     }
 
     this.presence.abortEventLoop();

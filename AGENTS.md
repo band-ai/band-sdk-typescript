@@ -295,6 +295,59 @@ packages/sdk/src/
 └── index.ts           # Main barrel export
 ```
 
+## Runtime Lifecycle
+
+`Agent`, `PlatformRuntime`, `AgentRuntime`, and `Execution` each keep their lifecycle in **one**
+discriminated-union field (`packages/sdk/src/runtime/lifecycle.ts`), read publicly via a `state`
+getter. Do not reintroduce parallel booleans (`started`, `running`, `stopping`, …) — they are what
+made illegal combinations reachable and stranded shutdown on error paths.
+
+| Type | Used by | States |
+|---|---|---|
+| `RuntimeLifecycleState` | `Agent`, `PlatformRuntime`, `AgentRuntime` | `not_started`, `starting`, `running`, `stopping`, `stopped`, `failed` |
+| `ExecutionLifecycleState` | `Execution` | `running`, `stopping`, `stopped` (carries `graceful`), `failed` |
+
+```text
+not_started ─▶ starting ─▶ running ─▶ stopping ─▶ stopped
+                   │          │           │           │
+                   └──────────┴───────────┴──▶ failed │
+                                                 │    │
+                        starting ◀───────────────┴────┘
+```
+
+Rules:
+
+- Every transition goes through `LifecycleTracker.transition()`, which validates it against
+  `isLegalRuntimeTransition` / `isLegalExecutionTransition`. Both read a `Record` keyed by the full
+  status union, so adding a state without adding its row fails `pnpm -r typecheck`.
+- `stopped` and `failed` are re-startable for the three runtime owners; `Execution` is terminal.
+- `start()` while a `stop()` is in flight rejects with `RuntimeStateError`.
+- `stop()` while a `start()` is in flight **supersedes** that start for `Agent` and
+  `PlatformRuntime`: it tears down what the start had already claimed and returns, and the start
+  aborts at its next checkpoint with `RuntimeStateError` instead of installing a live runtime
+  behind the completed teardown. It does not queue behind the start — several adapters only
+  abandon a parked `onStarted()` once `onRuntimeStop()` runs, so a stop that waited would be
+  waiting on itself. `AgentRuntime.stop()` does wait for its own start, since it drives no
+  third-party adapter that can park indefinitely.
+- "Was I superseded?" is asked through the lifecycle, not a second counter beside it: a start
+  captures the `"starting"` state instance `startWithGate()` installed and later checks
+  `LifecycleTracker.isCurrent()`. Every accepted transition installs a fresh frozen state, so this
+  distinguishes "still my start" from "a replacement start is now running", which a bare status
+  comparison cannot.
+- Teardown steps are isolated from each other: one room's failing `Execution.stop()` never skips
+  the remaining rooms, the map clearing, or `link.disconnect()`. Failures are collected and
+  rethrown together (a single distinct error is rethrown as-is, keeping error identity intact).
+- Concurrent `start()`/`stop()` calls join the in-flight operation and mirror its outcome,
+  including the identical `Error` instance on failure. `stop()` never returns `true` for teardown
+  it did not perform.
+- `stop()` on an owner whose state is `failed` with nothing left to tear down rejects with the
+  recorded error rather than resolving `true` — a `true` that contradicts `state` is the same
+  masked-success bug in a narrower window.
+- `Execution.enqueue()` after `stop()` rejects with `RuntimeStateError` instead of silently
+  queueing into a queue nothing will read.
+- `ExecutionState` in `ExecutionContext.ts` (`"starting" | "idle" | "processing"`) is a *per-turn
+  activity* indicator, not a lifecycle. Keep the two vocabularies non-overlapping.
+
 ## Testing Structure
 
 ```
