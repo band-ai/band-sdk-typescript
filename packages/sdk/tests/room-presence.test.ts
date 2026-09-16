@@ -22,6 +22,15 @@ async function waitFor(check: () => boolean): Promise<void> {
   throw new Error("Condition was not met in time");
 }
 
+function makeLogger() {
+  return {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  };
+}
+
 describe("RoomPresence", () => {
   it("subscribes existing rooms and forwards room lifecycle events", async () => {
     const transport = new FakeTransport();
@@ -145,14 +154,10 @@ describe("RoomPresence", () => {
 
   it("keeps room discovery failures contained when the caller logger throws", async () => {
     const transport = new FakeTransport();
-    const logger = {
-      debug: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(() => {
-        throw new Error("logger is broken");
-      }),
-      error: vi.fn(),
-    };
+    const logger = makeLogger();
+    logger.warn.mockImplementation(() => {
+      throw new Error("logger is broken");
+    });
 
     await using presence = new RoomPresence({
       link: new BandLink({
@@ -563,12 +568,7 @@ describe("RoomPresence", () => {
 
   it("warns and continues start() when the agent_contacts subscribe fails", async () => {
     const transport = new FakeTransport();
-    const logger = {
-      debug: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    };
+    const logger = makeLogger();
     const failingJoin = vi.spyOn(transport, "join").mockImplementation(async (topic, handlers) => {
       if (topic === "agent_contacts:agent-1") {
         throw new Error("contacts join failed");
@@ -598,12 +598,7 @@ describe("RoomPresence", () => {
 
   it("still tears down admitted rooms during stop() when unsubscribeAgentContacts fails", async () => {
     const transport = new FakeTransport();
-    const logger = {
-      debug: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    };
+    const logger = makeLogger();
     const left: string[] = [];
 
     await using presence = new RoomPresence({
@@ -708,7 +703,7 @@ describe("RoomPresence", () => {
 
   it("does not admit a newly discovered room after reconnect when its subscribe fails, but a later reconnect can still admit it", async () => {
     const transport = new FakeTransport();
-    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const logger = makeLogger();
     let snapshotRooms: Array<{ id: string; title: string }> = [{ id: "room-a", title: "Room A" }];
     const joined: string[] = [];
 
@@ -860,7 +855,7 @@ describe("RoomPresence", () => {
 
   it("warns and still reconciles rooms when the agent_rooms resubscribe fails during reconnect", async () => {
     const transport = new FakeTransport();
-    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const logger = makeLogger();
 
     const link = new BandLink({
       agentId: "agent-1",
@@ -916,7 +911,7 @@ describe("RoomPresence", () => {
 
   it("warns and continues reconciliation when the agent_contacts resubscribe fails during reconnect", async () => {
     const transport = new FakeTransport();
-    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const logger = makeLogger();
 
     const link = new BandLink({
       agentId: "agent-1",
@@ -993,7 +988,7 @@ describe("RoomPresence", () => {
 
   it("keeps the roster unchanged but still forwards the reconnect for execution resync when the REST snapshot fetch fails", async () => {
     const transport = new FakeTransport();
-    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const logger = makeLogger();
     let callCount = 0;
 
     const link = new BandLink({
@@ -1046,7 +1041,7 @@ describe("RoomPresence", () => {
 
   it("keeps a surviving room visible and retryable when its post-reconnect resubscribe fails", async () => {
     const transport = new FakeTransport();
-    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const logger = makeLogger();
 
     const link = new BandLink({
       agentId: "agent-1",

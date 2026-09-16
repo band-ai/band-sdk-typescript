@@ -75,14 +75,7 @@ export class FakePhoenixPeer {
       throw new Error(`No pending join for ${topic}`);
     }
     this.pendingJoins.delete(topic);
-    this.reply(
-      pending.socket,
-      pending.joinRef,
-      pending.ref,
-      topic,
-      outcome,
-      outcome === "ok" ? {} : { reason: "rejected" },
-    );
+    this.reply(pending.socket, pending.joinRef, pending.ref, topic, outcome, responseFor(outcome));
   }
 
   public push(topic: string, event: string, payload: unknown): void {
@@ -119,7 +112,7 @@ export class FakePhoenixPeer {
         this.pendingJoins.set(topic, { socket, joinRef, ref });
         return;
       }
-      this.reply(socket, joinRef, ref, topic, outcome, outcome === "ok" ? {} : { reason: "rejected" });
+      this.reply(socket, joinRef, ref, topic, outcome, responseFor(outcome));
       return;
     }
 
@@ -139,4 +132,8 @@ export class FakePhoenixPeer {
     const message: PhoenixMessage = [joinRef, ref, topic, "phx_reply", { status, response }];
     socket.send(JSON.stringify(message));
   }
+}
+
+function responseFor(outcome: Exclude<JoinOutcome, "pending">): unknown {
+  return outcome === "ok" ? {} : { reason: "rejected" };
 }

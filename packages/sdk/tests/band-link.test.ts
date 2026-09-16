@@ -10,6 +10,16 @@ import {
 import { UnsupportedFeatureError } from "../src/core/errors";
 import { FakeRestApi, FakeTransport } from "./testUtils";
 
+const supersededReason = {
+  source: "agent_control",
+  code: "session.already_connected",
+  message: "superseded",
+  retryable: false,
+  retryAfter: null,
+  targetSocketId: null,
+  correlationId: null,
+} satisfies WebSocketDisconnectReason;
+
 describe("BandLink event waiting", () => {
   it("coalesces concurrent connection setup behind one reconnect observer", async () => {
     const transport = new FakeTransport();
@@ -53,17 +63,8 @@ describe("BandLink event waiting", () => {
     await link.connect();
     await link.subscribeRoom("room-1");
 
-    const reason = {
-      source: "agent_control",
-      code: "session.already_connected",
-      message: "superseded",
-      retryable: false,
-      retryAfter: null,
-      targetSocketId: null,
-      correlationId: null,
-    } satisfies WebSocketDisconnectReason;
     (link as unknown as { recordDisconnectError(error: WebSocketDisconnectError): void })
-      .recordDisconnectError(new WebSocketDisconnectError(reason));
+      .recordDisconnectError(new WebSocketDisconnectError(supersededReason));
 
     await link.disconnect();
 
@@ -72,17 +73,8 @@ describe("BandLink event waiting", () => {
   });
 
   it("propagates a non-retryable connect failure through the real transport.connect() path, then allows a fresh session afterward", async () => {
-    const nonRetryableReason = {
-      source: "agent_control",
-      code: "session.already_connected",
-      message: "superseded",
-      retryable: false,
-      retryAfter: null,
-      targetSocketId: null,
-      correlationId: null,
-    } satisfies WebSocketDisconnectReason;
     const transport = new FakeTransport();
-    transport.failConnect(new WebSocketDisconnectError(nonRetryableReason));
+    transport.failConnect(new WebSocketDisconnectError(supersededReason));
     const link = new BandLink({
       agentId: "agent-1",
       apiKey: "key",
@@ -91,7 +83,8 @@ describe("BandLink event waiting", () => {
     });
 
     await expect(link.connect()).rejects.toBeInstanceOf(WebSocketDisconnectError);
-    expect(link.getDisconnectReason()).toBe(nonRetryableReason);
+    expect(link.getDisconnectReason()).toBe(supersededReason);
+    expect(transport.observers.size).toBe(0);
 
     transport.clearConnectFailure();
     await expect(link.connect()).resolves.toBeUndefined();
@@ -110,6 +103,13 @@ describe("BandLink event waiting", () => {
 
     await expect(link.connect()).rejects.toThrow("boom");
     expect(transport.disconnectCount).toBe(1);
+    expect(transport.observers.size).toBe(0);
+
+    // A second failed retry must not leak another observer registration on
+    // top of the first's.
+    await expect(link.connect()).rejects.toThrow("boom");
+    expect(transport.disconnectCount).toBe(2);
+    expect(transport.observers.size).toBe(0);
 
     transport.clearConnectFailure();
     await expect(link.connect()).resolves.toBeUndefined();
@@ -164,6 +164,34 @@ describe("BandLink event waiting", () => {
     expect(connectResolved).toBe(true);
     expect(link.isConnected()).toBe(true);
     await expect(link.subscribeRoom("room-1")).resolves.toBeUndefined();
+  });
+
+  it("waits for an in-flight connect() before completing a concurrent disconnect()", async () => {
+    const transport = new FakeTransport();
+    transport.gateConnect();
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      restApi: new FakeRestApi(),
+      transport,
+    });
+
+    const connect = link.connect();
+    let disconnectResolved = false;
+    const disconnect = link.disconnect().then(() => {
+      disconnectResolved = true;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(disconnectResolved).toBe(false);
+
+    transport.releaseConnection();
+    await connect;
+    await disconnect;
+
+    expect(disconnectResolved).toBe(true);
+    expect(link.isConnected()).toBe(false);
+    expect(transport.disconnectCount).toBe(1);
   });
 
   it("coalesces concurrent disconnect calls into one transport teardown", async () => {
