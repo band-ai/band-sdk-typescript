@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { chatRoomTopic, roomParticipantsTopic } from "@band-ai/band-sdk-core";
 
 import { BandLink } from "../src/platform/BandLink";
 import type { PlatformEvent } from "../src/platform/events";
@@ -6,36 +7,251 @@ import {
   WebSocketDisconnectError,
   type WebSocketDisconnectReason,
 } from "../src/platform/streaming/disconnectReason";
-import type { StreamingTransport } from "../src/platform/streaming/transport";
 import { UnsupportedFeatureError } from "../src/core/errors";
-import { FakeRestApi } from "./testUtils";
+import { FakeRestApi, FakeTransport } from "./testUtils";
 
-class FakeTransport implements StreamingTransport {
-  public readonly joinedTopics: string[] = [];
-
-  public async connect() {}
-  public async disconnect() {}
-  public async join(topic: string) {
-    this.joinedTopics.push(topic);
-  }
-  public async leave() {}
-  public async runForever() {}
-  public isConnected() {
-    return true;
-  }
-}
-
-class RejectingTransport extends FakeTransport {
-  public constructor(private readonly reason: WebSocketDisconnectReason) {
-    super();
-  }
-
-  public override async connect() {
-    throw new WebSocketDisconnectError(this.reason);
-  }
-}
+const supersededReason = {
+  source: "agent_control",
+  code: "session.already_connected",
+  message: "superseded",
+  retryable: false,
+  retryAfter: null,
+  targetSocketId: null,
+  correlationId: null,
+} satisfies WebSocketDisconnectReason;
 
 describe("BandLink event waiting", () => {
+  it("coalesces concurrent connection setup behind one reconnect observer", async () => {
+    const transport = new FakeTransport();
+    transport.gateConnect();
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      restApi: new FakeRestApi(),
+      transport,
+    });
+
+    const first = link.connect();
+    const second = link.connect();
+    expect(transport.observers.size).toBe(1);
+
+    transport.releaseConnection();
+    await Promise.all([first, second]);
+    await transport.triggerReconnect({
+      generation: 1,
+      attemptedTopics: new Set(),
+      joinedTopics: new Set(),
+    });
+
+    await expect(link.nextEvent()).resolves.toEqual({
+      type: "reconnected",
+      roomId: null,
+      payload: {},
+    });
+    await link.disconnect();
+    expect(transport.observers.size).toBe(0);
+  });
+
+  it("finishes cleanup after a terminal callback already marked the link disconnected", async () => {
+    const transport = new FakeTransport();
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      restApi: new FakeRestApi(),
+      transport,
+    });
+    await link.connect();
+    await link.subscribeRoom("room-1");
+
+    (link as unknown as { recordDisconnectError(error: WebSocketDisconnectError): void })
+      .recordDisconnectError(new WebSocketDisconnectError(supersededReason));
+
+    await link.disconnect();
+
+    expect(transport.disconnectCount).toBe(1);
+    expect(transport.observers.size).toBe(0);
+  });
+
+  it("propagates a non-retryable connect failure through the real transport.connect() path, then allows a fresh session afterward", async () => {
+    const transport = new FakeTransport();
+    transport.failConnect(new WebSocketDisconnectError(supersededReason));
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      restApi: new FakeRestApi(),
+      transport,
+    });
+
+    await expect(link.connect()).rejects.toBeInstanceOf(WebSocketDisconnectError);
+    expect(link.getDisconnectReason()).toBe(supersededReason);
+    expect(transport.observers.size).toBe(0);
+
+    transport.clearConnectFailure();
+    await expect(link.connect()).resolves.toBeUndefined();
+    expect(link.isConnected()).toBe(true);
+  });
+
+  it("disconnects the transport when connect() fails, so a partially-opened socket/channels don't leak", async () => {
+    const transport = new FakeTransport();
+    transport.failConnect(new Error("boom"));
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      restApi: new FakeRestApi(),
+      transport,
+    });
+
+    await expect(link.connect()).rejects.toThrow("boom");
+    expect(transport.disconnectCount).toBe(1);
+    expect(transport.observers.size).toBe(0);
+
+    // A second failed retry must not leak another observer registration on
+    // top of the first's.
+    await expect(link.connect()).rejects.toThrow("boom");
+    expect(transport.disconnectCount).toBe(2);
+    expect(transport.observers.size).toBe(0);
+
+    transport.clearConnectFailure();
+    await expect(link.connect()).resolves.toBeUndefined();
+    expect(link.isConnected()).toBe(true);
+  });
+
+  it("still tears down local state and clears observers when transport.disconnect() rejects", async () => {
+    const transport = new FakeTransport();
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      restApi: new FakeRestApi(),
+      transport,
+    });
+    await link.connect();
+    vi.spyOn(transport, "disconnect").mockRejectedValueOnce(new Error("boom"));
+
+    await expect(link.disconnect()).rejects.toThrow("boom");
+    expect(link.isConnected()).toBe(false);
+    expect(transport.observers.size).toBe(0);
+  });
+
+  it("waits for an in-flight disconnect() before completing a concurrent connect()", async () => {
+    const transport = new FakeTransport();
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      restApi: new FakeRestApi(),
+      transport,
+    });
+    await link.connect();
+
+    let releaseDisconnect: (() => void) | undefined;
+    const disconnectGate = new Promise<void>((resolve) => {
+      releaseDisconnect = resolve;
+    });
+    vi.spyOn(transport, "disconnect").mockImplementationOnce(async () => disconnectGate);
+
+    const disconnect = link.disconnect();
+    let connectResolved = false;
+    const connect = link.connect().then(() => {
+      connectResolved = true;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(connectResolved).toBe(false);
+
+    releaseDisconnect?.();
+    await disconnect;
+    await connect;
+
+    expect(connectResolved).toBe(true);
+    expect(link.isConnected()).toBe(true);
+    await expect(link.subscribeRoom("room-1")).resolves.toBeUndefined();
+  });
+
+  it("waits for an in-flight connect() before completing a concurrent disconnect()", async () => {
+    const transport = new FakeTransport();
+    transport.gateConnect();
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      restApi: new FakeRestApi(),
+      transport,
+    });
+
+    const connect = link.connect();
+    let disconnectResolved = false;
+    const disconnect = link.disconnect().then(() => {
+      disconnectResolved = true;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(disconnectResolved).toBe(false);
+
+    transport.releaseConnection();
+    await connect;
+    await disconnect;
+
+    expect(disconnectResolved).toBe(true);
+    expect(link.isConnected()).toBe(false);
+    expect(transport.disconnectCount).toBe(1);
+  });
+
+  it("coalesces concurrent disconnect calls into one transport teardown", async () => {
+    const transport = new FakeTransport();
+    let releaseDisconnect: (() => void) | undefined;
+    const disconnectReleased = new Promise<void>((resolve) => {
+      releaseDisconnect = resolve;
+    });
+    const disconnect = vi
+      .spyOn(transport, "disconnect")
+      .mockImplementation(async () => disconnectReleased);
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      restApi: new FakeRestApi(),
+      transport,
+    });
+    await link.connect();
+
+    const first = link.disconnect();
+    const second = link.disconnect();
+    await vi.waitFor(() => expect(disconnect).toHaveBeenCalledTimes(1));
+
+    releaseDisconnect?.();
+    await Promise.all([first, second]);
+    expect(disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not publish an old observer's reconnect after a new session starts", async () => {
+    const transport = new FakeTransport();
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      restApi: new FakeRestApi(),
+      transport,
+    });
+    await link.connect();
+    await link.subscribeRoom("room-1");
+    const releaseChatLeave = transport.gateLeave(chatRoomTopic("room-1"));
+    const releaseParticipantsLeave = transport.gateLeave(roomParticipantsTopic("room-1"));
+
+    const staleReconnect = transport.triggerReconnect({
+      generation: 1,
+      attemptedTopics: new Set([chatRoomTopic("room-1"), roomParticipantsTopic("room-1")]),
+      joinedTopics: new Set(),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await link.disconnect();
+    await link.connect();
+
+    releaseChatLeave();
+    releaseParticipantsLeave();
+    await staleReconnect;
+
+    const controller = new AbortController();
+    const next = link.nextEvent(controller.signal);
+    controller.abort();
+    await expect(next).resolves.toBeNull();
+  });
+
   it("does not poison runForever after a retryable websocket disconnect", async () => {
     const retryableReason = {
       source: "upgrade",
@@ -46,20 +262,23 @@ describe("BandLink event waiting", () => {
       retryAfter: 7,
       requestId: null,
     } satisfies WebSocketDisconnectReason;
+    const rejectingTransport = new FakeTransport();
+    rejectingTransport.failConnect(new WebSocketDisconnectError(retryableReason));
     const link = new BandLink({
       agentId: "agent-1",
       apiKey: "key",
       restApi: new FakeRestApi(),
-      transport: new RejectingTransport(retryableReason),
+      transport: rejectingTransport,
     });
 
     await expect(link.connect()).rejects.toBeInstanceOf(
       WebSocketDisconnectError,
     );
     expect(link.getDisconnectReason()).toBe(retryableReason);
-    await expect(
-      link.runForever(new AbortController().signal),
-    ).resolves.toBeUndefined();
+    const controller = new AbortController();
+    const runForever = link.runForever(controller.signal);
+    controller.abort();
+    await expect(runForever).resolves.toBeUndefined();
   });
 
   it("removes abort listeners when waiter resolves from queued events", async () => {
@@ -134,7 +353,7 @@ describe("BandLink event waiting", () => {
     });
 
     await expect(link.subscribeAgentContacts()).resolves.toBeUndefined();
-    expect(transport.joinedTopics).toContain("agent_contacts:agent-1");
+    expect(transport.joinCalls).toContain("agent_contacts:agent-1");
   });
 
   it("propagates mark errors by default", async () => {

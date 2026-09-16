@@ -105,7 +105,8 @@ type PlatformEvent =
   | ContactRequestReceivedEvent
   | ContactRequestUpdatedEvent
   | ContactAddedEvent
-  | ContactRemovedEvent;
+  | ContactRemovedEvent
+  | ReconnectedEvent;         // type: "reconnected" — synthetic, see below
 
 type ContactEvent =
   | ContactRequestReceivedEvent
@@ -115,6 +116,16 @@ type ContactEvent =
 ```
 
 `BandLink` is `AsyncIterable<PlatformEvent>`; `PlatformRuntime` consumes it and dispatches to the correct `ExecutionContext` per room.
+
+### Synthetic `reconnected` Event
+
+`ReconnectedEvent` (`{ type: "reconnected", roomId: null, payload: {} }`) never arrives over the wire — `BandLink` synthesizes it once per automatic WebSocket reconnect, after its internal `SubscriptionManager` has reconciled every room and agent-topic subscription against the transport's post-reconnect snapshot (rejoining what settled cleanly, cleaning up what didn't). It is queued through the same event stream as every other `PlatformEvent`, so ordering relative to real events is preserved.
+
+Two runtime consumers act on it:
+- `RoomPresence` re-subscribes `agent_rooms`/`agent_contacts`, re-fetches the REST room snapshot, reconciles its roster via `RoomRoster.reconcile()`, and forwards the event to every currently tracked room.
+- `Execution` (via `AgentRuntime`) intercepts it in its serialized event queue and calls `synchronizeWithNext()` again — the same `/messages/next` catch-up sweep used at startup — so messages missed during the disconnect are picked up before normal WebSocket processing resumes. The event itself is never forwarded to `onExecute`/adapters.
+
+A framework adapter or any other direct consumer of `BandLink`'s event stream should treat `"reconnected"` as a no-op unless it specifically needs to react to a resumed connection — it carries no room-specific payload.
 
 ## Contact Event Handling
 
@@ -283,7 +294,7 @@ packages/sdk/src/
 ├── integrations/      # Deep integrations (currently: linear/)
 ├── linear/            # Subpath barrel for @band-ai/sdk/linear
 ├── mcp/               # Generic MCP + Claude SDK MCP bridge
-├── platform/          # BandLink (WS+REST), PlatformEvent, Phoenix Channels transport
+├── platform/          # BandLink (WS+REST), PlatformEvent, Phoenix Channels transport, SubscriptionManager (internal)
 ├── rest/              # Subpath barrel for @band-ai/sdk/rest
 ├── runtime/           # PlatformRuntime, ExecutionContext, Execution, ContactEventHandler
 │   ├── tools/         # AgentTools, ContactToolsImpl, ContactCallbackTools, schemas

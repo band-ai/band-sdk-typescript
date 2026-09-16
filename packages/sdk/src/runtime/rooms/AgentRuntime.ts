@@ -127,6 +127,7 @@ export class AgentRuntime {
           return;
         }
         case "message_created":
+        case "reconnected":
           await this.getOrCreateExecution(roomId).enqueue(event);
           return;
         default:
