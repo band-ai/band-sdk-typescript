@@ -3521,7 +3521,12 @@ describe("ACP client transports", () => {
       const starting = adapter.onStarted("Agent", "desc")
       await once(server, "connection")
       await adapter.stop()
-      await expect(starting).rejects.toThrow(/ACP (TCP connection attempt aborted|connection closed)/)
+      // Which message wins is a race: `raceAgainstConnectionClose`'s own
+      // rejection needs an extra microtask hop through `connection.closed`,
+      // so Node's `Duplex.toWeb` read rejection (a plain AbortError once
+      // `socket.destroy()` cancels the in-flight `initialize` read) usually
+      // settles first.
+      await expect(starting).rejects.toThrow(/ACP (TCP connection attempt aborted|connection closed)|operation was aborted/)
       await waitForSocketClose
       expect(socketClosed).toBe(true)
     } finally {
