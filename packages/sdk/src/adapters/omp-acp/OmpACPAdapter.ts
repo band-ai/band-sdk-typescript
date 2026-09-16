@@ -1,8 +1,8 @@
-import { ACPClientAdapter, type ACPClientAdapterOptions } from "../acp";
+import { ACPClientAdapter, type ACPClientStdioOptions } from "../acp";
 
 export const DEFAULT_OMP_ACP_COMMAND = ["omp", "acp"] as const;
 
-export interface OmpACPAdapterOptions extends Omit<ACPClientAdapterOptions, "command"> {
+export interface OmpACPAdapterOptions extends Omit<ACPClientStdioOptions, "command"> {
   command?: string | string[];
 }
 

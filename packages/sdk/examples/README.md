@@ -11,6 +11,7 @@ Folders:
 - `claude-sdk/`
 - `codex/`
 - `omp-acp/`
+- `copilot-acp/` — GitHub Copilot CLI ACP (public preview; requires `@agentclientprotocol/sdk` and Copilot CLI)
 - `custom-adapter/`
 - `langgraph/`
 - `parlant/`

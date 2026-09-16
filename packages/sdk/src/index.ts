@@ -57,6 +57,8 @@ export { OpencodeAdapter } from "./adapters/opencode";
 export { ClaudeSDKAdapter } from "./adapters/claude-sdk";
 export { CodexAdapter } from "./adapters/codex";
 export { OmpACPAdapter, DEFAULT_OMP_ACP_COMMAND } from "./adapters/omp-acp";
+export { ACPClientAdapter } from "./adapters/acp";
+export { CopilotACPAdapter, DEFAULT_COPILOT_ACP_COMMAND } from "./adapters/copilot-acp";
 
 export type {
   AdapterToolsProtocol,
@@ -103,6 +105,13 @@ export type {
   CodexWebSearchMode,
   ToolCallingModel,
   OmpACPAdapterOptions,
+  ACPClientAdapterOptions,
+  ACPClientAdapterBaseOptions,
+  ACPClientStdioOptions,
+  ACPClientTcpOptions,
+  CopilotACPAdapterOptions,
+  CopilotACPStdioOptions,
+  CopilotACPTcpOptions,
 } from "./adapters";
 
 export { SimpleAdapter } from "./core/simpleAdapter";

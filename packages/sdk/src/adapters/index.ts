@@ -4,6 +4,9 @@ export {
   ACPServer,
   BandACPServerAdapter,
   type ACPClientAdapterOptions,
+  type ACPClientAdapterBaseOptions,
+  type ACPClientStdioOptions,
+  type ACPClientTcpOptions,
   type ACPPermissionAbandonReason,
   type ACPPermissionEndReason,
   type ACPPermissionRequest,
@@ -15,6 +18,13 @@ export {
   DEFAULT_OMP_ACP_COMMAND,
   type OmpACPAdapterOptions,
 } from "./omp-acp";
+export {
+  CopilotACPAdapter,
+  DEFAULT_COPILOT_ACP_COMMAND,
+  type CopilotACPAdapterOptions,
+  type CopilotACPStdioOptions,
+  type CopilotACPTcpOptions,
+} from "./copilot-acp";
 export {
   VercelAISDKAdapter,
   VercelAISDKToolCallingModel,

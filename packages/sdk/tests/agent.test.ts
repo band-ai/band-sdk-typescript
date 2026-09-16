@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Agent } from "../src/agent/Agent";
 
 describe("Agent", () => {
-  it("waits for startup to finish before honoring a stop request", async () => {
+  it("stops the runtime while startup is pending", async () => {
     let releaseStart!: () => void;
     const startGate = new Promise<void>((resolve) => {
       releaseStart = () => {
@@ -32,7 +32,7 @@ describe("Agent", () => {
     const startPromise = agent.start();
     const stopPromise = agent.stop();
 
-    expect(mockRuntime.stop).not.toHaveBeenCalled();
+    expect(mockRuntime.stop).toHaveBeenCalledTimes(1);
 
     releaseStart();
     await startPromise;

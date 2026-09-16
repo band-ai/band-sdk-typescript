@@ -1,6 +1,14 @@
+import { once } from "node:events";
+import { createServer } from "node:net";
+
+import type { Client } from "@agentclientprotocol/sdk";
 import { describe, expect, it, vi } from "vitest";
 
-import { ACPClientAdapter, type ACPClientAdapterOptions } from "../src/adapters/acp";
+import {
+  ACPClientAdapter,
+  createTcpConnection,
+  type ACPClientAdapterOptions,
+} from "../src/adapters/acp";
 import { BandACPClient } from "../src/adapters/acp/client";
 import { FakeTools, expectTurnFailed, findFailureEvent, makeMessage } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
@@ -31,7 +39,7 @@ async function send(adapter: ACPClientAdapter, roomId = "room-1", history: Recor
 // Shared by the `resolveSessionMode` and `resolveSessionModel` test
 // harnesses below: the connection-mock shape every ACP session actually
 // exposes (signal/closed/initialize/authenticate/loadSession/
-// unstable_resumeSession/newSession/prompt), parameterized by whichever
+// resumeSession/newSession/prompt), parameterized by whichever
 // extra RPC spies (setSessionMode, setSessionConfigOption) the calling
 // block needs.
 function buildMockConnection(spies: {
@@ -52,7 +60,7 @@ function buildMockConnection(spies: {
       })),
       authenticate: vi.fn(async () => ({})),
       loadSession: spies.loadSession,
-      unstable_resumeSession: vi.fn(),
+      resumeSession: vi.fn(),
       newSession: spies.newSession,
       prompt: spies.prompt,
       ...spies.extraRpcSpies,
@@ -178,7 +186,7 @@ describe("ACPClientAdapter", () => {
             initialize,
             authenticate,
             loadSession,
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             prompt,
           } as never,
@@ -330,7 +338,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession: vi.fn(async () => ({ sessionId: "session-coalesce" })),
             prompt,
           } as never,
@@ -422,7 +430,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession: vi.fn(async () => ({ sessionId: "session-thought" })),
             prompt,
           } as never,
@@ -622,7 +630,7 @@ describe("ACPClientAdapter", () => {
             initialize,
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             prompt,
           } as never,
@@ -678,7 +686,7 @@ describe("ACPClientAdapter", () => {
             })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession: vi.fn(async () => ({ sessionId: "session-mentions" })),
             prompt,
           } as never,
@@ -728,7 +736,7 @@ describe("ACPClientAdapter", () => {
             })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession: vi.fn(async () => ({ sessionId: "session-room-context" })),
             prompt,
           } as never,
@@ -784,7 +792,7 @@ describe("ACPClientAdapter", () => {
             initialize,
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             prompt: vi.fn(),
           } as never,
@@ -835,7 +843,7 @@ describe("ACPClientAdapter", () => {
             initialize,
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             prompt,
           } as never,
@@ -912,7 +920,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             prompt: vi.fn(async () => ({ stopReason: "end_turn" })),
           } as never,
@@ -999,7 +1007,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession: vi.fn(async () => ({ sessionId: "session-1" })),
             prompt,
           } as never,
@@ -1059,7 +1067,7 @@ describe("ACPClientAdapter", () => {
           initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
           authenticate: vi.fn(async () => ({})),
           loadSession: vi.fn(),
-          unstable_resumeSession: vi.fn(),
+          resumeSession: vi.fn(),
           newSession,
           prompt: vi.fn(async () => ({ stopReason: "end_turn" })),
         } as never,
@@ -1110,7 +1118,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             prompt,
           } as never,
@@ -1172,7 +1180,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             prompt,
           } as never,
@@ -1224,7 +1232,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession: vi.fn(async () => ({
               sessionId: "session-modes",
               modes: {
@@ -1329,7 +1337,7 @@ describe("ACPClientAdapter", () => {
         // (and its own housekeeping timers, which would otherwise pollute
         // `vi.getTimerCount()` assertions under fake timers).
         enableMcpTools: false,
-        connectionFactory: async (client) => {
+        connectionFactory: async (client: Client) => {
           const controller = new AbortController()
           let markClosed: () => void = () => undefined
           const closed = new Promise<void>((resolve) => { markClosed = resolve })
@@ -1359,7 +1367,7 @@ describe("ACPClientAdapter", () => {
               })),
               authenticate: vi.fn(async () => ({})),
               loadSession,
-              unstable_resumeSession: vi.fn(),
+              resumeSession: vi.fn(),
               newSession,
               setSessionMode,
               prompt,
@@ -1370,7 +1378,7 @@ describe("ACPClientAdapter", () => {
           }
         },
         ...input.adapterOptions,
-      })
+      } as never)
 
       return {
         adapter,
@@ -2033,7 +2041,7 @@ describe("ACPClientAdapter", () => {
       const loadSession = vi.fn(async () => ({
         ...(input.loadSessionModes ? { modes: input.loadSessionModes } : {}),
       }))
-      const unstable_resumeSession = vi.fn()
+      const resumeSession = vi.fn()
       const prompt = vi.fn(async (params: { sessionId: string }) => {
         if (input.raisePermissionRequest) {
           permissionResult = await clientHandle?.requestPermission({
@@ -2051,7 +2059,7 @@ describe("ACPClientAdapter", () => {
       const adapter = new ACPClientAdapter({
         command: ["acp-agent"],
         enableMcpTools: false,
-        connectionFactory: async (client) => {
+        connectionFactory: async (client: Client) => {
           clientHandle = client as unknown as typeof clientHandle
           const controller = new AbortController()
           return {
@@ -2064,7 +2072,7 @@ describe("ACPClientAdapter", () => {
               })),
               authenticate: vi.fn(async () => ({})),
               loadSession,
-              unstable_resumeSession,
+              resumeSession,
               newSession,
               setSessionMode,
               prompt,
@@ -2075,7 +2083,7 @@ describe("ACPClientAdapter", () => {
           }
         },
         ...input.adapterOptions,
-      })
+      } as never)
 
       return { adapter, setSessionMode, loadSession, newSession, getPermissionResult: () => permissionResult }
     }
@@ -2210,7 +2218,7 @@ describe("ACPClientAdapter", () => {
     })
 
     // The ACP client does not runtime-validate an agent's JSON-RPC response
-    // (see `dist/acp.js` — `newSession`/`loadSession`/`unstable_resumeSession`
+    // (see `dist/acp.js` — `newSession`/`loadSession`/`resumeSession`
     // just return the raw parsed result), so the two cases below model
     // non-conforming responses that `SessionModeState`'s type promises can't
     // happen but nothing actually prevents.
@@ -2225,7 +2233,7 @@ describe("ACPClientAdapter", () => {
     })
 
     it("treats a resumed session as restored even when the agent's response carries no modes at all", async () => {
-      // The installed ACP SDK's own `unstable_resumeSession` has no `?? {}`
+      // The installed ACP SDK's own `resumeSession` has no `?? {}`
       // fallback the way its `loadSession` does, so resolving to `undefined`
       // on success is a real possibility here, not just a hypothetical.
       const { adapter, newSession } = buildHarness({
@@ -2313,7 +2321,7 @@ describe("ACPClientAdapter", () => {
               })),
               authenticate: vi.fn(async () => ({})),
               loadSession,
-              unstable_resumeSession: vi.fn(),
+              resumeSession: vi.fn(),
               newSession,
               cancel,
               prompt: input.prompt,
@@ -2740,7 +2748,7 @@ describe("ACPClientAdapter", () => {
                 initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
                 authenticate: vi.fn(async () => ({})),
                 loadSession: vi.fn(async () => ({})),
-                unstable_resumeSession: vi.fn(),
+                resumeSession: vi.fn(),
                 newSession,
                 cancel: vi.fn(async () => undefined),
                 prompt: vi.fn(async () => {
@@ -2761,7 +2769,7 @@ describe("ACPClientAdapter", () => {
               initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
               authenticate: vi.fn(async () => ({})),
               loadSession: vi.fn(async () => ({})),
-              unstable_resumeSession: vi.fn(),
+              resumeSession: vi.fn(),
               newSession,
               cancel: vi.fn(async () => undefined),
               prompt: vi.fn(async (params: { sessionId: string }) => {
@@ -2863,7 +2871,7 @@ describe("ACPClientAdapter", () => {
                 initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
                 authenticate: vi.fn(async () => ({})),
                 loadSession: vi.fn(async () => ({})),
-                unstable_resumeSession: vi.fn(),
+                resumeSession: vi.fn(),
                 newSession,
                 cancel: vi.fn(async () => undefined),
                 prompt: vi.fn(async () => {
@@ -2883,7 +2891,7 @@ describe("ACPClientAdapter", () => {
               initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
               authenticate: vi.fn(async () => ({})),
               loadSession: vi.fn(async () => ({})),
-              unstable_resumeSession: vi.fn(),
+              resumeSession: vi.fn(),
               newSession,
               cancel: vi.fn(async () => undefined),
               prompt: vi.fn(async () => {
@@ -2953,7 +2961,7 @@ describe("ACPClientAdapter", () => {
               initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
               authenticate: vi.fn(async () => ({})),
               loadSession: vi.fn(async () => ({})),
-              unstable_resumeSession: vi.fn(),
+              resumeSession: vi.fn(),
               newSession: vi.fn(async () => ({ sessionId: "session-1" })),
               cancel: vi.fn(async () => undefined),
               prompt: vi.fn(async (params: { sessionId: string }) => {
@@ -3029,7 +3037,7 @@ describe("ACPClientAdapter", () => {
           extraRpcSpies: { setSessionMode, setSessionConfigOption },
         }),
         ...input.adapterOptions,
-      })
+      } as never)
 
       return { adapter, setSessionMode, setSessionConfigOption, loadSession, newSession }
     }
@@ -3256,7 +3264,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: { loadSession: true } })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(async () => ({})),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             setSessionMode: vi.fn(async () => ({})),
             setSessionConfigOption,
@@ -3399,3 +3407,161 @@ describe("ACPClientAdapter", () => {
     })
   })
 });
+
+describe("ACP client transports", () => {
+  it("rejects incomplete, conflicting, and invalid transport configuration", () => {
+    expect(() => new ACPClientAdapter({} as never)).toThrow("requires a command or TCP host and port")
+    expect(() => new ACPClientAdapter({ host: "127.0.0.1" } as never)).toThrow("requires both host and port")
+    expect(() => new ACPClientAdapter({ command: ["agent"], host: "127.0.0.1", port: 3000 } as never)).toThrow("cannot use command")
+    expect(() => new ACPClientAdapter({ host: "", port: 3000 } as never)).toThrow("host must be a non-empty string")
+    expect(() => new ACPClientAdapter({ host: "127.0.0.1", port: 0 } as never)).toThrow("port must be an integer")
+  })
+
+  it("keeps injected connection factories compatible with TCP selection", async () => {
+    let received: { command: string[]; cwd?: string; env?: Record<string, string> } | null = null
+    const adapter = new ACPClientAdapter({
+      host: "127.0.0.1",
+      port: 3000,
+      connectionFactory: async (_client, options) => {
+        received = options
+        return buildMockConnection({
+          loadSession: async () => ({}),
+          newSession: async () => ({ sessionId: "session-1" }),
+          prompt: async () => ({ stopReason: "end_turn" }),
+        })
+      },
+    })
+
+    await adapter.onStarted("Agent", "desc")
+    expect(received).toEqual({ command: [], cwd: process.cwd(), env: undefined })
+    await adapter.stop()
+  })
+
+  it("connects to an ACP NDJSON TCP server and closes only its client socket", async () => {
+    let socketClosed = false
+    const server = createServer((socket) => {
+      socket.on("close", () => {
+        socketClosed = true
+      })
+      let pending = ""
+      socket.on("data", (chunk: Buffer) => {
+        pending += chunk.toString("utf8")
+        const lines = pending.split("\n")
+        pending = lines.pop() ?? ""
+        for (const line of lines) {
+          if (!line) continue
+          const request = JSON.parse(line) as { id: number }
+          socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: 1, agentCapabilities: {} } })}\n`)
+        }
+      })
+    })
+    server.listen(0, "127.0.0.1")
+    await once(server, "listening")
+    const address = server.address()
+    if (!address || typeof address === "string") throw new Error("TCP test server did not expose a port")
+
+    try {
+      const handle = await createTcpConnection({} as never, { host: "127.0.0.1", port: address.port })
+      await handle.connection.initialize({ protocolVersion: 1, clientCapabilities: {} })
+      await handle.stop()
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(socketClosed).toBe(true)
+      expect(server.listening).toBe(true)
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+
+  it("cleans up a TCP socket when ACP initialization fails", async () => {
+    let socketClosed = false
+    const server = createServer((socket) => {
+      socket.on("close", () => {
+        socketClosed = true
+      })
+      socket.once("data", (chunk: Buffer) => {
+        const request = JSON.parse(chunk.toString("utf8")) as { id: number }
+        socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code: -32000, message: "rejected" } })}\n`)
+      })
+    })
+    server.listen(0, "127.0.0.1")
+    await once(server, "listening")
+    const address = server.address()
+    if (!address || typeof address === "string") throw new Error("TCP test server did not expose a port")
+
+    try {
+      const adapter = new ACPClientAdapter({ host: "127.0.0.1", port: address.port })
+      await expect(adapter.onStarted("Agent", "desc")).rejects.toThrow("rejected")
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(socketClosed).toBe(true)
+      expect(server.listening).toBe(true)
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+
+  it("cancels a connected TCP startup when the adapter stops before initialization", async () => {
+    let socketClosed = false
+    let waitForSocketClose: Promise<void> | null = null
+    const server = createServer((socket) => {
+      socket.on("data", () => undefined)
+      waitForSocketClose = new Promise((resolve) => {
+        socket.once("close", () => {
+          socketClosed = true
+          resolve()
+        })
+      })
+    })
+    server.listen(0, "127.0.0.1")
+    await once(server, "listening")
+    const address = server.address()
+    if (!address || typeof address === "string") throw new Error("TCP test server did not expose a port")
+
+    try {
+      const adapter = new ACPClientAdapter({ host: "127.0.0.1", port: address.port })
+      const starting = adapter.onStarted("Agent", "desc")
+      await once(server, "connection")
+      await adapter.stop()
+      // Which message wins is a race: `raceAgainstConnectionClose`'s own
+      // rejection needs an extra microtask hop through `connection.closed`,
+      // so Node's `Duplex.toWeb` read rejection (a plain AbortError once
+      // `socket.destroy()` cancels the in-flight `initialize` read) usually
+      // settles first.
+      await expect(starting).rejects.toThrow(/ACP (TCP connection attempt aborted|connection closed)|operation was aborted/)
+      await waitForSocketClose
+      expect(socketClosed).toBe(true)
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+
+  it("does not open TCP after stop races lazy ACP loading", async () => {
+    let connected = false
+    const server = createServer((socket) => {
+      connected = true
+      socket.on("data", () => undefined)
+    })
+    server.listen(0, "127.0.0.1")
+    await once(server, "listening")
+    const address = server.address()
+    if (!address || typeof address === "string") throw new Error("TCP test server did not expose a port")
+
+    const adapter = new ACPClientAdapter({ host: "127.0.0.1", port: address.port })
+    const starting = adapter.onStarted("Agent", "desc")
+    const settled = starting.then(
+      () => "resolved",
+      (error: unknown) => error instanceof Error ? error.message : String(error),
+    )
+
+    try {
+      await adapter.stop()
+      await expect(Promise.race([
+        settled,
+        new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 100)),
+      ])).resolves.toContain("superseded by stop")
+      expect(connected).toBe(false)
+    } finally {
+      await adapter.stop()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+})
