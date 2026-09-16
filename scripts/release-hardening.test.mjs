@@ -549,6 +549,7 @@ test("release workflow asserts package contents after README copy and before pac
   assert.match(sdkContents.body, /README\.md/);
   assert.match(openclawContents.body, /node scripts\/assert-package-contents\.mjs/);
   assert.match(openclawContents.body, /packages\/openclaw/);
+  assert.match(openclawContents.body, /dist\/band_sdk_core_bg\.wasm/);
 });
 
 test("assert-package-contents rejects missing entries, low file counts, and excluded-but-existing files", async () => {
