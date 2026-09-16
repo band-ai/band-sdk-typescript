@@ -1,5 +1,6 @@
 import type { Logger } from "../core/logger";
-import { NoopLogger } from "../core/logger";
+import { resolveLogger } from "../core/logger";
+import { RecoverableTurnError } from "../core/errors";
 import type { BandLink } from "../platform/BandLink";
 import type { PlatformEvent } from "../platform/events";
 import type { PlatformMessage } from "./types";
@@ -66,7 +67,7 @@ export class Execution {
     this.retryTracker = this.context.getRetryTracker();
     this.onExecute = options.onExecute;
     this.onFailure = options.onFailure;
-    this.logger = options.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options.logger);
     this.processTask = this.processLoop();
   }
 
@@ -295,6 +296,20 @@ export class Execution {
     try {
       await this.onExecute(this.context, event);
     } catch (error: unknown) {
+      // Scoped to the turn that raised it: `PlatformRuntime` has already
+      // marked the message failed, and the queue below is every *other*
+      // message in this room. Tearing all of that down — and, through
+      // onFailure, the whole runtime — is the right answer to a broken
+      // adapter and the wrong one to a single reply that would not post.
+      if (error instanceof RecoverableTurnError) {
+        this.logger.warn("Turn failed without stopping the room", {
+          roomId: this.roomId,
+          eventType: event.type,
+          error,
+        });
+        return;
+      }
+
       if (this.onFailure) {
         await this.onFailure(error, event);
       } else {

@@ -2,7 +2,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, type Interface as ReadLineInterface } from "node:readline";
 
 import type { Logger } from "../../core/logger";
-import { NoopLogger } from "../../core/logger";
+import { resolveLogger } from "../../core/logger";
+import { withTimeout } from "../shared/withTimeout";
 import type {
   DynamicToolCallResponse,
   InitializeParams,
@@ -29,7 +30,7 @@ export type CodexRpcEvent = CodexRpcRequestEvent | CodexRpcNotificationEvent;
 export interface CodexClientLike {
   connect(): Promise<void>;
   initialize(params: InitializeParams): Promise<void>;
-  request<TResult>(method: string, params?: Record<string, unknown>): Promise<TResult>;
+  request<TResult>(method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<TResult>;
   notify(method: string, params?: Record<string, unknown>): Promise<void>;
   respond(requestId: RequestId, result: Record<string, unknown> | DynamicToolCallResponse): Promise<void>;
   respondError(requestId: RequestId, code: number, message: string, data?: unknown): Promise<void>;
@@ -90,7 +91,7 @@ export class CodexAppServerStdioClient implements CodexClientLike {
     } else {
       this.env = undefined;
     }
-    this.logger = options?.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options?.logger);
   }
 
   public async connect(): Promise<void> {
@@ -147,16 +148,29 @@ export class CodexAppServerStdioClient implements CodexClientLike {
   public async request<TResult>(
     method: string,
     params?: Record<string, unknown>,
+    timeoutMs?: number,
   ): Promise<TResult> {
     const id = ++this.nextRequestId;
-    const response = await new Promise<TResult>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+    const call = new Promise<TResult>((resolve, reject) => {
+      this.pending.set(id, {
+        resolve: (value) => resolve(value as TResult),
+        reject,
+      });
       void this.sendJson({ id, method, params: params ?? {} }).catch((error) => {
-        this.pending.delete(id);
         reject(error instanceof Error ? error : new Error(String(error)));
       });
     });
-    return response;
+    // A caller that abandons this call (see `abandon`) never reads the
+    // result, so nothing else ever clears `this.pending`'s entry for a
+    // request whose response never arrives — on a long-lived connection,
+    // each abandoned call permanently leaks one entry. The `.finally` below
+    // reclaims it regardless of which of `call`'s three settlement paths
+    // (response, `sendJson` rejection, or this timeout) actually ran.
+    return withTimeout(
+      call,
+      timeoutMs ?? Infinity,
+      () => new Error(`Codex app-server request "${method}" timed out after ${timeoutMs}ms.`),
+    ).finally(() => this.pending.delete(id));
   }
 
   public async notify(method: string, params?: Record<string, unknown>): Promise<void> {
@@ -221,12 +235,17 @@ export class CodexAppServerStdioClient implements CodexClientLike {
     proc.stdin.end();
 
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
+      const termTimer = setTimeout(() => {
         proc.kill("SIGTERM");
       }, 500);
+      const killTimer = setTimeout(() => {
+        proc.kill("SIGKILL");
+        resolve();
+      }, 1_500);
 
       proc.once("close", () => {
-        clearTimeout(timer);
+        clearTimeout(termTimer);
+        clearTimeout(killTimer);
         resolve();
       });
     });

@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { namedWorkflowSteps } from "./workflow-test-utils.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const releaseOutputsScript = join(root, "scripts/assert-release-outputs.mjs");
@@ -451,15 +452,6 @@ test("idempotent publisher fails fast with a named path when the tarball is miss
     assert.doesNotMatch(logged, /^publish /m);
   }, { createTarball: false });
 });
-
-function namedWorkflowSteps(workflow) {
-  const starts = [...workflow.matchAll(/^      - name: (.+)$/gm)];
-  return starts.map((match, index) => ({
-    name: match[1],
-    body: workflow.slice(match.index, starts[index + 1]?.index ?? workflow.length),
-    index: match.index,
-  }));
-}
 
 test("release workflow enters PR-only mode before release-please when held", async () => {
   const workflow = await readFile(join(root, ".github/workflows/release.yml"), "utf8");

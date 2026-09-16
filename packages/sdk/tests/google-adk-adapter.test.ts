@@ -4,7 +4,8 @@ import { z } from "zod";
 import { GoogleADKAdapter } from "../src/adapters";
 import { GoogleADKHistoryConverter } from "../src/converters";
 import type { AgentToolsProtocol } from "../src/core";
-import { FakeTools, makeMessage } from "./testUtils";
+import { FakeTools, makeMessage, expectTurnFailed } from "./testUtils";
+import { describeDeliveryContract } from "./deliveryContract";
 
 class GoogleAdkTestTools extends FakeTools {
   public readonly executedCalls: Array<{ toolName: string; args: Record<string, unknown> }> = [];
@@ -72,6 +73,25 @@ function createFakeGoogleAdkSdk(
 }
 
 describe("GoogleADKAdapter", () => {
+  describeDeliveryContract([{
+    path: "final assistant text",
+    turn: async (tools) => {
+      const adapter = new GoogleADKAdapter({
+        sdkFactory: createFakeGoogleAdkSdk(async function* () {
+          yield { final: true, text: "It is 12C in Vancouver." };
+        }),
+      });
+      await adapter.onMessage(
+        makeMessage("weather?"),
+        tools,
+        [],
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-delivery" },
+      );
+    },
+  }]);
+
   it("bridges platform tools and reports final assistant text", async () => {
     const tools = new GoogleAdkTestTools();
     const seenPrompts: string[] = [];
@@ -313,5 +333,87 @@ describe("GoogleADKAdapter", () => {
 
     expect(capture.createAgentCalls).toHaveLength(1);
     expect(capture.createAgentCalls[0]?.name).toBe("band_agent");
+  });
+
+  it("reports a plain thrown Error from the run loop as a generic sendFailure fallback, then fails the turn", async () => {
+    const tools = new GoogleAdkTestTools();
+
+    const adapter = new GoogleADKAdapter({
+      sdkFactory: createFakeGoogleAdkSdk(async function* () {
+        throw new Error("model exploded");
+        yield { final: true, text: "unreachable" };
+      }),
+    });
+
+    await adapter.onStarted("Weather Agent", "Answers weather questions");
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("What's the weather?"),
+        tools,
+        [],
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-1" },
+      ),
+    );
+
+    expect(tools.messages).toEqual([]);
+    expect(tools.events).toEqual([
+      {
+        content: "model exploded",
+        messageType: "error",
+        metadata: {
+          failure: { provider: "google-adk", code: null, message: "model exploded", detail: null },
+        },
+      },
+    ]);
+  });
+
+  it("reports a failure in the previously-uncaught sdk/runner/session setup path, then fails the turn", async () => {
+    const tools = new GoogleAdkTestTools();
+
+    const adapter = new GoogleADKAdapter({
+      sdkFactory: async () => ({
+        createAgent: (params: Record<string, unknown>) => params,
+        createFunctionTool: (params: Record<string, unknown>) => params,
+        createRunner: () => ({
+          sessionService: {
+            createSession: async () => {
+              throw new Error("session service unavailable");
+            },
+          },
+          runAsync: () => {
+            throw new Error("should not be reached");
+          },
+        }),
+        isFinalResponse: () => false,
+        getFunctionCalls: () => [],
+        getFunctionResponses: () => [],
+        stringifyContent: () => "",
+      }),
+    });
+
+    await adapter.onStarted("Weather Agent", "Answers weather questions");
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("What's the weather?"),
+        tools,
+        [],
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-1" },
+      ),
+    );
+
+    expect(tools.messages).toEqual([]);
+    expect(tools.events).toEqual([
+      {
+        content: "session service unavailable",
+        messageType: "error",
+        metadata: {
+          failure: { provider: "google-adk", code: null, message: "session service unavailable", detail: null },
+        },
+      },
+    ]);
   });
 });

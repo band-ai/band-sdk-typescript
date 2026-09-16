@@ -5,7 +5,9 @@ import {
   type ClaudeSDKQuery,
 } from "../src/adapters/claude-sdk/ClaudeSDKAdapter";
 import { HistoryProvider } from "../src/runtime/types";
-import { FakeTools, makeMessage } from "./testUtils";
+import { DeliveryFailedError } from "../src/core/deliveryFailedError";
+import { FakeTools, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
+import { describeDeliveryContract } from "./deliveryContract";
 import { MCP_SERVER_NAME } from "../src/runtime/tools/schemas";
 
 function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
@@ -270,4 +272,239 @@ describe("ClaudeSDKAdapter", () => {
       }),
     );
   });
+
+  it("surfaces a query-loop failure as a structured sendFailure event", async () => {
+    const queryFn: ClaudeSDKQuery = () => {
+      throw new Error("claude query blew up");
+    };
+
+    const adapter = new ClaudeSDKAdapter({ queryFn });
+    await adapter.onStarted("Parity Agent", "Parity test agent");
+
+    const tools = new FakeTools();
+    await expectTurnFailed(adapter.onMessage(
+      makeMessage("hello", "room-fail"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-fail" },
+    ));
+
+    expect(tools.messages).toEqual([]);
+    const failureEvent = findFailureEvent(tools);
+    expect(failureEvent?.content).toBe("claude query blew up");
+    expect(failureEvent?.metadata?.failure).toMatchObject({
+      provider: "claude-sdk",
+      message: "claude query blew up",
+      code: null,
+      detail: null,
+    });
+  });
+
+
+  it("reports a non-success result event as a terminal provider failure without prior assistant text", async () => {
+    const queryFn: ClaudeSDKQuery = () =>
+      streamFrom([
+        {
+          type: "result",
+          subtype: "error_max_turns",
+          result: "hit the turn cap",
+          session_id: "session-fail",
+        } as never,
+      ]) as never;
+
+    const adapter = new ClaudeSDKAdapter({ queryFn });
+    await adapter.onStarted("Parity Agent", "Parity test agent");
+
+    const tools = new FakeTools();
+    await expectTurnFailed(adapter.onMessage(
+      makeMessage("hello", "room-result-fail"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-result-fail" },
+    ));
+
+    expect(tools.messages).toEqual([]);
+    const failureEvent = findFailureEvent(tools);
+    expect(tools.events.filter((event) => event.messageType === "error")).toHaveLength(1);
+    expect(failureEvent?.metadata?.failure).toMatchObject({
+      provider: "claude-sdk",
+      code: "error_max_turns",
+      message: "hit the turn cap",
+    });
+  });
+
+  it("keeps preceding assistant text once, then fails the turn on a non-success result", async () => {
+    const queryFn: ClaudeSDKQuery = () =>
+      streamFrom([
+        {
+          type: "assistant",
+          session_id: "session-partial",
+          message: {
+            content: [{ type: "text", text: "almost done" }],
+          },
+        } as never,
+        {
+          type: "result",
+          subtype: "error_during_execution",
+          summary: "tool crashed",
+          session_id: "session-partial",
+        } as never,
+      ]) as never;
+
+    const adapter = new ClaudeSDKAdapter({ queryFn });
+    await adapter.onStarted("Parity Agent", "Parity test agent");
+
+    const tools = new FakeTools();
+    await expectTurnFailed(adapter.onMessage(
+      makeMessage("hello", "room-result-partial"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-result-partial" },
+    ));
+
+    expect(tools.messages).toEqual(["almost done"]);
+    const failureEvent = findFailureEvent(tools);
+    expect(tools.events.filter((event) => event.messageType === "error")).toHaveLength(1);
+    expect(failureEvent?.metadata?.failure).toMatchObject({
+      provider: "claude-sdk",
+      code: "error_during_execution",
+      message: "tool crashed",
+    });
+  });
+
+  it("reports the Claude result failure even when partial-text delivery is rejected", async () => {
+    const queryFn: ClaudeSDKQuery = () =>
+      streamFrom([
+        {
+          type: "assistant",
+          session_id: "session-partial-delivery",
+          message: {
+            content: [{ type: "text", text: "almost done" }],
+          },
+        } as never,
+        {
+          type: "result",
+          subtype: "error_during_execution",
+          summary: "tool crashed",
+          session_id: "session-partial-delivery",
+        } as never,
+      ]) as never;
+
+    const adapter = new ClaudeSDKAdapter({ queryFn });
+    await adapter.onStarted("Parity Agent", "Parity test agent");
+
+    const tools = new FakeTools({ failOn: ["sendMessage"] });
+    await expect(adapter.onMessage(
+      makeMessage("hello", "room-result-partial-delivery"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-result-partial-delivery" },
+    )).rejects.toBeInstanceOf(DeliveryFailedError);
+    expect(tools.messages).toEqual([]);
+    expect(tools.events.filter((event) => event.messageType === "error")).toHaveLength(1);
+    expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({
+      provider: "claude-sdk",
+      code: "error_during_execution",
+      message: "tool crashed",
+    });
+  });
+
+  it("treats success+is_error as a terminal Claude failure and does not deliver the result", async () => {
+    const queryFn: ClaudeSDKQuery = () =>
+      streamFrom([
+        {
+          type: "result",
+          subtype: "success",
+          is_error: true,
+          result: "Not logged in",
+          session_id: "session-is-error",
+        } as never,
+      ]) as never;
+
+    const adapter = new ClaudeSDKAdapter({ queryFn });
+    await adapter.onStarted("Parity Agent", "Parity test agent");
+
+    const tools = new FakeTools();
+    await expectTurnFailed(adapter.onMessage(
+      makeMessage("hello", "room-is-error"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-is-error" },
+    ));
+
+    expect(tools.messages).toEqual([]);
+    expect(tools.events.filter((event) => event.messageType === "error")).toHaveLength(1);
+    expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({
+      provider: "claude-sdk",
+      code: "error",
+      message: "Not logged in",
+    });
+  });
+
+  it("still delivers a success result when is_error is false", async () => {
+    const queryFn: ClaudeSDKQuery = () =>
+      streamFrom([
+        {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          result: "all good",
+          session_id: "session-is-error-false",
+        } as never,
+      ]) as never;
+
+    const adapter = new ClaudeSDKAdapter({ queryFn });
+    await adapter.onStarted("Parity Agent", "Parity test agent");
+
+    const tools = new FakeTools();
+    await adapter.onMessage(
+      makeMessage("hello", "room-is-error-false"),
+      tools,
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-is-error-false" },
+    );
+
+    expect(tools.messages).toEqual(["all good"]);
+    expect(tools.events.filter((event) => event.messageType === "error")).toEqual([]);
+  });
+
+  describeDeliveryContract([{
+    path: "final assistant text",
+    turn: async (tools) => {
+      const queryFn: ClaudeSDKQuery = () =>
+        streamFrom([
+          {
+            type: "assistant",
+            session_id: "session-delivery",
+            message: {
+              content: [{ type: "text", text: "final answer" }],
+            },
+          } as never,
+        ]) as never;
+
+      const adapter = new ClaudeSDKAdapter({ queryFn });
+      await adapter.onStarted("Parity Agent", "Parity test agent");
+
+      await adapter.onMessage(
+        makeMessage("hello", "room-delivery"),
+        tools,
+        new HistoryProvider([]),
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-delivery" },
+      );
+    },
+  }]);
 });

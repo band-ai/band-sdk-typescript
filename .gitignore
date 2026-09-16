@@ -8,7 +8,9 @@ coverage
 .tmp-bin
 .tmp-harness-reports
 .desloppify
-.claude
+# Local Claude Code settings/state (machine-specific, not shared)
+.claude/settings.local.json
+.claude/worktrees
 .agents
 .idea
 scorecard.png

@@ -10,7 +10,10 @@ import type {
   GatewayServerOptions,
 } from "./types";
 import { buildStatusEvent } from "./statusEvent";
+import { buildGatewayFailureMetadata } from "./failure";
 import { asNonEmptyString } from "../shared/coercion";
+import type { Logger } from "../../core/logger";
+import { resolveLogger } from "../../core/logger";
 
 interface ExpressAppLike {
   use: (...args: unknown[]) => void;
@@ -83,15 +86,18 @@ class GatewayPeerExecutor {
   private readonly peer: GatewayPeer;
   private readonly onRequest: GatewayServerOptions["onRequest"];
   private readonly onCancel?: GatewayServerOptions["onCancel"];
+  private readonly logger: Logger;
 
   public constructor(options: {
     peer: GatewayPeer;
     onRequest: GatewayServerOptions["onRequest"];
     onCancel?: GatewayServerOptions["onCancel"];
+    logger: Logger;
   }) {
     this.peer = options.peer;
     this.onRequest = options.onRequest;
     this.onCancel = options.onCancel;
+    this.logger = options.logger;
   }
 
   public async execute(
@@ -119,6 +125,12 @@ class GatewayPeerExecutor {
         }
       }
     } catch (error) {
+      this.logger.warn("a2a_gateway.peer_request_failed", {
+        peerId: this.peer.id,
+        taskId,
+        contextId,
+        error,
+      });
       eventBus.publish(
         buildStatusEvent({
           taskId,
@@ -126,7 +138,7 @@ class GatewayPeerExecutor {
           state: "failed",
           final: true,
           text: "Peer request failed.",
-          metadata: buildGatewayExecutionFailureMetadata(error),
+          metadata: buildGatewayFailureMetadata(error),
         }),
       );
     } finally {
@@ -163,11 +175,13 @@ class GatewayPeerExecutor {
 
 export class GatewayServer implements GatewayServerLike {
   private readonly options: GatewayServerOptions;
+  private readonly logger: Logger;
   private server: HttpServer | null = null;
   private started = false;
 
   public constructor(options: GatewayServerOptions) {
     this.options = options;
+    this.logger = resolveLogger(options.logger);
   }
 
   public async start(): Promise<void> {
@@ -265,6 +279,7 @@ export class GatewayServer implements GatewayServerLike {
         peer,
         onRequest: this.options.onRequest,
         onCancel: this.options.onCancel,
+        logger: this.logger,
       }),
     );
 
@@ -611,34 +626,6 @@ function verifyBearerAuthorization(
   }
 
   return safeHeaderEquals(authorization, `Bearer ${authToken}`);
-}
-
-function buildGatewayExecutionFailureMetadata(
-  error: unknown,
-): Record<string, unknown> {
-  return {
-    error_type: error instanceof Error ? error.name : "UnknownError",
-    error_message: sanitizeGatewayErrorMessage(error),
-  };
-}
-
-function sanitizeGatewayErrorMessage(error: unknown): string {
-  const rawMessage = error instanceof Error ? error.message : String(error);
-  const trimmed = rawMessage.trim();
-  if (!trimmed) {
-    return "Unknown error";
-  }
-
-  const withBearerRedaction = trimmed
-    .replace(/Bearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
-    .replace(/(token|authorization|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]");
-
-  const maxLength = 240;
-  if (withBearerRedaction.length <= maxLength) {
-    return withBearerRedaction;
-  }
-
-  return `${withBearerRedaction.slice(0, maxLength - 3)}...`;
 }
 
 function safeHeaderEquals(left: string, right: string): boolean {

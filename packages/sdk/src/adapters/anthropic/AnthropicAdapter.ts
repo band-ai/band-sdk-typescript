@@ -6,7 +6,7 @@ import {
 } from "./model";
 
 export interface AnthropicAdapterOptions
-  extends Omit<ToolCallingAdapterOptions, "toolFormat" | "model"> {
+  extends Omit<ToolCallingAdapterOptions, "toolFormat" | "model" | "provider"> {
   model?: ToolCallingModel;
   anthropicModel?: string;
   apiKey?: string;
@@ -36,6 +36,7 @@ export class AnthropicAdapter extends ToolCallingAdapter {
       ...adapterOptions,
       model: resolvedModel,
       toolFormat: "anthropic",
+      provider: "anthropic",
     });
   }
 }

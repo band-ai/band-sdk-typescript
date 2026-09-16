@@ -7,7 +7,9 @@ export default defineConfig({
     // whole entrypoint, forcing a fresh transform of the entire module graph:
     // ~4.5s warm and standalone, but well over 20s when the full suite is
     // running files in parallel and contending for CPU. Sizing the timeout off
-    // the warm number is what makes those tests flaky rather than slow.
+    // the warm number is what makes those tests flaky rather than slow. The
+    // same margin also covers native V8 coverage instrumentation, which slows
+    // the compile-proof tests below the normal timeout on its own.
     //
     // 60s is therefore chosen against observed worst-case contention, not the
     // happy path. It costs nothing when tests pass and delays a genuinely hung
