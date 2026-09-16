@@ -11,8 +11,14 @@ import {
   type WebSocketDisconnectReason,
 } from "./disconnectReason";
 import { createNodeWebSocketFactory } from "./nodeWebSocketFactory";
-import type { StreamingTransport, TopicHandlers } from "./transport";
+import type {
+  ReconnectObserver,
+  ReconnectSnapshot,
+  StreamingTransport,
+  TopicHandlers,
+} from "./transport";
 import { agentControlTopic } from "@band-ai/band-sdk-core";
+import type { Push } from "phoenix";
 
 interface PhoenixChannelsTransportOptions {
   wsUrl: string;
@@ -36,6 +42,13 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private readonly channels = new Map<string, Channel>();
   private readonly channelRefs = new Map<string, Array<[string, number]>>();
   private readonly pendingJoins = new Map<string, Promise<void>>();
+  private readonly joinPushes = new Map<string, Push>();
+  private readonly reconnectObservers = new Set<ReconnectObserver>();
+  private readonly pendingGenerations = new Map<number, Set<string>>();
+  private readonly settledGenerationTopics = new Map<number, Set<string>>();
+  private hasOpenedOnce = false;
+  private generation = 0;
+  private observerChain: Promise<void> = Promise.resolve();
   private readonly logger: Logger;
   private readonly onTerminalDisconnect?: (
     reason: WebSocketDisconnectReason,
@@ -215,10 +228,20 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       refs.push([event, ref]);
     }
 
+    // Phoenix creates exactly one join `Push` per channel and reuses it for
+    // every automatic rejoin (`resend()`), so hooks registered on it now stay
+    // attached and fire again on every later settlement — this is the only
+    // hook into a channel's reconnect outcome the public API exposes.
+    const joinPush = channel.join();
+    joinPush
+      .receive("ok", () => this.recordTopicSettled(topic, true))
+      .receive("error", () => this.recordTopicSettled(topic, false))
+      .receive("timeout", () => this.recordTopicSettled(topic, false));
+    this.joinPushes.set(topic, joinPush);
+
     try {
       await new Promise<void>((resolve, reject) => {
-        channel
-          .join()
+        joinPush
           .receive("ok", () => resolve())
           .receive("error", (error: unknown) =>
             reject(new TransportError(`Failed to join topic ${topic}`, error)),
@@ -231,6 +254,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       for (const [event, ref] of refs) {
         channel.off(event, ref);
       }
+      this.joinPushes.delete(topic);
       // Leave and remove the channel so it doesn't get rejoined on reconnect.
       channel.leave();
       removeSocketChannel(this.socket, channel);
@@ -267,6 +291,8 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     });
 
     this.channels.delete(topic);
+    this.joinPushes.delete(topic);
+    this.removeTopicFromPendingGenerations(topic);
     this.logger.debug("Left topic", { topic });
   }
 
@@ -310,7 +336,23 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     });
   }
 
+  public onReconnected(observer: ReconnectObserver): () => void {
+    this.reconnectObservers.add(observer);
+    return () => {
+      this.reconnectObservers.delete(observer);
+    };
+  }
+
   private async handleOpen(): Promise<void> {
+    // Runs synchronously, before this function's first `await` yields back to
+    // the socket's onOpen dispatch loop, so the snapshot is taken before
+    // Phoenix's own per-channel onOpen callbacks resend their join pushes.
+    if (this.hasOpenedOnce) {
+      this.beginReconnectGeneration();
+    } else {
+      this.hasOpenedOnce = true;
+    }
+
     try {
       await this.subscribeAgentControl();
     } catch (error) {
@@ -331,6 +373,72 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     this.connectReject = null;
     this.logger.info("Phoenix socket opened", {
       channels: getSocketChannelCount(this.socket),
+    });
+  }
+
+  private beginReconnectGeneration(): void {
+    const generation = ++this.generation;
+
+    // A generation superseded by this newer one will never receive another
+    // settlement for its stragglers (Phoenix rebinds each rejoined push's
+    // reply listener on `resend()`, so a stale reply can no longer arrive) —
+    // drop it now rather than leaking it forever.
+    for (const staleGeneration of this.pendingGenerations.keys()) {
+      if (staleGeneration < generation) {
+        this.pendingGenerations.delete(staleGeneration);
+        this.settledGenerationTopics.delete(staleGeneration);
+      }
+    }
+
+    this.pendingGenerations.set(generation, new Set(this.channels.keys()));
+    this.settledGenerationTopics.set(generation, new Set());
+    this.maybeFinalizeGeneration(generation);
+  }
+
+  private recordTopicSettled(topic: string, joined: boolean): void {
+    const pending = this.pendingGenerations.get(this.generation);
+    if (!pending?.delete(topic)) {
+      return;
+    }
+
+    if (joined) {
+      this.settledGenerationTopics.get(this.generation)?.add(topic);
+    }
+    this.maybeFinalizeGeneration(this.generation);
+  }
+
+  private removeTopicFromPendingGenerations(topic: string): void {
+    for (const [generation, pending] of this.pendingGenerations) {
+      if (pending.delete(topic)) {
+        this.maybeFinalizeGeneration(generation);
+      }
+    }
+  }
+
+  private maybeFinalizeGeneration(generation: number): void {
+    const pending = this.pendingGenerations.get(generation);
+    if (!pending || pending.size > 0) {
+      return;
+    }
+
+    const joinedTopics = this.settledGenerationTopics.get(generation) ?? new Set<string>();
+    this.pendingGenerations.delete(generation);
+    this.settledGenerationTopics.delete(generation);
+    this.notifyReconnectObservers({ generation, joinedTopics });
+  }
+
+  private notifyReconnectObservers(snapshot: ReconnectSnapshot): void {
+    this.observerChain = this.observerChain.then(async () => {
+      for (const observer of this.reconnectObservers) {
+        try {
+          await observer(snapshot);
+        } catch (error) {
+          this.logger.error("Reconnect observer failed", {
+            generation: snapshot.generation,
+            error,
+          });
+        }
+      }
     });
   }
 

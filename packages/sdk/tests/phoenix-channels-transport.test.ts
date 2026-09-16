@@ -10,6 +10,36 @@ import { FakeRestApi } from "./testUtils";
 const phoenixMock = vi.hoisted(() => {
   type Outcome = "ok" | "error" | "timeout" | "pending";
 
+  // Models Phoenix's real behavior: one join `Push` per channel, reused for
+  // every automatic rejoin. `.receive()` hooks registered on it accumulate
+  // and are re-fired on every settlement, never just the first.
+  class FakeJoinPush {
+    private readonly hooks: Array<{
+      status: Exclude<Outcome, "pending">;
+      callback: (payload?: unknown) => void;
+    }> = [];
+
+    public receive(
+      status: Outcome,
+      callback: (payload?: unknown) => void,
+    ): FakeJoinPush {
+      if (status !== "pending") {
+        this.hooks.push({ status, callback });
+      }
+      return this;
+    }
+
+    public settle(outcome: Exclude<Outcome, "pending">): void {
+      for (const hook of this.hooks) {
+        if (hook.status === outcome) {
+          queueMicrotask(() =>
+            hook.callback(outcome === "ok" ? {} : { error: outcome }),
+          );
+        }
+      }
+    }
+  }
+
   class FakeChannel {
     public readonly topic: string;
     public readonly handlers = new Map<
@@ -18,6 +48,7 @@ const phoenixMock = vi.hoisted(() => {
     >();
     public joinOutcome: Outcome = "ok";
     public leaveOutcome: Outcome = "ok";
+    public readonly joinPush = new FakeJoinPush();
     private nextRef = 1;
 
     public constructor(topic: string) {
@@ -40,13 +71,21 @@ const phoenixMock = vi.hoisted(() => {
       this.handlers.get(event)?.(payload);
     }
 
-    public join(): {
-      receive: (
-        kind: Outcome,
-        callback: (payload?: unknown) => void,
-      ) => unknown;
-    } {
-      return this.receiver(this.joinOutcome);
+    public join(): FakeJoinPush {
+      const outcome = this.joinOutcome;
+      if (outcome !== "pending") {
+        // Deferred, like a real server round-trip: `doJoin` registers its
+        // receive hooks synchronously right after this returns, and they
+        // must be in place before the settlement fires.
+        queueMicrotask(() => this.joinPush.settle(outcome));
+      }
+      return this.joinPush;
+    }
+
+    /** Simulates Phoenix resending this channel's join push on a later
+     *  automatic rejoin, without calling `.join()` again. */
+    public settleRejoin(outcome: Exclude<Outcome, "pending">): void {
+      this.joinPush.settle(outcome);
     }
 
     public leave(): {
@@ -142,6 +181,11 @@ const phoenixMock = vi.hoisted(() => {
       queueMicrotask(() => {
         this.openHandler?.();
       });
+    }
+
+    /** Simulates a later automatic reconnect's socket re-open. */
+    public emitOpen(): void {
+      this.openHandler?.();
     }
 
     public disconnect(): void {
@@ -653,5 +697,173 @@ describe("PhoenixChannelsTransport", () => {
 
     releaseExecution?.();
     await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  describe("reconnect snapshot", () => {
+    it("does not invoke the reconnect observer for the initial socket open", async () => {
+      const transport = new PhoenixChannelsTransport({
+        wsUrl: "wss://example.test/socket",
+        apiKey: "key-1",
+      });
+      const observer = vi.fn();
+      transport.onReconnected(observer);
+
+      await transport.connect();
+      await transport.join("room:1", {});
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(observer).not.toHaveBeenCalled();
+    });
+
+    it("invokes the observer only after every snapshotted topic settles", async () => {
+      const transport = new PhoenixChannelsTransport({
+        wsUrl: "wss://example.test/socket",
+        apiKey: "key-1",
+      });
+      await transport.connect();
+      await transport.join("room:1", {});
+      await transport.join("room:2", {});
+
+      const observer = vi.fn();
+      transport.onReconnected(observer);
+
+      const socket = phoenixMock.FakeSocket.instances[0];
+      socket?.emitOpen();
+      socket?.channels.get("room:1")?.settleRejoin("ok");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(observer).not.toHaveBeenCalled();
+
+      socket?.channels.get("room:2")?.settleRejoin("ok");
+      await vi.waitFor(() => expect(observer).toHaveBeenCalledTimes(1));
+      expect(observer).toHaveBeenCalledWith({
+        generation: 1,
+        joinedTopics: new Set(["room:1", "room:2"]),
+      });
+    });
+
+    it("omits topics whose rejoin settles as rejected or timed out", async () => {
+      const transport = new PhoenixChannelsTransport({
+        wsUrl: "wss://example.test/socket",
+        apiKey: "key-1",
+      });
+      await transport.connect();
+      await transport.join("room:1", {});
+      await transport.join("room:2", {});
+      await transport.join("room:3", {});
+
+      const observer = vi.fn();
+      transport.onReconnected(observer);
+
+      const socket = phoenixMock.FakeSocket.instances[0];
+      socket?.emitOpen();
+      socket?.channels.get("room:1")?.settleRejoin("ok");
+      socket?.channels.get("room:2")?.settleRejoin("error");
+      socket?.channels.get("room:3")?.settleRejoin("timeout");
+
+      await vi.waitFor(() => expect(observer).toHaveBeenCalledTimes(1));
+      expect(observer).toHaveBeenCalledWith({
+        generation: 1,
+        joinedTopics: new Set(["room:1"]),
+      });
+    });
+
+    it("removes a topic from the pending snapshot when it is explicitly left before settling", async () => {
+      const transport = new PhoenixChannelsTransport({
+        wsUrl: "wss://example.test/socket",
+        apiKey: "key-1",
+      });
+      await transport.connect();
+      await transport.join("room:1", {});
+      await transport.join("room:2", {});
+
+      const observer = vi.fn();
+      transport.onReconnected(observer);
+
+      const socket = phoenixMock.FakeSocket.instances[0];
+      socket?.emitOpen();
+      socket?.channels.get("room:1")?.settleRejoin("ok");
+      await transport.leave("room:2");
+
+      await vi.waitFor(() => expect(observer).toHaveBeenCalledTimes(1));
+      expect(observer).toHaveBeenCalledWith({
+        generation: 1,
+        joinedTopics: new Set(["room:1"]),
+      });
+    });
+
+    it("lets a newer open generation supersede an incomplete older settlement", async () => {
+      const transport = new PhoenixChannelsTransport({
+        wsUrl: "wss://example.test/socket",
+        apiKey: "key-1",
+      });
+      await transport.connect();
+      await transport.join("room:1", {});
+      await transport.join("room:2", {});
+
+      const observer = vi.fn();
+      transport.onReconnected(observer);
+
+      const socket = phoenixMock.FakeSocket.instances[0];
+      socket?.emitOpen();
+      socket?.channels.get("room:1")?.settleRejoin("ok");
+      // room:2 never settles for this generation before a second open fires.
+
+      socket?.emitOpen();
+      socket?.channels.get("room:1")?.settleRejoin("ok");
+      socket?.channels.get("room:2")?.settleRejoin("ok");
+
+      await vi.waitFor(() => expect(observer).toHaveBeenCalledTimes(1));
+      expect(observer).toHaveBeenCalledWith({
+        generation: 2,
+        joinedTopics: new Set(["room:1", "room:2"]),
+      });
+    });
+
+    it("logs a reconnect observer failure instead of leaking an unhandled rejection", async () => {
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const transport = new PhoenixChannelsTransport({
+        wsUrl: "wss://example.test/socket",
+        apiKey: "key-1",
+        logger,
+      });
+      await transport.connect();
+      await transport.join("room:1", {});
+
+      const failure = new Error("observer boom");
+      transport.onReconnected(() => {
+        throw failure;
+      });
+
+      const socket = phoenixMock.FakeSocket.instances[0];
+      socket?.emitOpen();
+      socket?.channels.get("room:1")?.settleRejoin("ok");
+
+      await vi.waitFor(() =>
+        expect(logger.error).toHaveBeenCalledWith(
+          "Reconnect observer failed",
+          expect.objectContaining({ generation: 1, error: failure }),
+        ),
+      );
+    });
+
+    it("stops notifying an observer once it unsubscribes", async () => {
+      const transport = new PhoenixChannelsTransport({
+        wsUrl: "wss://example.test/socket",
+        apiKey: "key-1",
+      });
+      await transport.connect();
+      await transport.join("room:1", {});
+
+      const observer = vi.fn();
+      const unsubscribe = transport.onReconnected(observer);
+      unsubscribe();
+
+      const socket = phoenixMock.FakeSocket.instances[0];
+      socket?.emitOpen();
+      socket?.channels.get("room:1")?.settleRejoin("ok");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(observer).not.toHaveBeenCalled();
+    });
   });
 });

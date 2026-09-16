@@ -16,7 +16,12 @@ import type {
   ParticipantRecord,
   PeerRecord,
 } from "../src/contracts/dtos";
-import type { StreamingTransport, TopicHandlers } from "../src/platform/streaming/transport";
+import type {
+  ReconnectObserver,
+  ReconnectSnapshot,
+  StreamingTransport,
+  TopicHandlers,
+} from "../src/platform/streaming/transport";
 
 interface CapturedToolEvent {
   content: string;
@@ -146,6 +151,7 @@ export function makeRoster(participants: ParticipantRecord[]): ParticipantRoster
 export class FakeTransport implements StreamingTransport {
   private readonly handlers = new Map<string, TopicHandlers>();
   private connected = false;
+  private reconnectObserver: ReconnectObserver | null = null;
 
   public async connect(): Promise<void> {
     this.connected = true;
@@ -186,6 +192,20 @@ export class FakeTransport implements StreamingTransport {
 
   public hasTopic(topic: string): boolean {
     return this.handlers.has(topic);
+  }
+
+  public onReconnected(observer: ReconnectObserver): () => void {
+    this.reconnectObserver = observer;
+    return () => {
+      if (this.reconnectObserver === observer) {
+        this.reconnectObserver = null;
+      }
+    };
+  }
+
+  /** Simulates a settled transport-level reconnect for tests driving BandLink's observer. */
+  public async triggerReconnect(snapshot: ReconnectSnapshot): Promise<void> {
+    await this.reconnectObserver?.(snapshot);
   }
 }
 

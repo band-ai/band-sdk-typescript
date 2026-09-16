@@ -32,12 +32,8 @@ import {
   type AgentToolsCapabilities,
 } from "../contracts/protocols";
 import { BandClient } from "@band-ai/rest-client";
-import {
-  agentContactsTopic,
-  agentRoomsTopic,
-  chatRoomTopic,
-  roomParticipantsTopic,
-} from "@band-ai/band-sdk-core";
+import { agentContactsTopic, agentRoomsTopic } from "@band-ai/band-sdk-core";
+import { SubscriptionManager } from "./SubscriptionManager";
 
 export interface BandLinkOptions {
   agentId: string;
@@ -69,13 +65,6 @@ export interface MessageMarkOptions {
   bestEffort?: boolean;
 }
 
-function roomTopics(roomId: string): { chat: string; participants: string } {
-  return {
-    chat: chatRoomTopic(roomId),
-    participants: roomParticipantsTopic(roomId),
-  };
-}
-
 function toPlatformMessage(
   roomId: string,
   message: PlatformChatMessage,
@@ -103,12 +92,13 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
 
   private readonly logger: Logger;
   private readonly transport: StreamingTransport;
-  private readonly subscribedRooms = new Set<string>();
+  private readonly subscriptionManager: SubscriptionManager;
   private readonly eventQueue: PlatformEvent[] = [];
   private readonly waiters: PendingWaiter[] = [];
   private connected = false;
   private lastDisconnectReason: WebSocketDisconnectReason | null = null;
   private terminalDisconnectError: WebSocketDisconnectError | null = null;
+  private unregisterReconnectObserver: (() => void) | null = null;
 
   public constructor(options: BandLinkOptions) {
     this.agentId = options.agentId;
@@ -144,6 +134,11 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
           this.recordDisconnectReason(reason);
         },
       });
+
+    this.subscriptionManager = new SubscriptionManager({
+      transport: this.transport,
+      logger: this.logger,
+    });
   }
 
   public isConnected(): boolean {
@@ -159,9 +154,17 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
       return;
     }
 
+    this.unregisterReconnectObserver =
+      this.transport.onReconnected?.(async (snapshot) => {
+        await this.subscriptionManager.reconcileReconnect(snapshot);
+        this.queueEvent({ type: "reconnected", roomId: null, payload: {} });
+      }) ?? null;
+
     try {
       await this.transport.connect();
     } catch (error) {
+      this.unregisterReconnectObserver?.();
+      this.unregisterReconnectObserver = null;
       if (error instanceof WebSocketDisconnectError) {
         if (error.reason.retryable) {
           this.lastDisconnectReason = error.reason;
@@ -179,12 +182,14 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
       return;
     }
 
-    await Promise.allSettled(
-      [...this.subscribedRooms].map((roomId) => this.unsubscribeRoom(roomId)),
-    );
-
-    await this.transport.disconnect();
-    this.connected = false;
+    try {
+      await this.transport.disconnect();
+    } finally {
+      this.connected = false;
+      this.unregisterReconnectObserver?.();
+      this.unregisterReconnectObserver = null;
+      this.subscriptionManager.endSession();
+    }
   }
 
   public async runForever(signal: AbortSignal): Promise<void> {
@@ -220,7 +225,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   public async subscribeAgentRooms(): Promise<void> {
-    await this.transport.join(agentRoomsTopic(this.agentId), {
+    await this.subscriptionManager.subscribeAgentTopic(agentRoomsTopic(this.agentId), {
       room_added: (payload) => {
         const roomId = typeof payload.id === "string" ? payload.id : "";
         this.emit("room_added", payload, roomId);
@@ -233,36 +238,13 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   public async subscribeRoom(roomId: string): Promise<void> {
-    if (this.subscribedRooms.has(roomId)) {
-      return;
-    }
-
-    await this.joinRoomTopics(roomId);
-    this.subscribedRooms.add(roomId);
-  }
-
-  public async unsubscribeRoom(roomId: string): Promise<void> {
-    if (!this.subscribedRooms.has(roomId)) {
-      return;
-    }
-
-    const topics = roomTopics(roomId);
-    await this.transport.leave(topics.chat);
-    await this.transport.leave(topics.participants);
-    this.subscribedRooms.delete(roomId);
-  }
-
-  private async joinRoomTopics(roomId: string): Promise<void> {
-    const topics = roomTopics(roomId);
-
-    await this.transport.join(topics.chat, {
-      message_created: (payload) => {
-        this.emit("message_created", payload, roomId);
+    await this.subscriptionManager.subscribeRoom(roomId, {
+      chat: {
+        message_created: (payload) => {
+          this.emit("message_created", payload, roomId);
+        },
       },
-    });
-
-    try {
-      await this.transport.join(topics.participants, {
+      participants: {
         participant_added: (payload) => {
           this.emit("participant_added", payload, roomId);
         },
@@ -272,16 +254,17 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         room_deleted: (payload) => {
           this.emit("room_deleted", payload, roomId);
         },
-      });
-    } catch (error) {
-      await this.transport.leave(topics.chat);
-      throw error;
-    }
+      },
+    });
+  }
+
+  public async unsubscribeRoom(roomId: string): Promise<void> {
+    await this.subscriptionManager.unsubscribeRoom(roomId);
   }
 
   public async subscribeAgentContacts(): Promise<void> {
     assertCapability(this.capabilities, "contacts", "Contacts streaming");
-    await this.transport.join(agentContactsTopic(this.agentId), {
+    await this.subscriptionManager.subscribeAgentTopic(agentContactsTopic(this.agentId), {
       contact_request_received: (payload) => {
         this.emit("contact_request_received", payload, null);
       },
@@ -298,7 +281,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   public async unsubscribeAgentContacts(): Promise<void> {
-    await this.transport.leave(agentContactsTopic(this.agentId));
+    await this.subscriptionManager.unsubscribeAgentTopic(agentContactsTopic(this.agentId));
   }
 
   public async nextEvent(signal?: AbortSignal): Promise<PlatformEvent | null> {

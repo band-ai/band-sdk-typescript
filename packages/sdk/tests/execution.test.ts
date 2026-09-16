@@ -36,6 +36,29 @@ function makeEvent(id: string): PlatformEvent {
   };
 }
 
+function makeReconnectedEvent(): PlatformEvent {
+  return { type: "reconnected", roomId: null, payload: {} };
+}
+
+/**
+ * `waitForIdle()` is only a safe drain signal for the synchronization it
+ * itself triggers (e.g. after a "reconnected" enqueue, which flips
+ * `syncComplete` off synchronously); a plain event enqueued while the loop
+ * is already parked on a pending waiter can be claimed one microtask after
+ * `isIdle()` last reported true, so polling the actual side effect is the
+ * reliable check here.
+ */
+async function waitFor(check: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (check()) {
+      return;
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+
+  throw new Error("Condition was not met in time");
+}
+
 function makeBacklogMessage(id: string, content = "backlog"): BacklogMessage {
   return {
     id,
@@ -436,6 +459,97 @@ describe("Execution crash recovery", () => {
     await execution.waitForIdle();
     // Recovery failed gracefully, /next sync and ws events still processed
     expect(processed).toEqual(["next-1", "ws-1"]);
+    await execution.stop();
+  });
+});
+
+describe("Execution reconnect handling", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("re-runs /next synchronization after a reconnect and processes messages missed during the downtime, without ever forwarding the reconnect itself to onExecute", async () => {
+    const missedMessage = makeBacklogMessage("missed-1", "missed while disconnected");
+    const getNextMessage = vi
+      .fn<() => Promise<BacklogMessage | null>>()
+      .mockResolvedValueOnce(null) // initial /next sync at startup: nothing pending
+      .mockResolvedValueOnce(missedMessage) // post-reconnect /next sync
+      .mockResolvedValueOnce(null);
+
+    const seenTypes: string[] = [];
+    const { execution, processed } = createExecution({
+      getNextMessage,
+      onExecute: async (event) => {
+        seenTypes.push(event.type);
+      },
+    });
+
+    await execution.waitForIdle();
+    expect(processed).toEqual([]);
+
+    await execution.enqueue(makeReconnectedEvent());
+    await execution.waitForIdle();
+
+    expect(processed).toEqual(["missed-1"]);
+    expect(seenTypes).not.toContain("reconnected");
+    expect(getNextMessage).toHaveBeenCalledTimes(3);
+    await execution.stop();
+  });
+
+  it("treats a live WebSocket message enqueued right after a reconnect as the sync boundary for the re-run /next synchronization", async () => {
+    const getNextMessage = vi
+      .fn<() => Promise<BacklogMessage | null>>()
+      .mockResolvedValueOnce(null) // initial /next sync at startup
+      .mockResolvedValueOnce(makeBacklogMessage("m-before", "missed while disconnected"))
+      .mockResolvedValueOnce(makeBacklogMessage("m-live", "same id as the live message queued after reconnect"));
+
+    const { execution, processed } = createExecution({ getNextMessage });
+
+    await execution.waitForIdle();
+
+    await execution.enqueue(makeReconnectedEvent());
+    await execution.enqueue(makeEvent("m-live"));
+
+    await execution.waitForIdle();
+
+    // /next drains "m-before", then the sync-boundary message "m-live" once —
+    // the live WebSocket delivery of that same id is recognized as the
+    // already-processed duplicate and skipped, not processed twice.
+    expect(processed).toEqual(["m-before", "m-live"]);
+    expect(getNextMessage).toHaveBeenCalledTimes(3);
+    await execution.stop();
+  });
+
+  it("gives each of several consecutive reconnects its own ordered /next synchronization without reordering normal events between them", async () => {
+    const getNextMessage = vi
+      .fn<() => Promise<BacklogMessage | null>>()
+      .mockResolvedValueOnce(null) // startup sync
+      .mockResolvedValueOnce(makeBacklogMessage("missed-1", "from first reconnect"))
+      .mockResolvedValueOnce(null) // first reconnect sync ends
+      .mockResolvedValueOnce(makeBacklogMessage("missed-2", "from second reconnect"))
+      .mockResolvedValueOnce(null); // second reconnect sync ends
+
+    const { execution, processed } = createExecution({ getNextMessage });
+
+    await execution.waitForIdle();
+
+    await execution.enqueue(makeReconnectedEvent());
+    await execution.waitForIdle();
+    expect(processed).toEqual(["missed-1"]);
+
+    await execution.enqueue(makeEvent("ws-between"));
+    await waitFor(() => processed.length === 2);
+    expect(processed).toEqual(["missed-1", "ws-between"]);
+
+    await execution.enqueue(makeReconnectedEvent());
+    await execution.waitForIdle();
+    expect(processed).toEqual(["missed-1", "ws-between", "missed-2"]);
+
+    await execution.enqueue(makeEvent("ws-after"));
+    await waitFor(() => processed.length === 4);
+    expect(processed).toEqual(["missed-1", "ws-between", "missed-2", "ws-after"]);
+
+    expect(getNextMessage).toHaveBeenCalledTimes(5);
     await execution.stop();
   });
 });

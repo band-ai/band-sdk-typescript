@@ -7,10 +7,11 @@ import type {
   MessageEvent,
   ParticipantAddedEvent,
   ParticipantRemovedEvent,
+  ReconnectedEvent,
 } from "../../platform/events";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { RoomRoster } from "@band-ai/band-sdk-core";
-import { hydrateExistingRooms } from "./subscriptions";
+import { hydrateExistingRooms, listExistingRooms } from "./subscriptions";
 
 interface RoomPresenceOptions {
   link: BandLink;
@@ -23,7 +24,7 @@ type RoomPresenceJoinHandler = (roomId: string, payload: MetadataMap) => Promise
 type RoomPresenceLeaveHandler = (roomId: string) => Promise<void>;
 type RoomPresenceEventHandler = (
   roomId: string,
-  event: MessageEvent | ParticipantAddedEvent | ParticipantRemovedEvent,
+  event: MessageEvent | ParticipantAddedEvent | ParticipantRemovedEvent | ReconnectedEvent,
 ) => Promise<void>;
 type RoomPresenceContactHandler = (event: ContactEvent) => Promise<void>;
 
@@ -273,6 +274,9 @@ export class RoomPresence implements AsyncDisposable {
             await this.onRoomEvent?.(event.roomId, event);
           }
           break;
+        case "reconnected":
+          await this.handleReconnected(event);
+          break;
         default:
           assertNever(event);
       }
@@ -301,6 +305,94 @@ export class RoomPresence implements AsyncDisposable {
       return;
     }
     await this.onRoomLeft?.(roomId);
+  }
+
+  /**
+   * A REST fetch failure here must not blank the roster — it forwards the
+   * reconnect to every currently tracked room regardless, so each room's
+   * `Execution` can still re-run its `/next` synchronization even when
+   * membership reconciliation itself has to wait for the next reconnect.
+   */
+  private async handleReconnected(event: ReconnectedEvent): Promise<void> {
+    try {
+      await this.link.subscribeAgentRooms();
+    } catch (error) {
+      this.logger.warn("RoomPresence failed to resubscribe agent_rooms channel after reconnect", {
+        error,
+      });
+    }
+
+    if (this.link.capabilities.contacts) {
+      try {
+        await this.link.subscribeAgentContacts();
+      } catch (error) {
+        this.logger.warn("RoomPresence failed to resubscribe agent_contacts channel after reconnect", {
+          error,
+        });
+      }
+    }
+
+    let accepted: Map<string, MetadataMap> | null = null;
+    try {
+      accepted = await listExistingRooms({
+        link: this.link,
+        roomFilter: this.roomFilter,
+        requestOptions: DEFAULT_REQUEST_OPTIONS,
+      });
+    } catch (error) {
+      this.logger.warn("RoomPresence failed to fetch room snapshot after reconnect", { error });
+    }
+
+    if (accepted) {
+      await this.reconcileRoomsWithSnapshot(accepted);
+    }
+
+    await Promise.all(
+      this.roster
+        .trackedRoomIds()
+        .map((roomId) => this.onRoomEvent?.(roomId, event) ?? Promise.resolve()),
+    );
+  }
+
+  private async reconcileRoomsWithSnapshot(accepted: Map<string, MetadataMap>): Promise<void> {
+    const acceptedIds = this.autoSubscribeExistingRooms
+      ? [...accepted.keys()]
+      : this.roster.trackedRoomIds().filter((roomId) => accepted.has(roomId));
+
+    const reconciliation = this.roster.reconcile(acceptedIds);
+
+    await Promise.all(
+      reconciliation.removed.map(async (roomId) => {
+        await this.unsubscribeRoom(roomId);
+        this.lastSubscribeError.delete(roomId);
+        await this.onRoomLeft?.(roomId);
+      }),
+    );
+
+    await Promise.all(
+      reconciliation.admitting.map(async ([roomId, ticket]) => {
+        const admitted = await this.performAdmission(roomId, ticket);
+        if (admitted) {
+          await this.onRoomJoined?.(roomId, accepted.get(roomId) ?? {});
+        }
+      }),
+    );
+
+    await Promise.all(
+      reconciliation.resync.map(async (roomId) => {
+        try {
+          await this.link.subscribeRoom(roomId);
+        } catch (error) {
+          // REST stays authoritative for membership either way; a failed
+          // resubscribe here just means this room retries on the next
+          // reconnect rather than losing its tracked membership now.
+          this.logger.warn("RoomPresence failed to resubscribe surviving room after reconnect", {
+            roomId,
+            error,
+          });
+        }
+      }),
+    );
   }
 
   private async unsubscribeRoom(roomId: string): Promise<void> {

@@ -126,7 +126,12 @@ export class Execution {
       );
     }
 
-    if (event.type === "message_created" && !this.syncComplete && this.firstWsMessageId === null) {
+    if (event.type === "reconnected") {
+      // Set synchronously, at enqueue time, so the very next WebSocket
+      // message — however soon it arrives — can become the new sync
+      // boundary rather than racing this flag's assignment.
+      this.syncComplete = false;
+    } else if (event.type === "message_created" && !this.syncComplete && this.firstWsMessageId === null) {
       this.firstWsMessageId = event.payload.id;
     }
 
@@ -255,6 +260,11 @@ export class Execution {
       const event = await this.nextQueuedEvent();
       if (!event) {
         return;
+      }
+
+      if (event.type === "reconnected") {
+        await this.synchronizeWithNext();
+        continue;
       }
 
       if (event.type === "message_created" && this.drainedWsMessageIds.has(event.payload.id)) {

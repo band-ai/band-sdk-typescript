@@ -29,6 +29,13 @@ export type ContactRequestUpdatedEvent = BaseEvent<"contact_request_updated", Co
 export type ContactAddedEvent = BaseEvent<"contact_added", ContactAddedPayload>;
 export type ContactRemovedEvent = BaseEvent<"contact_removed", ContactRemovedPayload>;
 
+/**
+ * Synthetic — never a wire event. Queued once per settled transport
+ * reconnect generation, after tracker reconciliation, so a room's
+ * `Execution` can re-run its `/next` synchronization boundary.
+ */
+export type ReconnectedEvent = BaseEvent<"reconnected", Record<string, never>>;
+
 export type ContactEvent =
   | ContactRequestReceivedEvent
   | ContactRequestUpdatedEvent
@@ -45,4 +52,5 @@ export type PlatformEvent =
   | ContactRequestReceivedEvent
   | ContactRequestUpdatedEvent
   | ContactAddedEvent
-  | ContactRemovedEvent;
+  | ContactRemovedEvent
+  | ReconnectedEvent;
