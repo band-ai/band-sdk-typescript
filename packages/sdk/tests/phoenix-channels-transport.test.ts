@@ -426,6 +426,24 @@ describe("PhoenixChannelsTransport", () => {
     );
   });
 
+  it("defaults an absent Core supersede retry_after to null", async () => {
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+      agentId: "agent-1",
+    });
+
+    await transport.connect();
+    const socket = phoenixMock.FakeSocket.instances[0];
+    socket?.channels.get("agent_control:agent-1")?.emit("supersede", {
+      reason: "session.already_connected",
+      message: "Superseded by a newer session.",
+      correlation_id: null,
+    });
+
+    expect(transport.getDisconnectReason()).toMatchObject({ retryAfter: null });
+  });
+
   it("rejects runForever waiters on terminal supersede", async () => {
     const transport = new PhoenixChannelsTransport({
       wsUrl: "wss://example.test/socket",

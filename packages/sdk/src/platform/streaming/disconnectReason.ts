@@ -133,7 +133,7 @@ export function parseSupersedeDisconnectReason(
       code: normalized.reason as string,
       message: normalized.message as string,
       retryable: normalized.retryable as boolean,
-      retryAfter: normalized.retry_after as number | null,
+      retryAfter: (normalized.retry_after as number | null) ?? null,
       targetSocketId: (normalized.target_socket_id as string | null) ?? null,
       correlationId: normalized.correlation_id as string | null,
     };
