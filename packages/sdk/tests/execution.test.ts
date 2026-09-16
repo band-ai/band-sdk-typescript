@@ -40,25 +40,6 @@ function makeReconnectedEvent(): PlatformEvent {
   return { type: "reconnected", roomId: null, payload: {} };
 }
 
-/**
- * `waitForIdle()` is only a safe drain signal for the synchronization it
- * itself triggers (e.g. after a "reconnected" enqueue, which flips
- * `syncComplete` off synchronously); a plain event enqueued while the loop
- * is already parked on a pending waiter can be claimed one microtask after
- * `isIdle()` last reported true, so polling the actual side effect is the
- * reliable check here.
- */
-async function waitFor(check: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    if (check()) {
-      return;
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-  }
-
-  throw new Error("Condition was not met in time");
-}
-
 function makeBacklogMessage(id: string, content = "backlog"): BacklogMessage {
   return {
     id,
@@ -520,36 +501,25 @@ describe("Execution reconnect handling", () => {
     await execution.stop();
   });
 
-  it("gives each of several consecutive reconnects its own ordered /next synchronization without reordering normal events between them", async () => {
+  it("gives overlapping queued reconnects separate live-message synchronization boundaries", async () => {
     const getNextMessage = vi
       .fn<() => Promise<BacklogMessage | null>>()
       .mockResolvedValueOnce(null) // startup sync
-      .mockResolvedValueOnce(makeBacklogMessage("missed-1", "from first reconnect"))
-      .mockResolvedValueOnce(null) // first reconnect sync ends
-      .mockResolvedValueOnce(makeBacklogMessage("missed-2", "from second reconnect"))
-      .mockResolvedValueOnce(null); // second reconnect sync ends
+      .mockResolvedValueOnce(makeBacklogMessage("live-a", "first reconnect boundary"))
+      .mockResolvedValueOnce(makeBacklogMessage("live-b", "second reconnect boundary"));
 
     const { execution, processed } = createExecution({ getNextMessage });
 
     await execution.waitForIdle();
 
     await execution.enqueue(makeReconnectedEvent());
-    await execution.waitForIdle();
-    expect(processed).toEqual(["missed-1"]);
-
-    await execution.enqueue(makeEvent("ws-between"));
-    await waitFor(() => processed.length === 2);
-    expect(processed).toEqual(["missed-1", "ws-between"]);
-
+    await execution.enqueue(makeEvent("live-a"));
     await execution.enqueue(makeReconnectedEvent());
+    await execution.enqueue(makeEvent("live-b"));
     await execution.waitForIdle();
-    expect(processed).toEqual(["missed-1", "ws-between", "missed-2"]);
 
-    await execution.enqueue(makeEvent("ws-after"));
-    await waitFor(() => processed.length === 4);
-    expect(processed).toEqual(["missed-1", "ws-between", "missed-2", "ws-after"]);
-
-    expect(getNextMessage).toHaveBeenCalledTimes(5);
+    expect(processed).toEqual(["live-a", "live-b"]);
+    expect(getNextMessage).toHaveBeenCalledTimes(3);
     await execution.stop();
   });
 });

@@ -50,6 +50,8 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private generation = 0;
   private sessionEpoch = 0;
   private bufferingGeneration: number | null = null;
+  private reconnectBarrier: Promise<void> | null = null;
+  private resolveReconnectBarrier: (() => void) | null = null;
   private observerChain: Promise<void> = Promise.resolve();
   private readonly logger: Logger;
   private readonly onTerminalDisconnect?: (
@@ -184,6 +186,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     this.hasOpenedOnce = false;
     this.generation = 0;
     this.bufferingGeneration = null;
+    this.resolveReconnectBarrier?.();
+    this.reconnectBarrier = null;
+    this.resolveReconnectBarrier = null;
     this.bufferedTopicEvents.splice(0);
     this.pendingGenerations.clear();
     this.generationTopics.clear();
@@ -221,6 +226,20 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       return pendingJoin;
     }
 
+    const epoch = this.sessionEpoch;
+    await this.reconnectBarrier;
+    if (epoch !== this.sessionEpoch) {
+      throw new TransportError(`Join superseded by transport disconnect for topic ${topic}`);
+    }
+
+    if (this.channels.has(topic)) {
+      return;
+    }
+    const resumedPendingJoin = this.pendingJoins.get(topic);
+    if (resumedPendingJoin) {
+      return resumedPendingJoin;
+    }
+
     const joinPromise = this.doJoin(topic, handlers);
     this.pendingJoins.set(topic, joinPromise);
     const cleanup = (): void => {
@@ -256,7 +275,10 @@ export class PhoenixChannelsTransport implements StreamingTransport {
           }
         };
 
-        if (this.bufferingGeneration !== null) {
+        if (
+          this.bufferingGeneration !== null &&
+          topic !== (this.agentId ? agentControlTopic(this.agentId) : null)
+        ) {
           this.bufferedTopicEvents.push(deliver);
         } else {
           deliver();
@@ -422,6 +444,11 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     const generation = ++this.generation;
     const topics = new Set(this.channels.keys());
     this.bufferingGeneration = generation;
+    if (!this.reconnectBarrier) {
+      this.reconnectBarrier = new Promise<void>((resolve) => {
+        this.resolveReconnectBarrier = resolve;
+      });
+    }
 
     // A generation superseded by this newer one will never receive another
     // settlement for its stragglers (Phoenix rebinds each rejoined push's
@@ -509,6 +536,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
         for (const deliver of events) {
           deliver();
         }
+        this.resolveReconnectBarrier?.();
+        this.reconnectBarrier = null;
+        this.resolveReconnectBarrier = null;
       }
     });
   }

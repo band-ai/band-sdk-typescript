@@ -820,6 +820,62 @@ describe("PhoenixChannelsTransport", () => {
       await vi.waitFor(() => expect(order).toEqual(["reconnected", "message"]));
     });
 
+    it("holds a replacement join until reconnect reconciliation completes", async () => {
+      const transport = new PhoenixChannelsTransport({
+        wsUrl: "wss://example.test/socket",
+        apiKey: "key-1",
+      });
+      let releaseObserver: (() => void) | undefined;
+      const observerReleased = new Promise<void>((resolve) => {
+        releaseObserver = resolve;
+      });
+      const observer = vi.fn(async () => observerReleased);
+
+      await transport.connect();
+      await transport.join("room:1", {});
+      transport.onReconnected(observer);
+
+      const socket = phoenixMock.FakeSocket.instances[0];
+      socket?.emitOpen();
+      socket?.channels.get("room:1")?.settleRejoin("ok");
+      await vi.waitFor(() => expect(observer).toHaveBeenCalledTimes(1));
+
+      await transport.leave("room:1");
+      const replacementJoin = transport.join("room:1", {});
+      let joined = false;
+      void replacementJoin.then(() => {
+        joined = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(joined).toBe(false);
+
+      releaseObserver?.();
+      await replacementJoin;
+      expect(joined).toBe(true);
+    });
+
+    it("delivers agent_control supersede without waiting for room-topic settlement", async () => {
+      const onTerminalDisconnect = vi.fn();
+      const transport = new PhoenixChannelsTransport({
+        wsUrl: "wss://example.test/socket",
+        apiKey: "key-1",
+        agentId: "agent-1",
+        onTerminalDisconnect,
+      });
+      await transport.connect();
+      await transport.join("room:1", {});
+
+      const socket = phoenixMock.FakeSocket.instances[0];
+      socket?.emitOpen();
+      socket?.channels.get("agent_control:agent-1")?.settleRejoin("ok");
+      socket?.channels.get("agent_control:agent-1")?.emit("supersede", {
+        reason: "session.already_connected",
+        message: "Superseded by another session",
+      });
+
+      expect(onTerminalDisconnect).toHaveBeenCalledTimes(1);
+    });
+
     it("omits topics whose rejoin settles as rejected or timed out", async () => {
       const transport = new PhoenixChannelsTransport({
         wsUrl: "wss://example.test/socket",

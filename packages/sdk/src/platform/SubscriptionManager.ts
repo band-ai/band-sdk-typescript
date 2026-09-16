@@ -20,6 +20,13 @@ interface Operation {
   promise: Promise<void>;
 }
 
+interface ReconnectWork {
+  snapshot: ReconnectSnapshot;
+  epoch: number;
+  roomCandidates: Array<[string, bigint]>;
+  agentTopicCandidates: Array<[string, bigint]>;
+}
+
 function roomOperationKey(roomId: string): string {
   return `room:${roomId}`;
 }
@@ -86,10 +93,22 @@ export class SubscriptionManager {
 
   /** Serialized: each generation's reconciliation completes before the next begins. */
   public reconcileReconnect(snapshot: ReconnectSnapshot): Promise<void> {
+    if (snapshot.generation <= this.lastReconciledGeneration) {
+      return Promise.resolve();
+    }
+    this.lastReconciledGeneration = snapshot.generation;
+
     const epoch = this.sessionEpoch;
+    this.tracker.onReconnected();
+    const work: ReconnectWork = {
+      snapshot,
+      epoch,
+      roomCandidates: this.tracker.roomRejoinCandidates(),
+      agentTopicCandidates: this.tracker.agentTopicRejoinCandidates(),
+    };
     this.reconcileTail = this.reconcileTail.then(
-      () => this.runReconcile(snapshot, epoch),
-      () => this.runReconcile(snapshot, epoch),
+      () => this.runReconcile(work),
+      () => this.runReconcile(work),
     );
     return this.reconcileTail;
   }
@@ -304,18 +323,13 @@ export class SubscriptionManager {
 
   // ---- reconnect reconciliation -------------------------------------------
 
-  private async runReconcile(snapshot: ReconnectSnapshot, epoch: number): Promise<void> {
+  private async runReconcile(work: ReconnectWork): Promise<void> {
+    const { snapshot, epoch, roomCandidates, agentTopicCandidates } = work;
     if (epoch !== this.sessionEpoch) {
       return;
     }
-    if (snapshot.generation <= this.lastReconciledGeneration) {
-      return;
-    }
-    this.lastReconciledGeneration = snapshot.generation;
 
-    this.tracker.onReconnected();
-
-    for (const [roomId, ticket] of this.tracker.roomRejoinCandidates()) {
+    for (const [roomId, ticket] of roomCandidates) {
       const chatTopic = chatRoomTopic(roomId);
       const participantsTopic = roomParticipantsTopic(roomId);
       if (
@@ -335,7 +349,7 @@ export class SubscriptionManager {
       }
     }
 
-    for (const [topic, ticket] of this.tracker.agentTopicRejoinCandidates()) {
+    for (const [topic, ticket] of agentTopicCandidates) {
       if (!snapshot.attemptedTopics.has(topic)) {
         continue;
       }

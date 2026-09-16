@@ -100,6 +100,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   private terminalDisconnectError: WebSocketDisconnectError | null = null;
   private unregisterReconnectObserver: (() => void) | null = null;
   private connectPromise: Promise<void> | null = null;
+  private disconnectPromise: Promise<void> | null = null;
   private sessionEpoch = 0;
   private sessionActive = false;
 
@@ -153,6 +154,9 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   public async connect(): Promise<void> {
+    if (this.disconnectPromise) {
+      await this.disconnectPromise.catch(() => undefined);
+    }
     if (this.connected) {
       return;
     }
@@ -210,6 +214,27 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   public async disconnect(): Promise<void> {
+    if (!this.disconnectPromise) {
+      const pending = this.disconnectSession();
+      this.disconnectPromise = pending;
+      void pending.then(
+        () => {
+          if (this.disconnectPromise === pending) {
+            this.disconnectPromise = null;
+          }
+        },
+        () => {
+          if (this.disconnectPromise === pending) {
+            this.disconnectPromise = null;
+          }
+        },
+      );
+    }
+
+    await this.disconnectPromise;
+  }
+
+  private async disconnectSession(): Promise<void> {
     await this.connectPromise?.catch(() => undefined);
     if (!this.sessionActive && !this.unregisterReconnectObserver) {
       return;

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { BandLink } from "../src/platform/BandLink";
 import type { PlatformEvent } from "../src/platform/events";
@@ -165,6 +165,32 @@ describe("BandLink event waiting", () => {
 
     expect(transport.disconnectCount).toBe(1);
     expect(transport.observers.size).toBe(0);
+  });
+
+  it("coalesces concurrent disconnect calls into one transport teardown", async () => {
+    const transport = new ReconnectTransport();
+    let releaseDisconnect: (() => void) | undefined;
+    const disconnectReleased = new Promise<void>((resolve) => {
+      releaseDisconnect = resolve;
+    });
+    const disconnect = vi
+      .spyOn(transport, "disconnect")
+      .mockImplementation(async () => disconnectReleased);
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      restApi: new FakeRestApi(),
+      transport,
+    });
+    await link.connect();
+
+    const first = link.disconnect();
+    const second = link.disconnect();
+    await vi.waitFor(() => expect(disconnect).toHaveBeenCalledTimes(1));
+
+    releaseDisconnect?.();
+    await Promise.all([first, second]);
+    expect(disconnect).toHaveBeenCalledTimes(1);
   });
 
   it("does not publish an old observer's reconnect after a new session starts", async () => {

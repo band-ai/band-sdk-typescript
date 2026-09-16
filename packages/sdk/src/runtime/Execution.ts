@@ -28,6 +28,15 @@ interface ExecutionOptions {
   logger?: Logger;
 }
 
+interface SyncBoundary {
+  messageId: string | null;
+}
+
+interface QueuedEvent {
+  event: PlatformEvent;
+  syncBoundary: SyncBoundary | null;
+}
+
 function toMessageEvent(message: PlatformMessage): PlatformEvent {
   const insertedAt = message.createdAt.toISOString();
 
@@ -56,8 +65,8 @@ export class Execution {
   private readonly onExecute: ExecutionHandler;
   private readonly onFailure?: (error: unknown, event: PlatformEvent) => void | Promise<void>;
   private readonly logger: Logger;
-  private readonly eventQueue: PlatformEvent[] = [];
-  private readonly waiters: Array<(event: PlatformEvent | null) => void> = [];
+  private readonly eventQueue: QueuedEvent[] = [];
+  private readonly waiters: Array<(event: QueuedEvent | null) => void> = [];
   private readonly idleWaiters = new Set<() => void>();
   private readonly drainedWsMessageIds = new Set<string>();
   private readonly syncProcessedIds = new Set<string>();
@@ -65,7 +74,8 @@ export class Execution {
   private readonly lifecycle: LifecycleTracker<ExecutionLifecycleState>;
   private readonly processTask: Promise<void>;
   private readonly stopGate = new SingleFlight<boolean>();
-  private firstWsMessageId: string | null = null;
+  private readonly initialSyncBoundary: SyncBoundary = { messageId: null };
+  private pendingSyncBoundary: SyncBoundary | null = this.initialSyncBoundary;
   private syncComplete = false;
   private inFlight = 0;
   /**
@@ -126,20 +136,24 @@ export class Execution {
       );
     }
 
+    let syncBoundary: SyncBoundary | null = null;
     if (event.type === "reconnected") {
-      // Set synchronously, at enqueue time, so the very next WebSocket
-      // message — however soon it arrives — can become the new sync
-      // boundary rather than racing this flag's assignment.
+      syncBoundary = { messageId: null };
+      this.pendingSyncBoundary = syncBoundary;
       this.syncComplete = false;
-    } else if (event.type === "message_created" && !this.syncComplete && this.firstWsMessageId === null) {
-      this.firstWsMessageId = event.payload.id;
+    } else if (
+      event.type === "message_created" &&
+      this.pendingSyncBoundary?.messageId === null
+    ) {
+      this.pendingSyncBoundary.messageId = event.payload.id;
     }
 
+    const queued = { event, syncBoundary };
     const waiter = this.waiters.shift();
     if (waiter) {
-      waiter(event);
+      waiter(queued);
     } else {
-      this.eventQueue.push(event);
+      this.eventQueue.push(queued);
     }
   }
 
@@ -254,16 +268,17 @@ export class Execution {
 
   private async processLoop(): Promise<void> {
     await this.recoverStaleProcessingMessages();
-    await this.synchronizeWithNext();
+    await this.synchronizeWithNext(this.initialSyncBoundary);
 
     while (this.isActive()) {
-      const event = await this.nextQueuedEvent();
-      if (!event) {
+      const queued = await this.nextQueuedEvent();
+      if (!queued) {
         return;
       }
+      const { event } = queued;
 
       if (event.type === "reconnected") {
-        await this.synchronizeWithNext();
+        await this.synchronizeWithNext(queued.syncBoundary ?? { messageId: null });
         continue;
       }
 
@@ -315,7 +330,7 @@ export class Execution {
     }
   }
 
-  private async synchronizeWithNext(): Promise<void> {
+  private async synchronizeWithNext(boundary: SyncBoundary): Promise<void> {
     while (this.isActive()) {
       const nextMessage = await this.link.getNextMessage(this.roomId);
       if (!nextMessage) {
@@ -323,10 +338,9 @@ export class Execution {
       }
 
       if (this.syncProcessedIds.has(nextMessage.id)) {
-        const isSyncPoint = this.firstWsMessageId !== null && nextMessage.id === this.firstWsMessageId;
+        const isSyncPoint = boundary.messageId !== null && nextMessage.id === boundary.messageId;
         if (isSyncPoint) {
           this.drainedWsMessageIds.add(nextMessage.id);
-          this.firstWsMessageId = null;
           break;
         }
         continue;
@@ -338,28 +352,29 @@ export class Execution {
           messageId: nextMessage.id,
         });
         await this.markMessageFailed(nextMessage.id, "Message permanently failed after max retries");
-        const isSyncPoint = this.firstWsMessageId !== null && nextMessage.id === this.firstWsMessageId;
+        const isSyncPoint = boundary.messageId !== null && nextMessage.id === boundary.messageId;
         if (isSyncPoint) {
           this.drainedWsMessageIds.add(nextMessage.id);
-          this.firstWsMessageId = null;
           break;
         }
         continue;
       }
 
-      const isSyncPoint = this.firstWsMessageId !== null && nextMessage.id === this.firstWsMessageId;
+      const isSyncPoint = boundary.messageId !== null && nextMessage.id === boundary.messageId;
       await this.executeSyncMessage(toMessageEvent(nextMessage), nextMessage.id);
       this.syncProcessedIds.add(nextMessage.id);
 
       if (isSyncPoint) {
         this.drainedWsMessageIds.add(nextMessage.id);
-        this.firstWsMessageId = null;
         break;
       }
     }
 
     this.syncProcessedIds.clear();
-    this.syncComplete = true;
+    if (this.pendingSyncBoundary === boundary) {
+      this.pendingSyncBoundary = null;
+    }
+    this.syncComplete = this.pendingSyncBoundary === null;
     this.notifyIfIdle();
   }
 
@@ -435,7 +450,7 @@ export class Execution {
     }
   }
 
-  private async nextQueuedEvent(): Promise<PlatformEvent | null> {
+  private async nextQueuedEvent(): Promise<QueuedEvent | null> {
     const queued = this.eventQueue.shift();
     if (queued) {
       return queued;
@@ -445,7 +460,7 @@ export class Execution {
       return null;
     }
 
-    return new Promise<PlatformEvent | null>((resolve) => {
+    return new Promise<QueuedEvent | null>((resolve) => {
       this.waiters.push(resolve);
     });
   }
@@ -472,7 +487,7 @@ export class Execution {
     }
   }
 
-  private resolveEventWaiters(event: PlatformEvent | null): void {
+  private resolveEventWaiters(event: QueuedEvent | null): void {
     const waiters = this.waiters.splice(0, this.waiters.length);
     for (const waiter of waiters) {
       waiter(event);

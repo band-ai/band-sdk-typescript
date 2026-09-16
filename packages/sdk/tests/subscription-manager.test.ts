@@ -13,6 +13,7 @@ class FakeTransport implements StreamingTransport {
   private readonly joinOutcomes = new Map<string, JoinOutcome>();
   private readonly leaveOutcomes = new Map<string, JoinOutcome>();
   private readonly joinGates = new Map<string, Promise<void>>();
+  private readonly leaveGates = new Map<string, Promise<void>>();
 
   public async connect(): Promise<void> {
     return undefined;
@@ -43,6 +44,10 @@ class FakeTransport implements StreamingTransport {
 
   public async leave(topic: string): Promise<void> {
     this.leaveCalls.push(topic);
+    const gate = this.leaveGates.get(topic);
+    if (gate) {
+      await gate;
+    }
     if (this.leaveOutcomes.get(topic) === "error") {
       throw new Error(`leave failed: ${topic}`);
     }
@@ -57,6 +62,18 @@ class FakeTransport implements StreamingTransport {
     this.joinGates.set(topic, gate);
     return () => {
       this.joinGates.delete(topic);
+      release();
+    };
+  }
+
+  public gateLeave(topic: string): () => void {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.leaveGates.set(topic, gate);
+    return () => {
+      this.leaveGates.delete(topic);
       release();
     };
   }
@@ -321,6 +338,47 @@ describe("SubscriptionManager", () => {
   });
 
   describe("reconnect reconciliation", () => {
+    it("does not apply a queued stale snapshot to a fresh subscription generation", async () => {
+      const transport = new FakeTransport();
+      const manager = new SubscriptionManager({ transport });
+      await manager.subscribeRoom("room-a", ROOM_HANDLERS);
+      await manager.subscribeRoom("room-b", ROOM_HANDLERS);
+
+      const releaseChatLeave = transport.gateLeave(chatRoomTopic("room-b"));
+      const releaseParticipantsLeave = transport.gateLeave(roomParticipantsTopic("room-b"));
+      const firstReconcile = manager.reconcileReconnect(
+        reconnectSnapshot(
+          1,
+          [chatRoomTopic("room-a"), roomParticipantsTopic("room-a")],
+          [
+            chatRoomTopic("room-a"),
+            roomParticipantsTopic("room-a"),
+            chatRoomTopic("room-b"),
+            roomParticipantsTopic("room-b"),
+          ],
+        ),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const staleReconcile = manager.reconcileReconnect(
+        reconnectSnapshot(
+          2,
+          [],
+          [chatRoomTopic("room-a"), roomParticipantsTopic("room-a")],
+        ),
+      );
+      await manager.unsubscribeRoom("room-a");
+      await manager.subscribeRoom("room-a", ROOM_HANDLERS);
+      transport.leaveCalls.length = 0;
+
+      releaseChatLeave();
+      releaseParticipantsLeave();
+      await Promise.all([firstReconcile, staleReconcile]);
+
+      expect(transport.leaveCalls).not.toContain(chatRoomTopic("room-a"));
+      expect(transport.leaveCalls).not.toContain(roomParticipantsTopic("room-a"));
+    });
+
     it("does not judge a subscription created after the reconnect snapshot", async () => {
       const transport = new FakeTransport();
       const manager = new SubscriptionManager({ transport });
