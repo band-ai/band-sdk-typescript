@@ -66,6 +66,7 @@ export class PlatformRuntime implements AsyncDisposable {
   private contactHandler?: ContactEventHandler;
   private activeAdapter?: FrameworkAdapter;
   private stopping = false;
+  private lifecycleGeneration = 0;
   private _agentName = "";
   private _agentDescription = "";
   private contactsSubscribed = false;
@@ -181,11 +182,15 @@ export class PlatformRuntime implements AsyncDisposable {
   }
 
   public async start(adapter: FrameworkAdapter): Promise<void> {
+    const lifecycleGeneration = this.lifecycleGeneration;
     await this.initialize();
-    await adapter.onStarted(this._agentName, this._agentDescription);
+    this.assertStartCurrent(lifecycleGeneration);
     this.activeAdapter = adapter;
 
     try {
+      await adapter.onStarted(this._agentName, this._agentDescription);
+      this.assertStartCurrent(lifecycleGeneration);
+
       this.contactHandler = new ContactEventHandler({
         config: this.contactConfig ?? { strategy: "disabled" },
         rest: this.link.rest,
@@ -224,13 +229,17 @@ export class PlatformRuntime implements AsyncDisposable {
       });
 
       await this.runtime.start();
+      this.assertStartCurrent(lifecycleGeneration);
       this.contactsSubscribed = Boolean(this.link.capabilities.contacts);
     } catch (error) {
-      await this.cleanupAfterFailedStart(error);
+      await this.cleanupAfterFailedStart(error, lifecycleGeneration);
     }
   }
 
-  private async cleanupAfterFailedStart(startError: unknown): Promise<never> {
+  private async cleanupAfterFailedStart(startError: unknown, lifecycleGeneration: number): Promise<never> {
+    if (this.lifecycleGeneration !== lifecycleGeneration) {
+      throw startError;
+    }
     try {
       await this.stop();
     } catch (stopError) {
@@ -242,10 +251,18 @@ export class PlatformRuntime implements AsyncDisposable {
     throw startError;
   }
 
+  private assertStartCurrent(lifecycleGeneration: number): void {
+    if (this.lifecycleGeneration !== lifecycleGeneration) {
+      throw new RuntimeStateError("PlatformRuntime start was superseded by stop()");
+    }
+  }
+
   public async stop(timeoutMs?: number): Promise<boolean> {
     if (this.stopping) {
       return true;
     }
+
+    this.lifecycleGeneration += 1;
 
     const runtime = this.runtime;
     const adapter = this.activeAdapter;
@@ -259,35 +276,38 @@ export class PlatformRuntime implements AsyncDisposable {
     this.contactsSubscribed = false;
     this.activeAdapter = undefined;
 
-    let graceful = true;
-    let runtimeError: unknown = null;
-
-    if (runtime) {
-      try {
-        graceful = await runtime.stop(timeoutMs);
-      } catch (error) {
-        runtimeError = error;
-      }
-    }
-
     try {
-      await adapter?.onRuntimeStop?.();
-    } catch (error) {
-      if (runtimeError) {
-        throw new AggregateError(
-          [runtimeError, error],
-          "PlatformRuntime stop failed and adapter cleanup also failed",
-        );
+      let graceful = true;
+      let runtimeError: unknown = null;
+
+      if (runtime) {
+        try {
+          graceful = await runtime.stop(timeoutMs);
+        } catch (error) {
+          runtimeError = error;
+        }
       }
-      throw error;
-    }
 
-    if (runtimeError) {
-      throw runtimeError instanceof Error ? runtimeError : new Error(String(runtimeError));
-    }
+      try {
+        await adapter?.onRuntimeStop?.();
+      } catch (error) {
+        if (runtimeError) {
+          throw new AggregateError(
+            [runtimeError, error],
+            "PlatformRuntime stop failed and adapter cleanup also failed",
+          );
+        }
+        throw error;
+      }
 
-    this.stopping = false;
-    return graceful;
+      if (runtimeError) {
+        throw runtimeError instanceof Error ? runtimeError : new Error(String(runtimeError));
+      }
+
+      return graceful;
+    } finally {
+      this.stopping = false;
+    }
   }
 
   public async [Symbol.asyncDispose](): Promise<void> {

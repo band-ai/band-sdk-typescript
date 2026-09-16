@@ -10,6 +10,7 @@ Folders:
 - `gemini/`
 - `claude-sdk/`
 - `codex/`
+- `copilot-acp/` — GitHub Copilot CLI ACP (public preview; requires `@agentclientprotocol/sdk` and Copilot CLI)
 - `custom-adapter/`
 - `langgraph/`
 - `parlant/`
