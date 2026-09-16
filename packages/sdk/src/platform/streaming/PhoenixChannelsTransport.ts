@@ -4,6 +4,7 @@ import { resolveLogger, type Logger } from "../../core/logger";
 import { combineTeardownErrors } from "../../core/teardown";
 import { KeyedSingleFlight, Serializer, SingleFlight } from "../../core/singleFlight";
 import { createDeferred, type Deferred } from "../../core/deferred";
+import { Epoch } from "../../core/epoch";
 import {
   WebSocketDisconnectError,
   genericCloseReason,
@@ -77,7 +78,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   );
   private readonly bufferedTopicEvents: BufferedTopicEvent[] = [];
   private hasOpenedOnce = false;
-  private sessionEpoch = 0;
+  private readonly epoch = new Epoch();
   private bufferingGeneration: number | null = null;
   private reconnectBarrier: Deferred<void> | null = null;
   private readonly observerChain = new Serializer();
@@ -180,7 +181,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   public async disconnect(): Promise<void> {
-    this.sessionEpoch += 1;
+    this.epoch.bump();
     const results = await Promise.allSettled(
       [...this.channels.keys()].map((topic) => this.leave(topic)),
     );
@@ -244,10 +245,10 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       return pendingJoin;
     }
 
-    const epoch = this.sessionEpoch;
+    const epoch = this.epoch.current;
     await this.reconnectBarrier?.promise;
-    if (this.isStale(epoch)) {
-      throw new TransportError(`Join superseded by transport disconnect for topic ${topic}`);
+    if (this.epoch.isStale(epoch)) {
+      throw this.supersededJoinError(topic);
     }
 
     if (this.channels.has(topic)) {
@@ -262,7 +263,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   private async doJoin(topic: string, handlers: TopicHandlers): Promise<void> {
-    const epoch = this.sessionEpoch;
+    const epoch = this.epoch.current;
     const channel = this.socket.channel(topic, {});
 
     const refs: Array<[string, number]> = [];
@@ -331,11 +332,11 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     }
 
     const stillPending = this.forgetPendingChannel(topic, channel);
-    if (!stillPending || this.isStale(epoch)) {
+    if (!stillPending || this.epoch.isStale(epoch)) {
       if (stillPending) {
         this.abandonChannel(channel, refs);
       }
-      throw new TransportError(`Join superseded by transport disconnect for topic ${topic}`);
+      throw this.supersededJoinError(topic);
     }
 
     this.channels.set(topic, channel);
@@ -343,9 +344,8 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     this.logger.debug("Joined topic", { topic });
   }
 
-  /** Whether `epoch` no longer matches the current session (disconnect() ran since). */
-  private isStale(epoch: number): boolean {
-    return epoch !== this.sessionEpoch;
+  private supersededJoinError(topic: string): TransportError {
+    return new TransportError(`Join superseded by transport disconnect for topic ${topic}`);
   }
 
   /**
@@ -502,15 +502,15 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   private notifyReconnectObservers(snapshot: ReconnectSnapshot): void {
-    const epoch = this.sessionEpoch;
+    const epoch = this.epoch.current;
     const observers = [...this.reconnectObservers];
     void this.observerChain.run(async () => {
-      if (this.isStale(epoch)) {
+      if (this.epoch.isStale(epoch)) {
         return;
       }
 
       for (const observer of observers) {
-        if (this.isStale(epoch)) {
+        if (this.epoch.isStale(epoch)) {
           return;
         }
         if (!this.reconnectObservers.has(observer)) {
@@ -526,7 +526,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
         }
       }
 
-      if (!this.isStale(epoch) && snapshot.generation === this.bufferingGeneration) {
+      if (!this.epoch.isStale(epoch) && snapshot.generation === this.bufferingGeneration) {
         this.bufferingGeneration = null;
         const events = this.bufferedTopicEvents.splice(0);
         for (const { deliver } of events) {

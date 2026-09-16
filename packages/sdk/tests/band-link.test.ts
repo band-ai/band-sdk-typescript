@@ -33,7 +33,11 @@ describe("BandLink event waiting", () => {
       joinedTopics: new Set(),
     });
 
-    await expect(link.nextEvent()).resolves.toMatchObject({ type: "reconnected" });
+    await expect(link.nextEvent()).resolves.toEqual({
+      type: "reconnected",
+      roomId: null,
+      payload: {},
+    });
     await link.disconnect();
     expect(transport.observers.size).toBe(0);
   });
@@ -65,6 +69,83 @@ describe("BandLink event waiting", () => {
 
     expect(transport.disconnectCount).toBe(1);
     expect(transport.observers.size).toBe(0);
+  });
+
+  it("propagates a non-retryable connect failure through the real transport.connect() path, then allows a fresh session afterward", async () => {
+    const nonRetryableReason = {
+      source: "agent_control",
+      code: "session.already_connected",
+      message: "superseded",
+      retryable: false,
+      retryAfter: null,
+      targetSocketId: null,
+      correlationId: null,
+    } satisfies WebSocketDisconnectReason;
+    const transport = new FakeTransport();
+    transport.failConnect(new WebSocketDisconnectError(nonRetryableReason));
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      restApi: new FakeRestApi(),
+      transport,
+    });
+
+    await expect(link.connect()).rejects.toBeInstanceOf(WebSocketDisconnectError);
+    expect(link.getDisconnectReason()).toBe(nonRetryableReason);
+
+    transport.clearConnectFailure();
+    await expect(link.connect()).resolves.toBeUndefined();
+    expect(link.isConnected()).toBe(true);
+  });
+
+  it("still tears down local state and clears observers when transport.disconnect() rejects", async () => {
+    const transport = new FakeTransport();
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      restApi: new FakeRestApi(),
+      transport,
+    });
+    await link.connect();
+    vi.spyOn(transport, "disconnect").mockRejectedValueOnce(new Error("boom"));
+
+    await expect(link.disconnect()).rejects.toThrow("boom");
+    expect(link.isConnected()).toBe(false);
+    expect(transport.observers.size).toBe(0);
+  });
+
+  it("waits for an in-flight disconnect() before completing a concurrent connect()", async () => {
+    const transport = new FakeTransport();
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      restApi: new FakeRestApi(),
+      transport,
+    });
+    await link.connect();
+
+    let releaseDisconnect: (() => void) | undefined;
+    const disconnectGate = new Promise<void>((resolve) => {
+      releaseDisconnect = resolve;
+    });
+    vi.spyOn(transport, "disconnect").mockImplementationOnce(async () => disconnectGate);
+
+    const disconnect = link.disconnect();
+    let connectResolved = false;
+    const connect = link.connect().then(() => {
+      connectResolved = true;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(connectResolved).toBe(false);
+
+    releaseDisconnect?.();
+    await disconnect;
+    await connect;
+
+    expect(connectResolved).toBe(true);
+    expect(link.isConnected()).toBe(true);
+    await expect(link.subscribeRoom("room-1")).resolves.toBeUndefined();
   });
 
   it("coalesces concurrent disconnect calls into one transport teardown", async () => {

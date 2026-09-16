@@ -179,6 +179,10 @@ export class FakeTransport implements StreamingTransport {
     this.connectError = error;
   }
 
+  public clearConnectFailure(): void {
+    this.connectError = null;
+  }
+
   public async disconnect(): Promise<void> {
     this.disconnectCount += 1;
     this.connected = false;
@@ -198,6 +202,12 @@ export class FakeTransport implements StreamingTransport {
 
   public async join(topic: string, handlers: TopicHandlers): Promise<void> {
     this.joinCalls.push(topic);
+    // Mirrors the real transport's `if (this.channels.has(topic)) { return; }`
+    // fast path: once a topic is bound, a later join() call must not silently
+    // rebind it to different handlers.
+    if (this.handlers.has(topic)) {
+      return;
+    }
     const gate = this.joinGates.get(topic);
     if (gate) {
       await gate;

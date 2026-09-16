@@ -706,6 +706,80 @@ describe("RoomPresence", () => {
     expect(subscribeRoomSpy).not.toHaveBeenCalledWith("room-a");
   });
 
+  it("does not admit a newly discovered room after reconnect when its subscribe fails, but a later reconnect can still admit it", async () => {
+    const transport = new FakeTransport();
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    let snapshotRooms: Array<{ id: string; title: string }> = [{ id: "room-a", title: "Room A" }];
+    const joined: string[] = [];
+
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      transport,
+      restApi: new FakeRestApi({
+        listChats: async () => ({
+          data: snapshotRooms,
+          metadata: { page: 1, pageSize: 100, totalPages: 1, totalCount: snapshotRooms.length },
+        }),
+      }),
+    });
+
+    await using presence = new RoomPresence({ link, logger });
+    presence.onRoomJoined = async (roomId) => {
+      joined.push(roomId);
+    };
+
+    await presence.start();
+    expect(presence.roster.trackedRoomIds()).toEqual(["room-a"]);
+
+    // room-b is newly listed on this reconnect's snapshot.
+    snapshotRooms = [
+      { id: "room-a", title: "Room A" },
+      { id: "room-b", title: "Room B" },
+    ];
+
+    const originalSubscribeRoom = link.subscribeRoom.bind(link);
+    const subscribeRoomSpy = vi
+      .spyOn(link, "subscribeRoom")
+      .mockImplementation(async (roomId) => {
+        if (roomId === "room-b") {
+          throw new Error("admission failed");
+        }
+        return originalSubscribeRoom(roomId);
+      });
+
+    await transport.triggerReconnect({
+      generation: 1,
+      joinedTopics: new Set([
+        agentRoomsTopic("agent-1"),
+        chatRoomTopic("room-a"),
+        roomParticipantsTopic("room-a"),
+      ]),
+    });
+
+    await waitFor(() =>
+      logger.warn.mock.calls.some(([message]) => message === "RoomPresence failed to subscribe room"),
+    );
+    expect(joined).not.toContain("room-b");
+    expect(presence.roster.trackedRoomIds()).toEqual(["room-a"]);
+
+    // A later reconnect, once the transport can actually join room-b, admits it.
+    subscribeRoomSpy.mockImplementation(originalSubscribeRoom);
+    await transport.triggerReconnect({
+      generation: 2,
+      joinedTopics: new Set([
+        agentRoomsTopic("agent-1"),
+        chatRoomTopic("room-a"),
+        roomParticipantsTopic("room-a"),
+        chatRoomTopic("room-b"),
+        roomParticipantsTopic("room-b"),
+      ]),
+    });
+
+    await waitFor(() => joined.includes("room-b"));
+    expect(presence.roster.trackedRoomIds().sort()).toEqual(["room-a", "room-b"]);
+  });
+
   it("does not auto-admit a newly discovered room after reconnect when autoSubscribeExistingRooms is false", async () => {
     const transport = new FakeTransport();
     let snapshotRooms: Array<{ id: string; title: string }> = [{ id: "room-1", title: "Room 1" }];

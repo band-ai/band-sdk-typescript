@@ -1,4 +1,6 @@
 import { resolveLogger, type Logger } from "../core/logger";
+import { SingleFlight } from "../core/singleFlight";
+import { Epoch } from "../core/epoch";
 import { FernRestAdapter } from "../client/rest/RestFacade";
 import type { FernBandClientLike } from "../client/rest/types";
 import type { RestRequestOptions } from "../client/rest/requestOptions";
@@ -101,7 +103,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   private unregisterReconnectObserver: (() => void) | null = null;
   private readonly connectFlight = new SingleFlight<void>();
   private readonly disconnectFlight = new SingleFlight<void>();
-  private sessionEpoch = 0;
+  private readonly epoch = new Epoch();
   private sessionActive = false;
 
   public constructor(options: BandLinkOptions) {
@@ -162,7 +164,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     }
 
     await this.connectFlight.run(() => {
-      const epoch = ++this.sessionEpoch;
+      const epoch = this.epoch.bump();
       this.sessionActive = true;
       return this.connectSession(epoch);
     });
@@ -172,10 +174,10 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     this.unregisterReconnectObserver =
       this.transport.onReconnected?.(async (snapshot) => {
         await this.subscriptionManager.reconcileReconnect(snapshot);
-        // `sessionActive` and `sessionEpoch` always change together (see
+        // `sessionActive` and `epoch` always change together (see
         // `connect`/`connectSession`/`disconnectSession`), so an unchanged
         // epoch already guarantees the session is still active.
-        if (epoch !== this.sessionEpoch) {
+        if (this.epoch.isStale(epoch)) {
           this.logger.debug(
             "Reconnect reconciliation settled after session ended, discarding reconnected event",
           );
@@ -189,7 +191,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     } catch (error) {
       this.clearReconnectObserver();
       this.sessionActive = false;
-      this.sessionEpoch += 1;
+      this.epoch.bump();
       this.subscriptionManager.endSession();
       if (error instanceof WebSocketDisconnectError) {
         if (error.reason.retryable) {
@@ -218,7 +220,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     }
 
     this.sessionActive = false;
-    this.sessionEpoch += 1;
+    this.epoch.bump();
 
     try {
       await this.transport.disconnect();

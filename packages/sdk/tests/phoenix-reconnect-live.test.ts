@@ -77,7 +77,11 @@ describe("Phoenix reconnect (real wire)", () => {
       expect(eventResolved).toBe(false);
 
       peer.settleJoin(roomParticipantsTopic("room-1"), "ok");
-      await expect(firstEvent).resolves.toMatchObject({ type: "reconnected" });
+      await expect(firstEvent).resolves.toEqual({
+        type: "reconnected",
+        roomId: null,
+        payload: {},
+      });
       await expect(link.nextEvent()).resolves.toMatchObject({
         type: "message_created",
         payload: { id: "message-after-rejoin" },
@@ -211,6 +215,85 @@ describe("Phoenix reconnect (real wire)", () => {
 
       // The synthetic reconnect boundary itself must never reach the adapter.
       expect(executedEvents.some((event) => event.type === "reconnected")).toBe(false);
+    } finally {
+      await runtime.stop().catch(() => undefined);
+      await peer.stop();
+    }
+  }, 10_000);
+
+  it("recovers room membership changes made during the outage through a real reconnect snapshot", async () => {
+    const peer = await FakePhoenixPeer.start();
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: peer.url,
+      apiKey: "test-key",
+      agentId: "agent-1",
+      reconnectAfterMs: () => 10,
+    });
+
+    let snapshotRooms: Array<{ id: string; title: string }> = [{ id: "room-1", title: "Room 1" }];
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "test-key",
+      transport,
+      restApi: new FakeRestApi({
+        listChats: async () => ({
+          data: snapshotRooms,
+          metadata: { page: 1, pageSize: 100, totalPages: 1, totalCount: snapshotRooms.length },
+        }),
+      }),
+    });
+
+    const runtime = new AgentRuntime({
+      link,
+      agentId: "agent-1",
+      agentConfig: { autoSubscribeExistingRooms: true },
+      onExecute: async () => {},
+    });
+
+    try {
+      await runtime.start();
+      await vi.waitFor(() => expect(runtime.presence.roster.trackedRoomIds()).toContain("room-1"));
+
+      // While disconnected, the REST snapshot changes: room-1 drops off,
+      // room-2 is newly listed.
+      snapshotRooms = [{ id: "room-2", title: "Room 2" }];
+      peer.receivedEvents.length = 0;
+      peer.severAllConnections();
+
+      // Phoenix's own reconnect machinery rejoins room-1's topics
+      // automatically at the transport level, unaware of the REST-level
+      // membership change — recovery has to come from the reconnect
+      // snapshot's REST reconciliation, not from anything the rejoin itself
+      // reports.
+      await vi.waitFor(
+        () =>
+          expect(peer.receivedEvents).toEqual(
+            expect.arrayContaining([
+              { topic: chatRoomTopic("room-1"), event: "phx_join" },
+              { topic: roomParticipantsTopic("room-1"), event: "phx_join" },
+            ]),
+          ),
+        { timeout: 5000 },
+      );
+
+      await vi.waitFor(
+        () => expect(runtime.presence.roster.trackedRoomIds()).toEqual(["room-2"]),
+        { timeout: 5000 },
+      );
+
+      // The stale room-1 topics were actually left on the wire, and
+      // room-2's were actually joined — not just updated in local roster
+      // state.
+      await vi.waitFor(() =>
+        expect(peer.receivedEvents).toEqual(
+          expect.arrayContaining([
+            { topic: chatRoomTopic("room-1"), event: "phx_leave" },
+            { topic: roomParticipantsTopic("room-1"), event: "phx_leave" },
+            { topic: chatRoomTopic("room-2"), event: "phx_join" },
+            { topic: roomParticipantsTopic("room-2"), event: "phx_join" },
+          ]),
+        ),
+      );
     } finally {
       await runtime.stop().catch(() => undefined);
       await peer.stop();

@@ -5,6 +5,7 @@ import { RuntimeStateError, TransportError } from "../core/errors";
 import type { Logger } from "../core/logger";
 import { NoopLogger } from "../core/logger";
 import { Serializer } from "../core/singleFlight";
+import { Epoch } from "../core/epoch";
 import type {
   ReconnectSnapshot,
   StreamingTransport,
@@ -65,7 +66,7 @@ export class SubscriptionManager {
   private readonly agentTopicsNeedingReconciliation = new Set<string>();
   private readonly reconcileTail = new Serializer();
   private lastReconciledGeneration = 0;
-  private sessionEpoch = 0;
+  private readonly epoch = new Epoch();
 
   public constructor(options: { transport: StreamingTransport; logger?: Logger }) {
     this.transport = options.transport;
@@ -107,7 +108,7 @@ export class SubscriptionManager {
     }
     this.lastReconciledGeneration = snapshot.generation;
 
-    const epoch = this.sessionEpoch;
+    const epoch = this.epoch.current;
     this.tracker.onReconnected();
     const work: ReconnectWork = {
       snapshot,
@@ -125,7 +126,7 @@ export class SubscriptionManager {
    * and transport effects that can outlive the core session they started in.
    */
   public endSession(): void {
-    this.sessionEpoch += 1;
+    this.epoch.bump();
     this.tracker.endSession();
     this.operations.clear();
     this.roomsNeedingReconciliation.clear();
@@ -133,13 +134,8 @@ export class SubscriptionManager {
     this.lastReconciledGeneration = 0;
   }
 
-  /** Whether `epoch` no longer matches the current session (it ended or restarted since). */
-  private isStale(epoch: number): boolean {
-    return epoch !== this.sessionEpoch;
-  }
-
   private leaveOutcome(epoch: number, succeeded: boolean): LeaveOutcome {
-    return this.isStale(epoch) ? "unknown" : succeeded ? "left" : "failed";
+    return this.epoch.isStale(epoch) ? "unknown" : succeeded ? "left" : "failed";
   }
 
   // ---- generic operation coalescing -------------------------------------
@@ -175,7 +171,7 @@ export class SubscriptionManager {
   // ---- room subscribe/unsubscribe ----------------------------------------
 
   private async claimRoomSubscribe(roomId: string, handlers: RoomTopicHandlers): Promise<void> {
-    const epoch = this.sessionEpoch;
+    const epoch = this.epoch.current;
     const ticket = this.tracker.beginRoomSubscribe(roomId);
     if (ticket === undefined) {
       return this.settleIdempotentRoomClaim(roomId);
@@ -186,7 +182,7 @@ export class SubscriptionManager {
     try {
       await this.transport.join(chatTopic, handlers.chat);
     } catch (error) {
-      if (!this.isStale(epoch)) {
+      if (!this.epoch.isStale(epoch)) {
         this.tracker.recordChatRoomJoinFailed(roomId, ticket);
       } else {
         this.logger.debug("Room chat-topic join settled after session ended, ignoring stale ticket", {
@@ -199,7 +195,7 @@ export class SubscriptionManager {
     try {
       await this.transport.join(participantsTopic, handlers.participants);
     } catch (participantError) {
-      if (this.isStale(epoch)) {
+      if (this.epoch.isStale(epoch)) {
         this.logger.debug(
           "Room participants-topic join settled after session ended, ignoring stale ticket",
           { roomId },
@@ -231,8 +227,12 @@ export class SubscriptionManager {
       throw participantError;
     }
 
-    if (!this.isStale(epoch)) {
+    if (!this.epoch.isStale(epoch)) {
       this.tracker.recordBothRoomTopicsJoined(roomId, ticket);
+    } else {
+      this.logger.debug("Room subscribe settled after session ended, discarding stale success", {
+        roomId,
+      });
     }
   }
 
@@ -260,7 +260,7 @@ export class SubscriptionManager {
   }
 
   private async claimRoomUnsubscribe(roomId: string): Promise<void> {
-    const epoch = this.sessionEpoch;
+    const epoch = this.epoch.current;
     const ticket = this.tracker.unsubscribeRoom(roomId);
     if (ticket === undefined) {
       return;
@@ -287,7 +287,7 @@ export class SubscriptionManager {
   // ---- agent topic join/leave (agent_rooms, agent_contacts) --------------
 
   private async claimAgentTopicJoin(topic: string, handlers: TopicHandlers): Promise<void> {
-    const epoch = this.sessionEpoch;
+    const epoch = this.epoch.current;
     const ticket = this.tracker.beginAgentTopicJoin(topic);
     if (ticket === undefined) {
       return this.settleIdempotentTopicClaim(topic);
@@ -302,7 +302,7 @@ export class SubscriptionManager {
       joinError = error;
     }
 
-    if (this.isStale(epoch)) {
+    if (this.epoch.isStale(epoch)) {
       this.tracker.recordAgentTopicJoinAmbiguous(topic, ticket);
       this.logger.debug("Agent topic join settled after session ended, marking ambiguous for reconciliation", {
         topic,
@@ -325,7 +325,7 @@ export class SubscriptionManager {
   }
 
   private async claimAgentTopicLeave(topic: string): Promise<void> {
-    const epoch = this.sessionEpoch;
+    const epoch = this.epoch.current;
     const ticket = this.tracker.leaveAgentTopic(topic);
     if (ticket === undefined) {
       return;
@@ -357,7 +357,7 @@ export class SubscriptionManager {
 
   private async runReconcile(work: ReconnectWork): Promise<void> {
     const { snapshot, epoch, roomCandidates, agentTopicCandidates } = work;
-    if (this.isStale(epoch)) {
+    if (this.epoch.isStale(epoch)) {
       this.logger.debug("Reconnect reconciliation settled after session ended, skipping rejoin evaluation", {
         generation: snapshot.generation,
       });
@@ -395,7 +395,7 @@ export class SubscriptionManager {
       }
     }
 
-    if (this.isStale(epoch)) {
+    if (this.epoch.isStale(epoch)) {
       this.logger.debug("Reconnect reconciliation settled after session ended, skipping cleanup drain", {
         generation: snapshot.generation,
       });
@@ -415,7 +415,7 @@ export class SubscriptionManager {
       Promise.allSettled(topics.map((topic) => this.transport.leave(topic))),
     ]);
 
-    if (this.isStale(epoch)) {
+    if (this.epoch.isStale(epoch)) {
       // The session ended mid-cleanup; a new session starts with empty
       // reconciliation sets, so leave the stale tracker acknowledgements
       // undone rather than resolve them against an ended session.

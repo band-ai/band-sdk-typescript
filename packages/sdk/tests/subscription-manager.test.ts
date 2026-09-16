@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { chatRoomTopic, roomParticipantsTopic, agentRoomsTopic } from "@band-ai/band-sdk-core";
 
 import { SubscriptionManager } from "../src/platform/SubscriptionManager";
@@ -335,6 +335,70 @@ describe("SubscriptionManager", () => {
       release();
       await fresh;
     });
+
+    it("rejects with the plain join error, without attempting a chat-room rollback, when the participant join fails after the session already ended", async () => {
+      const transport = new FakeTransport();
+      const manager = new SubscriptionManager({ transport });
+      transport.failJoin(roomParticipantsTopic("room-1"));
+      const release = transport.gateJoin(roomParticipantsTopic("room-1"));
+
+      const staleSubscribe = manager.subscribeRoom("room-1", ROOM_HANDLERS);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      manager.endSession();
+      release();
+
+      await expect(staleSubscribe).rejects.toThrow(
+        `join failed: ${roomParticipantsTopic("room-1")}`,
+      );
+      // The session already ended by the time the participant join failed:
+      // the stale ticket is discarded outright, with no rollback leave
+      // attempted for the chat topic that DID succeed — the transport's own
+      // teardown, not this rollback, is what cleans that up once a session
+      // actually ends (see BandLink.disconnectSession).
+      expect(transport.leaveCalls).not.toContain(chatRoomTopic("room-1"));
+    });
+
+    it("does not let a stale session's late-settling join overwrite a fresh session's already-bound handlers for the same topic", async () => {
+      const transport = new FakeTransport();
+      const manager = new SubscriptionManager({ transport });
+      const topic = agentRoomsTopic("agent-1");
+      const staleHandler = vi.fn();
+      const freshHandler = vi.fn();
+
+      const originalJoin = transport.join.bind(transport);
+      let releaseStale: (() => void) | undefined;
+      const staleDelay = new Promise<void>((resolve) => {
+        releaseStale = resolve;
+      });
+      const joinSpy = vi
+        .spyOn(transport, "join")
+        .mockImplementationOnce(async (joinedTopic, handlers) => {
+          await staleDelay;
+          return originalJoin(joinedTopic, handlers);
+        });
+
+      const staleSubscribe = manager.subscribeAgentTopic(topic, {
+        room_added: staleHandler,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      manager.endSession();
+
+      // A fresh session's subscribe for the same topic goes through the
+      // real (unmocked) join() and completes immediately.
+      await manager.subscribeAgentTopic(topic, { room_added: freshHandler });
+
+      // Only now does the stale session's own join, started before
+      // endSession(), finally settle.
+      releaseStale?.();
+      await staleSubscribe.catch(() => undefined);
+      joinSpy.mockRestore();
+
+      await transport.emit(topic, "room_added", { id: "room-x" });
+      expect(freshHandler).toHaveBeenCalledTimes(1);
+      expect(staleHandler).not.toHaveBeenCalled();
+    });
   });
 
   describe("reconnect reconciliation", () => {
@@ -493,6 +557,62 @@ describe("SubscriptionManager", () => {
       await manager.reconcileReconnect(
         reconnectSnapshot(2, [], [chatRoomTopic("room-1"), roomParticipantsTopic("room-1")]),
       );
+      await expect(manager.subscribeRoom("room-1", ROOM_HANDLERS)).resolves.toBeUndefined();
+    });
+
+    it("skips rejoin evaluation entirely when the session ends before reconcileReconnect's serialized tail runs", async () => {
+      const transport = new FakeTransport();
+      const manager = new SubscriptionManager({ transport });
+      await manager.subscribeRoom("room-1", ROOM_HANDLERS);
+      transport.leaveCalls.length = 0;
+
+      // room-1's participants topic missing from the snapshot would normally
+      // mark it needing reconciliation, but the session ends synchronously
+      // right after, before the serialized tail's runReconcile even starts.
+      const reconcile = manager.reconcileReconnect(
+        reconnectSnapshot(1, [chatRoomTopic("room-1")], [
+          chatRoomTopic("room-1"),
+          roomParticipantsTopic("room-1"),
+        ]),
+      );
+      manager.endSession();
+      await reconcile;
+
+      expect(transport.leaveCalls).toEqual([]);
+      // A fresh session's subscribe is not blocked by tracker state from a
+      // reconciliation this session never actually applied.
+      await expect(manager.subscribeRoom("room-1", ROOM_HANDLERS)).resolves.toBeUndefined();
+    });
+
+    it("still runs pending cleanup leaves but skips the tracker acknowledgement when the session ends mid-drain", async () => {
+      const transport = new FakeTransport();
+      const manager = new SubscriptionManager({ transport });
+      await manager.subscribeRoom("room-1", ROOM_HANDLERS);
+      transport.leaveCalls.length = 0;
+      const releaseLeave = transport.gateLeave(roomParticipantsTopic("room-1"));
+
+      // Only chat_room rejoined, so room-1 needs cleanup; drainReconciliation
+      // starts its leave sweep (participants topic gated) before the session
+      // ends mid-flight.
+      const reconcile = manager.reconcileReconnect(
+        reconnectSnapshot(1, [chatRoomTopic("room-1")], [
+          chatRoomTopic("room-1"),
+          roomParticipantsTopic("room-1"),
+        ]),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      manager.endSession();
+      releaseLeave();
+      await reconcile;
+
+      expect(transport.leaveCalls).toEqual(
+        expect.arrayContaining([chatRoomTopic("room-1"), roomParticipantsTopic("room-1")]),
+      );
+      // The tracker acknowledgement was skipped for the ended session, but
+      // endSession()'s own reset already leaves nothing pending: a fresh
+      // session's subscribe succeeds cleanly rather than inheriting a
+      // phantom blocked/reconciling state.
       await expect(manager.subscribeRoom("room-1", ROOM_HANDLERS)).resolves.toBeUndefined();
     });
   });

@@ -325,6 +325,51 @@ describe("PhoenixChannelsTransport", () => {
     expect(channel?.leaveCallCount).toBe(1);
   });
 
+  it("coalesces concurrent join() calls for the same never-before-joined topic into one physical join", async () => {
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+    });
+    await transport.connect();
+
+    const first = transport.join("room:1", {});
+    const second = transport.join("room:1", {});
+    await Promise.all([first, second]);
+
+    const socket = phoenixMock.FakeSocket.instances[0];
+    expect(socket?.channels.filter((channel) => channel.topic === "room:1")).toHaveLength(1);
+  });
+
+  it("coalesces two joins for the same topic that both arrive while a reconnect barrier is open", async () => {
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+    });
+    await transport.connect();
+    await transport.join("room:1", {});
+
+    const socket = phoenixMock.FakeSocket.instances[0];
+    // A later automatic reconnect opens the barrier; room:1 is the only
+    // topic the new generation must wait on to settle.
+    socket?.emitOpen();
+
+    const first = transport.join("room:2", {});
+    const second = transport.join("room:2", {});
+
+    // Both calls are queued behind the barrier — neither has created a
+    // channel for room:2 yet.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(socket?.channels.filter((channel) => channel.topic === "room:2")).toHaveLength(0);
+
+    socket?.channels.get("room:1")?.settleRejoin("ok");
+    await Promise.all([first, second]);
+
+    // The second caller resumed from the barrier and coalesced onto the
+    // first's already-registered in-flight join, rather than starting its
+    // own independent doJoin() and creating a second channel.
+    expect(socket?.channels.filter((channel) => channel.topic === "room:2")).toHaveLength(1);
+  });
+
   it("wraps join failures in TransportError", async () => {
     const transport = new PhoenixChannelsTransport({
       wsUrl: "wss://example.test/socket",
@@ -445,6 +490,43 @@ describe("PhoenixChannelsTransport", () => {
 
     // Proof the second join's channel is still correctly tracked as
     // pending: a disconnect now must abandon it, not silently miss it.
+    await transport.disconnect();
+    expect(secondChannel?.leaveCallCount).toBe(1);
+  });
+
+  it("does not let a superseded join's late error settlement double-abandon its own channel or evict a newer join's still-pending entry", async () => {
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+    });
+    await transport.connect();
+
+    const socket = phoenixMock.FakeSocket.instances[0];
+    socket?.joinOutcomes.set("room:late", "pending");
+    const firstJoin = transport.join("room:late", {});
+    firstJoin.catch(() => undefined);
+    await Promise.resolve();
+    const firstChannel = socket?.channels.get("room:late");
+
+    await transport.disconnect();
+    expect(firstChannel?.leaveCallCount).toBe(1);
+
+    await transport.connect();
+    const secondJoin = transport.join("room:late", {});
+    secondJoin.catch(() => undefined);
+    await Promise.resolve();
+    const secondChannel = socket?.channels.get("room:late");
+    expect(secondChannel).not.toBe(firstChannel);
+
+    // The first join's own Push finally settles late with an ERROR — this
+    // exercises the identity check in doJoin's catch block (as opposed to
+    // the prior test's post-await success path). It must reject with the
+    // real join failure, not double-abandon its own already-abandoned
+    // channel, and must not touch the second join's still-pending slot.
+    firstChannel?.settleRejoin("error");
+    await expect(firstJoin).rejects.toThrow("Failed to join topic room:late");
+    expect(firstChannel?.leaveCallCount).toBe(1);
+
     await transport.disconnect();
     expect(secondChannel?.leaveCallCount).toBe(1);
   });
@@ -891,6 +973,31 @@ describe("PhoenixChannelsTransport", () => {
       });
     });
 
+    it("includes agent_control in the reconnect snapshot alongside room topics, matching production's always-set agentId", async () => {
+      const transport = new PhoenixChannelsTransport({
+        wsUrl: "wss://example.test/socket",
+        apiKey: "key-1",
+        agentId: "agent-1",
+      });
+      await transport.connect();
+      await transport.join("room:1", {});
+
+      const observer = vi.fn();
+      transport.onReconnected(observer);
+
+      const socket = phoenixMock.FakeSocket.instances[0];
+      socket?.emitOpen();
+      socket?.channels.get("room:1")?.settleRejoin("ok");
+      socket?.channels.get("agent_control:agent-1")?.settleRejoin("ok");
+
+      await vi.waitFor(() => expect(observer).toHaveBeenCalledTimes(1));
+      expect(observer).toHaveBeenCalledWith({
+        generation: 1,
+        attemptedTopics: new Set(["room:1", "agent_control:agent-1"]),
+        joinedTopics: new Set(["room:1", "agent_control:agent-1"]),
+      });
+    });
+
     it("holds post-open topic events until the reconnect observer establishes the recovery boundary", async () => {
       const transport = new PhoenixChannelsTransport({
         wsUrl: "wss://example.test/socket",
@@ -1060,15 +1167,16 @@ describe("PhoenixChannelsTransport", () => {
       });
     });
 
-    it("logs a reconnect observer failure instead of leaking an unhandled rejection", async () => {
+    it("logs a reconnect observer failure instead of leaking an unhandled rejection, and still flushes buffered events afterward", async () => {
       const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const onMessage = vi.fn();
       const transport = new PhoenixChannelsTransport({
         wsUrl: "wss://example.test/socket",
         apiKey: "key-1",
         logger,
       });
       await transport.connect();
-      await transport.join("room:1", {});
+      await transport.join("room:1", { message_created: onMessage });
 
       const failure = new Error("observer boom");
       transport.onReconnected(() => {
@@ -1077,6 +1185,9 @@ describe("PhoenixChannelsTransport", () => {
 
       const socket = phoenixMock.FakeSocket.instances[0];
       socket?.emitOpen();
+      socket?.channels.get("room:1")?.emit("message_created", { id: "buffered-1" });
+      expect(onMessage).not.toHaveBeenCalled();
+
       socket?.channels.get("room:1")?.settleRejoin("ok");
 
       await vi.waitFor(() =>
@@ -1085,6 +1196,11 @@ describe("PhoenixChannelsTransport", () => {
           expect.objectContaining({ generation: 1, error: failure }),
         ),
       );
+
+      // The failing observer must not wedge the transport in buffering
+      // state forever: the event it buffered still gets delivered once the
+      // generation finishes settling.
+      await vi.waitFor(() => expect(onMessage).toHaveBeenCalledWith({ id: "buffered-1" }));
     });
 
     it("stops notifying an observer once it unsubscribes", async () => {
