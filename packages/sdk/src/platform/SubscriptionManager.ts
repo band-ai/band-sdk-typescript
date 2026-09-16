@@ -4,6 +4,7 @@ import { chatRoomTopic, roomParticipantsTopic } from "@band-ai/band-sdk-core";
 import { RuntimeStateError, TransportError } from "../core/errors";
 import type { Logger } from "../core/logger";
 import { NoopLogger } from "../core/logger";
+import { Serializer } from "../core/singleFlight";
 import type {
   ReconnectSnapshot,
   StreamingTransport,
@@ -62,7 +63,7 @@ export class SubscriptionManager {
   private readonly operations = new Map<string, Operation>();
   private readonly roomsNeedingReconciliation = new Set<string>();
   private readonly agentTopicsNeedingReconciliation = new Set<string>();
-  private reconcileTail: Promise<void> = Promise.resolve();
+  private readonly reconcileTail = new Serializer();
   private lastReconciledGeneration = 0;
   private sessionEpoch = 0;
 
@@ -114,11 +115,7 @@ export class SubscriptionManager {
       roomCandidates: this.tracker.roomRejoinCandidates(),
       agentTopicCandidates: this.tracker.agentTopicRejoinCandidates(),
     };
-    this.reconcileTail = this.reconcileTail.then(
-      () => this.runReconcile(work),
-      () => this.runReconcile(work),
-    );
-    return this.reconcileTail;
+    return this.reconcileTail.run(() => this.runReconcile(work));
   }
 
   /**
@@ -136,8 +133,13 @@ export class SubscriptionManager {
     this.lastReconciledGeneration = 0;
   }
 
+  /** Whether `epoch` no longer matches the current session (it ended or restarted since). */
+  private isStale(epoch: number): boolean {
+    return epoch !== this.sessionEpoch;
+  }
+
   private leaveOutcome(epoch: number, succeeded: boolean): LeaveOutcome {
-    return epoch !== this.sessionEpoch ? "unknown" : succeeded ? "left" : "failed";
+    return this.isStale(epoch) ? "unknown" : succeeded ? "left" : "failed";
   }
 
   // ---- generic operation coalescing -------------------------------------
@@ -184,7 +186,7 @@ export class SubscriptionManager {
     try {
       await this.transport.join(chatTopic, handlers.chat);
     } catch (error) {
-      if (epoch === this.sessionEpoch) {
+      if (!this.isStale(epoch)) {
         this.tracker.recordChatRoomJoinFailed(roomId, ticket);
       } else {
         this.logger.debug("Room chat-topic join settled after session ended, ignoring stale ticket", {
@@ -197,7 +199,7 @@ export class SubscriptionManager {
     try {
       await this.transport.join(participantsTopic, handlers.participants);
     } catch (participantError) {
-      if (epoch !== this.sessionEpoch) {
+      if (this.isStale(epoch)) {
         this.logger.debug(
           "Room participants-topic join settled after session ended, ignoring stale ticket",
           { roomId },
@@ -229,7 +231,7 @@ export class SubscriptionManager {
       throw participantError;
     }
 
-    if (epoch === this.sessionEpoch) {
+    if (!this.isStale(epoch)) {
       this.tracker.recordBothRoomTopicsJoined(roomId, ticket);
     }
   }
@@ -300,7 +302,7 @@ export class SubscriptionManager {
       joinError = error;
     }
 
-    if (epoch !== this.sessionEpoch) {
+    if (this.isStale(epoch)) {
       this.tracker.recordAgentTopicJoinAmbiguous(topic, ticket);
       this.logger.debug("Agent topic join settled after session ended, marking ambiguous for reconciliation", {
         topic,
@@ -355,7 +357,7 @@ export class SubscriptionManager {
 
   private async runReconcile(work: ReconnectWork): Promise<void> {
     const { snapshot, epoch, roomCandidates, agentTopicCandidates } = work;
-    if (epoch !== this.sessionEpoch) {
+    if (this.isStale(epoch)) {
       this.logger.debug("Reconnect reconciliation settled after session ended, skipping rejoin evaluation", {
         generation: snapshot.generation,
       });
@@ -393,7 +395,7 @@ export class SubscriptionManager {
       }
     }
 
-    if (epoch !== this.sessionEpoch) {
+    if (this.isStale(epoch)) {
       this.logger.debug("Reconnect reconciliation settled after session ended, skipping cleanup drain", {
         generation: snapshot.generation,
       });
@@ -413,7 +415,7 @@ export class SubscriptionManager {
       Promise.allSettled(topics.map((topic) => this.transport.leave(topic))),
     ]);
 
-    if (epoch !== this.sessionEpoch) {
+    if (this.isStale(epoch)) {
       // The session ended mid-cleanup; a new session starts with empty
       // reconciliation sets, so leave the stale tracker acknowledgements
       // undone rather than resolve them against an ended session.

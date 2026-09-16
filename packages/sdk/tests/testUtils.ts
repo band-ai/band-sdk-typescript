@@ -164,10 +164,19 @@ export class FakeTransport implements StreamingTransport {
   private readonly leaveGates = new Map<string, Promise<void>>();
   private connectGate: Promise<void> = Promise.resolve();
   private releaseConnectGate: (() => void) | null = null;
+  private connectError: unknown = null;
 
   public async connect(): Promise<void> {
     await this.connectGate;
+    if (this.connectError) {
+      throw this.connectError;
+    }
     this.connected = true;
+  }
+
+  /** Makes every future `connect()` call reject with `error` until cleared. */
+  public failConnect(error: unknown): void {
+    this.connectError = error;
   }
 
   public async disconnect(): Promise<void> {
@@ -232,20 +241,28 @@ export class FakeTransport implements StreamingTransport {
     return this.gate(this.leaveGates, topic);
   }
 
+  private setOutcome(outcomes: Map<string, JoinLeaveOutcome>, topic: string, outcome: JoinLeaveOutcome): void {
+    outcomes.set(topic, outcome);
+  }
+
+  private clearOutcome(outcomes: Map<string, JoinLeaveOutcome>, topic: string): void {
+    outcomes.delete(topic);
+  }
+
   public failJoin(topic: string): void {
-    this.joinOutcomes.set(topic, "error");
+    this.setOutcome(this.joinOutcomes, topic, "error");
   }
 
   public failLeave(topic: string): void {
-    this.leaveOutcomes.set(topic, "error");
+    this.setOutcome(this.leaveOutcomes, topic, "error");
   }
 
   public clearJoinFailure(topic: string): void {
-    this.joinOutcomes.delete(topic);
+    this.clearOutcome(this.joinOutcomes, topic);
   }
 
   public clearLeaveFailure(topic: string): void {
-    this.leaveOutcomes.delete(topic);
+    this.clearOutcome(this.leaveOutcomes, topic);
   }
 
   public joinCountOf(topic: string): number {

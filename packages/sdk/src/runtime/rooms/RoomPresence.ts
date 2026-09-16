@@ -12,6 +12,7 @@ import type {
 import { resolveLogger, type Logger } from "../../core/logger";
 import { RoomRoster } from "@band-ai/band-sdk-core";
 import { hydrateExistingRooms, listExistingRooms } from "./subscriptions";
+import { Serializer } from "../../core/singleFlight";
 
 interface RoomPresenceOptions {
   link: BandLink;
@@ -42,7 +43,7 @@ export class RoomPresence implements AsyncDisposable {
   private eventController: AbortController | null = null;
   private eventTask: Promise<void> | null = null;
   private contactsSubscribed = false;
-  private lifecycle: Promise<void> = Promise.resolve();
+  private readonly lifecycle = new Serializer();
   private readonly admissionInFlight = new Map<string, Promise<boolean>>();
   // Read once by `admitRoomOrThrow` right after a failed admission; a
   // subsequent successful subscribe clears it so a caller never attributes
@@ -57,11 +58,11 @@ export class RoomPresence implements AsyncDisposable {
   }
 
   public async start(): Promise<void> {
-    return this.serialize(() => this.startBody());
+    return this.lifecycle.run(() => this.startBody());
   }
 
   public async stop(): Promise<void> {
-    return this.serialize(() => this.stopBody());
+    return this.lifecycle.run(() => this.stopBody());
   }
 
   public async [Symbol.asyncDispose](): Promise<void> {
@@ -158,15 +159,6 @@ export class RoomPresence implements AsyncDisposable {
     // current state rather than only our own ticket's fate, so a caller like
     // `admitRoomOrThrow` doesn't fail a room that is in fact joined.
     return roomIsAdmitted;
-  }
-
-  private async serialize(body: () => Promise<void>): Promise<void> {
-    const run = this.lifecycle.then(body, body);
-    this.lifecycle = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
   }
 
   private async startBody(): Promise<void> {

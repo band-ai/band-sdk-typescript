@@ -64,8 +64,8 @@ const phoenixMock = vi.hoisted(() => {
       return this.nextRef++;
     }
 
-    public off(_event: string, _ref?: number): void {
-      // In a real implementation this would remove the specific handler
+    public off(event: string, _ref?: number): void {
+      this.handlers.delete(event);
     }
 
     public emit(event: string, payload: Record<string, unknown>): void {
@@ -359,16 +359,94 @@ describe("PhoenixChannelsTransport", () => {
     const socket = phoenixMock.FakeSocket.instances[0];
     socket?.joinOutcomes.set("room:late", "pending");
     const staleJoin = transport.join("room:late", {});
+    await Promise.resolve(); // let doJoin's synchronous prefix run
+    const staleChannel = socket?.channels.get("room:late");
 
     await transport.disconnect();
+    // The in-flight join's channel is detached immediately by disconnect()
+    // (see "does not leak events..." below), not left dangling in Phoenix's
+    // own registry — so it's already gone from the socket's channel list.
+    expect(socket?.channels.has("room:late")).toBe(false);
+
     socket?.joinOutcomes.delete("room:late");
     await transport.connect();
     const freshJoin = transport.join("room:late", {});
     await expect(freshJoin).resolves.toBeUndefined();
 
-    socket?.channels.get("room:late")?.settleRejoin("ok");
+    // Settling the original (now-detached) channel's own join push still
+    // reaches doJoin's stale-epoch check and rejects, even though the
+    // channel itself is no longer registered anywhere.
+    staleChannel?.settleRejoin("ok");
     await expect(staleJoin).rejects.toThrow("superseded by transport disconnect");
-    expect(socket?.channels.has("room:late")).toBe(true);
+    expect(socket?.channels.has("room:late")).toBe(true); // the fresh join's own channel
+  });
+
+  it("does not leak events from a join that was still in flight when disconnect() ran", async () => {
+    const onMessage = vi.fn(async () => {});
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+    });
+    await transport.connect();
+
+    const socket = phoenixMock.FakeSocket.instances[0];
+    socket?.joinOutcomes.set("room:late", "pending");
+    const staleJoin = transport.join("room:late", { message: onMessage });
+    staleJoin.catch(() => undefined);
+    await Promise.resolve(); // let doJoin's synchronous prefix run
+
+    const inFlightChannel = socket?.channels.get("room:late");
+    expect(inFlightChannel).toBeDefined();
+
+    await transport.disconnect();
+
+    // Detached, not merely forgotten by this transport's own bookkeeping —
+    // otherwise Phoenix's own reconnect machinery could later resurrect this
+    // channel and redeliver events on it with no dedup anywhere upstream.
+    expect(socket?.channels.has("room:late")).toBe(false);
+    inFlightChannel?.emit("message", { body: "leaked-after-disconnect" });
+    await Promise.resolve();
+    expect(onMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not let a superseded join's late settlement evict a newer join's still-pending entry for the same topic", async () => {
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+    });
+    await transport.connect();
+
+    const socket = phoenixMock.FakeSocket.instances[0];
+    socket?.joinOutcomes.set("room:late", "pending");
+    const firstJoin = transport.join("room:late", {});
+    firstJoin.catch(() => undefined);
+    await Promise.resolve(); // let doJoin's synchronous prefix run
+    const firstChannel = socket?.channels.get("room:late");
+
+    await transport.disconnect();
+    expect(firstChannel?.leaveCallCount).toBe(1);
+
+    // Reconnect and start a second join for the same topic while it's still
+    // pending too — disconnect() cleared `joinFlights`, so this is a
+    // genuinely new join, not coalesced with the first.
+    await transport.connect();
+    const secondJoin = transport.join("room:late", {});
+    secondJoin.catch(() => undefined);
+    await Promise.resolve();
+    const secondChannel = socket?.channels.get("room:late");
+    expect(secondChannel).not.toBe(firstChannel);
+
+    // The first join's own Push finally settles late. It must still reject
+    // as superseded, but must not touch the second join's still-pending
+    // slot or abandon the first channel a second time.
+    firstChannel?.settleRejoin("ok");
+    await expect(firstJoin).rejects.toThrow("superseded by transport disconnect");
+    expect(firstChannel?.leaveCallCount).toBe(1);
+
+    // Proof the second join's channel is still correctly tracked as
+    // pending: a disconnect now must abandon it, not silently miss it.
+    await transport.disconnect();
+    expect(secondChannel?.leaveCallCount).toBe(1);
   });
 
   it("forgets local channel ownership when a disconnect leave fails", async () => {

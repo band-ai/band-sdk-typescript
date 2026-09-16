@@ -57,3 +57,22 @@ export class KeyedSingleFlight<T = void> {
     this.flights.clear();
   }
 }
+
+/**
+ * Runs each enqueued body only after the previous one has settled, whether it
+ * resolved or rejected, so callers get a strict one-at-a-time queue instead
+ * of unbounded concurrency. Each call gets its own body's real outcome; a
+ * failure never blocks the next enqueued body from running.
+ */
+export class Serializer {
+  private tail: Promise<void> = Promise.resolve();
+
+  public run<T>(body: () => Promise<T>): Promise<T> {
+    const run = this.tail.then(body, body);
+    this.tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+}

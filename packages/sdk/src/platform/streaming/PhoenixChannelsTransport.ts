@@ -2,7 +2,8 @@ import { Channel, Socket } from "phoenix";
 import { TransportError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { combineTeardownErrors } from "../../core/teardown";
-import { KeyedSingleFlight, SingleFlight } from "../../core/singleFlight";
+import { KeyedSingleFlight, Serializer, SingleFlight } from "../../core/singleFlight";
+import { createDeferred, type Deferred } from "../../core/deferred";
 import {
   WebSocketDisconnectError,
   genericCloseReason,
@@ -47,6 +48,17 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private readonly agentId?: string;
   private readonly channels = new Map<string, Channel>();
   private readonly channelRefs = new Map<string, Array<[string, number]>>();
+  // A join's Channel and handler bindings, tracked from the moment doJoin
+  // creates them — before the join Push settles — so disconnect() can find
+  // and tear down an in-flight join too, not only ones already promoted
+  // into `channels`. Left untracked here, the underlying Phoenix Channel
+  // would survive disconnect() unnoticed, keep its handlers bound, and
+  // could later be resurrected by Phoenix's own reconnect machinery,
+  // redelivering live events with no dedup anywhere upstream.
+  private readonly pendingChannels = new Map<
+    string,
+    { channel: Channel; refs: Array<[string, number]> }
+  >();
   private readonly joinFlights = new KeyedSingleFlight<void>();
   private readonly leaveFlights = new KeyedSingleFlight<void>();
   private readonly reconnectObservers = new Set<ReconnectObserver>();
@@ -67,9 +79,8 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private hasOpenedOnce = false;
   private sessionEpoch = 0;
   private bufferingGeneration: number | null = null;
-  private reconnectBarrier: Promise<void> | null = null;
-  private resolveReconnectBarrier: (() => void) | null = null;
-  private observerChain: Promise<void> = Promise.resolve();
+  private reconnectBarrier: Deferred<void> | null = null;
+  private readonly observerChain = new Serializer();
   private readonly logger: Logger;
   private readonly onTerminalDisconnect?: (
     reason: WebSocketDisconnectReason,
@@ -184,13 +195,20 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     }
     this.channels.clear();
     this.channelRefs.clear();
+
+    // A join still in flight never reached `channels` above; its Channel is
+    // real in Phoenix's own socket registry and must be abandoned here too.
+    for (const { channel, refs } of this.pendingChannels.values()) {
+      this.abandonChannel(channel, refs);
+    }
+    this.pendingChannels.clear();
+
     this.joinFlights.clear();
     this.leaveFlights.clear();
     this.hasOpenedOnce = false;
     this.bufferingGeneration = null;
-    this.resolveReconnectBarrier?.();
+    this.reconnectBarrier?.resolve();
     this.reconnectBarrier = null;
-    this.resolveReconnectBarrier = null;
     this.bufferedTopicEvents.splice(0);
     this.generationTracker.reset();
 
@@ -227,8 +245,8 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     }
 
     const epoch = this.sessionEpoch;
-    await this.reconnectBarrier;
-    if (epoch !== this.sessionEpoch) {
+    await this.reconnectBarrier?.promise;
+    if (this.isStale(epoch)) {
       throw new TransportError(`Join superseded by transport disconnect for topic ${topic}`);
     }
 
@@ -276,40 +294,75 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       refs.push([event, ref]);
     }
 
+    this.pendingChannels.set(topic, { channel, refs });
+
     // Phoenix creates exactly one join `Push` per channel and reuses it for
     // every automatic rejoin (`resend()`), so hooks registered on it now stay
     // attached and fire again on every later settlement — this is the only
     // hook into a channel's reconnect outcome the public API exposes.
     const joinPush = channel.join();
-    joinPush
-      .receive("ok", () => this.generationTracker.recordSettled(topic, true))
-      .receive("error", () => this.generationTracker.recordSettled(topic, false))
-      .receive("timeout", () => this.generationTracker.recordSettled(topic, false));
     try {
       await new Promise<void>((resolve, reject) => {
         joinPush
-          .receive("ok", () => resolve())
-          .receive("error", (error: unknown) =>
-            reject(new TransportError(`Failed to join topic ${topic}`, error)),
-          )
-          .receive("timeout", () =>
-            reject(new TransportError(`Timeout joining topic ${topic}`)),
-          );
+          .receive("ok", () => {
+            this.generationTracker.recordSettled(topic, true);
+            resolve();
+          })
+          .receive("error", (error: unknown) => {
+            this.generationTracker.recordSettled(topic, false);
+            reject(new TransportError(`Failed to join topic ${topic}`, error));
+          })
+          .receive("timeout", () => {
+            this.generationTracker.recordSettled(topic, false);
+            reject(new TransportError(`Timeout joining topic ${topic}`));
+          });
       });
     } catch (error) {
-      // Leave and remove the channel so it doesn't get rejoined on reconnect.
-      this.abandonChannel(channel, refs);
+      // Leave and remove the channel so it doesn't get rejoined on reconnect
+      // — but only if this join still owns the pendingChannels entry for
+      // this topic. disconnect() may have already abandoned it (clearing
+      // the entry first), or, since disconnect() also clears `joinFlights`,
+      // a later join for the same topic may have already taken the slot;
+      // either way this settlement must not touch state that isn't its own.
+      if (this.forgetPendingChannel(topic, channel)) {
+        this.abandonChannel(channel, refs);
+      }
       throw error;
     }
 
-    if (epoch !== this.sessionEpoch) {
-      this.abandonChannel(channel, refs);
+    const stillPending = this.forgetPendingChannel(topic, channel);
+    if (!stillPending || this.isStale(epoch)) {
+      if (stillPending) {
+        this.abandonChannel(channel, refs);
+      }
       throw new TransportError(`Join superseded by transport disconnect for topic ${topic}`);
     }
 
     this.channels.set(topic, channel);
     this.channelRefs.set(topic, refs);
     this.logger.debug("Joined topic", { topic });
+  }
+
+  /** Whether `epoch` no longer matches the current session (disconnect() ran since). */
+  private isStale(epoch: number): boolean {
+    return epoch !== this.sessionEpoch;
+  }
+
+  /**
+   * Removes `topic`'s pendingChannels entry only if it still points at
+   * `channel`, returning whether it did. A topic-keyed delete without this
+   * identity check can drop a *different*, still-genuinely-pending join for
+   * the same topic — reachable because `disconnect()` clears `joinFlights`,
+   * so a later join for a topic whose earlier join is still unsettled is
+   * possible, and that earlier join's eventual (stale) settlement must not
+   * touch a slot it no longer owns.
+   */
+  private forgetPendingChannel(topic: string, channel: Channel): boolean {
+    if (this.pendingChannels.get(topic)?.channel !== channel) {
+      return false;
+    }
+    this.pendingChannels.delete(topic);
+    return true;
   }
 
   private abandonChannel(channel: Channel, refs: Array<[string, number]>): void {
@@ -419,9 +472,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     if (this.hasOpenedOnce) {
       this.bufferingGeneration = this.generationTracker.beginGeneration(this.channels.keys());
       if (!this.reconnectBarrier) {
-        this.reconnectBarrier = new Promise<void>((resolve) => {
-          this.resolveReconnectBarrier = resolve;
-        });
+        this.reconnectBarrier = createDeferred<void>();
       }
     } else {
       this.hasOpenedOnce = true;
@@ -453,13 +504,13 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private notifyReconnectObservers(snapshot: ReconnectSnapshot): void {
     const epoch = this.sessionEpoch;
     const observers = [...this.reconnectObservers];
-    this.observerChain = this.observerChain.then(async () => {
-      if (epoch !== this.sessionEpoch) {
+    void this.observerChain.run(async () => {
+      if (this.isStale(epoch)) {
         return;
       }
 
       for (const observer of observers) {
-        if (epoch !== this.sessionEpoch) {
+        if (this.isStale(epoch)) {
           return;
         }
         if (!this.reconnectObservers.has(observer)) {
@@ -475,18 +526,14 @@ export class PhoenixChannelsTransport implements StreamingTransport {
         }
       }
 
-      if (
-        epoch === this.sessionEpoch &&
-        snapshot.generation === this.bufferingGeneration
-      ) {
+      if (!this.isStale(epoch) && snapshot.generation === this.bufferingGeneration) {
         this.bufferingGeneration = null;
         const events = this.bufferedTopicEvents.splice(0);
         for (const { deliver } of events) {
           deliver();
         }
-        this.resolveReconnectBarrier?.();
+        this.reconnectBarrier?.resolve();
         this.reconnectBarrier = null;
-        this.resolveReconnectBarrier = null;
       }
     });
   }

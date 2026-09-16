@@ -293,6 +293,30 @@ describe("SubscriptionManager", () => {
       expect(transport.joinCountOf(chatRoomTopic("room-1"))).toBe(1);
     });
 
+    it("marks a late agent topic join ambiguous rather than joined, and leaves a new session's subscribe unaffected", async () => {
+      const transport = new FakeTransport();
+      const manager = new SubscriptionManager({ transport });
+      const topic = agentRoomsTopic("agent-1");
+      const release = transport.gateJoin(topic);
+
+      const staleSubscribe = manager.subscribeAgentTopic(topic, NO_HANDLERS);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      manager.endSession();
+      release();
+
+      // The stale operation's own promise still reports its real transport
+      // outcome (a successful join); the tracker just records it ambiguous
+      // instead of joined, since the session that started it already ended.
+      await expect(staleSubscribe).resolves.toBeUndefined();
+
+      transport.joinCalls.length = 0;
+      await expect(manager.subscribeAgentTopic(topic, NO_HANDLERS)).resolves.toBeUndefined();
+      // A genuinely fresh claim in the new session, not blocked or coalesced
+      // by the ambiguous ticket the ended session left behind.
+      expect(transport.joinCountOf(topic)).toBe(1);
+    });
+
     it("clears in-flight operations so a new session's calls are not coalesced against the old one", async () => {
       const transport = new FakeTransport();
       const manager = new SubscriptionManager({ transport });

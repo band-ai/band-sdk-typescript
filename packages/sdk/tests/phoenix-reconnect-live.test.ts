@@ -9,6 +9,20 @@ import type { PlatformEvent } from "../src/platform/events";
 import { FakePhoenixPeer } from "./fakePhoenixPeer";
 import { FakeRestApi } from "./testUtils";
 
+function wireMessage(id: string, content: string) {
+  return {
+    id,
+    content,
+    message_type: "text",
+    sender_id: "user-1",
+    sender_type: "User",
+    sender_name: "User",
+    metadata: {},
+    inserted_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+}
+
 /**
  * Exercises the real `phoenix` client and a real `ws` socket end to end —
  * no mocked transport — to prove the reconnect-snapshot contract holds
@@ -54,17 +68,11 @@ describe("Phoenix reconnect (real wire)", () => {
         eventResolved = true;
         return event;
       });
-      peer.push(chatRoomTopic("room-1"), "message_created", {
-        id: "message-after-rejoin",
-        content: "after reconnect",
-        message_type: "text",
-        sender_id: "user-1",
-        sender_type: "User",
-        sender_name: "User",
-        metadata: {},
-        inserted_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      });
+      peer.push(
+        chatRoomTopic("room-1"),
+        "message_created",
+        wireMessage("message-after-rejoin", "after reconnect"),
+      );
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(eventResolved).toBe(false);
 
@@ -154,17 +162,7 @@ describe("Phoenix reconnect (real wire)", () => {
             return null;
           }
           releaseMissedMessage = false;
-          return {
-            id: "missed-message",
-            content: "sent during the outage",
-            message_type: "text",
-            sender_id: "user-1",
-            sender_type: "User",
-            sender_name: "User",
-            metadata: {},
-            inserted_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          };
+          return wireMessage("missed-message", "sent during the outage");
         },
       }),
     });

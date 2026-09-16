@@ -176,6 +176,9 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         // `connect`/`connectSession`/`disconnectSession`), so an unchanged
         // epoch already guarantees the session is still active.
         if (epoch !== this.sessionEpoch) {
+          this.logger.debug(
+            "Reconnect reconciliation settled after session ended, discarding reconnected event",
+          );
           return;
         }
         this.queueEvent({ type: "reconnected", roomId: null, payload: {} });
