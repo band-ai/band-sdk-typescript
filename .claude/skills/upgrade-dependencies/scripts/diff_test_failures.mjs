@@ -41,9 +41,10 @@ if (newFailures.length === 0) {
   if (fixedFailures.length > 0) {
     console.log(`(${fixedFailures.length} baseline failure(s) no longer failing — unrelated improvement or flake.)`);
   }
-  if (baseline.size > 0) {
-    console.log(`Note: ${baseline.size} pre-existing baseline failure(s) still present, unrelated to this change:`);
-    for (const id of baseline) if (candidate.has(id)) console.log(`  - ${id}`);
+  const stillPresent = [...baseline].filter((id) => candidate.has(id));
+  if (stillPresent.length > 0) {
+    console.log(`Note: ${stillPresent.length} pre-existing baseline failure(s) still present, unrelated to this change:`);
+    for (const id of stillPresent) console.log(`  - ${id}`);
   }
   process.exit(0);
 }
