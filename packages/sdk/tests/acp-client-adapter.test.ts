@@ -2033,7 +2033,7 @@ describe("ACPClientAdapter", () => {
       const loadSession = vi.fn(async () => ({
         ...(input.loadSessionModes ? { modes: input.loadSessionModes } : {}),
       }))
-      const unstable_resumeSession = vi.fn()
+      const resumeSession = vi.fn()
       const prompt = vi.fn(async (params: { sessionId: string }) => {
         if (input.raisePermissionRequest) {
           permissionResult = await clientHandle?.requestPermission({
@@ -2064,7 +2064,7 @@ describe("ACPClientAdapter", () => {
               })),
               authenticate: vi.fn(async () => ({})),
               loadSession,
-              unstable_resumeSession,
+              resumeSession,
               newSession,
               setSessionMode,
               prompt,
@@ -2313,7 +2313,7 @@ describe("ACPClientAdapter", () => {
               })),
               authenticate: vi.fn(async () => ({})),
               loadSession,
-              unstable_resumeSession: vi.fn(),
+              resumeSession: vi.fn(),
               newSession,
               cancel,
               prompt: input.prompt,
@@ -2740,7 +2740,7 @@ describe("ACPClientAdapter", () => {
                 initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
                 authenticate: vi.fn(async () => ({})),
                 loadSession: vi.fn(async () => ({})),
-                unstable_resumeSession: vi.fn(),
+                resumeSession: vi.fn(),
                 newSession,
                 cancel: vi.fn(async () => undefined),
                 prompt: vi.fn(async () => {
@@ -2761,7 +2761,7 @@ describe("ACPClientAdapter", () => {
               initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
               authenticate: vi.fn(async () => ({})),
               loadSession: vi.fn(async () => ({})),
-              unstable_resumeSession: vi.fn(),
+              resumeSession: vi.fn(),
               newSession,
               cancel: vi.fn(async () => undefined),
               prompt: vi.fn(async (params: { sessionId: string }) => {
@@ -2863,7 +2863,7 @@ describe("ACPClientAdapter", () => {
                 initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
                 authenticate: vi.fn(async () => ({})),
                 loadSession: vi.fn(async () => ({})),
-                unstable_resumeSession: vi.fn(),
+                resumeSession: vi.fn(),
                 newSession,
                 cancel: vi.fn(async () => undefined),
                 prompt: vi.fn(async () => {
@@ -2883,7 +2883,7 @@ describe("ACPClientAdapter", () => {
               initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
               authenticate: vi.fn(async () => ({})),
               loadSession: vi.fn(async () => ({})),
-              unstable_resumeSession: vi.fn(),
+              resumeSession: vi.fn(),
               newSession,
               cancel: vi.fn(async () => undefined),
               prompt: vi.fn(async () => {
@@ -2953,7 +2953,7 @@ describe("ACPClientAdapter", () => {
               initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
               authenticate: vi.fn(async () => ({})),
               loadSession: vi.fn(async () => ({})),
-              unstable_resumeSession: vi.fn(),
+              resumeSession: vi.fn(),
               newSession: vi.fn(async () => ({ sessionId: "session-1" })),
               cancel: vi.fn(async () => undefined),
               prompt: vi.fn(async (params: { sessionId: string }) => {
