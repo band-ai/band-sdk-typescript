@@ -1210,7 +1210,7 @@ describe("PhoenixChannelsTransport", () => {
       });
     });
 
-    it("finalizes an incomplete generation superseded by a newer open, so nothing awaiting it hangs, then finalizes the new one too", async () => {
+    it("drops an incomplete generation superseded by a newer open and publishes only the new recovery", async () => {
       const transport = new PhoenixChannelsTransport({
         wsUrl: "wss://example.test/socket",
         apiKey: "key-1",
@@ -1230,23 +1230,15 @@ describe("PhoenixChannelsTransport", () => {
 
       socket?.emitOpen();
 
-      // The superseded first generation is finalized immediately, with
-      // room:2 excluded entirely — it never got a reply before being
-      // superseded, so it is not reported as attempted-and-failed, only
-      // omitted; generation 2's own settlement below is what reports its
-      // real outcome.
-      await vi.waitFor(() => expect(observer).toHaveBeenCalledTimes(1));
-      expect(observer).toHaveBeenNthCalledWith(1, {
-        generation: 1,
-        attemptedTopics: new Set(["room:1"]),
-        joinedTopics: new Set(["room:1"]),
-      });
+      // An incomplete observation has no outcome. Publishing its partial
+      // success would let reconciliation act on an obsolete socket attempt.
+      expect(observer).not.toHaveBeenCalled();
 
       socket?.channels.get("room:1")?.settleRejoin("ok");
       socket?.channels.get("room:2")?.settleRejoin("ok");
 
-      await vi.waitFor(() => expect(observer).toHaveBeenCalledTimes(2));
-      expect(observer).toHaveBeenNthCalledWith(2, {
+      await vi.waitFor(() => expect(observer).toHaveBeenCalledTimes(1));
+      expect(observer).toHaveBeenNthCalledWith(1, {
         generation: 2,
         attemptedTopics: new Set(["room:1", "room:2"]),
         joinedTopics: new Set(["room:1", "room:2"]),

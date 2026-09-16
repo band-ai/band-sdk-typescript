@@ -36,7 +36,7 @@ describe("ReconnectGenerationTracker", () => {
     });
   });
 
-  it("finalizes a superseded generation with what settled before the drop, so nothing awaiting it hangs, without reporting its still-pending topic as failed", () => {
+  it("drops a superseded generation without publishing a partial recovery snapshot", () => {
     const onSettled = vi.fn();
     const onGenerationDropped = vi.fn();
     const tracker = new ReconnectGenerationTracker(onSettled, onGenerationDropped);
@@ -48,26 +48,18 @@ describe("ReconnectGenerationTracker", () => {
 
     expect(onGenerationDropped).toHaveBeenCalledTimes(1);
     expect(onGenerationDropped).toHaveBeenCalledWith(first, 1);
-    expect(onSettled).toHaveBeenCalledTimes(1);
-    // "chat:b" never got a reply before being superseded — that's not a
-    // failure, so it's omitted from attemptedTopics entirely rather than
-    // reported as attempted-but-not-joined.
-    expect(onSettled).toHaveBeenNthCalledWith(1, {
-      generation: first,
-      attemptedTopics: new Set(["chat:a"]),
-      joinedTopics: new Set(["chat:a"]),
-    });
+    expect(onSettled).not.toHaveBeenCalled();
 
     // A stray settlement for the dropped generation's topic is now a no-op:
     // recordSettled always targets the current generation, and "chat:b"
     // was never attempted there.
     tracker.recordSettled("chat:b", true);
-    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(onSettled).not.toHaveBeenCalled();
 
     // The current generation still finalizes normally on its own topics.
     tracker.recordSettled("chat:c", true);
-    expect(onSettled).toHaveBeenCalledTimes(2);
-    expect(onSettled).toHaveBeenNthCalledWith(2, {
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(onSettled).toHaveBeenNthCalledWith(1, {
       generation: second,
       attemptedTopics: new Set(["chat:c"]),
       joinedTopics: new Set(["chat:c"]),

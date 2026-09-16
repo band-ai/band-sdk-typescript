@@ -29,6 +29,36 @@ function wireMessage(id: string, content: string) {
  * against Phoenix's actual rejoin mechanics, not just our model of them.
  */
 describe("Phoenix reconnect (real wire)", () => {
+  it("rejects an in-flight join when disconnect removes its real Phoenix reply route", async () => {
+    const peer = await FakePhoenixPeer.start();
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: peer.url,
+      apiKey: "test-key",
+      reconnectAfterMs: () => 10,
+    });
+    const topic = "room:pending-disconnect";
+
+    try {
+      await transport.connect();
+      peer.queueJoinOutcomes(topic, ["pending"]);
+      const join = transport.join(topic, {});
+
+      await vi.waitFor(
+        () =>
+          expect(peer.receivedEvents).toEqual(
+            expect.arrayContaining([{ topic, event: "phx_join" }]),
+          ),
+        { timeout: 5000 },
+      );
+
+      await transport.disconnect();
+      await expect(join).rejects.toThrow("superseded by transport disconnect");
+    } finally {
+      await transport.disconnect().catch(() => undefined);
+      await peer.stop();
+    }
+  }, 10_000);
+
   it("publishes the recovery boundary before a message delivered by a rejoined room", async () => {
     const peer = await FakePhoenixPeer.start();
     const transport = new PhoenixChannelsTransport({
@@ -136,6 +166,63 @@ describe("Phoenix reconnect (real wire)", () => {
       await expect(
         manager.subscribeRoom("room-1", { chat: {}, participants: {} }),
       ).resolves.toBeUndefined();
+    } finally {
+      await transport.disconnect().catch(() => undefined);
+      await peer.stop();
+    }
+  }, 10_000);
+
+  it("does not leave a room when a second reconnect supersedes unanswered rejoins", async () => {
+    const peer = await FakePhoenixPeer.start();
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: peer.url,
+      apiKey: "test-key",
+      reconnectAfterMs: () => 10,
+    });
+    const manager = new SubscriptionManager({ transport });
+    transport.onReconnected((snapshot) => manager.reconcileReconnect(snapshot));
+    const chatTopic = chatRoomTopic("room-1");
+    const participantsTopic = roomParticipantsTopic("room-1");
+
+    try {
+      await transport.connect();
+      await manager.subscribeRoom("room-1", { chat: {}, participants: {} });
+
+      peer.queueJoinOutcomes(chatTopic, ["pending"]);
+      peer.queueJoinOutcomes(participantsTopic, ["pending"]);
+      peer.receivedEvents.length = 0;
+      peer.severAllConnections();
+
+      await vi.waitFor(
+        () =>
+          expect(peer.receivedEvents).toEqual(
+            expect.arrayContaining([
+              { topic: chatTopic, event: "phx_join" },
+              { topic: participantsTopic, event: "phx_join" },
+            ]),
+          ),
+        { timeout: 5000 },
+      );
+
+      peer.severAllConnections();
+      await vi.waitFor(
+        () =>
+          expect(
+            peer.receivedEvents.filter(
+              (event) => event.event === "phx_join" && event.topic === chatTopic,
+            ),
+          ).toHaveLength(2),
+        { timeout: 5000 },
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(
+        peer.receivedEvents.filter(
+          (event) =>
+            event.event === "phx_leave" &&
+            (event.topic === chatTopic || event.topic === participantsTopic),
+        ),
+      ).toEqual([]);
     } finally {
       await transport.disconnect().catch(() => undefined);
       await peer.stop();
