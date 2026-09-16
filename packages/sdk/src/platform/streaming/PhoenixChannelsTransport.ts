@@ -1,7 +1,6 @@
 import { Channel, Socket } from "phoenix";
 import { TransportError } from "../../core/errors";
-import type { Logger } from "../../core/logger";
-import { NoopLogger } from "../../core/logger";
+import { resolveLogger, type Logger } from "../../core/logger";
 import {
   WebSocketDisconnectError,
   genericCloseReason,
@@ -52,7 +51,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private suppressNextCloseReason = false;
 
   public constructor(options: PhoenixChannelsTransportOptions) {
-    this.logger = options.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options.logger);
     this.agentId = options.agentId;
     this.onTerminalDisconnect = options.onTerminalDisconnect;
 

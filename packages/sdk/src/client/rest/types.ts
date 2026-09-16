@@ -19,6 +19,20 @@ import type {
   ToolOperationResult,
 } from "../../contracts/dtos";
 
+// The Fern-generated `@band-ai/rest-client` mention item type has widened
+// over time (e.g. `id` became optional once `handle`-only mentions were
+// supported), while our own `MentionReference` DTO keeps `id` required for
+// callers of the SDK's public surface. `FernMentionRequestItem` mirrors the
+// generated client's looser shape so `FernBandClientLike` stays structurally
+// compatible with the real `BandClient` regardless of which identifying
+// field the generated type currently requires.
+export interface FernMentionRequestItem {
+  id?: string;
+  handle?: string;
+  name?: string;
+  kind?: string;
+}
+
 export interface AgentIdentity {
   id: string;
   name: string;
@@ -353,7 +367,7 @@ export interface FernBandClientLike {
           content: string;
           message_type?: string;
           metadata?: MetadataMap;
-          mentions?: MentionReference[];
+          mentions?: FernMentionRequestItem[];
         };
       },
       options?: RestRequestOptions,
@@ -392,7 +406,7 @@ export interface FernBandClientLike {
           content: string;
           message_type?: string;
           metadata?: MetadataMap;
-          mentions?: MentionReference[];
+          mentions?: FernMentionRequestItem[];
         };
       },
       options?: RestRequestOptions,
@@ -439,7 +453,7 @@ export interface FernBandClientLike {
           content: string;
           message_type?: string;
           metadata?: MetadataMap;
-          mentions?: MentionReference[];
+          mentions?: FernMentionRequestItem[];
         };
       },
       options?: RestRequestOptions,

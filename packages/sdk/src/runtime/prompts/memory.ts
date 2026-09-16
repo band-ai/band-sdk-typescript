@@ -44,6 +44,7 @@ function longTermPattern(
 }
 
 const COMMON_MEMORY_PATTERNS = [
+  longTermPattern("Private notes for this agent only", MEMORY_TYPE.semantic, MEMORY_SEGMENT.guideline, MEMORY_STORE_SCOPE.agent),
   longTermPattern("Facts learned about a specific agent/entity", MEMORY_TYPE.semantic, MEMORY_SEGMENT.agent, MEMORY_STORE_SCOPE.subject),
   longTermPattern("Events involving a specific person/agent", MEMORY_TYPE.episodic, MEMORY_SEGMENT.agent, MEMORY_STORE_SCOPE.subject),
   longTermPattern("A user's preferences or profile info", MEMORY_TYPE.semantic, MEMORY_SEGMENT.user, MEMORY_STORE_SCOPE.subject),
@@ -59,7 +60,9 @@ const MEMORY_COMMON_PATTERNS = [
   ...COMMON_MEMORY_PATTERNS.map(renderMemoryPattern),
 ].join("\n");
 
-const MEMORY_SCOPE_GUIDANCE = `Prefer \`scope="${MEMORY_STORE_SCOPE.subject}"\` whenever the memory is about a specific person or agent, so it
+const MEMORY_SCOPE_GUIDANCE = `Use \`scope="${MEMORY_STORE_SCOPE.agent}"\` for information private to this agent that is not about an
+identified subject. Omitting \`scope\` and \`subject_id\` on store defaults to agent scope on the platform.
+Prefer \`scope="${MEMORY_STORE_SCOPE.subject}"\` whenever the memory is about a specific person or agent, so it
 stays attached to that subject rather than leaking org-wide. Storing with \`scope="${MEMORY_STORE_SCOPE.subject}"\` requires a
 real \`subject_id\` UUID, so resolve it first via \`band_lookup_peers\` or the participant list.
 Reserve \`scope="${MEMORY_STORE_SCOPE.organization}"\` for knowledge that is genuinely shared across the whole organization and

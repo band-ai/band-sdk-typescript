@@ -83,7 +83,7 @@ export function setBandAccountConfig(
   channels[BAND_CHANNEL_ID] = channel;
   // Also make the Band + message tools visible so the operator doesn't have to
   // hand-edit tools.alsoAllow after adding the account.
-  return ensureBandToolsAllowed({ ...(cfg as object), channels } as OpenClawConfig);
+  return ensureBandToolsAllowed({ ...(cfg as object), channels });
 }
 
 function isConfigured(cfg: OpenClawConfig, accountId?: string): boolean {
@@ -187,6 +187,6 @@ export const bandSetupWizard: ChannelSetupWizard = {
     const view = cfg as unknown as ConfigWithBandChannel;
     const channels = { ...(view.channels ?? {}) };
     channels[BAND_CHANNEL_ID] = { ...(channels[BAND_CHANNEL_ID] ?? {}), enabled: false };
-    return { ...(cfg as object), channels } as OpenClawConfig;
+    return { ...(cfg as object), channels };
   },
 };

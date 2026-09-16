@@ -10,7 +10,7 @@ import {
   type OAuthAppWebhookPayload,
 } from "@linear/sdk/webhooks";
 
-import { NoopLogger, type Logger } from "../../core/logger";
+import { resolveLogger, type Logger } from "../../core/logger";
 import { handleAppUserNotification } from "./notification";
 import { postError, postThought } from "./activities";
 import {
@@ -70,7 +70,7 @@ type DispatchAttemptResult =
 export function createInlineLinearBridgeDispatcher(
   options?: { logger?: Logger },
 ): LinearBridgeDispatcher {
-  const logger = options?.logger ?? new NoopLogger();
+  const logger = resolveLogger(options?.logger);
   const runtime = createLinearBridgeRuntime();
 
   return {
@@ -119,7 +119,7 @@ export function createInlineLinearBridgeDispatcher(
 export function createInProcessLinearBridgeDispatcher(
   options?: { logger?: Logger },
 ): LinearBridgeDispatcher {
-  const logger = options?.logger ?? new NoopLogger();
+  const logger = resolveLogger(options?.logger);
   const runtime = createLinearBridgeRuntime();
   const queued = new Set<string>();
   const inFlight = new Set<Promise<void>>();
@@ -212,7 +212,7 @@ export function createInProcessLinearBridgeDispatcher(
 export function createLinearWebhookHandler(
   options: CreateLinearWebhookHandlerOptions,
 ): (request: IncomingMessage, response: ServerResponse) => Promise<void> {
-  const logger = options.deps.logger ?? new NoopLogger();
+  const logger = resolveLogger(options.deps.logger);
   const runtime = createLinearBridgeRuntime();
   const dispatcher = options.dispatcher ?? createInlineLinearBridgeDispatcher({ logger });
   const webhookClient = new LinearWebhookClient(options.config.linearWebhookSecret);
@@ -244,14 +244,14 @@ export function createLinearWebhookHandler(
       return;
     }
 
-    const rawBody = await readRawBody(request as NodeRequestWithBody);
+    const rawBody = await readRawBody(request);
     let parsed: { type?: string };
     try {
       parsed = webhookClient.parseData(
         rawBody,
         signature,
         timestamp,
-      ) as { type?: string };
+      );
     } catch (error) {
       logger.warn("linear_thenvoi_bridge.webhook_invalid_signature", {
         error: error instanceof Error ? error.message : String(error),

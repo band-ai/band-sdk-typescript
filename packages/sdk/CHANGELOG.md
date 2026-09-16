@@ -1,6 +1,21 @@
 # Changelog
 
 
+## [0.3.4](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.3.3...sdk-v0.3.4) (2026-09-14)
+
+
+### Bug Fixes
+
+* **acp:** keep a text/thought run open across the other streamed type ([#207](https://github.com/band-ai/band-sdk-typescript/issues/207)) ([bc3ee65](https://github.com/band-ai/band-sdk-typescript/commit/bc3ee65d0b3040e96db4053abad9bb6c64454e98))
+* **sdk:** bump @band-ai/band-sdk-core to latest (2.4.0) ([#193](https://github.com/band-ai/band-sdk-typescript/issues/193)) ([4ea059f](https://github.com/band-ai/band-sdk-typescript/commit/4ea059f05b8d954650f1c496727c696c882084c8))
+
+## [0.3.3](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.3.2...sdk-v0.3.3) (2026-09-13)
+
+
+### Bug Fixes
+
+* **adapters:** coalesce streamed ACP chunks before posting to the room ([#189](https://github.com/band-ai/band-sdk-typescript/issues/189)) ([c0dccf4](https://github.com/band-ai/band-sdk-typescript/commit/c0dccf42cfd4f74ccb71ddd61fb009f2d9a8c74c))
+
 ## [0.3.2](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.3.1...sdk-v0.3.2) (2026-09-08)
 
 

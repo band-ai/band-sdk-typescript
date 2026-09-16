@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { AgentFailure } from "@band-ai/band-sdk-core";
 
 import { ContactCallbackTools } from "../src/runtime/tools/ContactCallbackTools";
 import { ContactToolsImpl } from "../src/runtime/tools/ContactToolsImpl";
@@ -244,6 +245,68 @@ describe("ContactCallbackTools", () => {
         "room-1",
         { content: "hi", messageType: "task" },
       );
+    });
+
+    it("resolves {ok:false} instead of rejecting when createChatEvent fails, matching AgentTools.sendEvent's contract", async () => {
+      const createChatEvent = vi.fn().mockRejectedValue(new Error("Status code: 500"));
+      const tools = new ContactCallbackTools({ createChat: vi.fn(), createChatEvent } as never, "room-1");
+
+      await expect(tools.sendEvent("hi", "task")).resolves.toMatchObject({
+        ok: false,
+        status: "failed",
+        message: "Status code: 500",
+      });
+    });
+  });
+
+  describe("sendFailure", () => {
+    // sendEvent promises never to reject; a caller-supplied logger throwing
+    // while reporting a dropped event must not become that rejection.
+    it("still resolves when the send fails and the logger itself throws", async () => {
+      const createChatEvent = vi.fn().mockRejectedValue(new Error("event rejected"));
+      const logger = {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn: vi.fn(() => {
+          throw new Error("logger exploded");
+        }),
+        error: vi.fn(),
+      };
+      const tools = new ContactCallbackTools(
+        { createChat: vi.fn(), createChatEvent } as never,
+        "room-1",
+        logger,
+      );
+
+      await expect(tools.sendFailure(new AgentFailure("acp", "agent went away"))).resolves.toMatchObject({
+        ok: false,
+        status: "failed",
+      });
+    });
+
+    it("posts an error event whose metadata nests the failure under `failure`", async () => {
+      const createChatEvent = vi.fn().mockResolvedValue({ success: true });
+      const tools = new ContactCallbackTools({ createChat: vi.fn(), createChatEvent } as never, "room-1");
+
+      await tools.sendFailure(new AgentFailure("acp", "agent went away", "timeout", { raw: true }));
+
+      expect(createChatEvent).toHaveBeenCalledWith(
+        "room-1",
+        {
+          content: "agent went away",
+          messageType: "error",
+          metadata: { failure: { provider: "acp", message: "agent went away", code: "timeout", detail: { raw: true } } },
+        },
+      );
+    });
+
+    it("resolves {ok:false} instead of rejecting when the underlying post fails, so a ContactCallbackTools-backed room's sendFailure can never crash the runtime", async () => {
+      const createChatEvent = vi.fn().mockRejectedValue(new Error("Status code: 500"));
+      const tools = new ContactCallbackTools({ createChat: vi.fn(), createChatEvent } as never, "room-1");
+
+      await expect(
+        tools.sendFailure(new AgentFailure("acp", "agent went away")),
+      ).resolves.toMatchObject({ ok: false, status: "failed" });
     });
   });
 
