@@ -23,6 +23,16 @@ const strictTypeCheckedRules = {
   "no-console": ["warn", { allow: ["warn", "error"] }],
 };
 
+const noRawNoopLoggerFallback = {
+  "no-restricted-syntax": [
+    "error",
+    {
+      selector: "LogicalExpression[operator='??'] > NewExpression[callee.name='NoopLogger']",
+      message: "Use resolveLogger() for optional caller-supplied loggers.",
+    },
+  ],
+};
+
 const relaxedRules = {
   ...tseslint.configs["recommended"].rules,
   "@typescript-eslint/no-unused-vars": [
@@ -54,6 +64,11 @@ export default [
       },
     },
     rules: strictTypeCheckedRules,
+  },
+  {
+    files: STRICT_TS_FILES,
+    ignores: ["src/core/logger.ts"],
+    rules: noRawNoopLoggerFallback,
   },
   {
     files: RELAXED_TS_FILES,
