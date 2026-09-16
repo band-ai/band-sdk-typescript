@@ -10,6 +10,18 @@ interface TrackedChannel {
   refs: Array<[string, number]>;
 }
 
+interface PendingJoin extends TrackedChannel {
+  /**
+   * Rejects `doJoin()`'s awaited join outcome directly. Needed because once
+   * a join is abandoned (channel.leave() + removed from the socket), real
+   * Phoenix cancels the join Push's timeout timer and makes its reply
+   * unroutable — so an abandoned join can never settle on its own, and
+   * without this, `doJoin()`'s awaiter would hang forever. Calling it after
+   * the join already settled naturally is a harmless no-op.
+   */
+  reject: (error: Error) => void;
+}
+
 /**
  * Everything a caller needs to decide *how* a joined topic's events and
  * settlements are handled, kept out of the registry itself so it stays a
@@ -60,7 +72,7 @@ export class ChannelRegistry {
   // teardown unnoticed, keep its handlers bound, and could later be
   // resurrected by Phoenix's own reconnect machinery, redelivering live
   // events with no dedup anywhere upstream.
-  private readonly pendingChannels = new Map<string, TrackedChannel>();
+  private readonly pendingChannels = new Map<string, PendingJoin>();
   private readonly joinFlights = new KeyedSingleFlight<void>();
   private readonly leaveFlights = new KeyedSingleFlight<void>();
 
@@ -117,8 +129,6 @@ export class ChannelRegistry {
       refs.push([event, ref]);
     }
 
-    this.pendingChannels.set(topic, { channel, refs });
-
     // Phoenix creates exactly one join `Push` per channel and reuses it for
     // every automatic rejoin (`resend()`), so hooks registered on it now stay
     // attached and fire again on every later settlement — this is the only
@@ -126,6 +136,7 @@ export class ChannelRegistry {
     const joinPush = channel.join();
     try {
       await new Promise<void>((resolve, reject) => {
+        this.pendingChannels.set(topic, { channel, refs, reject });
         joinPush
           .receive("ok", () => {
             this.hooks.onJoinSettled(topic, true);
@@ -147,17 +158,19 @@ export class ChannelRegistry {
       // entry first), or a later join for the same topic may have already
       // taken the slot (teardown also clears `joinFlights`); either way this
       // settlement must not touch state that isn't its own.
-      if (this.forgetPendingChannel(topic, channel)) {
-        this.abandonChannel(channel, refs);
+      const pending = this.forgetPendingChannel(topic, channel);
+      if (pending) {
+        this.abandonChannel(topic, pending);
       }
       throw error;
     }
 
-    const stillPending = this.forgetPendingChannel(topic, channel);
-    if (!stillPending || this.epoch.isStale(epoch)) {
-      if (stillPending) {
-        this.abandonChannel(channel, refs);
+    const pending = this.forgetPendingChannel(topic, channel);
+    if (!pending || this.epoch.isStale(epoch)) {
+      if (pending) {
+        this.abandonChannel(topic, pending);
       }
+      this.logger.debug("Join superseded by transport disconnect/reconnect", { topic });
       throw supersededJoinError(topic);
     }
 
@@ -166,28 +179,36 @@ export class ChannelRegistry {
   }
 
   /**
-   * Removes `topic`'s pendingChannels entry only if it still points at
-   * `channel`, returning whether it did. A topic-keyed delete without this
-   * identity check can drop a *different*, still-genuinely-pending join for
-   * the same topic — reachable because a teardown clears `joinFlights`, so a
-   * later join for a topic whose earlier join is still unsettled is
-   * possible, and that earlier join's eventual (stale) settlement must not
-   * touch a slot it no longer owns.
+   * Removes and returns `topic`'s pendingChannels entry only if it still
+   * points at `channel`. A topic-keyed delete without this identity check
+   * can drop a *different*, still-genuinely-pending join for the same topic
+   * — reachable because a teardown clears `joinFlights`, so a later join for
+   * a topic whose earlier join is still unsettled is possible, and that
+   * earlier join's eventual (stale) settlement must not touch a slot it no
+   * longer owns.
    */
-  private forgetPendingChannel(topic: string, channel: Channel): boolean {
-    if (this.pendingChannels.get(topic)?.channel !== channel) {
-      return false;
+  private forgetPendingChannel(topic: string, channel: Channel): PendingJoin | undefined {
+    const pending = this.pendingChannels.get(topic);
+    if (pending?.channel !== channel) {
+      return undefined;
     }
     this.pendingChannels.delete(topic);
-    return true;
+    return pending;
   }
 
-  private abandonChannel(channel: Channel, refs: Array<[string, number]>): void {
-    for (const [event, ref] of refs) {
-      channel.off(event, ref);
+  /**
+   * Detaches a join's channel and — via `pending.reject` — settles its
+   * still-outstanding join promise directly, so abandoning it can never
+   * leave `doJoin()`'s awaiter hanging on a Phoenix reply that a `leave()`
+   * just made unroutable.
+   */
+  private abandonChannel(topic: string, pending: PendingJoin): void {
+    for (const [event, ref] of pending.refs) {
+      pending.channel.off(event, ref);
     }
-    channel.leave();
-    removeSocketChannel(this.socket, channel);
+    pending.channel.leave();
+    removeSocketChannel(this.socket, pending.channel);
+    pending.reject(supersededJoinError(topic));
   }
 
   public async leave(topic: string): Promise<void> {
@@ -254,8 +275,8 @@ export class ChannelRegistry {
     }
     this.channels.clear();
 
-    for (const { channel, refs } of this.pendingChannels.values()) {
-      this.abandonChannel(channel, refs);
+    for (const [topic, pending] of this.pendingChannels) {
+      this.abandonChannel(topic, pending);
     }
     this.pendingChannels.clear();
 

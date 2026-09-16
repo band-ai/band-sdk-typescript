@@ -10,7 +10,11 @@ interface GenerationRecord {
  * Tracks, per socket-open generation, which topics are still settling and
  * which joined — and reports a finalized snapshot once every topic attempted
  * at that generation's start has settled one way or another (joined, or
- * explicitly removed via `removeTopic`).
+ * explicitly removed via `removeTopic`). A generation forced to finalize
+ * early by a newer one omits its still-pending topics from the snapshot's
+ * `attemptedTopics` entirely, rather than reporting them as failed — they
+ * merely never got a reply before being superseded, and the generation that
+ * superseded them is what will report their real outcome.
  */
 export class ReconnectGenerationTracker {
   private readonly generations = new Map<number, GenerationRecord>();
@@ -32,15 +36,26 @@ export class ReconnectGenerationTracker {
     // than dropping it silently — anything still pending here would
     // otherwise never notify, and a caller awaiting that settlement (e.g. a
     // reconnect barrier keyed to this generation) would hang forever.
+    //
+    // A topic still in `pending` at this point never got a reply before
+    // being superseded — that is not the same as having failed to join, so
+    // it must not be reported as "attempted" here (which reconciliation
+    // reads as "attempted and not joined, therefore failed"). It stays
+    // `attempted` in whichever generation is current when it actually
+    // settles, so that generation's own real outcome drives reconciliation
+    // for it instead.
     for (const staleGeneration of this.generations.keys()) {
       if (staleGeneration < generation) {
         const stale = this.generations.get(staleGeneration);
         if (stale) {
           this.onGenerationDropped?.(staleGeneration, stale.pending.size);
           this.generations.delete(staleGeneration);
+          const settledTopics = new Set(
+            [...stale.attempted].filter((topic) => !stale.pending.has(topic)),
+          );
           this.onSettled({
             generation: staleGeneration,
-            attemptedTopics: stale.attempted,
+            attemptedTopics: settledTopics,
             joinedTopics: stale.joined,
           });
         }

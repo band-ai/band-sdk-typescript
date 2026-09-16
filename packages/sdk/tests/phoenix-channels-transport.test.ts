@@ -537,13 +537,20 @@ describe("PhoenixChannelsTransport", () => {
     const secondChannel = socket?.channels.get("room:late");
     expect(secondChannel).not.toBe(firstChannel);
 
+    // firstJoin already rejected as superseded the moment disconnect()
+    // abandoned it — abandonChannel settles it directly rather than waiting
+    // on a Phoenix reply that leave() just made unroutable.
+    await expect(firstJoin).rejects.toThrow("superseded by transport disconnect");
+
     // The first join's own Push finally settles late with an ERROR — this
     // exercises the identity check in doJoin's catch block (as opposed to
-    // the prior test's post-await success path). It must reject with the
-    // real join failure, not double-abandon its own already-abandoned
-    // channel, and must not touch the second join's still-pending slot.
+    // the prior test's post-await success path). Rejecting an
+    // already-settled promise a second time is a no-op: the real join
+    // failure must not surface, must not double-abandon its own
+    // already-abandoned channel, and must not touch the second join's
+    // still-pending slot.
     firstChannel?.settleRejoin("error");
-    await expect(firstJoin).rejects.toThrow("Failed to join topic room:late");
+    await expect(firstJoin).rejects.toThrow("superseded by transport disconnect");
     expect(firstChannel?.leaveCallCount).toBe(1);
 
     await transport.disconnect();
@@ -1224,11 +1231,14 @@ describe("PhoenixChannelsTransport", () => {
       socket?.emitOpen();
 
       // The superseded first generation is finalized immediately, with
-      // room:2 correctly excluded from its joined set.
+      // room:2 excluded entirely — it never got a reply before being
+      // superseded, so it is not reported as attempted-and-failed, only
+      // omitted; generation 2's own settlement below is what reports its
+      // real outcome.
       await vi.waitFor(() => expect(observer).toHaveBeenCalledTimes(1));
       expect(observer).toHaveBeenNthCalledWith(1, {
         generation: 1,
-        attemptedTopics: new Set(["room:1", "room:2"]),
+        attemptedTopics: new Set(["room:1"]),
         joinedTopics: new Set(["room:1"]),
       });
 

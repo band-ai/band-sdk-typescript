@@ -36,7 +36,7 @@ describe("ReconnectGenerationTracker", () => {
     });
   });
 
-  it("finalizes a superseded generation with what settled before the drop, so nothing awaiting it hangs", () => {
+  it("finalizes a superseded generation with what settled before the drop, so nothing awaiting it hangs, without reporting its still-pending topic as failed", () => {
     const onSettled = vi.fn();
     const onGenerationDropped = vi.fn();
     const tracker = new ReconnectGenerationTracker(onSettled, onGenerationDropped);
@@ -49,9 +49,12 @@ describe("ReconnectGenerationTracker", () => {
     expect(onGenerationDropped).toHaveBeenCalledTimes(1);
     expect(onGenerationDropped).toHaveBeenCalledWith(first, 1);
     expect(onSettled).toHaveBeenCalledTimes(1);
+    // "chat:b" never got a reply before being superseded — that's not a
+    // failure, so it's omitted from attemptedTopics entirely rather than
+    // reported as attempted-but-not-joined.
     expect(onSettled).toHaveBeenNthCalledWith(1, {
       generation: first,
-      attemptedTopics: new Set(["chat:a", "chat:b"]),
+      attemptedTopics: new Set(["chat:a"]),
       joinedTopics: new Set(["chat:a"]),
     });
 

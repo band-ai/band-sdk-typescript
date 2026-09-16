@@ -244,6 +244,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     const epoch = this.epoch.current;
     await this.reconnectBarrier?.promise;
     if (this.epoch.isStale(epoch)) {
+      this.logger.debug("Join superseded by transport disconnect/reconnect", { topic });
       throw supersededJoinError(topic);
     }
 
