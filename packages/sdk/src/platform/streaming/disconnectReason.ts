@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { validateEventPayload } from "@band-ai/band-sdk-core";
 
 export type WebSocketConflictPolicy = "supersede" | "reject";
 export type WebSocketDisconnectSource =
@@ -10,7 +11,7 @@ export interface AgentControlSupersedeDisconnectReason {
   source: "agent_control";
   code: string;
   message: string;
-  retryable: false;
+  retryable: boolean;
   retryAfter: number | null;
   targetSocketId: string | null;
   correlationId: string | null;
@@ -122,29 +123,23 @@ export class WebSocketDisconnectError extends Error {
 export function parseSupersedeDisconnectReason(
   payload: Record<string, unknown>,
 ): AgentControlSupersedeDisconnectReason | null {
-  if (
-    typeof payload.reason !== "string" ||
-    typeof payload.message !== "string"
-  ) {
+  try {
+    const normalized = validateEventPayload("supersede", payload) as Record<
+      string,
+      unknown
+    >;
+    return {
+      source: "agent_control",
+      code: normalized.reason as string,
+      message: normalized.message as string,
+      retryable: normalized.retryable as boolean,
+      retryAfter: normalized.retry_after as number | null,
+      targetSocketId: (normalized.target_socket_id as string | null) ?? null,
+      correlationId: normalized.correlation_id as string | null,
+    };
+  } catch {
     return null;
   }
-
-  return {
-    source: "agent_control",
-    code: payload.reason,
-    message: payload.message,
-    retryable: false,
-    retryAfter:
-      typeof payload.retry_after === "number" ? payload.retry_after : null,
-    targetSocketId:
-      typeof payload.target_socket_id === "string"
-        ? payload.target_socket_id
-        : null,
-    correlationId:
-      typeof payload.correlation_id === "string"
-        ? payload.correlation_id
-        : null,
-  };
 }
 
 export function parseUpgradeDisconnectReason(

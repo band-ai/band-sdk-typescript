@@ -200,7 +200,9 @@ async function emitRoomAdded(transport: FakeTransport, roomId: string): Promise<
     status: "active",
     type: "direct",
     title: "Room",
-    removed_at: "",
+    task_id: null,
+    inserted_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
   });
 }
 

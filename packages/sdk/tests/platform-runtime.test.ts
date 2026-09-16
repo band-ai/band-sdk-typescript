@@ -61,7 +61,7 @@ describe("PlatformRuntime", () => {
 
     await runtime.start(adapter);
 
-    await transport.emit("agent_rooms:a1", "room_added", { id: "room-1", status: "active", type: "direct", title: "Room", removed_at: "" });
+    await transport.emit("agent_rooms:a1", "room_added", { id: "room-1", status: "active", type: "direct", title: "Room", task_id: null, inserted_at: new Date().toISOString(), updated_at: new Date().toISOString() });
     await transport.emit("chat_room:room-1", "message_created", {
       id: "m1",
       content: "hello runtime",
@@ -126,7 +126,7 @@ describe("PlatformRuntime", () => {
     });
     await runtime.start(adapter);
 
-    await transport.emit("agent_rooms:a1", "room_added", { id: "room-1", status: "active", type: "direct", title: "Room", removed_at: "" });
+    await transport.emit("agent_rooms:a1", "room_added", { id: "room-1", status: "active", type: "direct", title: "Room", task_id: null, inserted_at: new Date().toISOString(), updated_at: new Date().toISOString() });
     await transport.emit("chat_room:room-1", "message_created", {
       id: "m1",
       content: "trigger a provider failure",
@@ -204,7 +204,7 @@ describe("PlatformRuntime", () => {
     });
     await runtime.start(adapter);
 
-    await transport.emit("agent_rooms:a1", "room_added", { id: "room-1", status: "active", type: "direct", title: "Room", removed_at: "" });
+    await transport.emit("agent_rooms:a1", "room_added", { id: "room-1", status: "active", type: "direct", title: "Room", task_id: null, inserted_at: new Date().toISOString(), updated_at: new Date().toISOString() });
     await transport.emit("chat_room:room-1", "message_created", {
       id: "m1",
       content: "trigger a delivery failure",
@@ -348,14 +348,18 @@ describe("PlatformRuntime", () => {
       status: "active",
       type: "direct",
       title: "Direct",
-      removed_at: "",
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
     await transport.emit("agent_rooms:a1", "room_added", {
       id: "group-1",
       status: "active",
       type: "group",
       title: "Group",
-      removed_at: "",
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
 
     expect(transport.hasTopic("chat_room:direct-1")).toBe(true);
@@ -389,7 +393,9 @@ describe("PlatformRuntime", () => {
       status: "active",
       type: "direct",
       title: "Room",
-      removed_at: "",
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -430,7 +436,9 @@ describe("PlatformRuntime", () => {
       status: "active",
       type: "direct",
       title: "Room",
-      removed_at: "",
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
     // Admission joins `chat_room` then `room_participants` sequentially
     // (BandLink.joinRoomTopics), so both topics need a tick to settle
@@ -455,6 +463,8 @@ describe("PlatformRuntime", () => {
     });
     await transport.emit("room_participants:room-1", "participant_removed", {
       id: "participant-1",
+      name: "Jane",
+      type: "User",
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -489,7 +499,9 @@ describe("PlatformRuntime", () => {
       status: "active",
       type: "direct",
       title: "Room",
-      removed_at: "",
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -566,7 +578,9 @@ describe("PlatformRuntime", () => {
       status: "active",
       type: "direct",
       title: "Room",
-      removed_at: "",
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
     await transport.emit("chat_room:room-1", "message_created", {
       id: "m-fail",

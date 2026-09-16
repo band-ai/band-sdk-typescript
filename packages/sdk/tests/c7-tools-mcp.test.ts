@@ -9,7 +9,7 @@
  */
 import { describe, it, expect, vi } from "vitest";
 import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { PassThrough } from "node:stream";
 
@@ -347,7 +347,7 @@ describe("P-TOOL-08: completeness — no legacy tool/prefix/server/identifier in
   function scoped(): string[] {
     return execSync("git ls-files", { cwd: REPO_ROOT, encoding: "utf8" })
       .split("\n")
-      .filter((f) => f && !ALLOW_FILE.test(f));
+      .filter((f) => f && existsSync(join(REPO_ROOT, f)) && !ALLOW_FILE.test(f));
   }
 
   it("scans a non-trivial file set (sanity)", () => {

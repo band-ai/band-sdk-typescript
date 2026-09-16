@@ -397,6 +397,35 @@ describe("PhoenixChannelsTransport", () => {
     );
   });
 
+  it("uses Core's normalized nullable supersede fields while remaining terminal", async () => {
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+      agentId: "agent-1",
+    });
+
+    await transport.connect();
+    const socket = phoenixMock.FakeSocket.instances[0];
+    socket?.channels.get("agent_control:agent-1")?.emit("supersede", {
+      reason: "session.already_connected",
+      message: "Superseded by a newer session.",
+      correlation_id: null,
+      retry_after: "not-a-number",
+    });
+
+    expect(transport.getDisconnectReason()).toMatchObject({
+      source: "agent_control",
+      retryable: false,
+      retryAfter: null,
+      targetSocketId: null,
+      correlationId: null,
+    });
+    expect(socket?.reconnectAfterMs?.(1)).toBe(Number.POSITIVE_INFINITY);
+    await expect(transport.runForever(new AbortController().signal)).rejects.toBeInstanceOf(
+      WebSocketDisconnectError,
+    );
+  });
+
   it("rejects runForever waiters on terminal supersede", async () => {
     const transport = new PhoenixChannelsTransport({
       wsUrl: "wss://example.test/socket",
@@ -412,6 +441,7 @@ describe("PhoenixChannelsTransport", () => {
       reason: "session.already_connected",
       message:
         "This connection has been superseded by a newer session for this agent.",
+      correlation_id: null,
     });
 
     await expect(runForever).rejects.toBeInstanceOf(WebSocketDisconnectError);
@@ -577,6 +607,7 @@ describe("PhoenixChannelsTransport", () => {
       reason: "session.already_connected",
       message:
         "This connection has been superseded by a newer session for this agent.",
+      correlation_id: null,
     });
 
     await expect(runForever).rejects.toBeInstanceOf(WebSocketDisconnectError);
@@ -619,10 +650,10 @@ describe("PhoenixChannelsTransport", () => {
 
     socket?.channels.get("agent_rooms:agent-1")?.emit("room_added", {
       id: "room-1",
-      status: "active",
-      type: "direct",
       title: "Room",
-      removed_at: null,
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
     await vi.waitFor(() => {
       expect(socket?.channels.has("chat_room:room-1")).toBe(true);
@@ -645,6 +676,7 @@ describe("PhoenixChannelsTransport", () => {
       reason: "session.already_connected",
       message:
         "This connection has been superseded by a newer session for this agent.",
+      correlation_id: null,
     });
     await expect(runForever).rejects.toBeInstanceOf(WebSocketDisconnectError);
 
