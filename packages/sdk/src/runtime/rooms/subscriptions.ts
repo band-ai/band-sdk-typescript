@@ -3,18 +3,15 @@ import { UnsupportedFeatureError } from "../../core/errors";
 import type { MetadataMap } from "../../contracts/dtos";
 import type { BandLink } from "../../platform/BandLink";
 
-export interface ExistingRoomsOptions {
-  link: BandLink;
-  roomFilter?: (room: MetadataMap) => boolean;
-  onRoom: (roomId: string, payload: MetadataMap) => Promise<void>;
-  requestOptions?: RestRequestOptions;
-  onError?: (error: unknown) => Promise<void> | void;
-}
-
 export interface ListExistingRoomsOptions {
   link: BandLink;
   roomFilter?: (room: MetadataMap) => boolean;
   requestOptions?: RestRequestOptions;
+}
+
+export interface ExistingRoomsOptions extends ListExistingRoomsOptions {
+  onRoom: (roomId: string, payload: MetadataMap) => Promise<void>;
+  onError?: (error: unknown) => Promise<void> | void;
 }
 
 /**

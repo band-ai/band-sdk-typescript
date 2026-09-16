@@ -304,13 +304,18 @@ export class RoomPresence implements AsyncDisposable {
       return;
     }
 
-    await this.unsubscribeRoom(roomId);
-    this.lastSubscribeError.delete(roomId);
+    await this.leaveRoomTracking(roomId);
     if (!this.roster.recordRoomRemoved(roomId)) {
       this.logger.debug("RoomPresence ignoring removal for untracked room", { roomId });
       return;
     }
     await this.onRoomLeft?.(roomId);
+  }
+
+  /** Unsubscribes the transport topic and clears any remembered subscribe failure for `roomId`. */
+  private async leaveRoomTracking(roomId: string): Promise<void> {
+    await this.unsubscribeRoom(roomId);
+    this.lastSubscribeError.delete(roomId);
   }
 
   /**
@@ -320,19 +325,20 @@ export class RoomPresence implements AsyncDisposable {
    * membership reconciliation itself has to wait for the next reconnect.
    */
   private async handleReconnected(event: ReconnectedEvent): Promise<void> {
-    await this.subscribeAgentRoomsChannel("reconnect");
-    await this.subscribeContacts("reconnect");
-
-    let accepted: Map<string, MetadataMap> | null = null;
-    try {
-      accepted = await listExistingRooms({
+    // Independent of each other (no shared state), same as the equivalent
+    // start-up concurrency in `startBody`.
+    const [, , accepted] = await Promise.all([
+      this.subscribeAgentRoomsChannel("reconnect"),
+      this.subscribeContacts("reconnect"),
+      listExistingRooms({
         link: this.link,
         roomFilter: this.roomFilter,
         requestOptions: DEFAULT_REQUEST_OPTIONS,
-      });
-    } catch (error) {
-      this.logger.warn("RoomPresence failed to fetch room snapshot after reconnect", { error });
-    }
+      }).catch((error: unknown): null => {
+        this.logger.warn("RoomPresence failed to fetch room snapshot after reconnect", { error });
+        return null;
+      }),
+    ]);
 
     if (accepted) {
       await this.reconcileRoomsWithSnapshot(accepted);
@@ -354,8 +360,7 @@ export class RoomPresence implements AsyncDisposable {
 
     await Promise.all(
       reconciliation.removed.map(async (roomId) => {
-        await this.unsubscribeRoom(roomId);
-        this.lastSubscribeError.delete(roomId);
+        await this.leaveRoomTracking(roomId);
         await this.onRoomLeft?.(roomId);
       }),
     );

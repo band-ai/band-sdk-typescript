@@ -172,7 +172,10 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     this.unregisterReconnectObserver =
       this.transport.onReconnected?.(async (snapshot) => {
         await this.subscriptionManager.reconcileReconnect(snapshot);
-        if (!this.sessionActive || epoch !== this.sessionEpoch) {
+        // `sessionActive` and `sessionEpoch` always change together (see
+        // `connect`/`connectSession`/`disconnectSession`), so an unchanged
+        // epoch already guarantees the session is still active.
+        if (epoch !== this.sessionEpoch) {
           return;
         }
         this.queueEvent({ type: "reconnected", roomId: null, payload: {} });
@@ -203,7 +206,11 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
 
   private async disconnectSession(): Promise<void> {
     await this.connectFlight.current?.catch(() => undefined);
-    if (!this.sessionActive && !this.unregisterReconnectObserver) {
+    // By now any in-flight connect has fully settled, so `sessionActive`
+    // alone reflects whether there is a session to tear down: every path
+    // that clears `unregisterReconnectObserver` also clears `sessionActive`
+    // in the same step.
+    if (!this.sessionActive) {
       return;
     }
 

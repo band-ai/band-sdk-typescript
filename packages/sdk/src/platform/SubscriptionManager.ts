@@ -234,13 +234,16 @@ export class SubscriptionManager {
     }
   }
 
+  /** Resolves or rejects an idempotent no-op claim (the tracker reported no new ticket to act on). */
+  private settleIdempotentClaim(matched: boolean, describe: () => string): Promise<void> {
+    return matched ? Promise.resolve() : Promise.reject(new RuntimeStateError(describe()));
+  }
+
   private settleIdempotentRoomClaim(roomId: string): Promise<void> {
     const status = this.tracker.roomStatus(roomId);
-    if (status === "subscribed") {
-      return Promise.resolve();
-    }
-    return Promise.reject(
-      new RuntimeStateError(`Room ${roomId} cannot be subscribed while it is "${status}"`),
+    return this.settleIdempotentClaim(
+      status === "subscribed",
+      () => `Room ${roomId} cannot be subscribed while it is "${status}"`,
     );
   }
 
@@ -313,11 +316,9 @@ export class SubscriptionManager {
 
   private settleIdempotentTopicClaim(topic: string): Promise<void> {
     const status = this.tracker.agentTopicStatus(topic);
-    if (status === "joined") {
-      return Promise.resolve();
-    }
-    return Promise.reject(
-      new RuntimeStateError(`Topic ${topic} cannot be joined while it is "${status}"`),
+    return this.settleIdempotentClaim(
+      status === "joined",
+      () => `Topic ${topic} cannot be joined while it is "${status}"`,
     );
   }
 
@@ -404,14 +405,13 @@ export class SubscriptionManager {
 
   private async drainReconciliation(epoch: number): Promise<void> {
     const rooms = [...this.roomsNeedingReconciliation];
-    const roomLeaveResults = await Promise.allSettled(
-      rooms.map((roomId) => this.leaveRoomTopicsCleanly(roomId)),
-    );
-
     const topics = [...this.agentTopicsNeedingReconciliation];
-    const topicLeaveResults = await Promise.allSettled(
-      topics.map((topic) => this.transport.leave(topic)),
-    );
+    // Disjoint key spaces (room ids vs. topic names) with no shared state
+    // between them, so both cleanup sweeps run concurrently.
+    const [roomLeaveResults, topicLeaveResults] = await Promise.all([
+      Promise.allSettled(rooms.map((roomId) => this.leaveRoomTopicsCleanly(roomId))),
+      Promise.allSettled(topics.map((topic) => this.transport.leave(topic))),
+    ]);
 
     if (epoch !== this.sessionEpoch) {
       // The session ended mid-cleanup; a new session starts with empty
@@ -424,27 +424,40 @@ export class SubscriptionManager {
       return;
     }
 
-    rooms.forEach((roomId, index) => {
-      if (roomLeaveResults[index]?.status !== "fulfilled") {
-        this.logger.warn("Room reconciliation cleanup failed, retrying on next reconnect", {
-          roomId,
-        });
-        return;
-      }
-      if (this.tracker.acknowledgeRoomReconciled(roomId)) {
-        this.roomsNeedingReconciliation.delete(roomId);
-      }
+    this.acknowledgeCleanup({
+      ids: rooms,
+      results: roomLeaveResults,
+      pending: this.roomsNeedingReconciliation,
+      acknowledge: (roomId) => this.tracker.acknowledgeRoomReconciled(roomId),
+      failureMessage: "Room reconciliation cleanup failed, retrying on next reconnect",
+      logContext: (roomId) => ({ roomId }),
     });
 
-    topics.forEach((topic, index) => {
-      if (topicLeaveResults[index]?.status !== "fulfilled") {
-        this.logger.warn("Agent topic reconciliation cleanup failed, retrying on next reconnect", {
-          topic,
-        });
+    this.acknowledgeCleanup({
+      ids: topics,
+      results: topicLeaveResults,
+      pending: this.agentTopicsNeedingReconciliation,
+      acknowledge: (topic) => this.tracker.acknowledgeAgentTopicReconciled(topic),
+      failureMessage: "Agent topic reconciliation cleanup failed, retrying on next reconnect",
+      logContext: (topic) => ({ topic }),
+    });
+  }
+
+  private acknowledgeCleanup(options: {
+    ids: string[];
+    results: PromiseSettledResult<void>[];
+    pending: Set<string>;
+    acknowledge: (id: string) => boolean;
+    failureMessage: string;
+    logContext: (id: string) => Record<string, unknown>;
+  }): void {
+    options.ids.forEach((id, index) => {
+      if (options.results[index]?.status !== "fulfilled") {
+        this.logger.warn(options.failureMessage, options.logContext(id));
         return;
       }
-      if (this.tracker.acknowledgeAgentTopicReconciled(topic)) {
-        this.agentTopicsNeedingReconciliation.delete(topic);
+      if (options.acknowledge(id)) {
+        options.pending.delete(id);
       }
     });
   }

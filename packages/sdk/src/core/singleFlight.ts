@@ -25,3 +25,35 @@ export class SingleFlight<T = void> {
     return this.pending;
   }
 }
+
+/** The same single-slot memoization as {@link SingleFlight}, keyed so unrelated keys run independently. */
+export class KeyedSingleFlight<T = void> {
+  private readonly flights = new Map<string, SingleFlight<T>>();
+
+  /** The currently in-flight operation's promise for `key`, if any is running. */
+  public current(key: string): Promise<T> | null {
+    return this.flights.get(key)?.current ?? null;
+  }
+
+  public run(key: string, start: () => Promise<T>): Promise<T> {
+    let flight = this.flights.get(key);
+    if (!flight) {
+      flight = new SingleFlight<T>();
+      this.flights.set(key, flight);
+    }
+
+    const promise = flight.run(start);
+    const forget = (): void => {
+      if (this.flights.get(key) === flight && !flight.current) {
+        this.flights.delete(key);
+      }
+    };
+    void promise.then(forget, forget);
+    return promise;
+  }
+
+  /** Drops every key without waiting for its in-flight operation to settle. */
+  public clear(): void {
+    this.flights.clear();
+  }
+}

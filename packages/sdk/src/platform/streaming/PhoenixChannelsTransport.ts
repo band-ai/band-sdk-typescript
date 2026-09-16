@@ -2,6 +2,7 @@ import { Channel, Socket } from "phoenix";
 import { TransportError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { combineTeardownErrors } from "../../core/teardown";
+import { KeyedSingleFlight, SingleFlight } from "../../core/singleFlight";
 import {
   WebSocketDisconnectError,
   genericCloseReason,
@@ -46,9 +47,14 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private readonly agentId?: string;
   private readonly channels = new Map<string, Channel>();
   private readonly channelRefs = new Map<string, Array<[string, number]>>();
-  private readonly pendingJoins = new Map<string, Promise<void>>();
-  private readonly pendingLeaves = new Map<string, Promise<void>>();
+  private readonly joinFlights = new KeyedSingleFlight<void>();
+  private readonly leaveFlights = new KeyedSingleFlight<void>();
   private readonly reconnectObservers = new Set<ReconnectObserver>();
+  // Topics whose event delivery must never wait behind a reconnect buffering
+  // window, populated once per topic by whichever internal call site joins
+  // it (currently only the mandatory agent_control channel) rather than
+  // re-derived by name comparison on every delivered event.
+  private readonly bufferingExemptTopics = new Set<string>();
   private readonly generationTracker = new ReconnectGenerationTracker(
     (snapshot) => this.notifyReconnectObservers(snapshot),
     (generation, pendingTopics) =>
@@ -178,8 +184,8 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     }
     this.channels.clear();
     this.channelRefs.clear();
-    this.pendingJoins.clear();
-    this.pendingLeaves.clear();
+    this.joinFlights.clear();
+    this.leaveFlights.clear();
     this.hasOpenedOnce = false;
     this.bufferingGeneration = null;
     this.resolveReconnectBarrier?.();
@@ -215,7 +221,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       return;
     }
 
-    const pendingJoin = this.pendingJoins.get(topic);
+    const pendingJoin = this.joinFlights.current(topic);
     if (pendingJoin) {
       return pendingJoin;
     }
@@ -229,25 +235,12 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     if (this.channels.has(topic)) {
       return;
     }
-    const resumedPendingJoin = this.pendingJoins.get(topic);
+    const resumedPendingJoin = this.joinFlights.current(topic);
     if (resumedPendingJoin) {
       return resumedPendingJoin;
     }
 
-    return this.coalesce(this.pendingJoins, topic, () => this.doJoin(topic, handlers));
-  }
-
-  /** Runs `start()` once per key, sharing its promise with any concurrent caller until it settles. */
-  private coalesce(pending: Map<string, Promise<void>>, key: string, start: () => Promise<void>): Promise<void> {
-    const promise = start();
-    pending.set(key, promise);
-    const cleanup = (): void => {
-      if (pending.get(key) === promise) {
-        pending.delete(key);
-      }
-    };
-    void promise.then(cleanup, cleanup);
-    return promise;
+    return this.joinFlights.run(topic, () => this.doJoin(topic, handlers));
   }
 
   private async doJoin(topic: string, handlers: TopicHandlers): Promise<void> {
@@ -274,10 +267,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
           }
         };
 
-        if (
-          this.bufferingGeneration !== null &&
-          topic !== (this.agentId ? agentControlTopic(this.agentId) : null)
-        ) {
+        if (this.bufferingGeneration !== null && !this.bufferingExemptTopics.has(topic)) {
           this.bufferedTopicEvents.push({ topic, deliver });
         } else {
           deliver();
@@ -331,7 +321,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   public async leave(topic: string): Promise<void> {
-    const pendingLeave = this.pendingLeaves.get(topic);
+    const pendingLeave = this.leaveFlights.current(topic);
     if (pendingLeave) {
       return pendingLeave;
     }
@@ -341,7 +331,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       return;
     }
 
-    return this.coalesce(this.pendingLeaves, topic, () => this.doLeave(topic, channel));
+    return this.leaveFlights.run(topic, () => this.doLeave(topic, channel));
   }
 
   private async doLeave(topic: string, channel: Channel): Promise<void> {
@@ -519,7 +509,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       return;
     }
 
-    await this.join(agentControlTopic(this.agentId), {
+    const topic = agentControlTopic(this.agentId);
+    this.bufferingExemptTopics.add(topic);
+    await this.join(topic, {
       supersede: (payload) => {
         const reason = parseSupersedeDisconnectReason(payload);
         if (!reason) {
