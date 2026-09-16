@@ -1102,6 +1102,32 @@ describe("PhoenixChannelsTransport", () => {
       await vi.waitFor(() => expect(order).toEqual(["reconnected", "message"]));
     });
 
+    it("delivers events for any buffering-exempt topic before reconnect reconciliation settles", async () => {
+      const transport = new PhoenixChannelsTransport({
+        wsUrl: "wss://example.test/socket",
+        apiKey: "key-1",
+      });
+      const delivered: string[] = [];
+
+      await transport.connect();
+      await transport.join("room:held", {});
+      await transport.join(
+        "room:exempt",
+        {
+          message_created: () => {
+            delivered.push("message");
+          },
+        },
+        { exemptFromBuffering: true },
+      );
+
+      const socket = phoenixMock.FakeSocket.instances[0];
+      socket?.emitOpen();
+      socket?.channels.get("room:exempt")?.emit("message_created", {});
+
+      expect(delivered).toEqual(["message"]);
+    });
+
     it("holds a replacement join until reconnect reconciliation completes", async () => {
       const transport = new PhoenixChannelsTransport({
         wsUrl: "wss://example.test/socket",

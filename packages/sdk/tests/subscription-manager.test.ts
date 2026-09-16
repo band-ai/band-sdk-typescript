@@ -317,6 +317,27 @@ describe("SubscriptionManager", () => {
       expect(transport.joinCountOf(topic)).toBe(1);
     });
 
+    it("keeps a late failed agent topic join from poisoning a new session", async () => {
+      const transport = new FakeTransport();
+      const manager = new SubscriptionManager({ transport });
+      const topic = agentRoomsTopic("agent-1");
+      transport.failJoin(topic);
+      const release = transport.gateJoin(topic);
+
+      const staleSubscribe = manager.subscribeAgentTopic(topic, NO_HANDLERS);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      manager.endSession();
+      release();
+
+      await expect(staleSubscribe).rejects.toThrow("join failed");
+
+      transport.clearJoinFailure(topic);
+      transport.joinCalls.length = 0;
+      await expect(manager.subscribeAgentTopic(topic, NO_HANDLERS)).resolves.toBeUndefined();
+      expect(transport.joinCountOf(topic)).toBe(1);
+    });
+
     it("clears in-flight operations so a new session's calls are not coalesced against the old one", async () => {
       const transport = new FakeTransport();
       const manager = new SubscriptionManager({ transport });
