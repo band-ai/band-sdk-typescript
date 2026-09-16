@@ -27,15 +27,23 @@ export class ReconnectGenerationTracker {
 
     // A generation superseded by this newer one will never receive another
     // settlement for its stragglers (Phoenix rebinds each rejoined push's
-    // reply listener on `resend()`, so a stale reply can no longer arrive) —
-    // drop it now rather than leaking it forever.
+    // reply listener on `resend()`, so a stale reply can no longer arrive).
+    // Finalize it now with whatever settled before it was superseded, rather
+    // than dropping it silently — anything still pending here would
+    // otherwise never notify, and a caller awaiting that settlement (e.g. a
+    // reconnect barrier keyed to this generation) would hang forever.
     for (const staleGeneration of this.generations.keys()) {
       if (staleGeneration < generation) {
         const stale = this.generations.get(staleGeneration);
         if (stale) {
           this.onGenerationDropped?.(staleGeneration, stale.pending.size);
+          this.generations.delete(staleGeneration);
+          this.onSettled({
+            generation: staleGeneration,
+            attemptedTopics: stale.attempted,
+            joinedTopics: stale.joined,
+          });
         }
-        this.generations.delete(staleGeneration);
       }
     }
 

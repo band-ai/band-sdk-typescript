@@ -18,9 +18,11 @@ interface TrackedChannel {
  */
 export interface ChannelRegistryHooks {
   /**
-   * Wraps a raw payload handler for `topic`/`event` with whatever delivery
-   * policy the caller wants (e.g. buffering during a reconnect window) and
-   * error containment. Called once per handler when a join starts.
+   * Adapts a raw payload handler for `topic`/`event` into the sync,
+   * void-returning callback Phoenix's `Channel.on` requires, applying
+   * whatever delivery policy the caller wants (e.g. buffering during a
+   * reconnect window) and error containment along the way. Called once per
+   * handler when a join starts.
    */
   wrapHandler(
     topic: string,

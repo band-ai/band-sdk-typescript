@@ -168,7 +168,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   private async connectSession(epoch: number): Promise<void> {
-    this.session.setReconnectObserverTeardown(
+    this.session.reconnectObserverTeardown =
       this.transport.onReconnected?.(async (snapshot) => {
         await this.subscriptionManager.reconcileReconnect(snapshot);
         if (this.session.isStale(epoch)) {
@@ -178,14 +178,19 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
           return;
         }
         this.queueEvent({ type: "reconnected", roomId: null, payload: {} });
-      }) ?? null,
-    );
+      }) ?? null;
 
     try {
       await this.transport.connect();
     } catch (error) {
       this.session.clearReconnectObserver();
       this.session.deactivate();
+      // The failed connect may have already opened the socket and joined
+      // some channels (e.g. agent_control succeeded but a later step threw)
+      // — tear those down too, or they leak until the next successful
+      // connect's disconnect() call, orphaned in Phoenix's own reconnect
+      // machinery with no session left to own them.
+      await this.transport.disconnect().catch(() => undefined);
       this.subscriptionManager.endSession();
       if (error instanceof WebSocketDisconnectError) {
         if (error.reason.retryable) {

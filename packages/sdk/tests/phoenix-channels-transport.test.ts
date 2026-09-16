@@ -1203,7 +1203,7 @@ describe("PhoenixChannelsTransport", () => {
       });
     });
 
-    it("lets a newer open generation supersede an incomplete older settlement", async () => {
+    it("finalizes an incomplete generation superseded by a newer open, so nothing awaiting it hangs, then finalizes the new one too", async () => {
       const transport = new PhoenixChannelsTransport({
         wsUrl: "wss://example.test/socket",
         apiKey: "key-1",
@@ -1219,13 +1219,24 @@ describe("PhoenixChannelsTransport", () => {
       socket?.emitOpen();
       socket?.channels.get("room:1")?.settleRejoin("ok");
       // room:2 never settles for this generation before a second open fires.
+      await new Promise((resolve) => setTimeout(resolve, 0));
 
       socket?.emitOpen();
+
+      // The superseded first generation is finalized immediately, with
+      // room:2 correctly excluded from its joined set.
+      await vi.waitFor(() => expect(observer).toHaveBeenCalledTimes(1));
+      expect(observer).toHaveBeenNthCalledWith(1, {
+        generation: 1,
+        attemptedTopics: new Set(["room:1", "room:2"]),
+        joinedTopics: new Set(["room:1"]),
+      });
+
       socket?.channels.get("room:1")?.settleRejoin("ok");
       socket?.channels.get("room:2")?.settleRejoin("ok");
 
-      await vi.waitFor(() => expect(observer).toHaveBeenCalledTimes(1));
-      expect(observer).toHaveBeenCalledWith({
+      await vi.waitFor(() => expect(observer).toHaveBeenCalledTimes(2));
+      expect(observer).toHaveBeenNthCalledWith(2, {
         generation: 2,
         attemptedTopics: new Set(["room:1", "room:2"]),
         joinedTopics: new Set(["room:1", "room:2"]),

@@ -98,6 +98,24 @@ describe("BandLink event waiting", () => {
     expect(link.isConnected()).toBe(true);
   });
 
+  it("disconnects the transport when connect() fails, so a partially-opened socket/channels don't leak", async () => {
+    const transport = new FakeTransport();
+    transport.failConnect(new Error("boom"));
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      restApi: new FakeRestApi(),
+      transport,
+    });
+
+    await expect(link.connect()).rejects.toThrow("boom");
+    expect(transport.disconnectCount).toBe(1);
+
+    transport.clearConnectFailure();
+    await expect(link.connect()).resolves.toBeUndefined();
+    expect(link.isConnected()).toBe(true);
+  });
+
   it("still tears down local state and clears observers when transport.disconnect() rejects", async () => {
     const transport = new FakeTransport();
     const link = new BandLink({

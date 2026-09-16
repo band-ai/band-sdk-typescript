@@ -17,6 +17,7 @@ import {
 import { createNodeWebSocketFactory } from "./nodeWebSocketFactory";
 import { ReconnectGenerationTracker } from "./ReconnectGenerationTracker";
 import type {
+  JoinOptions,
   ReconnectObserver,
   ReconnectSnapshot,
   StreamingTransport,
@@ -50,10 +51,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private readonly agentId?: string;
   private readonly registry: ChannelRegistry;
   private readonly reconnectObservers = new Set<ReconnectObserver>();
-  // Topics whose event delivery must never wait behind a reconnect buffering
-  // window, populated once per topic by whichever internal call site joins
-  // it (currently only the mandatory agent_control channel) rather than
-  // re-derived by name comparison on every delivered event.
+  // Topics joined with `{ exemptFromBuffering: true }`, recorded here so
+  // `wrapHandler` can check by name on every delivered event rather than
+  // threading the flag through the channel/handler plumbing.
   private readonly bufferingExemptTopics = new Set<string>();
   private readonly generationTracker = new ReconnectGenerationTracker(
     (snapshot) => this.notifyReconnectObservers(snapshot),
@@ -121,15 +121,11 @@ export class PhoenixChannelsTransport implements StreamingTransport {
 
     this.registry = new ChannelRegistry(this.socket, this.epoch, this.logger, {
       wrapHandler: (topic, event, handler) => (payload) => {
+        const reportError = (error: unknown): void => {
+          this.logger.error("Unhandled topic handler error", { topic, event, error });
+          this.onHandlerError?.(error);
+        };
         const deliver = (): void => {
-          const reportError = (error: unknown): void => {
-            this.logger.error("Unhandled topic handler error", {
-              topic,
-              event,
-              error,
-            });
-            this.onHandlerError?.(error);
-          };
           try {
             void Promise.resolve(handler(payload)).catch(reportError);
           } catch (error) {
@@ -235,7 +231,11 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     return this.lastDisconnectReason;
   }
 
-  public async join(topic: string, handlers: TopicHandlers): Promise<void> {
+  public async join(topic: string, handlers: TopicHandlers, options?: JoinOptions): Promise<void> {
+    if (options?.exemptFromBuffering) {
+      this.bufferingExemptTopics.add(topic);
+    }
+
     const existing = this.registry.existingJoin(topic);
     if (existing) {
       return existing;
@@ -398,19 +398,22 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     }
 
     const topic = agentControlTopic(this.agentId);
-    this.bufferingExemptTopics.add(topic);
-    await this.join(topic, {
-      supersede: (payload) => {
-        const reason = parseSupersedeDisconnectReason(payload);
-        if (!reason) {
-          this.logger.warn("Invalid agent_control supersede payload", {
-            payload,
-          });
-          return;
-        }
-        this.recordTerminalDisconnect(reason);
+    await this.join(
+      topic,
+      {
+        supersede: (payload) => {
+          const reason = parseSupersedeDisconnectReason(payload);
+          if (!reason) {
+            this.logger.warn("Invalid agent_control supersede payload", {
+              payload,
+            });
+            return;
+          }
+          this.recordTerminalDisconnect(reason);
+        },
       },
-    });
+      { exemptFromBuffering: true },
+    );
   }
 
   private recordSocketClose(event?: { code?: number; reason?: string }): void {

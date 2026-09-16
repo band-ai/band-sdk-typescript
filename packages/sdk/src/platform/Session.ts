@@ -10,7 +10,13 @@ import { Epoch } from "../core/epoch";
 export class Session {
   private readonly epoch = new Epoch();
   private active = false;
-  private unregisterReconnectObserver: (() => void) | null = null;
+
+  /**
+   * Teardown for whatever reconnect observer this session registered on the
+   * transport — a plain field since a caller just assigns whatever
+   * `onReconnected()` handed back (or `null` if the transport has none).
+   */
+  public reconnectObserverTeardown: (() => void) | null = null;
 
   public get isActive(): boolean {
     return this.active;
@@ -33,12 +39,8 @@ export class Session {
     this.epoch.bump();
   }
 
-  public setReconnectObserverTeardown(unregister: (() => void) | null): void {
-    this.unregisterReconnectObserver = unregister;
-  }
-
   public clearReconnectObserver(): void {
-    this.unregisterReconnectObserver?.();
-    this.unregisterReconnectObserver = null;
+    this.reconnectObserverTeardown?.();
+    this.reconnectObserverTeardown = null;
   }
 }
