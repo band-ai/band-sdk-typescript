@@ -262,7 +262,7 @@ export class GeminiToolCallingModel implements ToolCallingModel {
 
 function asFunctionResponsePayload(result: ToolResult): Record<string, unknown> {
   if (result.output && typeof result.output === "object" && !Array.isArray(result.output)) {
-    return { output: result.output as Record<string, unknown> };
+    return { output: result.output };
   }
 
   return { output: toWireString(result.output) };

@@ -947,7 +947,11 @@ describe("PlatformRuntime", () => {
 
     await runtime.initialize();
 
-    expect((runtime.link as unknown as { logger: unknown }).logger).toBe(spyLogger);
+    const logger = (runtime.link as unknown as { logger: { error(message: string): void } }).logger;
+    logger.error("test");
+
+    expect(spyLogger.error).toHaveBeenCalledWith("test", undefined);
+    expect(linkLogger.error).not.toHaveBeenCalled();
   });
 
   it("preserves a BandLink logger when no runtime logger is configured", async () => {
@@ -969,6 +973,9 @@ describe("PlatformRuntime", () => {
 
     await runtime.initialize();
 
-    expect((runtime.link as unknown as { logger: unknown }).logger).toBe(linkLogger);
+    const logger = (runtime.link as unknown as { logger: { error(message: string): void } }).logger;
+    logger.error("test");
+
+    expect(linkLogger.error).toHaveBeenCalledWith("test", undefined);
   });
 });

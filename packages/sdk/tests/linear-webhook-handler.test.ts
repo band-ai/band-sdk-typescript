@@ -13,6 +13,7 @@ import {
   type SessionRoomRecord,
   type SessionRoomStore,
 } from "../src/linear";
+import type { Logger } from "../src/core/logger";
 import { LinearBandExampleRestApi } from "../examples/linear-band/linear-band-rest-stub";
 
 class MemorySessionRoomStore implements SessionRoomStore {
@@ -114,7 +115,11 @@ function sign(secret: string, rawBody: string): string {
   return createHmac("sha256", secret).update(rawBody).digest("hex");
 }
 
-async function startServer(dispatcher?: LinearBridgeDispatcher, permissionCallbacks?: PermissionChangeCallbacks) {
+async function startServer(
+  dispatcher?: LinearBridgeDispatcher,
+  permissionCallbacks?: PermissionChangeCallbacks,
+  logger?: Logger,
+) {
   const store = new MemorySessionRoomStore();
   const linearClient = {
     createAgentActivity: vi.fn(async () => ({ ok: true })),
@@ -131,6 +136,7 @@ async function startServer(dispatcher?: LinearBridgeDispatcher, permissionCallba
       bandRest: new LinearBandExampleRestApi(),
       linearClient: linearClient as never,
       store,
+      logger,
     },
   });
 
@@ -224,6 +230,26 @@ function makeOAuthAppRevokedPayload() {
 }
 
 describe("createLinearWebhookHandler", () => {
+  it("returns the intended invalid-method response when the caller logger throws", async () => {
+    const logger: Logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(() => {
+        throw new Error("logger is broken");
+      }),
+      error: vi.fn(),
+    };
+    const { url } = await startServer(undefined, undefined, logger);
+
+    const response = await fetch(url, { method: "GET" });
+
+    expect(response.status).toBe(405);
+    await expect(response.text()).resolves.toBe("Method not allowed");
+    expect(logger.warn).toHaveBeenCalledWith("linear_thenvoi_bridge.webhook_invalid_method", {
+      method: "GET",
+    });
+  });
+
   it("verifies the payload, posts acknowledgment, and dispatches async work", async () => {
     const queued = new Set<string>();
     const dispatcher = {
