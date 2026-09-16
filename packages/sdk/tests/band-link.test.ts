@@ -97,6 +97,7 @@ describe("BandLink event waiting", () => {
       message_type: "text",
       sender_id: "sender-1",
       sender_type: "Agent",
+      chat_room_id: 42,
       inserted_at: "2026-01-01T00:00:01Z",
       updated_at: "2026-01-01T00:00:01Z",
       server_extra: "kept",
@@ -114,6 +115,7 @@ describe("BandLink event waiting", () => {
       attachments: [],
       metadata: { mentions: [] },
       server_extra: "kept",
+      chat_room_id: 42,
     });
     expect(message?.raw).toMatchObject({ server_extra: "kept" });
 
@@ -183,6 +185,31 @@ describe("BandLink event waiting", () => {
     });
   });
 
+  it("delivers Core's compact room payloads", async () => {
+    const transport = new ControllableTransport();
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      restApi: new FakeRestApi(),
+      transport,
+    });
+    await link.subscribeAgentRooms();
+
+    for (const event of ["room_added", "room_removed"] as const) {
+      transport.emit("agent_rooms:agent-1", event, {
+        id: "room-compact",
+        inserted_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+      });
+      const received = await link.nextEvent();
+      expect(received).toMatchObject({ type: event, payload: { id: "room-compact" } });
+      if (received?.type === event) {
+        expect(received.payload.title).toBeUndefined();
+        expect(received.payload.task_id).toBeUndefined();
+      }
+    }
+  });
+
   it("preserves Core's compact and nullable contact payloads", async () => {
     const transport = new ControllableTransport();
     const link = new BandLink({
@@ -204,6 +231,7 @@ describe("BandLink event waiting", () => {
       name: null,
       type: "Agent",
       inserted_at: "2026-01-01T00:00:01Z",
+      is_remote: null,
     });
 
     await expect(link.nextEvent()).resolves.toMatchObject({
@@ -212,7 +240,7 @@ describe("BandLink event waiting", () => {
     });
     await expect(link.nextEvent()).resolves.toMatchObject({
       type: "contact_added",
-      payload: { handle: null, name: null },
+      payload: { handle: null, name: null, is_remote: null },
     });
   });
 

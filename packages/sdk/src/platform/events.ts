@@ -16,7 +16,6 @@ export interface MessageCreatedPayload extends Payload {
   sender_id: string;
   sender_type: string;
   sender_name?: string | null;
-  chat_room_id?: string | null;
   inserted_at: string;
   updated_at: string;
 }
@@ -66,8 +65,8 @@ export interface ContactAddedPayload extends Payload {
   name: string | null;
   type: string;
   description?: string | null;
-  is_external?: boolean;
-  is_remote?: boolean;
+  is_external?: boolean | null;
+  is_remote?: boolean | null;
   inserted_at: string;
 }
 
