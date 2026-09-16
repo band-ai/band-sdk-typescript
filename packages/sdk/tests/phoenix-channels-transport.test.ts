@@ -143,6 +143,7 @@ const phoenixMock = vi.hoisted(() => {
     public readonly params: Record<string, unknown>;
     public readonly reconnectAfterMs?: (tries: number) => number;
     public readonly channels = new FakeChannelList();
+    public readonly joinOutcomes = new Map<string, Outcome>();
     public disconnectCount = 0;
     private openHandler: (() => void) | null = null;
     private closeHandler:
@@ -199,6 +200,7 @@ const phoenixMock = vi.hoisted(() => {
 
     public channel(topic: string): FakeChannel {
       const channel = new FakeChannel(topic);
+      channel.joinOutcome = this.joinOutcomes.get(topic) ?? "ok";
       this.channels.push(channel);
       return channel;
     }
@@ -320,6 +322,50 @@ describe("PhoenixChannelsTransport", () => {
         message: async () => {},
       }),
     ).rejects.toBeInstanceOf(TransportError);
+  });
+
+  it("rejects and removes a join that settles after disconnect", async () => {
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+    });
+    await transport.connect();
+
+    const socket = phoenixMock.FakeSocket.instances[0];
+    socket?.joinOutcomes.set("room:late", "pending");
+    const staleJoin = transport.join("room:late", {});
+
+    await transport.disconnect();
+    socket?.joinOutcomes.delete("room:late");
+    await transport.connect();
+    const freshJoin = transport.join("room:late", {});
+    await expect(freshJoin).resolves.toBeUndefined();
+
+    socket?.channels.get("room:late")?.settleRejoin("ok");
+    await expect(staleJoin).rejects.toThrow("superseded by transport disconnect");
+    expect(socket?.channels.has("room:late")).toBe(true);
+  });
+
+  it("forgets local channel ownership when a disconnect leave fails", async () => {
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+    });
+    await transport.connect();
+    await transport.join("room:failed-leave", {});
+
+    const socket = phoenixMock.FakeSocket.instances[0];
+    const oldChannel = socket?.channels.get("room:failed-leave");
+    if (oldChannel) {
+      oldChannel.leaveOutcome = "error";
+    }
+
+    await expect(transport.disconnect()).rejects.toThrow(AggregateError);
+    expect(socket?.channels.has("room:failed-leave")).toBe(false);
+
+    await transport.connect();
+    await expect(transport.join("room:failed-leave", {})).resolves.toBeUndefined();
+    expect(socket?.channels.has("room:failed-leave")).toBe(true);
   });
 
   it("does not report connected while mandatory agent_control join is pending", async () => {
@@ -737,8 +783,41 @@ describe("PhoenixChannelsTransport", () => {
       await vi.waitFor(() => expect(observer).toHaveBeenCalledTimes(1));
       expect(observer).toHaveBeenCalledWith({
         generation: 1,
+        attemptedTopics: new Set(["room:1", "room:2"]),
         joinedTopics: new Set(["room:1", "room:2"]),
       });
+    });
+
+    it("holds post-open topic events until the reconnect observer establishes the recovery boundary", async () => {
+      const transport = new PhoenixChannelsTransport({
+        wsUrl: "wss://example.test/socket",
+        apiKey: "key-1",
+      });
+      const order: string[] = [];
+      let releaseObserver: (() => void) | undefined;
+      const observerReleased = new Promise<void>((resolve) => {
+        releaseObserver = resolve;
+      });
+
+      await transport.connect();
+      await transport.join("room:1", {
+        message_created: () => {
+          order.push("message");
+        },
+      });
+      transport.onReconnected(async () => {
+        order.push("reconnected");
+        await observerReleased;
+      });
+
+      const socket = phoenixMock.FakeSocket.instances[0];
+      socket?.emitOpen();
+      socket?.channels.get("room:1")?.emit("message_created", {});
+      socket?.channels.get("room:1")?.settleRejoin("ok");
+
+      await vi.waitFor(() => expect(order).toEqual(["reconnected"]));
+      releaseObserver?.();
+      await vi.waitFor(() => expect(order).toEqual(["reconnected", "message"]));
     });
 
     it("omits topics whose rejoin settles as rejected or timed out", async () => {
@@ -763,6 +842,7 @@ describe("PhoenixChannelsTransport", () => {
       await vi.waitFor(() => expect(observer).toHaveBeenCalledTimes(1));
       expect(observer).toHaveBeenCalledWith({
         generation: 1,
+        attemptedTopics: new Set(["room:1", "room:2", "room:3"]),
         joinedTopics: new Set(["room:1"]),
       });
     });
@@ -787,6 +867,7 @@ describe("PhoenixChannelsTransport", () => {
       await vi.waitFor(() => expect(observer).toHaveBeenCalledTimes(1));
       expect(observer).toHaveBeenCalledWith({
         generation: 1,
+        attemptedTopics: new Set(["room:1", "room:2"]),
         joinedTopics: new Set(["room:1"]),
       });
     });
@@ -815,6 +896,7 @@ describe("PhoenixChannelsTransport", () => {
       await vi.waitFor(() => expect(observer).toHaveBeenCalledTimes(1));
       expect(observer).toHaveBeenCalledWith({
         generation: 2,
+        attemptedTopics: new Set(["room:1", "room:2"]),
         joinedTopics: new Set(["room:1", "room:2"]),
       });
     });

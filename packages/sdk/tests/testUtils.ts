@@ -204,8 +204,14 @@ export class FakeTransport implements StreamingTransport {
   }
 
   /** Simulates a settled transport-level reconnect for tests driving BandLink's observer. */
-  public async triggerReconnect(snapshot: ReconnectSnapshot): Promise<void> {
-    await this.reconnectObserver?.(snapshot);
+  public async triggerReconnect(
+    snapshot: Omit<ReconnectSnapshot, "attemptedTopics"> &
+      Partial<Pick<ReconnectSnapshot, "attemptedTopics">>,
+  ): Promise<void> {
+    await this.reconnectObserver?.({
+      ...snapshot,
+      attemptedTopics: snapshot.attemptedTopics ?? snapshot.joinedTopics,
+    });
   }
 }
 

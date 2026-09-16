@@ -784,6 +784,39 @@ describe("RoomPresence", () => {
     expect(subscribeAgentContactsSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("owns a contact subscription that first succeeds during reconnect", async () => {
+    const transport = new FakeTransport();
+    const originalJoin = transport.join.bind(transport);
+    let failInitialContacts = true;
+    vi.spyOn(transport, "join").mockImplementation(async (topic, handlers) => {
+      if (topic === agentContactsTopic("agent-1") && failInitialContacts) {
+        failInitialContacts = false;
+        throw new Error("initial contact join failed");
+      }
+      await originalJoin(topic, handlers);
+    });
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      transport,
+      restApi: new FakeRestApi({ listChats: async () => ({ data: [] }) }),
+      capabilities: { contacts: true },
+    });
+    const presence = new RoomPresence({ link });
+
+    await presence.start();
+    expect(transport.hasTopic(agentContactsTopic("agent-1"))).toBe(false);
+
+    await transport.triggerReconnect({
+      generation: 1,
+      joinedTopics: new Set([agentRoomsTopic("agent-1")]),
+    });
+    await waitFor(() => transport.hasTopic(agentContactsTopic("agent-1")));
+
+    await presence.stop();
+    expect(transport.hasTopic(agentContactsTopic("agent-1"))).toBe(false);
+  });
+
   it("keeps the roster unchanged but still forwards the reconnect for execution resync when the REST snapshot fetch fails", async () => {
     const transport = new FakeTransport();
     const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };

@@ -86,9 +86,10 @@ export class SubscriptionManager {
 
   /** Serialized: each generation's reconciliation completes before the next begins. */
   public reconcileReconnect(snapshot: ReconnectSnapshot): Promise<void> {
+    const epoch = this.sessionEpoch;
     this.reconcileTail = this.reconcileTail.then(
-      () => this.runReconcile(snapshot),
-      () => this.runReconcile(snapshot),
+      () => this.runReconcile(snapshot, epoch),
+      () => this.runReconcile(snapshot, epoch),
     );
     return this.reconcileTail;
   }
@@ -96,9 +97,8 @@ export class SubscriptionManager {
   /**
    * Ends this session: every ticket issued so far goes stale, every in-flight
    * operation's late completion becomes a no-op, and both reconciliation sets
-   * start empty for the next session. Idempotent tickets aside, a bigint
-   * ticket value could in principle be reused by a future session, so the
-   * epoch — not ticket equality alone — is what a late completion checks.
+   * start empty for the next session. The epoch guards host-side async work
+   * and transport effects that can outlive the core session they started in.
    */
   public endSession(): void {
     this.sessionEpoch += 1;
@@ -106,6 +106,7 @@ export class SubscriptionManager {
     this.operations.clear();
     this.roomsNeedingReconciliation.clear();
     this.agentTopicsNeedingReconciliation.clear();
+    this.lastReconciledGeneration = 0;
   }
 
   // ---- generic operation coalescing -------------------------------------
@@ -167,12 +168,12 @@ export class SubscriptionManager {
       }
 
       let chatRoomLeft = false;
+      let rollbackError: unknown;
       try {
         await this.transport.leave(chatTopic);
         chatRoomLeft = true;
-      } catch {
-        // Rollback failure is reflected below via the tracker's own
-        // rollback_failed result, not by inspecting this leave directly.
+      } catch (error) {
+        rollbackError = error;
       }
 
       const result = this.tracker.recordRoomParticipantsJoinFailed(roomId, ticket, chatRoomLeft);
@@ -181,7 +182,8 @@ export class SubscriptionManager {
         throw new AggregateError(
           [
             participantError,
-            new TransportError(`Failed to roll back chat_room join for room ${roomId}`),
+            rollbackError ??
+              new TransportError(`Failed to roll back chat_room join for room ${roomId}`),
           ],
           `Failed to subscribe to room ${roomId} and roll back its chat_room join`,
         );
@@ -302,19 +304,29 @@ export class SubscriptionManager {
 
   // ---- reconnect reconciliation -------------------------------------------
 
-  private async runReconcile(snapshot: ReconnectSnapshot): Promise<void> {
+  private async runReconcile(snapshot: ReconnectSnapshot, epoch: number): Promise<void> {
+    if (epoch !== this.sessionEpoch) {
+      return;
+    }
     if (snapshot.generation <= this.lastReconciledGeneration) {
       return;
     }
     this.lastReconciledGeneration = snapshot.generation;
 
-    const epoch = this.sessionEpoch;
     this.tracker.onReconnected();
 
     for (const [roomId, ticket] of this.tracker.roomRejoinCandidates()) {
+      const chatTopic = chatRoomTopic(roomId);
+      const participantsTopic = roomParticipantsTopic(roomId);
+      if (
+        !snapshot.attemptedTopics.has(chatTopic) ||
+        !snapshot.attemptedTopics.has(participantsTopic)
+      ) {
+        continue;
+      }
       const present =
-        snapshot.joinedTopics.has(chatRoomTopic(roomId)) &&
-        snapshot.joinedTopics.has(roomParticipantsTopic(roomId));
+        snapshot.joinedTopics.has(chatTopic) &&
+        snapshot.joinedTopics.has(participantsTopic);
       if (present) {
         continue;
       }
@@ -324,6 +336,9 @@ export class SubscriptionManager {
     }
 
     for (const [topic, ticket] of this.tracker.agentTopicRejoinCandidates()) {
+      if (!snapshot.attemptedTopics.has(topic)) {
+        continue;
+      }
       if (snapshot.joinedTopics.has(topic)) {
         continue;
       }

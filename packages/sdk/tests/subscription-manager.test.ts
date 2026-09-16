@@ -85,6 +85,18 @@ class FakeTransport implements StreamingTransport {
 const NO_HANDLERS: TopicHandlers = {};
 const ROOM_HANDLERS = { chat: NO_HANDLERS, participants: NO_HANDLERS };
 
+function reconnectSnapshot(
+  generation: number,
+  joinedTopics: string[],
+  attemptedTopics = joinedTopics,
+) {
+  return {
+    generation,
+    attemptedTopics: new Set(attemptedTopics),
+    joinedTopics: new Set(joinedTopics),
+  };
+}
+
 describe("SubscriptionManager", () => {
   describe("operation coalescing", () => {
     it("shares the real completion across concurrent same-kind calls", async () => {
@@ -165,7 +177,12 @@ describe("SubscriptionManager", () => {
       transport.failJoin(roomParticipantsTopic("room-1"));
       transport.failLeave(chatRoomTopic("room-1"));
 
-      await expect(manager.subscribeRoom("room-1", ROOM_HANDLERS)).rejects.toThrow(AggregateError);
+      const failure = await manager.subscribeRoom("room-1", ROOM_HANDLERS).catch((error) => error);
+      expect(failure).toBeInstanceOf(AggregateError);
+      expect((failure as AggregateError).errors).toEqual([
+        expect.objectContaining({ message: `join failed: ${roomParticipantsTopic("room-1")}` }),
+        expect.objectContaining({ message: `leave failed: ${chatRoomTopic("room-1")}` }),
+      ]);
 
       // The room needs reconciliation now — a fresh subscribe attempt must
       // reject clearly rather than silently retry or look like success.
@@ -188,7 +205,7 @@ describe("SubscriptionManager", () => {
       // The transport's own reconnect has since restored a clean topic state.
       transport.clearJoinFailure(roomParticipantsTopic("room-1"));
       transport.clearLeaveFailure(chatRoomTopic("room-1"));
-      await manager.reconcileReconnect({ generation: 1, joinedTopics: new Set() });
+      await manager.reconcileReconnect(reconnectSnapshot(1, []));
 
       transport.joinCalls.length = 0;
       transport.leaveCalls.length = 0;
@@ -252,7 +269,7 @@ describe("SubscriptionManager", () => {
       );
 
       transport.clearLeaveFailure(topic);
-      await manager.reconcileReconnect({ generation: 1, joinedTopics: new Set() });
+      await manager.reconcileReconnect(reconnectSnapshot(1, []));
 
       transport.joinCalls.length = 0;
       await expect(manager.subscribeAgentTopic(topic, NO_HANDLERS)).resolves.toBeUndefined();
@@ -304,22 +321,38 @@ describe("SubscriptionManager", () => {
   });
 
   describe("reconnect reconciliation", () => {
+    it("does not judge a subscription created after the reconnect snapshot", async () => {
+      const transport = new FakeTransport();
+      const manager = new SubscriptionManager({ transport });
+      await manager.subscribeRoom("room-a", ROOM_HANDLERS);
+
+      const snapshot = reconnectSnapshot(1, [
+        chatRoomTopic("room-a"),
+        roomParticipantsTopic("room-a"),
+      ]);
+      await manager.subscribeRoom("room-b", ROOM_HANDLERS);
+      transport.leaveCalls.length = 0;
+
+      await manager.reconcileReconnect(snapshot);
+
+      expect(transport.leaveCalls).toEqual([]);
+      transport.joinCalls.length = 0;
+      await expect(manager.subscribeRoom("room-b", ROOM_HANDLERS)).resolves.toBeUndefined();
+      expect(transport.joinCalls).toEqual([]);
+    });
+
     it("does nothing for a generation at or below the last reconciled one", async () => {
       const transport = new FakeTransport();
       const manager = new SubscriptionManager({ transport });
       await manager.subscribeRoom("room-1", ROOM_HANDLERS);
 
-      await manager.reconcileReconnect({
-        generation: 1,
-        joinedTopics: new Set([chatRoomTopic("room-1"), roomParticipantsTopic("room-1")]),
-      });
+      await manager.reconcileReconnect(
+        reconnectSnapshot(1, [chatRoomTopic("room-1"), roomParticipantsTopic("room-1")]),
+      );
       transport.leaveCalls.length = 0;
 
       // A stale/duplicate generation must not re-run reconciliation.
-      await manager.reconcileReconnect({
-        generation: 1,
-        joinedTopics: new Set(),
-      });
+      await manager.reconcileReconnect(reconnectSnapshot(1, []));
       expect(transport.leaveCalls).toEqual([]);
     });
 
@@ -328,10 +361,9 @@ describe("SubscriptionManager", () => {
       const manager = new SubscriptionManager({ transport });
       await manager.subscribeRoom("room-1", ROOM_HANDLERS);
 
-      await manager.reconcileReconnect({
-        generation: 1,
-        joinedTopics: new Set([chatRoomTopic("room-1"), roomParticipantsTopic("room-1")]),
-      });
+      await manager.reconcileReconnect(
+        reconnectSnapshot(1, [chatRoomTopic("room-1"), roomParticipantsTopic("room-1")]),
+      );
 
       expect(transport.leaveCalls).toEqual([]);
       // The room is still considered subscribed — a second subscribe call is
@@ -349,10 +381,13 @@ describe("SubscriptionManager", () => {
 
       // Only chat_room rejoined; room_participants is missing from the
       // snapshot, so the room as a whole did not survive the reconnect.
-      await manager.reconcileReconnect({
-        generation: 1,
-        joinedTopics: new Set([chatRoomTopic("room-1")]),
-      });
+      await manager.reconcileReconnect(
+        reconnectSnapshot(
+          1,
+          [chatRoomTopic("room-1")],
+          [chatRoomTopic("room-1"), roomParticipantsTopic("room-1")],
+        ),
+      );
 
       expect(transport.leaveCalls).toEqual(
         expect.arrayContaining([chatRoomTopic("room-1"), roomParticipantsTopic("room-1")]),
@@ -370,7 +405,7 @@ describe("SubscriptionManager", () => {
       await manager.subscribeAgentTopic(topic, NO_HANDLERS);
       transport.leaveCalls.length = 0;
 
-      await manager.reconcileReconnect({ generation: 1, joinedTopics: new Set() });
+      await manager.reconcileReconnect(reconnectSnapshot(1, [], [topic]));
 
       expect(transport.leaveCalls).toEqual([topic]);
       transport.joinCalls.length = 0;
@@ -384,7 +419,9 @@ describe("SubscriptionManager", () => {
       await manager.subscribeRoom("room-1", ROOM_HANDLERS);
       transport.failLeave(chatRoomTopic("room-1"));
 
-      await manager.reconcileReconnect({ generation: 1, joinedTopics: new Set() });
+      await manager.reconcileReconnect(
+        reconnectSnapshot(1, [], [chatRoomTopic("room-1"), roomParticipantsTopic("room-1")]),
+      );
 
       // Cleanup failed, so a fresh subscribe still sees the room as blocked.
       await expect(manager.subscribeRoom("room-1", ROOM_HANDLERS)).rejects.toBeInstanceOf(
@@ -395,7 +432,9 @@ describe("SubscriptionManager", () => {
       // leave both topics, the room becomes claimable again.
       transport.clearLeaveFailure(chatRoomTopic("room-1"));
 
-      await manager.reconcileReconnect({ generation: 2, joinedTopics: new Set() });
+      await manager.reconcileReconnect(
+        reconnectSnapshot(2, [], [chatRoomTopic("room-1"), roomParticipantsTopic("room-1")]),
+      );
       await expect(manager.subscribeRoom("room-1", ROOM_HANDLERS)).resolves.toBeUndefined();
     });
   });

@@ -6,7 +6,12 @@ import {
   WebSocketDisconnectError,
   type WebSocketDisconnectReason,
 } from "../src/platform/streaming/disconnectReason";
-import type { StreamingTransport } from "../src/platform/streaming/transport";
+import type {
+  ReconnectObserver,
+  ReconnectSnapshot,
+  StreamingTransport,
+  TopicHandlers,
+} from "../src/platform/streaming/transport";
 import { UnsupportedFeatureError } from "../src/core/errors";
 import { FakeRestApi } from "./testUtils";
 
@@ -35,7 +40,163 @@ class RejectingTransport extends FakeTransport {
   }
 }
 
+class ReconnectTransport implements StreamingTransport {
+  public readonly observers = new Set<ReconnectObserver>();
+  public readonly joinCalls: string[] = [];
+  public readonly joinedTopics = new Set<string>();
+  public disconnectCount = 0;
+  private connectGate: Promise<void> = Promise.resolve();
+  private releaseConnect: (() => void) | null = null;
+  private leaveGate: Promise<void> = Promise.resolve();
+  private releaseLeave: (() => void) | null = null;
+
+  public gateConnect(): void {
+    this.connectGate = new Promise((resolve) => {
+      this.releaseConnect = resolve;
+    });
+  }
+
+  public releaseConnection(): void {
+    this.releaseConnect?.();
+    this.releaseConnect = null;
+  }
+
+  public gateLeaves(): void {
+    this.leaveGate = new Promise((resolve) => {
+      this.releaseLeave = resolve;
+    });
+  }
+
+  public releaseLeaves(): void {
+    this.releaseLeave?.();
+    this.releaseLeave = null;
+  }
+
+  public async connect(): Promise<void> {
+    await this.connectGate;
+  }
+
+  public async disconnect(): Promise<void> {
+    this.disconnectCount += 1;
+    this.joinedTopics.clear();
+  }
+
+  public async join(topic: string, _handlers: TopicHandlers): Promise<void> {
+    if (this.joinedTopics.has(topic)) {
+      return;
+    }
+    this.joinCalls.push(topic);
+    this.joinedTopics.add(topic);
+  }
+
+  public async leave(topic: string): Promise<void> {
+    await this.leaveGate;
+    this.joinedTopics.delete(topic);
+  }
+
+  public async runForever(): Promise<void> {}
+
+  public isConnected(): boolean {
+    return true;
+  }
+
+  public onReconnected(observer: ReconnectObserver): () => void {
+    this.observers.add(observer);
+    return () => this.observers.delete(observer);
+  }
+
+  public async triggerReconnect(snapshot: ReconnectSnapshot): Promise<void> {
+    await Promise.all([...this.observers].map((observer) => observer(snapshot)));
+  }
+}
+
 describe("BandLink event waiting", () => {
+  it("coalesces concurrent connection setup behind one reconnect observer", async () => {
+    const transport = new ReconnectTransport();
+    transport.gateConnect();
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      restApi: new FakeRestApi(),
+      transport,
+    });
+
+    const first = link.connect();
+    const second = link.connect();
+    expect(transport.observers.size).toBe(1);
+
+    transport.releaseConnection();
+    await Promise.all([first, second]);
+    await transport.triggerReconnect({
+      generation: 1,
+      attemptedTopics: new Set(),
+      joinedTopics: new Set(),
+    });
+
+    await expect(link.nextEvent()).resolves.toMatchObject({ type: "reconnected" });
+    await link.disconnect();
+    expect(transport.observers.size).toBe(0);
+  });
+
+  it("finishes cleanup after a terminal callback already marked the link disconnected", async () => {
+    const transport = new ReconnectTransport();
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      restApi: new FakeRestApi(),
+      transport,
+    });
+    await link.connect();
+    await link.subscribeRoom("room-1");
+
+    const reason = {
+      source: "agent_control",
+      code: "session.already_connected",
+      message: "superseded",
+      retryable: false,
+      retryAfter: null,
+      targetSocketId: null,
+      correlationId: null,
+    } satisfies WebSocketDisconnectReason;
+    (link as unknown as { recordDisconnectError(error: WebSocketDisconnectError): void })
+      .recordDisconnectError(new WebSocketDisconnectError(reason));
+
+    await link.disconnect();
+
+    expect(transport.disconnectCount).toBe(1);
+    expect(transport.observers.size).toBe(0);
+  });
+
+  it("does not publish an old observer's reconnect after a new session starts", async () => {
+    const transport = new ReconnectTransport();
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      restApi: new FakeRestApi(),
+      transport,
+    });
+    await link.connect();
+    await link.subscribeRoom("room-1");
+    transport.gateLeaves();
+
+    const staleReconnect = transport.triggerReconnect({
+      generation: 1,
+      attemptedTopics: new Set(["chat_room:room-1", "room_participants:room-1"]),
+      joinedTopics: new Set(),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await link.disconnect();
+    await link.connect();
+
+    transport.releaseLeaves();
+    await staleReconnect;
+
+    const controller = new AbortController();
+    const next = link.nextEvent(controller.signal);
+    controller.abort();
+    await expect(next).resolves.toBeNull();
+  });
+
   it("does not poison runForever after a retryable websocket disconnect", async () => {
     const retryableReason = {
       source: "upgrade",

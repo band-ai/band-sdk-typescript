@@ -99,6 +99,9 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   private lastDisconnectReason: WebSocketDisconnectReason | null = null;
   private terminalDisconnectError: WebSocketDisconnectError | null = null;
   private unregisterReconnectObserver: (() => void) | null = null;
+  private connectPromise: Promise<void> | null = null;
+  private sessionEpoch = 0;
+  private sessionActive = false;
 
   public constructor(options: BandLinkOptions) {
     this.agentId = options.agentId;
@@ -154,9 +157,35 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
       return;
     }
 
+    if (!this.connectPromise) {
+      const epoch = ++this.sessionEpoch;
+      this.sessionActive = true;
+      const pending = this.connectSession(epoch);
+      this.connectPromise = pending;
+      void pending.then(
+        () => {
+          if (this.connectPromise === pending) {
+            this.connectPromise = null;
+          }
+        },
+        () => {
+          if (this.connectPromise === pending) {
+            this.connectPromise = null;
+          }
+        },
+      );
+    }
+
+    await this.connectPromise;
+  }
+
+  private async connectSession(epoch: number): Promise<void> {
     this.unregisterReconnectObserver =
       this.transport.onReconnected?.(async (snapshot) => {
         await this.subscriptionManager.reconcileReconnect(snapshot);
+        if (!this.sessionActive || epoch !== this.sessionEpoch) {
+          return;
+        }
         this.queueEvent({ type: "reconnected", roomId: null, payload: {} });
       }) ?? null;
 
@@ -165,6 +194,9 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     } catch (error) {
       this.unregisterReconnectObserver?.();
       this.unregisterReconnectObserver = null;
+      this.sessionActive = false;
+      this.sessionEpoch += 1;
+      this.subscriptionManager.endSession();
       if (error instanceof WebSocketDisconnectError) {
         if (error.reason.retryable) {
           this.lastDisconnectReason = error.reason;
@@ -178,9 +210,13 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   public async disconnect(): Promise<void> {
-    if (!this.connected) {
+    await this.connectPromise?.catch(() => undefined);
+    if (!this.sessionActive && !this.unregisterReconnectObserver) {
       return;
     }
+
+    this.sessionActive = false;
+    this.sessionEpoch += 1;
 
     try {
       await this.transport.disconnect();

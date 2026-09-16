@@ -325,6 +325,7 @@ export class RoomPresence implements AsyncDisposable {
     if (this.link.capabilities.contacts) {
       try {
         await this.link.subscribeAgentContacts();
+        this.contactsSubscribed = true;
       } catch (error) {
         this.logger.warn("RoomPresence failed to resubscribe agent_contacts channel after reconnect", {
           error,

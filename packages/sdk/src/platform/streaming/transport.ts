@@ -5,11 +5,13 @@ export interface TopicHandlers {
 /**
  * One settled outcome of an automatic transport-level reconnect: every topic
  * the transport owned when the socket reopened has since either rejoined or
- * failed to. Carries no transport-specific objects so every transport
- * implementation (and every test double) can produce one.
+ * failed to. `attemptedTopics` fixes that generation's membership boundary;
+ * `joinedTopics` is its successful subset. Carries no transport-specific
+ * objects so every transport implementation can produce one.
  */
 export interface ReconnectSnapshot {
   generation: number;
+  attemptedTopics: ReadonlySet<string>;
   joinedTopics: ReadonlySet<string>;
 }
 
