@@ -1,11 +1,11 @@
 import { SubscriptionTracker } from "@band-ai/band-sdk-core";
 import type { LeaveOutcome } from "@band-ai/band-sdk-core";
-import { chatRoomTopic, roomParticipantsTopic } from "@band-ai/band-sdk-core";
 import { RuntimeStateError, TransportError } from "../core/errors";
 import type { Logger } from "../core/logger";
 import { NoopLogger } from "../core/logger";
-import { Serializer } from "../core/singleFlight";
 import { Epoch } from "../core/epoch";
+import { ReconciliationCoordinator } from "./ReconciliationCoordinator";
+import { roomTopics, settleRoomLeaves } from "./roomTopics";
 import type {
   ReconnectSnapshot,
   StreamingTransport,
@@ -22,29 +22,12 @@ interface Operation {
   promise: Promise<void>;
 }
 
-interface ReconnectWork {
-  snapshot: ReconnectSnapshot;
-  epoch: number;
-  roomCandidates: Array<[string, bigint]>;
-  agentTopicCandidates: Array<[string, bigint]>;
-}
-
 function roomOperationKey(roomId: string): string {
   return `room:${roomId}`;
 }
 
 function topicOperationKey(topic: string): string {
   return `topic:${topic}`;
-}
-
-function roomTopics(roomId: string): { chat: string; participants: string } {
-  return { chat: chatRoomTopic(roomId), participants: roomParticipantsTopic(roomId) };
-}
-
-function isRejected(
-  result: PromiseSettledResult<unknown>,
-): result is PromiseRejectedResult {
-  return result.status === "rejected";
 }
 
 /**
@@ -62,15 +45,18 @@ export class SubscriptionManager {
   private readonly transport: StreamingTransport;
   private readonly logger: Logger;
   private readonly operations = new Map<string, Operation>();
-  private readonly roomsNeedingReconciliation = new Set<string>();
-  private readonly agentTopicsNeedingReconciliation = new Set<string>();
-  private readonly reconcileTail = new Serializer();
-  private lastReconciledGeneration = 0;
   private readonly epoch = new Epoch();
+  private readonly reconciliation: ReconciliationCoordinator;
 
   public constructor(options: { transport: StreamingTransport; logger?: Logger }) {
     this.transport = options.transport;
     this.logger = options.logger ?? new NoopLogger();
+    this.reconciliation = new ReconciliationCoordinator(
+      this.tracker,
+      this.transport,
+      this.logger,
+      this.epoch,
+    );
   }
 
   public subscribeRoom(roomId: string, handlers: RoomTopicHandlers): Promise<void> {
@@ -99,24 +85,7 @@ export class SubscriptionManager {
 
   /** Serialized: each generation's reconciliation completes before the next begins. */
   public reconcileReconnect(snapshot: ReconnectSnapshot): Promise<void> {
-    if (snapshot.generation <= this.lastReconciledGeneration) {
-      this.logger.debug("Ignoring stale or duplicate reconnect snapshot", {
-        generation: snapshot.generation,
-        lastReconciledGeneration: this.lastReconciledGeneration,
-      });
-      return Promise.resolve();
-    }
-    this.lastReconciledGeneration = snapshot.generation;
-
-    const epoch = this.epoch.current;
-    this.tracker.onReconnected();
-    const work: ReconnectWork = {
-      snapshot,
-      epoch,
-      roomCandidates: this.tracker.roomRejoinCandidates(),
-      agentTopicCandidates: this.tracker.agentTopicRejoinCandidates(),
-    };
-    return this.reconcileTail.run(() => this.runReconcile(work));
+    return this.reconciliation.reconcileReconnect(snapshot);
   }
 
   /**
@@ -129,9 +98,7 @@ export class SubscriptionManager {
     this.epoch.bump();
     this.tracker.endSession();
     this.operations.clear();
-    this.roomsNeedingReconciliation.clear();
-    this.agentTopicsNeedingReconciliation.clear();
-    this.lastReconciledGeneration = 0;
+    this.reconciliation.reset();
   }
 
   private leaveOutcome(epoch: number, succeeded: boolean): LeaveOutcome {
@@ -214,7 +181,7 @@ export class SubscriptionManager {
 
       const result = this.tracker.recordRoomParticipantsJoinFailed(roomId, ticket, chatRoomLeft);
       if (result === "rollback_failed") {
-        this.roomsNeedingReconciliation.add(roomId);
+        this.reconciliation.markRoomNeedsReconciliation(roomId);
         throw new AggregateError(
           [
             participantError,
@@ -249,16 +216,6 @@ export class SubscriptionManager {
     );
   }
 
-  /** Leaves both of a room's topics and returns whichever leave calls rejected. */
-  private async settleRoomLeaves(roomId: string): Promise<PromiseRejectedResult[]> {
-    const { chat: chatTopic, participants: participantsTopic } = roomTopics(roomId);
-    const results = await Promise.allSettled([
-      this.transport.leave(chatTopic),
-      this.transport.leave(participantsTopic),
-    ]);
-    return results.filter(isRejected);
-  }
-
   private async claimRoomUnsubscribe(roomId: string): Promise<void> {
     const epoch = this.epoch.current;
     const ticket = this.tracker.unsubscribeRoom(roomId);
@@ -266,14 +223,14 @@ export class SubscriptionManager {
       return;
     }
 
-    const failures = await this.settleRoomLeaves(roomId);
+    const failures = await settleRoomLeaves(this.transport, roomId);
     const outcome = this.leaveOutcome(epoch, failures.length === 0);
     if (outcome === "unknown") {
       this.logger.debug("Room unsubscribe settled after session ended, outcome ambiguous", { roomId });
     }
 
     if (this.tracker.markRoomLeaveComplete(roomId, ticket, outcome) && outcome !== "left") {
-      this.roomsNeedingReconciliation.add(roomId);
+      this.reconciliation.markRoomNeedsReconciliation(roomId);
     }
 
     if (failures.length > 0) {
@@ -345,132 +302,11 @@ export class SubscriptionManager {
       this.logger.debug("Agent topic unsubscribe settled after session ended, outcome ambiguous", { topic });
     }
     if (this.tracker.markAgentTopicLeaveComplete(topic, ticket, outcome) && outcome !== "left") {
-      this.agentTopicsNeedingReconciliation.add(topic);
+      this.reconciliation.markAgentTopicNeedsReconciliation(topic);
     }
 
     if (!left) {
       throw leaveError;
-    }
-  }
-
-  // ---- reconnect reconciliation -------------------------------------------
-
-  private async runReconcile(work: ReconnectWork): Promise<void> {
-    const { snapshot, epoch, roomCandidates, agentTopicCandidates } = work;
-    if (this.epoch.isStale(epoch)) {
-      this.logger.debug("Reconnect reconciliation settled after session ended, skipping rejoin evaluation", {
-        generation: snapshot.generation,
-      });
-      return;
-    }
-
-    for (const [roomId, ticket] of roomCandidates) {
-      const { chat: chatTopic, participants: participantsTopic } = roomTopics(roomId);
-      if (
-        !snapshot.attemptedTopics.has(chatTopic) ||
-        !snapshot.attemptedTopics.has(participantsTopic)
-      ) {
-        continue;
-      }
-      const present =
-        snapshot.joinedTopics.has(chatTopic) &&
-        snapshot.joinedTopics.has(participantsTopic);
-      if (present) {
-        continue;
-      }
-      if (this.tracker.markRoomRejoinFailed(roomId, ticket)) {
-        this.roomsNeedingReconciliation.add(roomId);
-      }
-    }
-
-    for (const [topic, ticket] of agentTopicCandidates) {
-      if (!snapshot.attemptedTopics.has(topic)) {
-        continue;
-      }
-      if (snapshot.joinedTopics.has(topic)) {
-        continue;
-      }
-      if (this.tracker.markAgentTopicRejoinFailed(topic, ticket)) {
-        this.agentTopicsNeedingReconciliation.add(topic);
-      }
-    }
-
-    if (this.epoch.isStale(epoch)) {
-      this.logger.debug("Reconnect reconciliation settled after session ended, skipping cleanup drain", {
-        generation: snapshot.generation,
-      });
-      return;
-    }
-
-    await this.drainReconciliation(epoch);
-  }
-
-  private async drainReconciliation(epoch: number): Promise<void> {
-    const rooms = [...this.roomsNeedingReconciliation];
-    const topics = [...this.agentTopicsNeedingReconciliation];
-    // Disjoint key spaces (room ids vs. topic names) with no shared state
-    // between them, so both cleanup sweeps run concurrently.
-    const [roomLeaveResults, topicLeaveResults] = await Promise.all([
-      Promise.allSettled(rooms.map((roomId) => this.leaveRoomTopicsCleanly(roomId))),
-      Promise.allSettled(topics.map((topic) => this.transport.leave(topic))),
-    ]);
-
-    if (this.epoch.isStale(epoch)) {
-      // The session ended mid-cleanup; a new session starts with empty
-      // reconciliation sets, so leave the stale tracker acknowledgements
-      // undone rather than resolve them against an ended session.
-      this.logger.debug("Reconnect reconciliation cleanup settled after session ended, leaving tracker acknowledgements pending for next reconnect", {
-        rooms: rooms.length,
-        topics: topics.length,
-      });
-      return;
-    }
-
-    this.acknowledgeCleanup({
-      ids: rooms,
-      results: roomLeaveResults,
-      pending: this.roomsNeedingReconciliation,
-      acknowledge: (roomId) => this.tracker.acknowledgeRoomReconciled(roomId),
-      failureMessage: "Room reconciliation cleanup failed, retrying on next reconnect",
-      logContext: (roomId) => ({ roomId }),
-    });
-
-    this.acknowledgeCleanup({
-      ids: topics,
-      results: topicLeaveResults,
-      pending: this.agentTopicsNeedingReconciliation,
-      acknowledge: (topic) => this.tracker.acknowledgeAgentTopicReconciled(topic),
-      failureMessage: "Agent topic reconciliation cleanup failed, retrying on next reconnect",
-      logContext: (topic) => ({ topic }),
-    });
-  }
-
-  private acknowledgeCleanup(options: {
-    ids: string[];
-    results: PromiseSettledResult<void>[];
-    pending: Set<string>;
-    acknowledge: (id: string) => boolean;
-    failureMessage: string;
-    logContext: (id: string) => Record<string, unknown>;
-  }): void {
-    options.ids.forEach((id, index) => {
-      if (options.results[index]?.status !== "fulfilled") {
-        this.logger.warn(options.failureMessage, options.logContext(id));
-        return;
-      }
-      if (options.acknowledge(id)) {
-        options.pending.delete(id);
-      }
-    });
-  }
-
-  private async leaveRoomTopicsCleanly(roomId: string): Promise<void> {
-    const failures = await this.settleRoomLeaves(roomId);
-    if (failures.length > 0) {
-      throw new AggregateError(
-        failures.map((failure): unknown => failure.reason),
-        `Failed to clean up room ${roomId} during reconnect reconciliation`,
-      );
     }
   }
 }

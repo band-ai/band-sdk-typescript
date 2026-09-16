@@ -13,6 +13,7 @@ import {
   isLegalExecutionTransition,
 } from "./lifecycle";
 import type { RetryTracker } from "@band-ai/band-sdk-core";
+import { SyncBoundaryTracker, type SyncBoundary } from "./SyncBoundaryTracker";
 
 export type ExecutionHandler = (
   context: ExecutionContext,
@@ -26,10 +27,6 @@ interface ExecutionOptions {
   onExecute: ExecutionHandler;
   onFailure?: (error: unknown, event: PlatformEvent) => void | Promise<void>;
   logger?: Logger;
-}
-
-interface SyncBoundary {
-  messageId: string | null;
 }
 
 interface QueuedEvent {
@@ -72,25 +69,7 @@ export class Execution {
   private readonly lifecycle: LifecycleTracker<ExecutionLifecycleState>;
   private readonly processTask: Promise<void>;
   private readonly stopGate = new SingleFlight<boolean>();
-  // Every message id a sync scan has ever executed. Entries are never
-  // removed: evicting on a message's own live redelivery was tried and
-  // proved unsafe, because the backend can still return that same id from
-  // `getNextMessage()` on a *later* reconnect's scan before its
-  // mark-as-processed effect has propagated — an eviction keyed on "we saw
-  // it once already" reopens exactly that race, just on a different
-  // trigger. Permanent membership is what makes "already executed"
-  // unconditional, at the cost of one entry per message ever synced via a
-  // backlog scan for the life of this Execution — a real, bounded quantity.
-  private readonly executedMessageIds = new Set<string>();
-  private readonly initialSyncBoundary: SyncBoundary = { messageId: null };
-  // Ordered, oldest first, matching the order `processLoop` will run their
-  // `synchronizeWithNext` calls in. A live message always anchors the
-  // oldest not-yet-anchored boundary — the one whose sync call either owns
-  // it now or will next — never whichever reconnect was queued most
-  // recently, so a boundary already mid-scan can't be silently orphaned by
-  // a newer reconnect queued before its own live message arrives.
-  private readonly boundaryQueue: SyncBoundary[] = [this.initialSyncBoundary];
-  private syncComplete = false;
+  private readonly syncBoundaries = new SyncBoundaryTracker();
   private inFlight = 0;
   /**
    * Set once the queue stops accepting new events, ahead of the lifecycle
@@ -152,14 +131,9 @@ export class Execution {
 
     let syncBoundary: SyncBoundary | null = null;
     if (event.type === "reconnected") {
-      syncBoundary = { messageId: null };
-      this.boundaryQueue.push(syncBoundary);
-      this.syncComplete = false;
+      syncBoundary = this.syncBoundaries.beginBoundary();
     } else if (event.type === "message_created") {
-      const openBoundary = this.boundaryQueue.find((boundary) => boundary.messageId === null);
-      if (openBoundary) {
-        openBoundary.messageId = event.payload.id;
-      }
+      this.syncBoundaries.anchor(event.payload.id);
     }
 
     const queued = { event, syncBoundary };
@@ -175,12 +149,12 @@ export class Execution {
     // Record the ID before executing so that the concurrent synchronizeWithNext()
     // loop (started in the constructor) will skip this message if it encounters
     // it in the REST queue, preventing duplicate processing.
-    this.executedMessageIds.add(message.id);
+    this.syncBoundaries.recordExecuted(message.id);
     await this.executeSyncMessage(toMessageEvent(message), message.id);
   }
 
   public isIdle(): boolean {
-    return this.syncComplete && this.inFlight === 0 && this.eventQueue.length === 0;
+    return this.syncBoundaries.isComplete && this.inFlight === 0 && this.eventQueue.length === 0;
   }
 
   public async waitForIdle(timeoutMs?: number): Promise<boolean> {
@@ -282,7 +256,7 @@ export class Execution {
 
   private async processLoop(): Promise<void> {
     await this.recoverStaleProcessingMessages();
-    await this.synchronizeWithNext(this.initialSyncBoundary);
+    await this.synchronizeWithNext(this.syncBoundaries.initial);
 
     while (this.isActive()) {
       const queued = await this.nextQueuedEvent();
@@ -296,7 +270,7 @@ export class Execution {
         continue;
       }
 
-      if (event.type === "message_created" && this.executedMessageIds.has(event.payload.id)) {
+      if (event.type === "message_created" && this.syncBoundaries.isExecuted(event.payload.id)) {
         this.notifyIfIdle();
         continue;
       }
@@ -339,12 +313,8 @@ export class Execution {
       }
 
       await this.executeSyncMessage(toMessageEvent(message), message.id);
-      this.executedMessageIds.add(message.id);
+      this.syncBoundaries.recordExecuted(message.id);
     }
-  }
-
-  private isSyncPoint(boundary: SyncBoundary, messageId: string): boolean {
-    return boundary.messageId !== null && messageId === boundary.messageId;
   }
 
   private async synchronizeWithNext(boundary: SyncBoundary): Promise<void> {
@@ -358,8 +328,8 @@ export class Execution {
       // recovery. Never redo it, but a repeat sighting of the boundary's own
       // live message still ends this scan early: nothing further in the
       // backlog needs a REST round trip once we've caught up to live traffic.
-      if (this.executedMessageIds.has(nextMessage.id)) {
-        if (this.isSyncPoint(boundary, nextMessage.id)) {
+      if (this.syncBoundaries.isExecuted(nextMessage.id)) {
+        if (this.syncBoundaries.isSyncPoint(boundary, nextMessage.id)) {
           break;
         }
         continue;
@@ -371,8 +341,8 @@ export class Execution {
           messageId: nextMessage.id,
         });
         await this.markMessageFailed(nextMessage.id, "Message permanently failed after max retries");
-        this.executedMessageIds.add(nextMessage.id);
-        if (this.isSyncPoint(boundary, nextMessage.id)) {
+        this.syncBoundaries.recordExecuted(nextMessage.id);
+        if (this.syncBoundaries.isSyncPoint(boundary, nextMessage.id)) {
           break;
         }
         continue;
@@ -388,17 +358,14 @@ export class Execution {
       // backend's mark-as-processed effect propagates) find it already done
       // regardless of whether this scan ever recognized it as "the" sync
       // point in real time.
-      this.executedMessageIds.add(nextMessage.id);
+      this.syncBoundaries.recordExecuted(nextMessage.id);
 
-      if (this.isSyncPoint(boundary, nextMessage.id)) {
+      if (this.syncBoundaries.isSyncPoint(boundary, nextMessage.id)) {
         break;
       }
     }
 
-    if (this.boundaryQueue[0] === boundary) {
-      this.boundaryQueue.shift();
-    }
-    this.syncComplete = this.boundaryQueue.length === 0;
+    this.syncBoundaries.completeBoundary(boundary);
     this.notifyIfIdle();
   }
 

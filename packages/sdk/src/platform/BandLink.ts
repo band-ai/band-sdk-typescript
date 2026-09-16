@@ -1,6 +1,6 @@
 import { resolveLogger, type Logger } from "../core/logger";
 import { SingleFlight } from "../core/singleFlight";
-import { Epoch } from "../core/epoch";
+import { Session } from "./Session";
 import { FernRestAdapter } from "../client/rest/RestFacade";
 import type { FernBandClientLike } from "../client/rest/types";
 import type { RestRequestOptions } from "../client/rest/requestOptions";
@@ -100,11 +100,9 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   private connected = false;
   private lastDisconnectReason: WebSocketDisconnectReason | null = null;
   private terminalDisconnectError: WebSocketDisconnectError | null = null;
-  private unregisterReconnectObserver: (() => void) | null = null;
   private readonly connectFlight = new SingleFlight<void>();
   private readonly disconnectFlight = new SingleFlight<void>();
-  private readonly epoch = new Epoch();
-  private sessionActive = false;
+  private readonly session = new Session();
 
   public constructor(options: BandLinkOptions) {
     this.agentId = options.agentId;
@@ -164,34 +162,30 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     }
 
     await this.connectFlight.run(() => {
-      const epoch = this.epoch.bump();
-      this.sessionActive = true;
+      const epoch = this.session.begin();
       return this.connectSession(epoch);
     });
   }
 
   private async connectSession(epoch: number): Promise<void> {
-    this.unregisterReconnectObserver =
+    this.session.setReconnectObserverTeardown(
       this.transport.onReconnected?.(async (snapshot) => {
         await this.subscriptionManager.reconcileReconnect(snapshot);
-        // `sessionActive` and `epoch` always change together (see
-        // `connect`/`connectSession`/`disconnectSession`), so an unchanged
-        // epoch already guarantees the session is still active.
-        if (this.epoch.isStale(epoch)) {
+        if (this.session.isStale(epoch)) {
           this.logger.debug(
             "Reconnect reconciliation settled after session ended, discarding reconnected event",
           );
           return;
         }
         this.queueEvent({ type: "reconnected", roomId: null, payload: {} });
-      }) ?? null;
+      }) ?? null,
+    );
 
     try {
       await this.transport.connect();
     } catch (error) {
-      this.clearReconnectObserver();
-      this.sessionActive = false;
-      this.epoch.bump();
+      this.session.clearReconnectObserver();
+      this.session.deactivate();
       this.subscriptionManager.endSession();
       if (error instanceof WebSocketDisconnectError) {
         if (error.reason.retryable) {
@@ -211,29 +205,21 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
 
   private async disconnectSession(): Promise<void> {
     await this.connectFlight.current?.catch(() => undefined);
-    // By now any in-flight connect has fully settled, so `sessionActive`
-    // alone reflects whether there is a session to tear down: every path
-    // that clears `unregisterReconnectObserver` also clears `sessionActive`
-    // in the same step.
-    if (!this.sessionActive) {
+    // By now any in-flight connect has fully settled, so the session's own
+    // active flag alone reflects whether there is a session to tear down.
+    if (!this.session.isActive) {
       return;
     }
 
-    this.sessionActive = false;
-    this.epoch.bump();
+    this.session.deactivate();
 
     try {
       await this.transport.disconnect();
     } finally {
       this.connected = false;
-      this.clearReconnectObserver();
+      this.session.clearReconnectObserver();
       this.subscriptionManager.endSession();
     }
-  }
-
-  private clearReconnectObserver(): void {
-    this.unregisterReconnectObserver?.();
-    this.unregisterReconnectObserver = null;
   }
 
   public async runForever(signal: AbortSignal): Promise<void> {
