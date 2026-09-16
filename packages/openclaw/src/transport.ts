@@ -216,7 +216,7 @@ export function createReplyDeliver(
     try {
       await outboundSendText(
         {
-          rest: account.link.rest as never,
+          rest: account.link.rest,
           selfAgentId: account.selfAgentId,
           getLastSender: (r) => getLastSender(accountId, r) ?? null,
         },
@@ -236,7 +236,7 @@ function defaultDispatch(deps: Required<Pick<BandGatewayDeps, "log">>): (p: Disp
       dispatcherOptions: {
         deliver: createReplyDeliver(accountId, roomId, deps.log),
         onError: (err: unknown) => deps.log(`[band:${accountId}] reply error (room=${roomId}): ${String(err)}`),
-      } as Parameters<typeof dispatchInboundMessageWithBufferedDispatcher>[0]["dispatcherOptions"],
+      },
     });
   };
 }
@@ -248,14 +248,14 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
   const createLink = deps.createLink ?? ((conn) => new BandLink(conn) as unknown as LinkLike);
   const createRuntime =
     deps.createRuntime ??
-    ((link, opts) => new AgentRuntime(buildRuntimeOptions(link, opts) as never) as unknown as RuntimeLike);
+    ((link, opts) => new AgentRuntime(buildRuntimeOptions(link, opts) as never));
   const createContactHandler =
     deps.createContactHandler ??
     ((link) =>
       new ContactEventHandler({
         config: { strategy: "hub_room", broadcastChanges: true },
         rest: link.rest as never,
-      }) as unknown as { handle: (event: ContactEvent) => Promise<unknown> });
+      }));
   const dispatch = deps.dispatch ?? defaultDispatch({ log });
 
   async function teardown(accountId: string): Promise<void> {
@@ -418,7 +418,7 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
         link: link as never,
         selfAgentId,
         ownerUuid,
-        runtime: runtime as never,
+        runtime: runtime,
         stopTimeoutMs: ctx.account.stopTimeoutMs,
       });
 
