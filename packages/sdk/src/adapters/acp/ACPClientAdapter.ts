@@ -641,7 +641,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     // serve even exists — no session can out-race its own route.
     const owner = { generation: -1 }
     const client = new BandACPClient((params) => this.routePermissionRequest(params, owner.generation))
-    const handle = await this.connectionFactory(client as Client, {
+    const handle = await this.connectionFactory(client, {
       command: this.command,
       cwd: this.cwd,
       env: this.env,
@@ -1508,7 +1508,7 @@ export async function createSubprocessConnection(
   }
 
   const stream = acp.ndJsonStream(
-    Writable.toWeb(child.stdin) as unknown as WritableStream<Uint8Array>,
+    Writable.toWeb(child.stdin),
     Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>,
   )
 

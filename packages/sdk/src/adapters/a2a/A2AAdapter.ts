@@ -622,7 +622,7 @@ function unwrapResult(value: unknown, depth = 0): A2AEventLike | null {
     return unwrapResult(event.result, depth + 1);
   }
 
-  return event as A2AEventLike;
+  return event;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

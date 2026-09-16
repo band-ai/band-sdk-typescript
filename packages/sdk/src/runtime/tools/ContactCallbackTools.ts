@@ -73,7 +73,7 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
       || rest.listContactRequests
       || rest.respondContactRequest
     );
-    this.contactTools = hasContactMethods ? new ContactToolsImpl(rest as ContactRestApi) : null;
+    this.contactTools = hasContactMethods ? new ContactToolsImpl(rest) : null;
 
     this.capabilities = Object.freeze({
       peers: Boolean(rest.listPeers),
@@ -333,7 +333,7 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
           handle: String(toolArgs.handle ?? ""),
         });
       case "band_list_memories":
-        return this.listMemories(toolArgs as ListMemoriesArgs);
+        return this.listMemories(toolArgs);
       case "band_store_memory":
         return this.storeMemory(toolArgs as unknown as StoreMemoryArgs);
       case "band_get_memory":
