@@ -221,8 +221,9 @@ export const TOOL_MODELS = {
   band_list_memories: {
     description:
       "List memories accessible to the agent. " +
-      "Returns memories about the specified subject (cross-agent sharing) " +
-      "and organization-wide shared memories.",
+      "Use scope=\"agent\" for the caller's private memories, scope=\"subject\" for " +
+      "memories about a specific person or agent, and scope=\"organization\" for " +
+      "org-wide shared memories. Omit scope or use scope=\"all\" to search across scopes.",
     properties: {
       subject_id: {
         type: "string",
@@ -232,7 +233,9 @@ export const TOOL_MODELS = {
       scope: {
         type: "string",
         enum: [...MEMORY_LIST_SCOPES],
-        description: "Filter by scope.",
+        description:
+          "Filter by scope. \"agent\" returns the caller's private memories; " +
+          "\"subject\" and \"organization\" filter to those audiences; \"all\" omits the filter.",
       },
       system: {
         type: "string",
@@ -270,8 +273,9 @@ export const TOOL_MODELS = {
   band_store_memory: {
     description:
       "Store a new memory entry. The memory will be associated with the authenticated agent " +
-      "as the source. For subject-scoped memories, provide a subject_id. " +
-      "For organization-scoped memories, omit subject_id.",
+      "as the source. Use scope=\"agent\" for information private to this agent (no subject_id). " +
+      "Use scope=\"subject\" with a subject_id for memories about a specific person or agent. " +
+      "Use scope=\"organization\" for knowledge genuinely shared across the organization.",
     properties: {
       content: {
         type: "string",
@@ -299,12 +303,14 @@ export const TOOL_MODELS = {
       scope: {
         type: "string",
         enum: [...MEMORY_STORE_SCOPES],
-        description: "Visibility scope.",
+        description:
+          "Visibility scope. \"agent\" is private to this agent; \"subject\" requires subject_id; " +
+          "\"organization\" is shared org-wide.",
       },
       subject_id: {
         type: "string",
         description:
-          "UUID of the subject this memory is about (required for subject scope).",
+          "UUID of the subject this memory is about (required for subject scope; omit for agent scope).",
       },
       metadata: {
         type: "object",

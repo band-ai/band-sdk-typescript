@@ -402,6 +402,40 @@ describe("FernRestAdapter coverage", () => {
     );
   });
 
+  it("forwards agent-scoped storeMemory without stripping scope", async () => {
+    const createAgentMemory = vi.fn(async () => ({
+      data: { id: "memory-agent", content: "private", scope: "agent" },
+    }));
+    const adapter = new FernRestAdapter({
+      agentApiMemories: { createAgentMemory },
+    });
+
+    await expect(
+      adapter.storeMemory({
+        content: "private",
+        thought: "only this agent",
+        system: "long_term",
+        type: "semantic",
+        segment: "agent",
+        scope: "agent",
+      }),
+    ).resolves.toEqual({ id: "memory-agent", content: "private", scope: "agent" });
+
+    expect(createAgentMemory).toHaveBeenCalledWith(
+      {
+        memory: {
+          content: "private",
+          thought: "only this agent",
+          system: "long_term",
+          type: "semantic",
+          segment: "agent",
+          scope: "agent",
+        },
+      },
+      expect.any(Object),
+    );
+  });
+
   it("directly normalizes paginated envelopes and filters invalid items", () => {
     const response = normalizeFernPaginatedResponse(
       {
