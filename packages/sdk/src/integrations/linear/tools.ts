@@ -286,8 +286,8 @@ export function createLinearTools(options: CreateLinearToolsOptions): CustomTool
 function addIssueTools(input: {
   tools: CustomToolDef[];
   client: LinearActivityClient;
-  requiredIssueIdSchema: z.AnyZodObject;
-  optionalIssueIdSchema: z.AnyZodObject;
+  requiredIssueIdSchema: z.ZodObject;
+  optionalIssueIdSchema: z.ZodObject;
   issueCommentLimitSchema: z.ZodOptional<z.ZodNumber>;
 }): void {
   const {

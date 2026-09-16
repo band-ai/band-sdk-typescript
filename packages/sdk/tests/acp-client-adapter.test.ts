@@ -2,10 +2,18 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ACPClientAdapter, type ACPClientAdapterOptions } from "../src/adapters/acp";
 import { BandACPClient } from "../src/adapters/acp/client";
-import { FakeTools, makeMessage } from "./testUtils";
+import { FakeTools, expectTurnFailed, findFailureEvent, makeMessage } from "./testUtils";
+import { describeDeliveryContract } from "./deliveryContract";
 
 function makeLoggerSpy() {
   return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+}
+
+function requireAcpClient(client: BandACPClient | null): BandACPClient {
+  if (!client) {
+    throw new Error("ACP connection factory did not receive a client")
+  }
+  return client
 }
 
 async function send(adapter: ACPClientAdapter, roomId = "room-1", history: Record<string, string> = {}): Promise<void> {
@@ -23,7 +31,7 @@ async function send(adapter: ACPClientAdapter, roomId = "room-1", history: Recor
 // Shared by the `resolveSessionMode` and `resolveSessionModel` test
 // harnesses below: the connection-mock shape every ACP session actually
 // exposes (signal/closed/initialize/authenticate/loadSession/
-// unstable_resumeSession/newSession/prompt), parameterized by whichever
+// resumeSession/newSession/prompt), parameterized by whichever
 // extra RPC spies (setSessionMode, setSessionConfigOption) the calling
 // block needs.
 function buildMockConnection(spies: {
@@ -44,7 +52,7 @@ function buildMockConnection(spies: {
       })),
       authenticate: vi.fn(async () => ({})),
       loadSession: spies.loadSession,
-      unstable_resumeSession: vi.fn(),
+      resumeSession: vi.fn(),
       newSession: spies.newSession,
       prompt: spies.prompt,
       ...spies.extraRpcSpies,
@@ -170,7 +178,7 @@ describe("ACPClientAdapter", () => {
             initialize,
             authenticate,
             loadSession,
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             prompt,
           } as never,
@@ -257,9 +265,7 @@ describe("ACPClientAdapter", () => {
   })
 
   it("coalesces adjacent streamed text chunks; leaves each tool_call_update frame its own event with its own reported status", async () => {
-    let clientHandle: {
-      sessionUpdate: (params: Record<string, unknown>) => Promise<void>;
-    } | null = null
+    let clientHandle: BandACPClient | null = null
 
     const prompt = vi.fn(async (params: { sessionId: string }) => {
       // Two text deltas in a row — the shape a streaming agent actually sends
@@ -315,7 +321,7 @@ describe("ACPClientAdapter", () => {
       command: ["acp-agent"],
       enableMcpTools: false,
       connectionFactory: async (client) => {
-        clientHandle = client as unknown as typeof clientHandle
+        clientHandle = client as BandACPClient
         const controller = new AbortController()
         return {
           connection: {
@@ -324,7 +330,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession: vi.fn(async () => ({ sessionId: "session-coalesce" })),
             prompt,
           } as never,
@@ -362,6 +368,14 @@ describe("ACPClientAdapter", () => {
         metadata: expect.objectContaining({ tool_call_id: "call-1", status: "completed" }),
       }),
     ])
+
+    await adapter.onCleanup("room-coalesce")
+    const client = requireAcpClient(clientHandle)
+    await client.sessionUpdate({
+      sessionId: "session-coalesce",
+      update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "late output" } },
+    })
+    expect(client.getCollectedChunks("session-coalesce")).toEqual([])
   })
 
   it("coalesces a text run across an interleaved thought run, since a thought is not an action boundary", async () => {
@@ -408,7 +422,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession: vi.fn(async () => ({ sessionId: "session-thought" })),
             prompt,
           } as never,
@@ -438,6 +452,7 @@ describe("ACPClientAdapter", () => {
 
   it("a non-streamed chunk closes every open streamed run, not just the one sharing its chunkType", async () => {
     const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+    client.beginSession("session-x")
 
     // Both a text run and a thought run are open when the tool call lands —
     // it must close both, so the text/thought that follow start fresh runs
@@ -475,6 +490,7 @@ describe("ACPClientAdapter", () => {
 
   it("does not merge a streamed text chunk with an adjacent, unrelated cursor/task completion marker sharing the same chunkType", async () => {
     const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+    client.beginSession("session-x")
 
     await client.sessionUpdate({
       sessionId: "session-x",
@@ -493,6 +509,7 @@ describe("ACPClientAdapter", () => {
 
   it("does not merge a cursor/task completion marker with a streamed text chunk that follows it", async () => {
     const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+    client.beginSession("session-x")
 
     // Same hazard as the marker-after-stream case above, in the opposite
     // order: the marker is non-streamed, so it must not become the seed a
@@ -511,6 +528,7 @@ describe("ACPClientAdapter", () => {
 
   it("cursor/update_todos posts a non-streamed plan chunk that does not merge into an adjacent streamed text run", async () => {
     const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+    client.beginSession("session-x")
 
     await client.sessionUpdate({
       sessionId: "session-x",
@@ -539,6 +557,8 @@ describe("ACPClientAdapter", () => {
 
   it("BandACPClient.getCollectedChunks() with no sessionId coalesces each session independently, not across sessions", async () => {
     const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+    client.beginSession("session-a")
+    client.beginSession("session-b")
 
     await client.sessionUpdate({
       sessionId: "session-a",
@@ -602,7 +622,7 @@ describe("ACPClientAdapter", () => {
             initialize,
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             prompt,
           } as never,
@@ -658,7 +678,7 @@ describe("ACPClientAdapter", () => {
             })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession: vi.fn(async () => ({ sessionId: "session-mentions" })),
             prompt,
           } as never,
@@ -708,7 +728,7 @@ describe("ACPClientAdapter", () => {
             })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession: vi.fn(async () => ({ sessionId: "session-room-context" })),
             prompt,
           } as never,
@@ -764,7 +784,7 @@ describe("ACPClientAdapter", () => {
             initialize,
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             prompt: vi.fn(),
           } as never,
@@ -815,7 +835,7 @@ describe("ACPClientAdapter", () => {
             initialize,
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             prompt,
           } as never,
@@ -892,7 +912,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             prompt: vi.fn(async () => ({ stopReason: "end_turn" })),
           } as never,
@@ -979,7 +999,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession: vi.fn(async () => ({ sessionId: "session-1" })),
             prompt,
           } as never,
@@ -1039,7 +1059,7 @@ describe("ACPClientAdapter", () => {
           initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
           authenticate: vi.fn(async () => ({})),
           loadSession: vi.fn(),
-          unstable_resumeSession: vi.fn(),
+          resumeSession: vi.fn(),
           newSession,
           prompt: vi.fn(async () => ({ stopReason: "end_turn" })),
         } as never,
@@ -1090,7 +1110,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             prompt,
           } as never,
@@ -1152,7 +1172,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             prompt,
           } as never,
@@ -1204,7 +1224,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession: vi.fn(async () => ({
               sessionId: "session-modes",
               modes: {
@@ -1339,7 +1359,7 @@ describe("ACPClientAdapter", () => {
               })),
               authenticate: vi.fn(async () => ({})),
               loadSession,
-              unstable_resumeSession: vi.fn(),
+              resumeSession: vi.fn(),
               newSession,
               setSessionMode,
               prompt,
@@ -2013,6 +2033,7 @@ describe("ACPClientAdapter", () => {
       const loadSession = vi.fn(async () => ({
         ...(input.loadSessionModes ? { modes: input.loadSessionModes } : {}),
       }))
+      const resumeSession = vi.fn()
       const prompt = vi.fn(async (params: { sessionId: string }) => {
         if (input.raisePermissionRequest) {
           permissionResult = await clientHandle?.requestPermission({
@@ -2032,18 +2053,43 @@ describe("ACPClientAdapter", () => {
         enableMcpTools: false,
         connectionFactory: async (client) => {
           clientHandle = client as unknown as typeof clientHandle
-          return buildMockConnection({
-            agentCapabilities: input.agentCapabilities,
-            loadSession,
-            newSession,
-            prompt,
-            extraRpcSpies: { setSessionMode },
-          })
+          const controller = new AbortController()
+          return {
+            connection: {
+              signal: controller.signal,
+              closed: new Promise<void>(() => undefined),
+              initialize: vi.fn(async () => ({
+                protocolVersion: 1,
+                agentCapabilities: input.agentCapabilities ?? { loadSession: true },
+              })),
+              authenticate: vi.fn(async () => ({})),
+              loadSession,
+              resumeSession,
+              newSession,
+              setSessionMode,
+              prompt,
+            } as never,
+            stop: async () => {
+              controller.abort()
+            },
+          }
         },
         ...input.adapterOptions,
       })
 
       return { adapter, setSessionMode, loadSession, newSession, getPermissionResult: () => permissionResult }
+    }
+
+    async function send(adapter: ACPClientAdapter, roomId = "room-1", history: Record<string, string> = {}): Promise<void> {
+      await adapter.onStarted("Agent", "desc")
+      await adapter.onMessage(
+        makeMessage("hi", roomId),
+        new FakeTools(),
+        { roomToSession: history },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId },
+      )
     }
 
     it.each(["allow", "deny"] as const)("switching into ask mode surfaces a real %s decision on the next tool call", async (pick) => {
@@ -2164,7 +2210,7 @@ describe("ACPClientAdapter", () => {
     })
 
     // The ACP client does not runtime-validate an agent's JSON-RPC response
-    // (see `dist/acp.js` — `newSession`/`loadSession`/`unstable_resumeSession`
+    // (see `dist/acp.js` — `newSession`/`loadSession`/`resumeSession`
     // just return the raw parsed result), so the two cases below model
     // non-conforming responses that `SessionModeState`'s type promises can't
     // happen but nothing actually prevents.
@@ -2179,7 +2225,7 @@ describe("ACPClientAdapter", () => {
     })
 
     it("treats a resumed session as restored even when the agent's response carries no modes at all", async () => {
-      // The installed ACP SDK's own `unstable_resumeSession` has no `?? {}`
+      // The installed ACP SDK's own `resumeSession` has no `?? {}`
       // fallback the way its `loadSession` does, so resolving to `undefined`
       // on success is a real possibility here, not just a hypothetical.
       const { adapter, newSession } = buildHarness({
@@ -2238,24 +2284,39 @@ describe("ACPClientAdapter", () => {
     })
   })
 
-  describe("runTurn error reporting", () => {
-    // Minimal harness: only what a fresh (non-restored) session bootstrap
-    // touches — no loadSession/setSessionMode needed since there's no prior
-    // room-to-session history and no session-mode resolution configured.
-    function buildHarness(prompt: ReturnType<typeof vi.fn>) {
+  describe("failure reporting", () => {
+    function buildFailureHarness(input: {
+      turnTimeoutMs?: number;
+      prompt: ReturnType<typeof vi.fn>;
+      cancel?: ReturnType<typeof vi.fn>;
+      newSession?: ReturnType<typeof vi.fn>;
+    }) {
+      let clientHandle: BandACPClient | null = null
+      const cancel = input.cancel ?? vi.fn(async () => undefined)
+      const loadSession = vi.fn(async () => ({}))
+      const newSession = input.newSession ?? vi.fn(async () => ({ sessionId: "session-1" }))
+
       const adapter = new ACPClientAdapter({
         command: ["acp-agent"],
         enableMcpTools: false,
-        connectionFactory: async () => {
+        turnTimeoutMs: input.turnTimeoutMs,
+        connectionFactory: async (client) => {
+          clientHandle = client as unknown as BandACPClient
           const controller = new AbortController()
           return {
             connection: {
               signal: controller.signal,
               closed: new Promise<void>(() => undefined),
-              initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+              initialize: vi.fn(async () => ({
+                protocolVersion: 1,
+                agentCapabilities: { loadSession: true },
+              })),
               authenticate: vi.fn(async () => ({})),
-              newSession: vi.fn(async () => ({ sessionId: "session-1" })),
-              prompt,
+              loadSession,
+              resumeSession: vi.fn(),
+              newSession,
+              cancel,
+              prompt: input.prompt,
             } as never,
             stop: async () => {
               controller.abort()
@@ -2263,56 +2324,674 @@ describe("ACPClientAdapter", () => {
           }
         },
       })
-      return { adapter }
+
+      return { adapter, cancel, loadSession, newSession, getClient: () => requireAcpClient(clientHandle) }
     }
 
-    class RequestError extends Error {
-      public constructor(
-        public readonly code: number,
-        message: string,
-        public readonly data?: unknown,
-      ) {
-        super(message)
-      }
-    }
+    describeDeliveryContract([{
+      path: "ACP flushed reply chunk",
+      turn: async (tools) => {
+        const { adapter, getClient } = buildFailureHarness({
+          prompt: vi.fn(async (params: { sessionId: string }) => {
+            await getClient().sessionUpdate({
+              sessionId: params.sessionId,
+              update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "final answer" } },
+            })
+            return { stopReason: "end_turn" }
+          }),
+        })
+        await adapter.onStarted("Agent", "desc")
+        await adapter.onMessage(
+          makeMessage("question", "room-delivery"),
+          tools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-delivery" },
+        )
+      },
+    }])
 
-    async function expectRunTurnError(rejection: unknown, expectedMessage: string): Promise<void> {
-      const prompt = vi.fn(async () => {
-        throw rejection
+    it("reports a structured failure, carrying the provider's stop reason, without throwing a raw error", async () => {
+      const { adapter } = buildFailureHarness({
+        prompt: vi.fn(async () => ({ stopReason: "refusal" })),
       })
-      const { adapter } = buildHarness(prompt)
-      const tools = new FakeTools()
-
       await adapter.onStarted("Agent", "desc")
-      await adapter.onMessage(
-        makeMessage("hi", "room-1"),
+
+      const tools = new FakeTools()
+      await expectTurnFailed(adapter.onMessage(
+        makeMessage("question", "room-refusal"),
         tools,
         { roomToSession: {} },
         null,
         null,
-        { isSessionBootstrap: true, roomId: "room-1" },
-      )
+        { isSessionBootstrap: false, roomId: "room-refusal" },
+      ))
 
-      expect(tools.events).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          messageType: "error",
-          content: `ACP agent error: ${expectedMessage}`,
-          metadata: expect.objectContaining({ acp_error: expectedMessage }),
+      expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({
+        provider: "acp",
+        code: "refusal",
+        message: "ACP turn ended with stop reason: refusal.",
+      })
+    })
+
+    it("reports a structured failure when the prompt call itself rejects", async () => {
+      const promptError = new Error("agent process crashed")
+      const { adapter } = buildFailureHarness({
+        prompt: vi.fn(async () => {
+          throw promptError
         }),
-      ]))
-    }
+      })
+      await adapter.onStarted("Agent", "desc")
 
-    it.each([
-      [
-        "a plain JSON-RPC error object",
-        { code: -32603, message: "Internal error", data: "agent crashed: OOM" },
-      ],
-      [
-        "an Error subclass carrying a data field",
-        new RequestError(-32603, "Internal error", { message: "agent crashed: OOM" }),
-      ],
-    ])("surfaces the JSON-RPC error's data alongside the message when the agent rejects with %s", async (_label, rejection) => {
-      await expectRunTurnError(rejection, "Internal error (agent crashed: OOM)")
+      const tools = new FakeTools()
+      await expectTurnFailed(adapter.onMessage(
+        makeMessage("question", "room-crash"),
+        tools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-crash" },
+      ))
+
+      expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({
+        provider: "acp",
+        message: "agent process crashed",
+      })
+    })
+
+    it("a fake connection.prompt rejecting with a wire-shaped error reaches sendFailure with code, message, and detail populated", async () => {
+      const { adapter } = buildFailureHarness({
+        prompt: vi.fn(async () => {
+          throw { code: 42, message: "quota exceeded", data: { retryAfterMs: 5000 } }
+        }),
+      })
+      await adapter.onStarted("Agent", "desc")
+
+      const tools = new FakeTools()
+      await expectTurnFailed(adapter.onMessage(
+        makeMessage("question", "room-jsonrpc"),
+        tools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-jsonrpc" },
+      ))
+
+      expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({
+        provider: "acp",
+        code: "42",
+        message: "quota exceeded",
+        detail: { retryAfterMs: 5000 },
+      })
+    })
+
+    it("does not redeliver an already-flushed chunk when a later step of the same turn fails", async () => {
+      const { adapter, getClient } = buildFailureHarness({
+        prompt: vi.fn(async (params: { sessionId: string }) => {
+          await getClient().sessionUpdate({
+            sessionId: params.sessionId,
+            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "final answer" } },
+          })
+          return { stopReason: "end_turn" }
+        }),
+      })
+      await adapter.onStarted("Agent", "desc")
+
+      // Fails the "ACP client session" task event posted right after the
+      // success-path flush already delivered the chunk above, landing in
+      // `runTurn`'s catch — which used to flush again from the same
+      // (non-draining) buffer and post the same reply twice.
+      const tools = new FakeTools({ failOn: ["sendEvent"] })
+      await expectTurnFailed(adapter.onMessage(
+        makeMessage("question", "room-double-flush"),
+        tools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-double-flush" },
+      ))
+
+      expect(tools.messages).toEqual(["final answer"])
+    })
+
+    it("on a turn timeout: cancels the outstanding prompt, flushes output streamed so far, and evicts the session so the room's next turn establishes a fresh session instead of restoring or reusing it", async () => {
+      vi.useFakeTimers()
+      try {
+        const prompt = vi.fn()
+        const { adapter, cancel, loadSession, newSession, getClient } = buildFailureHarness({
+          turnTimeoutMs: 1_000,
+          prompt,
+        })
+        prompt.mockImplementationOnce(async (params: { sessionId: string }) => {
+          await getClient().sessionUpdate({
+            sessionId: params.sessionId,
+            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "partial-before-timeout" } },
+          })
+          // Never settles — the real agent is still working when the turn
+          // gives up waiting on it.
+          return new Promise(() => undefined)
+        })
+        prompt.mockImplementation(async () => ({ stopReason: "end_turn" }))
+
+        await adapter.onStarted("Agent", "desc")
+
+        const tools = new FakeTools()
+        const turn = adapter.onMessage(
+          makeMessage("question", "room-timeout"),
+          tools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-timeout" },
+        )
+        // A safety net only -- `expectTurnFailed` below attaches the real
+        // assertion separately. Without this, the rejection below (once the
+        // timer fires) has no handler yet during the `advanceTimersByTimeAsync`
+        // tick that produces it, which Node flags as unhandled even though
+        // `expectTurnFailed` handles it moments later.
+        turn.catch(() => undefined)
+
+        await vi.advanceTimersByTimeAsync(1_000)
+        await expectTurnFailed(turn)
+
+        // Partial output the agent had already streamed still reaches the
+        // room instead of being silently discarded.
+        expect(tools.messages).toEqual(["partial-before-timeout"])
+        expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({
+          provider: "acp",
+          code: "timeout",
+        })
+        // The abandoned turn is actually told to stop, not just given up on
+        // locally.
+        expect(cancel).toHaveBeenCalledWith({ sessionId: "session-1" })
+
+        // The timed-out session is evicted AND barred from restore: the
+        // room's next turn establishes a genuinely fresh session via
+        // `newSession` instead of `loadSession`-restoring the one the
+        // abandoned turn may still be writing to.
+        const nextTools = new FakeTools()
+        await adapter.onMessage(
+          makeMessage("follow up", "room-timeout"),
+          nextTools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-timeout" },
+        )
+        expect(loadSession).not.toHaveBeenCalled()
+        expect(newSession).toHaveBeenCalledTimes(2)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("a stray notification from a timed-out turn's session cannot contaminate the next turn's reply, since the next turn is a genuinely fresh session", async () => {
+      vi.useFakeTimers()
+      try {
+        const prompt = vi.fn()
+        const newSession = vi.fn()
+          .mockResolvedValueOnce({ sessionId: "session-1" })
+          .mockResolvedValueOnce({ sessionId: "session-2" })
+        const { adapter, loadSession, getClient } = buildFailureHarness({
+          turnTimeoutMs: 1_000,
+          prompt,
+          newSession,
+        })
+        prompt.mockImplementationOnce(() => new Promise(() => undefined))
+
+        await adapter.onStarted("Agent", "desc")
+
+        const tools = new FakeTools()
+        const turn = adapter.onMessage(
+          makeMessage("question", "room-stray"),
+          tools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-stray" },
+        )
+        turn.catch(() => undefined)
+        await vi.advanceTimersByTimeAsync(1_000)
+        await expectTurnFailed(turn)
+
+        // The next turn establishes session-2 (a fresh id, not a restore of
+        // session-1) and streams its own real content; a straggler from the
+        // abandoned session-1 turn arrives for the OLD id in between.
+        prompt.mockImplementationOnce(async (params: { sessionId: string }) => {
+          await getClient().sessionUpdate({
+            sessionId: "session-1",
+            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "STALE-FROM-ABANDONED-TURN " } },
+          })
+          await getClient().sessionUpdate({
+            sessionId: params.sessionId,
+            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "real-turn-2-answer" } },
+          })
+          return { stopReason: "end_turn" }
+        })
+
+        const nextTools = new FakeTools()
+        await adapter.onMessage(
+          makeMessage("follow up", "room-stray"),
+          nextTools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-stray" },
+        )
+
+        expect(loadSession).not.toHaveBeenCalled()
+        expect(nextTools.messages).toEqual(["real-turn-2-answer"])
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("does not wedge the room forever waiting on a turn-timeout cancel() that never resolves", async () => {
+      vi.useFakeTimers()
+      try {
+        const prompt = vi.fn()
+        const cancel = vi.fn(() => new Promise(() => undefined))
+        const { adapter } = buildFailureHarness({
+          turnTimeoutMs: 1_000,
+          prompt,
+          cancel,
+        })
+        prompt.mockImplementationOnce(() => new Promise(() => undefined))
+        prompt.mockImplementation(async () => ({ stopReason: "end_turn" }))
+
+        await adapter.onStarted("Agent", "desc")
+
+        const tools = new FakeTools()
+        const turn = adapter.onMessage(
+          makeMessage("question", "room-wedge"),
+          tools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-wedge" },
+        )
+        turn.catch(() => undefined)
+        await vi.advanceTimersByTimeAsync(1_000)
+
+        // The timed-out turn itself still fails promptly -- it does not wait
+        // on `cancel()`, which this test deliberately never resolves.
+        await expectTurnFailed(turn)
+
+        // Nor does the room stay wedged: a follow-up turn on the same room
+        // completes normally instead of hanging behind the unresolved cancel.
+        const nextTools = new FakeTools()
+        await adapter.onMessage(
+          makeMessage("follow up", "room-wedge"),
+          nextTools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-wedge" },
+        )
+        expect(nextTools.messages).toEqual([])
+        expect(findFailureEvent(nextTools)).toBeUndefined()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it.each([0, -1, NaN])("constructing with an invalid turnTimeoutMs (%s) throws", (invalid) => {
+      expect(() => new ACPClientAdapter({
+        command: ["acp-agent"],
+        turnTimeoutMs: invalid,
+      })).toThrow(/turnTimeoutMs must be a positive number or Infinity/)
+    })
+
+    it("constructing with a turnTimeoutMs beyond setTimeout's max delay throws", () => {
+      expect(() => new ACPClientAdapter({
+        command: ["acp-agent"],
+        turnTimeoutMs: 2_147_483_648,
+      })).toThrow(/turnTimeoutMs must be Infinity or at most 2147483647/)
+    })
+
+    it("accepts Infinity as an explicit, unbounded turnTimeoutMs", () => {
+      expect(() => new ACPClientAdapter({
+        command: ["acp-agent"],
+        turnTimeoutMs: Infinity,
+      })).not.toThrow()
+    })
+
+    it("constructing with a non-number turnTimeoutMs throws instead of silently disabling the timeout", () => {
+      expect(() => new ACPClientAdapter({
+        command: ["acp-agent"],
+        turnTimeoutMs: "3000" as unknown as number,
+      })).toThrow(/turnTimeoutMs must be a positive number or Infinity/)
+    })
+
+    it("still evicts and cancels when flushing the timed-out partial fails to deliver", async () => {
+      vi.useFakeTimers()
+      try {
+        const prompt = vi.fn()
+        const { adapter, cancel, loadSession, newSession, getClient } = buildFailureHarness({
+          turnTimeoutMs: 1_000,
+          prompt,
+        })
+        prompt.mockImplementationOnce(async (params: { sessionId: string }) => {
+          await getClient().sessionUpdate({
+            sessionId: params.sessionId,
+            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "partial-before-timeout" } },
+          })
+          return new Promise(() => undefined)
+        })
+        prompt.mockImplementation(async () => ({ stopReason: "end_turn" }))
+
+        await adapter.onStarted("Agent", "desc")
+
+        const tools = new FakeTools({ failOn: ["sendMessage"] })
+        const turn = adapter.onMessage(
+          makeMessage("question", "room-timeout-flush-fail"),
+          tools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-timeout-flush-fail" },
+        )
+        turn.catch(() => undefined)
+        await vi.advanceTimersByTimeAsync(1_000)
+        await expect(turn).rejects.toBeTruthy()
+        expect(cancel).toHaveBeenCalledWith({ sessionId: "session-1" })
+
+        const nextTools = new FakeTools()
+        await adapter.onMessage(
+          makeMessage("follow up", "room-timeout-flush-fail"),
+          nextTools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-timeout-flush-fail" },
+        )
+        expect(loadSession).not.toHaveBeenCalled()
+        expect(newSession).toHaveBeenCalledTimes(2)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("a stale generation's timeout does not reset a replacement that reused the same session id", async () => {
+      let attempt = 0
+      let client2: BandACPClient | null = null
+      let resolveClosed!: () => void
+      const closed = new Promise<void>((resolve) => {
+        resolveClosed = resolve
+      })
+      const stalePromptStarted = (() => { let resolve!: () => void; const promise = new Promise<void>((r) => { resolve = r }); return { promise, resolve } })()
+      const replPromptStarted = (() => { let resolve!: () => void; const promise = new Promise<void>((r) => { resolve = r }); return { promise, resolve } })()
+      const releaseReplacement = (() => { let resolve!: () => void; const promise = new Promise<void>((r) => { resolve = r }); return { promise, resolve } })()
+      const newSession = vi.fn(async () => ({ sessionId: "session-persist" }))
+
+      const adapter = new ACPClientAdapter({
+        command: ["acp-agent"],
+        enableMcpTools: false,
+        turnTimeoutMs: 250,
+        connectionFactory: async (client) => {
+          attempt += 1
+          const controller = new AbortController()
+          if (attempt === 1) {
+            return {
+              connection: {
+                signal: controller.signal,
+                closed,
+                initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+                authenticate: vi.fn(async () => ({})),
+                loadSession: vi.fn(async () => ({})),
+                resumeSession: vi.fn(),
+                newSession,
+                cancel: vi.fn(async () => undefined),
+                prompt: vi.fn(async () => {
+                  stalePromptStarted.resolve()
+                  return new Promise(() => undefined)
+                }),
+              } as never,
+              stop: async () => {
+                controller.abort()
+              },
+            }
+          }
+          client2 = client as unknown as BandACPClient
+          return {
+            connection: {
+              signal: controller.signal,
+              closed: new Promise<void>(() => undefined),
+              initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+              authenticate: vi.fn(async () => ({})),
+              loadSession: vi.fn(async () => ({})),
+              resumeSession: vi.fn(),
+              newSession,
+              cancel: vi.fn(async () => undefined),
+              prompt: vi.fn(async (params: { sessionId: string }) => {
+                replPromptStarted.resolve()
+                await client2!.sessionUpdate({
+                  sessionId: params.sessionId,
+                  update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "REPLACEMENT-OUTPUT" } },
+                })
+                await releaseReplacement.promise
+                return { stopReason: "end_turn" }
+              }),
+            } as never,
+            stop: async () => {
+              controller.abort()
+            },
+          }
+        },
+      })
+
+      await adapter.onStarted("Agent", "desc")
+      const staleTools = new FakeTools()
+      const staleTurn = adapter.onMessage(
+        makeMessage("hello", "room-race"),
+        staleTools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-race" },
+      )
+      staleTurn.catch(() => undefined)
+      await stalePromptStarted.promise
+      await adapter.onCleanup("room-race")
+      resolveClosed()
+      await new Promise((resolve) => setTimeout(resolve, 10))
+
+      const replTools = new FakeTools()
+      const replTurn = adapter.onMessage(
+        makeMessage("replacement", "room-race"),
+        replTools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-race" },
+      )
+      await replPromptStarted.promise
+      await expectTurnFailed(staleTurn)
+
+      releaseReplacement.resolve()
+      await replTurn
+      expect(replTools.messages).toEqual(["REPLACEMENT-OUTPUT"])
+
+      const thirdTools = new FakeTools()
+      await adapter.onMessage(
+        makeMessage("third", "room-race"),
+        thirdTools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-race" },
+      )
+      expect(newSession).toHaveBeenCalledTimes(2)
+      await adapter.stop()
+    })
+
+    it("a stale generation's permission request is cancelled and never delivered to a same-id replacement room", async () => {
+      let attempt = 0
+      let client1: BandACPClient | null = null
+      let resolveClosed!: () => void
+      const closed = new Promise<void>((resolve) => {
+        resolveClosed = resolve
+      })
+      const stalePromptStarted = (() => { let resolve!: () => void; const promise = new Promise<void>((r) => { resolve = r }); return { promise, resolve } })()
+      const replPromptStarted = (() => { let resolve!: () => void; const promise = new Promise<void>((r) => { resolve = r }); return { promise, resolve } })()
+      const releaseReplacement = (() => { let resolve!: () => void; const promise = new Promise<void>((r) => { resolve = r }); return { promise, resolve } })()
+      const resolvedRooms: string[] = []
+      const newSession = vi.fn(async () => ({ sessionId: "session-persist" }))
+      const permissionParams = {
+        sessionId: "session-persist",
+        toolCall: { toolCallId: "call-stale", title: "Edit config" },
+        options: [{ kind: "allow_once" as const, name: "Allow once", optionId: "allow" }],
+      }
+
+      const adapter = new ACPClientAdapter({
+        command: ["acp-agent"],
+        enableMcpTools: false,
+        resolvePermission: async (request) => {
+          resolvedRooms.push(request.roomId)
+          return "allow"
+        },
+        connectionFactory: async (client) => {
+          attempt += 1
+          const controller = new AbortController()
+          if (attempt === 1) {
+            client1 = client as unknown as BandACPClient
+            return {
+              connection: {
+                signal: controller.signal,
+                closed,
+                initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+                authenticate: vi.fn(async () => ({})),
+                loadSession: vi.fn(async () => ({})),
+                resumeSession: vi.fn(),
+                newSession,
+                cancel: vi.fn(async () => undefined),
+                prompt: vi.fn(async () => {
+                  stalePromptStarted.resolve()
+                  return new Promise(() => undefined)
+                }),
+              } as never,
+              stop: async () => {
+                controller.abort()
+              },
+            }
+          }
+          return {
+            connection: {
+              signal: controller.signal,
+              closed: new Promise<void>(() => undefined),
+              initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+              authenticate: vi.fn(async () => ({})),
+              loadSession: vi.fn(async () => ({})),
+              resumeSession: vi.fn(),
+              newSession,
+              cancel: vi.fn(async () => undefined),
+              prompt: vi.fn(async () => {
+                replPromptStarted.resolve()
+                await releaseReplacement.promise
+                return { stopReason: "end_turn" }
+              }),
+            } as never,
+            stop: async () => {
+              controller.abort()
+            },
+          }
+        },
+      })
+
+      await adapter.onStarted("Agent", "desc")
+      const staleTools = new FakeTools()
+      const staleTurn = adapter.onMessage(
+        makeMessage("hello", "room-perm-race"),
+        staleTools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-perm-race" },
+      )
+      staleTurn.catch(() => undefined)
+      await stalePromptStarted.promise
+      await adapter.onCleanup("room-perm-race")
+      resolveClosed()
+      await new Promise((resolve) => setTimeout(resolve, 10))
+
+      const replTools = new FakeTools()
+      const replTurn = adapter.onMessage(
+        makeMessage("replacement", "room-perm-race"),
+        replTools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-perm-race" },
+      )
+      await replPromptStarted.promise
+
+      const stalePermission = await client1!.requestPermission(permissionParams)
+      expect(stalePermission).toEqual({ outcome: { outcome: "cancelled" } })
+      expect(replTools.events.filter((event) => event.metadata?.permission_request === true)).toEqual([])
+      expect(resolvedRooms).toEqual([])
+
+      releaseReplacement.resolve()
+      await replTurn
+      await adapter.stop()
+    })
+
+    it("takeCollectedChunks does not resurrect a buffer deleted by onCleanup", async () => {
+      let clientHandle: BandACPClient | null = null
+      const promptStarted = (() => { let resolve!: () => void; const promise = new Promise<void>((r) => { resolve = r }); return { promise, resolve } })()
+      const promptGate = (() => { let resolve!: () => void; const promise = new Promise<void>((r) => { resolve = r }); return { promise, resolve } })()
+      const adapter = new ACPClientAdapter({
+        command: ["acp-agent"],
+        enableMcpTools: false,
+        connectionFactory: async (client) => {
+          clientHandle = client as unknown as BandACPClient
+          const controller = new AbortController()
+          return {
+            connection: {
+              signal: controller.signal,
+              closed: new Promise<void>(() => undefined),
+              initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+              authenticate: vi.fn(async () => ({})),
+              loadSession: vi.fn(async () => ({})),
+              resumeSession: vi.fn(),
+              newSession: vi.fn(async () => ({ sessionId: "session-1" })),
+              cancel: vi.fn(async () => undefined),
+              prompt: vi.fn(async (params: { sessionId: string }) => {
+                await clientHandle!.sessionUpdate({
+                  sessionId: params.sessionId,
+                  update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "in-flight" } },
+                })
+                promptStarted.resolve()
+                await promptGate.promise
+                return { stopReason: "end_turn" }
+              }),
+            } as never,
+            stop: async () => {
+              controller.abort()
+            },
+          }
+        },
+      })
+      await adapter.onStarted("Agent", "desc")
+      const tools = new FakeTools()
+      const turn = adapter.onMessage(
+        makeMessage("hello", "room-cleanup-inflight"),
+        tools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-cleanup-inflight" },
+      )
+      await promptStarted.promise
+      await adapter.onCleanup("room-cleanup-inflight")
+      promptGate.resolve()
+      await turn.catch(() => undefined)
+      await clientHandle!.sessionUpdate({
+        sessionId: "session-1",
+        update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "late-after-cleanup" } },
+      })
+      expect(clientHandle!.takeCollectedChunks("session-1")).toEqual([])
+      await adapter.stop()
     })
   })
 
@@ -2577,7 +3256,7 @@ describe("ACPClientAdapter", () => {
             initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: { loadSession: true } })),
             authenticate: vi.fn(async () => ({})),
             loadSession: vi.fn(async () => ({})),
-            unstable_resumeSession: vi.fn(),
+            resumeSession: vi.fn(),
             newSession,
             setSessionMode: vi.fn(async () => ({})),
             setSessionConfigOption,

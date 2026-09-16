@@ -104,4 +104,16 @@ export type {
 } from "./adapters";
 
 export { SimpleAdapter } from "./core/simpleAdapter";
+export {
+  AgentFailure,
+  FAILURE_EVENT_TYPE,
+  FAILURE_METADATA_KEY,
+  toFailureEvent,
+  RecoverableTurnError,
+  DeliveryFailedError,
+  deliverReply,
+  ProviderTurnFailedError,
+  agentFailure,
+  reportTurnFailure,
+} from "./core";
 export { MCP_TOOL_PREFIX, MCP_SERVER_NAME, TOOL_MODELS } from "./runtime/tools/schemas";

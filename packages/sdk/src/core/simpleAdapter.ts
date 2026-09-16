@@ -19,6 +19,9 @@ import type {
 export abstract class SimpleAdapter<H, TTools = AdapterToolsProtocol>
   implements FrameworkAdapter
 {
+  /** `AgentFailure.provider` identity for every failure this adapter reports. */
+  protected abstract readonly provider: string;
+
   protected historyConverter?: HistoryConverter<H>;
   protected agentName = "";
   protected agentDescription = "";

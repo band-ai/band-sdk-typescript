@@ -19,6 +19,20 @@ import type {
   ToolOperationResult,
 } from "../../contracts/dtos";
 
+// The Fern-generated `@band-ai/rest-client` mention item type has widened
+// over time (e.g. `id` became optional once `handle`-only mentions were
+// supported), while our own `MentionReference` DTO keeps `id` required for
+// callers of the SDK's public surface. `FernMentionRequestItem` mirrors the
+// generated client's looser shape so `FernBandClientLike` stays structurally
+// compatible with the real `BandClient` regardless of which identifying
+// field the generated type currently requires.
+export interface FernMentionRequestItem {
+  id?: string;
+  handle?: string;
+  name?: string;
+  kind?: string;
+}
+
 export interface AgentIdentity {
   id: string;
   name: string;
@@ -228,17 +242,6 @@ export interface FernUserProfile {
   username?: string;
 }
 
-/**
- * Mention item the generated client accepts on create-message.
- * `id` is optional: the client resolves `handle` server-side, and either field is enough.
- */
-export interface FernClientMention {
-  id?: string;
-  handle?: string;
-  name?: string;
-  kind?: "mention" | "reference";
-}
-
 // Method syntax (not property-function syntax) is used intentionally so that
 // TypeScript checks parameter types bivariantly.
 export interface FernBandClientLike {
@@ -364,7 +367,7 @@ export interface FernBandClientLike {
           content: string;
           message_type?: string;
           metadata?: MetadataMap;
-          mentions?: FernClientMention[];
+          mentions?: FernMentionRequestItem[];
         };
       },
       options?: RestRequestOptions,
@@ -403,7 +406,7 @@ export interface FernBandClientLike {
           content: string;
           message_type?: string;
           metadata?: MetadataMap;
-          mentions?: FernClientMention[];
+          mentions?: FernMentionRequestItem[];
         };
       },
       options?: RestRequestOptions,
@@ -450,7 +453,7 @@ export interface FernBandClientLike {
           content: string;
           message_type?: string;
           metadata?: MetadataMap;
-          mentions?: FernClientMention[];
+          mentions?: FernMentionRequestItem[];
         };
       },
       options?: RestRequestOptions,

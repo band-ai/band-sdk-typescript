@@ -1,4 +1,5 @@
 import type { RestApi } from "../../client/rest/types";
+import type { Logger } from "../../core/logger";
 
 export type GatewayTaskState =
   | "submitted"
@@ -111,6 +112,7 @@ export interface GatewayServerOptions {
   ) => AsyncIterable<GatewayA2AStatusUpdateEvent>;
   onCancel?: (request: GatewayCancelRequest) => Promise<void>;
   loadModules?: () => Promise<unknown>;
+  logger?: Logger;
 }
 
 export type GatewayServerFactory = (
@@ -128,4 +130,5 @@ export interface A2AGatewayAdapterOptions {
   peerPageSize?: number;
   maxPeerPages?: number;
   serverFactory?: GatewayServerFactory;
+  logger?: Logger;
 }

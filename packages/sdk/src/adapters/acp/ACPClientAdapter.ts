@@ -20,14 +20,17 @@ import type {
 
 import { ACPClientHistoryConverter, type ACPClientSessionState } from "../../converters/acp-client";
 import { SimpleAdapter } from "../../core/simpleAdapter";
-import { NoopLogger, type Logger } from "../../core/logger";
-import { ValidationError } from "../../core/errors";
+import { resolveLogger, type Logger } from "../../core/logger";
+import { rethrowIfRecoverableTurnFailure, ValidationError } from "../../core/errors";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { mentionSubjectsFromMetadata, replaceUuidMentions } from "../../runtime/formatters";
 import { systemUpdateParts } from "../shared/conversationPrompt";
-import { withTimeout } from "../shared/withTimeout";
 import { asErrorMessage, asOptionalRecord } from "../shared/coercion";
+import { withTimeout } from "../shared/withTimeout";
+import { abandon } from "../shared/abandon";
+import { deliverReply } from "../../core/deliveryFailedError";
+import { FAILURE_CODE_TIMEOUT, agentFailure, reportTurnFailure } from "../../core/providerFailure";
 import { isBlankEventContent } from "../../contracts/chatEvents";
 import type { PlatformMessage } from "../../runtime/types";
 import type { McpToolRegistration } from "../../mcp/registrations";
@@ -66,6 +69,7 @@ type InjectedMcpBackend =
 // (`approvalWaitTimeoutMs`) — an unanswered request shouldn't hang the
 // agent's turn forever, but should give a human realistic time to notice it.
 const DEFAULT_PERMISSION_TIMEOUT_MS = 5 * 60_000;
+const DEFAULT_TURN_TIMEOUT_MS = 60 * 60_000;
 
 // The installed ACP SDK's `ClientSideConnection#sendRequest` has no timeout
 // of its own — it waits forever for a matching response id — so an RPC that
@@ -73,9 +77,19 @@ const DEFAULT_PERMISSION_TIMEOUT_MS = 5 * 60_000;
 // its own bound. Order-of-magnitude match for `OpencodeAdapter`'s own
 // subprocess-handshake timeout: this is the same kind of wait, a local agent
 // process acknowledging an administrative call, not doing model inference.
-// Shared by both `setSessionMode` and `setSessionConfigOption` — the same
-// category of RPC-ack wait, not two identical constants.
 const SET_SESSION_CONFIG_TIMEOUT_MS = 10_000;
+const MAX_SETTIMEOUT_DELAY_MS = 2_147_483_647;
+
+// `setTimeout` silently truncates any delay past this to ~1ms, so a config
+// value beyond it must be rejected outright rather than let that surprise
+// through. Shared by every constructor timeout check below; each caller
+// still gates whether the check applies (a value that's currently unused,
+// or Infinity, may skip it) since that condition differs per field.
+function assertWithinSetTimeoutBound(message: string, value: number): void {
+  if (value > MAX_SETTIMEOUT_DELAY_MS) {
+    throw new ValidationError(message)
+  }
+}
 
 export interface ACPModeRequest {
   roomId: string;
@@ -116,6 +130,7 @@ export interface ACPClientAdapterOptions {
   // Only meaningful when `resolvePermission` is set. Defaults to
   // `DEFAULT_PERMISSION_TIMEOUT_MS`.
   permissionTimeoutMs?: number;
+  turnTimeoutMs?: number;
   // ACP advertises session modes once a session is (re)established. This
   // callback receives that harness-owned catalog and may select one before
   // the session's first prompt. Omit it to preserve the harness's advertised
@@ -145,6 +160,7 @@ export interface ACPClientAdapterOptions {
 }
 
 export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, AdapterToolsProtocol> {
+  protected readonly provider = "acp";
   private readonly command: string[]
   private readonly cwd: string
   private readonly env?: Record<string, string>
@@ -156,12 +172,23 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private readonly clientCapabilities?: ClientCapabilities
   private readonly connectionFactory: ACPClientConnectionFactory
 
-  private readonly roomToSession = new Map<string, string>()
+  // The value's `generation` is the connection generation the session was
+  // last established/restored against. `client` is the exact BandACPClient
+  // instance that session was established against — never reread from
+  // `this.client` at cleanup time, because a reconnect can already have
+  // replaced it. `null` only for a room rehydrated from persisted history.
+  private readonly roomToSession = new Map<string, { sessionId: string; generation: number; client: BandACPClient | null }>()
   private readonly sessionToRoom = new Map<string, string>()
   private readonly roomTools = new Map<string, AdapterToolsProtocol>()
+  // Keyed by `sessionKey(generation, sessionId)`, not bare sessionId: an ACP
+  // agent can reissue the identical session id across a reconnect.
   private readonly activeSessions = new Set<string>()
   private readonly bootstrappedSessions = new Set<string>()
-  private readonly pendingPermissions = new Map<string /* sessionId */, Set<AbortController>>()
+  // A timed-out turn's generation-qualified session, once `cancel()`'d, can
+  // never be trusted for restore on that same connection. A later connection
+  // generation with the same raw session id is a different owner.
+  private readonly abandonedSessions = new Set<string>()
+  private readonly pendingPermissions = new Map<string /* sessionKey */, Set<AbortController>>()
   private readonly sessionsInFlight = new Map<string /* roomId */, Promise<string>>()
   private readonly roomTurnLocks = new Map<string /* roomId */, Promise<unknown>>()
   // Bumped each time a room starts a *new* establishment (never on a
@@ -174,6 +201,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private readonly resolveSessionMode?: (request: ACPModeRequest, signal: AbortSignal) => Promise<string | undefined>
   private readonly resolveSessionModel?: (request: ACPModelRequest, signal: AbortSignal) => Promise<string | undefined>
   private readonly permissionTimeoutMs: number
+  private readonly turnTimeoutMs: number
   private readonly logger: Logger
 
   private backend: InjectedMcpBackend | null = null
@@ -185,6 +213,10 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private started = false
   private systemPrompt = ""
   private spawnPromise: Promise<ClientSideConnection> | null = null
+  // Bumped by `stop()` and on every successful spawn install. Cleanup/timeout
+  // and permission maps key by this plus session id so a stale generation
+  // cannot alias a same-id session on a newer connection.
+  private connectionGeneration = 0
 
   public constructor(options: ACPClientAdapterOptions) {
     super({
@@ -209,7 +241,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.resolvePermission = options.resolvePermission
     this.resolveSessionMode = options.resolveSessionMode
     this.resolveSessionModel = options.resolveSessionModel
-    this.logger = options.logger ?? new NoopLogger()
+    this.logger = resolveLogger(options.logger)
     this.permissionTimeoutMs = options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
     // Only meaningful when `resolvePermission`, `resolveSessionMode`, or
     // `resolveSessionModel` is actually set — the auto-allow/harness-default
@@ -218,6 +250,26 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     // all.
     if ((this.resolvePermission || this.resolveSessionMode || this.resolveSessionModel) && (!Number.isFinite(this.permissionTimeoutMs) || this.permissionTimeoutMs <= 0)) {
       throw new ValidationError(`permissionTimeoutMs must be a positive finite number, got ${options.permissionTimeoutMs}`)
+    }
+    if (this.resolvePermission || this.resolveSessionMode || this.resolveSessionModel) {
+      assertWithinSetTimeoutBound(
+        `permissionTimeoutMs must be at most ${MAX_SETTIMEOUT_DELAY_MS}, got ${options.permissionTimeoutMs}`,
+        this.permissionTimeoutMs,
+      )
+    }
+
+    this.turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS
+    // `Number.isNaN("3000")` is false and comparison coercions would otherwise
+    // accept a string, then `Number.isFinite("3000")` is false and silently
+    // disable the timeout. Reject non-numbers; `Infinity` remains the opt-out.
+    if (typeof this.turnTimeoutMs !== "number" || Number.isNaN(this.turnTimeoutMs) || this.turnTimeoutMs <= 0) {
+      throw new ValidationError(`turnTimeoutMs must be a positive number or Infinity, got ${options.turnTimeoutMs}`)
+    }
+    if (Number.isFinite(this.turnTimeoutMs)) {
+      assertWithinSetTimeoutBound(
+        `turnTimeoutMs must be Infinity or at most ${MAX_SETTIMEOUT_DELAY_MS}, got ${options.turnTimeoutMs}`,
+        this.turnTimeoutMs,
+      )
     }
   }
 
@@ -268,60 +320,132 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
-    const connection = await this.ensureConnection()
-    const client = this.client
-    if (!client) {
-      throw new Error("ACP client was not initialized")
-    }
-
-    const sessionId = await this.getOrCreateSession(context.roomId, connection)
-    client.resetChunks(sessionId)
-
-    // The platform stores a typed mention as @[[participant_id]]; nothing else
-    // in ACP resolves that back to a handle, so the agent reads a bare id as
-    // an MCP protocol token instead of as being spoken to.
-    const content = replaceUuidMentions(message.content, mentionSubjectsFromMetadata(message.metadata))
-
-    // ExecutionContext.consumeParticipantsMessage is edge-triggered: it only
-    // returns a value on the turn the roster actually changed, then clears
-    // itself. Injecting it here, on every turn it's non-null, is the only
-    // chance ACP gets to see it at all.
-    const messageWithContext = [...systemUpdateParts(participantsMessage, contactsMessage), content].join("\n\n")
-
-    const promptText = this.bootstrappedSessions.has(sessionId)
-      ? messageWithContext
-      : `${this.buildSystemContext(context.roomId, message)}\n\n${messageWithContext}`
-
-    this.bootstrappedSessions.add(sessionId)
-
+    // Hoisted out of the `try` so the `catch` below — specifically the
+    // timeout branch — can still reach the connection/client/session a
+    // timed-out prompt was issued on, to cancel and evict it.
+    let connection: ClientSideConnection | undefined
+    let client: BandACPClient | null = null
+    let sessionId: string | undefined
+    let generation = 0
     try {
-      await connection.prompt({
+      const ensured = await this.ensureConnection()
+      connection = ensured.connection
+      generation = ensured.generation
+      client = this.client
+      if (!client) {
+        throw new Error("ACP client was not initialized")
+      }
+
+      sessionId = await this.getOrCreateSession(context.roomId, connection, generation, client)
+      const sessionKey = this.sessionKey(generation, sessionId)
+      client.beginSession(sessionId)
+      const content = replaceUuidMentions(message.content, mentionSubjectsFromMetadata(message.metadata))
+      const messageWithContext = [...systemUpdateParts(participantsMessage, contactsMessage), content].join("\n\n")
+      const promptText = this.bootstrappedSessions.has(sessionKey)
+        ? messageWithContext
+        : `${this.buildSystemContext(context.roomId, message)}\n\n${messageWithContext}`
+
+      this.bootstrappedSessions.add(sessionKey)
+      const response = await withTimeout(connection.prompt({
         sessionId,
         prompt: [{
           type: "text",
           text: promptText,
         }],
+      }), this.turnTimeoutMs, () => new AcpTurnTimeoutError())
+
+      await this.flushChunks({
+        client,
+        tools,
+        sessionId,
+        senderId: message.senderId,
+        senderHandle: message.senderName ?? message.senderType,
       })
+
+      await tools.sendEvent("ACP client session", "task", {
+        acp_client_session_id: sessionId,
+        acp_client_room_id: context.roomId,
+      })
+
+      if (response.stopReason !== "end_turn") {
+        await reportTurnFailure(
+          tools,
+          agentFailure(this.provider, `ACP turn ended with stop reason: ${response.stopReason ?? "unknown"}.`, response.stopReason),
+          this.logger,
+          { roomId: context.roomId, sessionId },
+        )
+      }
     } catch (error) {
-      await this.stop()
-      const errorMessage = asErrorMessage(error)
-      await tools.sendEvent(`ACP agent error: ${errorMessage}`, "error", {
-        acp_error: errorMessage,
-      })
-      return
+      rethrowIfRecoverableTurnFailure(error)
+
+      const isTimeout = error instanceof AcpTurnTimeoutError
+
+      // Ownership eviction must happen before any fallible delivery: a
+      // DeliveryFailedError from flushChunks is recoverable and would skip
+      // cancel/abandon if it ran first, leaving the next turn to restore
+      // this still-live session.
+      if (isTimeout && connection && sessionId) {
+        await this.abandonTimedOutTurn(connection, sessionId, generation)
+      }
+
+      if (client && sessionId) {
+        try {
+          await this.flushChunks({
+            client,
+            tools,
+            sessionId,
+            senderId: message.senderId,
+            senderHandle: message.senderName ?? message.senderType,
+          })
+        } finally {
+          if (isTimeout) {
+            client.resetChunks(sessionId)
+          }
+        }
+      }
+
+      const acpError = asAcpJsonRpcError(error)
+      await reportTurnFailure(
+        tools,
+        isTimeout
+          ? agentFailure(this.provider, "ACP turn timed out.", FAILURE_CODE_TIMEOUT)
+          : acpError
+            ? agentFailure(this.provider, acpError.message, String(acpError.code), acpError.data)
+            : agentFailure(this.provider, asErrorMessage(error)),
+        this.logger,
+        { roomId: context.roomId, sessionId },
+      )
     }
+  }
 
-    await this.flushChunks({
-      tools,
-      sessionId,
-      senderId: message.senderId,
-      senderHandle: message.senderName ?? message.senderType,
-    })
-
-    await tools.sendEvent("ACP client session", "task", {
-      acp_client_session_id: sessionId,
-      acp_client_room_id: context.roomId,
-    })
+  // Best-effort: tells the agent to stop working on a turn Band has already
+  // given up waiting for (the ACP client has no way to force it), evicts the
+  // session so the room's next turn re-establishes rather than reuses it
+  // (`establishSession` also refuses to restore it — see `abandonedSessions`),
+  // and resets the chunk buffer so a stray notification the agent sends
+  // before the next turn starts (the tail it may still send after `cancel`,
+  // per the ACP spec) has nowhere to land (`sessionUpdate` only collects
+  // into a session it still has a buffer for).
+  //
+  // `connection.cancel()` is fired via the shared `abandon()` helper, not
+  // awaited: the turn only timed out because the underlying agent process
+  // stopped responding, and `cancel` rides the same transport — awaiting it
+  // would risk blocking this room's turn lock forever on the very process
+  // that just proved it can hang.
+  private async abandonTimedOutTurn(connection: ClientSideConnection, sessionId: string, generation: number): Promise<void> {
+    const key = this.sessionKey(generation, sessionId)
+    this.activeSessions.delete(key)
+    this.abandonedSessions.add(key)
+    // Only drop this generation's mapping. A replacement that reused the
+    // same raw session id on a newer connection owns a different key.
+    const owner = [...this.roomToSession.entries()].find(([, value]) => value.sessionId === sessionId && value.generation === generation)
+    if (owner) {
+      this.unlinkOwner(owner[0], owner[1])
+    }
+    abandon(
+      () => connection.cancel({ sessionId }),
+      (error) => this.safeWarn("acp_client.cancel_failed", { sessionId, error: asErrorMessage(error) }),
+    )
   }
 
   // A per-room async mutex: `fn` for a given `roomId` never overlaps another
@@ -338,7 +462,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   }
 
   public async onCleanup(roomId: string): Promise<void> {
-    const sessionId = this.unlinkRoom(roomId)
+    const owner = this.unlinkRoom(roomId)
     this.roomTools.delete(roomId)
     this.sessionsInFlight.delete(roomId)
     this.roomTurnLocks.delete(roomId)
@@ -346,10 +470,13 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     // finish later (nothing cancels the real RPC), but must not link or
     // activate on behalf of a room that has already moved on.
     this.nextRoomGeneration(roomId)
-    if (sessionId) {
-      this.activeSessions.delete(sessionId)
-      this.bootstrappedSessions.delete(sessionId)
-      this.cancelPendingPermissions(sessionId, "room-closed")
+    if (owner) {
+      const key = this.sessionKey(owner.generation, owner.sessionId)
+      owner.client?.resetChunks(owner.sessionId)
+      this.activeSessions.delete(key)
+      this.bootstrappedSessions.delete(key)
+      this.abandonedSessions.delete(key)
+      this.cancelPendingPermissions(key, "room-closed")
     }
   }
 
@@ -358,10 +485,12 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   }
 
   public async stop(): Promise<void> {
+    this.connectionGeneration++
     this.spawnPromise = null
     this.connectionState = null
     this.activeSessions.clear()
     this.bootstrappedSessions.clear()
+    this.abandonedSessions.clear()
     this.roomToSession.clear()
     this.sessionToRoom.clear()
     this.roomTools.clear()
@@ -394,7 +523,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private rehydrate(history: ACPClientSessionState): void {
     for (const [roomId, sessionId] of Object.entries(history.roomToSession)) {
       if (!this.roomToSession.has(roomId)) {
-        this.linkSession(roomId, sessionId)
+        this.linkSession(roomId, sessionId, this.connectionGeneration, null)
       }
     }
   }
@@ -407,8 +536,9 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   // on to activate/configure/prompt a session regardless of a `false` here
   // would use a session this room was refused, not just fail to route its
   // permissions.
-  private linkSession(roomId: string, sessionId: string): boolean {
-    const routedRoomId = this.sessionToRoom.get(sessionId)
+  private linkSession(roomId: string, sessionId: string, generation: number, client: BandACPClient | null): boolean {
+    const key = this.sessionKey(generation, sessionId)
+    const routedRoomId = this.sessionToRoom.get(key)
     if (routedRoomId !== undefined && routedRoomId !== roomId) {
       this.safeWarn("refusing to route one ACP session to a second room", {
         sessionId,
@@ -418,13 +548,16 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       return false
     }
 
-    const replacedSessionId = this.roomToSession.get(roomId)
-    if (replacedSessionId !== undefined && replacedSessionId !== sessionId) {
-      this.sessionToRoom.delete(replacedSessionId)
+    const replaced = this.roomToSession.get(roomId)
+    if (replaced && replaced.generation > generation) {
+      return false
+    }
+    if (replaced !== undefined && (replaced.sessionId !== sessionId || replaced.generation !== generation)) {
+      this.sessionToRoom.delete(this.sessionKey(replaced.generation, replaced.sessionId))
     }
 
-    this.roomToSession.set(roomId, sessionId)
-    this.sessionToRoom.set(sessionId, roomId)
+    this.roomToSession.set(roomId, { sessionId, generation, client })
+    this.sessionToRoom.set(key, roomId)
     return true
   }
 
@@ -455,19 +588,30 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     return Promise.race([operation, closedRejection])
   }
 
-  private unlinkRoom(roomId: string): string | undefined {
-    const sessionId = this.roomToSession.get(roomId)
-    this.roomToSession.delete(roomId)
-    if (sessionId !== undefined) {
-      this.sessionToRoom.delete(sessionId)
+  private unlinkRoom(roomId: string): { sessionId: string; generation: number; client: BandACPClient | null } | undefined {
+    const owner = this.roomToSession.get(roomId)
+    if (owner) {
+      this.unlinkOwner(roomId, owner)
     }
-
-    return sessionId
+    return owner
   }
 
-  private async ensureConnection(): Promise<ClientSideConnection> {
+  private unlinkOwner(roomId: string, owner: { sessionId: string; generation: number; client: BandACPClient | null }): void {
+    const current = this.roomToSession.get(roomId)
+    if (!current || current.sessionId !== owner.sessionId || current.generation !== owner.generation) {
+      return
+    }
+    this.roomToSession.delete(roomId)
+    this.sessionToRoom.delete(this.sessionKey(owner.generation, owner.sessionId))
+  }
+
+  private sessionKey(generation: number, sessionId: string): string {
+    return `${generation}:${sessionId}`
+  }
+
+  private async ensureConnection(): Promise<{ connection: ClientSideConnection; generation: number }> {
     if (this.connection && !this.connection.signal.aborted) {
-      return this.connection
+      return { connection: this.connection, generation: this.connectionGeneration }
     }
 
     if (!this.started) {
@@ -478,50 +622,72 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     if (isCreator) {
       this.spawnPromise = this.spawnConnection()
     }
+    const spawnPromise = this.spawnPromise!
 
     try {
-      return await this.spawnPromise!
+      const connection = await spawnPromise
+      return { connection, generation: this.connectionGeneration }
     } finally {
-      if (isCreator) this.spawnPromise = null
+      if (isCreator && this.spawnPromise === spawnPromise) {
+        this.spawnPromise = null
+      }
     }
   }
 
   private async spawnConnection(): Promise<ClientSideConnection> {
+    const generation = this.connectionGeneration
     const acp = await acpModule.get()
     // Handed its permission handler here, one line before the process it will
     // serve even exists — no session can out-race its own route.
-    const client = new BandACPClient((params) => this.routePermissionRequest(params))
-    const handle = await this.connectionFactory(client as Client, {
+    const owner = { generation: -1 }
+    const client = new BandACPClient((params) => this.routePermissionRequest(params, owner.generation))
+    const handle = await this.connectionFactory(client, {
       command: this.command,
       cwd: this.cwd,
       env: this.env,
     })
     const connection = handle.connection
-    const initializeResult = await connection.initialize({
-      protocolVersion: acp.PROTOCOL_VERSION,
-      clientCapabilities: this.clientCapabilities ?? {},
-    })
-
-    if (this.authMethod) {
-      await connection.authenticate({
-        methodId: this.authMethod,
+    try {
+      const initializeResult = await connection.initialize({
+        protocolVersion: acp.PROTOCOL_VERSION,
+        clientCapabilities: this.clientCapabilities ?? {},
       })
+
+      if (this.authMethod) {
+        await connection.authenticate({
+          methodId: this.authMethod,
+        })
+      }
+
+      if (generation !== this.connectionGeneration) {
+        await handle.stop()
+        throw new Error("ACP connection attempt superseded by stop()")
+      }
+
+      this.connectionGeneration++
+      owner.generation = this.connectionGeneration
+      this.client = client
+      this.connection = connection
+      this.connectionHandle = handle
+      this.connectionState = initializeResult
+    } catch (error) {
+      if (this.connection !== connection) {
+        try {
+          await handle.stop()
+        } catch (stopError) {
+          this.safeWarn("acp_client.handle_stop_after_handshake_failure", { error: asErrorMessage(stopError) })
+        }
+      }
+      throw error
     }
 
-    this.client = client
-    this.connection = connection
-    this.connectionHandle = handle
-    this.connectionState = initializeResult
-
+    const installedGeneration = this.connectionGeneration
     void connection.closed.finally(() => {
+      this.pruneConnectionGeneration(installedGeneration)
       if (this.connection === connection) {
         this.connection = null
         this.connectionHandle = null
         this.connectionState = null
-        this.activeSessions.clear()
-        // Nothing can answer these any more: the agent that asked is gone.
-        // Without this they'd sit on screen for the full permission timeout.
-        this.cancelAllPendingPermissions("connection-lost")
       }
     })
 
@@ -531,11 +697,14 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private async getOrCreateSession(
     roomId: string,
     connection: ClientSideConnection,
+    connectionGeneration: number,
+    client: BandACPClient,
   ): Promise<string> {
-    const existingSessionId = this.roomToSession.get(roomId)
+    const owner = this.roomToSession.get(roomId)
+    const existingSessionId = owner?.sessionId
 
-    if (existingSessionId && this.activeSessions.has(existingSessionId)) {
-      return existingSessionId
+    if (owner && owner.generation === connectionGeneration && this.activeSessions.has(this.sessionKey(connectionGeneration, owner.sessionId))) {
+      return owner.sessionId
     }
 
     // A single room really can re-enter here concurrently — `Execution` runs a
@@ -551,7 +720,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     // to the room's *current* generation, and stays pinned to it even if
     // `onCleanup`/`stop` bump the counter while it's still in flight.
     const generation = this.nextRoomGeneration(roomId)
-    const establishing = this.establishSession(roomId, existingSessionId, connection, generation)
+    const establishing = this.establishSession(roomId, existingSessionId, connection, generation, connectionGeneration, client)
     // Compare-and-delete: if this room was torn down and re-entered while
     // `establishing` was still pending, a newer promise is already stored at
     // `roomId` by the time this one settles. Deleting unconditionally would
@@ -576,10 +745,16 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     existingSessionId: string | undefined,
     connection: ClientSideConnection,
     generation: number,
+    connectionGeneration: number,
+    client: BandACPClient,
   ): Promise<string> {
     const mcpServers = await this.buildSessionMcpServers()
 
-    if (existingSessionId) {
+    // A session a timed-out turn abandoned must never be restored: the
+    // agent may still be writing to it (see `abandonTimedOutTurn`), so
+    // reusing its id — rather than falling through to a genuinely fresh
+    // `newSession` below — is what would let that stray output resurface.
+    if (existingSessionId && !this.abandonedSessions.has(this.sessionKey(connectionGeneration, existingSessionId))) {
       const restored = await this.tryRestoreSession(connection, existingSessionId, mcpServers)
       if (restored.ok) {
         // Linked and marked active/bootstrapped before the best-effort mode
@@ -589,9 +764,10 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         // await would let a stale add silently re-admit a session whose
         // connection just died, and would leave the session unroutable for
         // the whole duration of the call.
-        this.linkOrAbandon(roomId, existingSessionId, generation)
-        this.activeSessions.add(existingSessionId)
-        this.bootstrappedSessions.add(existingSessionId)
+        this.linkOrAbandon(roomId, existingSessionId, generation, connectionGeneration, client)
+        const restoredKey = this.sessionKey(connectionGeneration, existingSessionId)
+        this.activeSessions.add(restoredKey)
+        this.bootstrappedSessions.add(restoredKey)
         await this.configureSessionMode(roomId, existingSessionId, restored.modes, connection)
         await this.configureSessionModel(roomId, existingSessionId, restored.configOptions, connection)
         return existingSessionId
@@ -608,8 +784,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     }))
 
     // Same ordering reason as the restored-session branch above.
-    this.linkOrAbandon(roomId, created.sessionId, generation)
-    this.activeSessions.add(created.sessionId)
+    this.linkOrAbandon(roomId, created.sessionId, generation, connectionGeneration, client)
+    this.activeSessions.add(this.sessionKey(connectionGeneration, created.sessionId))
     await this.configureSessionMode(roomId, created.sessionId, created.modes, connection)
     await this.configureSessionModel(roomId, created.sessionId, created.configOptions, connection)
     return created.sessionId
@@ -622,12 +798,12 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   // room. Either failure throws — this establishment cannot silently
   // continue to activate, configure, and prompt a session it has no right
   // to use for this room.
-  private linkOrAbandon(roomId: string, sessionId: string, generation: number): void {
+  private linkOrAbandon(roomId: string, sessionId: string, generation: number, connectionGeneration: number, client: BandACPClient): void {
     if (!this.isCurrentGeneration(roomId, generation)) {
       throw new Error(`ACP session establishment for room "${roomId}" was superseded before it could be linked`)
     }
 
-    if (!this.linkSession(roomId, sessionId)) {
+    if (!this.linkSession(roomId, sessionId, connectionGeneration, client)) {
       throw new Error(`ACP session "${sessionId}" could not be linked to room "${roomId}": already routed elsewhere`)
     }
   }
@@ -832,14 +1008,14 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     const capabilities = this.connectionState?.agentCapabilities
     const params = { cwd: this.cwd, mcpServers, sessionId }
 
-    // `loadSession`/`unstable_resumeSession` share both their params and
+    // `loadSession`/`resumeSession` share both their params and
     // their response shape (`{ ...; modes?: SessionModeState | null;
     // configOptions?: Array<SessionConfigOption> | null }`); resolve which
     // one applies once, then handle the result once.
     const restore = capabilities?.loadSession
       ? () => connection.loadSession(params)
       : capabilities?.sessionCapabilities?.resume
-        ? () => connection.unstable_resumeSession(params)
+        ? () => connection.resumeSession(params)
         : null
 
     if (!restore) {
@@ -848,7 +1024,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
     try {
       // `?.`: the ACP client doesn't runtime-validate this response, and the
-      // installed SDK's own `unstable_resumeSession` has no fallback for a
+      // installed SDK's own `resumeSession` has no fallback for a
       // nullish resolution the way its `loadSession` does — a restore that
       // genuinely succeeded must not be miscategorized as failed just
       // because no mode state came back with it.
@@ -998,9 +1174,14 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   // outlives a dropped connection so the session can be restored later.
   private async routePermissionRequest(
     params: RequestPermissionRequest,
+    connectionGeneration: number,
   ): Promise<RequestPermissionResponse> {
-    const isActive = this.activeSessions.has(params.sessionId)
-    const roomId = isActive ? this.sessionToRoom.get(params.sessionId) : undefined
+    if (connectionGeneration < 0) {
+      return { outcome: { outcome: "cancelled" } }
+    }
+    const key = this.sessionKey(connectionGeneration, params.sessionId)
+    const isActive = this.activeSessions.has(key)
+    const roomId = isActive ? this.sessionToRoom.get(key) : undefined
     const tools = roomId === undefined ? undefined : this.roomTools.get(roomId)
 
     if (roomId === undefined || !tools) {
@@ -1014,7 +1195,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     }
 
     try {
-      return await this.handlePermissionRequest(tools, roomId, params)
+      return await this.handlePermissionRequest(tools, roomId, params, connectionGeneration)
     } catch (error) {
       this.safeWarn("permission handling failed; cancelling the request", {
         sessionId: params.sessionId,
@@ -1029,6 +1210,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     tools: AdapterToolsProtocol,
     roomId: string,
     params: RequestPermissionRequest,
+    connectionGeneration: number,
   ): Promise<RequestPermissionResponse> {
     const toolName = params.toolCall.title ?? "unknown"
 
@@ -1045,7 +1227,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     // cancellable immediately, not only once `resolveManually` itself runs.
     const controller = this.resolvePermission ? new AbortController() : undefined
     if (controller) {
-      this.trackPending(params.sessionId, controller)
+      this.trackPending(this.sessionKey(connectionGeneration, params.sessionId), controller)
     }
 
     // A room's only way to learn a request is pending at all — if it never
@@ -1081,7 +1263,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         }
       }),
       controller
-        ? this.resolveManually(roomId, params, controller)
+        ? this.resolveManually(roomId, params, controller, connectionGeneration)
         : Promise.resolve(autoSelection?.optionId),
     ])
 
@@ -1153,6 +1335,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     roomId: string,
     params: RequestPermissionRequest,
     controller: AbortController,
+    connectionGeneration: number,
   ): Promise<string | undefined> {
     const abandoned = new Promise<undefined>((resolve) => {
       controller.signal.addEventListener("abort", () => resolve(undefined))
@@ -1177,7 +1360,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       ])
     } finally {
       clearTimeout(timer)
-      this.untrackPending(params.sessionId, controller)
+      this.untrackPending(this.sessionKey(connectionGeneration, params.sessionId), controller)
       // The final abort reason is decided by `handlePermissionRequest`, once
       // the actual `RequestPermissionResponse` is known — not here, and not
       // unconditionally `"settled"`: that would contradict a response that
@@ -1241,18 +1424,38 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     }
   }
 
+  private pruneConnectionGeneration(generation: number): void {
+    const prefix = `${generation}:`
+    for (const key of [...this.abandonedSessions]) {
+      if (key.startsWith(prefix)) {
+        this.abandonedSessions.delete(key)
+      }
+    }
+    for (const key of [...this.activeSessions]) {
+      if (key.startsWith(prefix)) {
+        this.activeSessions.delete(key)
+      }
+    }
+    for (const key of [...this.bootstrappedSessions]) {
+      if (key.startsWith(prefix)) {
+        this.bootstrappedSessions.delete(key)
+      }
+    }
+    for (const key of [...this.pendingPermissions.keys()]) {
+      if (key.startsWith(prefix)) {
+        this.cancelPendingPermissions(key, "connection-lost")
+      }
+    }
+  }
+
   private async flushChunks(input: {
+    client: BandACPClient;
     tools: AdapterToolsProtocol;
     sessionId: string;
     senderId: string;
     senderHandle: string;
   }): Promise<void> {
-    const client = this.client
-    if (!client) {
-      return
-    }
-
-    for (const chunk of client.getCollectedChunks(input.sessionId)) {
+    for (const chunk of input.client.takeCollectedChunks(input.sessionId)) {
       // A status-only ACP update carries its meaning in metadata and has
       // nothing to post.
       if (isBlankEventContent(chunk.content)) {
@@ -1260,7 +1463,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       }
 
       if (chunk.chunkType === "text") {
-        await input.tools.sendMessage(chunk.content, [{
+        await deliverReply(input.tools, chunk.content, [{
           id: input.senderId,
           handle: input.senderHandle,
         }])
@@ -1279,6 +1482,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     }
   }
 }
+
+class AcpTurnTimeoutError extends Error {}
 
 export async function createSubprocessConnection(
   client: Client,
@@ -1303,7 +1508,7 @@ export async function createSubprocessConnection(
   }
 
   const stream = acp.ndJsonStream(
-    Writable.toWeb(child.stdin) as unknown as WritableStream<Uint8Array>,
+    Writable.toWeb(child.stdin),
     Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>,
   )
 
@@ -1412,3 +1617,23 @@ function flattenConfigSelectOptions(
     return [entry]
   })
 }
+
+// Structural guard, not `instanceof RequestError`: `connection.prompt(...)`
+// rejects with the plain deserialized wire object (`{code, message, data?}`),
+// never re-wrapped into a `RequestError` instance (that class is only used
+// on the agent side to *construct* an outgoing error response). Some stacks
+// wrap that payload as `{ error: { code, message, data? } }`.
+function isAcpErrorResponse(error: unknown): error is { code: number; message: string; data?: unknown } {
+  return typeof error === "object" && error !== null
+    && typeof (error as { code?: unknown }).code === "number"
+    && typeof (error as { message?: unknown }).message === "string"
+}
+
+function asAcpJsonRpcError(error: unknown): { code: number; message: string; data?: unknown } | undefined {
+  if (isAcpErrorResponse(error)) {
+    return error
+  }
+  const nested = asOptionalRecord(error)?.error
+  return isAcpErrorResponse(nested) ? nested : undefined
+}
+
