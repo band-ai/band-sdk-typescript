@@ -71,6 +71,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Set up Bun
+        if: matrix.file == 'omp-acp-live.ts'
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install OMP
+        if: matrix.file == 'omp-acp-live.ts'
+        run: npm install --global @oh-my-pi/pi-coding-agent
+
       - name: Install GitHub Copilot CLI
         run: npm install --global @github/copilot
 
@@ -84,6 +92,7 @@ jobs:
           BAND_API_KEY_USER: ${{ secrets.E2E_BAND_API_KEY_USER }}
           BAND_REST_URL: ${{ secrets.E2E_BAND_REST_URL }}
           BAND_WS_URL: ${{ secrets.E2E_BAND_WS_URL }}
+          GEMINI_API_KEY: ${{ secrets.E2E_GOOGLE_API_KEY }}
           COPILOT_PROVIDER_TYPE: anthropic
           COPILOT_PROVIDER_BASE_URL: https://api.anthropic.com
           COPILOT_PROVIDER_API_KEY: ${{ secrets.E2E_ANTHROPIC_API_KEY }}

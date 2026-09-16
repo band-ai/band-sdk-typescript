@@ -14,6 +14,11 @@ export {
   type BandACPServerAdapterOptions,
 } from "./acp";
 export {
+  OmpACPAdapter,
+  DEFAULT_OMP_ACP_COMMAND,
+  type OmpACPAdapterOptions,
+} from "./omp-acp";
+export {
   CopilotACPAdapter,
   DEFAULT_COPILOT_ACP_COMMAND,
   type CopilotACPAdapterOptions,
