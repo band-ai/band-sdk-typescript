@@ -68,12 +68,20 @@ export class Execution {
   private readonly eventQueue: QueuedEvent[] = [];
   private readonly waiters: Array<(event: QueuedEvent | null) => void> = [];
   private readonly idleWaiters = new Set<() => void>();
-  private readonly drainedWsMessageIds = new Set<string>();
-  private readonly syncProcessedIds = new Set<string>();
   private readonly stoppedSignal = new TerminalSignal();
   private readonly lifecycle: LifecycleTracker<ExecutionLifecycleState>;
   private readonly processTask: Promise<void>;
   private readonly stopGate = new SingleFlight<boolean>();
+  // Every message id a sync scan has ever executed. Entries are never
+  // removed: evicting on a message's own live redelivery was tried and
+  // proved unsafe, because the backend can still return that same id from
+  // `getNextMessage()` on a *later* reconnect's scan before its
+  // mark-as-processed effect has propagated — an eviction keyed on "we saw
+  // it once already" reopens exactly that race, just on a different
+  // trigger. Permanent membership is what makes "already executed"
+  // unconditional, at the cost of one entry per message ever synced via a
+  // backlog scan for the life of this Execution — a real, bounded quantity.
+  private readonly executedMessageIds = new Set<string>();
   private readonly initialSyncBoundary: SyncBoundary = { messageId: null };
   // Ordered, oldest first, matching the order `processLoop` will run their
   // `synchronizeWithNext` calls in. A live message always anchors the
@@ -167,7 +175,7 @@ export class Execution {
     // Record the ID before executing so that the concurrent synchronizeWithNext()
     // loop (started in the constructor) will skip this message if it encounters
     // it in the REST queue, preventing duplicate processing.
-    this.syncProcessedIds.add(message.id);
+    this.executedMessageIds.add(message.id);
     await this.executeSyncMessage(toMessageEvent(message), message.id);
   }
 
@@ -288,8 +296,7 @@ export class Execution {
         continue;
       }
 
-      if (event.type === "message_created" && this.drainedWsMessageIds.has(event.payload.id)) {
-        this.drainedWsMessageIds.delete(event.payload.id);
+      if (event.type === "message_created" && this.executedMessageIds.has(event.payload.id)) {
         this.notifyIfIdle();
         continue;
       }
@@ -332,7 +339,7 @@ export class Execution {
       }
 
       await this.executeSyncMessage(toMessageEvent(message), message.id);
-      this.syncProcessedIds.add(message.id);
+      this.executedMessageIds.add(message.id);
     }
   }
 
@@ -347,9 +354,12 @@ export class Execution {
         break;
       }
 
-      if (this.syncProcessedIds.has(nextMessage.id)) {
+      // Already executed — by this scan, an earlier scan, or bootstrap/stale
+      // recovery. Never redo it, but a repeat sighting of the boundary's own
+      // live message still ends this scan early: nothing further in the
+      // backlog needs a REST round trip once we've caught up to live traffic.
+      if (this.executedMessageIds.has(nextMessage.id)) {
         if (this.isSyncPoint(boundary, nextMessage.id)) {
-          this.drainedWsMessageIds.add(nextMessage.id);
           break;
         }
         continue;
@@ -361,24 +371,30 @@ export class Execution {
           messageId: nextMessage.id,
         });
         await this.markMessageFailed(nextMessage.id, "Message permanently failed after max retries");
+        this.executedMessageIds.add(nextMessage.id);
         if (this.isSyncPoint(boundary, nextMessage.id)) {
-          this.drainedWsMessageIds.add(nextMessage.id);
           break;
         }
         continue;
       }
 
-      const isSyncPoint = this.isSyncPoint(boundary, nextMessage.id);
       await this.executeSyncMessage(toMessageEvent(nextMessage), nextMessage.id);
-      this.syncProcessedIds.add(nextMessage.id);
+      // Recorded unconditionally, not only when this happens to be
+      // recognized as the boundary's own live message: `boundary.messageId`
+      // is anchored asynchronously by a live delivery arriving through a
+      // separate path (`enqueue()`), so this scan can execute a message
+      // before that anchor lands. Marking every executed id lets the later
+      // live delivery (or a later scan re-fetching the same id before the
+      // backend's mark-as-processed effect propagates) find it already done
+      // regardless of whether this scan ever recognized it as "the" sync
+      // point in real time.
+      this.executedMessageIds.add(nextMessage.id);
 
-      if (isSyncPoint) {
-        this.drainedWsMessageIds.add(nextMessage.id);
+      if (this.isSyncPoint(boundary, nextMessage.id)) {
         break;
       }
     }
 
-    this.syncProcessedIds.clear();
     if (this.boundaryQueue[0] === boundary) {
       this.boundaryQueue.shift();
     }

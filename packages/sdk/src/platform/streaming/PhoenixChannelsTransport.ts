@@ -49,8 +49,13 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private readonly pendingJoins = new Map<string, Promise<void>>();
   private readonly pendingLeaves = new Map<string, Promise<void>>();
   private readonly reconnectObservers = new Set<ReconnectObserver>();
-  private readonly generationTracker = new ReconnectGenerationTracker((snapshot) =>
-    this.notifyReconnectObservers(snapshot),
+  private readonly generationTracker = new ReconnectGenerationTracker(
+    (snapshot) => this.notifyReconnectObservers(snapshot),
+    (generation, pendingTopics) =>
+      this.logger.debug("Superseded reconnect generation before it fully settled", {
+        generation,
+        pendingTopics,
+      }),
   );
   private readonly bufferedTopicEvents: BufferedTopicEvent[] = [];
   private hasOpenedOnce = false;
@@ -229,15 +234,20 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       return resumedPendingJoin;
     }
 
-    const joinPromise = this.doJoin(topic, handlers);
-    this.pendingJoins.set(topic, joinPromise);
+    return this.coalesce(this.pendingJoins, topic, () => this.doJoin(topic, handlers));
+  }
+
+  /** Runs `start()` once per key, sharing its promise with any concurrent caller until it settles. */
+  private coalesce(pending: Map<string, Promise<void>>, key: string, start: () => Promise<void>): Promise<void> {
+    const promise = start();
+    pending.set(key, promise);
     const cleanup = (): void => {
-      if (this.pendingJoins.get(topic) === joinPromise) {
-        this.pendingJoins.delete(topic);
+      if (pending.get(key) === promise) {
+        pending.delete(key);
       }
     };
-    void joinPromise.then(cleanup, cleanup);
-    return joinPromise;
+    void promise.then(cleanup, cleanup);
+    return promise;
   }
 
   private async doJoin(topic: string, handlers: TopicHandlers): Promise<void> {
@@ -331,15 +341,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       return;
     }
 
-    const leavePromise = this.doLeave(topic, channel);
-    this.pendingLeaves.set(topic, leavePromise);
-    const cleanup = (): void => {
-      if (this.pendingLeaves.get(topic) === leavePromise) {
-        this.pendingLeaves.delete(topic);
-      }
-    };
-    void leavePromise.then(cleanup, cleanup);
-    return leavePromise;
+    return this.coalesce(this.pendingLeaves, topic, () => this.doLeave(topic, channel));
   }
 
   private async doLeave(topic: string, channel: Channel): Promise<void> {

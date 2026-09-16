@@ -555,4 +555,97 @@ describe("Execution reconnect handling", () => {
     expect(getNextMessage).toHaveBeenCalledTimes(3);
     await execution.stop();
   });
+
+  it("executes a message exactly once when the backlog scan discovers it before its own live delivery anchors the boundary", async () => {
+    let resolveReconnectSync!: (message: BacklogMessage | null) => void;
+    const reconnectSyncPending = new Promise<BacklogMessage | null>((resolve) => {
+      resolveReconnectSync = resolve;
+    });
+    const getNextMessage = vi
+      .fn<() => Promise<BacklogMessage | null>>()
+      .mockResolvedValueOnce(null) // startup sync
+      .mockImplementationOnce(() => reconnectSyncPending) // reconnect's first /next call: held open
+      .mockResolvedValueOnce(null); // reconnect's second /next call: backlog exhausted
+
+    const { execution, processed } = createExecution({ getNextMessage });
+
+    await execution.waitForIdle();
+
+    await execution.enqueue(makeReconnectedEvent()); // R1: its sync is now blocked on getNextMessage
+
+    // The backlog scan discovers "m1" while the boundary is still unanchored
+    // — its live delivery hasn't reached enqueue() yet — and the scan then
+    // exhausts (returns null) without ever recognizing "m1" as its own sync
+    // point.
+    resolveReconnectSync(makeBacklogMessage("m1", "discovered by backlog scan first"));
+    await execution.waitForIdle();
+
+    // Only now does the live delivery of the same message arrive.
+    await execution.enqueue(makeEvent("m1"));
+    // waitForIdle() alone can race ahead of executeEvent() actually running
+    // (enqueue() can hand a queued event straight to a parked waiter before
+    // `inFlight` is incremented) — stop() waits for the process loop itself
+    // to fully drain, which is what this assertion needs.
+    await execution.stop();
+
+    expect(processed).toEqual(["m1"]);
+    // Startup sync + the reconnect's two /next calls (backlog "m1", then
+    // null) — confirms the live delivery was recognized as a duplicate
+    // rather than triggering a further backlog scan of its own.
+    expect(getNextMessage).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not re-execute a message if getNextMessage returns it again on the very next reconnect's scan", async () => {
+    const getNextMessage = vi
+      .fn<() => Promise<BacklogMessage | null>>()
+      .mockResolvedValueOnce(null) // startup sync
+      .mockResolvedValueOnce(makeBacklogMessage("m1", "first sighting")) // R1 scan, call 1
+      .mockResolvedValueOnce(null) // R1 scan, call 2: backlog drained cleanly
+      .mockResolvedValueOnce(makeBacklogMessage("m1", "eventually-consistent re-sighting")) // R2 scan, call 1
+      .mockResolvedValueOnce(null); // R2 scan, call 2: backlog drained
+
+    const { execution, processed } = createExecution({ getNextMessage });
+
+    await execution.waitForIdle();
+
+    // R1 then R2, back-to-back — no live messages involved, purely a
+    // backend that hasn't yet reflected "m1" as processed by the time R2's
+    // scan asks for the next message.
+    await execution.enqueue(makeReconnectedEvent());
+    await execution.enqueue(makeReconnectedEvent());
+    await execution.stop();
+
+    expect(processed).toEqual(["m1"]);
+    expect(getNextMessage).toHaveBeenCalledTimes(5);
+  });
+
+  it("does not re-execute a message re-sighted by a later reconnect scan after its own live delivery already arrived", async () => {
+    const getNextMessage = vi
+      .fn<() => Promise<BacklogMessage | null>>()
+      .mockResolvedValueOnce(null) // startup sync
+      .mockResolvedValueOnce(makeBacklogMessage("m1", "R1 backlog scan finds it")) // R1 scan, call 1
+      .mockResolvedValueOnce(null) // R1 scan, call 2: backlog drained cleanly
+      .mockResolvedValueOnce(makeBacklogMessage("m1", "R2 eventually-consistent re-sighting")) // R2 scan, call 1
+      .mockResolvedValueOnce(null); // R2 scan, call 2: backlog drained
+
+    const { execution, processed } = createExecution({ getNextMessage });
+
+    await execution.waitForIdle();
+
+    await execution.enqueue(makeReconnectedEvent()); // R1: scan executes "m1", exhausts
+    await execution.waitForIdle();
+
+    // "m1"'s live delivery arrives and is recognized as a duplicate. This
+    // must not evict "m1" from the dedup record — a later scan can still
+    // see it again from the backend before the mark-as-processed effect
+    // propagates, and eviction-on-live-match would reopen that race.
+    await execution.enqueue(makeEvent("m1"));
+    await execution.waitForIdle();
+
+    await execution.enqueue(makeReconnectedEvent()); // R2: re-sights "m1" via REST
+    await execution.stop();
+
+    expect(processed).toEqual(["m1"]);
+    expect(getNextMessage).toHaveBeenCalledTimes(5);
+  });
 });

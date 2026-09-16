@@ -153,20 +153,38 @@ type JoinLeaveOutcome = "ok" | "error";
 export class FakeTransport implements StreamingTransport {
   public readonly joinCalls: string[] = [];
   public readonly leaveCalls: string[] = [];
+  /** Every currently-registered reconnect observer — a real transport only ever settles once per generation, but exposing the full set (rather than the last-registered one) lets a test assert exactly how many a caller has live at once. */
+  public readonly observers = new Set<ReconnectObserver>();
+  public disconnectCount = 0;
   private readonly handlers = new Map<string, TopicHandlers>();
   private connected = false;
-  private reconnectObserver: ReconnectObserver | null = null;
   private readonly joinOutcomes = new Map<string, JoinLeaveOutcome>();
   private readonly leaveOutcomes = new Map<string, JoinLeaveOutcome>();
   private readonly joinGates = new Map<string, Promise<void>>();
   private readonly leaveGates = new Map<string, Promise<void>>();
+  private connectGate: Promise<void> = Promise.resolve();
+  private releaseConnectGate: (() => void) | null = null;
 
   public async connect(): Promise<void> {
+    await this.connectGate;
     this.connected = true;
   }
 
   public async disconnect(): Promise<void> {
+    this.disconnectCount += 1;
     this.connected = false;
+  }
+
+  /** Blocks every `connect()` call until the returned function runs. */
+  public gateConnect(): void {
+    this.connectGate = new Promise((resolve) => {
+      this.releaseConnectGate = resolve;
+    });
+  }
+
+  public releaseConnection(): void {
+    this.releaseConnectGate?.();
+    this.releaseConnectGate = null;
   }
 
   public async join(topic: string, handlers: TopicHandlers): Promise<void> {
@@ -193,29 +211,25 @@ export class FakeTransport implements StreamingTransport {
     this.handlers.delete(topic);
   }
 
-  /** Blocks every `join(topic, ...)` call until the returned function runs. */
-  public gateJoin(topic: string): () => void {
+  private gate(gates: Map<string, Promise<void>>, topic: string): () => void {
     let release: () => void = () => undefined;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    this.joinGates.set(topic, gate);
+    gates.set(topic, gate);
     return () => {
-      this.joinGates.delete(topic);
+      gates.delete(topic);
       release();
     };
   }
 
+  /** Blocks every `join(topic, ...)` call until the returned function runs. */
+  public gateJoin(topic: string): () => void {
+    return this.gate(this.joinGates, topic);
+  }
+
   public gateLeave(topic: string): () => void {
-    let release: () => void = () => undefined;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    this.leaveGates.set(topic, gate);
-    return () => {
-      this.leaveGates.delete(topic);
-      release();
-    };
+    return this.gate(this.leaveGates, topic);
   }
 
   public failJoin(topic: string): void {
@@ -264,23 +278,20 @@ export class FakeTransport implements StreamingTransport {
   }
 
   public onReconnected(observer: ReconnectObserver): () => void {
-    this.reconnectObserver = observer;
-    return () => {
-      if (this.reconnectObserver === observer) {
-        this.reconnectObserver = null;
-      }
-    };
+    this.observers.add(observer);
+    return () => this.observers.delete(observer);
   }
 
-  /** Simulates a settled transport-level reconnect for tests driving BandLink's observer. */
+  /** Simulates a settled transport-level reconnect for tests driving BandLink's observer(s). */
   public async triggerReconnect(
     snapshot: Omit<ReconnectSnapshot, "attemptedTopics"> &
       Partial<Pick<ReconnectSnapshot, "attemptedTopics">>,
   ): Promise<void> {
-    await this.reconnectObserver?.({
+    const full: ReconnectSnapshot = {
       ...snapshot,
       attemptedTopics: snapshot.attemptedTopics ?? snapshot.joinedTopics,
-    });
+    };
+    await Promise.all([...this.observers].map((observer) => observer(full)));
   }
 }
 

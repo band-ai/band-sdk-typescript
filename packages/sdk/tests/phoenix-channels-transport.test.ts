@@ -48,6 +48,7 @@ const phoenixMock = vi.hoisted(() => {
     >();
     public joinOutcome: Outcome = "ok";
     public leaveOutcome: Outcome = "ok";
+    public leaveCallCount = 0;
     public readonly joinPush = new FakeJoinPush();
     private nextRef = 1;
 
@@ -94,6 +95,7 @@ const phoenixMock = vi.hoisted(() => {
         callback: (payload?: unknown) => void,
       ) => unknown;
     } {
+      this.leaveCallCount += 1;
       return this.receiver(this.leaveOutcome);
     }
 
@@ -298,6 +300,29 @@ describe("PhoenixChannelsTransport", () => {
 
     await transport.leave("room:1");
     await expect(transport.leave("room:1")).resolves.toBeUndefined();
+  });
+
+  it("coalesces concurrent leave() calls for the same topic into one physical leave", async () => {
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+    });
+    await transport.connect();
+    await transport.join("room:1", {});
+
+    const channel = phoenixMock.FakeSocket.instances[0]?.channels.get("room:1");
+    expect(channel).toBeDefined();
+
+    // Two callers leaving the same topic without awaiting the first — e.g.
+    // disconnect()'s unconditional per-topic leave racing a reconciliation
+    // leave for the same topic — must share one in-flight leave rather than
+    // sending a second, redundant `phx_leave`.
+    const first = transport.leave("room:1");
+    const second = transport.leave("room:1");
+
+    await Promise.all([first, second]);
+
+    expect(channel?.leaveCallCount).toBe(1);
   });
 
   it("wraps join failures in TransportError", async () => {

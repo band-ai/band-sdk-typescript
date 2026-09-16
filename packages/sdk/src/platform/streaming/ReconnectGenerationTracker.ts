@@ -16,7 +16,10 @@ export class ReconnectGenerationTracker {
   private readonly generations = new Map<number, GenerationRecord>();
   private currentGeneration = 0;
 
-  public constructor(private readonly onSettled: (snapshot: ReconnectSnapshot) => void) {}
+  public constructor(
+    private readonly onSettled: (snapshot: ReconnectSnapshot) => void,
+    private readonly onGenerationDropped?: (generation: number, pendingTopics: number) => void,
+  ) {}
 
   public beginGeneration(topics: Iterable<string>): number {
     const generation = ++this.currentGeneration;
@@ -28,6 +31,10 @@ export class ReconnectGenerationTracker {
     // drop it now rather than leaking it forever.
     for (const staleGeneration of this.generations.keys()) {
       if (staleGeneration < generation) {
+        const stale = this.generations.get(staleGeneration);
+        if (stale) {
+          this.onGenerationDropped?.(staleGeneration, stale.pending.size);
+        }
         this.generations.delete(staleGeneration);
       }
     }

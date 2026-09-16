@@ -195,15 +195,17 @@ export class RoomPresence implements AsyncDisposable {
     this.eventTask = this.consumeEvents(this.eventController.signal);
   }
 
+  private contextualWarnMessage(channel: string, context: "start" | "reconnect"): string {
+    return context === "reconnect"
+      ? `RoomPresence failed to resubscribe ${channel} channel after reconnect`
+      : `RoomPresence failed to subscribe ${channel} channel, continuing without it`;
+  }
+
   private async subscribeAgentRoomsChannel(context: "start" | "reconnect"): Promise<void> {
     try {
       await this.link.subscribeAgentRooms();
     } catch (error) {
-      const message =
-        context === "reconnect"
-          ? "RoomPresence failed to resubscribe agent_rooms channel after reconnect"
-          : "RoomPresence failed to subscribe agent_rooms channel, continuing without it";
-      this.logger.warn(message, { error });
+      this.logger.warn(this.contextualWarnMessage("agent_rooms", context), { error });
     }
   }
 
@@ -216,11 +218,7 @@ export class RoomPresence implements AsyncDisposable {
       await this.link.subscribeAgentContacts();
       this.contactsSubscribed = true;
     } catch (error) {
-      const message =
-        context === "reconnect"
-          ? "RoomPresence failed to resubscribe agent_contacts channel after reconnect"
-          : "RoomPresence failed to subscribe agent_contacts channel, continuing without it";
-      this.logger.warn(message, { error });
+      this.logger.warn(this.contextualWarnMessage("agent_contacts", context), { error });
     }
   }
 

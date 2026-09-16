@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { chatRoomTopic, roomParticipantsTopic } from "@band-ai/band-sdk-core";
 
 import { BandLink } from "../src/platform/BandLink";
 import type { PlatformEvent } from "../src/platform/events";
@@ -6,14 +7,9 @@ import {
   WebSocketDisconnectError,
   type WebSocketDisconnectReason,
 } from "../src/platform/streaming/disconnectReason";
-import type {
-  ReconnectObserver,
-  ReconnectSnapshot,
-  StreamingTransport,
-  TopicHandlers,
-} from "../src/platform/streaming/transport";
+import type { StreamingTransport } from "../src/platform/streaming/transport";
 import { UnsupportedFeatureError } from "../src/core/errors";
-import { FakeRestApi } from "./testUtils";
+import { FakeRestApi, FakeTransport as ReconnectTransport } from "./testUtils";
 
 class FakeTransport implements StreamingTransport {
   public readonly joinedTopics: string[] = [];
@@ -37,76 +33,6 @@ class RejectingTransport extends FakeTransport {
 
   public override async connect() {
     throw new WebSocketDisconnectError(this.reason);
-  }
-}
-
-class ReconnectTransport implements StreamingTransport {
-  public readonly observers = new Set<ReconnectObserver>();
-  public readonly joinCalls: string[] = [];
-  public readonly joinedTopics = new Set<string>();
-  public disconnectCount = 0;
-  private connectGate: Promise<void> = Promise.resolve();
-  private releaseConnect: (() => void) | null = null;
-  private leaveGate: Promise<void> = Promise.resolve();
-  private releaseLeave: (() => void) | null = null;
-
-  public gateConnect(): void {
-    this.connectGate = new Promise((resolve) => {
-      this.releaseConnect = resolve;
-    });
-  }
-
-  public releaseConnection(): void {
-    this.releaseConnect?.();
-    this.releaseConnect = null;
-  }
-
-  public gateLeaves(): void {
-    this.leaveGate = new Promise((resolve) => {
-      this.releaseLeave = resolve;
-    });
-  }
-
-  public releaseLeaves(): void {
-    this.releaseLeave?.();
-    this.releaseLeave = null;
-  }
-
-  public async connect(): Promise<void> {
-    await this.connectGate;
-  }
-
-  public async disconnect(): Promise<void> {
-    this.disconnectCount += 1;
-    this.joinedTopics.clear();
-  }
-
-  public async join(topic: string, _handlers: TopicHandlers): Promise<void> {
-    if (this.joinedTopics.has(topic)) {
-      return;
-    }
-    this.joinCalls.push(topic);
-    this.joinedTopics.add(topic);
-  }
-
-  public async leave(topic: string): Promise<void> {
-    await this.leaveGate;
-    this.joinedTopics.delete(topic);
-  }
-
-  public async runForever(): Promise<void> {}
-
-  public isConnected(): boolean {
-    return true;
-  }
-
-  public onReconnected(observer: ReconnectObserver): () => void {
-    this.observers.add(observer);
-    return () => this.observers.delete(observer);
-  }
-
-  public async triggerReconnect(snapshot: ReconnectSnapshot): Promise<void> {
-    await Promise.all([...this.observers].map((observer) => observer(snapshot)));
   }
 }
 
@@ -203,18 +129,20 @@ describe("BandLink event waiting", () => {
     });
     await link.connect();
     await link.subscribeRoom("room-1");
-    transport.gateLeaves();
+    const releaseChatLeave = transport.gateLeave(chatRoomTopic("room-1"));
+    const releaseParticipantsLeave = transport.gateLeave(roomParticipantsTopic("room-1"));
 
     const staleReconnect = transport.triggerReconnect({
       generation: 1,
-      attemptedTopics: new Set(["chat_room:room-1", "room_participants:room-1"]),
+      attemptedTopics: new Set([chatRoomTopic("room-1"), roomParticipantsTopic("room-1")]),
       joinedTopics: new Set(),
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
     await link.disconnect();
     await link.connect();
 
-    transport.releaseLeaves();
+    releaseChatLeave();
+    releaseParticipantsLeave();
     await staleReconnect;
 
     const controller = new AbortController();
