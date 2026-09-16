@@ -477,8 +477,19 @@ export class PhoenixChannelsTransport implements StreamingTransport {
 
   private notifyReconnectObservers(snapshot: ReconnectSnapshot): void {
     const epoch = this.sessionEpoch;
+    const observers = [...this.reconnectObservers];
     this.observerChain = this.observerChain.then(async () => {
-      for (const observer of this.reconnectObservers) {
+      if (epoch !== this.sessionEpoch) {
+        return;
+      }
+
+      for (const observer of observers) {
+        if (epoch !== this.sessionEpoch) {
+          return;
+        }
+        if (!this.reconnectObservers.has(observer)) {
+          continue;
+        }
         try {
           await observer(snapshot);
         } catch (error) {

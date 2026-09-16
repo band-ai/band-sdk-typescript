@@ -947,5 +947,36 @@ describe("PhoenixChannelsTransport", () => {
 
       expect(observer).not.toHaveBeenCalled();
     });
+
+    it("does not deliver an old generation to an observer registered by a later session", async () => {
+      const transport = new PhoenixChannelsTransport({
+        wsUrl: "wss://example.test/socket",
+        apiKey: "key-1",
+      });
+      await transport.connect();
+      await transport.join("room:1", {});
+
+      let releaseOldObserver: (() => void) | undefined;
+      const oldObserverReleased = new Promise<void>((resolve) => {
+        releaseOldObserver = resolve;
+      });
+      const oldObserver = vi.fn(async () => oldObserverReleased);
+      const unregisterOldObserver = transport.onReconnected(oldObserver);
+
+      const socket = phoenixMock.FakeSocket.instances[0];
+      socket?.emitOpen();
+      socket?.channels.get("room:1")?.settleRejoin("ok");
+      await vi.waitFor(() => expect(oldObserver).toHaveBeenCalledTimes(1));
+
+      unregisterOldObserver();
+      await transport.disconnect();
+      await transport.connect();
+      const newObserver = vi.fn();
+      transport.onReconnected(newObserver);
+
+      releaseOldObserver?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(newObserver).not.toHaveBeenCalled();
+    });
   });
 });
