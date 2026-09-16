@@ -183,6 +183,39 @@ describe("BandLink event waiting", () => {
     });
   });
 
+  it("preserves Core's compact and nullable contact payloads", async () => {
+    const transport = new ControllableTransport();
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      restApi: new FakeRestApi(),
+      transport,
+    });
+    await link.subscribeAgentContacts();
+
+    transport.emit("agent_contacts:agent-1", "contact_request_received", {
+      id: "request-1",
+      status: "pending",
+      inserted_at: "2026-01-01T00:00:00Z",
+    });
+    transport.emit("agent_contacts:agent-1", "contact_added", {
+      id: "contact-1",
+      handle: null,
+      name: null,
+      type: "Agent",
+      inserted_at: "2026-01-01T00:00:01Z",
+    });
+
+    await expect(link.nextEvent()).resolves.toMatchObject({
+      type: "contact_request_received",
+      payload: { id: "request-1" },
+    });
+    await expect(link.nextEvent()).resolves.toMatchObject({
+      type: "contact_added",
+      payload: { handle: null, name: null },
+    });
+  });
+
   it("does not poison runForever after a retryable websocket disconnect", async () => {
     const retryableReason = {
       source: "upgrade",

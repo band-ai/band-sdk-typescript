@@ -23,8 +23,8 @@ export interface MessageCreatedPayload extends Payload {
 
 export interface RoomPayload extends Payload {
   id: string;
-  title: string | null;
-  task_id: string | null;
+  title?: string | null;
+  task_id?: string | null;
   inserted_at: string;
   updated_at: string;
 }
@@ -48,8 +48,8 @@ export type ParticipantRemovedPayload = ParticipantPayload;
 
 export interface ContactRequestReceivedPayload extends Payload {
   id: string;
-  from_handle: string;
-  from_name: string;
+  from_handle?: string;
+  from_name?: string;
   message?: string | null;
   status: string;
   inserted_at: string;
@@ -62,8 +62,8 @@ export interface ContactRequestUpdatedPayload extends Payload {
 
 export interface ContactAddedPayload extends Payload {
   id: string;
-  handle: string;
-  name: string;
+  handle: string | null;
+  name: string | null;
   type: string;
   description?: string | null;
   is_external?: boolean;

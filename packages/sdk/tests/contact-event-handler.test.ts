@@ -494,6 +494,38 @@ describe("ContactEventHandler", () => {
       expect(msg).toContain("Alice");
     });
 
+    it("uses explicit fallbacks for compact and nullable contact identities", async () => {
+      const handler = new ContactEventHandler({
+        config: { strategy: "disabled" },
+        rest: makeRest(),
+      });
+
+      const request = await handler.formatEventMessage({
+        type: "contact_request_received",
+        roomId: null,
+        payload: {
+          id: "request-compact",
+          status: "pending",
+          inserted_at: new Date().toISOString(),
+        },
+      });
+      const contact = await handler.formatEventMessage({
+        type: "contact_added",
+        roomId: null,
+        payload: {
+          id: "contact-nullable",
+          handle: null,
+          name: null,
+          type: "Agent",
+          inserted_at: new Date().toISOString(),
+        },
+      });
+
+      expect(request).toContain("Unknown contact (@unknown)");
+      expect(contact).toContain("Unknown contact (@unknown)");
+      expect(`${request}\n${contact}`).not.toContain("undefined");
+    });
+
     it("formats contact_removed", async () => {
       const handler = new ContactEventHandler({
         config: { strategy: "disabled" },
