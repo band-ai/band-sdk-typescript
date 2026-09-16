@@ -2,6 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 
 import { RestFacade } from "../src/client/rest/RestFacade";
 import type { RestApi } from "../src/client/rest/types";
+import {
+  expectedList,
+  MEMORY_LIST_SCOPES,
+  MEMORY_SEGMENTS,
+  MEMORY_STORE_SCOPES,
+  MEMORY_SYSTEMS,
+  MEMORY_TYPES,
+} from "../src/contracts/memory";
 import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 
@@ -118,6 +126,23 @@ describe("AgentTools coverage", () => {
     expect(adapterTools.listMemories).toBeUndefined();
   });
 
+  // Adapters never touch an AgentTools instance directly — ExecutionContext
+  // hands them getAdapterTools()'s frozen object. A messaging method missing
+  // from it is a TypeError on the exact path that reports failures, and the
+  // cast inside buildAdapterTools means the compiler cannot say so.
+  it("binds every ungated messaging method onto the object adapters actually receive", () => {
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: createFacade(new CoverageRestApi()),
+      capabilities: { peers: false, contacts: false, memory: false },
+    });
+
+    const adapterTools = tools.getAdapterTools() as unknown as Record<string, unknown>;
+    for (const methodName of ["sendMessage", "sendEvent", "sendFailure"]) {
+      expect(typeof adapterTools[methodName], `${methodName} missing from adapter tools`).toBe("function");
+    }
+  });
+
   it("paginates peer lookup when adding a participant by name", async () => {
     const rest = new CoverageRestApi();
     const tools = new AgentTools({
@@ -141,7 +166,15 @@ describe("AgentTools coverage", () => {
     );
   });
 
-  it("returns a structured validation error for invalid memory tool arguments", async () => {
+  it.each([
+    ["system", { system: "bad-system", type: "semantic", segment: "user" }, `system must be one of: ${expectedList(MEMORY_SYSTEMS)}`],
+    ["type", { system: "long_term", type: "bad-type", segment: "user" }, `type must be one of: ${expectedList(MEMORY_TYPES)}`],
+    [
+      "segment",
+      { system: "long_term", type: "semantic", segment: "bad-segment" },
+      `segment must be one of: ${expectedList(MEMORY_SEGMENTS)}`,
+    ],
+  ] as const)("returns a structured validation error for an invalid %s on band_store_memory", async (_field, overrides, expectedMessage) => {
     const tools = new AgentTools({
       roomId: "room-1",
       rest: createFacade(new CoverageRestApi()),
@@ -153,22 +186,14 @@ describe("AgentTools coverage", () => {
     const result = await tools.executeToolCall("band_store_memory", {
       content: "remember this",
       thought: "reasoning",
-      system: "bad-system",
-      type: "bad-type",
-      segment: "bad-segment",
+      ...overrides,
     });
 
     expect(result).toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
       toolName: "band_store_memory",
-      details: {
-        validationErrors: expect.arrayContaining([
-          expect.stringContaining("system: Invalid value 'bad-system'"),
-          expect.stringContaining("type: Invalid value 'bad-type'"),
-          expect.stringContaining("segment: Invalid value 'bad-segment'"),
-        ]),
-      },
+      message: expectedMessage,
     });
   });
 
@@ -395,7 +420,7 @@ describe("AgentTools coverage", () => {
     ).resolves.toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
-      message: "scope must be one of: subject, organization, all",
+      message: `scope must be one of: ${expectedList(MEMORY_LIST_SCOPES)}`,
     });
   });
 
@@ -577,7 +602,9 @@ describe("AgentTools coverage", () => {
     ).resolves.toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
-      message: expect.stringContaining("scope must be one of: subject, organization"),
+      message: expect.stringContaining(
+        `scope must be one of: ${expectedList(MEMORY_STORE_SCOPES)}`,
+      ),
     });
   });
 
@@ -604,7 +631,7 @@ describe("AgentTools coverage", () => {
       ok: false,
       errorType: "ToolArgumentsValidationError",
       toolName: "band_store_memory",
-      message: expect.stringContaining("Invalid value 'semantic' for system 'sensory'"),
+      message: expect.stringContaining('for system "sensory"'),
     });
 
     await expect(
@@ -623,6 +650,118 @@ describe("AgentTools coverage", () => {
     expect(rest.listMemories).not.toHaveBeenCalled();
   });
 
+  it("exposes agent in generated memory tool scope enums", () => {
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: createFacade(new CoverageRestApi()),
+      capabilities: {
+        memory: true,
+      },
+    });
+
+    const openaiSchemas = tools.getToolSchemas("openai", { includeMemory: true });
+    const storeSchema = openaiSchemas.find(
+      (entry) => (entry.function as { name?: string } | undefined)?.name === "band_store_memory",
+    );
+    const listSchema = openaiSchemas.find(
+      (entry) => (entry.function as { name?: string } | undefined)?.name === "band_list_memories",
+    );
+
+    expect(
+      (storeSchema?.function as { parameters?: { properties?: { scope?: { enum?: string[] } } } })
+        ?.parameters?.properties?.scope?.enum,
+    ).toEqual([...MEMORY_STORE_SCOPES]);
+    expect(
+      (listSchema?.function as { parameters?: { properties?: { scope?: { enum?: string[] } } } })
+        ?.parameters?.properties?.scope?.enum,
+    ).toEqual([...MEMORY_LIST_SCOPES]);
+  });
+
+  it("forwards memory store without scope when omitted (platform default)", async () => {
+    const rest = new CoverageRestApi();
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: createFacade(rest),
+      capabilities: {
+        memory: true,
+      },
+    });
+
+    await tools.executeToolCall("band_store_memory", {
+      content: "Private note",
+      thought: "Default agent scope",
+      system: "long_term",
+      type: "semantic",
+      segment: "user",
+    });
+
+    expect(rest.storeMemory).toHaveBeenCalledWith(
+      {
+        content: "Private note",
+        thought: "Default agent scope",
+        system: "long_term",
+        type: "semantic",
+        segment: "user",
+      },
+      expect.any(Object),
+    );
+    expect(rest.storeMemory.mock.calls[0]?.[0]).not.toHaveProperty("scope");
+    expect(rest.storeMemory.mock.calls[0]?.[0]).not.toHaveProperty("subject_id");
+  });
+
+  it("forwards agent-scoped memory store without subject_id", async () => {
+    const rest = new CoverageRestApi();
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: createFacade(rest),
+      capabilities: {
+        memory: true,
+      },
+    });
+
+    await tools.executeToolCall("band_store_memory", {
+      content: "Private note",
+      thought: "Only for this agent",
+      system: "long_term",
+      type: "semantic",
+      segment: "agent",
+      scope: "agent",
+    });
+
+    expect(rest.storeMemory).toHaveBeenCalledWith(
+      {
+        content: "Private note",
+        thought: "Only for this agent",
+        system: "long_term",
+        type: "semantic",
+        segment: "agent",
+        scope: "agent",
+      },
+      expect.any(Object),
+    );
+    expect(rest.storeMemory.mock.calls[0]?.[0]).not.toHaveProperty("subject_id");
+  });
+
+  it("forwards agent-scoped memory list filter", async () => {
+    const rest = new CoverageRestApi();
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: createFacade(rest),
+      capabilities: {
+        memory: true,
+      },
+    });
+
+    await tools.executeToolCall("band_list_memories", {
+      scope: "agent",
+    });
+
+    expect(rest.listMemories).toHaveBeenCalledWith(
+      { scope: "agent" },
+      expect.any(Object),
+    );
+  });
+
   it("rejects subject-scoped store_memory without subject_id", async () => {
     const rest = new CoverageRestApi();
     const tools = new AgentTools({
@@ -633,21 +772,22 @@ describe("AgentTools coverage", () => {
       },
     });
 
-    await expect(
-      tools.executeToolCall("band_store_memory", {
-        content: "User prefers concise updates",
-        thought: "Durable user preference",
-        system: "long_term",
-        type: "semantic",
-        segment: "user",
-        scope: "subject",
-      }),
-    ).resolves.toMatchObject({
+    const result = await tools.executeToolCall("band_store_memory", {
+      content: "User prefers concise updates",
+      thought: "Durable user preference",
+      system: "long_term",
+      type: "semantic",
+      segment: "user",
+      scope: "subject",
+    });
+
+    expect(result).toMatchObject({
       ok: false,
       errorType: "ToolArgumentsValidationError",
       toolName: "band_store_memory",
-      message: expect.stringContaining("requires a subject_id"),
     });
+    expect((result as { message?: string }).message).toContain("requires a subject_id");
+    expect((result as { message?: string }).message).toContain('scope="agent"');
 
     expect(rest.storeMemory).not.toHaveBeenCalled();
   });

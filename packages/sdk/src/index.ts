@@ -56,6 +56,8 @@ export { LettaAdapter } from "./adapters/letta";
 export { OpencodeAdapter } from "./adapters/opencode";
 export { ClaudeSDKAdapter } from "./adapters/claude-sdk";
 export { CodexAdapter } from "./adapters/codex";
+export { ACPClientAdapter } from "./adapters/acp";
+export { CopilotACPAdapter, DEFAULT_COPILOT_ACP_COMMAND } from "./adapters/copilot-acp";
 
 export type {
   AdapterToolsProtocol,
@@ -101,7 +103,26 @@ export type {
   CodexReasoningSummary,
   CodexWebSearchMode,
   ToolCallingModel,
+  ACPClientAdapterOptions,
+  ACPClientAdapterBaseOptions,
+  ACPClientStdioOptions,
+  ACPClientTcpOptions,
+  CopilotACPAdapterOptions,
+  CopilotACPStdioOptions,
+  CopilotACPTcpOptions,
 } from "./adapters";
 
 export { SimpleAdapter } from "./core/simpleAdapter";
+export {
+  AgentFailure,
+  FAILURE_EVENT_TYPE,
+  FAILURE_METADATA_KEY,
+  toFailureEvent,
+  RecoverableTurnError,
+  DeliveryFailedError,
+  deliverReply,
+  ProviderTurnFailedError,
+  agentFailure,
+  reportTurnFailure,
+} from "./core";
 export { MCP_TOOL_PREFIX, MCP_SERVER_NAME, TOOL_MODELS } from "./runtime/tools/schemas";

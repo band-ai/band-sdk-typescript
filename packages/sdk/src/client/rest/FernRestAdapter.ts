@@ -42,7 +42,7 @@ function mergeOptions(options?: RestRequestOptions, maxRetries?: number): RestRe
 }
 
 function asMetadataMap(value: unknown): MetadataMap | undefined {
-  return asOptionalRecord(value) as MetadataMap | undefined;
+  return asOptionalRecord(value);
 }
 
 function requireNonEmptyStringField(
