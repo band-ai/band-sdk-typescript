@@ -50,8 +50,7 @@ export function supersededJoinError(topic: string): TransportError {
  * join's settlement outcome is entirely up to the injected hooks.
  */
 export class ChannelRegistry {
-  private readonly channels = new Map<string, Channel>();
-  private readonly channelRefs = new Map<string, Array<[string, number]>>();
+  private readonly channels = new Map<string, TrackedChannel>();
   // A join's Channel and handler bindings, tracked from the moment doJoin
   // creates them — before the join Push settles — so a teardown mid-join can
   // find and detach it too, not only joins already promoted into `channels`.
@@ -78,16 +77,31 @@ export class ChannelRegistry {
     return this.channels.has(topic);
   }
 
-  /** A promise for `topic` if it's already joined or has a join in flight, without starting a new one. */
+  /**
+   * A promise for `topic` if it's already joined or has a join in flight,
+   * without starting a new one. A topic mid-leave is never reported as
+   * already joined — `channels` still holds it until the leave's Push
+   * settles, but its handlers are already unbound and the channel is about
+   * to be removed, so treating that window as "joined" would hand the
+   * caller a promise that resolves into a channel already gone.
+   */
   public existingJoin(topic: string): Promise<void> | undefined {
-    if (this.channels.has(topic)) {
+    if (this.channels.has(topic) && !this.leaveFlights.current(topic)) {
       return Promise.resolve();
     }
     return this.joinFlights.current(topic) ?? undefined;
   }
 
-  /** Starts a new join for `topic`. Callers check `existingJoin()` first. */
-  public join(topic: string, handlers: TopicHandlers): Promise<void> {
+  /**
+   * Starts a new join for `topic`. Callers check `existingJoin()` first.
+   * Waits out a leave already in flight for the same topic before starting,
+   * so the new join's channel is never raced by the old one's teardown.
+   */
+  public async join(topic: string, handlers: TopicHandlers): Promise<void> {
+    const pendingLeave = this.leaveFlights.current(topic);
+    if (pendingLeave) {
+      await pendingLeave.catch(() => undefined);
+    }
     return this.joinFlights.run(topic, () => this.doJoin(topic, handlers));
   }
 
@@ -145,8 +159,7 @@ export class ChannelRegistry {
       throw supersededJoinError(topic);
     }
 
-    this.channels.set(topic, channel);
-    this.channelRefs.set(topic, refs);
+    this.channels.set(topic, { channel, refs });
     this.logger.debug("Joined topic", { topic });
   }
 
@@ -181,20 +194,19 @@ export class ChannelRegistry {
       return pendingLeave;
     }
 
-    const channel = this.channels.get(topic);
-    if (!channel) {
+    const tracked = this.channels.get(topic);
+    if (!tracked) {
       return;
     }
 
-    return this.leaveFlights.run(topic, () => this.doLeave(topic, channel));
+    return this.leaveFlights.run(topic, () => this.doLeave(topic, tracked));
   }
 
-  private async doLeave(topic: string, channel: Channel): Promise<void> {
-    const refs = this.channelRefs.get(topic) ?? [];
+  private async doLeave(topic: string, tracked: TrackedChannel): Promise<void> {
+    const { channel, refs } = tracked;
     for (const [event, ref] of refs) {
       channel.off(event, ref);
     }
-    this.channelRefs.delete(topic);
 
     await new Promise<void>((resolve, reject) => {
       channel
@@ -232,14 +244,13 @@ export class ChannelRegistry {
    * `leaveAll()` has settled.
    */
   public forceTeardown(): void {
-    for (const [topic, channel] of this.channels) {
-      for (const [event, ref] of this.channelRefs.get(topic) ?? []) {
+    for (const { channel, refs } of this.channels.values()) {
+      for (const [event, ref] of refs) {
         channel.off(event, ref);
       }
       removeSocketChannel(this.socket, channel);
     }
     this.channels.clear();
-    this.channelRefs.clear();
 
     for (const { channel, refs } of this.pendingChannels.values()) {
       this.abandonChannel(channel, refs);

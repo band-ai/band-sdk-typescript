@@ -50,6 +50,7 @@ const phoenixMock = vi.hoisted(() => {
     public leaveOutcome: Outcome = "ok";
     public leaveCallCount = 0;
     public readonly joinPush = new FakeJoinPush();
+    private pendingLeaveCallbacks: Map<Outcome, (payload?: unknown) => void> | null = null;
     private nextRef = 1;
 
     public constructor(topic: string) {
@@ -96,7 +97,25 @@ const phoenixMock = vi.hoisted(() => {
       ) => unknown;
     } {
       this.leaveCallCount += 1;
+      if (this.leaveOutcome === "pending") {
+        const callbacks = new Map<Outcome, (payload?: unknown) => void>();
+        this.pendingLeaveCallbacks = callbacks;
+        const chain = {
+          receive: (kind: Outcome, callback: (payload?: unknown) => void) => {
+            callbacks.set(kind, callback);
+            return chain;
+          },
+        };
+        return chain;
+      }
       return this.receiver(this.leaveOutcome);
+    }
+
+    /** Settles a `leave()` call left pending via `leaveOutcome = "pending"`. */
+    public settleLeave(outcome: Exclude<Outcome, "pending">): void {
+      const callbacks = this.pendingLeaveCallbacks;
+      this.pendingLeaveCallbacks = null;
+      callbacks?.get(outcome)?.(outcome === "ok" ? {} : { error: outcome });
     }
 
     private receiver(outcome: Outcome): {
@@ -529,6 +548,52 @@ describe("PhoenixChannelsTransport", () => {
 
     await transport.disconnect();
     expect(secondChannel?.leaveCallCount).toBe(1);
+  });
+
+  it("does not report a topic as already joined while its leave is still in flight", async () => {
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+    });
+    await transport.connect();
+    await transport.join("room:1", {});
+
+    const socket = phoenixMock.FakeSocket.instances[0];
+    const oldChannel = socket?.channels.get("room:1");
+    if (oldChannel) {
+      oldChannel.leaveOutcome = "pending";
+    }
+
+    const leave = transport.leave("room:1");
+    await Promise.resolve();
+
+    let secondJoinResolved = false;
+    const secondJoin = transport.join("room:1", {}).then(() => {
+      secondJoinResolved = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // The old channel is still registered (its leave hasn't settled) — a
+    // buggy `existingJoin()` would treat that as "already joined" and
+    // resolve the second join immediately, without ever creating a real
+    // channel for it.
+    expect(secondJoinResolved).toBe(false);
+
+    oldChannel?.settleLeave("ok");
+    await leave;
+    await secondJoin;
+
+    // A real new join happened — a second FakeChannel for the topic was
+    // created via `socket.channel()` — rather than the second join()
+    // resolving off the stale registry entry with no real work done.
+    // (The old channel is never removed from the fake socket's own list on
+    // a graceful leave — matching real Phoenix's socket.remove() contract,
+    // which this transport also only calls for an abandoned/failed channel
+    // — so both instances coexist here; `.filter` finds them both.)
+    expect(secondJoinResolved).toBe(true);
+    const channelsForTopic = socket?.channels.filter((channel) => channel.topic === "room:1");
+    expect(channelsForTopic).toHaveLength(2);
+    expect(channelsForTopic?.[1]).not.toBe(oldChannel);
   });
 
   it("forgets local channel ownership when a disconnect leave fails", async () => {
