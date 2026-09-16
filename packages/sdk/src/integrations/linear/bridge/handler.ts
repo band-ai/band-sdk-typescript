@@ -1,7 +1,7 @@
 import { LinearDocument as L } from "@linear/sdk";
 
 import { UnsupportedFeatureError } from "../../../core/errors";
-import { NoopLogger, type Logger } from "../../../core/logger";
+import { resolveLogger, type Logger } from "../../../core/logger";
 import type { RestApi } from "../../../client/rest/types";
 import type { PeerRecord } from "../../../contracts/dtos";
 import type {
@@ -79,7 +79,7 @@ export async function handleAgentSessionEvent(
     runtime?: LinearBridgeRuntime;
   },
 ): Promise<void> {
-  const logger = input.deps.logger ?? new NoopLogger();
+  const logger = resolveLogger(input.deps.logger);
   const config = normalizeConfig(input.config);
   const action = normalizeAction(input.payload.action);
   const runtime = options?.runtime ?? createLinearBridgeRuntime();

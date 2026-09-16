@@ -1,5 +1,4 @@
-import type { Logger } from "../core/logger";
-import { NoopLogger } from "../core/logger";
+import { resolveLogger, type Logger } from "../core/logger";
 import type { ContactEvent, MessageEvent } from "../platform/events";
 import type { AdapterToolsProtocol } from "../contracts/protocols";
 import type { AgentToolsRestApi, ChatMessagingRestApi, ChatRoomRestApi, ContactRestApi } from "../client/rest/types";
@@ -104,7 +103,7 @@ export class ContactEventHandler {
   public constructor(options: ContactEventHandlerOptions) {
     this.config = options.config;
     this.rest = options.rest;
-    this.logger = options.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options.logger);
     this.onBroadcast = options.onBroadcast;
     this.onHubEvent = options.onHubEvent;
     this.onHubInit = options.onHubInit;

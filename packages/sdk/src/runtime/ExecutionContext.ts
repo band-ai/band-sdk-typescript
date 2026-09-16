@@ -3,7 +3,7 @@ import { DEFAULT_REQUEST_OPTIONS } from "../client/rest/requestOptions";
 import type { AdapterToolsProtocol, AgentToolsCapabilities } from "../contracts/protocols";
 import type { MetadataMap, ParticipantRecord } from "../contracts/dtos";
 import { UnsupportedFeatureError } from "../core/errors";
-import { NoopLogger, type Logger } from "../core/logger";
+import { resolveLogger, type Logger } from "../core/logger";
 import type { ConversationContext, PlatformMessage } from "./types";
 import { AgentTools } from "./tools/AgentTools";
 import { ParticipantRoster, RetryTracker } from "@band-ai/band-sdk-core";
@@ -65,7 +65,7 @@ export class ExecutionContext {
       rest: this.link.rest,
       roster: this.roster,
       capabilities: this.link.capabilities,
-      logger: options.logger ?? new NoopLogger(),
+      logger: resolveLogger(options.logger),
     });
     this.adapterTools = this.tools.getAdapterTools();
   }

@@ -1,5 +1,4 @@
-import type { Logger } from "../core/logger";
-import { NoopLogger } from "../core/logger";
+import { resolveLogger, type Logger } from "../core/logger";
 import { FernRestAdapter } from "../client/rest/RestFacade";
 import type { FernBandClientLike } from "../client/rest/types";
 import type { RestRequestOptions } from "../client/rest/requestOptions";
@@ -89,7 +88,7 @@ function toPlatformMessage(
     senderType: message.sender_type,
     senderName: message.sender_name ?? null,
     messageType: message.message_type,
-    metadata: (message.metadata ?? {}) as Record<string, unknown>,
+    metadata: (message.metadata ?? {}),
     createdAt: new Date(message.inserted_at),
   };
 }
@@ -116,7 +115,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     this.apiKey = options.apiKey;
     this.wsUrl = options.wsUrl ?? DEFAULT_WS_URL;
     this.restUrl = options.restUrl ?? deriveDefaultRestUrl(this.wsUrl);
-    this.logger = options.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options.logger);
     this.capabilities = {
       ...DEFAULT_AGENT_TOOLS_CAPABILITIES,
       ...options.capabilities,
@@ -128,7 +127,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         new BandClient({
           apiKey: this.apiKey,
           baseUrl: this.restUrl,
-        }) as unknown as FernBandClientLike,
+        }),
       );
 
     this.rest = restApi;

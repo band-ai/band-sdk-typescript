@@ -1,5 +1,4 @@
-import type { Logger } from "../../core/logger";
-import { NoopLogger } from "../../core/logger";
+import { resolveLogger, type Logger } from "../../core/logger";
 import { postThought, type LinearActivityClient } from "./activities";
 import type { SessionRoomRecord, SessionRoomStore } from "./types";
 import { STALE_SESSION_CHECK_INTERVAL_MS, STALE_SESSION_THRESHOLD_MS } from "./types";
@@ -35,7 +34,7 @@ export class StaleSessionGuard {
   public constructor(options: StaleSessionGuardOptions) {
     this.store = options.store;
     this.linearClient = options.linearClient;
-    this.logger = options.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options.logger);
     this.checkIntervalMs = options.checkIntervalMs ?? STALE_SESSION_CHECK_INTERVAL_MS;
     this.staleThresholdMs = options.staleThresholdMs ?? STALE_SESSION_THRESHOLD_MS;
     this.keepAliveMessage = options.keepAliveMessage ?? DEFAULT_KEEPALIVE_MESSAGE;
