@@ -75,7 +75,13 @@ export class Execution {
   private readonly processTask: Promise<void>;
   private readonly stopGate = new SingleFlight<boolean>();
   private readonly initialSyncBoundary: SyncBoundary = { messageId: null };
-  private pendingSyncBoundary: SyncBoundary | null = this.initialSyncBoundary;
+  // Ordered, oldest first, matching the order `processLoop` will run their
+  // `synchronizeWithNext` calls in. A live message always anchors the
+  // oldest not-yet-anchored boundary — the one whose sync call either owns
+  // it now or will next — never whichever reconnect was queued most
+  // recently, so a boundary already mid-scan can't be silently orphaned by
+  // a newer reconnect queued before its own live message arrives.
+  private readonly boundaryQueue: SyncBoundary[] = [this.initialSyncBoundary];
   private syncComplete = false;
   private inFlight = 0;
   /**
@@ -139,13 +145,13 @@ export class Execution {
     let syncBoundary: SyncBoundary | null = null;
     if (event.type === "reconnected") {
       syncBoundary = { messageId: null };
-      this.pendingSyncBoundary = syncBoundary;
+      this.boundaryQueue.push(syncBoundary);
       this.syncComplete = false;
-    } else if (
-      event.type === "message_created" &&
-      this.pendingSyncBoundary?.messageId === null
-    ) {
-      this.pendingSyncBoundary.messageId = event.payload.id;
+    } else if (event.type === "message_created") {
+      const openBoundary = this.boundaryQueue.find((boundary) => boundary.messageId === null);
+      if (openBoundary) {
+        openBoundary.messageId = event.payload.id;
+      }
     }
 
     const queued = { event, syncBoundary };
@@ -330,6 +336,10 @@ export class Execution {
     }
   }
 
+  private isSyncPoint(boundary: SyncBoundary, messageId: string): boolean {
+    return boundary.messageId !== null && messageId === boundary.messageId;
+  }
+
   private async synchronizeWithNext(boundary: SyncBoundary): Promise<void> {
     while (this.isActive()) {
       const nextMessage = await this.link.getNextMessage(this.roomId);
@@ -338,8 +348,7 @@ export class Execution {
       }
 
       if (this.syncProcessedIds.has(nextMessage.id)) {
-        const isSyncPoint = boundary.messageId !== null && nextMessage.id === boundary.messageId;
-        if (isSyncPoint) {
+        if (this.isSyncPoint(boundary, nextMessage.id)) {
           this.drainedWsMessageIds.add(nextMessage.id);
           break;
         }
@@ -352,15 +361,14 @@ export class Execution {
           messageId: nextMessage.id,
         });
         await this.markMessageFailed(nextMessage.id, "Message permanently failed after max retries");
-        const isSyncPoint = boundary.messageId !== null && nextMessage.id === boundary.messageId;
-        if (isSyncPoint) {
+        if (this.isSyncPoint(boundary, nextMessage.id)) {
           this.drainedWsMessageIds.add(nextMessage.id);
           break;
         }
         continue;
       }
 
-      const isSyncPoint = boundary.messageId !== null && nextMessage.id === boundary.messageId;
+      const isSyncPoint = this.isSyncPoint(boundary, nextMessage.id);
       await this.executeSyncMessage(toMessageEvent(nextMessage), nextMessage.id);
       this.syncProcessedIds.add(nextMessage.id);
 
@@ -371,10 +379,10 @@ export class Execution {
     }
 
     this.syncProcessedIds.clear();
-    if (this.pendingSyncBoundary === boundary) {
-      this.pendingSyncBoundary = null;
+    if (this.boundaryQueue[0] === boundary) {
+      this.boundaryQueue.shift();
     }
-    this.syncComplete = this.pendingSyncBoundary === null;
+    this.syncComplete = this.boundaryQueue.length === 0;
     this.notifyIfIdle();
   }
 

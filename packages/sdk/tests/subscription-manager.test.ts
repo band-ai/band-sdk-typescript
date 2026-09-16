@@ -3,101 +3,8 @@ import { chatRoomTopic, roomParticipantsTopic, agentRoomsTopic } from "@band-ai/
 
 import { SubscriptionManager } from "../src/platform/SubscriptionManager";
 import { RuntimeStateError } from "../src/core/errors";
-import type { StreamingTransport, TopicHandlers } from "../src/platform/streaming/transport";
-
-type JoinOutcome = "ok" | "error";
-
-class FakeTransport implements StreamingTransport {
-  public readonly joinCalls: string[] = [];
-  public readonly leaveCalls: string[] = [];
-  private readonly joinOutcomes = new Map<string, JoinOutcome>();
-  private readonly leaveOutcomes = new Map<string, JoinOutcome>();
-  private readonly joinGates = new Map<string, Promise<void>>();
-  private readonly leaveGates = new Map<string, Promise<void>>();
-
-  public async connect(): Promise<void> {
-    return undefined;
-  }
-
-  public async disconnect(): Promise<void> {
-    return undefined;
-  }
-
-  public isConnected(): boolean {
-    return true;
-  }
-
-  public async runForever(): Promise<void> {
-    return undefined;
-  }
-
-  public async join(topic: string, _handlers: TopicHandlers): Promise<void> {
-    this.joinCalls.push(topic);
-    const gate = this.joinGates.get(topic);
-    if (gate) {
-      await gate;
-    }
-    if (this.joinOutcomes.get(topic) === "error") {
-      throw new Error(`join failed: ${topic}`);
-    }
-  }
-
-  public async leave(topic: string): Promise<void> {
-    this.leaveCalls.push(topic);
-    const gate = this.leaveGates.get(topic);
-    if (gate) {
-      await gate;
-    }
-    if (this.leaveOutcomes.get(topic) === "error") {
-      throw new Error(`leave failed: ${topic}`);
-    }
-  }
-
-  /** Blocks every `join(topic, ...)` call until the returned function runs. */
-  public gateJoin(topic: string): () => void {
-    let release: () => void = () => undefined;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    this.joinGates.set(topic, gate);
-    return () => {
-      this.joinGates.delete(topic);
-      release();
-    };
-  }
-
-  public gateLeave(topic: string): () => void {
-    let release: () => void = () => undefined;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    this.leaveGates.set(topic, gate);
-    return () => {
-      this.leaveGates.delete(topic);
-      release();
-    };
-  }
-
-  public failJoin(topic: string): void {
-    this.joinOutcomes.set(topic, "error");
-  }
-
-  public failLeave(topic: string): void {
-    this.leaveOutcomes.set(topic, "error");
-  }
-
-  public clearLeaveFailure(topic: string): void {
-    this.leaveOutcomes.delete(topic);
-  }
-
-  public clearJoinFailure(topic: string): void {
-    this.joinOutcomes.delete(topic);
-  }
-
-  public joinCountOf(topic: string): number {
-    return this.joinCalls.filter((t) => t === topic).length;
-  }
-}
+import type { TopicHandlers } from "../src/platform/streaming/transport";
+import { FakeTransport } from "./testUtils";
 
 const NO_HANDLERS: TopicHandlers = {};
 const ROOM_HANDLERS = { chat: NO_HANDLERS, participants: NO_HANDLERS };
@@ -252,6 +159,34 @@ describe("SubscriptionManager", () => {
       await expect(manager.unsubscribeRoom("room-1")).resolves.toBeUndefined();
       expect(transport.leaveCalls).toEqual([]);
     });
+
+    it("still rejects with the real leave failures when the session ends while both leaves are in flight", async () => {
+      const transport = new FakeTransport();
+      const manager = new SubscriptionManager({ transport });
+      await manager.subscribeRoom("room-1", ROOM_HANDLERS);
+
+      transport.failLeave(chatRoomTopic("room-1"));
+      transport.failLeave(roomParticipantsTopic("room-1"));
+      const releaseChatLeave = transport.gateLeave(chatRoomTopic("room-1"));
+      const releaseParticipantsLeave = transport.gateLeave(roomParticipantsTopic("room-1"));
+
+      const unsubscribe = manager.unsubscribeRoom("room-1");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      // The session ends while both leave calls are still pending, making the
+      // tracker's ticket stale by the time they settle.
+      manager.endSession();
+      releaseChatLeave();
+      releaseParticipantsLeave();
+
+      // A stale ticket must not swallow the two real transport failures.
+      const failure = await unsubscribe.catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(AggregateError);
+      expect((failure as AggregateError).errors).toEqual([
+        expect.objectContaining({ message: `leave failed: ${chatRoomTopic("room-1")}` }),
+        expect.objectContaining({ message: `leave failed: ${roomParticipantsTopic("room-1")}` }),
+      ]);
+    });
   });
 
   describe("agent topics (agent_rooms, agent_contacts)", () => {
@@ -292,6 +227,23 @@ describe("SubscriptionManager", () => {
       await expect(manager.subscribeAgentTopic(topic, NO_HANDLERS)).resolves.toBeUndefined();
       expect(transport.joinCountOf(topic)).toBe(1);
     });
+
+    it("still rejects a real leave failure even when the session ends while it is in flight", async () => {
+      const transport = new FakeTransport();
+      const manager = new SubscriptionManager({ transport });
+      const topic = agentRoomsTopic("agent-1");
+      await manager.subscribeAgentTopic(topic, NO_HANDLERS);
+
+      transport.failLeave(topic);
+      const releaseLeave = transport.gateLeave(topic);
+      const unsubscribe = manager.unsubscribeAgentTopic(topic);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      manager.endSession();
+      releaseLeave();
+
+      await expect(unsubscribe).rejects.toThrow("leave failed");
+    });
   });
 
   describe("endSession", () => {
@@ -314,6 +266,30 @@ describe("SubscriptionManager", () => {
       await expect(manager.subscribeRoom("room-1", ROOM_HANDLERS)).resolves.toBeUndefined();
       // A genuinely fresh claim in the new session, not treated as already
       // subscribed because of the stale session's late success.
+      expect(transport.joinCountOf(chatRoomTopic("room-1"))).toBe(1);
+    });
+
+    it("discards a late join failure after the session ended rather than blocking a new session's tracker", async () => {
+      const transport = new FakeTransport();
+      const manager = new SubscriptionManager({ transport });
+      transport.failJoin(chatRoomTopic("room-1"));
+      const release = transport.gateJoin(chatRoomTopic("room-1"));
+
+      const staleSubscribe = manager.subscribeRoom("room-1", ROOM_HANDLERS).catch((error: unknown) => error);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      manager.endSession();
+      release();
+
+      // The stale operation's own promise still reports its real failure...
+      expect(await staleSubscribe).toBeInstanceOf(Error);
+
+      // ...but a fresh session's claim is unaffected by it: a genuinely new
+      // subscribe attempt succeeds cleanly rather than inheriting a phantom
+      // failed/blocked state from the ended session.
+      transport.clearJoinFailure(chatRoomTopic("room-1"));
+      transport.joinCalls.length = 0;
+      await expect(manager.subscribeRoom("room-1", ROOM_HANDLERS)).resolves.toBeUndefined();
       expect(transport.joinCountOf(chatRoomTopic("room-1"))).toBe(1);
     });
 

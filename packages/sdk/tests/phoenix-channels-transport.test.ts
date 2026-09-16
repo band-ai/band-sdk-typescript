@@ -1004,6 +1004,34 @@ describe("PhoenixChannelsTransport", () => {
       expect(observer).not.toHaveBeenCalled();
     });
 
+    it("does not deliver a buffered event for a topic that was explicitly left before its generation settles", async () => {
+      const onMessage = vi.fn(async () => {});
+      const transport = new PhoenixChannelsTransport({
+        wsUrl: "wss://example.test/socket",
+        apiKey: "key-1",
+      });
+      await transport.connect();
+      await transport.join("room:1", { message: onMessage });
+
+      const socket = phoenixMock.FakeSocket.instances[0];
+      socket?.emitOpen();
+
+      // Arrives mid-reconnect, before room:1's rejoin has settled, so it is
+      // buffered rather than delivered immediately.
+      socket?.channels.get("room:1")?.emit("message", { body: "buffered" });
+      expect(onMessage).not.toHaveBeenCalled();
+
+      // The room is torn down (e.g. by reconciliation) before it ever
+      // settles — removing the last pending topic finalizes the generation
+      // and flushes the buffer.
+      await transport.leave("room:1");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      // The left topic's already-queued event must not fire against a
+      // handler that no longer has a live subscription.
+      expect(onMessage).not.toHaveBeenCalled();
+    });
+
     it("does not deliver an old generation to an observer registered by a later session", async () => {
       const transport = new PhoenixChannelsTransport({
         wsUrl: "wss://example.test/socket",

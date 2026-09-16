@@ -181,15 +181,9 @@ export class RoomPresence implements AsyncDisposable {
     // Independent of the rooms channel/REST hydration below (no shared
     // state), so it runs concurrently instead of adding its latency to the
     // room-hydration critical path.
-    const contactsReady = this.subscribeContacts();
+    const contactsReady = this.subscribeContacts("start");
 
-    try {
-      await this.link.subscribeAgentRooms();
-    } catch (error) {
-      this.logger.warn("RoomPresence failed to subscribe agent_rooms channel, continuing without it", {
-        error,
-      });
-    }
+    await this.subscribeAgentRoomsChannel("start");
 
     if (this.autoSubscribeExistingRooms) {
       await this.subscribeExistingRooms();
@@ -201,7 +195,19 @@ export class RoomPresence implements AsyncDisposable {
     this.eventTask = this.consumeEvents(this.eventController.signal);
   }
 
-  private async subscribeContacts(): Promise<void> {
+  private async subscribeAgentRoomsChannel(context: "start" | "reconnect"): Promise<void> {
+    try {
+      await this.link.subscribeAgentRooms();
+    } catch (error) {
+      const message =
+        context === "reconnect"
+          ? "RoomPresence failed to resubscribe agent_rooms channel after reconnect"
+          : "RoomPresence failed to subscribe agent_rooms channel, continuing without it";
+      this.logger.warn(message, { error });
+    }
+  }
+
+  private async subscribeContacts(context: "start" | "reconnect"): Promise<void> {
     if (!this.link.capabilities.contacts) {
       return;
     }
@@ -210,9 +216,11 @@ export class RoomPresence implements AsyncDisposable {
       await this.link.subscribeAgentContacts();
       this.contactsSubscribed = true;
     } catch (error) {
-      this.logger.warn("RoomPresence failed to subscribe agent_contacts channel, continuing without it", {
-        error,
-      });
+      const message =
+        context === "reconnect"
+          ? "RoomPresence failed to resubscribe agent_contacts channel after reconnect"
+          : "RoomPresence failed to subscribe agent_contacts channel, continuing without it";
+      this.logger.warn(message, { error });
     }
   }
 
@@ -314,24 +322,8 @@ export class RoomPresence implements AsyncDisposable {
    * membership reconciliation itself has to wait for the next reconnect.
    */
   private async handleReconnected(event: ReconnectedEvent): Promise<void> {
-    try {
-      await this.link.subscribeAgentRooms();
-    } catch (error) {
-      this.logger.warn("RoomPresence failed to resubscribe agent_rooms channel after reconnect", {
-        error,
-      });
-    }
-
-    if (this.link.capabilities.contacts) {
-      try {
-        await this.link.subscribeAgentContacts();
-        this.contactsSubscribed = true;
-      } catch (error) {
-        this.logger.warn("RoomPresence failed to resubscribe agent_contacts channel after reconnect", {
-          error,
-        });
-      }
-    }
+    await this.subscribeAgentRoomsChannel("reconnect");
+    await this.subscribeContacts("reconnect");
 
     let accepted: Map<string, MetadataMap> | null = null;
     try {

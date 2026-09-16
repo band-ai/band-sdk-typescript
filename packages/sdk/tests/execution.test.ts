@@ -522,4 +522,37 @@ describe("Execution reconnect handling", () => {
     expect(getNextMessage).toHaveBeenCalledTimes(3);
     await execution.stop();
   });
+
+  it("executes a message exactly once when a second reconnect is queued before the first boundary's own live message arrives", async () => {
+    let resolveFirstReconnectSync!: (message: BacklogMessage | null) => void;
+    const firstReconnectSyncPending = new Promise<BacklogMessage | null>((resolve) => {
+      resolveFirstReconnectSync = resolve;
+    });
+    const getNextMessage = vi
+      .fn<() => Promise<BacklogMessage | null>>()
+      .mockResolvedValueOnce(null) // startup sync
+      .mockImplementationOnce(() => firstReconnectSyncPending) // first reconnect's sync: held open
+      .mockResolvedValueOnce(null); // second reconnect's own sync
+
+    const { execution, processed } = createExecution({ getNextMessage });
+
+    await execution.waitForIdle();
+
+    await execution.enqueue(makeReconnectedEvent()); // R1: its sync is now blocked on getNextMessage
+    await execution.enqueue(makeReconnectedEvent()); // R2, queued before R1's own live message arrives
+    await execution.enqueue(makeEvent("m1")); // live delivery of the same message R1's backlog scan will find
+
+    // R1's blocked backlog scan now discovers "m1" — the same id its live
+    // delivery above already queued.
+    resolveFirstReconnectSync(makeBacklogMessage("m1", "arrived during the outage"));
+    await execution.waitForIdle();
+
+    // "m1" is recovered exactly once via R1's backlog sync; its live
+    // delivery is recognized as the already-synced duplicate and skipped,
+    // even though R2 was queued (and reassigned the newest boundary) before
+    // that live delivery ever arrived.
+    expect(processed).toEqual(["m1"]);
+    expect(getNextMessage).toHaveBeenCalledTimes(3);
+    await execution.stop();
+  });
 });

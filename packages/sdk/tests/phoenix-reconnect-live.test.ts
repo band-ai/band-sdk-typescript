@@ -4,6 +4,8 @@ import { chatRoomTopic, roomParticipantsTopic } from "@band-ai/band-sdk-core";
 import { PhoenixChannelsTransport } from "../src/platform/streaming/PhoenixChannelsTransport";
 import { SubscriptionManager } from "../src/platform/SubscriptionManager";
 import { BandLink } from "../src/platform/BandLink";
+import { AgentRuntime } from "../src/runtime/rooms/AgentRuntime";
+import type { PlatformEvent } from "../src/platform/events";
 import { FakePhoenixPeer } from "./fakePhoenixPeer";
 import { FakeRestApi } from "./testUtils";
 
@@ -124,6 +126,95 @@ describe("Phoenix reconnect (real wire)", () => {
       ).resolves.toBeUndefined();
     } finally {
       await transport.disconnect().catch(() => undefined);
+      await peer.stop();
+    }
+  }, 10_000);
+
+  it("recovers a message missed during the outage through the real AgentRuntime dispatch path, never exposing the synthetic event to the adapter", async () => {
+    const peer = await FakePhoenixPeer.start();
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: peer.url,
+      apiKey: "test-key",
+      agentId: "agent-1",
+      reconnectAfterMs: () => 10,
+    });
+
+    let releaseMissedMessage = false;
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "test-key",
+      transport,
+      restApi: new FakeRestApi({
+        listChats: async () => ({
+          data: [{ id: "room-1", title: "Room 1" }],
+          metadata: { page: 1, pageSize: 100, totalPages: 1, totalCount: 1 },
+        }),
+        getNextMessage: async () => {
+          if (!releaseMissedMessage) {
+            return null;
+          }
+          releaseMissedMessage = false;
+          return {
+            id: "missed-message",
+            content: "sent during the outage",
+            message_type: "text",
+            sender_id: "user-1",
+            sender_type: "User",
+            sender_name: "User",
+            metadata: {},
+            inserted_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          };
+        },
+      }),
+    });
+
+    const executedEvents: PlatformEvent[] = [];
+    const runtime = new AgentRuntime({
+      link,
+      agentId: "agent-1",
+      agentConfig: { autoSubscribeExistingRooms: true },
+      onExecute: async (_context, event) => {
+        executedEvents.push(event);
+      },
+    });
+
+    try {
+      await runtime.start();
+      await vi.waitFor(() => expect(runtime.presence.roster.trackedRoomIds()).toContain("room-1"));
+
+      // The message "arrives" while disconnected: the REST backlog will
+      // return it once, only after the connection is severed below.
+      releaseMissedMessage = true;
+      peer.receivedEvents.length = 0;
+      peer.severAllConnections();
+
+      await vi.waitFor(
+        () =>
+          expect(peer.receivedEvents).toEqual(
+            expect.arrayContaining([
+              { topic: chatRoomTopic("room-1"), event: "phx_join" },
+              { topic: roomParticipantsTopic("room-1"), event: "phx_join" },
+            ]),
+          ),
+        { timeout: 5000 },
+      );
+
+      await vi.waitFor(
+        () =>
+          expect(executedEvents).toEqual([
+            expect.objectContaining({
+              type: "message_created",
+              payload: expect.objectContaining({ id: "missed-message" }),
+            }),
+          ]),
+        { timeout: 5000 },
+      );
+
+      // The synthetic reconnect boundary itself must never reach the adapter.
+      expect(executedEvents.some((event) => event.type === "reconnected")).toBe(false);
+    } finally {
+      await runtime.stop().catch(() => undefined);
       await peer.stop();
     }
   }, 10_000);

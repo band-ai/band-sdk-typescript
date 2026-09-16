@@ -35,6 +35,10 @@ function topicOperationKey(topic: string): string {
   return `topic:${topic}`;
 }
 
+function roomTopics(roomId: string): { chat: string; participants: string } {
+  return { chat: chatRoomTopic(roomId), participants: roomParticipantsTopic(roomId) };
+}
+
 function isRejected(
   result: PromiseSettledResult<unknown>,
 ): result is PromiseRejectedResult {
@@ -128,6 +132,10 @@ export class SubscriptionManager {
     this.lastReconciledGeneration = 0;
   }
 
+  private leaveOutcome(epoch: number, succeeded: boolean): LeaveOutcome {
+    return epoch !== this.sessionEpoch ? "unknown" : succeeded ? "left" : "failed";
+  }
+
   // ---- generic operation coalescing -------------------------------------
 
   private runOperation(
@@ -167,14 +175,17 @@ export class SubscriptionManager {
       return this.settleIdempotentRoomClaim(roomId);
     }
 
-    const chatTopic = chatRoomTopic(roomId);
-    const participantsTopic = roomParticipantsTopic(roomId);
+    const { chat: chatTopic, participants: participantsTopic } = roomTopics(roomId);
 
     try {
       await this.transport.join(chatTopic, handlers.chat);
     } catch (error) {
       if (epoch === this.sessionEpoch) {
         this.tracker.recordChatRoomJoinFailed(roomId, ticket);
+      } else {
+        this.logger.debug("Room chat-topic join settled after session ended, ignoring stale ticket", {
+          roomId,
+        });
       }
       throw error;
     }
@@ -183,6 +194,10 @@ export class SubscriptionManager {
       await this.transport.join(participantsTopic, handlers.participants);
     } catch (participantError) {
       if (epoch !== this.sessionEpoch) {
+        this.logger.debug(
+          "Room participants-topic join settled after session ended, ignoring stale ticket",
+          { roomId },
+        );
         throw participantError;
       }
 
@@ -232,21 +247,21 @@ export class SubscriptionManager {
       return;
     }
 
+    const { chat: chatTopic, participants: participantsTopic } = roomTopics(roomId);
     const results = await Promise.allSettled([
-      this.transport.leave(chatRoomTopic(roomId)),
-      this.transport.leave(roomParticipantsTopic(roomId)),
+      this.transport.leave(chatTopic),
+      this.transport.leave(participantsTopic),
     ]);
     const failures = results.filter(isRejected);
-    const outcome: LeaveOutcome =
-      epoch !== this.sessionEpoch ? "unknown" : failures.length === 0 ? "left" : "failed";
-
-    if (!this.tracker.markRoomLeaveComplete(roomId, ticket, outcome)) {
-      return;
+    const outcome = this.leaveOutcome(epoch, failures.length === 0);
+    if (outcome === "unknown") {
+      this.logger.debug("Room unsubscribe settled after session ended, outcome ambiguous", { roomId });
     }
 
-    if (outcome !== "left") {
+    if (this.tracker.markRoomLeaveComplete(roomId, ticket, outcome) && outcome !== "left") {
       this.roomsNeedingReconciliation.add(roomId);
     }
+
     if (failures.length > 0) {
       throw new AggregateError(
         failures.map((failure): unknown => failure.reason),
@@ -275,6 +290,9 @@ export class SubscriptionManager {
 
     if (epoch !== this.sessionEpoch) {
       this.tracker.recordAgentTopicJoinAmbiguous(topic, ticket);
+      this.logger.debug("Agent topic join settled after session ended, marking ambiguous for reconciliation", {
+        topic,
+      });
     } else {
       this.tracker.recordAgentTopicJoin(topic, ticket, joined);
     }
@@ -310,8 +328,10 @@ export class SubscriptionManager {
       leaveError = error;
     }
 
-    const outcome: LeaveOutcome =
-      epoch !== this.sessionEpoch ? "unknown" : left ? "left" : "failed";
+    const outcome = this.leaveOutcome(epoch, left);
+    if (outcome === "unknown") {
+      this.logger.debug("Agent topic unsubscribe settled after session ended, outcome ambiguous", { topic });
+    }
     if (this.tracker.markAgentTopicLeaveComplete(topic, ticket, outcome) && outcome !== "left") {
       this.agentTopicsNeedingReconciliation.add(topic);
     }
@@ -330,8 +350,7 @@ export class SubscriptionManager {
     }
 
     for (const [roomId, ticket] of roomCandidates) {
-      const chatTopic = chatRoomTopic(roomId);
-      const participantsTopic = roomParticipantsTopic(roomId);
+      const { chat: chatTopic, participants: participantsTopic } = roomTopics(roomId);
       if (
         !snapshot.attemptedTopics.has(chatTopic) ||
         !snapshot.attemptedTopics.has(participantsTopic)
@@ -412,9 +431,10 @@ export class SubscriptionManager {
   }
 
   private async leaveRoomTopicsCleanly(roomId: string): Promise<void> {
+    const { chat: chatTopic, participants: participantsTopic } = roomTopics(roomId);
     const results = await Promise.allSettled([
-      this.transport.leave(chatRoomTopic(roomId)),
-      this.transport.leave(roomParticipantsTopic(roomId)),
+      this.transport.leave(chatTopic),
+      this.transport.leave(participantsTopic),
     ]);
     const failures = results.filter(isRejected);
     if (failures.length > 0) {

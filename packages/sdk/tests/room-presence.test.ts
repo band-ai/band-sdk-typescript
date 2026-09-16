@@ -784,6 +784,106 @@ describe("RoomPresence", () => {
     expect(subscribeAgentContactsSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("warns and still reconciles rooms when the agent_rooms resubscribe fails during reconnect", async () => {
+    const transport = new FakeTransport();
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      transport,
+      restApi: new FakeRestApi({
+        listChats: async () => ({
+          data: [{ id: "room-1", title: "Room 1" }],
+          metadata: { page: 1, pageSize: 100, totalPages: 1, totalCount: 1 },
+        }),
+      }),
+    });
+
+    await using presence = new RoomPresence({ link, logger });
+    await presence.start();
+    expect(presence.roster.trackedRoomIds()).toEqual(["room-1"]);
+
+    const failingJoin = vi.spyOn(transport, "join").mockImplementation(async (topic, handlers) => {
+      if (topic === agentRoomsTopic("agent-1")) {
+        throw new Error("agent_rooms resubscribe failed");
+      }
+      return FakeTransport.prototype.join.call(transport, topic, handlers);
+    });
+
+    // agent_rooms was attempted for this generation but did not rejoin, so
+    // reconciliation cleans it up before RoomPresence's explicit resubscribe
+    // below hits a real (and, here, failing) fresh join attempt.
+    await transport.triggerReconnect({
+      generation: 1,
+      attemptedTopics: new Set([
+        agentRoomsTopic("agent-1"),
+        chatRoomTopic("room-1"),
+        roomParticipantsTopic("room-1"),
+      ]),
+      joinedTopics: new Set([chatRoomTopic("room-1"), roomParticipantsTopic("room-1")]),
+    });
+
+    await waitFor(() =>
+      logger.warn.mock.calls.some(
+        ([message]) => message === "RoomPresence failed to resubscribe agent_rooms channel after reconnect",
+      ),
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      "RoomPresence failed to resubscribe agent_rooms channel after reconnect",
+      expect.objectContaining({ error: expect.any(Error) }),
+    );
+    // The failed agent_rooms resubscribe does not block the rest of
+    // reconciliation — the surviving room still resyncs.
+    expect(presence.roster.trackedRoomIds()).toEqual(["room-1"]);
+
+    failingJoin.mockRestore();
+  });
+
+  it("warns and continues reconciliation when the agent_contacts resubscribe fails during reconnect", async () => {
+    const transport = new FakeTransport();
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      transport,
+      restApi: new FakeRestApi({ listChats: async () => ({ data: [] }) }),
+      capabilities: { contacts: true },
+    });
+
+    await using presence = new RoomPresence({ link, logger });
+    await presence.start();
+
+    const failingJoin = vi.spyOn(transport, "join").mockImplementation(async (topic, handlers) => {
+      if (topic === agentContactsTopic("agent-1")) {
+        throw new Error("agent_contacts resubscribe failed");
+      }
+      return FakeTransport.prototype.join.call(transport, topic, handlers);
+    });
+
+    // agent_contacts was attempted for this generation but did not rejoin,
+    // so reconciliation cleans it up before RoomPresence's explicit
+    // resubscribe below hits a real (and, here, failing) fresh join attempt.
+    await transport.triggerReconnect({
+      generation: 1,
+      attemptedTopics: new Set([agentRoomsTopic("agent-1"), agentContactsTopic("agent-1")]),
+      joinedTopics: new Set([agentRoomsTopic("agent-1")]),
+    });
+
+    await waitFor(() =>
+      logger.warn.mock.calls.some(
+        ([message]) => message === "RoomPresence failed to resubscribe agent_contacts channel after reconnect",
+      ),
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      "RoomPresence failed to resubscribe agent_contacts channel after reconnect",
+      expect.objectContaining({ error: expect.any(Error) }),
+    );
+
+    failingJoin.mockRestore();
+  });
+
   it("owns a contact subscription that first succeeds during reconnect", async () => {
     const transport = new FakeTransport();
     const originalJoin = transport.join.bind(transport);

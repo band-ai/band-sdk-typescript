@@ -11,6 +11,7 @@ import {
   type WebSocketDisconnectReason,
 } from "./disconnectReason";
 import { createNodeWebSocketFactory } from "./nodeWebSocketFactory";
+import { ReconnectGenerationTracker } from "./ReconnectGenerationTracker";
 import type {
   ReconnectObserver,
   ReconnectSnapshot,
@@ -18,6 +19,11 @@ import type {
   TopicHandlers,
 } from "./transport";
 import { agentControlTopic } from "@band-ai/band-sdk-core";
+
+interface BufferedTopicEvent {
+  topic: string;
+  deliver: () => void;
+}
 
 interface PhoenixChannelsTransportOptions {
   wsUrl: string;
@@ -41,13 +47,13 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private readonly channels = new Map<string, Channel>();
   private readonly channelRefs = new Map<string, Array<[string, number]>>();
   private readonly pendingJoins = new Map<string, Promise<void>>();
+  private readonly pendingLeaves = new Map<string, Promise<void>>();
   private readonly reconnectObservers = new Set<ReconnectObserver>();
-  private readonly pendingGenerations = new Map<number, Set<string>>();
-  private readonly generationTopics = new Map<number, Set<string>>();
-  private readonly settledGenerationTopics = new Map<number, Set<string>>();
-  private readonly bufferedTopicEvents: Array<() => void> = [];
+  private readonly generationTracker = new ReconnectGenerationTracker((snapshot) =>
+    this.notifyReconnectObservers(snapshot),
+  );
+  private readonly bufferedTopicEvents: BufferedTopicEvent[] = [];
   private hasOpenedOnce = false;
-  private generation = 0;
   private sessionEpoch = 0;
   private bufferingGeneration: number | null = null;
   private reconnectBarrier: Promise<void> | null = null;
@@ -59,7 +65,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   ) => void;
   private onHandlerError?: (error: unknown) => void;
   private connected = false;
-  private connectPromise: Promise<void> | null = null;
+  private readonly connectFlight = new SingleFlight<void>();
   private connectResolve: (() => void) | null = null;
   private connectReject: ((error: Error) => void) | null = null;
   private lastDisconnectReason: WebSocketDisconnectReason | null = null;
@@ -145,25 +151,10 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       return;
     }
 
-    if (!this.connectPromise) {
+    await this.connectFlight.run(() => {
       this.socket.connect();
-      const pending = this.waitForConnection();
-      this.connectPromise = pending;
-      void pending.then(
-        () => {
-          if (this.connectPromise === pending) {
-            this.connectPromise = null;
-          }
-        },
-        () => {
-          if (this.connectPromise === pending) {
-            this.connectPromise = null;
-          }
-        },
-      );
-    }
-
-    await this.connectPromise;
+      return this.waitForConnection();
+    });
   }
 
   public async disconnect(): Promise<void> {
@@ -183,16 +174,14 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     this.channels.clear();
     this.channelRefs.clear();
     this.pendingJoins.clear();
+    this.pendingLeaves.clear();
     this.hasOpenedOnce = false;
-    this.generation = 0;
     this.bufferingGeneration = null;
     this.resolveReconnectBarrier?.();
     this.reconnectBarrier = null;
     this.resolveReconnectBarrier = null;
     this.bufferedTopicEvents.splice(0);
-    this.pendingGenerations.clear();
-    this.generationTopics.clear();
-    this.settledGenerationTopics.clear();
+    this.generationTracker.reset();
 
     const failures: unknown[] = [];
     for (const result of results) {
@@ -279,7 +268,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
           this.bufferingGeneration !== null &&
           topic !== (this.agentId ? agentControlTopic(this.agentId) : null)
         ) {
-          this.bufferedTopicEvents.push(deliver);
+          this.bufferedTopicEvents.push({ topic, deliver });
         } else {
           deliver();
         }
@@ -293,9 +282,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     // hook into a channel's reconnect outcome the public API exposes.
     const joinPush = channel.join();
     joinPush
-      .receive("ok", () => this.recordTopicSettled(topic, true))
-      .receive("error", () => this.recordTopicSettled(topic, false))
-      .receive("timeout", () => this.recordTopicSettled(topic, false));
+      .receive("ok", () => this.generationTracker.recordSettled(topic, true))
+      .receive("error", () => this.generationTracker.recordSettled(topic, false))
+      .receive("timeout", () => this.generationTracker.recordSettled(topic, false));
     try {
       await new Promise<void>((resolve, reject) => {
         joinPush
@@ -308,21 +297,13 @@ export class PhoenixChannelsTransport implements StreamingTransport {
           );
       });
     } catch (error) {
-      for (const [event, ref] of refs) {
-        channel.off(event, ref);
-      }
       // Leave and remove the channel so it doesn't get rejoined on reconnect.
-      channel.leave();
-      removeSocketChannel(this.socket, channel);
+      this.abandonChannel(channel, refs);
       throw error;
     }
 
     if (epoch !== this.sessionEpoch) {
-      for (const [event, ref] of refs) {
-        channel.off(event, ref);
-      }
-      channel.leave();
-      removeSocketChannel(this.socket, channel);
+      this.abandonChannel(channel, refs);
       throw new TransportError(`Join superseded by transport disconnect for topic ${topic}`);
     }
 
@@ -331,12 +312,37 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     this.logger.debug("Joined topic", { topic });
   }
 
+  private abandonChannel(channel: Channel, refs: Array<[string, number]>): void {
+    for (const [event, ref] of refs) {
+      channel.off(event, ref);
+    }
+    channel.leave();
+    removeSocketChannel(this.socket, channel);
+  }
+
   public async leave(topic: string): Promise<void> {
+    const pendingLeave = this.pendingLeaves.get(topic);
+    if (pendingLeave) {
+      return pendingLeave;
+    }
+
     const channel = this.channels.get(topic);
     if (!channel) {
       return;
     }
 
+    const leavePromise = this.doLeave(topic, channel);
+    this.pendingLeaves.set(topic, leavePromise);
+    const cleanup = (): void => {
+      if (this.pendingLeaves.get(topic) === leavePromise) {
+        this.pendingLeaves.delete(topic);
+      }
+    };
+    void leavePromise.then(cleanup, cleanup);
+    return leavePromise;
+  }
+
+  private async doLeave(topic: string, channel: Channel): Promise<void> {
     const refs = this.channelRefs.get(topic) ?? [];
     for (const [event, ref] of refs) {
       channel.off(event, ref);
@@ -356,7 +362,14 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     });
 
     this.channels.delete(topic);
-    this.removeTopicFromPendingGenerations(topic);
+    this.generationTracker.removeTopic(topic);
+    // A topic explicitly left mid-reconnect must not still deliver an event
+    // it buffered before the teardown, once the generation later flushes.
+    for (let index = this.bufferedTopicEvents.length - 1; index >= 0; index -= 1) {
+      if (this.bufferedTopicEvents[index]?.topic === topic) {
+        this.bufferedTopicEvents.splice(index, 1);
+      }
+    }
     this.logger.debug("Left topic", { topic });
   }
 
@@ -412,7 +425,12 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     // the socket's onOpen dispatch loop, so the snapshot is taken before
     // Phoenix's own per-channel onOpen callbacks resend their join pushes.
     if (this.hasOpenedOnce) {
-      this.beginReconnectGeneration();
+      this.bufferingGeneration = this.generationTracker.beginGeneration(this.channels.keys());
+      if (!this.reconnectBarrier) {
+        this.reconnectBarrier = new Promise<void>((resolve) => {
+          this.resolveReconnectBarrier = resolve;
+        });
+      }
     } else {
       this.hasOpenedOnce = true;
     }
@@ -438,68 +456,6 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     this.logger.info("Phoenix socket opened", {
       channels: getSocketChannelCount(this.socket),
     });
-  }
-
-  private beginReconnectGeneration(): void {
-    const generation = ++this.generation;
-    const topics = new Set(this.channels.keys());
-    this.bufferingGeneration = generation;
-    if (!this.reconnectBarrier) {
-      this.reconnectBarrier = new Promise<void>((resolve) => {
-        this.resolveReconnectBarrier = resolve;
-      });
-    }
-
-    // A generation superseded by this newer one will never receive another
-    // settlement for its stragglers (Phoenix rebinds each rejoined push's
-    // reply listener on `resend()`, so a stale reply can no longer arrive) —
-    // drop it now rather than leaking it forever.
-    for (const staleGeneration of this.pendingGenerations.keys()) {
-      if (staleGeneration < generation) {
-        this.pendingGenerations.delete(staleGeneration);
-        this.generationTopics.delete(staleGeneration);
-        this.settledGenerationTopics.delete(staleGeneration);
-      }
-    }
-
-    this.pendingGenerations.set(generation, new Set(topics));
-    this.generationTopics.set(generation, topics);
-    this.settledGenerationTopics.set(generation, new Set());
-    this.maybeFinalizeGeneration(generation);
-  }
-
-  private recordTopicSettled(topic: string, joined: boolean): void {
-    const pending = this.pendingGenerations.get(this.generation);
-    if (!pending?.delete(topic)) {
-      return;
-    }
-
-    if (joined) {
-      this.settledGenerationTopics.get(this.generation)?.add(topic);
-    }
-    this.maybeFinalizeGeneration(this.generation);
-  }
-
-  private removeTopicFromPendingGenerations(topic: string): void {
-    for (const [generation, pending] of this.pendingGenerations) {
-      if (pending.delete(topic)) {
-        this.maybeFinalizeGeneration(generation);
-      }
-    }
-  }
-
-  private maybeFinalizeGeneration(generation: number): void {
-    const pending = this.pendingGenerations.get(generation);
-    if (!pending || pending.size > 0) {
-      return;
-    }
-
-    const attemptedTopics = this.generationTopics.get(generation) ?? new Set<string>();
-    const joinedTopics = this.settledGenerationTopics.get(generation) ?? new Set<string>();
-    this.pendingGenerations.delete(generation);
-    this.generationTopics.delete(generation);
-    this.settledGenerationTopics.delete(generation);
-    this.notifyReconnectObservers({ generation, attemptedTopics, joinedTopics });
   }
 
   private notifyReconnectObservers(snapshot: ReconnectSnapshot): void {
@@ -533,7 +489,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       ) {
         this.bufferingGeneration = null;
         const events = this.bufferedTopicEvents.splice(0);
-        for (const deliver of events) {
+        for (const { deliver } of events) {
           deliver();
         }
         this.resolveReconnectBarrier?.();

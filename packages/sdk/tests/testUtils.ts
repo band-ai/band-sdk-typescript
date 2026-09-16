@@ -147,11 +147,19 @@ export function makeRoster(participants: ParticipantRecord[]): ParticipantRoster
   return roster;
 }
 
+type JoinLeaveOutcome = "ok" | "error";
+
 /** Fake `StreamingTransport` driven by `emit(...)`, standing in for the network only. */
 export class FakeTransport implements StreamingTransport {
+  public readonly joinCalls: string[] = [];
+  public readonly leaveCalls: string[] = [];
   private readonly handlers = new Map<string, TopicHandlers>();
   private connected = false;
   private reconnectObserver: ReconnectObserver | null = null;
+  private readonly joinOutcomes = new Map<string, JoinLeaveOutcome>();
+  private readonly leaveOutcomes = new Map<string, JoinLeaveOutcome>();
+  private readonly joinGates = new Map<string, Promise<void>>();
+  private readonly leaveGates = new Map<string, Promise<void>>();
 
   public async connect(): Promise<void> {
     this.connected = true;
@@ -162,11 +170,72 @@ export class FakeTransport implements StreamingTransport {
   }
 
   public async join(topic: string, handlers: TopicHandlers): Promise<void> {
+    this.joinCalls.push(topic);
+    const gate = this.joinGates.get(topic);
+    if (gate) {
+      await gate;
+    }
+    if (this.joinOutcomes.get(topic) === "error") {
+      throw new Error(`join failed: ${topic}`);
+    }
     this.handlers.set(topic, handlers);
   }
 
   public async leave(topic: string): Promise<void> {
+    this.leaveCalls.push(topic);
+    const gate = this.leaveGates.get(topic);
+    if (gate) {
+      await gate;
+    }
+    if (this.leaveOutcomes.get(topic) === "error") {
+      throw new Error(`leave failed: ${topic}`);
+    }
     this.handlers.delete(topic);
+  }
+
+  /** Blocks every `join(topic, ...)` call until the returned function runs. */
+  public gateJoin(topic: string): () => void {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.joinGates.set(topic, gate);
+    return () => {
+      this.joinGates.delete(topic);
+      release();
+    };
+  }
+
+  public gateLeave(topic: string): () => void {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.leaveGates.set(topic, gate);
+    return () => {
+      this.leaveGates.delete(topic);
+      release();
+    };
+  }
+
+  public failJoin(topic: string): void {
+    this.joinOutcomes.set(topic, "error");
+  }
+
+  public failLeave(topic: string): void {
+    this.leaveOutcomes.set(topic, "error");
+  }
+
+  public clearJoinFailure(topic: string): void {
+    this.joinOutcomes.delete(topic);
+  }
+
+  public clearLeaveFailure(topic: string): void {
+    this.leaveOutcomes.delete(topic);
+  }
+
+  public joinCountOf(topic: string): number {
+    return this.joinCalls.filter((t) => t === topic).length;
   }
 
   public async runForever(signal?: AbortSignal): Promise<void> {
