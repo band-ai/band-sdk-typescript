@@ -388,7 +388,7 @@ pnpm install
 cp agent_config.yaml.example agent_config.yaml  # add your credentials
 
 npx tsx examples/basic/basic-agent.ts
-npx tsx examples/openai/openai-agent.ts
+npx tsx examples/openai/01_basic_agent.ts
 ```
 
 ## Architecture

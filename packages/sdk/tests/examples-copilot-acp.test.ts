@@ -1,16 +1,26 @@
 import { describe, expect, it } from "vitest";
 
-import { createCopilotACPAgent } from "../examples/copilot-acp/01_basic_agent";
+import {
+  buildCopilotACPExampleAdapter,
+  createCopilotACPAgent,
+} from "../examples/copilot-acp/01_basic_agent";
+import { firstAcpSystemPrompt } from "./helpers/exampleAcpTurn";
 
 describe("copilot-acp examples", () => {
-  it("builds a Copilot ACP adapter agent without import-time side effects", () => {
-    const agent = createCopilotACPAgent();
-    expect(agent).toBeDefined();
-    expect(typeof agent.run).toBe("function");
-    expect(typeof agent.stop).toBe("function");
+  it("factory returns an agent that has not auto-started", () => {
+    expect(createCopilotACPAgent().state.status).toBe("not_started");
   });
 
-  it("imports 01_basic_agent entry script without side effects", async () => {
-    await expect(import("../examples/copilot-acp/01_basic_agent")).resolves.toBeDefined();
+  it("character customSection appears in the first ACP system context", async () => {
+    const prompt = await firstAcpSystemPrompt((connectionFactory) =>
+      buildCopilotACPExampleAdapter({
+        customSection: "Tom the cat chases Jerry.",
+        command: ["copilot-acp-stub"],
+        connectionFactory,
+      }),
+    );
+
+    expect(prompt).toContain("[System Context]");
+    expect(prompt).toContain("Tom the cat chases Jerry.");
   });
 });

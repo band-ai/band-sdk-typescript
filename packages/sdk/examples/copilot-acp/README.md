@@ -18,6 +18,10 @@ Optional: `COPILOT_HOME` (isolated config dir), `COPILOT_ALLOW_ALL=true` for una
 | File | Description |
 |------|-------------|
 | `01_basic_agent.ts` | Stdio ACP bridge with default `copilot --acp --stdio` command |
+| `02_tom_agent.ts` | Tom character (`customSection` on first ACP turn system context) |
+| `03_jerry_agent.ts` | Jerry character — run with Tom in the same room (separate terminals / agents) |
+
+Character prompts: `examples/prompts/characters.ts`. Use `tom_agent` / `jerry_agent` in `agent_config.yaml`.
 
 ## Running
 

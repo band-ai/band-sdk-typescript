@@ -15,6 +15,10 @@ Optional: set `cwd` when constructing the adapter for an isolated working direct
 | File | Description |
 |------|-------------|
 | `01_basic_agent.ts` | Stdio OMP ACP bridge with platform tools forwarded to the subprocess |
+| `02_tom_agent.ts` | Tom character (`customSection` on first ACP turn system context) |
+| `03_jerry_agent.ts` | Jerry character — run with Tom in the same room |
+
+Character prompts: `examples/prompts/characters.ts`. Use `tom_agent` / `jerry_agent` in `agent_config.yaml`.
 
 ## Running
 

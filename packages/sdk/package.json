@@ -87,7 +87,8 @@
     "examples:a2a-stub": "node scripts/a2a-stub-server.mjs",
     "examples:discover": "node scripts/examples-discover.mjs",
     "examples:smoke": "node scripts/examples-smoke-startup.mjs --env-file ../../.env.test",
-    "examples:run-plan": "tsx --env-file ../../.env.test scripts/example-runner.ts"
+    "examples:run-plan": "tsx --env-file ../../.env.test scripts/example-runner.ts",
+    "examples:tom-jerry": "tsx --env-file ../../.env.test scripts/tom-jerry-cross-room.ts"
   },
   "engines": {
     "node": ">=22.12"

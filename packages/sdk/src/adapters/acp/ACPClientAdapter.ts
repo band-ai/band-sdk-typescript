@@ -120,6 +120,8 @@ export interface ACPConfigRequest {
 export type ACPConfigSelections = Readonly<Record<string, string | undefined>>;
 
 export interface ACPClientAdapterBaseOptions {
+  /** Merged into the first-turn system context (character/persona sections for examples). */
+  customSection?: string;
   cwd?: string;
   env?: Record<string, string>;
   mcpServers?: McpServer[];
@@ -238,6 +240,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private readonly permissionTimeoutMs: number
   private readonly turnTimeoutMs: number
   private readonly logger: Logger
+  private readonly customSection?: string
 
   private backend: InjectedMcpBackend | null = null
   private backendPromise: Promise<InjectedMcpBackend> | null = null
@@ -281,6 +284,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.resolveSessionModel = options.resolveSessionModel
     this.resolveSessionConfig = options.resolveSessionConfig
     this.logger = resolveLogger(options.logger)
+    this.customSection = options.customSection
     this.permissionTimeoutMs = options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
     // Only meaningful when `resolvePermission`, `resolveSessionMode`, or
     // `resolveSessionModel` is actually set — the auto-allow/harness-default
@@ -326,6 +330,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       agentName,
       agentDescription,
       includeBaseInstructions: false,
+      customSection: this.customSection,
     })
     await this.ensureConnection()
   }

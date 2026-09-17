@@ -1,16 +1,25 @@
 import { describe, expect, it } from "vitest";
 
-import { createOmpACPAgent } from "../examples/omp-acp/01_basic_agent";
+import {
+  buildOmpACPExampleAdapter,
+  createOmpACPAgent,
+} from "../examples/omp-acp/01_basic_agent";
+import { firstAcpSystemPrompt } from "./helpers/exampleAcpTurn";
 
 describe("omp-acp examples", () => {
-  it("builds an OMP ACP adapter agent without import-time side effects", () => {
-    const agent = createOmpACPAgent();
-    expect(agent).toBeDefined();
-    expect(typeof agent.run).toBe("function");
-    expect(typeof agent.stop).toBe("function");
+  it("factory returns an agent that has not auto-started", () => {
+    expect(createOmpACPAgent().state.status).toBe("not_started");
   });
 
-  it("imports 01_basic_agent entry script without side effects", async () => {
-    await expect(import("../examples/omp-acp/01_basic_agent")).resolves.toBeDefined();
+  it("character customSection appears in the first ACP system context", async () => {
+    const prompt = await firstAcpSystemPrompt((connectionFactory) =>
+      buildOmpACPExampleAdapter({
+        customSection: "Jerry the mouse evades Tom.",
+        command: ["omp-acp-stub"],
+        connectionFactory,
+      }),
+    );
+
+    expect(prompt).toContain("Jerry the mouse evades Tom.");
   });
 });

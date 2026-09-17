@@ -1,12 +1,17 @@
 import { Agent, OmpACPAdapter, isDirectExecution, loadAgentConfig, type OmpACPAdapterOptions } from "../../src/index";
 
-export type OmpACPExampleOptions = Pick<OmpACPAdapterOptions, "cwd">;
+/** OMP ACP adapter options (see README for common fields: `cwd`, `customSection`). */
+export type OmpACPExampleOptions = OmpACPAdapterOptions;
+
+export function buildOmpACPExampleAdapter(options: OmpACPExampleOptions = {}): OmpACPAdapter {
+  return new OmpACPAdapter(options);
+}
 
 export function createOmpACPAgent(
   options: OmpACPExampleOptions = {},
   overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
-  const adapter = new OmpACPAdapter(options);
+  const adapter = buildOmpACPExampleAdapter(options);
 
   return Agent.create({
     adapter,

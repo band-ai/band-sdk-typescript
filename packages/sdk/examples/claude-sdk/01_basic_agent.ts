@@ -1,24 +1,36 @@
-import { Agent, ClaudeSDKAdapter, loadAgentConfig, isDirectExecution } from "../../src/index";
+import {
+  Agent,
+  ClaudeSDKAdapter,
+  loadAgentConfig,
+  isDirectExecution,
+  type ClaudeSDKQuery,
+} from "../../src/index";
 
-interface ClaudeSdkExampleOptions {
+export interface ClaudeSdkExampleOptions {
   model?: string;
   cwd?: string;
   customSection?: string;
   enableExecutionReporting?: boolean;
+  queryFn?: ClaudeSDKQuery;
+}
+
+export function buildClaudeSdkExampleAdapter(options: ClaudeSdkExampleOptions = {}): ClaudeSDKAdapter {
+  return new ClaudeSDKAdapter({
+    model: options.model ?? "claude-sonnet-4-6",
+    cwd: options.cwd,
+    customSection: options.customSection,
+    queryFn: options.queryFn,
+    permissionMode: "acceptEdits",
+    enableMcpTools: true,
+    enableExecutionReporting: options.enableExecutionReporting,
+  });
 }
 
 export function createClaudeSdkAgent(
   options: ClaudeSdkExampleOptions = {},
   overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
-  const adapter = new ClaudeSDKAdapter({
-    model: options.model ?? "claude-sonnet-4-6",
-    cwd: options.cwd,
-    customSection: options.customSection,
-    permissionMode: "acceptEdits",
-    enableMcpTools: true,
-    enableExecutionReporting: options.enableExecutionReporting,
-  });
+  const adapter = buildClaudeSdkExampleAdapter(options);
 
   return Agent.create({
     adapter,

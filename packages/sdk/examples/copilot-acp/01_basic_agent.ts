@@ -3,19 +3,23 @@ import {
   CopilotACPAdapter,
   isDirectExecution,
   loadAgentConfig,
-  type CopilotACPTcpOptions,
-  type CopilotACPStdioOptions,
+  type CopilotACPAdapterOptions,
 } from "../../src/index";
 
-export type CopilotACPExampleOptions =
-  | Pick<CopilotACPStdioOptions, "cwd">
-  | Pick<CopilotACPTcpOptions, "cwd" | "host" | "port">;
+/** Copilot ACP adapter options (see README for common fields: `cwd`, `customSection`). */
+export type CopilotACPExampleOptions = CopilotACPAdapterOptions;
+
+export function buildCopilotACPExampleAdapter(
+  options: CopilotACPExampleOptions = {},
+): CopilotACPAdapter {
+  return new CopilotACPAdapter(options);
+}
 
 export function createCopilotACPAgent(
   options: CopilotACPExampleOptions = {},
   overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
 ): Agent {
-  const adapter = new CopilotACPAdapter(options);
+  const adapter = buildCopilotACPExampleAdapter(options);
 
   return Agent.create({
     adapter,

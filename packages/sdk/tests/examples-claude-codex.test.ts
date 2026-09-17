@@ -1,34 +1,57 @@
 import { describe, expect, it } from "vitest";
 
-import { createClaudeSdkAgent } from "../examples/claude-sdk/01_basic_agent";
+import {
+  buildClaudeSdkExampleAdapter,
+  createClaudeSdkAgent,
+} from "../examples/claude-sdk/01_basic_agent";
 import { createCodexAgent } from "../examples/codex/01_basic_agent";
+import { generateTomPrompt } from "../examples/prompts/characters";
+import type { ClaudeSDKQuery } from "../src/adapters/claude-sdk/ClaudeSDKAdapter";
+import { HistoryProvider } from "../src/runtime/types";
+import { FakeTools, makeMessage } from "./testUtils";
+
+function claudeSuccessStream(sessionId = "session-example"): ReturnType<ClaudeSDKQuery> {
+  return (async function* generator() {
+    yield {
+      type: "assistant",
+      session_id: sessionId,
+      message: { content: [{ type: "text", text: "ok" }] },
+    } as never;
+    yield {
+      type: "result",
+      subtype: "success",
+      result: "ok",
+      session_id: sessionId,
+    } as never;
+  })() as ReturnType<ClaudeSDKQuery>;
+}
 
 describe("claude/codex examples", () => {
-  it("builds a Claude SDK adapter agent without import-time side effects", () => {
-    const agent = createClaudeSdkAgent();
-    expect(agent).toBeDefined();
-    expect(typeof agent.run).toBe("function");
-    expect(typeof agent.stop).toBe("function");
+  it("factories return agents that have not auto-started", () => {
+    expect(createClaudeSdkAgent().state.status).toBe("not_started");
+    expect(createCodexAgent().state.status).toBe("not_started");
   });
 
-  it("builds a Codex adapter agent without import-time side effects", () => {
-    const agent = createCodexAgent();
-    expect(agent).toBeDefined();
-    expect(typeof agent.run).toBe("function");
-    expect(typeof agent.stop).toBe("function");
-  });
+  it("Tom character customSection reaches the Claude SDK system prompt", async () => {
+    let systemPrompt = "";
+    const adapter = buildClaudeSdkExampleAdapter({
+      customSection: generateTomPrompt("Tom").trim(),
+      queryFn: ({ options }) => {
+        systemPrompt = typeof options?.systemPrompt === "string" ? options.systemPrompt : "";
+        return claudeSuccessStream();
+      },
+    });
 
-  it("builds Codex and Claude SDK agents with character custom sections", () => {
-    const codex = createCodexAgent({ customSection: "Tom the cat." });
-    const claude = createClaudeSdkAgent({ customSection: "Jerry the mouse." });
-    expect(codex).toBeDefined();
-    expect(claude).toBeDefined();
-  });
+    await adapter.onStarted("Tom", "Character demo");
+    await adapter.onMessage(
+      makeMessage("hi", "room-claude"),
+      new FakeTools(),
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-claude" },
+    );
 
-  it("imports Tom and Jerry example scripts without side effects", async () => {
-    await expect(import("../examples/codex/02_tom_agent")).resolves.toBeDefined();
-    await expect(import("../examples/codex/03_jerry_agent")).resolves.toBeDefined();
-    await expect(import("../examples/claude-sdk/02_tom_agent")).resolves.toBeDefined();
-    await expect(import("../examples/claude-sdk/03_jerry_agent")).resolves.toBeDefined();
+    expect(systemPrompt).toContain("Tom the Cat");
   });
 });
