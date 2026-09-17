@@ -34,7 +34,7 @@ await agent.run();
 | File | Description |
 |------|-------------|
 | `01_basic_agent.ts` | Minimal agent with default model and settings |
-| `02_custom_instructions.ts` | Support-style system prompt plus execution reporting for tool visibility |
+| `02_custom_instructions.ts` | Support-style custom section merged with SDK base instructions (`renderSystemPrompt`) plus execution reporting |
 
 ## Running
 
@@ -52,11 +52,11 @@ Copy `agent_config.yaml.example` to `agent_config.yaml` and fill in:
 ```yaml
 anthropic_agent:
   agent_id: "your-anthropic-agent-id"
-  api_key: "your-band-api-key"
+  api_key: "your-api-key"
 
 support_agent:
   agent_id: "your-support-agent-id"
-  api_key: "your-band-api-key"
+  api_key: "your-api-key"
 ```
 
 - `01_basic_agent.ts` uses `loadAgentConfig("anthropic_agent")`

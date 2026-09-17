@@ -41,7 +41,15 @@ From `packages/sdk/` (with `A2A_AGENT_URL` set as above):
 
 ```bash
 pnpm exec tsx examples/a2a-bridge/01_basic_agent.ts
-pnpm exec tsx examples/a2a-bridge/02_with_auth.ts   # optional: A2A_API_KEY and/or A2A_BEARER_TOKEN
+```
+
+For `02_with_auth.ts`, set remote A2A credentials when the server requires them:
+
+```bash
+export A2A_API_KEY=your-remote-api-key
+# and/or
+export A2A_BEARER_TOKEN=your-bearer-token
+pnpm exec tsx examples/a2a-bridge/02_with_auth.ts
 ```
 
 ## Configuration
@@ -49,11 +57,11 @@ pnpm exec tsx examples/a2a-bridge/02_with_auth.ts   # optional: A2A_API_KEY and/
 ```yaml
 a2a_bridge_agent:
   agent_id: "your-bridge-agent-id"
-  api_key: "your-band-api-key"
+  api_key: "your-api-key"
 
 a2a_bridge_auth_agent:
   agent_id: "your-bridge-auth-agent-id"
-  api_key: "your-band-api-key"
+  api_key: "your-api-key"
 ```
 
 - `01_basic_agent.ts` → `loadAgentConfig("a2a_bridge_agent")`

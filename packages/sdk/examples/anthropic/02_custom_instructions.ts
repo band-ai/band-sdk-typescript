@@ -1,4 +1,5 @@
 import { loadAgentConfig, isDirectExecution } from "../../src/index";
+import { renderSystemPrompt } from "../../src/runtime/prompts";
 
 import { createAnthropicAgent } from "./01_basic_agent";
 
@@ -20,7 +21,7 @@ if (isDirectExecution(import.meta.url)) {
   const config = loadAgentConfig("support_agent");
   void createAnthropicAgent(
     {
-      systemPrompt: SUPPORT_SYSTEM_PROMPT,
+      systemPrompt: renderSystemPrompt({ customSection: SUPPORT_SYSTEM_PROMPT.trim() }),
       enableExecutionReporting: true,
     },
     config,
