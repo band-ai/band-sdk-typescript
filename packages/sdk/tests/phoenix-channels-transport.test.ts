@@ -1229,6 +1229,7 @@ describe("PhoenixChannelsTransport", () => {
       socket?.channels.get("agent_control:agent-1")?.emit("supersede", {
         reason: "session.already_connected",
         message: "Superseded by another session",
+        correlation_id: "supersede-1",
       });
 
       expect(onTerminalDisconnect).toHaveBeenCalledTimes(1);
