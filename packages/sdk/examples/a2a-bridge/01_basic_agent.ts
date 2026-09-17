@@ -1,6 +1,6 @@
 import { A2AAdapter, Agent, loadAgentConfig, isDirectExecution } from "../../src/index";
 
-function requireA2ARemoteUrl(optionsRemoteUrl?: string): string {
+export function requireA2ARemoteUrl(optionsRemoteUrl?: string): string {
   const remoteUrl = optionsRemoteUrl ?? process.env.A2A_AGENT_URL;
   if (!remoteUrl) {
     throw new Error("A2A remote URL is required. Set A2A_AGENT_URL or pass options.remoteUrl.");

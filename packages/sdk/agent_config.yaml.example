@@ -18,6 +18,10 @@ anthropic_agent:
   agent_id: "your-anthropic-agent-id"
   api_key: "your-api-key"
 
+support_agent:
+  agent_id: "your-support-agent-id"
+  api_key: "your-api-key"
+
 gemini_agent:
   agent_id: "your-gemini-agent-id"
   api_key: "your-api-key"

@@ -458,7 +458,7 @@ When adding a new adapter, follow this workflow. Use the lowercase module name (
 
 ### Phase 5: Example
 
-- Create `packages/sdk/examples/<framework>/<framework>-agent.ts` mirroring an existing example (e.g., `examples/anthropic/anthropic-agent.ts`).
+- Create `packages/sdk/examples/<framework>/01_basic_agent.ts` (numbered scripts + folder README) mirroring an existing example (e.g., `examples/anthropic/01_basic_agent.ts`).
 - Use `loadAgentConfig("my_agent")` (YAML) or `loadAgentConfigFromEnv()` (env vars) for credentials, **not** direct `process.env` reads.
 
 ### Phase 6: Final Validation
