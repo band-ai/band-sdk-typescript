@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createAnthropicAgent } from "../examples/anthropic/anthropic-agent";
+import { createAnthropicAgent } from "../examples/anthropic/01_basic_agent";
 import { createGeminiAgent } from "../examples/gemini/gemini-agent";
 import { createOpenAIAgent } from "../examples/openai/openai-agent";
 

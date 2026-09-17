@@ -18,6 +18,11 @@ anthropic_agent:
   agent_id: "your-anthropic-agent-id"
   api_key: "your-api-key"
 
+# examples/anthropic/02_custom_instructions.ts
+support_agent:
+  agent_id: "your-support-agent-id"
+  api_key: "your-api-key"
+
 gemini_agent:
   agent_id: "your-gemini-agent-id"
   api_key: "your-api-key"

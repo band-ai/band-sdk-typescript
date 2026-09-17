@@ -6,7 +6,7 @@ Folders:
 
 - `basic/`
 - `openai/`
-- `anthropic/`
+- `anthropic/` — [README](anthropic/README.md) (Anthropic adapter; numbered scripts)
 - `gemini/`
 - `claude-sdk/`
 - `codex/`
@@ -15,7 +15,7 @@ Folders:
 - `custom-adapter/`
 - `langgraph/`
 - `parlant/`
-- `a2a-bridge/`
+- `a2a-bridge/` — [README](a2a-bridge/README.md) (A2A outbound bridge)
 - `a2a-gateway/`
-- `linear-band/`
+- `linear-band/` — [README](linear-band/README.md)
 - `dog-landing-page/`
