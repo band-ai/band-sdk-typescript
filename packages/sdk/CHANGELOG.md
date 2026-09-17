@@ -1,6 +1,21 @@
 # Changelog
 
 
+## [0.4.1](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.4.0...sdk-v0.4.1) (2026-09-17)
+
+
+### Bug Fixes
+
+* **acp:** expose live session config selections ([650c637](https://github.com/band-ai/band-sdk-typescript/commit/650c6377c443b543678b324387a70cf5f557a1c7))
+* **adapters:** expose live session config selections ([1d8fbc9](https://github.com/band-ai/band-sdk-typescript/commit/1d8fbc9c43445cb176074488548c4050da2bf8f1))
+* **adapters:** refresh ACP public surface inventory ([2b3ded5](https://github.com/band-ai/band-sdk-typescript/commit/2b3ded551ebb19e90b7e9cf7e7877f71e0273a4a))
+* **examples:** address PR review for INT-1491 anthropic/a2a tranche ([9b3ecc5](https://github.com/band-ai/band-sdk-typescript/commit/9b3ecc5f516569ecae3b4ce90ac22eacbeeca0a3))
+
+
+### Documentation
+
+* **examples:** add self-contained harness docs ([51a70a2](https://github.com/band-ai/band-sdk-typescript/commit/51a70a2f5040f8a5b43a7d70bd4d60bbc072ec1b))
+
 ## [0.4.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.3.4...sdk-v0.4.0) (2026-09-17)
 
 
