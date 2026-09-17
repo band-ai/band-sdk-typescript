@@ -90,6 +90,21 @@ async function terminateProcess(child) {
 }
 
 /**
+ * @param {import('node:child_process').ChildProcess} child
+ * @param {number} readinessMs
+ */
+export async function waitForStartupReadiness(child, readinessMs) {
+  return Promise.race([
+    new Promise((resolve) => {
+      child.once("exit", (code, signal) => resolve({ kind: "exit", code, signal }));
+    }),
+    new Promise((resolve) => {
+      setTimeout(() => resolve({ kind: "ready" }), readinessMs);
+    }),
+  ]);
+}
+
+/**
  * @param {string} examplePath relative to SDK_ROOT
  * @param {{ envFile: string, env: NodeJS.ProcessEnv, logDir: string }} options
  */
@@ -118,12 +133,11 @@ async function runOne(examplePath, options) {
     child.on("exit", (code, signal) => resolve({ code, signal }));
   });
 
-  await new Promise((resolve) => setTimeout(resolve, STARTUP_READINESS_MS));
-  if (child.exitCode !== null || child.signalCode !== null) {
-    const outcome = await exitPromise;
+  const readiness = await waitForStartupReadiness(child, STARTUP_READINESS_MS);
+  if (readiness.kind === "exit") {
     return {
       status: "fail",
-      detail: `exited during startup (${outcome.code ?? outcome.signal}); log: ${logPath}`,
+      detail: `exited during startup (${readiness.code ?? readiness.signal}); log: ${logPath}`,
     };
   }
 
@@ -228,7 +242,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}
