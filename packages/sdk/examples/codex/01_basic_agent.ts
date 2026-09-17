@@ -3,6 +3,7 @@ import { Agent, CodexAdapter, type CodexAdapterConfig, loadAgentConfig, isDirect
 interface CodexExampleOptions {
   model?: string;
   cwd?: string;
+  customSection?: string;
   approvalPolicy?: CodexAdapterConfig["approvalPolicy"];
   sandboxMode?: CodexAdapterConfig["sandboxMode"];
   reasoningEffort?: CodexAdapterConfig["reasoningEffort"];
@@ -16,6 +17,7 @@ export function createCodexAgent(
     config: {
       model: options.model,
       cwd: options.cwd,
+      customSection: options.customSection,
       approvalPolicy: options.approvalPolicy ?? "never",
       sandboxMode: options.sandboxMode ?? "workspace-write",
       reasoningEffort: options.reasoningEffort,

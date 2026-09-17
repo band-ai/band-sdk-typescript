@@ -3,6 +3,8 @@ import { Agent, ClaudeSDKAdapter, loadAgentConfig, isDirectExecution } from "../
 interface ClaudeSdkExampleOptions {
   model?: string;
   cwd?: string;
+  customSection?: string;
+  enableExecutionReporting?: boolean;
 }
 
 export function createClaudeSdkAgent(
@@ -12,8 +14,10 @@ export function createClaudeSdkAgent(
   const adapter = new ClaudeSDKAdapter({
     model: options.model ?? "claude-sonnet-4-6",
     cwd: options.cwd,
+    customSection: options.customSection,
     permissionMode: "acceptEdits",
     enableMcpTools: true,
+    enableExecutionReporting: options.enableExecutionReporting,
   });
 
   return Agent.create({

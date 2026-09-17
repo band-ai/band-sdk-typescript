@@ -1,0 +1,9 @@
+version: 1
+examples:
+  - id: basic-echo
+    path: examples/basic/basic-agent.ts
+    config_key: basic_agent
+    steps:
+      - prompt: "Reply with the exact marker {marker}."
+        barrier: reply
+        contains_any: ["{marker}"]

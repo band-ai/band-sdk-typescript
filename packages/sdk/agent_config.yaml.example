@@ -22,6 +22,15 @@ support_agent:
   agent_id: "your-support-agent-id"
   api_key: "your-api-key"
 
+# Shared character agents (examples/anthropic/03_tom_agent.ts, 04_jerry_agent.ts)
+tom_agent:
+  agent_id: "your-tom-agent-id"
+  api_key: "your-api-key"
+
+jerry_agent:
+  agent_id: "your-jerry-agent-id"
+  api_key: "your-api-key"
+
 gemini_agent:
   agent_id: "your-gemini-agent-id"
   api_key: "your-api-key"
@@ -86,4 +95,12 @@ reviewer_agent:
 
 linear_band_transport:
   agent_id: "your-linear-transport-agent-id"
+  api_key: "your-api-key"
+
+copilot_acp_agent:
+  agent_id: "your-copilot-acp-agent-id"
+  api_key: "your-api-key"
+
+omp_acp_agent:
+  agent_id: "your-omp-acp-agent-id"
   api_key: "your-api-key"

@@ -35,6 +35,10 @@ await agent.run();
 |------|-------------|
 | `01_basic_agent.ts` | Minimal agent with default model and settings |
 | `02_custom_instructions.ts` | Support-style custom section merged with SDK base instructions (`renderSystemPrompt`) plus execution reporting |
+| `03_tom_agent.ts` | Tom character agent — finds Jerry via platform tools and runs the catch-the-mouse demo |
+| `04_jerry_agent.ts` | Jerry character agent — run alongside Tom in the same room (separate Band agents / terminals) |
+
+Character prompts live in `examples/prompts/characters.ts` (shared with other adapters when you add Tom/Jerry examples there).
 
 ## Running
 
@@ -43,7 +47,11 @@ From `packages/sdk/`:
 ```bash
 pnpm exec tsx examples/anthropic/01_basic_agent.ts
 pnpm exec tsx examples/anthropic/02_custom_instructions.ts
+pnpm exec tsx examples/anthropic/03_tom_agent.ts
+pnpm exec tsx examples/anthropic/04_jerry_agent.ts
 ```
+
+For Tom & Jerry, create two Band agents, add `tom_agent` and `jerry_agent` to `agent_config.yaml`, start both scripts in separate terminals, then add both to the same chat room. Ask Tom to catch Jerry (e.g. “@Tom catch Jerry!”).
 
 ## Configuration
 
@@ -57,10 +65,20 @@ anthropic_agent:
 support_agent:
   agent_id: "your-support-agent-id"
   api_key: "your-api-key"
+
+tom_agent:
+  agent_id: "your-tom-agent-id"
+  api_key: "your-api-key"
+
+jerry_agent:
+  agent_id: "your-jerry-agent-id"
+  api_key: "your-api-key"
 ```
 
 - `01_basic_agent.ts` uses `loadAgentConfig("anthropic_agent")`
 - `02_custom_instructions.ts` uses `loadAgentConfig("support_agent")`
+- `03_tom_agent.ts` uses `loadAgentConfig("tom_agent")`
+- `04_jerry_agent.ts` uses `loadAgentConfig("jerry_agent")`
 
 Provider credentials come from the environment (`ANTHROPIC_API_KEY`), not from the YAML file.
 
