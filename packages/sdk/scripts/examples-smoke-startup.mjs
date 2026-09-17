@@ -94,6 +94,9 @@ async function terminateProcess(child) {
  * @param {number} readinessMs
  */
 export async function waitForStartupReadiness(child, readinessMs) {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return { kind: "exit", code: child.exitCode, signal: child.signalCode };
+  }
   return Promise.race([
     new Promise((resolve) => {
       child.once("exit", (code, signal) => resolve({ kind: "exit", code, signal }));
