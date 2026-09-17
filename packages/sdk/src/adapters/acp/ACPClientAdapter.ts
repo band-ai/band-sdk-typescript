@@ -111,6 +111,14 @@ export interface ACPModelRequest {
   models: readonly SessionConfigSelectOption[];
 }
 
+export interface ACPConfigRequest {
+  roomId: string;
+  sessionId: string;
+  configOptions: readonly SessionConfigOption[];
+}
+
+export type ACPConfigSelections = Readonly<Record<string, string | undefined>>;
+
 export interface ACPClientAdapterBaseOptions {
   cwd?: string;
   env?: Record<string, string>;
@@ -146,6 +154,12 @@ export interface ACPClientAdapterBaseOptions {
   // re-asserted. A session's mode is therefore fixed for its lifetime —
   // changing it means tearing the session down and establishing a new one.
   resolveSessionMode?: (request: ACPModeRequest, signal: AbortSignal) => Promise<string | undefined>;
+  // ACP advertises all user-selectable session configuration in one live
+  // catalog. Return values keyed by config id to apply before the first
+  // prompt. Values are validated against that session's own options; an
+  // invalid or unavailable value is warned and ignored. This is the generic
+  // hook for model, reasoning, thinking, and future harness-specific knobs.
+  resolveSessionConfig?: (request: ACPConfigRequest, signal: AbortSignal) => Promise<ACPConfigSelections | undefined>;
   // ACP advertises a session's model catalog (when the agent exposes one) as
   // a `configOptions` entry categorized/keyed "model" — not via the SDK's
   // separate, `@experimental`/`unstable_`-prefixed `SessionModelState`/
@@ -220,6 +234,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private readonly resolvePermission?: (request: ACPPermissionRequest, signal: AbortSignal) => Promise<string | undefined>
   private readonly resolveSessionMode?: (request: ACPModeRequest, signal: AbortSignal) => Promise<string | undefined>
   private readonly resolveSessionModel?: (request: ACPModelRequest, signal: AbortSignal) => Promise<string | undefined>
+  private readonly resolveSessionConfig?: (request: ACPConfigRequest, signal: AbortSignal) => Promise<ACPConfigSelections | undefined>
   private readonly permissionTimeoutMs: number
   private readonly turnTimeoutMs: number
   private readonly logger: Logger
@@ -264,6 +279,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.resolvePermission = options.resolvePermission
     this.resolveSessionMode = options.resolveSessionMode
     this.resolveSessionModel = options.resolveSessionModel
+    this.resolveSessionConfig = options.resolveSessionConfig
     this.logger = resolveLogger(options.logger)
     this.permissionTimeoutMs = options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
     // Only meaningful when `resolvePermission`, `resolveSessionMode`, or
@@ -271,10 +287,10 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     // paths never read it, so an irrelevant/default value here shouldn't
     // reject an otherwise-valid config for a caller not using manual mode at
     // all.
-    if ((this.resolvePermission || this.resolveSessionMode || this.resolveSessionModel) && (!Number.isFinite(this.permissionTimeoutMs) || this.permissionTimeoutMs <= 0)) {
+    if ((this.resolvePermission || this.resolveSessionMode || this.resolveSessionModel || this.resolveSessionConfig) && (!Number.isFinite(this.permissionTimeoutMs) || this.permissionTimeoutMs <= 0)) {
       throw new ValidationError(`permissionTimeoutMs must be a positive finite number, got ${options.permissionTimeoutMs}`)
     }
-    if (this.resolvePermission || this.resolveSessionMode || this.resolveSessionModel) {
+    if (this.resolvePermission || this.resolveSessionMode || this.resolveSessionModel || this.resolveSessionConfig) {
       assertWithinSetTimeoutBound(
         `permissionTimeoutMs must be at most ${MAX_SETTIMEOUT_DELAY_MS}, got ${options.permissionTimeoutMs}`,
         this.permissionTimeoutMs,
@@ -831,7 +847,10 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         this.activeSessions.add(restoredKey)
         this.bootstrappedSessions.add(restoredKey)
         await this.configureSessionMode(roomId, existingSessionId, restored.modes, connection)
-        await this.configureSessionModel(roomId, existingSessionId, restored.configOptions, connection)
+        await this.configureSessionConfig(roomId, existingSessionId, restored.configOptions, connection)
+        if (!this.resolveSessionConfig) {
+          await this.configureSessionModel(roomId, existingSessionId, restored.configOptions, connection)
+        }
         return existingSessionId
       }
     }
@@ -849,8 +868,64 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.linkOrAbandon(roomId, created.sessionId, generation, connectionGeneration, client)
     this.activeSessions.add(this.sessionKey(connectionGeneration, created.sessionId))
     await this.configureSessionMode(roomId, created.sessionId, created.modes, connection)
-    await this.configureSessionModel(roomId, created.sessionId, created.configOptions, connection)
+    await this.configureSessionConfig(roomId, created.sessionId, created.configOptions, connection)
+    if (!this.resolveSessionConfig) {
+      await this.configureSessionModel(roomId, created.sessionId, created.configOptions, connection)
+    }
     return created.sessionId
+  }
+
+  private async configureSessionConfig(
+    roomId: string,
+    sessionId: string,
+    configOptions: readonly SessionConfigOption[] | null | undefined,
+    connection: ClientSideConnection,
+  ): Promise<void> {
+    if (!this.resolveSessionConfig || !Array.isArray(configOptions) || configOptions.length === 0) {
+      return
+    }
+
+    const selections = await this.resolveManualSelection(
+      "resolveSessionConfig",
+      (signal) => this.resolveSessionConfig!({ roomId, sessionId, configOptions }, signal),
+      connection.signal,
+    )
+    if (!selections) {
+      return
+    }
+
+    for (const option of configOptions) {
+      const selectedValue = selections[option.id]
+      if (selectedValue === undefined || selectedValue === option.currentValue || !isSessionConfigSelect(option)) {
+        continue
+      }
+
+      const availableValues = flattenConfigSelectOptions(option.options).map((entry) => entry.value)
+      if (!availableValues.includes(selectedValue)) {
+        this.safeWarn("resolveSessionConfig selected a value this session does not advertise", {
+          sessionId,
+          configId: option.id,
+          selectedValue,
+          availableValues,
+        })
+        continue
+      }
+
+      try {
+        await withTimeout(
+          connection.setSessionConfigOption({ sessionId, configId: option.id, value: selectedValue }),
+          SET_SESSION_CONFIG_TIMEOUT_MS,
+          `setSessionConfigOption did not respond within ${SET_SESSION_CONFIG_TIMEOUT_MS}ms`,
+        )
+      } catch (error) {
+        this.safeWarn("failed to switch session config option", {
+          sessionId,
+          configId: option.id,
+          selectedValue,
+          error: String(error),
+        })
+      }
+    }
   }
 
   // The single gate an establishment must pass before it's allowed to claim
@@ -1000,11 +1075,11 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     }
   }
 
-  private async resolveManualSelection(
+  private async resolveManualSelection<T>(
     hookName: string,
-    resolver: (signal: AbortSignal) => Promise<string | undefined>,
+    resolver: (signal: AbortSignal) => Promise<T | undefined>,
     signal: AbortSignal,
-  ): Promise<string | undefined> {
+  ): Promise<T | undefined> {
     const controller = new AbortController()
     const abort = () => controller.abort()
     signal.addEventListener("abort", abort, { once: true })

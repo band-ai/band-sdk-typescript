@@ -3080,6 +3080,40 @@ describe("ACPClientAdapter", () => {
       expect(setSessionConfigOption).toHaveBeenCalledWith({ sessionId: "session-1", configId: "model", value: "sonnet" })
     })
 
+    it("applies selections from the live generic config catalog", async () => {
+      const resolveSessionConfig = vi.fn(async () => ({ model: "sonnet", reasoning: "high" }))
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: { resolveSessionConfig },
+        newSessionConfigOptions: [
+          modelConfigOption(),
+          {
+            id: "reasoning",
+            name: "Reasoning effort",
+            category: "reasoning_effort",
+            type: "select",
+            currentValue: "medium",
+            options: [
+              { value: "medium", name: "Medium" },
+              { value: "high", name: "High" },
+            ],
+          },
+        ],
+      })
+
+      await send(adapter)
+
+      expect(resolveSessionConfig).toHaveBeenCalledWith({
+        roomId: "room-1",
+        sessionId: "session-1",
+        configOptions: expect.arrayContaining([
+          expect.objectContaining({ id: "model" }),
+          expect.objectContaining({ id: "reasoning" }),
+        ]),
+      }, expect.any(AbortSignal))
+      expect(setSessionConfigOption).toHaveBeenCalledWith({ sessionId: "session-1", configId: "model", value: "sonnet" })
+      expect(setSessionConfigOption).toHaveBeenCalledWith({ sessionId: "session-1", configId: "reasoning", value: "high" })
+    })
+
     it("does nothing when resolveSessionModel is unset, regardless of what's advertised", async () => {
       const { adapter, setSessionConfigOption } = buildHarness({
         newSessionConfigOptions: [modelConfigOption()],

@@ -7,6 +7,8 @@ export {
   type ACPClientAdapterBaseOptions,
   type ACPClientStdioOptions,
   type ACPClientTcpOptions,
+  type ACPConfigRequest,
+  type ACPConfigSelections,
   type ACPPermissionAbandonReason,
   type ACPPermissionEndReason,
   type ACPPermissionRequest,

@@ -5,6 +5,8 @@ export {
   type ACPClientAdapterBaseOptions,
   type ACPClientStdioOptions,
   type ACPClientTcpOptions,
+  type ACPConfigRequest,
+  type ACPConfigSelections,
 } from "./ACPClientAdapter";
 
 export {

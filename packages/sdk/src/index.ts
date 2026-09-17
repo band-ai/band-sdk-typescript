@@ -110,6 +110,8 @@ export type {
   ACPClientAdapterBaseOptions,
   ACPClientStdioOptions,
   ACPClientTcpOptions,
+  ACPConfigRequest,
+  ACPConfigSelections,
   CopilotACPAdapterOptions,
   CopilotACPStdioOptions,
   CopilotACPTcpOptions,
