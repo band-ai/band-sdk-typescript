@@ -63,14 +63,18 @@ describe("RoomPresence", () => {
       status: "active",
       type: "direct",
       title: "New Room",
-      removed_at: "",
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
     await transport.emit("agent_rooms:agent-1", "room_removed", {
       id: "room-new",
       status: "inactive",
       type: "direct",
       title: "New Room",
-      removed_at: new Date().toISOString(),
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
     await waitFor(
       () => joined.length === 2 && left.length === 1 && presence.roster.trackedRoomIds().length === 1,
@@ -302,14 +306,18 @@ describe("RoomPresence", () => {
       status: "inactive",
       type: "direct",
       title: "Room",
-      removed_at: new Date().toISOString(),
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
     await transport.emit("agent_rooms:agent-1", "room_added", {
       id: "room-1",
       status: "active",
       type: "direct",
       title: "Room",
-      removed_at: "",
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
 
     // SubscriptionManager serializes room operations, so the removal's
@@ -371,14 +379,18 @@ describe("RoomPresence", () => {
       status: "inactive",
       type: "direct",
       title: "Room",
-      removed_at: new Date().toISOString(),
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
     await transport.emit("agent_rooms:agent-1", "room_added", {
       id: "room-1",
       status: "active",
       type: "direct",
       title: "Room",
-      removed_at: "",
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
 
     releaseStaleJoin(new Error("stale ticket's own join failed"));
@@ -403,7 +415,9 @@ describe("RoomPresence", () => {
       status: "inactive",
       type: "direct",
       title: "Room",
-      removed_at: new Date().toISOString(),
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
     await waitFor(() => presence.roster.roomMembership("room-1") === "unadmitted");
     const freshError = new Error("fresh, unrelated failure");
@@ -468,7 +482,9 @@ describe("RoomPresence", () => {
       status: "inactive",
       type: "direct",
       title: "Untracked Room",
-      removed_at: new Date().toISOString(),
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
 
     expect(left).toEqual([]);
@@ -559,7 +575,9 @@ describe("RoomPresence", () => {
       status: "active",
       type: "direct",
       title: "Room",
-      removed_at: "",
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
     await waitFor(() => joined.length === 1);
 

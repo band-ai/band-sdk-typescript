@@ -124,6 +124,14 @@ async function main() {
     () => core.validateMemoryTypeForSystem("sensory", "semantic"),
     "validateMemoryTypeForSystem rejects a mismatched pair against the real wasm binding",
   );
+  expectNoThrow(
+    () => core.validateEventPayload("room_deleted", { id: "room-1" }),
+    "validateEventPayload accepts a real event through the externalized wasm binding",
+  );
+  expectThrows(
+    () => core.validateEventPayload("room_deleted", {}),
+    "validateEventPayload rejects an invalid event through the externalized wasm binding",
+  );
 
   const roomTracker = new core.SubscriptionTracker();
   const roomTicket = roomTracker.beginRoomSubscribe("room-1");

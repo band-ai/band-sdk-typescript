@@ -64,6 +64,13 @@ export interface BuildInboundContextOptions {
 
 const DIRECT_ROOM_TYPES = new Set(["direct", "dm", "individual", "one_to_one"]);
 
+function messageRoomId(
+  event: Extract<PlatformEvent, { type: "message_created" }>,
+): string | null {
+  const fallback = event.payload.chat_room_id;
+  return event.roomId ?? (typeof fallback === "string" ? fallback : null);
+}
+
 /** Map a Band room type to OpenClaw's direct/group chat type (default group). */
 export function roomTypeToChatType(roomType: string | null | undefined): "direct" | "group" {
   if (!roomType) return "group";
@@ -82,7 +89,7 @@ export function platformEventToInboundContext(
   if (event.type !== "message_created") return null;
 
   const payload = event.payload;
-  const roomId = event.roomId ?? payload.chat_room_id;
+  const roomId = messageRoomId(event);
   if (!roomId) return null;
   if (payload.sender_id === opts.selfAgentId) return null;
   if (payload.message_type !== "text") return null;
@@ -359,7 +366,7 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
         messageId: string | undefined;
       } | null> {
         if (event.type !== "message_created") return null;
-        const roomId = event.roomId ?? event.payload.chat_room_id;
+        const roomId = messageRoomId(event);
         if (!roomId) return null;
 
         const roomType = getRoomType(accountId, roomId);

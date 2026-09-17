@@ -21,6 +21,132 @@ const supersededReason = {
 } satisfies WebSocketDisconnectReason;
 
 describe("BandLink event waiting", () => {
+  it("normalizes subscribed events through Core without losing ordered delivery", async () => {
+    const transport = new FakeTransport();
+    const warn = vi.fn();
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      restApi: new FakeRestApi(),
+      transport,
+      logger: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
+    });
+
+    await link.subscribeAgentRooms();
+    await link.subscribeRoom("room-1");
+    await link.subscribeAgentContacts();
+
+    await transport.emit("agent_rooms:agent-1", "room_added", {
+      id: "room-1",
+      title: "A real room",
+      task_id: null,
+      inserted_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+      server_extra: "kept",
+    });
+    await transport.emit("room_participants:room-1", "participant_added", {
+      id: "participant-1",
+      name: "Participant",
+      type: "Agent",
+    });
+    await transport.emit("chat_room:room-1", "message_created", {
+      id: "message-1",
+      content: "@participant hello",
+      message_type: "text",
+      sender_id: "sender-1",
+      sender_type: "Agent",
+      chat_room_id: 42,
+      inserted_at: "2026-01-01T00:00:01Z",
+      updated_at: "2026-01-01T00:00:01Z",
+      server_extra: "kept",
+    });
+
+    const roomAdded = await link.nextEvent();
+    const participantAdded = await link.nextEvent();
+    const message = await link.nextEvent();
+    expect([roomAdded?.type, participantAdded?.type, message?.type]).toEqual([
+      "room_added",
+      "participant_added",
+      "message_created",
+    ]);
+    expect(message?.payload).toMatchObject({
+      attachments: [],
+      metadata: { mentions: [] },
+      server_extra: "kept",
+      chat_room_id: 42,
+    });
+    expect(message?.raw).toMatchObject({ server_extra: "kept" });
+
+    const pending = link.nextEvent();
+    await transport.emit("chat_room:room-1", "message_created", { id: "invalid" });
+    await transport.emit("room_participants:room-1", "participant_removed", {
+      id: "participant-1",
+      name: "Participant",
+      type: "Agent",
+    });
+    await expect(pending).resolves.toMatchObject({
+      type: "participant_removed",
+      payload: { id: "participant-1", name: "Participant", type: "Agent" },
+    });
+    expect(warn).toHaveBeenCalledWith(
+      "Invalid message_created payload, dropping event",
+      expect.objectContaining({
+        issues: expect.any(Array),
+        traceContext: null,
+        roomId: "room-1",
+      }),
+    );
+  });
+
+  it("delivers Core's compact room and contact payloads", async () => {
+    const transport = new FakeTransport();
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      restApi: new FakeRestApi(),
+      transport,
+    });
+    await link.subscribeAgentRooms();
+    await link.subscribeAgentContacts();
+
+    for (const event of ["room_added", "room_removed"] as const) {
+      await transport.emit("agent_rooms:agent-1", event, {
+        id: "room-compact",
+        inserted_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-01T00:00:00Z",
+      });
+      const received = await link.nextEvent();
+      expect(received).toMatchObject({ type: event, payload: { id: "room-compact" } });
+      if (received?.type === event) {
+        expect(received.payload.title).toBeUndefined();
+        expect(received.payload.task_id).toBeUndefined();
+      }
+    }
+
+    await transport.emit("agent_contacts:agent-1", "contact_request_received", {
+      id: "request-1",
+      status: "pending",
+      inserted_at: "2026-01-01T00:00:00Z",
+    });
+    await transport.emit("agent_contacts:agent-1", "contact_added", {
+      id: "contact-1",
+      handle: null,
+      name: null,
+      type: "Agent",
+      inserted_at: "2026-01-01T00:00:01Z",
+      is_remote: null,
+    });
+
+    await expect(link.nextEvent()).resolves.toMatchObject({
+      type: "contact_request_received",
+      payload: { id: "request-1" },
+    });
+    await expect(link.nextEvent()).resolves.toMatchObject({
+      type: "contact_added",
+      payload: { handle: null, name: null, is_remote: null },
+    });
+  });
+
   it("coalesces concurrent connection setup behind one reconnect observer", async () => {
     const transport = new FakeTransport();
     transport.gateConnect();

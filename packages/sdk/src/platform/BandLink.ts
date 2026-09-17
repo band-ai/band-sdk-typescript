@@ -2,7 +2,6 @@ import { resolveLogger, type Logger } from "../core/logger";
 import { SingleFlight } from "../core/singleFlight";
 import { Session } from "./Session";
 import { FernRestAdapter } from "../client/rest/RestFacade";
-import type { FernBandClientLike } from "../client/rest/types";
 import type { RestRequestOptions } from "../client/rest/requestOptions";
 import {
   fetchPaginated,
@@ -13,15 +12,11 @@ import type {
   PlatformChatMessage,
   BandLinkRestApi,
 } from "../client/rest/types";
-import type { PlatformEvent } from "./events";
+import type { PlatformEvent, SupportedSocketEvent } from "./events";
 import { UnsupportedFeatureError } from "../core/errors";
 import { assertCapability } from "../contracts/capabilities";
 import type { MetadataMap } from "../contracts/dtos";
 import type { PlatformMessageLike as PlatformMessage } from "../contracts/protocols";
-import {
-  type SupportedSocketEvent,
-  payloadSchemas,
-} from "./streaming/payloadSchemas";
 import { PhoenixChannelsTransport } from "./streaming/PhoenixChannelsTransport";
 import type { StreamingTransport } from "./streaming/transport";
 import {
@@ -34,7 +29,11 @@ import {
   type AgentToolsCapabilities,
 } from "../contracts/protocols";
 import { BandClient } from "@band-ai/rest-client";
-import { agentContactsTopic, agentRoomsTopic } from "@band-ai/band-sdk-core";
+import {
+  agentContactsTopic,
+  agentRoomsTopic,
+  validateEventPayload,
+} from "@band-ai/band-sdk-core";
 import { SubscriptionManager } from "./SubscriptionManager";
 
 export interface BandLinkOptions {
@@ -82,6 +81,21 @@ function toPlatformMessage(
     metadata: (message.metadata ?? {}),
     createdAt: new Date(message.inserted_at),
   };
+}
+
+function validationErrorDetails(error: unknown): Record<string, unknown> {
+  if (typeof error !== "object" || error === null) {
+    return {};
+  }
+
+  const details: Record<string, unknown> = {};
+  if ("issues" in error) {
+    details.issues = error.issues;
+  }
+  if ("traceContext" in error) {
+    details.traceContext = error.traceContext;
+  }
+  return details;
 }
 
 export class BandLink implements AsyncIterable<PlatformEvent> {
@@ -527,21 +541,19 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     payload: Record<string, unknown>,
     roomId: string | null,
   ): void {
-    const schema = payloadSchemas[eventType];
-    const parsed = schema.safeParse(payload);
-    if (!parsed.success) {
+    try {
+      const normalizedPayload = validateEventPayload(eventType, payload);
+      this.queueEvent({
+        type: eventType,
+        roomId,
+        payload: normalizedPayload,
+        raw: payload,
+      } as PlatformEvent);
+    } catch (error) {
       this.logger.warn(`Invalid ${eventType} payload, dropping event`, {
-        error: parsed.error.message,
+        ...validationErrorDetails(error),
         roomId,
       });
-      return;
     }
-
-    this.queueEvent({
-      type: eventType,
-      roomId,
-      payload: parsed.data,
-      raw: payload,
-    } as PlatformEvent);
   }
 }
