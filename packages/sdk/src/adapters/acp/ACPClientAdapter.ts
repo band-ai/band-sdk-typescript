@@ -884,17 +884,18 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     if (!this.resolveSessionConfig || !Array.isArray(configOptions) || configOptions.length === 0) {
       return
     }
+    const advertisedOptions: readonly SessionConfigOption[] = configOptions
 
     const selections = await this.resolveManualSelection(
       "resolveSessionConfig",
-      (signal) => this.resolveSessionConfig!({ roomId, sessionId, configOptions }, signal),
+      (signal) => this.resolveSessionConfig!({ roomId, sessionId, configOptions: advertisedOptions }, signal),
       connection.signal,
     )
     if (!selections) {
       return
     }
 
-    for (const option of configOptions) {
+    for (const option of advertisedOptions) {
       const selectedValue = selections[option.id]
       if (selectedValue === undefined || selectedValue === option.currentValue || !isSessionConfigSelect(option)) {
         continue
