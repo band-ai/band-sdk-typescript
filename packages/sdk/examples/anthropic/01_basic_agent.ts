@@ -1,6 +1,6 @@
 import { Agent, AnthropicAdapter, loadAgentConfig, isDirectExecution } from "../../src/index";
 
-export interface AnthropicExampleOptions {
+interface AnthropicExampleOptions {
   model?: string;
   apiKey?: string;
   systemPrompt?: string;

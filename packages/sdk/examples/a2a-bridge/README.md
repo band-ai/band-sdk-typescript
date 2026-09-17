@@ -37,19 +37,11 @@ curl http://localhost:10000/.well-known/agent-card.json
 
 ## Running
 
-From `packages/sdk/`:
+From `packages/sdk/` (with `A2A_AGENT_URL` set as above):
 
 ```bash
-export A2A_AGENT_URL=http://localhost:10000
 pnpm exec tsx examples/a2a-bridge/01_basic_agent.ts
-```
-
-Authenticated remote agent:
-
-```bash
-export A2A_AGENT_URL=http://localhost:10000
-export A2A_API_KEY=your-remote-key   # and/or A2A_BEARER_TOKEN
-pnpm exec tsx examples/a2a-bridge/02_with_auth.ts
+pnpm exec tsx examples/a2a-bridge/02_with_auth.ts   # optional: A2A_API_KEY and/or A2A_BEARER_TOKEN
 ```
 
 ## Configuration
