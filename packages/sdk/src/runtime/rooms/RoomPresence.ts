@@ -7,10 +7,12 @@ import type {
   MessageEvent,
   ParticipantAddedEvent,
   ParticipantRemovedEvent,
+  ReconnectedEvent,
 } from "../../platform/events";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { RoomRoster } from "@band-ai/band-sdk-core";
-import { hydrateExistingRooms } from "./subscriptions";
+import { hydrateExistingRooms, listExistingRooms } from "./subscriptions";
+import { Serializer } from "../../core/singleFlight";
 
 interface RoomPresenceOptions {
   link: BandLink;
@@ -23,7 +25,7 @@ type RoomPresenceJoinHandler = (roomId: string, payload: MetadataMap) => Promise
 type RoomPresenceLeaveHandler = (roomId: string) => Promise<void>;
 type RoomPresenceEventHandler = (
   roomId: string,
-  event: MessageEvent | ParticipantAddedEvent | ParticipantRemovedEvent,
+  event: MessageEvent | ParticipantAddedEvent | ParticipantRemovedEvent | ReconnectedEvent,
 ) => Promise<void>;
 type RoomPresenceContactHandler = (event: ContactEvent) => Promise<void>;
 
@@ -41,7 +43,7 @@ export class RoomPresence implements AsyncDisposable {
   private eventController: AbortController | null = null;
   private eventTask: Promise<void> | null = null;
   private contactsSubscribed = false;
-  private lifecycle: Promise<void> = Promise.resolve();
+  private readonly lifecycle = new Serializer();
   private readonly admissionInFlight = new Map<string, Promise<boolean>>();
   // Read once by `admitRoomOrThrow` right after a failed admission; a
   // subsequent successful subscribe clears it so a caller never attributes
@@ -56,11 +58,11 @@ export class RoomPresence implements AsyncDisposable {
   }
 
   public async start(): Promise<void> {
-    return this.serialize(() => this.startBody());
+    return this.lifecycle.run(() => this.startBody());
   }
 
   public async stop(): Promise<void> {
-    return this.serialize(() => this.stopBody());
+    return this.lifecycle.run(() => this.stopBody());
   }
 
   public async [Symbol.asyncDispose](): Promise<void> {
@@ -159,15 +161,6 @@ export class RoomPresence implements AsyncDisposable {
     return roomIsAdmitted;
   }
 
-  private async serialize(body: () => Promise<void>): Promise<void> {
-    const run = this.lifecycle.then(body, body);
-    this.lifecycle = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
-  }
-
   private async startBody(): Promise<void> {
     if (this.eventTask) {
       throw new RuntimeStateError("RoomPresence is already started");
@@ -180,15 +173,9 @@ export class RoomPresence implements AsyncDisposable {
     // Independent of the rooms channel/REST hydration below (no shared
     // state), so it runs concurrently instead of adding its latency to the
     // room-hydration critical path.
-    const contactsReady = this.subscribeContacts();
+    const contactsReady = this.subscribeContacts("start");
 
-    try {
-      await this.link.subscribeAgentRooms();
-    } catch (error) {
-      this.logger.warn("RoomPresence failed to subscribe agent_rooms channel, continuing without it", {
-        error,
-      });
-    }
+    await this.subscribeAgentRoomsChannel("start");
 
     if (this.autoSubscribeExistingRooms) {
       await this.subscribeExistingRooms();
@@ -200,7 +187,21 @@ export class RoomPresence implements AsyncDisposable {
     this.eventTask = this.consumeEvents(this.eventController.signal);
   }
 
-  private async subscribeContacts(): Promise<void> {
+  private contextualWarnMessage(channel: string, context: "start" | "reconnect"): string {
+    return context === "reconnect"
+      ? `RoomPresence failed to resubscribe ${channel} channel after reconnect`
+      : `RoomPresence failed to subscribe ${channel} channel, continuing without it`;
+  }
+
+  private async subscribeAgentRoomsChannel(context: "start" | "reconnect"): Promise<void> {
+    try {
+      await this.link.subscribeAgentRooms();
+    } catch (error) {
+      this.logger.warn(this.contextualWarnMessage("agent_rooms", context), { error });
+    }
+  }
+
+  private async subscribeContacts(context: "start" | "reconnect"): Promise<void> {
     if (!this.link.capabilities.contacts) {
       return;
     }
@@ -209,9 +210,7 @@ export class RoomPresence implements AsyncDisposable {
       await this.link.subscribeAgentContacts();
       this.contactsSubscribed = true;
     } catch (error) {
-      this.logger.warn("RoomPresence failed to subscribe agent_contacts channel, continuing without it", {
-        error,
-      });
+      this.logger.warn(this.contextualWarnMessage("agent_contacts", context), { error });
     }
   }
 
@@ -273,6 +272,9 @@ export class RoomPresence implements AsyncDisposable {
             await this.onRoomEvent?.(event.roomId, event);
           }
           break;
+        case "reconnected":
+          await this.handleReconnected(event);
+          break;
         default:
           assertNever(event);
       }
@@ -294,13 +296,91 @@ export class RoomPresence implements AsyncDisposable {
       return;
     }
 
-    await this.unsubscribeRoom(roomId);
-    this.lastSubscribeError.delete(roomId);
+    await this.leaveRoomTracking(roomId);
     if (!this.roster.recordRoomRemoved(roomId)) {
       this.logger.debug("RoomPresence ignoring removal for untracked room", { roomId });
       return;
     }
     await this.onRoomLeft?.(roomId);
+  }
+
+  /** Unsubscribes the transport topic and clears any remembered subscribe failure for `roomId`. */
+  private async leaveRoomTracking(roomId: string): Promise<void> {
+    await this.unsubscribeRoom(roomId);
+    this.lastSubscribeError.delete(roomId);
+  }
+
+  /**
+   * A REST fetch failure here must not blank the roster — it forwards the
+   * reconnect to every currently tracked room regardless, so each room's
+   * `Execution` can still re-run its `/next` synchronization even when
+   * membership reconciliation itself has to wait for the next reconnect.
+   */
+  private async handleReconnected(event: ReconnectedEvent): Promise<void> {
+    // Independent of each other (no shared state), same as the equivalent
+    // start-up concurrency in `startBody`.
+    const [, , accepted] = await Promise.all([
+      this.subscribeAgentRoomsChannel("reconnect"),
+      this.subscribeContacts("reconnect"),
+      listExistingRooms({
+        link: this.link,
+        roomFilter: this.roomFilter,
+        requestOptions: DEFAULT_REQUEST_OPTIONS,
+      }).catch((error: unknown): null => {
+        this.logger.warn("RoomPresence failed to fetch room snapshot after reconnect", { error });
+        return null;
+      }),
+    ]);
+
+    if (accepted) {
+      await this.reconcileRoomsWithSnapshot(accepted);
+    }
+
+    await Promise.all(
+      this.roster
+        .trackedRoomIds()
+        .map((roomId) => this.onRoomEvent?.(roomId, event) ?? Promise.resolve()),
+    );
+  }
+
+  private async reconcileRoomsWithSnapshot(accepted: Map<string, MetadataMap>): Promise<void> {
+    const acceptedIds = this.autoSubscribeExistingRooms
+      ? [...accepted.keys()]
+      : this.roster.trackedRoomIds().filter((roomId) => accepted.has(roomId));
+
+    const reconciliation = this.roster.reconcile(acceptedIds);
+
+    await Promise.all(
+      reconciliation.removed.map(async (roomId) => {
+        await this.leaveRoomTracking(roomId);
+        await this.onRoomLeft?.(roomId);
+      }),
+    );
+
+    await Promise.all(
+      reconciliation.admitting.map(async ([roomId, ticket]) => {
+        const admitted = await this.performAdmission(roomId, ticket);
+        if (admitted) {
+          await this.onRoomJoined?.(roomId, accepted.get(roomId) ?? {});
+        }
+      }),
+    );
+
+    await Promise.all(
+      reconciliation.resync.map(async (roomId) => {
+        try {
+          await this.link.subscribeRoom(roomId);
+        } catch (error) {
+          // REST stays authoritative for membership either way; a failed
+          // resubscribe here just means this room retries on the next
+          // reconnect rather than losing its tracked membership now.
+          this.logger.warn("RoomPresence failed to resubscribe surviving room after reconnect", {
+            roomId,
+            error,
+          });
+        }
+      }),
+    );
   }
 
   private async unsubscribeRoom(roomId: string): Promise<void> {

@@ -16,7 +16,12 @@ import type {
   ParticipantRecord,
   PeerRecord,
 } from "../src/contracts/dtos";
-import type { StreamingTransport, TopicHandlers } from "../src/platform/streaming/transport";
+import type {
+  ReconnectObserver,
+  ReconnectSnapshot,
+  StreamingTransport,
+  TopicHandlers,
+} from "../src/platform/streaming/transport";
 
 interface CapturedToolEvent {
   content: string;
@@ -142,25 +147,136 @@ export function makeRoster(participants: ParticipantRecord[]): ParticipantRoster
   return roster;
 }
 
+type JoinLeaveOutcome = "ok" | "error";
+
 /** Fake `StreamingTransport` driven by `emit(...)`, standing in for the network only. */
 export class FakeTransport implements StreamingTransport {
+  public readonly joinCalls: string[] = [];
+  public readonly leaveCalls: string[] = [];
+  /** Every currently-registered reconnect observer — a real transport only ever settles once per generation, but exposing the full set (rather than the last-registered one) lets a test assert exactly how many a caller has live at once. */
+  public readonly observers = new Set<ReconnectObserver>();
+  public disconnectCount = 0;
   private readonly handlers = new Map<string, TopicHandlers>();
   private connected = false;
+  private readonly joinOutcomes = new Map<string, JoinLeaveOutcome>();
+  private readonly leaveOutcomes = new Map<string, JoinLeaveOutcome>();
+  private readonly joinGates = new Map<string, Promise<void>>();
+  private readonly leaveGates = new Map<string, Promise<void>>();
+  private connectGate: Promise<void> = Promise.resolve();
+  private releaseConnectGate: (() => void) | null = null;
+  private connectError: unknown = null;
 
   public async connect(): Promise<void> {
+    await this.connectGate;
+    if (this.connectError) {
+      throw this.connectError;
+    }
     this.connected = true;
   }
 
+  /** Makes every future `connect()` call reject with `error` until cleared. */
+  public failConnect(error: unknown): void {
+    this.connectError = error;
+  }
+
+  public clearConnectFailure(): void {
+    this.connectError = null;
+  }
+
   public async disconnect(): Promise<void> {
+    this.disconnectCount += 1;
     this.connected = false;
   }
 
+  /** Blocks every `connect()` call until the returned function runs. */
+  public gateConnect(): void {
+    this.connectGate = new Promise((resolve) => {
+      this.releaseConnectGate = resolve;
+    });
+  }
+
+  public releaseConnection(): void {
+    this.releaseConnectGate?.();
+    this.releaseConnectGate = null;
+  }
+
   public async join(topic: string, handlers: TopicHandlers): Promise<void> {
+    this.joinCalls.push(topic);
+    // Mirrors the real transport's `if (this.channels.has(topic)) { return; }`
+    // fast path: once a topic is bound, a later join() call must not silently
+    // rebind it to different handlers.
+    if (this.handlers.has(topic)) {
+      return;
+    }
+    const gate = this.joinGates.get(topic);
+    if (gate) {
+      await gate;
+    }
+    if (this.joinOutcomes.get(topic) === "error") {
+      throw new Error(`join failed: ${topic}`);
+    }
     this.handlers.set(topic, handlers);
   }
 
   public async leave(topic: string): Promise<void> {
+    this.leaveCalls.push(topic);
+    const gate = this.leaveGates.get(topic);
+    if (gate) {
+      await gate;
+    }
+    if (this.leaveOutcomes.get(topic) === "error") {
+      throw new Error(`leave failed: ${topic}`);
+    }
     this.handlers.delete(topic);
+  }
+
+  private gate(gates: Map<string, Promise<void>>, topic: string): () => void {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    gates.set(topic, gate);
+    return () => {
+      gates.delete(topic);
+      release();
+    };
+  }
+
+  /** Blocks every `join(topic, ...)` call until the returned function runs. */
+  public gateJoin(topic: string): () => void {
+    return this.gate(this.joinGates, topic);
+  }
+
+  public gateLeave(topic: string): () => void {
+    return this.gate(this.leaveGates, topic);
+  }
+
+  private setOutcome(outcomes: Map<string, JoinLeaveOutcome>, topic: string, outcome: JoinLeaveOutcome): void {
+    outcomes.set(topic, outcome);
+  }
+
+  private clearOutcome(outcomes: Map<string, JoinLeaveOutcome>, topic: string): void {
+    outcomes.delete(topic);
+  }
+
+  public failJoin(topic: string): void {
+    this.setOutcome(this.joinOutcomes, topic, "error");
+  }
+
+  public failLeave(topic: string): void {
+    this.setOutcome(this.leaveOutcomes, topic, "error");
+  }
+
+  public clearJoinFailure(topic: string): void {
+    this.clearOutcome(this.joinOutcomes, topic);
+  }
+
+  public clearLeaveFailure(topic: string): void {
+    this.clearOutcome(this.leaveOutcomes, topic);
+  }
+
+  public joinCountOf(topic: string): number {
+    return this.joinCalls.filter((t) => t === topic).length;
   }
 
   public async runForever(signal?: AbortSignal): Promise<void> {
@@ -186,6 +302,23 @@ export class FakeTransport implements StreamingTransport {
 
   public hasTopic(topic: string): boolean {
     return this.handlers.has(topic);
+  }
+
+  public onReconnected(observer: ReconnectObserver): () => void {
+    this.observers.add(observer);
+    return () => this.observers.delete(observer);
+  }
+
+  /** Simulates a settled transport-level reconnect for tests driving BandLink's observer(s). */
+  public async triggerReconnect(
+    snapshot: Omit<ReconnectSnapshot, "attemptedTopics"> &
+      Partial<Pick<ReconnectSnapshot, "attemptedTopics">>,
+  ): Promise<void> {
+    const full: ReconnectSnapshot = {
+      ...snapshot,
+      attemptedTopics: snapshot.attemptedTopics ?? snapshot.joinedTopics,
+    };
+    await Promise.all([...this.observers].map((observer) => observer(full)));
   }
 }
 

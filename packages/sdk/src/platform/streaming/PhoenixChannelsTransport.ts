@@ -1,7 +1,11 @@
-import { Channel, Socket } from "phoenix";
+import { Socket, type Channel } from "phoenix";
 import { TransportError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { combineTeardownErrors } from "../../core/teardown";
+import { Serializer, SingleFlight } from "../../core/singleFlight";
+import { createDeferred, type Deferred } from "../../core/deferred";
+import { Epoch } from "../../core/epoch";
+import { ChannelRegistry, supersededJoinError } from "./ChannelRegistry";
 import {
   WebSocketDisconnectError,
   genericCloseReason,
@@ -11,8 +15,20 @@ import {
   type WebSocketDisconnectReason,
 } from "./disconnectReason";
 import { createNodeWebSocketFactory } from "./nodeWebSocketFactory";
-import type { StreamingTransport, TopicHandlers } from "./transport";
+import { ReconnectGenerationTracker } from "./ReconnectGenerationTracker";
+import type {
+  JoinOptions,
+  ReconnectObserver,
+  ReconnectSnapshot,
+  StreamingTransport,
+  TopicHandlers,
+} from "./transport";
 import { agentControlTopic } from "@band-ai/band-sdk-core";
+
+interface BufferedTopicEvent {
+  topic: string;
+  deliver: () => void;
+}
 
 interface PhoenixChannelsTransportOptions {
   wsUrl: string;
@@ -33,16 +49,33 @@ interface PendingRunForever {
 export class PhoenixChannelsTransport implements StreamingTransport {
   private readonly socket: Socket;
   private readonly agentId?: string;
-  private readonly channels = new Map<string, Channel>();
-  private readonly channelRefs = new Map<string, Array<[string, number]>>();
-  private readonly pendingJoins = new Map<string, Promise<void>>();
+  private readonly registry: ChannelRegistry;
+  private readonly reconnectObservers = new Set<ReconnectObserver>();
+  // Topics joined with `{ exemptFromBuffering: true }`, recorded here so
+  // `wrapHandler` can check by name on every delivered event rather than
+  // threading the flag through the channel/handler plumbing.
+  private readonly bufferingExemptTopics = new Set<string>();
+  private readonly generationTracker = new ReconnectGenerationTracker(
+    (snapshot) => this.notifyReconnectObservers(snapshot),
+    (generation, pendingTopics) =>
+      this.logger.debug("Superseded reconnect generation before it fully settled", {
+        generation,
+        pendingTopics,
+      }),
+  );
+  private readonly bufferedTopicEvents: BufferedTopicEvent[] = [];
+  private hasOpenedOnce = false;
+  private readonly epoch = new Epoch();
+  private bufferingGeneration: number | null = null;
+  private reconnectBarrier: Deferred<void> | null = null;
+  private readonly observerChain = new Serializer();
   private readonly logger: Logger;
   private readonly onTerminalDisconnect?: (
     reason: WebSocketDisconnectReason,
   ) => void;
   private onHandlerError?: (error: unknown) => void;
   private connected = false;
-  private connectPromise: Promise<void> | null = null;
+  private readonly connectFlight = new SingleFlight<void>();
   private connectResolve: (() => void) | null = null;
   private connectReject: ((error: Error) => void) | null = null;
   private lastDisconnectReason: WebSocketDisconnectReason | null = null;
@@ -84,6 +117,40 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       },
       transport:
         options.websocketFactory ?? resolveWebSocketFactory(options.apiKey),
+    });
+
+    this.registry = new ChannelRegistry(this.socket, this.epoch, this.logger, {
+      wrapHandler: (topic, event, handler) => (payload) => {
+        const reportError = (error: unknown): void => {
+          this.logger.error("Unhandled topic handler error", { topic, event, error });
+          this.onHandlerError?.(error);
+        };
+        const deliver = (): void => {
+          try {
+            void Promise.resolve(handler(payload)).catch(reportError);
+          } catch (error) {
+            reportError(error);
+          }
+        };
+
+        if (this.bufferingGeneration !== null && !this.bufferingExemptTopics.has(topic)) {
+          this.bufferedTopicEvents.push({ topic, deliver });
+        } else {
+          deliver();
+        }
+      },
+      onJoinSettled: (topic, joined) => this.generationTracker.recordSettled(topic, joined),
+      onLeft: (topic) => {
+        this.generationTracker.removeTopic(topic);
+        // A topic explicitly left mid-reconnect must not still deliver an
+        // event it buffered before the teardown, once the generation later
+        // flushes.
+        for (let index = this.bufferedTopicEvents.length - 1; index >= 0; index -= 1) {
+          if (this.bufferedTopicEvents[index]?.topic === topic) {
+            this.bufferedTopicEvents.splice(index, 1);
+          }
+        }
+      },
     });
 
     this.socket.onOpen(() => {
@@ -128,41 +195,26 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       return;
     }
 
-    if (!this.connectPromise) {
+    await this.connectFlight.run(() => {
       this.socket.connect();
-      const pending = this.waitForConnection();
-      this.connectPromise = pending;
-      void pending.then(
-        () => {
-          if (this.connectPromise === pending) {
-            this.connectPromise = null;
-          }
-        },
-        () => {
-          if (this.connectPromise === pending) {
-            this.connectPromise = null;
-          }
-        },
-      );
-    }
-
-    await this.connectPromise;
+      return this.waitForConnection();
+    });
   }
 
   public async disconnect(): Promise<void> {
-    const results = await Promise.allSettled(
-      [...this.channels.keys()].map((topic) => this.leave(topic)),
-    );
+    this.epoch.bump();
+    const failures = await this.registry.leaveAll();
 
     this.socket.disconnect();
     this.connected = false;
+    this.registry.forceTeardown();
 
-    const failures: unknown[] = [];
-    for (const result of results) {
-      if (result.status === "rejected") {
-        failures.push(result.reason);
-      }
-    }
+    this.hasOpenedOnce = false;
+    this.bufferingGeneration = null;
+    this.reconnectBarrier?.resolve();
+    this.reconnectBarrier = null;
+    this.bufferedTopicEvents.splice(0);
+    this.generationTracker.reset();
 
     if (failures.length > 0) {
       // A lone failure is rethrown as-is rather than masked inside a
@@ -179,95 +231,33 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     return this.lastDisconnectReason;
   }
 
-  public async join(topic: string, handlers: TopicHandlers): Promise<void> {
-    if (this.channels.has(topic)) {
-      return;
+  public async join(topic: string, handlers: TopicHandlers, options?: JoinOptions): Promise<void> {
+    if (options?.exemptFromBuffering) {
+      this.bufferingExemptTopics.add(topic);
     }
 
-    const pendingJoin = this.pendingJoins.get(topic);
-    if (pendingJoin) {
-      return pendingJoin;
+    const existing = this.registry.existingJoin(topic);
+    if (existing) {
+      return existing;
     }
 
-    const joinPromise = this.doJoin(topic, handlers).finally(() => {
-      this.pendingJoins.delete(topic);
-    });
-    this.pendingJoins.set(topic, joinPromise);
-    return joinPromise;
-  }
-
-  private async doJoin(topic: string, handlers: TopicHandlers): Promise<void> {
-    const channel = this.socket.channel(topic, {});
-
-    const refs: Array<[string, number]> = [];
-
-    for (const [event, handler] of Object.entries(handlers)) {
-      const ref = channel.on(event, (payload: Record<string, unknown>) => {
-        Promise.resolve(handler(payload)).catch((error: unknown) => {
-          this.logger.error("Unhandled topic handler error", {
-            topic,
-            event,
-            error,
-          });
-          this.onHandlerError?.(error);
-        });
-      });
-      refs.push([event, ref]);
+    const epoch = this.epoch.current;
+    await this.reconnectBarrier?.promise;
+    if (this.epoch.isStale(epoch)) {
+      this.logger.debug("Join superseded by transport disconnect/reconnect", { topic });
+      throw supersededJoinError(topic);
     }
 
-    try {
-      await new Promise<void>((resolve, reject) => {
-        channel
-          .join()
-          .receive("ok", () => resolve())
-          .receive("error", (error: unknown) =>
-            reject(new TransportError(`Failed to join topic ${topic}`, error)),
-          )
-          .receive("timeout", () =>
-            reject(new TransportError(`Timeout joining topic ${topic}`)),
-          );
-      });
-    } catch (error) {
-      for (const [event, ref] of refs) {
-        channel.off(event, ref);
-      }
-      // Leave and remove the channel so it doesn't get rejoined on reconnect.
-      channel.leave();
-      removeSocketChannel(this.socket, channel);
-      throw error;
+    const resumed = this.registry.existingJoin(topic);
+    if (resumed) {
+      return resumed;
     }
 
-    this.channels.set(topic, channel);
-    this.channelRefs.set(topic, refs);
-    this.logger.debug("Joined topic", { topic });
+    return this.registry.join(topic, handlers);
   }
 
   public async leave(topic: string): Promise<void> {
-    const channel = this.channels.get(topic);
-    if (!channel) {
-      return;
-    }
-
-    const refs = this.channelRefs.get(topic) ?? [];
-    for (const [event, ref] of refs) {
-      channel.off(event, ref);
-    }
-    this.channelRefs.delete(topic);
-
-    await new Promise<void>((resolve, reject) => {
-      channel
-        .leave()
-        .receive("ok", () => resolve())
-        .receive("error", (error: unknown) =>
-          reject(new TransportError(`Failed to leave topic ${topic}`, error)),
-        )
-        .receive("timeout", () =>
-          reject(new TransportError(`Timeout leaving topic ${topic}`)),
-        );
-    });
-
-    this.channels.delete(topic);
-    this.logger.debug("Left topic", { topic });
+    return this.registry.leave(topic);
   }
 
   public async runForever(signal: AbortSignal): Promise<void> {
@@ -310,7 +300,26 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     });
   }
 
+  public onReconnected(observer: ReconnectObserver): () => void {
+    this.reconnectObservers.add(observer);
+    return () => {
+      this.reconnectObservers.delete(observer);
+    };
+  }
+
   private async handleOpen(): Promise<void> {
+    // Runs synchronously, before this function's first `await` yields back to
+    // the socket's onOpen dispatch loop, so the snapshot is taken before
+    // Phoenix's own per-channel onOpen callbacks resend their join pushes.
+    if (this.hasOpenedOnce) {
+      this.bufferingGeneration = this.generationTracker.beginGeneration(this.registry.topics());
+      if (!this.reconnectBarrier) {
+        this.reconnectBarrier = createDeferred<void>();
+      }
+    } else {
+      this.hasOpenedOnce = true;
+    }
+
     try {
       await this.subscribeAgentControl();
     } catch (error) {
@@ -334,6 +343,43 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     });
   }
 
+  private notifyReconnectObservers(snapshot: ReconnectSnapshot): void {
+    const epoch = this.epoch.current;
+    const observers = [...this.reconnectObservers];
+    void this.observerChain.run(async () => {
+      if (this.epoch.isStale(epoch)) {
+        return;
+      }
+
+      for (const observer of observers) {
+        if (this.epoch.isStale(epoch)) {
+          return;
+        }
+        if (!this.reconnectObservers.has(observer)) {
+          continue;
+        }
+        try {
+          await observer(snapshot);
+        } catch (error) {
+          this.logger.error("Reconnect observer failed", {
+            generation: snapshot.generation,
+            error,
+          });
+        }
+      }
+
+      if (!this.epoch.isStale(epoch) && snapshot.generation === this.bufferingGeneration) {
+        this.bufferingGeneration = null;
+        const events = this.bufferedTopicEvents.splice(0);
+        for (const { deliver } of events) {
+          deliver();
+        }
+        this.reconnectBarrier?.resolve();
+        this.reconnectBarrier = null;
+      }
+    });
+  }
+
   private stopReconnectIfNoChannels(
     options: { suppressCloseReason?: boolean } = {},
   ): void {
@@ -352,18 +398,23 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       return;
     }
 
-    await this.join(agentControlTopic(this.agentId), {
-      supersede: (payload) => {
-        const reason = parseSupersedeDisconnectReason(payload);
-        if (!reason) {
-          this.logger.warn("Invalid agent_control supersede payload", {
-            payload,
-          });
-          return;
-        }
-        this.recordTerminalDisconnect(reason);
+    const topic = agentControlTopic(this.agentId);
+    await this.join(
+      topic,
+      {
+        supersede: (payload) => {
+          const reason = parseSupersedeDisconnectReason(payload);
+          if (!reason) {
+            this.logger.warn("Invalid agent_control supersede payload", {
+              payload,
+            });
+            return;
+          }
+          this.recordTerminalDisconnect(reason);
+        },
       },
-    });
+      { exemptFromBuffering: true },
+    );
   }
 
   private recordSocketClose(event?: { code?: number; reason?: string }): void {
@@ -454,11 +505,6 @@ function unwrapErrorEvent(event: unknown): unknown {
 
 function isErrorEvent(event: unknown): event is { error: unknown } {
   return typeof event === "object" && event !== null && "error" in event;
-}
-
-function removeSocketChannel(socket: Socket, channel: Channel): void {
-  const candidate = socket as unknown as { remove?: (value: Channel) => void };
-  candidate.remove?.(channel);
 }
 
 function getSocketChannelCount(socket: Socket): number | "unknown" {

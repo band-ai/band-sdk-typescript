@@ -30,4 +30,11 @@ describe("root import boundary", () => {
 
     expect(typeof core.WebSocketDisconnectError).toBe("function");
   });
+
+  it("does not export SubscriptionManager or SubscriptionTracker from the public entrypoint", async () => {
+    const sdk = (await import("../src/index")) as Record<string, unknown>;
+
+    expect(sdk.SubscriptionManager).toBeUndefined();
+    expect(sdk.SubscriptionTracker).toBeUndefined();
+  });
 });

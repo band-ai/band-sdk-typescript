@@ -146,6 +146,7 @@
         "PlatformRuntimeOptions",
         "Preprocessor",
         "ProviderTurnFailedError",
+        "ReconnectedEvent",
         "RecoverableTurnError",
         "RoomParticipantTools",
         "RuntimeLifecycleState",
