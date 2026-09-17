@@ -9,12 +9,15 @@
  */
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { dump as dumpYaml, load as loadYaml } from "js-yaml";
+
+import { assertReplyOnlyBarrier } from "./example-runner-barriers.js";
 
 import { FernRestAdapter } from "../src/rest";
 import { BandClient } from "@band-ai/rest-client";
@@ -23,7 +26,6 @@ import {
   provisionAgent,
   reapProvisioned,
   sweepOrphans,
-  waitUntil,
   type ProvisionedAgent,
 } from "../tests/integration/support/liveHarness";
 
@@ -87,10 +89,15 @@ function recordResult(results: Result[], result: Result): void {
   console.log(`${result.status.toUpperCase()} ${result.scenario} ${result.example}${detail}`);
 }
 
-function resolveExamplePath(relativePath: string): string {
+async function resolveExamplePath(relativePath: string): Promise<string> {
   const resolved = path.resolve(SDK_ROOT, relativePath);
   if (!resolved.startsWith(SDK_ROOT) || !resolved.endsWith(".ts")) {
-    throw new Error(`example path does not exist inside packages/sdk: ${relativePath}`);
+    throw new Error(`example path is outside packages/sdk or not a .ts file: ${relativePath}`);
+  }
+  try {
+    await access(resolved, fsConstants.R_OK);
+  } catch {
+    throw new Error(`example path does not exist: ${relativePath}`);
   }
   return resolved;
 }
@@ -105,16 +112,14 @@ function parseStep(raw: unknown, label: string): Step {
     contains_any?: string[];
   };
   const barrier = step.barrier ?? "reply";
-  if (barrier !== "reply" && barrier !== "processed") {
-    throw new Error(`unsupported barrier: ${barrier}`);
-  }
+  assertReplyOnlyBarrier(barrier);
   const containsAny = Array.isArray(step.contains_any)
     ? step.contains_any.filter((item): item is string => typeof item === "string")
     : [];
   return { prompt: step.prompt, barrier: barrier as Step["barrier"], containsAny };
 }
 
-function parseExample(raw: unknown, index: number): ExampleSpec {
+async function parseExample(raw: unknown, index: number): Promise<ExampleSpec> {
   const label = `examples[${index}]`;
   if (!raw || typeof raw !== "object") {
     throw new Error(`${label} must be a mapping`);
@@ -132,7 +137,7 @@ function parseExample(raw: unknown, index: number): ExampleSpec {
   if (typeof examplePath !== "string" || !examplePath) {
     throw new Error(`${label}.path must be a non-empty string`);
   }
-  resolveExamplePath(examplePath);
+  await resolveExamplePath(examplePath);
 
   const command = Array.isArray(item.command)
     ? item.command.filter((part): part is string => typeof part === "string")
@@ -176,7 +181,7 @@ async function loadPlan(planPath: string): Promise<Plan> {
   if (!Array.isArray(examplesRaw) || examplesRaw.length === 0) {
     throw new Error("plan.examples must be a non-empty list");
   }
-  const examples = examplesRaw.map((item, index) => parseExample(item, index));
+  const examples = await Promise.all(examplesRaw.map((item, index) => parseExample(item, index)));
   const ids = examples.map((item) => item.id);
   if (new Set(ids).size !== ids.length) {
     throw new Error("example ids must be unique");
@@ -215,8 +220,8 @@ async function writeAgentConfig(
   await writeFile(path.join(workdir, "agent_config.yaml"), document, { mode: 0o600 });
 }
 
-function exampleCommand(spec: ExampleSpec, workdir: string): string[] {
-  const values = { repo: REPO_ROOT, path: resolveExamplePath(spec.path), workdir };
+function exampleCommand(spec: ExampleSpec, workdir: string, absoluteExamplePath: string): string[] {
+  const values = { repo: REPO_ROOT, path: absoluteExamplePath, workdir };
   if (spec.command.length > 0) {
     return spec.command.map((part) => formatTemplate(part, { marker: "", ...values }));
   }
@@ -229,8 +234,9 @@ function exampleEnvironment(
   workdir: string,
   restUrl: string,
   wsUrl: string | undefined,
+  absoluteExamplePath: string,
 ): NodeJS.ProcessEnv {
-  const values = { repo: REPO_ROOT, path: resolveExamplePath(spec.path), workdir };
+  const values = { repo: REPO_ROOT, path: absoluteExamplePath, workdir };
   const environment: NodeJS.ProcessEnv = {};
   for (const name of PROCESS_ENV_ALLOWLIST) {
     if (process.env[name]) {
@@ -286,14 +292,15 @@ async function startExample(
   restUrl: string,
   wsUrl: string | undefined,
   logPath: string,
+  absoluteExamplePath: string,
 ): Promise<{ child: ReturnType<typeof spawn>; workdir: string; logPath: string }> {
   const workdir = await mkdtemp(path.join(os.tmpdir(), `band-example-${spec.id}-`));
   await writeAgentConfig(spec.configKey, agent, workdir, restUrl, wsUrl);
   const logFd = await import("node:fs/promises").then((fs) => fs.open(logPath, "w"));
-  const argv = exampleCommand(spec, workdir);
+  const argv = exampleCommand(spec, workdir, absoluteExamplePath);
   const child = spawn(argv[0], argv.slice(1), {
     cwd: workdir,
-    env: exampleEnvironment(spec, workdir, restUrl, wsUrl),
+    env: exampleEnvironment(spec, workdir, restUrl, wsUrl, absoluteExamplePath),
     detached: true,
     stdio: ["ignore", logFd, logFd],
   });
@@ -311,26 +318,29 @@ async function waitForReply(
   roomId: string,
   agentId: string,
   sinceIso: string,
-  marker: string,
+  expectedSubstrings: string[],
 ): Promise<void> {
-  await waitUntil(
-    () => {
-      return userRest
-        .listMessages({ chatId: roomId, page: 1, pageSize: 100 })
-        .then((page) => {
-          const replies = page.data.filter(
-            (message) =>
-              message.sender_id === agentId
-              && typeof message.inserted_at === "string"
-              && message.inserted_at >= sinceIso
-              && message.content.toLowerCase().includes(marker.toLowerCase()),
-          );
-          return replies.length > 0;
-        })
-        .catch(() => false);
-    },
-    { timeoutMs: STEP_TIMEOUT_MS, intervalMs: 500 },
-  );
+  const deadline = Date.now() + STEP_TIMEOUT_MS;
+  const needles = expectedSubstrings.map((value) => value.toLowerCase()).filter(Boolean);
+  while (Date.now() < deadline) {
+    try {
+      const page = await userRest.listMessages({ chatId: roomId, page: 1, pageSize: 100 });
+      const match = page.data.some(
+        (message) =>
+          message.sender_id === agentId
+          && typeof message.inserted_at === "string"
+          && message.inserted_at >= sinceIso
+          && needles.some((needle) => message.content.toLowerCase().includes(needle)),
+      );
+      if (match) {
+        return;
+      }
+    } catch {
+      // keep polling until timeout
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`waitForReply timed out after ${STEP_TIMEOUT_MS}ms`);
 }
 
 async function exerciseExample(
@@ -349,7 +359,8 @@ async function exerciseExample(
   try {
     const agent = await provisionAgent(userClient, runId, "example-runner", spec.id);
     provisioned.push(agent);
-    const started = await startExample(spec, agent, restUrl, wsUrl, logPath);
+    const absoluteExamplePath = await resolveExamplePath(spec.path);
+    const started = await startExample(spec, agent, restUrl, wsUrl, logPath, absoluteExamplePath);
     child = started.child;
     workdir = started.workdir;
 
@@ -368,7 +379,7 @@ async function exerciseExample(
         marker,
         roomId: chat.id,
         repo: REPO_ROOT,
-        path: resolveExamplePath(spec.path),
+        path: absoluteExamplePath,
         workdir: workdir ?? "",
       });
       const before = new Date().toISOString();
@@ -376,20 +387,18 @@ async function exerciseExample(
         content: prompt,
         mentions: [{ id: agent.id, handle: agent.name }],
       });
-      if (step.barrier === "reply") {
-        const expected = step.containsAny.length > 0
-          ? step.containsAny.map((value) =>
-              formatTemplate(value, {
-                marker,
-                roomId: chat.id,
-                repo: REPO_ROOT,
-                path: resolveExamplePath(spec.path),
-                workdir: workdir ?? "",
-              }),
-            )
-          : [marker];
-        await waitForReply(userRest, chat.id, agent.id, before, expected[0] ?? marker);
-      }
+      const expected = step.containsAny.length > 0
+        ? step.containsAny.map((value) =>
+            formatTemplate(value, {
+              marker,
+              roomId: chat.id,
+              repo: REPO_ROOT,
+              path: absoluteExamplePath,
+              workdir: workdir ?? "",
+            }),
+          )
+        : [marker];
+      await waitForReply(userRest, chat.id, agent.id, before, expected);
       recordResult(results, {
         scenario: "independent",
         example: spec.id,
