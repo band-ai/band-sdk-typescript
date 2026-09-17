@@ -113,27 +113,56 @@ async function startExample(relativeScript: string, logLabel: string): Promise<C
   return child;
 }
 
+function stripAt(handle: string): string {
+  return handle.startsWith("@") ? handle.slice(1) : handle;
+}
+
 async function participantHandle(
-  rest: FernRestAdapter,
+  agentRest: FernRestAdapter,
   roomId: string,
   agentId: string,
 ): Promise<string> {
-  const roster = await rest.listChatParticipants(roomId);
+  const roster = await agentRest.listChatParticipants(roomId);
   const member = roster.find((p) => p.id === agentId);
-  const handle = member?.handle ?? member?.name;
-  if (handle) {
-    return handle;
+  const fromRoster = member?.handle ?? member?.name;
+  if (fromRoster) {
+    return stripAt(fromRoster);
   }
-  const me = await rest.getAgentMe();
-  if (!me.name) {
-    throw new Error("getAgentMe returned no handle/name");
+  const me = await agentRest.getAgentMe();
+  if (me.id !== agentId) {
+    throw new Error(
+      `Could not resolve handle for ${agentId} in room ${roomId} (not on roster; agent client is ${me.id})`,
+    );
   }
-  return me.name;
+  const fallback = me.name ?? me.handle;
+  if (!fallback) {
+    throw new Error(`Agent ${agentId} has no handle/name on profile`);
+  }
+  return stripAt(fallback);
+}
+
+function requireProviderEnvForScript(relativeScript: string): void {
+  if (relativeScript.includes("anthropic") || relativeScript.includes("claude-sdk")) {
+    requireEnv("ANTHROPIC_API_KEY");
+  }
+  if (relativeScript.includes("openai") || relativeScript.includes("codex")) {
+    requireEnv("OPENAI_API_KEY");
+  }
+  if (relativeScript.includes("gemini")) {
+    if (!process.env.GOOGLE_API_KEY && !process.env.GEMINI_API_KEY) {
+      throw new Error("GOOGLE_API_KEY or GEMINI_API_KEY is required for Gemini examples");
+    }
+  }
+  if (relativeScript.includes("letta")) {
+    if (!process.env.LETTA_API_KEY && !process.env.LETTA_BASE_URL) {
+      throw new Error("LETTA_API_KEY or LETTA_BASE_URL is required for Letta examples");
+    }
+  }
 }
 
 async function runScenario(options: ScenarioOptions): Promise<void> {
-  requireEnv("ANTHROPIC_API_KEY");
-  requireEnv("OPENAI_API_KEY");
+  requireProviderEnvForScript(options.tomScript);
+  requireProviderEnvForScript(options.jerryScript);
   const tomProfile = await loadProfile("tom_agent");
   const jerryProfile = await loadProfile("jerry_agent");
   if (tomProfile.agent_id === jerryProfile.agent_id) {
@@ -161,8 +190,8 @@ async function runScenario(options: ScenarioOptions): Promise<void> {
     console.log(`tom-jerry room ${chat.id} — waiting ${JOIN_SETTLE_MS / 1000}s for WS room join…`);
     await sleep(JOIN_SETTLE_MS);
 
-    const tomHandle = await participantHandle(hostRest, chat.id, tomProfile.agent_id);
-    const jerryHandle = await participantHandle(hostRest, chat.id, jerryProfile.agent_id);
+    const tomHandle = await participantHandle(tomRest, chat.id, tomProfile.agent_id);
+    const jerryHandle = await participantHandle(jerryRest, chat.id, jerryProfile.agent_id);
     console.log(`tom-jerry Tom=@${tomHandle} (${options.tomLabel}) Jerry=@${jerryHandle} (${options.jerryLabel})`);
 
     const trigger = `@${tomHandle} Catch Jerry (@${jerryHandle})! Use band_lookup_peers to find him, then chase him with band_send_message.`;

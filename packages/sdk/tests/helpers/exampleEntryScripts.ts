@@ -4,6 +4,11 @@ import path from "node:path";
 import { expect } from "vitest";
 
 export const EXAMPLE_ENTRY_SCRIPTS = [
+  { file: "examples/anthropic/01_basic_agent.ts", configKey: "anthropic_agent" },
+  { file: "examples/anthropic/03_tom_agent.ts", configKey: "tom_agent" },
+  { file: "examples/anthropic/04_jerry_agent.ts", configKey: "jerry_agent" },
+  { file: "examples/codex/01_basic_agent.ts", configKey: "codex_agent" },
+  { file: "examples/claude-sdk/01_basic_agent.ts", configKey: "claude_sdk_agent" },
   { file: "examples/openai/01_basic_agent.ts", configKey: "openai_agent" },
   { file: "examples/openai/02_memory_agent.ts", configKey: "memory_agent" },
   { file: "examples/openai/03_tom_agent.ts", configKey: "tom_agent" },
