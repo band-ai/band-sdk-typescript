@@ -3375,6 +3375,65 @@ describe("ACPClientAdapter", () => {
       }
     })
 
+    it("releases an in-flight turn in another room when a config timeout retires their shared connection", async () => {
+      vi.useFakeTimers()
+      try {
+        let promptStarted: () => void = () => undefined
+        const promptStartedPromise = new Promise<void>((resolve) => { promptStarted = resolve })
+        let configApplyStarted: () => void = () => undefined
+        const configApplyStartedPromise = new Promise<void>((resolve) => { configApplyStarted = resolve })
+        let nextSession = 0
+        const prompt = vi.fn(async (params: { sessionId: string }) => {
+          if (params.sessionId === "session-b") {
+            promptStarted()
+            return new Promise<never>(() => undefined)
+          }
+          return { stopReason: "end_turn" }
+        })
+        const setSessionConfigOption = vi.fn(() => {
+          configApplyStarted()
+          return new Promise<never>(() => undefined)
+        })
+        const adapter = new ACPClientAdapter({
+          command: ["acp-agent"],
+          enableMcpTools: false,
+          resolveSessionConfig: async ({ roomId }: { roomId: string }) => roomId === "room-a" ? { model: "sonnet" } : undefined,
+          connectionFactory: async () => buildMockConnection({
+            loadSession: vi.fn(async () => ({})),
+            newSession: vi.fn(async () => {
+              nextSession++
+              return nextSession === 1
+                ? { sessionId: "session-b" }
+                : { sessionId: "session-a", configOptions: [modelConfigOption()] }
+            }),
+            prompt,
+            extraRpcSpies: { setSessionConfigOption },
+          }),
+        } as never)
+
+        await adapter.onStarted("Agent", "desc")
+        const roomB = adapter.onMessage(
+          makeMessage("keep working", "room-b"), new FakeTools(), { roomToSession: {} }, null, null,
+          { isSessionBootstrap: true, roomId: "room-b" },
+        )
+        roomB.catch(() => undefined)
+        await promptStartedPromise
+
+        const roomA = adapter.onMessage(
+          makeMessage("configure", "room-a"), new FakeTools(), { roomToSession: {} }, null, null,
+          { isSessionBootstrap: true, roomId: "room-a" },
+        )
+        roomA.catch(() => undefined)
+        await configApplyStartedPromise
+        await vi.advanceTimersByTimeAsync(10_000)
+
+        await expectTurnFailed(roomA)
+        await expectTurnFailed(roomB)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it("does not retain an abandoned session when cleanup wins a config timeout race", async () => {
       vi.useFakeTimers()
       try {

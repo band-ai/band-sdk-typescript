@@ -74,6 +74,19 @@ type InjectedMcpBackend =
     stop(): Promise<void>;
   }
 
+interface ConnectionRetirement {
+  promise: Promise<never>;
+  reject(error: Error): void;
+}
+
+function createConnectionRetirement(): ConnectionRetirement {
+  let reject: (error: Error) => void = () => undefined
+  const promise = new Promise<never>((_resolve, rejectPromise) => {
+    reject = rejectPromise
+  })
+  return { promise, reject }
+}
+
 // Same default `OpencodeAdapter` uses for its own manual-approval wait
 // (`approvalWaitTimeoutMs`) — an unanswered request shouldn't hang the
 // agent's turn forever, but should give a human realistic time to notice it.
@@ -260,6 +273,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private started = false
   private systemPrompt = ""
   private spawnPromise: Promise<ClientSideConnection> | null = null
+  private readonly connectionRetirements = new WeakMap<ClientSideConnection, ConnectionRetirement>()
   // Bumped by `stop()` and on every successful spawn install. Cleanup/timeout
   // and permission maps key by this plus session id so a stale generation
   // cannot alias a same-id session on a newer connection.
@@ -402,13 +416,17 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         : `${this.buildSystemContext(context.roomId, message)}\n\n${messageWithContext}`
 
       this.bootstrappedSessions.add(sessionKey)
-      const response = await withTimeout(connection.prompt({
-        sessionId,
-        prompt: [{
-          type: "text",
-          text: promptText,
-        }],
-      }), this.turnTimeoutMs, () => new AcpTurnTimeoutError())
+      const response = await withTimeout(
+        this.raceAgainstConnectionRetirement(connection, connection.prompt({
+          sessionId,
+          prompt: [{
+            type: "text",
+            text: promptText,
+          }],
+        })),
+        this.turnTimeoutMs,
+        () => new AcpTurnTimeoutError(),
+      )
 
       await this.flushChunks({
         client,
@@ -651,6 +669,12 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     // derived promise itself never rejects and needs no `.catch` of its own.
     void connection.closed.then(() => reject(new Error("ACP connection closed while a session operation was still in flight")))
     return Promise.race([operation, closedRejection])
+  }
+
+  private raceAgainstConnectionRetirement<T>(connection: ClientSideConnection, operation: Promise<T>): Promise<T> {
+    const retirement = this.connectionRetirements.get(connection) ?? createConnectionRetirement()
+    this.connectionRetirements.set(connection, retirement)
+    return Promise.race([operation, retirement.promise])
   }
 
   private unlinkRoom(roomId: string): { sessionId: string; generation: number; client: BandACPClient | null } | undefined {
@@ -995,6 +1019,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.connectionState = null
     this.client = null
     this.pruneConnectionGeneration(generation)
+    this.connectionRetirements.get(connection)?.reject(new Error("ACP connection retired after a config timeout"))
     if (handle) {
       abandon(
         () => handle.stop(),
