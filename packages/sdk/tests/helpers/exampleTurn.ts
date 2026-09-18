@@ -49,7 +49,8 @@ export async function runToolCallingExampleTurn(
 }
 
 export function openAiToolNames(turn: ToolCallingModelRequest): string[] {
-  return turn.tools
-    .map((schema) => schema.function?.name)
-    .filter((name): name is string => typeof name === "string");
+  return turn.tools.flatMap((schema) => {
+    const fn = schema.function as { name?: string } | undefined;
+    return typeof fn?.name === "string" ? [fn.name] : [];
+  });
 }

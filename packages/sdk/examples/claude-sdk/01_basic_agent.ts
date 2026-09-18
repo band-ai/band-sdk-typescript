@@ -1,10 +1,5 @@
-import {
-  Agent,
-  ClaudeSDKAdapter,
-  loadAgentConfig,
-  isDirectExecution,
-  type ClaudeSDKQuery,
-} from "../../src/index";
+import { Agent, ClaudeSDKAdapter, loadAgentConfig, isDirectExecution } from "../../src/index";
+import type { ClaudeSDKQuery } from "../../src/adapters/claude-sdk/ClaudeSDKAdapter";
 
 export interface ClaudeSdkExampleOptions {
   model?: string;
