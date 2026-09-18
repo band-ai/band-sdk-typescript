@@ -3016,7 +3016,7 @@ describe("ACPClientAdapter", () => {
       loadSessionConfigOptions?: Array<Record<string, unknown>>;
     } = {}) {
       const setSessionMode = vi.fn(async () => ({}))
-      const setSessionConfigOption = vi.fn(async () => ({ configOptions: [] }))
+      const setSessionConfigOption = vi.fn(async (_params?: unknown) => ({ configOptions: [] as Array<Record<string, unknown>> }))
       const newSession = vi.fn(async () => ({
         sessionId: "session-1",
         ...(input.newSessionModes ? { modes: input.newSessionModes } : {}),
@@ -3081,23 +3081,32 @@ describe("ACPClientAdapter", () => {
     })
 
     it("applies selections from the live generic config catalog", async () => {
+      const initialCatalog = [
+        modelConfigOption(),
+        {
+          id: "reasoning",
+          name: "Reasoning effort",
+          category: "reasoning_effort",
+          type: "select",
+          currentValue: "medium",
+          options: [
+            { value: "medium", name: "Medium" },
+            { value: "high", name: "High" },
+          ],
+        },
+      ]
       const resolveSessionConfig = vi.fn(async () => ({ model: "sonnet", reasoning: "high" }))
       const { adapter, setSessionConfigOption } = buildHarness({
         adapterOptions: { resolveSessionConfig },
-        newSessionConfigOptions: [
-          modelConfigOption(),
-          {
-            id: "reasoning",
-            name: "Reasoning effort",
-            category: "reasoning_effort",
-            type: "select",
-            currentValue: "medium",
-            options: [
-              { value: "medium", name: "Medium" },
-              { value: "high", name: "High" },
-            ],
-          },
-        ],
+        newSessionConfigOptions: initialCatalog,
+      })
+      setSessionConfigOption.mockImplementation(async (params: unknown) => {
+        const { configId, value } = params as { configId: string; value: string }
+        return {
+          configOptions: initialCatalog.map((option) => (
+            option.id === configId ? { ...option, currentValue: value } : option
+          )),
+        }
       })
 
       await send(adapter)
@@ -3112,6 +3121,252 @@ describe("ACPClientAdapter", () => {
       }, expect.any(AbortSignal))
       expect(setSessionConfigOption).toHaveBeenCalledWith({ sessionId: "session-1", configId: "model", value: "sonnet" })
       expect(setSessionConfigOption).toHaveBeenCalledWith({ sessionId: "session-1", configId: "reasoning", value: "high" })
+    })
+
+    it("revalidates later selections against each setSessionConfigOption response catalog", async () => {
+      const initialCatalog = [
+        modelConfigOption({
+          options: [
+            { value: "opus", name: "Opus" },
+            { value: "sonnet", name: "Sonnet" },
+            { value: "auto", name: "Auto" },
+          ],
+        }),
+        {
+          id: "reasoning_effort",
+          name: "Reasoning",
+          category: "thought_level",
+          type: "select",
+          currentValue: "medium",
+          options: [
+            { value: "medium", name: "Medium" },
+            { value: "high", name: "High" },
+          ],
+        },
+      ]
+      const afterAuto = [modelConfigOption({
+        currentValue: "auto",
+        options: [
+          { value: "opus", name: "Opus" },
+          { value: "sonnet", name: "Sonnet" },
+          { value: "auto", name: "Auto" },
+        ],
+      })]
+      const resolveSessionConfig = vi.fn(async () => ({ model: "auto", reasoning_effort: "high" }))
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: { resolveSessionConfig },
+        newSessionConfigOptions: initialCatalog,
+      })
+      setSessionConfigOption.mockImplementationOnce(async () => ({ configOptions: afterAuto }))
+
+      await expect(send(adapter)).rejects.toBeTruthy()
+      expect(setSessionConfigOption).toHaveBeenCalledTimes(1)
+      expect(setSessionConfigOption).toHaveBeenCalledWith({ sessionId: "session-1", configId: "model", value: "auto" })
+    })
+
+    it("reports a structured configuration failure when Copilot rejects effort after model=auto", async () => {
+      const catalog = [
+        modelConfigOption({
+          options: [
+            { value: "opus", name: "Opus" },
+            { value: "auto", name: "Auto" },
+          ],
+        }),
+        {
+          id: "reasoning_effort",
+          name: "Reasoning",
+          category: "thought_level",
+          type: "select",
+          currentValue: "medium",
+          options: [
+            { value: "medium", name: "Medium" },
+            { value: "high", name: "High" },
+          ],
+        },
+      ]
+      const resolveSessionConfig = vi.fn(async () => ({ model: "auto", reasoning_effort: "high" }))
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: { resolveSessionConfig },
+        newSessionConfigOptions: catalog,
+      })
+      setSessionConfigOption
+        .mockImplementationOnce(async () => ({
+          configOptions: catalog.map((option) => (
+            option.id === "model" ? { ...option, currentValue: "auto" } : option
+          )),
+        }))
+        .mockRejectedValueOnce({ code: -32602, message: "Invalid params" })
+
+      const tools = new FakeTools()
+      await adapter.onStarted("Agent", "desc")
+      await expectTurnFailed(adapter.onMessage(
+        makeMessage("hi", "room-1"),
+        tools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-1" },
+      ))
+      expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({
+        provider: "acp",
+        code: "-32602",
+        message: "Invalid params",
+      })
+      expect((findFailureEvent(tools)?.metadata?.failure as { detail?: unknown } | undefined)?.detail).toMatchObject({
+        optionId: "reasoning_effort",
+        selectedValue: "high",
+      })
+    })
+
+    it("applies Copilot effort first then model=auto when the returned catalog drops effort", async () => {
+      const withEffort = [
+        modelConfigOption({
+          options: [
+            { value: "opus", name: "Opus" },
+            { value: "auto", name: "Auto" },
+          ],
+        }),
+        {
+          id: "reasoning_effort",
+          name: "Reasoning",
+          category: "thought_level",
+          type: "select",
+          currentValue: "medium",
+          options: [
+            { value: "medium", name: "Medium" },
+            { value: "high", name: "High" },
+          ],
+        },
+      ]
+      const afterEffort = withEffort.map((option) => (
+        option.id === "reasoning_effort" ? { ...option, currentValue: "high" } : option
+      ))
+      const afterAuto = [modelConfigOption({
+        currentValue: "auto",
+        options: [
+          { value: "opus", name: "Opus" },
+          { value: "auto", name: "Auto" },
+        ],
+      })]
+      // Insertion order: effort then model
+      const resolveSessionConfig = vi.fn(async () => ({ reasoning_effort: "high", model: "auto" }))
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: { resolveSessionConfig },
+        newSessionConfigOptions: withEffort,
+      })
+      setSessionConfigOption
+        .mockImplementationOnce(async () => ({ configOptions: afterEffort }))
+        .mockImplementationOnce(async () => ({ configOptions: afterAuto }))
+
+      await send(adapter)
+      expect(setSessionConfigOption.mock.calls.map((call: unknown[]) => call[0])).toEqual([
+        { sessionId: "session-1", configId: "reasoning_effort", value: "high" },
+        { sessionId: "session-1", configId: "model", value: "auto" },
+      ])
+    })
+
+    it("fails closed when a selected config id disappears from the returned catalog", async () => {
+      const initialCatalog = [
+        modelConfigOption(),
+        {
+          id: "thinking",
+          name: "Thinking",
+          category: "thought_level",
+          type: "select",
+          currentValue: "off",
+          options: [
+            { value: "off", name: "Off" },
+            { value: "on", name: "On" },
+          ],
+        },
+      ]
+      const resolveSessionConfig = vi.fn(async () => ({ model: "sonnet", thinking: "on" }))
+      const { adapter, setSessionConfigOption } = buildHarness({
+        adapterOptions: { resolveSessionConfig },
+        newSessionConfigOptions: initialCatalog,
+      })
+      setSessionConfigOption.mockImplementationOnce(async () => ({
+        configOptions: [modelConfigOption({ currentValue: "sonnet" })],
+      }))
+
+      const tools = new FakeTools()
+      await adapter.onStarted("Agent", "desc")
+      await expectTurnFailed(adapter.onMessage(
+        makeMessage("hi", "room-1"),
+        tools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-1" },
+      ))
+      expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({
+        provider: "acp",
+        code: "session_config",
+      })
+      expect((findFailureEvent(tools)?.metadata?.failure as { detail?: unknown } | undefined)?.detail).toMatchObject({
+        optionId: "thinking",
+        selectedValue: "on",
+      })
+    })
+
+    it("after a config failure, the next turn establishes a fresh session instead of reusing the half-configured one", async () => {
+      const initialCatalog = [
+        modelConfigOption(),
+        {
+          id: "thinking",
+          name: "Thinking",
+          category: "thought_level",
+          type: "select",
+          currentValue: "off",
+          options: [
+            { value: "off", name: "Off" },
+            { value: "on", name: "On" },
+          ],
+        },
+      ]
+      const resolveSessionConfig = vi.fn(async () => ({ model: "sonnet", thinking: "on" }))
+      const { adapter, setSessionConfigOption, newSession } = buildHarness({
+        adapterOptions: { resolveSessionConfig },
+        newSessionConfigOptions: initialCatalog,
+      })
+      setSessionConfigOption
+        .mockImplementationOnce(async () => ({
+          configOptions: [modelConfigOption({ currentValue: "sonnet" })],
+        }))
+        .mockImplementation(async (params: unknown) => {
+          const { configId, value } = params as { configId: string; value: string }
+          return {
+            configOptions: initialCatalog.map((option) => (
+              option.id === configId ? { ...option, currentValue: value } : option
+            )),
+          }
+        })
+
+      const tools = new FakeTools()
+      await adapter.onStarted("Agent", "desc")
+      await expectTurnFailed(adapter.onMessage(
+        makeMessage("hi", "room-1"),
+        tools,
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-1" },
+      ))
+
+      resolveSessionConfig.mockReset()
+      resolveSessionConfig.mockImplementation(async () => ({ model: "sonnet" }) as never)
+      newSession.mockImplementationOnce(async () => ({
+        sessionId: "session-2",
+        configOptions: [modelConfigOption()],
+      }))
+
+      await send(adapter)
+      expect(newSession).toHaveBeenCalledTimes(2)
+      expect(setSessionConfigOption).toHaveBeenLastCalledWith({
+        sessionId: "session-2",
+        configId: "model",
+        value: "sonnet",
+      })
     })
 
     it("does nothing when resolveSessionModel is unset, regardless of what's advertised", async () => {
@@ -3282,7 +3537,7 @@ describe("ACPClientAdapter", () => {
     it("resolves promptly instead of hanging the full timeout when the connection signal starts already aborted", async () => {
       const preAbortedController = new AbortController()
       preAbortedController.abort()
-      const setSessionConfigOption = vi.fn(async () => ({ configOptions: [] }))
+      const setSessionConfigOption = vi.fn(async (_params?: unknown) => ({ configOptions: [] as Array<Record<string, unknown>> }))
       const newSession = vi.fn(async () => ({
         sessionId: "session-1",
         configOptions: [modelConfigOption()],

@@ -14,7 +14,6 @@ import type {
   SessionConfigOption,
   SessionConfigSelect,
   SessionConfigSelectOption,
-  SessionConfigSelectOptions,
   SessionMode,
   SessionModeState,
 } from "@agentclientprotocol/sdk";
@@ -32,6 +31,13 @@ import { withTimeout } from "../shared/withTimeout";
 import { abandon } from "../shared/abandon";
 import { deliverReply } from "../../core/deliveryFailedError";
 import { FAILURE_CODE_TIMEOUT, agentFailure, reportTurnFailure } from "../../core/providerFailure";
+import {
+  AcpSessionConfigError,
+  applySessionConfigSelections,
+  flattenConfigSelectOptions,
+  isSessionConfigSelect,
+  type ACPConfigSelections as ReconciledACPConfigSelections,
+} from "./sessionConfigReconciliation";
 import { isBlankEventContent } from "../../contracts/chatEvents";
 import type { PlatformMessage } from "../../runtime/types";
 import type { McpToolRegistration } from "../../mcp/registrations";
@@ -117,7 +123,7 @@ export interface ACPConfigRequest {
   configOptions: readonly SessionConfigOption[];
 }
 
-export type ACPConfigSelections = Readonly<Record<string, string | undefined>>;
+export type ACPConfigSelections = ReconciledACPConfigSelections;
 
 export interface ACPClientAdapterBaseOptions {
   /** Merged into the first-turn system context (character/persona sections for examples). */
@@ -158,9 +164,10 @@ export interface ACPClientAdapterBaseOptions {
   resolveSessionMode?: (request: ACPModeRequest, signal: AbortSignal) => Promise<string | undefined>;
   // ACP advertises all user-selectable session configuration in one live
   // catalog. Return values keyed by config id to apply before the first
-  // prompt. Values are validated against that session's own options; an
-  // invalid or unavailable value is warned and ignored. This is the generic
-  // hook for model, reasoning, thinking, and future harness-specific knobs.
+  // prompt, in the order the caller supplies them. Each successful
+  // `session/set_config_option` response becomes the catalog for the next
+  // selection. An invalid, removed, or rejected value fails the turn with a
+  // structured configuration error — never silently skipped or defaulted.
   resolveSessionConfig?: (request: ACPConfigRequest, signal: AbortSignal) => Promise<ACPConfigSelections | undefined>;
   // ACP advertises a session's model catalog (when the agent exposes one) as
   // a `configOptions` entry categorized/keyed "model" — not via the SDK's
@@ -452,16 +459,23 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         }
       }
 
-      const acpError = asAcpJsonRpcError(error)
+      const configError = error instanceof AcpSessionConfigError ? error : undefined
+      const acpError = configError ? undefined : asAcpJsonRpcError(error)
       await reportTurnFailure(
         tools,
         isTimeout
           ? agentFailure(this.provider, "ACP turn timed out.", FAILURE_CODE_TIMEOUT)
-          : acpError
-            ? agentFailure(this.provider, acpError.message, String(acpError.code), acpError.data)
-            : agentFailure(this.provider, asErrorMessage(error)),
+          : configError
+            ? configError.toAgentFailure()
+            : acpError
+              ? agentFailure(this.provider, acpError.message, String(acpError.code), acpError.data)
+              : agentFailure(this.provider, asErrorMessage(error)),
         this.logger,
-        { roomId: context.roomId, sessionId },
+        {
+          roomId: context.roomId,
+          sessionId,
+          ...(configError ? { optionId: configError.optionId, selectedValue: configError.selectedValue } : {}),
+        },
       )
     }
   }
@@ -852,7 +866,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         this.activeSessions.add(restoredKey)
         this.bootstrappedSessions.add(restoredKey)
         await this.configureSessionMode(roomId, existingSessionId, restored.modes, connection)
-        await this.configureSessionConfig(roomId, existingSessionId, restored.configOptions, connection)
+        await this.configureSessionConfig(roomId, existingSessionId, restored.configOptions, connection, connectionGeneration, client)
         if (!this.resolveSessionConfig) {
           await this.configureSessionModel(roomId, existingSessionId, restored.configOptions, connection)
         }
@@ -873,7 +887,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.linkOrAbandon(roomId, created.sessionId, generation, connectionGeneration, client)
     this.activeSessions.add(this.sessionKey(connectionGeneration, created.sessionId))
     await this.configureSessionMode(roomId, created.sessionId, created.modes, connection)
-    await this.configureSessionConfig(roomId, created.sessionId, created.configOptions, connection)
+    await this.configureSessionConfig(roomId, created.sessionId, created.configOptions, connection, connectionGeneration, client)
     if (!this.resolveSessionConfig) {
       await this.configureSessionModel(roomId, created.sessionId, created.configOptions, connection)
     }
@@ -885,6 +899,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     sessionId: string,
     configOptions: readonly SessionConfigOption[] | null | undefined,
     connection: ClientSideConnection,
+    connectionGeneration: number,
+    client: BandACPClient,
   ): Promise<void> {
     if (!this.resolveSessionConfig || !Array.isArray(configOptions) || configOptions.length === 0) {
       return
@@ -900,37 +916,38 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       return
     }
 
-    for (const option of advertisedOptions) {
-      const selectedValue = selections[option.id]
-      if (selectedValue === undefined || selectedValue === option.currentValue || !isSessionConfigSelect(option)) {
-        continue
-      }
+    try {
+      await applySessionConfigSelections({
+        provider: this.provider,
+        sessionId,
+        catalog: advertisedOptions,
+        selections,
+        setOption: (params) => connection.setSessionConfigOption(params),
+        timeoutMs: SET_SESSION_CONFIG_TIMEOUT_MS,
+        withTimeout,
+      })
+    } catch (error) {
+      this.abandonFailedConfigSession(roomId, sessionId, connectionGeneration, client)
+      throw error
+    }
+  }
 
-      const availableValues = flattenConfigSelectOptions(option.options).map((entry) => entry.value)
-      if (!availableValues.includes(selectedValue)) {
-        this.safeWarn("resolveSessionConfig selected a value this session does not advertise", {
-          sessionId,
-          configId: option.id,
-          selectedValue,
-          availableValues,
-        })
-        continue
-      }
-
-      try {
-        await withTimeout(
-          connection.setSessionConfigOption({ sessionId, configId: option.id, value: selectedValue }),
-          SET_SESSION_CONFIG_TIMEOUT_MS,
-          `setSessionConfigOption did not respond within ${SET_SESSION_CONFIG_TIMEOUT_MS}ms`,
-        )
-      } catch (error) {
-        this.safeWarn("failed to switch session config option", {
-          sessionId,
-          configId: option.id,
-          selectedValue,
-          error: String(error),
-        })
-      }
+  // A config failure mid-establish must not leave a half-applied session
+  // active for the room: the next turn needs a fresh `newSession` catalog.
+  private abandonFailedConfigSession(
+    roomId: string,
+    sessionId: string,
+    connectionGeneration: number,
+    client: BandACPClient,
+  ): void {
+    const key = this.sessionKey(connectionGeneration, sessionId)
+    this.activeSessions.delete(key)
+    this.bootstrappedSessions.delete(key)
+    this.abandonedSessions.add(key)
+    client.resetChunks(sessionId)
+    const owner = this.roomToSession.get(roomId)
+    if (owner && owner.sessionId === sessionId && owner.generation === connectionGeneration) {
+      this.unlinkOwner(roomId, owner)
     }
   }
 
@@ -1783,16 +1800,6 @@ export async function createTcpConnection(
 // selector (see `ACPModelRequest`'s doc comment).
 const MODEL_CONFIG_OPTION_KEY = "model"
 
-// `SessionConfigOption` is a discriminated union — only the `"select"`
-// branch has `.currentValue`/`.options`. `Array.find()`'s plain
-// boolean-returning callback doesn't narrow that union on its own, so
-// `configureSessionModel` needs real type-predicates here rather than an
-// inline arrow.
-function isSessionConfigSelect(
-  option: SessionConfigOption,
-): option is SessionConfigOption & SessionConfigSelect & { type: "select" } {
-  return option?.type === "select"
-}
 
 // `category` is the protocol's documented signal for "this is the model
 // selector" and takes priority; `isModelConfigOptionById` below is
@@ -1815,38 +1822,6 @@ function isModelConfigOptionById(
   return isSessionConfigSelect(option) && option.id === MODEL_CONFIG_OPTION_KEY
 }
 
-// `SessionConfigSelect.options` is typed as `Array<SessionConfigSelectOption>
-// | Array<SessionConfigSelectGroup>` — a real protocol possibility, even
-// though no agent observed while building this (Claude, Codex) uses the
-// grouped form. `SessionConfigSelectGroup` (`{group, name, options}`) is
-// distinguished from `SessionConfigSelectOption` (`{value, name,
-// description?}`) via `"group" in entry`, the only field unique to the
-// group shape. Entries are otherwise unvalidated JSON-RPC data (same
-// reasoning as `configureSessionMode`'s `availableModes` guard) — `entry`
-// and a group's own `options` are each validated with this codebase's
-// shared `asOptionalRecord`/`Array.isArray` guards (not a bespoke check)
-// before either is trusted, so a non-object or non-array shape is dropped
-// rather than passed to the `in` operator or returned as if it were real
-// catalog data.
-function flattenConfigSelectOptions(
-  options: SessionConfigSelectOptions | null | undefined,
-): SessionConfigSelectOption[] {
-  if (!Array.isArray(options)) {
-    return []
-  }
-
-  return options.flatMap((entry) => {
-    if (!asOptionalRecord(entry)) {
-      return []
-    }
-
-    if ("group" in entry) {
-      return Array.isArray(entry.options) ? entry.options : []
-    }
-
-    return [entry]
-  })
-}
 
 // Structural guard, not `instanceof RequestError`: `connection.prompt(...)`
 // rejects with the plain deserialized wire object (`{code, message, data?}`),
