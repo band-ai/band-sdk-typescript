@@ -1,6 +1,6 @@
 {
   "name": "@band-ai/sdk",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Band TypeScript SDK core runtime",
   "license": "MIT",
   "repository": {
