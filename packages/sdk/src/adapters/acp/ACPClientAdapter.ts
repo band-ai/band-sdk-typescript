@@ -14,7 +14,6 @@ import type {
   SessionConfigOption,
   SessionConfigSelect,
   SessionConfigSelectOption,
-  SessionConfigSelectOptions,
   SessionMode,
   SessionModeState,
 } from "@agentclientprotocol/sdk";
@@ -27,11 +26,19 @@ import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { mentionSubjectsFromMetadata, replaceUuidMentions } from "../../runtime/formatters";
 import { systemUpdateParts } from "../shared/conversationPrompt";
-import { asErrorMessage, asOptionalRecord } from "../shared/coercion";
+import { asErrorMessage } from "../shared/coercion";
 import { withTimeout } from "../shared/withTimeout";
 import { abandon } from "../shared/abandon";
 import { deliverReply } from "../../core/deliveryFailedError";
 import { FAILURE_CODE_TIMEOUT, agentFailure, reportTurnFailure } from "../../core/providerFailure";
+import {
+  AcpSessionConfigError,
+  asAcpJsonRpcError,
+  applySessionConfigSelections,
+  flattenConfigSelectOptions,
+  isSessionConfigSelect,
+  type ACPConfigSelections as ReconciledACPConfigSelections,
+} from "./sessionConfigReconciliation";
 import { isBlankEventContent } from "../../contracts/chatEvents";
 import type { PlatformMessage } from "../../runtime/types";
 import type { McpToolRegistration } from "../../mcp/registrations";
@@ -66,6 +73,19 @@ type InjectedMcpBackend =
     authToken: string;
     stop(): Promise<void>;
   }
+
+interface ConnectionRetirement {
+  promise: Promise<never>;
+  reject(error: Error): void;
+}
+
+function createConnectionRetirement(): ConnectionRetirement {
+  let reject: (error: Error) => void = () => undefined
+  const promise = new Promise<never>((_resolve, rejectPromise) => {
+    reject = rejectPromise
+  })
+  return { promise, reject }
+}
 
 // Same default `OpencodeAdapter` uses for its own manual-approval wait
 // (`approvalWaitTimeoutMs`) — an unanswered request shouldn't hang the
@@ -117,7 +137,7 @@ export interface ACPConfigRequest {
   configOptions: readonly SessionConfigOption[];
 }
 
-export type ACPConfigSelections = Readonly<Record<string, string | undefined>>;
+export type ACPConfigSelections = ReconciledACPConfigSelections;
 
 export interface ACPClientAdapterBaseOptions {
   /** Merged into the first-turn system context (character/persona sections for examples). */
@@ -158,9 +178,10 @@ export interface ACPClientAdapterBaseOptions {
   resolveSessionMode?: (request: ACPModeRequest, signal: AbortSignal) => Promise<string | undefined>;
   // ACP advertises all user-selectable session configuration in one live
   // catalog. Return values keyed by config id to apply before the first
-  // prompt. Values are validated against that session's own options; an
-  // invalid or unavailable value is warned and ignored. This is the generic
-  // hook for model, reasoning, thinking, and future harness-specific knobs.
+  // prompt, in the order the caller supplies them. Each successful
+  // `session/set_config_option` response becomes the catalog for the next
+  // selection. An invalid, removed, or rejected value fails the turn with a
+  // structured configuration error — never silently skipped or defaulted.
   resolveSessionConfig?: (request: ACPConfigRequest, signal: AbortSignal) => Promise<ACPConfigSelections | undefined>;
   // ACP advertises a session's model catalog (when the agent exposes one) as
   // a `configOptions` entry categorized/keyed "model" — not via the SDK's
@@ -252,6 +273,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private started = false
   private systemPrompt = ""
   private spawnPromise: Promise<ClientSideConnection> | null = null
+  private readonly connectionRetirements = new WeakMap<ClientSideConnection, ConnectionRetirement>()
   // Bumped by `stop()` and on every successful spawn install. Cleanup/timeout
   // and permission maps key by this plus session id so a stale generation
   // cannot alias a same-id session on a newer connection.
@@ -394,13 +416,17 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         : `${this.buildSystemContext(context.roomId, message)}\n\n${messageWithContext}`
 
       this.bootstrappedSessions.add(sessionKey)
-      const response = await withTimeout(connection.prompt({
-        sessionId,
-        prompt: [{
-          type: "text",
-          text: promptText,
-        }],
-      }), this.turnTimeoutMs, () => new AcpTurnTimeoutError())
+      const response = await withTimeout(
+        this.raceAgainstConnectionRetirement(connection, connection.prompt({
+          sessionId,
+          prompt: [{
+            type: "text",
+            text: promptText,
+          }],
+        })),
+        this.turnTimeoutMs,
+        () => new AcpTurnTimeoutError(),
+      )
 
       await this.flushChunks({
         client,
@@ -452,16 +478,23 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         }
       }
 
-      const acpError = asAcpJsonRpcError(error)
+      const configError = error instanceof AcpSessionConfigError ? error : undefined
+      const acpError = configError ? undefined : asAcpJsonRpcError(error)
       await reportTurnFailure(
         tools,
         isTimeout
           ? agentFailure(this.provider, "ACP turn timed out.", FAILURE_CODE_TIMEOUT)
-          : acpError
-            ? agentFailure(this.provider, acpError.message, String(acpError.code), acpError.data)
-            : agentFailure(this.provider, asErrorMessage(error)),
+          : configError
+            ? configError.toAgentFailure()
+            : acpError
+              ? agentFailure(this.provider, acpError.message, String(acpError.code), acpError.data)
+              : agentFailure(this.provider, asErrorMessage(error)),
         this.logger,
-        { roomId: context.roomId, sessionId },
+        {
+          roomId: context.roomId,
+          sessionId: configError?.sessionId ?? sessionId,
+          ...(configError ? { optionId: configError.optionId, selectedValue: configError.selectedValue } : {}),
+        },
       )
     }
   }
@@ -481,19 +514,14 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   // would risk blocking this room's turn lock forever on the very process
   // that just proved it can hang.
   private async abandonTimedOutTurn(connection: ClientSideConnection, sessionId: string, generation: number): Promise<void> {
-    const key = this.sessionKey(generation, sessionId)
-    this.activeSessions.delete(key)
-    this.abandonedSessions.add(key)
     // Only drop this generation's mapping. A replacement that reused the
     // same raw session id on a newer connection owns a different key.
-    const owner = [...this.roomToSession.entries()].find(([, value]) => value.sessionId === sessionId && value.generation === generation)
-    if (owner) {
-      this.unlinkOwner(owner[0], owner[1])
-    }
-    abandon(
-      () => connection.cancel({ sessionId }),
-      (error) => this.safeWarn("acp_client.cancel_failed", { sessionId, error: asErrorMessage(error) }),
-    )
+    this.evictAbandonedSession(sessionId, generation, connection, () => {
+      const owner = [...this.roomToSession.entries()].find(([, value]) => value.sessionId === sessionId && value.generation === generation)
+      if (owner) {
+        this.unlinkOwner(owner[0], owner[1])
+      }
+    })
   }
 
   // A per-room async mutex: `fn` for a given `roomId` never overlaps another
@@ -641,6 +669,12 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     // derived promise itself never rejects and needs no `.catch` of its own.
     void connection.closed.then(() => reject(new Error("ACP connection closed while a session operation was still in flight")))
     return Promise.race([operation, closedRejection])
+  }
+
+  private raceAgainstConnectionRetirement<T>(connection: ClientSideConnection, operation: Promise<T>): Promise<T> {
+    const retirement = this.connectionRetirements.get(connection) ?? createConnectionRetirement()
+    this.connectionRetirements.set(connection, retirement)
+    return Promise.race([operation, retirement.promise])
   }
 
   private unlinkRoom(roomId: string): { sessionId: string; generation: number; client: BandACPClient | null } | undefined {
@@ -852,7 +886,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         this.activeSessions.add(restoredKey)
         this.bootstrappedSessions.add(restoredKey)
         await this.configureSessionMode(roomId, existingSessionId, restored.modes, connection)
-        await this.configureSessionConfig(roomId, existingSessionId, restored.configOptions, connection)
+        await this.configureSessionConfig(roomId, existingSessionId, restored.configOptions, connection, connectionGeneration, client)
         if (!this.resolveSessionConfig) {
           await this.configureSessionModel(roomId, existingSessionId, restored.configOptions, connection)
         }
@@ -873,7 +907,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.linkOrAbandon(roomId, created.sessionId, generation, connectionGeneration, client)
     this.activeSessions.add(this.sessionKey(connectionGeneration, created.sessionId))
     await this.configureSessionMode(roomId, created.sessionId, created.modes, connection)
-    await this.configureSessionConfig(roomId, created.sessionId, created.configOptions, connection)
+    await this.configureSessionConfig(roomId, created.sessionId, created.configOptions, connection, connectionGeneration, client)
     if (!this.resolveSessionConfig) {
       await this.configureSessionModel(roomId, created.sessionId, created.configOptions, connection)
     }
@@ -885,6 +919,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     sessionId: string,
     configOptions: readonly SessionConfigOption[] | null | undefined,
     connection: ClientSideConnection,
+    connectionGeneration: number,
+    client: BandACPClient,
   ): Promise<void> {
     if (!this.resolveSessionConfig || !Array.isArray(configOptions) || configOptions.length === 0) {
       return
@@ -900,37 +936,95 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       return
     }
 
-    for (const option of advertisedOptions) {
-      const selectedValue = selections[option.id]
-      if (selectedValue === undefined || selectedValue === option.currentValue || !isSessionConfigSelect(option)) {
-        continue
-      }
+    try {
+      await applySessionConfigSelections({
+        provider: this.provider,
+        sessionId,
+        catalog: advertisedOptions,
+        selections,
+        setOption: (params) => connection.setSessionConfigOption(params),
+        timeoutMs: SET_SESSION_CONFIG_TIMEOUT_MS,
+      })
+    } catch (error) {
+      this.abandonFailedConfigSession(
+        roomId,
+        sessionId,
+        connectionGeneration,
+        client,
+        connection,
+        error instanceof AcpSessionConfigError && error.timedOut,
+      )
+      throw error
+    }
+  }
 
-      const availableValues = flattenConfigSelectOptions(option.options).map((entry) => entry.value)
-      if (!availableValues.includes(selectedValue)) {
-        this.safeWarn("resolveSessionConfig selected a value this session does not advertise", {
-          sessionId,
-          configId: option.id,
-          selectedValue,
-          availableValues,
-        })
-        continue
+  // A config failure mid-establish must not leave a half-applied session
+  // active for the room: the next turn needs a fresh `newSession` catalog.
+  private abandonFailedConfigSession(
+    roomId: string,
+    sessionId: string,
+    connectionGeneration: number,
+    client: BandACPClient,
+    connection: ClientSideConnection,
+    retireConnection: boolean,
+  ): void {
+    const key = this.sessionKey(connectionGeneration, sessionId)
+    this.bootstrappedSessions.delete(key)
+    client.resetChunks(sessionId)
+    // Shared eviction+cancel with turn-timeout abandon: a hung
+    // setSessionConfigOption must not stay pending while the next turn
+    // opens a fresh session on this connection.
+    this.evictAbandonedSession(sessionId, connectionGeneration, connection, () => {
+      const owner = this.roomToSession.get(roomId)
+      if (owner && owner.sessionId === sessionId && owner.generation === connectionGeneration) {
+        this.unlinkOwner(roomId, owner)
       }
+    })
+    if (retireConnection) {
+      this.retireConnection(connection, connectionGeneration)
+    }
+  }
 
-      try {
-        await withTimeout(
-          connection.setSessionConfigOption({ sessionId, configId: option.id, value: selectedValue }),
-          SET_SESSION_CONFIG_TIMEOUT_MS,
-          `setSessionConfigOption did not respond within ${SET_SESSION_CONFIG_TIMEOUT_MS}ms`,
-        )
-      } catch (error) {
-        this.safeWarn("failed to switch session config option", {
-          sessionId,
-          configId: option.id,
-          selectedValue,
-          error: String(error),
-        })
-      }
+  // Common half of timeout and config-failure abandon: mark the session
+  // unusable for restore, unlink ownership, and best-effort cancel.
+  private evictAbandonedSession(
+    sessionId: string,
+    connectionGeneration: number,
+    connection: ClientSideConnection,
+    unlink: () => void,
+  ): void {
+    const key = this.sessionKey(connectionGeneration, sessionId)
+    const wasActive = this.activeSessions.delete(key)
+    if (wasActive) {
+      this.abandonedSessions.add(key)
+    }
+    unlink()
+    abandon(
+      () => connection.cancel({ sessionId }),
+      (error) => this.safeWarn("acp_client.cancel_failed", { sessionId, error: asErrorMessage(error) }),
+    )
+  }
+
+  // A timed-out config RPC means this transport has already failed to answer
+  // one request. Retire it so the next turn cannot wait forever on another.
+  private retireConnection(connection: ClientSideConnection, generation: number): void {
+    if (this.connection !== connection || this.connectionGeneration !== generation) {
+      return
+    }
+
+    const handle = this.connectionHandle
+    this.connectionGeneration++
+    this.connection = null
+    this.connectionHandle = null
+    this.connectionState = null
+    this.client = null
+    this.pruneConnectionGeneration(generation)
+    this.connectionRetirements.get(connection)?.reject(new Error("ACP connection retired after a config timeout"))
+    if (handle) {
+      abandon(
+        () => handle.stop(),
+        (error) => this.safeWarn("acp_client.handle_stop_after_config_timeout", { error: asErrorMessage(error) }),
+      )
     }
   }
 
@@ -1783,16 +1877,6 @@ export async function createTcpConnection(
 // selector (see `ACPModelRequest`'s doc comment).
 const MODEL_CONFIG_OPTION_KEY = "model"
 
-// `SessionConfigOption` is a discriminated union — only the `"select"`
-// branch has `.currentValue`/`.options`. `Array.find()`'s plain
-// boolean-returning callback doesn't narrow that union on its own, so
-// `configureSessionModel` needs real type-predicates here rather than an
-// inline arrow.
-function isSessionConfigSelect(
-  option: SessionConfigOption,
-): option is SessionConfigOption & SessionConfigSelect & { type: "select" } {
-  return option?.type === "select"
-}
 
 // `category` is the protocol's documented signal for "this is the model
 // selector" and takes priority; `isModelConfigOptionById` below is
@@ -1813,56 +1897,4 @@ function isModelConfigOptionById(
   option: SessionConfigOption,
 ): option is SessionConfigOption & SessionConfigSelect & { type: "select" } {
   return isSessionConfigSelect(option) && option.id === MODEL_CONFIG_OPTION_KEY
-}
-
-// `SessionConfigSelect.options` is typed as `Array<SessionConfigSelectOption>
-// | Array<SessionConfigSelectGroup>` — a real protocol possibility, even
-// though no agent observed while building this (Claude, Codex) uses the
-// grouped form. `SessionConfigSelectGroup` (`{group, name, options}`) is
-// distinguished from `SessionConfigSelectOption` (`{value, name,
-// description?}`) via `"group" in entry`, the only field unique to the
-// group shape. Entries are otherwise unvalidated JSON-RPC data (same
-// reasoning as `configureSessionMode`'s `availableModes` guard) — `entry`
-// and a group's own `options` are each validated with this codebase's
-// shared `asOptionalRecord`/`Array.isArray` guards (not a bespoke check)
-// before either is trusted, so a non-object or non-array shape is dropped
-// rather than passed to the `in` operator or returned as if it were real
-// catalog data.
-function flattenConfigSelectOptions(
-  options: SessionConfigSelectOptions | null | undefined,
-): SessionConfigSelectOption[] {
-  if (!Array.isArray(options)) {
-    return []
-  }
-
-  return options.flatMap((entry) => {
-    if (!asOptionalRecord(entry)) {
-      return []
-    }
-
-    if ("group" in entry) {
-      return Array.isArray(entry.options) ? entry.options : []
-    }
-
-    return [entry]
-  })
-}
-
-// Structural guard, not `instanceof RequestError`: `connection.prompt(...)`
-// rejects with the plain deserialized wire object (`{code, message, data?}`),
-// never re-wrapped into a `RequestError` instance (that class is only used
-// on the agent side to *construct* an outgoing error response). Some stacks
-// wrap that payload as `{ error: { code, message, data? } }`.
-function isAcpErrorResponse(error: unknown): error is { code: number; message: string; data?: unknown } {
-  return typeof error === "object" && error !== null
-    && typeof (error as { code?: unknown }).code === "number"
-    && typeof (error as { message?: unknown }).message === "string"
-}
-
-function asAcpJsonRpcError(error: unknown): { code: number; message: string; data?: unknown } | undefined {
-  if (isAcpErrorResponse(error)) {
-    return error
-  }
-  const nested = asOptionalRecord(error)?.error
-  return isAcpErrorResponse(nested) ? nested : undefined
 }
