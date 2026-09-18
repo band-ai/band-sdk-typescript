@@ -1,6 +1,14 @@
 # Changelog
 
 
+## [0.4.2](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.4.1...sdk-v0.4.2) (2026-09-18)
+
+
+### Features
+
+* **adapters:** reconcile ACP session config from setter responses ([#230](https://github.com/band-ai/band-sdk-typescript/issues/230)) ([d04b8af](https://github.com/band-ai/band-sdk-typescript/commit/d04b8af60bfe9197dcbddd550f088e98c417bf7c))
+* **examples:** adapter expansion, Tom/Jerry, and example run tooling (INT-1491) ([#228](https://github.com/band-ai/band-sdk-typescript/issues/228)) ([9fa8a40](https://github.com/band-ai/band-sdk-typescript/commit/9fa8a405e05b557115710e25042d877121800202))
+
 ## [0.4.1](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.4.0...sdk-v0.4.1) (2026-09-17)
 
 
