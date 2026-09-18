@@ -5,7 +5,6 @@ import {
   FAILURE_CODE_SESSION_CONFIG,
   applySessionConfigSelections,
 } from "../src/adapters/acp/sessionConfigReconciliation";
-import { withTimeout } from "../src/adapters/shared/withTimeout";
 
 const modelOption = (overrides: Record<string, unknown> = {}) => ({
   id: "model",
@@ -44,34 +43,37 @@ describe("applySessionConfigSelections", () => {
       currentValue: "off",
       options: [
         { value: "off", name: "Off" },
-        { value: "medium", name: "Medium" },
+        { value: "on", name: "On" },
       ],
     };
-    const setOption = vi.fn(async ({ configId, value }: { configId: string; value: string }) => ({
-      configOptions: [
-        modelOption({ currentValue: configId === "model" ? value : "sonnet" }),
-        { ...thinking, currentValue: configId === "thinking" ? value : thinking.currentValue },
-      ],
-    }));
+    const setOption = vi.fn()
+      .mockResolvedValueOnce({
+        configOptions: [modelOption({ currentValue: "sonnet" }), thinking],
+      })
+      .mockResolvedValueOnce({
+        configOptions: [modelOption({ currentValue: "sonnet" }), { ...thinking, currentValue: "on" }],
+      });
 
     const result = await applySessionConfigSelections({
       provider: "omp-acp",
       sessionId: "s1",
       catalog: [modelOption(), thinking],
-      selections: { model: "sonnet", thinking: "medium" },
+      selections: { model: "sonnet", thinking: "on" },
       setOption,
       timeoutMs: 1_000,
-      withTimeout,
     });
 
     expect(setOption).toHaveBeenCalledTimes(2);
-    expect(result.catalog.find((o) => o.id === "thinking")).toMatchObject({ currentValue: "medium" });
+    expect(result.catalog).toEqual([
+      modelOption({ currentValue: "sonnet" }),
+      { ...thinking, currentValue: "on" },
+    ]);
   });
 
-  it("applies Codex-style effort-only selection without requiring a model change", async () => {
-    const setOption = vi.fn(async () => ({
+  it("skips setOption when the selected value is already current", async () => {
+    const setOption = vi.fn().mockResolvedValue({
       configOptions: [modelOption({ currentValue: "opus" }), effortOption({ currentValue: "high" })],
-    }));
+    });
 
     await applySessionConfigSelections({
       provider: "acp",
@@ -80,7 +82,6 @@ describe("applySessionConfigSelections", () => {
       selections: { reasoning_effort: "high" },
       setOption,
       timeoutMs: 1_000,
-      withTimeout,
     });
 
     expect(setOption).toHaveBeenCalledWith({
@@ -90,38 +91,69 @@ describe("applySessionConfigSelections", () => {
     });
   });
 
-  it("surfaces a structured failure with provider and option id", async () => {
+  it("fails closed when a selected value is not advertised", async () => {
+    const setOption = vi.fn();
     await expect(applySessionConfigSelections({
+      provider: "omp-acp",
+      sessionId: "s1",
+      catalog: [modelOption()],
+      selections: { model: "haiku" },
+      setOption,
+      timeoutMs: 1_000,
+    })).rejects.toMatchObject({
+      name: "AcpSessionConfigError",
+      provider: "omp-acp",
+      sessionId: "s1",
+      optionId: "model",
+      selectedValue: "haiku",
+    });
+    expect(setOption).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when a successful setter omits the refreshed catalog", async () => {
+    const setOption = vi.fn().mockResolvedValue({});
+    await expect(applySessionConfigSelections({
+      provider: "acp",
+      sessionId: "s1",
+      catalog: [modelOption(), effortOption()],
+      selections: { model: "auto", reasoning_effort: "high" },
+      setOption,
+      timeoutMs: 1_000,
+    })).rejects.toMatchObject({
+      name: "AcpSessionConfigError",
+      optionId: "model",
+      selectedValue: "auto",
+      detail: { reason: "missing_config_options" },
+    });
+    expect(setOption).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces a structured failure with provider, session id, and option id", async () => {
+    const rejection = applySessionConfigSelections({
       provider: "omp-acp",
       sessionId: "s1",
       catalog: [modelOption()],
       selections: { thinking: "on" },
       setOption: vi.fn(),
       timeoutMs: 1_000,
-      withTimeout,
-    })).rejects.toMatchObject({
-      name: "AcpSessionConfigError",
+    });
+
+    await expect(rejection).rejects.toBeInstanceOf(AcpSessionConfigError);
+    const error = await rejection.catch((value: unknown) => value) as AcpSessionConfigError;
+    expect(error).toMatchObject({
       provider: "omp-acp",
+      sessionId: "s1",
       optionId: "thinking",
       selectedValue: "on",
     });
-
-    try {
-      await applySessionConfigSelections({
-        provider: "omp-acp",
+    expect(error.toAgentFailure()).toMatchObject({
+      provider: "omp-acp",
+      code: FAILURE_CODE_SESSION_CONFIG,
+      detail: {
         sessionId: "s1",
-        catalog: [modelOption()],
-        selections: { thinking: "on" },
-        setOption: vi.fn(),
-        timeoutMs: 1_000,
-        withTimeout,
-      });
-    } catch (error) {
-      expect(error).toBeInstanceOf(AcpSessionConfigError);
-      expect((error as AcpSessionConfigError).toAgentFailure()).toMatchObject({
-        provider: "omp-acp",
-        code: FAILURE_CODE_SESSION_CONFIG,
-      });
-    }
+        optionId: "thinking",
+        selectedValue: "on",
+      },
+    });
   });
 });

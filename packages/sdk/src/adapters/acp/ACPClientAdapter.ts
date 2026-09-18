@@ -26,13 +26,14 @@ import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { mentionSubjectsFromMetadata, replaceUuidMentions } from "../../runtime/formatters";
 import { systemUpdateParts } from "../shared/conversationPrompt";
-import { asErrorMessage, asOptionalRecord } from "../shared/coercion";
+import { asErrorMessage } from "../shared/coercion";
 import { withTimeout } from "../shared/withTimeout";
 import { abandon } from "../shared/abandon";
 import { deliverReply } from "../../core/deliveryFailedError";
 import { FAILURE_CODE_TIMEOUT, agentFailure, reportTurnFailure } from "../../core/providerFailure";
 import {
   AcpSessionConfigError,
+  asAcpJsonRpcError,
   applySessionConfigSelections,
   flattenConfigSelectOptions,
   isSessionConfigSelect,
@@ -473,7 +474,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         this.logger,
         {
           roomId: context.roomId,
-          sessionId,
+          sessionId: configError?.sessionId ?? sessionId,
           ...(configError ? { optionId: configError.optionId, selectedValue: configError.selectedValue } : {}),
         },
       )
@@ -924,10 +925,9 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         selections,
         setOption: (params) => connection.setSessionConfigOption(params),
         timeoutMs: SET_SESSION_CONFIG_TIMEOUT_MS,
-        withTimeout,
       })
     } catch (error) {
-      this.abandonFailedConfigSession(roomId, sessionId, connectionGeneration, client)
+      this.abandonFailedConfigSession(roomId, sessionId, connectionGeneration, client, connection)
       throw error
     }
   }
@@ -939,6 +939,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     sessionId: string,
     connectionGeneration: number,
     client: BandACPClient,
+    connection: ClientSideConnection,
   ): void {
     const key = this.sessionKey(connectionGeneration, sessionId)
     this.activeSessions.delete(key)
@@ -949,6 +950,13 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     if (owner && owner.sessionId === sessionId && owner.generation === connectionGeneration) {
       this.unlinkOwner(roomId, owner)
     }
+    // Same best-effort cancel as turn-timeout abandon: a hung
+    // setSessionConfigOption must not stay pending while the next turn
+    // opens a fresh session on this connection.
+    abandon(
+      () => connection.cancel({ sessionId }),
+      (error) => this.safeWarn("acp_client.cancel_failed", { sessionId, error: asErrorMessage(error) }),
+    )
   }
 
   // The single gate an establishment must pass before it's allowed to claim
@@ -1823,21 +1831,3 @@ function isModelConfigOptionById(
 }
 
 
-// Structural guard, not `instanceof RequestError`: `connection.prompt(...)`
-// rejects with the plain deserialized wire object (`{code, message, data?}`),
-// never re-wrapped into a `RequestError` instance (that class is only used
-// on the agent side to *construct* an outgoing error response). Some stacks
-// wrap that payload as `{ error: { code, message, data? } }`.
-function isAcpErrorResponse(error: unknown): error is { code: number; message: string; data?: unknown } {
-  return typeof error === "object" && error !== null
-    && typeof (error as { code?: unknown }).code === "number"
-    && typeof (error as { message?: unknown }).message === "string"
-}
-
-function asAcpJsonRpcError(error: unknown): { code: number; message: string; data?: unknown } | undefined {
-  if (isAcpErrorResponse(error)) {
-    return error
-  }
-  const nested = asOptionalRecord(error)?.error
-  return isAcpErrorResponse(nested) ? nested : undefined
-}

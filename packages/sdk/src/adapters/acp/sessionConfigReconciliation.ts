@@ -8,6 +8,7 @@ import type {
 import { AgentFailure } from "@band-ai/band-sdk-core";
 
 import { asErrorMessage, asOptionalRecord } from "../shared/coercion";
+import { withTimeout } from "../shared/withTimeout";
 import { agentFailure } from "../../core/providerFailure";
 
 /** Structured Band failure code when an ACP session config selection cannot be applied. */
@@ -22,6 +23,7 @@ export type ACPConfigSelections = Readonly<Record<string, string | undefined>>;
  */
 export class AcpSessionConfigError extends Error {
   public readonly provider: string;
+  public readonly sessionId: string;
   public readonly optionId: string;
   public readonly selectedValue: string | undefined;
   public readonly acpCode: number | undefined;
@@ -29,6 +31,7 @@ export class AcpSessionConfigError extends Error {
 
   public constructor(input: {
     provider: string;
+    sessionId: string;
     optionId: string;
     message: string;
     selectedValue?: string;
@@ -39,6 +42,7 @@ export class AcpSessionConfigError extends Error {
     super(input.message, input.cause !== undefined ? { cause: input.cause } : undefined);
     this.name = "AcpSessionConfigError";
     this.provider = input.provider;
+    this.sessionId = input.sessionId;
     this.optionId = input.optionId;
     this.selectedValue = input.selectedValue;
     this.acpCode = input.acpCode;
@@ -51,6 +55,7 @@ export class AcpSessionConfigError extends Error {
       this.message,
       this.acpCode !== undefined ? String(this.acpCode) : FAILURE_CODE_SESSION_CONFIG,
       {
+        sessionId: this.sessionId,
         optionId: this.optionId,
         selectedValue: this.selectedValue,
         detail: this.detail,
@@ -72,7 +77,6 @@ export interface ApplySessionConfigSelectionsInput {
   selections: ACPConfigSelections;
   setOption: SessionConfigOptionSetter;
   timeoutMs: number;
-  withTimeout: <T>(promise: Promise<T>, ms: number, message: string) => Promise<T>;
 }
 
 export interface ApplySessionConfigSelectionsResult {
@@ -100,6 +104,7 @@ export async function applySessionConfigSelections(
     if (!option || !isSessionConfigSelect(option)) {
       throw new AcpSessionConfigError({
         provider: input.provider,
+        sessionId: input.sessionId,
         optionId: configId,
         selectedValue,
         message: `Session config option "${configId}" is not available after prior selections.`,
@@ -114,6 +119,7 @@ export async function applySessionConfigSelections(
     if (!availableValues.includes(selectedValue)) {
       throw new AcpSessionConfigError({
         provider: input.provider,
+        sessionId: input.sessionId,
         optionId: configId,
         selectedValue,
         message: `Session config value "${selectedValue}" is not advertised for option "${configId}".`,
@@ -122,14 +128,22 @@ export async function applySessionConfigSelections(
     }
 
     try {
-      const response = await input.withTimeout(
+      const response = await withTimeout(
         input.setOption({ sessionId: input.sessionId, configId, value: selectedValue }),
         input.timeoutMs,
         `setSessionConfigOption did not respond within ${input.timeoutMs}ms`,
       );
-      if (Array.isArray(response?.configOptions)) {
-        catalog = response.configOptions;
+      if (!Array.isArray(response?.configOptions)) {
+        throw new AcpSessionConfigError({
+          provider: input.provider,
+          sessionId: input.sessionId,
+          optionId: configId,
+          selectedValue,
+          message: `Session config option "${configId}" response did not include a refreshed catalog.`,
+          detail: { reason: "missing_config_options" },
+        });
       }
+      catalog = response.configOptions;
     } catch (error) {
       if (error instanceof AcpSessionConfigError) {
         throw error;
@@ -137,6 +151,7 @@ export async function applySessionConfigSelections(
       const acpError = asAcpJsonRpcError(error);
       throw new AcpSessionConfigError({
         provider: input.provider,
+        sessionId: input.sessionId,
         optionId: configId,
         selectedValue,
         acpCode: acpError?.code,
@@ -172,17 +187,22 @@ export function flattenConfigSelectOptions(
       return Array.isArray(entry.options) ? entry.options : [];
     }
 
-    return [entry as SessionConfigSelectOption];
+    return [entry];
   });
 }
 
+// Structural guard, not `instanceof RequestError`: ACP client RPC rejects with
+// the plain deserialized wire object (`{code, message, data?}`), never
+// re-wrapped into a `RequestError` instance (that class is only used on the
+// agent side to *construct* an outgoing error response). Some stacks wrap that
+// payload as `{ error: { code, message, data? } }`.
 function isAcpErrorResponse(error: unknown): error is { code: number; message: string; data?: unknown } {
   return typeof error === "object" && error !== null
     && typeof (error as { code?: unknown }).code === "number"
     && typeof (error as { message?: unknown }).message === "string";
 }
 
-function asAcpJsonRpcError(error: unknown): { code: number; message: string; data?: unknown } | undefined {
+export function asAcpJsonRpcError(error: unknown): { code: number; message: string; data?: unknown } | undefined {
   if (isAcpErrorResponse(error)) {
     return error;
   }
