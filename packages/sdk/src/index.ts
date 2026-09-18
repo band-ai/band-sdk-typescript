@@ -62,6 +62,7 @@ export {
   ACPClientAdapter,
   AcpSessionConfigError,
   FAILURE_CODE_SESSION_CONFIG,
+  MISSING_CONFIG_OPTIONS_REASON,
   applySessionConfigSelections,
 } from "./adapters/acp";
 export { CopilotACPAdapter, DEFAULT_COPILOT_ACP_COMMAND } from "./adapters/copilot-acp";

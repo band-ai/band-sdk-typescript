@@ -11,6 +11,7 @@ export {
   type ACPConfigSelections,
   AcpSessionConfigError,
   FAILURE_CODE_SESSION_CONFIG,
+  MISSING_CONFIG_OPTIONS_REASON,
   applySessionConfigSelections,
   type ACPPermissionAbandonReason,
   type ACPPermissionEndReason,

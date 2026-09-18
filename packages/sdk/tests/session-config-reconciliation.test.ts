@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   AcpSessionConfigError,
   FAILURE_CODE_SESSION_CONFIG,
+  MISSING_CONFIG_OPTIONS_REASON,
   applySessionConfigSelections,
 } from "../src/adapters/acp/sessionConfigReconciliation";
 
@@ -79,11 +80,12 @@ describe("applySessionConfigSelections", () => {
       provider: "acp",
       sessionId: "s1",
       catalog: [modelOption({ currentValue: "opus" }), effortOption()],
-      selections: { reasoning_effort: "high" },
+      selections: { model: "opus", reasoning_effort: "high" },
       setOption,
       timeoutMs: 1_000,
     });
 
+    expect(setOption).toHaveBeenCalledTimes(1);
     expect(setOption).toHaveBeenCalledWith({
       sessionId: "s1",
       configId: "reasoning_effort",
@@ -123,7 +125,7 @@ describe("applySessionConfigSelections", () => {
       name: "AcpSessionConfigError",
       optionId: "model",
       selectedValue: "auto",
-      detail: { reason: "missing_config_options" },
+      detail: { reason: MISSING_CONFIG_OPTIONS_REASON },
     });
     expect(setOption).toHaveBeenCalledTimes(1);
   });

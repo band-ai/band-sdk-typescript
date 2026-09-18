@@ -32,6 +32,7 @@ export { CursorExtensionHandler } from "./cursorExtensions";
 export {
   AcpSessionConfigError,
   FAILURE_CODE_SESSION_CONFIG,
+  MISSING_CONFIG_OPTIONS_REASON,
   applySessionConfigSelections,
   type ApplySessionConfigSelectionsInput,
   type ApplySessionConfigSelectionsResult,

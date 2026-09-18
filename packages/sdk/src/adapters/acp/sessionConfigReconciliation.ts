@@ -14,6 +14,9 @@ import { agentFailure } from "../../core/providerFailure";
 /** Structured Band failure code when an ACP session config selection cannot be applied. */
 export const FAILURE_CODE_SESSION_CONFIG = "session_config";
 
+/** Reason when a successful setter omits an array `configOptions` catalog. */
+export const MISSING_CONFIG_OPTIONS_REASON = "missing_config_options";
+
 export type ACPConfigSelections = Readonly<Record<string, string | undefined>>;
 
 /**
@@ -140,7 +143,7 @@ export async function applySessionConfigSelections(
           optionId: configId,
           selectedValue,
           message: `Session config option "${configId}" response did not include a refreshed catalog.`,
-          detail: { reason: "missing_config_options" },
+          detail: { reason: MISSING_CONFIG_OPTIONS_REASON },
         });
       }
       catalog = response.configOptions;

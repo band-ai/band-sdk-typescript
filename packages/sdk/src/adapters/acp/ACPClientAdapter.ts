@@ -496,19 +496,14 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   // would risk blocking this room's turn lock forever on the very process
   // that just proved it can hang.
   private async abandonTimedOutTurn(connection: ClientSideConnection, sessionId: string, generation: number): Promise<void> {
-    const key = this.sessionKey(generation, sessionId)
-    this.activeSessions.delete(key)
-    this.abandonedSessions.add(key)
     // Only drop this generation's mapping. A replacement that reused the
     // same raw session id on a newer connection owns a different key.
-    const owner = [...this.roomToSession.entries()].find(([, value]) => value.sessionId === sessionId && value.generation === generation)
-    if (owner) {
-      this.unlinkOwner(owner[0], owner[1])
-    }
-    abandon(
-      () => connection.cancel({ sessionId }),
-      (error) => this.safeWarn("acp_client.cancel_failed", { sessionId, error: asErrorMessage(error) }),
-    )
+    this.evictAbandonedSession(sessionId, generation, connection, () => {
+      const owner = [...this.roomToSession.entries()].find(([, value]) => value.sessionId === sessionId && value.generation === generation)
+      if (owner) {
+        this.unlinkOwner(owner[0], owner[1])
+      }
+    })
   }
 
   // A per-room async mutex: `fn` for a given `roomId` never overlaps another
@@ -942,17 +937,31 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     connection: ClientSideConnection,
   ): void {
     const key = this.sessionKey(connectionGeneration, sessionId)
-    this.activeSessions.delete(key)
     this.bootstrappedSessions.delete(key)
-    this.abandonedSessions.add(key)
     client.resetChunks(sessionId)
-    const owner = this.roomToSession.get(roomId)
-    if (owner && owner.sessionId === sessionId && owner.generation === connectionGeneration) {
-      this.unlinkOwner(roomId, owner)
-    }
-    // Same best-effort cancel as turn-timeout abandon: a hung
+    // Shared eviction+cancel with turn-timeout abandon: a hung
     // setSessionConfigOption must not stay pending while the next turn
     // opens a fresh session on this connection.
+    this.evictAbandonedSession(sessionId, connectionGeneration, connection, () => {
+      const owner = this.roomToSession.get(roomId)
+      if (owner && owner.sessionId === sessionId && owner.generation === connectionGeneration) {
+        this.unlinkOwner(roomId, owner)
+      }
+    })
+  }
+
+  // Common half of timeout and config-failure abandon: mark the session
+  // unusable for restore, unlink ownership, and best-effort cancel.
+  private evictAbandonedSession(
+    sessionId: string,
+    connectionGeneration: number,
+    connection: ClientSideConnection,
+    unlink: () => void,
+  ): void {
+    const key = this.sessionKey(connectionGeneration, sessionId)
+    this.activeSessions.delete(key)
+    this.abandonedSessions.add(key)
+    unlink()
     abandon(
       () => connection.cancel({ sessionId }),
       (error) => this.safeWarn("acp_client.cancel_failed", { sessionId, error: asErrorMessage(error) }),
