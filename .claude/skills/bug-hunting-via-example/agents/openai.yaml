@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bug Hunting via Example"
+  short_description: "Discover, smoke, and live-run TS SDK examples"
+  default_prompt: "Use $bug-hunting-via-example to discover runnable examples, smoke them, and investigate failures."

@@ -4,6 +4,9 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const EXAMPLES_DIR = path.resolve(process.cwd(), "examples");
+/** Shared character prompts (Python `examples/prompts/`) — importable from any adapter folder. */
+const SHARED_EXAMPLE_DIRS = new Set(["prompts"]);
+const PROMPTS_DIR = path.join(EXAMPLES_DIR, "prompts");
 
 async function listTypeScriptFiles(dir: string): Promise<string[]> {
   const entries = await readdir(dir, { withFileTypes: true });
@@ -54,6 +57,10 @@ describe("examples", () => {
     expect(exampleFolders.length).toBeGreaterThan(0);
 
     for (const folder of exampleFolders) {
+      if (SHARED_EXAMPLE_DIRS.has(folder)) {
+        continue;
+      }
+
       const folderPath = path.join(EXAMPLES_DIR, folder);
       const tsFiles = await listTypeScriptFiles(folderPath);
       expect(tsFiles.length, `${folder} should contain at least one .ts file`).toBeGreaterThan(0);
@@ -69,6 +76,10 @@ describe("examples", () => {
 
           const resolved = path.resolve(path.dirname(fullPath), specifier);
           if (!resolved.startsWith(EXAMPLES_DIR)) {
+            continue;
+          }
+
+          if (resolved.startsWith(PROMPTS_DIR)) {
             continue;
           }
 

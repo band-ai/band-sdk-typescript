@@ -82,7 +82,13 @@
     "lint": "eslint .",
     "clean": "rm -rf dist",
     "dev:linear": "tsx --env-file-if-exists=.env.local examples/linear-band/linear-band-bridge-server.ts",
-    "start:linear": "tsx examples/linear-band/linear-band-bridge-server.ts"
+    "start:linear": "tsx examples/linear-band/linear-band-bridge-server.ts",
+    "examples:config": "python3 scripts/generate-agent-config-for-examples.py",
+    "examples:a2a-stub": "node scripts/a2a-stub-server.mjs",
+    "examples:discover": "node scripts/examples-discover.mjs",
+    "examples:smoke": "node scripts/examples-smoke-startup.mjs --env-file ../../.env.test",
+    "examples:run-plan": "tsx --env-file ../../.env.test scripts/example-runner.ts",
+    "examples:tom-jerry": "tsx --env-file ../../.env.test scripts/tom-jerry-cross-room.ts"
   },
   "engines": {
     "node": ">=22.12"
