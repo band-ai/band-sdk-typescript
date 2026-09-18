@@ -9,15 +9,6 @@ network_policies:
     endpoints:
       - host: app.band.ai
         port: 443
-        protocol: rest
-        enforcement: enforce
-        rules:
-          - allow: { method: GET,    path: "/api/**" }
-          - allow: { method: POST,   path: "/api/**" }
-          - allow: { method: PATCH,  path: "/api/**" }
-          - allow: { method: DELETE, path: "/api/**" }
-      - host: app.band.ai
-        port: 443
         access: full
         tls: skip
     binaries:
