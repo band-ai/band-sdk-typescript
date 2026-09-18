@@ -71,6 +71,41 @@ describe("applySessionConfigSelections", () => {
     ]);
   });
 
+  it("preserves explicit selection order for numeric-like config ids", async () => {
+    const first = modelOption({ id: "10" });
+    const second = modelOption({ id: "2" });
+    const setOption = vi.fn()
+      .mockResolvedValueOnce({
+        configOptions: [modelOption({ id: "10", currentValue: "sonnet" }), second],
+      })
+      .mockResolvedValueOnce({
+        configOptions: [modelOption({ id: "10", currentValue: "sonnet" }), modelOption({ id: "2", currentValue: "auto" })],
+      });
+
+    await applySessionConfigSelections({
+      provider: "acp",
+      sessionId: "s1",
+      catalog: [first, second],
+      selections: [
+        { configId: "10", value: "sonnet" },
+        { configId: "2", value: "auto" },
+      ],
+      setOption,
+      timeoutMs: 1_000,
+    });
+
+    expect(setOption).toHaveBeenNthCalledWith(1, {
+      sessionId: "s1",
+      configId: "10",
+      value: "sonnet",
+    });
+    expect(setOption).toHaveBeenNthCalledWith(2, {
+      sessionId: "s1",
+      configId: "2",
+      value: "auto",
+    });
+  });
+
   it("skips setOption when the selected value is already current", async () => {
     const setOption = vi.fn().mockResolvedValue({
       configOptions: [modelOption({ currentValue: "opus" }), effortOption({ currentValue: "high" })],

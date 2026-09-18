@@ -959,8 +959,10 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     unlink: () => void,
   ): void {
     const key = this.sessionKey(connectionGeneration, sessionId)
-    this.activeSessions.delete(key)
-    this.abandonedSessions.add(key)
+    const wasActive = this.activeSessions.delete(key)
+    if (wasActive) {
+      this.abandonedSessions.add(key)
+    }
     unlink()
     abandon(
       () => connection.cancel({ sessionId }),
@@ -1838,5 +1840,4 @@ function isModelConfigOptionById(
 ): option is SessionConfigOption & SessionConfigSelect & { type: "select" } {
   return isSessionConfigSelect(option) && option.id === MODEL_CONFIG_OPTION_KEY
 }
-
 

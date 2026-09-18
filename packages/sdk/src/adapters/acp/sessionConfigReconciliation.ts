@@ -5,7 +5,7 @@ import type {
   SessionConfigSelectOptions,
 } from "@agentclientprotocol/sdk";
 
-import { AgentFailure } from "@band-ai/band-sdk-core";
+import type { AgentFailure } from "@band-ai/band-sdk-core";
 
 import { asErrorMessage, asOptionalRecord } from "../shared/coercion";
 import { withTimeout } from "../shared/withTimeout";
@@ -17,7 +17,19 @@ export const FAILURE_CODE_SESSION_CONFIG = "session_config";
 /** Reason when a successful setter omits an array `configOptions` catalog. */
 export const MISSING_CONFIG_OPTIONS_REASON = "missing_config_options";
 
-export type ACPConfigSelections = Readonly<Record<string, string | undefined>>;
+export interface ACPConfigSelection {
+  configId: string;
+  value: string | undefined;
+}
+
+/**
+ * Session configuration selected by a caller. Use an array when the order is
+ * significant: JavaScript object enumeration sorts array-index property names.
+ * The record form remains supported for existing callers.
+ */
+export type ACPConfigSelections =
+  | readonly ACPConfigSelection[]
+  | Readonly<Record<string, string | undefined>>;
 
 /**
  * Deterministic failure applying ACP session configuration. Carries provider,
@@ -97,8 +109,7 @@ export async function applySessionConfigSelections(
 ): Promise<ApplySessionConfigSelectionsResult> {
   let catalog: readonly SessionConfigOption[] = input.catalog;
 
-  for (const configId of Object.keys(input.selections)) {
-    const selectedValue = input.selections[configId];
+  for (const { configId, value: selectedValue } of sessionConfigSelectionEntries(input.selections)) {
     if (selectedValue === undefined) {
       continue;
     }
@@ -166,6 +177,20 @@ export async function applySessionConfigSelections(
   }
 
   return { catalog };
+}
+
+function sessionConfigSelectionEntries(selections: ACPConfigSelections): readonly ACPConfigSelection[] {
+  if (isOrderedSessionConfigSelections(selections)) {
+    return selections;
+  }
+
+  return Object.keys(selections).map((configId) => ({ configId, value: selections[configId] }));
+}
+
+function isOrderedSessionConfigSelections(
+  selections: ACPConfigSelections,
+): selections is readonly ACPConfigSelection[] {
+  return Array.isArray(selections);
 }
 
 export function isSessionConfigSelect(

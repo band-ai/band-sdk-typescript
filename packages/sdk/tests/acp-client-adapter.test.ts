@@ -3373,6 +3373,43 @@ describe("ACPClientAdapter", () => {
       }
     })
 
+    it("does not retain an abandoned session when cleanup wins a config timeout race", async () => {
+      vi.useFakeTimers()
+      try {
+        let setSessionConfigOptionCalled: () => void = () => undefined
+        const called = new Promise<void>((resolve) => { setSessionConfigOptionCalled = resolve })
+        const resolveSessionConfig = vi.fn(async () => ({ model: "sonnet" }))
+        const { adapter, setSessionConfigOption } = buildHarness({
+          adapterOptions: { resolveSessionConfig },
+          newSessionConfigOptions: [modelConfigOption()],
+        })
+        setSessionConfigOption.mockImplementationOnce(() => {
+          setSessionConfigOptionCalled()
+          return new Promise(() => undefined)
+        })
+
+        const tools = new FakeTools()
+        await adapter.onStarted("Agent", "desc")
+        const turn = adapter.onMessage(
+          makeMessage("hi", "room-1"),
+          tools,
+          { roomToSession: {} },
+          null,
+          null,
+          { isSessionBootstrap: true, roomId: "room-1" },
+        )
+        turn.catch(() => undefined)
+        await called
+        await adapter.onCleanup("room-1")
+        await vi.advanceTimersByTimeAsync(10_000)
+        await expectTurnFailed(turn)
+
+        expect((adapter as unknown as { abandonedSessions: Set<string> }).abandonedSessions).toEqual(new Set())
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
     it("after a config failure, the next turn establishes a fresh session instead of reusing the half-configured one", async () => {
       const initialCatalog = [
         modelConfigOption(),
