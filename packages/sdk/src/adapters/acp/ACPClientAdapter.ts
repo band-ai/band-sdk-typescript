@@ -922,7 +922,14 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         timeoutMs: SET_SESSION_CONFIG_TIMEOUT_MS,
       })
     } catch (error) {
-      this.abandonFailedConfigSession(roomId, sessionId, connectionGeneration, client, connection)
+      this.abandonFailedConfigSession(
+        roomId,
+        sessionId,
+        connectionGeneration,
+        client,
+        connection,
+        error instanceof AcpSessionConfigError && error.timedOut,
+      )
       throw error
     }
   }
@@ -935,6 +942,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     connectionGeneration: number,
     client: BandACPClient,
     connection: ClientSideConnection,
+    retireConnection: boolean,
   ): void {
     const key = this.sessionKey(connectionGeneration, sessionId)
     this.bootstrappedSessions.delete(key)
@@ -948,6 +956,9 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         this.unlinkOwner(roomId, owner)
       }
     })
+    if (retireConnection) {
+      this.retireConnection(connection, connectionGeneration)
+    }
   }
 
   // Common half of timeout and config-failure abandon: mark the session
@@ -968,6 +979,28 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       () => connection.cancel({ sessionId }),
       (error) => this.safeWarn("acp_client.cancel_failed", { sessionId, error: asErrorMessage(error) }),
     )
+  }
+
+  // A timed-out config RPC means this transport has already failed to answer
+  // one request. Retire it so the next turn cannot wait forever on another.
+  private retireConnection(connection: ClientSideConnection, generation: number): void {
+    if (this.connection !== connection || this.connectionGeneration !== generation) {
+      return
+    }
+
+    const handle = this.connectionHandle
+    this.connectionGeneration++
+    this.connection = null
+    this.connectionHandle = null
+    this.connectionState = null
+    this.client = null
+    this.pruneConnectionGeneration(generation)
+    if (handle) {
+      abandon(
+        () => handle.stop(),
+        (error) => this.safeWarn("acp_client.handle_stop_after_config_timeout", { error: asErrorMessage(error) }),
+      )
+    }
   }
 
   // The single gate an establishment must pass before it's allowed to claim
@@ -1840,4 +1873,3 @@ function isModelConfigOptionById(
 ): option is SessionConfigOption & SessionConfigSelect & { type: "select" } {
   return isSessionConfigSelect(option) && option.id === MODEL_CONFIG_OPTION_KEY
 }
-

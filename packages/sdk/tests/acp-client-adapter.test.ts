@@ -3329,13 +3329,13 @@ describe("ACPClientAdapter", () => {
       })
     })
 
-    it("cancels the outstanding setSessionConfigOption when config apply times out", async () => {
+    it("retires a connection after config apply times out so the next turn starts fresh", async () => {
       vi.useFakeTimers()
       try {
         let setSessionConfigOptionCalled: () => void = () => undefined
         const called = new Promise<void>((resolve) => { setSessionConfigOptionCalled = resolve })
         const resolveSessionConfig = vi.fn(async () => ({ model: "sonnet" }))
-        const { adapter, setSessionConfigOption, cancel } = buildHarness({
+        const { adapter, setSessionConfigOption, cancel, newSession } = buildHarness({
           adapterOptions: { resolveSessionConfig },
           newSessionConfigOptions: [modelConfigOption()],
         })
@@ -3368,6 +3368,8 @@ describe("ACPClientAdapter", () => {
           optionId: "model",
           selectedValue: "sonnet",
         })
+        await send(adapter)
+        expect(newSession).toHaveBeenCalledTimes(2)
       } finally {
         vi.useRealTimers()
       }
