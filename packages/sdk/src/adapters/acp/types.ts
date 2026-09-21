@@ -25,6 +25,8 @@ export interface CollectedChunk {
 // the protocol boundary. The handler returns collected chunks instead of
 // reaching into the client's per-session buffer itself.
 export interface ACPClientExtensionHandler {
+  extensionSessionId?(): string | null;
+
   extMethod?(
     method: string,
     params: Record<string, unknown>,

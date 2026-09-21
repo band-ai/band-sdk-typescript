@@ -108,12 +108,13 @@ export class BandACPClient implements Client {
       params,
       { sessionId },
     )
-    if (!sessionId || !chunks) {
+    const targetSessionId = sessionId ?? this.extensionHandler?.extensionSessionId?.() ?? null
+    if (!targetSessionId || !chunks) {
       return
     }
 
     for (const chunk of chunks) {
-      this.appendChunk(sessionId, chunk)
+      this.appendChunk(targetSessionId, chunk)
     }
   }
 

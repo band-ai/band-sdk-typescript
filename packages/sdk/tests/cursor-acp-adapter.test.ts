@@ -9,15 +9,16 @@ interface CursorClient {
   requestPermission(params: unknown): Promise<unknown>;
 }
 
-function mockConnection(prompt: () => Promise<{ stopReason: string }>) {
+function mockConnection(prompt: () => Promise<{ stopReason: string }>, sessionIds = ["cursor-session"]) {
   const controller = new AbortController();
+  let sessionIndex = 0;
   return {
     connection: {
       signal: controller.signal,
       closed: new Promise<void>(() => undefined),
       initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
       authenticate: vi.fn(async () => ({})),
-      newSession: vi.fn(async () => ({ sessionId: "cursor-session" })),
+      newSession: vi.fn(async () => ({ sessionId: sessionIds[sessionIndex++] ?? sessionIds.at(-1)! })),
       prompt,
     } as never,
     stop: async () => controller.abort(),
@@ -35,7 +36,6 @@ describe("CursorACPAdapter", () => {
         client = captured as CursorClient;
         return mockConnection(async () => {
           request = client!.extMethod("cursor/ask_question", {
-            sessionId: "cursor-session",
             questions: [
               {
                 id: "files",
@@ -116,10 +116,9 @@ describe("CursorACPAdapter", () => {
         return mockConnection(async () => {
           results = await Promise.all([
             client!.extMethod("cursor/ask_question", {
-              sessionId: "cursor-session",
               questions: [{ id: "question", options: [{ id: "first" }, { id: "second" }] }],
             }),
-            client!.extMethod("cursor/create_plan", { sessionId: "cursor-session" }),
+            client!.extMethod("cursor/create_plan", {}),
             client!.requestPermission({
               sessionId: "cursor-session",
               toolCall: { toolCallId: "tool-call", title: "Write file" },
@@ -142,7 +141,7 @@ describe("CursorACPAdapter", () => {
     await adapter.stop();
   });
 
-  it("delivers Cursor todo and task notifications as room events", async () => {
+  it("routes documented no-session Cursor extension payloads and preserves merged todos", async () => {
     let client: CursorClient | undefined;
     const adapter = new CursorACPAdapter({
       enableMcpTools: false,
@@ -150,10 +149,14 @@ describe("CursorACPAdapter", () => {
         client = captured as CursorClient;
         return mockConnection(async () => {
           await client!.extNotification("cursor/update_todos", {
-            sessionId: "cursor-session",
-            todos: [{ content: "Review the change", completed: true }],
+            todos: [{ id: "review", content: "Review the change", status: "in_progress" }],
           });
-          await client!.extNotification("cursor/task", { sessionId: "cursor-session", result: "Completed" });
+          await client!.extNotification("cursor/update_todos", {
+            merge: true,
+            todos: [{ id: "review", content: "Review the change", status: "completed" }, { id: "tests", content: "Run tests", status: "pending" }],
+          });
+          await client!.extNotification("cursor/task", { description: "Review implementation", subagentType: "explorer", model: "composer" });
+          await client!.extNotification("cursor/generate_image", { description: "Architecture diagram", filePath: "diagram.png" });
           return { stopReason: "end_turn" };
         });
       },
@@ -164,14 +167,17 @@ describe("CursorACPAdapter", () => {
     await adapter.onMessage(cursorMessage("start", "requester"), tools, { roomToSession: {} }, null, null, { isSessionBootstrap: false, roomId: "room-1" });
 
     expect(tools.events.map(({ content, messageType }) => ({ content, messageType }))).toEqual([
-      { content: "- [x] Review the change", messageType: "task" },
+      { content: "- [~] Review the change", messageType: "task" },
+      { content: "- [x] Review the change\n- [ ] Run tests", messageType: "task" },
+      { content: "[Cursor explorer task] Review implementation (composer)", messageType: "task" },
+      { content: "[Cursor generated image] Architecture diagram → diagram.png", messageType: "task" },
       { content: "ACP client session", messageType: "task" },
     ]);
-    expect(tools.messages).toEqual(["[Task completed] Completed"]);
+    expect(tools.messages).toEqual([]);
     await adapter.stop();
   });
 
-  it("keeps a queued same-room turn from taking over an active decision", async () => {
+  it("keeps a concurrent room from taking over an active no-session decision", async () => {
     let client: CursorClient | undefined;
     let releaseFirstPrompt: (() => void) | undefined;
     const firstPromptMayAsk = new Promise<void>((resolve) => { releaseFirstPrompt = resolve; });
@@ -188,12 +194,11 @@ describe("CursorACPAdapter", () => {
             firstPromptStarted!();
             await firstPromptMayAsk;
             await client!.extMethod("cursor/ask_question", {
-              sessionId: "cursor-session",
               questions: [{ id: "question", options: [{ id: "answer" }] }],
             });
           }
           return { stopReason: "end_turn" };
-        });
+        }, ["cursor-first", "cursor-queued"]);
       },
     });
     const firstTools = new FakeTools();
@@ -202,7 +207,7 @@ describe("CursorACPAdapter", () => {
     await adapter.onStarted("Cursor", "desc");
     const firstTurn = adapter.onMessage(cursorMessage("first", "first-requester", "first-message"), firstTools, { roomToSession: {} }, null, null, { isSessionBootstrap: false, roomId: "room-1" });
     await firstPromptIsRunning;
-    const queuedTurn = adapter.onMessage(cursorMessage("queued", "queued-requester", "queued-message"), queuedTools, { roomToSession: {} }, null, null, { isSessionBootstrap: false, roomId: "room-1" });
+    const queuedTurn = adapter.onMessage(cursorMessage("queued", "queued-requester", "queued-message"), queuedTools, { roomToSession: {} }, null, null, { isSessionBootstrap: false, roomId: "room-2" });
 
     releaseFirstPrompt!();
     await vi.waitFor(() => expect(firstTools.messages[0]).toContain("/cursor answer"));

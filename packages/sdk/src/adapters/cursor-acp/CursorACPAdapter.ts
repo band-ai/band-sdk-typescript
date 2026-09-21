@@ -38,6 +38,8 @@ type DecisionKind = "permission" | "question" | "plan";
 
 interface CursorTurn {
   messageId: string;
+  roomId: string;
+  sessionId?: string;
   tools: AdapterToolsProtocol;
   requesterId: string;
 }
@@ -52,6 +54,7 @@ interface PendingDecision {
 
 class CursorExtensions implements ACPClientExtensionHandler {
   private adapter: CursorACPAdapter | null = null;
+  private readonly todosBySession = new Map<string, Map<string, CursorTodo>>();
 
   public bind(adapter: CursorACPAdapter): void {
     this.adapter = adapter;
@@ -62,6 +65,10 @@ class CursorExtensions implements ACPClientExtensionHandler {
     signal: AbortSignal,
   ): Promise<string | undefined> {
     return this.adapter?.resolveCursorPermission(request, signal);
+  }
+
+  public extensionSessionId(): string | null {
+    return this.adapter?.extensionSessionId() ?? null;
   }
 
   public async extMethod(
@@ -77,26 +84,61 @@ class CursorExtensions implements ACPClientExtensionHandler {
     params: Record<string, unknown>,
     context: ACPClientExtensionContext,
   ): Promise<readonly CollectedChunk[] | void> {
-    if (!context.sessionId) {
+    const sessionId = context.sessionId ?? this.extensionSessionId();
+    if (!sessionId) {
       return;
     }
     if (method === "cursor/update_todos") {
-      const content = todoContent(params.todos);
+      const content = this.updateTodos(sessionId, params);
       if (!content) {
         return;
       }
-      return [{ chunkType: "plan", content, metadata: {}, streamed: false }];
+      return [{ chunkType: "plan", content, metadata: { cursor_todos: true }, streamed: false }];
     }
     if (method === "cursor/task") {
-      const result = stringValue(params.result);
-      return result ? [{ chunkType: "text", content: `[Task completed] ${result}`, metadata: {}, streamed: false }] : [];
+      const description = stringValue(params.description);
+      if (!description) {
+        return [];
+      }
+      const subagentType = stringValue(params.subagentType) ?? "unspecified";
+      const model = stringValue(params.model);
+      const suffix = model ? ` (${model})` : "";
+      return [{ chunkType: "plan", content: `[Cursor ${subagentType} task] ${description}${suffix}`, metadata: {}, streamed: false }];
     }
     if (method === "cursor/generate_image") {
-      const image = stringValue(params.imageUri) ?? stringValue(params.uri);
-      return image ? [{ chunkType: "text", content: image, metadata: { image_uri: image }, streamed: false }] : [];
+      const description = stringValue(params.description);
+      if (!description) {
+        return [];
+      }
+      const filePath = stringValue(params.filePath);
+      return [{ chunkType: "plan", content: `[Cursor generated image] ${description}${filePath ? ` → ${filePath}` : ""}`, metadata: {}, streamed: false }];
     }
   }
 
+  public forgetSession(sessionId: string): void {
+    this.todosBySession.delete(sessionId);
+  }
+
+  public clearSessions(): void {
+    this.todosBySession.clear();
+  }
+
+  private updateTodos(sessionId: string, params: Record<string, unknown>): string | undefined {
+    const todos = parseTodos(params.todos);
+    if (params.merge === true) {
+      const current = this.todosBySession.get(sessionId) ?? new Map<string, CursorTodo>();
+      for (const todo of todos) {
+        current.set(todo.id, todo);
+      }
+      this.todosBySession.set(sessionId, current);
+    } else {
+      this.todosBySession.set(sessionId, new Map(todos.map((todo) => [todo.id, todo])));
+    }
+    const current = this.todosBySession.get(sessionId);
+    return current && current.size > 0
+      ? [...current.values()].map((todo) => `- [${todoMark(todo.status)}] ${todo.content}`).join("\n")
+      : undefined;
+  }
 }
 
 export class CursorACPAdapter extends ACPClientAdapter {
@@ -108,8 +150,11 @@ export class CursorACPAdapter extends ACPClientAdapter {
   private readonly maxPendingDecisions: number;
   private readonly authorizedSenders: ReadonlySet<string> | null;
   private readonly decisionLogger: Logger;
+  private readonly extensions: CursorExtensions;
   private readonly turns = new Map<string, CursorTurn>();
   private readonly pending = new Map<string, PendingDecision>();
+  private activeTurn: CursorTurn | null = null;
+  private turnTail: Promise<void> = Promise.resolve();
 
   public constructor(options: CursorACPAdapterOptions = {}) {
     const extensions = new CursorExtensions();
@@ -124,6 +169,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
       resolvePermission: (request, signal) => extensions.resolvePermission(request, signal),
     });
     extensions.bind(this);
+    this.extensions = extensions;
     this.approvalMode = options.approvalMode ?? "manual";
     this.questionMode = options.questionMode ?? "manual";
     this.planMode = options.planMode ?? "manual";
@@ -146,7 +192,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
     if (await this.handleControl(message, tools, context.roomId)) {
       return;
     }
-    await super.onMessage(message, tools, history, participantsMessage, contactsMessage, context);
+    await this.withCursorTurnLock(() => super.onMessage(message, tools, history, participantsMessage, contactsMessage, context));
   }
 
   protected override async onAcpTurnStarted(
@@ -154,7 +200,21 @@ export class CursorACPAdapter extends ACPClientAdapter {
     tools: AdapterToolsProtocol,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
-    this.turns.set(context.roomId, { messageId: message.id, tools, requesterId: message.senderId });
+    const turn = { messageId: message.id, roomId: context.roomId, tools, requesterId: message.senderId };
+    this.turns.set(context.roomId, turn);
+    this.activeTurn = turn;
+  }
+
+  protected override async onAcpSessionReady(
+    message: PlatformMessage,
+    _tools: AdapterToolsProtocol,
+    context: { isSessionBootstrap: boolean; roomId: string },
+    sessionId: string,
+  ): Promise<void> {
+    const turn = this.turns.get(context.roomId);
+    if (turn?.messageId === message.id) {
+      turn.sessionId = sessionId;
+    }
   }
 
   protected override async onAcpTurnFinished(
@@ -167,12 +227,22 @@ export class CursorACPAdapter extends ACPClientAdapter {
       this.turns.delete(context.roomId);
       this.cancelRoom(context.roomId);
     }
+    if (this.activeTurn?.messageId === message.id) {
+      this.activeTurn = null;
+    }
   }
 
   public override async onCleanup(roomId: string): Promise<void> {
+    const sessionId = this.turns.get(roomId)?.sessionId;
     this.cancelRoom(roomId);
     this.turns.delete(roomId);
+    if (this.activeTurn?.roomId === roomId) {
+      this.activeTurn = null;
+    }
     await super.onCleanup(roomId);
+    if (sessionId) {
+      this.extensions.forgetSession(sessionId);
+    }
   }
 
   public override async stop(): Promise<void> {
@@ -181,6 +251,8 @@ export class CursorACPAdapter extends ACPClientAdapter {
     }
     this.pending.clear();
     this.turns.clear();
+    this.activeTurn = null;
+    this.extensions.clearSessions();
     await super.stop();
   }
 
@@ -189,16 +261,16 @@ export class CursorACPAdapter extends ACPClientAdapter {
     params: Record<string, unknown>,
     sessionId: string | null,
   ): Promise<Record<string, unknown>> {
-    const roomId = sessionId ? this.roomIdForSession(sessionId) : undefined;
+    const roomId = sessionId ? this.roomIdForSession(sessionId) : this.activeTurn?.roomId;
     const turn = roomId ? this.turns.get(roomId) : undefined;
-    if (!roomId || !turn) {
+    if (!turn || (sessionId && turn.sessionId !== sessionId)) {
       return { outcome: { outcome: "cancelled" } };
     }
     if (method === "cursor/ask_question") {
-      return this.resolveQuestion(roomId, turn, params);
+      return this.resolveQuestion(turn.roomId, turn, params);
     }
     if (method === "cursor/create_plan") {
-      return this.resolvePlan(roomId, turn, params);
+      return this.resolvePlan(turn.roomId, turn, params);
     }
     return {};
   }
@@ -217,6 +289,10 @@ export class CursorACPAdapter extends ACPClientAdapter {
     const options = request.options.map((option) => option.optionId);
     const token = await this.waitForDecision("permission", request.roomId, turn, new Map([["permission", options]]), new Set(), `Cursor needs permission. Reply \`/cursor select {token} option-id\` or \`/cursor deny {token}\`.`, signal);
     return typeof token === "string" && options.includes(token) ? token : undefined;
+  }
+
+  public extensionSessionId(): string | null {
+    return this.activeTurn?.sessionId ?? null;
   }
 
   private async resolveQuestion(roomId: string, turn: CursorTurn, params: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -307,6 +383,18 @@ export class CursorACPAdapter extends ACPClientAdapter {
       }
     }
   }
+
+  private async withCursorTurnLock<T>(run: () => Promise<T>): Promise<T> {
+    const queued = this.turnTail.then(run, run);
+    this.turnTail = queued.then(() => undefined, () => undefined);
+    return queued;
+  }
+}
+
+interface CursorTodo {
+  id: string;
+  content: string;
+  status: string;
 }
 
 function cursorEnv(options: CursorACPAdapterOptions): Record<string, string> | undefined {
@@ -360,10 +448,28 @@ function answered(selected: Record<string, readonly string[]>): Record<string, u
   return { outcome: { outcome: "answered", answers: Object.entries(selected).map(([questionId, selectedOptionIds]) => ({ questionId, selectedOptionIds })) } };
 }
 
-function todoContent(value: unknown): string | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const lines = value.filter(isRecord).map((todo) => `- [${todo.completed === true ? "x" : " "}] ${stringValue(todo.content) ?? ""}`).filter((line) => line.trim().length > 0);
-  return lines.length > 0 ? lines.join("\n") : undefined;
+function parseTodos(value: unknown): CursorTodo[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((todo) => {
+    if (!isRecord(todo)) return [];
+    const id = stringValue(todo.id);
+    const content = stringValue(todo.content);
+    const status = stringValue(todo.status);
+    return id && content && status ? [{ id, content, status }] : [];
+  });
+}
+
+function todoMark(status: string): string {
+  switch (status) {
+    case "completed":
+      return "x";
+    case "in_progress":
+      return "~";
+    case "cancelled":
+      return "-";
+    default:
+      return " ";
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

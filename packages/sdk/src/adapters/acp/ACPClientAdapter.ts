@@ -413,6 +413,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
       sessionId = await this.getOrCreateSession(context.roomId, connection, generation, client)
       const sessionKey = this.sessionKey(generation, sessionId)
+      await this.onAcpSessionReady(message, tools, context, sessionId)
       client.beginSession(sessionId)
       const content = replaceUuidMentions(message.content, mentionSubjectsFromMetadata(message.metadata))
       const messageWithContext = [...systemUpdateParts(participantsMessage, contactsMessage), content].join("\n\n")
@@ -516,6 +517,13 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     _message: PlatformMessage,
     _tools: AdapterToolsProtocol,
     _context: { isSessionBootstrap: boolean; roomId: string },
+  ): Promise<void> {}
+
+  protected async onAcpSessionReady(
+    _message: PlatformMessage,
+    _tools: AdapterToolsProtocol,
+    _context: { isSessionBootstrap: boolean; roomId: string },
+    _sessionId: string,
   ): Promise<void> {}
 
   // Best-effort: tells the agent to stop working on a turn Band has already
@@ -719,10 +727,6 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
   protected roomIdForSession(sessionId: string): string | undefined {
     return [...this.roomToSession.entries()].find(([, owner]) => owner.sessionId === sessionId)?.[0]
-  }
-
-  protected sessionIdForRoom(roomId: string): string | undefined {
-    return this.roomToSession.get(roomId)?.sessionId
   }
 
   private async ensureConnection(): Promise<{ connection: ClientSideConnection; generation: number }> {
