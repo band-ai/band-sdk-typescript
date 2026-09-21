@@ -43,11 +43,7 @@ describe("buildConversationPrompt", () => {
     const prompt = buildConversationPrompt({
       history: new HistoryProvider([
         { sender_name: "Old", content: "outside the window" },
-        ...Array.from({ length: 49 }, (_, index) => ({
-          message_type: "task",
-          sender_name: "Task",
-          content: `task ${index}`,
-        })),
+        { message_type: "task", content: "session marker" },
         { sender_name: "Alice", message_type: "text", content: "typed text" },
         { sender_name: "Bob", content: "legacy text" },
         { message_type: "tool_call", content: JSON.stringify({ type: "tool_use_summary" }) },
@@ -61,12 +57,13 @@ describe("buildConversationPrompt", () => {
       contactsMessage: null,
       historyHeader: "[History]",
       currentMessage: "Current message",
-      maxHistoryMessages: 50,
+      maxHistoryMessages: 8,
     });
 
     expect(prompt).toContain("[Alice]: typed text");
     expect(prompt).toContain("[Bob]: legacy text");
     expect(prompt).not.toContain("outside the window");
+    expect(prompt).not.toContain("session marker");
     expect(prompt).not.toContain("tool_use_summary");
     expect(prompt).not.toContain("tool output");
     expect(prompt).not.toContain("internal reasoning");

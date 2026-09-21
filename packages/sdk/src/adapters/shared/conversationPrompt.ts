@@ -31,7 +31,7 @@ export function systemUpdateParts(participantsMessage: string | null, contactsMe
 export function buildConversationPrompt(options: BuildConversationPromptOptions): string {
   const parts: string[] = [];
 
-  if (options.isSessionBootstrap && options.history.length > 0) {
+  if (options.isSessionBootstrap) {
     const historyText = options.history.raw
       .slice(-(options.maxHistoryMessages ?? 50))
       .filter(isTextHistoryEntry)
