@@ -562,19 +562,27 @@ test("openclaw build copies wasm via tsup onSuccess and CI packaging requires it
   assert.doesNotMatch(openclawPkg.scripts.build, /copy-wasm/);
 
   const tsupConfig = readFileSync(join(root, "packages/openclaw/tsup.config.ts"), "utf8");
-  assert.match(tsupConfig, /onSuccess/);
-  assert.match(tsupConfig, /copy-wasm\.mjs/);
-  assert.match(tsupConfig, /copyWasm/);
+  assert.match(
+    tsupConfig,
+    /async onSuccess\(\) \{[\s\S]*?import\("\.\/scripts\/copy-wasm\.mjs"\)[\s\S]*?copyWasm\(\)[\s\S]*?process\.exit\(1\)/,
+  );
 
   const copyWasm = readFileSync(join(root, "packages/openclaw/scripts/copy-wasm.mjs"), "utf8");
   assert.match(copyWasm, /requireFromOpenclaw\.resolve\("@band-ai\/sdk"\)/);
   assert.match(copyWasm, /band_sdk_core_bg\.wasm/);
+  assert.match(copyWasm, /realpathSync/);
 
   const stageLink = readFileSync(join(root, "packages/openclaw/scripts/stage-link.mjs"), "utf8");
-  assert.match(stageLink, /band_sdk_core_bg\.wasm/);
+  assert.match(
+    stageLink,
+    /statSync\(wasmPath\)\.size === 0/,
+  );
 
   const ci = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
-  assert.match(ci, /dist\/band_sdk_core_bg\.wasm/);
+  assert.match(
+    ci,
+    /const required = \[[^\]]*['"]dist\/band_sdk_core_bg\.wasm['"]/,
+  );
 });
 
 test("assert-package-contents rejects missing entries, low file counts, and excluded-but-existing files", async () => {

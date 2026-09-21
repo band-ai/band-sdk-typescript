@@ -8,7 +8,7 @@
  * cannot drift.
  */
 
-import { copyFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -34,10 +34,16 @@ export function copyWasm(destinationDir = join(pkgRoot, "dist")) {
   return wasmDestinationPath;
 }
 
-const isMain =
-  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+function isCliEntry() {
+  if (process.argv[1] === undefined) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return import.meta.url === pathToFileURL(process.argv[1]).href;
+  }
+}
 
-if (isMain) {
+if (isCliEntry()) {
   const dest = copyWasm();
   console.log(`[copy-wasm] wrote ${dest}`);
 }

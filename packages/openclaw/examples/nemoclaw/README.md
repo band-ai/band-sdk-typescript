@@ -97,12 +97,11 @@ Do not pass this example's base-only Dockerfile with `--from`. NemoClaw `0.0.124
 
 ## 4. Apply the Band egress policy
 
-From this example directory, apply the checked-in preset (`presets/band.yaml` is the single source of truth):
+From `packages/openclaw/examples/nemoclaw`, apply the checked-in preset (`presets/band.yaml` is the single source of truth):
 
 **Host**
 
 ```bash
-cd packages/openclaw/examples/nemoclaw
 nemoclaw band-demo policy-add --from-file ./presets/band.yaml
 ```
 
@@ -136,7 +135,10 @@ plugin_dir="$(
 )"
 tmp_dir="$(mktemp -d)"
 archive="$(npm pack @band-ai/band-sdk-core@2.5.0 --pack-destination "$tmp_dir" --silent)"
-tar -xOf "$tmp_dir/$archive" package/band_sdk_core_bg.wasm > "$plugin_dir/dist/band_sdk_core_bg.wasm"
+tar -xOf "$tmp_dir/$archive" package/band_sdk_core_bg.wasm > "$tmp_dir/band_sdk_core_bg.wasm"
+wasm_size="$(wc -c < "$tmp_dir/band_sdk_core_bg.wasm" | tr -d ' ')"
+test "$wasm_size" -gt 0
+mv "$tmp_dir/band_sdk_core_bg.wasm" "$plugin_dir/dist/band_sdk_core_bg.wasm"
 rm -rf "$tmp_dir"
 
 openclaw plugins inspect openclaw-channel-band --runtime --json
@@ -216,5 +218,5 @@ Add the agent to a Band room and mention it. A model-generated reply should appe
 | A Docker volume is missing after switching runtimes | Run `readlink /var/run/docker.sock`. If it points to the old runtime, stop the existing gateway after confirming it has no running sandboxes, export Colima's `DOCKER_HOST`, and onboard a new `band-demo` sandbox. |
 | A custom image is created but its gateway never becomes ready | The example Dockerfile is only a base image. Onboard the stock runtime without a custom image, then install the plugin in the ready sandbox. |
 | The plugin does not load | Inside the sandbox, run `openclaw plugins inspect openclaw-channel-band --runtime --json`. If it reports a missing `band_sdk_core_bg.wasm`, repeat the matching-core repair in step 5 (`2.5.0` for `0.3.x`). |
-| `[band:default] connected to Band` never appears | Confirm the default account is enabled, the agent ID and API key match, and the `band-policy.yaml` policy is applied. Check OpenShell policy prompts for blocked access to `app.band.ai:443`. |
+| `[band:default] connected to Band` never appears | Confirm the default account is enabled, the agent ID and API key match, and the `presets/band.yaml` policy from step 4 is applied. Check OpenShell policy prompts for blocked access to `app.band.ai:443`. |
 | Band tools are hidden | Merge `openclaw-channel-band` and `message` into `tools.alsoAllow` (do not overwrite the whole list), restart the gateway, and start a new Band conversation. |

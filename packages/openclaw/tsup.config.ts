@@ -153,7 +153,13 @@ export default defineConfig({
   // tsup clean:true wipes dist/ on every build/watch rebuild; copy the wasm the
   // inlined band-sdk-core glue expects beside the emitted JS (build and dev).
   async onSuccess() {
-    const { copyWasm } = await import("./scripts/copy-wasm.mjs");
-    copyWasm();
+    try {
+      const { copyWasm } = await import("./scripts/copy-wasm.mjs");
+      copyWasm();
+    } catch (error) {
+      // clean:true already wiped any prior wasm; do not leave JS-only dist for watch.
+      console.error("[copy-wasm] failed to restore band_sdk_core_bg.wasm after build:", error);
+      process.exit(1);
+    }
   },
 });

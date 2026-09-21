@@ -10,7 +10,7 @@
 // Usage: build first (so dist/ exists), then run this; then:
 //   openclaw plugins install --link packages/openclaw/.local-link
 
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,9 +22,10 @@ if (!existsSync(join(pkgRoot, "dist", "index.js"))) {
   process.exit(1);
 }
 
-if (!existsSync(join(pkgRoot, "dist", "band_sdk_core_bg.wasm"))) {
+const wasmPath = join(pkgRoot, "dist", "band_sdk_core_bg.wasm");
+if (!existsSync(wasmPath) || statSync(wasmPath).size === 0) {
   console.error(
-    "[stage-link] dist/band_sdk_core_bg.wasm missing — run the build first (pnpm build).",
+    "[stage-link] dist/band_sdk_core_bg.wasm missing or empty — run the build first (pnpm build).",
   );
   process.exit(1);
 }
