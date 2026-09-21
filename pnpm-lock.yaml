@@ -80,8 +80,8 @@ importers:
         specifier: 2.5.0
         version: 2.5.0
       '@band-ai/rest-client':
-        specifier: 0.0.143
-        version: 0.0.143
+        specifier: 0.0.146
+        version: 0.0.146
       '@google/adk':
         specifier: '>=0.5.0'
         version: 0.5.0(a667b48bb0e27e6ebb80ea6a6319c8e6)
@@ -368,8 +368,8 @@ packages:
   '@band-ai/band-sdk-core@2.5.0':
     resolution: {integrity: sha512-zPQuRI4NDIMe4Gc5yFQxEs811MJlmxnUZNsza31ZJvtSWUamUN4P2C3EDS9riW1hvrWHJ/1wkfxXg49uR8secw==}
 
-  '@band-ai/rest-client@0.0.143':
-    resolution: {integrity: sha512-T27utun3BweYVG0b4aFmyoAidUQR//Vt4hyQx4dQWrv2EN80fJwI2Yh+ClNCiYE7HQySs2xvpbs6yvNPwotJsA==}
+  '@band-ai/rest-client@0.0.146':
+    resolution: {integrity: sha512-dxPAQFYYth587MZ3kybxUNjaamNq2tFISd6L+FNoyxJgXmn/dyMOZjzuQa369QSI2HapnloDPLHpUBXTtw3bvQ==}
     engines: {node: '>=18.0.0'}
 
   '@bcoe/v8-coverage@1.0.2':
@@ -5102,7 +5102,7 @@ snapshots:
 
   '@band-ai/band-sdk-core@2.5.0': {}
 
-  '@band-ai/rest-client@0.0.143': {}
+  '@band-ai/rest-client@0.0.146': {}
 
   '@bcoe/v8-coverage@1.0.2': {}
 
