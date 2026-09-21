@@ -127,7 +127,7 @@ nemoclaw band-demo connect
 
 The shell opened by `connect` is inside the sandbox. Run the rest of this section there.
 
-Inspect the installed plugin. If runtime status is `"loaded"` and diagnostics are empty, skip the repair. If inspect reports a missing `band_sdk_core_bg.wasm` (today’s npm `0.3.0` still does), copy the **matching** core WASM for that plugin’s embedded glue (`2.5.0` for `0.3.x` — do not pair `0.3.x` with `band-sdk-core@2.0.0`):
+Inspect the installed plugin. If runtime status is `"loaded"` and diagnostics are empty, skip the repair. If inspect reports a missing `band_sdk_core_bg.wasm` (today’s npm `0.3.0` still does), copy the core WASM version stamped on the installed plugin (`openclaw.plugin.json` → `bandSdkCoreVersion`, written at build time from the same SDK resolve graph as `copy-wasm`):
 
 **Sandbox**
 
@@ -140,16 +140,28 @@ plugin_dir="$(
       process.stdout.write(JSON.parse(json).plugin.rootDir);
     '
 )"
-tmp_dir="$(mktemp -d)"
-archive="$(npm pack @band-ai/band-sdk-core@2.5.0 --pack-destination "$tmp_dir" --silent)"
-tar -xOf "$tmp_dir/$archive" package/band_sdk_core_bg.wasm > "$tmp_dir/band_sdk_core_bg.wasm"
-wasm_size="$(wc -c < "$tmp_dir/band_sdk_core_bg.wasm" | tr -d ' ')"
-if [ "$wasm_size" -le 0 ]; then
-  echo "band_sdk_core_bg.wasm extract was empty — leave the connect shell open and re-check npm pack/tar" >&2
+if [ -z "$plugin_dir" ] || [ ! -d "$plugin_dir/dist" ]; then
+  echo "could not resolve plugin rootDir/dist — leave the connect shell open and re-run plugins inspect" >&2
 else
-  mv "$tmp_dir/band_sdk_core_bg.wasm" "$plugin_dir/dist/band_sdk_core_bg.wasm"
+  core_ver="$(node -e 'const p=require(process.argv[1]); if(!p.bandSdkCoreVersion) process.exit(2); process.stdout.write(p.bandSdkCoreVersion)' "$plugin_dir/openclaw.plugin.json")" || {
+    echo "installed plugin is missing bandSdkCoreVersion — reinstall a build that stamps it" >&2
+    core_ver=""
+  }
+  if [ -n "$core_ver" ]; then
+    tmp_dir="$(mktemp -d)"
+    archive="$(npm pack "@band-ai/band-sdk-core@$core_ver" --pack-destination "$tmp_dir" --silent)"
+    tar -xOf "$tmp_dir/$archive" package/band_sdk_core_bg.wasm > "$tmp_dir/band_sdk_core_bg.wasm"
+    wasm_size="$(wc -c < "$tmp_dir/band_sdk_core_bg.wasm" | tr -d ' ')"
+    if [ "$wasm_size" -le 0 ]; then
+      echo "band_sdk_core_bg.wasm extract was empty — leave the connect shell open and re-check npm pack/tar" >&2
+    elif mv "$tmp_dir/band_sdk_core_bg.wasm" "$plugin_dir/dist/band_sdk_core_bg.wasm"; then
+      :
+    else
+      echo "failed to install wasm into $plugin_dir/dist" >&2
+    fi
+    rm -rf "$tmp_dir"
+  fi
 fi
-rm -rf "$tmp_dir"
 
 openclaw plugins inspect openclaw-channel-band --runtime --json
 ```
@@ -227,6 +239,6 @@ Add the agent to a Band room and mention it. A model-generated reply should appe
 | NemoClaw rejects the host platform or container runtime | Run `docker info --format '{{.OperatingSystem}}'`. Start Docker Desktop or Colima, switch to its Docker context, and confirm `nemoclaw host probe` succeeds. OrbStack is unsupported. |
 | A Docker volume is missing after switching runtimes | Run `readlink /var/run/docker.sock`. If it points to the old runtime, stop the existing gateway after confirming it has no running sandboxes, export Colima's `DOCKER_HOST`, and onboard a new `band-demo` sandbox. |
 | A custom image is created but its gateway never becomes ready | Onboard the stock runtime without `--from` and a custom Dockerfile, then install the plugin in the ready sandbox. |
-| The plugin does not load | Inside the sandbox, run `openclaw plugins inspect openclaw-channel-band --runtime --json`. If it reports a missing `band_sdk_core_bg.wasm`, repeat the matching-core repair in step 5 (`2.5.0` for `0.3.x`). |
+| The plugin does not load | Inside the sandbox, run `openclaw plugins inspect openclaw-channel-band --runtime --json`. If it reports a missing `band_sdk_core_bg.wasm`, repeat the stamped-core repair in step 5. |
 | `[band:default] connected to Band` never appears | Confirm the default account is enabled, the agent ID and API key match, and the `presets/band.yaml` policy from step 4 is applied. Check OpenShell policy prompts for blocked access to `app.band.ai:443`. |
 | Band tools are hidden | Merge `openclaw-channel-band` and `message` into `tools.alsoAllow` (do not overwrite the whole list), restart the gateway, and start a new Band conversation. |

@@ -35,12 +35,11 @@ export function resolveCoreWasmPath() {
   return join(dirname(coreEntryPath), CORE_WASM_FILENAME);
 }
 
-export function copyWasm(destinationDir = join(pkgRoot, "dist")) {
-  const wasmSourcePath = resolveCoreWasmPath();
-  assertNonEmptyWasm(wasmSourcePath, "source wasm");
+export function copyWasm(destinationDir = join(pkgRoot, "dist"), sourcePath = resolveCoreWasmPath()) {
+  assertNonEmptyWasm(sourcePath, "source wasm");
   mkdirSync(destinationDir, { recursive: true });
   const wasmDestinationPath = join(destinationDir, CORE_WASM_FILENAME);
-  copyFileSync(wasmSourcePath, wasmDestinationPath);
+  copyFileSync(sourcePath, wasmDestinationPath);
   assertNonEmptyWasm(wasmDestinationPath, "copied wasm");
   return wasmDestinationPath;
 }

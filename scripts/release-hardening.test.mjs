@@ -564,15 +564,15 @@ test("openclaw build copies wasm via tsup onSuccess and CI packaging requires it
   const tsupConfig = readFileSync(join(root, "packages/openclaw/tsup.config.ts"), "utf8");
   assert.match(
     tsupConfig,
-    /async onSuccess\(\) \{[\s\S]*?try \{[\s\S]*?import\("\.\/scripts\/copy-wasm\.mjs"\)[\s\S]*?copyWasm\(\)[\s\S]*?\} catch[\s\S]*?process\.exit\(1\)/,
+    /async onSuccess\(\) \{[\s\S]*?try \{[\s\S]*?import\("\.\/scripts\/copy-wasm\.mjs"\)[\s\S]*?copyWasm\(\)[\s\S]*?\} catch[\s\S]*?\{[\s\S]*?process\.exit\(1\)/,
   );
-  assert.match(tsupConfig, /CORE_WASM_FILENAME|band_sdk_core_bg\.wasm/);
 
   const copyWasm = readFileSync(join(root, "packages/openclaw/scripts/copy-wasm.mjs"), "utf8");
   assert.match(copyWasm, /requireFromOpenclaw\.resolve\("@band-ai\/sdk"\)/);
   assert.match(copyWasm, /export const CORE_WASM_FILENAME/);
-  assert.match(copyWasm, /assertNonEmptyWasm|size === 0/);
-  assert.match(copyWasm, /band_sdk_core_bg\.wasm/);
+  assert.match(copyWasm, /assertNonEmptyWasm\(sourcePath, "source wasm"\)/);
+  assert.match(copyWasm, /assertNonEmptyWasm\(wasmDestinationPath, "copied wasm"\)/);
+  assert.match(copyWasm, /requireFromSdk\.resolve\("@band-ai\/band-sdk-core"\)/);
   assert.match(copyWasm, /realpathSync/);
 
   const stageLink = readFileSync(join(root, "packages/openclaw/scripts/stage-link.mjs"), "utf8");
@@ -587,6 +587,13 @@ test("openclaw build copies wasm via tsup onSuccess and CI packaging requires it
     ci,
     /const required = \[[^\]]*['"]dist\/band_sdk_core_bg\.wasm['"]/,
   );
+  const syncVersion = readFileSync(join(root, "packages/openclaw/scripts/sync-plugin-version.js"), "utf8");
+  assert.match(syncVersion, /bandSdkCoreVersion/);
+  assert.match(syncVersion, /@band-ai\/band-sdk-core/);
+
+  const pluginJson = JSON.parse(readFileSync(join(root, "packages/openclaw/openclaw.plugin.json"), "utf8"));
+  assert.equal(typeof pluginJson.bandSdkCoreVersion, "string");
+  assert.match(pluginJson.bandSdkCoreVersion, /^\d+\.\d+\.\d+/);
 });
 
 test("assert-package-contents rejects missing entries, low file counts, and excluded-but-existing files", async () => {

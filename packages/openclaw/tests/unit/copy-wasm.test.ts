@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +6,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   CORE_WASM_FILENAME,
-  assertNonEmptyWasm,
   copyWasm,
   resolveCoreWasmPath,
 } from "../../scripts/copy-wasm.mjs";
@@ -16,7 +15,7 @@ describe("copy-wasm", () => {
     const source = resolveCoreWasmPath();
     expect(source.replace(/\\/g, "/")).toContain("@band-ai/band-sdk-core");
     expect(source.replace(/\\/g, "/")).toMatch(new RegExp(`${CORE_WASM_FILENAME}$`));
-    const sourceBytes = await import("node:fs").then((fs) => fs.readFileSync(source));
+    const sourceBytes = readFileSync(source);
     expect(sourceBytes.byteLength).toBeGreaterThan(0);
 
     const destDir = await mkdtemp(join(tmpdir(), "openclaw-copy-wasm-"));
@@ -24,14 +23,13 @@ describe("copy-wasm", () => {
 
     const dest = copyWasm(destDir);
     expect(dest).toBe(join(destDir, CORE_WASM_FILENAME));
-    const copied = await import("node:fs").then((fs) => fs.readFileSync(dest));
-    expect(copied.equals(sourceBytes)).toBe(true);
+    expect(readFileSync(dest).equals(sourceBytes)).toBe(true);
   });
 
-  it("rejects an empty wasm path", async () => {
+  it("rejects an empty source wasm via copyWasm", async () => {
     const destDir = await mkdtemp(join(tmpdir(), "openclaw-copy-wasm-empty-"));
-    const empty = join(destDir, CORE_WASM_FILENAME);
+    const empty = join(destDir, "empty.wasm");
     writeFileSync(empty, "");
-    expect(() => assertNonEmptyWasm(empty, "source wasm")).toThrow(/empty/);
+    expect(() => copyWasm(destDir, empty)).toThrow(/empty/);
   });
 });
