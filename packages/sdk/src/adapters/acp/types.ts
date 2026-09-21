@@ -21,6 +21,27 @@ export interface CollectedChunk {
   streamed: boolean;
 }
 
+// ACP extensions are vendor-defined, so their payloads remain JSON-shaped at
+// the protocol boundary. The handler returns collected chunks instead of
+// reaching into the client's per-session buffer itself.
+export interface ACPClientExtensionHandler {
+  extMethod?(
+    method: string,
+    params: Record<string, unknown>,
+    context: ACPClientExtensionContext,
+  ): Promise<Record<string, unknown> | null>;
+
+  extNotification?(
+    method: string,
+    params: Record<string, unknown>,
+    context: ACPClientExtensionContext,
+  ): Promise<readonly CollectedChunk[] | void>;
+}
+
+export interface ACPClientExtensionContext {
+  sessionId: string | null;
+}
+
 export interface PendingACPPrompt {
   sessionId: string;
   done: Promise<void>;

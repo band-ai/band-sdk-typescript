@@ -9,20 +9,25 @@ import type {
 } from "@agentclientprotocol/sdk";
 
 import type {
+  ACPClientExtensionHandler,
   ACPPermissionHandler,
   CollectedChunk,
 } from "./types";
-import { choosePermissionOption } from "./types";
 
 export class BandACPClient implements Client {
   private readonly sessionChunks = new Map<string, CollectedChunk[]>()
   private readonly permissionHandler: ACPPermissionHandler
+  private readonly extensionHandler: ACPClientExtensionHandler | undefined
 
   // The handler is connection-scoped and required at construction, so it is
   // already in place before the agent process is spawned: there is no window
   // in which a `session/request_permission` has nowhere to go.
-  public constructor(permissionHandler: ACPPermissionHandler) {
+  public constructor(
+    permissionHandler: ACPPermissionHandler,
+    extensionHandler?: ACPClientExtensionHandler,
+  ) {
     this.permissionHandler = permissionHandler
+    this.extensionHandler = extensionHandler
   }
 
   public beginSession(sessionId: string): void {
@@ -85,78 +90,30 @@ export class BandACPClient implements Client {
     method: string,
     params: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    if (method === "cursor/ask_question") {
-      const options = Array.isArray(params.options)
-        ? params.options
-        : []
-      const selected = choosePermissionOption(
-        options.filter((option): option is RequestPermissionRequest["options"][number] => !!option && typeof option === "object"),
-      )
-
-      if (!selected) {
-        return {
-          outcome: {
-            type: "cancelled",
-          },
-        }
-      }
-
-      return {
-        outcome: {
-          type: "selected",
-          optionId: selected.optionId,
-        },
-      }
-    }
-
-    if (method === "cursor/create_plan") {
-      return {
-        outcome: {
-          type: "approved",
-        },
-      }
-    }
-
-    return {}
+    const result = await this.extensionHandler?.extMethod?.(
+      method,
+      params,
+      { sessionId: sessionIdFrom(params) },
+    )
+    return result ?? {}
   }
 
   public async extNotification(
     method: string,
     params: Record<string, unknown>,
   ): Promise<void> {
-    const sessionId = toOptionalString(params.sessionId) ?? toOptionalString(params.session_id)
-    if (!sessionId) {
+    const sessionId = sessionIdFrom(params)
+    const chunks = await this.extensionHandler?.extNotification?.(
+      method,
+      params,
+      { sessionId },
+    )
+    if (!sessionId || !chunks) {
       return
     }
 
-    if (method === "cursor/update_todos") {
-      const todos = Array.isArray(params.todos) ? params.todos : []
-      const lines = todos
-        .filter((todo): todo is Record<string, unknown> => !!todo && typeof todo === "object")
-        .map((todo) => `- [${todo.completed === true ? "x" : " "}] ${String(todo.content ?? "")}`)
-        .filter((line) => line.trim().length > 0)
-
-      if (lines.length > 0) {
-        this.appendChunk(sessionId, {
-          chunkType: "plan",
-          content: lines.join("\n"),
-          metadata: {},
-          streamed: false,
-        })
-      }
-      return
-    }
-
-    if (method === "cursor/task") {
-      const result = toOptionalString(params.result)
-      if (result) {
-        this.appendChunk(sessionId, {
-          chunkType: "text",
-          content: `[Task completed] ${result}`,
-          metadata: {},
-          streamed: false,
-        })
-      }
+    for (const chunk of chunks) {
+      this.appendChunk(sessionId, chunk)
     }
   }
 
@@ -310,4 +267,8 @@ function extractTextFromContent(content: ContentBlock): string {
 
 function toOptionalString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null
+}
+
+function sessionIdFrom(params: Record<string, unknown>): string | null {
+  return toOptionalString(params.sessionId) ?? toOptionalString(params.session_id)
 }

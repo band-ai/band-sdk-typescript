@@ -24,6 +24,8 @@ export type {
   ACPPermissionEndReason,
   ACPPermissionRequest,
   ACPClientTcpEndpoint,
+  ACPClientExtensionContext,
+  ACPClientExtensionHandler,
 } from "./types";
 
 export type { ACPExtensionHandler } from "./extensions";

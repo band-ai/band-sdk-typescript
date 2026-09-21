@@ -32,6 +32,14 @@ export {
   type CopilotACPTcpOptions,
 } from "./copilot-acp";
 export {
+  CursorACPAdapter,
+  DEFAULT_CURSOR_ACP_COMMAND,
+  type CursorACPAdapterOptions,
+  type CursorApprovalMode,
+  type CursorPlanMode,
+  type CursorQuestionMode,
+} from "./cursor-acp";
+export {
   VercelAISDKAdapter,
   VercelAISDKToolCallingModel,
   type VercelAISDKAdapterOptions,

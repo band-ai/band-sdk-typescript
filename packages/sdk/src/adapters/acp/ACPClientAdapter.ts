@@ -52,6 +52,7 @@ import {
 import {
   choosePermissionOption,
   type ACPClientConnectionFactory,
+  type ACPClientExtensionHandler,
   type ACPClientConnectionHandle,
   type ACPClientTcpEndpoint,
   type ACPPermissionAbandonReason,
@@ -151,6 +152,7 @@ export interface ACPClientAdapterBaseOptions {
   additionalMcpTools?: McpToolRegistration[];
   clientCapabilities?: ClientCapabilities;
   connectionFactory?: ACPClientConnectionFactory;
+  extensionHandler?: ACPClientExtensionHandler;
   // Omitted ⇒ every permission request auto-resolves via
   // `choosePermissionOption`, unchanged from today. Set ⇒ each request is
   // handed to this callback instead; its resolved id is used verbatim
@@ -227,6 +229,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private readonly additionalMcpTools: McpToolRegistration[]
   private readonly clientCapabilities?: ClientCapabilities
   private readonly connectionFactory?: ACPClientConnectionFactory
+  private readonly extensionHandler?: ACPClientExtensionHandler
   private readonly tcpEndpoint: ACPClientTcpEndpoint | null
 
   // The value's `generation` is the connection generation the session was
@@ -299,6 +302,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.additionalMcpTools = [...(options.additionalMcpTools ?? [])]
     this.clientCapabilities = options.clientCapabilities
     this.connectionFactory = options.connectionFactory
+    this.extensionHandler = options.extensionHandler
     this.tcpEndpoint = tcpEndpoint
 
     this.resolvePermission = options.resolvePermission
@@ -698,6 +702,14 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     return `${generation}:${sessionId}`
   }
 
+  protected roomIdForSession(sessionId: string): string | undefined {
+    return [...this.roomToSession.entries()].find(([, owner]) => owner.sessionId === sessionId)?.[0]
+  }
+
+  protected sessionIdForRoom(roomId: string): string | undefined {
+    return this.roomToSession.get(roomId)?.sessionId
+  }
+
   private async ensureConnection(): Promise<{ connection: ClientSideConnection; generation: number }> {
     if (this.connection && !this.connection.signal.aborted) {
       return { connection: this.connection, generation: this.connectionGeneration }
@@ -741,7 +753,10 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       // Handed its permission handler here, one line before the process it will
       // serve even exists — no session can out-race its own route.
       const owner = { generation: -1 }
-      const client = new BandACPClient((params) => this.routePermissionRequest(params, owner.generation))
+      const client = new BandACPClient(
+        (params) => this.routePermissionRequest(params, owner.generation),
+        this.extensionHandler,
+      )
       handle = await (this.connectionFactory
         ? this.connectionFactory(client, {
           command: this.command,
