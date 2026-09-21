@@ -1,5 +1,6 @@
 import type { PermissionOption } from "@agentclientprotocol/sdk";
 
+import { resolveLogger, type Logger } from "../../core/logger";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { PlatformMessage } from "../../runtime/types";
 import type { ACPClientSessionState } from "../../converters/acp-client";
@@ -13,6 +14,8 @@ import {
 import type { CollectedChunk } from "../acp/types";
 
 export const DEFAULT_CURSOR_ACP_COMMAND = ["agent", "acp"] as const;
+export const DEFAULT_CURSOR_DECISION_TIMEOUT_MS = 300_000;
+export const DEFAULT_CURSOR_MAX_PENDING_DECISIONS = 10;
 
 export type CursorApprovalMode = "manual" | "autoAccept" | "autoDecline";
 export type CursorQuestionMode = "manual" | "autoFirst" | "autoCancel";
@@ -48,7 +51,6 @@ interface PendingDecision {
 
 class CursorExtensions implements ACPClientExtensionHandler {
   private adapter: CursorACPAdapter | null = null;
-  private readonly todos = new Map<string, string>();
 
   public bind(adapter: CursorACPAdapter): void {
     this.adapter = adapter;
@@ -82,7 +84,6 @@ class CursorExtensions implements ACPClientExtensionHandler {
       if (!content) {
         return;
       }
-      this.todos.set(context.sessionId, content);
       return [{ chunkType: "plan", content, metadata: {}, streamed: false }];
     }
     if (method === "cursor/task") {
@@ -95,20 +96,17 @@ class CursorExtensions implements ACPClientExtensionHandler {
     }
   }
 
-  public forget(sessionId: string): void {
-    this.todos.delete(sessionId);
-  }
 }
 
 export class CursorACPAdapter extends ACPClientAdapter {
   protected readonly provider = "cursor-acp";
-  private readonly extensions: CursorExtensions;
   private readonly approvalMode: CursorApprovalMode;
   private readonly questionMode: CursorQuestionMode;
   private readonly planMode: CursorPlanMode;
   private readonly decisionTimeoutMs: number;
   private readonly maxPendingDecisions: number;
   private readonly authorizedSenders: ReadonlySet<string> | null;
+  private readonly logger: Logger;
   private readonly turns = new Map<string, CursorTurn>();
   private readonly pending = new Map<string, PendingDecision>();
 
@@ -124,16 +122,16 @@ export class CursorACPAdapter extends ACPClientAdapter {
       extensionHandler: extensions,
       resolvePermission: (request, signal) => extensions.resolvePermission(request, signal),
     });
-    this.extensions = extensions;
     extensions.bind(this);
     this.approvalMode = options.approvalMode ?? "manual";
     this.questionMode = options.questionMode ?? "manual";
     this.planMode = options.planMode ?? "manual";
-    this.decisionTimeoutMs = options.decisionTimeoutMs ?? 300_000;
-    this.maxPendingDecisions = options.maxPendingDecisions ?? 10;
+    this.decisionTimeoutMs = options.decisionTimeoutMs ?? DEFAULT_CURSOR_DECISION_TIMEOUT_MS;
+    this.maxPendingDecisions = options.maxPendingDecisions ?? DEFAULT_CURSOR_MAX_PENDING_DECISIONS;
     this.authorizedSenders = options.decisionAuthorizedSenders
       ? new Set(options.decisionAuthorizedSenders)
       : null;
+    this.logger = resolveLogger(options.logger);
   }
 
   public override async onMessage(
@@ -147,23 +145,22 @@ export class CursorACPAdapter extends ACPClientAdapter {
     if (await this.handleControl(message, tools, context.roomId)) {
       return;
     }
-    this.turns.set(context.roomId, { tools, requesterId: message.senderId });
+    const turn = { tools, requesterId: message.senderId };
+    this.turns.set(context.roomId, turn);
     try {
       await super.onMessage(message, tools, history, participantsMessage, contactsMessage, context);
     } finally {
-      this.turns.delete(context.roomId);
-      this.cancelRoom(context.roomId);
+      if (this.turns.get(context.roomId) === turn) {
+        this.turns.delete(context.roomId);
+        this.cancelRoom(context.roomId);
+      }
     }
   }
 
   public override async onCleanup(roomId: string): Promise<void> {
-    const sessionId = this.sessionForRoom(roomId);
     this.cancelRoom(roomId);
     this.turns.delete(roomId);
     await super.onCleanup(roomId);
-    if (sessionId) {
-      this.extensions.forget(sessionId);
-    }
   }
 
   public override async stop(): Promise<void> {
@@ -192,10 +189,6 @@ export class CursorACPAdapter extends ACPClientAdapter {
       return this.resolvePlan(roomId, turn, params);
     }
     return {};
-  }
-
-  private sessionForRoom(roomId: string): string | undefined {
-    return this.sessionIdForRoom(roomId);
   }
 
   public async resolveCursorPermission(request: ACPPermissionRequest, signal: AbortSignal): Promise<string | undefined> {
@@ -257,7 +250,10 @@ export class CursorACPAdapter extends ACPClientAdapter {
       };
       this.pending.set(token, { kind, roomId, choices, multiSelect, resolve: settle });
       signal?.addEventListener("abort", abort, { once: true });
-      void turn.tools.sendMessage(prompt.replaceAll("{token}", token), [turn.requesterId]).catch(() => settle(undefined));
+      void turn.tools.sendMessage(prompt.replaceAll("{token}", token), [turn.requesterId]).catch((error: unknown) => {
+        this.logger.warn("cursor_acp.decision_prompt_delivery_failed", { roomId, kind, error: String(error) });
+        settle(undefined);
+      });
     });
   }
 
