@@ -50,6 +50,7 @@ describe("buildConversationPrompt", () => {
         content: `${message_type} content`,
       })),
       { message_type: "unknown", content: "unrecognized content" },
+      { sender_name: "Carol", message_type: "text", content: "after non-text" },
     ];
     const prompt = buildConversationPrompt({
       history: new HistoryProvider([outsideWindow, ...inWindow]),
@@ -63,6 +64,7 @@ describe("buildConversationPrompt", () => {
 
     expect(prompt).toContain("[Alice]: typed text");
     expect(prompt).toContain("[Bob]: legacy text");
+    expect(prompt).toContain("[Carol]: after non-text");
     expect(prompt).not.toContain("outside the window");
     for (const message_type of CHAT_EVENT_TYPES) {
       expect(prompt).not.toContain(`${message_type} content`);

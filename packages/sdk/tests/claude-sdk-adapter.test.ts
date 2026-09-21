@@ -229,6 +229,7 @@ describe("ClaudeSDKAdapter", () => {
         { message_type: "thought", content: "internal reasoning" },
         { message_type: "error", content: "provider error" },
         { message_type: "unknown", content: "unrecognized content" },
+        { sender_name: "Carol", message_type: "text", content: "after non-text" },
       ]),
       null,
       null,
@@ -240,6 +241,7 @@ describe("ClaudeSDKAdapter", () => {
     expect(prompt).toContain("[Previous conversation context]");
     expect(prompt).toContain("[Alice]: typed text");
     expect(prompt).toContain("[Bob]: legacy text");
+    expect(prompt).toContain("[Carol]: after non-text");
     expect(prompt).not.toContain("Claude SDK session");
     expect(prompt).not.toContain("session-from-history");
     expect(prompt).not.toContain("tool_use_summary");
