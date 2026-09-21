@@ -37,9 +37,6 @@ importers:
 
   packages/openclaw:
     devDependencies:
-      '@band-ai/band-sdk-core':
-        specifier: 2.5.0
-        version: 2.5.0
       '@band-ai/sdk':
         specifier: workspace:*
         version: link:../sdk

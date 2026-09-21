@@ -22,6 +22,13 @@ if (!existsSync(join(pkgRoot, "dist", "index.js"))) {
   process.exit(1);
 }
 
+if (!existsSync(join(pkgRoot, "dist", "band_sdk_core_bg.wasm"))) {
+  console.error(
+    "[stage-link] dist/band_sdk_core_bg.wasm missing — run the build first (pnpm build).",
+  );
+  process.exit(1);
+}
+
 rmSync(stage, { recursive: true, force: true });
 mkdirSync(stage, { recursive: true });
 

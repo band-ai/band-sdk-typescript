@@ -150,4 +150,10 @@ export default defineConfig({
   define: {
     __OPENCLAW_PKG_VERSION__: JSON.stringify(openclawPkg.version),
   },
+  // tsup clean:true wipes dist/ on every build/watch rebuild; copy the wasm the
+  // inlined band-sdk-core glue expects beside the emitted JS (build and dev).
+  async onSuccess() {
+    const { copyWasm } = await import("./scripts/copy-wasm.mjs");
+    copyWasm();
+  },
 });

@@ -242,7 +242,7 @@ jobs:
           node -e "
           const fs = require('fs');
           // Verify dist files exist
-          const required = ['dist/index.js', 'dist/index.d.ts', 'dist/openclaw.plugin.json'];
+          const required = ['dist/index.js', 'dist/index.d.ts', 'dist/openclaw.plugin.json', 'dist/band_sdk_core_bg.wasm'];
           for (const f of required) {
             if (!fs.existsSync(f)) throw new Error('Missing: ' + f);
             const stat = fs.statSync(f);

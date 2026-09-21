@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -551,6 +552,29 @@ test("release workflow asserts package contents after README copy and before pac
   assert.match(openclawContents.body, /node scripts\/assert-package-contents\.mjs/);
   assert.match(openclawContents.body, /packages\/openclaw/);
   assert.match(openclawContents.body, /dist\/band_sdk_core_bg\.wasm/);
+});
+
+test("openclaw build copies wasm via tsup onSuccess and CI packaging requires it", () => {
+  const openclawPkg = JSON.parse(readFileSync(join(root, "packages/openclaw/package.json"), "utf8"));
+  // copy-wasm must not be a separate package pin — resolve through @band-ai/sdk.
+  assert.equal(openclawPkg.devDependencies?.["@band-ai/band-sdk-core"], undefined);
+  assert.match(openclawPkg.scripts.build, /tsup/);
+  assert.doesNotMatch(openclawPkg.scripts.build, /copy-wasm/);
+
+  const tsupConfig = readFileSync(join(root, "packages/openclaw/tsup.config.ts"), "utf8");
+  assert.match(tsupConfig, /onSuccess/);
+  assert.match(tsupConfig, /copy-wasm\.mjs/);
+  assert.match(tsupConfig, /copyWasm/);
+
+  const copyWasm = readFileSync(join(root, "packages/openclaw/scripts/copy-wasm.mjs"), "utf8");
+  assert.match(copyWasm, /requireFromOpenclaw\.resolve\("@band-ai\/sdk"\)/);
+  assert.match(copyWasm, /band_sdk_core_bg\.wasm/);
+
+  const stageLink = readFileSync(join(root, "packages/openclaw/scripts/stage-link.mjs"), "utf8");
+  assert.match(stageLink, /band_sdk_core_bg\.wasm/);
+
+  const ci = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
+  assert.match(ci, /dist\/band_sdk_core_bg\.wasm/);
 });
 
 test("assert-package-contents rejects missing entries, low file counts, and excluded-but-existing files", async () => {

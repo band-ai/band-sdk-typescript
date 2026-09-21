@@ -23,7 +23,7 @@
     "openclaw.plugin.json"
   ],
   "scripts": {
-    "build": "pnpm --filter @band-ai/sdk build && tsup && node scripts/copy-wasm.mjs && node scripts/sync-plugin-version.js",
+    "build": "pnpm --filter @band-ai/sdk build && tsup && node scripts/sync-plugin-version.js",
     "dev": "tsup --watch",
     "typecheck": "pnpm --filter @band-ai/sdk build && tsc --noEmit",
     "lint": "eslint src/",
@@ -36,7 +36,6 @@
     "link:local": "pnpm build && node scripts/stage-link.mjs"
   },
   "devDependencies": {
-    "@band-ai/band-sdk-core": "2.5.0",
     "@band-ai/sdk": "workspace:*",
     "@types/node": "^26.5.1",
     "@typescript-eslint/eslint-plugin": "^8.70.0",

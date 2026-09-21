@@ -1,9 +1,43 @@
-import { copyFileSync } from "node:fs";
+/**
+ * Copy band_sdk_core_bg.wasm next to the bundled plugin JS.
+ *
+ * The OpenClaw build inlines @band-ai/sdk (and thus band-sdk-core's JS glue)
+ * into dist/, but the glue still loads the .wasm from __dirname at runtime.
+ * Resolve the wasm from the same @band-ai/band-sdk-core package that
+ * @band-ai/sdk depends on — not a separate OpenClaw pin — so glue and wasm
+ * cannot drift.
+ */
+
+import { copyFileSync, mkdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-const coreEntryPath = fileURLToPath(import.meta.resolve("@band-ai/band-sdk-core"));
-const wasmSourcePath = join(dirname(coreEntryPath), "band_sdk_core_bg.wasm");
-const wasmDestinationUrl = new URL("../dist/band_sdk_core_bg.wasm", import.meta.url);
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const pkgRoot = dirname(scriptDir);
+const requireFromOpenclaw = createRequire(join(pkgRoot, "package.json"));
 
-copyFileSync(wasmSourcePath, wasmDestinationUrl);
+export function resolveCoreWasmPath() {
+  // Resolve through an @band-ai/sdk module file so Node uses the SDK package's
+  // dependency graph (exports block "@/package.json" subpath access).
+  const sdkEntryPath = requireFromOpenclaw.resolve("@band-ai/sdk");
+  const requireFromSdk = createRequire(sdkEntryPath);
+  const coreEntryPath = requireFromSdk.resolve("@band-ai/band-sdk-core");
+  return join(dirname(coreEntryPath), "band_sdk_core_bg.wasm");
+}
+
+export function copyWasm(destinationDir = join(pkgRoot, "dist")) {
+  const wasmSourcePath = resolveCoreWasmPath();
+  mkdirSync(destinationDir, { recursive: true });
+  const wasmDestinationPath = join(destinationDir, "band_sdk_core_bg.wasm");
+  copyFileSync(wasmSourcePath, wasmDestinationPath);
+  return wasmDestinationPath;
+}
+
+const isMain =
+  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isMain) {
+  const dest = copyWasm();
+  console.log(`[copy-wasm] wrote ${dest}`);
+}
