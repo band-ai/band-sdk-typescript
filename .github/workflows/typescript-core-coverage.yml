@@ -143,7 +143,7 @@ jobs:
           token: ${{ secrets.CORE_SDK_READ_KEY }}
 
       - name: Install just and wasm-pack
-        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8 # v2
+        uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908 # v2
         with:
           tool: just,wasm-pack
 
