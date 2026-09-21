@@ -5,6 +5,8 @@ import { FakeTools, makeMessage } from "./testUtils";
 
 interface CursorClient {
   extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>>;
+  extNotification(method: string, params: Record<string, unknown>): Promise<void>;
+  requestPermission(params: unknown): Promise<unknown>;
 }
 
 function mockConnection(prompt: () => Promise<{ stopReason: string }>) {
@@ -100,8 +102,120 @@ describe("CursorACPAdapter", () => {
     await turn;
     await adapter.stop();
   });
+
+  it("applies automatic question, plan, and permission policies through ACP", async () => {
+    let client: CursorClient | undefined;
+    let results: unknown[] = [];
+    const adapter = new CursorACPAdapter({
+      enableMcpTools: false,
+      questionMode: "autoFirst",
+      planMode: "autoAccept",
+      approvalMode: "autoAccept",
+      connectionFactory: async (captured) => {
+        client = captured as CursorClient;
+        return mockConnection(async () => {
+          results = await Promise.all([
+            client!.extMethod("cursor/ask_question", {
+              sessionId: "cursor-session",
+              questions: [{ id: "question", options: [{ id: "first" }, { id: "second" }] }],
+            }),
+            client!.extMethod("cursor/create_plan", { sessionId: "cursor-session" }),
+            client!.requestPermission({
+              sessionId: "cursor-session",
+              toolCall: { toolCallId: "tool-call", title: "Write file" },
+              options: [{ optionId: "deny", kind: "reject_once" }, { optionId: "allow", kind: "allow_once" }],
+            }),
+          ]);
+          return { stopReason: "end_turn" };
+        });
+      },
+    });
+
+    await adapter.onStarted("Cursor", "desc");
+    await adapter.onMessage(cursorMessage("start", "requester"), new FakeTools(), { roomToSession: {} }, null, null, { isSessionBootstrap: false, roomId: "room-1" });
+
+    expect(results).toEqual([
+      { outcome: { outcome: "answered", answers: [{ questionId: "question", selectedOptionIds: ["first"] }] } },
+      { outcome: { outcome: "accepted" } },
+      { outcome: { outcome: "selected", optionId: "allow" } },
+    ]);
+    await adapter.stop();
+  });
+
+  it("delivers Cursor todo and task notifications as room events", async () => {
+    let client: CursorClient | undefined;
+    const adapter = new CursorACPAdapter({
+      enableMcpTools: false,
+      connectionFactory: async (captured) => {
+        client = captured as CursorClient;
+        return mockConnection(async () => {
+          await client!.extNotification("cursor/update_todos", {
+            sessionId: "cursor-session",
+            todos: [{ content: "Review the change", completed: true }],
+          });
+          await client!.extNotification("cursor/task", { sessionId: "cursor-session", result: "Completed" });
+          return { stopReason: "end_turn" };
+        });
+      },
+    });
+    const tools = new FakeTools();
+
+    await adapter.onStarted("Cursor", "desc");
+    await adapter.onMessage(cursorMessage("start", "requester"), tools, { roomToSession: {} }, null, null, { isSessionBootstrap: false, roomId: "room-1" });
+
+    expect(tools.events.map(({ content, messageType }) => ({ content, messageType }))).toEqual([
+      { content: "- [x] Review the change", messageType: "task" },
+      { content: "ACP client session", messageType: "task" },
+    ]);
+    expect(tools.messages).toEqual(["[Task completed] Completed"]);
+    await adapter.stop();
+  });
+
+  it("keeps a queued same-room turn from taking over an active decision", async () => {
+    let client: CursorClient | undefined;
+    let releaseFirstPrompt: (() => void) | undefined;
+    const firstPromptMayAsk = new Promise<void>((resolve) => { releaseFirstPrompt = resolve; });
+    let firstPromptStarted: (() => void) | undefined;
+    const firstPromptIsRunning = new Promise<void>((resolve) => { firstPromptStarted = resolve; });
+    let promptCount = 0;
+    const adapter = new CursorACPAdapter({
+      enableMcpTools: false,
+      connectionFactory: async (captured) => {
+        client = captured as CursorClient;
+        return mockConnection(async () => {
+          promptCount += 1;
+          if (promptCount === 1) {
+            firstPromptStarted!();
+            await firstPromptMayAsk;
+            await client!.extMethod("cursor/ask_question", {
+              sessionId: "cursor-session",
+              questions: [{ id: "question", options: [{ id: "answer" }] }],
+            });
+          }
+          return { stopReason: "end_turn" };
+        });
+      },
+    });
+    const firstTools = new FakeTools();
+    const queuedTools = new FakeTools();
+
+    await adapter.onStarted("Cursor", "desc");
+    const firstTurn = adapter.onMessage(cursorMessage("first", "first-requester", "first-message"), firstTools, { roomToSession: {} }, null, null, { isSessionBootstrap: false, roomId: "room-1" });
+    await firstPromptIsRunning;
+    const queuedTurn = adapter.onMessage(cursorMessage("queued", "queued-requester", "queued-message"), queuedTools, { roomToSession: {} }, null, null, { isSessionBootstrap: false, roomId: "room-1" });
+
+    releaseFirstPrompt!();
+    await vi.waitFor(() => expect(firstTools.messages[0]).toContain("/cursor answer"));
+    expect(queuedTools.messages).toEqual([]);
+    const token = firstTools.messages[0]!.match(/answer ([a-f0-9]{8})/)?.[1];
+    await adapter.onMessage(cursorMessage(`/cursor answer ${token} question=answer`, "first-requester", "decision-message"), firstTools, { roomToSession: {} }, null, null, { isSessionBootstrap: false, roomId: "room-1" });
+
+    await Promise.all([firstTurn, queuedTurn]);
+    expect(promptCount).toBe(2);
+    await adapter.stop();
+  });
 });
 
-function cursorMessage(content: string, senderId: string) {
-  return { ...makeMessage(content), senderId };
+function cursorMessage(content: string, senderId: string, id = "msg-1") {
+  return { ...makeMessage(content), id, senderId };
 }

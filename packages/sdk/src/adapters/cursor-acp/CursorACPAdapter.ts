@@ -37,6 +37,7 @@ export interface CursorACPAdapterOptions extends Omit<ACPClientStdioOptions, "co
 type DecisionKind = "permission" | "question" | "plan";
 
 interface CursorTurn {
+  messageId: string;
   tools: AdapterToolsProtocol;
   requesterId: string;
 }
@@ -106,7 +107,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
   private readonly decisionTimeoutMs: number;
   private readonly maxPendingDecisions: number;
   private readonly authorizedSenders: ReadonlySet<string> | null;
-  private readonly logger: Logger;
+  private readonly decisionLogger: Logger;
   private readonly turns = new Map<string, CursorTurn>();
   private readonly pending = new Map<string, PendingDecision>();
 
@@ -131,7 +132,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
     this.authorizedSenders = options.decisionAuthorizedSenders
       ? new Set(options.decisionAuthorizedSenders)
       : null;
-    this.logger = resolveLogger(options.logger);
+    this.decisionLogger = resolveLogger(options.logger);
   }
 
   public override async onMessage(
@@ -145,15 +146,26 @@ export class CursorACPAdapter extends ACPClientAdapter {
     if (await this.handleControl(message, tools, context.roomId)) {
       return;
     }
-    const turn = { tools, requesterId: message.senderId };
-    this.turns.set(context.roomId, turn);
-    try {
-      await super.onMessage(message, tools, history, participantsMessage, contactsMessage, context);
-    } finally {
-      if (this.turns.get(context.roomId) === turn) {
-        this.turns.delete(context.roomId);
-        this.cancelRoom(context.roomId);
-      }
+    await super.onMessage(message, tools, history, participantsMessage, contactsMessage, context);
+  }
+
+  protected override async onAcpTurnStarted(
+    message: PlatformMessage,
+    tools: AdapterToolsProtocol,
+    context: { isSessionBootstrap: boolean; roomId: string },
+  ): Promise<void> {
+    this.turns.set(context.roomId, { messageId: message.id, tools, requesterId: message.senderId });
+  }
+
+  protected override async onAcpTurnFinished(
+    message: PlatformMessage,
+    _tools: AdapterToolsProtocol,
+    context: { isSessionBootstrap: boolean; roomId: string },
+  ): Promise<void> {
+    const turn = this.turns.get(context.roomId);
+    if (turn?.messageId === message.id) {
+      this.turns.delete(context.roomId);
+      this.cancelRoom(context.roomId);
     }
   }
 
@@ -251,7 +263,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
       this.pending.set(token, { kind, roomId, choices, multiSelect, resolve: settle });
       signal?.addEventListener("abort", abort, { once: true });
       void turn.tools.sendMessage(prompt.replaceAll("{token}", token), [turn.requesterId]).catch((error: unknown) => {
-        this.logger.warn("cursor_acp.decision_prompt_delivery_failed", { roomId, kind, error: String(error) });
+        this.decisionLogger.warn("cursor_acp.decision_prompt_delivery_failed", { roomId, kind, error: String(error) });
         settle(undefined);
       });
     });

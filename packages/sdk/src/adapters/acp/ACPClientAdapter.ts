@@ -401,6 +401,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     let client: BandACPClient | null = null
     let sessionId: string | undefined
     let generation = 0
+    await this.onAcpTurnStarted(message, tools, context)
     try {
       const ensured = await this.ensureConnection()
       connection = ensured.connection
@@ -500,8 +501,22 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
           ...(configError ? { optionId: configError.optionId, selectedValue: configError.selectedValue } : {}),
         },
       )
+    } finally {
+      await this.onAcpTurnFinished(message, tools, context)
     }
   }
+
+  protected async onAcpTurnStarted(
+    _message: PlatformMessage,
+    _tools: AdapterToolsProtocol,
+    _context: { isSessionBootstrap: boolean; roomId: string },
+  ): Promise<void> {}
+
+  protected async onAcpTurnFinished(
+    _message: PlatformMessage,
+    _tools: AdapterToolsProtocol,
+    _context: { isSessionBootstrap: boolean; roomId: string },
+  ): Promise<void> {}
 
   // Best-effort: tells the agent to stop working on a turn Band has already
   // given up waiting for (the ACP client has no way to force it), evicts the
