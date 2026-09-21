@@ -47,9 +47,7 @@ describe("buildConversationPrompt", () => {
       { sender_name: "Bob", content: "legacy text" },
       ...CHAT_EVENT_TYPES.map((message_type) => ({
         message_type,
-        content: message_type === "tool_call"
-          ? JSON.stringify({ type: "tool_use_summary" })
-          : `${message_type} content`,
+        content: `${message_type} content`,
       })),
       { message_type: "unknown", content: "unrecognized content" },
     ];
@@ -66,11 +64,8 @@ describe("buildConversationPrompt", () => {
     expect(prompt).toContain("[Alice]: typed text");
     expect(prompt).toContain("[Bob]: legacy text");
     expect(prompt).not.toContain("outside the window");
-    expect(prompt).not.toContain("tool_use_summary");
     for (const message_type of CHAT_EVENT_TYPES) {
-      if (message_type !== "tool_call") {
-        expect(prompt).not.toContain(`${message_type} content`);
-      }
+      expect(prompt).not.toContain(`${message_type} content`);
     }
     expect(prompt).not.toContain("unrecognized content");
   });
