@@ -497,18 +497,25 @@ describe("ACPClientAdapter", () => {
     ])
   })
 
-  it("does not merge a streamed text chunk with an adjacent, unrelated cursor/task completion marker sharing the same chunkType", async () => {
-    const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+  it("does not merge a streamed text chunk with an adjacent extension chunk sharing the same chunkType", async () => {
+    const client = new BandACPClient(
+      async () => ({ outcome: { outcome: "cancelled" } }),
+      {
+        extNotification: async () => [{
+          chunkType: "text",
+          content: "[Task completed] done",
+          metadata: {},
+          streamed: false,
+        }],
+      },
+    )
     client.beginSession("session-x")
 
     await client.sessionUpdate({
       sessionId: "session-x",
       update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Building your report" } },
     })
-    // cursor/task delivers a one-shot completion marker as chunkType "text",
-    // the same type a streamed reply uses — it must never be mistaken for
-    // part of that stream just because the type string matches.
-    await client.extNotification("cursor/task", { sessionId: "session-x", result: "done" })
+    await client.extNotification("vendor/task", { sessionId: "session-x", result: "done" })
 
     expect(client.getCollectedChunks("session-x").map((chunk) => chunk.content)).toEqual([
       "Building your report",
@@ -516,14 +523,21 @@ describe("ACPClientAdapter", () => {
     ])
   })
 
-  it("does not merge a cursor/task completion marker with a streamed text chunk that follows it", async () => {
-    const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+  it("does not merge an extension chunk with a streamed text chunk that follows it", async () => {
+    const client = new BandACPClient(
+      async () => ({ outcome: { outcome: "cancelled" } }),
+      {
+        extNotification: async () => [{
+          chunkType: "text",
+          content: "[Task completed] done",
+          metadata: {},
+          streamed: false,
+        }],
+      },
+    )
     client.beginSession("session-x")
 
-    // Same hazard as the marker-after-stream case above, in the opposite
-    // order: the marker is non-streamed, so it must not become the seed a
-    // later genuine delta merges into either.
-    await client.extNotification("cursor/task", { sessionId: "session-x", result: "done" })
+    await client.extNotification("vendor/task", { sessionId: "session-x", result: "done" })
     await client.sessionUpdate({
       sessionId: "session-x",
       update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Starting the next step" } },
@@ -535,15 +549,27 @@ describe("ACPClientAdapter", () => {
     ])
   })
 
-  it("cursor/update_todos posts a non-streamed plan chunk that does not merge into an adjacent streamed text run", async () => {
-    const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+  it("routes extension chunks to their owning session without merging them into a streamed run", async () => {
+    const extension = vi.fn(async (_method: string, _params: Record<string, unknown>, context: { sessionId: string | null }) => {
+      expect(context).toEqual({ sessionId: "session-x" })
+      return [{
+        chunkType: "plan" as const,
+        content: "- [x] Read the file\n- [ ] Write the fix",
+        metadata: {},
+        streamed: false,
+      }]
+    })
+    const client = new BandACPClient(
+      async () => ({ outcome: { outcome: "cancelled" } }),
+      { extNotification: extension },
+    )
     client.beginSession("session-x")
 
     await client.sessionUpdate({
       sessionId: "session-x",
       update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Working on it" } },
     })
-    await client.extNotification("cursor/update_todos", {
+    await client.extNotification("vendor/update_todos", {
       sessionId: "session-x",
       todos: [
         { content: "Read the file", completed: true },
@@ -556,12 +582,29 @@ describe("ACPClientAdapter", () => {
     expect(chunks[1].content).toBe("- [x] Read the file\n- [ ] Write the fix")
   })
 
-  it("cursor/update_todos with no non-blank todo lines posts nothing", async () => {
+  it("keeps vendor extensions inert unless an extension handler is configured", async () => {
     const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
 
-    await client.extNotification("cursor/update_todos", { sessionId: "session-x", todos: [] })
+    await client.extNotification("vendor/update_todos", { sessionId: "session-x", todos: [{ content: "ignored" }] })
 
     expect(client.getCollectedChunks("session-x")).toEqual([])
+  })
+
+  it("routes extension methods with their session context and preserves the no-op fallback", async () => {
+    const method = vi.fn(async (_name: string, _params: Record<string, unknown>, context: { sessionId: string | null }) => {
+      expect(context).toEqual({ sessionId: "session-x" })
+      return { outcome: { type: "handled" } }
+    })
+    const client = new BandACPClient(
+      async () => ({ outcome: { outcome: "cancelled" } }),
+      { extMethod: method },
+    )
+
+    await expect(client.extMethod("vendor/decision", { session_id: "session-x" })).resolves.toEqual({
+      outcome: { type: "handled" },
+    })
+    await expect(new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+      .extMethod("vendor/decision", {})).resolves.toEqual({})
   })
 
   it("BandACPClient.getCollectedChunks() with no sessionId coalesces each session independently, not across sessions", async () => {

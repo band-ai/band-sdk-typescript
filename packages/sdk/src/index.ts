@@ -66,6 +66,7 @@ export {
   applySessionConfigSelections,
 } from "./adapters/acp";
 export { CopilotACPAdapter, DEFAULT_COPILOT_ACP_COMMAND } from "./adapters/copilot-acp";
+export { CursorACPAdapter, DEFAULT_CURSOR_ACP_COMMAND } from "./adapters/cursor-acp";
 
 export type {
   AdapterToolsProtocol,
@@ -121,6 +122,10 @@ export type {
   CopilotACPAdapterOptions,
   CopilotACPStdioOptions,
   CopilotACPTcpOptions,
+  CursorACPAdapterOptions,
+  CursorApprovalMode,
+  CursorPlanMode,
+  CursorQuestionMode,
 } from "./adapters";
 
 export { SimpleAdapter } from "./core/simpleAdapter";
