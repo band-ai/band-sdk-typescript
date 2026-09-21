@@ -560,11 +560,13 @@ test("openclaw build copies wasm via tsup onSuccess and CI packaging requires it
   assert.equal(openclawPkg.devDependencies?.["@band-ai/band-sdk-core"], undefined);
   assert.match(openclawPkg.scripts.build, /tsup/);
   assert.doesNotMatch(openclawPkg.scripts.build, /copy-wasm/);
+  assert.match(openclawPkg.scripts.build, /sync-plugin-version/);
 
   const tsupConfig = readFileSync(join(root, "packages/openclaw/tsup.config.ts"), "utf8");
+  // Exit must sit inside the catch body: no closing brace between catch { and process.exit(1).
   assert.match(
     tsupConfig,
-    /async onSuccess\(\) \{[\s\S]*?try \{[\s\S]*?import\("\.\/scripts\/copy-wasm\.mjs"\)[\s\S]*?copyWasm\(\)[\s\S]*?\} catch[\s\S]*?\{[\s\S]*?process\.exit\(1\)/,
+    /async onSuccess\(\) \{[\s\S]*?try \{[\s\S]*?import\("\.\/scripts\/copy-wasm\.mjs"\)[\s\S]*?copyWasm\(\)[\s\S]*?\} catch[^{]*\{[^}]*process\.exit\(1\)/,
   );
 
   const copyWasm = readFileSync(join(root, "packages/openclaw/scripts/copy-wasm.mjs"), "utf8");
