@@ -157,7 +157,7 @@ jobs:
 
       - name: Setup Node
         if: steps.release_state.outputs.sdk_created == 'true' || steps.release_state.outputs.openclaw_created == 'true'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4; immutable pin protects package construction
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v4; immutable pin protects package construction
         with:
           node-version: 22
           cache: pnpm
@@ -227,7 +227,7 @@ jobs:
           fetch-depth: 1
 
       - name: Setup Node for trusted publishing
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4; immutable pin configures npm authentication
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v4; immutable pin configures npm authentication
         with:
           # This exact Node release bundles npm 11.16.0, which supports OIDC
           # trusted publishing without installing executable code in this job.
