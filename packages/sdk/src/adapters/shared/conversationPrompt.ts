@@ -49,6 +49,7 @@ export function buildConversationPrompt(options: BuildConversationPromptOptions)
 }
 
 function isTextHistoryEntry(entry: Record<string, unknown>): boolean {
+  // Older raw history omits message_type; that shape is treated as text.
   return entry.message_type === undefined || entry.message_type === "text";
 }
 

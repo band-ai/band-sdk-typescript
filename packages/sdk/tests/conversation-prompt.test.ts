@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildConversationPrompt } from "../src/adapters/shared/conversationPrompt";
+import { CHAT_EVENT_TYPES } from "../src/contracts/chatEvents";
 import { HistoryProvider } from "../src/runtime/types";
 
 describe("buildConversationPrompt", () => {
@@ -40,34 +41,37 @@ describe("buildConversationPrompt", () => {
   });
 
   it("keeps only text entries from the raw bootstrap window", () => {
+    const outsideWindow = { sender_name: "Old", content: "outside the window" };
+    const inWindow = [
+      { sender_name: "Alice", message_type: "text", content: "typed text" },
+      { sender_name: "Bob", content: "legacy text" },
+      ...CHAT_EVENT_TYPES.map((message_type) => ({
+        message_type,
+        content: message_type === "tool_call"
+          ? JSON.stringify({ type: "tool_use_summary" })
+          : `${message_type} content`,
+      })),
+      { message_type: "unknown", content: "unrecognized content" },
+    ];
     const prompt = buildConversationPrompt({
-      history: new HistoryProvider([
-        { sender_name: "Old", content: "outside the window" },
-        { message_type: "task", content: "session marker" },
-        { sender_name: "Alice", message_type: "text", content: "typed text" },
-        { sender_name: "Bob", content: "legacy text" },
-        { message_type: "tool_call", content: JSON.stringify({ type: "tool_use_summary" }) },
-        { message_type: "tool_result", content: "tool output" },
-        { message_type: "thought", content: "internal reasoning" },
-        { message_type: "error", content: "provider error" },
-        { message_type: "unknown", content: "unrecognized content" },
-      ]),
+      history: new HistoryProvider([outsideWindow, ...inWindow]),
       isSessionBootstrap: true,
       participantsMessage: null,
       contactsMessage: null,
       historyHeader: "[History]",
       currentMessage: "Current message",
-      maxHistoryMessages: 8,
+      maxHistoryMessages: inWindow.length,
     });
 
     expect(prompt).toContain("[Alice]: typed text");
     expect(prompt).toContain("[Bob]: legacy text");
     expect(prompt).not.toContain("outside the window");
-    expect(prompt).not.toContain("session marker");
     expect(prompt).not.toContain("tool_use_summary");
-    expect(prompt).not.toContain("tool output");
-    expect(prompt).not.toContain("internal reasoning");
-    expect(prompt).not.toContain("provider error");
+    for (const message_type of CHAT_EVENT_TYPES) {
+      if (message_type !== "tool_call") {
+        expect(prompt).not.toContain(`${message_type} content`);
+      }
+    }
     expect(prompt).not.toContain("unrecognized content");
   });
 
