@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { SKIP_WITHOUT_NODE_SQLITE } from "./support/nodeSqlite";
 
 import { createSqliteSessionRoomStore, type SessionRoomStore } from "../src/linear";
 
@@ -21,7 +22,7 @@ async function createStore(): Promise<{ store: SessionRoomStore; cleanup: () => 
   };
 }
 
-describe("sqlite session room store", () => {
+describe.skipIf(SKIP_WITHOUT_NODE_SQLITE)("sqlite session room store", () => {
   const cleanups: Array<() => Promise<void>> = [];
 
   afterEach(async () => {

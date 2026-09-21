@@ -44,6 +44,25 @@ Requires Node.js 22+.
 
 Each adapter wraps a different LLM framework. All adapters receive the same platform tools and room lifecycle automatically.
 
+### GitHub Copilot CLI ACP (public preview)
+
+`CopilotACPAdapter` connects Band rooms to [GitHub Copilot CLI's ACP server](https://docs.github.com/en/copilot/reference/copilot-cli-reference/acp-server). Install the optional ACP peer alongside the CLI, then use the default stdio transport:
+
+```bash
+pnpm add @agentclientprotocol/sdk
+npm install -g @github/copilot
+```
+
+```ts
+import { CopilotACPAdapter } from "@band-ai/sdk";
+
+const adapter = new CopilotACPAdapter({ cwd: process.cwd() });
+```
+
+It launches `copilot --acp --stdio`. For an already-running listener, use `{ host, port }`; the SDK only owns its client socket, never that listener. The default injected Band MCP server is loopback-only, so a remote/containerized Copilot server needs `enableMcpTools: false` and caller-provided reachable `mcpServers`.
+
+Copilot CLI authentication and BYOK remain CLI configuration. Supply auth/BYOK environment variables through `env` only for stdio; a TCP listener already owns its environment. ACP is public preview, and Copilot tool filtering and reasoning effort are server launch-time settings rather than per-session adapter options.
+
 ### Generic
 
 Bring your own logic with a single async callback:
@@ -159,6 +178,28 @@ const agent = Agent.create({
 
 await agent.run();
 ```
+
+### OMP ACP
+
+`OmpACPAdapter` connects Band rooms to [OMP's](https://omp.sh/) ACP server. Install the optional ACP peer alongside OMP itself:
+
+```bash
+pnpm add @agentclientprotocol/sdk
+curl -fsSL https://omp.sh/install | sh
+```
+
+```ts
+import { Agent, OmpACPAdapter, loadAgentConfig } from "@band-ai/sdk";
+
+const agent = Agent.create({
+  adapter: new OmpACPAdapter({ cwd: process.cwd() }),
+  config: loadAgentConfig("my_agent"),
+});
+
+await agent.run();
+```
+
+It launches `omp acp`. OMP performs `read`/`write`/`bash` itself — this SDK's ACP client doesn't implement `fs`/`terminal` handlers, so `clientCapabilities` is left unset — but OMP still gates `bash`/`edit`/`delete`/`move` through `session/request_permission` under its default (non-yolo) ACP approval mode; don't configure OMP with `tools.approvalMode: yolo` if you want that gate to stay active. OMP resolves its own provider credentials (a stored login or one of 60+ provider-specific environment variables — see [OMP's provider docs](https://github.com/can1357/oh-my-pi/blob/main/docs/providers.md)); pass any needed values through `env`. The SDK never reads or logs them.
 
 ### LangGraph
 
@@ -330,6 +371,8 @@ Working examples live in `examples/`. Each folder is self-contained.
 | `examples/gemini/` | Gemini | Gemini 3 Flash |
 | `examples/claude-sdk/` | Claude Agent SDK | MCP tools, room-scoped resume |
 | `examples/codex/` | Codex | Thread mapping, local commands |
+| `examples/omp-acp/` | OMP | ACP stdio, permission-gated writes |
+| `examples/copilot-acp/` | GitHub Copilot CLI | ACP stdio or existing TCP listener |
 | `examples/langgraph/` | LangGraph | Graph-based agent |
 | `examples/custom-adapter/` | SimpleAdapter | Custom adapter protocol |
 | `examples/parlant/` | Parlant | Guideline-based behavior |
@@ -345,7 +388,7 @@ pnpm install
 cp agent_config.yaml.example agent_config.yaml  # add your credentials
 
 npx tsx examples/basic/basic-agent.ts
-npx tsx examples/openai/openai-agent.ts
+npx tsx examples/openai/01_basic_agent.ts
 ```
 
 ## Architecture
@@ -374,7 +417,9 @@ Adapter failure reporting is structured (`MessagingTools.sendFailure`, required
 
 ```bash
 pnpm install
+pnpm build       # build dist/ — some tests compile a consumer against it
 pnpm test        # unit tests
 pnpm typecheck   # tsc --noEmit
-pnpm build       # build dist/
 ```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for which tests need that build and why.

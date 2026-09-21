@@ -4,12 +4,41 @@ export {
   ACPServer,
   BandACPServerAdapter,
   type ACPClientAdapterOptions,
+  type ACPClientAdapterBaseOptions,
+  type ACPClientStdioOptions,
+  type ACPClientTcpOptions,
+  type ACPConfigRequest,
+  type ACPConfigSelections,
+  AcpSessionConfigError,
+  FAILURE_CODE_SESSION_CONFIG,
+  MISSING_CONFIG_OPTIONS_REASON,
+  applySessionConfigSelections,
   type ACPPermissionAbandonReason,
   type ACPPermissionEndReason,
   type ACPPermissionRequest,
   type ACPServerOptions,
   type BandACPServerAdapterOptions,
 } from "./acp";
+export {
+  OmpACPAdapter,
+  DEFAULT_OMP_ACP_COMMAND,
+  type OmpACPAdapterOptions,
+} from "./omp-acp";
+export {
+  CopilotACPAdapter,
+  DEFAULT_COPILOT_ACP_COMMAND,
+  type CopilotACPAdapterOptions,
+  type CopilotACPStdioOptions,
+  type CopilotACPTcpOptions,
+} from "./copilot-acp";
+export {
+  CursorACPAdapter,
+  DEFAULT_CURSOR_ACP_COMMAND,
+  type CursorACPAdapterOptions,
+  type CursorApprovalMode,
+  type CursorPlanMode,
+  type CursorQuestionMode,
+} from "./cursor-acp";
 export {
   VercelAISDKAdapter,
   VercelAISDKToolCallingModel,

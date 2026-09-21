@@ -1,11 +1,19 @@
+import { RecoverableTurnError, RuntimeStateError } from "../core/errors";
 import type { Logger } from "../core/logger";
 import { resolveLogger } from "../core/logger";
-import { RecoverableTurnError } from "../core/errors";
 import type { BandLink } from "../platform/BandLink";
 import type { PlatformEvent } from "../platform/events";
 import type { PlatformMessage } from "./types";
 import type { ExecutionContext } from "./ExecutionContext";
+import type { ExecutionLifecycleState } from "./lifecycle";
+import {
+  LifecycleTracker,
+  SingleFlight,
+  TerminalSignal,
+  isLegalExecutionTransition,
+} from "./lifecycle";
 import type { RetryTracker } from "@band-ai/band-sdk-core";
+import { SyncBoundaryTracker, type SyncBoundary } from "./SyncBoundaryTracker";
 
 export type ExecutionHandler = (
   context: ExecutionContext,
@@ -19,6 +27,11 @@ interface ExecutionOptions {
   onExecute: ExecutionHandler;
   onFailure?: (error: unknown, event: PlatformEvent) => void | Promise<void>;
   logger?: Logger;
+}
+
+interface QueuedEvent {
+  event: PlatformEvent;
+  syncBoundary: SyncBoundary | null;
 }
 
 function toMessageEvent(message: PlatformMessage): PlatformEvent {
@@ -49,16 +62,21 @@ export class Execution {
   private readonly onExecute: ExecutionHandler;
   private readonly onFailure?: (error: unknown, event: PlatformEvent) => void | Promise<void>;
   private readonly logger: Logger;
-  private readonly eventQueue: PlatformEvent[] = [];
-  private readonly waiters: Array<(event: PlatformEvent | null) => void> = [];
+  private readonly eventQueue: QueuedEvent[] = [];
+  private readonly waiters: Array<(event: QueuedEvent | null) => void> = [];
   private readonly idleWaiters = new Set<() => void>();
-  private readonly drainedWsMessageIds = new Set<string>();
-  private readonly syncProcessedIds = new Set<string>();
-  private processTask: Promise<void>;
-  private firstWsMessageId: string | null = null;
-  private syncComplete = false;
-  private running = true;
+  private readonly stoppedSignal = new TerminalSignal();
+  private readonly lifecycle: LifecycleTracker<ExecutionLifecycleState>;
+  private readonly processTask: Promise<void>;
+  private readonly stopGate = new SingleFlight<boolean>();
+  private readonly syncBoundaries = new SyncBoundaryTracker();
   private inFlight = 0;
+  /**
+   * Set once the queue stops accepting new events, ahead of the lifecycle
+   * itself reporting `"stopped"` (see {@link runStop}) — closing the queue
+   * cannot wait on the drain it is closing for.
+   */
+  private closed = false;
 
   public constructor(options: ExecutionOptions) {
     this.roomId = options.roomId;
@@ -68,34 +86,75 @@ export class Execution {
     this.onExecute = options.onExecute;
     this.onFailure = options.onFailure;
     this.logger = resolveLogger(options.logger);
-    this.processTask = this.processLoop();
+    this.lifecycle = new LifecycleTracker<ExecutionLifecycleState>({ status: "running" }, {
+      owner: "Execution",
+      logContext: { roomId: this.roomId },
+      logger: this.logger,
+      isLegalTransition: isLegalExecutionTransition,
+      onTransition: (state) => {
+        if (state.status === "stopped") {
+          this.stoppedSignal.settle(null);
+        } else if (state.status === "failed") {
+          this.stoppedSignal.settle(state.error);
+        }
+      },
+    });
+    this.processTask = this.runProcessLoop();
+    // A non-graceful stop deliberately detaches the loop, so keep its outcome
+    // observed here; real callers still see it via waitUntilStopped()/stop().
+    void this.processTask.catch(() => undefined);
   }
 
-  public enqueue(event: PlatformEvent): Promise<void> {
-    if (event.type === "message_created" && !this.syncComplete && this.firstWsMessageId === null) {
-      this.firstWsMessageId = event.payload.id;
+  /**
+   * Whether this `Execution` is still alive, and if not, why it ended.
+   *
+   * This is the *lifecycle* axis. For "is this turn's handler currently
+   * executing" read `ExecutionContext.state` instead, which reports
+   * `"starting" | "idle" | "processing"` for the room's context.
+   *
+   * @see ExecutionContext.state
+   */
+  public get state(): ExecutionLifecycleState {
+    return this.lifecycle.state;
+  }
+
+  public async enqueue(event: PlatformEvent): Promise<void> {
+    if (this.lifecycle.is("stopped") || this.lifecycle.is("failed") || this.closed) {
+      // `closed` can be true slightly ahead of `status` reaching "stopped" (see
+      // runStop): the queue stops accepting before the final drain it is
+      // closing for has finished, so report the status as-is rather than
+      // claiming "stopped" prematurely.
+      throw new RuntimeStateError(
+        `Execution for room ${this.roomId} has already ended or is stopping (status: ${this.lifecycle.state.status}); enqueue() is a no-op after stop()`,
+      );
     }
 
+    let syncBoundary: SyncBoundary | null = null;
+    if (event.type === "reconnected") {
+      syncBoundary = this.syncBoundaries.beginBoundary();
+    } else if (event.type === "message_created") {
+      this.syncBoundaries.anchor(event.payload.id);
+    }
+
+    const queued = { event, syncBoundary };
     const waiter = this.waiters.shift();
     if (waiter) {
-      waiter(event);
+      waiter(queued);
     } else {
-      this.eventQueue.push(event);
+      this.eventQueue.push(queued);
     }
-
-    return Promise.resolve();
   }
 
   public async bootstrapMessage(message: PlatformMessage): Promise<void> {
     // Record the ID before executing so that the concurrent synchronizeWithNext()
     // loop (started in the constructor) will skip this message if it encounters
     // it in the REST queue, preventing duplicate processing.
-    this.syncProcessedIds.add(message.id);
+    this.syncBoundaries.recordExecuted(message.id);
     await this.executeSyncMessage(toMessageEvent(message), message.id);
   }
 
   public isIdle(): boolean {
-    return this.syncComplete && this.inFlight === 0 && this.eventQueue.length === 0;
+    return this.syncBoundaries.isComplete && this.inFlight === 0 && this.eventQueue.length === 0;
   }
 
   public async waitForIdle(timeoutMs?: number): Promise<boolean> {
@@ -137,33 +196,81 @@ export class Execution {
   }
 
   public async stop(timeoutMs?: number): Promise<boolean> {
+    return await this.stopGate.run(() => this.runStop(timeoutMs));
+  }
+
+  private async runStop(timeoutMs?: number): Promise<boolean> {
+    if (this.lifecycle.is("failed")) {
+      throw this.lifecycle.state.error;
+    }
+    if (this.lifecycle.is("stopped")) {
+      return this.lifecycle.state.graceful;
+    }
+
+    // stop() is single-flight, so the only remaining state here is "running".
+    this.lifecycle.transition({ status: "stopping" }, "stop");
+
     const graceful = await this.waitForIdle(timeoutMs);
-    this.running = false;
+
+    if (this.lifecycle.is("failed")) {
+      throw this.lifecycle.state.error;
+    }
+
+    // Closing the queue is independent of — and precedes — the lifecycle
+    // itself reporting "stopped": enqueue() must reject from this point on
+    // even though the drain below hasn't finished yet.
+    this.closed = true;
     this.resolveEventWaiters(null);
 
     if (graceful || timeoutMs === undefined) {
       await this.processTask;
     }
 
+    // Only now — after the process loop has actually finished draining, or been
+    // deliberately detached past a timeout — does external state (and
+    // waitUntilStopped()) report "stopped". Transitioning before the drain
+    // completes let a concurrent getOrCreateExecution() observe "stopped" while
+    // this Execution was still mid-teardown.
+    this.lifecycle.transition({ status: "stopped", graceful }, graceful ? "stopped" : "stopped-forced");
+
     return graceful;
   }
 
+  /**
+   * Resolve once this `Execution` has reached a terminal state — including a
+   * forced, non-graceful stop that detached the process loop — or reject with
+   * the error that ended it.
+   */
   public async waitUntilStopped(): Promise<void> {
-    await this.processTask;
+    await this.stoppedSignal.wait();
+  }
+
+  private async runProcessLoop(): Promise<void> {
+    try {
+      await this.processLoop();
+    } catch (error) {
+      this.markFailed(error, "process-loop-failed");
+      throw error;
+    }
   }
 
   private async processLoop(): Promise<void> {
     await this.recoverStaleProcessingMessages();
-    await this.synchronizeWithNext();
+    await this.synchronizeWithNext(this.syncBoundaries.initial);
 
-    while (this.running) {
-      const event = await this.nextQueuedEvent();
-      if (!event) {
+    while (this.isActive()) {
+      const queued = await this.nextQueuedEvent();
+      if (!queued) {
         return;
       }
+      const { event } = queued;
 
-      if (event.type === "message_created" && this.drainedWsMessageIds.has(event.payload.id)) {
-        this.drainedWsMessageIds.delete(event.payload.id);
+      if (event.type === "reconnected") {
+        await this.synchronizeWithNext(queued.syncBoundary ?? { messageId: null });
+        continue;
+      }
+
+      if (event.type === "message_created" && this.syncBoundaries.isExecuted(event.payload.id)) {
         this.notifyIfIdle();
         continue;
       }
@@ -193,7 +300,7 @@ export class Execution {
     });
 
     for (const message of staleMessages) {
-      if (!this.running) {
+      if (!this.isActive()) {
         break;
       }
 
@@ -206,22 +313,23 @@ export class Execution {
       }
 
       await this.executeSyncMessage(toMessageEvent(message), message.id);
-      this.syncProcessedIds.add(message.id);
+      this.syncBoundaries.recordExecuted(message.id);
     }
   }
 
-  private async synchronizeWithNext(): Promise<void> {
-    while (this.running) {
+  private async synchronizeWithNext(boundary: SyncBoundary): Promise<void> {
+    while (this.isActive()) {
       const nextMessage = await this.link.getNextMessage(this.roomId);
       if (!nextMessage) {
         break;
       }
 
-      if (this.syncProcessedIds.has(nextMessage.id)) {
-        const isSyncPoint = this.firstWsMessageId !== null && nextMessage.id === this.firstWsMessageId;
-        if (isSyncPoint) {
-          this.drainedWsMessageIds.add(nextMessage.id);
-          this.firstWsMessageId = null;
+      // Already executed — by this scan, an earlier scan, or bootstrap/stale
+      // recovery. Never redo it, but a repeat sighting of the boundary's own
+      // live message still ends this scan early: nothing further in the
+      // backlog needs a REST round trip once we've caught up to live traffic.
+      if (this.syncBoundaries.isExecuted(nextMessage.id)) {
+        if (this.syncBoundaries.isSyncPoint(boundary, nextMessage.id)) {
           break;
         }
         continue;
@@ -233,28 +341,31 @@ export class Execution {
           messageId: nextMessage.id,
         });
         await this.markMessageFailed(nextMessage.id, "Message permanently failed after max retries");
-        const isSyncPoint = this.firstWsMessageId !== null && nextMessage.id === this.firstWsMessageId;
-        if (isSyncPoint) {
-          this.drainedWsMessageIds.add(nextMessage.id);
-          this.firstWsMessageId = null;
+        this.syncBoundaries.recordExecuted(nextMessage.id);
+        if (this.syncBoundaries.isSyncPoint(boundary, nextMessage.id)) {
           break;
         }
         continue;
       }
 
-      const isSyncPoint = this.firstWsMessageId !== null && nextMessage.id === this.firstWsMessageId;
       await this.executeSyncMessage(toMessageEvent(nextMessage), nextMessage.id);
-      this.syncProcessedIds.add(nextMessage.id);
+      // Recorded unconditionally, not only when this happens to be
+      // recognized as the boundary's own live message: `boundary.messageId`
+      // is anchored asynchronously by a live delivery arriving through a
+      // separate path (`enqueue()`), so this scan can execute a message
+      // before that anchor lands. Marking every executed id lets the later
+      // live delivery (or a later scan re-fetching the same id before the
+      // backend's mark-as-processed effect propagates) find it already done
+      // regardless of whether this scan ever recognized it as "the" sync
+      // point in real time.
+      this.syncBoundaries.recordExecuted(nextMessage.id);
 
-      if (isSyncPoint) {
-        this.drainedWsMessageIds.add(nextMessage.id);
-        this.firstWsMessageId = null;
+      if (this.syncBoundaries.isSyncPoint(boundary, nextMessage.id)) {
         break;
       }
     }
 
-    this.syncProcessedIds.clear();
-    this.syncComplete = true;
+    this.syncBoundaries.completeBoundary(boundary);
     this.notifyIfIdle();
   }
 
@@ -319,7 +430,7 @@ export class Execution {
           error,
         });
       }
-      this.running = false;
+      this.markFailed(error, "execution-failed");
       this.eventQueue.splice(0, this.eventQueue.length);
       this.resolveEventWaiters(null);
       throw error;
@@ -330,19 +441,29 @@ export class Execution {
     }
   }
 
-  private async nextQueuedEvent(): Promise<PlatformEvent | null> {
+  private async nextQueuedEvent(): Promise<QueuedEvent | null> {
     const queued = this.eventQueue.shift();
     if (queued) {
       return queued;
     }
 
-    if (!this.running) {
+    if (this.closed || !this.isActive()) {
       return null;
     }
 
-    return new Promise<PlatformEvent | null>((resolve) => {
+    return new Promise<QueuedEvent | null>((resolve) => {
       this.waiters.push(resolve);
     });
+  }
+
+  /** True while the process loop should keep draining (`running` or mid-`stop()`). */
+  private isActive(): boolean {
+    const status = this.lifecycle.state.status;
+    return status === "running" || status === "stopping";
+  }
+
+  private markFailed(error: unknown, trigger: string): void {
+    this.lifecycle.fail(error, trigger);
   }
 
   private notifyIfIdle(): void {
@@ -357,7 +478,7 @@ export class Execution {
     }
   }
 
-  private resolveEventWaiters(event: PlatformEvent | null): void {
+  private resolveEventWaiters(event: QueuedEvent | null): void {
     const waiters = this.waiters.splice(0, this.waiters.length);
     for (const waiter of waiters) {
       waiter(event);

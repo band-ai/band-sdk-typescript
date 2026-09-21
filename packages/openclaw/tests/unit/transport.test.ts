@@ -156,6 +156,14 @@ describe("platformEventToInboundContext", () => {
     expect(ctx).toBeNull();
   });
 
+  it("returns null when Core preserves a non-string fallback room id", () => {
+    const ctx = platformEventToInboundContext(
+      msgEvent({ roomId: undefined, payload: { chat_room_id: 42 } }),
+      { selfAgentId: SELF },
+    );
+    expect(ctx).toBeNull();
+  });
+
   it("returns null for non-message events", () => {
     const ctx = platformEventToInboundContext(
       { type: "participant_added", roomId: "r", payload: {} } as unknown as PlatformEvent,

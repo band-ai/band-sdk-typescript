@@ -18,6 +18,19 @@ anthropic_agent:
   agent_id: "your-anthropic-agent-id"
   api_key: "your-api-key"
 
+support_agent:
+  agent_id: "your-support-agent-id"
+  api_key: "your-api-key"
+
+# Shared character agents (examples/anthropic/03_tom_agent.ts, 04_jerry_agent.ts)
+tom_agent:
+  agent_id: "your-tom-agent-id"
+  api_key: "your-api-key"
+
+jerry_agent:
+  agent_id: "your-jerry-agent-id"
+  api_key: "your-api-key"
+
 gemini_agent:
   agent_id: "your-gemini-agent-id"
   api_key: "your-api-key"
@@ -38,7 +51,7 @@ memory_agent:
   agent_id: "your-memory-agent-id"
   api_key: "your-api-key"
   # Optional: defaults to OPENAI_API_KEY from the environment
-  # Used by examples/openai/openai-memory-agent.ts
+  # Used by examples/openai/02_memory_agent.ts
   openai_api_key: "your-openai-api-key"
   # Optional: defaults to gpt-4o
   model: "gpt-4o"
@@ -82,4 +95,16 @@ reviewer_agent:
 
 linear_band_transport:
   agent_id: "your-linear-transport-agent-id"
+  api_key: "your-api-key"
+
+copilot_acp_agent:
+  agent_id: "your-copilot-acp-agent-id"
+  api_key: "your-api-key"
+
+omp_acp_agent:
+  agent_id: "your-omp-acp-agent-id"
+  api_key: "your-api-key"
+
+letta_agent:
+  agent_id: "your-letta-band-agent-id"
   api_key: "your-api-key"

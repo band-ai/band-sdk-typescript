@@ -29,12 +29,6 @@ export class NoopLogger implements Logger {
  * Use this wherever an optional caller-supplied `Logger` enters the SDK, so
  * the guard lives here once rather than at each site that remembers it.
  *
- * Adoption is deliberately partial: every adapter entry point and `Execution`
- * are converted, because those log from inside the failure paths this
- * feature added. Thirteen entry points under `runtime/`, `platform/`,
- * `integrations/` and `client/` still build their logger with
- * `?? new NoopLogger()` — a known, pre-existing inconsistency tracked
- * separately, not an oversight to report.
  */
 export function resolveLogger(logger?: Logger): Logger {
   if (!logger) {
@@ -117,7 +111,7 @@ export class ConsoleLogger implements Logger {
     context?: Record<string, unknown>,
   ): void {
     // eslint-disable-next-line no-console -- ConsoleLogger is the intended consumer of console methods.
-    const fn = console[level];
+    const fn = console[level].bind(console);
     if (context === undefined) {
       fn(message);
       return;

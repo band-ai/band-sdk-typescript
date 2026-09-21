@@ -124,6 +124,65 @@ async function main() {
     () => core.validateMemoryTypeForSystem("sensory", "semantic"),
     "validateMemoryTypeForSystem rejects a mismatched pair against the real wasm binding",
   );
+  expectNoThrow(
+    () => core.validateEventPayload("room_deleted", { id: "room-1" }),
+    "validateEventPayload accepts a real event through the externalized wasm binding",
+  );
+  expectThrows(
+    () => core.validateEventPayload("room_deleted", {}),
+    "validateEventPayload rejects an invalid event through the externalized wasm binding",
+  );
+
+  const roomTracker = new core.SubscriptionTracker();
+  const roomTicket = roomTracker.beginRoomSubscribe("room-1");
+  if (roomTicket === undefined) {
+    fail("SubscriptionTracker.beginRoomSubscribe", "expected a ticket for a fresh room subscribe");
+  }
+  roomTracker.recordBothRoomTopicsJoined("room-1", roomTicket);
+  if (!roomTracker.isRoomSubscribed("room-1")) {
+    fail("SubscriptionTracker room subscribe flow", "expected room-1 to be subscribed after both topics joined");
+  }
+  const roomLeaveTicket = roomTracker.unsubscribeRoom("room-1");
+  if (roomLeaveTicket === undefined) {
+    fail("SubscriptionTracker.unsubscribeRoom", "expected a ticket for a subscribed room");
+  }
+  roomTracker.markRoomLeaveComplete("room-1", roomLeaveTicket, "left");
+  if (roomTracker.isRoomSubscribed("room-1")) {
+    fail("SubscriptionTracker room unsubscribe flow", "expected room-1 to no longer be subscribed after leave");
+  }
+  pass("SubscriptionTracker room subscribe/unsubscribe flow runs against the real wasm binding");
+
+  const topicTracker = new core.SubscriptionTracker();
+  const agentRoomsTopic = core.agentRoomsTopic("agent-1");
+  const topicTicket = topicTracker.beginAgentTopicJoin(agentRoomsTopic);
+  if (topicTicket === undefined) {
+    fail("SubscriptionTracker.beginAgentTopicJoin", "expected a ticket for a fresh topic join");
+  }
+  topicTracker.recordAgentTopicJoin(agentRoomsTopic, topicTicket, true);
+  if (!topicTracker.isAgentTopicJoined(agentRoomsTopic)) {
+    fail("SubscriptionTracker agent-topic join flow", "expected agent_rooms topic to be joined");
+  }
+  const topicLeaveTicket = topicTracker.leaveAgentTopic(agentRoomsTopic);
+  if (topicLeaveTicket === undefined) {
+    fail("SubscriptionTracker.leaveAgentTopic", "expected a ticket for a joined topic");
+  }
+  topicTracker.markAgentTopicLeaveComplete(agentRoomsTopic, topicLeaveTicket, "left");
+  if (topicTracker.isAgentTopicJoined(agentRoomsTopic)) {
+    fail("SubscriptionTracker agent-topic leave flow", "expected agent_rooms topic to no longer be joined");
+  }
+  pass("SubscriptionTracker agent-topic join/leave flow runs against the real wasm binding");
+
+  const roomRoster = new core.RoomRoster();
+  const admitTicket = roomRoster.beginRoomAdmission("room-1", true);
+  if (admitTicket === undefined) {
+    fail("RoomRoster.beginRoomAdmission", "expected a ticket for a fresh room admission");
+  }
+  roomRoster.recordRoomAdmission("room-1", admitTicket, true);
+  const reconciliation = roomRoster.reconcile(["room-1", "room-2"]);
+  if (!reconciliation.admitting.some(([roomId]) => roomId === "room-2")) {
+    fail("RoomRoster.reconcile", "expected room-2 to be listed as admitting after appearing in a fresh snapshot");
+  }
+  pass("RoomRoster.reconcile runs against the real wasm binding");
 
   const topicChecks: Array<[string, string]> = [
     [core.chatRoomTopic("room-1"), "chat_room:room-1"],

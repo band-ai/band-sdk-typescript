@@ -1,7 +1,7 @@
-import type { Logger } from "../core/logger";
-import { NoopLogger } from "../core/logger";
+import { resolveLogger, type Logger } from "../core/logger";
+import { SingleFlight } from "../core/singleFlight";
+import { Session } from "./Session";
 import { FernRestAdapter } from "../client/rest/RestFacade";
-import type { FernBandClientLike } from "../client/rest/types";
 import type { RestRequestOptions } from "../client/rest/requestOptions";
 import {
   fetchPaginated,
@@ -12,15 +12,11 @@ import type {
   PlatformChatMessage,
   BandLinkRestApi,
 } from "../client/rest/types";
-import type { PlatformEvent } from "./events";
+import type { PlatformEvent, SupportedSocketEvent } from "./events";
 import { UnsupportedFeatureError } from "../core/errors";
 import { assertCapability } from "../contracts/capabilities";
 import type { MetadataMap } from "../contracts/dtos";
 import type { PlatformMessageLike as PlatformMessage } from "../contracts/protocols";
-import {
-  type SupportedSocketEvent,
-  payloadSchemas,
-} from "./streaming/payloadSchemas";
 import { PhoenixChannelsTransport } from "./streaming/PhoenixChannelsTransport";
 import type { StreamingTransport } from "./streaming/transport";
 import {
@@ -36,9 +32,9 @@ import { BandClient } from "@band-ai/rest-client";
 import {
   agentContactsTopic,
   agentRoomsTopic,
-  chatRoomTopic,
-  roomParticipantsTopic,
+  validateEventPayload,
 } from "@band-ai/band-sdk-core";
+import { SubscriptionManager } from "./SubscriptionManager";
 
 export interface BandLinkOptions {
   agentId: string;
@@ -70,13 +66,6 @@ export interface MessageMarkOptions {
   bestEffort?: boolean;
 }
 
-function roomTopics(roomId: string): { chat: string; participants: string } {
-  return {
-    chat: chatRoomTopic(roomId),
-    participants: roomParticipantsTopic(roomId),
-  };
-}
-
 function toPlatformMessage(
   roomId: string,
   message: PlatformChatMessage,
@@ -89,9 +78,24 @@ function toPlatformMessage(
     senderType: message.sender_type,
     senderName: message.sender_name ?? null,
     messageType: message.message_type,
-    metadata: (message.metadata ?? {}) as Record<string, unknown>,
+    metadata: (message.metadata ?? {}),
     createdAt: new Date(message.inserted_at),
   };
+}
+
+function validationErrorDetails(error: unknown): Record<string, unknown> {
+  if (typeof error !== "object" || error === null) {
+    return {};
+  }
+
+  const details: Record<string, unknown> = {};
+  if ("issues" in error) {
+    details.issues = error.issues;
+  }
+  if ("traceContext" in error) {
+    details.traceContext = error.traceContext;
+  }
+  return details;
 }
 
 export class BandLink implements AsyncIterable<PlatformEvent> {
@@ -104,19 +108,22 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
 
   private readonly logger: Logger;
   private readonly transport: StreamingTransport;
-  private readonly subscribedRooms = new Set<string>();
+  private readonly subscriptionManager: SubscriptionManager;
   private readonly eventQueue: PlatformEvent[] = [];
   private readonly waiters: PendingWaiter[] = [];
   private connected = false;
   private lastDisconnectReason: WebSocketDisconnectReason | null = null;
   private terminalDisconnectError: WebSocketDisconnectError | null = null;
+  private readonly connectFlight = new SingleFlight<void>();
+  private readonly disconnectFlight = new SingleFlight<void>();
+  private readonly session = new Session();
 
   public constructor(options: BandLinkOptions) {
     this.agentId = options.agentId;
     this.apiKey = options.apiKey;
     this.wsUrl = options.wsUrl ?? DEFAULT_WS_URL;
     this.restUrl = options.restUrl ?? deriveDefaultRestUrl(this.wsUrl);
-    this.logger = options.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options.logger);
     this.capabilities = {
       ...DEFAULT_AGENT_TOOLS_CAPABILITIES,
       ...options.capabilities,
@@ -128,7 +135,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         new BandClient({
           apiKey: this.apiKey,
           baseUrl: this.restUrl,
-        }) as unknown as FernBandClientLike,
+        }),
       );
 
     this.rest = restApi;
@@ -145,6 +152,11 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
           this.recordDisconnectReason(reason);
         },
       });
+
+    this.subscriptionManager = new SubscriptionManager({
+      transport: this.transport,
+      logger: this.logger,
+    });
   }
 
   public isConnected(): boolean {
@@ -156,13 +168,44 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   public async connect(): Promise<void> {
+    if (this.disconnectFlight.current) {
+      await this.disconnectFlight.current.catch(() => undefined);
+    }
     if (this.connected) {
       return;
     }
 
+    await this.connectFlight.run(() => {
+      const epoch = this.session.begin();
+      return this.connectSession(epoch);
+    });
+  }
+
+  private async connectSession(epoch: number): Promise<void> {
+    this.session.reconnectObserverTeardown =
+      this.transport.onReconnected?.(async (snapshot) => {
+        await this.subscriptionManager.reconcileReconnect(snapshot);
+        if (this.session.isStale(epoch)) {
+          this.logger.debug(
+            "Reconnect reconciliation settled after session ended, discarding reconnected event",
+          );
+          return;
+        }
+        this.queueEvent({ type: "reconnected", roomId: null, payload: {} });
+      }) ?? null;
+
     try {
       await this.transport.connect();
     } catch (error) {
+      this.session.clearReconnectObserver();
+      this.session.deactivate();
+      // The failed connect may have already opened the socket and joined
+      // some channels (e.g. agent_control succeeded but a later step threw)
+      // — tear those down too, or they leak until the next successful
+      // connect's disconnect() call, orphaned in Phoenix's own reconnect
+      // machinery with no session left to own them.
+      await this.transport.disconnect().catch(() => undefined);
+      this.subscriptionManager.endSession();
       if (error instanceof WebSocketDisconnectError) {
         if (error.reason.retryable) {
           this.lastDisconnectReason = error.reason;
@@ -176,16 +219,26 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   public async disconnect(): Promise<void> {
-    if (!this.connected) {
+    await this.disconnectFlight.run(() => this.disconnectSession());
+  }
+
+  private async disconnectSession(): Promise<void> {
+    await this.connectFlight.current?.catch(() => undefined);
+    // By now any in-flight connect has fully settled, so the session's own
+    // active flag alone reflects whether there is a session to tear down.
+    if (!this.session.isActive) {
       return;
     }
 
-    await Promise.allSettled(
-      [...this.subscribedRooms].map((roomId) => this.unsubscribeRoom(roomId)),
-    );
+    this.session.deactivate();
 
-    await this.transport.disconnect();
-    this.connected = false;
+    try {
+      await this.transport.disconnect();
+    } finally {
+      this.connected = false;
+      this.session.clearReconnectObserver();
+      this.subscriptionManager.endSession();
+    }
   }
 
   public async runForever(signal: AbortSignal): Promise<void> {
@@ -221,7 +274,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   public async subscribeAgentRooms(): Promise<void> {
-    await this.transport.join(agentRoomsTopic(this.agentId), {
+    await this.subscriptionManager.subscribeAgentTopic(agentRoomsTopic(this.agentId), {
       room_added: (payload) => {
         const roomId = typeof payload.id === "string" ? payload.id : "";
         this.emit("room_added", payload, roomId);
@@ -234,36 +287,13 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   public async subscribeRoom(roomId: string): Promise<void> {
-    if (this.subscribedRooms.has(roomId)) {
-      return;
-    }
-
-    await this.joinRoomTopics(roomId);
-    this.subscribedRooms.add(roomId);
-  }
-
-  public async unsubscribeRoom(roomId: string): Promise<void> {
-    if (!this.subscribedRooms.has(roomId)) {
-      return;
-    }
-
-    const topics = roomTopics(roomId);
-    await this.transport.leave(topics.chat);
-    await this.transport.leave(topics.participants);
-    this.subscribedRooms.delete(roomId);
-  }
-
-  private async joinRoomTopics(roomId: string): Promise<void> {
-    const topics = roomTopics(roomId);
-
-    await this.transport.join(topics.chat, {
-      message_created: (payload) => {
-        this.emit("message_created", payload, roomId);
+    await this.subscriptionManager.subscribeRoom(roomId, {
+      chat: {
+        message_created: (payload) => {
+          this.emit("message_created", payload, roomId);
+        },
       },
-    });
-
-    try {
-      await this.transport.join(topics.participants, {
+      participants: {
         participant_added: (payload) => {
           this.emit("participant_added", payload, roomId);
         },
@@ -273,16 +303,17 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
         room_deleted: (payload) => {
           this.emit("room_deleted", payload, roomId);
         },
-      });
-    } catch (error) {
-      await this.transport.leave(topics.chat);
-      throw error;
-    }
+      },
+    });
+  }
+
+  public async unsubscribeRoom(roomId: string): Promise<void> {
+    await this.subscriptionManager.unsubscribeRoom(roomId);
   }
 
   public async subscribeAgentContacts(): Promise<void> {
     assertCapability(this.capabilities, "contacts", "Contacts streaming");
-    await this.transport.join(agentContactsTopic(this.agentId), {
+    await this.subscriptionManager.subscribeAgentTopic(agentContactsTopic(this.agentId), {
       contact_request_received: (payload) => {
         this.emit("contact_request_received", payload, null);
       },
@@ -299,7 +330,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   public async unsubscribeAgentContacts(): Promise<void> {
-    await this.transport.leave(agentContactsTopic(this.agentId));
+    await this.subscriptionManager.unsubscribeAgentTopic(agentContactsTopic(this.agentId));
   }
 
   public async nextEvent(signal?: AbortSignal): Promise<PlatformEvent | null> {
@@ -510,21 +541,19 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     payload: Record<string, unknown>,
     roomId: string | null,
   ): void {
-    const schema = payloadSchemas[eventType];
-    const parsed = schema.safeParse(payload);
-    if (!parsed.success) {
+    try {
+      const normalizedPayload = validateEventPayload(eventType, payload);
+      this.queueEvent({
+        type: eventType,
+        roomId,
+        payload: normalizedPayload,
+        raw: payload,
+      } as PlatformEvent);
+    } catch (error) {
       this.logger.warn(`Invalid ${eventType} payload, dropping event`, {
-        error: parsed.error.message,
+        ...validationErrorDetails(error),
         roomId,
       });
-      return;
     }
-
-    this.queueEvent({
-      type: eventType,
-      roomId,
-      payload: parsed.data,
-      raw: payload,
-    } as PlatformEvent);
   }
 }

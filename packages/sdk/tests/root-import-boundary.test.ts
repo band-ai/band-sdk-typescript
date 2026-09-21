@@ -20,11 +20,21 @@ describe("root import boundary", () => {
     expect(typeof sdk.AgentRuntime).toBe("function");
     expect(typeof sdk.GenericAdapter).toBe("function");
     expect(typeof sdk.ClaudeSDKAdapter).toBe("function");
+    expect(typeof sdk.OmpACPAdapter).toBe("function");
+    expect(typeof sdk.ACPClientAdapter).toBe("function");
+    expect(typeof sdk.CopilotACPAdapter).toBe("function");
   });
 
   it("exposes websocket disconnect errors from the core entrypoint", async () => {
     const core = await import("../src/core");
 
     expect(typeof core.WebSocketDisconnectError).toBe("function");
+  });
+
+  it("does not export SubscriptionManager or SubscriptionTracker from the public entrypoint", async () => {
+    const sdk = (await import("../src/index")) as Record<string, unknown>;
+
+    expect(sdk.SubscriptionManager).toBeUndefined();
+    expect(sdk.SubscriptionTracker).toBeUndefined();
   });
 });

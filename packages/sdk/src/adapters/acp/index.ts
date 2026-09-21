@@ -1,6 +1,12 @@
 export {
   ACPClientAdapter,
+  createTcpConnection,
   type ACPClientAdapterOptions,
+  type ACPClientAdapterBaseOptions,
+  type ACPClientStdioOptions,
+  type ACPClientTcpOptions,
+  type ACPConfigRequest,
+  type ACPConfigSelections,
 } from "./ACPClientAdapter";
 
 export {
@@ -17,7 +23,19 @@ export type {
   ACPPermissionAbandonReason,
   ACPPermissionEndReason,
   ACPPermissionRequest,
+  ACPClientTcpEndpoint,
+  ACPClientExtensionContext,
+  ACPClientExtensionHandler,
 } from "./types";
 
 export type { ACPExtensionHandler } from "./extensions";
 export { CursorExtensionHandler } from "./cursorExtensions";
+
+export {
+  AcpSessionConfigError,
+  FAILURE_CODE_SESSION_CONFIG,
+  MISSING_CONFIG_OPTIONS_REASON,
+  applySessionConfigSelections,
+  type ApplySessionConfigSelectionsInput,
+  type ApplySessionConfigSelectionsResult,
+} from "./sessionConfigReconciliation";

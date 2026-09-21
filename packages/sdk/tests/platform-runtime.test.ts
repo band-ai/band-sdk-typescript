@@ -61,7 +61,7 @@ describe("PlatformRuntime", () => {
 
     await runtime.start(adapter);
 
-    await transport.emit("agent_rooms:a1", "room_added", { id: "room-1", status: "active", type: "direct", title: "Room", removed_at: "" });
+    await transport.emit("agent_rooms:a1", "room_added", { id: "room-1", status: "active", type: "direct", title: "Room", task_id: null, inserted_at: new Date().toISOString(), updated_at: new Date().toISOString() });
     await transport.emit("chat_room:room-1", "message_created", {
       id: "m1",
       content: "hello runtime",
@@ -126,7 +126,7 @@ describe("PlatformRuntime", () => {
     });
     await runtime.start(adapter);
 
-    await transport.emit("agent_rooms:a1", "room_added", { id: "room-1", status: "active", type: "direct", title: "Room", removed_at: "" });
+    await transport.emit("agent_rooms:a1", "room_added", { id: "room-1", status: "active", type: "direct", title: "Room", task_id: null, inserted_at: new Date().toISOString(), updated_at: new Date().toISOString() });
     await transport.emit("chat_room:room-1", "message_created", {
       id: "m1",
       content: "trigger a provider failure",
@@ -204,7 +204,7 @@ describe("PlatformRuntime", () => {
     });
     await runtime.start(adapter);
 
-    await transport.emit("agent_rooms:a1", "room_added", { id: "room-1", status: "active", type: "direct", title: "Room", removed_at: "" });
+    await transport.emit("agent_rooms:a1", "room_added", { id: "room-1", status: "active", type: "direct", title: "Room", task_id: null, inserted_at: new Date().toISOString(), updated_at: new Date().toISOString() });
     await transport.emit("chat_room:room-1", "message_created", {
       id: "m1",
       content: "trigger a delivery failure",
@@ -348,14 +348,18 @@ describe("PlatformRuntime", () => {
       status: "active",
       type: "direct",
       title: "Direct",
-      removed_at: "",
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
     await transport.emit("agent_rooms:a1", "room_added", {
       id: "group-1",
       status: "active",
       type: "group",
       title: "Group",
-      removed_at: "",
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
 
     expect(transport.hasTopic("chat_room:direct-1")).toBe(true);
@@ -389,7 +393,9 @@ describe("PlatformRuntime", () => {
       status: "active",
       type: "direct",
       title: "Room",
-      removed_at: "",
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -430,7 +436,9 @@ describe("PlatformRuntime", () => {
       status: "active",
       type: "direct",
       title: "Room",
-      removed_at: "",
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
     // Admission joins `chat_room` then `room_participants` sequentially
     // (BandLink.joinRoomTopics), so both topics need a tick to settle
@@ -455,6 +463,8 @@ describe("PlatformRuntime", () => {
     });
     await transport.emit("room_participants:room-1", "participant_removed", {
       id: "participant-1",
+      name: "Jane",
+      type: "User",
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -489,7 +499,9 @@ describe("PlatformRuntime", () => {
       status: "active",
       type: "direct",
       title: "Room",
-      removed_at: "",
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -566,7 +578,9 @@ describe("PlatformRuntime", () => {
       status: "active",
       type: "direct",
       title: "Room",
-      removed_at: "",
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
     await transport.emit("chat_room:room-1", "message_created", {
       id: "m-fail",
@@ -756,6 +770,100 @@ describe("PlatformRuntime", () => {
     expect(adapter.onRuntimeStop).toHaveBeenCalledTimes(1);
   });
 
+  it("stops an adapter whose startup is still pending", async () => {
+    const transport = new FakeTransport();
+    let releaseStarted!: () => void;
+    let signalStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    const startGate = new Promise<void>((resolve) => {
+      releaseStarted = resolve;
+    });
+    const adapter = {
+      onEvent: vi.fn(async () => undefined),
+      onCleanup: vi.fn(async () => undefined),
+      onStarted: vi.fn(async () => {
+        signalStarted();
+        await startGate;
+      }),
+      onRuntimeStop: vi.fn(async () => undefined),
+    };
+
+    await using runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      link: new BandLink({
+        agentId: "a1",
+        apiKey: "k",
+        transport,
+        restApi: new FakeRestApi(),
+      }),
+    });
+
+    const starting = runtime.start(adapter);
+    await started;
+    await expect(runtime.stop()).resolves.toBe(true);
+    expect(adapter.onRuntimeStop).toHaveBeenCalledTimes(1);
+
+    releaseStarted();
+    await expect(starting).rejects.toThrow("superseded by stop()");
+  });
+
+  it("does not let stale failed-start cleanup stop a replacement adapter", async () => {
+    const transport = new FakeTransport();
+    let releaseStarted!: () => void;
+    let signalStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      signalStarted = resolve;
+    });
+    const startGate = new Promise<void>((resolve) => {
+      releaseStarted = resolve;
+    });
+    const failingAdapter = {
+      onEvent: vi.fn(async () => undefined),
+      onCleanup: vi.fn(async () => undefined),
+      onStarted: vi.fn(async () => {
+        signalStarted();
+        await startGate;
+      }),
+      onRuntimeStop: vi.fn(async () => {
+        throw new Error("cleanup failed");
+      }),
+    };
+    const nextAdapter = {
+      onEvent: vi.fn(async () => undefined),
+      onCleanup: vi.fn(async () => undefined),
+      onStarted: vi.fn(async () => undefined),
+      onRuntimeStop: vi.fn(async () => undefined),
+    };
+
+    await using runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      link: new BandLink({
+        agentId: "a1",
+        apiKey: "k",
+        transport,
+        restApi: new FakeRestApi(),
+      }),
+    });
+
+    const starting = runtime.start(failingAdapter);
+    await started;
+    await expect(runtime.stop()).rejects.toThrow("cleanup failed");
+
+    await runtime.start(nextAdapter);
+    expect(nextAdapter.onRuntimeStop).not.toHaveBeenCalled();
+
+    releaseStarted();
+    await expect(starting).rejects.toThrow("superseded by stop()");
+    expect(nextAdapter.onRuntimeStop).not.toHaveBeenCalled();
+    await runtime.stop();
+
+    expect(nextAdapter.onRuntimeStop).toHaveBeenCalledTimes(1);
+  });
+
   it("cleans up adapter runtime hooks when startup fails after onStarted", async () => {
     const adapter = {
       onEvent: vi.fn(async () => undefined),
@@ -853,7 +961,11 @@ describe("PlatformRuntime", () => {
 
     await runtime.initialize();
 
-    expect((runtime.link as unknown as { logger: unknown }).logger).toBe(spyLogger);
+    const logger = (runtime.link as unknown as { logger: { error(message: string): void } }).logger;
+    logger.error("test");
+
+    expect(spyLogger.error).toHaveBeenCalledWith("test", undefined);
+    expect(linkLogger.error).not.toHaveBeenCalled();
   });
 
   it("preserves a BandLink logger when no runtime logger is configured", async () => {
@@ -875,6 +987,9 @@ describe("PlatformRuntime", () => {
 
     await runtime.initialize();
 
-    expect((runtime.link as unknown as { logger: unknown }).logger).toBe(linkLogger);
+    const logger = (runtime.link as unknown as { logger: { error(message: string): void } }).logger;
+    logger.error("test");
+
+    expect(linkLogger.error).toHaveBeenCalledWith("test", undefined);
   });
 });

@@ -152,10 +152,10 @@ describe("ClaudeSDKAdapter", () => {
     expect(payload.summary).toBe("Used band_send_message");
   });
 
-  it("rehydrates session id from bootstrap task metadata", async () => {
-    const calls: Array<{ options?: Record<string, unknown> }> = [];
-    const queryFn: ClaudeSDKQuery = ({ options }) => {
-      calls.push({ options: options as Record<string, unknown> });
+  it("rehydrates session id from bootstrap task metadata without prompting it", async () => {
+    const calls: Array<{ prompt: string; options?: Record<string, unknown> }> = [];
+    const queryFn: ClaudeSDKQuery = ({ prompt, options }) => {
+      calls.push({ prompt, options: options as Record<string, unknown> });
       return streamFrom([
         {
           type: "assistant",
@@ -177,6 +177,7 @@ describe("ClaudeSDKAdapter", () => {
       new HistoryProvider([
         {
           message_type: "task",
+          content: "Claude SDK session",
           metadata: {
             claude_sdk_session_id: "session-from-history",
           },
@@ -188,7 +189,66 @@ describe("ClaudeSDKAdapter", () => {
     );
 
     expect(calls[0]?.options?.resume).toBe("session-from-history");
+    expect(calls[0]?.prompt).not.toContain("[Previous conversation context]");
+    expect(calls[0]?.prompt).not.toContain("Claude SDK session");
+    expect(calls[0]?.prompt).not.toContain("session-from-history");
     expect(tools.events.some((event) => event.messageType === "task")).toBe(true);
+  });
+
+  it("prompts only text history on bootstrap and keeps session resume off the prompt", async () => {
+    const calls: Array<{ prompt: string; options?: Record<string, unknown> }> = [];
+    const queryFn: ClaudeSDKQuery = ({ prompt, options }) => {
+      calls.push({ prompt, options: options as Record<string, unknown> });
+      return streamFrom([
+        {
+          type: "assistant",
+          session_id: "session-from-history",
+          message: {
+            content: [{ type: "text", text: "ok" }],
+          },
+        } as never,
+      ]) as never;
+    };
+
+    const adapter = new ClaudeSDKAdapter({ queryFn });
+    await adapter.onStarted("Parity Agent", "Parity test agent");
+
+    await adapter.onMessage(
+      makeMessage("hello"),
+      new FakeTools(),
+      new HistoryProvider([
+        { sender_name: "Alice", message_type: "text", content: "typed text" },
+        { sender_name: "Bob", content: "legacy text" },
+        {
+          message_type: "task",
+          content: "Claude SDK session",
+          metadata: { claude_sdk_session_id: "session-from-history" },
+        },
+        { message_type: "tool_call", content: JSON.stringify({ type: "tool_use_summary" }) },
+        { message_type: "tool_result", content: "tool output" },
+        { message_type: "thought", content: "internal reasoning" },
+        { message_type: "error", content: "provider error" },
+        { message_type: "unknown", content: "unrecognized content" },
+        { sender_name: "Carol", message_type: "text", content: "after non-text" },
+      ]),
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-mixed" },
+    );
+
+    const prompt = calls[0]?.prompt ?? "";
+    expect(calls[0]?.options?.resume).toBe("session-from-history");
+    expect(prompt).toContain("[Previous conversation context]");
+    expect(prompt).toContain("[Alice]: typed text");
+    expect(prompt).toContain("[Bob]: legacy text");
+    expect(prompt).toContain("[Carol]: after non-text");
+    expect(prompt).not.toContain("Claude SDK session");
+    expect(prompt).not.toContain("session-from-history");
+    expect(prompt).not.toContain("tool_use_summary");
+    expect(prompt).not.toContain("tool output");
+    expect(prompt).not.toContain("internal reasoning");
+    expect(prompt).not.toContain("provider error");
+    expect(prompt).not.toContain("unrecognized content");
   });
 
   it("rehydrates legacy Claude session markers from bootstrap task metadata", async () => {

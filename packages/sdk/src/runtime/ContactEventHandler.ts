@@ -1,5 +1,4 @@
-import type { Logger } from "../core/logger";
-import { NoopLogger } from "../core/logger";
+import { resolveLogger, type Logger } from "../core/logger";
 import type { ContactEvent, MessageEvent } from "../platform/events";
 import type { AdapterToolsProtocol } from "../contracts/protocols";
 import type { AgentToolsRestApi, ChatMessagingRestApi, ChatRoomRestApi, ContactRestApi } from "../client/rest/types";
@@ -104,7 +103,7 @@ export class ContactEventHandler {
   public constructor(options: ContactEventHandlerOptions) {
     this.config = options.config;
     this.rest = options.rest;
-    this.logger = options.logger ?? new NoopLogger();
+    this.logger = resolveLogger(options.logger);
     this.onBroadcast = options.onBroadcast;
     this.onHubEvent = options.onHubEvent;
     this.onHubInit = options.onHubInit;
@@ -265,7 +264,8 @@ export class ContactEventHandler {
       case "contact_request_received": {
         const msg = event.payload.message ? `\nMessage: "${event.payload.message}"` : "";
         const handle = normalizeHandle(event.payload.from_handle);
-        return `[Contact Request] ${event.payload.from_name} (${handle}) wants to connect.${msg}\nRequest ID: ${event.payload.id}`;
+        const name = displayName(event.payload.from_name);
+        return `[Contact Request] ${name} (${handle}) wants to connect.${msg}\nRequest ID: ${event.payload.id}`;
       }
       case "contact_request_updated": {
         const info = await this.enrichUpdateEvent(event.payload.id);
@@ -282,7 +282,8 @@ export class ContactEventHandler {
       }
       case "contact_added": {
         const handle = normalizeHandle(event.payload.handle);
-        return `[Contact Added] ${event.payload.name} (${handle}) is now a contact.\nType: ${event.payload.type}, ID: ${event.payload.id}`;
+        const name = displayName(event.payload.name);
+        return `[Contact Added] ${name} (${handle}) is now a contact.\nType: ${event.payload.type}, ID: ${event.payload.id}`;
       }
       case "contact_removed":
         return `[Contact Removed] Contact ${event.payload.id} was removed.`;
@@ -295,7 +296,7 @@ export class ContactEventHandler {
     switch (event.type) {
       case "contact_added": {
         const handle = normalizeHandle(event.payload.handle);
-        return `[Contacts]: ${handle} (${event.payload.name}) is now a contact`;
+        return `[Contacts]: ${handle} (${displayName(event.payload.name)}) is now a contact`;
       }
       case "contact_removed":
         return `[Contacts]: Contact ${event.payload.id} was removed`;
@@ -458,4 +459,8 @@ function assertNever(value: never): never {
 function normalizeHandle(handle: string | null | undefined): string {
   if (!handle) return "@unknown";
   return handle.startsWith("@") ? handle : `@${handle}`;
+}
+
+function displayName(name: string | null | undefined): string {
+  return name?.trim() || "Unknown contact";
 }

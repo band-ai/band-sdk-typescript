@@ -1,4 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import {
+  agentContactsTopic,
+  agentRoomsTopic,
+  chatRoomTopic,
+  roomParticipantsTopic,
+} from "@band-ai/band-sdk-core";
 
 import { RoomPresence } from "../src/runtime/rooms/RoomPresence";
 import { BandLink } from "../src/platform/BandLink";
@@ -14,6 +20,15 @@ async function waitFor(check: () => boolean): Promise<void> {
   }
 
   throw new Error("Condition was not met in time");
+}
+
+function makeLogger() {
+  return {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  };
 }
 
 describe("RoomPresence", () => {
@@ -48,14 +63,18 @@ describe("RoomPresence", () => {
       status: "active",
       type: "direct",
       title: "New Room",
-      removed_at: "",
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
     await transport.emit("agent_rooms:agent-1", "room_removed", {
       id: "room-new",
       status: "inactive",
       type: "direct",
       title: "New Room",
-      removed_at: new Date().toISOString(),
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
     await waitFor(
       () => joined.length === 2 && left.length === 1 && presence.roster.trackedRoomIds().length === 1,
@@ -137,14 +156,12 @@ describe("RoomPresence", () => {
     expect(presence.roster.trackedRoomIds()).toEqual(["room-1", "room-2"]);
   });
 
-  it("logs room discovery failures instead of swallowing them silently", async () => {
+  it("keeps room discovery failures contained when the caller logger throws", async () => {
     const transport = new FakeTransport();
-    const logger = {
-      debug: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    };
+    const logger = makeLogger();
+    logger.warn.mockImplementation(() => {
+      throw new Error("logger is broken");
+    });
 
     await using presence = new RoomPresence({
       link: new BandLink({
@@ -245,7 +262,7 @@ describe("RoomPresence", () => {
     expect(joined).toEqual([{ roomId: "room-1", payload: { source: "room_added" } }]);
   });
 
-  it("keeps a newer admission's subscription alive when an older, slower ticket resolves stale", async () => {
+  it("keeps a room correctly subscribed when it is removed and re-added while an out-of-loop admission is still resolving", async () => {
     const transport = new FakeTransport();
     const joined: string[] = [];
 
@@ -289,30 +306,40 @@ describe("RoomPresence", () => {
       status: "inactive",
       type: "direct",
       title: "Room",
-      removed_at: new Date().toISOString(),
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
     await transport.emit("agent_rooms:agent-1", "room_added", {
       id: "room-1",
       status: "active",
       type: "direct",
       title: "Room",
-      removed_at: "",
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
+
+    // SubscriptionManager serializes room operations, so the removal's
+    // unsubscribe and the re-add's fresh subscribe are both chained behind
+    // this still-in-flight join and cannot proceed until it settles.
+    releaseStaleJoin();
     await waitFor(() => joined.length === 1 && presence.roster.roomMembership("room-1") === "admitted");
 
-    releaseStaleJoin();
-    // The stale ticket's own subscribe succeeded, but a newer ticket already
-    // won the room — the caller must see the room's real, current state
-    // (admitted), not `false` just because its own ticket lost the race.
+    // The in-flight admission's own join succeeded, so its caller correctly
+    // sees its own (transient) success — it is then displaced by the
+    // removal, and the room ends up admitted again via the fresh ticket
+    // that followed, with no leaked or duplicate transport join.
     await expect(staleAdmission).resolves.toBe(true);
 
     expect(presence.roster.roomMembership("room-1")).toBe("admitted");
     expect(transport.hasTopic("chat_room:room-1")).toBe(true);
+    expect(chatJoinCount).toBe(2);
 
     joinSpy.mockRestore();
   });
 
-  it("does not let a stale ticket's own failed subscribe clobber a healthy room's error state", async () => {
+  it("reports a stale ticket's own failed subscribe honestly, without blocking the room's fresh re-admission", async () => {
     const transport = new FakeTransport();
 
     await using presence = new RoomPresence({
@@ -342,8 +369,8 @@ describe("RoomPresence", () => {
       return FakeTransport.prototype.join.call(transport, topic, handlers);
     });
 
-    // Same race as above, but this time the stale ticket's own subscribe
-    // will fail (not just lose the race) once released.
+    // Same setup as above, but this time the stale ticket's own subscribe
+    // will fail (not just lose a race) once released.
     const staleAdmission = presence.admitRoom("room-1", {}, false);
     await waitFor(() => chatJoinCount === 1);
 
@@ -352,23 +379,33 @@ describe("RoomPresence", () => {
       status: "inactive",
       type: "direct",
       title: "Room",
-      removed_at: new Date().toISOString(),
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
     await transport.emit("agent_rooms:agent-1", "room_added", {
       id: "room-1",
       status: "active",
       type: "direct",
       title: "Room",
-      removed_at: "",
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
-    await waitFor(() => presence.roster.roomMembership("room-1") === "admitted");
 
     releaseStaleJoin(new Error("stale ticket's own join failed"));
 
-    // The stale ticket's own subscribe failed, but the room is admitted via
-    // the newer ticket — the caller must see success, not a spurious failure.
-    await expect(staleAdmission).resolves.toBe(true);
-    expect(presence.roster.roomMembership("room-1")).toBe("admitted");
+    // Operations now serialize per room, so a fresh admission cannot start
+    // — let alone succeed — before this stale ticket's own join settles.
+    // There is no window left in which a newer ticket's success could
+    // retroactively rescue this one: the caller sees its own honest failure.
+    await expect(staleAdmission).resolves.toBe(false);
+
+    // The room is still reachable: the fresh admission chained behind the
+    // failed one (via the removal + re-add that follows it) succeeds
+    // normally afterward, unaffected by the earlier failure.
+    await waitFor(() => presence.roster.roomMembership("room-1") === "admitted");
+    expect(transport.hasTopic("chat_room:room-1")).toBe(true);
     joinSpy.mockRestore();
 
     // The stale ticket's irrelevant failure must not linger and later be
@@ -378,7 +415,9 @@ describe("RoomPresence", () => {
       status: "inactive",
       type: "direct",
       title: "Room",
-      removed_at: new Date().toISOString(),
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
     await waitFor(() => presence.roster.roomMembership("room-1") === "unadmitted");
     const freshError = new Error("fresh, unrelated failure");
@@ -443,7 +482,9 @@ describe("RoomPresence", () => {
       status: "inactive",
       type: "direct",
       title: "Untracked Room",
-      removed_at: new Date().toISOString(),
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
 
     expect(left).toEqual([]);
@@ -534,7 +575,9 @@ describe("RoomPresence", () => {
       status: "active",
       type: "direct",
       title: "Room",
-      removed_at: "",
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     });
     await waitFor(() => joined.length === 1);
 
@@ -543,12 +586,7 @@ describe("RoomPresence", () => {
 
   it("warns and continues start() when the agent_contacts subscribe fails", async () => {
     const transport = new FakeTransport();
-    const logger = {
-      debug: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    };
+    const logger = makeLogger();
     const failingJoin = vi.spyOn(transport, "join").mockImplementation(async (topic, handlers) => {
       if (topic === "agent_contacts:agent-1") {
         throw new Error("contacts join failed");
@@ -578,12 +616,7 @@ describe("RoomPresence", () => {
 
   it("still tears down admitted rooms during stop() when unsubscribeAgentContacts fails", async () => {
     const transport = new FakeTransport();
-    const logger = {
-      debug: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    };
+    const logger = makeLogger();
     const left: string[] = [];
 
     await using presence = new RoomPresence({
@@ -621,5 +654,468 @@ describe("RoomPresence", () => {
     expect(presence.roster.trackedRoomIds()).toEqual([]);
 
     failingLeave.mockRestore();
+  });
+
+  it("reconciles removed, newly discovered, and surviving rooms from one REST snapshot after reconnect", async () => {
+    const transport = new FakeTransport();
+    let snapshotRooms: Array<{ id: string; title: string }> = [
+      { id: "room-a", title: "Room A" },
+      { id: "room-b", title: "Room B" },
+    ];
+    const joined: string[] = [];
+    const left: string[] = [];
+
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      transport,
+      restApi: new FakeRestApi({
+        listChats: async () => ({
+          data: snapshotRooms,
+          metadata: { page: 1, pageSize: 100, totalPages: 1, totalCount: snapshotRooms.length },
+        }),
+      }),
+    });
+    const subscribeRoomSpy = vi.spyOn(link, "subscribeRoom");
+
+    await using presence = new RoomPresence({ link });
+    presence.onRoomJoined = async (roomId) => {
+      joined.push(roomId);
+    };
+    presence.onRoomLeft = async (roomId) => {
+      left.push(roomId);
+    };
+
+    await presence.start();
+    expect(presence.roster.trackedRoomIds().sort()).toEqual(["room-a", "room-b"]);
+
+    // room-a drops off the snapshot, room-b survives, room-c is newly listed.
+    snapshotRooms = [
+      { id: "room-b", title: "Room B" },
+      { id: "room-c", title: "Room C" },
+    ];
+    subscribeRoomSpy.mockClear();
+
+    await transport.triggerReconnect({
+      generation: 1,
+      joinedTopics: new Set([
+        agentRoomsTopic("agent-1"),
+        chatRoomTopic("room-a"),
+        roomParticipantsTopic("room-a"),
+        chatRoomTopic("room-b"),
+        roomParticipantsTopic("room-b"),
+      ]),
+    });
+
+    await waitFor(() => left.includes("room-a") && joined.includes("room-c"));
+
+    expect(left).toEqual(["room-a"]);
+    expect(joined).toEqual(["room-a", "room-b", "room-c"]);
+    expect(presence.roster.trackedRoomIds().sort()).toEqual(["room-b", "room-c"]);
+
+    // room-b was neither removed nor freshly admitted — it survived via a
+    // plain resubscribe, not a second onRoomJoined notification.
+    expect(subscribeRoomSpy).toHaveBeenCalledWith("room-b");
+    expect(subscribeRoomSpy).not.toHaveBeenCalledWith("room-a");
+  });
+
+  it("does not admit a newly discovered room after reconnect when its subscribe fails, but a later reconnect can still admit it", async () => {
+    const transport = new FakeTransport();
+    const logger = makeLogger();
+    let snapshotRooms: Array<{ id: string; title: string }> = [{ id: "room-a", title: "Room A" }];
+    const joined: string[] = [];
+
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      transport,
+      restApi: new FakeRestApi({
+        listChats: async () => ({
+          data: snapshotRooms,
+          metadata: { page: 1, pageSize: 100, totalPages: 1, totalCount: snapshotRooms.length },
+        }),
+      }),
+    });
+
+    await using presence = new RoomPresence({ link, logger });
+    presence.onRoomJoined = async (roomId) => {
+      joined.push(roomId);
+    };
+
+    await presence.start();
+    expect(presence.roster.trackedRoomIds()).toEqual(["room-a"]);
+
+    // room-b is newly listed on this reconnect's snapshot.
+    snapshotRooms = [
+      { id: "room-a", title: "Room A" },
+      { id: "room-b", title: "Room B" },
+    ];
+
+    const originalSubscribeRoom = link.subscribeRoom.bind(link);
+    const subscribeRoomSpy = vi
+      .spyOn(link, "subscribeRoom")
+      .mockImplementation(async (roomId) => {
+        if (roomId === "room-b") {
+          throw new Error("admission failed");
+        }
+        return originalSubscribeRoom(roomId);
+      });
+
+    await transport.triggerReconnect({
+      generation: 1,
+      joinedTopics: new Set([
+        agentRoomsTopic("agent-1"),
+        chatRoomTopic("room-a"),
+        roomParticipantsTopic("room-a"),
+      ]),
+    });
+
+    await waitFor(() =>
+      logger.warn.mock.calls.some(([message]) => message === "RoomPresence failed to subscribe room"),
+    );
+    expect(joined).not.toContain("room-b");
+    expect(presence.roster.trackedRoomIds()).toEqual(["room-a"]);
+
+    // A later reconnect, once the transport can actually join room-b, admits it.
+    subscribeRoomSpy.mockImplementation(originalSubscribeRoom);
+    await transport.triggerReconnect({
+      generation: 2,
+      joinedTopics: new Set([
+        agentRoomsTopic("agent-1"),
+        chatRoomTopic("room-a"),
+        roomParticipantsTopic("room-a"),
+        chatRoomTopic("room-b"),
+        roomParticipantsTopic("room-b"),
+      ]),
+    });
+
+    await waitFor(() => joined.includes("room-b"));
+    expect(presence.roster.trackedRoomIds().sort()).toEqual(["room-a", "room-b"]);
+  });
+
+  it("does not auto-admit a newly discovered room after reconnect when autoSubscribeExistingRooms is false", async () => {
+    const transport = new FakeTransport();
+    let snapshotRooms: Array<{ id: string; title: string }> = [{ id: "room-1", title: "Room 1" }];
+    const joined: string[] = [];
+
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      transport,
+      restApi: new FakeRestApi({
+        listChats: async () => ({
+          data: snapshotRooms,
+          metadata: { page: 1, pageSize: 100, totalPages: 1, totalCount: snapshotRooms.length },
+        }),
+      }),
+    });
+
+    await using presence = new RoomPresence({ link, autoSubscribeExistingRooms: false });
+    presence.onRoomJoined = async (roomId) => {
+      joined.push(roomId);
+    };
+
+    await presence.start();
+    expect(presence.roster.trackedRoomIds()).toEqual([]);
+
+    await presence.admitRoom("room-1", {});
+    joined.length = 0;
+
+    snapshotRooms = [
+      { id: "room-1", title: "Room 1" },
+      { id: "room-2", title: "Room 2" },
+    ];
+
+    await transport.triggerReconnect({
+      generation: 1,
+      joinedTopics: new Set([
+        agentRoomsTopic("agent-1"),
+        chatRoomTopic("room-1"),
+        roomParticipantsTopic("room-1"),
+      ]),
+    });
+
+    // room-1 stays tracked (it was already admitted); room-2 is never
+    // auto-admitted just because a reconnect happened to see it in REST.
+    await waitFor(() => presence.roster.trackedRoomIds().length > 0);
+    expect(presence.roster.trackedRoomIds()).toEqual(["room-1"]);
+    expect(joined).toEqual([]);
+  });
+
+  it("restores agent_rooms and agent_contacts subscription intent after reconnect", async () => {
+    const transport = new FakeTransport();
+
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      transport,
+      restApi: new FakeRestApi({ listChats: async () => ({ data: [] }) }),
+      capabilities: { contacts: true },
+    });
+
+    await using presence = new RoomPresence({ link });
+    await presence.start();
+
+    const subscribeAgentRoomsSpy = vi.spyOn(link, "subscribeAgentRooms");
+    const subscribeAgentContactsSpy = vi.spyOn(link, "subscribeAgentContacts");
+
+    await transport.triggerReconnect({
+      generation: 1,
+      joinedTopics: new Set([agentRoomsTopic("agent-1"), agentContactsTopic("agent-1")]),
+    });
+
+    await waitFor(
+      () => subscribeAgentRoomsSpy.mock.calls.length > 0 && subscribeAgentContactsSpy.mock.calls.length > 0,
+    );
+    expect(subscribeAgentRoomsSpy).toHaveBeenCalledTimes(1);
+    expect(subscribeAgentContactsSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("warns and still reconciles rooms when the agent_rooms resubscribe fails during reconnect", async () => {
+    const transport = new FakeTransport();
+    const logger = makeLogger();
+
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      transport,
+      restApi: new FakeRestApi({
+        listChats: async () => ({
+          data: [{ id: "room-1", title: "Room 1" }],
+          metadata: { page: 1, pageSize: 100, totalPages: 1, totalCount: 1 },
+        }),
+      }),
+    });
+
+    await using presence = new RoomPresence({ link, logger });
+    await presence.start();
+    expect(presence.roster.trackedRoomIds()).toEqual(["room-1"]);
+
+    const failingJoin = vi.spyOn(transport, "join").mockImplementation(async (topic, handlers) => {
+      if (topic === agentRoomsTopic("agent-1")) {
+        throw new Error("agent_rooms resubscribe failed");
+      }
+      return FakeTransport.prototype.join.call(transport, topic, handlers);
+    });
+
+    // agent_rooms was attempted for this generation but did not rejoin, so
+    // reconciliation cleans it up before RoomPresence's explicit resubscribe
+    // below hits a real (and, here, failing) fresh join attempt.
+    await transport.triggerReconnect({
+      generation: 1,
+      attemptedTopics: new Set([
+        agentRoomsTopic("agent-1"),
+        chatRoomTopic("room-1"),
+        roomParticipantsTopic("room-1"),
+      ]),
+      joinedTopics: new Set([chatRoomTopic("room-1"), roomParticipantsTopic("room-1")]),
+    });
+
+    await waitFor(() =>
+      logger.warn.mock.calls.some(
+        ([message]) => message === "RoomPresence failed to resubscribe agent_rooms channel after reconnect",
+      ),
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      "RoomPresence failed to resubscribe agent_rooms channel after reconnect",
+      expect.objectContaining({ error: expect.any(Error) }),
+    );
+    // The failed agent_rooms resubscribe does not block the rest of
+    // reconciliation — the surviving room still resyncs.
+    expect(presence.roster.trackedRoomIds()).toEqual(["room-1"]);
+
+    failingJoin.mockRestore();
+  });
+
+  it("warns and continues reconciliation when the agent_contacts resubscribe fails during reconnect", async () => {
+    const transport = new FakeTransport();
+    const logger = makeLogger();
+
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      transport,
+      restApi: new FakeRestApi({ listChats: async () => ({ data: [] }) }),
+      capabilities: { contacts: true },
+    });
+
+    await using presence = new RoomPresence({ link, logger });
+    await presence.start();
+
+    const failingJoin = vi.spyOn(transport, "join").mockImplementation(async (topic, handlers) => {
+      if (topic === agentContactsTopic("agent-1")) {
+        throw new Error("agent_contacts resubscribe failed");
+      }
+      return FakeTransport.prototype.join.call(transport, topic, handlers);
+    });
+
+    // agent_contacts was attempted for this generation but did not rejoin,
+    // so reconciliation cleans it up before RoomPresence's explicit
+    // resubscribe below hits a real (and, here, failing) fresh join attempt.
+    await transport.triggerReconnect({
+      generation: 1,
+      attemptedTopics: new Set([agentRoomsTopic("agent-1"), agentContactsTopic("agent-1")]),
+      joinedTopics: new Set([agentRoomsTopic("agent-1")]),
+    });
+
+    await waitFor(() =>
+      logger.warn.mock.calls.some(
+        ([message]) => message === "RoomPresence failed to resubscribe agent_contacts channel after reconnect",
+      ),
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      "RoomPresence failed to resubscribe agent_contacts channel after reconnect",
+      expect.objectContaining({ error: expect.any(Error) }),
+    );
+
+    failingJoin.mockRestore();
+  });
+
+  it("owns a contact subscription that first succeeds during reconnect", async () => {
+    const transport = new FakeTransport();
+    const originalJoin = transport.join.bind(transport);
+    let failInitialContacts = true;
+    vi.spyOn(transport, "join").mockImplementation(async (topic, handlers) => {
+      if (topic === agentContactsTopic("agent-1") && failInitialContacts) {
+        failInitialContacts = false;
+        throw new Error("initial contact join failed");
+      }
+      await originalJoin(topic, handlers);
+    });
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      transport,
+      restApi: new FakeRestApi({ listChats: async () => ({ data: [] }) }),
+      capabilities: { contacts: true },
+    });
+    const presence = new RoomPresence({ link });
+
+    await presence.start();
+    expect(transport.hasTopic(agentContactsTopic("agent-1"))).toBe(false);
+
+    await transport.triggerReconnect({
+      generation: 1,
+      joinedTopics: new Set([agentRoomsTopic("agent-1")]),
+    });
+    await waitFor(() => transport.hasTopic(agentContactsTopic("agent-1")));
+
+    await presence.stop();
+    expect(transport.hasTopic(agentContactsTopic("agent-1"))).toBe(false);
+  });
+
+  it("keeps the roster unchanged but still forwards the reconnect for execution resync when the REST snapshot fetch fails", async () => {
+    const transport = new FakeTransport();
+    const logger = makeLogger();
+    let callCount = 0;
+
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      transport,
+      restApi: new FakeRestApi({
+        listChats: async () => {
+          callCount += 1;
+          if (callCount > 1) {
+            throw new Error("REST snapshot fetch failed");
+          }
+          return {
+            data: [{ id: "room-1", title: "Room 1" }],
+            metadata: { page: 1, pageSize: 100, totalPages: 1, totalCount: 1 },
+          };
+        },
+      }),
+    });
+
+    const events: Array<{ roomId: string; type: string }> = [];
+    await using presence = new RoomPresence({ link, logger });
+    presence.onRoomEvent = async (roomId, event) => {
+      events.push({ roomId, type: event.type });
+    };
+
+    await presence.start();
+    expect(presence.roster.trackedRoomIds()).toEqual(["room-1"]);
+
+    await transport.triggerReconnect({
+      generation: 1,
+      joinedTopics: new Set([
+        agentRoomsTopic("agent-1"),
+        chatRoomTopic("room-1"),
+        roomParticipantsTopic("room-1"),
+      ]),
+    });
+
+    await waitFor(() => events.length > 0);
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "RoomPresence failed to fetch room snapshot after reconnect",
+      expect.objectContaining({ error: expect.any(Error) }),
+    );
+    // The roster survives the failed fetch untouched, and the room's own
+    // Execution still gets the reconnect so it can re-run `/next`.
+    expect(presence.roster.trackedRoomIds()).toEqual(["room-1"]);
+    expect(events).toEqual([{ roomId: "room-1", type: "reconnected" }]);
+  });
+
+  it("keeps a surviving room visible and retryable when its post-reconnect resubscribe fails", async () => {
+    const transport = new FakeTransport();
+    const logger = makeLogger();
+
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      transport,
+      restApi: new FakeRestApi({
+        listChats: async () => ({
+          data: [{ id: "room-1", title: "Room 1" }],
+          metadata: { page: 1, pageSize: 100, totalPages: 1, totalCount: 1 },
+        }),
+      }),
+    });
+
+    await using presence = new RoomPresence({ link, logger });
+    await presence.start();
+
+    const originalSubscribeRoom = link.subscribeRoom.bind(link);
+    let callCount = 0;
+    const subscribeRoomSpy = vi.spyOn(link, "subscribeRoom").mockImplementation(async (roomId) => {
+      callCount += 1;
+      if (callCount === 1) {
+        throw new Error("resync failed");
+      }
+      return originalSubscribeRoom(roomId);
+    });
+
+    await transport.triggerReconnect({
+      generation: 1,
+      joinedTopics: new Set([
+        agentRoomsTopic("agent-1"),
+        chatRoomTopic("room-1"),
+        roomParticipantsTopic("room-1"),
+      ]),
+    });
+
+    await waitFor(() => callCount > 0);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "RoomPresence failed to resubscribe surviving room after reconnect",
+      expect.objectContaining({ roomId: "room-1", error: expect.any(Error) }),
+    );
+    // The room stays tracked despite the failed resync — it is not torn
+    // down just because one reconnect's resubscribe attempt failed.
+    expect(presence.roster.trackedRoomIds()).toEqual(["room-1"]);
+
+    // A later reconnect can still resync it successfully.
+    await transport.triggerReconnect({
+      generation: 2,
+      joinedTopics: new Set([
+        agentRoomsTopic("agent-1"),
+        chatRoomTopic("room-1"),
+        roomParticipantsTopic("room-1"),
+      ]),
+    });
+    await waitFor(() => callCount > 1);
+    expect(presence.roster.trackedRoomIds()).toEqual(["room-1"]);
+
+    subscribeRoomSpy.mockRestore();
   });
 });

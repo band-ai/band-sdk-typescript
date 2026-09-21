@@ -2,7 +2,7 @@ export { Agent } from "./agent/Agent";
 export type { AgentCreateOptions } from "./agent/Agent";
 
 export { BandLink, deriveDefaultRestUrl } from "./platform/BandLink";
-export type { PlatformEvent, ContactEvent } from "./platform/events";
+export type { PlatformEvent, ContactEvent, ReconnectedEvent } from "./platform/events";
 export { WebSocketDisconnectError } from "./platform/streaming/disconnectReason";
 export type {
   WebSocketConflictPolicy,
@@ -12,6 +12,7 @@ export { PlatformRuntime } from "./runtime/PlatformRuntime";
 export type { PlatformRuntimeOptions } from "./runtime/PlatformRuntime";
 export { AgentRuntime } from "./runtime/rooms/AgentRuntime";
 export type { ExecutionContextOptions } from "./runtime/ExecutionContext";
+export type { RuntimeLifecycleState, ExecutionLifecycleState } from "./runtime/lifecycle";
 export { DefaultPreprocessor } from "./runtime/preprocessing/DefaultPreprocessor";
 export type { CustomToolDef } from "./runtime/tools/customTools";
 export type {
@@ -56,6 +57,16 @@ export { LettaAdapter } from "./adapters/letta";
 export { OpencodeAdapter } from "./adapters/opencode";
 export { ClaudeSDKAdapter } from "./adapters/claude-sdk";
 export { CodexAdapter } from "./adapters/codex";
+export { OmpACPAdapter, DEFAULT_OMP_ACP_COMMAND } from "./adapters/omp-acp";
+export {
+  ACPClientAdapter,
+  AcpSessionConfigError,
+  FAILURE_CODE_SESSION_CONFIG,
+  MISSING_CONFIG_OPTIONS_REASON,
+  applySessionConfigSelections,
+} from "./adapters/acp";
+export { CopilotACPAdapter, DEFAULT_COPILOT_ACP_COMMAND } from "./adapters/copilot-acp";
+export { CursorACPAdapter, DEFAULT_CURSOR_ACP_COMMAND } from "./adapters/cursor-acp";
 
 export type {
   AdapterToolsProtocol,
@@ -101,6 +112,20 @@ export type {
   CodexReasoningSummary,
   CodexWebSearchMode,
   ToolCallingModel,
+  OmpACPAdapterOptions,
+  ACPClientAdapterOptions,
+  ACPClientAdapterBaseOptions,
+  ACPClientStdioOptions,
+  ACPClientTcpOptions,
+  ACPConfigRequest,
+  ACPConfigSelections,
+  CopilotACPAdapterOptions,
+  CopilotACPStdioOptions,
+  CopilotACPTcpOptions,
+  CursorACPAdapterOptions,
+  CursorApprovalMode,
+  CursorPlanMode,
+  CursorQuestionMode,
 } from "./adapters";
 
 export { SimpleAdapter } from "./core/simpleAdapter";

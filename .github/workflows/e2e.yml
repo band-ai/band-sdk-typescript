@@ -60,16 +60,27 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Set up Bun
+        if: matrix.file == 'omp-acp-live.ts'
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install OMP
+        if: matrix.file == 'omp-acp-live.ts'
+        run: npm install --global @oh-my-pi/pi-coding-agent
+
+      - name: Install GitHub Copilot CLI
+        run: npm install --global @github/copilot
 
       # BAND_API_KEY_USER is the same Band user credential band-sdk-python's
       # e2e.yml uses (its E2E_BAND_API_KEY_USER secret) to dynamically
@@ -81,4 +92,9 @@ jobs:
           BAND_API_KEY_USER: ${{ secrets.E2E_BAND_API_KEY_USER }}
           BAND_REST_URL: ${{ secrets.E2E_BAND_REST_URL }}
           BAND_WS_URL: ${{ secrets.E2E_BAND_WS_URL }}
+          GEMINI_API_KEY: ${{ secrets.E2E_GOOGLE_API_KEY }}
+          COPILOT_PROVIDER_TYPE: anthropic
+          COPILOT_PROVIDER_BASE_URL: https://api.anthropic.com
+          COPILOT_PROVIDER_API_KEY: ${{ secrets.E2E_ANTHROPIC_API_KEY }}
+          COPILOT_MODEL: claude-haiku-4-5
         run: npx tsx tests/integration/${{ matrix.file }}

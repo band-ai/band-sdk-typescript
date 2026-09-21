@@ -9,14 +9,14 @@
  */
 
 import { mkdtemp, rm, readFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { spawnSync } from "node:child_process";
-import { writeFileSync, mkdirSync, cpSync } from "node:fs";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { COMPILE_PROOF_OPTS, compileConsumer, linkBuiltSdk, type CompileResult } from "./support/compileProof";
+import { SKIP_WITHOUT_NODE_SQLITE } from "./support/nodeSqlite";
 import { createSqliteSessionRoomStore } from "../src/linear";
 
 const SDK_ROOT = resolve(__dirname, "..");
@@ -93,7 +93,7 @@ async function tableColumns(path: string, table: string): Promise<string[]> {
   }
 }
 
-describe("P-STO: no-DDL storage compatibility matrix", () => {
+describe.skipIf(SKIP_WITHOUT_NODE_SQLITE)("P-STO: no-DDL storage compatibility matrix", () => {
   const cleanups: Array<() => Promise<void>> = [];
 
   afterEach(async () => {
@@ -361,38 +361,20 @@ describe("P-STO: no-DDL storage compatibility matrix", () => {
 
 // ── P-C4-2: public room-id field compile proof ───────────────────────────────
 
-describe("P-C4-2: public room-id field compile proof", () => {
+describe("P-C4-2: public room-id field compile proof", COMPILE_PROOF_OPTS, () => {
   let tmpDirPath: string;
 
   afterEach(() => {
-    if (tmpDirPath) rm(tmpDirPath, { recursive: true, force: true });
+    if (tmpDirPath) rmSync(tmpDirPath, { recursive: true, force: true });
   });
 
-  function compileConsumer(filename: string, code: string): { status: number; output: string } {
-    const base = join(tmpdir(), `c4-compile-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    mkdirSync(base, { recursive: true });
+  // Each call gets a fresh temp project, so the SDK link is established per call
+  // rather than once in a `beforeAll`.
+  function compile(filename: string, code: string): CompileResult {
+    const base = mkdtempSync(join(tmpdir(), "c4-compile-"));
     tmpDirPath = base;
-    const nmDir = join(base, "node_modules/@band-ai/sdk");
-    mkdirSync(nmDir, { recursive: true });
-    cpSync(join(SDK_ROOT, "dist"), join(nmDir, "dist"), { recursive: true });
-    cpSync(join(SDK_ROOT, "package.json"), join(nmDir, "package.json"));
-    writeFileSync(join(base, "tsconfig.json"), JSON.stringify({
-      compilerOptions: {
-        strict: true,
-        module: "nodenext",
-        moduleResolution: "nodenext",
-        target: "es2022",
-        noEmit: true,
-        skipLibCheck: true,
-        typeRoots: [join(SDK_ROOT, "node_modules/@types")],
-      },
-      include: [filename],
-    }));
-    writeFileSync(join(base, filename), code);
-    const result = spawnSync(join(SDK_ROOT, "node_modules/.bin/tsc"), ["-p", join(base, "tsconfig.json")], {
-      encoding: "utf8",
-    });
-    return { status: result.status ?? 1, output: (result.stdout ?? "") + (result.stderr ?? "") };
+    linkBuiltSdk(base);
+    return compileConsumer(base, filename, code);
   }
 
   const record = (roomField: string) => `
@@ -409,23 +391,23 @@ describe("P-C4-2: public room-id field compile proof", () => {
   `;
 
   it("ESM consumer: new bandRoomId field compiles via NodeNext package exports", () => {
-    const result = compileConsumer("consumer.mts", record("bandRoomId"));
-    expect(result.status).toBe(0);
+    const result = compile("consumer.mts", record("bandRoomId"));
+    expect(result.status, result.output).toBe(0);
   });
 
   it("ESM consumer: old thenvoiRoomId field fails to compile", () => {
-    const result = compileConsumer("old.mts", record("thenvoiRoomId"));
+    const result = compile("old.mts", record("thenvoiRoomId"));
     expect(result.status).not.toBe(0);
     expect(result.output).toMatch(/bandRoomId|thenvoiRoomId/);
   });
 
   it("CJS consumer: new bandRoomId field compiles via NodeNext package exports", () => {
-    const result = compileConsumer("consumer.cts", record("bandRoomId"));
-    expect(result.status).toBe(0);
+    const result = compile("consumer.cts", record("bandRoomId"));
+    expect(result.status, result.output).toBe(0);
   });
 
   it("CJS consumer: old thenvoiRoomId field fails to compile", () => {
-    const result = compileConsumer("old.cts", record("thenvoiRoomId"));
+    const result = compile("old.cts", record("thenvoiRoomId"));
     expect(result.status).not.toBe(0);
     expect(result.output).toMatch(/bandRoomId|thenvoiRoomId/);
   });

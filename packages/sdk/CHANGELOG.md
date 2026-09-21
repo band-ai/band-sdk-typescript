@@ -1,6 +1,75 @@
 # Changelog
 
 
+## [0.4.3](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.4.2...sdk-v0.4.3) (2026-09-21)
+
+
+### Features
+
+* Add Cursor ACP support ([#242](https://github.com/band-ai/band-sdk-typescript/issues/242)) ([d0d8d34](https://github.com/band-ai/band-sdk-typescript/commit/d0d8d34bfdf4500c3c665a06cac887aeec239ea0))
+
+## [0.4.2](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.4.1...sdk-v0.4.2) (2026-09-18)
+
+
+### Features
+
+* **adapters:** reconcile ACP session config from setter responses ([#230](https://github.com/band-ai/band-sdk-typescript/issues/230)) ([d04b8af](https://github.com/band-ai/band-sdk-typescript/commit/d04b8af60bfe9197dcbddd550f088e98c417bf7c))
+* **examples:** adapter expansion, Tom/Jerry, and example run tooling (INT-1491) ([#228](https://github.com/band-ai/band-sdk-typescript/issues/228)) ([9fa8a40](https://github.com/band-ai/band-sdk-typescript/commit/9fa8a405e05b557115710e25042d877121800202))
+
+## [0.4.1](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.4.0...sdk-v0.4.1) (2026-09-17)
+
+
+### Bug Fixes
+
+* **acp:** expose live session config selections ([650c637](https://github.com/band-ai/band-sdk-typescript/commit/650c6377c443b543678b324387a70cf5f557a1c7))
+* **adapters:** expose live session config selections ([1d8fbc9](https://github.com/band-ai/band-sdk-typescript/commit/1d8fbc9c43445cb176074488548c4050da2bf8f1))
+* **adapters:** refresh ACP public surface inventory ([2b3ded5](https://github.com/band-ai/band-sdk-typescript/commit/2b3ded551ebb19e90b7e9cf7e7877f71e0273a4a))
+* **examples:** address PR review for INT-1491 anthropic/a2a tranche ([9b3ecc5](https://github.com/band-ai/band-sdk-typescript/commit/9b3ecc5f516569ecae3b4ce90ac22eacbeeca0a3))
+
+
+### Documentation
+
+* **examples:** add self-contained harness docs ([51a70a2](https://github.com/band-ai/band-sdk-typescript/commit/51a70a2f5040f8a5b43a7d70bd4d60bbc072ec1b))
+
+## [0.4.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.3.4...sdk-v0.4.0) (2026-09-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sdk:** `maxHistoryMessages: 0` now replays no history. It previously returned the entire history, because the old call site ended in `.slice(-limit)` and `-0 === 0` makes `slice(0)` a no-op. A negative value likewise dropped that many turns from the front and now replays nothing. Callers relying on `0` to mean "unlimited" should omit the option or pass an explicit cap.
+* **sdk:** public zod-typed surfaces (CustomToolDef.schema, the exported payload schemas) are now zod 4 types; consumers passing zod 3 schemas must upgrade to zod 4.
+* **sdk:** A2A gateway status-update failure metadata renames error_type -> code and error_message -> message, and adds provider and detail keys. Remote A2A clients reading the old keys must switch to the new ones.
+
+### Features
+
+* **adapters:** add resolveSessionModel hook to ACPClientAdapter ([#196](https://github.com/band-ai/band-sdk-typescript/issues/196)) ([21c1e39](https://github.com/band-ai/band-sdk-typescript/commit/21c1e393f564a61bf2a466a0f8cf85c0cd4a4ebc))
+* add GitHub Copilot CLI ACP support ([#218](https://github.com/band-ai/band-sdk-typescript/issues/218)) ([cf15460](https://github.com/band-ai/band-sdk-typescript/commit/cf15460379a724d342f141a314e992c29513cda4))
+* Integrate band-sdk-core memory taxonomy into band-sdk-typescript ([#187](https://github.com/band-ai/band-sdk-typescript/issues/187)) ([1da6b2e](https://github.com/band-ai/band-sdk-typescript/commit/1da6b2e51e35825dfc9a9947f0b156396df3ed0b))
+* **sdk:** add OmpACPAdapter (INT-1473) ([#219](https://github.com/band-ai/band-sdk-typescript/issues/219)) ([59c2dd4](https://github.com/band-ai/band-sdk-typescript/commit/59c2dd4f01975634a0ac7098369c3d97c46345bc))
+* **sdk:** add platform-supported agent scope to memory tools (INT-1422) ([#191](https://github.com/band-ai/band-sdk-typescript/issues/191)) ([06702e6](https://github.com/band-ai/band-sdk-typescript/commit/06702e67e1b2aa31d629cbd0f83793e501046966))
+* **sdk:** Add structured adapter failure reporting ([#178](https://github.com/band-ai/band-sdk-typescript/issues/178)) ([5d9a66a](https://github.com/band-ai/band-sdk-typescript/commit/5d9a66a1dde4989fbc0608200f291f0ca8194052))
+* **sdk:** integrate band-sdk-core SubscriptionTracker into BandLink (INT-1324) ([6a8dc02](https://github.com/band-ai/band-sdk-typescript/commit/6a8dc023eeb5a64d7bdcb44d1125313d0d187d84))
+* **sdk:** validate inbound events with core ([8079af6](https://github.com/band-ai/band-sdk-typescript/commit/8079af699b01c88ce102ce9662318bd2355e3eb1))
+* **sdk:** validate inbound events with core (INT-1237) ([f1bed4f](https://github.com/band-ai/band-sdk-typescript/commit/f1bed4f6e3d87882b1f2adea5d5d162af8c43a61))
+* **websocket:** integrate core subscription tracking (INT-1324) ([b36fb1c](https://github.com/band-ai/band-sdk-typescript/commit/b36fb1cfbfa8fc5664a6fda2b374917d00781334))
+
+
+### Bug Fixes
+
+* **ci:** make the test suite run truthfully and let CI report on main ([#167](https://github.com/band-ai/band-sdk-typescript/issues/167)) ([d0eaade](https://github.com/band-ai/band-sdk-typescript/commit/d0eaade871f163b92794fa87de78f63f173f0956))
+* **sdk:** align core event projections ([f513301](https://github.com/band-ai/band-sdk-typescript/commit/f5133012f73deccc81143158457e4c7c4c4a6f14))
+* **sdk:** guard remaining caller loggers ([#220](https://github.com/band-ai/band-sdk-typescript/issues/220)) ([0eef7c1](https://github.com/band-ai/band-sdk-typescript/commit/0eef7c15c8c5f98abf6ed335b67da15db791a003))
+* **sdk:** migrate from zod 3 to zod 4 ([#164](https://github.com/band-ai/band-sdk-typescript/issues/164)) ([c206564](https://github.com/band-ai/band-sdk-typescript/commit/c206564fe4e81301c2abff9014a208872dd5fa50))
+* **sdk:** model compact core event payloads ([686ebd6](https://github.com/band-ai/band-sdk-typescript/commit/686ebd673f68c1d70227b6075e3c2d07b027ecd4))
+* **sdk:** normalize absent supersede retry delay ([6fde2df](https://github.com/band-ai/band-sdk-typescript/commit/6fde2dfb066454436773e6fa69efb6df8f70ef76))
+* **sdk:** rework runtime lifecycle bugs as a state machine ([#161](https://github.com/band-ai/band-sdk-typescript/issues/161)) ([10bacdc](https://github.com/band-ai/band-sdk-typescript/commit/10bacdccd459c3fa490e50e50727db102da6c261))
+* **sdk:** stop Parlant dropping messages in multi-turn history ([#166](https://github.com/band-ai/band-sdk-typescript/issues/166)) ([47fc3ca](https://github.com/band-ai/band-sdk-typescript/commit/47fc3cadc46736ec8a112f2a0f9c0b2c5560c36d))
+* **sdk:** surface JSON-RPC error data/cause instead of dropping it ([#195](https://github.com/band-ai/band-sdk-typescript/issues/195)) ([c9d552c](https://github.com/band-ai/band-sdk-typescript/commit/c9d552cdfe9a31b02673f14c42541a3d7a50ba97))
+* **sdk:** update for @agentclientprotocol/sdk v1 ([#214](https://github.com/band-ai/band-sdk-typescript/issues/214)) ([8ee508d](https://github.com/band-ai/band-sdk-typescript/commit/8ee508d388aa38a088645d4aab67e6b52fdc4ad3))
+* **sdk:** update for @band-ai/rest-client v0.0.143 ([#212](https://github.com/band-ai/band-sdk-typescript/issues/212)) ([6a86bb4](https://github.com/band-ai/band-sdk-typescript/commit/6a86bb40a4b5cced63247f83ed38f9b03f2851f8))
+* **sdk:** update for js-yaml v5 ([#211](https://github.com/band-ai/band-sdk-typescript/issues/211)) ([93b333d](https://github.com/band-ai/band-sdk-typescript/commit/93b333d9aaae098e6bad5fd98691c6bd448a25aa))
+* **sdk:** update for zod v4 ([#213](https://github.com/band-ai/band-sdk-typescript/issues/213)) ([c5ef5dd](https://github.com/band-ai/band-sdk-typescript/commit/c5ef5dd0fabf836104a5b2c13a2e29abc6a97127))
+
 ## [0.3.4](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.3.3...sdk-v0.3.4) (2026-09-14)
 
 

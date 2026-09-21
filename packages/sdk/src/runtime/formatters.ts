@@ -7,9 +7,8 @@ function isMetadataMap(value: unknown): value is MetadataMap {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-// `metadata.mentions` entries are validated against payloadSchemas.ts's
-// mentionSchema, where `handle`, `name` and `username` are all independently
-// nullish — any one of them can be the only field present on a given mention.
+// Inbound message payloads are normalized by band-sdk-core; any mention label
+// can still be absent independently, so choose the first usable one.
 export function mentionSubjectsFromMetadata(metadata: MetadataMap | undefined): Array<Record<string, unknown>> {
   const mentions = metadata?.mentions;
   if (!Array.isArray(mentions)) {

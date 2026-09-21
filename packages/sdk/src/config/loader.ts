@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import yaml from "js-yaml";
+import { load as loadYaml, JSON_SCHEMA } from "js-yaml";
 import { ValidationError } from "../core/errors";
 
 export interface AgentCredentials {
@@ -118,7 +118,7 @@ export function loadAgentConfig(
     );
   }
 
-  const parsed = yaml.load(raw, { schema: yaml.JSON_SCHEMA });
+  const parsed = loadYaml(raw, { schema: JSON_SCHEMA });
   if (!parsed || typeof parsed !== "object") {
     throw new ValidationError(`Invalid config file: ${filePath}. Expected a YAML object.`);
   }

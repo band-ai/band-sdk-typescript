@@ -1,6 +1,10 @@
 import type { FrameworkAdapter } from "../contracts/protocols";
 import type { AgentCredentials } from "../config";
+import type { Logger } from "../core/logger";
+import { resolveLogger } from "../core/logger";
 import { PlatformRuntime, type PlatformRuntimeOptions } from "../runtime/PlatformRuntime";
+import type { RuntimeLifecycleState } from "../runtime/lifecycle";
+import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, startWithGate } from "../runtime/lifecycle";
 import { runWithGracefulShutdown } from "../runtime/shutdown";
 import type { PlatformMessage } from "../runtime/types";
 
@@ -23,13 +27,22 @@ export interface AgentCreateOptions extends Omit<PlatformRuntimeOptions, "agentI
 export class Agent {
   private readonly platformRuntime: PlatformRuntime;
   private readonly adapter: FrameworkAdapter;
-  private started = false;
-  private startPromise: Promise<void> | null = null;
+  private readonly lifecycle: LifecycleTracker<RuntimeLifecycleState>;
+  private readonly logger: Logger;
+  private readonly startGate = new SingleFlight<void>();
+  private readonly stopGate = new SingleFlight<boolean>();
   private shutdownTimeoutMs: number | null = 30_000;
 
-  public constructor(runtime: PlatformRuntime, adapter: FrameworkAdapter) {
+  public constructor(runtime: PlatformRuntime, adapter: FrameworkAdapter, logger?: Logger) {
     this.platformRuntime = runtime;
     this.adapter = adapter;
+    this.logger = resolveLogger(logger);
+    this.lifecycle = new LifecycleTracker<RuntimeLifecycleState>({ status: "not_started" }, {
+      owner: "Agent",
+      logContext: { agentId: runtime.agentId },
+      logger: this.logger,
+      isLegalTransition: isLegalRuntimeTransition,
+    });
   }
 
   /** Build an Agent from credentials and a framework adapter. */
@@ -55,51 +68,133 @@ export class Agent {
         ? { restUrl: restUrl ?? config?.restUrl }
         : {}),
     });
-    const agent = new Agent(runtime, adapter);
+    const agent = new Agent(runtime, adapter, runtimeOptions.logger);
     agent.shutdownTimeoutMs = shutdownTimeoutMs === undefined ? 30_000 : shutdownTimeoutMs;
     return agent;
   }
 
+  /**
+   * Whether the agent is currently started.
+   *
+   * `false` while a `start()` call is still in flight — it only turns `true`
+   * once that call has resolved — and `false` again once the agent is stopped.
+   *
+   * @deprecated Read {@link Agent.state} instead, which also distinguishes
+   * `"starting"`, `"stopping"` and `"failed"` from a plain `"not_started"`.
+   */
   public get isRunning(): boolean {
-    return this.started;
+    return this.lifecycle.is("running");
   }
 
+  /** Current lifecycle state of this agent. */
+  public get state(): RuntimeLifecycleState {
+    return this.lifecycle.state;
+  }
+
+  /**
+   * The underlying `PlatformRuntime`, for reading its `link`/`getContext()`/etc.
+   *
+   * Do not call `runtime.start()`/`runtime.stop()` directly: `Agent` keeps its
+   * own lifecycle tracker, so driving `PlatformRuntime`'s independently leaves
+   * `agent.state` reporting stale information. Use {@link Agent.start}/
+   * {@link Agent.stop} instead.
+   */
   public get runtime(): PlatformRuntime {
     return this.platformRuntime;
   }
 
+  /**
+   * Start the agent.
+   *
+   * Repeated or concurrent calls join the in-flight start. Calling `start()`
+   * while a `stop()` is still in flight rejects with a `RuntimeStateError`.
+   */
   public async start(): Promise<void> {
-    if (this.startPromise) {
-      return this.startPromise;
-    }
-
-    this.startPromise = this.platformRuntime.start(this.adapter).then(() => {
-      this.started = true;
-    }).catch((error: unknown) => {
-      this.startPromise = null;
-      throw error;
+    await startWithGate({
+      lifecycle: this.lifecycle,
+      startGate: this.startGate,
+      stopGate: this.stopGate,
+      ownerName: "Agent",
+      runStart: () => this.runStart(),
     });
-    return this.startPromise;
   }
 
+  private async runStart(): Promise<void> {
+    // The fresh `"starting"` state `startWithGate` just installed. Comparing
+    // against this instance — not against the status — is what keeps a start
+    // that a `stop()` superseded from reporting on the lifecycle a *later*
+    // start has since taken over.
+    const startState = this.lifecycle.state;
+
+    try {
+      await this.platformRuntime.start(this.adapter);
+    } catch (error) {
+      // PlatformRuntime.start() already ran its own cleanup before rejecting.
+      if (this.lifecycle.isCurrent(startState)) {
+        this.lifecycle.fail(error, "start-failed");
+      }
+      throw error;
+    }
+
+    if (this.lifecycle.isCurrent(startState)) {
+      this.lifecycle.transition({ status: "running" }, "started");
+    }
+  }
+
+  /**
+   * Stop the agent.
+   *
+   * A concurrent second call joins the in-flight teardown and mirrors its
+   * outcome — including rejecting with the *same* `Error` instance. A rejected
+   * `stop()` is not treated as a completed one: the next `stop()` reports the
+   * same failure, and a `start()` re-arms teardown.
+   */
   public async stop(timeoutMs?: number | null): Promise<boolean> {
-    if (!this.started && !this.startPromise) {
+    return await this.stopGate.run(() => this.runStop(timeoutMs));
+  }
+
+  private async runStop(timeoutMs?: number | null): Promise<boolean> {
+    // A start that failed already tore down whatever PlatformRuntime had built,
+    // so there is nothing left to stop — but the caller must not be told the
+    // agent shut down gracefully while `state` still reads "failed".
+    if (this.lifecycle.is("failed")) {
+      this.logger.debug("Agent stop is resurfacing the recorded start failure", { error: this.lifecycle.state.error });
+
+      throw this.lifecycle.state.error;
+    }
+
+    if (!this.lifecycle.is("starting") && !this.lifecycle.is("running")) {
       return true;
     }
 
-    if (!this.started && this.startPromise) {
+    // Captured before the transition below moves the lifecycle off "starting".
+    const pendingStart = this.lifecycle.is("starting") ? this.startGate.pending : null;
+
+    this.startGate.reset();
+    this.lifecycle.transition({ status: "stopping" }, "stop");
+
+    // Issued before awaiting that start rather than after it: `PlatformRuntime.stop()`
+    // is what supersedes an in-flight start, so queueing behind it would let an
+    // adapter whose startup never settles block shutdown indefinitely.
+    const stopping = this.platformRuntime.stop(timeoutMs ?? undefined);
+
+    if (pendingStart) {
       try {
-        await this.startPromise;
-      } catch {
-        return true;
+        await pendingStart;
+      } catch (error) {
+        // The start's own caller sees the rejection, but a fire-and-forget
+        // start() has no such caller, so leave a trace here.
+        this.logger.debug("Agent stop superseded the in-flight start", { error });
       }
     }
 
     try {
-      return await this.platformRuntime.stop(timeoutMs ?? undefined);
-    } finally {
-      this.started = false;
-      this.startPromise = null;
+      const graceful = await stopping;
+      this.lifecycle.transition({ status: "stopped" }, "stopped");
+      return graceful;
+    } catch (error) {
+      this.lifecycle.fail(error, "stop-failed");
+      throw error;
     }
   }
 

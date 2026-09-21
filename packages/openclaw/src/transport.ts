@@ -19,10 +19,17 @@ import { AgentRuntime, ContactEventHandler } from "@band-ai/sdk/runtime";
 import type { MsgContext } from "openclaw/plugin-sdk/reply-runtime";
 import { dispatchInboundMessageWithBufferedDispatcher } from "openclaw/plugin-sdk/reply-runtime";
 import { runPassiveAccountLifecycle } from "openclaw/plugin-sdk/channel-lifecycle";
-import type {
-  ChannelGatewayAdapter,
-  ChannelGatewayContext,
-} from "openclaw/plugin-sdk/channel-runtime";
+import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-core";
+import type { ChannelGatewayContext } from "openclaw/plugin-sdk/channel-contract";
+
+// `ChannelGatewayAdapter` is no longer re-exported as a standalone type from
+// any `openclaw/plugin-sdk/*` subpath as of openclaw 2026.9.4 (previously
+// available from the now-removed `channel-runtime` subpath). Derive it
+// structurally from the `gateway` field of the still-exported `ChannelPlugin`
+// contract instead of importing internal package types directly.
+type ChannelGatewayAdapter<ResolvedAccount = unknown> = NonNullable<
+  ChannelPlugin<ResolvedAccount>["gateway"]
+>;
 import { resolveConnectionConfig, DEFAULT_STOP_TIMEOUT_MS, type BandAccountConfig } from "./config.js";
 import {
   setAccount,
@@ -57,6 +64,13 @@ export interface BuildInboundContextOptions {
 
 const DIRECT_ROOM_TYPES = new Set(["direct", "dm", "individual", "one_to_one"]);
 
+function messageRoomId(
+  event: Extract<PlatformEvent, { type: "message_created" }>,
+): string | null {
+  const fallback = event.payload.chat_room_id;
+  return event.roomId ?? (typeof fallback === "string" ? fallback : null);
+}
+
 /** Map a Band room type to OpenClaw's direct/group chat type (default group). */
 export function roomTypeToChatType(roomType: string | null | undefined): "direct" | "group" {
   if (!roomType) return "group";
@@ -75,7 +89,7 @@ export function platformEventToInboundContext(
   if (event.type !== "message_created") return null;
 
   const payload = event.payload;
-  const roomId = event.roomId ?? payload.chat_room_id;
+  const roomId = messageRoomId(event);
   if (!roomId) return null;
   if (payload.sender_id === opts.selfAgentId) return null;
   if (payload.message_type !== "text") return null;
@@ -216,7 +230,7 @@ export function createReplyDeliver(
     try {
       await outboundSendText(
         {
-          rest: account.link.rest as never,
+          rest: account.link.rest,
           selfAgentId: account.selfAgentId,
           getLastSender: (r) => getLastSender(accountId, r) ?? null,
         },
@@ -236,7 +250,7 @@ function defaultDispatch(deps: Required<Pick<BandGatewayDeps, "log">>): (p: Disp
       dispatcherOptions: {
         deliver: createReplyDeliver(accountId, roomId, deps.log),
         onError: (err: unknown) => deps.log(`[band:${accountId}] reply error (room=${roomId}): ${String(err)}`),
-      } as Parameters<typeof dispatchInboundMessageWithBufferedDispatcher>[0]["dispatcherOptions"],
+      },
     });
   };
 }
@@ -248,14 +262,14 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
   const createLink = deps.createLink ?? ((conn) => new BandLink(conn) as unknown as LinkLike);
   const createRuntime =
     deps.createRuntime ??
-    ((link, opts) => new AgentRuntime(buildRuntimeOptions(link, opts) as never) as unknown as RuntimeLike);
+    ((link, opts) => new AgentRuntime(buildRuntimeOptions(link, opts) as never));
   const createContactHandler =
     deps.createContactHandler ??
     ((link) =>
       new ContactEventHandler({
         config: { strategy: "hub_room", broadcastChanges: true },
         rest: link.rest as never,
-      }) as unknown as { handle: (event: ContactEvent) => Promise<unknown> });
+      }));
   const dispatch = deps.dispatch ?? defaultDispatch({ log });
 
   async function teardown(accountId: string): Promise<void> {
@@ -352,7 +366,7 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
         messageId: string | undefined;
       } | null> {
         if (event.type !== "message_created") return null;
-        const roomId = event.roomId ?? event.payload.chat_room_id;
+        const roomId = messageRoomId(event);
         if (!roomId) return null;
 
         const roomType = getRoomType(accountId, roomId);
@@ -418,7 +432,7 @@ export function createBandGateway(deps: BandGatewayDeps = {}): ChannelGatewayAda
         link: link as never,
         selfAgentId,
         ownerUuid,
-        runtime: runtime as never,
+        runtime: runtime,
         stopTimeoutMs: ctx.account.stopTimeoutMs,
       });
 

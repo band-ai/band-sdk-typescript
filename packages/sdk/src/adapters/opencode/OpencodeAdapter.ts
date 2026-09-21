@@ -5,6 +5,7 @@ import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import { rethrowIfRecoverableTurnFailure } from "../../core/errors";
+import { createDeferred } from "../../core/deferred";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import type { PlatformMessage } from "../../runtime/types";
 import {
@@ -150,14 +151,6 @@ interface OpencodeAdapterOptions {
   clientFactory?: (config: Required<OpencodeAdapterConfig>) => OpencodeClientLike;
   mcpBackendFactory?: typeof createBandMcpBackend;
   logger?: Logger;
-}
-
-function createDeferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((innerResolve) => {
-    resolve = innerResolve;
-  });
-  return { promise, resolve };
 }
 
 function withDefaults(config?: OpencodeAdapterConfig): Required<OpencodeAdapterConfig> {

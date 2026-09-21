@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.0](https://github.com/band-ai/band-sdk-typescript/compare/openclaw-channel-band-v0.2.1...openclaw-channel-band-v0.3.0) (2026-09-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sdk:** public zod-typed surfaces (CustomToolDef.schema, the exported payload schemas) are now zod 4 types; consumers passing zod 3 schemas must upgrade to zod 4.
+
+### Features
+
+* **sdk:** validate inbound events with core ([8079af6](https://github.com/band-ai/band-sdk-typescript/commit/8079af699b01c88ce102ce9662318bd2355e3eb1))
+
+
+### Bug Fixes
+
+* **openclaw:** guard Core room id passthrough ([2fbbacc](https://github.com/band-ai/band-sdk-typescript/commit/2fbbacc2ec2126d27cd72fba8097b631c808ec6c))
+* **openclaw:** update for openclaw 2026.9.4 ([#216](https://github.com/band-ai/band-sdk-typescript/issues/216)) ([61c21de](https://github.com/band-ai/band-sdk-typescript/commit/61c21deab650d1e882793d550dc7959d68fb907f))
+* **sdk:** migrate from zod 3 to zod 4 ([#164](https://github.com/band-ai/band-sdk-typescript/issues/164)) ([c206564](https://github.com/band-ai/band-sdk-typescript/commit/c206564fe4e81301c2abff9014a208872dd5fa50))
+
 ## [0.2.1](https://github.com/band-ai/band-sdk-typescript/compare/openclaw-channel-band-v0.2.0...openclaw-channel-band-v0.2.1) (2026-09-07)
 
 

@@ -105,7 +105,8 @@ type PlatformEvent =
   | ContactRequestReceivedEvent
   | ContactRequestUpdatedEvent
   | ContactAddedEvent
-  | ContactRemovedEvent;
+  | ContactRemovedEvent
+  | ReconnectedEvent;         // type: "reconnected" — synthetic, see below
 
 type ContactEvent =
   | ContactRequestReceivedEvent
@@ -115,6 +116,16 @@ type ContactEvent =
 ```
 
 `BandLink` is `AsyncIterable<PlatformEvent>`; `PlatformRuntime` consumes it and dispatches to the correct `ExecutionContext` per room.
+
+### Synthetic `reconnected` Event
+
+`ReconnectedEvent` (`{ type: "reconnected", roomId: null, payload: {} }`) never arrives over the wire — `BandLink` synthesizes it once per automatic WebSocket reconnect, after its internal `SubscriptionManager` has reconciled every room and agent-topic subscription against the transport's post-reconnect snapshot (rejoining what settled cleanly, cleaning up what didn't). It is queued through the same event stream as every other `PlatformEvent`, so ordering relative to real events is preserved.
+
+Two runtime consumers act on it:
+- `RoomPresence` re-subscribes `agent_rooms`/`agent_contacts`, re-fetches the REST room snapshot, reconciles its roster via `RoomRoster.reconcile()`, and forwards the event to every currently tracked room.
+- `Execution` (via `AgentRuntime`) intercepts it in its serialized event queue and calls `synchronizeWithNext()` again — the same `/messages/next` catch-up sweep used at startup — so messages missed during the disconnect are picked up before normal WebSocket processing resumes. The event itself is never forwarded to `onExecute`/adapters.
+
+A framework adapter or any other direct consumer of `BandLink`'s event stream should treat `"reconnected"` as a no-op unless it specifically needs to react to a resumed connection — it carries no room-specific payload.
 
 ## Contact Event Handling
 
@@ -283,7 +294,7 @@ packages/sdk/src/
 ├── integrations/      # Deep integrations (currently: linear/)
 ├── linear/            # Subpath barrel for @band-ai/sdk/linear
 ├── mcp/               # Generic MCP + Claude SDK MCP bridge
-├── platform/          # BandLink (WS+REST), PlatformEvent, Phoenix Channels transport
+├── platform/          # BandLink (WS+REST), PlatformEvent, Phoenix Channels transport, SubscriptionManager (internal)
 ├── rest/              # Subpath barrel for @band-ai/sdk/rest
 ├── runtime/           # PlatformRuntime, ExecutionContext, Execution, ContactEventHandler
 │   ├── tools/         # AgentTools, ContactToolsImpl, ContactCallbackTools, schemas
@@ -294,6 +305,59 @@ packages/sdk/src/
 ├── types/             # Ambient type shims (google-adk.d.ts, ws.d.ts)
 └── index.ts           # Main barrel export
 ```
+
+## Runtime Lifecycle
+
+`Agent`, `PlatformRuntime`, `AgentRuntime`, and `Execution` each keep their lifecycle in **one**
+discriminated-union field (`packages/sdk/src/runtime/lifecycle.ts`), read publicly via a `state`
+getter. Do not reintroduce parallel booleans (`started`, `running`, `stopping`, …) — they are what
+made illegal combinations reachable and stranded shutdown on error paths.
+
+| Type | Used by | States |
+|---|---|---|
+| `RuntimeLifecycleState` | `Agent`, `PlatformRuntime`, `AgentRuntime` | `not_started`, `starting`, `running`, `stopping`, `stopped`, `failed` |
+| `ExecutionLifecycleState` | `Execution` | `running`, `stopping`, `stopped` (carries `graceful`), `failed` |
+
+```text
+not_started ─▶ starting ─▶ running ─▶ stopping ─▶ stopped
+                   │          │           │           │
+                   └──────────┴───────────┴──▶ failed │
+                                                 │    │
+                        starting ◀───────────────┴────┘
+```
+
+Rules:
+
+- Every transition goes through `LifecycleTracker.transition()`, which validates it against
+  `isLegalRuntimeTransition` / `isLegalExecutionTransition`. Both read a `Record` keyed by the full
+  status union, so adding a state without adding its row fails `pnpm -r typecheck`.
+- `stopped` and `failed` are re-startable for the three runtime owners; `Execution` is terminal.
+- `start()` while a `stop()` is in flight rejects with `RuntimeStateError`.
+- `stop()` while a `start()` is in flight **supersedes** that start for `Agent` and
+  `PlatformRuntime`: it tears down what the start had already claimed and returns, and the start
+  aborts at its next checkpoint with `RuntimeStateError` instead of installing a live runtime
+  behind the completed teardown. It does not queue behind the start — several adapters only
+  abandon a parked `onStarted()` once `onRuntimeStop()` runs, so a stop that waited would be
+  waiting on itself. `AgentRuntime.stop()` does wait for its own start, since it drives no
+  third-party adapter that can park indefinitely.
+- "Was I superseded?" is asked through the lifecycle, not a second counter beside it: a start
+  captures the `"starting"` state instance `startWithGate()` installed and later checks
+  `LifecycleTracker.isCurrent()`. Every accepted transition installs a fresh frozen state, so this
+  distinguishes "still my start" from "a replacement start is now running", which a bare status
+  comparison cannot.
+- Teardown steps are isolated from each other: one room's failing `Execution.stop()` never skips
+  the remaining rooms, the map clearing, or `link.disconnect()`. Failures are collected and
+  rethrown together (a single distinct error is rethrown as-is, keeping error identity intact).
+- Concurrent `start()`/`stop()` calls join the in-flight operation and mirror its outcome,
+  including the identical `Error` instance on failure. `stop()` never returns `true` for teardown
+  it did not perform.
+- `stop()` on an owner whose state is `failed` with nothing left to tear down rejects with the
+  recorded error rather than resolving `true` — a `true` that contradicts `state` is the same
+  masked-success bug in a narrower window.
+- `Execution.enqueue()` after `stop()` rejects with `RuntimeStateError` instead of silently
+  queueing into a queue nothing will read.
+- `ExecutionState` in `ExecutionContext.ts` (`"starting" | "idle" | "processing"`) is a *per-turn
+  activity* indicator, not a lifecycle. Keep the two vocabularies non-overlapping.
 
 ## Testing Structure
 
@@ -394,7 +458,7 @@ When adding a new adapter, follow this workflow. Use the lowercase module name (
 
 ### Phase 5: Example
 
-- Create `packages/sdk/examples/<framework>/<framework>-agent.ts` mirroring an existing example (e.g., `examples/anthropic/anthropic-agent.ts`).
+- Create `packages/sdk/examples/<framework>/01_basic_agent.ts` (numbered scripts + folder README) mirroring an existing example (e.g., `examples/anthropic/01_basic_agent.ts`).
 - Use `loadAgentConfig("my_agent")` (YAML) or `loadAgentConfigFromEnv()` (env vars) for credentials, **not** direct `process.env` reads.
 
 ### Phase 6: Final Validation
