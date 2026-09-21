@@ -152,10 +152,10 @@ describe("ClaudeSDKAdapter", () => {
     expect(payload.summary).toBe("Used band_send_message");
   });
 
-  it("rehydrates session id from bootstrap task metadata", async () => {
-    const calls: Array<{ options?: Record<string, unknown> }> = [];
-    const queryFn: ClaudeSDKQuery = ({ options }) => {
-      calls.push({ options: options as Record<string, unknown> });
+  it("rehydrates session id from bootstrap task metadata without prompting it", async () => {
+    const calls: Array<{ prompt: string; options?: Record<string, unknown> }> = [];
+    const queryFn: ClaudeSDKQuery = ({ prompt, options }) => {
+      calls.push({ prompt, options: options as Record<string, unknown> });
       return streamFrom([
         {
           type: "assistant",
@@ -188,6 +188,7 @@ describe("ClaudeSDKAdapter", () => {
     );
 
     expect(calls[0]?.options?.resume).toBe("session-from-history");
+    expect(calls[0]?.prompt).not.toContain("[Previous conversation context]");
     expect(tools.events.some((event) => event.messageType === "task")).toBe(true);
   });
 

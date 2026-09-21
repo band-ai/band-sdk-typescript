@@ -38,4 +38,55 @@ describe("buildConversationPrompt", () => {
     expect(prompt).not.toContain("[History]");
     expect(prompt).toBe("Current message");
   });
+
+  it("keeps only text entries from the raw bootstrap window", () => {
+    const prompt = buildConversationPrompt({
+      history: new HistoryProvider([
+        { sender_name: "Old", content: "outside the window" },
+        ...Array.from({ length: 49 }, (_, index) => ({
+          message_type: "task",
+          sender_name: "Task",
+          content: `task ${index}`,
+        })),
+        { sender_name: "Alice", message_type: "text", content: "typed text" },
+        { sender_name: "Bob", content: "legacy text" },
+        { message_type: "tool_call", content: JSON.stringify({ type: "tool_use_summary" }) },
+        { message_type: "tool_result", content: "tool output" },
+        { message_type: "thought", content: "internal reasoning" },
+        { message_type: "error", content: "provider error" },
+        { message_type: "unknown", content: "unrecognized content" },
+      ]),
+      isSessionBootstrap: true,
+      participantsMessage: null,
+      contactsMessage: null,
+      historyHeader: "[History]",
+      currentMessage: "Current message",
+      maxHistoryMessages: 50,
+    });
+
+    expect(prompt).toContain("[Alice]: typed text");
+    expect(prompt).toContain("[Bob]: legacy text");
+    expect(prompt).not.toContain("outside the window");
+    expect(prompt).not.toContain("tool_use_summary");
+    expect(prompt).not.toContain("tool output");
+    expect(prompt).not.toContain("internal reasoning");
+    expect(prompt).not.toContain("provider error");
+    expect(prompt).not.toContain("unrecognized content");
+  });
+
+  it("omits the history header when no bootstrap entries are text", () => {
+    const prompt = buildConversationPrompt({
+      history: new HistoryProvider([
+        { message_type: "task", content: "session marker" },
+        { message_type: "tool_call", content: "tool call" },
+      ]),
+      isSessionBootstrap: true,
+      participantsMessage: null,
+      contactsMessage: null,
+      historyHeader: "[History]",
+      currentMessage: "Current message",
+    });
+
+    expect(prompt).toBe("Current message");
+  });
 });

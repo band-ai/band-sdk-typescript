@@ -34,15 +34,22 @@ export function buildConversationPrompt(options: BuildConversationPromptOptions)
   if (options.isSessionBootstrap && options.history.length > 0) {
     const historyText = options.history.raw
       .slice(-(options.maxHistoryMessages ?? 50))
+      .filter(isTextHistoryEntry)
       .map(formatHistoryLine)
       .join("\n");
-    parts.push(`${options.historyHeader}\n${historyText}`);
+    if (historyText) {
+      parts.push(`${options.historyHeader}\n${historyText}`);
+    }
   }
 
   parts.push(...systemUpdateParts(options.participantsMessage, options.contactsMessage));
 
   parts.push(options.currentMessage);
   return parts.join("\n\n");
+}
+
+function isTextHistoryEntry(entry: Record<string, unknown>): boolean {
+  return entry.message_type === undefined || entry.message_type === "text";
 }
 
 function formatHistoryLine(entry: Record<string, unknown>): string {
