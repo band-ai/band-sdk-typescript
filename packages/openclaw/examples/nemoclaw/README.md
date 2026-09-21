@@ -137,7 +137,7 @@ tmp_dir="$(mktemp -d)"
 archive="$(npm pack @band-ai/band-sdk-core@2.5.0 --pack-destination "$tmp_dir" --silent)"
 tar -xOf "$tmp_dir/$archive" package/band_sdk_core_bg.wasm > "$tmp_dir/band_sdk_core_bg.wasm"
 wasm_size="$(wc -c < "$tmp_dir/band_sdk_core_bg.wasm" | tr -d ' ')"
-test "$wasm_size" -gt 0
+test "$wasm_size" -gt 0 || exit 1
 mv "$tmp_dir/band_sdk_core_bg.wasm" "$plugin_dir/dist/band_sdk_core_bg.wasm"
 rm -rf "$tmp_dir"
 
