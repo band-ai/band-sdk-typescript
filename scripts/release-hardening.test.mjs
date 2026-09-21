@@ -564,15 +564,19 @@ test("openclaw build copies wasm via tsup onSuccess and CI packaging requires it
   const tsupConfig = readFileSync(join(root, "packages/openclaw/tsup.config.ts"), "utf8");
   assert.match(
     tsupConfig,
-    /async onSuccess\(\) \{[\s\S]*?import\("\.\/scripts\/copy-wasm\.mjs"\)[\s\S]*?copyWasm\(\)[\s\S]*?process\.exit\(1\)/,
+    /async onSuccess\(\) \{[\s\S]*?try \{[\s\S]*?import\("\.\/scripts\/copy-wasm\.mjs"\)[\s\S]*?copyWasm\(\)[\s\S]*?\} catch[\s\S]*?process\.exit\(1\)/,
   );
+  assert.match(tsupConfig, /CORE_WASM_FILENAME|band_sdk_core_bg\.wasm/);
 
   const copyWasm = readFileSync(join(root, "packages/openclaw/scripts/copy-wasm.mjs"), "utf8");
   assert.match(copyWasm, /requireFromOpenclaw\.resolve\("@band-ai\/sdk"\)/);
+  assert.match(copyWasm, /export const CORE_WASM_FILENAME/);
+  assert.match(copyWasm, /assertNonEmptyWasm|size === 0/);
   assert.match(copyWasm, /band_sdk_core_bg\.wasm/);
   assert.match(copyWasm, /realpathSync/);
 
   const stageLink = readFileSync(join(root, "packages/openclaw/scripts/stage-link.mjs"), "utf8");
+  assert.match(stageLink, /CORE_WASM_FILENAME/);
   assert.match(
     stageLink,
     /statSync\(wasmPath\)\.size === 0/,

@@ -4,6 +4,10 @@ Run the Band channel plugin in NemoClaw's stock OpenClaw runtime on Apple Silico
 
 Band credentials are stored in `/sandbox/.openclaw/openclaw.json`. They are not stored in host environment variables or this repository.
 
+The maintained copy of this guide also lives on
+[docs.band.ai](https://docs.band.ai/integrations/sandboxes/nemoclaw). This directory keeps the
+checked-in `presets/band.yaml` artifact that guide references.
+
 ## Prerequisites
 
 - Apple Silicon Mac
@@ -93,7 +97,10 @@ Choose the following options in the wizard:
 4. Decline web search and the bundled messaging channels unless you need them.
 5. Use the default OpenShell resource profile.
 
-Do not pass this example's base-only Dockerfile with `--from`. NemoClaw `0.0.124` treats a custom Dockerfile as the complete sandbox image. The base image does not contain the managed startup runtime, so its gateway cannot become ready. Onboard the stock runtime and install the Band plugin after the sandbox is ready.
+Do not onboard with `nemoclaw onboard --from` and a custom Dockerfile. NemoClaw `0.0.124` treats that
+file as the complete sandbox image; a base-only image lacks the managed startup runtime, so the
+gateway never becomes ready. Onboard the stock runtime and install the Band plugin after the sandbox
+is ready.
 
 ## 4. Apply the Band egress policy
 
@@ -109,18 +116,18 @@ Band uses REST and a Phoenix Channels WebSocket on the same host and port. One h
 
 ## 5. Install the Band plugin
 
-Install the Band channel plugin into the stock runtime. Prefer a published release that already ships `dist/band_sdk_core_bg.wasm` (any OpenClaw package built after this packaging fix). Until that release is on npm, install the current `0.3.0` line and repair with the **matching** core WASM (`2.5.0` — the same version `0.3.0` embeds). Do not pair `0.3.x` with `band-sdk-core@2.0.0`.
+Install the Band channel plugin into the stock runtime, then decide whether a WASM repair is needed from `plugins inspect` — never from whether “some” published build exists.
 
 **Host**
 
 ```bash
-nemoclaw band-demo exec -- env HOME=/sandbox openclaw plugins install @band-ai/openclaw-channel-band@0.3.0 --force
+nemoclaw band-demo exec -- env HOME=/sandbox openclaw plugins install @band-ai/openclaw-channel-band@latest --force
 nemoclaw band-demo connect
 ```
 
 The shell opened by `connect` is inside the sandbox. Run the rest of this section there.
 
-Confirm the plugin loaded. If `openclaw plugins inspect openclaw-channel-band --runtime --json` reports a missing `band_sdk_core_bg.wasm`, copy the matching asset:
+Inspect the installed plugin. If runtime status is `"loaded"` and diagnostics are empty, skip the repair. If inspect reports a missing `band_sdk_core_bg.wasm` (today’s npm `0.3.0` still does), copy the **matching** core WASM for that plugin’s embedded glue (`2.5.0` for `0.3.x` — do not pair `0.3.x` with `band-sdk-core@2.0.0`):
 
 **Sandbox**
 
@@ -137,14 +144,17 @@ tmp_dir="$(mktemp -d)"
 archive="$(npm pack @band-ai/band-sdk-core@2.5.0 --pack-destination "$tmp_dir" --silent)"
 tar -xOf "$tmp_dir/$archive" package/band_sdk_core_bg.wasm > "$tmp_dir/band_sdk_core_bg.wasm"
 wasm_size="$(wc -c < "$tmp_dir/band_sdk_core_bg.wasm" | tr -d ' ')"
-test "$wasm_size" -gt 0 || exit 1
-mv "$tmp_dir/band_sdk_core_bg.wasm" "$plugin_dir/dist/band_sdk_core_bg.wasm"
+if [ "$wasm_size" -le 0 ]; then
+  echo "band_sdk_core_bg.wasm extract was empty — leave the connect shell open and re-check npm pack/tar" >&2
+else
+  mv "$tmp_dir/band_sdk_core_bg.wasm" "$plugin_dir/dist/band_sdk_core_bg.wasm"
+fi
 rm -rf "$tmp_dir"
 
 openclaw plugins inspect openclaw-channel-band --runtime --json
 ```
 
-The Node parser discards any proxy status line before the JSON. The final inspection must report `"status": "loaded"` and an empty `diagnostics` array. Skip the repair once a published build includes the wasm. Reinstall (and repair only if still needed) after a NemoClaw rebuild that replaces the sandbox's writable OpenClaw state.
+The Node parser discards any proxy status line before the JSON. The final inspection must report `"status": "loaded"` and an empty `diagnostics` array. Re-run inspect (and repair only when it still reports missing wasm) after a NemoClaw rebuild that replaces the sandbox's writable OpenClaw state.
 
 ## 6. Configure Band inside the sandbox
 
@@ -216,7 +226,7 @@ Add the agent to a Band room and mention it. A model-generated reply should appe
 |---|---|
 | NemoClaw rejects the host platform or container runtime | Run `docker info --format '{{.OperatingSystem}}'`. Start Docker Desktop or Colima, switch to its Docker context, and confirm `nemoclaw host probe` succeeds. OrbStack is unsupported. |
 | A Docker volume is missing after switching runtimes | Run `readlink /var/run/docker.sock`. If it points to the old runtime, stop the existing gateway after confirming it has no running sandboxes, export Colima's `DOCKER_HOST`, and onboard a new `band-demo` sandbox. |
-| A custom image is created but its gateway never becomes ready | The example Dockerfile is only a base image. Onboard the stock runtime without a custom image, then install the plugin in the ready sandbox. |
+| A custom image is created but its gateway never becomes ready | Onboard the stock runtime without `--from` and a custom Dockerfile, then install the plugin in the ready sandbox. |
 | The plugin does not load | Inside the sandbox, run `openclaw plugins inspect openclaw-channel-band --runtime --json`. If it reports a missing `band_sdk_core_bg.wasm`, repeat the matching-core repair in step 5 (`2.5.0` for `0.3.x`). |
 | `[band:default] connected to Band` never appears | Confirm the default account is enabled, the agent ID and API key match, and the `presets/band.yaml` policy from step 4 is applied. Check OpenShell policy prompts for blocked access to `app.band.ai:443`. |
 | Band tools are hidden | Merge `openclaw-channel-band` and `message` into `tools.alsoAllow` (do not overwrite the whole list), restart the gateway, and start a new Band conversation. |
