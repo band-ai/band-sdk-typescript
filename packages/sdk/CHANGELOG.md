@@ -1,6 +1,13 @@
 # Changelog
 
 
+## [0.4.3](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.4.2...sdk-v0.4.3) (2026-09-21)
+
+
+### Features
+
+* Add Cursor ACP support ([#242](https://github.com/band-ai/band-sdk-typescript/issues/242)) ([d0d8d34](https://github.com/band-ai/band-sdk-typescript/commit/d0d8d34bfdf4500c3c665a06cac887aeec239ea0))
+
 ## [0.4.2](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.4.1...sdk-v0.4.2) (2026-09-18)
 
 
