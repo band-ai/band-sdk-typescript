@@ -3,14 +3,19 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Agent } from "../src/agent/Agent";
-import { RuntimeStateError } from "../src/core/errors";
+import { RuntimeStateError, ValidationError } from "../src/core/errors";
 import { BandLink } from "../src/platform/BandLink";
 import type { PlatformEvent } from "../src/platform/events";
 import type { StreamingTransport, TopicHandlers } from "../src/platform/streaming/transport";
 import { Execution } from "../src/runtime/Execution";
-import type { ExecutionState } from "../src/runtime/ExecutionContext";
+import { ExecutionContext, type ExecutionState } from "../src/runtime/ExecutionContext";
 import { PlatformRuntime, type PlatformRuntimeOptions } from "../src/runtime/PlatformRuntime";
 import { AgentRuntime } from "../src/runtime/rooms/AgentRuntime";
+import {
+  DEFAULT_CONTEXT_CACHE_TTL_SECONDS,
+  DEFAULT_MAX_MESSAGE_RETRIES,
+  MAX_CONTEXT_MESSAGES,
+} from "../src/runtime/types";
 import { RetryTracker } from "@band-ai/band-sdk-core";
 import {
   isLegalExecutionTransition,
@@ -173,6 +178,43 @@ function makeAgentRuntime(
     ...overrides,
   });
 }
+
+it("rejects invalid session config through the direct AgentRuntime entry point", () => {
+  expect(() => makeAgentRuntime(new FakeTransport(), {
+    sessionConfig: { maxContextMessages: 0 },
+  })).toThrow(ValidationError);
+});
+
+it("applies sessionConfig defaults through AgentRuntime", () => {
+  let captured: Parameters<NonNullable<AgentRuntimeOptions["contextFactory"]>>[1] | undefined;
+  makeAgentRuntime(new FakeTransport(), {
+    contextFactory: (_roomId, defaults) => {
+      captured = defaults;
+      return new ExecutionContext(defaults);
+    },
+  }).getOrCreateContext(ROOM_ID);
+
+  expect(captured).toMatchObject({
+    enableContextCache: true,
+    contextCacheTtlSeconds: DEFAULT_CONTEXT_CACHE_TTL_SECONDS,
+    maxContextMessages: MAX_CONTEXT_MESSAGES,
+    maxMessageRetries: DEFAULT_MAX_MESSAGE_RETRIES,
+    enableContextHydration: true,
+  });
+});
+
+it("retains contextCacheTtlSeconds=0 through AgentRuntime", () => {
+  let captured: Parameters<NonNullable<AgentRuntimeOptions["contextFactory"]>>[1] | undefined;
+  makeAgentRuntime(new FakeTransport(), {
+    sessionConfig: { contextCacheTtlSeconds: 0 },
+    contextFactory: (_roomId, defaults) => {
+      captured = defaults;
+      return new ExecutionContext(defaults);
+    },
+  }).getOrCreateContext(ROOM_ID);
+
+  expect(captured?.contextCacheTtlSeconds).toBe(0);
+});
 
 function makeStubRuntime(overrides?: {
   start?: () => Promise<void>;

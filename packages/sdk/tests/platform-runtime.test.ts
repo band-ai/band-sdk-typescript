@@ -402,6 +402,47 @@ describe("PlatformRuntime", () => {
     expect(factoryCalls).toEqual(["room-1"]);
   });
 
+  it("forwards resolved sessionConfig into AgentRuntime contexts", async () => {
+    const transport = new FakeTransport();
+    const adapter = new GenericAdapter(async () => {});
+    let captured:
+      | { maxContextMessages: number; contextCacheTtlSeconds: number | undefined }
+      | undefined;
+
+    await using runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      link: new BandLink({
+        agentId: "a1",
+        apiKey: "k",
+        transport,
+        restApi: new FakeRestApi(),
+      }),
+      sessionConfig: { maxContextMessages: 7, contextCacheTtlSeconds: 0 },
+      contextFactory: (_roomId, defaults) => {
+        captured = {
+          maxContextMessages: defaults.maxContextMessages,
+          contextCacheTtlSeconds: defaults.contextCacheTtlSeconds,
+        };
+        return new ExecutionContext(defaults);
+      },
+    });
+
+    await runtime.start(adapter);
+    await transport.emit("agent_rooms:a1", "room_added", {
+      id: "room-1",
+      status: "active",
+      type: "direct",
+      title: "Room",
+      task_id: null,
+      inserted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(captured).toEqual({ maxContextMessages: 7, contextCacheTtlSeconds: 0 });
+  });
+
   it("dispatches participant events to the room context and message events to its execution", async () => {
     const transport = new FakeTransport();
     const added: string[] = [];

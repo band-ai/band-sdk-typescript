@@ -1,4 +1,6 @@
+import { z } from "zod";
 import type { ParticipantRecord } from "../contracts/dtos";
+import { ValidationError } from "../core/errors";
 import type {
   AdapterToolsProtocol,
   FrameworkAdapterInput,
@@ -10,12 +12,47 @@ export interface AgentConfig {
   autoSubscribeExistingRooms?: boolean;
 }
 
-export interface SessionConfig {
-  enableContextCache?: boolean;
-  contextCacheTtlSeconds?: number;
-  maxContextMessages?: number;
-  maxMessageRetries?: number;
-  enableContextHydration?: boolean;
+/** Upper bound core's `RetryTracker` accepts for `maxRetries` (u32::MAX). */
+export const MAX_MESSAGE_RETRIES = 4_294_967_295;
+
+export const DEFAULT_CONTEXT_CACHE_TTL_SECONDS = 300;
+export const MIN_CONTEXT_MESSAGES = 1;
+export const MAX_CONTEXT_MESSAGES = 100;
+export const DEFAULT_MAX_MESSAGE_RETRIES = 1;
+
+export const sessionConfigSchema = z.object({
+  enableContextCache: z.boolean().default(true),
+  // Zero keeps a cache valid until it is explicitly refreshed or changed.
+  contextCacheTtlSeconds: z.number().int().nonnegative().default(DEFAULT_CONTEXT_CACHE_TTL_SECONDS),
+  maxContextMessages: z
+    .number()
+    .int()
+    .min(MIN_CONTEXT_MESSAGES)
+    .max(MAX_CONTEXT_MESSAGES)
+    .default(MAX_CONTEXT_MESSAGES),
+  maxMessageRetries: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(MAX_MESSAGE_RETRIES)
+    .default(DEFAULT_MAX_MESSAGE_RETRIES),
+  enableContextHydration: z.boolean().default(true),
+});
+
+export type SessionConfig = z.input<typeof sessionConfigSchema>;
+export type ResolvedSessionConfig = z.output<typeof sessionConfigSchema>;
+
+export function parseSessionConfig(input: unknown = undefined): ResolvedSessionConfig {
+  const result = sessionConfigSchema.safeParse(input === undefined ? {} : input);
+  if (result.success) {
+    return result.data;
+  }
+
+  const issues = result.error.issues.map((issue) => {
+    const field = issue.path.length > 0 ? issue.path.map(String).join(".") : "sessionConfig";
+    return `${field}: ${issue.message}`;
+  });
+  throw new ValidationError(`Invalid sessionConfig: ${issues.join(", ")}`, result.error);
 }
 
 export type ContactEventStrategy = "disabled" | "callback" | "hub_room";

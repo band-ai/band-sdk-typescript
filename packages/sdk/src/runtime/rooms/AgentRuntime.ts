@@ -14,7 +14,7 @@ import {
 } from "../lifecycle";
 import { combineTeardownErrors, isolateTeardown } from "../../core/teardown";
 import { RoomPresence } from "./RoomPresence";
-import type { AgentConfig, SessionConfig } from "../types";
+import { parseSessionConfig, type AgentConfig, type ResolvedSessionConfig, type SessionConfig } from "../types";
 import type { PlatformMessage } from "../types";
 
 interface AgentRuntimeOptions {
@@ -48,7 +48,7 @@ export class AgentRuntime {
   private readonly onParticipantRemoved?: AgentRuntimeOptions["onParticipantRemoved"];
   private readonly onError?: AgentRuntimeOptions["onError"];
   private readonly contextFactory?: AgentRuntimeOptions["contextFactory"];
-  private readonly sessionConfig: Required<SessionConfig>;
+  private readonly sessionConfig: ResolvedSessionConfig;
   private readonly contexts = new Map<string, ExecutionContext>();
   private readonly executions = new Map<string, Execution>();
   private readonly executionWatchers = new Map<string, Promise<void>>();
@@ -71,13 +71,7 @@ export class AgentRuntime {
     this.onParticipantAdded = options.onParticipantAdded;
     this.onParticipantRemoved = options.onParticipantRemoved;
     this.contextFactory = options.contextFactory;
-    this.sessionConfig = {
-      enableContextCache: options.sessionConfig?.enableContextCache ?? true,
-      contextCacheTtlSeconds: options.sessionConfig?.contextCacheTtlSeconds ?? 300,
-      maxContextMessages: options.sessionConfig?.maxContextMessages ?? 100,
-      maxMessageRetries: options.sessionConfig?.maxMessageRetries ?? 1,
-      enableContextHydration: options.sessionConfig?.enableContextHydration ?? true,
-    };
+    this.sessionConfig = parseSessionConfig(options.sessionConfig);
     this.lifecycle = new LifecycleTracker<RuntimeLifecycleState>({ status: "not_started" }, {
       owner: "AgentRuntime",
       logContext: { agentId: this.agentId },

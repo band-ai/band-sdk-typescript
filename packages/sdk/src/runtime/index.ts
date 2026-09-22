@@ -1,5 +1,6 @@
 export type {
   AgentConfig,
+  ResolvedSessionConfig,
   SessionConfig,
   PlatformMessage,
   ConversationContext,
@@ -10,6 +11,13 @@ export type {
 } from "./types";
 export {
   HistoryProvider,
+  MAX_MESSAGE_RETRIES,
+  DEFAULT_CONTEXT_CACHE_TTL_SECONDS,
+  MIN_CONTEXT_MESSAGES,
+  MAX_CONTEXT_MESSAGES,
+  DEFAULT_MAX_MESSAGE_RETRIES,
+  parseSessionConfig,
+  sessionConfigSchema,
   SYNTHETIC_SENDER_TYPE,
   SYNTHETIC_CONTACT_EVENTS_SENDER_ID,
   SYNTHETIC_CONTACT_EVENTS_SENDER_NAME,

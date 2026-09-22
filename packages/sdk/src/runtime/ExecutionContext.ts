@@ -4,7 +4,7 @@ import type { AdapterToolsProtocol, AgentToolsCapabilities } from "../contracts/
 import type { MetadataMap, ParticipantRecord } from "../contracts/dtos";
 import { UnsupportedFeatureError } from "../core/errors";
 import { resolveLogger, type Logger } from "../core/logger";
-import type { ConversationContext, PlatformMessage } from "./types";
+import { parseSessionConfig, type ConversationContext, type PlatformMessage, type SessionConfig } from "./types";
 import { AgentTools } from "./tools/AgentTools";
 import { ParticipantRoster, RetryTracker } from "@band-ai/band-sdk-core";
 import { buildParticipantsMessage, toParticipantRecord, toParticipantRecordFromRest } from "./formatters";
@@ -23,14 +23,11 @@ interface ExecutionContextLink {
   capabilities?: Partial<AgentToolsCapabilities>;
 }
 
-export interface ExecutionContextOptions {
+export interface ExecutionContextOptions extends SessionConfig {
   roomId: string;
   link: ExecutionContextLink;
+  /** Required on direct construction; optional on `SessionConfig` via schema defaults. */
   maxContextMessages: number;
-  maxMessageRetries?: number;
-  enableContextCache?: boolean;
-  contextCacheTtlSeconds?: number;
-  enableContextHydration?: boolean;
   logger?: Logger;
 }
 
@@ -60,13 +57,14 @@ export class ExecutionContext {
   private readonly _pendingSystemMessages: string[] = [];
 
   public constructor(options: ExecutionContextOptions) {
+    const sessionConfig = parseSessionConfig(options);
     this.roomId = options.roomId;
     this.link = options.link;
-    this.maxContextMessages = options.maxContextMessages;
-    this.enableContextCache = options.enableContextCache ?? true;
-    this.contextCacheTtlMs = Math.max(0, (options.contextCacheTtlSeconds ?? 300) * 1000);
-    this.enableContextHydration = options.enableContextHydration ?? true;
-    this.retryTrackerInstance = new RetryTracker(options.maxMessageRetries ?? 1);
+    this.maxContextMessages = sessionConfig.maxContextMessages;
+    this.enableContextCache = sessionConfig.enableContextCache;
+    this.contextCacheTtlMs = sessionConfig.contextCacheTtlSeconds * 1000;
+    this.enableContextHydration = sessionConfig.enableContextHydration;
+    this.retryTrackerInstance = new RetryTracker(sessionConfig.maxMessageRetries);
     this.tools = new AgentTools({
       roomId: this.roomId,
       rest: this.link.rest,
@@ -285,7 +283,7 @@ export class ExecutionContext {
 
   private async loadHydratedMessages(): Promise<MetadataMap[]> {
     const messages: MetadataMap[] = [];
-    const pageSize = Math.min(Math.max(this.maxContextMessages, 1), 100);
+    const pageSize = this.maxContextMessages;
     const maxPages = 100;
 
     for (let page = 1; page <= maxPages; page += 1) {
@@ -338,6 +336,7 @@ export class ExecutionContext {
   }
 
   private nextCacheExpiry(): number {
+    // A zero TTL means the cache has no time-based expiry.
     if (!this.enableContextCache || this.contextCacheTtlMs === 0) {
       return 0;
     }
