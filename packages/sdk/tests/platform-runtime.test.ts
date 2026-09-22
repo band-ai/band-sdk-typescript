@@ -405,7 +405,9 @@ describe("PlatformRuntime", () => {
   it("forwards resolved sessionConfig into AgentRuntime contexts", async () => {
     const transport = new FakeTransport();
     const adapter = new GenericAdapter(async () => {});
-    let captured: { maxContextMessages: number; contextCacheTtlSeconds: number } | undefined;
+    let captured:
+      | { maxContextMessages: number; contextCacheTtlSeconds: number | undefined }
+      | undefined;
 
     await using runtime = new PlatformRuntime({
       agentId: "a1",

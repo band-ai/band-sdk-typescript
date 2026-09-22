@@ -61,7 +61,7 @@ describe("Agent.create", () => {
   });
 
 
-  it.each([MIN_CONTEXT_MESSAGES - 1, MAX_CONTEXT_MESSAGES + 1,, 1.5, NaN, Infinity])("rejects maxContextMessages=%s up front", (maxContextMessages) => {
+  it.each([MIN_CONTEXT_MESSAGES - 1, MAX_CONTEXT_MESSAGES + 1, 1.5, NaN, Infinity])("rejects maxContextMessages=%s up front", (maxContextMessages) => {
     expect(() => Agent.create({
       adapter: new GenericAdapter(async () => undefined),
       agentId: "agent-1",
