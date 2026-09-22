@@ -23,6 +23,10 @@ interface ExecutionContextLink {
   capabilities?: Partial<AgentToolsCapabilities>;
 }
 
+/**
+ * `AgentRuntime` supplies validated session values. Direct callers should
+ * validate configuration with `parseSessionConfig` before constructing a context.
+ */
 export interface ExecutionContextOptions {
   roomId: string;
   link: ExecutionContextLink;
@@ -64,7 +68,7 @@ export class ExecutionContext {
     this.link = options.link;
     this.maxContextMessages = options.maxContextMessages;
     this.enableContextCache = options.enableContextCache ?? true;
-    this.contextCacheTtlMs = Math.max(0, (options.contextCacheTtlSeconds ?? 300) * 1000);
+    this.contextCacheTtlMs = (options.contextCacheTtlSeconds ?? 300) * 1000;
     this.enableContextHydration = options.enableContextHydration ?? true;
     this.retryTrackerInstance = new RetryTracker(options.maxMessageRetries ?? 1);
     this.tools = new AgentTools({
@@ -285,7 +289,7 @@ export class ExecutionContext {
 
   private async loadHydratedMessages(): Promise<MetadataMap[]> {
     const messages: MetadataMap[] = [];
-    const pageSize = Math.min(Math.max(this.maxContextMessages, 1), 100);
+    const pageSize = this.maxContextMessages;
     const maxPages = 100;
 
     for (let page = 1; page <= maxPages; page += 1) {
@@ -338,6 +342,7 @@ export class ExecutionContext {
   }
 
   private nextCacheExpiry(): number {
+    // A zero TTL means the cache has no time-based expiry.
     if (!this.enableContextCache || this.contextCacheTtlMs === 0) {
       return 0;
     }

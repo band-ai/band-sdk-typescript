@@ -14,6 +14,7 @@ export { AgentRuntime } from "./runtime/rooms/AgentRuntime";
 export type { ExecutionContextOptions } from "./runtime/ExecutionContext";
 export type { RuntimeLifecycleState, ExecutionLifecycleState } from "./runtime/lifecycle";
 export { DefaultPreprocessor } from "./runtime/preprocessing/DefaultPreprocessor";
+export { MAX_MESSAGE_RETRIES, parseSessionConfig, sessionConfigSchema } from "./runtime/types";
 export type { CustomToolDef } from "./runtime/tools/customTools";
 export type {
   AgentConfig,
@@ -24,6 +25,7 @@ export type {
   ConversationContext,
   HistoryProvider,
   MessageHandler,
+  ResolvedSessionConfig,
   PlatformMessage,
   SessionConfig,
 } from "./runtime/types";

@@ -25,6 +25,36 @@ function makeContext(restOverrides?: Partial<RestApi>, options?: {
 }
 
 describe("ExecutionContext coverage", () => {
+  it("keeps a zero-TTL cache valid across elapsed time", async () => {
+    vi.useFakeTimers();
+    try {
+      const listParticipants = vi.fn(async () => []);
+      const getChatContext = vi.fn(async () => ({ data: [] }));
+      const ctx = new ExecutionContext({
+        roomId: "room-1",
+        link: {
+          rest: {
+            ...(new FakeRestApi() as RestApi),
+            listChatParticipants: listParticipants,
+            getChatContext,
+          },
+          capabilities: {},
+        },
+        maxContextMessages: 3,
+        contextCacheTtlSeconds: 0,
+      });
+
+      await ctx.hydrateContext();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await ctx.hydrateContext();
+
+      expect(listParticipants).toHaveBeenCalledTimes(1);
+      expect(getChatContext).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("hydrates paginated context, caches it, and honors force refresh", async () => {
     const listParticipants = vi.fn(async () => [
       { id: "u1", name: "Jane", type: "User", handle: "@jane" },

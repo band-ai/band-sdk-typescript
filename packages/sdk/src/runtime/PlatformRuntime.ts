@@ -2,7 +2,13 @@ import type { FrameworkAdapter, Preprocessor } from "../contracts/protocols";
 import type { ContactEvent, PlatformEvent } from "../platform/events";
 import { BandLink, type BandLinkOptions } from "../platform/BandLink";
 import { AgentRuntime } from "./rooms/AgentRuntime";
-import type { AgentConfig, ContactEventConfig, SessionConfig } from "./types";
+import {
+  parseSessionConfig,
+  type AgentConfig,
+  type ContactEventConfig,
+  type ResolvedSessionConfig,
+  type SessionConfig,
+} from "./types";
 import type { PlatformMessage } from "./types";
 import { SYNTHETIC_SENDER_TYPE, SYNTHETIC_CONTACT_EVENTS_SENDER_ID } from "./types";
 import type { ParticipantRecord, MetadataMap } from "../contracts/dtos";
@@ -14,12 +20,6 @@ import type { RuntimeLifecycleState } from "./lifecycle";
 import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, startWithGate, toLifecycleError } from "./lifecycle";
 import { combineTeardownErrors, isolateTeardown } from "../core/teardown";
 import { resolveLogger, type Logger } from "../core/logger";
-
-/** Upper bound core's `RetryTracker` accepts for `maxRetries` (u32::MAX). */
-export const MAX_MESSAGE_RETRIES = 4_294_967_295;
-
-const isValidRetryCount = (value: number): boolean =>
-  Number.isInteger(value) && value >= 0 && value <= MAX_MESSAGE_RETRIES;
 
 /** Trigger of the cleanup `stop()` that `start()` runs on its own failure path. */
 const START_CLEANUP_TRIGGER = "start-failed";
@@ -52,7 +52,7 @@ export class PlatformRuntime implements AsyncDisposable {
   private readonly _wsUrl?: string;
   private readonly _restUrl?: string;
   private readonly preprocessor: Preprocessor<PlatformEvent>;
-  private readonly sessionConfig?: SessionConfig;
+  private readonly sessionConfig: ResolvedSessionConfig;
   private readonly contactConfig?: ContactEventConfig;
   private readonly agentConfig?: AgentConfig;
   private readonly linkOptions?: Omit<BandLinkOptions, "agentId" | "apiKey">;
@@ -91,15 +91,6 @@ export class PlatformRuntime implements AsyncDisposable {
       );
     }
 
-    // RetryTracker rejects these too, but only once a room's ExecutionContext
-    // is built mid-run — too late to be actionable.
-    const maxMessageRetries = options.sessionConfig?.maxMessageRetries;
-    if (maxMessageRetries !== undefined && !isValidRetryCount(maxMessageRetries)) {
-      throw new ValidationError(
-        `sessionConfig.maxMessageRetries must be an integer between 0 and ${MAX_MESSAGE_RETRIES}, got ${maxMessageRetries}.`,
-      );
-    }
-
     this._agentId = options.agentId;
     this._apiKey = options.apiKey;
     this._wsUrl = options.wsUrl;
@@ -113,7 +104,7 @@ export class PlatformRuntime implements AsyncDisposable {
       logger: options.logger ?? options.linkOptions?.logger,
     };
     this.preprocessor = options.preprocessor ?? new DefaultPreprocessor();
-    this.sessionConfig = options.sessionConfig;
+    this.sessionConfig = parseSessionConfig(options.sessionConfig);
     this.contactConfig = options.contactConfig;
     this.agentConfig = options.agentConfig;
     this.logger = resolveLogger(options.logger);

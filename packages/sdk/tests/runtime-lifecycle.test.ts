@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Agent } from "../src/agent/Agent";
-import { RuntimeStateError } from "../src/core/errors";
+import { RuntimeStateError, ValidationError } from "../src/core/errors";
 import { BandLink } from "../src/platform/BandLink";
 import type { PlatformEvent } from "../src/platform/events";
 import type { StreamingTransport, TopicHandlers } from "../src/platform/streaming/transport";
@@ -173,6 +173,12 @@ function makeAgentRuntime(
     ...overrides,
   });
 }
+
+it("rejects invalid session config through the direct AgentRuntime entry point", () => {
+  expect(() => makeAgentRuntime(new FakeTransport(), {
+    sessionConfig: { maxContextMessages: 0 },
+  })).toThrow(ValidationError);
+});
 
 function makeStubRuntime(overrides?: {
   start?: () => Promise<void>;

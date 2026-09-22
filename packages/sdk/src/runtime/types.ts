@@ -1,4 +1,6 @@
+import { z } from "zod";
 import type { ParticipantRecord } from "../contracts/dtos";
+import { ValidationError } from "../core/errors";
 import type {
   AdapterToolsProtocol,
   FrameworkAdapterInput,
@@ -10,12 +12,32 @@ export interface AgentConfig {
   autoSubscribeExistingRooms?: boolean;
 }
 
-export interface SessionConfig {
-  enableContextCache?: boolean;
-  contextCacheTtlSeconds?: number;
-  maxContextMessages?: number;
-  maxMessageRetries?: number;
-  enableContextHydration?: boolean;
+/** Upper bound core's `RetryTracker` accepts for `maxRetries` (u32::MAX). */
+export const MAX_MESSAGE_RETRIES = 4_294_967_295;
+
+export const sessionConfigSchema = z.object({
+  enableContextCache: z.boolean().default(true),
+  // Zero keeps a cache valid until it is explicitly refreshed or changed.
+  contextCacheTtlSeconds: z.number().int().nonnegative().default(300),
+  maxContextMessages: z.number().int().min(1).max(100).default(100),
+  maxMessageRetries: z.number().int().min(0).max(MAX_MESSAGE_RETRIES).default(1),
+  enableContextHydration: z.boolean().default(true),
+});
+
+export type SessionConfig = z.input<typeof sessionConfigSchema>;
+export type ResolvedSessionConfig = z.output<typeof sessionConfigSchema>;
+
+export function parseSessionConfig(input: unknown = undefined): ResolvedSessionConfig {
+  const result = sessionConfigSchema.safeParse(input === undefined ? {} : input);
+  if (result.success) {
+    return result.data;
+  }
+
+  const issues = result.error.issues.map((issue) => {
+    const field = issue.path.length > 0 ? issue.path.map(String).join(".") : "sessionConfig";
+    return `${field}: ${issue.message}`;
+  });
+  throw new ValidationError(`Invalid sessionConfig: ${issues.join(", ")}`, result.error);
 }
 
 export type ContactEventStrategy = "disabled" | "callback" | "hub_room";
