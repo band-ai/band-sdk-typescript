@@ -33,7 +33,7 @@ export const sessionConfigSchema = z.object({
   maxMessageRetries: z
     .number()
     .int()
-    .min(0)
+    .nonnegative()
     .max(MAX_MESSAGE_RETRIES)
     .default(DEFAULT_MAX_MESSAGE_RETRIES),
   enableContextHydration: z.boolean().default(true),

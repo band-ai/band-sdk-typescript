@@ -11,6 +11,11 @@ import { Execution } from "../src/runtime/Execution";
 import { ExecutionContext, type ExecutionState } from "../src/runtime/ExecutionContext";
 import { PlatformRuntime, type PlatformRuntimeOptions } from "../src/runtime/PlatformRuntime";
 import { AgentRuntime } from "../src/runtime/rooms/AgentRuntime";
+import {
+  DEFAULT_CONTEXT_CACHE_TTL_SECONDS,
+  DEFAULT_MAX_MESSAGE_RETRIES,
+  MAX_CONTEXT_MESSAGES,
+} from "../src/runtime/types";
 import { RetryTracker } from "@band-ai/band-sdk-core";
 import {
   isLegalExecutionTransition,
@@ -191,9 +196,9 @@ it("applies sessionConfig defaults through AgentRuntime", () => {
 
   expect(captured).toMatchObject({
     enableContextCache: true,
-    contextCacheTtlSeconds: 300,
-    maxContextMessages: 100,
-    maxMessageRetries: 1,
+    contextCacheTtlSeconds: DEFAULT_CONTEXT_CACHE_TTL_SECONDS,
+    maxContextMessages: MAX_CONTEXT_MESSAGES,
+    maxMessageRetries: DEFAULT_MAX_MESSAGE_RETRIES,
     enableContextHydration: true,
   });
 });

@@ -50,7 +50,7 @@ describe("ExecutionContext coverage", () => {
       });
 
       await ctx.hydrateContext();
-      // Past the schema default TTL so a silent fallback to 300s would miss and re-fetch.
+      // Past the schema default TTL so a silent fallback to that default would miss and re-fetch.
       await vi.advanceTimersByTimeAsync((DEFAULT_CONTEXT_CACHE_TTL_SECONDS + 1) * 1000);
       await ctx.hydrateContext();
 
