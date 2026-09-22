@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { Agent } from "../src/agent/Agent";
 import { GenericAdapter } from "../src/adapters/GenericAdapter";
 import { ValidationError } from "../src/core/errors";
-import { MAX_MESSAGE_RETRIES, parseSessionConfig } from "../src/runtime/types";
+import { MAX_MESSAGE_RETRIES } from "../src/runtime/types";
 
 describe("Agent.create", () => {
   it("accepts a typed config object without spreading credentials", () => {
@@ -56,14 +56,6 @@ describe("Agent.create", () => {
     expect(agent.runtime.agentId).toBe("agent-1");
   });
 
-  it("accepts contextCacheTtlSeconds=0", () => {
-    expect(() => Agent.create({
-      adapter: new GenericAdapter(async () => undefined),
-      agentId: "agent-1",
-      apiKey: "key-1",
-      sessionConfig: { contextCacheTtlSeconds: 0 },
-    })).not.toThrow();
-  });
 
   it.each([0, 101, 1.5, NaN, Infinity])("rejects maxContextMessages=%s up front", (maxContextMessages) => {
     expect(() => Agent.create({
@@ -105,13 +97,4 @@ describe("Agent.create", () => {
     })).toThrow(ValidationError);
   });
 
-  it("resolves defaults through the shared schema", () => {
-    expect(parseSessionConfig()).toEqual({
-      enableContextCache: true,
-      contextCacheTtlSeconds: 300,
-      maxContextMessages: 100,
-      maxMessageRetries: 1,
-      enableContextHydration: true,
-    });
-  });
 });

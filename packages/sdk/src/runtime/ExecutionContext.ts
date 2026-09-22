@@ -26,11 +26,8 @@ interface ExecutionContextLink {
 export interface ExecutionContextOptions extends SessionConfig {
   roomId: string;
   link: ExecutionContextLink;
+  /** Required on direct construction; optional on `SessionConfig` via schema defaults. */
   maxContextMessages: number;
-  maxMessageRetries?: number;
-  enableContextCache?: boolean;
-  contextCacheTtlSeconds?: number;
-  enableContextHydration?: boolean;
   logger?: Logger;
 }
 

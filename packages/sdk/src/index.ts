@@ -14,7 +14,15 @@ export { AgentRuntime } from "./runtime/rooms/AgentRuntime";
 export type { ExecutionContextOptions } from "./runtime/ExecutionContext";
 export type { RuntimeLifecycleState, ExecutionLifecycleState } from "./runtime/lifecycle";
 export { DefaultPreprocessor } from "./runtime/preprocessing/DefaultPreprocessor";
-export { MAX_MESSAGE_RETRIES, parseSessionConfig, sessionConfigSchema } from "./runtime/types";
+export {
+  MAX_MESSAGE_RETRIES,
+  DEFAULT_CONTEXT_CACHE_TTL_SECONDS,
+  MIN_CONTEXT_MESSAGES,
+  MAX_CONTEXT_MESSAGES,
+  DEFAULT_MAX_MESSAGE_RETRIES,
+  parseSessionConfig,
+  sessionConfigSchema,
+} from "./runtime/types";
 export type { CustomToolDef } from "./runtime/tools/customTools";
 export type {
   AgentConfig,

@@ -8,7 +8,7 @@ import { BandLink } from "../src/platform/BandLink";
 import type { PlatformEvent } from "../src/platform/events";
 import type { StreamingTransport, TopicHandlers } from "../src/platform/streaming/transport";
 import { Execution } from "../src/runtime/Execution";
-import type { ExecutionState } from "../src/runtime/ExecutionContext";
+import { ExecutionContext, type ExecutionState } from "../src/runtime/ExecutionContext";
 import { PlatformRuntime, type PlatformRuntimeOptions } from "../src/runtime/PlatformRuntime";
 import { AgentRuntime } from "../src/runtime/rooms/AgentRuntime";
 import { RetryTracker } from "@band-ai/band-sdk-core";
@@ -178,6 +178,37 @@ it("rejects invalid session config through the direct AgentRuntime entry point",
   expect(() => makeAgentRuntime(new FakeTransport(), {
     sessionConfig: { maxContextMessages: 0 },
   })).toThrow(ValidationError);
+});
+
+it("applies sessionConfig defaults through AgentRuntime", () => {
+  let captured: Parameters<NonNullable<AgentRuntimeOptions["contextFactory"]>>[1] | undefined;
+  makeAgentRuntime(new FakeTransport(), {
+    contextFactory: (_roomId, defaults) => {
+      captured = defaults;
+      return new ExecutionContext(defaults);
+    },
+  }).getOrCreateContext(ROOM_ID);
+
+  expect(captured).toMatchObject({
+    enableContextCache: true,
+    contextCacheTtlSeconds: 300,
+    maxContextMessages: 100,
+    maxMessageRetries: 1,
+    enableContextHydration: true,
+  });
+});
+
+it("retains contextCacheTtlSeconds=0 through AgentRuntime", () => {
+  let captured: Parameters<NonNullable<AgentRuntimeOptions["contextFactory"]>>[1] | undefined;
+  makeAgentRuntime(new FakeTransport(), {
+    sessionConfig: { contextCacheTtlSeconds: 0 },
+    contextFactory: (_roomId, defaults) => {
+      captured = defaults;
+      return new ExecutionContext(defaults);
+    },
+  }).getOrCreateContext(ROOM_ID);
+
+  expect(captured?.contextCacheTtlSeconds).toBe(0);
 });
 
 function makeStubRuntime(overrides?: {

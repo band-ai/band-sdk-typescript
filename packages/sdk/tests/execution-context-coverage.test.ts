@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { UnsupportedFeatureError } from "../src/core/errors";
-import { ValidationError } from "../src/core/errors";
+import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
 import { ExecutionContext } from "../src/runtime/ExecutionContext";
 import type { RestApi } from "../src/client/rest/types";
+import { DEFAULT_CONTEXT_CACHE_TTL_SECONDS } from "../src/runtime/types";
 import { FakeRestApi, makeMessage } from "./testUtils";
 
 function makeContext(restOverrides?: Partial<RestApi>, options?: {
@@ -50,7 +50,8 @@ describe("ExecutionContext coverage", () => {
       });
 
       await ctx.hydrateContext();
-      await vi.advanceTimersByTimeAsync(60_000);
+      // Past the schema default TTL so a silent fallback to 300s would miss and re-fetch.
+      await vi.advanceTimersByTimeAsync((DEFAULT_CONTEXT_CACHE_TTL_SECONDS + 1) * 1000);
       await ctx.hydrateContext();
 
       expect(listParticipants).toHaveBeenCalledTimes(1);
@@ -113,6 +114,10 @@ describe("ExecutionContext coverage", () => {
 
     expect(first.messages.map((entry) => entry.id)).toEqual(["m1", "m2"]);
     expect(first.participants).toEqual([{ id: "u1", name: "Jane", type: "User", handle: "@jane" }]);
+    expect(getChatContext).toHaveBeenCalledWith(
+      expect.objectContaining({ chatId: "room-1", page: 1, pageSize: 3 }),
+      expect.anything(),
+    );
     expect(cached).toBe(first);
     expect(refreshed).not.toBe(first);
     expect(listParticipants).toHaveBeenCalledTimes(2);
