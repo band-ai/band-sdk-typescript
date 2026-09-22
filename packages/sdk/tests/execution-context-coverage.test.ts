@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { UnsupportedFeatureError } from "../src/core/errors";
+import { ValidationError } from "../src/core/errors";
 import { ExecutionContext } from "../src/runtime/ExecutionContext";
 import type { RestApi } from "../src/client/rest/types";
 import { FakeRestApi, makeMessage } from "./testUtils";
@@ -25,6 +26,10 @@ function makeContext(restOverrides?: Partial<RestApi>, options?: {
 }
 
 describe("ExecutionContext coverage", () => {
+  it("rejects an invalid direct maxContextMessages value", () => {
+    expect(() => makeContext(undefined, { maxContextMessages: 0 })).toThrow(ValidationError);
+  });
+
   it("keeps a zero-TTL cache valid across elapsed time", async () => {
     vi.useFakeTimers();
     try {
