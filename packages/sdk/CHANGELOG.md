@@ -1,6 +1,13 @@
 # Changelog
 
 
+## [0.4.4](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.4.3...sdk-v0.4.4) (2026-09-22)
+
+
+### Bug Fixes
+
+* **sdk:** exclude non-text bootstrap history ([#244](https://github.com/band-ai/band-sdk-typescript/issues/244)) ([85d21c9](https://github.com/band-ai/band-sdk-typescript/commit/85d21c96a4d7f19a5504071f6222d0fc39ce15de))
+
 ## [0.4.3](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.4.2...sdk-v0.4.3) (2026-09-21)
 
 

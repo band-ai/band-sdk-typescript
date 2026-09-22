@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.3.1](https://github.com/band-ai/band-sdk-typescript/compare/openclaw-channel-band-v0.3.0...openclaw-channel-band-v0.3.1) (2026-09-22)
+
+
+### Bug Fixes
+
+* **openclaw:** abort NemoClaw wasm repair on empty extract ([f14e5fa](https://github.com/band-ai/band-sdk-typescript/commit/f14e5fa9110ccdfd48cf7e2e623f999bc0ff8f9d))
+* **openclaw:** address cycle-2 packaging and docs review ([0200a19](https://github.com/band-ai/band-sdk-typescript/commit/0200a199b64b2a0b02ea13ac740bf4ccd42828b6))
+* **openclaw:** align band-sdk-core with main and repair lockfile ([0dc8036](https://github.com/band-ai/band-sdk-typescript/commit/0dc8036d74e55c55709031028950b7eea283e48f))
+* **openclaw:** close packaging gaps from code review ([216b0c9](https://github.com/band-ai/band-sdk-typescript/commit/216b0c9681befe02b0db9b36d68106accec2f090))
+* **openclaw:** harden wasm copy gates and NemoClaw install docs ([3aa96d5](https://github.com/band-ai/band-sdk-typescript/commit/3aa96d5eca62a7b9ac13923ef4f66b02d72313ec))
+* **openclaw:** package WASM asset and align NemoClaw docs ([ac3b74e](https://github.com/band-ai/band-sdk-typescript/commit/ac3b74e81f95b224bfd53299ebeb3d3732ad5336))
+* **openclaw:** restore nemoclaw files dropped by mistake ([3baef17](https://github.com/band-ai/band-sdk-typescript/commit/3baef176a774ba7a0bb889dffcd33bd901bbe02a))
+* **openclaw:** stamp core version and harden NemoClaw repair ([ce14bfc](https://github.com/band-ai/band-sdk-typescript/commit/ce14bfc75509980e8e2987e2ca54f9bf932228c3))
+
+
+### Documentation
+
+* **openclaw:** drop stale NemoClaw example artifacts ([5b35991](https://github.com/band-ai/band-sdk-typescript/commit/5b359911180bd0b37e07834368e18a9a378cde20))
+* **openclaw:** fix nemoclaw example's stale Band policy preset ([fcd3eb1](https://github.com/band-ai/band-sdk-typescript/commit/fcd3eb179b4d350c16332399322f850f162b4aed))
+
 ## [0.3.0](https://github.com/band-ai/band-sdk-typescript/compare/openclaw-channel-band-v0.2.1...openclaw-channel-band-v0.3.0) (2026-09-17)
 
 
