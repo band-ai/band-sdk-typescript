@@ -3,7 +3,11 @@ import { describe, expect, it } from "vitest";
 import { Agent } from "../src/agent/Agent";
 import { GenericAdapter } from "../src/adapters/GenericAdapter";
 import { ValidationError } from "../src/core/errors";
-import { MAX_MESSAGE_RETRIES } from "../src/runtime/types";
+import {
+  MAX_CONTEXT_MESSAGES,
+  MAX_MESSAGE_RETRIES,
+  MIN_CONTEXT_MESSAGES,
+} from "../src/runtime/types";
 
 describe("Agent.create", () => {
   it("accepts a typed config object without spreading credentials", () => {
@@ -57,7 +61,7 @@ describe("Agent.create", () => {
   });
 
 
-  it.each([0, 101, 1.5, NaN, Infinity])("rejects maxContextMessages=%s up front", (maxContextMessages) => {
+  it.each([MIN_CONTEXT_MESSAGES - 1, MAX_CONTEXT_MESSAGES + 1,, 1.5, NaN, Infinity])("rejects maxContextMessages=%s up front", (maxContextMessages) => {
     expect(() => Agent.create({
       adapter: new GenericAdapter(async () => undefined),
       agentId: "agent-1",

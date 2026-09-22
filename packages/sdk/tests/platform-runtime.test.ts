@@ -420,7 +420,7 @@ describe("PlatformRuntime", () => {
       contextFactory: (_roomId, defaults) => {
         captured = {
           maxContextMessages: defaults.maxContextMessages,
-          contextCacheTtlSeconds: defaults.contextCacheTtlSeconds ?? -1,
+          contextCacheTtlSeconds: defaults.contextCacheTtlSeconds,
         };
         return new ExecutionContext(defaults);
       },
