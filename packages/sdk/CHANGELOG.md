@@ -1,6 +1,19 @@
 # Changelog
 
 
+## [0.4.5](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.4.4...sdk-v0.4.5) (2026-09-22)
+
+
+### Bug Fixes
+
+* **sdk:** address cycle-2 SessionConfig review nits ([63eecc1](https://github.com/band-ai/band-sdk-typescript/commit/63eecc196319af24effbeb047415ed841dc5f53f))
+* **sdk:** polish cycle-3 SessionConfig test nits ([4a86ee8](https://github.com/band-ai/band-sdk-typescript/commit/4a86ee8a827d2e81e6ea64fdf3453958f4d243d0))
+* **sdk:** repair cycle-3 test polish typecheck ([5566422](https://github.com/band-ai/band-sdk-typescript/commit/556642219e66bd2ba2961fe26a4303badaf3bae7))
+* **sdk:** tighten SessionConfig review findings ([d22985f](https://github.com/band-ai/band-sdk-typescript/commit/d22985f09451a0e76e48b586b04c3c4eb2e474dc))
+* **sdk:** validate direct execution context config ([b8b5797](https://github.com/band-ai/band-sdk-typescript/commit/b8b57977667075ecac4a5bffe3b7b544c1714e60))
+* **sdk:** validate session config at runtime boundary ([0223cc0](https://github.com/band-ai/band-sdk-typescript/commit/0223cc00ee286434aed25981757ed5c7e286d0a6))
+* **sdk:** validate SessionConfig at runtime boundary ([db30de4](https://github.com/band-ai/band-sdk-typescript/commit/db30de4b23336528992f07035d061a388dfb2204))
+
 ## [0.4.4](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.4.3...sdk-v0.4.4) (2026-09-22)
 
 
