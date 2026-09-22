@@ -10,7 +10,8 @@
 // Usage: build first (so dist/ exists), then run this; then:
 //   openclaw plugins install --link packages/openclaw/.local-link
 
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { CORE_WASM_FILENAME } from "./copy-wasm.mjs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,6 +20,14 @@ const stage = join(pkgRoot, ".local-link");
 
 if (!existsSync(join(pkgRoot, "dist", "index.js"))) {
   console.error("[stage-link] dist/index.js missing — run the build first (pnpm build).");
+  process.exit(1);
+}
+
+const wasmPath = join(pkgRoot, "dist", CORE_WASM_FILENAME);
+if (!existsSync(wasmPath) || statSync(wasmPath).size === 0) {
+  console.error(
+    `[stage-link] dist/${CORE_WASM_FILENAME} missing or empty — run the build first (pnpm build).`,
+  );
   process.exit(1);
 }
 

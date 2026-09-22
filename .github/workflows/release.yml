@@ -180,7 +180,7 @@ jobs:
 
       - name: Assert OpenClaw package contents
         if: steps.release_state.outputs.openclaw_created == 'true'
-        run: node scripts/assert-package-contents.mjs packages/openclaw 55 dist/index.js dist/index.d.ts openclaw.plugin.json package.json
+        run: node scripts/assert-package-contents.mjs packages/openclaw 55 dist/index.js dist/index.d.ts dist/band_sdk_core_bg.wasm openclaw.plugin.json package.json
 
       - name: Pack SDK (@band-ai)
         if: steps.release_state.outputs.sdk_created == 'true'
