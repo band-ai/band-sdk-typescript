@@ -77,6 +77,7 @@ export {
 } from "./adapters/acp";
 export { CopilotACPAdapter, DEFAULT_COPILOT_ACP_COMMAND } from "./adapters/copilot-acp";
 export { CursorACPAdapter, DEFAULT_CURSOR_ACP_COMMAND } from "./adapters/cursor-acp";
+export { KiroACPAdapter, DEFAULT_KIRO_ACP_COMMAND, type KiroACPAdapterOptions } from "./adapters/kiro-acp";
 
 export type {
   AdapterToolsProtocol,

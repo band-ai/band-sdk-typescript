@@ -362,6 +362,7 @@ describe("converter exports", () => {
       roomToSession: {
         "room-1": "session-1",
       },
+      replayMessages: [],
     });
 
     const serverState = new converters.ACPServerHistoryConverter().convert([
@@ -385,6 +386,27 @@ describe("converter exports", () => {
         "session-2": [{ type: "stdio", command: "opencode" }],
       },
     });
+  });
+
+  it("renders ACP client replay lines from text history, skipping non-text/empty/id-less entries", () => {
+    const clientState = new converters.ACPClientHistoryConverter().convert([
+      { id: "m1", message_type: "text", sender_name: "Jane", content: "Hi" },
+      { id: "m2", message_type: "text", sender_type: "Agent", content: "Hello" },
+      // Non-text entries never become replay lines.
+      { id: "m3", message_type: "task", content: "should be skipped" },
+      // Blank/whitespace-only content is skipped, even for a text entry.
+      { id: "m4", message_type: "text", content: "   " },
+      // No sender at all falls back to "Unknown".
+      { id: "m5", message_type: "text", content: "anonymous" },
+      // No `id` means a consumer could never exclude it from a replay it's
+      // also the trigger for — skipped rather than emitted unfilterable.
+      { message_type: "text", content: "no id" },
+    ]);
+    expect(clientState.replayMessages).toEqual([
+      { id: "m1", line: "[Jane]: Hi" },
+      { id: "m2", line: "[Agent]: Hello" },
+      { id: "m5", line: "[Unknown]: anonymous" },
+    ]);
   });
 
   it("extracts Opencode session state and replay messages", () => {

@@ -273,6 +273,833 @@ describe("ACPClientAdapter", () => {
     expect(promptTexts[2]).not.toContain("[System Context]")
   })
 
+  it("resolves a per-room cwd via workspaceForRoom for both restored and freshly created sessions", async () => {
+    const loadSessionCalls: Array<{ cwd?: string }> = []
+    const newSessionCalls: Array<{ cwd?: string }> = []
+    const loadSession = vi.fn(async (params?: { cwd?: string }) => {
+      loadSessionCalls.push(params ?? {})
+      return {}
+    })
+    const newSession = vi.fn(async (params?: { cwd?: string }) => {
+      newSessionCalls.push(params ?? {})
+      return { sessionId: "session-fresh" }
+    })
+    const prompt = vi.fn(async () => ({ stopReason: "end_turn" }))
+
+    const workspaces: Record<string, string> = {
+      "room-restore": "/workspaces/room-restore",
+      "room-fresh": "/workspaces/room-fresh",
+    }
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      cwd: "/adapter/default/cwd",
+      workspaceForRoom: (roomId) => workspaces[roomId] ?? "/adapter/default/cwd",
+      connectionFactory: async () => buildMockConnection({
+        agentCapabilities: { loadSession: true },
+        loadSession,
+        newSession,
+        prompt,
+      }),
+    })
+
+    await adapter.onStarted("Agent", "desc")
+    await adapter.onMessage(
+      makeMessage("continue", "room-restore"),
+      new FakeTools(),
+      { roomToSession: { "room-restore": "session-restore" } },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-restore" },
+    )
+    await adapter.onMessage(
+      makeMessage("start", "room-fresh"),
+      new FakeTools(),
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-fresh" },
+    )
+
+    expect(loadSessionCalls[0]?.cwd).toBe("/workspaces/room-restore")
+    expect(newSessionCalls[0]?.cwd).toBe("/workspaces/room-fresh")
+  })
+
+  it("falls back to the adapter-wide cwd for every room when workspaceForRoom is unset", async () => {
+    const newSessionCalls: Array<{ cwd?: string }> = []
+    const newSession = vi.fn(async (params?: { cwd?: string }) => {
+      newSessionCalls.push(params ?? {})
+      return { sessionId: "session-fresh" }
+    })
+    const prompt = vi.fn(async () => ({ stopReason: "end_turn" }))
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      cwd: "/adapter/default/cwd",
+      connectionFactory: async () => buildMockConnection({
+        loadSession: vi.fn(),
+        newSession,
+        prompt,
+      }),
+    })
+
+    await adapter.onStarted("Agent", "desc")
+    await adapter.onMessage(makeMessage("start", "room-a"), new FakeTools(), { roomToSession: {} }, null, null, { isSessionBootstrap: true, roomId: "room-a" })
+
+    expect(newSessionCalls[0]?.cwd).toBe("/adapter/default/cwd")
+  })
+
+  it("seeds a replacement session's first prompt with replayed room history after a resume miss, excluding the trigger message", async () => {
+    const loadSession = vi.fn(async () => {
+      throw new Error("agent forgot this session")
+    })
+    let created = 0
+    const newSession = vi.fn(async () => ({ sessionId: `session-fresh-${++created}` }))
+    const promptTexts: string[] = []
+    const prompt = vi.fn(async (params: { sessionId: string; prompt?: Array<{ text?: string }> }) => {
+      promptTexts.push(params.prompt?.[0]?.text ?? "")
+      return { stopReason: "end_turn" }
+    })
+    const logger = makeLoggerSpy()
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      logger,
+      connectionFactory: async () => buildMockConnection({
+        agentCapabilities: { loadSession: true },
+        loadSession,
+        newSession,
+        prompt,
+      }),
+    })
+
+    await adapter.onStarted("Agent", "desc")
+    await adapter.onMessage(
+      makeMessage("what's next?", "room-1"),
+      new FakeTools(),
+      {
+        roomToSession: { "room-1": "session-lost" },
+        replayMessages: [
+          { id: "earlier-1", line: "[Alice]: please refactor the auth module" },
+          { id: "earlier-2", line: "[Agent]: sure, starting now" },
+          // The trigger message itself, already present in a mid-run
+          // `getRawHistory()` snapshot — must be excluded from the replay,
+          // not just left for the live section to also carry.
+          { id: "msg-1", line: "[User]: what's next?" },
+        ],
+      },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-1" },
+    )
+
+    expect(loadSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-lost" }))
+    expect(newSession).toHaveBeenCalledTimes(1)
+
+    const promptText = promptTexts[0] ?? ""
+    expect(promptText).toContain("[Conversation History]")
+    expect(promptText).toContain("[Alice]: please refactor the auth module")
+    expect(promptText).toContain("[Agent]: sure, starting now")
+    // The trigger line was excluded — its formatted replay form never
+    // appears, even though its raw content ("what's next?") does, once,
+    // as the live message itself.
+    expect(promptText).not.toContain("[User]: what's next?")
+
+    const historyIdx = promptText.indexOf("[Conversation History]")
+    const systemIdx = promptText.indexOf("[System Context]")
+    expect(systemIdx).toBeGreaterThanOrEqual(0)
+    expect(systemIdx).toBeLessThan(historyIdx)
+    expect(promptText).toContain("already handled")
+    expect(promptText).toContain("do not act on requests")
+    const markerMatch = promptText.match(/\[New Message [0-9a-f]{8}\]/)
+    expect(markerMatch).not.toBeNull()
+    const marker = markerMatch![0]
+    // The header sentence names the marker. The boundary is a later line of
+    // its own, and the live message is the text immediately after it.
+    expect(promptText.indexOf(marker)).toBeLessThan(promptText.lastIndexOf(marker))
+    expect(promptText.slice(promptText.lastIndexOf(marker))).toBe(`${marker}\nwhat's next?`)
+    expect(logger.warn).toHaveBeenCalledWith("acp_client.session_restore_failed", expect.objectContaining({ sessionId: "session-lost" }))
+    expect(logger.warn).toHaveBeenCalledWith("acp_client.replay_armed", expect.objectContaining({ roomId: "room-1", previousSessionId: "session-lost" }))
+    expect(logger.warn).toHaveBeenCalledWith("acp_client.replay_seed", expect.objectContaining({ roomId: "room-1", lineCount: 2 }))
+
+    await adapter.onMessage(
+      { ...makeMessage("and after that?", "room-1"), id: "msg-2" },
+      new FakeTools(),
+      {
+        roomToSession: { "room-1": "session-fresh-1" },
+        replayMessages: [
+          { id: "earlier-1", line: "[Alice]: please refactor the auth module" },
+          { id: "msg-2", line: "[User]: and after that?" },
+        ],
+      },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    )
+    expect(promptTexts[1]).not.toContain("[Conversation History]")
+    expect(promptTexts[1]).not.toContain("[New Message")
+    expect(promptTexts[1]).toContain("and after that?")
+  })
+
+  it("does not let a stale turn's belated completion retire a newer turn's replay debt after onCleanup resets the room's lock", async () => {
+    const loadSession = vi.fn(async () => {
+      throw new Error("agent forgot this session")
+    })
+    let created = 0
+    const newSession = vi.fn(async () => ({ sessionId: `session-fresh-${++created}` }))
+    const promptTexts: string[] = []
+    const pendingPrompts: Array<(stopReason: string) => void> = []
+    const prompt = vi.fn((params: { sessionId: string; prompt?: Array<{ text?: string }> }) => {
+      promptTexts.push(params.prompt?.[0]?.text ?? "")
+      return new Promise<{ stopReason: string }>((resolve) => {
+        pendingPrompts.push((stopReason) => resolve({ stopReason }))
+      })
+    })
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      connectionFactory: async () => buildMockConnection({
+        agentCapabilities: { loadSession: true },
+        loadSession,
+        newSession,
+        prompt,
+      }),
+    })
+    await adapter.onStarted("Agent", "desc")
+
+    // T1: a resume miss arms room-1's replay debt and seeds session-fresh-1,
+    // then hangs waiting on its prompt to be accepted.
+    const t1 = adapter.onMessage(
+      makeMessage("t1 trigger", "room-1"),
+      new FakeTools(),
+      { roomToSession: { "room-1": "session-lost-1" }, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-1" },
+    )
+    await vi.waitFor(() => expect(pendingPrompts).toHaveLength(1))
+
+    // A bounded teardown (e.g. `agent.stop`/`resetRoomSession` timing out
+    // without awaiting T1) resets the room's turn lock while T1 is still
+    // in flight, letting a new message start T2 concurrently instead of
+    // queuing behind T1.
+    await adapter.onCleanup("room-1")
+
+    // T2: its own resume miss re-arms the same room-keyed debt, seeded with
+    // T2's own history, then its prompt is rejected (not accepted).
+    const t2 = adapter.onMessage(
+      makeMessage("t2 trigger", "room-1"),
+      new FakeTools(),
+      {
+        roomToSession: { "room-1": "session-lost-2" },
+        replayMessages: [{ id: "t2-earlier", line: "[Alice]: T2's own preserved context" }],
+      },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-1" },
+    )
+    await vi.waitFor(() => expect(pendingPrompts).toHaveLength(2))
+    pendingPrompts[1]("cancelled")
+    await expect(t2).rejects.toThrow("cancelled")
+
+    // T1's prompt is now accepted, well after T2 re-armed the debt for its
+    // own (different) session.
+    pendingPrompts[0]("end_turn")
+    await t1
+
+    // T3 reuses T2's still-active session. If T1's belated completion had
+    // wrongly retired T2's debt, T3 would fall back to its own (here,
+    // deliberately impoverished) history instead of T2's preserved one.
+    const t3 = adapter.onMessage(
+      makeMessage("t3 trigger", "room-1"),
+      new FakeTools(),
+      { roomToSession: { "room-1": "session-fresh-2" }, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    )
+    await vi.waitFor(() => expect(pendingPrompts).toHaveLength(3))
+    pendingPrompts[2]("end_turn")
+    await t3
+
+    expect(newSession).toHaveBeenCalledTimes(2)
+    expect(promptTexts[2]).toContain("T2's own preserved context")
+  })
+
+  it("marks a session with a still-in-flight prompt abandoned on cleanup, so a later turn never restores it", async () => {
+    const loadSession = vi.fn(async () => ({}))
+    const newSession = vi.fn(async () => ({ sessionId: "session-fresh" }))
+    const pendingPrompts: Array<(stopReason: string) => void> = []
+    const prompt = vi.fn(() => new Promise<{ stopReason: string }>((resolve) => {
+      pendingPrompts.push((stopReason) => resolve({ stopReason }))
+    }))
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      connectionFactory: async () => buildMockConnection({
+        agentCapabilities: { loadSession: true },
+        loadSession,
+        newSession,
+        prompt,
+      }),
+    })
+    await adapter.onStarted("Agent", "desc")
+
+    // T3 establishes a fresh session and hangs on its prompt.
+    const t3 = adapter.onMessage(
+      makeMessage("t3", "room-1"),
+      new FakeTools(),
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-1" },
+    )
+    await vi.waitFor(() => expect(pendingPrompts).toHaveLength(1))
+    expect(newSession).toHaveBeenCalledTimes(1)
+
+    // A bounded teardown fires while T3's prompt is still outstanding.
+    await adapter.onCleanup("room-1")
+
+    // T4, a later bootstrap for the same room, believes (per persisted
+    // history) that "session-fresh" is still its session and would
+    // normally try to restore it.
+    const t4 = adapter.onMessage(
+      makeMessage("t4", "room-1"),
+      new FakeTools(),
+      { roomToSession: { "room-1": "session-fresh" } },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-1" },
+    )
+    await vi.waitFor(() => expect(pendingPrompts).toHaveLength(2))
+    pendingPrompts[1]("end_turn")
+    await t4
+
+    // The restore attempt never happened — the session was abandoned
+    // instead, so T4 got a genuinely fresh session.
+    expect(loadSession).not.toHaveBeenCalled()
+    expect(newSession).toHaveBeenCalledTimes(2)
+
+    pendingPrompts[0]("end_turn")
+    await t3
+  })
+
+  it("never seeds a replay when the session restores successfully, even though replay history is available", async () => {
+    const loadSession = vi.fn(async () => ({}))
+    const newSession = vi.fn()
+    const promptTexts: string[] = []
+    const prompt = vi.fn(async (params: { sessionId: string; prompt?: Array<{ text?: string }> }) => {
+      promptTexts.push(params.prompt?.[0]?.text ?? "")
+      return { stopReason: "end_turn" }
+    })
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      connectionFactory: async () => buildMockConnection({
+        agentCapabilities: { loadSession: true },
+        loadSession,
+        newSession,
+        prompt,
+      }),
+    })
+
+    await adapter.onStarted("Agent", "desc")
+    await adapter.onMessage(
+      makeMessage("what's next?", "room-1"),
+      new FakeTools(),
+      {
+        roomToSession: { "room-1": "session-live" },
+        replayMessages: [{ id: "earlier-1", line: "[Alice]: please refactor the auth module" }],
+      },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-1" },
+    )
+
+    expect(newSession).not.toHaveBeenCalled()
+    const promptText = promptTexts[0] ?? ""
+    expect(promptText).not.toContain("[Conversation History]")
+    expect(promptText).not.toContain("[New Message")
+  })
+
+  it("does not replay history on a room's first session, or when a resume miss has no earlier lines", async () => {
+    const cases: Array<{ name: string; roomToSession: Record<string, string>; replayMessages?: Array<{ id: string; line: string }>; loadFails: boolean }> = [
+      {
+        name: "first session",
+        roomToSession: {},
+        replayMessages: [{ id: "earlier-1", line: "[Alice]: please refactor the auth module" }],
+        loadFails: false,
+      },
+      {
+        name: "resume miss, trigger only",
+        roomToSession: { "room-1": "session-lost" },
+        replayMessages: [{ id: "msg-1", line: "[User]: what's next?" }],
+        loadFails: true,
+      },
+      {
+        name: "resume miss, replay omitted",
+        roomToSession: { "room-1": "session-lost" },
+        loadFails: true,
+      },
+    ]
+
+    for (const [index, entry] of cases.entries()) {
+      const loadSession = vi.fn(async () => {
+        if (entry.loadFails) {
+          throw new Error("agent forgot this session")
+        }
+        return {}
+      })
+      const promptTexts: string[] = []
+      const adapter = new ACPClientAdapter({
+        command: ["acp-agent"],
+        enableMcpTools: false,
+        connectionFactory: async () => buildMockConnection({
+          agentCapabilities: { loadSession: true },
+          loadSession,
+          newSession: vi.fn(async () => ({ sessionId: `session-${index}` })),
+          prompt: vi.fn(async (params: { sessionId: string; prompt?: Array<{ text?: string }> }) => {
+            promptTexts.push(params.prompt?.[0]?.text ?? "")
+            return { stopReason: "end_turn" }
+          }),
+        }),
+      })
+      await adapter.onStarted("Agent", "desc")
+      await adapter.onMessage(
+        makeMessage("what's next?", "room-1"),
+        new FakeTools(),
+        { roomToSession: entry.roomToSession, replayMessages: entry.replayMessages },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-1" },
+      )
+      const promptText = promptTexts[0] ?? ""
+      expect(promptText, entry.name).not.toContain("[Conversation History]")
+      expect(promptText, entry.name).not.toContain("[New Message")
+      await adapter.stop()
+    }
+  })
+
+  it("keeps the replay for the first prompt a replacement session actually accepts", async () => {
+    const loadSession = vi.fn(async () => {
+      throw new Error("agent forgot this session")
+    })
+    const newSession = vi.fn(async () => ({ sessionId: "session-fresh-1" }))
+    const promptTexts: string[] = []
+    let calls = 0
+    const prompt = vi.fn(async (params: { sessionId: string; prompt?: Array<{ text?: string }> }) => {
+      calls += 1
+      promptTexts.push(params.prompt?.[0]?.text ?? "")
+      if (calls === 1) {
+        throw new Error("prompt rejected")
+      }
+      return { stopReason: "end_turn" }
+    })
+    const history = {
+      roomToSession: { "room-1": "session-lost" },
+      replayMessages: [
+        { id: "earlier-1", line: "[Alice]: please refactor the auth module" },
+        { id: "earlier-2", line: "[Agent]: sure, starting now" },
+      ],
+    }
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      connectionFactory: async () => buildMockConnection({
+        agentCapabilities: { loadSession: true },
+        loadSession,
+        newSession,
+        prompt,
+      }),
+    })
+    await adapter.onStarted("Agent", "desc")
+    await expect(adapter.onMessage(makeMessage("what's next?", "room-1"), new FakeTools(), history, null, null, { isSessionBootstrap: true, roomId: "room-1" })).rejects.toThrow("prompt rejected")
+    await adapter.onMessage(
+      { ...makeMessage("try again", "room-1"), id: "msg-2" },
+      new FakeTools(),
+      history,
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    )
+    expect(newSession).toHaveBeenCalledTimes(1)
+    expect(promptTexts[1]).toContain("[Conversation History]")
+    expect(promptTexts[1]).toContain("[Alice]: please refactor the auth module")
+  })
+
+  it("seeds the session that replaces one abandoned before its replay prompt was accepted", async () => {
+    const replayMessages = [
+      { id: "earlier-1", line: "[Alice]: please refactor the auth module" },
+      { id: "earlier-2", line: "[Agent]: sure, starting now" },
+    ]
+    const catalog = [{
+      id: "model",
+      name: "Model",
+      category: "model",
+      type: "select",
+      currentValue: "opus",
+      options: [
+        { value: "opus", name: "Opus" },
+        { value: "sonnet", name: "Sonnet" },
+      ],
+    }]
+
+    const loadSession = vi.fn(async () => {
+      throw new Error("agent forgot this session")
+    })
+    let created = 0
+    const newSession = vi.fn(async () => ({
+      sessionId: `session-fresh-${++created}`,
+      configOptions: catalog,
+    }))
+    let configCalls = 0
+    const setSessionConfigOption = vi.fn(async () => {
+      configCalls += 1
+      if (configCalls === 1) {
+        throw new Error("config rejected")
+      }
+      return { configOptions: catalog.map((option) => ({ ...option, currentValue: "sonnet" })) }
+    })
+    const promptTexts: string[] = []
+    const prompt = vi.fn(async (params: { sessionId: string; prompt?: Array<{ text?: string }> }) => {
+      promptTexts.push(params.prompt?.[0]?.text ?? "")
+      return { stopReason: "end_turn" }
+    })
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      resolveSessionConfig: async () => ({ model: "sonnet" }),
+      connectionFactory: async () => buildMockConnection({
+        agentCapabilities: { loadSession: true },
+        loadSession,
+        newSession,
+        prompt,
+        extraRpcSpies: { setSessionConfigOption, cancel: vi.fn(async () => undefined) },
+      }),
+    })
+    await adapter.onStarted("Agent", "desc")
+    await expect(adapter.onMessage(
+      makeMessage("what's next?", "room-1"),
+      new FakeTools(),
+      { roomToSession: { "room-1": "session-lost" }, replayMessages },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-1" },
+    )).rejects.toThrow("config rejected")
+    await adapter.onMessage(
+      { ...makeMessage("try again", "room-1"), id: "msg-2" },
+      new FakeTools(),
+      { roomToSession: {}, replayMessages },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    )
+    expect(newSession).toHaveBeenCalledTimes(2)
+    expect(prompt).toHaveBeenCalledTimes(1)
+    expect(promptTexts[0] ?? "").toContain("[Conversation History]")
+    expect(promptTexts[0] ?? "").toContain("[Alice]: please refactor the auth module")
+    await adapter.stop()
+
+    let timedOutCreated = 0
+    const timedOutNewSession = vi.fn(async () => ({ sessionId: `session-timeout-${++timedOutCreated}` }))
+    const timedOutTexts: string[] = []
+    let timedOutCalls = 0
+    const timedOutPrompt = vi.fn(async (params: { sessionId: string; prompt?: Array<{ text?: string }> }) => {
+      timedOutCalls += 1
+      timedOutTexts.push(params.prompt?.[0]?.text ?? "")
+      if (timedOutCalls === 1) {
+        return new Promise<{ stopReason: string }>(() => undefined)
+      }
+      return { stopReason: "end_turn" }
+    })
+    const timedOut = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      turnTimeoutMs: 30,
+      connectionFactory: async () => buildMockConnection({
+        agentCapabilities: { loadSession: true },
+        loadSession: vi.fn(async () => {
+          throw new Error("agent forgot this session")
+        }),
+        newSession: timedOutNewSession,
+        prompt: timedOutPrompt,
+        extraRpcSpies: { cancel: vi.fn(async () => undefined) },
+      }),
+    })
+    await timedOut.onStarted("Agent", "desc")
+    await expect(timedOut.onMessage(
+      makeMessage("what's next?", "room-1"),
+      new FakeTools(),
+      { roomToSession: { "room-1": "session-lost" }, replayMessages },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-1" },
+    )).rejects.toThrow("ACP turn timed out")
+    await timedOut.onMessage(
+      { ...makeMessage("try again", "room-1"), id: "msg-2" },
+      new FakeTools(),
+      { roomToSession: {}, replayMessages },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    )
+    expect(timedOutNewSession).toHaveBeenCalledTimes(2)
+    expect(timedOutTexts[1]).toContain("[Conversation History]")
+    expect(timedOutTexts[1]).toContain("[Alice]: please refactor the auth module")
+  })
+
+  it("replays the bootstrap turn's own history when a second message arrives mid-restore", async () => {
+    let releaseLoad: (error: Error) => void = () => undefined
+    let markLoadEntered: () => void = () => undefined
+    const loadEntered = new Promise<void>((resolve) => {
+      markLoadEntered = resolve
+    })
+    const loadSession = vi.fn(() => {
+      markLoadEntered()
+      return new Promise<Record<string, unknown>>((_resolve, reject) => {
+        releaseLoad = reject
+      })
+    })
+    const promptTexts: string[] = []
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      connectionFactory: async () => buildMockConnection({
+        agentCapabilities: { loadSession: true },
+        loadSession,
+        newSession: vi.fn(async () => ({ sessionId: "session-fresh-1" })),
+        prompt: vi.fn(async (params: { sessionId: string; prompt?: Array<{ text?: string }> }) => {
+          promptTexts.push(params.prompt?.[0]?.text ?? "")
+          return { stopReason: "end_turn" }
+        }),
+      }),
+    })
+    await adapter.onStarted("Agent", "desc")
+    const first = adapter.onMessage(
+      { ...makeMessage("bootstrap please", "room-1"), id: "msg-boot" },
+      new FakeTools(),
+      {
+        roomToSession: { "room-1": "session-lost" },
+        replayMessages: [
+          { id: "old-1", line: "[Alice]: hydrated older line" },
+          { id: "msg-boot", line: "[User]: bootstrap please" },
+        ],
+      },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-1" },
+    )
+    await loadEntered
+    const second = adapter.onMessage(
+      { ...makeMessage("second live text", "room-1"), id: "msg-2" },
+      new FakeTools(),
+      {
+        roomToSession: {},
+        replayMessages: [{ id: "msg-2", line: "[Bob]: second live text" }],
+      },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    )
+    await Promise.resolve()
+    releaseLoad(new Error("agent forgot this session"))
+    await first
+    await second
+    expect(promptTexts[0] ?? "").toContain("[Alice]: hydrated older line")
+    expect(promptTexts[0] ?? "").not.toContain("[Bob]: second live text")
+    expect(promptTexts[1] ?? "").toContain("second live text")
+    expect(promptTexts[1] ?? "").not.toContain("[Conversation History]")
+  })
+
+  it("still replays after a rejected seeding prompt when the replacement session is restored on a new connection", async () => {
+    let closeFirst: () => void = () => undefined
+    let connections = 0
+    let loads = 0
+    const loadSession = vi.fn(async () => {
+      loads += 1
+      if (loads === 1) {
+        throw new Error("agent forgot this session")
+      }
+      return {}
+    })
+    let created = 0
+    const promptTexts: string[] = []
+    let prompts = 0
+    const replayMessages = [
+      { id: "earlier-1", line: "[Alice]: please refactor the auth module" },
+    ]
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      connectionFactory: async () => {
+        connections += 1
+        const controller = new AbortController()
+        let resolveClosed: () => void = () => undefined
+        const closed = new Promise<void>((resolve) => {
+          resolveClosed = resolve
+        })
+        if (connections === 1) {
+          closeFirst = resolveClosed
+        }
+        return {
+          connection: {
+            signal: controller.signal,
+            closed,
+            initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: { loadSession: true } })),
+            authenticate: vi.fn(async () => ({})),
+            loadSession,
+            resumeSession: vi.fn(),
+            newSession: vi.fn(async () => ({ sessionId: `session-fresh-${++created}` })),
+            prompt: vi.fn(async (params: { sessionId: string; prompt?: Array<{ text?: string }> }) => {
+              prompts += 1
+              promptTexts.push(params.prompt?.[0]?.text ?? "")
+              if (prompts === 1) {
+                throw new Error("prompt rejected")
+              }
+              return { stopReason: "end_turn" }
+            }),
+          } as never,
+          stop: async () => controller.abort(),
+        }
+      },
+    })
+    await adapter.onStarted("Agent", "desc")
+    await expect(adapter.onMessage(
+      makeMessage("what's next?", "room-1"),
+      new FakeTools(),
+      { roomToSession: { "room-1": "session-lost" }, replayMessages },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-1" },
+    )).rejects.toThrow("prompt rejected")
+    closeFirst()
+    await adapter.onMessage(
+      { ...makeMessage("try again", "room-1"), id: "msg-2" },
+      new FakeTools(),
+      { roomToSession: {}, replayMessages },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    )
+    expect(loads).toBeGreaterThan(1)
+    expect(promptTexts[1] ?? "").toContain("[Conversation History]")
+    expect(promptTexts[1] ?? "").toContain("[Alice]: please refactor the auth module")
+  })
+
+  it("keeps the replay when a seeding prompt resolves as cancelled", async () => {
+    const promptTexts: string[] = []
+    let calls = 0
+    const history = {
+      roomToSession: { "room-1": "session-lost" },
+      replayMessages: [{ id: "earlier-1", line: "[Alice]: please refactor the auth module" }],
+    }
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      connectionFactory: async () => buildMockConnection({
+        agentCapabilities: { loadSession: true },
+        loadSession: vi.fn(async () => {
+          throw new Error("agent forgot this session")
+        }),
+        newSession: vi.fn(async () => ({ sessionId: "session-fresh-1" })),
+        prompt: vi.fn(async (params: { sessionId: string; prompt?: Array<{ text?: string }> }) => {
+          calls += 1
+          promptTexts.push(params.prompt?.[0]?.text ?? "")
+          return { stopReason: calls === 1 ? "cancelled" : "end_turn" }
+        }),
+      }),
+    })
+    await adapter.onStarted("Agent", "desc")
+    await expect(adapter.onMessage(
+      makeMessage("what's next?", "room-1"),
+      new FakeTools(),
+      history,
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-1" },
+    )).rejects.toThrow("cancelled")
+    await adapter.onMessage(
+      { ...makeMessage("try again", "room-1"), id: "msg-2" },
+      new FakeTools(),
+      history,
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    )
+    expect(promptTexts[1]).toContain("[Conversation History]")
+    expect(promptTexts[1]).toContain("[Alice]: please refactor the auth module")
+  })
+
+  it("keeps the hydrated transcript after a cancelled seed when the next turn's history is only local", async () => {
+    const promptTexts: string[] = []
+    let calls = 0
+    const hydrated = {
+      roomToSession: { "room-1": "session-lost" },
+      replayMessages: [{ id: "earlier-1", line: "[Alice]: please refactor the auth module" }],
+    }
+    const localOnly = {
+      roomToSession: { "room-1": "session-fresh-1" },
+      replayMessages: [{ id: "msg-2", line: "[User]: try again" }],
+    }
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      connectionFactory: async () => buildMockConnection({
+        agentCapabilities: { loadSession: true },
+        loadSession: vi.fn(async () => {
+          throw new Error("agent forgot this session")
+        }),
+        newSession: vi.fn(async () => ({ sessionId: "session-fresh-1" })),
+        prompt: vi.fn(async (params: { sessionId: string; prompt?: Array<{ text?: string }> }) => {
+          calls += 1
+          promptTexts.push(params.prompt?.[0]?.text ?? "")
+          return { stopReason: calls === 1 ? "cancelled" : "end_turn" }
+        }),
+      }),
+    })
+    await adapter.onStarted("Agent", "desc")
+    await expect(adapter.onMessage(
+      makeMessage("what's next?", "room-1"),
+      new FakeTools(),
+      hydrated,
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-1" },
+    )).rejects.toThrow("cancelled")
+    await adapter.onMessage(
+      { ...makeMessage("try again", "room-1"), id: "msg-2" },
+      new FakeTools(),
+      localOnly,
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    )
+    expect(promptTexts[1]).toContain("[Alice]: please refactor the auth module")
+  })
+
+  it("releasing one prompt does not drop a later prompt that reused the session id", async () => {
+    const client = new BandACPClient(
+      async () => ({ outcome: { outcome: "cancelled" } }),
+      {
+        async extNotification() {
+          return [{ chunkType: "plan", content: "kept", metadata: {}, streamed: false }]
+        },
+      },
+    )
+    client.beginSession("s-a")
+    const first = client.enterPromptSession("s-a")
+    const second = client.enterPromptSession("s-a")
+    first.release()
+    await client.extNotification("vendor/meta", {})
+    expect(client.getCollectedChunks("s-a").map((chunk) => chunk.content)).toEqual(["kept"])
+    second.release()
+  })
+
   it("coalesces adjacent streamed text chunks; leaves each tool_call_update frame its own event with its own reported status", async () => {
     let clientHandle: BandACPClient | null = null
 

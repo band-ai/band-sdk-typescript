@@ -1,7 +1,40 @@
 import type { HistoryConverter } from "../contracts/protocols";
+import { resolveReplayLineContent } from "./shared";
+
+export interface ACPClientReplayMessage {
+  id: string;
+  line: string;
+}
 
 export interface ACPClientSessionState {
   roomToSession: Record<string, string>;
+  // Rendered `[sender]: content` lines for the room's text history — the
+  // adapter's fallback context when a session cannot be restored and a
+  // fresh one must be seeded instead. Paired with each entry's `id` so a
+  // consumer can exclude its own trigger message from the replay, whether
+  // or not it was already excluded upstream. Optional so a hand-built test
+  // fixture unconcerned with replay doesn't have to state it; the real
+  // converter always populates it (possibly empty).
+  replayMessages?: ACPClientReplayMessage[];
+}
+
+// Non-text messages (task/tool/thought events) are skipped; used by
+// `ACPClientAdapter` to re-seed a fresh session from platform history when
+// the previous one cannot be resumed.
+function buildReplayMessages(raw: Array<Record<string, unknown>>): ACPClientReplayMessage[] {
+  const replayMessages: ACPClientReplayMessage[] = []
+  for (const entry of raw) {
+    if (entry.message_type !== "text") {
+      continue
+    }
+    const id = typeof entry.id === "string" ? entry.id : null
+    const line = resolveReplayLineContent(entry)
+    if (!line || !id) {
+      continue
+    }
+    replayMessages.push({ id, line: `[${line.sender}]: ${line.content}` })
+  }
+  return replayMessages
 }
 
 export class ACPClientHistoryConverter implements HistoryConverter<ACPClientSessionState> {
@@ -38,6 +71,6 @@ export class ACPClientHistoryConverter implements HistoryConverter<ACPClientSess
       }
     }
 
-    return { roomToSession };
+    return { roomToSession, replayMessages: buildReplayMessages(raw) };
   }
 }

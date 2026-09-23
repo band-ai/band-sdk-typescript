@@ -18,6 +18,10 @@ export class BandACPClient implements Client {
   private readonly sessionChunks = new Map<string, CollectedChunk[]>()
   private readonly permissionHandler: ACPPermissionHandler
   private readonly extensionHandler: ACPClientExtensionHandler | undefined
+  // Token, not session id: a timed-out prompt's `finally` must not delete
+  // a later prompt that reused the same id.
+  private nextPromptToken = 0
+  private readonly promptsInFlight = new Map<number, string>()
 
   // The handler is connection-scoped and required at construction, so it is
   // already in place before the agent process is spawned: there is no window
@@ -32,6 +36,48 @@ export class BandACPClient implements Client {
 
   public beginSession(sessionId: string): void {
     this.sessionChunks.set(sessionId, [])
+  }
+
+  // `sessionChunks` is keyed by bare session id with no per-turn isolation
+  // — the ACP protocol gives a `session/update` notification nothing finer
+  // to key on. Reusing a session id while this is true would mix two
+  // turns' chunks in the one buffer, so callers must never restore/reuse a
+  // session while it is.
+  public hasPromptInFlight(sessionId: string): boolean {
+    for (const inFlight of this.promptsInFlight.values()) {
+      if (inFlight === sessionId) {
+        return true
+      }
+    }
+    return false
+  }
+
+  // One token per call. `release` drops that token only, so a turn that
+  // stopped waiting cannot remove a later prompt that reused the session id.
+  public enterPromptSession(sessionId: string): {
+    run: <T>(fn: () => Promise<T>) => Promise<T>
+    release: () => void
+  } {
+    const token = ++this.nextPromptToken
+    this.promptsInFlight.set(token, sessionId)
+    let released = false
+    const release = (): void => {
+      if (released) {
+        return
+      }
+      released = true
+      this.promptsInFlight.delete(token)
+    }
+    return {
+      release,
+      run: async (fn) => {
+        try {
+          return await fn()
+        } finally {
+          release()
+        }
+      },
+    }
   }
 
   public async sessionUpdate(params: SessionNotification): Promise<void> {
@@ -102,7 +148,9 @@ export class BandACPClient implements Client {
     method: string,
     params: Record<string, unknown>,
   ): Promise<void> {
-    const sessionId = sessionIdFrom(params)
+    // Resolved before the handler await. Reading a handler-owned session id
+    // after that await lets another room's session-ready overwrite it.
+    const sessionId = this.attributableSession(sessionIdFrom(params))
     const chunks = await this.extensionHandler?.extNotification?.(
       method,
       params,
@@ -120,6 +168,21 @@ export class BandACPClient implements Client {
 
   private appendChunk(sessionId: string, chunk: CollectedChunk): void {
     this.sessionChunks.get(sessionId)?.push(chunk)
+  }
+
+  // Params win. Otherwise, the only signal a sessionless notification has is
+  // whether exactly one prompt is in flight: the ACP SDK dispatches
+  // notifications from the connection's own read loop, not from a
+  // continuation of any specific `prompt()` call, so there is no way to
+  // tell which of two or more overlapping prompts a notification belongs to.
+  private attributableSession(paramSessionId: string | null): string | null {
+    if (paramSessionId) {
+      return paramSessionId
+    }
+    if (this.promptsInFlight.size !== 1) {
+      return null
+    }
+    return this.promptsInFlight.values().next().value ?? null
   }
 }
 

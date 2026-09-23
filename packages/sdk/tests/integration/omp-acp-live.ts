@@ -25,18 +25,17 @@ import {
 } from "../../src/index";
 import { withTimeout } from "../../src/adapters/shared/withTimeout";
 import { BandLink } from "../../src/platform/BandLink";
-import type { PlatformEvent } from "../../src/platform/events";
 import { FernRestAdapter } from "../../src/rest";
 import {
   loadLiveEnv,
   provisionAgent,
   reapProvisioned,
   sweepOrphans,
+  waitForEvent,
   type ProvisionedAgent,
 } from "./support/liveHarness";
 
 const TEST_NAME = "omp-acp";
-const TIMEOUT_MS = 180_000;
 const OMP_PROBE_TIMEOUT_MS = 10_000;
 const AGENT_STOP_TIMEOUT_MS = 5_000;
 const OMP_MODEL = "google/gemini-2.5-flash";
@@ -169,28 +168,6 @@ function flushOutput(stream: NodeJS.WriteStream): Promise<void> {
   return new Promise((resolve) => {
     stream.write("", () => resolve());
   });
-}
-
-async function waitForEvent(
-  link: BandLink,
-  predicate: (event: PlatformEvent) => boolean,
-  message: string,
-): Promise<void> {
-  const timeout = new AbortController();
-  const timer = setTimeout(() => timeout.abort(), TIMEOUT_MS);
-  try {
-    while (true) {
-      const event = await link.nextEvent(timeout.signal);
-      if (!event) {
-        throw new Error(message);
-      }
-      if (predicate(event)) {
-        return;
-      }
-    }
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 async function sendMentionedMessage(
