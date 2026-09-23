@@ -465,13 +465,11 @@ export class PlatformRuntime implements AsyncDisposable {
 
     let succeeded = true;
     let caughtError: unknown;
-    let errorLabel = "";
     try {
       await adapter.onEvent(input);
     } catch (error) {
       succeeded = false;
       caughtError = error;
-      errorLabel = error instanceof Error ? error.message : String(error);
     }
 
     if (messageId && !isSynthetic) {
@@ -479,7 +477,8 @@ export class PlatformRuntime implements AsyncDisposable {
       if (decision.decision === "processed") {
         await this.link.markProcessed(roomId, messageId, messageMarkOptions);
       } else {
-        await this.link.markFailed(roomId, messageId, errorLabel, messageMarkOptions);
+        const label = caughtError instanceof Error ? caughtError.message : String(caughtError);
+        await this.link.markFailed(roomId, messageId, label, messageMarkOptions);
       }
     }
 
