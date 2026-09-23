@@ -11,18 +11,17 @@ import { BandClient } from "@band-ai/rest-client";
 
 import { Agent, DEFAULT_KIRO_ACP_COMMAND, KiroACPAdapter } from "../../src/index";
 import { BandLink } from "../../src/platform/BandLink";
-import type { PlatformEvent } from "../../src/platform/events";
 import { FernRestAdapter } from "../../src/rest";
 import {
   loadLiveEnv,
   provisionAgent,
   reapProvisioned,
   sweepOrphans,
+  waitForEvent,
   type ProvisionedAgent,
 } from "./support/liveHarness";
 
 const TEST_NAME = "kiro-acp";
-const TIMEOUT_MS = 180_000;
 const KIRO_API_KEY_ENV = "KIRO_API_KEY";
 
 function hasKiroCli(): boolean {
@@ -31,28 +30,6 @@ function hasKiroCli(): boolean {
 
 function hasKiroAuth(): boolean {
   return Boolean(process.env[KIRO_API_KEY_ENV]);
-}
-
-async function waitForEvent(
-  link: BandLink,
-  predicate: (event: PlatformEvent) => boolean,
-  message: string,
-): Promise<void> {
-  const timeout = new AbortController();
-  const timer = setTimeout(() => timeout.abort(), TIMEOUT_MS);
-  try {
-    while (true) {
-      const event = await link.nextEvent(timeout.signal);
-      if (!event) {
-        throw new Error(message);
-      }
-      if (predicate(event)) {
-        return;
-      }
-    }
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 async function main(): Promise<void> {

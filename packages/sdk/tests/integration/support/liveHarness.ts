@@ -7,6 +7,9 @@
  */
 import { BandClient } from "@band-ai/rest-client";
 
+import type { BandLink } from "../../../src/platform/BandLink";
+import type { PlatformEvent } from "../../../src/platform/events";
+
 export const NAME_PREFIX = "e2e-ts-";
 export const DEFAULT_REST_URL = "https://app.band.ai/";
 const ORPHAN_MAX_AGE_MINUTES = 60;
@@ -219,4 +222,30 @@ export async function reapProvisioned(
       console.warn(`${logLabel} Failed to bulk-delete rooms:`, err);
     }),
   ]);
+}
+
+export const LIVE_EVENT_TIMEOUT_MS = 180_000;
+
+/** Reads the link until `predicate` matches, or `timeoutMs` elapses. */
+export async function waitForEvent(
+  link: BandLink,
+  predicate: (event: PlatformEvent) => boolean,
+  message: string,
+  timeoutMs = LIVE_EVENT_TIMEOUT_MS,
+): Promise<void> {
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort(), timeoutMs);
+  try {
+    while (true) {
+      const event = await link.nextEvent(timeout.signal);
+      if (!event) {
+        throw new Error(message);
+      }
+      if (predicate(event)) {
+        return;
+      }
+    }
+  } finally {
+    clearTimeout(timer);
+  }
 }

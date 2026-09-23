@@ -1,6 +1,4 @@
 import { resolveLogger, type Logger } from "../../core/logger";
-import type { AdapterToolsProtocol } from "../../contracts/protocols";
-import type { PlatformMessage } from "../../runtime/types";
 import {
   ACPClientAdapter,
   type ACPClientExtensionContext,
@@ -18,42 +16,26 @@ const KIRO_EXTENSION_PREFIX = "_kiro.dev/";
 export const KIRO_MCP_OAUTH_REQUEST_METHOD = `${KIRO_EXTENSION_PREFIX}mcp/oauth_request`;
 export const KIRO_METADATA_METHOD = `${KIRO_EXTENSION_PREFIX}metadata`;
 
-export interface KiroACPAdapterOptions extends Omit<ACPClientStdioOptions, "command"> {
+export interface KiroACPAdapterOptions extends Omit<ACPClientStdioOptions, "command" | "extensionHandler"> {
   command?: string | string[];
 }
 
-// No OAuth UI is wired up yet, and `_kiro.dev/metadata`'s real payload shape
-// is unconfirmed against a live `kiro-cli acp` session — both are declared
-// in the parent ticket's own source links, not observed firsthand. Declines
-// rather than hangs the agent on an unanswerable request; the metadata
-// parser is a no-op for any shape it doesn't recognize. Revisit both once
-// this ticket's own gap-analysis phase runs against a real Kiro CLI.
+// No OAuth UI is wired up, and the metadata payload shape is unconfirmed
+// against a live `kiro-cli acp` session. Decline the OAuth request on this
+// turn so the agent is not left waiting. A metadata payload with no session,
+// or without two finite usage numbers and a positive total, is ignored.
 class KiroExtensions implements ACPClientExtensionHandler {
   private readonly logger: Logger;
-  private sessionId: string | null = null;
 
   public constructor(logger: Logger) {
     this.logger = logger;
   }
 
-  public extensionSessionId(): string | null {
-    return this.sessionId;
-  }
-
-  // Kiro's real payloads for these two methods are unconfirmed, so this
-  // also tracks the session the adapter itself just made ready
-  // (`KiroACPAdapter.onAcpSessionReady`) — the reliable fallback for a
-  // vendor payload that turns out to carry no session id of its own.
-  public setActiveSessionId(sessionId: string): void {
-    this.sessionId = sessionId;
-  }
-
   public async extMethod(
     method: string,
     _params: Record<string, unknown>,
-    context: ACPClientExtensionContext,
+    _context: ACPClientExtensionContext,
   ): Promise<Record<string, unknown> | null> {
-    this.sessionId = context.sessionId ?? this.sessionId;
     if (method !== KIRO_MCP_OAUTH_REQUEST_METHOD) {
       return null;
     }
@@ -66,12 +48,16 @@ class KiroExtensions implements ACPClientExtensionHandler {
     params: Record<string, unknown>,
     context: ACPClientExtensionContext,
   ): Promise<readonly CollectedChunk[] | void> {
-    this.sessionId = context.sessionId ?? this.sessionId;
     if (method !== KIRO_METADATA_METHOD) {
+      return;
+    }
+    if (!context.sessionId) {
+      this.logger.warn("kiro_acp.metadata_unattributed", { method, keys: Object.keys(params) });
       return;
     }
     const summary = describeKiroMetadata(params);
     if (!summary) {
+      this.logger.warn("kiro_acp.metadata_unrecognized", { method, keys: Object.keys(params) });
       return;
     }
     return [{ chunkType: "plan", content: summary, metadata: { kiro_metadata: true }, streamed: false }];
@@ -80,26 +66,14 @@ class KiroExtensions implements ACPClientExtensionHandler {
 
 export class KiroACPAdapter extends ACPClientAdapter {
   protected readonly provider = "kiro-acp";
-  private readonly extensions: KiroExtensions;
 
   public constructor(options: KiroACPAdapterOptions = {}) {
-    const extensions = new KiroExtensions(resolveLogger(options.logger));
     const { command, ...rest } = options;
     super({
       ...rest,
       command: command ?? [...DEFAULT_KIRO_ACP_COMMAND],
-      extensionHandler: extensions,
+      extensionHandler: new KiroExtensions(resolveLogger(options.logger)),
     });
-    this.extensions = extensions;
-  }
-
-  protected override async onAcpSessionReady(
-    _message: PlatformMessage,
-    _tools: AdapterToolsProtocol,
-    _context: { isSessionBootstrap: boolean; roomId: string },
-    sessionId: string,
-  ): Promise<void> {
-    this.extensions.setActiveSessionId(sessionId);
   }
 }
 

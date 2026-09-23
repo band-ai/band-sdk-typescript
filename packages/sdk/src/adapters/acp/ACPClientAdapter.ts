@@ -109,9 +109,9 @@ function newMessageMarker(): string {
 
 // Frames replayed room history when the remote agent could not restore its
 // session. The framing is load-bearing: replayed instructions must not be
-// re-executed (observed live with weaker wording, in band-sdk-python's own
-// INT-1111 work), and the model must answer the new message, not the
-// transcript. Affirmative "already handled" framing over bare prohibitions,
+// re-executed (observed live with weaker wording), and the model must
+// answer the new message, not the transcript. Affirmative "already handled"
+// framing over bare prohibitions,
 // and an escape hatch so an explicit recall request ("what did I say
 // before?") is never refused. `{marker}` is filled with this turn's
 // nonce'd boundary marker.
@@ -290,18 +290,11 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private readonly roomToSession = new Map<string, { sessionId: string; generation: number; client: BandACPClient | null }>()
   private readonly sessionToRoom = new Map<string, string>()
   private readonly roomTools = new Map<string, AdapterToolsProtocol>()
-  // The room's most recently converted history, refreshed at the top of
-  // every `onMessage` call (same lifetime/idiom as `roomTools`) — read by
-  // `establishSession`'s resume-failure replay fallback without threading
-  // history through every method between `onMessage` and there.
-  private readonly roomHistory = new Map<string, ACPClientSessionState>()
-  // Sessions established in `establishSession`'s `newSession` fallback that
-  // replaced an existing session id whose restore failed — the one case
-  // that actually needs a replay seeded (a room's genuine first-ever
-  // session has nothing to replay, and is already covered by
-  // `buildSystemContext`). Consumed once by `runTurn`, keyed by the same
-  // `sessionKey` as `activeSessions`/`bootstrappedSessions`.
-  private readonly sessionsNeedingReplay = new Set<string>()
+  // Rooms whose previous session could not be restored. Stays set until a
+  // prompt on the replacement session is accepted, so a rejected prompt or
+  // an abandoned session still seeds the next one. Keyed by room, not by
+  // the session that may be thrown away before that prompt lands.
+  private readonly roomsOwedReplay = new Set<string>()
   // Keyed by `sessionKey(generation, sessionId)`, not bare sessionId: an ACP
   // agent can reissue the identical session id across a reconnect.
   private readonly activeSessions = new Set<string>()
@@ -437,7 +430,6 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     }
 
     this.roomTools.set(context.roomId, tools)
-    this.roomHistory.set(context.roomId, history)
 
     // `Execution.bootstrapMessage` runs outside its own room's serialized
     // `processLoop`, alongside the sync loop its constructor starts — so two
@@ -448,7 +440,10 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     // so one turn's `resetChunks` can wipe output the other is still
     // collecting. Serializing the whole turn body per room, not just
     // establishment, is what actually makes concurrent same-room turns safe.
-    await this.withRoomTurnLock(context.roomId, () => this.runTurn(message, tools, participantsMessage, contactsMessage, context))
+    // `history` is this turn's own snapshot, closed over here. A later
+    // `onMessage` for the same room must not be able to replace it while
+    // this turn is still establishing a session.
+    await this.withRoomTurnLock(context.roomId, () => this.runTurn(message, tools, participantsMessage, contactsMessage, context, history))
   }
 
   private async runTurn(
@@ -457,6 +452,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     participantsMessage: string | null,
     contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
+    history: ACPClientSessionState,
   ): Promise<void> {
     // Hoisted out of the `try` so the `catch` below — specifically the
     // timeout branch — can still reach the connection/client/session a
@@ -481,27 +477,43 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       client.beginSession(sessionId)
       const content = replaceUuidMentions(message.content, mentionSubjectsFromMetadata(message.metadata))
       const messageWithContext = [...systemUpdateParts(participantsMessage, contactsMessage), content].join("\n\n")
+      // A restored session is normally already bootstrapped. It still owes
+      // a transcript when the prompt that should have carried the replay
+      // was never accepted — restore of that empty session must not skip it.
+      const seedingSession = this.roomsOwedReplay.has(context.roomId) || !this.bootstrappedSessions.has(sessionKey)
       let promptText: string
-      if (this.bootstrappedSessions.has(sessionKey)) {
+      if (!seedingSession) {
         promptText = messageWithContext
       } else {
-        const replayLines = this.consumeReplayLines(sessionKey, context.roomId, message.id)
+        const replayLines = this.replayLinesFor(context.roomId, message.id, history)
+        if (this.roomsOwedReplay.has(context.roomId)) {
+          this.safeWarn("acp_client.replay_seed", { roomId: context.roomId, lineCount: replayLines?.length ?? 0 })
+        }
         const liveSections = replayLines ? framedReplay(replayLines, messageWithContext) : [messageWithContext]
         promptText = [this.buildSystemContext(context.roomId, message), ...liveSections].join("\n\n")
       }
 
-      this.bootstrappedSessions.add(sessionKey)
+      const activeConnection = connection
+      const activeSessionId = sessionId
       const response = await withTimeout(
-        this.raceAgainstConnectionRetirement(connection, connection.prompt({
-          sessionId,
+        this.raceAgainstConnectionRetirement(activeConnection, client.runInPromptSession(activeSessionId, () => activeConnection.prompt({
+          sessionId: activeSessionId,
           prompt: [{
             type: "text",
             text: promptText,
           }],
-        })),
+        }))),
         this.turnTimeoutMs,
         () => new AcpTurnTimeoutError(),
       )
+      // Only a prompt the agent accepted counts. A rejection leaves the
+      // session unbootstrapped and the room still owed its replay, so the
+      // next prompt on this session — or on the session that replaces an
+      // abandoned one — is the one that carries the transcript.
+      if (seedingSession) {
+        this.bootstrappedSessions.add(sessionKey)
+        this.roomsOwedReplay.delete(context.roomId)
+      }
 
       await this.flushChunks({
         client,
@@ -526,6 +538,9 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       }
     } catch (error) {
       rethrowIfRecoverableTurnFailure(error)
+      if (client && sessionId) {
+        client.releasePromptSession(sessionId)
+      }
 
       const isTimeout = error instanceof AcpTurnTimeoutError
 
@@ -636,7 +651,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   public async onCleanup(roomId: string): Promise<void> {
     const owner = this.unlinkRoom(roomId)
     this.roomTools.delete(roomId)
-    this.roomHistory.delete(roomId)
+    this.roomsOwedReplay.delete(roomId)
     this.sessionsInFlight.delete(roomId)
     this.roomTurnLocks.delete(roomId)
     // Invalidates any establishment for this room still in flight — it may
@@ -649,7 +664,6 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       this.activeSessions.delete(key)
       this.bootstrappedSessions.delete(key)
       this.abandonedSessions.delete(key)
-      this.sessionsNeedingReplay.delete(key)
       this.cancelPendingPermissions(key, "room-closed")
     }
   }
@@ -666,11 +680,10 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.activeSessions.clear()
     this.bootstrappedSessions.clear()
     this.abandonedSessions.clear()
-    this.sessionsNeedingReplay.clear()
+    this.roomsOwedReplay.clear()
     this.roomToSession.clear()
     this.sessionToRoom.clear()
     this.roomTools.clear()
-    this.roomHistory.clear()
     this.sessionsInFlight.clear()
     this.roomTurnLocks.clear()
     // Same reasoning as `onCleanup`, for every room at once: a still-pending
@@ -802,17 +815,16 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     return this.workspaceForRoom?.(roomId) ?? this.cwd
   }
 
-  // One-time consume: a session only ever needs its history replayed once,
-  // on its own first prompt (see `runTurn`). Excludes the current turn's own
-  // message — `roomHistory` already carries it on a non-bootstrap turn
-  // (`ExecutionContext.recordMessage` runs before the history it hands to
-  // the adapter is read), unlike a genuine bootstrap replay, which never
-  // included it to begin with.
-  private consumeReplayLines(sessionKey: string, roomId: string, currentMessageId: string): string[] | null {
-    if (!this.sessionsNeedingReplay.delete(sessionKey)) {
+  // Excludes the current turn's own message. A non-bootstrap history
+  // already includes it (`ExecutionContext.recordMessage` runs before the
+  // history handed to the adapter is read); a bootstrap history does not.
+  // Empty after that filter means there is nothing to frame — an empty
+  // array must not still emit the history header.
+  private replayLinesFor(roomId: string, currentMessageId: string, history: ACPClientSessionState): string[] | null {
+    if (!this.roomsOwedReplay.has(roomId)) {
       return null
     }
-    const lines = (this.roomHistory.get(roomId)?.replayMessages ?? [])
+    const lines = (history.replayMessages ?? [])
       .filter((entry) => entry.id !== currentMessageId)
       .map((entry) => entry.line)
     return lines.length > 0 ? lines : null
@@ -1035,12 +1047,15 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.linkOrAbandon(roomId, created.sessionId, generation, connectionGeneration, client)
     const createdKey = this.sessionKey(connectionGeneration, created.sessionId)
     this.activeSessions.add(createdKey)
-    // Only a restore *failure* for a session that actually existed leaves
-    // the fresh session amnesiac of real prior context — a room's genuine
+    // Only a restore failure for a session that actually existed leaves the
+    // fresh session amnesiac of real prior context — a room's genuine
     // first-ever session has nothing to replay, and gets its framing from
-    // `buildSystemContext` instead (see `runTurn`).
+    // `buildSystemContext` instead (see `runTurn`). Kept on the room, not
+    // the new session key: config failure and turn timeout both unlink
+    // that session before its prompt is accepted.
     if (existingSessionId) {
-      this.sessionsNeedingReplay.add(createdKey)
+      this.roomsOwedReplay.add(roomId)
+      this.safeWarn("acp_client.replay_armed", { roomId, previousSessionId: existingSessionId })
     }
     await this.configureSessionMode(roomId, created.sessionId, created.modes, connection)
     await this.configureSessionConfig(roomId, created.sessionId, created.configOptions, connection, connectionGeneration, client)
@@ -1410,7 +1425,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       // fresh session instead.
       const restored = await this.raceAgainstConnectionClose(connection, restore())
       return { ok: true, modes: restored?.modes, configOptions: restored?.configOptions }
-    } catch {
+    } catch (error) {
+      this.safeWarn("acp_client.session_restore_failed", { sessionId, error: asErrorMessage(error) })
       return { ok: false }
     }
   }

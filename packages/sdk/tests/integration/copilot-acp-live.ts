@@ -15,18 +15,17 @@ import { BandClient } from "@band-ai/rest-client";
 
 import { Agent, CopilotACPAdapter, DEFAULT_COPILOT_ACP_COMMAND } from "../../src/index";
 import { BandLink } from "../../src/platform/BandLink";
-import type { PlatformEvent } from "../../src/platform/events";
 import { FernRestAdapter } from "../../src/rest";
 import {
   loadLiveEnv,
   provisionAgent,
   reapProvisioned,
   sweepOrphans,
+  waitForEvent,
   type ProvisionedAgent,
 } from "./support/liveHarness";
 
 const TEST_NAME = "copilot-acp";
-const TIMEOUT_MS = 180_000;
 const COPILOT_HOSTED_AUTH_ENV = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] as const;
 const COPILOT_BYOK_REQUIRED_ENV = ["COPILOT_PROVIDER_BASE_URL", "COPILOT_MODEL"] as const;
 const COPILOT_HOME_ENV = "COPILOT_HOME";
@@ -43,28 +42,6 @@ function hasByok(): boolean {
 
 function hasHostedAuthentication(): boolean {
   return COPILOT_HOSTED_AUTH_ENV.some((name) => process.env[name]);
-}
-
-async function waitForEvent(
-  link: BandLink,
-  predicate: (event: PlatformEvent) => boolean,
-  message: string,
-): Promise<void> {
-  const timeout = new AbortController();
-  const timer = setTimeout(() => timeout.abort(), TIMEOUT_MS);
-  try {
-    while (true) {
-      const event = await link.nextEvent(timeout.signal);
-      if (!event) {
-        throw new Error(message);
-      }
-      if (predicate(event)) {
-        return;
-      }
-    }
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 async function main(): Promise<void> {

@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import type {
   Client,
   ContentBlock,
@@ -18,6 +20,12 @@ export class BandACPClient implements Client {
   private readonly sessionChunks = new Map<string, CollectedChunk[]>()
   private readonly permissionHandler: ACPPermissionHandler
   private readonly extensionHandler: ACPClientExtensionHandler | undefined
+  // The prompt call that is on the stack, plus every prompt still awaiting a
+  // response. A sessionless extension notification is attributed to the
+  // prompt that is actually running, not to whichever session last became
+  // ready — two rooms share this client, and that last-ready slot moves.
+  private readonly promptSession = new AsyncLocalStorage<string>()
+  private readonly promptsInFlight = new Set<string>()
 
   // The handler is connection-scoped and required at construction, so it is
   // already in place before the agent process is spawned: there is no window
@@ -32,6 +40,26 @@ export class BandACPClient implements Client {
 
   public beginSession(sessionId: string): void {
     this.sessionChunks.set(sessionId, [])
+  }
+
+  // Wraps the `session/prompt` RPC so a notification the agent emits while
+  // that prompt is the one on the stack stays attributed to it, even when
+  // another room's prompt is also in flight.
+  public async runInPromptSession<T>(sessionId: string, run: () => Promise<T>): Promise<T> {
+    this.promptsInFlight.add(sessionId)
+    try {
+      return await this.promptSession.run(sessionId, run)
+    } finally {
+      this.promptsInFlight.delete(sessionId)
+    }
+  }
+
+  // The turn stopped waiting (timeout, or the connection was retired) while
+  // `session/prompt` may still be pending. The id has to leave the in-flight
+  // set now: the `finally` above does not run until that RPC settles, and a
+  // hung id makes every later sessionless notification look ambiguous.
+  public releasePromptSession(sessionId: string): void {
+    this.promptsInFlight.delete(sessionId)
   }
 
   public async sessionUpdate(params: SessionNotification): Promise<void> {
@@ -102,7 +130,9 @@ export class BandACPClient implements Client {
     method: string,
     params: Record<string, unknown>,
   ): Promise<void> {
-    const sessionId = sessionIdFrom(params)
+    // Resolved before the handler await. Reading a handler-owned session id
+    // after that await lets another room's session-ready overwrite it.
+    const sessionId = this.attributableSession(sessionIdFrom(params))
     const chunks = await this.extensionHandler?.extNotification?.(
       method,
       params,
@@ -120,6 +150,24 @@ export class BandACPClient implements Client {
 
   private appendChunk(sessionId: string, chunk: CollectedChunk): void {
     this.sessionChunks.get(sessionId)?.push(chunk)
+  }
+
+  // Params win. Otherwise the prompt on this stack, which is the only
+  // signal a sessionless notification has when two prompts overlap. A
+  // single in-flight prompt covers a notification dispatched off the
+  // prompt's own stack (the connection read loop).
+  private attributableSession(paramSessionId: string | null): string | null {
+    if (paramSessionId) {
+      return paramSessionId
+    }
+    const onStack = this.promptSession.getStore()
+    if (onStack) {
+      return onStack
+    }
+    if (this.promptsInFlight.size !== 1) {
+      return null
+    }
+    return this.promptsInFlight.values().next().value ?? null
   }
 }
 

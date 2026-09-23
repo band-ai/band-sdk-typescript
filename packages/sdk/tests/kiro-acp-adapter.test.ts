@@ -153,4 +153,182 @@ describe("KiroACPAdapter", () => {
     expect(tools.events.filter((event) => event.messageType === "task" && event.content.startsWith("[Kiro"))).toEqual([])
     await adapter.stop()
   })
+
+  it("reads context-window aliases and ignores totals that are missing, non-positive, or non-finite", async () => {
+    let client: KiroClient | undefined
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    const adapter = new KiroACPAdapter({
+      enableMcpTools: false,
+      logger,
+      connectionFactory: async (captured) => {
+        client = captured as KiroClient
+        return mockConnection(async () => {
+          await client!.extNotification(KIRO_METADATA_METHOD, { tokensUsed: 10, contextWindowTotal: 100 })
+          await client!.extNotification(KIRO_METADATA_METHOD, { contextWindowUsed: 10 })
+          await client!.extNotification(KIRO_METADATA_METHOD, { contextWindowUsed: 10, contextWindowSize: 0 })
+          await client!.extNotification(KIRO_METADATA_METHOD, { contextWindowUsed: 10, contextWindowSize: -5 })
+          await client!.extNotification(KIRO_METADATA_METHOD, { contextWindowUsed: Number.NaN, contextWindowSize: 100 })
+          await client!.extNotification(KIRO_METADATA_METHOD, { contextWindowUsed: Number.POSITIVE_INFINITY, contextWindowSize: 100 })
+          return { stopReason: "end_turn" }
+        })
+      },
+    })
+    const tools = new FakeTools()
+
+    await adapter.onStarted("Agent", "desc")
+    await adapter.onMessage(makeMessage("hi"), tools, { roomToSession: {} }, null, null, { isSessionBootstrap: false, roomId: "room-1" })
+
+    expect(tools.events.filter((event) => event.content.startsWith("[Kiro context window]")).map((event) => event.content)).toEqual([
+      "[Kiro context window] 10/100 tokens (10%)",
+    ])
+    expect(logger.warn).toHaveBeenCalledWith("kiro_acp.metadata_unrecognized", {
+      method: KIRO_METADATA_METHOD,
+      keys: ["contextWindowUsed"],
+    })
+    await adapter.stop()
+  })
+
+  it("posts a sessionless metadata notification to the prompt that emitted it, not the room that became ready later", async () => {
+    let client: KiroClient | undefined
+    let created = 0
+    let markAInPrompt: () => void = () => undefined
+    let markBInPrompt: () => void = () => undefined
+    let releaseB: () => void = () => undefined
+    const aInPrompt = new Promise<void>((resolve) => {
+      markAInPrompt = resolve
+    })
+    const bInPrompt = new Promise<void>((resolve) => {
+      markBInPrompt = resolve
+    })
+    const bRelease = new Promise<void>((resolve) => {
+      releaseB = resolve
+    })
+    const prompt = vi.fn(async (params: { sessionId: string }) => {
+      if (params.sessionId === "kiro-1") {
+        markAInPrompt()
+        await bInPrompt
+        await client!.extNotification(KIRO_METADATA_METHOD, {
+          contextWindowUsed: 4200,
+          contextWindowSize: 200_000,
+        })
+        releaseB()
+        return { stopReason: "end_turn" }
+      }
+      markBInPrompt()
+      await bRelease
+      return { stopReason: "end_turn" }
+    })
+    const adapter = new KiroACPAdapter({
+      enableMcpTools: false,
+      connectionFactory: async (captured) => {
+        client = captured as KiroClient
+        const controller = new AbortController()
+        return {
+          connection: {
+            signal: controller.signal,
+            closed: new Promise<void>(() => undefined),
+            initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+            authenticate: vi.fn(async () => ({})),
+            newSession: vi.fn(async () => ({ sessionId: `kiro-${++created}` })),
+            prompt,
+          } as never,
+          stop: async () => controller.abort(),
+        }
+      },
+    })
+    const toolsA = new FakeTools()
+    const toolsB = new FakeTools()
+    await adapter.onStarted("Agent", "desc")
+    const turnA = adapter.onMessage(
+      makeMessage("hello A", "room-a"),
+      toolsA,
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-a" },
+    )
+    await aInPrompt
+    const turnB = adapter.onMessage(
+      makeMessage("hello B", "room-b"),
+      toolsB,
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-b" },
+    )
+    await Promise.all([turnA, turnB])
+
+    const usage = "[Kiro context window] 4200/200000 tokens (2%)"
+    const posted = (tools: FakeTools) => tools.events.some((event) => event.content === usage)
+    expect({ roomA: posted(toolsA), roomB: posted(toolsB) }).toEqual({ roomA: true, roomB: false })
+    await adapter.stop()
+  })
+
+  it("attributes a sessionless metadata notification to the next prompt after a timed-out prompt never settles", async () => {
+    let client: KiroClient | undefined
+    let created = 0
+    let markBInPrompt: () => void = () => undefined
+    let releaseB: () => void = () => undefined
+    const bInPrompt = new Promise<void>((resolve) => {
+      markBInPrompt = resolve
+    })
+    const bRelease = new Promise<void>((resolve) => {
+      releaseB = resolve
+    })
+    const prompt = vi.fn(async (params: { sessionId: string }) => {
+      if (params.sessionId === "kiro-1") {
+        return new Promise<{ stopReason: string }>(() => undefined)
+      }
+      markBInPrompt()
+      await bRelease
+      return { stopReason: "end_turn" }
+    })
+    const adapter = new KiroACPAdapter({
+      enableMcpTools: false,
+      turnTimeoutMs: 30,
+      connectionFactory: async (captured) => {
+        client = captured as KiroClient
+        const controller = new AbortController()
+        return {
+          connection: {
+            signal: controller.signal,
+            closed: new Promise<void>(() => undefined),
+            initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+            authenticate: vi.fn(async () => ({})),
+            newSession: vi.fn(async () => ({ sessionId: `kiro-${++created}` })),
+            prompt,
+            cancel: vi.fn(async () => undefined),
+          } as never,
+          stop: async () => controller.abort(),
+        }
+      },
+    })
+    const toolsA = new FakeTools()
+    const toolsB = new FakeTools()
+    await adapter.onStarted("Agent", "desc")
+    await expect(adapter.onMessage(
+      makeMessage("hello A", "room-a"),
+      toolsA,
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-a" },
+    )).rejects.toThrow("ACP turn timed out")
+    const turnB = adapter.onMessage(
+      makeMessage("hello B", "room-b"),
+      toolsB,
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-b" },
+    )
+    await bInPrompt
+    await client!.extNotification(KIRO_METADATA_METHOD, { contextWindowUsed: 10, contextWindowSize: 100 })
+    releaseB()
+    await turnB
+    const usage = "[Kiro context window] 10/100 tokens (10%)"
+    expect(toolsB.events.some((event) => event.content === usage)).toBe(true)
+    expect(toolsA.events.some((event) => event.content === usage)).toBe(false)
+    await adapter.stop()
+  })
 })
