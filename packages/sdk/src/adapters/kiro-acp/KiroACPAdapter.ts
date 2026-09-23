@@ -23,8 +23,8 @@ export interface KiroACPAdapterOptions extends Omit<ACPClientStdioOptions, "comm
 // No OAuth UI is wired up, and the metadata payload shape is unconfirmed
 // against a live `kiro-cli acp` session. Decline the OAuth request on this
 // turn so the agent is not left waiting. A metadata payload with no session,
-// or without two finite usage numbers forming a sane (non-negative, used <=
-// total) and positive total, is ignored.
+// or without two finite integer usage numbers forming a sane (non-negative,
+// used <= total) and positive total, is ignored.
 class KiroExtensions implements ACPClientExtensionHandler {
   private readonly logger: Logger;
 
@@ -83,7 +83,10 @@ export class KiroACPAdapter extends ACPClientAdapter {
 function describeKiroMetadata(params: Record<string, unknown>): string | undefined {
   const used = numberValue(params.contextWindowUsed) ?? numberValue(params.tokensUsed);
   const total = numberValue(params.contextWindowSize) ?? numberValue(params.contextWindowTotal);
-  if (used === undefined || total === undefined || total <= 0 || used < 0 || used > total) {
+  if (
+    used === undefined || total === undefined || total <= 0 || used < 0 || used > total
+    || !Number.isInteger(used) || !Number.isInteger(total)
+  ) {
     return undefined;
   }
   const percent = Math.round((used / total) * 100);

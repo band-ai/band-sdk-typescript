@@ -181,7 +181,7 @@ describe("KiroACPAdapter", () => {
     await adapter.stop()
   })
 
-  it("reads context-window aliases and ignores usage that is missing, non-finite, negative, or exceeds a non-positive total", async () => {
+  it("reads context-window aliases and ignores usage that is missing, non-finite, negative, fractional, or exceeds a non-positive total", async () => {
     let client: KiroClient | undefined
     const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
     const adapter = new KiroACPAdapter({
@@ -198,6 +198,7 @@ describe("KiroACPAdapter", () => {
           await client!.extNotification(KIRO_METADATA_METHOD, { contextWindowUsed: Number.POSITIVE_INFINITY, contextWindowSize: 100 })
           await client!.extNotification(KIRO_METADATA_METHOD, { contextWindowUsed: -10, contextWindowSize: 100 })
           await client!.extNotification(KIRO_METADATA_METHOD, { contextWindowUsed: 500, contextWindowSize: 100 })
+          await client!.extNotification(KIRO_METADATA_METHOD, { contextWindowUsed: 0.5, contextWindowSize: 100 })
           return { stopReason: "end_turn" }
         })
       },
@@ -214,71 +215,6 @@ describe("KiroACPAdapter", () => {
       method: KIRO_METADATA_METHOD,
       keys: ["contextWindowUsed"],
     })
-    await adapter.stop()
-  })
-
-  it("posts a sessionless metadata notification to the prompt that emitted it, not the room that became ready later", async () => {
-    let client: KiroClient | undefined
-    let created = 0
-    let markAInPrompt: () => void = () => undefined
-    let markBInPrompt: () => void = () => undefined
-    let releaseB: () => void = () => undefined
-    const aInPrompt = new Promise<void>((resolve) => {
-      markAInPrompt = resolve
-    })
-    const bInPrompt = new Promise<void>((resolve) => {
-      markBInPrompt = resolve
-    })
-    const bRelease = new Promise<void>((resolve) => {
-      releaseB = resolve
-    })
-    const prompt = vi.fn(async (params: { sessionId: string }) => {
-      if (params.sessionId === "kiro-1") {
-        markAInPrompt()
-        await bInPrompt
-        await client!.extNotification(KIRO_METADATA_METHOD, {
-          contextWindowUsed: 4200,
-          contextWindowSize: 200_000,
-        })
-        releaseB()
-        return { stopReason: "end_turn" }
-      }
-      markBInPrompt()
-      await bRelease
-      return { stopReason: "end_turn" }
-    })
-    const adapter = new KiroACPAdapter({
-      enableMcpTools: false,
-      connectionFactory: async (captured) => {
-        client = captured as KiroClient
-        return mockConnection(prompt, { newSession: async () => ({ sessionId: `kiro-${++created}` }) })
-      },
-    })
-    const toolsA = new FakeTools()
-    const toolsB = new FakeTools()
-    await adapter.onStarted("Agent", "desc")
-    const turnA = adapter.onMessage(
-      makeMessage("hello A", "room-a"),
-      toolsA,
-      { roomToSession: {} },
-      null,
-      null,
-      { isSessionBootstrap: true, roomId: "room-a" },
-    )
-    await aInPrompt
-    const turnB = adapter.onMessage(
-      makeMessage("hello B", "room-b"),
-      toolsB,
-      { roomToSession: {} },
-      null,
-      null,
-      { isSessionBootstrap: true, roomId: "room-b" },
-    )
-    await Promise.all([turnA, turnB])
-
-    const usage = "[Kiro context window] 4200/200000 tokens (2%)"
-    const posted = (tools: FakeTools) => tools.events.some((event) => event.content === usage)
-    expect({ roomA: posted(toolsA), roomB: posted(toolsB) }).toEqual({ roomA: true, roomB: false })
     await adapter.stop()
   })
 
@@ -341,7 +277,7 @@ describe("KiroACPAdapter", () => {
     await adapter.stop()
   })
 
-  it("drops a sessionless metadata notification when two prompts are in flight and it is not on either stack", async () => {
+  it("drops a sessionless metadata notification when two prompts are in flight", async () => {
     let client: KiroClient | undefined
     let created = 0
     let markA: () => void = () => undefined

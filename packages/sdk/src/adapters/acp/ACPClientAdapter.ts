@@ -536,7 +536,11 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         // (different) session. Retiring it unconditionally here would drop
         // that newer turn's replay out from under it — only the turn whose
         // session the room still actually points at may retire the debt.
-        if (this.roomToSession.get(context.roomId)?.sessionId === sessionId) {
+        // A bare `sessionId` match is not enough: an agent can reissue the
+        // identical raw session id across a reconnect (see `activeSessions`),
+        // so the connection generation has to match too, same as `unlinkOwner`.
+        const owner = this.roomToSession.get(context.roomId)
+        if (owner?.sessionId === sessionId && owner.generation === generation) {
           this.roomsOwedReplay.delete(context.roomId)
           this.replaySource.delete(context.roomId)
         }

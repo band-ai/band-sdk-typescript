@@ -1,5 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
-
 import type {
   Client,
   ContentBlock,
@@ -20,11 +18,6 @@ export class BandACPClient implements Client {
   private readonly sessionChunks = new Map<string, CollectedChunk[]>()
   private readonly permissionHandler: ACPPermissionHandler
   private readonly extensionHandler: ACPClientExtensionHandler | undefined
-  // The prompt call that is on the stack, plus every prompt still awaiting a
-  // response. A sessionless extension notification is attributed to the
-  // prompt that is actually running, not to whichever session last became
-  // ready — two rooms share this client, and that last-ready slot moves.
-  private readonly promptSession = new AsyncLocalStorage<string>()
   // Token, not session id: a timed-out prompt's `finally` must not delete
   // a later prompt that reused the same id.
   private nextPromptToken = 0
@@ -45,9 +38,8 @@ export class BandACPClient implements Client {
     this.sessionChunks.set(sessionId, [])
   }
 
-  // One token per call, including the prompt currently on the stack.
-  // `release` drops that token only, so a turn that stopped waiting cannot
-  // remove a later prompt that reused the session id.
+  // One token per call. `release` drops that token only, so a turn that
+  // stopped waiting cannot remove a later prompt that reused the session id.
   public enterPromptSession(sessionId: string): {
     run: <T>(fn: () => Promise<T>) => Promise<T>
     release: () => void
@@ -64,13 +56,13 @@ export class BandACPClient implements Client {
     }
     return {
       release,
-      run: (fn) => this.promptSession.run(sessionId, async () => {
+      run: async (fn) => {
         try {
           return await fn()
         } finally {
           release()
         }
-      }),
+      },
     }
   }
 
@@ -164,17 +156,14 @@ export class BandACPClient implements Client {
     this.sessionChunks.get(sessionId)?.push(chunk)
   }
 
-  // Params win. Otherwise the prompt on this stack, which is the only
-  // signal a sessionless notification has when two prompts overlap. A
-  // single in-flight prompt covers a notification dispatched off the
-  // prompt's own stack (the connection read loop).
+  // Params win. Otherwise, the only signal a sessionless notification has is
+  // whether exactly one prompt is in flight: the ACP SDK dispatches
+  // notifications from the connection's own read loop, not from a
+  // continuation of any specific `prompt()` call, so there is no way to
+  // tell which of two or more overlapping prompts a notification belongs to.
   private attributableSession(paramSessionId: string | null): string | null {
     if (paramSessionId) {
       return paramSessionId
-    }
-    const onStack = this.promptSession.getStore()
-    if (onStack) {
-      return onStack
     }
     if (this.promptsInFlight.size !== 1) {
       return null
