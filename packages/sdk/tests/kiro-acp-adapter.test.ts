@@ -452,7 +452,11 @@ describe("KiroACPAdapter", () => {
     )
     await secondIn
     releaseHung()
-    await Promise.resolve()
+    // The hung prompt's `finally` runs on a later microtask than the
+    // resolution itself. Yielding one turn would notify while that token
+    // is still the only entry, which is already true after the timeout
+    // released it.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     await client!.extNotification(KIRO_METADATA_METHOD, { contextWindowUsed: 10, contextWindowSize: 100 })
     releaseSecond()
     await turnB

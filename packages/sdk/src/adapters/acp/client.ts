@@ -45,28 +45,32 @@ export class BandACPClient implements Client {
     this.sessionChunks.set(sessionId, [])
   }
 
-  // Wraps the `session/prompt` RPC so a notification the agent emits while
-  // that prompt is the one on the stack stays attributed to it, even when
-  // another room's prompt is also in flight.
-  public async runInPromptSession<T>(sessionId: string, run: () => Promise<T>): Promise<T> {
+  // One token per call, including the prompt currently on the stack.
+  // `release` drops that token only, so a turn that stopped waiting cannot
+  // remove a later prompt that reused the session id.
+  public enterPromptSession(sessionId: string): {
+    run: <T>(fn: () => Promise<T>) => Promise<T>
+    release: () => void
+  } {
     const token = ++this.nextPromptToken
     this.promptsInFlight.set(token, sessionId)
-    try {
-      return await this.promptSession.run(sessionId, run)
-    } finally {
+    let released = false
+    const release = (): void => {
+      if (released) {
+        return
+      }
+      released = true
       this.promptsInFlight.delete(token)
     }
-  }
-
-  // The turn stopped waiting (timeout, or the connection was retired) while
-  // `session/prompt` may still be pending. Drop only the entries that exist
-  // now: the `finally` above deletes its own token when the RPC later
-  // settles, and must not remove a prompt that reused this session id.
-  public releasePromptSession(sessionId: string): void {
-    for (const [token, id] of this.promptsInFlight) {
-      if (id === sessionId) {
-        this.promptsInFlight.delete(token)
-      }
+    return {
+      release,
+      run: (fn) => this.promptSession.run(sessionId, async () => {
+        try {
+          return await fn()
+        } finally {
+          release()
+        }
+      }),
     }
   }
 

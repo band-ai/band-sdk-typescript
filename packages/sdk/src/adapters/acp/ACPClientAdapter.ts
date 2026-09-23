@@ -296,6 +296,10 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   // an abandoned session still seeds the next one. Keyed by room, not by
   // the session that may be thrown away before that prompt lands.
   private readonly roomsOwedReplay = new Set<string>()
+  // The history the debt was armed with. Later turns in the same room are
+  // not bootstraps, so their history argument is only what this process
+  // has recorded since startup.
+  private readonly replaySource = new Map<string, ACPClientSessionState>()
   // Keyed by `sessionKey(generation, sessionId)`, not bare sessionId: an ACP
   // agent can reissue the identical session id across a reconnect.
   private readonly activeSessions = new Set<string>()
@@ -462,6 +466,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     let client: BandACPClient | null = null
     let sessionId: string | undefined
     let generation = 0
+    let releasePrompt: (() => void) | undefined
     await this.onAcpTurnStarted(message, tools, context)
     try {
       const ensured = await this.ensureConnection()
@@ -482,11 +487,18 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       // a transcript when the prompt that should have carried the replay
       // was never accepted — restore of that empty session must not skip it.
       const seedingSession = this.roomsOwedReplay.has(context.roomId) || !this.bootstrappedSessions.has(sessionKey)
+      if (this.roomsOwedReplay.has(context.roomId) && !this.replaySource.has(context.roomId)) {
+        this.replaySource.set(context.roomId, history)
+      }
       let promptText: string
       if (!seedingSession) {
         promptText = messageWithContext
       } else {
-        const replayLines = this.replayLinesFor(context.roomId, message.id, history)
+        const replayLines = this.replayLinesFor(
+          context.roomId,
+          message.id,
+          this.replaySource.get(context.roomId) ?? history,
+        )
         if (this.roomsOwedReplay.has(context.roomId)) {
           this.safeWarn("acp_client.replay_seed", { roomId: context.roomId, lineCount: replayLines?.length ?? 0 })
         }
@@ -496,8 +508,10 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
 
       const activeConnection = connection
       const activeSessionId = sessionId
+      const promptSession = client.enterPromptSession(activeSessionId)
+      releasePrompt = promptSession.release
       const response = await withTimeout(
-        this.raceAgainstConnectionRetirement(activeConnection, client.runInPromptSession(activeSessionId, () => activeConnection.prompt({
+        this.raceAgainstConnectionRetirement(activeConnection, promptSession.run(() => activeConnection.prompt({
           sessionId: activeSessionId,
           prompt: [{
             type: "text",
@@ -518,6 +532,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       if (seedingSession && response.stopReason !== "cancelled") {
         this.bootstrappedSessions.add(sessionKey)
         this.roomsOwedReplay.delete(context.roomId)
+        this.replaySource.delete(context.roomId)
       }
 
       await this.flushChunks({
@@ -543,9 +558,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       }
     } catch (error) {
       rethrowIfRecoverableTurnFailure(error)
-      if (client && sessionId) {
-        client.releasePromptSession(sessionId)
-      }
+      releasePrompt?.()
 
       const isTimeout = error instanceof AcpTurnTimeoutError
 
@@ -657,6 +670,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     const owner = this.unlinkRoom(roomId)
     this.roomTools.delete(roomId)
     this.roomsOwedReplay.delete(roomId)
+    this.replaySource.delete(roomId)
     this.sessionsInFlight.delete(roomId)
     this.roomTurnLocks.delete(roomId)
     // Invalidates any establishment for this room still in flight — it may
@@ -686,6 +700,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.bootstrappedSessions.clear()
     this.abandonedSessions.clear()
     this.roomsOwedReplay.clear()
+    this.replaySource.clear()
     this.roomToSession.clear()
     this.sessionToRoom.clear()
     this.roomTools.clear()
