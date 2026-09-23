@@ -17,7 +17,7 @@ class FakeTransport implements StreamingTransport {
   }
 }
 
-function makeEvent(senderId = "user-1") {
+function makeEvent(senderId = "user-1", senderType = "User") {
   return {
     type: "message_created" as const,
     roomId: "room-1",
@@ -26,7 +26,7 @@ function makeEvent(senderId = "user-1") {
       content: "hello",
       message_type: "text",
       sender_id: senderId,
-      sender_type: "User",
+      sender_type: senderType,
       sender_name: "Jane",
       inserted_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -63,9 +63,17 @@ describe("DefaultPreprocessor", () => {
   it("skips self-authored messages", async () => {
     const context = makeContext();
     const preprocessor = new DefaultPreprocessor();
-    const result = await preprocessor.process(context, makeEvent("a1"), "a1");
+    const result = await preprocessor.process(context, makeEvent("a1", "Agent"), "a1");
 
     expect(result).toBeNull();
+  });
+
+  it("does not skip a message whose sender id matches the agent but whose sender type is not Agent", async () => {
+    const context = makeContext();
+    const preprocessor = new DefaultPreprocessor();
+    const result = await preprocessor.process(context, makeEvent("a1", "User"), "a1");
+
+    expect(result).not.toBeNull();
   });
 
   it("uses isLlmInitialized for bootstrap detection", async () => {

@@ -1,6 +1,7 @@
 import type { Preprocessor, PreprocessorContext } from "../../contracts/protocols";
 import { HistoryProvider, type AgentInput, type PlatformMessage } from "../types";
 import type { PlatformEvent } from "../../platform/events";
+import { isSelfEcho } from "@band-ai/band-sdk-core";
 
 function toPlatformMessage(roomId: string, payload: {
   id: string;
@@ -37,7 +38,7 @@ export class DefaultPreprocessor implements Preprocessor<PlatformEvent> {
 
     const message = toPlatformMessage(event.roomId, event.payload);
 
-    if (message.senderId === agentId) {
+    if (isSelfEcho(message.senderId, message.senderType, agentId)) {
       return null;
     }
 

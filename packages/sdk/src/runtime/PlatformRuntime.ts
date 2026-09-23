@@ -20,6 +20,7 @@ import type { RuntimeLifecycleState } from "./lifecycle";
 import { LifecycleTracker, SingleFlight, isLegalRuntimeTransition, startWithGate, toLifecycleError } from "./lifecycle";
 import { combineTeardownErrors, isolateTeardown } from "../core/teardown";
 import { resolveLogger, type Logger } from "../core/logger";
+import { evaluateAdapterResult } from "@band-ai/band-sdk-core";
 
 /** Trigger of the cleanup `stop()` that `start()` runs on its own failure path. */
 const START_CLEANUP_TRIGGER = "start-failed";
@@ -462,17 +463,27 @@ export class PlatformRuntime implements AsyncDisposable {
       await this.link.markProcessing(roomId, messageId, messageMarkOptions);
     }
 
+    let succeeded = true;
+    let caughtError: unknown;
     try {
       await adapter.onEvent(input);
-      if (messageId && !isSynthetic) {
-        await this.link.markProcessed(roomId, messageId, messageMarkOptions);
-      }
     } catch (error) {
-      const label = error instanceof Error ? error.message : String(error);
-      if (messageId && !isSynthetic) {
+      succeeded = false;
+      caughtError = error;
+    }
+
+    if (messageId && !isSynthetic) {
+      const decision = evaluateAdapterResult(roomId, messageId, succeeded);
+      if (decision.decision === "processed") {
+        await this.link.markProcessed(roomId, messageId, messageMarkOptions);
+      } else {
+        const label = caughtError instanceof Error ? caughtError.message : String(caughtError);
         await this.link.markFailed(roomId, messageId, label, messageMarkOptions);
       }
-      throw error;
+    }
+
+    if (!succeeded) {
+      throw caughtError;
     }
   }
 
