@@ -38,6 +38,20 @@ export class BandACPClient implements Client {
     this.sessionChunks.set(sessionId, [])
   }
 
+  // `sessionChunks` is keyed by bare session id with no per-turn isolation
+  // — the ACP protocol gives a `session/update` notification nothing finer
+  // to key on. Reusing a session id while this is true would mix two
+  // turns' chunks in the one buffer, so callers must never restore/reuse a
+  // session while it is.
+  public hasPromptInFlight(sessionId: string): boolean {
+    for (const inFlight of this.promptsInFlight.values()) {
+      if (inFlight === sessionId) {
+        return true
+      }
+    }
+    return false
+  }
+
   // One token per call. `release` drops that token only, so a turn that
   // stopped waiting cannot remove a later prompt that reused the session id.
   public enterPromptSession(sessionId: string): {

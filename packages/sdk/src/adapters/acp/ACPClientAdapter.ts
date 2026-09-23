@@ -693,7 +693,16 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       owner.client?.resetChunks(owner.sessionId)
       this.activeSessions.delete(key)
       this.bootstrappedSessions.delete(key)
-      this.abandonedSessions.delete(key)
+      // A prompt still in flight on this session must block it from ever
+      // being restored: `sessionChunks` has no per-turn isolation, so a
+      // later turn reusing this id while that prompt is still writing to
+      // it would mix both turns' output in the one buffer (same hazard
+      // `abandonTimedOutTurn` already guards against for a timed-out turn).
+      if (owner.client?.hasPromptInFlight(owner.sessionId)) {
+        this.abandonedSessions.add(key)
+      } else {
+        this.abandonedSessions.delete(key)
+      }
       this.cancelPendingPermissions(key, "room-closed")
     }
   }

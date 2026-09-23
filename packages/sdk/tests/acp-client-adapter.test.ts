@@ -529,6 +529,65 @@ describe("ACPClientAdapter", () => {
     expect(promptTexts[2]).toContain("T2's own preserved context")
   })
 
+  it("marks a session with a still-in-flight prompt abandoned on cleanup, so a later turn never restores it", async () => {
+    const loadSession = vi.fn(async () => ({}))
+    const newSession = vi.fn(async () => ({ sessionId: "session-fresh" }))
+    const pendingPrompts: Array<(stopReason: string) => void> = []
+    const prompt = vi.fn(() => new Promise<{ stopReason: string }>((resolve) => {
+      pendingPrompts.push((stopReason) => resolve({ stopReason }))
+    }))
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      connectionFactory: async () => buildMockConnection({
+        agentCapabilities: { loadSession: true },
+        loadSession,
+        newSession,
+        prompt,
+      }),
+    })
+    await adapter.onStarted("Agent", "desc")
+
+    // T3 establishes a fresh session and hangs on its prompt.
+    const t3 = adapter.onMessage(
+      makeMessage("t3", "room-1"),
+      new FakeTools(),
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-1" },
+    )
+    await vi.waitFor(() => expect(pendingPrompts).toHaveLength(1))
+    expect(newSession).toHaveBeenCalledTimes(1)
+
+    // A bounded teardown fires while T3's prompt is still outstanding.
+    await adapter.onCleanup("room-1")
+
+    // T4, a later bootstrap for the same room, believes (per persisted
+    // history) that "session-fresh" is still its session and would
+    // normally try to restore it.
+    const t4 = adapter.onMessage(
+      makeMessage("t4", "room-1"),
+      new FakeTools(),
+      { roomToSession: { "room-1": "session-fresh" } },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-1" },
+    )
+    await vi.waitFor(() => expect(pendingPrompts).toHaveLength(2))
+    pendingPrompts[1]("end_turn")
+    await t4
+
+    // The restore attempt never happened — the session was abandoned
+    // instead, so T4 got a genuinely fresh session.
+    expect(loadSession).not.toHaveBeenCalled()
+    expect(newSession).toHaveBeenCalledTimes(2)
+
+    pendingPrompts[0]("end_turn")
+    await t3
+  })
+
   it("never seeds a replay when the session restores successfully, even though replay history is available", async () => {
     const loadSession = vi.fn(async () => ({}))
     const newSession = vi.fn()
