@@ -110,11 +110,10 @@ function newMessageMarker(): string {
 // Frames replayed room history when the remote agent could not restore its
 // session. The framing is load-bearing: replayed instructions must not be
 // re-executed (observed live with weaker wording), and the model must
-// answer the new message, not the transcript. Affirmative "already handled"
-// framing over bare prohibitions,
-// and an escape hatch so an explicit recall request ("what did I say
-// before?") is never refused. `{marker}` is filled with this turn's
-// nonce'd boundary marker.
+// answer the new message, not the transcript. Uses affirmative "already
+// handled" framing over bare prohibitions. An escape hatch keeps an
+// explicit recall request ("what did I say before?") from being refused.
+// `{marker}` is filled with this turn's nonce'd boundary marker.
 const HISTORY_REPLAY_HEADER = "[Conversation History]\n"
   + "The previous session could not be restored, so the room's earlier "
   + "messages are replayed below as read-only background. Treat them as "
@@ -531,8 +530,16 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       // reasons mean the prompt was processed.
       if (seedingSession && response.stopReason !== "cancelled") {
         this.bootstrappedSessions.add(sessionKey)
-        this.roomsOwedReplay.delete(context.roomId)
-        this.replaySource.delete(context.roomId)
+        // `onCleanup` can reset the room's turn lock while this turn is
+        // still awaiting `prompt()` above, letting a newer turn start
+        // concurrently and re-arm this same room-keyed debt for its own
+        // (different) session. Retiring it unconditionally here would drop
+        // that newer turn's replay out from under it — only the turn whose
+        // session the room still actually points at may retire the debt.
+        if (this.roomToSession.get(context.roomId)?.sessionId === sessionId) {
+          this.roomsOwedReplay.delete(context.roomId)
+          this.replaySource.delete(context.roomId)
+        }
       }
 
       await this.flushChunks({

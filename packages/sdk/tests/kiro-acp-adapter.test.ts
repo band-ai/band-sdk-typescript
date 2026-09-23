@@ -13,7 +13,13 @@ interface KiroClient {
   extNotification(method: string, params: Record<string, unknown>): Promise<void>;
 }
 
-function mockConnection(prompt: () => Promise<{ stopReason: string }>) {
+function mockConnection(
+  prompt: (params: { sessionId: string }) => Promise<{ stopReason: string }>,
+  overrides: {
+    newSession?: (params?: Record<string, unknown>) => Promise<{ sessionId: string }>;
+    cancel?: () => Promise<void>;
+  } = {},
+) {
   const controller = new AbortController()
   return {
     connection: {
@@ -21,8 +27,9 @@ function mockConnection(prompt: () => Promise<{ stopReason: string }>) {
       closed: new Promise<void>(() => undefined),
       initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
       authenticate: vi.fn(async () => ({})),
-      newSession: vi.fn(async () => ({ sessionId: "kiro-session" })),
+      newSession: vi.fn(overrides.newSession ?? (async () => ({ sessionId: "kiro-session" }))),
       prompt,
+      ...(overrides.cancel ? { cancel: vi.fn(overrides.cancel) } : {}),
     } as never,
     stop: async () => controller.abort(),
   }
@@ -57,6 +64,26 @@ describe("KiroACPAdapter", () => {
 
     await adapter.onStarted("Agent", "desc")
     expect(command).toEqual(["kiro-cli-preview", "acp"])
+    await adapter.stop()
+  })
+
+  it("passes base ACPClientAdapter options (e.g. cwd) through to the underlying session", async () => {
+    let newSessionParams: Record<string, unknown> | null = null
+    const adapter = new KiroACPAdapter({
+      enableMcpTools: false,
+      cwd: "/workspace/kiro",
+      connectionFactory: async () => mockConnection(async () => ({ stopReason: "end_turn" }), {
+        newSession: async (params) => {
+          newSessionParams = params ?? {}
+          return { sessionId: "kiro-session" }
+        },
+      }),
+    })
+
+    await adapter.onStarted("Agent", "desc")
+    await adapter.onMessage(makeMessage("hi"), new FakeTools(), { roomToSession: {} }, null, null, { isSessionBootstrap: false, roomId: "room-1" })
+
+    expect(newSessionParams).toMatchObject({ cwd: "/workspace/kiro" })
     await adapter.stop()
   })
 
@@ -154,7 +181,7 @@ describe("KiroACPAdapter", () => {
     await adapter.stop()
   })
 
-  it("reads context-window aliases and ignores totals that are missing, non-positive, or non-finite", async () => {
+  it("reads context-window aliases and ignores usage that is missing, non-finite, negative, or exceeds a non-positive total", async () => {
     let client: KiroClient | undefined
     const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
     const adapter = new KiroACPAdapter({
@@ -169,6 +196,8 @@ describe("KiroACPAdapter", () => {
           await client!.extNotification(KIRO_METADATA_METHOD, { contextWindowUsed: 10, contextWindowSize: -5 })
           await client!.extNotification(KIRO_METADATA_METHOD, { contextWindowUsed: Number.NaN, contextWindowSize: 100 })
           await client!.extNotification(KIRO_METADATA_METHOD, { contextWindowUsed: Number.POSITIVE_INFINITY, contextWindowSize: 100 })
+          await client!.extNotification(KIRO_METADATA_METHOD, { contextWindowUsed: -10, contextWindowSize: 100 })
+          await client!.extNotification(KIRO_METADATA_METHOD, { contextWindowUsed: 500, contextWindowSize: 100 })
           return { stopReason: "end_turn" }
         })
       },
@@ -222,18 +251,7 @@ describe("KiroACPAdapter", () => {
       enableMcpTools: false,
       connectionFactory: async (captured) => {
         client = captured as KiroClient
-        const controller = new AbortController()
-        return {
-          connection: {
-            signal: controller.signal,
-            closed: new Promise<void>(() => undefined),
-            initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
-            authenticate: vi.fn(async () => ({})),
-            newSession: vi.fn(async () => ({ sessionId: `kiro-${++created}` })),
-            prompt,
-          } as never,
-          stop: async () => controller.abort(),
-        }
+        return mockConnection(prompt, { newSession: async () => ({ sessionId: `kiro-${++created}` }) })
       },
     })
     const toolsA = new FakeTools()
@@ -288,19 +306,10 @@ describe("KiroACPAdapter", () => {
       turnTimeoutMs: 30,
       connectionFactory: async (captured) => {
         client = captured as KiroClient
-        const controller = new AbortController()
-        return {
-          connection: {
-            signal: controller.signal,
-            closed: new Promise<void>(() => undefined),
-            initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
-            authenticate: vi.fn(async () => ({})),
-            newSession: vi.fn(async () => ({ sessionId: `kiro-${++created}` })),
-            prompt,
-            cancel: vi.fn(async () => undefined),
-          } as never,
-          stop: async () => controller.abort(),
-        }
+        return mockConnection(prompt, {
+          newSession: async () => ({ sessionId: `kiro-${++created}` }),
+          cancel: async () => undefined,
+        })
       },
     })
     const toolsA = new FakeTools()
@@ -356,18 +365,7 @@ describe("KiroACPAdapter", () => {
       logger,
       connectionFactory: async (captured) => {
         client = captured as KiroClient
-        const controller = new AbortController()
-        return {
-          connection: {
-            signal: controller.signal,
-            closed: new Promise<void>(() => undefined),
-            initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
-            authenticate: vi.fn(async () => ({})),
-            newSession: vi.fn(async () => ({ sessionId: `kiro-${++created}` })),
-            prompt,
-          } as never,
-          stop: async () => controller.abort(),
-        }
+        return mockConnection(prompt, { newSession: async () => ({ sessionId: `kiro-${++created}` }) })
       },
     })
     const toolsA = new FakeTools()
@@ -414,22 +412,13 @@ describe("KiroACPAdapter", () => {
       turnTimeoutMs: 30,
       connectionFactory: async (captured) => {
         client = captured as KiroClient
-        const controller = new AbortController()
-        return {
-          connection: {
-            signal: controller.signal,
-            closed: new Promise<void>(() => undefined),
-            initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
-            authenticate: vi.fn(async () => ({})),
-            newSession: vi.fn(async () => {
-              created += 1
-              return { sessionId: "s-a" }
-            }),
-            prompt,
-            cancel: vi.fn(async () => undefined),
-          } as never,
-          stop: async () => controller.abort(),
-        }
+        return mockConnection(prompt, {
+          newSession: async () => {
+            created += 1
+            return { sessionId: "s-a" }
+          },
+          cancel: async () => undefined,
+        })
       },
     })
     const toolsB = new FakeTools()

@@ -273,7 +273,7 @@ describe("ACPClientAdapter", () => {
     expect(promptTexts[2]).not.toContain("[System Context]")
   })
 
-  it("resolves a per-room cwd via workspaceForRoom for both restored and freshly created sessions (INT-1532)", async () => {
+  it("resolves a per-room cwd via workspaceForRoom for both restored and freshly created sessions", async () => {
     const loadSessionCalls: Array<{ cwd?: string }> = []
     const newSessionCalls: Array<{ cwd?: string }> = []
     const loadSession = vi.fn(async (params?: { cwd?: string }) => {
@@ -325,7 +325,7 @@ describe("ACPClientAdapter", () => {
     expect(newSessionCalls[0]?.cwd).toBe("/workspaces/room-fresh")
   })
 
-  it("falls back to the adapter-wide cwd for every room when workspaceForRoom is unset (INT-1532, default unchanged)", async () => {
+  it("falls back to the adapter-wide cwd for every room when workspaceForRoom is unset", async () => {
     const newSessionCalls: Array<{ cwd?: string }> = []
     const newSession = vi.fn(async (params?: { cwd?: string }) => {
       newSessionCalls.push(params ?? {})
@@ -350,7 +350,7 @@ describe("ACPClientAdapter", () => {
     expect(newSessionCalls[0]?.cwd).toBe("/adapter/default/cwd")
   })
 
-  it("seeds a replacement session's first prompt with replayed room history after a resume miss, excluding the trigger message (INT-1532)", async () => {
+  it("seeds a replacement session's first prompt with replayed room history after a resume miss, excluding the trigger message", async () => {
     const loadSession = vi.fn(async () => {
       throw new Error("agent forgot this session")
     })
@@ -441,6 +441,92 @@ describe("ACPClientAdapter", () => {
     expect(promptTexts[1]).not.toContain("[Conversation History]")
     expect(promptTexts[1]).not.toContain("[New Message")
     expect(promptTexts[1]).toContain("and after that?")
+  })
+
+  it("does not let a stale turn's belated completion retire a newer turn's replay debt after onCleanup resets the room's lock", async () => {
+    const loadSession = vi.fn(async () => {
+      throw new Error("agent forgot this session")
+    })
+    let created = 0
+    const newSession = vi.fn(async () => ({ sessionId: `session-fresh-${++created}` }))
+    const promptTexts: string[] = []
+    const pendingPrompts: Array<(stopReason: string) => void> = []
+    const prompt = vi.fn((params: { sessionId: string; prompt?: Array<{ text?: string }> }) => {
+      promptTexts.push(params.prompt?.[0]?.text ?? "")
+      return new Promise<{ stopReason: string }>((resolve) => {
+        pendingPrompts.push((stopReason) => resolve({ stopReason }))
+      })
+    })
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      connectionFactory: async () => buildMockConnection({
+        agentCapabilities: { loadSession: true },
+        loadSession,
+        newSession,
+        prompt,
+      }),
+    })
+    await adapter.onStarted("Agent", "desc")
+
+    // T1: a resume miss arms room-1's replay debt and seeds session-fresh-1,
+    // then hangs waiting on its prompt to be accepted.
+    const t1 = adapter.onMessage(
+      makeMessage("t1 trigger", "room-1"),
+      new FakeTools(),
+      { roomToSession: { "room-1": "session-lost-1" }, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-1" },
+    )
+    await vi.waitFor(() => expect(pendingPrompts).toHaveLength(1))
+
+    // A bounded teardown (e.g. `agent.stop`/`resetRoomSession` timing out
+    // without awaiting T1) resets the room's turn lock while T1 is still
+    // in flight, letting a new message start T2 concurrently instead of
+    // queuing behind T1.
+    await adapter.onCleanup("room-1")
+
+    // T2: its own resume miss re-arms the same room-keyed debt, seeded with
+    // T2's own history, then its prompt is rejected (not accepted).
+    const t2 = adapter.onMessage(
+      makeMessage("t2 trigger", "room-1"),
+      new FakeTools(),
+      {
+        roomToSession: { "room-1": "session-lost-2" },
+        replayMessages: [{ id: "t2-earlier", line: "[Alice]: T2's own preserved context" }],
+      },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-1" },
+    )
+    await vi.waitFor(() => expect(pendingPrompts).toHaveLength(2))
+    pendingPrompts[1]("cancelled")
+    await expect(t2).rejects.toThrow("cancelled")
+
+    // T1's prompt is now accepted, well after T2 re-armed the debt for its
+    // own (different) session.
+    pendingPrompts[0]("end_turn")
+    await t1
+
+    // T3 reuses T2's still-active session. If T1's belated completion had
+    // wrongly retired T2's debt, T3 would fall back to its own (here,
+    // deliberately impoverished) history instead of T2's preserved one.
+    const t3 = adapter.onMessage(
+      makeMessage("t3 trigger", "room-1"),
+      new FakeTools(),
+      { roomToSession: { "room-1": "session-fresh-2" }, replayMessages: [] },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    )
+    await vi.waitFor(() => expect(pendingPrompts).toHaveLength(3))
+    pendingPrompts[2]("end_turn")
+    await t3
+
+    expect(newSession).toHaveBeenCalledTimes(2)
+    expect(promptTexts[2]).toContain("T2's own preserved context")
   })
 
   it("never seeds a replay when the session restores successfully, even though replay history is available", async () => {

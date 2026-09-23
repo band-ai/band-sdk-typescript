@@ -1,5 +1,5 @@
 import { findLatestTaskMetadata } from "../adapters/shared/history";
-import { asOptionalString, parseDate } from "./shared";
+import { asOptionalString, parseDate, resolveReplayLineContent } from "./shared";
 
 export interface OpencodeSessionState {
   sessionId: string | null;
@@ -55,15 +55,12 @@ function buildReplayMessages(raw: Array<Record<string, unknown>>): string[] {
       continue;
     }
 
-    const content = asOptionalString(entry.content);
-    if (!content) {
+    const line = resolveReplayLineContent(entry);
+    if (!line) {
       continue;
     }
 
-    const senderName = asOptionalString(entry.sender_name)
-      ?? asOptionalString(entry.sender_type)
-      ?? "Unknown";
-    replayMessages.push(`[${senderName}]: ${content}`);
+    replayMessages.push(`[${line.sender}]: ${line.content}`);
   }
 
   return replayMessages;

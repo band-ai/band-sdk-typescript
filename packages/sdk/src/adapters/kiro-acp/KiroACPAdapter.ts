@@ -23,7 +23,8 @@ export interface KiroACPAdapterOptions extends Omit<ACPClientStdioOptions, "comm
 // No OAuth UI is wired up, and the metadata payload shape is unconfirmed
 // against a live `kiro-cli acp` session. Decline the OAuth request on this
 // turn so the agent is not left waiting. A metadata payload with no session,
-// or without two finite usage numbers and a positive total, is ignored.
+// or without two finite usage numbers forming a sane (non-negative, used <=
+// total) and positive total, is ignored.
 class KiroExtensions implements ACPClientExtensionHandler {
   private readonly logger: Logger;
 
@@ -37,6 +38,7 @@ class KiroExtensions implements ACPClientExtensionHandler {
     _context: ACPClientExtensionContext,
   ): Promise<Record<string, unknown> | null> {
     if (method !== KIRO_MCP_OAUTH_REQUEST_METHOD) {
+      this.logger.warn("kiro_acp.ext_method_unhandled", { method });
       return null;
     }
     this.logger.warn("kiro_acp.oauth_request_declined", { method });
@@ -49,6 +51,7 @@ class KiroExtensions implements ACPClientExtensionHandler {
     context: ACPClientExtensionContext,
   ): Promise<readonly CollectedChunk[] | void> {
     if (method !== KIRO_METADATA_METHOD) {
+      this.logger.warn("kiro_acp.ext_notification_unhandled", { method });
       return;
     }
     if (!context.sessionId) {
@@ -80,7 +83,7 @@ export class KiroACPAdapter extends ACPClientAdapter {
 function describeKiroMetadata(params: Record<string, unknown>): string | undefined {
   const used = numberValue(params.contextWindowUsed) ?? numberValue(params.tokensUsed);
   const total = numberValue(params.contextWindowSize) ?? numberValue(params.contextWindowTotal);
-  if (used === undefined || total === undefined || total <= 0) {
+  if (used === undefined || total === undefined || total <= 0 || used < 0 || used > total) {
     return undefined;
   }
   const percent = Math.round((used / total) * 100);

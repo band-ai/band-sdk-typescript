@@ -1,4 +1,5 @@
 import type { HistoryConverter } from "../contracts/protocols";
+import { resolveReplayLineContent } from "./shared";
 
 export interface ACPClientReplayMessage {
   id: string;
@@ -26,15 +27,12 @@ function buildReplayMessages(raw: Array<Record<string, unknown>>): ACPClientRepl
     if (entry.message_type !== "text") {
       continue
     }
-    const content = typeof entry.content === "string" ? entry.content.trim() : ""
     const id = typeof entry.id === "string" ? entry.id : null
-    if (!content || !id) {
+    const line = resolveReplayLineContent(entry)
+    if (!line || !id) {
       continue
     }
-    const sender = (typeof entry.sender_name === "string" && entry.sender_name)
-      || (typeof entry.sender_type === "string" && entry.sender_type)
-      || "Unknown"
-    replayMessages.push({ id, line: `[${sender}]: ${content}` })
+    replayMessages.push({ id, line: `[${line.sender}]: ${line.content}` })
   }
   return replayMessages
 }

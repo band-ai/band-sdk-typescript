@@ -20,6 +20,24 @@ export function asOptionalString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+export interface ReplayLineContent {
+  content: string;
+  sender: string;
+}
+
+// Shared by every converter that renders a room's text history into
+// "[sender]: content" replay lines (opencode, acp-client) — each applies its
+// own message_type filter first, since that part differs between them.
+export function resolveReplayLineContent(entry: Record<string, unknown>): ReplayLineContent | null {
+  const content = asOptionalString(entry.content);
+  if (!content) {
+    return null;
+  }
+
+  const sender = asOptionalString(entry.sender_name) ?? asOptionalString(entry.sender_type) ?? "Unknown";
+  return { content, sender };
+}
+
 export function parseDate(value: unknown): Date | null {
   if (typeof value !== "string" || value.length === 0) {
     return null;
