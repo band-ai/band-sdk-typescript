@@ -25,7 +25,10 @@ export class BandACPClient implements Client {
   // prompt that is actually running, not to whichever session last became
   // ready — two rooms share this client, and that last-ready slot moves.
   private readonly promptSession = new AsyncLocalStorage<string>()
-  private readonly promptsInFlight = new Set<string>()
+  // Token, not session id: a timed-out prompt's `finally` must not delete
+  // a later prompt that reused the same id.
+  private nextPromptToken = 0
+  private readonly promptsInFlight = new Map<number, string>()
 
   // The handler is connection-scoped and required at construction, so it is
   // already in place before the agent process is spawned: there is no window
@@ -46,20 +49,25 @@ export class BandACPClient implements Client {
   // that prompt is the one on the stack stays attributed to it, even when
   // another room's prompt is also in flight.
   public async runInPromptSession<T>(sessionId: string, run: () => Promise<T>): Promise<T> {
-    this.promptsInFlight.add(sessionId)
+    const token = ++this.nextPromptToken
+    this.promptsInFlight.set(token, sessionId)
     try {
       return await this.promptSession.run(sessionId, run)
     } finally {
-      this.promptsInFlight.delete(sessionId)
+      this.promptsInFlight.delete(token)
     }
   }
 
   // The turn stopped waiting (timeout, or the connection was retired) while
-  // `session/prompt` may still be pending. The id has to leave the in-flight
-  // set now: the `finally` above does not run until that RPC settles, and a
-  // hung id makes every later sessionless notification look ambiguous.
+  // `session/prompt` may still be pending. Drop only the entries that exist
+  // now: the `finally` above deletes its own token when the RPC later
+  // settles, and must not remove a prompt that reused this session id.
   public releasePromptSession(sessionId: string): void {
-    this.promptsInFlight.delete(sessionId)
+    for (const [token, id] of this.promptsInFlight) {
+      if (id === sessionId) {
+        this.promptsInFlight.delete(token)
+      }
+    }
   }
 
   public async sessionUpdate(params: SessionNotification): Promise<void> {

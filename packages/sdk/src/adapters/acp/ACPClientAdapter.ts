@@ -123,8 +123,9 @@ const HISTORY_REPLAY_HEADER = "[Conversation History]\n"
   + "under {marker}.";
 
 // The replay block plus the live message under the nonce'd boundary marker
-// the header names — only ever used on a session's first prompt (see
-// `runTurn`), so ordinary turns need none of this.
+// the header names. Attached on each seeding attempt until one prompt is
+// accepted, so a rejected or cancelled attempt does not leave the next
+// prompt without it.
 function framedReplay(lines: readonly string[], liveMessage: string): [string, string] {
   const marker = newMessageMarker();
   return [
@@ -510,7 +511,11 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       // session unbootstrapped and the room still owed its replay, so the
       // next prompt on this session — or on the session that replaces an
       // abandoned one — is the one that carries the transcript.
-      if (seedingSession) {
+      // `cancelled` means the client aborted the turn (`session/cancel`).
+      // The agent is required to return that stop reason instead of
+      // `end_turn`, and it may not have taken the prompt. Other stop
+      // reasons mean the prompt was processed.
+      if (seedingSession && response.stopReason !== "cancelled") {
         this.bootstrappedSessions.add(sessionKey)
         this.roomsOwedReplay.delete(context.roomId)
       }
