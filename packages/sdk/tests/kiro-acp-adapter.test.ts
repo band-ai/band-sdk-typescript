@@ -18,6 +18,8 @@ function mockConnection(
   overrides: {
     newSession?: (params?: Record<string, unknown>) => Promise<{ sessionId: string }>;
     cancel?: () => Promise<void>;
+    loadSession?: (params: { sessionId: string }) => Promise<Record<string, unknown>>;
+    agentCapabilities?: Record<string, unknown>;
   } = {},
 ) {
   const controller = new AbortController()
@@ -25,11 +27,15 @@ function mockConnection(
     connection: {
       signal: controller.signal,
       closed: new Promise<void>(() => undefined),
-      initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+      initialize: vi.fn(async () => ({
+        protocolVersion: 1,
+        agentCapabilities: overrides.agentCapabilities ?? {},
+      })),
       authenticate: vi.fn(async () => ({})),
       newSession: vi.fn(overrides.newSession ?? (async () => ({ sessionId: "kiro-session" }))),
       prompt,
       ...(overrides.cancel ? { cancel: vi.fn(overrides.cancel) } : {}),
+      ...(overrides.loadSession ? { loadSession: vi.fn(overrides.loadSession) } : {}),
     } as never,
     stop: async () => controller.abort(),
   }
@@ -387,5 +393,134 @@ describe("KiroACPAdapter", () => {
     await turnB
     expect(toolsB.events.some((event) => event.content === "[Kiro context window] 10/100 tokens (10%)")).toBe(true)
     await adapter.stop()
+  })
+
+  // Two REAL, sequential adapter lifecycles standing in for a `kiro-cli`
+  // process restart -- the exact shape of the two live E2E scenarios dropped
+  // for lack of a paid Kiro subscription (previously
+  // packages/sdk/tests/integration/kiro-acp-live.ts). Unlike the
+  // single-instance tests above, phase 2 runs against a brand-new
+  // `KiroACPAdapter`, so whatever session id it tries to resume is whatever
+  // phase 1's mock actually returned -- not a hand-picked constant. What a
+  // real `KIRO_HOME` would persist across a restart is modeled by whether
+  // phase 2's `loadSession` mock recognizes phase 1's session id.
+  describe("multi-stage recall across a simulated restart", () => {
+    it("recalls a fact via native session/load resume", async () => {
+      const trackingMarker = "MARKER-7421"
+      const agentFact = "the sky is blue"
+      const sessionId = "kiro-restart-session"
+
+      const adapter1 = new KiroACPAdapter({
+        enableMcpTools: false,
+        connectionFactory: async () => mockConnection(
+          async () => ({ stopReason: "end_turn" }),
+          { newSession: async () => ({ sessionId }) },
+        ),
+      })
+      await adapter1.onStarted("Agent", "desc")
+      await adapter1.onMessage(
+        makeMessage(`Log a note with tracking marker ${trackingMarker} and state a fact: ${agentFact}.`),
+        new FakeTools(),
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-1" },
+      )
+      await adapter1.stop()
+
+      // A fresh adapter instance wired to the same session id a persisted
+      // KIRO_HOME would carry across the restart.
+      const loadSession = vi.fn(async (params: { sessionId: string }) => {
+        if (params.sessionId !== sessionId) throw new Error("agent forgot this session")
+        return {}
+      })
+      const newSession = vi.fn(async () => ({ sessionId: "should-not-be-created" }))
+      const adapter2 = new KiroACPAdapter({
+        enableMcpTools: false,
+        connectionFactory: async () => mockConnection(
+          async () => ({ stopReason: "end_turn" }),
+          { loadSession, newSession, agentCapabilities: { loadSession: true } },
+        ),
+      })
+      await adapter2.onStarted("Agent", "desc")
+      await adapter2.onMessage(
+        makeMessage("What did you log earlier?"),
+        new FakeTools(),
+        { roomToSession: { "room-1": sessionId } },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-1" },
+      )
+
+      expect(loadSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId }))
+      expect(newSession).not.toHaveBeenCalled()
+      await adapter2.stop()
+    })
+
+    it("recalls a fact via room-replay fallback when session/load misses", async () => {
+      const trackingMarker = "MARKER-9182"
+      const agentFact = "the sky is blue"
+      const staleSessionId = "kiro-stale-session"
+
+      const adapter1 = new KiroACPAdapter({
+        enableMcpTools: false,
+        connectionFactory: async () => mockConnection(
+          async () => ({ stopReason: "end_turn" }),
+          { newSession: async () => ({ sessionId: staleSessionId }) },
+        ),
+      })
+      await adapter1.onStarted("Agent", "desc")
+      await adapter1.onMessage(
+        makeMessage(`Log a note with tracking marker ${trackingMarker} and state a fact: ${agentFact}.`),
+        new FakeTools(),
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-1" },
+      )
+      await adapter1.stop()
+
+      // A fresh KIRO_HOME after restart: session/load genuinely misses, so
+      // Band's own room-replay fallback is the only way phase 2 recalls
+      // what phase 1 said.
+      const loadSession = vi.fn(async () => {
+        throw new Error("agent forgot this session")
+      })
+      const newSession = vi.fn(async () => ({ sessionId: "kiro-fresh-session" }))
+      const promptTexts: string[] = []
+      const prompt = vi.fn(async (params: { sessionId: string; prompt?: Array<{ text?: string }> }) => {
+        promptTexts.push(params.prompt?.[0]?.text ?? "")
+        return { stopReason: "end_turn" }
+      })
+      const adapter2 = new KiroACPAdapter({
+        enableMcpTools: false,
+        connectionFactory: async () => mockConnection(prompt, {
+          loadSession,
+          newSession,
+          agentCapabilities: { loadSession: true },
+        }),
+      })
+      await adapter2.onStarted("Agent", "desc")
+      await adapter2.onMessage(
+        makeMessage("What did you log earlier?"),
+        new FakeTools(),
+        {
+          roomToSession: { "room-1": staleSessionId },
+          replayMessages: [
+            { id: "earlier-1", line: `[User]: Log a note with tracking marker ${trackingMarker} and state a fact: ${agentFact}.` },
+            { id: "earlier-2", line: `[Agent]: Logged ${trackingMarker}: ${agentFact}` },
+          ],
+        },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-1" },
+      )
+
+      expect(loadSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: staleSessionId }))
+      expect(newSession).toHaveBeenCalledTimes(1)
+      expect(promptTexts[0]).toContain(trackingMarker)
+      expect(promptTexts[0]).toContain(agentFact)
+      await adapter2.stop()
+    })
   })
 })
