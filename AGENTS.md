@@ -285,7 +285,8 @@ packages/sdk/src/
 ├── agent/             # Agent.create() entry point
 ├── adapters/          # Framework adapters (one folder per framework, plus GenericAdapter.ts at top level)
 │   ├── tool-calling/  # ToolCallingAdapter base + ToolCallingModel interface
-│   └── shared/        # conversationPrompt, history, coercion utilities
+│   ├── opencode/      # OpencodeAdapter; replies (reply grammar + routing), messages (decision texts)
+│   └── shared/        # conversationPrompt, history, coercion utilities; decisions (chat-mediated decision registry)
 ├── client/rest/       # FernRestAdapter, RestFacade, pagination, REST types
 ├── config/            # YAML and env-var config loaders
 ├── contracts/         # Protocols, DTOs, capabilities, chatEvents (CHAT_EVENT_TYPES)

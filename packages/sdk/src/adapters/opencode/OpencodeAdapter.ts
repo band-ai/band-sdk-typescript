@@ -80,9 +80,18 @@ export interface OpencodeAdapterConfig {
   enableMemoryTools?: boolean;
   fallbackSendAgentText?: boolean;
   turnTimeoutMs?: number;
+  /**
+   * "manual" relays each OpenCode permission ask to the room. Replies are
+   * `approve <id>`, `always <id>`, or `reject <id>`, optionally after
+   * @mentions. The id may be left out while exactly one approval is pending.
+   */
   approvalMode?: OpencodeApprovalMode;
   approvalWaitTimeoutMs?: number;
   approvalTimeoutReply?: OpencodeApprovalReply;
+  /**
+   * "manual" relays each OpenCode question to the room. Free text answers the
+   * oldest pending question, one line per question; `reject [id]` rejects it.
+   */
   questionMode?: OpencodeQuestionMode;
   questionWaitTimeoutMs?: number;
   sessionTitlePrefix?: string;
@@ -147,7 +156,11 @@ interface OpencodeAdapterOptions {
   clientFactory?: (config: Required<OpencodeAdapterConfig>) => OpencodeClientLike;
   mcpBackendFactory?: typeof createBandMcpBackend;
   logger?: Logger;
-  // Who may resolve approvals and questions from the room; omitted lets anyone.
+  /**
+   * Sender ids allowed to resolve approvals and questions from the room.
+   * Omitted lets anyone resolve; an empty list lets nobody. Hints about how
+   * to reply go to anyone.
+   */
   decisionAuthorizedSenders?: readonly string[];
 }
 
