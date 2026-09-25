@@ -82,10 +82,6 @@ jobs:
       - name: Install GitHub Copilot CLI
         run: npm install --global @github/copilot
 
-      - name: Install Kiro CLI
-        if: matrix.file == 'kiro-acp-live.ts'
-        run: curl -fsSL https://cli.kiro.dev/install | bash
-
       # BAND_API_KEY_USER is the same Band user credential band-sdk-python's
       # e2e.yml uses (its E2E_BAND_API_KEY_USER secret) to dynamically
       # provision/reap its own test agents — same secret name/shape here so
@@ -101,5 +97,4 @@ jobs:
           COPILOT_PROVIDER_BASE_URL: https://api.anthropic.com
           COPILOT_PROVIDER_API_KEY: ${{ secrets.E2E_ANTHROPIC_API_KEY }}
           COPILOT_MODEL: claude-haiku-4-5
-          KIRO_API_KEY: ${{ secrets.E2E_KIRO_API_KEY }}
         run: npx tsx tests/integration/${{ matrix.file }}
