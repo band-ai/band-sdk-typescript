@@ -26,6 +26,31 @@ export interface PendingQuestion {
   questions: Array<Record<string, unknown>>;
 }
 
+/** A `permission.asked` event's ask; null without a request id. */
+export function toPendingPermission(properties: Record<string, unknown>): PendingPermission | null {
+  if (typeof properties.id !== "string" || !properties.id) {
+    return null;
+  }
+  return {
+    requestId: properties.id,
+    permission: typeof properties.permission === "string" ? properties.permission : "unknown",
+    patterns: Array.isArray(properties.patterns)
+      ? properties.patterns.filter((value): value is string => typeof value === "string")
+      : [],
+  };
+}
+
+/** A `question.asked` event's ask, keeping only well-formed questions; null without a request id. */
+export function toPendingQuestion(properties: Record<string, unknown>): PendingQuestion | null {
+  if (typeof properties.id !== "string" || !properties.id) {
+    return null;
+  }
+  const questions = Array.isArray(properties.questions)
+    ? properties.questions.filter((value): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value))
+    : [];
+  return { requestId: properties.id, questions };
+}
+
 export interface RoomDecisions {
   permissions: DecisionRegistry<PendingPermission>;
   questions: DecisionRegistry<PendingQuestion>;

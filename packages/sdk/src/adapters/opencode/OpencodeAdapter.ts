@@ -49,9 +49,10 @@ import { OPENCODE_DECISION_MESSAGES, formatQuestionPrompt } from "./messages";
 import {
   REPLY_WORDS,
   routeReply,
+  toPendingPermission,
+  toPendingQuestion,
+  type DecisionKind,
   type OpencodeApprovalReply,
-  type PendingPermission,
-  type PendingQuestion,
   type ReplyAction,
   type RoomDecisions,
 } from "./replies";
@@ -111,6 +112,22 @@ type TurnReleaseOutcome =
 // timeout branch, which would abort and fail whatever session id a later,
 // unrelated turn goes on to reuse for this or another room.
 type TurnEndOutcome = "completed" | "cancelled";
+
+// Sends one claimed ask's reply; `expectedTurn` is the turn it belongs to.
+type ReplySender = (expectedTurn: Promise<TurnEndOutcome> | null) => Promise<void>;
+
+// What differs between a permission ask and a question ask.
+interface AskLifecycle {
+  kind: DecisionKind;
+  // Set when the configured mode answers without asking the room.
+  autoReply: ReplySender | null;
+  timeoutMs: number;
+  timeoutReply: ReplySender;
+  timedOutNotice: string;
+  prompt: string;
+  // Rejects the ask server-side when its prompt could not be posted.
+  rejectAsk: (client: OpencodeClientLike) => Promise<unknown>;
+}
 
 interface RoomState {
   roomId: string;
@@ -699,77 +716,87 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   }
 
   private async handlePermissionAsked(roomState: RoomState, properties: Record<string, unknown>): Promise<void> {
-    const requestId = typeof properties.id === "string" ? properties.id : null;
-    if (!requestId) {
+    const pending = toPendingPermission(properties);
+    if (!pending) {
       return;
     }
-
-    const pending: PendingPermission = {
-      requestId,
-      permission: typeof properties.permission === "string" ? properties.permission : "unknown",
-      patterns: Array.isArray(properties.patterns)
-        ? properties.patterns.filter((value): value is string => typeof value === "string")
-        : [],
-    };
-    const { permissions, knownIds } = roomState.decisions;
-    if (permissions.register(pending, requestId) === null) {
-      return;
-    }
-    knownIds.set(requestId, "permission");
-
-    if (this.config.approvalMode !== "manual") {
-      const reply = this.config.approvalMode === "auto_accept" ? REPLY_WORDS.approve : REPLY_WORDS.reject;
-      permissions.tryClaim(requestId);
-      await this.replyInBackground(roomState, (expectedTurn) => this.sendPermissionReply(roomState, requestId, reply, expectedTurn));
-      return;
-    }
-
-    permissions.startTimeout(requestId, this.config.approvalWaitTimeoutMs, (claimed) => this.expirePermission(roomState, claimed));
-    await this.postAsk(roomState, permissions, requestId, OPENCODE_DECISION_MESSAGES.approvalRequested(pending), (client) => {
-      const sessionId = roomState.sessionId;
-      return sessionId ? client.replyPermission(sessionId, requestId, { response: REPLY_WORDS.reject }) : Promise.resolve();
+    const { requestId } = pending;
+    const replyWith = (reply: OpencodeApprovalReply): ReplySender =>
+      (expectedTurn) => this.sendPermissionReply(roomState, requestId, reply, expectedTurn);
+    const { approvalMode, approvalTimeoutReply } = this.config;
+    await this.openAsk(roomState, roomState.decisions.permissions, pending, {
+      kind: "permission",
+      autoReply: approvalMode === "manual" ? null : replyWith(approvalMode === "auto_accept" ? REPLY_WORDS.approve : REPLY_WORDS.reject),
+      timeoutMs: this.config.approvalWaitTimeoutMs,
+      timeoutReply: replyWith(approvalTimeoutReply),
+      timedOutNotice: OPENCODE_DECISION_MESSAGES.approvalTimedOut(requestId, approvalTimeoutReply),
+      prompt: OPENCODE_DECISION_MESSAGES.approvalRequested(pending),
+      rejectAsk: (client) => {
+        const sessionId = roomState.sessionId;
+        return sessionId ? client.replyPermission(sessionId, requestId, { response: REPLY_WORDS.reject }) : Promise.resolve();
+      },
     });
   }
 
   private async handleQuestionAsked(roomState: RoomState, properties: Record<string, unknown>): Promise<void> {
-    const requestId = typeof properties.id === "string" ? properties.id : null;
-    const questions = Array.isArray(properties.questions)
-      ? properties.questions.filter((value): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value))
-      : [];
-    if (!requestId) {
+    const pending = toPendingQuestion(properties);
+    if (!pending) {
       return;
     }
+    const { requestId, questions } = pending;
     if (questions.length === 0) {
       // Nothing to answer, so nobody would: reject it rather than leave OpenCode blocked on it.
-      this.rejectEmptyQuestion(roomState, requestId);
+      this.logger.warn("opencode_adapter.empty_question_rejected", { roomId: roomState.roomId, requestId });
+      const client = this.client;
+      if (client) {
+        this.rejectInBackground(roomState, () => client.rejectQuestion(requestId));
+      }
       return;
     }
+    const reject: ReplySender = (expectedTurn) => this.sendQuestionReject(roomState, requestId, expectedTurn);
+    await this.openAsk(roomState, roomState.decisions.questions, pending, {
+      kind: "question",
+      autoReply: this.config.questionMode === "auto_reject" ? reject : null,
+      timeoutMs: this.config.questionWaitTimeoutMs,
+      timeoutReply: reject,
+      timedOutNotice: OPENCODE_DECISION_MESSAGES.questionTimedOut(requestId),
+      prompt: formatQuestionPrompt(questions, requestId),
+      rejectAsk: (client) => client.rejectQuestion(requestId),
+    });
+  }
 
-    const pending: PendingQuestion = { requestId, questions };
-    const { questions: registry, knownIds } = roomState.decisions;
+  // One ask's lifecycle, whatever its kind: register it, then reply automatically or relay it to the room.
+  private async openAsk<T extends { requestId: string }>(
+    roomState: RoomState,
+    registry: DecisionRegistry<T>,
+    pending: T,
+    ask: AskLifecycle,
+  ): Promise<void> {
+    const { requestId } = pending;
+    // A redelivery of an ask whose reply is already in flight.
     if (registry.register(pending, requestId) === null) {
       return;
     }
-    knownIds.set(requestId, "question");
+    roomState.decisions.knownIds.set(requestId, ask.kind);
 
-    if (this.config.questionMode === "auto_reject") {
+    if (ask.autoReply) {
       registry.tryClaim(requestId);
-      await this.replyInBackground(roomState, (expectedTurn) => this.sendQuestionReject(roomState, requestId, expectedTurn));
+      await this.replyInBackground(roomState, ask.autoReply);
       return;
     }
-
-    registry.startTimeout(requestId, this.config.questionWaitTimeoutMs, (claimed) => this.expireQuestion(roomState, claimed));
-    await this.postAsk(roomState, registry, requestId, formatQuestionPrompt(questions, requestId), (client) => client.rejectQuestion(requestId));
+    registry.startTimeout(requestId, ask.timeoutMs, async () => {
+      if (await this.replyInBackground(roomState, ask.timeoutReply)) {
+        await roomState.tools?.sendEvent(ask.timedOutNotice, "error");
+      }
+    });
+    await this.postAsk(roomState, registry, requestId, ask.prompt, ask.rejectAsk);
   }
 
-  private rejectEmptyQuestion(roomState: RoomState, requestId: string): void {
-    const client = this.client;
-    this.logger.warn("opencode_adapter.empty_question_rejected", { roomId: roomState.roomId, requestId });
-    if (client) {
-      abandon(() => client.rejectQuestion(requestId), (error) => {
-        this.logger.warn("opencode_adapter.interaction_rejection_failed", { roomId: roomState.roomId, requestId, error });
-      });
-    }
+  // Best-effort: the session is being given up on, so nothing waits on this rejection.
+  private rejectInBackground(roomState: RoomState, reject: () => Promise<unknown>): void {
+    abandon(reject, (error) => {
+      this.logger.warn("opencode_adapter.interaction_rejection_failed", { roomId: roomState.roomId, error });
+    });
   }
 
   // Posts a manual ask to the room and backgrounds the turn while it waits.
@@ -922,7 +949,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   // to the room once, and only if it failed the turn. True when the reply went through.
   private async replyInBackground(
     roomState: RoomState,
-    send: (expectedTurn: Promise<TurnEndOutcome> | null) => Promise<void>,
+    send: ReplySender,
   ): Promise<boolean> {
     try {
       await send(roomState.turnOutcome);
@@ -935,19 +962,6 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
         this.logger.warn("opencode_adapter.stale_reply_failed", { roomId: roomState.roomId, error });
       }
       return false;
-    }
-  }
-
-  private async expirePermission(roomState: RoomState, pending: PendingPermission): Promise<void> {
-    const reply = this.config.approvalTimeoutReply;
-    if (await this.replyInBackground(roomState, (expectedTurn) => this.sendPermissionReply(roomState, pending.requestId, reply, expectedTurn))) {
-      await roomState.tools?.sendEvent(OPENCODE_DECISION_MESSAGES.approvalTimedOut(pending.requestId, reply), "error");
-    }
-  }
-
-  private async expireQuestion(roomState: RoomState, pending: PendingQuestion): Promise<void> {
-    if (await this.replyInBackground(roomState, (expectedTurn) => this.sendQuestionReject(roomState, pending.requestId, expectedTurn))) {
-      await roomState.tools?.sendEvent(OPENCODE_DECISION_MESSAGES.questionTimedOut(pending.requestId), "error");
     }
   }
 
@@ -1161,12 +1175,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     // events remain attributable to the abandoned turn.
     this.abortAndAbandonSession(roomState);
     if (rejectInteraction) {
-      abandon(rejectInteraction, (rejectionError) => {
-        this.logger.warn("opencode_adapter.interaction_rejection_failed", {
-          roomId: roomState.roomId,
-          error: rejectionError,
-        });
-      });
+      this.rejectInBackground(roomState, rejectInteraction);
     }
     // The aborted session can answer none of the room's other asks either.
     this.dropDecisions(roomState, "interaction_failed");
