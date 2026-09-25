@@ -25,8 +25,8 @@ export const FAILURE_CODE_TIMEOUT = "timeout";
  * down, which is what an ordinary throw from here used to do.
  */
 export class ProviderTurnFailedError extends RecoverableTurnError {
-  public constructor(public readonly failure: AgentFailure) {
-    super(failure.message);
+  public constructor(public readonly failure: AgentFailure, cause?: unknown) {
+    super(failure.message, cause);
     this.name = "ProviderTurnFailedError";
   }
 }

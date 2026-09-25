@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { HttpStatusError, OpencodeAdapter, type OpencodeClientLike } from "../src/adapters";
+import { HttpStatusError, OpencodeAdapter, type OpencodeAdapterConfig, type OpencodeClientLike } from "../src/adapters";
+import { OPENCODE_DECISION_MESSAGES } from "../src/adapters/opencode/messages";
+import { createDeferred } from "../src/core/deferred";
 import { DeliveryFailedError } from "../src/core/deliveryFailedError";
 import type { OpencodeSessionState } from "../src/converters";
 import { FakeTools, expectTurnFailed, findFailureEvent, makeMessage } from "./testUtils";
@@ -1936,4 +1938,269 @@ describe("OpencodeAdapter", () => {
     });
   });
 
+  describe("room decisions", () => {
+    const permissionAsk = (id: string) => ({
+      type: "permission.asked",
+      properties: { id, permission: "bash", patterns: ["npm test"] },
+    });
+    const questionAsk = (id: string, questions: Array<Record<string, unknown>> = [{ question: "Which approach?" }]) => ({
+      type: "question.asked",
+      properties: { id, questions },
+    });
+
+    /** Holds every call of one client method until released, counting how many arrived. */
+    function holdClientMethod(client: FakeOpencodeClient, method: "replyPermission" | "rejectQuestion" | "replyQuestion") {
+      const release = createDeferred();
+      const held = { entered: 0, release: () => release.resolve() };
+      const original = (client[method] as (...args: unknown[]) => Promise<void>).bind(client);
+      (client as unknown as Record<string, unknown>)[method] = async (...args: unknown[]) => {
+        held.entered += 1;
+        await release.promise;
+        return original(...args);
+      };
+      return held;
+    }
+
+    /** Opens a turn whose OpenCode session raises `asks`; replies arrive as follow-up room messages. */
+    async function openTurnWithAsks(
+      asks: Array<{ type: string; properties: Record<string, unknown> }>,
+      options: {
+        config?: OpencodeAdapterConfig;
+        decisionAuthorizedSenders?: string[];
+        client?: FakeOpencodeClient;
+        logger?: { debug: () => void; info: () => void; warn: () => void; error: () => void };
+      } = {},
+    ) {
+      const roomId = "room-decisions";
+      const tools = new FakeTools();
+      const client = options.client ?? new FakeOpencodeClient();
+      createdClients.push(client);
+      const adapter = new OpencodeAdapter({
+        clientFactory: () => client as unknown as OpencodeClientLike,
+        mcpBackendFactory: httpMcpBackend(),
+        config: options.config,
+        decisionAuthorizedSenders: options.decisionAuthorizedSenders,
+        logger: options.logger,
+      });
+      adapters.push(adapter);
+      await adapter.onStarted("OpenCode Agent", "Writes code");
+      const turn = adapter.onMessage(
+        makeMessage("Need approval", roomId), tools,
+        { sessionId: null, roomId: null, createdAt: null, replayMessages: [] },
+        null, null, { isSessionBootstrap: true, roomId },
+      );
+      turn.catch(() => undefined);
+      await waitFor(() => client.createdSessions.length === 1);
+      const sessionId = client.createdSessions[0]!;
+      const raise = (ask: { type: string; properties: Record<string, unknown> }) => {
+        client.eventQueue.push({ ...ask, properties: { ...ask.properties, sessionID: sessionId } });
+      };
+      asks.forEach(raise);
+      const reply = (content: string, senderId = "user-1") => adapter.onMessage(
+        { ...makeMessage(content, roomId), id: `reply-${content}`, senderId }, tools,
+        { sessionId, roomId, createdAt: null, replayMessages: [] },
+        null, null, { isSessionBootstrap: false, roomId },
+      );
+      const finish = (text: string) => {
+        emitAssistantText(client, sessionId, text);
+        client.eventQueue.push({ type: "session.idle", properties: { sessionID: sessionId } });
+      };
+      return { adapter, tools, client, sessionId, turn, raise, reply, finish };
+    }
+
+    const timedOutEvents = (tools: FakeTools) => tools.events.filter((event) => event.content.includes("timed out"));
+    const failureEvents = (tools: FakeTools) => tools.events.filter((event) => event.metadata?.failure !== undefined);
+
+    it.each([
+      {
+        kind: "permission",
+        ask: permissionAsk("perm-1"),
+        config: { approvalWaitTimeoutMs: 30 },
+        heldMethod: "replyPermission" as const,
+        lateReply: "approve perm-1",
+        sent: (client: FakeOpencodeClient) => ({ permissions: client.permissionReplies.map((entry) => entry.response), answers: client.questionReplies, rejections: client.rejectedQuestions }),
+        expected: { permissions: ["reject"], answers: [], rejections: [] },
+      },
+      {
+        kind: "question",
+        ask: questionAsk("question-1"),
+        config: { questionWaitTimeoutMs: 30 },
+        heldMethod: "rejectQuestion" as const,
+        lateReply: "the first approach",
+        sent: (client: FakeOpencodeClient) => ({ permissions: client.permissionReplies.map((entry) => entry.response), answers: client.questionReplies, rejections: client.rejectedQuestions }),
+        expected: { permissions: [], answers: [], rejections: ["question-1"] },
+      },
+    ])("sends only the expiry's reply when a $kind reply lands while that expiry is in flight", async ({ ask, config, heldMethod, lateReply, sent, expected }) => {
+      const client = new FakeOpencodeClient();
+      const expiryReply = holdClientMethod(client, heldMethod);
+      const { tools, turn, reply } = await openTurnWithAsks([ask], { client, config });
+      await turn;
+
+      await waitFor(() => expiryReply.entered === 1);
+      await reply(lateReply);
+      expiryReply.release();
+      await waitFor(() => timedOutEvents(tools).length === 1);
+
+      expect(sent(client)).toEqual(expected);
+      expect(tools.messages).toHaveLength(1);
+    });
+
+    it("never times out an ask whose reply was claimed before the deadline, however long that reply takes", async () => {
+      const client = new FakeOpencodeClient();
+      const userReply = holdClientMethod(client, "replyPermission");
+      const { tools, turn, reply } = await openTurnWithAsks([permissionAsk("perm-1")], { client, config: { approvalWaitTimeoutMs: 30 } });
+      await turn;
+
+      const approving = reply("approve perm-1");
+      await waitFor(() => userReply.entered === 1);
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      userReply.release();
+      await approving;
+
+      expect(client.permissionReplies.map((entry) => entry.response)).toEqual(["once"]);
+      expect(timedOutEvents(tools)).toEqual([]);
+    });
+
+    it("keeps each of two concurrent permissions answerable after the other is answered", async () => {
+      const { client, tools, turn, reply } = await openTurnWithAsks([permissionAsk("perm-1"), permissionAsk("perm-2")]);
+      await turn;
+      await waitFor(() => tools.messages.length === 2);
+
+      await reply("approve perm-2");
+      await reply("always");
+
+      expect(client.permissionReplies.map(({ permissionId, response }) => [permissionId, response])).toEqual([
+        ["perm-2", "once"],
+        ["perm-1", "always"],
+      ]);
+    });
+
+    it("sends no second reply or prompt for an ask OpenCode redelivers while its reply is in flight", async () => {
+      const client = new FakeOpencodeClient();
+      const userReply = holdClientMethod(client, "replyPermission");
+      const { tools, turn, raise, reply } = await openTurnWithAsks([permissionAsk("perm-1")], { client });
+      await turn;
+
+      const approving = reply("approve perm-1");
+      await waitFor(() => userReply.entered === 1);
+      raise(permissionAsk("perm-1"));
+      raise(permissionAsk("perm-2"));
+      await waitFor(() => tools.messages.some((message) => message.includes("approve perm-2")));
+      userReply.release();
+      await approving;
+
+      expect(client.permissionReplies.map((entry) => entry.permissionId)).toEqual(["perm-1"]);
+      expect(tools.messages.filter((message) => message.includes("approve perm-1"))).toHaveLength(1);
+    });
+
+    it("fails the turn with the provider's failure and drops sibling asks when a room reply cannot be sent", async () => {
+      const client = new FakeOpencodeClient();
+      client.replyPermission = async () => {
+        throw new HttpStatusError(503, { error: "unavailable" });
+      };
+      const { tools, sessionId, turn, reply } = await openTurnWithAsks([permissionAsk("perm-1"), permissionAsk("perm-2")], { client });
+      await turn;
+      await waitFor(() => tools.messages.length === 2);
+
+      await expectTurnFailed(reply("approve perm-1"));
+      await reply("approve perm-2");
+
+      expect(failureEvents(tools)).toHaveLength(1);
+      expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({ code: "503" });
+      expect(tools.messages.at(-1)).toBe(OPENCODE_DECISION_MESSAGES.noLongerPending("permission", "perm-2"));
+      expect(client.aborts).toEqual([sessionId]);
+    });
+
+    it("reports a failed automatic reply once and fails the turn without reconnecting the event stream", async () => {
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const client = new FakeOpencodeClient();
+      client.replyPermission = async () => {
+        throw new HttpStatusError(503, { error: "unavailable" });
+      };
+      const { tools, turn } = await openTurnWithAsks([permissionAsk("perm-1")], { client, logger, config: { approvalMode: "auto_accept" } });
+
+      await expectTurnFailed(turn);
+
+      expect(failureEvents(tools)).toHaveLength(1);
+      expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({ code: "503" });
+      expect(logger.warn).not.toHaveBeenCalledWith("OpenCode event stream failed", expect.anything());
+    });
+
+    it("reports a failed expiry reply once and posts no timeout notice", async () => {
+      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+      const client = new FakeOpencodeClient();
+      client.replyPermission = async () => {
+        throw new HttpStatusError(503, { error: "unavailable" });
+      };
+      const { tools, turn } = await openTurnWithAsks([permissionAsk("perm-1")], { client, logger, config: { approvalWaitTimeoutMs: 30 } });
+      await turn;
+
+      await waitFor(() => logger.error.mock.calls.length > 0);
+
+      expect(failureEvents(tools)).toHaveLength(1);
+      expect(timedOutEvents(tools)).toEqual([]);
+      expect(logger.error).toHaveBeenCalledWith("OpenCode turn failed after the request returned", expect.anything());
+    });
+
+    it("leaves the room's next turn intact when an earlier turn's reply fails late", async () => {
+      const client = new FakeOpencodeClient();
+      const release = createDeferred();
+      client.replyPermission = async () => {
+        await release.promise;
+        throw new HttpStatusError(503, { error: "unavailable" });
+      };
+      const { tools, turn, reply, finish } = await openTurnWithAsks([permissionAsk("perm-1")], { client });
+      await turn;
+      const approving = reply("approve perm-1");
+      approving.catch(() => undefined);
+      finish("turn-a-done");
+      await waitFor(() => tools.messages.includes("turn-a-done"));
+
+      const nextTurn = reply("second task");
+      await waitFor(() => client.promptCalls.length === 2);
+      release.resolve();
+      await expectTurnFailed(approving);
+      finish("turn-b-done");
+      await nextTurn;
+
+      expect(tools.messages).toContain("turn-b-done");
+      expect(client.aborts).toEqual([]);
+    });
+
+    it("lets only an authorized sender resolve an ask, keeping it answerable after a refused reply", async () => {
+      const { client, tools, turn, reply } = await openTurnWithAsks([permissionAsk("perm-1")], { decisionAuthorizedSenders: ["owner"] });
+      await turn;
+
+      await reply("approve perm-1", "intruder");
+      expect(tools.messages.at(-1)).toBe(OPENCODE_DECISION_MESSAGES.notAuthorized());
+      expect(client.permissionReplies).toEqual([]);
+
+      await reply("approve perm-1", "owner");
+      expect(client.permissionReplies.map((entry) => entry.response)).toEqual(["once"]);
+    });
+
+    it("mentions the requester on the approval prompt and the replier on the handled notice", async () => {
+      const { tools, turn, reply } = await openTurnWithAsks([permissionAsk("perm-1")]);
+      await turn;
+
+      await reply("@[[agent-uuid]] approve perm-1", "approver");
+
+      expect(tools.messages).toEqual([
+        OPENCODE_DECISION_MESSAGES.approvalRequested({ requestId: "perm-1", permission: "bash", patterns: ["npm test"] }),
+        OPENCODE_DECISION_MESSAGES.approvalHandled("perm-1", "once"),
+      ]);
+      expect(tools.mentions).toEqual([[{ id: "user-1" }], [{ id: "approver" }]]);
+    });
+
+    it("rejects a question with nothing to answer instead of leaving OpenCode blocked on it", async () => {
+      const { client, tools, turn, finish } = await openTurnWithAsks([questionAsk("question-empty", [])]);
+
+      await waitFor(() => client.rejectedQuestions.length === 1);
+      finish("done");
+      await turn;
+
+      expect(client.rejectedQuestions).toEqual(["question-empty"]);
+      expect(tools.messages).toEqual(["done"]);
+    });
+  });
 });
