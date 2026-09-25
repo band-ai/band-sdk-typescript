@@ -16,6 +16,7 @@ import type { ACPPermissionAbandonReason, CollectedChunk } from "../acp/types";
 import { abandon } from "../shared/abandon";
 import { DecisionRegistry, isAuthorizedSender, toAuthorizedSenders } from "../shared/decisions";
 import { stripLeadingMentions } from "../../runtime/formatters";
+import { CURSOR_COMMAND, CURSOR_DECISION_MESSAGES, type DecisionKind } from "./messages";
 
 export const DEFAULT_CURSOR_ACP_COMMAND = ["agent", "acp"] as const;
 export const DEFAULT_CURSOR_DECISION_TIMEOUT_MS = 300_000;
@@ -38,23 +39,8 @@ export interface CursorACPAdapterOptions extends Omit<ACPClientStdioOptions, "co
   decisionAuthorizedSenders?: readonly string[];
 }
 
-type DecisionKind = "permission" | "question" | "plan";
-
-const CURSOR_COMMAND = "/cursor";
 // Shared with the ACP base class, whose own permission timeout aborts with this reason.
 const TIMEOUT_REASON: ACPPermissionAbandonReason = "timeout";
-
-const CURSOR_DECISION_MESSAGES = {
-  permissionPrompt: (token: string) => `Cursor needs permission. Reply \`${CURSOR_COMMAND} select ${token} option-id\` or \`${CURSOR_COMMAND} deny ${token}\`.`,
-  questionPrompt: (token: string) => `Cursor needs input. Reply \`${CURSOR_COMMAND} answer ${token} question-id=option-id[,option-id] ...\`.`,
-  planPrompt: (title: string, token: string) => `${title} needs approval. Reply \`${CURSOR_COMMAND} accept ${token}\` or \`${CURSOR_COMMAND} reject ${token}\`.`,
-  pendingList: (entries: readonly string[]) => `Pending Cursor decisions: ${entries.join(", ") || "none"}`,
-  notPending: (token: string) => `Cursor decision \`${token}\` is not pending.`,
-  notAuthorized: () => "You are not authorized to resolve Cursor decisions.",
-  invalidCommand: (kind: DecisionKind, token: string) => `That command is not valid for Cursor ${kind} decision \`${token}\`.`,
-  resolved: (kind: DecisionKind, token: string) => `Cursor ${kind} decision \`${token}\` resolved.`,
-  timedOut: (kind: DecisionKind, token: string) => `Cursor ${kind} decision \`${token}\` timed out and was cancelled.`,
-} as const;
 
 interface CursorTurn {
   messageId: string;
@@ -64,13 +50,17 @@ interface CursorTurn {
   requesterId: string;
 }
 
-interface PendingDecision {
+// What a decision asks for; the rest of `PendingDecision` comes from its turn.
+interface DecisionSpec {
   kind: DecisionKind;
   roomId: string;
-  tools: AdapterToolsProtocol;
-  requesterId: string;
   choices: Map<string, readonly string[]>;
   multiSelect: ReadonlySet<string>;
+}
+
+interface PendingDecision extends DecisionSpec {
+  tools: AdapterToolsProtocol;
+  requesterId: string;
   resolve(value: unknown): void;
 }
 
@@ -305,7 +295,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
       return undefined;
     }
     const options = request.options.map((option) => option.optionId);
-    const token = await this.waitForDecision("permission", request.roomId, turn, new Map([["permission", options]]), new Set(), CURSOR_DECISION_MESSAGES.permissionPrompt, signal);
+    const token = await this.waitForDecision(turn, { kind: "permission", roomId: request.roomId, choices: new Map([["permission", options]]), multiSelect: new Set() }, CURSOR_DECISION_MESSAGES.permissionPrompt, signal);
     return typeof token === "string" && options.includes(token) ? token : undefined;
   }
 
@@ -324,7 +314,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
     if (this.questionMode === "autoFirst") {
       return answered(Object.fromEntries([...questions.choices].map(([id, options]) => [id, [options[0]]])));
     }
-    const result = await this.waitForDecision("question", roomId, turn, questions.choices, questions.multiSelect, CURSOR_DECISION_MESSAGES.questionPrompt);
+    const result = await this.waitForDecision(turn, { kind: "question", roomId, ...questions }, CURSOR_DECISION_MESSAGES.questionPrompt);
     return isRecord(result) ? result : { outcome: { outcome: "cancelled" } };
   }
 
@@ -336,16 +326,16 @@ export class CursorACPAdapter extends ACPClientAdapter {
       return { outcome: { outcome: "rejected" } };
     }
     const title = stringValue(params.title) ?? "Cursor plan";
-    const result = await this.waitForDecision("plan", roomId, turn, new Map(), new Set(), (token) => CURSOR_DECISION_MESSAGES.planPrompt(title, token));
+    const result = await this.waitForDecision(turn, { kind: "plan", roomId, choices: new Map(), multiSelect: new Set() }, (token) => CURSOR_DECISION_MESSAGES.planPrompt(title, token));
     return isRecord(result) ? result : { outcome: { outcome: "cancelled" } };
   }
 
-  private async waitForDecision(kind: DecisionKind, roomId: string, turn: CursorTurn, choices: Map<string, readonly string[]>, multiSelect: ReadonlySet<string>, prompt: (token: string) => string, signal?: AbortSignal): Promise<unknown> {
+  private async waitForDecision(turn: CursorTurn, spec: DecisionSpec, prompt: (token: string) => string, signal?: AbortSignal): Promise<unknown> {
     if (this.decisions.size >= this.maxPendingDecisions) {
       this.withdrawUnanswered(this.decisions.keys()[0], "evicted");
     }
     const answer = createDeferred<unknown>();
-    const token = this.decisions.register({ kind, roomId, tools: turn.tools, requesterId: turn.requesterId, choices, multiSelect, resolve: answer.resolve });
+    const token = this.decisions.register({ ...spec, tools: turn.tools, requesterId: turn.requesterId, resolve: answer.resolve });
     this.decisions.startTimeout(token, this.decisionTimeoutMs, (decision) => {
       this.decisions.forget(token);
       this.expire(token, decision, TIMEOUT_REASON);
@@ -359,7 +349,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
       }
     }
     void turn.tools.sendMessage(prompt(token), [turn.requesterId]).catch((error: unknown) => {
-      this.decisionLogger.warn("cursor_acp.decision_prompt_delivery_failed", { roomId, kind, error: String(error) });
+      this.decisionLogger.warn("cursor_acp.decision_prompt_delivery_failed", { roomId: spec.roomId, kind: spec.kind, error: String(error) });
       this.withdrawUnanswered(token, "prompt_delivery_failed");
     });
     return answer.promise;
