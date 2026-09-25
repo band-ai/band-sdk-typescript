@@ -221,6 +221,117 @@ describe("CursorACPAdapter", () => {
   });
 });
 
+describe("CursorACPAdapter decision lifecycle", () => {
+  const question = { questions: [{ id: "question", options: [{ id: "answer" }] }] };
+
+  /** Starts a turn whose Cursor prompt runs `ask` against the live ACP client, and waits for its first decision prompt. */
+  async function startDecisionTurn(
+    options: ConstructorParameters<typeof CursorACPAdapter>[0],
+    ask: (client: CursorClient, tools: FakeTools) => Promise<void>,
+  ) {
+    const tools = new FakeTools();
+    const adapter = new CursorACPAdapter({
+      enableMcpTools: false,
+      ...options,
+      connectionFactory: async (captured) => mockConnection(async () => {
+        await ask(captured as CursorClient, tools);
+        return { stopReason: "end_turn" };
+      }),
+    });
+    await adapter.onStarted("Cursor", "desc");
+    const turn = adapter.onMessage(cursorMessage("start", "requester"), tools, { roomToSession: {} }, null, null, { isSessionBootstrap: false, roomId: "room-1" });
+    await vi.waitFor(() => expect(tools.messages.length).toBeGreaterThan(0));
+    const token = tools.messages[0]!.match(/ ([a-f0-9]{8}) /)?.[1] ?? "";
+    const reply = (content: string, roomId = "room-1") =>
+      adapter.onMessage(cursorMessage(content, "requester", `reply-${content}`), tools, { roomToSession: {} }, null, null, { isSessionBootstrap: false, roomId });
+    return { adapter, tools, turn, token, reply };
+  }
+
+  it("cancels a question on its own timeout, tells the requester, and answers a late reply with not pending", async () => {
+    let result: unknown;
+    const { adapter, tools, turn, token, reply } = await startDecisionTurn({ decisionTimeoutMs: 30 }, async (client) => {
+      result = await client.extMethod("cursor/ask_question", question);
+    });
+
+    await turn;
+    expect(result).toEqual({ outcome: { outcome: "cancelled" } });
+    expect(tools.messages[1]).toBe(`Cursor question decision \`${token}\` timed out and was cancelled.`);
+    expect(tools.mentions[1]).toEqual(["requester"]);
+
+    await reply(`/cursor answer ${token} question=answer`);
+    expect(tools.messages.at(-1)).toBe(`Cursor decision \`${token}\` is not pending.`);
+    await adapter.stop();
+  });
+
+  it("cancels a permission on the ACP base class's own timeout and tells the requester once", async () => {
+    let result: unknown;
+    const { adapter, tools, turn, token } = await startDecisionTurn({ permissionTimeoutMs: 30, decisionTimeoutMs: 60_000 }, async (client) => {
+      result = await client.requestPermission({
+        sessionId: "cursor-session",
+        toolCall: { toolCallId: "tool-call", title: "Write file" },
+        options: [{ optionId: "allow", kind: "allow_once" }],
+      });
+    });
+
+    await turn;
+    expect(result).toEqual({ outcome: { outcome: "cancelled" } });
+    await vi.waitFor(() => expect(tools.messages).toHaveLength(2));
+    expect(tools.messages[1]).toBe(`Cursor permission decision \`${token}\` timed out and was cancelled.`);
+    expect(tools.mentions[1]).toEqual(["requester"]);
+    await adapter.stop();
+  });
+
+  it("resolves a command that follows the platform's leading mention", async () => {
+    let result: unknown;
+    const { adapter, turn, token, reply } = await startDecisionTurn({}, async (client) => {
+      result = await client.extMethod("cursor/ask_question", question);
+    });
+
+    await reply(`@[[agent-uuid]] /cursor answer ${token} question=answer`);
+    await turn;
+
+    expect(result).toEqual({ outcome: { outcome: "answered", answers: [{ questionId: "question", selectedOptionIds: ["answer"] }] } });
+    await adapter.stop();
+  });
+
+  it("cancels the oldest decision when a new one arrives at capacity, leaving the new one answerable", async () => {
+    const results: unknown[] = [];
+    const { adapter, tools, turn, reply } = await startDecisionTurn({ maxPendingDecisions: 1 }, async (client, tools) => {
+      const oldest = client.extMethod("cursor/ask_question", question);
+      await vi.waitFor(() => expect(tools.messages).toHaveLength(1));
+      const newest = client.extMethod("cursor/ask_question", question);
+      results.push(await oldest, await newest);
+    });
+
+    await vi.waitFor(() => expect(tools.messages).toHaveLength(2));
+    const newestToken = tools.messages[1]!.match(/ ([a-f0-9]{8}) /)?.[1];
+    await reply(`/cursor answer ${newestToken} question=answer`);
+    await turn;
+
+    expect(results).toEqual([
+      { outcome: { outcome: "cancelled" } },
+      { outcome: { outcome: "answered", answers: [{ questionId: "question", selectedOptionIds: ["answer"] }] } },
+    ]);
+    await adapter.stop();
+  });
+
+  it("cancels only the cleaned-up room's decisions", async () => {
+    let result: unknown;
+    const { adapter, tools, turn, token, reply } = await startDecisionTurn({}, async (client) => {
+      result = await client.extMethod("cursor/ask_question", question);
+    });
+
+    await adapter.onCleanup("room-2");
+    await reply("/cursor decisions");
+    expect(tools.messages.at(-1)).toBe(`Pending Cursor decisions: \`${token}\` (question)`);
+
+    await adapter.onCleanup("room-1");
+    await turn.catch(() => undefined);
+    expect(result).toEqual({ outcome: { outcome: "cancelled" } });
+    await adapter.stop();
+  });
+});
+
 function cursorMessage(content: string, senderId: string, id = "msg-1") {
   return { ...makeMessage(content), id, senderId };
 }
