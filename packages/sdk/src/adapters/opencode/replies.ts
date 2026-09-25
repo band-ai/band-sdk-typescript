@@ -51,7 +51,7 @@ function isReplyWord(word: string): word is ReplyWord {
 }
 
 /** A reply word as the first token, and the id after it (case kept); null id when none or only "please". */
-export function parseCommand(text: string): { reply: OpencodeApprovalReply; id: string | null } | null {
+function parseCommand(text: string): { reply: OpencodeApprovalReply; id: string | null } | null {
   const [first = "", ...trailing] = text.trim().split(/\s+/);
   const word = first.replace(/^\//, "").toLowerCase();
   if (!isReplyWord(word)) {
@@ -62,7 +62,7 @@ export function parseCommand(text: string): { reply: OpencodeApprovalReply; id: 
 }
 
 /** One non-empty answer line per question; null when too few arrived. */
-export function parseQuestionAnswers(text: string, questions: PendingQuestion["questions"]): string[][] | null {
+function parseQuestionAnswers(text: string, questions: PendingQuestion["questions"]): string[][] | null {
   if (questions.length === 1) {
     const answer = text.trim();
     return answer ? [[answer]] : null;

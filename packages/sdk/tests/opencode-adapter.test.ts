@@ -4,6 +4,7 @@ import { HttpStatusError, OpencodeAdapter, type OpencodeAdapterConfig, type Open
 import { OPENCODE_DECISION_MESSAGES } from "../src/adapters/opencode/messages";
 import { createDeferred } from "../src/core/deferred";
 import { DeliveryFailedError } from "../src/core/deliveryFailedError";
+import type { Logger } from "../src/core/logger";
 import type { OpencodeSessionState } from "../src/converters";
 import { FakeTools, expectTurnFailed, findFailureEvent, makeMessage } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
@@ -1968,7 +1969,7 @@ describe("OpencodeAdapter", () => {
         config?: OpencodeAdapterConfig;
         decisionAuthorizedSenders?: string[];
         client?: FakeOpencodeClient;
-        logger?: { debug: () => void; info: () => void; warn: () => void; error: () => void };
+        logger?: Logger;
       } = {},
     ) {
       const roomId = "room-decisions";
@@ -2011,6 +2012,12 @@ describe("OpencodeAdapter", () => {
     const timedOutEvents = (tools: FakeTools) => tools.events.filter((event) => event.content.includes("timed out"));
     const failureEvents = (tools: FakeTools) => tools.events.filter((event) => event.metadata?.failure !== undefined);
 
+    const sent = (client: FakeOpencodeClient) => ({
+      permissions: client.permissionReplies.map((entry) => entry.response),
+      answers: client.questionReplies,
+      rejections: client.rejectedQuestions,
+    });
+
     it.each([
       {
         kind: "permission",
@@ -2018,7 +2025,6 @@ describe("OpencodeAdapter", () => {
         config: { approvalWaitTimeoutMs: 30 },
         heldMethod: "replyPermission" as const,
         lateReply: "approve perm-1",
-        sent: (client: FakeOpencodeClient) => ({ permissions: client.permissionReplies.map((entry) => entry.response), answers: client.questionReplies, rejections: client.rejectedQuestions }),
         expected: { permissions: ["reject"], answers: [], rejections: [] },
       },
       {
@@ -2027,10 +2033,9 @@ describe("OpencodeAdapter", () => {
         config: { questionWaitTimeoutMs: 30 },
         heldMethod: "rejectQuestion" as const,
         lateReply: "the first approach",
-        sent: (client: FakeOpencodeClient) => ({ permissions: client.permissionReplies.map((entry) => entry.response), answers: client.questionReplies, rejections: client.rejectedQuestions }),
         expected: { permissions: [], answers: [], rejections: ["question-1"] },
       },
-    ])("sends only the expiry's reply when a $kind reply lands while that expiry is in flight", async ({ ask, config, heldMethod, lateReply, sent, expected }) => {
+    ])("sends only the expiry's reply when a $kind reply lands while that expiry is in flight", async ({ ask, config, heldMethod, lateReply, expected }) => {
       const client = new FakeOpencodeClient();
       const expiryReply = holdClientMethod(client, heldMethod);
       const { tools, turn, reply } = await openTurnWithAsks([ask], { client, config });

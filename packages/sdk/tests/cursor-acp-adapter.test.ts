@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { CursorACPAdapter } from "../src/adapters/cursor-acp";
+import { MINTED_TOKEN_LENGTH } from "../src/adapters/shared/decisions";
 import { FakeTools, makeMessage } from "./testUtils";
+
+const DECISION_TOKEN = new RegExp(` ([a-f0-9]{${MINTED_TOKEN_LENGTH}}) `);
+const decisionToken = (prompt: string) => prompt.match(DECISION_TOKEN)?.[1];
 
 interface CursorClient {
   extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -68,7 +72,7 @@ describe("CursorACPAdapter", () => {
     );
 
     await vi.waitFor(() => expect(tools.messages[0]).toContain("/cursor answer"));
-    const token = tools.messages[0]!.match(/answer ([a-f0-9]{8})/)?.[1];
+    const token = decisionToken(tools.messages[0]!);
     expect(token).toBeDefined();
 
     await adapter.onMessage(
@@ -212,7 +216,7 @@ describe("CursorACPAdapter", () => {
     releaseFirstPrompt!();
     await vi.waitFor(() => expect(firstTools.messages[0]).toContain("/cursor answer"));
     expect(queuedTools.messages).toEqual([]);
-    const token = firstTools.messages[0]!.match(/answer ([a-f0-9]{8})/)?.[1];
+    const token = decisionToken(firstTools.messages[0]!);
     await adapter.onMessage(cursorMessage(`/cursor answer ${token} question=answer`, "first-requester", "decision-message"), firstTools, { roomToSession: {} }, null, null, { isSessionBootstrap: false, roomId: "room-1" });
 
     await Promise.all([firstTurn, queuedTurn]);
@@ -241,7 +245,7 @@ describe("CursorACPAdapter decision lifecycle", () => {
     await adapter.onStarted("Cursor", "desc");
     const turn = adapter.onMessage(cursorMessage("start", "requester"), tools, { roomToSession: {} }, null, null, { isSessionBootstrap: false, roomId: "room-1" });
     await vi.waitFor(() => expect(tools.messages.length).toBeGreaterThan(0));
-    const token = tools.messages[0]!.match(/ ([a-f0-9]{8}) /)?.[1] ?? "";
+    const token = decisionToken(tools.messages[0]!) ?? "";
     const reply = (content: string, roomId = "room-1") =>
       adapter.onMessage(cursorMessage(content, "requester", `reply-${content}`), tools, { roomToSession: {} }, null, null, { isSessionBootstrap: false, roomId });
     return { adapter, tools, turn, token, reply };
@@ -304,7 +308,7 @@ describe("CursorACPAdapter decision lifecycle", () => {
     });
 
     await vi.waitFor(() => expect(tools.messages).toHaveLength(2));
-    const newestToken = tools.messages[1]!.match(/ ([a-f0-9]{8}) /)?.[1];
+    const newestToken = decisionToken(tools.messages[1]!);
     await reply(`/cursor answer ${newestToken} question=answer`);
     await turn;
 

@@ -3,7 +3,11 @@ import { abandon } from "./abandon";
 
 export const MINTED_TOKEN_LENGTH = 8;
 
-// null → anyone may resolve; any set (empty included) → members only.
+// Omitted → null (anyone may resolve); any list, empty included → members only.
+export function toAuthorizedSenders(senderIds?: readonly string[]): ReadonlySet<string> | null {
+  return senderIds ? new Set(senderIds) : null;
+}
+
 export function isAuthorizedSender(allowed: ReadonlySet<string> | null, senderId: string): boolean {
   return allowed === null || allowed.has(senderId);
 }

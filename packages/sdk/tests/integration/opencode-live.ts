@@ -26,6 +26,7 @@ import {
   loadLiveEnv,
   provisionAgent,
   reapProvisioned,
+  runLiveScript,
   sleep,
   sweepOrphans,
   waitForEvent,
@@ -180,12 +181,6 @@ async function runTimeoutScenario(scenario: Scenario): Promise<void> {
   console.log("opencode passed: the approval timed out once, and a late reply was told it is no longer pending");
 }
 
-function flushOutput(stream: NodeJS.WriteStream): Promise<void> {
-  return new Promise((resolve) => {
-    stream.write("", () => resolve());
-  });
-}
-
 async function main(): Promise<void> {
   if (!process.env.ANTHROPIC_API_KEY) {
     console.log("opencode skipped: ANTHROPIC_API_KEY is not configured");
@@ -281,13 +276,4 @@ async function main(): Promise<void> {
   }
 }
 
-main()
-  .catch((error) => {
-    console.error("opencode failed:", error);
-    process.exitCode = 1;
-  })
-  .finally(async () => {
-    await Promise.all([flushOutput(process.stdout), flushOutput(process.stderr)]);
-    // The managed `opencode serve` child can keep Node alive after cleanup.
-    process.exit(process.exitCode ?? 0);
-  });
+runLiveScript(TEST_NAME, main);

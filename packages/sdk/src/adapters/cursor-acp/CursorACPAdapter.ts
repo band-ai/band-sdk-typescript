@@ -12,9 +12,9 @@ import {
   type ACPClientStdioOptions,
   type ACPPermissionRequest,
 } from "../acp";
-import type { CollectedChunk } from "../acp/types";
+import type { ACPPermissionAbandonReason, CollectedChunk } from "../acp/types";
 import { abandon } from "../shared/abandon";
-import { DecisionRegistry, isAuthorizedSender } from "../shared/decisions";
+import { DecisionRegistry, isAuthorizedSender, toAuthorizedSenders } from "../shared/decisions";
 import { stripLeadingMentions } from "../../runtime/formatters";
 
 export const DEFAULT_CURSOR_ACP_COMMAND = ["agent", "acp"] as const;
@@ -41,6 +41,8 @@ export interface CursorACPAdapterOptions extends Omit<ACPClientStdioOptions, "co
 type DecisionKind = "permission" | "question" | "plan";
 
 const CURSOR_COMMAND = "/cursor";
+// Shared with the ACP base class, whose own permission timeout aborts with this reason.
+const TIMEOUT_REASON: ACPPermissionAbandonReason = "timeout";
 
 const CURSOR_DECISION_MESSAGES = {
   permissionPrompt: (token: string) => `Cursor needs permission. Reply \`${CURSOR_COMMAND} select ${token} option-id\` or \`${CURSOR_COMMAND} deny ${token}\`.`,
@@ -195,9 +197,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
     this.planMode = options.planMode ?? "manual";
     this.decisionTimeoutMs = options.decisionTimeoutMs ?? DEFAULT_CURSOR_DECISION_TIMEOUT_MS;
     this.maxPendingDecisions = options.maxPendingDecisions ?? DEFAULT_CURSOR_MAX_PENDING_DECISIONS;
-    this.authorizedSenders = options.decisionAuthorizedSenders
-      ? new Set(options.decisionAuthorizedSenders)
-      : null;
+    this.authorizedSenders = toAuthorizedSenders(options.decisionAuthorizedSenders);
     this.decisionLogger = resolveLogger(options.logger);
     this.decisions = new DecisionRegistry(this.decisionLogger);
   }
@@ -346,7 +346,10 @@ export class CursorACPAdapter extends ACPClientAdapter {
     }
     const answer = createDeferred<unknown>();
     const token = this.decisions.register({ kind, roomId, tools: turn.tools, requesterId: turn.requesterId, choices, multiSelect, resolve: answer.resolve });
-    this.decisions.startTimeout(token, this.decisionTimeoutMs, (decision) => this.expire(token, decision, "timeout"));
+    this.decisions.startTimeout(token, this.decisionTimeoutMs, (decision) => {
+      this.decisions.forget(token);
+      this.expire(token, decision, TIMEOUT_REASON);
+    });
     if (signal) {
       // The ACP base class aborts on its own timeout too; the claim guard lets only one of them end the decision.
       const onAbort = () => this.withdrawUnanswered(token, String(signal.reason));
@@ -357,7 +360,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
     }
     void turn.tools.sendMessage(prompt(token), [turn.requesterId]).catch((error: unknown) => {
       this.decisionLogger.warn("cursor_acp.decision_prompt_delivery_failed", { roomId, kind, error: String(error) });
-      this.decisions.withdraw(token)?.resolve(undefined);
+      this.withdrawUnanswered(token, "prompt_delivery_failed");
     });
     return answer.promise;
   }
@@ -369,11 +372,10 @@ export class CursorACPAdapter extends ACPClientAdapter {
     }
   }
 
-  // Ends a decision this caller has claimed, without an answer.
+  // Ends a claimed, already-forgotten decision without an answer.
   private expire(token: string, decision: PendingDecision, reason: string): void {
-    this.decisions.forget(token);
     this.endUnanswered(decision, reason);
-    if (reason === "timeout") {
+    if (reason === TIMEOUT_REASON) {
       abandon(
         () => decision.tools.sendMessage(CURSOR_DECISION_MESSAGES.timedOut(decision.kind, token), [decision.requesterId]),
         (error) => {

@@ -249,3 +249,23 @@ export async function waitForEvent(
     clearTimeout(timer);
   }
 }
+
+function flushOutput(stream: NodeJS.WriteStream): Promise<void> {
+  return new Promise((resolve) => {
+    stream.write("", () => resolve());
+  });
+}
+
+/** Runs a live script's `main`, reports a failure under `label`, and exits once output is flushed. */
+export function runLiveScript(label: string, main: () => Promise<void>): void {
+  main()
+    .catch((error) => {
+      console.error(`${label} failed:`, error);
+      process.exitCode = 1;
+    })
+    .finally(async () => {
+      await Promise.all([flushOutput(process.stdout), flushOutput(process.stderr)]);
+      // A managed CLI child can keep Node alive after cleanup.
+      process.exit(process.exitCode ?? 0);
+    });
+}

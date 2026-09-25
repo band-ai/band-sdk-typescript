@@ -3,6 +3,7 @@ import { expect } from "vitest";
 import { ParticipantRoster, type AgentFailure } from "@band-ai/band-sdk-core";
 import type { PlatformMessage } from "../src/runtime";
 import type { AgentToolsProtocol } from "../src/core";
+import type { MentionInput } from "../src/contracts/dtos";
 import { DEFAULT_AGENT_TOOLS_CAPABILITIES, FAILURE_EVENT_TYPE, toFailureEvent } from "../src/contracts/protocols";
 import { isBlankEventContent } from "../src/contracts/chatEvents";
 import type {
@@ -40,7 +41,7 @@ export class FakeTools implements AgentToolsProtocol {
   public readonly capabilities = { ...DEFAULT_AGENT_TOOLS_CAPABILITIES };
   public readonly messages: string[] = [];
   /** Parallel to `messages`: the mentions each one was sent with. */
-  public readonly mentions: Array<string[] | Array<{ id: string; handle?: string }>> = [];
+  public readonly mentions: MentionInput[] = [];
   public readonly events: CapturedToolEvent[] = [];
   public rest?: Pick<RestApi, "getAgentMe" | "listChats">;
   private readonly failOn: Set<FakeToolMethod>;

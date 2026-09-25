@@ -30,6 +30,7 @@ import {
   loadLiveEnv,
   provisionAgent,
   reapProvisioned,
+  runLiveScript,
   sweepOrphans,
   waitForEvent,
   type ProvisionedAgent,
@@ -162,12 +163,6 @@ async function stopAgentWithFallback(target: Agent, timeoutMs: number): Promise<
       );
     },
   );
-}
-
-function flushOutput(stream: NodeJS.WriteStream): Promise<void> {
-  return new Promise((resolve) => {
-    stream.write("", () => resolve());
-  });
 }
 
 async function sendMentionedMessage(
@@ -417,13 +412,4 @@ async function main(): Promise<void> {
   }
 }
 
-main()
-  .catch((error) => {
-    console.error("omp-acp failed:", error);
-    process.exitCode = 1;
-  })
-  .finally(async () => {
-    await Promise.all([flushOutput(process.stdout), flushOutput(process.stderr)]);
-    // A SIGTERM-resistant OMP child can keep Node alive after cleanup.
-    process.exit(process.exitCode ?? 0);
-  });
+runLiveScript(TEST_NAME, main);
