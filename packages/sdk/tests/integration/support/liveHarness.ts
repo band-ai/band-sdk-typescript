@@ -5,7 +5,11 @@
  * core-retry-participant-live.ts so a second live script doesn't re-implement
  * the same primitives (mirrors tests/support's role for unit-test fakes).
  */
+import { spawnSync } from "node:child_process";
+
 import { BandClient } from "@band-ai/rest-client";
+
+import { FernRestAdapter } from "../../../src/rest";
 
 import type { BandLink } from "../../../src/platform/BandLink";
 import type { PlatformEvent } from "../../../src/platform/events";
@@ -13,6 +17,7 @@ import type { PlatformEvent } from "../../../src/platform/events";
 export const NAME_PREFIX = "e2e-ts-";
 export const DEFAULT_REST_URL = "https://app.band.ai/";
 const ORPHAN_MAX_AGE_MINUTES = 60;
+const CLI_PROBE_TIMEOUT_MS = 10_000;
 
 export interface TestResult {
   name: string;
@@ -117,6 +122,36 @@ export function loadLiveEnv(): LiveEnv {
   const userApiKey = requireEnv("BAND_API_KEY_USER");
   const userClient = new BandClient({ baseUrl: restUrl, apiKey: userApiKey });
   return { restUrl, wsUrl, userApiKey, userClient };
+}
+
+/** Why `<command> --version` failed, or null when the CLI is installed and runs. */
+export function cliProbeFailure(command: string): string | null {
+  const probe = spawnSync(command, ["--version"], { stdio: "ignore", timeout: CLI_PROBE_TIMEOUT_MS });
+  if (probe.error) {
+    return probe.error.message;
+  }
+  if (probe.signal) {
+    return `terminated by ${probe.signal}`;
+  }
+  return probe.status === 0 ? null : `exited with status ${probe.status}`;
+}
+
+/** A REST client acting as the agent that owns `apiKey`. */
+export function agentRest(restUrl: string, apiKey: string): FernRestAdapter {
+  return new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey }));
+}
+
+/** Posts `text` to the room as `rest`'s agent, @mentioning `recipient` so it is delivered to them. */
+export async function sendMentionedMessage(
+  rest: FernRestAdapter,
+  roomId: string,
+  recipient: ProvisionedAgent,
+  text: string,
+): Promise<void> {
+  await rest.createChatMessage(roomId, {
+    content: `@${recipient.name} ${text}`,
+    mentions: [{ id: recipient.id, handle: recipient.name }],
+  });
 }
 
 export interface ProvisionedAgent {

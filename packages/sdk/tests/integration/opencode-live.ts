@@ -13,28 +13,28 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
 
-import { BandClient } from "@band-ai/rest-client";
 
 import { Agent, OpencodeAdapter } from "../../src/index";
 import { OPENCODE_DECISION_MESSAGES } from "../../src/adapters/opencode/messages";
 import { REPLY_WORDS, type ReplyWord } from "../../src/adapters/opencode/replies";
 import { BandLink } from "../../src/platform/BandLink";
-import { FernRestAdapter } from "../../src/rest";
+import type { FernRestAdapter } from "../../src/rest";
 import {
+  agentRest,
+  cliProbeFailure,
   loadLiveEnv,
   provisionAgent,
+  type ProvisionedAgent,
   reapProvisioned,
   runLiveScript,
+  sendMentionedMessage,
   sleep,
   sweepOrphans,
   waitForEvent,
-  type ProvisionedAgent,
 } from "./support/liveHarness";
 
 const TEST_NAME = "opencode";
-const OPENCODE_PROBE_TIMEOUT_MS = 10_000;
 const PROVIDER_ID = "anthropic";
 const MODEL_ID = "claude-haiku-4-5";
 const APPROVAL_WAIT_MS = 10_000;
@@ -62,20 +62,14 @@ interface Scenario {
 }
 
 function assertOpencodeAvailable(): void {
-  const probe = spawnSync("opencode", ["--version"], { stdio: "ignore", timeout: OPENCODE_PROBE_TIMEOUT_MS });
-  if (probe.error || probe.signal || probe.status !== 0) {
-    const outcome = probe.error?.message
-      ?? (probe.signal ? `terminated by ${probe.signal}` : `exited with status ${probe.status}`);
+  const outcome = cliProbeFailure("opencode");
+  if (outcome) {
     throw new Error(`opencode failed: the OpenCode CLI is not installed or not on PATH, but ANTHROPIC_API_KEY is configured: ${outcome}`);
   }
 }
 
-async function sendMentionedMessage(scenario: Scenario, content: string): Promise<void> {
-  const { name, id } = scenario.opencodeIdentity;
-  await scenario.senderRest.createChatMessage(scenario.roomId, {
-    content: `@${name} ${content}`,
-    mentions: [{ id, handle: name }],
-  });
+async function sendToOpencode(scenario: Scenario, text: string): Promise<void> {
+  await sendMentionedMessage(scenario.senderRest, scenario.roomId, scenario.opencodeIdentity, text);
 }
 
 interface RoomMessage {
@@ -105,7 +99,7 @@ const turnEnded = (transcript: RoomMessage[], requestId: string) =>
 
 /** Asks OpenCode for one gated shell command and returns the request id of the approval it relays. */
 async function requestGatedCommand(scenario: Scenario, marker: string, transcript: RoomMessage[]): Promise<string> {
-  await sendMentionedMessage(
+  await sendToOpencode(
     scenario,
     `Use your bash tool to run exactly this one command and no other tool: printf %s ${marker} > ${scenario.markerFile} — then reply with one short sentence.`,
   );
@@ -143,7 +137,7 @@ async function runReplyScenario(scenario: Scenario, word: ReplyWord, expectMarke
   const transcript: RoomMessage[] = [];
   const requestId = await requestGatedCommand(scenario, marker, transcript);
 
-  await sendMentionedMessage(scenario, `${word} ${requestId}`);
+  await sendToOpencode(scenario, `${word} ${requestId}`);
   const handled = OPENCODE_DECISION_MESSAGES.approvalHandled(requestId, REPLY_WORDS[word]);
   await collectUntil(
     scenario,
@@ -166,7 +160,7 @@ async function runTimeoutScenario(scenario: Scenario): Promise<void> {
   await collectUntil(scenario, transcript, () => turnEnded(transcript, requestId), "the end of the timed-out turn");
   const timedOutEvents = await awaitOwnEvents(scenario, OPENCODE_DECISION_MESSAGES.approvalTimedOut(requestId, REPLY_WORDS.reject));
 
-  await sendMentionedMessage(scenario, `${APPROVE_WORD} ${requestId}`);
+  await sendToOpencode(scenario, `${APPROVE_WORD} ${requestId}`);
   const noLongerPending = OPENCODE_DECISION_MESSAGES.noLongerPending("permission", requestId);
   await collectUntil(scenario, transcript, () => said(transcript, noLongerPending), "the no-longer-pending notice");
 
@@ -214,8 +208,8 @@ async function main(): Promise<void> {
     const senderIdentity = await provisionAgent(userClient, runId, TEST_NAME, "sender");
     provisioned.push(senderIdentity);
 
-    const opencodeRest = new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey: opencodeIdentity.apiKey }));
-    const senderRest = new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey: senderIdentity.apiKey }));
+    const opencodeRest = agentRest(restUrl, opencodeIdentity.apiKey);
+    const senderRest = agentRest(restUrl, senderIdentity.apiKey);
     const chat = await opencodeRest.createChat();
     roomIds.push(chat.id);
     await opencodeRest.addChatParticipant(chat.id, { participantId: senderIdentity.id, role: "member" });

@@ -9,20 +9,20 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
 
-import { BandClient } from "@band-ai/rest-client";
 
 import { Agent, CopilotACPAdapter, DEFAULT_COPILOT_ACP_COMMAND } from "../../src/index";
 import { BandLink } from "../../src/platform/BandLink";
-import { FernRestAdapter } from "../../src/rest";
 import {
+  agentRest,
+  cliProbeFailure,
   loadLiveEnv,
   provisionAgent,
+  type ProvisionedAgent,
   reapProvisioned,
+  sendMentionedMessage,
   sweepOrphans,
   waitForEvent,
-  type ProvisionedAgent,
 } from "./support/liveHarness";
 
 const TEST_NAME = "copilot-acp";
@@ -33,7 +33,7 @@ const COPILOT_ALLOW_ALL_ENV = "COPILOT_ALLOW_ALL";
 const COPILOT_ALLOW_ALL_VALUE = "true";
 
 function hasCopilotCli(): boolean {
-  return spawnSync(DEFAULT_COPILOT_ACP_COMMAND[0], ["--version"], { stdio: "ignore" }).status === 0;
+  return cliProbeFailure(DEFAULT_COPILOT_ACP_COMMAND[0]) === null;
 }
 
 function hasByok(): boolean {
@@ -71,8 +71,8 @@ async function main(): Promise<void> {
     const helperIdentity = await provisionAgent(userClient, runId, TEST_NAME, "helper");
     provisioned.push(helperIdentity);
 
-    const copilotRest = new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey: copilotIdentity.apiKey }));
-    const senderRest = new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey: senderIdentity.apiKey }));
+    const copilotRest = agentRest(restUrl, copilotIdentity.apiKey);
+    const senderRest = agentRest(restUrl, senderIdentity.apiKey);
     const chat = await copilotRest.createChat();
     roomIds.push(chat.id);
     await copilotRest.addChatParticipant(chat.id, { participantId: senderIdentity.id, role: "member" });
@@ -99,10 +99,7 @@ async function main(): Promise<void> {
 
     const firstMarker = `FIRST-${runId}`;
     const mcpMarker = `MCP-${runId}`;
-    await senderRest.createChatMessage(chat.id, {
-      content: `@${copilotIdentity.name} Reply with exactly ${firstMarker}.`,
-      mentions: [{ id: copilotIdentity.id, handle: copilotIdentity.name }],
-    });
+    await sendMentionedMessage(senderRest, chat.id, copilotIdentity, `Reply with exactly ${firstMarker}.`);
     await waitForEvent(
       observer,
       (event) => event.type === "message_created"
@@ -111,10 +108,7 @@ async function main(): Promise<void> {
       "first Copilot response was not visible",
     );
 
-    await senderRest.createChatMessage(chat.id, {
-      content: `@${copilotIdentity.name} Use the band_add_participant MCP tool to add the available agent named ${helperIdentity.name} to this room as a member. This changes the room roster and cannot be done by replying with text. After it succeeds, reply in one message with the exact secret word from your previous turn, then ${mcpMarker}, then SECOND-${runId}.`,
-      mentions: [{ id: copilotIdentity.id, handle: copilotIdentity.name }],
-    });
+    await sendMentionedMessage(senderRest, chat.id, copilotIdentity, `Use the band_add_participant MCP tool to add the available agent named ${helperIdentity.name} to this room as a member. This changes the room roster and cannot be done by replying with text. After it succeeds, reply in one message with the exact secret word from your previous turn, then ${mcpMarker}, then SECOND-${runId}.`);
     let helperAdded = false;
     let secondResponseReceived = false;
     await waitForEvent(observer, (event) => {
