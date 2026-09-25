@@ -2,9 +2,10 @@ export {
   OpencodeAdapter,
   type OpencodeAdapterConfig,
   type OpencodeApprovalMode,
-  type OpencodeApprovalReply,
   type OpencodeQuestionMode,
 } from "./OpencodeAdapter";
+
+export type { OpencodeApprovalReply } from "./replies";
 
 export {
   HttpOpencodeClient,

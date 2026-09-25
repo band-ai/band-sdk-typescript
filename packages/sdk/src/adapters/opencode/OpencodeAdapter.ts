@@ -44,6 +44,8 @@ import {
   ManagedOpencodeClient,
   type OpencodeClientLike,
 } from "./client";
+import { OPENCODE_DECISION_MESSAGES, formatQuestionPrompt } from "./messages";
+import { parseQuestionAnswers, type OpencodeApprovalReply } from "./replies";
 
 const OPENCODE_SYSTEM_NOTE = [
   "Responses are relayed back into the Band room by the adapter.",
@@ -53,7 +55,6 @@ const OPENCODE_SYSTEM_NOTE = [
 
 export type OpencodeApprovalMode = "manual" | "auto_accept" | "auto_decline";
 export type OpencodeQuestionMode = "manual" | "auto_reject";
-export type OpencodeApprovalReply = "once" | "always" | "reject";
 
 export interface OpencodeAdapterConfig {
   baseUrl?: string;
@@ -712,11 +713,8 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     }, this.config.approvalWaitTimeoutMs);
     const expectedTurn = roomState.turnOutcome;
     if (roomState.tools) {
-      const patterns = roomState.pendingPermission.patterns.join(", ") || "n/a";
       try {
-        await roomState.tools.sendMessage(
-          `OpenCode approval requested for \`${roomState.pendingPermission.permission}\` (${patterns}). Reply with \`approve ${requestId}\`, \`always ${requestId}\`, or \`reject ${requestId}\`.`,
-        );
+        await roomState.tools.sendMessage(OPENCODE_DECISION_MESSAGES.approvalRequested(roomState.pendingPermission));
       } catch (error) {
         if (roomState.turnOutcome !== expectedTurn || roomState.pendingPermission?.requestId !== requestId) {
           return;
@@ -771,7 +769,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     const expectedTurn = roomState.turnOutcome;
     if (roomState.tools) {
       try {
-        await roomState.tools.sendMessage(this.formatQuestionPrompt(questions, requestId));
+        await roomState.tools.sendMessage(formatQuestionPrompt(questions, requestId));
       } catch (error) {
         if (roomState.turnOutcome !== expectedTurn || roomState.pendingQuestion?.requestId !== requestId) {
           return;
@@ -810,9 +808,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
         const expectedTurn = roomState.turnOutcome;
         await this.replyPermission(roomState, reply);
         if (roomState.tools && roomState.turnOutcome === expectedTurn) {
-          await deliverReply(roomState.tools,
-            `OpenCode approval \`${requestId}\` handled with \`${reply}\`.`,
-          );
+          await deliverReply(roomState.tools, OPENCODE_DECISION_MESSAGES.approvalHandled(requestId, reply));
         }
         return true;
       }
@@ -823,24 +819,22 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       if (lowered === "reject" || lowered === "/reject") {
         await this.rejectQuestion(roomState);
         if (roomState.tools) {
-          await deliverReply(roomState.tools, `OpenCode question \`${requestId}\` rejected.`);
+          await deliverReply(roomState.tools, OPENCODE_DECISION_MESSAGES.questionRejected(requestId));
         }
         return true;
       }
 
-      const answers = this.parseQuestionAnswers(content, roomState.pendingQuestion);
+      const answers = parseQuestionAnswers(content, roomState.pendingQuestion.questions);
       if (answers === null) {
         if (roomState.tools) {
-          await deliverReply(roomState.tools,
-            "OpenCode is waiting for answers. Reply with one line per question, or `reject` to reject the question.",
-          );
+          await deliverReply(roomState.tools, OPENCODE_DECISION_MESSAGES.waitingForAnswers());
         }
         return true;
       }
 
       await this.replyQuestion(roomState, answers);
       if (roomState.tools) {
-        await deliverReply(roomState.tools, `OpenCode question \`${requestId}\` answered.`);
+        await deliverReply(roomState.tools, OPENCODE_DECISION_MESSAGES.questionAnswered(requestId));
       }
       return true;
     }
@@ -907,7 +901,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     await this.replyPermission(roomState, this.config.approvalTimeoutReply);
     if (roomState.tools) {
       await roomState.tools.sendEvent(
-        `OpenCode approval \`${requestId}\` timed out and was handled with \`${this.config.approvalTimeoutReply}\`.`,
+        OPENCODE_DECISION_MESSAGES.approvalTimedOut(requestId, this.config.approvalTimeoutReply),
         "error",
       );
     }
@@ -920,10 +914,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
 
     await this.rejectQuestion(roomState);
     if (roomState.tools) {
-      await roomState.tools.sendEvent(
-        `OpenCode question \`${requestId}\` timed out and was rejected.`,
-        "error",
-      );
+      await roomState.tools.sendEvent(OPENCODE_DECISION_MESSAGES.questionTimedOut(requestId), "error");
     }
   }
 
@@ -1341,30 +1332,6 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       return "reject";
     }
     return null;
-  }
-
-  private parseQuestionAnswers(content: string, pending: PendingQuestion): string[][] | null {
-    if (pending.questions.length === 1) {
-      return [[content.trim()]];
-    }
-
-    const lines = content
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
-    if (lines.length < pending.questions.length) {
-      return null;
-    }
-    return lines.slice(0, pending.questions.length).map((line) => [line]);
-  }
-
-  private formatQuestionPrompt(questions: Array<Record<string, unknown>>, requestId: string): string {
-    const lines = [`OpenCode asked question \`${requestId}\`:`];
-    questions.forEach((question, index) => {
-      lines.push(`${index + 1}. ${String(question.question ?? "Question")}`);
-    });
-    lines.push("Reply with one line per question, or `reject`.");
-    return lines.join("\n");
   }
 
   private toAgentFailure(error: unknown): AgentFailure {
