@@ -60,6 +60,21 @@ export function replaceUuidMentions(
   return next;
 }
 
+// A delivered reply starts with the platform's mention block (`@[[uuid]]`,
+// or `@handle` once replaced); both forms are whitespace-free tokens.
+const LEADING_MENTIONS = /^\s*(?:@\S+(?:\s+|$))+/;
+const LEADING_MENTION = /^\s*@\S+(?:\s+|$)/;
+
+/**
+ * Drops the leading mention block so a command can be read off the first
+ * token. `onlyFirst` removes just the delivery mention, for free text whose
+ * next token may legitimately be an `@handle`. Text past the stripped span,
+ * newlines included, is kept verbatim.
+ */
+export function stripLeadingMentions(content: string, options?: { onlyFirst?: boolean }): string {
+  return content.replace(options?.onlyFirst ? LEADING_MENTION : LEADING_MENTIONS, "");
+}
+
 export function formatMessageForLlm(
   message: Record<string, unknown>,
   participants?: Array<Record<string, unknown>>,

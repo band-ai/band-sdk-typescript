@@ -39,6 +39,8 @@ interface FakeToolsOptions {
 export class FakeTools implements AgentToolsProtocol {
   public readonly capabilities = { ...DEFAULT_AGENT_TOOLS_CAPABILITIES };
   public readonly messages: string[] = [];
+  /** Parallel to `messages`: the mentions each one was sent with. */
+  public readonly mentions: Array<string[] | Array<{ id: string; handle?: string }>> = [];
   public readonly events: CapturedToolEvent[] = [];
   public rest?: Pick<RestApi, "getAgentMe" | "listChats">;
   private readonly failOn: Set<FakeToolMethod>;
@@ -53,10 +55,11 @@ export class FakeTools implements AgentToolsProtocol {
 
   public async sendMessage(
     content: string,
-    _mentions?: string[] | Array<{ id: string; handle?: string }>,
+    mentions?: string[] | Array<{ id: string; handle?: string }>,
   ): Promise<Record<string, unknown>> {
     this.maybeFail("sendMessage");
     this.messages.push(content);
+    this.mentions.push(mentions ?? []);
     return { ok: true };
   }
 
