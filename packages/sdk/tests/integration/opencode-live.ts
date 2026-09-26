@@ -9,11 +9,9 @@
  *
  * Run: BAND_API_KEY_USER=... ANTHROPIC_API_KEY=... npx tsx tests/integration/opencode-live.ts
  */
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-
 
 import { Agent, OpencodeAdapter } from "../../src/index";
 import { OPENCODE_DECISION_MESSAGES } from "../../src/adapters/opencode/messages";
@@ -23,10 +21,10 @@ import type { FernRestAdapter } from "../../src/rest";
 import {
   agentRest,
   cliProbeFailure,
+  LiveResources,
   loadLiveEnv,
   provisionAgent,
   type ProvisionedAgent,
-  reapProvisioned,
   runLiveScript,
   EventRecordingRest,
   sendMentionedMessage,
@@ -38,6 +36,7 @@ const TEST_NAME = "opencode";
 const PROVIDER_ID = "anthropic";
 const MODEL_ID = "claude-haiku-4-5";
 const APPROVAL_WAIT_MS = 10_000;
+const APPROVAL_TIMEOUT_REPLY = REPLY_WORDS.reject;
 const MARKER_FILE_NAME = "approval.txt";
 const APPROVE_WORD: ReplyWord = "approve";
 // The approval prompt offers `approve <request id>`; nothing else OpenCode posts does.
@@ -49,6 +48,28 @@ const OPENCODE_CONFIG = {
   permission: { bash: { "*": "ask" } },
 };
 
+interface RoomMessage {
+  type: string;
+  content: string;
+}
+
+/** Every message OpenCode posted in the room, in order; a mark scopes a read to what came after it. */
+class Transcript {
+  private readonly messages: RoomMessage[] = [];
+
+  public record(message: RoomMessage): void {
+    this.messages.push(message);
+  }
+
+  public mark(): number {
+    return this.messages.length;
+  }
+
+  public since(mark: number): readonly RoomMessage[] {
+    return this.messages.slice(mark);
+  }
+}
+
 interface Scenario {
   observer: BandLink;
   senderRest: FernRestAdapter;
@@ -57,6 +78,7 @@ interface Scenario {
   roomId: string;
   opencodeIdentity: ProvisionedAgent;
   markerFile: string;
+  transcript: Transcript;
 }
 
 function assertOpencodeAvailable(): void {
@@ -70,43 +92,46 @@ async function sendToOpencode(scenario: Scenario, text: string): Promise<void> {
   await sendMentionedMessage(scenario.senderRest, scenario.roomId, scenario.opencodeIdentity, text);
 }
 
-interface RoomMessage {
-  type: string;
-  content: string;
-}
-
-/** Records every OpenCode message in the room until `done` holds for what was recorded. */
-async function collectUntil(scenario: Scenario, transcript: RoomMessage[], done: () => boolean, what: string): Promise<void> {
+/** Records OpenCode's messages until `done` holds for those since `mark`, and returns them. */
+async function collectUntil(
+  scenario: Scenario,
+  mark: number,
+  done: (messages: readonly RoomMessage[]) => boolean,
+  what: string,
+): Promise<readonly RoomMessage[]> {
+  const { transcript } = scenario;
   try {
     await waitForEvent(scenario.observer, (event) => {
       if (event.type === "message_created" && event.payload.sender_id === scenario.opencodeIdentity.id) {
-        transcript.push({ type: event.payload.message_type, content: event.payload.content });
+        transcript.record({ type: event.payload.message_type, content: event.payload.content });
       }
-      return done();
+      return done(transcript.since(mark));
     }, `${what} was not observed`);
   } catch (error) {
-    throw new Error(`${what} was not observed; OpenCode said: ${JSON.stringify(transcript)}`, { cause: error });
+    throw new Error(`${what} was not observed; OpenCode said: ${JSON.stringify(transcript.since(mark))}`, { cause: error });
   }
+  return transcript.since(mark);
 }
 
-const said = (transcript: RoomMessage[], text: string) => transcript.some((message) => message.content.includes(text));
+const said = (messages: readonly RoomMessage[], text: string) => messages.some((message) => message.content.includes(text));
 
 // Every decision message names its request id; the turn's own reply is the text that doesn't.
-const turnEnded = (transcript: RoomMessage[], requestId: string) =>
-  transcript.some((message) => message.type === "text" && !message.content.includes(requestId));
+const turnEnded = (messages: readonly RoomMessage[], requestId: string) =>
+  messages.some((message) => message.type === "text" && !message.content.includes(requestId));
 
-/** Asks OpenCode for one gated shell command and returns the request id of the approval it relays. */
-async function requestGatedCommand(scenario: Scenario, marker: string, transcript: RoomMessage[]): Promise<string> {
+/**
+ * Asks OpenCode for one gated shell command; returns the request id of the approval it relays, and a mark
+ * after that prompt, since only what follows it belongs to this decision.
+ */
+async function requestGatedCommand(scenario: Scenario, marker: string): Promise<{ requestId: string; mark: number }> {
+  const start = scenario.transcript.mark();
   await sendToOpencode(
     scenario,
     `Use your bash tool to run exactly this one command and no other tool: printf %s ${marker} > ${scenario.markerFile} — then reply with one short sentence.`,
   );
-  const prompt = () => transcript.find((message) => APPROVAL_REQUEST_ID.test(message.content));
-  await collectUntil(scenario, transcript, () => prompt() !== undefined, "the approval prompt");
-  const requestId = prompt()!.content.match(APPROVAL_REQUEST_ID)![1]!;
-  // Only what follows the prompt belongs to this decision.
-  transcript.length = 0;
-  return requestId;
+  const prompt = (messages: readonly RoomMessage[]) => messages.find((message) => APPROVAL_REQUEST_ID.test(message.content));
+  const messages = await collectUntil(scenario, start, (seen) => prompt(seen) !== undefined, "the approval prompt");
+  return { requestId: prompt(messages)!.content.match(APPROVAL_REQUEST_ID)![1]!, mark: scenario.transcript.mark() };
 }
 
 async function markerWritten(scenario: Scenario, marker: string): Promise<boolean> {
@@ -116,15 +141,14 @@ async function markerWritten(scenario: Scenario, marker: string): Promise<boolea
 
 async function runReplyScenario(scenario: Scenario, word: ReplyWord, expectMarker: boolean): Promise<void> {
   const marker = `${word.toUpperCase()}-${randomUUID().slice(0, 8)}`;
-  const transcript: RoomMessage[] = [];
-  const requestId = await requestGatedCommand(scenario, marker, transcript);
+  const { requestId, mark } = await requestGatedCommand(scenario, marker);
 
   await sendToOpencode(scenario, `${word} ${requestId}`);
   const handled = OPENCODE_DECISION_MESSAGES.approvalHandled(requestId, REPLY_WORDS[word]);
   await collectUntil(
     scenario,
-    transcript,
-    () => said(transcript, handled) && turnEnded(transcript, requestId),
+    mark,
+    (messages) => said(messages, handled) && turnEnded(messages, requestId),
     `the handled notice and the end of the turn after \`${word}\``,
   );
 
@@ -136,16 +160,15 @@ async function runReplyScenario(scenario: Scenario, word: ReplyWord, expectMarke
 
 async function runTimeoutScenario(scenario: Scenario): Promise<void> {
   const marker = `TIMEOUT-${randomUUID().slice(0, 8)}`;
-  const transcript: RoomMessage[] = [];
-  const requestId = await requestGatedCommand(scenario, marker, transcript);
+  const { requestId, mark } = await requestGatedCommand(scenario, marker);
 
-  await collectUntil(scenario, transcript, () => turnEnded(transcript, requestId), "the end of the timed-out turn");
-  const timedOut = OPENCODE_DECISION_MESSAGES.approvalTimedOut(requestId, REPLY_WORDS.reject);
+  await collectUntil(scenario, mark, (messages) => turnEnded(messages, requestId), "the end of the timed-out turn");
+  const timedOut = OPENCODE_DECISION_MESSAGES.approvalTimedOut(requestId, APPROVAL_TIMEOUT_REPLY);
   await scenario.opencodeRest.eventContaining(timedOut);
 
   await sendToOpencode(scenario, `${APPROVE_WORD} ${requestId}`);
   const noLongerPending = OPENCODE_DECISION_MESSAGES.noLongerPending(ASK_KIND.permission, requestId);
-  await collectUntil(scenario, transcript, () => said(transcript, noLongerPending), "the no-longer-pending notice");
+  const transcript = await collectUntil(scenario, mark, (messages) => said(messages, noLongerPending), "the no-longer-pending notice");
 
   const handledNotices = Object.values(REPLY_WORDS).map((reply) => OPENCODE_DECISION_MESSAGES.approvalHandled(requestId, reply));
   const timedOutEvents = scenario.opencodeRest.events.filter((content) => content.includes(timedOut));
@@ -167,91 +190,62 @@ async function main(): Promise<void> {
 
   assertOpencodeAvailable();
 
-  const { restUrl, wsUrl, userApiKey, userClient } = loadLiveEnv();
+  const env = loadLiveEnv();
+  const { restUrl, wsUrl, userClient } = env;
   const runId = randomUUID().slice(0, 8);
+  await using resources = new LiveResources(env, TEST_NAME);
 
-  const provisioned: ProvisionedAgent[] = [];
-  const roomIds: string[] = [];
-  const tempDirs: string[] = [];
-  let agent: Agent | null = null;
-  let observer: BandLink | null = null;
+  const workdir = await resources.tempDir("band-opencode-live-");
+  const configFile = join(await resources.tempDir("band-opencode-config-"), "opencode.json");
+  await writeFile(configFile, JSON.stringify(OPENCODE_CONFIG));
+  // The managed server replaces OPENCODE_CONFIG_CONTENT but inherits OPENCODE_CONFIG.
+  process.env.OPENCODE_CONFIG = configFile;
 
-  try {
-    const workdir = await mkdtemp(join(tmpdir(), "band-opencode-live-"));
-    tempDirs.push(workdir);
-    const configDir = await mkdtemp(join(tmpdir(), "band-opencode-config-"));
-    tempDirs.push(configDir);
-    const configFile = join(configDir, "opencode.json");
-    await writeFile(configFile, JSON.stringify(OPENCODE_CONFIG));
-    // The managed server replaces OPENCODE_CONFIG_CONTENT but inherits OPENCODE_CONFIG.
-    process.env.OPENCODE_CONFIG = configFile;
+  await sweepOrphans(userClient, runId);
+  const opencodeIdentity = resources.trackAgent(await provisionAgent(userClient, runId, TEST_NAME, "opencode"));
+  const senderIdentity = resources.trackAgent(await provisionAgent(userClient, runId, TEST_NAME, "sender"));
 
-    await sweepOrphans(userClient, runId);
-    const opencodeIdentity = await provisionAgent(userClient, runId, TEST_NAME, "opencode");
-    provisioned.push(opencodeIdentity);
-    const senderIdentity = await provisionAgent(userClient, runId, TEST_NAME, "sender");
-    provisioned.push(senderIdentity);
+  const opencodeRest = new EventRecordingRest(restUrl, opencodeIdentity.apiKey);
+  const senderRest = agentRest(restUrl, senderIdentity.apiKey);
+  const roomId = resources.trackRoom((await opencodeRest.createChat()).id);
+  await opencodeRest.addChatParticipant(roomId, { participantId: senderIdentity.id, role: "member" });
+  const observer = new BandLink({ agentId: senderIdentity.id, apiKey: senderIdentity.apiKey, wsUrl, restApi: senderRest });
+  resources.trackService("observer.disconnect", () => observer.disconnect());
+  await observer.connect();
+  await observer.subscribeRoom(roomId);
 
-    const opencodeRest = new EventRecordingRest(restUrl, opencodeIdentity.apiKey);
-    const senderRest = agentRest(restUrl, senderIdentity.apiKey);
-    const chat = await opencodeRest.createChat();
-    roomIds.push(chat.id);
-    await opencodeRest.addChatParticipant(chat.id, { participantId: senderIdentity.id, role: "member" });
-    observer = new BandLink({ agentId: senderIdentity.id, apiKey: senderIdentity.apiKey, wsUrl, restApi: senderRest });
-    await observer.connect();
-    await observer.subscribeRoom(chat.id);
+  const agent = Agent.create({
+    adapter: new OpencodeAdapter({
+      config: {
+        directory: workdir,
+        providerId: PROVIDER_ID,
+        modelId: MODEL_ID,
+        approvalMode: "manual",
+        approvalWaitTimeoutMs: APPROVAL_WAIT_MS,
+        approvalTimeoutReply: APPROVAL_TIMEOUT_REPLY,
+      },
+    }),
+    agentId: opencodeIdentity.id,
+    apiKey: opencodeIdentity.apiKey,
+    wsUrl,
+    linkOptions: { restApi: opencodeRest },
+    agentConfig: { autoSubscribeExistingRooms: true },
+  });
+  resources.trackService("agent.stop", () => agent.stop());
+  await agent.start();
 
-    agent = Agent.create({
-      adapter: new OpencodeAdapter({
-        config: {
-          directory: workdir,
-          providerId: PROVIDER_ID,
-          modelId: MODEL_ID,
-          approvalMode: "manual",
-          approvalWaitTimeoutMs: APPROVAL_WAIT_MS,
-        },
-      }),
-      agentId: opencodeIdentity.id,
-      apiKey: opencodeIdentity.apiKey,
-      wsUrl,
-      linkOptions: { restApi: opencodeRest },
-      agentConfig: { autoSubscribeExistingRooms: true },
-    });
-    await agent.start();
-
-    const scenario: Scenario = {
-      observer,
-      senderRest,
-      opencodeRest,
-      roomId: chat.id,
-      opencodeIdentity,
-      markerFile: join(workdir, MARKER_FILE_NAME),
-    };
-    await runReplyScenario(scenario, "approve", true);
-    await runReplyScenario(scenario, "reject", false);
-    await runTimeoutScenario(scenario);
-  } finally {
-    if (agent) {
-      await agent.stop().catch((error: unknown) => {
-        console.warn("opencode cleanup: agent.stop failed:", error);
-      });
-    }
-    if (observer) {
-      await observer.disconnect().catch((error: unknown) => {
-        console.warn("opencode cleanup: observer.disconnect failed:", error);
-      });
-    }
-    await reapProvisioned(userClient, restUrl, userApiKey, provisioned, roomIds, TEST_NAME).catch((error: unknown) => {
-      console.warn("opencode cleanup: reapProvisioned failed:", error);
-    });
-    await Promise.all(
-      tempDirs.map((dir) =>
-        rm(dir, { recursive: true, force: true }).catch((error: unknown) => {
-          console.warn(`opencode cleanup: failed to remove ${dir}:`, error);
-        }),
-      ),
-    );
-  }
+  const scenario: Scenario = {
+    observer,
+    senderRest,
+    opencodeRest,
+    roomId,
+    opencodeIdentity,
+    markerFile: join(workdir, MARKER_FILE_NAME),
+    transcript: new Transcript(),
+  };
+  await runReplyScenario(scenario, "approve", true);
+  await runReplyScenario(scenario, "reject", false);
+  await runTimeoutScenario(scenario);
 }
 
 runLiveScript(TEST_NAME, main);

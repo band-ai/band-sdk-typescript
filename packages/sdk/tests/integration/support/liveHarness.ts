@@ -6,6 +6,9 @@
  * the same primitives (mirrors tests/support's role for unit-test fakes).
  */
 import { spawnSync } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { BandClient } from "@band-ai/rest-client";
 
@@ -288,6 +291,61 @@ export async function reapProvisioned(
       console.warn(`${logLabel} Failed to bulk-delete rooms:`, err);
     }),
   ]);
+}
+
+/**
+ * What a live script provisions, released when its `await using` scope ends:
+ * running services stop first (last started, first stopped), then agents and
+ * rooms are reaped and temp dirs removed. Each failure is logged, never thrown,
+ * so one failed step never skips the rest.
+ */
+export class LiveResources implements AsyncDisposable {
+  private readonly agents: ProvisionedAgent[] = [];
+  private readonly roomIds: string[] = [];
+  private readonly tempDirs: string[] = [];
+  private readonly stops: Array<{ what: string; stop: () => Promise<unknown> }> = [];
+
+  public constructor(
+    private readonly env: LiveEnv,
+    private readonly label: string,
+  ) {}
+
+  public trackAgent(agent: ProvisionedAgent): ProvisionedAgent {
+    this.agents.push(agent);
+    return agent;
+  }
+
+  public trackRoom(roomId: string): string {
+    this.roomIds.push(roomId);
+    return roomId;
+  }
+
+  /** Registers `stop` (named `what` in a failure log) to run before anything is reaped. */
+  public trackService(what: string, stop: () => Promise<unknown>): void {
+    this.stops.push({ what, stop });
+  }
+
+  public async tempDir(prefix: string): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), prefix));
+    this.tempDirs.push(dir);
+    return dir;
+  }
+
+  public async [Symbol.asyncDispose](): Promise<void> {
+    for (const { what, stop } of [...this.stops].reverse()) {
+      await stop().catch((error: unknown) => this.warn(`${what} failed`, error));
+    }
+    const { userClient, restUrl, userApiKey } = this.env;
+    await reapProvisioned(userClient, restUrl, userApiKey, this.agents, this.roomIds, this.label)
+      .catch((error: unknown) => this.warn("reapProvisioned failed", error));
+    await Promise.all(
+      this.tempDirs.map((dir) => rm(dir, { recursive: true, force: true }).catch((error: unknown) => this.warn(`failed to remove ${dir}`, error))),
+    );
+  }
+
+  private warn(what: string, error: unknown): void {
+    console.warn(`${this.label} cleanup: ${what}:`, error);
+  }
 }
 
 export const LIVE_EVENT_TIMEOUT_MS = 180_000;

@@ -8,8 +8,7 @@
  *
  * Run: BAND_API_KEY_USER=... GEMINI_API_KEY=... npx tsx tests/integration/omp-acp-live.ts
  */
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -27,10 +26,10 @@ import type { FernRestAdapter } from "../../src/rest";
 import {
   agentRest,
   cliProbeFailure,
+  LiveResources,
   loadLiveEnv,
   provisionAgent,
   type ProvisionedAgent,
-  reapProvisioned,
   runLiveScript,
   sendMentionedMessage,
   sweepOrphans,
@@ -294,105 +293,74 @@ async function main(): Promise<void> {
 
   assertOmpAvailable();
 
-  const { restUrl, wsUrl, userApiKey, userClient } = loadLiveEnv();
+  const env = loadLiveEnv();
+  const { restUrl, wsUrl, userClient } = env;
   const runId = randomUUID().slice(0, 8);
-
-  const provisioned: ProvisionedAgent[] = [];
-  const roomIds: string[] = [];
-  const tempDirs: string[] = [];
-  let agent: Agent | null = null;
-  let observer: BandLink | null = null;
   const permissionObservation = createPermissionObservation();
+  // Declared before any setup, so a failure partway through still releases whatever already exists.
+  await using resources = new LiveResources(env, TEST_NAME);
 
-  try {
-    // Tracked in `tempDirs` (not local `const`s) and created inside the try
-    // block so a failure partway through setup still reaches `finally` with
-    // whichever dir(s) already exist recorded for cleanup.
-    const ompStateDir = await mkdtemp(join(tmpdir(), "band-omp-acp-state-"));
-    tempDirs.push(ompStateDir);
-    const ompCwd = await mkdtemp(join(tmpdir(), "band-omp-acp-cwd-"));
-    tempDirs.push(ompCwd);
-    const guardedFile = join(ompCwd, GUARDED_FILE_NAME);
-    await writeFile(guardedFile, GUARDED_FILE_CONTENTS);
+  const ompStateDir = await resources.tempDir("band-omp-acp-state-");
+  const ompCwd = await resources.tempDir("band-omp-acp-cwd-");
+  const guardedFile = join(ompCwd, GUARDED_FILE_NAME);
+  await writeFile(guardedFile, GUARDED_FILE_CONTENTS);
 
-    await sweepOrphans(userClient, runId);
-    const ompIdentity = await provisionAgent(userClient, runId, TEST_NAME, "omp");
-    provisioned.push(ompIdentity);
-    const senderIdentity = await provisionAgent(userClient, runId, TEST_NAME, "sender");
-    provisioned.push(senderIdentity);
-    const helperIdentity = await provisionAgent(userClient, runId, TEST_NAME, "helper");
-    provisioned.push(helperIdentity);
+  await sweepOrphans(userClient, runId);
+  const ompIdentity = resources.trackAgent(await provisionAgent(userClient, runId, TEST_NAME, "omp"));
+  const senderIdentity = resources.trackAgent(await provisionAgent(userClient, runId, TEST_NAME, "sender"));
+  const helperIdentity = resources.trackAgent(await provisionAgent(userClient, runId, TEST_NAME, "helper"));
 
-    const ompRest = agentRest(restUrl, ompIdentity.apiKey);
-    const senderRest = agentRest(restUrl, senderIdentity.apiKey);
-    const chat = await ompRest.createChat();
-    roomIds.push(chat.id);
-    await ompRest.addChatParticipant(chat.id, { participantId: senderIdentity.id, role: "member" });
-    observer = new BandLink({
-      agentId: senderIdentity.id,
-      apiKey: senderIdentity.apiKey,
-      wsUrl,
-      restApi: senderRest,
-    });
-    await observer.connect();
-    await observer.subscribeRoom(chat.id);
+  const ompRest = agentRest(restUrl, ompIdentity.apiKey);
+  const senderRest = agentRest(restUrl, senderIdentity.apiKey);
+  const roomId = resources.trackRoom((await ompRest.createChat()).id);
+  await ompRest.addChatParticipant(roomId, { participantId: senderIdentity.id, role: "member" });
+  const observer = new BandLink({
+    agentId: senderIdentity.id,
+    apiKey: senderIdentity.apiKey,
+    wsUrl,
+    restApi: senderRest,
+  });
+  resources.trackService("observer.disconnect", () => observer.disconnect());
+  await observer.connect();
+  await observer.subscribeRoom(roomId);
 
-    agent = Agent.create({
-      adapter: new OmpACPAdapter({
-        command: OMP_COMMAND,
-        cwd: ompCwd,
-        env: { [OMP_STATE_DIR_ENV]: ompStateDir },
-        // Never yolo: --yolo/--auto-approve/--approval-mode yolo (or a config
-        // overlay setting tools.approvalMode: yolo) would bypass the
-        // permission gate this test exists to exercise, so none is ever
-        // passed here.
-        resolvePermission: permissionObservation.resolvePermission,
-      }),
-      agentId: ompIdentity.id,
-      apiKey: ompIdentity.apiKey,
-      wsUrl,
-      linkOptions: { restApi: ompRest },
-      agentConfig: { autoSubscribeExistingRooms: true },
-    });
-    await agent.start();
+  const agent = Agent.create({
+    adapter: new OmpACPAdapter({
+      command: OMP_COMMAND,
+      cwd: ompCwd,
+      env: { [OMP_STATE_DIR_ENV]: ompStateDir },
+      // Never yolo: --yolo/--auto-approve/--approval-mode yolo (or a config
+      // overlay setting tools.approvalMode: yolo) would bypass the
+      // permission gate this test exists to exercise, so none is ever
+      // passed here.
+      resolvePermission: permissionObservation.resolvePermission,
+    }),
+    agentId: ompIdentity.id,
+    apiKey: ompIdentity.apiKey,
+    wsUrl,
+    linkOptions: { restApi: ompRest },
+    agentConfig: { autoSubscribeExistingRooms: true },
+  });
+  resources.trackService("agent.stop", () => stopAgentWithFallback(agent, AGENT_STOP_TIMEOUT_MS));
+  await agent.start();
 
-    await runMcpSessionScenario({
-      observer,
-      senderRest,
-      roomId: chat.id,
-      ompIdentity,
-      helperIdentity,
-      runId,
-    });
-    await runPermissionScenario({
-      observer,
-      senderRest,
-      roomId: chat.id,
-      ompIdentity,
-      guardedFile,
-      runId,
-      observation: permissionObservation,
-    });
-  } finally {
-    if (agent) {
-      await stopAgentWithFallback(agent, AGENT_STOP_TIMEOUT_MS);
-    }
-    if (observer) {
-      await observer.disconnect().catch((error: unknown) => {
-        console.warn("omp-acp cleanup: observer.disconnect failed:", error);
-      });
-    }
-    await reapProvisioned(userClient, restUrl, userApiKey, provisioned, roomIds, TEST_NAME).catch((error: unknown) => {
-      console.warn("omp-acp cleanup: reapProvisioned failed:", error);
-    });
-    await Promise.all(
-      tempDirs.map((dir) =>
-        rm(dir, { recursive: true, force: true }).catch((error: unknown) => {
-          console.warn(`omp-acp cleanup: failed to remove ${dir}:`, error);
-        }),
-      ),
-    );
-  }
+  await runMcpSessionScenario({
+    observer,
+    senderRest,
+    roomId,
+    ompIdentity,
+    helperIdentity,
+    runId,
+  });
+  await runPermissionScenario({
+    observer,
+    senderRest,
+    roomId,
+    ompIdentity,
+    guardedFile,
+    runId,
+    observation: permissionObservation,
+  });
 }
 
 runLiveScript(TEST_NAME, main);
