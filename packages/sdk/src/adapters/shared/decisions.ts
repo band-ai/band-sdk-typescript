@@ -9,6 +9,7 @@ import {
   type ClaimOutcome,
 } from "@band-ai/band-sdk-core";
 
+import { Deadline } from "../../core/deadline";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { abandon } from "./abandon";
 
@@ -30,6 +31,8 @@ export interface Registration<T> {
   readonly removed: readonly DecisionEntry<T>[];
 }
 
+type TimeoutHandler<T> = (entry: DecisionEntry<T>) => Promise<void> | void;
+
 /** A configured allowlist in the shape core's `isAuthorizedSender` takes: null admits anyone; any list, empty included, only its members. */
 export function senderAllowlist(senders?: Iterable<string> | null): ReadonlySet<string> | null {
   return senders == null ? null : new Set(senders);
@@ -39,7 +42,7 @@ export function senderAllowlist(senders?: Iterable<string> | null): ReadonlySet<
 export class DecisionRegistry<T> implements Iterable<DecisionEntry<T>> {
   private readonly core: CoreDecisionRegistry;
   private readonly entries = new Map<string, DecisionEntry<T>>();
-  private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly timers = new Map<string, Deadline>();
   private readonly logger: Logger;
 
   public constructor(options: { maxPending?: number; logger?: Logger } = {}) {
@@ -89,25 +92,14 @@ export class DecisionRegistry<T> implements Iterable<DecisionEntry<T>> {
   }
 
   /** Claims `entry` after `timeoutMs` and hands it to `onTimeout`, unless a reply claims it first. */
-  public startTimeout(entry: DecisionEntry<T>, timeoutMs: number, onTimeout: (entry: DecisionEntry<T>) => Promise<void> | void): void {
-    // `setTimeout` coerces Infinity to 1ms, so "unbounded" must never arm.
-    if (!this.holds(entry) || !Number.isFinite(timeoutMs)) {
+  public startTimeout(entry: DecisionEntry<T>, timeoutMs: number, onTimeout: TimeoutHandler<T>): void {
+    if (!this.holds(entry)) {
       return;
     }
     this.cancelTimer(entry.token);
-    const timer = setTimeout(() => {
-      // The running expiry owns its outcome once it claims, so a later discard must not find it.
-      if (this.timers.get(entry.token) === timer) {
-        this.timers.delete(entry.token);
-      }
-      if (this.claim(entry) !== "claimed") {
-        return;
-      }
-      abandon(async () => onTimeout(entry), (error) => {
-        this.logger.warn("decisions.timeout_handler_failed", { token: entry.token, error });
-      });
-    }, timeoutMs);
-    this.timers.set(entry.token, timer);
+    const deadline = new Deadline(timeoutMs);
+    this.timers.set(entry.token, deadline);
+    void deadline.expired.then(() => this.expire(entry, deadline, onTimeout));
   }
 
   /** Takes ownership of whatever registration holds `token`; null if someone else has. Resolve without awaiting in between: a waiter defers to the claim. */
@@ -134,33 +126,12 @@ export class DecisionRegistry<T> implements Iterable<DecisionEntry<T>> {
 
   /** The answer to `entry`, or TIMED_OUT if the deadline claims it first or it was replaced; a reply that claimed it first is always waited for. */
   public async wait<R>(entry: DecisionEntry<T>, answer: Promise<R>, options: { timeoutMs: number }): Promise<R | TimedOut> {
-    let settled: { value: R } | undefined;
-    const answered = answer.then((value) => (settled = { value }));
-    let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
-      if (!Number.isFinite(options.timeoutMs)) {
-        return await answer;
-      }
-      const first = await Promise.race([
-        answered,
-        new Promise<TimedOut>((resolve) => {
-          deadline = setTimeout(() => resolve(TIMED_OUT), options.timeoutMs);
-        }),
-      ]);
-      if (first !== TIMED_OUT) {
-        return first.value;
-      }
-      // Whoever removed the ask in the deadline's own tick resolved it.
-      if (settled) {
-        return settled.value;
-      }
-      if (this.claim(entry) === "already_claimed") {
-        this.logger.debug("decisions.deadline_deferred_to_claimant", { token: entry.token });
-        return await answer;
-      }
-      return TIMED_OUT;
+      using deadline = new Deadline(options.timeoutMs);
+      const answered = answer.then((value) => ({ value }));
+      const first = await Promise.race([answered, deadline.expired.then((): TimedOut => TIMED_OUT)]);
+      return first === TIMED_OUT ? await this.afterDeadline(entry, answered) : first.value;
     } finally {
-      clearTimeout(deadline);
       this.forget(entry);
     }
   }
@@ -206,6 +177,32 @@ export class DecisionRegistry<T> implements Iterable<DecisionEntry<T>> {
     return this.entries.get(entry.token) === entry;
   }
 
+  private expire(entry: DecisionEntry<T>, deadline: Deadline, onTimeout: TimeoutHandler<T>): void {
+    if (this.timers.get(entry.token) === deadline) {
+      this.timers.delete(entry.token);
+    }
+    if (this.claim(entry) === "claimed") {
+      abandon(async () => onTimeout(entry), (error) => {
+        this.logger.warn("decisions.timeout_handler_failed", { token: entry.token, error });
+      });
+    }
+  }
+
+  // The deadline fired, but an answer that settled in the same tick, or a claimant still resolving, wins.
+  private async afterDeadline<R>(entry: DecisionEntry<T>, answered: Promise<{ value: R }>): Promise<R | TimedOut> {
+    const settled = await Promise.race([answered, Promise.resolve(null)]);
+    if (settled) {
+      return settled.value;
+    }
+    switch (this.claim(entry)) {
+      case "already_claimed":
+        this.logger.debug("decisions.deadline_deferred_to_claimant", { token: entry.token });
+        return (await answered).value;
+      default:
+        return TIMED_OUT;
+    }
+  }
+
   private claim(entry: DecisionEntry<T>): ClaimOutcome {
     if (!this.holds(entry)) {
       return "stale";
@@ -247,7 +244,7 @@ export class DecisionRegistry<T> implements Iterable<DecisionEntry<T>> {
   }
 
   private cancelTimer(token: string): void {
-    clearTimeout(this.timers.get(token));
+    this.timers.get(token)?.[Symbol.dispose]();
     this.timers.delete(token);
   }
 }

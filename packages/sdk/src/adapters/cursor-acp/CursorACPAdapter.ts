@@ -18,7 +18,7 @@ import type { ACPPermissionAbandonReason, ACPPermissionEndReason, CollectedChunk
 import { abandon } from "../shared/abandon";
 import { DecisionRegistry, senderAllowlist, TIMED_OUT, type DecisionEntry } from "../shared/decisions";
 import { stripLeadingMentions } from "../../runtime/formatters";
-import { CURSOR_COMMAND, CURSOR_DECISION_MESSAGES, type DecisionKind } from "./messages";
+import { CURSOR_COMMAND, CURSOR_DECISION_MESSAGES, CURSOR_VERB, DECISION_KIND, type DecisionKind } from "./messages";
 
 export const DEFAULT_CURSOR_ACP_COMMAND = ["agent", "acp"] as const;
 export const DEFAULT_CURSOR_DECISION_TIMEOUT_MS = 300_000;
@@ -50,6 +50,9 @@ const END_REASON = {
   evicted: "evicted",
   promptDeliveryFailed: "prompt_delivery_failed",
 } as const;
+// A permission offers its options as a single choice under this key.
+const PERMISSION_CHOICE = DECISION_KIND.permission;
+
 type EndReason = (typeof END_REASON)[keyof typeof END_REASON] | ACPPermissionEndReason;
 
 interface CursorTurn {
@@ -323,7 +326,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
       return undefined;
     }
     const options = request.options.map((option) => option.optionId);
-    const token = await this.waitForDecision(turn, { kind: "permission", roomId: request.roomId, choices: new Map([["permission", options]]), multiSelect: new Set() }, CURSOR_DECISION_MESSAGES.permissionPrompt, signal);
+    const token = await this.waitForDecision(turn, { kind: DECISION_KIND.permission, roomId: request.roomId, choices: new Map([[PERMISSION_CHOICE, options]]), multiSelect: new Set() }, CURSOR_DECISION_MESSAGES.permissionPrompt, signal);
     return typeof token === "string" && options.includes(token) ? token : undefined;
   }
 
@@ -342,7 +345,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
     if (this.questionMode === "autoFirst") {
       return answered(Object.fromEntries([...questions.choices].map(([id, options]) => [id, [options[0]]])));
     }
-    const result = await this.waitForDecision(turn, { kind: "question", roomId, ...questions }, CURSOR_DECISION_MESSAGES.questionPrompt);
+    const result = await this.waitForDecision(turn, { kind: DECISION_KIND.question, roomId, ...questions }, CURSOR_DECISION_MESSAGES.questionPrompt);
     return isRecord(result) ? result : { outcome: { outcome: "cancelled" } };
   }
 
@@ -354,7 +357,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
       return { outcome: { outcome: "rejected" } };
     }
     const title = stringValue(params.title) ?? "Cursor plan";
-    const result = await this.waitForDecision(turn, { kind: "plan", roomId, choices: new Map(), multiSelect: new Set() }, (token) => CURSOR_DECISION_MESSAGES.planPrompt(title, token));
+    const result = await this.waitForDecision(turn, { kind: DECISION_KIND.plan, roomId, choices: new Map(), multiSelect: new Set() }, (token) => CURSOR_DECISION_MESSAGES.planPrompt(title, token));
     return isRecord(result) ? result : { outcome: { outcome: "cancelled" } };
   }
 
@@ -439,7 +442,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
   }
 
   private controlReply(words: string[], senderId: string, roomId: string): string {
-    if (words.length === 1 || words[1]?.toLowerCase() === "decisions") {
+    if (words.length === 1 || words[1]?.toLowerCase() === CURSOR_VERB.list) {
       const entries = this.decisions.unclaimedInRoom(roomId).map(({ token, payload }) => `\`${token}\` (${payload.kind})`);
       return CURSOR_DECISION_MESSAGES.pendingList(entries);
     }
@@ -513,21 +516,21 @@ function questionChoices(value: unknown): { choices: Map<string, readonly string
 
 function commandResult(action: string, args: readonly string[], decision: PendingDecision): unknown {
   switch (decision.kind) {
-    case "permission":
+    case DECISION_KIND.permission:
       return permissionResult(action, args, decision);
-    case "plan":
+    case DECISION_KIND.plan:
       return planResult(action);
-    case "question":
-      return action === "answer" ? questionResult(args, decision) : null;
+    case DECISION_KIND.question:
+      return action === CURSOR_VERB.answer ? questionResult(args, decision) : null;
   }
 }
 
 function permissionResult(action: string, args: readonly string[], decision: PendingDecision): unknown {
   switch (action) {
-    case "deny":
+    case CURSOR_VERB.deny:
       return undefined;
-    case "select":
-      return args.length === 1 && decision.choices.get("permission")?.includes(args[0] ?? "") ? args[0] : null;
+    case CURSOR_VERB.select:
+      return args.length === 1 && decision.choices.get(PERMISSION_CHOICE)?.includes(args[0] ?? "") ? args[0] : null;
     default:
       return null;
   }
@@ -535,9 +538,9 @@ function permissionResult(action: string, args: readonly string[], decision: Pen
 
 function planResult(action: string): unknown {
   switch (action) {
-    case "accept":
+    case CURSOR_VERB.accept:
       return { outcome: { outcome: "accepted" } };
-    case "reject":
+    case CURSOR_VERB.reject:
       return { outcome: { outcome: "rejected" } };
     default:
       return null;

@@ -103,13 +103,11 @@ export class FakeOpencodeServer implements AsyncDisposable {
   private ids = 0;
   private mcp: Promise<Client> | null = null;
 
-  private constructor(private readonly http: Server) {}
+  private readonly http: Server = createServer((req, res) => void this.handle(req, res));
 
   public static async start(): Promise<FakeOpencodeServer> {
-    let server!: FakeOpencodeServer;
-    const http = createServer((req, res) => void server.handle(req, res));
-    server = new FakeOpencodeServer(http);
-    await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
+    const server = new FakeOpencodeServer();
+    await new Promise<void>((resolve) => server.http.listen(0, "127.0.0.1", resolve));
     return server;
   }
 

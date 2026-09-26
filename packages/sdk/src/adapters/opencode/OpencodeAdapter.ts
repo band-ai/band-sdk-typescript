@@ -5,6 +5,7 @@ import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import { rethrowIfRecoverableTurnFailure, type RecoverableTurnError } from "../../core/errors";
+import { Deadline } from "../../core/deadline";
 import { createDeferred } from "../../core/deferred";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import type { PlatformMessage } from "../../runtime/types";
@@ -55,6 +56,8 @@ import {
   type OpencodeApprovalReply,
   type PendingPermission,
   type PendingQuestion,
+  ASK_KIND,
+  REPLY_ACTION,
   type DecisionAction,
   type RoomDecisions,
 } from "./replies";
@@ -556,7 +559,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
           return;
         }
         this.logger.warn("OpenCode event stream failed", { error, retryDelayMs });
-        await delay(retryDelayMs);
+        await new Deadline(retryDelayMs).expired;
         retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
       }
     }
@@ -730,7 +733,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       (entry, expectedTurn) => this.sendPermissionReply(roomState, entry, reply, expectedTurn);
     const { approvalMode, approvalTimeoutReply } = this.config;
     await this.openAsk(roomState, roomState.decisions.permissions, pending, {
-      kind: "permission",
+      kind: ASK_KIND.permission,
       autoReply: approvalMode === "manual" ? null : replyWith(approvalMode === "auto_accept" ? REPLY_WORDS.approve : REPLY_WORDS.reject),
       timeoutMs: this.config.approvalWaitTimeoutMs,
       timeoutReply: replyWith(approvalTimeoutReply),
@@ -759,7 +762,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     }
     const reject: ReplySender<PendingQuestion> = (entry, expectedTurn) => this.sendQuestionReject(roomState, entry, expectedTurn);
     await this.openAsk(roomState, roomState.decisions.questions, pending, {
-      kind: "question",
+      kind: ASK_KIND.question,
       autoReply: this.config.questionMode === "auto_reject" ? reject : null,
       timeoutMs: this.config.questionWaitTimeoutMs,
       timeoutReply: reject,
@@ -841,9 +844,9 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   private async handleControlMessage(roomState: RoomState, message: PlatformMessage): Promise<boolean> {
     const action = routeReply(message.content, roomState.decisions);
     switch (action.kind) {
-      case "pass":
+      case REPLY_ACTION.pass:
         return false;
-      case "notice":
+      case REPLY_ACTION.notice:
         await this.notifySender(roomState, action.text, message.senderId);
         return true;
       default:
@@ -872,7 +875,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   ): Promise<string | null> {
     const { permissions, questions } = roomState.decisions;
     switch (action.kind) {
-      case "permission": {
+      case REPLY_ACTION.permission: {
         const permission = permissions.tryClaim(action.id);
         if (!permission) {
           return null;
@@ -880,7 +883,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
         await this.sendPermissionReply(roomState, permission, action.reply, expectedTurn);
         return OPENCODE_DECISION_MESSAGES.approvalHandled(action.id, action.reply);
       }
-      case "reject-question": {
+      case REPLY_ACTION.rejectQuestion: {
         const question = questions.tryClaim(action.id);
         if (!question) {
           return null;
@@ -888,7 +891,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
         await this.sendQuestionReject(roomState, question, expectedTurn);
         return OPENCODE_DECISION_MESSAGES.questionRejected(action.id);
       }
-      case "answer-question": {
+      case REPLY_ACTION.answerQuestion: {
         const question = questions.tryClaim(action.id);
         if (!question) {
           return null;
@@ -1074,10 +1077,8 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     }
 
     try {
-      const outcome = await Promise.race([
-        turnOutcome,
-        delay(this.config.turnTimeoutMs).then(() => "timed_out" as const),
-      ]);
+      using watchdog = new Deadline(this.config.turnTimeoutMs);
+      const outcome = await Promise.race([turnOutcome, watchdog.expired.then(() => "timed_out" as const)]);
       if (outcome === "cancelled") {
         // A still-live turn's own interaction failed after it had already
         // backgrounded (see `failInteraction`):
@@ -1390,8 +1391,3 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   }
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
