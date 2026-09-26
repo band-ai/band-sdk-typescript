@@ -181,7 +181,6 @@ export class CursorACPAdapter extends ACPClientAdapter {
   private readonly decisions: DecisionRegistry<PendingDecision>;
   private activeTurn: CursorTurn | null = null;
   private turnTail: Promise<void> = Promise.resolve();
-  private readonly roomReleases = new Map<string, () => void>();
 
   public constructor(options: CursorACPAdapterOptions = {}) {
     const extensions = new CursorExtensions();
@@ -224,16 +223,25 @@ export class CursorACPAdapter extends ACPClientAdapter {
       await tools.sendMessage(CURSOR_DECISION_MESSAGES.turnInProgress(), [{ id: message.senderId }]);
       return;
     }
-    // The platform hands a room one message at a time, so the turn runs detached once it asks the room something.
     const released = createDeferred<void>();
-    this.roomReleases.set(message.id, released.resolve);
-    const turn = this.withCursorTurnLock(() => super.onMessage(message, tools, history, participantsMessage, contactsMessage, context))
-      .finally(() => this.roomReleases.delete(message.id));
-    const first = await Promise.race([turn.then(() => "finished" as const), released.promise.then(() => "released" as const)]);
-    if (first === "released") {
-      turn.catch((error: unknown) => {
-        this.decisionLogger.warn("cursor_acp.released_turn_failed", { roomId: context.roomId, error: String(error) });
-      });
+    const turn: CursorTurn = { messageId: message.id, roomId: context.roomId, tools, requesterId: message.senderId, releaseRoom: released.resolve };
+    this.turns.set(context.roomId, turn);
+    const run = this.withCursorTurnLock(() => super.onMessage(message, tools, history, participantsMessage, contactsMessage, context))
+      .finally(() => this.forgetTurn(turn));
+    await this.untilRoomReleased(turn, run, released.promise);
+  }
+
+  // The platform hands a room one message at a time, so a turn that asks the room something runs on detached.
+  private async untilRoomReleased(turn: CursorTurn, run: Promise<void>, released: Promise<void>): Promise<void> {
+    void released.then(() => run.catch((error: unknown) => {
+      this.decisionLogger.warn("cursor_acp.released_turn_failed", { roomId: turn.roomId, error: String(error) });
+    }));
+    await Promise.race([run, released]);
+  }
+
+  private forgetTurn(turn: CursorTurn): void {
+    if (this.turns.get(turn.roomId) === turn) {
+      this.turns.delete(turn.roomId);
     }
   }
 
@@ -242,9 +250,10 @@ export class CursorACPAdapter extends ACPClientAdapter {
     tools: AdapterToolsProtocol,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
-    const turn = { messageId: message.id, roomId: context.roomId, tools, requesterId: message.senderId, releaseRoom: this.roomReleases.get(message.id) ?? (() => undefined) };
-    this.turns.set(context.roomId, turn);
-    this.activeTurn = turn;
+    const turn = this.turns.get(context.roomId);
+    if (turn?.messageId === message.id) {
+      this.activeTurn = turn;
+    }
   }
 
   protected override async onAcpSessionReady(
