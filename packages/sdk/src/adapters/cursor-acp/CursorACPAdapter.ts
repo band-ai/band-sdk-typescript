@@ -14,7 +14,7 @@ import {
   type ACPClientStdioOptions,
   type ACPPermissionRequest,
 } from "../acp";
-import type { ACPPermissionAbandonReason, CollectedChunk } from "../acp/types";
+import type { ACPPermissionAbandonReason, ACPPermissionEndReason, CollectedChunk } from "../acp/types";
 import { abandon } from "../shared/abandon";
 import { DecisionRegistry, senderAllowlist, TIMED_OUT, type DecisionEntry } from "../shared/decisions";
 import { stripLeadingMentions } from "../../runtime/formatters";
@@ -41,8 +41,16 @@ export interface CursorACPAdapterOptions extends Omit<ACPClientStdioOptions, "co
   decisionAuthorizedSenders?: readonly string[];
 }
 
-// Shared with the ACP base class, whose own permission timeout aborts with this reason.
-const TIMEOUT_REASON: ACPPermissionAbandonReason = "timeout";
+// Why a decision ended without an answer. `timeout` is shared with the ACP base class, whose own permission timeout aborts with it.
+const END_REASON = {
+  timeout: "timeout" satisfies ACPPermissionAbandonReason,
+  turnFinished: "turn_finished",
+  roomCleanup: "room_cleanup",
+  stopped: "stopped",
+  evicted: "evicted",
+  promptDeliveryFailed: "prompt_delivery_failed",
+} as const;
+type EndReason = (typeof END_REASON)[keyof typeof END_REASON] | ACPPermissionEndReason;
 
 interface CursorTurn {
   messageId: string;
@@ -239,7 +247,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
     const turn = this.turns.get(context.roomId);
     if (turn?.messageId === message.id) {
       this.turns.delete(context.roomId);
-      this.cancelRoom(context.roomId, "turn_finished");
+      this.cancelRoom(context.roomId, END_REASON.turnFinished);
     }
     if (this.activeTurn?.messageId === message.id) {
       this.activeTurn = null;
@@ -248,7 +256,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
 
   public override async onCleanup(roomId: string): Promise<void> {
     const sessionId = this.turns.get(roomId)?.sessionId;
-    this.cancelRoom(roomId, "room_cleanup");
+    this.cancelRoom(roomId, END_REASON.roomCleanup);
     this.turns.delete(roomId);
     if (this.activeTurn?.roomId === roomId) {
       this.activeTurn = null;
@@ -260,7 +268,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
   }
 
   public override async stop(): Promise<void> {
-    this.endUnanswered(this.decisions.cancelAll(), "stopped");
+    this.endUnanswered(this.decisions.cancelAll(), END_REASON.stopped);
     this.turns.clear();
     this.activeTurn = null;
     this.extensions.clearSessions();
@@ -342,18 +350,18 @@ export class CursorACPAdapter extends ACPClientAdapter {
       { ...spec, tools: turn.tools, requesterId: turn.requesterId, resolve: answer.resolve },
       { roomId: spec.roomId },
     );
-    this.endUnanswered(registration.removed, "evicted");
+    this.endUnanswered(registration.removed, END_REASON.evicted);
     const { entry } = registration;
     if (signal) {
       // The ACP base class aborts on its own timeout too; the claim guard lets only one of them end the decision.
-      signal.addEventListener("abort", () => this.abandonDecision(entry, String(signal.reason)), { once: true });
+      signal.addEventListener("abort", () => this.abandonDecision(entry, signal.reason as ACPPermissionEndReason), { once: true });
     }
     try {
       await turn.tools.sendMessage(prompt(entry.token), [turn.requesterId]);
     } catch (error) {
       this.decisionLogger.warn("cursor_acp.decision_prompt_delivery_failed", { roomId: spec.roomId, kind: spec.kind, error: String(error) });
       // A reply that claimed it meanwhile owns the answer; wait for it.
-      if (this.abandonDecision(entry, "prompt_delivery_failed")) {
+      if (this.abandonDecision(entry, END_REASON.promptDeliveryFailed)) {
         return undefined;
       }
     }
@@ -366,14 +374,16 @@ export class CursorACPAdapter extends ACPClientAdapter {
   }
 
   // Ends a decision nobody has claimed; false when its claimant owns it.
-  private abandonDecision(entry: DecisionEntry<PendingDecision>, reason: string): boolean {
+  private abandonDecision(entry: DecisionEntry<PendingDecision>, reason: EndReason): boolean {
     if (!this.decisions.withdraw(entry)) {
       return false;
     }
-    if (reason === TIMEOUT_REASON) {
-      this.endTimedOut(entry);
-    } else {
-      this.endUnanswered([entry], reason);
+    switch (reason) {
+      case END_REASON.timeout:
+        this.endTimedOut(entry);
+        break;
+      default:
+        this.endUnanswered([entry], reason);
     }
     return true;
   }
@@ -381,7 +391,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
   // Both deadlines, the registry's and the ACP base class's, tell the requester.
   private endTimedOut(entry: DecisionEntry<PendingDecision>): void {
     const { token, payload: decision } = entry;
-    this.endUnanswered([entry], TIMEOUT_REASON);
+    this.endUnanswered([entry], END_REASON.timeout);
     abandon(
       () => decision.tools.sendMessage(CURSOR_DECISION_MESSAGES.timedOut(decision.kind, token), [decision.requesterId]),
       (error) => {
@@ -391,7 +401,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
   }
 
   // Whoever removes an unclaimed ask resolves it.
-  private endUnanswered(entries: readonly DecisionEntry<PendingDecision>[], reason: string): void {
+  private endUnanswered(entries: readonly DecisionEntry<PendingDecision>[], reason: EndReason): void {
     for (const { payload: decision } of entries) {
       decision.resolve(undefined);
       this.decisionLogger.info("cursor_acp.decision_ended", { roomId: decision.roomId, kind: decision.kind, reason });
@@ -432,7 +442,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
     return CURSOR_DECISION_MESSAGES.resolved(decision.kind, token);
   }
 
-  private cancelRoom(roomId: string, reason: string): void {
+  private cancelRoom(roomId: string, reason: EndReason): void {
     this.endUnanswered(this.decisions.cancelRoom(roomId), reason);
   }
 
@@ -482,9 +492,39 @@ function questionChoices(value: unknown): { choices: Map<string, readonly string
 }
 
 function commandResult(action: string, args: readonly string[], decision: PendingDecision): unknown {
-  if (decision.kind === "permission") return action === "deny" ? undefined : action === "select" && args.length === 1 && decision.choices.get("permission")?.includes(args[0] ?? "") ? args[0] : null;
-  if (decision.kind === "plan") return action === "accept" ? { outcome: { outcome: "accepted" } } : action === "reject" ? { outcome: { outcome: "rejected" } } : null;
-  if (action !== "answer") return null;
+  switch (decision.kind) {
+    case "permission":
+      return permissionResult(action, args, decision);
+    case "plan":
+      return planResult(action);
+    case "question":
+      return action === "answer" ? questionResult(args, decision) : null;
+  }
+}
+
+function permissionResult(action: string, args: readonly string[], decision: PendingDecision): unknown {
+  switch (action) {
+    case "deny":
+      return undefined;
+    case "select":
+      return args.length === 1 && decision.choices.get("permission")?.includes(args[0] ?? "") ? args[0] : null;
+    default:
+      return null;
+  }
+}
+
+function planResult(action: string): unknown {
+  switch (action) {
+    case "accept":
+      return { outcome: { outcome: "accepted" } };
+    case "reject":
+      return { outcome: { outcome: "rejected" } };
+    default:
+      return null;
+  }
+}
+
+function questionResult(args: readonly string[], decision: PendingDecision): unknown {
   const selected: Record<string, string[]> = {};
   for (const argument of args) {
     const [id, raw] = argument.split("=", 2);

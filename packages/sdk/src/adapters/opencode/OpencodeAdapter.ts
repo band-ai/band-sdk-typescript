@@ -55,7 +55,7 @@ import {
   type OpencodeApprovalReply,
   type PendingPermission,
   type PendingQuestion,
-  type ReplyAction,
+  type DecisionAction,
   type RoomDecisions,
 } from "./replies";
 
@@ -840,50 +840,63 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
 
   private async handleControlMessage(roomState: RoomState, message: PlatformMessage): Promise<boolean> {
     const action = routeReply(message.content, roomState.decisions);
-    if (action.kind === "pass") {
-      return false;
+    switch (action.kind) {
+      case "pass":
+        return false;
+      case "notice":
+        await this.notifySender(roomState, action.text, message.senderId);
+        return true;
+      default:
+        await this.applyDecisionReply(roomState, action, message.senderId);
+        return true;
     }
-    if (action.kind === "notice") {
-      await this.notifySender(roomState, action.text, message.senderId);
-      return true;
-    }
-    if (!isAuthorizedSender(this.authorizedSenders, message.senderId)) {
-      await this.notifySender(roomState, OPENCODE_DECISION_MESSAGES.notAuthorized(), message.senderId);
-      return true;
+  }
+
+  private async applyDecisionReply(roomState: RoomState, action: DecisionAction, senderId: string): Promise<void> {
+    if (!isAuthorizedSender(this.authorizedSenders, senderId)) {
+      await this.notifySender(roomState, OPENCODE_DECISION_MESSAGES.notAuthorized(), senderId);
+      return;
     }
     const expectedTurn = roomState.turnOutcome;
     const handled = await this.resolveDecision(roomState, action, expectedTurn);
     if (handled && roomState.turnOutcome === expectedTurn) {
-      await this.notifySender(roomState, handled, message.senderId);
+      await this.notifySender(roomState, handled, senderId);
     }
-    return true;
   }
 
   // Sends the reply an action resolves to; the notice to post, or null when another path already owns the ask.
   private async resolveDecision(
     roomState: RoomState,
-    action: Exclude<ReplyAction, { kind: "pass" } | { kind: "notice" }>,
+    action: DecisionAction,
     expectedTurn: Promise<TurnEndOutcome> | null,
   ): Promise<string | null> {
     const { permissions, questions } = roomState.decisions;
-    if (action.kind === "permission") {
-      const permission = permissions.tryClaim(action.id);
-      if (!permission) {
-        return null;
+    switch (action.kind) {
+      case "permission": {
+        const permission = permissions.tryClaim(action.id);
+        if (!permission) {
+          return null;
+        }
+        await this.sendPermissionReply(roomState, permission, action.reply, expectedTurn);
+        return OPENCODE_DECISION_MESSAGES.approvalHandled(action.id, action.reply);
       }
-      await this.sendPermissionReply(roomState, permission, action.reply, expectedTurn);
-      return OPENCODE_DECISION_MESSAGES.approvalHandled(action.id, action.reply);
+      case "reject-question": {
+        const question = questions.tryClaim(action.id);
+        if (!question) {
+          return null;
+        }
+        await this.sendQuestionReject(roomState, question, expectedTurn);
+        return OPENCODE_DECISION_MESSAGES.questionRejected(action.id);
+      }
+      case "answer-question": {
+        const question = questions.tryClaim(action.id);
+        if (!question) {
+          return null;
+        }
+        await this.sendQuestionReply(roomState, question, action.answers, expectedTurn);
+        return OPENCODE_DECISION_MESSAGES.questionAnswered(action.id);
+      }
     }
-    const question = questions.tryClaim(action.id);
-    if (!question) {
-      return null;
-    }
-    if (action.kind === "reject-question") {
-      await this.sendQuestionReject(roomState, question, expectedTurn);
-      return OPENCODE_DECISION_MESSAGES.questionRejected(action.id);
-    }
-    await this.sendQuestionReply(roomState, question, action.answers, expectedTurn);
-    return OPENCODE_DECISION_MESSAGES.questionAnswered(action.id);
   }
 
   private async notifySender(roomState: RoomState, text: string, senderId: string): Promise<void> {

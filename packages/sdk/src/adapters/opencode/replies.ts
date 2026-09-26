@@ -68,6 +68,9 @@ export type ReplyAction =
   | { kind: "notice"; text: string }
   | { kind: "pass" };
 
+/** A reply that resolves an ask, as opposed to one that only earns a notice or passes. */
+export type DecisionAction = Exclude<ReplyAction, { kind: "pass" } | { kind: "notice" }>;
+
 const PASS: ReplyAction = { kind: "pass" };
 
 function notice(text: string): ReplyAction {
@@ -118,22 +121,28 @@ export function routeReply(raw: string, decisions: RoomDecisions): ReplyAction {
 }
 
 // A named id is resolved by membership, so a reply to a claimed ask reaches `tryClaim` and loses there quietly.
-function routeNamedCommand(
-  raw: string,
-  reply: OpencodeApprovalReply,
-  id: string,
-  { permissions, questions, knownIds }: RoomDecisions,
-): ReplyAction {
+function routeNamedCommand(raw: string, reply: OpencodeApprovalReply, id: string, decisions: RoomDecisions): ReplyAction {
   const rejects = reply === REPLY_WORDS.reject;
+  switch (heldKind(id, rejects, decisions)) {
+    case "permission":
+      return { kind: "permission", id, reply };
+    case "question":
+      return rejects ? { kind: "reject-question", id } : notice(OPENCODE_DECISION_MESSAGES.questionHint(unclaimedIds(decisions.questions)));
+    case null:
+      return routeUnheldId(raw, rejects, id, decisions);
+  }
+}
+
+// A reject is the one command a question takes by id, so it looks there first.
+function heldKind(id: string, rejects: boolean, { permissions, questions }: RoomDecisions): DecisionKind | null {
   if (rejects && questions.has(id)) {
-    return { kind: "reject-question", id };
+    return "question";
   }
-  if (permissions.has(id)) {
-    return { kind: "permission", id, reply };
-  }
-  if (questions.has(id)) {
-    return notice(OPENCODE_DECISION_MESSAGES.questionHint(unclaimedIds(questions)));
-  }
+  return permissions.has(id) ? "permission" : questions.has(id) ? "question" : null;
+}
+
+// An id no registry holds: resolved earlier, or not an id at all.
+function routeUnheldId(raw: string, rejects: boolean, id: string, { permissions, questions, knownIds }: RoomDecisions): ReplyAction {
   const knownKind = knownIds.get(id);
   if (knownKind) {
     return notice(OPENCODE_DECISION_MESSAGES.noLongerPending(knownKind, id));
