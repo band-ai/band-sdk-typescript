@@ -2255,6 +2255,20 @@ describe("OpencodeAdapter", () => {
       expect(room.client.createdSessions).toEqual([room.sessionId]);
     });
 
+    it("mentions the requester on an ask raised after the turn's reply went out", async () => {
+      const late = aPermission();
+      const room = await openRoom([]);
+      await room.finish("done");
+
+      room.raise(late.event);
+      await room.prompted(late.prompt);
+      await room.say(`approve ${late.id}`);
+
+      expect(room.tools.mentions.at(room.tools.messages.indexOf(late.prompt))).toEqual([{ id: REQUESTER }]);
+      expect(permissionReplies(room.client)).toEqual([[late.id, "once"]]);
+      expect(room.client.aborts).toEqual([]);
+    });
+
     it("rejects a question with nothing to answer instead of leaving OpenCode blocked on it", async () => {
       const empty = aQuestion([]);
       const room = await openRoom([empty.event]);

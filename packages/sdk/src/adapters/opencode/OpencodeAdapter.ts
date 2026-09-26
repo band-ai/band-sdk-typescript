@@ -147,7 +147,8 @@ interface RoomState {
   // re-throws this instead, so `turnTask`'s own background observer (see
   // `startTurn`) still sees the failure.
   pendingDeliveryFailure: RecoverableTurnError | null;
-  pendingMentions: MentionInput;
+  // Who the turn answers; every room message it sends mentions them, since the platform drops one that mentions nobody.
+  requesterMentions: MentionInput;
   textParts: Map<string, string>;
   assistantMessageIds: Set<string>;
   assistantPartTypes: Map<string, string>;
@@ -443,7 +444,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       resolveReleaseWait: null,
       turnTask: null,
       pendingDeliveryFailure: null,
-      pendingMentions: [],
+      requesterMentions: [],
       textParts: new Map(),
       assistantMessageIds: new Set(),
       assistantPartTypes: new Map(),
@@ -815,7 +816,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   ): Promise<void> {
     const expectedTurn = roomState.turnOutcome;
     try {
-      await roomState.tools?.sendMessage(prompt, roomState.pendingMentions);
+      await roomState.tools?.sendMessage(prompt, roomState.requesterMentions);
     } catch (error) {
       // A reply that claimed the ask meanwhile owns it, and so does whatever replaced or removed it.
       if (roomState.turnOutcome !== expectedTurn || !registry.withdraw(entry)) {
@@ -1032,14 +1033,14 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     return { sessionId, created, needsHistoryReplay };
   }
 
-  private beginTurn(roomState: RoomState, senderId: string | null): Promise<TurnReleaseOutcome> {
+  private beginTurn(roomState: RoomState, senderId: string): Promise<TurnReleaseOutcome> {
     const turnOutcome = createDeferred<TurnEndOutcome>();
     const releaseWait = createDeferred<TurnReleaseOutcome>();
     roomState.turnOutcome = turnOutcome.promise;
     roomState.resolveTurnOutcome = turnOutcome.resolve;
     roomState.releaseWait = releaseWait.promise;
     roomState.resolveReleaseWait = releaseWait.resolve;
-    roomState.pendingMentions = senderId ? [{ id: senderId }] : [];
+    roomState.requesterMentions = [{ id: senderId }];
     roomState.turnTask = null;
     roomState.pendingDeliveryFailure = null;
     roomState.textParts.clear();
@@ -1253,8 +1254,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       return "empty";
     }
 
-    await deliverReply(roomState.tools, text, roomState.pendingMentions);
-    roomState.pendingMentions = [];
+    await deliverReply(roomState.tools, text, roomState.requesterMentions);
     return "sent";
   }
 
@@ -1267,9 +1267,8 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     await deliverReply(
       roomState.tools,
       "OpenCode completed the turn without a text reply.",
-      roomState.pendingMentions,
+      roomState.requesterMentions,
     );
-    roomState.pendingMentions = [];
   }
 
   private async reportToolCall(
