@@ -131,6 +131,10 @@ export class FakeTools implements AgentToolsProtocol {
     mentions?: string[] | Array<{ id: string; handle?: string }>,
   ): Promise<Record<string, unknown>> {
     this.maybeFail("sendMessage");
+    // The platform refuses a message that mentions nobody, so it never reaches the room.
+    if (!mentions?.length) {
+      throw new Error("At least one mention is required");
+    }
     await this.heldMessages.pass(content);
     this.messages.push(content);
     this.mentions.push(mentions ?? []);

@@ -298,6 +298,7 @@ describe("CursorACPAdapter decisions in a room", () => {
     expect(await room.say(`${CURSOR_COMMAND} decisions`)).toBe(pendingList(first!, second!));
     expect(await room.say(oldest.reply(evicted!))).toBe(CURSOR_DECISION_MESSAGES.notPending(evicted!));
     expect(await room.say(middle.reply(first!), { sender: "intruder" })).toBe(CURSOR_DECISION_MESSAGES.notAuthorized());
+    expect(room.tools.mentions.at(-1)).toEqual([{ id: "intruder" }]);
 
     const otherRoom = { roomId: "room-2", roomTools: new FakeTools() };
     await room.adapter.onCleanup("room-2");

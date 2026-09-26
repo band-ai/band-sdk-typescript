@@ -354,7 +354,9 @@ export class CursorACPAdapter extends ACPClientAdapter {
     } catch (error) {
       this.decisionLogger.warn("cursor_acp.decision_prompt_delivery_failed", { roomId: spec.roomId, kind: spec.kind, error: String(error) });
       // A reply that claimed it meanwhile owns the answer; wait for it.
-      this.abandonDecision(entry, "prompt_delivery_failed");
+      if (this.abandonDecision(entry, "prompt_delivery_failed")) {
+        return undefined;
+      }
     }
     const result = await this.decisions.wait(entry, answer.promise, { timeoutMs: this.decisionTimeoutMs });
     if (result !== TIMED_OUT) {
@@ -364,16 +366,17 @@ export class CursorACPAdapter extends ACPClientAdapter {
     return undefined;
   }
 
-  // Ends a decision nobody has claimed; a claimed one belongs to its claimant.
-  private abandonDecision(entry: DecisionEntry<PendingDecision>, reason: string): void {
+  // Ends a decision nobody has claimed; false when its claimant owns it.
+  private abandonDecision(entry: DecisionEntry<PendingDecision>, reason: string): boolean {
     if (!this.decisions.withdraw(entry)) {
-      return;
+      return false;
     }
     if (reason === TIMEOUT_REASON) {
       this.endTimedOut(entry);
     } else {
       this.endUnanswered([entry], reason);
     }
+    return true;
   }
 
   // Both deadlines, the registry's and the ACP base class's, tell the requester.
@@ -401,33 +404,33 @@ export class CursorACPAdapter extends ACPClientAdapter {
     if (words[0]?.toLowerCase() !== CURSOR_COMMAND) {
       return false;
     }
+    // The platform drops a message that mentions nobody, so every reply goes to its sender.
+    await tools.sendMessage(this.controlReply(words, message.senderId, roomId), [{ id: message.senderId }]);
+    return true;
+  }
+
+  private controlReply(words: string[], senderId: string, roomId: string): string {
     if (words.length === 1 || words[1]?.toLowerCase() === "decisions") {
       const entries = this.decisions.unclaimedInRoom(roomId).map(({ token, payload }) => `\`${token}\` (${payload.kind})`);
-      await tools.sendMessage(CURSOR_DECISION_MESSAGES.pendingList(entries));
-      return true;
+      return CURSOR_DECISION_MESSAGES.pendingList(entries);
     }
-    const [_, action, token = "", ...args] = words;
+    const [_, action = "", token = "", ...args] = words;
     const decision = this.decisions.get(token);
     if (!decision || decision.roomId !== roomId) {
-      await tools.sendMessage(CURSOR_DECISION_MESSAGES.notPending(token));
-      return true;
+      return CURSOR_DECISION_MESSAGES.notPending(token);
     }
-    if (!isAuthorizedSender(this.authorizedSenders, message.senderId)) {
-      await tools.sendMessage(CURSOR_DECISION_MESSAGES.notAuthorized());
-      return true;
+    if (!isAuthorizedSender(this.authorizedSenders, senderId)) {
+      return CURSOR_DECISION_MESSAGES.notAuthorized();
     }
-    const result = commandResult(action ?? "", args, decision);
+    const result = commandResult(action, args, decision);
     if (result === null) {
-      await tools.sendMessage(CURSOR_DECISION_MESSAGES.invalidCommand(decision.kind, token));
-      return true;
+      return CURSOR_DECISION_MESSAGES.invalidCommand(decision.kind, token);
     }
     if (!this.decisions.tryClaim(token)) {
-      await tools.sendMessage(CURSOR_DECISION_MESSAGES.notPending(token));
-      return true;
+      return CURSOR_DECISION_MESSAGES.notPending(token);
     }
     decision.resolve(result);
-    await tools.sendMessage(CURSOR_DECISION_MESSAGES.resolved(decision.kind, token));
-    return true;
+    return CURSOR_DECISION_MESSAGES.resolved(decision.kind, token);
   }
 
   private cancelRoom(roomId: string, reason: string): void {
