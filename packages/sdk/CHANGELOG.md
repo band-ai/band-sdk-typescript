@@ -1,6 +1,28 @@
 # Changelog
 
 
+## [0.4.6](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.4.5...sdk-v0.4.6) (2026-09-26)
+
+
+### Features
+
+* add KiroACPAdapter for AWS Kiro CLI (ACP) ([b518d57](https://github.com/band-ai/band-sdk-typescript/commit/b518d570e3b0c1df00ef0cde58cb474aa0c4ed2e))
+* add KiroACPAdapter for AWS Kiro CLI (ACP) ([c470779](https://github.com/band-ai/band-sdk-typescript/commit/c470779d7844481876461416dc95189a7c2915a7))
+* **sdk:** adopt band-sdk-core's isSelfEcho and evaluateAdapterResult ([bca5780](https://github.com/band-ai/band-sdk-typescript/commit/bca57801ee895bb3d958dea1c7036f604e1e35fd))
+* **sdk:** adopt band-sdk-core's isSelfEcho and evaluateAdapterResult ([33a931f](https://github.com/band-ai/band-sdk-typescript/commit/33a931fe53d8e31f48acc673a0c51cda39af4dcf))
+
+
+### Bug Fixes
+
+* abandon a session with a still-in-flight prompt on cleanup ([b965081](https://github.com/band-ai/band-sdk-typescript/commit/b9650811c04601dd63160ddc232f2c1e3e1d22ad))
+* add per-room workspace resolution and resume-failure replay to ACPClientAdapter ([5b94dad](https://github.com/band-ai/band-sdk-typescript/commit/5b94dadcfc217c94649aabdc01df49fa525b22f2))
+* compare full session ownership, drop dead notification-attribution path ([5a0019f](https://github.com/band-ai/band-sdk-typescript/commit/5a0019fa488210805f22e413279766de5120cff9))
+* drop the live Kiro CLI ACP E2E script ([#251](https://github.com/band-ai/band-sdk-typescript/issues/251)) ([ef860b3](https://github.com/band-ai/band-sdk-typescript/commit/ef860b37d5eb81ee01df554f68a4dbd370ef6243))
+* guard resume-replay debt against a stale turn racing onCleanup ([a669572](https://github.com/band-ai/band-sdk-typescript/commit/a6695720008dcd499ac1ba62fb2ca12acaeee796))
+* keep ACP resume replay until a prompt is accepted ([61aa11b](https://github.com/band-ai/band-sdk-typescript/commit/61aa11b042e5614caf926d9b967a9184bfae221b))
+* keep replay across a cancelled turn and a reused session id ([7059435](https://github.com/band-ai/band-sdk-typescript/commit/70594350122606bf8de2de7c2324747aca918280))
+* keep the armed replay snapshot and release only that prompt token ([adca1df](https://github.com/band-ai/band-sdk-typescript/commit/adca1df6b12eb7f36eaafd344f270f34100bae60))
+
 ## [0.4.5](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.4.4...sdk-v0.4.5) (2026-09-22)
 
 
