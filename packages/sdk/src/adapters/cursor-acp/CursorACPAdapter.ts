@@ -225,9 +225,17 @@ export class CursorACPAdapter extends ACPClientAdapter {
     }
     const released = createDeferred<void>();
     const turn: CursorTurn = { messageId: message.id, roomId: context.roomId, tools, requesterId: message.senderId, releaseRoom: released.resolve };
+    // Removing a room waits on its message, so one queued behind another room's turn must not hold it.
+    const queued = this.turns.size > 0;
     this.turns.set(context.roomId, turn);
-    const run = this.withCursorTurnLock(() => super.onMessage(message, tools, history, participantsMessage, contactsMessage, context))
-      .finally(() => this.forgetTurn(turn));
+    const run = this.withCursorTurnLock(async () => {
+      if (this.turns.get(turn.roomId) === turn) {
+        await super.onMessage(message, tools, history, participantsMessage, contactsMessage, context);
+      }
+    }).finally(() => this.forgetTurn(turn));
+    if (queued) {
+      turn.releaseRoom();
+    }
     await this.untilRoomReleased(turn, run, released.promise);
   }
 

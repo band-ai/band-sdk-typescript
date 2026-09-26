@@ -310,6 +310,27 @@ describe("Cursor in a Band room", () => {
     expect(await crossRoomAnswer).toEqual([SAYS.notPending(token!)]);
   });
 
+  it("lets a room waiting for Cursor be removed without stalling the room Cursor is asking", async () => {
+    await using session = await cursorRoom();
+    const { room, platform, agent } = session;
+    const otherRoom = await platform.room("room-2");
+    const { result, tokens: [token] } = await session.start((turn) => turn.ask({ questions: [{ id: "mode", options: [{ id: "plan" }] }] }), 1);
+    const queued = await otherRoom.say(OWNER, "And summarise room-2");
+    expect(await otherRoom.outcome(queued)).toBe("processed");
+    expect(await otherRoom.exchange(OWNER, "Anything yet?")).toEqual([SAYS.turnInProgress()]);
+
+    await otherRoom.remove();
+    expect(await room.exchange(OWNER, `${CURSOR_COMMAND} answer ${token} mode=plan`)).toEqual([SAYS.resolved("question", token!)]);
+
+    expect(await result).toEqual(answered({ mode: ["plan"] }));
+    const rejoined = await platform.room("room-2");
+    const next = agent.nextTurn(async (turn) => turn.sessionId);
+    const message = await rejoined.say(OWNER, "Summarise room-2 again");
+    expect(await next).toBe("cursor-session-2");
+    expect(await rejoined.outcome(message)).toBe("processed");
+    expect(agent.receivedOf("session/prompt")).toHaveLength(2);
+  });
+
   it("renders Cursor's todo, task and image updates as room events, tolerating partial payloads", async () => {
     await using session = await cursorRoom();
     const { room } = session;
