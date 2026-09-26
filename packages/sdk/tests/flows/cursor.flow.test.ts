@@ -229,6 +229,26 @@ describe("Cursor in a Band room", () => {
     expect(room.messages.filter(isPrompt)).toHaveLength(1);
   });
 
+  it("keeps serving the room after the platform refuses a control reply, and answers the retried command as no longer pending", async () => {
+    await using session = await cursorRoom();
+    const { room, agent } = session;
+    const { result, tokens: [token] } = await session.start((turn) => turn.ask({ questions: [{ id: "mode", options: [{ id: "plan" }] }] }), 1);
+    const command = `${CURSOR_COMMAND} answer ${token} mode=plan`;
+    const refused = room.holdMessage((content) => content === SAYS.resolved("question", token!), { error: new Error("platform unavailable") });
+    const reply = await room.say(OWNER, command);
+    await refused.sending;
+    refused.release();
+
+    expect(await room.outcome(reply)).toBe("failed");
+    expect(await result).toEqual(answered({ mode: ["plan"] }));
+    // The platform retries a failed message; the decision it resolved stays resolved once.
+    expect(await room.exchange(OWNER, command)).toEqual([SAYS.notPending(token!)]);
+    const next = agent.nextTurn(async (turn) => turn.say("Changelog tidied."));
+    const message = await room.say(OWNER, "Now tidy the changelog");
+    await next;
+    expect(await room.outcome(message)).toBe("processed");
+  });
+
   it.each([
     {
       policy: "accepts and answers automatically",

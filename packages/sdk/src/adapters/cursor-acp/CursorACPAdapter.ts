@@ -17,6 +17,7 @@ import {
 import type { ACPPermissionAbandonReason, ACPPermissionEndReason, CollectedChunk } from "../acp/types";
 import { abandon } from "../shared/abandon";
 import { DecisionRegistry, senderAllowlist, TIMED_OUT, type DecisionEntry } from "../shared/decisions";
+import { replyToSender } from "../shared/replyToSender";
 import { runUntilReleased } from "../shared/runUntilReleased";
 import { commandWords } from "../../runtime/formatters";
 import { CURSOR_COMMAND, CURSOR_DECISION_MESSAGES, CURSOR_VERB, DECISION_KIND, type DecisionKind } from "./messages";
@@ -229,7 +230,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
       return;
     }
     if (this.turns.has(context.roomId)) {
-      await tools.sendMessage(CURSOR_DECISION_MESSAGES.turnInProgress(), [{ id: message.senderId }]);
+      await replyToSender(tools, CURSOR_DECISION_MESSAGES.turnInProgress(), message.senderId);
       return;
     }
     const released = createDeferred<void>();
@@ -411,7 +412,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
   // False when the prompt failed and the decision ended unanswered.
   private async postPrompt(turn: CursorTurn, entry: DecisionEntry<PendingDecision>, prompt: (token: string) => string): Promise<boolean> {
     try {
-      await turn.tools.sendMessage(prompt(entry.token), [turn.requesterId]);
+      await replyToSender(turn.tools, prompt(entry.token), turn.requesterId);
       return true;
     } catch (error) {
       this.decisionLogger.warn("cursor_acp.decision_prompt_delivery_failed", { roomId: turn.roomId, kind: entry.payload.kind, error: String(error) });
@@ -443,7 +444,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
     const { token, payload: decision } = entry;
     this.endUnanswered([entry], END_REASON.timeout);
     abandon(
-      () => decision.tools.sendMessage(CURSOR_DECISION_MESSAGES.timedOut(decision.kind, token), [decision.requesterId]),
+      () => replyToSender(decision.tools, CURSOR_DECISION_MESSAGES.timedOut(decision.kind, token), decision.requesterId),
       (error) => {
         this.decisionLogger.warn("cursor_acp.decision_timeout_notice_failed", { roomId: decision.roomId, kind: decision.kind, error: String(error) });
       },
@@ -463,8 +464,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
     if (words[0]?.toLowerCase() !== CURSOR_COMMAND) {
       return false;
     }
-    // The platform drops a message that mentions nobody, so every reply goes to its sender.
-    await tools.sendMessage(this.controlReply(words, message.senderId, roomId), [{ id: message.senderId }]);
+    await replyToSender(tools, this.controlReply(words, message.senderId, roomId), message.senderId);
     return true;
   }
 
