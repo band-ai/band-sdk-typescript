@@ -10,6 +10,8 @@ import { spawnSync } from "node:child_process";
 import { BandClient } from "@band-ai/rest-client";
 
 import { FernRestAdapter } from "../../../src/rest";
+import { withTimeout } from "../../../src/adapters/shared/withTimeout";
+import { TrafficLog } from "../../testUtils";
 
 import type { BandLink } from "../../../src/platform/BandLink";
 import type { PlatformEvent } from "../../../src/platform/events";
@@ -141,6 +143,30 @@ export function agentRest(restUrl: string, apiKey: string): FernRestAdapter {
   return new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey }));
 }
 
+/** An agent's REST client that records the events it posts, so a script waits on them instead of polling the room. */
+export class EventRecordingRest extends FernRestAdapter {
+  private readonly posted: string[] = [];
+  private readonly traffic = new TrafficLog();
+
+  public constructor(restUrl: string, apiKey: string) {
+    super(new BandClient({ baseUrl: restUrl, apiKey }));
+  }
+
+  public override async createChatEvent(...args: Parameters<FernRestAdapter["createChatEvent"]>) {
+    const result = await super.createChatEvent(...args);
+    this.posted.push(args[1].content);
+    this.traffic.record();
+    return result;
+  }
+
+  /** The events posted so far that contain `text`, once there is at least one. */
+  public async eventsContaining(text: string, timeoutMs = LIVE_EVENT_TIMEOUT_MS): Promise<string[]> {
+    const matching = () => this.posted.filter((content) => content.includes(text));
+    await withTimeout(this.traffic.until(() => matching().length > 0), timeoutMs, `no event containing: ${text}`);
+    return matching();
+  }
+}
+
 /** Posts `text` to the room as `rest`'s agent, @mentioning `recipient` so it is delivered to them. */
 export async function sendMentionedMessage(
   rest: FernRestAdapter,
@@ -268,21 +294,13 @@ export async function waitForEvent(
   message: string,
   timeoutMs = LIVE_EVENT_TIMEOUT_MS,
 ): Promise<void> {
-  const timeout = new AbortController();
-  const timer = setTimeout(() => timeout.abort(), timeoutMs);
-  try {
-    while (true) {
-      const event = await link.nextEvent(timeout.signal);
-      if (!event) {
-        throw new Error(message);
-      }
-      if (predicate(event)) {
-        return;
-      }
+  const signal = AbortSignal.timeout(timeoutMs);
+  for (let event = await link.nextEvent(signal); event; event = await link.nextEvent(signal)) {
+    if (predicate(event)) {
+      return;
     }
-  } finally {
-    clearTimeout(timer);
   }
+  throw new Error(message);
 }
 
 function flushOutput(stream: NodeJS.WriteStream): Promise<void> {

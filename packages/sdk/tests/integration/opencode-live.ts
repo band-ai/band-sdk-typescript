@@ -17,7 +17,7 @@ import { randomUUID } from "node:crypto";
 
 import { Agent, OpencodeAdapter } from "../../src/index";
 import { OPENCODE_DECISION_MESSAGES } from "../../src/adapters/opencode/messages";
-import { REPLY_WORDS, type ReplyWord } from "../../src/adapters/opencode/replies";
+import { ASK_KIND, REPLY_WORDS, type ReplyWord } from "../../src/adapters/opencode/replies";
 import { BandLink } from "../../src/platform/BandLink";
 import type { FernRestAdapter } from "../../src/rest";
 import {
@@ -28,8 +28,8 @@ import {
   type ProvisionedAgent,
   reapProvisioned,
   runLiveScript,
+  EventRecordingRest,
   sendMentionedMessage,
-  sleep,
   sweepOrphans,
   waitForEvent,
 } from "./support/liveHarness";
@@ -38,8 +38,6 @@ const TEST_NAME = "opencode";
 const PROVIDER_ID = "anthropic";
 const MODEL_ID = "claude-haiku-4-5";
 const APPROVAL_WAIT_MS = 10_000;
-const EVENT_POLL_ATTEMPTS = 15;
-const EVENT_POLL_INTERVAL_MS = 2_000;
 const MARKER_FILE_NAME = "approval.txt";
 const APPROVE_WORD: ReplyWord = "approve";
 // The approval prompt offers `approve <request id>`; nothing else OpenCode posts does.
@@ -54,8 +52,8 @@ const OPENCODE_CONFIG = {
 interface Scenario {
   observer: BandLink;
   senderRest: FernRestAdapter;
-  // Agents don't receive each other's events over the socket; the agent's own context has them.
-  opencodeRest: FernRestAdapter;
+  // Agents don't receive each other's events over the socket, so the agent's own client records them.
+  opencodeRest: EventRecordingRest;
   roomId: string;
   opencodeIdentity: ProvisionedAgent;
   markerFile: string;
@@ -111,22 +109,6 @@ async function requestGatedCommand(scenario: Scenario, marker: string, transcrip
   return requestId;
 }
 
-/** The OpenCode agent's own events in the room containing `text`, polled until one appears. */
-async function awaitOwnEvents(scenario: Scenario, text: string): Promise<string[]> {
-  for (let attempt = 0; attempt < EVENT_POLL_ATTEMPTS; attempt += 1) {
-    const context = await scenario.opencodeRest.getChatContext({ chatId: scenario.roomId });
-    const events = context.data
-      .filter((message) => message.sender_id === scenario.opencodeIdentity.id && message.message_type !== "text")
-      .map((message) => message.content)
-      .filter((content) => content.includes(text));
-    if (events.length > 0) {
-      return events;
-    }
-    await sleep(EVENT_POLL_INTERVAL_MS);
-  }
-  throw new Error(`OpenCode posted no event containing: ${text}`);
-}
-
 async function markerWritten(scenario: Scenario, marker: string): Promise<boolean> {
   const contents = await readFile(scenario.markerFile, "utf8").catch(() => "");
   return contents.includes(marker);
@@ -158,10 +140,10 @@ async function runTimeoutScenario(scenario: Scenario): Promise<void> {
   const requestId = await requestGatedCommand(scenario, marker, transcript);
 
   await collectUntil(scenario, transcript, () => turnEnded(transcript, requestId), "the end of the timed-out turn");
-  const timedOutEvents = await awaitOwnEvents(scenario, OPENCODE_DECISION_MESSAGES.approvalTimedOut(requestId, REPLY_WORDS.reject));
+  const timedOutEvents = await scenario.opencodeRest.eventsContaining(OPENCODE_DECISION_MESSAGES.approvalTimedOut(requestId, REPLY_WORDS.reject));
 
   await sendToOpencode(scenario, `${APPROVE_WORD} ${requestId}`);
-  const noLongerPending = OPENCODE_DECISION_MESSAGES.noLongerPending("permission", requestId);
+  const noLongerPending = OPENCODE_DECISION_MESSAGES.noLongerPending(ASK_KIND.permission, requestId);
   await collectUntil(scenario, transcript, () => said(transcript, noLongerPending), "the no-longer-pending notice");
 
   const handledNotices = Object.values(REPLY_WORDS).map((reply) => OPENCODE_DECISION_MESSAGES.approvalHandled(requestId, reply));
@@ -208,7 +190,7 @@ async function main(): Promise<void> {
     const senderIdentity = await provisionAgent(userClient, runId, TEST_NAME, "sender");
     provisioned.push(senderIdentity);
 
-    const opencodeRest = agentRest(restUrl, opencodeIdentity.apiKey);
+    const opencodeRest = new EventRecordingRest(restUrl, opencodeIdentity.apiKey);
     const senderRest = agentRest(restUrl, senderIdentity.apiKey);
     const chat = await opencodeRest.createChat();
     roomIds.push(chat.id);
