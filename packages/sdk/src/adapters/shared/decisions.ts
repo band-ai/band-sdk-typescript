@@ -26,8 +26,6 @@ export interface DecisionEntry<T> {
 /** A new entry, plus any open ask registering it removed, for the caller to resolve. */
 export interface Registration<T> {
   readonly entry: DecisionEntry<T>;
-  readonly evicted: DecisionEntry<T> | null;
-  readonly replaced: DecisionEntry<T> | null;
   readonly removed: readonly DecisionEntry<T>[];
 }
 
@@ -232,5 +230,5 @@ export class DecisionRegistry<T> {
 }
 
 function registration<T>(entry: DecisionEntry<T>, evicted: DecisionEntry<T> | null, replaced: DecisionEntry<T> | null): Registration<T> {
-  return { entry, evicted, replaced, removed: [evicted, replaced].filter((removed) => removed !== null) };
+  return { entry, removed: [evicted, replaced].filter((removed) => removed !== null) };
 }

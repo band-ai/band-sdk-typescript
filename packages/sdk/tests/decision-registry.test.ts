@@ -44,7 +44,7 @@ class Room {
       return null;
     }
     for (const removed of registration.removed) {
-      removed.payload.answer.resolve(removed === registration.evicted ? "evicted" : "replaced");
+      removed.payload.answer.resolve(removed.token === registration.entry.token ? "replaced" : "evicted");
     }
     this.askers.set(name, this.registry.wait(registration.entry, ask.answer.promise, { timeoutMs: options.timeoutMs ?? DEADLINE_MS }));
     return registration.entry;
@@ -189,7 +189,7 @@ describe("DecisionRegistry", () => {
     const oldAsk = anAsk("old");
     const old = registry.registerKeyed(oldAsk, { key: "k" })!;
     const replacement = registry.registerKeyed(anAsk("new"), { key: "k" })!;
-    expect(replacement.replaced).toBe(old.entry);
+    expect(replacement.removed).toEqual([old.entry]);
 
     registry.forget(old.entry);
     expect(registry.withdraw(old.entry)).toBe(false);
