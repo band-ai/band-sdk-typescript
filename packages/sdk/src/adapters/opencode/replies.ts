@@ -204,7 +204,7 @@ function routeBareCommand(reply: OpencodeApprovalReply, decisions: RoomDecisions
 
 function routeBarePermission(reply: OpencodeApprovalReply, permissions: DecisionRegistry<PendingPermission>): ReplyAction {
   const [only, ...others] = permissions.unclaimed();
-  return others.length === 0 ? approve(only!.token, reply) : notice(OPENCODE_DECISION_MESSAGES.whichPermissionHint(unclaimedIds(permissions)));
+  return others.length === 0 ? approve(only.token, reply) : notice(OPENCODE_DECISION_MESSAGES.whichPermissionHint(unclaimedIds(permissions)));
 }
 
 function openAsks({ permissions, questions }: RoomDecisions): OpenAsks {
