@@ -12,4 +12,5 @@ export const CURSOR_DECISION_MESSAGES = {
   invalidCommand: (kind: DecisionKind, token: string) => `That command is not valid for Cursor ${kind} decision \`${token}\`.`,
   resolved: (kind: DecisionKind, token: string) => `Cursor ${kind} decision \`${token}\` resolved.`,
   timedOut: (kind: DecisionKind, token: string) => `Cursor ${kind} decision \`${token}\` timed out and was cancelled.`,
+  turnInProgress: () => "Cursor is still processing the previous request in this room.",
 } as const;

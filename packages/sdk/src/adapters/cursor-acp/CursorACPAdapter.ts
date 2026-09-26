@@ -58,6 +58,8 @@ interface CursorTurn {
   sessionId?: string;
   tools: AdapterToolsProtocol;
   requesterId: string;
+  // Hands the room's message queue back to the platform, so a reply to this turn's decision can reach the adapter.
+  releaseRoom: () => void;
 }
 
 // What a decision asks for; the rest of `PendingDecision` comes from its turn.
@@ -176,6 +178,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
   private readonly decisions: DecisionRegistry<PendingDecision>;
   private activeTurn: CursorTurn | null = null;
   private turnTail: Promise<void> = Promise.resolve();
+  private readonly roomReleases = new Map<string, () => void>();
 
   public constructor(options: CursorACPAdapterOptions = {}) {
     const extensions = new CursorExtensions();
@@ -214,7 +217,21 @@ export class CursorACPAdapter extends ACPClientAdapter {
     if (await this.handleControl(message, tools, context.roomId)) {
       return;
     }
-    await this.withCursorTurnLock(() => super.onMessage(message, tools, history, participantsMessage, contactsMessage, context));
+    if (this.turns.has(context.roomId)) {
+      await tools.sendMessage(CURSOR_DECISION_MESSAGES.turnInProgress(), [{ id: message.senderId }]);
+      return;
+    }
+    // The platform hands a room one message at a time, so the turn runs detached once it asks the room something.
+    const released = createDeferred<void>();
+    this.roomReleases.set(message.id, released.resolve);
+    const turn = this.withCursorTurnLock(() => super.onMessage(message, tools, history, participantsMessage, contactsMessage, context))
+      .finally(() => this.roomReleases.delete(message.id));
+    const first = await Promise.race([turn.then(() => "finished" as const), released.promise.then(() => "released" as const)]);
+    if (first === "released") {
+      turn.catch((error: unknown) => {
+        this.decisionLogger.warn("cursor_acp.released_turn_failed", { roomId: context.roomId, error: String(error) });
+      });
+    }
   }
 
   protected override async onAcpTurnStarted(
@@ -222,7 +239,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
     tools: AdapterToolsProtocol,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
-    const turn = { messageId: message.id, roomId: context.roomId, tools, requesterId: message.senderId };
+    const turn = { messageId: message.id, roomId: context.roomId, tools, requesterId: message.senderId, releaseRoom: this.roomReleases.get(message.id) ?? (() => undefined) };
     this.turns.set(context.roomId, turn);
     this.activeTurn = turn;
   }
@@ -364,6 +381,9 @@ export class CursorACPAdapter extends ACPClientAdapter {
       if (this.abandonDecision(entry, END_REASON.promptDeliveryFailed)) {
         return undefined;
       }
+    } finally {
+      // Whether or not the prompt landed, the room's reply must not queue behind this turn.
+      turn.releaseRoom();
     }
     const result = await this.decisions.wait(entry, answer.promise, { timeoutMs: this.decisionTimeoutMs });
     if (result !== TIMED_OUT) {
