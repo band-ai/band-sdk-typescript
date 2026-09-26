@@ -173,6 +173,22 @@ describe("OpenCode in a Band room", () => {
     expect(server.questionReplies()).toEqual([[pair, [["Alice"], ["Engineer"]]], [single, [["approve the blue one"]]]]);
   });
 
+  it("confirms an answer to the person who gave it even when OpenCode finishes before the reply returns", async () => {
+    await using session = await opencodeRoom();
+    const { room, server } = session;
+    await session.start((turn) => void turn.askQuestion([{ question: "Proceed?" }], "que_last"));
+    await room.nextMessage((posted) => posted.content === formatQuestionPrompt([{ question: "Proceed?" }], "que_last"));
+    const slowReply = server.hold("POST /question/que_:id/reply");
+
+    const confirmation = room.exchange(OWNER, "yes");
+    await slowReply.sending;
+    (await server.turn()).answer("Done.");
+    await room.nextMessage((posted) => posted.content === "Done.");
+    slowReply.release();
+
+    expect(await confirmation).toContain(SAYS.questionAnswered("que_last"));
+  });
+
   it.each([
     { timeoutReply: "reject", expected: "reject" },
     { timeoutReply: "once", expected: "once" },

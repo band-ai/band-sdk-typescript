@@ -1,3 +1,5 @@
+const DETACHED: unique symbol = Symbol("detached");
+
 /**
  * Awaits `run` until `released` resolves, then leaves it running detached.
  * A room hands an adapter one message at a time, so a turn that waits on the
@@ -8,6 +10,8 @@ export async function runUntilReleased(
   released: Promise<unknown>,
   onDetachedError: (error: unknown) => void,
 ): Promise<void> {
-  void released.then(() => run.catch(onDetachedError));
-  await Promise.race([run, released]);
+  // A run that fails before release throws to the caller, so only one that outlives this call is handed off.
+  if ((await Promise.race([run, released.then(() => DETACHED)])) === DETACHED) {
+    void run.catch(onDetachedError);
+  }
 }
