@@ -79,6 +79,12 @@ export class OpencodeTurn {
     return { isError: result.isError === true ? true : undefined, text: content.map((part) => part.text ?? "").join("") };
   }
 
+  /** Streams `text` as the turn's answer and ends the turn. */
+  public answer(text: string): void {
+    this.reply(text);
+    this.idle();
+  }
+
   public idle(): void {
     this.emit("session.idle", { sessionID: this.sessionId });
   }
@@ -93,6 +99,7 @@ type Script = (turn: OpencodeTurn) => Promise<void> | void;
 export class FakeOpencodeServer implements AsyncDisposable {
   public readonly requests = new RecordLog<Request>();
   private readonly scripts: Script[] = [];
+  private readonly turns = new RecordLog<OpencodeTurn>();
   private readonly sessions = new Set<string>();
   private readonly streams = new Set<ServerResponse>();
   private readonly failures = new Map<string, Failure[]>();
@@ -124,6 +131,11 @@ export class FakeOpencodeServer implements AsyncDisposable {
     this.scripts.push(script);
   }
 
+  /** The `index`th turn a prompt started, once it has. */
+  public turn(index = 0): Promise<OpencodeTurn> {
+    return this.turns.next(() => true, index);
+  }
+
   /** Makes the next request to `route` (e.g. "POST /session/:id/abort") fail with `failure`. */
   public failNext(route: string, failure: Failure): void {
     this.failures.set(route, [...(this.failures.get(route) ?? []), failure]);
@@ -152,6 +164,16 @@ export class FakeOpencodeServer implements AsyncDisposable {
 
   public requestsTo(method: string, pattern: RegExp): Request[] {
     return this.requests.entries.filter((request) => request.method === method && pattern.test(request.path));
+  }
+
+  /** Each permission reply OpenCode received, as `[request id, reply]`. */
+  public permissionReplies(): Array<[string, unknown]> {
+    return this.requestsTo("POST", /^\/permission\//).map((request) => [askId(request), request.body.reply]);
+  }
+
+  /** Each question reply OpenCode received, as `[request id, answers or "rejected"]`. */
+  public questionReplies(): Array<[string, unknown]> {
+    return this.requestsTo("POST", /^\/question\/.*\/(reply|reject)$/).map((request) => [askId(request), request.body.answers ?? "rejected"]);
   }
 
   public until(predicate: () => boolean): Promise<void> {
@@ -221,7 +243,9 @@ export class FakeOpencodeServer implements AsyncDisposable {
       send(res, 204);
       const script = this.scripts.shift();
       if (script) {
-        void Promise.resolve(script(new OpencodeTurn(this, session[1]!, body)));
+        const turn = new OpencodeTurn(this, session[1]!, body);
+        this.turns.record(turn);
+        void Promise.resolve(script(turn));
       }
       return;
     }
@@ -235,6 +259,11 @@ export class FakeOpencodeServer implements AsyncDisposable {
     this.streams.add(res);
     res.on("close", () => this.streams.delete(res));
   }
+}
+
+/** The ask a `/permission/:id/...` or `/question/:id/...` request answers. */
+function askId(request: Request): string {
+  return request.path.split("/")[2]!;
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {

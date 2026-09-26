@@ -182,6 +182,17 @@ export class BandPlatform implements AsyncDisposable {
     return platform;
   }
 
+  /** Starts the agent, as `start` does, and adds it to one room. */
+  public static async join(
+    adapter: FrameworkAdapter,
+    participants: readonly ParticipantRecord[],
+    options: { roomId?: string; rest?: RecordingRestApi } = {},
+  ): Promise<{ platform: BandPlatform; room: BandRoom } & AsyncDisposable> {
+    const platform = await BandPlatform.start(adapter, participants, options.rest);
+    const room = await platform.room(options.roomId ?? "room-1");
+    return { platform, room, [Symbol.asyncDispose]: () => platform[Symbol.asyncDispose]() };
+  }
+
   public async room(roomId: string): Promise<BandRoom> {
     await this.transport.emit(`agent_rooms:${AGENT_ID}`, "room_added", roomPayload(roomId, "active"));
     return new BandRoom(roomId, this);

@@ -11,6 +11,7 @@ import { OpencodeAdapter, type OpencodeAdapterConfig } from "../../src/adapters/
 import { OPENCODE_DECISION_MESSAGES as SAYS, formatQuestionPrompt } from "../../src/adapters/opencode/messages";
 import { createDeferred } from "../../src/core/deferred";
 import { FAILURE_EVENT_TYPE } from "../../src/contracts/protocols";
+import type { CustomToolDef } from "../../src/runtime/tools/customTools";
 import { BandPlatform, person, type RecordingRestApi } from "./support/bandPlatform";
 import { FakeOpencodeServer, type OpencodeTurn } from "./support/fakeOpencodeServer";
 
@@ -23,14 +24,10 @@ const DEADLINE_MS = 60_000;
 const SHORT_DEADLINE_MS = 30_000;
 
 const approvalPrompt = (requestId: string) => SAYS.approvalRequested({ requestId, permission: "bash", patterns: ["npm test"] });
-const permissionReplies = (server: FakeOpencodeServer) =>
-  server.requestsTo("POST", /^\/permission\//).map((request) => [request.path.split("/")[2], request.body.reply]);
-const questionReplies = (server: FakeOpencodeServer) =>
-  server.requestsTo("POST", /^\/question\/.*\/(reply|reject)$/).map((request) => [request.path.split("/")[2], request.body.answers ?? "rejected"]);
 
 interface RoomOptions {
   decisionAuthorizedSenders?: readonly string[];
-  customTools?: ConstructorParameters<typeof OpencodeAdapter>[0] extends infer O ? O extends { customTools?: infer C } ? C : never : never;
+  customTools?: CustomToolDef[];
   rest?: RecordingRestApi;
   server?: FakeOpencodeServer;
 }
@@ -43,8 +40,8 @@ async function opencodeRoom(config: OpencodeAdapterConfig = {}, options: RoomOpt
     decisionAuthorizedSenders: options.decisionAuthorizedSenders,
     customTools: options.customTools,
   });
-  const platform = await BandPlatform.start(adapter, PEOPLE, options.rest);
-  const room = await platform.room("room-1");
+  const joined = await BandPlatform.join(adapter, PEOPLE, { rest: options.rest });
+  const { platform, room } = joined;
   return {
     server,
     platform,
@@ -55,12 +52,20 @@ async function opencodeRoom(config: OpencodeAdapterConfig = {}, options: RoomOpt
       return room.say(OWNER, content);
     },
     async [Symbol.asyncDispose]() {
-      await platform[Symbol.asyncDispose]();
+      await joined[Symbol.asyncDispose]();
       if (!options.server) {
         await server[Symbol.asyncDispose]();
       }
     },
   };
+}
+
+/** Runs one answered turn on `server` and returns the platform an agent restarting on it resumes from. */
+async function seedRoom(server: FakeOpencodeServer, content?: string): Promise<RecordingRestApi> {
+  await using first = await opencodeRoom({}, { server });
+  await first.start((turn) => turn.answer("First answer."), content);
+  await first.room.nextMessage((posted) => posted.content === "First answer.");
+  return first.platform.rest;
 }
 
 describe("OpenCode in a Band room", () => {
@@ -108,21 +113,14 @@ describe("OpenCode in a Band room", () => {
 
   it("ignores what a finished turn's session sends once the turn is over", async () => {
     await using session = await opencodeRoom({ enableExecutionReporting: true });
-    const { room } = session;
-    let finished: OpencodeTurn | undefined;
-    const first = await session.start((turn) => {
-      finished = turn;
-      turn.reply("First answer.");
-      turn.idle();
-    });
+    const { room, server } = session;
+    const first = await session.start((turn) => turn.answer("First answer."));
     expect(await room.outcome(first)).toBe("processed");
 
-    finished!.emit("message.part.updated", { part: { id: "prt_late", messageID: "msg_late", sessionID: finished!.sessionId, type: "tool", tool: "bash", callID: "call_late", state: { status: "running" } } });
-    finished!.idle();
-    const second = await session.start((turn) => {
-      turn.reply("Second answer.");
-      turn.idle();
-    }, "And again");
+    const finished = await server.turn();
+    finished.emit("message.part.updated", { part: { id: "prt_late", messageID: "msg_late", sessionID: finished.sessionId, type: "tool", tool: "bash", callID: "call_late", state: { status: "running" } } });
+    finished.idle();
+    const second = await session.start((turn) => turn.answer("Second answer."), "And again");
 
     expect(await room.outcome(second)).toBe("processed");
     expect(room.messages.map((posted) => posted.content)).toEqual(["First answer.", "Second answer."]);
@@ -132,17 +130,12 @@ describe("OpenCode in a Band room", () => {
   it("routes a busy room's replies to the asks still awaiting one, and only from allowed senders", async () => {
     await using session = await opencodeRoom({}, { decisionAuthorizedSenders: [OWNER, APPROVER] });
     const { room, server } = session;
-    const asked = createDeferred<{ first: string; second: string; question: string }>();
+    const [first, second, question] = ["per_first", "per_second", "que_branch"];
     await session.start(async (turn) => {
-      const first = turn.askPermission();
-      const second = turn.askPermission();
-      const question = turn.askQuestion([{ question: "Which branch?" }]);
-      asked.resolve({ first: first.id, second: second.id, question: question.id });
-      await Promise.all([first.reply, second.reply, question.reply]);
-      turn.reply("Done.");
-      turn.idle();
+      const asks = [turn.askPermission({ id: first }), turn.askPermission({ id: second }), turn.askQuestion([{ question: "Which branch?" }], question)];
+      await Promise.all(asks.map((ask) => ask.reply));
+      turn.answer("Done.");
     });
-    const { first, second, question } = await asked.promise;
     await room.nextMessage((posted) => posted.content === formatQuestionPrompt([{ question: "Which branch?" }], question));
 
     expect(await room.exchange(OWNER, "approve")).toEqual([SAYS.whichPermissionHint([first, second])]);
@@ -154,35 +147,30 @@ describe("OpenCode in a Band room", () => {
     expect(await room.exchange(OWNER, "reject")).toEqual([SAYS.questionRejected(question)]);
 
     await room.nextMessage((posted) => posted.content === "Done.");
-    expect(permissionReplies(server)).toEqual([[second, "once"], [first, "always"]]);
-    expect(questionReplies(server)).toEqual([[question, "rejected"]]);
+    expect(server.permissionReplies()).toEqual([[second, "once"], [first, "always"]]);
+    expect(server.questionReplies()).toEqual([[question, "rejected"]]);
     expect(await room.exchange(OWNER, `approve ${first}`)).toEqual([SAYS.noLongerPending("permission", first)]);
   });
 
   it("answers questions line by line, oldest first, and hints when an answer is short or aimed wrong", async () => {
     await using session = await opencodeRoom();
     const { room, server } = session;
-    const asked = createDeferred<string[]>();
-    const twoPart = [{ question: "Name?" }, { question: "Role?" }];
+    const [pair, single] = ["que_pair", "que_single"];
     await session.start(async (turn) => {
-      const pair = turn.askQuestion(twoPart);
-      const single = turn.askQuestion([{ question: "Colour?" }]);
-      asked.resolve([pair.id, single.id]);
-      await Promise.all([pair.reply, single.reply]);
-      turn.reply("Thanks.");
-      turn.idle();
+      const asks = [turn.askQuestion([{ question: "Name?" }, { question: "Role?" }], pair), turn.askQuestion([{ question: "Colour?" }], single)];
+      await Promise.all(asks.map((ask) => ask.reply));
+      turn.answer("Thanks.");
     });
-    const [pair, single] = await asked.promise;
-    await room.nextMessage((posted) => posted.content === formatQuestionPrompt([{ question: "Colour?" }], single!));
+    await room.nextMessage((posted) => posted.content === formatQuestionPrompt([{ question: "Colour?" }], single));
 
     expect(await room.exchange(OWNER, "Alice")).toEqual([SAYS.waitingForAnswers()]);
-    expect(await room.exchange(OWNER, `approve ${pair}`)).toEqual([SAYS.questionHint([pair!, single!])]);
+    expect(await room.exchange(OWNER, `approve ${pair}`)).toEqual([SAYS.questionHint([pair, single])]);
     expect(await room.exchange(OWNER, "reject que_wrong")).toEqual([SAYS.noLongerPending("question", "que_wrong")]);
-    expect(await room.exchange(OWNER, "Alice\nEngineer")).toEqual([SAYS.questionAnswered(pair!)]);
-    expect(await room.exchange(OWNER, "approve the blue one")).toEqual([SAYS.questionAnswered(single!)]);
+    expect(await room.exchange(OWNER, "Alice\nEngineer")).toEqual([SAYS.questionAnswered(pair)]);
+    expect(await room.exchange(OWNER, "approve the blue one")).toEqual([SAYS.questionAnswered(single)]);
 
     await room.nextMessage((posted) => posted.content === "Thanks.");
-    expect(questionReplies(server)).toEqual([[pair, [["Alice"], ["Engineer"]]], [single, [["approve the blue one"]]]]);
+    expect(server.questionReplies()).toEqual([[pair, [["Alice"], ["Engineer"]]], [single, [["approve the blue one"]]]]);
   });
 
   it.each([
@@ -193,28 +181,25 @@ describe("OpenCode in a Band room", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     await using session = await opencodeRoom({ approvalWaitTimeoutMs: DEADLINE_MS, approvalTimeoutReply: timeoutReply, questionWaitTimeoutMs: SHORT_DEADLINE_MS });
     const { room, server } = session;
-    const asked = createDeferred<{ permission: string; question: string; redeliver: () => void }>();
+    const [permission, question] = ["per_unanswered", "que_unanswered"];
     await session.start(async (turn) => {
-      const permission = turn.askPermission();
-      const question = turn.askQuestion([{ question: "Proceed?" }]);
-      asked.resolve({ permission: permission.id, question: question.id, redeliver: () => void turn.askPermission({ id: permission.id }) });
-      await Promise.all([permission.reply, question.reply]);
+      const asks = [turn.askPermission({ id: permission }), turn.askQuestion([{ question: "Proceed?" }], question)];
+      await Promise.all(asks.map((ask) => ask.reply));
       turn.idle();
     });
-    const { permission, question, redeliver } = await asked.promise;
     await room.nextMessage((posted) => posted.content === formatQuestionPrompt([{ question: "Proceed?" }], question));
 
     await vi.advanceTimersByTimeAsync(SHORT_DEADLINE_MS);
-    await server.until(() => questionReplies(server).length === 1);
-    redeliver();
+    await server.until(() => server.questionReplies().length === 1);
+    (await server.turn()).askPermission({ id: permission });
     await room.until(() => room.messages.filter((posted) => posted.content === approvalPrompt(permission)).length === 2);
     await vi.advanceTimersByTimeAsync(DEADLINE_MS - 1);
-    expect(permissionReplies(server)).toEqual([]);
+    expect(server.permissionReplies()).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
-    await server.until(() => permissionReplies(server).length === 1);
+    await server.until(() => server.permissionReplies().length === 1);
 
-    expect(permissionReplies(server)).toEqual([[permission, expected]]);
-    expect(questionReplies(server)).toEqual([[question, "rejected"]]);
+    expect(server.permissionReplies()).toEqual([[permission, expected]]);
+    expect(server.questionReplies()).toEqual([[question, "rejected"]]);
     await room.until(() => room.events("error").length === 2);
     expect(room.events("error").map((event) => event.content)).toEqual([
       SAYS.questionTimedOut(question),
@@ -223,49 +208,48 @@ describe("OpenCode in a Band room", () => {
     expect(await room.exchange(OWNER, `approve ${permission}`)).toEqual([SAYS.noLongerPending("permission", permission)]);
   });
 
-  it.each([
-    { approvalMode: "auto_accept", questionMode: "manual", permission: "once", question: "prompted" },
-    { approvalMode: "auto_decline", questionMode: "auto_reject", permission: "reject", question: "rejected" },
-  ] as const)("handles asks by policy: approvals $approvalMode, questions $questionMode", async ({ approvalMode, questionMode, permission, question }) => {
-    await using session = await opencodeRoom({ approvalMode, questionMode });
+  // A question with nothing to answer is rejected under every policy, rather than left blocking OpenCode.
+  it("approves automatically under auto_accept, and still asks the room its questions", async () => {
+    await using session = await opencodeRoom({ approvalMode: "auto_accept", questionMode: "manual" });
     const { room, server } = session;
-    const asked = createDeferred<string>();
     await session.start(async (turn) => {
-      const approval = turn.askPermission();
-      const empty = turn.askQuestion([]);
-      const ask = turn.askQuestion([{ question: "Proceed?" }]);
-      asked.resolve(ask.id);
-      await Promise.all([approval.reply, empty.reply]);
-      if (question === "prompted") {
-        await ask.reply;
-      }
-      turn.reply("Done.");
-      turn.idle();
+      const asks = [turn.askPermission({ id: "per_auto" }), turn.askQuestion([], "que_empty"), turn.askQuestion([{ question: "Proceed?" }], "que_ask")];
+      await Promise.all(asks.map((ask) => ask.reply));
+      turn.answer("Done.");
     });
-    const askId = await asked.promise;
-    if (question === "prompted") {
-      await room.nextMessage((posted) => posted.content === formatQuestionPrompt([{ question: "Proceed?" }], askId));
-      expect(await room.exchange(OWNER, "yes")).toEqual([SAYS.questionAnswered(askId)]);
-    }
+    await room.nextMessage((posted) => posted.content === formatQuestionPrompt([{ question: "Proceed?" }], "que_ask"));
+    expect(await room.exchange(OWNER, "yes")).toEqual([SAYS.questionAnswered("que_ask")]);
 
     await room.nextMessage((posted) => posted.content === "Done.");
-    expect(permissionReplies(server).map(([, reply]) => reply)).toEqual([permission]);
-    // A question with nothing to answer is rejected rather than left blocking OpenCode.
-    expect(questionReplies(server)).toContainEqual([expect.any(String), "rejected"]);
-    expect(room.messages.filter((posted) => posted.content.startsWith("OpenCode approval requested"))).toEqual([]);
+    expect(server.permissionReplies()).toEqual([["per_auto", "once"]]);
+    expect(new Map(server.questionReplies())).toEqual(new Map<string, unknown>([["que_empty", "rejected"], ["que_ask", [["yes"]]]]));
+    expect(room.messages).not.toContainEqual(expect.objectContaining({ content: approvalPrompt("per_auto") }));
+  });
+
+  it("declines approvals and rejects questions without asking the room under auto_decline and auto_reject", async () => {
+    await using session = await opencodeRoom({ approvalMode: "auto_decline", questionMode: "auto_reject" });
+    const { room, server } = session;
+    await session.start(async (turn) => {
+      const asks = [turn.askPermission({ id: "per_auto" }), turn.askQuestion([], "que_empty"), turn.askQuestion([{ question: "Proceed?" }], "que_ask")];
+      await Promise.all(asks.map((ask) => ask.reply));
+      turn.answer("Done.");
+    });
+
+    await room.nextMessage((posted) => posted.content === "Done.");
+    expect(server.permissionReplies()).toEqual([["per_auto", "reject"]]);
+    expect(new Map(server.questionReplies())).toEqual(new Map<string, unknown>([["que_empty", "rejected"], ["que_ask", "rejected"]]));
+    expect(room.messages.map((posted) => posted.content)).toEqual(["Done."]);
   });
 
   it("fails the turn when OpenCode refuses a room's reply, drops the sibling asks, and serves the next request on the same session", async () => {
     await using session = await opencodeRoom();
     const { room, server } = session;
-    const asked = createDeferred<string[]>();
-    const first = await session.start(async (turn) => {
-      const refused = turn.askPermission();
-      const sibling = turn.askPermission();
-      asked.resolve([refused.id, sibling.id]);
+    const [refused, sibling] = ["per_refused", "per_sibling"];
+    const first = await session.start((turn) => {
+      turn.askPermission({ id: refused });
+      turn.askPermission({ id: sibling });
     });
-    const [refused, sibling] = await asked.promise;
-    await room.nextMessage((posted) => posted.content === approvalPrompt(sibling!));
+    await room.nextMessage((posted) => posted.content === approvalPrompt(sibling));
     server.failNext("POST /permission/per_:id/reply", { status: 503, body: { name: "UnavailableError", data: { message: "busy" } } });
 
     const reply = await room.say(OWNER, `approve ${refused}`);
@@ -273,13 +257,10 @@ describe("OpenCode in a Band room", () => {
     expect(await room.outcome(first)).toBe("processed");
     const [failure] = room.events(FAILURE_EVENT_TYPE);
     expect(failure?.metadata?.failure).toMatchObject({ code: "503" });
-    expect(await room.exchange(OWNER, `approve ${sibling}`)).toEqual([SAYS.noLongerPending("permission", sibling!)]);
+    expect(await room.exchange(OWNER, `approve ${sibling}`)).toEqual([SAYS.noLongerPending("permission", sibling)]);
     await server.until(() => server.requestsTo("POST", /\/abort$/).length === 1);
 
-    const next = await session.start((turn) => {
-      turn.reply("Second answer.");
-      turn.idle();
-    }, "Try again");
+    const next = await session.start((turn) => turn.answer("Second answer."), "Try again");
     await room.nextMessage((posted) => posted.content === "Second answer.");
     expect(await room.outcome(next)).toBe("processed");
     // The failed turn's session was aborted, so the retry opens a fresh one with the room's history replayed.
@@ -292,21 +273,14 @@ describe("OpenCode in a Band room", () => {
   it("lets a reply that claimed an ask while its prompt was failing answer it, and rejects an unclaimed one on OpenCode", async () => {
     await using session = await opencodeRoom();
     const { room, server } = session;
-    const asked = createDeferred<string>();
-    const lands = createDeferred();
+    const landed = "per_landed";
     await session.start(async (turn) => {
-      const landed = turn.askPermission();
-      asked.resolve(landed.id);
-      await lands.promise;
-      const claimed = turn.askPermission({ id: "per_claimed" });
-      await Promise.all([landed.reply, claimed.reply]);
-      turn.reply("Done.");
-      turn.idle();
+      await turn.askPermission({ id: landed }).reply;
+      turn.answer("Done.");
     });
-    const landed = await asked.promise;
     await room.nextMessage((posted) => posted.content === approvalPrompt(landed));
     const failedPrompt = room.holdMessage((content) => content === approvalPrompt("per_claimed"), { error: new Error("platform timed out") });
-    lands.resolve();
+    const claimed = (await server.turn()).askPermission({ id: "per_claimed" });
     await failedPrompt.sending;
 
     expect(await room.exchange(OWNER, "approve per_claimed")).toEqual([SAYS.approvalHandled("per_claimed", "once")]);
@@ -314,35 +288,24 @@ describe("OpenCode in a Band room", () => {
     expect(await room.exchange(OWNER, `approve ${landed}`)).toEqual([SAYS.approvalHandled(landed, "once")]);
 
     await room.nextMessage((posted) => posted.content === "Done.");
-    expect(permissionReplies(server)).toEqual([["per_claimed", "once"], [landed, "once"]]);
+    expect(await claimed.reply).toEqual({ reply: "once" });
+    expect(server.permissionReplies()).toEqual([["per_claimed", "once"], [landed, "once"]]);
     expect(room.events(FAILURE_EVENT_TYPE)).toEqual([]);
   });
 
   it("resumes the room's OpenCode session after the agent restarts, and starts over when OpenCode lost it", async () => {
     await using server = await FakeOpencodeServer.start();
-    const answer = (text: string) => (turn: OpencodeTurn) => {
-      turn.reply(text);
-      turn.idle();
-    };
-    let rest: RecordingRestApi;
-    {
-      await using first = await opencodeRoom({}, { server });
-      rest = first.platform.rest;
-      await first.start(answer("First answer."), "Remember the number 7");
-      await first.room.nextMessage((posted) => posted.content === "First answer.");
-    }
-    const [created] = server.requestsTo("POST", /^\/session$/);
-
+    const rest = await seedRoom(server, "Remember the number 7");
     {
       await using restarted = await opencodeRoom({}, { server, rest });
-      await restarted.start(answer("Second answer."), "What was the number?");
+      await restarted.start((turn) => turn.answer("Second answer."), "What was the number?");
       await restarted.room.nextMessage((posted) => posted.content === "Second answer.");
       expect(restarted.room.events("task").at(-1)?.content).toMatch(/resumed/i);
     }
     server.forgetSessions();
     {
       await using restarted = await opencodeRoom({}, { server, rest });
-      await restarted.start(answer("Third answer."), "And now?");
+      await restarted.start((turn) => turn.answer("Third answer."), "And now?");
       await restarted.room.nextMessage((posted) => posted.content === "Third answer.");
     }
 
@@ -351,7 +314,6 @@ describe("OpenCode in a Band room", () => {
     expect(prompts[1]!.path).toBe(prompts[0]!.path);
     expect(prompts[2]!.path).not.toBe(prompts[0]!.path);
     expect(prompts[2]!.body.parts).toEqual([{ type: "text", text: expect.stringMatching(/Recovered room history[\s\S]*Remember the number 7[\s\S]*\[owner\]: And now\?/) }]);
-    expect(created).toBeDefined();
   });
 
   it.each([
@@ -359,17 +321,7 @@ describe("OpenCode in a Band room", () => {
     { failure: "a structured 500", response: { status: 500, body: { name: "StorageError", data: { message: "disk full" } } }, detail: "disk full" },
   ])("fails the turn when restoring the session hits $failure", async ({ response, detail }) => {
     await using server = await FakeOpencodeServer.start();
-    let rest: RecordingRestApi;
-    {
-      await using first = await opencodeRoom({}, { server });
-      rest = first.platform.rest;
-      await first.start((turn) => {
-        turn.reply("First answer.");
-        turn.idle();
-      });
-      await first.room.nextMessage((posted) => posted.content === "First answer.");
-    }
-    await using restarted = await opencodeRoom({}, { server, rest });
+    await using restarted = await opencodeRoom({}, { server, rest: await seedRoom(server) });
     server.failNext("GET /session/ses_:id", response);
 
     const message = await restarted.room.say(OWNER, "Continue");
@@ -415,8 +367,7 @@ describe("OpenCode in a Band room", () => {
     const next = await session.start((turn) => {
       // A late event from the abandoned session must not leak into this turn.
       server.broadcast({ type: "permission.asked", properties: { id: "per_stale", sessionID: "ses_0001", permission: "bash", patterns: [] } });
-      turn.reply("Fresh answer.");
-      turn.idle();
+      turn.answer("Fresh answer.");
     }, "Try again");
     await room.nextMessage((posted) => posted.content === "Fresh answer.");
     expect(await room.outcome(next)).toBe("processed");
@@ -427,15 +378,11 @@ describe("OpenCode in a Band room", () => {
   it("keeps serving a turn when OpenCode's event stream drops and reconnects", async () => {
     await using session = await opencodeRoom();
     const { room, server } = session;
-    const asked = createDeferred<string>();
+    const permission = "per_reconnect";
     await session.start(async (turn) => {
-      const permission = turn.askPermission();
-      asked.resolve(permission.id);
-      await permission.reply;
-      turn.reply("Survived the reconnect.");
-      turn.idle();
+      await turn.askPermission({ id: permission }).reply;
+      turn.answer("Survived the reconnect.");
     });
-    const permission = await asked.promise;
     await room.nextMessage((posted) => posted.content === approvalPrompt(permission));
 
     server.dropEventStreams();
@@ -449,10 +396,7 @@ describe("OpenCode in a Band room", () => {
     await using session = await opencodeRoom();
     const { room, server, platform } = session;
     const other = await platform.room("room-2");
-    const answer = (text: string) => (turn: OpencodeTurn) => {
-      turn.reply(text);
-      turn.idle();
-    };
+    const answer = (text: string) => (turn: OpencodeTurn) => turn.answer(text);
     await session.start(answer("Room one."));
     await room.nextMessage((posted) => posted.content === "Room one.");
     server.onPrompt(answer("Room two."));
@@ -475,18 +419,13 @@ describe("OpenCode in a Band room", () => {
   it("mentions the requester on an ask raised after the turn's answer went out", async () => {
     await using session = await opencodeRoom();
     const { room, server } = session;
-    const late = createDeferred<OpencodeTurn>();
-    const message = await session.start((turn) => {
-      turn.reply("Done.");
-      turn.idle();
-      late.resolve(turn);
-    });
+    const message = await session.start((turn) => turn.answer("Done."));
     await room.nextMessage((posted) => posted.content === "Done.");
     expect(await room.outcome(message)).toBe("processed");
 
-    const { id, reply } = (await late.promise).askPermission();
-    expect(await room.nextMessage((posted) => posted.content === approvalPrompt(id))).toMatchObject({ mentions: [OWNER] });
-    expect(await room.exchange(OWNER, `approve ${id}`)).toEqual([SAYS.approvalHandled(id, "once")]);
+    const { reply } = (await server.turn()).askPermission({ id: "per_late" });
+    expect(await room.nextMessage((posted) => posted.content === approvalPrompt("per_late"))).toMatchObject({ mentions: [OWNER] });
+    expect(await room.exchange(OWNER, "approve per_late")).toEqual([SAYS.approvalHandled("per_late", "once")]);
     expect(await reply).toEqual({ reply: "once" });
     expect(server.requestsTo("POST", /\/abort$/)).toEqual([]);
   });
@@ -508,8 +447,7 @@ describe("OpenCode in a Band room", () => {
         await turn.callTool("flaky_tool", { room_id: "room-1" }),
       ]);
       // With fallback off, only what OpenCode sends through Band's tools reaches the room.
-      turn.reply("Plain text nobody sees.");
-      turn.idle();
+      turn.answer("Plain text nobody sees.");
     });
 
     const [sent, wrongRoom, lookup, flaky] = await calls.promise;
@@ -577,20 +515,16 @@ describe("OpenCode in a Band room", () => {
   it("tells a requester OpenCode is still busy while it waits on an approval", async () => {
     await using session = await opencodeRoom();
     const { room, server } = session;
-    const asked = createDeferred<string>();
+    const permission = "per_busy";
     await session.start(async (turn) => {
-      const permission = turn.askPermission();
-      asked.resolve(permission.id);
-      await permission.reply;
-      turn.reply("Done.");
-      turn.idle();
+      await turn.askPermission({ id: permission }).reply;
+      turn.answer("Done.");
     });
-    const permission = await asked.promise;
     await room.nextMessage((posted) => posted.content === approvalPrompt(permission));
 
     const hurry = await room.say(OWNER, "Is it done yet?");
     expect(await room.outcome(hurry)).toBe("processed");
-    expect(room.events("error").map((event) => event.content)).toEqual(["OpenCode is still processing the previous request in this room."]);
+    expect(room.events("error").map((event) => event.content)).toEqual([SAYS.turnInProgress()]);
     expect(await room.exchange(OWNER, `approve ${permission}`)).toEqual([SAYS.approvalHandled(permission, "once")]);
     await room.nextMessage((posted) => posted.content === "Done.");
     expect(server.requestsTo("POST", /\/prompt_async$/)).toHaveLength(1);
@@ -600,20 +534,12 @@ describe("OpenCode in a Band room", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     await using session = await opencodeRoom({ approvalWaitTimeoutMs: DEADLINE_MS, questionWaitTimeoutMs: DEADLINE_MS });
     const { room, server } = session;
-    const asked = createDeferred<{ permission: string; question: string; redeliver: () => void; marker: () => string }>();
+    const [permission, question] = ["per_expiring", "que_expiring"];
     await session.start(async (turn) => {
-      const permission = turn.askPermission();
-      const question = turn.askQuestion([{ question: "Proceed?" }]);
-      asked.resolve({
-        permission: permission.id,
-        question: question.id,
-        redeliver: () => void turn.askPermission({ id: permission.id }),
-        marker: () => turn.askPermission().id,
-      });
-      await Promise.all([permission.reply, question.reply]);
+      const asks = [turn.askPermission({ id: permission }), turn.askQuestion([{ question: "Proceed?" }], question)];
+      await Promise.all(asks.map((ask) => ask.reply));
       turn.idle();
     });
-    const { permission, question, redeliver, marker } = await asked.promise;
     await room.nextMessage((posted) => posted.content === formatQuestionPrompt([{ question: "Proceed?" }], question));
     const expiryReplies = [server.hold("POST /permission/per_:id/reply"), server.hold("POST /question/que_:id/reject")];
 
@@ -624,34 +550,32 @@ describe("OpenCode in a Band room", () => {
     expect(await room.exchange(OWNER, `reject ${question}`)).toEqual([]);
     expect(await room.exchange(OWNER, "yes please")).toEqual([]);
     // OpenCode redelivers the ask being expired; the marker behind it shows it was handled, and not prompted again.
-    redeliver();
-    const markerId = marker();
-    await room.nextMessage((posted) => posted.content === approvalPrompt(markerId));
+    const turn = await server.turn();
+    turn.askPermission({ id: permission });
+    turn.askPermission({ id: "per_marker" });
+    await room.nextMessage((posted) => posted.content === approvalPrompt("per_marker"));
     expiryReplies.forEach((reply) => reply.release());
     await room.until(() => room.events("error").length === 2);
 
-    expect(permissionReplies(server)).toEqual([[permission, "reject"]]);
-    expect(questionReplies(server)).toEqual([[question, "rejected"]]);
+    expect(server.permissionReplies()).toEqual([[permission, "reject"]]);
+    expect(server.questionReplies()).toEqual([[question, "rejected"]]);
     expect(room.messages.filter((posted) => posted.content === approvalPrompt(permission))).toHaveLength(1);
   });
 
   it("rejects an approval on OpenCode when the room never got its prompt, fails the turn, and starts fresh next time", async () => {
     await using session = await opencodeRoom();
     const { room, server } = session;
-    const refused = room.holdMessage((content) => content.startsWith("OpenCode approval requested"), { error: new Error("platform unavailable") });
+    const refused = room.holdMessage((content) => content === approvalPrompt("per_unseen"), { error: new Error("platform unavailable") });
     const message = await session.start((turn) => void turn.askPermission({ id: "per_unseen" }));
     await refused.sending;
     refused.release();
 
     expect(await room.outcome(message)).toBe("failed");
-    await server.until(() => permissionReplies(server).length === 1);
-    expect(permissionReplies(server)).toEqual([["per_unseen", "reject"]]);
+    await server.until(() => server.permissionReplies().length === 1);
+    expect(server.permissionReplies()).toEqual([["per_unseen", "reject"]]);
     expect(room.events(FAILURE_EVENT_TYPE)).toEqual([]);
 
-    const next = await session.start((turn) => {
-      turn.reply("Fresh start.");
-      turn.idle();
-    }, "Try again");
+    const next = await session.start((turn) => turn.answer("Fresh start."), "Try again");
     await room.nextMessage((posted) => posted.content === "Fresh start.");
     expect(await room.outcome(next)).toBe("processed");
     expect(server.requestsTo("POST", /^\/session$/)).toHaveLength(2);
@@ -702,8 +626,7 @@ describe("OpenCode in a Band room", () => {
     const slowPrompt = room.holdMessage((content) => content === approvalPrompt("per_slow"));
     const message = await session.start(async (turn) => {
       await turn.askPermission({ id: "per_slow" }).reply;
-      turn.reply("Went ahead without it.");
-      turn.idle();
+      turn.answer("Went ahead without it.");
     });
     await slowPrompt.sending;
 
@@ -713,7 +636,7 @@ describe("OpenCode in a Band room", () => {
 
     await room.nextMessage((posted) => posted.content === "Went ahead without it.");
     expect(await room.outcome(message)).toBe("processed");
-    expect(permissionReplies(server)).toEqual([["per_slow", "reject"]]);
+    expect(server.permissionReplies()).toEqual([["per_slow", "reject"]]);
     expect(room.events("error").map((event) => event.content)).toEqual([SAYS.approvalTimedOut("per_slow", "reject")]);
   });
 
@@ -735,10 +658,7 @@ describe("OpenCode in a Band room", () => {
     await using session = await opencodeRoom();
     const { room } = session;
     const refused = room.holdMessage((content) => content === "The answer.", { error: new Error("platform unavailable") });
-    const message = await session.start((turn) => {
-      turn.reply("The answer.");
-      turn.idle();
-    });
+    const message = await session.start((turn) => turn.answer("The answer."));
     await refused.sending;
     refused.release();
 
@@ -764,8 +684,8 @@ describe("OpenCode in a Band room", () => {
   it("keeps starting fresh, with the room's history, until a replacement session actually takes a prompt", async () => {
     await using session = await opencodeRoom();
     const { room, server } = session;
-    const refused = room.holdMessage((content) => content.startsWith("OpenCode approval requested"), { error: new Error("platform unavailable") });
-    const first = await session.start((turn) => void turn.askPermission());
+    const refused = room.holdMessage((content) => content === approvalPrompt("per_unseen"), { error: new Error("platform unavailable") });
+    const first = await session.start((turn) => void turn.askPermission({ id: "per_unseen" }));
     await refused.sending;
     refused.release();
     expect(await room.outcome(first)).toBe("failed");
@@ -774,10 +694,7 @@ describe("OpenCode in a Band room", () => {
     expect(await room.outcome(await room.say(OWNER, "Retry once"))).toBe("failed");
     server.failNext("POST /session/ses_:id/prompt_async", { status: 500, body: "cannot prompt" });
     expect(await room.outcome(await room.say(OWNER, "Retry twice"))).toBe("failed");
-    const recovered = await session.start((turn) => {
-      turn.reply("Back on track.");
-      turn.idle();
-    }, "Retry again");
+    const recovered = await session.start((turn) => turn.answer("Back on track."), "Retry again");
 
     await room.nextMessage((posted) => posted.content === "Back on track.");
     expect(await room.outcome(recovered)).toBe("processed");
@@ -789,16 +706,15 @@ describe("OpenCode in a Band room", () => {
   it("drops a room's open asks when the agent leaves it mid-turn", async () => {
     await using session = await opencodeRoom();
     const { room, server } = session;
-    const asked = createDeferred<string>();
-    const message = await session.start((turn) => asked.resolve(turn.askPermission().id));
-    const permission = await asked.promise;
+    const permission = "per_dropped";
+    const message = await session.start((turn) => void turn.askPermission({ id: permission }));
     await room.nextMessage((posted) => posted.content === approvalPrompt(permission));
     expect(await room.outcome(message)).toBe("processed");
 
     await room.remove();
     await server.until(() => server.requestsTo("POST", /\/mcp\/band\/disconnect$/).length === 1);
 
-    expect(permissionReplies(server)).toEqual([]);
-    expect(room.messages.filter((posted) => posted.content.startsWith("OpenCode approval"))).toHaveLength(1);
+    expect(server.permissionReplies()).toEqual([]);
+    expect(room.messages.filter((posted) => posted.content === approvalPrompt(permission))).toHaveLength(1);
   });
 });
