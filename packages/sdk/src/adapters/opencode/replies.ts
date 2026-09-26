@@ -1,6 +1,7 @@
-import { stripLeadingMentions } from "../../runtime/formatters";
+import type { Logger } from "../../core/logger";
+import { commandWords, stripLeadingMentions } from "../../runtime/formatters";
 import { asOptionalRecord, asString } from "../shared/coercion";
-import type { DecisionRegistry } from "../shared/decisions";
+import { DecisionRegistry, type Registration } from "../shared/decisions";
 import { OPENCODE_DECISION_MESSAGES } from "./messages";
 
 export type OpencodeApprovalReply = "once" | "always" | "reject";
@@ -60,11 +61,38 @@ export function toPendingQuestion(properties: Record<string, unknown>): PendingQ
   return { requestId, questions };
 }
 
-export interface RoomDecisions {
-  permissions: DecisionRegistry<PendingPermission>;
-  questions: DecisionRegistry<PendingQuestion>;
-  // Every id ever asked, so a reply naming a resolved one gets feedback; survives turn cleanup.
-  knownIds: Map<string, DecisionKind>;
+/** A room's pending asks by kind, and every id it has ever been asked. */
+export class RoomDecisions {
+  public readonly permissions: DecisionRegistry<PendingPermission>;
+  public readonly questions: DecisionRegistry<PendingQuestion>;
+  // Survives turn cleanup, so a reply naming a resolved id gets feedback.
+  private readonly knownIds = new Map<string, DecisionKind>();
+
+  public constructor(logger?: Logger) {
+    this.permissions = new DecisionRegistry({ logger });
+    this.questions = new DecisionRegistry({ logger });
+  }
+
+  /** Null for a redelivery of an ask whose reply is already in flight: that reply answers it. */
+  public registerPermission(pending: PendingPermission): Registration<PendingPermission> | null {
+    return this.register(this.permissions, ASK_KIND.permission, pending);
+  }
+
+  public registerQuestion(pending: PendingQuestion): Registration<PendingQuestion> | null {
+    return this.register(this.questions, ASK_KIND.question, pending);
+  }
+
+  public knownKind(id: string): DecisionKind | undefined {
+    return this.knownIds.get(id);
+  }
+
+  private register<T extends { requestId: string }>(registry: DecisionRegistry<T>, kind: DecisionKind, pending: T): Registration<T> | null {
+    const registration = registry.registerKeyed(pending, { key: pending.requestId });
+    if (registration) {
+      this.knownIds.set(pending.requestId, kind);
+    }
+    return registration;
+  }
 }
 
 export const REPLY_ACTION = {
@@ -108,9 +136,9 @@ function isReplyWord(word: string): word is ReplyWord {
   return Object.hasOwn(REPLY_WORDS, word);
 }
 
-/** A reply word as the first token, and the id after it (case kept); null id when none or only "please". */
+/** A reply word as the first token after any mentions, and the id after it (case kept); null id when none or only "please". */
 function parseCommand(text: string): { reply: OpencodeApprovalReply; id: string | null } | null {
-  const [first = "", ...trailing] = text.trim().split(/\s+/);
+  const [first = "", ...trailing] = commandWords(text);
   const word = first.replace(/^\//, "").toLowerCase();
   if (!isReplyWord(word)) {
     return null;
@@ -137,7 +165,7 @@ function parseQuestionAnswers(text: string, questions: PendingQuestion["question
 
 /** What a room reply means for the room's pending asks; the first matching rule wins. */
 export function routeReply(raw: string, decisions: RoomDecisions): ReplyAction {
-  const command = parseCommand(stripLeadingMentions(raw));
+  const command = parseCommand(raw);
   if (!command) {
     // Free text only ever answers a question; it never approves anything.
     return answerOldestQuestion(raw, decisions.questions) ?? PASS;
@@ -170,7 +198,7 @@ function heldKind(id: string, rejects: boolean, { permissions, questions }: Room
 
 // An id no registry holds: resolved earlier, the start of an answer, or a stale id.
 function routeUnheldId(raw: string, rejects: boolean, id: string, decisions: RoomDecisions): ReplyAction {
-  const knownKind = decisions.knownIds.get(id);
+  const knownKind = decisions.knownKind(id);
   if (knownKind) {
     return notice(OPENCODE_DECISION_MESSAGES.noLongerPending(knownKind, id));
   }

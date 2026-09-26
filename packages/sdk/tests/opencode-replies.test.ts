@@ -1,16 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { DecisionRegistry } from "../src/adapters/shared/decisions";
 import { OPENCODE_DECISION_MESSAGES } from "../src/adapters/opencode/messages";
 import {
   ASK_KIND,
   REPLY_ACTION,
   routeReply,
   type DecisionKind,
-  type PendingPermission,
-  type PendingQuestion,
   type ReplyAction,
-  type RoomDecisions,
+  RoomDecisions,
 } from "../src/adapters/opencode/replies";
 
 interface RoomSetup {
@@ -23,20 +20,20 @@ interface RoomSetup {
 
 /** A room's pending asks, registered the way the adapter registers them. */
 function room({ permissions = [], questions = [], resolved = {}, claimed = [] }: RoomSetup): RoomDecisions {
-  const decisions: RoomDecisions = {
-    permissions: new DecisionRegistry<PendingPermission>(),
-    questions: new DecisionRegistry<PendingQuestion>(),
-    knownIds: new Map(Object.entries(resolved)),
-  };
-  for (const requestId of permissions) {
-    decisions.permissions.registerKeyed({ requestId, sessionId: "ses_1", permission: "bash", patterns: [] }, { key: requestId });
-    decisions.knownIds.set(requestId, ASK_KIND.permission);
+  const decisions = new RoomDecisions();
+  const permission = (requestId: string) => decisions.registerPermission({ requestId, sessionId: "ses_1", permission: "bash", patterns: [] });
+  const question = (id: string, count = 1) =>
+    decisions.registerQuestion({ requestId: id, questions: Array.from({ length: count }, (_, index) => ({ question: `Question ${index + 1}?` })) });
+  // A resolved ask was registered once and is gone.
+  for (const [id, kind] of Object.entries(resolved)) {
+    if (kind === ASK_KIND.permission) {
+      decisions.permissions.withdraw(permission(id)!.entry);
+    } else {
+      decisions.questions.withdraw(question(id)!.entry);
+    }
   }
-  for (const { id, count = 1 } of questions) {
-    const asked = Array.from({ length: count }, (_, index) => ({ question: `Question ${index + 1}?` }));
-    decisions.questions.registerKeyed({ requestId: id, questions: asked }, { key: id });
-    decisions.knownIds.set(id, ASK_KIND.question);
-  }
+  permissions.forEach((requestId) => permission(requestId));
+  questions.forEach(({ id, count }) => question(id, count));
   for (const id of claimed) {
     if (!decisions.permissions.tryClaim(id)) {
       decisions.questions.tryClaim(id);

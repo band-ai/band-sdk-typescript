@@ -75,6 +75,11 @@ export function stripLeadingMentions(content: string, options?: { onlyFirst?: bo
   return content.replace(options?.onlyFirst ? LEADING_MENTION : LEADING_MENTIONS, "");
 }
 
+/** A room command's whitespace-separated words, after its leading mentions. */
+export function commandWords(content: string): string[] {
+  return stripLeadingMentions(content).trim().split(/\s+/);
+}
+
 export function formatMessageForLlm(
   message: Record<string, unknown>,
   participants?: Array<Record<string, unknown>>,

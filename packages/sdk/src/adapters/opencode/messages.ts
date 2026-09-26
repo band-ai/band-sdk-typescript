@@ -32,6 +32,7 @@ export const OPENCODE_DECISION_MESSAGES = {
   noLongerPending: (kind: DecisionKind, requestId: string) =>
     `OpenCode ${DECISION_NOUNS[kind]} \`${requestId}\` is no longer pending.`,
   notAuthorized: () => "You are not authorized to resolve OpenCode decisions.",
+  turnInProgress: () => "OpenCode is still processing the previous request in this room.",
 } as const;
 
 export function formatQuestionPrompt(questions: Array<Record<string, unknown>>, requestId: string): string {
