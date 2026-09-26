@@ -101,6 +101,7 @@ describe("OpenCode in a Band room", () => {
     ]);
     const [prompt] = server.requestsTo("POST", /\/prompt_async$/);
     expect(prompt!.body).toMatchObject({ model: { providerID: "anthropic", modelID: "claude-test" }, parts: [{ type: "text", text: expect.stringContaining("[owner]: Please run the tests") }] });
+    expect(server.requestsTo("POST", /^\/session$/)[0]!.body).toEqual({ title: "Band: Agent / room-1" });
     const [registration] = server.requestsTo("POST", /^\/mcp$/);
     expect(registration!.body).toMatchObject({ name: "band", config: { type: "remote", headers: { Authorization: expect.stringMatching(/^Bearer /) } } });
   });
@@ -621,6 +622,7 @@ describe("OpenCode in a Band room", () => {
     expect(await room.outcome(message)).toBe("failed");
     await server.until(() => permissionReplies(server).length === 1);
     expect(permissionReplies(server)).toEqual([["per_unseen", "reject"]]);
+    expect(room.events(FAILURE_EVENT_TYPE)).toEqual([]);
 
     const next = await session.start((turn) => {
       turn.reply("Fresh start.");
@@ -641,5 +643,76 @@ describe("OpenCode in a Band room", () => {
     expect(room.events(FAILURE_EVENT_TYPE)[0]?.metadata?.failure).toMatchObject({ code: "503" });
     expect(room.events("error").map((event) => event.content)).toEqual([room.events(FAILURE_EVENT_TYPE)[0]?.content]);
     expect(server.eventStreamCount).toBe(1);
+  });
+
+  it("fails a turn whose answer the platform refuses, so it is retried, without blaming OpenCode", async () => {
+    await using session = await opencodeRoom();
+    const { room } = session;
+    const refused = room.holdMessage((content) => content === "The answer.", { error: new Error("platform unavailable") });
+    const message = await session.start((turn) => {
+      turn.reply("The answer.");
+      turn.idle();
+    });
+    await refused.sending;
+    refused.release();
+
+    expect(await room.outcome(message)).toBe("failed");
+    expect(room.events(FAILURE_EVENT_TYPE)).toEqual([]);
+  });
+
+  it.each([
+    { failure: "a structured error", response: { status: 500, body: { name: "ProviderError", data: { message: "model overloaded" } } }, shows: "model overloaded" },
+    { failure: "a plain-text error", response: { status: 502, body: "bad gateway" }, shows: "bad gateway" },
+  ])("fails the turn with OpenCode's status when submitting the prompt returns $failure", async ({ response, shows }) => {
+    await using session = await opencodeRoom();
+    const { room, server } = session;
+    server.failNext("POST /session/ses_:id/prompt_async", response);
+
+    const message = await room.say(OWNER, "Please run the tests");
+    expect(await room.outcome(message)).toBe("failed");
+    const [failure] = room.events(FAILURE_EVENT_TYPE);
+    expect(failure?.metadata?.failure).toMatchObject({ code: String(response.status) });
+    expect(JSON.stringify(failure?.metadata)).toContain(shows);
+  });
+
+  it("keeps starting fresh, with the room's history, until a replacement session actually takes a prompt", async () => {
+    await using session = await opencodeRoom();
+    const { room, server } = session;
+    const refused = room.holdMessage((content) => content.startsWith("OpenCode approval requested"), { error: new Error("platform unavailable") });
+    const first = await session.start((turn) => void turn.askPermission());
+    await refused.sending;
+    refused.release();
+    expect(await room.outcome(first)).toBe("failed");
+
+    server.failNext("POST /session", { status: 500, body: "cannot create" });
+    expect(await room.outcome(await room.say(OWNER, "Retry once"))).toBe("failed");
+    server.failNext("POST /session/ses_:id/prompt_async", { status: 500, body: "cannot prompt" });
+    expect(await room.outcome(await room.say(OWNER, "Retry twice"))).toBe("failed");
+    const recovered = await session.start((turn) => {
+      turn.reply("Back on track.");
+      turn.idle();
+    }, "Retry again");
+
+    await room.nextMessage((posted) => posted.content === "Back on track.");
+    expect(await room.outcome(recovered)).toBe("processed");
+    const prompts = server.requestsTo("POST", /\/prompt_async$/);
+    expect(new Set(prompts.map((prompt) => prompt.path)).size).toBe(3);
+    expect(prompts.at(-1)!.body.parts).toEqual([{ type: "text", text: expect.stringMatching(/Recovered room history[\s\S]*\[owner\]: Retry again/) }]);
+  });
+
+  it("drops a room's open asks when the agent leaves it mid-turn", async () => {
+    await using session = await opencodeRoom();
+    const { room, server } = session;
+    const asked = createDeferred<string>();
+    const message = await session.start((turn) => asked.resolve(turn.askPermission().id));
+    const permission = await asked.promise;
+    await room.nextMessage((posted) => posted.content === approvalPrompt(permission));
+    expect(await room.outcome(message)).toBe("processed");
+
+    await room.remove();
+    await server.until(() => server.requestsTo("POST", /\/mcp\/band\/disconnect$/).length === 1);
+
+    expect(permissionReplies(server)).toEqual([]);
+    expect(room.messages.filter((posted) => posted.content.startsWith("OpenCode approval"))).toHaveLength(1);
   });
 });

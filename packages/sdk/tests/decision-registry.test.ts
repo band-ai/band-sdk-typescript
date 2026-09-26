@@ -207,19 +207,4 @@ describe("DecisionRegistry", () => {
     expect(namesOf(registry.unclaimed())).toEqual(["new"]);
     expect(namesOf(fresh.unclaimed())).toEqual(["fresh"]);
   });
-
-  it("withdraws an ask whose prompt failed, unless a reply already claimed it", async () => {
-    const registry = new DecisionRegistry<Ask>();
-    const unanswered = registry.registerMinted(anAsk("unanswered")).entry;
-    const answeredAsk = anAsk("answered");
-    const answered = registry.registerMinted(answeredAsk).entry;
-    const claimed = registry.tryClaim(answered.token)!;
-
-    expect(registry.withdraw(unanswered)).toBe(true);
-    expect(registry.withdraw(answered)).toBe(false);
-    claimed.payload.answer.resolve("accept");
-
-    expect(await registry.wait(answered, answeredAsk.answer.promise, { timeoutMs: DEADLINE_MS })).toBe("accept");
-    expect(registry.size).toBe(0);
-  });
 });

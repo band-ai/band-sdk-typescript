@@ -107,8 +107,7 @@ export interface OpencodeAdapterConfig {
 type TurnReleaseOutcome =
   | { kind: "foreground" }
   | { kind: "background" }
-  | { kind: "cancelled" }
-  | { kind: "interaction_failed"; error: RecoverableTurnError };
+  | { kind: "cancelled" };
 
 // "completed": OpenCode itself finished the turn (session.idle/session.error).
 // "cancelled": something else ended it first — room cleanup (`onCleanup`) tore
@@ -409,9 +408,6 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     }
 
     await turnTask;
-    if (release.kind === "interaction_failed") {
-      throw release.error;
-    }
   }
 
   public async onCleanup(roomId: string): Promise<void> {
@@ -1200,12 +1196,9 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     }
     // The aborted session can answer none of the room's other asks either.
     this.dropDecisions(roomState, "interaction_failed");
-    // Reaches `startTurn`'s caller if it's still awaiting `releaseWait` (the
-    // turn's first interactive prompt); otherwise a no-op, since that one-shot
-    // channel was already spent on an earlier "background" release — in which
-    // case `pendingInteractionFailure` below is what actually surfaces this.
-    this.releaseTurnWait(roomState, { kind: "interaction_failed", error: turnError });
+    // Either way the failure surfaces through `watchTurnCompletion`, which rethrows it.
     roomState.pendingInteractionFailure = turnError;
+    this.releaseTurnWait(roomState, { kind: "foreground" });
     // Settles a still-running watchTurnCompletion's race quietly (see
     // TurnEndOutcome) instead of letting it run to its timeout branch for a
     // turn that's already ending here.
