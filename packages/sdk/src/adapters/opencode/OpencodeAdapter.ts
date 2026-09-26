@@ -130,8 +130,8 @@ class OpencodeTurn {
   public readonly reportedToolCalls = new Set<string>();
   public readonly reportedToolResults = new Set<string>();
   public lastErrorMessage: string | null = null;
-  // Only `session.error` fails the session; one message's error only sets `lastErrorMessage`.
-  public sessionErrored = false;
+  // What failed the session: only `session.error`, or an error with no text; one message's error only sets `lastErrorMessage`.
+  public sessionError: string | null = null;
   // `watchTurnCompletion` rethrows it, even after the turn backgrounded.
   public failure: RecoverableTurnError | null = null;
   private readonly outcome = createDeferred<TurnEndOutcome>();
@@ -150,11 +150,8 @@ class OpencodeTurn {
     this.outcome.resolve(outcome);
   }
 
-  // A failed turn reports to its caller, so it never backgrounds.
   public background(): void {
-    if (!this.failure) {
-      this.backgrounded.resolve();
-    }
+    this.backgrounded.resolve();
   }
 
   public fail(error: RecoverableTurnError): void {
@@ -582,7 +579,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
 
     if (eventType === "session.error") {
       turn.lastErrorMessage = this.formatOpenCodeError(properties.error);
-      turn.sessionErrored = true;
+      turn.sessionError = turn.lastErrorMessage;
       turn.end("completed");
       return;
     }
@@ -590,7 +587,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     if (eventType === "session.idle") {
       const hasText = [...turn.textParts.values()].some((value) => value.trim().length > 0);
       if (turn.lastErrorMessage && !hasText) {
-        turn.sessionErrored = true;
+        turn.sessionError = turn.lastErrorMessage;
       }
       turn.end("completed");
     }
@@ -988,12 +985,12 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
         await this.handleTurnTimeout(roomState);
         return;
       }
-      if (turn.sessionErrored) {
+      if (turn.sessionError !== null) {
         // OpenCode's own session.error ends the turn the same way
         // session.idle does (see the event handler), so this is only
         // reachable here, not via the timeout branch below — handle it as
         // its own terminal failure rather than falling into the success path.
-        await this.handleSessionError(roomState, turn);
+        await this.handleSessionError(roomState, turn, turn.sessionError);
         return;
       }
       await this.deliverFallbackText(roomState, turn);
@@ -1045,7 +1042,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     this.roomBySession.delete(sessionId);
   }
 
-  private async handleSessionError(roomState: RoomState, turn: OpencodeTurn): Promise<void> {
+  private async handleSessionError(roomState: RoomState, turn: OpencodeTurn, message: string): Promise<void> {
     // OpenCode's session.error is a terminal provider failure exactly like
     // turnTimeoutMs expiring: flush whatever text the turn produced first
     // (same as a clean completion would), then fail the turn so
@@ -1053,7 +1050,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     // regardless of any partial text, unlike deliverFallbackText's own
     // best-effort, non-throwing sendFailure for this same message.
     await this.flushTurnText(roomState, turn);
-    const failure = agentFailure(this.provider, turn.lastErrorMessage ?? "OpenCode reported a session error.");
+    const failure = agentFailure(this.provider, message);
     await this.reportTerminalFailure(roomState, failure);
   }
 

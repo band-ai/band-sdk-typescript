@@ -106,6 +106,29 @@ describe("OpenCode in a Band room", () => {
     expect(registration!.body).toMatchObject({ name: "band", config: { type: "remote", headers: { Authorization: expect.stringMatching(/^Bearer /) } } });
   });
 
+  it("ignores what a finished turn's session sends once the turn is over", async () => {
+    await using session = await opencodeRoom({ enableExecutionReporting: true });
+    const { room } = session;
+    let finished: OpencodeTurn | undefined;
+    const first = await session.start((turn) => {
+      finished = turn;
+      turn.reply("First answer.");
+      turn.idle();
+    });
+    expect(await room.outcome(first)).toBe("processed");
+
+    finished!.emit("message.part.updated", { part: { id: "prt_late", messageID: "msg_late", sessionID: finished!.sessionId, type: "tool", tool: "bash", callID: "call_late", state: { status: "running" } } });
+    finished!.idle();
+    const second = await session.start((turn) => {
+      turn.reply("Second answer.");
+      turn.idle();
+    }, "And again");
+
+    expect(await room.outcome(second)).toBe("processed");
+    expect(room.messages.map((posted) => posted.content)).toEqual(["First answer.", "Second answer."]);
+    expect(room.events("tool_call")).toEqual([]);
+  });
+
   it("routes a busy room's replies to the asks still awaiting one, and only from allowed senders", async () => {
     await using session = await opencodeRoom({}, { decisionAuthorizedSenders: [OWNER, APPROVER] });
     const { room, server } = session;
