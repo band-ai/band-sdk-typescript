@@ -1,12 +1,12 @@
+import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { HttpStatusError, OpencodeAdapter, type OpencodeAdapterConfig, type OpencodeClientLike } from "../src/adapters";
-import { OPENCODE_DECISION_MESSAGES } from "../src/adapters/opencode/messages";
-import { createDeferred } from "../src/core/deferred";
+import { OPENCODE_DECISION_MESSAGES, formatQuestionPrompt } from "../src/adapters/opencode/messages";
 import { DeliveryFailedError } from "../src/core/deliveryFailedError";
 import type { Logger } from "../src/core/logger";
 import type { OpencodeSessionState } from "../src/converters";
-import { FakeTools, expectTurnFailed, findFailureEvent, makeMessage } from "./testUtils";
+import { CallHolds, FakeTools, TrafficLog, expectTurnFailed, findFailureEvent, makeMessage, type HeldCall } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
 
 /**
@@ -83,6 +83,9 @@ class EventQueue {
   }
 }
 
+type ReplyMethod = "replyPermission" | "replyQuestion" | "rejectQuestion";
+type ReplyCall = [method: ReplyMethod, requestId: string];
+
 class FakeOpencodeClient {
   public readonly promptCalls: Array<{ sessionId: string; payload: Record<string, unknown> }> = [];
   public readonly permissionReplies: Array<{ sessionId: string; permissionId: string; response: string }> = [];
@@ -100,7 +103,19 @@ class FakeOpencodeClient {
   /** Stands in for a server that accepts the abort and never answers it. */
   public abortNeverSettles = false;
   private readonly missingSessions = new Set<string>();
+  private readonly traffic = new TrafficLog();
+  private readonly heldReplies = new CallHolds<ReplyCall>();
   private sessionCounter = 0;
+
+  /** Keeps the next `method` reply in flight until released; with `error`, OpenCode then refuses it. */
+  public holdReply(method: ReplyMethod, options: { error?: Error } = {}): HeldCall<ReplyCall> {
+    return this.heldReplies.hold((called) => called === method, options);
+  }
+
+  /** Settles once `predicate` holds for what this server has recorded. */
+  public until(predicate: () => boolean): Promise<void> {
+    return this.traffic.until(predicate);
+  }
 
   public markMissing(sessionId: string): void {
     this.missingSessions.add(sessionId);
@@ -116,6 +131,7 @@ class FakeOpencodeClient {
     const sessionId = `session-${this.sessionCounter}`;
     this.createdSessions.push(sessionId);
     this.createdSessionTitles.push(input?.title ?? "");
+    this.traffic.record();
     return { id: sessionId };
   }
 
@@ -136,6 +152,7 @@ class FakeOpencodeClient {
       throw error;
     }
     this.promptCalls.push({ sessionId, payload });
+    this.traffic.record();
   }
 
   public async replyPermission(
@@ -143,22 +160,29 @@ class FakeOpencodeClient {
     permissionId: string,
     input: { response: string },
   ): Promise<void> {
+    await this.heldReplies.pass("replyPermission", permissionId);
     this.permissionReplies.push({ sessionId, permissionId, response: input.response });
+    this.traffic.record();
   }
 
   public async replyQuestion(
     requestId: string,
     input: { answers: string[][] },
   ): Promise<void> {
+    await this.heldReplies.pass("replyQuestion", requestId);
     this.questionReplies.push({ requestId, answers: input.answers });
+    this.traffic.record();
   }
 
   public async rejectQuestion(requestId: string): Promise<void> {
+    await this.heldReplies.pass("rejectQuestion", requestId);
     this.rejectedQuestions.push(requestId);
+    this.traffic.record();
   }
 
   public async abortSession(sessionId: string): Promise<void> {
     this.aborts.push(sessionId);
+    this.traffic.record();
     if (this.abortNeverSettles) {
       await new Promise<void>(() => undefined);
     }
@@ -1940,40 +1964,45 @@ describe("OpencodeAdapter", () => {
   });
 
   describe("room decisions", () => {
-    const permissionAsk = (id: string) => ({
-      type: "permission.asked",
-      properties: { id, permission: "bash", patterns: ["npm test"] },
-    });
-    const questionAsk = (id: string, questions: Array<Record<string, unknown>> = [{ question: "Which approach?" }]) => ({
-      type: "question.asked",
-      properties: { id, questions },
+    const REQUESTER = makeMessage("").senderId;
+    const APPROVER = "approver";
+    // Realistic waits; the question's is due first.
+    const QUESTION_TIMEOUT_MS = 60_000;
+    const APPROVAL_TIMEOUT_MS = 120_000;
+    const unavailable = () => new HttpStatusError(503, { error: "unavailable" });
+
+    afterEach(() => {
+      vi.useRealTimers();
     });
 
-    /** Holds every call of one client method until released, counting how many arrived. */
-    function holdClientMethod(client: FakeOpencodeClient, method: "replyPermission" | "rejectQuestion" | "replyQuestion") {
-      const release = createDeferred();
-      const held = { entered: 0, release: () => release.resolve() };
-      const original = (client[method] as (...args: unknown[]) => Promise<void>).bind(client);
-      (client as unknown as Record<string, unknown>)[method] = async (...args: unknown[]) => {
-        held.entered += 1;
-        await release.promise;
-        return original(...args);
-      };
-      return held;
+    type AskEvent = { type: string; properties: Record<string, unknown> };
+
+    /** A bash permission ask with a random id, and the prompt the room sees for it. */
+    function aPermission() {
+      const pending = { requestId: `perm-${randomUUID().slice(0, 8)}`, permission: "bash", patterns: ["npm test"] };
+      const { requestId: id, ...properties } = pending;
+      return { id, event: { type: "permission.asked", properties: { id, ...properties } }, prompt: OPENCODE_DECISION_MESSAGES.approvalRequested(pending) };
     }
 
-    /** Opens a turn whose OpenCode session raises `asks`; replies arrive as follow-up room messages. */
-    async function openTurnWithAsks(
-      asks: Array<{ type: string; properties: Record<string, unknown> }>,
+    /** A question ask with a random id, and the prompt the room sees for it. */
+    function aQuestion(questions: Array<Record<string, unknown>> = [{ question: "Which approach?" }]) {
+      const id = `question-${randomUUID().slice(0, 8)}`;
+      return { id, event: { type: "question.asked", properties: { id, questions } }, prompt: formatQuestionPrompt(questions, id) };
+    }
+
+    /** Opens a turn whose OpenCode session raises `asks`; room replies arrive through `say`. */
+    async function openRoom(
+      asks: AskEvent[],
       options: {
         config?: OpencodeAdapterConfig;
         decisionAuthorizedSenders?: string[];
         client?: FakeOpencodeClient;
+        tools?: FakeTools;
         logger?: Logger;
       } = {},
     ) {
       const roomId = "room-decisions";
-      const tools = new FakeTools();
+      const tools = options.tools ?? new FakeTools();
       const client = options.client ?? new FakeOpencodeClient();
       createdClients.push(client);
       const adapter = new OpencodeAdapter({
@@ -1991,221 +2020,200 @@ describe("OpencodeAdapter", () => {
         null, null, { isSessionBootstrap: true, roomId },
       );
       turn.catch(() => undefined);
-      await waitFor(() => client.createdSessions.length === 1);
+      // OpenCode only asks once it is working on the turn's prompt.
+      await client.until(() => client.promptCalls.length === 1);
       const sessionId = client.createdSessions[0]!;
-      const raise = (ask: { type: string; properties: Record<string, unknown> }) => {
+      const raise = (ask: AskEvent) => {
         client.eventQueue.push({ ...ask, properties: { ...ask.properties, sessionID: sessionId } });
       };
       asks.forEach(raise);
-      const reply = (content: string, senderId = "user-1") => adapter.onMessage(
-        { ...makeMessage(content, roomId), id: `reply-${content}`, senderId }, tools,
+      const say = (content: string, senderId = REQUESTER) => adapter.onMessage(
+        { ...makeMessage(content, roomId), id: `reply-${randomUUID()}`, senderId }, tools,
         { sessionId, roomId, createdAt: null, replayMessages: [] },
         null, null, { isSessionBootstrap: false, roomId },
       );
-      const finish = (text: string) => {
+      const finish = async (text: string) => {
         emitAssistantText(client, sessionId, text);
         client.eventQueue.push({ type: "session.idle", properties: { sessionID: sessionId } });
+        await tools.until(() => tools.messages.includes(text));
       };
-      return { adapter, tools, client, sessionId, turn, raise, reply, finish };
+      const prompted = (...prompts: string[]) => tools.until(() => prompts.every((prompt) => tools.messages.includes(prompt)));
+      return { adapter, tools, client, sessionId, turn, raise, say, finish, prompted };
     }
 
-    const timedOutEvents = (tools: FakeTools) => tools.events.filter((event) => event.content.includes("timed out"));
+    const permissionReplies = (client: FakeOpencodeClient) => client.permissionReplies.map(({ permissionId, response }) => [permissionId, response]);
     const failureEvents = (tools: FakeTools) => tools.events.filter((event) => event.metadata?.failure !== undefined);
+    const errorEvents = (tools: FakeTools) => tools.events.filter((event) => event.messageType === "error").map((event) => event.content);
 
-    const sent = (client: FakeOpencodeClient) => ({
-      permissions: client.permissionReplies.map((entry) => entry.response),
-      answers: client.questionReplies,
-      rejections: client.rejectedQuestions,
-    });
+    it("routes a busy room's replies to the asks still awaiting one, and only from allowed senders", async () => {
+      const [first, second, marker] = [aPermission(), aPermission(), aPermission()];
+      const question = aQuestion();
+      const room = await openRoom([first.event, second.event, question.event], { decisionAuthorizedSenders: [REQUESTER, APPROVER] });
+      await room.turn;
+      await room.prompted(first.prompt, second.prompt, question.prompt);
 
-    it.each([
-      {
-        kind: "permission",
-        ask: permissionAsk("perm-1"),
-        config: { approvalWaitTimeoutMs: 30 },
-        heldMethod: "replyPermission" as const,
-        lateReply: "approve perm-1",
-        expected: { permissions: ["reject"], answers: [], rejections: [] },
-      },
-      {
-        kind: "question",
-        ask: questionAsk("question-1"),
-        config: { questionWaitTimeoutMs: 30 },
-        heldMethod: "rejectQuestion" as const,
-        lateReply: "the first approach",
-        expected: { permissions: [], answers: [], rejections: ["question-1"] },
-      },
-    ])("sends only the expiry's reply when a $kind reply lands while that expiry is in flight", async ({ ask, config, heldMethod, lateReply, expected }) => {
-      const client = new FakeOpencodeClient();
-      const expiryReply = holdClientMethod(client, heldMethod);
-      const { tools, turn, reply } = await openTurnWithAsks([ask], { client, config });
-      await turn;
-
-      await waitFor(() => expiryReply.entered === 1);
-      await reply(lateReply);
-      expiryReply.release();
-      await waitFor(() => timedOutEvents(tools).length === 1);
-
-      expect(sent(client)).toEqual(expected);
-      expect(tools.messages).toHaveLength(1);
-    });
-
-    it("never times out an ask whose reply was claimed before the deadline, however long that reply takes", async () => {
-      const client = new FakeOpencodeClient();
-      const userReply = holdClientMethod(client, "replyPermission");
-      const { tools, turn, reply } = await openTurnWithAsks([permissionAsk("perm-1")], { client, config: { approvalWaitTimeoutMs: 30 } });
-      await turn;
-
-      const approving = reply("approve perm-1");
-      await waitFor(() => userReply.entered === 1);
-      await new Promise((resolve) => setTimeout(resolve, 60));
-      userReply.release();
+      await room.say("approve");
+      await room.say(`approve ${second.id}`, "intruder");
+      const secondReply = room.client.holdReply("replyPermission");
+      const approving = room.say(`@[[agent-uuid]] approve ${second.id}`, APPROVER);
+      await secondReply.sending;
+      // With `second` claimed, a bare command means the one ask still awaiting a reply.
+      await room.say("always");
+      await room.say("reject");
+      // OpenCode redelivers the claimed ask; the marker shows the redelivery was handled.
+      room.raise(second.event);
+      room.raise(marker.event);
+      await room.prompted(marker.prompt);
+      secondReply.release();
       await approving;
 
-      expect(client.permissionReplies.map((entry) => entry.response)).toEqual(["once"]);
-      expect(timedOutEvents(tools)).toEqual([]);
+      expect(permissionReplies(room.client)).toEqual([[first.id, "always"], [second.id, "once"]]);
+      expect(room.client.rejectedQuestions).toEqual([question.id]);
+      expect(room.tools.messages).toEqual([
+        first.prompt,
+        second.prompt,
+        question.prompt,
+        OPENCODE_DECISION_MESSAGES.whichPermissionHint([first.id, second.id]),
+        OPENCODE_DECISION_MESSAGES.notAuthorized(),
+        OPENCODE_DECISION_MESSAGES.approvalHandled(first.id, "always"),
+        OPENCODE_DECISION_MESSAGES.questionRejected(question.id),
+        marker.prompt,
+        OPENCODE_DECISION_MESSAGES.approvalHandled(second.id, "once"),
+      ]);
+      expect(room.tools.mentions.at(0)).toEqual([{ id: REQUESTER }]);
+      expect(room.tools.mentions.at(-1)).toEqual([{ id: APPROVER }]);
     });
 
-    it("keeps each of two concurrent permissions answerable after the other is answered", async () => {
-      const { client, tools, turn, reply } = await openTurnWithAsks([permissionAsk("perm-1"), permissionAsk("perm-2")]);
-      await turn;
-      await waitFor(() => tools.messages.length === 2);
+    it("finishes a reply claimed before the deadline and an expiry already replying, once each, past the turn's end", async () => {
+      vi.useFakeTimers();
+      const [answered, expired] = [aPermission(), aPermission()];
+      const question = aQuestion();
+      const room = await openRoom([answered.event, expired.event, question.event], {
+        config: { approvalWaitTimeoutMs: APPROVAL_TIMEOUT_MS, questionWaitTimeoutMs: QUESTION_TIMEOUT_MS },
+      });
+      await room.turn;
+      await room.prompted(answered.prompt, expired.prompt, question.prompt);
 
-      await reply("approve perm-2");
-      await reply("always");
+      const userReply = room.client.holdReply("replyPermission");
+      const approving = room.say(`approve ${answered.id}`);
+      await userReply.sending;
+      const expiryReply = room.client.holdReply("replyPermission");
+      await vi.advanceTimersByTimeAsync(APPROVAL_TIMEOUT_MS);
+      await expiryReply.sending;
+      // The expiry owns this ask now; a racing reply neither answers it nor says it did.
+      await room.say(`approve ${expired.id}`);
+      await room.finish("done");
+      userReply.release();
+      expiryReply.release();
+      await approving;
+      await room.tools.until(() => errorEvents(room.tools).length === 2);
 
-      expect(client.permissionReplies.map(({ permissionId, response }) => [permissionId, response])).toEqual([
-        ["perm-2", "once"],
-        ["perm-1", "always"],
+      for (const late of [`approve ${answered.id}`, `approve ${expired.id}`, `reject ${question.id}`]) {
+        await room.say(late);
+      }
+
+      expect(permissionReplies(room.client)).toEqual([[answered.id, "once"], [expired.id, "reject"]]);
+      expect(room.client.rejectedQuestions).toEqual([question.id]);
+      expect(errorEvents(room.tools)).toEqual([
+        OPENCODE_DECISION_MESSAGES.questionTimedOut(question.id),
+        OPENCODE_DECISION_MESSAGES.approvalTimedOut(expired.id, "reject"),
+      ]);
+      expect(room.tools.messages.slice(3)).toEqual([
+        "done",
+        OPENCODE_DECISION_MESSAGES.noLongerPending("permission", answered.id),
+        OPENCODE_DECISION_MESSAGES.noLongerPending("permission", expired.id),
+        OPENCODE_DECISION_MESSAGES.noLongerPending("question", question.id),
       ]);
     });
 
-    it("sends no second reply or prompt for an ask OpenCode redelivers while its reply is in flight", async () => {
-      const client = new FakeOpencodeClient();
-      const userReply = holdClientMethod(client, "replyPermission");
-      const { tools, turn, raise, reply } = await openTurnWithAsks([permissionAsk("perm-1")], { client });
-      await turn;
+    it("leaves an ask to the reply that claimed it while its prompt was failing", async () => {
+      const permission = aPermission();
+      const tools = new FakeTools();
+      const failedPrompt = tools.holdMessage((content) => content === permission.prompt, { error: new Error("chat delivery failed") });
+      const room = await openRoom([permission.event], { tools });
+      await failedPrompt.sending;
 
-      const approving = reply("approve perm-1");
-      await waitFor(() => userReply.entered === 1);
-      raise(permissionAsk("perm-1"));
-      raise(permissionAsk("perm-2"));
-      await waitFor(() => tools.messages.some((message) => message.includes("approve perm-2")));
-      userReply.release();
+      const reply = room.client.holdReply("replyPermission");
+      const approving = room.say(`approve ${permission.id}`);
+      await reply.sending;
+      failedPrompt.release();
+      reply.release();
       await approving;
+      await room.finish("done");
+      await room.turn;
 
-      expect(client.permissionReplies.map((entry) => entry.permissionId)).toEqual(["perm-1"]);
-      expect(tools.messages.filter((message) => message.includes("approve perm-1"))).toHaveLength(1);
+      expect(permissionReplies(room.client)).toEqual([[permission.id, "once"]]);
+      expect(tools.messages).toEqual([OPENCODE_DECISION_MESSAGES.approvalHandled(permission.id, "once"), "done"]);
+      expect(failureEvents(tools)).toEqual([]);
+      expect(room.client.aborts).toEqual([]);
     });
 
     it("fails the turn with the provider's failure and drops sibling asks when a room reply cannot be sent", async () => {
-      const client = new FakeOpencodeClient();
-      client.replyPermission = async () => {
-        throw new HttpStatusError(503, { error: "unavailable" });
-      };
-      const { tools, sessionId, turn, reply } = await openTurnWithAsks([permissionAsk("perm-1"), permissionAsk("perm-2")], { client });
-      await turn;
-      await waitFor(() => tools.messages.length === 2);
+      const [refused, sibling] = [aPermission(), aPermission()];
+      const room = await openRoom([refused.event, sibling.event]);
+      await room.turn;
+      await room.prompted(refused.prompt, sibling.prompt);
+      room.client.holdReply("replyPermission", { error: unavailable() }).release();
 
-      await expectTurnFailed(reply("approve perm-1"));
-      await reply("approve perm-2");
+      await expectTurnFailed(room.say(`approve ${refused.id}`));
+      await room.say(`approve ${sibling.id}`);
 
-      expect(failureEvents(tools)).toHaveLength(1);
-      expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({ code: "503" });
-      expect(tools.messages.at(-1)).toBe(OPENCODE_DECISION_MESSAGES.noLongerPending("permission", "perm-2"));
-      expect(client.aborts).toEqual([sessionId]);
+      expect(failureEvents(room.tools)).toHaveLength(1);
+      expect(findFailureEvent(room.tools)?.metadata?.failure).toMatchObject({ code: "503" });
+      expect(room.tools.messages.at(-1)).toBe(OPENCODE_DECISION_MESSAGES.noLongerPending("permission", sibling.id));
+      expect(room.client.aborts).toEqual([room.sessionId]);
     });
 
-    it("reports a failed automatic reply once and fails the turn without reconnecting the event stream", async () => {
+    it.each([
+      { reply: "automatic", config: { approvalMode: "auto_accept" as const } },
+      { reply: "expiry", config: { approvalWaitTimeoutMs: APPROVAL_TIMEOUT_MS } },
+    ])("reports a failed $reply reply once, without a timeout notice or reconnecting the event stream", async ({ config }) => {
+      vi.useFakeTimers();
       const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
       const client = new FakeOpencodeClient();
-      client.replyPermission = async () => {
-        throw new HttpStatusError(503, { error: "unavailable" });
-      };
-      const { tools, turn } = await openTurnWithAsks([permissionAsk("perm-1")], { client, logger, config: { approvalMode: "auto_accept" } });
+      client.holdReply("replyPermission", { error: unavailable() }).release();
+      const room = await openRoom([aPermission().event], { client, logger, config });
 
-      await expectTurnFailed(turn);
+      await vi.advanceTimersByTimeAsync(APPROVAL_TIMEOUT_MS);
+      await room.tools.until(() => failureEvents(room.tools).length > 0);
 
-      expect(failureEvents(tools)).toHaveLength(1);
-      expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({ code: "503" });
+      expect(failureEvents(room.tools)).toHaveLength(1);
+      expect(findFailureEvent(room.tools)?.metadata?.failure).toMatchObject({ code: "503" });
+      expect(errorEvents(room.tools)).toEqual([findFailureEvent(room.tools)?.content]);
       expect(logger.warn).not.toHaveBeenCalledWith("OpenCode event stream failed", expect.anything());
     });
 
-    it("reports a failed expiry reply once and posts no timeout notice", async () => {
-      const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-      const client = new FakeOpencodeClient();
-      client.replyPermission = async () => {
-        throw new HttpStatusError(503, { error: "unavailable" });
-      };
-      const { tools, turn } = await openTurnWithAsks([permissionAsk("perm-1")], { client, logger, config: { approvalWaitTimeoutMs: 30 } });
-      await turn;
+    it("leaves the room's next turn intact when an earlier turn's reply fails after that turn ended", async () => {
+      const permission = aPermission();
+      const room = await openRoom([permission.event]);
+      await room.turn;
+      await room.prompted(permission.prompt);
+      const lateFailure = room.client.holdReply("replyPermission", { error: unavailable() });
+      const approving = room.say(`approve ${permission.id}`);
+      await lateFailure.sending;
+      await room.finish("turn-a-done");
 
-      await waitFor(() => logger.error.mock.calls.length > 0);
-
-      expect(failureEvents(tools)).toHaveLength(1);
-      expect(timedOutEvents(tools)).toEqual([]);
-      expect(logger.error).toHaveBeenCalledWith("OpenCode turn failed after the request returned", expect.anything());
-    });
-
-    it("leaves the room's next turn intact when an earlier turn's reply fails late", async () => {
-      const client = new FakeOpencodeClient();
-      const release = createDeferred();
-      client.replyPermission = async () => {
-        await release.promise;
-        throw new HttpStatusError(503, { error: "unavailable" });
-      };
-      const { tools, turn, reply, finish } = await openTurnWithAsks([permissionAsk("perm-1")], { client });
-      await turn;
-      const approving = reply("approve perm-1");
-      approving.catch(() => undefined);
-      finish("turn-a-done");
-      await waitFor(() => tools.messages.includes("turn-a-done"));
-
-      const nextTurn = reply("second task");
-      await waitFor(() => client.promptCalls.length === 2);
-      release.resolve();
+      lateFailure.release();
       await expectTurnFailed(approving);
-      finish("turn-b-done");
+      const nextTurn = room.say("second task");
+      await room.client.until(() => room.client.promptCalls.length === 2);
+      await room.finish("turn-b-done");
       await nextTurn;
 
-      expect(tools.messages).toContain("turn-b-done");
-      expect(client.aborts).toEqual([]);
-    });
-
-    it("lets only an authorized sender resolve an ask, keeping it answerable after a refused reply", async () => {
-      const { client, tools, turn, reply } = await openTurnWithAsks([permissionAsk("perm-1")], { decisionAuthorizedSenders: ["owner"] });
-      await turn;
-
-      await reply("approve perm-1", "intruder");
-      expect(tools.messages.at(-1)).toBe(OPENCODE_DECISION_MESSAGES.notAuthorized());
-      expect(client.permissionReplies).toEqual([]);
-
-      await reply("approve perm-1", "owner");
-      expect(client.permissionReplies.map((entry) => entry.response)).toEqual(["once"]);
-    });
-
-    it("mentions the requester on the approval prompt and the replier on the handled notice", async () => {
-      const { tools, turn, reply } = await openTurnWithAsks([permissionAsk("perm-1")]);
-      await turn;
-
-      await reply("@[[agent-uuid]] approve perm-1", "approver");
-
-      expect(tools.messages).toEqual([
-        OPENCODE_DECISION_MESSAGES.approvalRequested({ requestId: "perm-1", permission: "bash", patterns: ["npm test"] }),
-        OPENCODE_DECISION_MESSAGES.approvalHandled("perm-1", "once"),
-      ]);
-      expect(tools.mentions).toEqual([[{ id: "user-1" }], [{ id: "approver" }]]);
+      expect(room.client.aborts).toEqual([]);
+      expect(room.client.createdSessions).toEqual([room.sessionId]);
     });
 
     it("rejects a question with nothing to answer instead of leaving OpenCode blocked on it", async () => {
-      const { client, tools, turn, finish } = await openTurnWithAsks([questionAsk("question-empty", [])]);
+      const empty = aQuestion([]);
+      const room = await openRoom([empty.event]);
 
-      await waitFor(() => client.rejectedQuestions.length === 1);
-      finish("done");
-      await turn;
+      await room.client.until(() => room.client.rejectedQuestions.length === 1);
+      await room.finish("done");
+      await room.turn;
 
-      expect(client.rejectedQuestions).toEqual(["question-empty"]);
-      expect(tools.messages).toEqual(["done"]);
+      expect(room.client.rejectedQuestions).toEqual([empty.id]);
+      expect(room.tools.messages).toEqual(["done"]);
     });
   });
 });

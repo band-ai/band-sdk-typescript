@@ -1,11 +1,16 @@
-import { describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CursorACPAdapter } from "../src/adapters/cursor-acp";
-import { MINTED_TOKEN_LENGTH } from "../src/adapters/shared/decisions";
+import { DEFAULT_CURSOR_DECISION_TIMEOUT_MS } from "../src/adapters/cursor-acp/CursorACPAdapter";
+import { CURSOR_COMMAND, CURSOR_DECISION_MESSAGES } from "../src/adapters/cursor-acp/messages";
+import { createDeferred } from "../src/core/deferred";
 import { FakeTools, makeMessage } from "./testUtils";
 
-const DECISION_TOKEN = new RegExp(` ([a-f0-9]{${MINTED_TOKEN_LENGTH}}) `);
+// Every decision prompt offers `/cursor <verb> <token> ...`; nothing else Cursor posts does.
+const DECISION_TOKEN = new RegExp(`\\${CURSOR_COMMAND} \\w+ (\\S+)`);
 const decisionToken = (prompt: string) => prompt.match(DECISION_TOKEN)?.[1];
+const isDecisionPrompt = (content: string) => decisionToken(content) !== undefined;
 
 interface CursorClient {
   extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>>;
@@ -225,114 +230,131 @@ describe("CursorACPAdapter", () => {
   });
 });
 
-describe("CursorACPAdapter decision lifecycle", () => {
-  const question = { questions: [{ id: "question", options: [{ id: "answer" }] }] };
+describe("CursorACPAdapter decisions in a room", () => {
+  const CANCELLED = { outcome: { outcome: "cancelled" } };
+  const OWNER = "owner";
 
-  /** Starts a turn whose Cursor prompt runs `ask` against the live ACP client, and waits for its first decision prompt. */
-  async function startDecisionTurn(
-    options: ConstructorParameters<typeof CursorACPAdapter>[0],
-    ask: (client: CursorClient, tools: FakeTools) => Promise<void>,
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** A single-choice Cursor question with random ids, and the room reply and ACP result that answer it. */
+  function aQuestion() {
+    const questionId = `question-${randomUUID().slice(0, 8)}`;
+    const optionId = `option-${randomUUID().slice(0, 8)}`;
+    return {
+      params: { questions: [{ id: questionId, options: [{ id: optionId }] }] },
+      reply: (token: string) => `${CURSOR_COMMAND} answer ${token} ${questionId}=${optionId}`,
+      answered: { outcome: { outcome: "answered", answers: [{ questionId, selectedOptionIds: [optionId] }] } },
+    };
+  }
+
+  /** A Cursor agent peer that runs `script` against the live ACP client for one turn in room-1, opened by OWNER. */
+  async function cursorRoom(
+    options: Omit<ConstructorParameters<typeof CursorACPAdapter>[0], "connectionFactory">,
+    script: (peer: CursorClient, tools: FakeTools) => Promise<unknown[]>,
+    tools = new FakeTools(),
   ) {
-    const tools = new FakeTools();
+    const results = createDeferred<unknown[]>();
     const adapter = new CursorACPAdapter({
       enableMcpTools: false,
+      decisionAuthorizedSenders: [OWNER],
       ...options,
       connectionFactory: async (captured) => mockConnection(async () => {
-        await ask(captured as CursorClient, tools);
+        results.resolve(await script(captured as CursorClient, tools));
         return { stopReason: "end_turn" };
       }),
     });
     await adapter.onStarted("Cursor", "desc");
-    const turn = adapter.onMessage(cursorMessage("start", "requester"), tools, { roomToSession: {} }, null, null, { isSessionBootstrap: false, roomId: "room-1" });
-    await vi.waitFor(() => expect(tools.messages.length).toBeGreaterThan(0));
-    const token = decisionToken(tools.messages[0]!) ?? "";
-    const reply = (content: string, roomId = "room-1") =>
-      adapter.onMessage(cursorMessage(content, "requester", `reply-${content}`), tools, { roomToSession: {} }, null, null, { isSessionBootstrap: false, roomId });
-    return { adapter, tools, turn, token, reply };
+    const turn = adapter.onMessage(cursorMessage("start", OWNER), tools, { roomToSession: {} }, null, null, { isSessionBootstrap: false, roomId: "room-1" });
+    const say = async (content: string, { sender = OWNER, roomId = "room-1", roomTools = tools } = {}) => {
+      await adapter.onMessage(cursorMessage(content, sender, `reply-${randomUUID()}`), roomTools, { roomToSession: {} }, null, null, { isSessionBootstrap: false, roomId });
+      return roomTools.messages.at(-1);
+    };
+    const prompted = async (count: number) => {
+      await tools.until(() => tools.messages.filter(isDecisionPrompt).length >= count);
+      return tools.messages.filter(isDecisionPrompt).map((prompt) => decisionToken(prompt)!);
+    };
+    const finished = async () => {
+      await turn;
+      await adapter.stop();
+      return results.promise;
+    };
+    return { tools, say, prompted, finished, adapter };
   }
 
-  it("cancels a question on its own timeout, tells the requester, and answers a late reply with not pending", async () => {
-    let result: unknown;
-    const { adapter, tools, turn, token, reply } = await startDecisionTurn({ decisionTimeoutMs: 30 }, async (client) => {
-      result = await client.extMethod("cursor/ask_question", question);
+  const pendingList = (...tokens: string[]) => CURSOR_DECISION_MESSAGES.pendingList(tokens.map((token) => `\`${token}\` (question)`));
+
+  it("shares a busy room: evicts the oldest ask, scopes it to its room, and admits only allowed senders", async () => {
+    const [oldest, middle, newest] = [aQuestion(), aQuestion(), aQuestion()];
+    const room = await cursorRoom({ maxPendingDecisions: 2 }, async (peer, tools) => {
+      const asked = [oldest, middle].map((question) => peer.extMethod("cursor/ask_question", question.params));
+      await tools.until(() => tools.messages.length === 2);
+      asked.push(peer.extMethod("cursor/ask_question", newest.params));
+      return Promise.all(asked);
     });
+    const [evicted, first, second] = await room.prompted(3);
 
-    await turn;
-    expect(result).toEqual({ outcome: { outcome: "cancelled" } });
-    expect(tools.messages[1]).toBe(`Cursor question decision \`${token}\` timed out and was cancelled.`);
-    expect(tools.mentions[1]).toEqual(["requester"]);
+    expect(await room.say(`${CURSOR_COMMAND} decisions`)).toBe(pendingList(first!, second!));
+    expect(await room.say(oldest.reply(evicted!))).toBe(CURSOR_DECISION_MESSAGES.notPending(evicted!));
+    expect(await room.say(middle.reply(first!), { sender: "intruder" })).toBe(CURSOR_DECISION_MESSAGES.notAuthorized());
 
-    await reply(`/cursor answer ${token} question=answer`);
-    expect(tools.messages.at(-1)).toBe(`Cursor decision \`${token}\` is not pending.`);
-    await adapter.stop();
+    const otherRoom = { roomId: "room-2", roomTools: new FakeTools() };
+    await room.adapter.onCleanup("room-2");
+    expect(await room.say(CURSOR_COMMAND, otherRoom)).toBe(CURSOR_DECISION_MESSAGES.pendingList([]));
+    expect(await room.say(middle.reply(first!), otherRoom)).toBe(CURSOR_DECISION_MESSAGES.notPending(first!));
+
+    expect(await room.say(`@[[agent-uuid]] ${middle.reply(first!)}`)).toBe(CURSOR_DECISION_MESSAGES.resolved("question", first!));
+    expect(await room.say(middle.reply(first!))).toBe(CURSOR_DECISION_MESSAGES.notPending(first!));
+    await room.say(newest.reply(second!));
+
+    expect(await room.finished()).toEqual([CANCELLED, middle.answered, newest.answered]);
   });
 
-  it("cancels a permission on the ACP base class's own timeout and tells the requester once", async () => {
-    let result: unknown;
-    const { adapter, tools, turn, token } = await startDecisionTurn({ permissionTimeoutMs: 30, decisionTimeoutMs: 60_000 }, async (client) => {
-      result = await client.requestPermission({
+  it("times each ask out at its own deadline, tells the requester once, and treats a late reply as not pending", async () => {
+    vi.useFakeTimers();
+    const PERMISSION_TIMEOUT_MS = 60_000;
+    const question = aQuestion();
+    const room = await cursorRoom({ permissionTimeoutMs: PERMISSION_TIMEOUT_MS }, async (peer) => Promise.all([
+      peer.requestPermission({
         sessionId: "cursor-session",
         toolCall: { toolCallId: "tool-call", title: "Write file" },
         options: [{ optionId: "allow", kind: "allow_once" }],
-      });
-    });
+      }),
+      peer.extMethod("cursor/ask_question", question.params),
+    ]));
+    const tokens = await room.prompted(2);
+    const permission = tokens.find((token) => room.tools.messages.includes(CURSOR_DECISION_MESSAGES.permissionPrompt(token)));
+    const asked = tokens.find((token) => token !== permission);
 
-    await turn;
-    expect(result).toEqual({ outcome: { outcome: "cancelled" } });
-    await vi.waitFor(() => expect(tools.messages).toHaveLength(2));
-    expect(tools.messages[1]).toBe(`Cursor permission decision \`${token}\` timed out and was cancelled.`);
-    expect(tools.mentions[1]).toEqual(["requester"]);
-    await adapter.stop();
-  });
+    await vi.advanceTimersByTimeAsync(PERMISSION_TIMEOUT_MS);
+    await vi.advanceTimersByTimeAsync(DEFAULT_CURSOR_DECISION_TIMEOUT_MS - PERMISSION_TIMEOUT_MS);
+    expect(await room.say(question.reply(asked!))).toBe(CURSOR_DECISION_MESSAGES.notPending(asked!));
 
-  it("resolves a command that follows the platform's leading mention", async () => {
-    let result: unknown;
-    const { adapter, turn, token, reply } = await startDecisionTurn({}, async (client) => {
-      result = await client.extMethod("cursor/ask_question", question);
-    });
-
-    await reply(`@[[agent-uuid]] /cursor answer ${token} question=answer`);
-    await turn;
-
-    expect(result).toEqual({ outcome: { outcome: "answered", answers: [{ questionId: "question", selectedOptionIds: ["answer"] }] } });
-    await adapter.stop();
-  });
-
-  it("cancels the oldest decision when a new one arrives at capacity, leaving the new one answerable", async () => {
-    const results: unknown[] = [];
-    const { adapter, tools, turn, reply } = await startDecisionTurn({ maxPendingDecisions: 1 }, async (client, tools) => {
-      const oldest = client.extMethod("cursor/ask_question", question);
-      await vi.waitFor(() => expect(tools.messages).toHaveLength(1));
-      const newest = client.extMethod("cursor/ask_question", question);
-      results.push(await oldest, await newest);
-    });
-
-    await vi.waitFor(() => expect(tools.messages).toHaveLength(2));
-    const newestToken = decisionToken(tools.messages[1]!);
-    await reply(`/cursor answer ${newestToken} question=answer`);
-    await turn;
-
-    expect(results).toEqual([
-      { outcome: { outcome: "cancelled" } },
-      { outcome: { outcome: "answered", answers: [{ questionId: "question", selectedOptionIds: ["answer"] }] } },
+    expect(await room.finished()).toEqual([CANCELLED, CANCELLED]);
+    expect(room.tools.messages.slice(2, 4)).toEqual([
+      CURSOR_DECISION_MESSAGES.timedOut("permission", permission!),
+      CURSOR_DECISION_MESSAGES.timedOut("question", asked!),
     ]);
-    await adapter.stop();
+    expect(room.tools.mentions.slice(2, 4)).toEqual([[OWNER], [OWNER]]);
   });
 
-  it("cancels only the cleaned-up room's decisions", async () => {
-    let result: unknown;
-    const { adapter, tools, turn, token, reply } = await startDecisionTurn({}, async (client) => {
-      result = await client.extMethod("cursor/ask_question", question);
-    });
+  it("lets a reply that claimed an ask outlive its failed prompt, and ends an unclaimed one at once", async () => {
+    const [claimed, unclaimed] = [aQuestion(), aQuestion()];
+    const tools = new FakeTools();
+    const failedPrompts = [claimed, unclaimed].map(() => tools.holdMessage(isDecisionPrompt, { error: new Error("chat delivery failed") }));
+    const room = await cursorRoom(
+      {},
+      async (peer) => Promise.all([claimed, unclaimed].map((question) => peer.extMethod("cursor/ask_question", question.params))),
+      tools,
+    );
+    const [[claimedPrompt]] = await Promise.all(failedPrompts.map((prompt) => prompt.sending));
 
-    await adapter.onCleanup("room-2");
-    await reply("/cursor decisions");
-    expect(tools.messages.at(-1)).toBe(`Pending Cursor decisions: \`${token}\` (question)`);
+    await room.say(claimed.reply(decisionToken(claimedPrompt)!));
+    failedPrompts.forEach((prompt) => prompt.release());
 
-    await adapter.onCleanup("room-1");
-    await turn.catch(() => undefined);
-    expect(result).toEqual({ outcome: { outcome: "cancelled" } });
-    await adapter.stop();
+    expect(await room.finished()).toEqual([claimed.answered, CANCELLED]);
+    expect(room.tools.messages.filter(isDecisionPrompt)).toEqual([]);
   });
 });
 

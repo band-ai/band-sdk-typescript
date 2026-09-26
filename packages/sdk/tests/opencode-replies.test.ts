@@ -15,23 +15,30 @@ interface RoomSetup {
   permissions?: string[];
   questions?: Array<{ id: string; count?: number }>;
   resolved?: Record<string, DecisionKind>;
+  // Asks whose reply is already in flight.
+  claimed?: string[];
 }
 
 /** A room's pending asks, registered the way the adapter registers them. */
-function room({ permissions = [], questions = [], resolved = {} }: RoomSetup): RoomDecisions {
+function room({ permissions = [], questions = [], resolved = {}, claimed = [] }: RoomSetup): RoomDecisions {
   const decisions: RoomDecisions = {
     permissions: new DecisionRegistry<PendingPermission>(),
     questions: new DecisionRegistry<PendingQuestion>(),
     knownIds: new Map(Object.entries(resolved)),
   };
   for (const requestId of permissions) {
-    decisions.permissions.register({ requestId, permission: "bash", patterns: [] }, requestId);
+    decisions.permissions.registerKeyed({ requestId, permission: "bash", patterns: [] }, { key: requestId });
     decisions.knownIds.set(requestId, "permission");
   }
   for (const { id, count = 1 } of questions) {
     const asked = Array.from({ length: count }, (_, index) => ({ question: `Question ${index + 1}?` }));
-    decisions.questions.register({ requestId: id, questions: asked }, id);
+    decisions.questions.registerKeyed({ requestId: id, questions: asked }, { key: id });
     decisions.knownIds.set(id, "question");
+  }
+  for (const id of claimed) {
+    if (!decisions.permissions.tryClaim(id)) {
+      decisions.questions.tryClaim(id);
+    }
   }
   return decisions;
 }
@@ -148,6 +155,42 @@ describe("routeReply", () => {
       reply: "reject",
       setup: { permissions: ["perm-a"], questions: [{ id: "q-1" }] },
       action: notice(OPENCODE_DECISION_MESSAGES.dualRejectHint(["perm-a"], ["q-1"])),
+    },
+    {
+      scenario: "names no permission while the other of two is claimed",
+      reply: "always",
+      setup: { permissions: ["perm-a", "perm-b"], claimed: ["perm-a"] },
+      action: { kind: "permission", id: "perm-b", reply: "always" },
+    },
+    {
+      scenario: "names a claimed permission, which only its claimant may resolve",
+      reply: "approve perm-a",
+      setup: { permissions: ["perm-a"], claimed: ["perm-a"] },
+      action: { kind: "permission", id: "perm-a", reply: "once" },
+    },
+    {
+      scenario: "rejects with no id while the only permission is claimed and a question waits",
+      reply: "reject",
+      setup: { permissions: ["perm-a"], questions: [{ id: "q-1" }], claimed: ["perm-a"] },
+      action: { kind: "reject-question", id: "q-1" },
+    },
+    {
+      scenario: "answers while the oldest question is claimed",
+      reply: "@agent the second approach",
+      setup: { questions: [{ id: "q-1" }, { id: "q-2" }], claimed: ["q-1"] },
+      action: { kind: "answer-question", id: "q-2", answers: [["the second approach"]] },
+    },
+    {
+      scenario: "approves with no id, hinting only at unclaimed questions",
+      reply: "approve",
+      setup: { questions: [{ id: "q-1" }, { id: "q-2" }], claimed: ["q-1"] },
+      action: notice(OPENCODE_DECISION_MESSAGES.questionHint(["q-2"])),
+    },
+    {
+      scenario: "sends free text while the only question is claimed",
+      reply: "@agent something else",
+      setup: { questions: [{ id: "q-1" }], claimed: ["q-1"] },
+      action: PASS,
     },
     {
       scenario: "sends a reply word with nothing pending",

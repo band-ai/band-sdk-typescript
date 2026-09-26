@@ -1,5 +1,7 @@
 import type { PermissionOption } from "@agentclientprotocol/sdk";
 
+import { isAuthorizedSender } from "@band-ai/band-sdk-core";
+
 import { createDeferred } from "../../core/deferred";
 import { resolveLogger, type Logger } from "../../core/logger";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
@@ -14,7 +16,7 @@ import {
 } from "../acp";
 import type { ACPPermissionAbandonReason, CollectedChunk } from "../acp/types";
 import { abandon } from "../shared/abandon";
-import { DecisionRegistry, isAuthorizedSender, toAuthorizedSenders } from "../shared/decisions";
+import { DecisionRegistry, senderAllowlist, TIMED_OUT, type DecisionEntry } from "../shared/decisions";
 import { stripLeadingMentions } from "../../runtime/formatters";
 import { CURSOR_COMMAND, CURSOR_DECISION_MESSAGES, type DecisionKind } from "./messages";
 
@@ -159,7 +161,6 @@ export class CursorACPAdapter extends ACPClientAdapter {
   private readonly questionMode: CursorQuestionMode;
   private readonly planMode: CursorPlanMode;
   private readonly decisionTimeoutMs: number;
-  private readonly maxPendingDecisions: number;
   private readonly authorizedSenders: ReadonlySet<string> | null;
   private readonly decisionLogger: Logger;
   private readonly extensions: CursorExtensions;
@@ -186,10 +187,12 @@ export class CursorACPAdapter extends ACPClientAdapter {
     this.questionMode = options.questionMode ?? "manual";
     this.planMode = options.planMode ?? "manual";
     this.decisionTimeoutMs = options.decisionTimeoutMs ?? DEFAULT_CURSOR_DECISION_TIMEOUT_MS;
-    this.maxPendingDecisions = options.maxPendingDecisions ?? DEFAULT_CURSOR_MAX_PENDING_DECISIONS;
-    this.authorizedSenders = toAuthorizedSenders(options.decisionAuthorizedSenders);
+    this.authorizedSenders = senderAllowlist(options.decisionAuthorizedSenders);
     this.decisionLogger = resolveLogger(options.logger);
-    this.decisions = new DecisionRegistry(this.decisionLogger);
+    this.decisions = new DecisionRegistry({
+      maxPending: options.maxPendingDecisions ?? DEFAULT_CURSOR_MAX_PENDING_DECISIONS,
+      logger: this.decisionLogger,
+    });
   }
 
   public override async onMessage(
@@ -257,7 +260,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
   }
 
   public override async stop(): Promise<void> {
-    this.cancelDecisions("stopped");
+    this.endUnanswered(this.decisions.cancelAll(), "stopped");
     this.turns.clear();
     this.activeTurn = null;
     this.extensions.clearSessions();
@@ -331,58 +334,65 @@ export class CursorACPAdapter extends ACPClientAdapter {
   }
 
   private async waitForDecision(turn: CursorTurn, spec: DecisionSpec, prompt: (token: string) => string, signal?: AbortSignal): Promise<unknown> {
-    if (this.decisions.size >= this.maxPendingDecisions) {
-      this.withdrawUnanswered(this.decisions.keys()[0], "evicted");
-    }
     const answer = createDeferred<unknown>();
-    const token = this.decisions.register({ ...spec, tools: turn.tools, requesterId: turn.requesterId, resolve: answer.resolve });
-    this.decisions.startTimeout(token, this.decisionTimeoutMs, (decision) => {
-      this.decisions.forget(token);
-      this.expire(token, decision, TIMEOUT_REASON);
-    });
+    const registration = this.decisions.registerMinted(
+      { ...spec, tools: turn.tools, requesterId: turn.requesterId, resolve: answer.resolve },
+      { roomId: spec.roomId },
+    );
+    this.endUnanswered(registration.removed, "evicted");
+    const { entry } = registration;
     if (signal) {
       // The ACP base class aborts on its own timeout too; the claim guard lets only one of them end the decision.
-      const onAbort = () => this.withdrawUnanswered(token, String(signal.reason));
+      const onAbort = () => this.abandonDecision(entry, String(signal.reason));
       signal.addEventListener("abort", onAbort, { once: true });
       if (signal.aborted) {
         onAbort();
       }
     }
-    void turn.tools.sendMessage(prompt(token), [turn.requesterId]).catch((error: unknown) => {
+    try {
+      await turn.tools.sendMessage(prompt(entry.token), [turn.requesterId]);
+    } catch (error) {
       this.decisionLogger.warn("cursor_acp.decision_prompt_delivery_failed", { roomId: spec.roomId, kind: spec.kind, error: String(error) });
-      this.withdrawUnanswered(token, "prompt_delivery_failed");
-    });
-    return answer.promise;
-  }
-
-  private withdrawUnanswered(token: string, reason: string): void {
-    const decision = this.decisions.withdraw(token);
-    if (decision) {
-      this.expire(token, decision, reason);
+      // A reply that claimed it meanwhile owns the answer; wait for it.
+      this.abandonDecision(entry, "prompt_delivery_failed");
     }
+    const result = await this.decisions.wait(entry, answer.promise, { timeoutMs: this.decisionTimeoutMs });
+    if (result !== TIMED_OUT) {
+      return result;
+    }
+    this.endTimedOut(entry);
+    return undefined;
   }
 
-  // Ends a claimed, already-forgotten decision without an answer.
-  private expire(token: string, decision: PendingDecision, reason: string): void {
-    this.endUnanswered(decision, reason);
+  // Ends a decision nobody has claimed; a claimed one belongs to its claimant.
+  private abandonDecision(entry: DecisionEntry<PendingDecision>, reason: string): void {
+    if (!this.decisions.withdraw(entry)) {
+      return;
+    }
     if (reason === TIMEOUT_REASON) {
-      abandon(
-        () => decision.tools.sendMessage(CURSOR_DECISION_MESSAGES.timedOut(decision.kind, token), [decision.requesterId]),
-        (error) => {
-          this.decisionLogger.warn("cursor_acp.decision_timeout_notice_failed", { roomId: decision.roomId, kind: decision.kind, error: String(error) });
-        },
-      );
+      this.endTimedOut(entry);
+    } else {
+      this.endUnanswered([entry], reason);
     }
   }
 
-  private endUnanswered(decision: PendingDecision, reason: string): void {
-    decision.resolve(undefined);
-    this.decisionLogger.info("cursor_acp.decision_ended", { roomId: decision.roomId, kind: decision.kind, reason });
+  // Both deadlines, the registry's and the ACP base class's, tell the requester.
+  private endTimedOut(entry: DecisionEntry<PendingDecision>): void {
+    const { token, payload: decision } = entry;
+    this.endUnanswered([entry], TIMEOUT_REASON);
+    abandon(
+      () => decision.tools.sendMessage(CURSOR_DECISION_MESSAGES.timedOut(decision.kind, token), [decision.requesterId]),
+      (error) => {
+        this.decisionLogger.warn("cursor_acp.decision_timeout_notice_failed", { roomId: decision.roomId, kind: decision.kind, error: String(error) });
+      },
+    );
   }
 
-  private cancelDecisions(reason: string, predicate?: (decision: PendingDecision) => boolean): void {
-    for (const decision of this.decisions.cancelAll(predicate)) {
-      this.endUnanswered(decision, reason);
+  // Whoever removes an unclaimed ask resolves it.
+  private endUnanswered(entries: readonly DecisionEntry<PendingDecision>[], reason: string): void {
+    for (const { payload: decision } of entries) {
+      decision.resolve(undefined);
+      this.decisionLogger.info("cursor_acp.decision_ended", { roomId: decision.roomId, kind: decision.kind, reason });
     }
   }
 
@@ -392,10 +402,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
       return false;
     }
     if (words.length === 1 || words[1]?.toLowerCase() === "decisions") {
-      const entries = this.decisions.keys().flatMap((token) => {
-        const decision = this.decisions.get(token);
-        return decision?.roomId === roomId ? [`\`${token}\` (${decision.kind})`] : [];
-      });
+      const entries = this.decisions.unclaimedInRoom(roomId).map(({ token, payload }) => `\`${token}\` (${payload.kind})`);
       await tools.sendMessage(CURSOR_DECISION_MESSAGES.pendingList(entries));
       return true;
     }
@@ -414,7 +421,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
       await tools.sendMessage(CURSOR_DECISION_MESSAGES.invalidCommand(decision.kind, token));
       return true;
     }
-    if (!this.decisions.withdraw(token)) {
+    if (!this.decisions.tryClaim(token)) {
       await tools.sendMessage(CURSOR_DECISION_MESSAGES.notPending(token));
       return true;
     }
@@ -424,7 +431,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
   }
 
   private cancelRoom(roomId: string, reason: string): void {
-    this.cancelDecisions(reason, (decision) => decision.roomId === roomId);
+    this.endUnanswered(this.decisions.cancelRoom(roomId), reason);
   }
 
   private async withCursorTurnLock<T>(run: () => Promise<T>): Promise<T> {

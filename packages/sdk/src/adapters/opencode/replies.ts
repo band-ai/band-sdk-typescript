@@ -107,13 +107,14 @@ export function routeReply(raw: string, decisions: RoomDecisions): ReplyAction {
   const command = parseCommand(stripLeadingMentions(raw));
   if (!command) {
     // Free text only ever answers a question; it never approves anything.
-    return decisions.questions.size > 0 ? answerOldestQuestion(raw, decisions.questions) : PASS;
+    return answerOldestQuestion(raw, decisions.questions) ?? PASS;
   }
   return command.id === null
     ? routeBareCommand(command.reply, decisions)
     : routeNamedCommand(raw, command.reply, command.id, decisions);
 }
 
+// A named id is resolved by membership, so a reply to a claimed ask reaches `tryClaim` and loses there quietly.
 function routeNamedCommand(
   raw: string,
   reply: OpencodeApprovalReply,
@@ -128,46 +129,56 @@ function routeNamedCommand(
     return { kind: "permission", id, reply };
   }
   if (questions.has(id)) {
-    return notice(OPENCODE_DECISION_MESSAGES.questionHint(questions.keys()));
+    return notice(OPENCODE_DECISION_MESSAGES.questionHint(unclaimedIds(questions)));
   }
   const knownKind = knownIds.get(id);
   if (knownKind) {
     return notice(OPENCODE_DECISION_MESSAGES.noLongerPending(knownKind, id));
   }
-  if (!rejects && questions.size > 0) {
+  if (!rejects && questions.hasUnclaimed()) {
     // An unknown id after "approve"/"always" is just the start of an answer.
-    return answerOldestQuestion(raw, questions);
+    return answerOldestQuestion(raw, questions) ?? PASS;
   }
-  if (permissions.size > 0 || questions.size > 0) {
-    return notice(OPENCODE_DECISION_MESSAGES.noLongerPending(permissions.size > 0 ? "permission" : "question", id));
+  if (permissions.hasUnclaimed() || questions.hasUnclaimed()) {
+    return notice(OPENCODE_DECISION_MESSAGES.noLongerPending(permissions.hasUnclaimed() ? "permission" : "question", id));
   }
   return PASS;
 }
 
+// Without an id, only asks still awaiting an answer count: one a reply already claimed is not "the" pending ask.
 function routeBareCommand(reply: OpencodeApprovalReply, { permissions, questions }: RoomDecisions): ReplyAction {
   const rejects = reply === REPLY_WORDS.reject;
-  if (rejects && permissions.size > 0 && questions.size > 0) {
-    return notice(OPENCODE_DECISION_MESSAGES.dualRejectHint(permissions.keys(), questions.keys()));
+  const oldestPermission = permissions.oldestUnclaimed();
+  const oldestQuestion = questions.oldestUnclaimed();
+  if (rejects && oldestPermission && oldestQuestion) {
+    return notice(OPENCODE_DECISION_MESSAGES.dualRejectHint(unclaimedIds(permissions), unclaimedIds(questions)));
   }
-  if (permissions.size === 1) {
-    return { kind: "permission", id: permissions.keys()[0], reply };
+  if (oldestPermission && permissions.unclaimedCount() === 1) {
+    return { kind: "permission", id: oldestPermission.token, reply };
   }
-  if (permissions.size > 1) {
-    return notice(OPENCODE_DECISION_MESSAGES.whichPermissionHint(permissions.keys()));
+  if (oldestPermission) {
+    return notice(OPENCODE_DECISION_MESSAGES.whichPermissionHint(unclaimedIds(permissions)));
   }
-  if (rejects && questions.size > 0) {
-    return { kind: "reject-question", id: questions.keys()[0] };
+  if (rejects && oldestQuestion) {
+    return { kind: "reject-question", id: oldestQuestion.token };
   }
-  if (questions.size > 0) {
-    return notice(OPENCODE_DECISION_MESSAGES.questionHint(questions.keys()));
+  if (oldestQuestion) {
+    return notice(OPENCODE_DECISION_MESSAGES.questionHint(unclaimedIds(questions)));
   }
   return PASS;
 }
 
-function answerOldestQuestion(raw: string, questions: DecisionRegistry<PendingQuestion>): ReplyAction {
-  const id = questions.keys()[0];
-  const pending = questions.get(id);
+/** The answer to the oldest unclaimed question; null when no question awaits one. */
+function answerOldestQuestion(raw: string, questions: DecisionRegistry<PendingQuestion>): ReplyAction | null {
+  const oldest = questions.oldestUnclaimed();
+  if (!oldest) {
+    return null;
+  }
   // Only the delivery mention goes: an answer may itself begin with an @handle.
-  const answers = pending && parseQuestionAnswers(stripLeadingMentions(raw, { onlyFirst: true }), pending.questions);
-  return answers ? { kind: "answer-question", id, answers } : notice(OPENCODE_DECISION_MESSAGES.waitingForAnswers());
+  const answers = parseQuestionAnswers(stripLeadingMentions(raw, { onlyFirst: true }), oldest.payload.questions);
+  return answers ? { kind: "answer-question", id: oldest.token, answers } : notice(OPENCODE_DECISION_MESSAGES.waitingForAnswers());
+}
+
+function unclaimedIds<T>(registry: DecisionRegistry<T>): string[] {
+  return registry.unclaimed().map((entry) => entry.token);
 }

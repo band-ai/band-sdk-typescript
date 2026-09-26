@@ -286,7 +286,7 @@ packages/sdk/src/
 ├── adapters/          # Framework adapters (one folder per framework, plus GenericAdapter.ts at top level)
 │   ├── tool-calling/  # ToolCallingAdapter base + ToolCallingModel interface
 │   ├── opencode/      # OpencodeAdapter; replies (reply grammar + routing), messages (decision texts)
-│   └── shared/        # conversationPrompt, history, coercion utilities; decisions (chat-mediated decision registry)
+│   └── shared/        # conversationPrompt, history, coercion utilities; decisions (thin wrapper over band-sdk-core's DecisionRegistry: payloads, timers, waits)
 ├── client/rest/       # FernRestAdapter, RestFacade, pagination, REST types
 ├── config/            # YAML and env-var config loaders
 ├── contracts/         # Protocols, DTOs, capabilities, chatEvents (CHAT_EVENT_TYPES)

@@ -1,114 +1,50 @@
+/**
+ * Chat-mediated decisions over band-sdk-core's `DecisionRegistry`: core owns
+ * the claim, eviction and ticket rules; this wrapper owns payloads, timers and
+ * reads, from a `Map` that mirrors core's order by construction.
+ */
+import {
+  DecisionRegistry as CoreDecisionRegistry,
+  type CancelledDecisions,
+  type ClaimOutcome,
+} from "@band-ai/band-sdk-core";
+
 import { resolveLogger, type Logger } from "../../core/logger";
 import { abandon } from "./abandon";
 
-export const MINTED_TOKEN_LENGTH = 8;
+export const TIMED_OUT: unique symbol = Symbol("decision timed out");
+export type TimedOut = typeof TIMED_OUT;
 
-// Omitted → null (anyone may resolve); any list, empty included → members only.
-export function toAuthorizedSenders(senderIds?: readonly string[]): ReadonlySet<string> | null {
-  return senderIds ? new Set(senderIds) : null;
+/** One registration: the handle its asker, timer and waiter act through. Its ticket goes stale once a redelivery replaces it. */
+export interface DecisionEntry<T> {
+  readonly token: string;
+  readonly ticket: bigint;
+  readonly payload: T;
 }
 
-export function isAuthorizedSender(allowed: ReadonlySet<string> | null, senderId: string): boolean {
-  return allowed === null || allowed.has(senderId);
+/** A new entry, plus any open ask registering it removed, for the caller to resolve. */
+export interface Registration<T> {
+  readonly entry: DecisionEntry<T>;
+  readonly evicted: DecisionEntry<T> | null;
+  readonly replaced: DecisionEntry<T> | null;
+  readonly removed: readonly DecisionEntry<T>[];
 }
 
-interface DecisionEntry<T> {
-  payload: T;
-  claimed: boolean;
-  timer?: ReturnType<typeof setTimeout>;
+/** A configured allowlist in the shape core's `isAuthorizedSender` takes: null admits anyone; any list, empty included, only its members. */
+export function senderAllowlist(senders?: Iterable<string> | null): ReadonlySet<string> | null {
+  return senders == null ? null : new Set(senders);
 }
 
-/**
- * Asks posted to a chat and awaiting a reply, by token. Whoever claims an
- * entry first — a reply, its timeout, or a cancellation — owns its outcome;
- * every later path finds nothing to claim.
- */
-export class DecisionRegistry<T> {
+/** Pending asks by token, oldest first. Without `maxPending` it never evicts. */
+export class DecisionRegistry<T> implements Iterable<DecisionEntry<T>> {
+  private readonly core: CoreDecisionRegistry;
   private readonly entries = new Map<string, DecisionEntry<T>>();
+  private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly logger: Logger;
 
-  public constructor(logger?: Logger) {
-    this.logger = resolveLogger(logger);
-  }
-
-  /** Registers under a minted token. */
-  public register(payload: T): string;
-  /** Registers under `key`, replacing an unclaimed predecessor; null if it's claimed. */
-  public register(payload: T, key: string): string | null;
-  public register(payload: T, key?: string): string | null {
-    if (key !== undefined) {
-      const existing = this.entries.get(key);
-      if (existing?.claimed) {
-        return null;
-      }
-      clearTimeout(existing?.timer);
-    }
-    const token = key ?? this.mintToken();
-    this.entries.set(token, { payload, claimed: false });
-    return token;
-  }
-
-  /** On expiry, claims the entry and runs `onTimeout` only if that claim wins. */
-  public startTimeout(token: string, ms: number, onTimeout: (payload: T) => Promise<void> | void): void {
-    const entry = this.entries.get(token);
-    // `setTimeout` coerces Infinity to 1ms, so "unbounded" must never arm.
-    if (!entry || !Number.isFinite(ms)) {
-      return;
-    }
-    clearTimeout(entry.timer);
-    entry.timer = setTimeout(() => {
-      const payload = this.tryClaim(token);
-      if (payload === undefined) {
-        return;
-      }
-      abandon(async () => onTimeout(payload), (error) => {
-        this.logger.warn("decisions.timeout_handler_failed", { token, error });
-      });
-    }, ms);
-  }
-
-  /** Takes ownership once and stops the timer; the entry stays until `forget`. */
-  public tryClaim(token: string): T | undefined {
-    const entry = this.entries.get(token);
-    if (!entry || entry.claimed) {
-      return undefined;
-    }
-    entry.claimed = true;
-    clearTimeout(entry.timer);
-    return entry.payload;
-  }
-
-  public forget(token: string): void {
-    clearTimeout(this.entries.get(token)?.timer);
-    this.entries.delete(token);
-  }
-
-  /** Claims and forgets in one step; undefined when someone else owns it. */
-  public withdraw(token: string): T | undefined {
-    const payload = this.tryClaim(token);
-    if (payload !== undefined) {
-      this.forget(token);
-    }
-    return payload;
-  }
-
-  /**
-   * Drops every matching entry and returns the unclaimed ones for the caller
-   * to resolve. A claimed entry's claimant still resolves it, so an expiry
-   * already running its handler completes.
-   */
-  public cancelAll(predicate: (payload: T) => boolean = () => true): T[] {
-    const unclaimed: T[] = [];
-    for (const [token, entry] of this.entries) {
-      if (!predicate(entry.payload)) {
-        continue;
-      }
-      this.forget(token);
-      if (!entry.claimed) {
-        unclaimed.push(entry.payload);
-      }
-    }
-    return unclaimed;
+  public constructor(options: { maxPending?: number; logger?: Logger } = {}) {
+    this.core = new CoreDecisionRegistry(options.maxPending ?? null);
+    this.logger = resolveLogger(options.logger);
   }
 
   public get(token: string): T | undefined {
@@ -123,16 +59,199 @@ export class DecisionRegistry<T> {
     return this.entries.size;
   }
 
-  /** Insertion order, oldest first. */
   public keys(): string[] {
     return [...this.entries.keys()];
   }
 
-  private mintToken(): string {
-    let token: string;
-    do {
-      token = crypto.randomUUID().replaceAll("-", "").slice(0, MINTED_TOKEN_LENGTH);
-    } while (this.entries.has(token));
-    return token;
+  public [Symbol.iterator](): Iterator<DecisionEntry<T>> {
+    return this.entries.values();
   }
+
+  /** Adds `payload` under a minted token, evicting the oldest open ask first when at capacity. */
+  public registerMinted(payload: T, options: { roomId?: string } = {}): Registration<T> {
+    const evicted = this.evictOldest();
+    const registered = this.core.registerMinted(options.roomId ?? null);
+    if (!registered) {
+      throw new Error("DecisionRegistry ran out of tickets");
+    }
+    return registration(this.store(payload, ...registered), evicted, null);
+  }
+
+  /** Adds `payload` under `key`; a redelivery replaces its open predecessor in place, so only a new key evicts. Null while the key is claimed. */
+  public registerKeyed(payload: T, options: { key: string }): Registration<T> | null {
+    const replaced = this.entries.get(options.key) ?? null;
+    const evicted = replaced ? null : this.evictOldest();
+    const registered = this.core.registerKeyed(options.key);
+    if (!registered) {
+      return null;
+    }
+    return registration(this.store(payload, ...registered), evicted, replaced);
+  }
+
+  /** Claims `entry` after `timeoutMs` and hands it to `onTimeout`, unless a reply claims it first. */
+  public startTimeout(entry: DecisionEntry<T>, timeoutMs: number, onTimeout: (entry: DecisionEntry<T>) => Promise<void> | void): void {
+    // `setTimeout` coerces Infinity to 1ms, so "unbounded" must never arm.
+    if (!this.holds(entry) || !Number.isFinite(timeoutMs)) {
+      return;
+    }
+    this.cancelTimer(entry.token);
+    const timer = setTimeout(() => {
+      // The running expiry owns its outcome once it claims, so a later discard must not find it.
+      if (this.timers.get(entry.token) === timer) {
+        this.timers.delete(entry.token);
+      }
+      if (this.claim(entry) !== "claimed") {
+        return;
+      }
+      abandon(async () => onTimeout(entry), (error) => {
+        this.logger.warn("decisions.timeout_handler_failed", { token: entry.token, error });
+      });
+    }, timeoutMs);
+    this.timers.set(entry.token, timer);
+  }
+
+  /** Takes ownership of whatever registration holds `token`; null if someone else has. Resolve without awaiting in between: a waiter defers to the claim. */
+  public tryClaim(token: string): DecisionEntry<T> | null {
+    const entry = this.entries.get(token);
+    return entry && this.claim(entry) === "claimed" ? entry : null;
+  }
+
+  /** Drops `entry` if nobody claimed it; false when a claimant owns it or it was replaced or removed. */
+  public withdraw(entry: DecisionEntry<T>): boolean {
+    if (!this.holds(entry) || !this.core.withdraw(entry.token, entry.ticket)) {
+      return false;
+    }
+    this.discard(entry.token);
+    return true;
+  }
+
+  /** Drops `entry`, claimed or not, leaving any newer registration of its token intact. */
+  public forget(entry: DecisionEntry<T>): void {
+    if (this.holds(entry) && this.core.forget(entry.token, entry.ticket)) {
+      this.discard(entry.token);
+    }
+  }
+
+  /** The answer to `entry`, or TIMED_OUT if the deadline claims it first or it was replaced; a reply that claimed it first is always waited for. */
+  public async wait<R>(entry: DecisionEntry<T>, answer: Promise<R>, options: { timeoutMs: number }): Promise<R | TimedOut> {
+    let settled: { value: R } | undefined;
+    const answered = answer.then((value) => (settled = { value }));
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      if (!Number.isFinite(options.timeoutMs)) {
+        return await answer;
+      }
+      const first = await Promise.race([
+        answered,
+        new Promise<TimedOut>((resolve) => {
+          deadline = setTimeout(() => resolve(TIMED_OUT), options.timeoutMs);
+        }),
+      ]);
+      if (first !== TIMED_OUT) {
+        return first.value;
+      }
+      // Whoever removed the ask in the deadline's own tick resolved it.
+      if (settled) {
+        return settled.value;
+      }
+      if (this.claim(entry) === "already_claimed") {
+        this.logger.debug("decisions.deadline_deferred_to_claimant", { token: entry.token });
+        return await answer;
+      }
+      return TIMED_OUT;
+    } finally {
+      clearTimeout(deadline);
+      this.forget(entry);
+    }
+  }
+
+  /** Entries still awaiting an answer: what a room should see as pending. */
+  public unclaimed(): DecisionEntry<T>[] {
+    return this.entriesFor(this.core.unclaimed());
+  }
+
+  public unclaimedInRoom(roomId: string): DecisionEntry<T>[] {
+    return this.entriesFor(this.core.unclaimedInRoom(roomId));
+  }
+
+  public unclaimedCount(): number {
+    return this.core.unclaimedCount();
+  }
+
+  public oldestUnclaimed(): DecisionEntry<T> | null {
+    const token = this.core.oldestUnclaimed();
+    return token === undefined ? null : this.entries.get(token) ?? null;
+  }
+
+  /** Unlike `size`, ignores an entry whose claimant is still resolving it. */
+  public hasUnclaimed(): boolean {
+    return this.unclaimedCount() > 0;
+  }
+
+  public hasClaimed(): boolean {
+    return this.size > this.unclaimedCount();
+  }
+
+  /** Removes every entry, returning the unclaimed ones for the caller to resolve; a claimed entry's claimant still resolves it. */
+  public cancelAll(): DecisionEntry<T>[] {
+    return this.dropCancelled(this.core.cancelAll());
+  }
+
+  public cancelRoom(roomId: string): DecisionEntry<T>[] {
+    return this.dropCancelled(this.core.cancelRoom(roomId));
+  }
+
+  // Tickets restart per registry, so an entry from a replaced registry could otherwise match a fresh one.
+  private holds(entry: DecisionEntry<T>): boolean {
+    return this.entries.get(entry.token) === entry;
+  }
+
+  private claim(entry: DecisionEntry<T>): ClaimOutcome {
+    if (!this.holds(entry)) {
+      return "stale";
+    }
+    const outcome = this.core.tryClaim(entry.token, entry.ticket);
+    if (outcome === "claimed") {
+      this.cancelTimer(entry.token);
+    }
+    return outcome;
+  }
+
+  private store(payload: T, token: string, ticket: bigint): DecisionEntry<T> {
+    this.cancelTimer(token);
+    const entry = Object.freeze({ token, ticket, payload });
+    this.entries.set(token, entry);
+    return entry;
+  }
+
+  private evictOldest(): DecisionEntry<T> | null {
+    const token = this.core.evictOldest();
+    return token === undefined ? null : this.discard(token);
+  }
+
+  private entriesFor(tokens: readonly string[]): DecisionEntry<T>[] {
+    return tokens.map((token) => this.entries.get(token)!);
+  }
+
+  private dropCancelled(cancelled: CancelledDecisions): DecisionEntry<T>[] {
+    const unclaimed = this.entriesFor(cancelled.unclaimed);
+    [...cancelled.unclaimed, ...cancelled.claimed].forEach((token) => this.discard(token));
+    return unclaimed;
+  }
+
+  private discard(token: string): DecisionEntry<T> {
+    this.cancelTimer(token);
+    const entry = this.entries.get(token)!;
+    this.entries.delete(token);
+    return entry;
+  }
+
+  private cancelTimer(token: string): void {
+    clearTimeout(this.timers.get(token));
+    this.timers.delete(token);
+  }
+}
+
+function registration<T>(entry: DecisionEntry<T>, evicted: DecisionEntry<T> | null, replaced: DecisionEntry<T> | null): Registration<T> {
+  return { entry, evicted, replaced, removed: [evicted, replaced].filter((removed) => removed !== null) };
 }

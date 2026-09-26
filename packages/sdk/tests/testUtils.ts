@@ -6,6 +6,7 @@ import type { AgentToolsProtocol } from "../src/core";
 import type { MentionInput } from "../src/contracts/dtos";
 import { DEFAULT_AGENT_TOOLS_CAPABILITIES, FAILURE_EVENT_TYPE, toFailureEvent } from "../src/contracts/protocols";
 import { isBlankEventContent } from "../src/contracts/chatEvents";
+import { createDeferred, type Deferred } from "../src/core/deferred";
 import type {
   AgentIdentity,
   PaginatedResponse,
@@ -32,6 +33,65 @@ interface CapturedToolEvent {
 
 type FakeToolMethod = keyof AgentToolsProtocol;
 
+/** Settles `until` waiters as a fake records traffic, so a test orders actors by what they did, never by time. */
+export class TrafficLog {
+  private readonly checks = new Set<() => void>();
+
+  public until(predicate: () => boolean): Promise<void> {
+    return new Promise((resolve) => {
+      const check = () => {
+        if (predicate()) {
+          this.checks.delete(check);
+          resolve();
+        }
+      };
+      this.checks.add(check);
+      check();
+    });
+  }
+
+  public record(): void {
+    this.checks.forEach((check) => check());
+  }
+}
+
+/** A call a fake keeps in flight: `sending` settles with its arguments once it arrives; `release()` lets it finish, failing with the hold's error if it has one. */
+export interface HeldCall<A extends unknown[]> {
+  readonly sending: Promise<A>;
+  release(): void;
+}
+
+interface Hold<A extends unknown[]> {
+  matches: (...args: A) => boolean;
+  error?: Error;
+  sending: Deferred<A>;
+  released: Deferred;
+}
+
+/** One-shot holds on a fake's calls; each hold parks the first call it matches. */
+export class CallHolds<A extends unknown[]> {
+  private readonly holds: Hold<A>[] = [];
+
+  public hold(matches: (...args: A) => boolean, options: { error?: Error } = {}): HeldCall<A> {
+    const hold: Hold<A> = { matches, error: options.error, sending: createDeferred<A>(), released: createDeferred() };
+    this.holds.push(hold);
+    return { sending: hold.sending.promise, release: () => hold.released.resolve() };
+  }
+
+  public async pass(...args: A): Promise<void> {
+    const hold = this.holds.find((candidate) => candidate.matches(...args));
+    if (!hold) {
+      return;
+    }
+    this.holds.splice(this.holds.indexOf(hold), 1);
+    hold.sending.resolve(args);
+    await hold.released.promise;
+    if (hold.error) {
+      throw hold.error;
+    }
+  }
+}
+
 interface FakeToolsOptions {
   failOn?: Iterable<FakeToolMethod>;
   errorFactory?: (method: FakeToolMethod) => Error;
@@ -44,6 +104,8 @@ export class FakeTools implements AgentToolsProtocol {
   public readonly mentions: MentionInput[] = [];
   public readonly events: CapturedToolEvent[] = [];
   public rest?: Pick<RestApi, "getAgentMe" | "listChats">;
+  private readonly traffic = new TrafficLog();
+  private readonly heldMessages = new CallHolds<[content: string]>();
   private readonly failOn: Set<FakeToolMethod>;
   private readonly errorFactory: (method: FakeToolMethod) => Error;
 
@@ -54,13 +116,25 @@ export class FakeTools implements AgentToolsProtocol {
       ((method) => new Error(`FakeTools configured failure for ${String(method)}`));
   }
 
+  /** Keeps the first message `matching` accepts in flight until released; with `error`, it then fails undelivered. */
+  public holdMessage(matching: (content: string) => boolean, options: { error?: Error } = {}): HeldCall<[content: string]> {
+    return this.heldMessages.hold(matching, options);
+  }
+
+  /** Settles once `predicate` holds for what the room has recorded. */
+  public until(predicate: () => boolean): Promise<void> {
+    return this.traffic.until(predicate);
+  }
+
   public async sendMessage(
     content: string,
     mentions?: string[] | Array<{ id: string; handle?: string }>,
   ): Promise<Record<string, unknown>> {
     this.maybeFail("sendMessage");
+    await this.heldMessages.pass(content);
     this.messages.push(content);
     this.mentions.push(mentions ?? []);
+    this.traffic.record();
     return { ok: true };
   }
 
@@ -76,6 +150,7 @@ export class FakeTools implements AgentToolsProtocol {
       return { ok: false, status: "failed" };
     }
     this.events.push({ content, messageType, metadata });
+    this.traffic.record();
     return { ok: true };
   }
 
