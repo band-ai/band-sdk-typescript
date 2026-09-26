@@ -2084,6 +2084,57 @@ describe("OpencodeAdapter", () => {
       expect(room.tools.mentions.at(-1)).toEqual([{ id: APPROVER }]);
     });
 
+    it("answers the oldest question still open while another answer is in flight", async () => {
+      const [first, second, third] = [aQuestion(), aQuestion(), aQuestion()];
+      const room = await openRoom([first.event, second.event]);
+      await room.turn;
+      await room.prompted(first.prompt, second.prompt);
+
+      const firstAnswer = room.client.holdReply("replyQuestion");
+      const answering = room.say("Alice");
+      await firstAnswer.sending;
+      // OpenCode redelivers the question being answered; the next ask shows the redelivery was handled.
+      room.raise(first.event);
+      room.raise(third.event);
+      await room.prompted(third.prompt);
+      await room.say("Bob");
+      await room.say("reject");
+      firstAnswer.release();
+      await answering;
+
+      expect(room.client.questionReplies).toEqual([
+        { requestId: second.id, answers: [["Bob"]] },
+        { requestId: first.id, answers: [["Alice"]] },
+      ]);
+      expect(room.client.rejectedQuestions).toEqual([third.id]);
+      expect(room.tools.messages.filter((message) => message === first.prompt)).toHaveLength(1);
+    });
+
+    it("restarts an ask's clock when OpenCode redelivers it", async () => {
+      vi.useFakeTimers();
+      const permission = aPermission();
+      const question = aQuestion();
+      const room = await openRoom([permission.event, question.event], {
+        config: { approvalWaitTimeoutMs: APPROVAL_TIMEOUT_MS, questionWaitTimeoutMs: APPROVAL_TIMEOUT_MS },
+      });
+      await room.turn;
+      await room.prompted(permission.prompt, question.prompt);
+
+      await vi.advanceTimersByTimeAsync(APPROVAL_TIMEOUT_MS * 2 / 3);
+      room.raise(permission.event);
+      room.raise(question.event);
+      await room.tools.until(() => room.tools.messages.length === 4);
+      await vi.advanceTimersByTimeAsync(APPROVAL_TIMEOUT_MS * 2 / 3);
+
+      expect(permissionReplies(room.client)).toEqual([]);
+      expect(room.client.rejectedQuestions).toEqual([]);
+      await room.say(`approve ${permission.id}`);
+      await vi.advanceTimersByTimeAsync(APPROVAL_TIMEOUT_MS / 3);
+
+      expect(permissionReplies(room.client)).toEqual([[permission.id, "once"]]);
+      expect(room.client.rejectedQuestions).toEqual([question.id]);
+    });
+
     it("finishes a reply claimed before the deadline and an expiry already replying, once each, past the turn's end", async () => {
       vi.useFakeTimers();
       const [answered, expired] = [aPermission(), aPermission()];
