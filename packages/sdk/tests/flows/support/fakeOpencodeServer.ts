@@ -10,8 +10,7 @@ import type { AddressInfo } from "node:net";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
-import { createDeferred, type Deferred } from "../../../src/core/deferred";
-import { CallHolds, TrafficLog, type HeldCall } from "../../testUtils";
+import { CallHolds, RecordLog, type HeldCall } from "../../testUtils";
 
 export interface Request {
   readonly method: string;
@@ -92,12 +91,10 @@ export class OpencodeTurn {
 type Script = (turn: OpencodeTurn) => Promise<void> | void;
 
 export class FakeOpencodeServer implements AsyncDisposable {
-  public readonly requests: Request[] = [];
-  private readonly traffic = new TrafficLog();
+  public readonly requests = new RecordLog<Request>();
   private readonly scripts: Script[] = [];
   private readonly sessions = new Set<string>();
   private readonly streams = new Set<ServerResponse>();
-  private readonly waiters: Array<{ method: string; path: string; request: Deferred<Request> }> = [];
   private readonly failures = new Map<string, Failure[]>();
   private readonly holds = new CallHolds<[route: string]>();
   private ids = 0;
@@ -154,17 +151,16 @@ export class FakeOpencodeServer implements AsyncDisposable {
   }
 
   public requestsTo(method: string, pattern: RegExp): Request[] {
-    return this.requests.filter((request) => request.method === method && pattern.test(request.path));
+    return this.requests.entries.filter((request) => request.method === method && pattern.test(request.path));
   }
 
   public until(predicate: () => boolean): Promise<void> {
-    return this.traffic.until(predicate);
+    return this.requests.until(predicate);
   }
 
+  /** Resolves with the next request to `method path` that arrives after this call. */
   public awaitRequest(method: string, path: string): Promise<Request> {
-    const request = createDeferred<Request>();
-    this.waiters.push({ method, path, request });
-    return request.promise;
+    return this.requests.next((request) => request.method === method && request.path === path, this.requests.entries.length);
   }
 
   /** An MCP client for the tools server the adapter registered, with the headers it registered. */
@@ -193,10 +189,8 @@ export class FakeOpencodeServer implements AsyncDisposable {
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? "/", this.url);
     const request: Request = { method: req.method ?? "GET", path: url.pathname, query: Object.fromEntries(url.searchParams), body: await readJson(req), headers: req.headers };
-    this.requests.push(request);
-    this.traffic.record();
+    this.requests.record(request);
     const route = `${request.method} ${request.path.replace(/\/(ses|per|que)_[^/]+/, "/$1_:id")}`;
-    this.settleWaiters(request);
 
     await this.holds.pass(route);
     const failure = this.failures.get(route)?.shift();
@@ -240,15 +234,6 @@ export class FakeOpencodeServer implements AsyncDisposable {
     res.write(`data: ${JSON.stringify({ type: "server.connected", properties: {} })}\n\n`);
     this.streams.add(res);
     res.on("close", () => this.streams.delete(res));
-  }
-
-  private settleWaiters(request: Request): void {
-    for (const waiter of [...this.waiters]) {
-      if (waiter.method === request.method && waiter.path === request.path) {
-        this.waiters.splice(this.waiters.indexOf(waiter), 1);
-        waiter.request.resolve(request);
-      }
-    }
   }
 }
 

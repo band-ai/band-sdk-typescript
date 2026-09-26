@@ -8,9 +8,8 @@ import type {
   LettaMessageCreateParams,
 } from "../src/adapters/letta/LettaAdapter";
 import { LettaHistoryConverter } from "../src/adapters/letta/types";
-import { FakeTools, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
+import { FakeTools, failureEvents, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
-import { FAILURE_EVENT_TYPE } from "../src/contracts/protocols";
 
 // ---------------------------------------------------------------------------
 // Fake Letta client
@@ -661,7 +660,7 @@ describe("LettaAdapter", () => {
     // The no-response branch throws from inside the same try its own catch
     // guards — without rethrowIfRecoverableTurnFailure, the catch re-reports
     // the identical failure a second time.
-    expect(tools.events.filter((event) => event.messageType === FAILURE_EVENT_TYPE)).toHaveLength(1);
+    expect(failureEvents(tools)).toHaveLength(1);
   });
 
   it("reports, then fails the turn, on a client error", async () => {
@@ -1605,7 +1604,7 @@ describe("LettaAdapter", () => {
     );
     // Should not have attempted init again
     expect(attempts).toBe(1);
-    const cooldownFailure = tools.events.filter((e) => e.messageType === FAILURE_EVENT_TYPE)[1];
+    const cooldownFailure = failureEvents(tools)[1];
     expect(cooldownFailure?.metadata?.failure).toMatchObject({
       provider: "letta",
       code: null,

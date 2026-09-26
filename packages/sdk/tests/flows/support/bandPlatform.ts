@@ -11,7 +11,7 @@ import type { ParticipantRecord } from "../../../src/contracts/dtos";
 import type { PaginatedResponse, PlatformChatMessage, RestApi } from "../../../src/client/rest/types";
 import { BandLink } from "../../../src/platform/BandLink";
 import { PlatformRuntime } from "../../../src/runtime/PlatformRuntime";
-import { CallHolds, FakeRestApi, FakeTransport, TrafficLog, type HeldCall } from "../../testUtils";
+import { assertMentioned, CallHolds, FakeRestApi, FakeTransport, RecordLog, type HeldCall } from "../../testUtils";
 
 export const AGENT_ID = "agent-1";
 
@@ -25,6 +25,11 @@ export interface Posted {
 }
 
 export type Outcome = "processed" | "failed";
+
+interface Settled {
+  readonly messageId: string;
+  readonly outcome: Outcome;
+}
 
 type MessageBody = Parameters<RestApi["createChatMessage"]>[1];
 type EventBody = Parameters<RestApi["createChatEvent"]>[1];
@@ -42,10 +47,9 @@ interface HistoryEntry {
 
 /** The platform's REST surface as the agent sees it: it records every post, keeps each room's history, and settles each message's outcome. */
 export class RecordingRestApi extends FakeRestApi {
-  public readonly posted: Posted[] = [];
+  public readonly posted = new RecordLog<Posted>();
+  public readonly settled = new RecordLog<Settled>();
   private readonly history: HistoryEntry[] = [];
-  public readonly outcomes = new Map<string, Outcome>();
-  public readonly traffic = new TrafficLog();
   public readonly messageHolds = new CallHolds<[roomId: string, content: string]>();
 
   public constructor(private readonly participants: readonly ParticipantRecord[]) {
@@ -53,18 +57,15 @@ export class RecordingRestApi extends FakeRestApi {
   }
 
   public override async createChatMessage(roomId: string, message: MessageBody) {
-    // The platform never delivers a chat message that mentions nobody.
-    if (!message.mentions?.length) {
-      throw new Error("At least one mention is required");
-    }
+    assertMentioned(message.mentions);
     await this.messageHolds.pass(roomId, message.content);
     this.record({ roomId, content: message.content, mentions: message.mentions.map((mention) => mention.id), messageType: "text" });
-    return { id: `posted-${this.posted.length}` };
+    return { id: `posted-${this.posted.entries.length}` };
   }
 
   public override async createChatEvent(roomId: string, event: EventBody) {
     this.record({ roomId, content: event.content, mentions: [], messageType: event.messageType, metadata: event.metadata });
-    return { id: `posted-${this.posted.length}` };
+    return { id: `posted-${this.posted.entries.length}` };
   }
 
   public override async listChatParticipants() {
@@ -89,18 +90,16 @@ export class RecordingRestApi extends FakeRestApi {
   }
 
   private settle(messageId: string, outcome: Outcome) {
-    this.outcomes.set(messageId, outcome);
-    this.traffic.record();
+    this.settled.record({ messageId, outcome });
     return {};
   }
 
   private record(posted: Posted): void {
-    this.posted.push(posted);
+    this.posted.record(posted);
     this.remember(posted.roomId, {
-      id: `posted-${this.posted.length}`, content: posted.content, sender_id: AGENT_ID, sender_type: "Agent", sender_name: "Agent",
+      id: `posted-${this.posted.entries.length}`, content: posted.content, sender_id: AGENT_ID, sender_type: "Agent", sender_name: "Agent",
       message_type: posted.messageType, metadata: posted.metadata ?? {}, inserted_at: now(), updated_at: now(),
     });
-    this.traffic.record();
   }
 }
 
@@ -125,7 +124,7 @@ export class BandRoom {
 
   /** Everything the agent posted here, messages and events, in order. */
   public get posted(): Posted[] {
-    return this.platform.rest.posted.filter((posted) => posted.roomId === this.id);
+    return this.platform.rest.posted.entries.filter((posted) => posted.roomId === this.id);
   }
 
   public get messages(): Posted[] {
@@ -137,16 +136,13 @@ export class BandRoom {
   }
 
   /** Resolves once the agent has posted a message here that `matches`, and returns it. */
-  public async nextMessage(matches: (posted: Posted) => boolean, after = 0): Promise<Posted> {
-    const found = () => this.messages.slice(after).find(matches);
-    await this.until(() => found() !== undefined);
-    return found()!;
+  public nextMessage(matches: (posted: Posted) => boolean): Promise<Posted> {
+    return this.platform.rest.posted.next((posted) => posted.roomId === this.id && posted.messageType === "text" && matches(posted));
   }
 
   /** Resolves with how the runtime settled `messageId`. */
   public async outcome(messageId: string): Promise<Outcome> {
-    await this.until(() => this.platform.rest.outcomes.has(messageId));
-    return this.platform.rest.outcomes.get(messageId)!;
+    return (await this.platform.rest.settled.next((settled) => settled.messageId === messageId)).outcome;
   }
 
   /** Keeps the agent's next matching chat message in flight; with `error`, the platform then refuses it. */
@@ -155,7 +151,7 @@ export class BandRoom {
   }
 
   public until(predicate: () => boolean): Promise<void> {
-    return this.platform.rest.traffic.until(predicate);
+    return this.platform.rest.posted.until(predicate);
   }
 
   /** The platform removes the agent from the room. */

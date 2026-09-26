@@ -520,7 +520,7 @@ describe("OpenCode in a Band room", () => {
     expect(JSON.parse(lookup!.text)).toEqual({ title: "Ticket T-7" });
     expect(flaky).toMatchObject({ isError: true, text: expect.stringContaining("upstream down") });
     // Every OpenCode call is scoped to the configured project.
-    expect(server.requests.filter((request) => request.path !== "/mcp/band" || request.method !== "DELETE").every((request) => request.query.directory === "/work/repo" && request.query.workspace === "ws-1")).toBe(true);
+    expect(server.requests.entries.filter((request) => request.path !== "/mcp/band" || request.method !== "DELETE").every((request) => request.query.directory === "/work/repo" && request.query.workspace === "ws-1")).toBe(true);
   });
 
   it("ignores malformed and foreign events, and still answers", async () => {

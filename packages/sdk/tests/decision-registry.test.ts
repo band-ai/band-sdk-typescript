@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createDeferred, type Deferred } from "../src/core/deferred";
 import { DecisionRegistry, TIMED_OUT, type DecisionEntry, type TimedOut } from "../src/adapters/shared/decisions";
-import { TrafficLog } from "./testUtils";
+import { RecordLog } from "./testUtils";
 
 type Outcome = string | TimedOut;
 
@@ -81,16 +81,16 @@ class Room {
 
 /** An `onTimeout` callback that records which asks expired. */
 class Expiries {
-  public readonly names: string[] = [];
-  private readonly traffic = new TrafficLog();
+  private readonly log = new RecordLog<string>();
 
-  public readonly record = (entry: DecisionEntry<Ask>): void => {
-    this.names.push(entry.payload.name);
-    this.traffic.record();
-  };
+  public get names(): readonly string[] {
+    return this.log.entries;
+  }
 
-  public until(name: string): Promise<void> {
-    return this.traffic.until(() => this.names.includes(name));
+  public readonly record = (entry: DecisionEntry<Ask>): void => this.log.record(entry.payload.name);
+
+  public async until(name: string): Promise<void> {
+    await this.log.next((expired) => expired === name);
   }
 }
 

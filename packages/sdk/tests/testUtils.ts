@@ -3,7 +3,6 @@ import { expect } from "vitest";
 import { ParticipantRoster, type AgentFailure } from "@band-ai/band-sdk-core";
 import type { PlatformMessage } from "../src/runtime";
 import type { AgentToolsProtocol } from "../src/core";
-import type { MentionInput } from "../src/contracts/dtos";
 import { DEFAULT_AGENT_TOOLS_CAPABILITIES, FAILURE_EVENT_TYPE, toFailureEvent } from "../src/contracts/protocols";
 import { isBlankEventContent } from "../src/contracts/chatEvents";
 import { createDeferred, type Deferred } from "../src/core/deferred";
@@ -33,9 +32,19 @@ interface CapturedToolEvent {
 
 type FakeToolMethod = keyof AgentToolsProtocol;
 
-/** Settles `until` waiters as a fake records traffic, so a test orders actors by what they did, never by time. */
-export class TrafficLog {
+/** What a fake saw, in order; a test awaits what it holds, so actors are ordered by what they did, never by time. */
+export class RecordLog<T> {
+  private readonly recorded: T[] = [];
   private readonly checks = new Set<() => void>();
+
+  public get entries(): readonly T[] {
+    return this.recorded;
+  }
+
+  public record(entry: T): void {
+    this.recorded.push(entry);
+    this.checks.forEach((check) => check());
+  }
 
   public until(predicate: () => boolean): Promise<void> {
     return new Promise((resolve) => {
@@ -50,8 +59,18 @@ export class TrafficLog {
     });
   }
 
-  public record(): void {
-    this.checks.forEach((check) => check());
+  /** Resolves with the first entry at or after index `from` that `matches`, once there is one. */
+  public async next(matches: (entry: T) => boolean, from = 0): Promise<T> {
+    const found = () => this.recorded.slice(from).find(matches);
+    await this.until(() => found() !== undefined);
+    return found()!;
+  }
+}
+
+/** The platform refuses a chat message that mentions nobody, so it never reaches the room. */
+export function assertMentioned<M extends readonly unknown[] | undefined>(mentions: M): asserts mentions is NonNullable<M> {
+  if (!mentions?.length) {
+    throw new Error("At least one mention is required");
   }
 }
 
@@ -100,12 +119,8 @@ interface FakeToolsOptions {
 export class FakeTools implements AgentToolsProtocol {
   public readonly capabilities = { ...DEFAULT_AGENT_TOOLS_CAPABILITIES };
   public readonly messages: string[] = [];
-  /** Parallel to `messages`: the mentions each one was sent with. */
-  public readonly mentions: MentionInput[] = [];
   public readonly events: CapturedToolEvent[] = [];
   public rest?: Pick<RestApi, "getAgentMe" | "listChats">;
-  private readonly traffic = new TrafficLog();
-  private readonly heldMessages = new CallHolds<[content: string]>();
   private readonly failOn: Set<FakeToolMethod>;
   private readonly errorFactory: (method: FakeToolMethod) => Error;
 
@@ -116,29 +131,13 @@ export class FakeTools implements AgentToolsProtocol {
       ((method) => new Error(`FakeTools configured failure for ${String(method)}`));
   }
 
-  /** Keeps the first message `matching` accepts in flight until released; with `error`, it then fails undelivered. */
-  public holdMessage(matching: (content: string) => boolean, options: { error?: Error } = {}): HeldCall<[content: string]> {
-    return this.heldMessages.hold(matching, options);
-  }
-
-  /** Settles once `predicate` holds for what the room has recorded. */
-  public until(predicate: () => boolean): Promise<void> {
-    return this.traffic.until(predicate);
-  }
-
   public async sendMessage(
     content: string,
     mentions?: string[] | Array<{ id: string; handle?: string }>,
   ): Promise<Record<string, unknown>> {
     this.maybeFail("sendMessage");
-    // The platform refuses a message that mentions nobody, so it never reaches the room.
-    if (!mentions?.length) {
-      throw new Error("At least one mention is required");
-    }
-    await this.heldMessages.pass(content);
+    assertMentioned(mentions);
     this.messages.push(content);
-    this.mentions.push(mentions);
-    this.traffic.record();
     return { ok: true };
   }
 
@@ -154,7 +153,6 @@ export class FakeTools implements AgentToolsProtocol {
       return { ok: false, status: "failed" };
     }
     this.events.push({ content, messageType, metadata });
-    this.traffic.record();
     return { ok: true };
   }
 

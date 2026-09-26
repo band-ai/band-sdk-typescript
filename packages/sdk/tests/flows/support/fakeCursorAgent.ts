@@ -9,7 +9,7 @@ import type * as schema from "@agentclientprotocol/sdk";
 
 import type { ACPClientConnectionFactory } from "../../../src/adapters/acp/types";
 import { createDeferred, type Deferred } from "../../../src/core/deferred";
-import { TrafficLog } from "../../testUtils";
+import { RecordLog } from "../../testUtils";
 
 export interface Received {
   readonly method: string;
@@ -50,10 +50,9 @@ function pipe() {
 }
 
 export class FakeCursorAgent {
-  public readonly received: Received[] = [];
+  public readonly received = new RecordLog<Received>();
   /** The environment each Cursor process was launched with. */
   public readonly launchEnvs: Array<Record<string, string> | undefined> = [];
-  private readonly traffic = new TrafficLog();
   private readonly turns: QueuedTurn[] = [];
   private sessions = 0;
   private peer: AgentSideConnection | null = null;
@@ -82,16 +81,11 @@ export class FakeCursorAgent {
   }
 
   public receivedOf(method: string): unknown[] {
-    return this.received.filter((request) => request.method === method).map((request) => request.params);
-  }
-
-  public until(predicate: () => boolean): Promise<void> {
-    return this.traffic.until(predicate);
+    return this.received.entries.filter((request) => request.method === method).map((request) => request.params);
   }
 
   private record(method: string, params: unknown): void {
-    this.received.push({ method, params });
-    this.traffic.record();
+    this.received.record({ method, params });
   }
 
   private agent(): Agent {

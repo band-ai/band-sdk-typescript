@@ -11,7 +11,7 @@ import { BandClient } from "@band-ai/rest-client";
 
 import { FernRestAdapter } from "../../../src/rest";
 import { withTimeout } from "../../../src/adapters/shared/withTimeout";
-import { TrafficLog } from "../../testUtils";
+import { RecordLog } from "../../testUtils";
 
 import type { BandLink } from "../../../src/platform/BandLink";
 import type { PlatformEvent } from "../../../src/platform/events";
@@ -140,30 +140,35 @@ export function cliProbeFailure(command: string): string | null {
 
 /** A REST client acting as the agent that owns `apiKey`. */
 export function agentRest(restUrl: string, apiKey: string): FernRestAdapter {
-  return new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey }));
+  return new FernRestAdapter(agentClient(restUrl, apiKey));
+}
+
+function agentClient(restUrl: string, apiKey: string): BandClient {
+  return new BandClient({ baseUrl: restUrl, apiKey });
 }
 
 /** An agent's REST client that records the events it posts, so a script waits on them instead of polling the room. */
 export class EventRecordingRest extends FernRestAdapter {
-  private readonly posted: string[] = [];
-  private readonly traffic = new TrafficLog();
+  private readonly posted = new RecordLog<string>();
 
   public constructor(restUrl: string, apiKey: string) {
-    super(new BandClient({ baseUrl: restUrl, apiKey }));
+    super(agentClient(restUrl, apiKey));
+  }
+
+  /** Every event content posted so far. */
+  public get events(): readonly string[] {
+    return this.posted.entries;
   }
 
   public override async createChatEvent(...args: Parameters<FernRestAdapter["createChatEvent"]>) {
     const result = await super.createChatEvent(...args);
-    this.posted.push(args[1].content);
-    this.traffic.record();
+    this.posted.record(args[1].content);
     return result;
   }
 
-  /** The events posted so far that contain `text`, once there is at least one. */
-  public async eventsContaining(text: string, timeoutMs = LIVE_EVENT_TIMEOUT_MS): Promise<string[]> {
-    const matching = () => this.posted.filter((content) => content.includes(text));
-    await withTimeout(this.traffic.until(() => matching().length > 0), timeoutMs, `no event containing: ${text}`);
-    return matching();
+  /** The first posted event that contains `text`, once there is one. */
+  public eventContaining(text: string, timeoutMs = LIVE_EVENT_TIMEOUT_MS): Promise<string> {
+    return withTimeout(this.posted.next((content) => content.includes(text)), timeoutMs, `no event containing: ${text}`);
   }
 }
 

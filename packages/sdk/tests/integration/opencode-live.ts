@@ -140,13 +140,15 @@ async function runTimeoutScenario(scenario: Scenario): Promise<void> {
   const requestId = await requestGatedCommand(scenario, marker, transcript);
 
   await collectUntil(scenario, transcript, () => turnEnded(transcript, requestId), "the end of the timed-out turn");
-  const timedOutEvents = await scenario.opencodeRest.eventsContaining(OPENCODE_DECISION_MESSAGES.approvalTimedOut(requestId, REPLY_WORDS.reject));
+  const timedOut = OPENCODE_DECISION_MESSAGES.approvalTimedOut(requestId, REPLY_WORDS.reject);
+  await scenario.opencodeRest.eventContaining(timedOut);
 
   await sendToOpencode(scenario, `${APPROVE_WORD} ${requestId}`);
   const noLongerPending = OPENCODE_DECISION_MESSAGES.noLongerPending(ASK_KIND.permission, requestId);
   await collectUntil(scenario, transcript, () => said(transcript, noLongerPending), "the no-longer-pending notice");
 
   const handledNotices = Object.values(REPLY_WORDS).map((reply) => OPENCODE_DECISION_MESSAGES.approvalHandled(requestId, reply));
+  const timedOutEvents = scenario.opencodeRest.events.filter((content) => content.includes(timedOut));
   const outcomes = [...timedOutEvents, ...transcript.map((message) => message.content).filter((content) => handledNotices.some((notice) => content.includes(notice)))];
   if (outcomes.length !== 1) {
     throw new Error(`expected exactly one outcome for ${requestId}, saw: ${JSON.stringify(outcomes)}`);

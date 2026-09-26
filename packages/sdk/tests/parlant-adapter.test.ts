@@ -1,9 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { ParlantAdapter } from "../src/adapters/parlant/ParlantAdapter";
-import { FakeTools, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
+import { FakeTools, failureEvents, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
-import { FAILURE_EVENT_TYPE } from "../src/contracts/protocols";
 
 class FakeParlantClient {
   public readonly customers = {
@@ -293,7 +292,7 @@ describe("ParlantAdapter", () => {
     // The timeout branch throws from inside the same try its own catch
     // guards — without rethrowIfRecoverableTurnFailure, the catch re-reports
     // a second, code-less duplicate.
-    expect(tools.events.filter((event) => event.messageType === FAILURE_EVENT_TYPE)).toHaveLength(1);
+    expect(failureEvents(tools)).toHaveLength(1);
   });
 
   it("serializes bootstrap initialization for concurrent first messages in one room", async () => {

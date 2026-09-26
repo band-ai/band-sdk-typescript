@@ -9,8 +9,7 @@ import {
 } from "../src/adapters/codex/appServerClient";
 import type { InitializeParams } from "../src/adapters/codex/appServerProtocol";
 import { HistoryProvider } from "../src/runtime/types";
-import { FakeTools, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
-import { FAILURE_EVENT_TYPE } from "../src/contracts/protocols";
+import { FakeTools, failureEvents, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
 
 class FakeCodexClient implements CodexClientLike {
@@ -1112,9 +1111,9 @@ describe("CodexAdapter", () => {
       { isSessionBootstrap: false, roomId: "room-double-report" },
     ));
 
-    const failureEvents = tools.events.filter((event) => event.messageType === FAILURE_EVENT_TYPE);
-    expect(failureEvents).toHaveLength(1);
-    expect(failureEvents[0]?.metadata?.failure).toMatchObject({
+    const failures = failureEvents(tools);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.metadata?.failure).toMatchObject({
       provider: "codex",
       code: "invalid_request",
       message: "bad turn input",
@@ -1152,9 +1151,9 @@ describe("CodexAdapter", () => {
       await vi.advanceTimersByTimeAsync(1_000);
       await expectTurnFailed(turn);
 
-      const failureEvents = tools.events.filter((event) => event.messageType === FAILURE_EVENT_TYPE);
-      expect(failureEvents).toHaveLength(1);
-      expect(failureEvents[0]?.metadata?.failure).toMatchObject({
+      const failures = failureEvents(tools);
+      expect(failures).toHaveLength(1);
+      expect(failures[0]?.metadata?.failure).toMatchObject({
         provider: "codex",
         code: "invalid_request",
         message: "bad turn input",
