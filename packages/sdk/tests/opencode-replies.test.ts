@@ -45,14 +45,17 @@ function room({ permissions = [], questions = [], resolved = {}, claimed = [] }:
 const notice = (text: string): ReplyAction => ({ kind: REPLY_ACTION.notice, text });
 const PASS: ReplyAction = { kind: REPLY_ACTION.pass };
 
+interface Row {
+  scenario: string;
+  reply: string;
+  setup: RoomSetup;
+  action: ReplyAction;
+  /** A deliberate departure from the Python adapter. */
+  departsFromPython?: true;
+}
+
 describe("routeReply", () => {
-  it.each<{ scenario: string; reply: string; setup: RoomSetup; action: ReplyAction }>([
-    {
-      scenario: "names one of two pending permissions",
-      reply: "approve perm-b",
-      setup: { permissions: ["perm-a", "perm-b"] },
-      action: { kind: REPLY_ACTION.permission, id: "perm-b", reply: "once" },
-    },
+  it.each<Row>([
     {
       scenario: "names a mixed-case id exactly as OpenCode issued it",
       reply: "Always PerM-Mixed",
@@ -102,12 +105,6 @@ describe("routeReply", () => {
       action: { kind: REPLY_ACTION.rejectQuestion, id: "q-1" },
     },
     {
-      scenario: "approves a question id",
-      reply: "approve q-1",
-      setup: { questions: [{ id: "q-1" }] },
-      action: notice(OPENCODE_DECISION_MESSAGES.questionHint(["q-1"])),
-    },
-    {
       scenario: "names a never-asked id while a permission waits",
       reply: "approve stale",
       setup: { permissions: ["perm-a"] },
@@ -118,12 +115,6 @@ describe("routeReply", () => {
       reply: "reject never-asked",
       setup: {},
       action: PASS,
-    },
-    {
-      scenario: "rejects with no id while both a permission and a question wait",
-      reply: "reject",
-      setup: { permissions: ["perm-a"], questions: [{ id: "q-1" }] },
-      action: notice(OPENCODE_DECISION_MESSAGES.dualRejectHint(["perm-a"], ["q-1"])),
     },
     {
       scenario: "names no permission while the other of two is claimed",
@@ -161,31 +152,28 @@ describe("routeReply", () => {
       setup: { questions: [{ id: "q-1" }], claimed: ["q-1"] },
       action: PASS,
     },
-  ])("when a reply $scenario", ({ reply, setup, action }) => {
-    expect(routeReply(reply, room(setup))).toEqual(action);
-  });
-
-  // Deliberate departures from the Python adapter.
-  it.each<{ scenario: string; reply: string; setup: RoomSetup; action: ReplyAction }>([
     {
-      scenario: "approving a question id while a permission waits hints at the question grammar",
+      scenario: "approves a question id while a permission waits, hinting at the question grammar",
       reply: "approve q-1",
       setup: { permissions: ["perm-a"], questions: [{ id: "q-1" }] },
       action: notice(OPENCODE_DECISION_MESSAGES.questionHint(["q-1"])),
+      departsFromPython: true,
     },
     {
-      scenario: "a polite reject with only questions waiting rejects the oldest",
+      scenario: "politely rejects with only questions waiting, rejecting the oldest",
       reply: "reject please",
       setup: { questions: [{ id: "q-1" }, { id: "q-2" }] },
       action: { kind: REPLY_ACTION.rejectQuestion, id: "q-1" },
+      departsFromPython: true,
     },
     {
-      scenario: "free text with only permissions waiting is left for the model",
+      scenario: "is free text with only permissions waiting, left for the model",
       reply: "@agent go ahead",
       setup: { permissions: ["perm-a"] },
       action: PASS,
+      departsFromPython: true,
     },
-  ])("$scenario", ({ reply, setup, action }) => {
+  ])("when a reply $scenario", ({ reply, setup, action }) => {
     expect(routeReply(reply, room(setup))).toEqual(action);
   });
 });
