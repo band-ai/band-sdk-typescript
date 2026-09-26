@@ -105,85 +105,143 @@ describe("DecisionRegistry", () => {
     vi.useRealTimers();
   });
 
-  it("gives every asker in a busy room exactly one outcome", async () => {
-    // At capacity with a reply mid-flight: the oldest open ask is evicted (never the claimed one), a redelivery
-    // supersedes its predecessor without evicting, a redelivery of the claimed ask is refused, the claimant's
-    // late answer still wins past the deadline, and the rest time out.
+  it("evicts the oldest open ask at capacity, never a claimed one", async () => {
     const room = new Room({ maxPending: 2 });
+    room.ask("a", { key: "a" });
+    room.ask("b", { key: "b" });
+    const claimed = room.registry.tryClaim("a")!;
+
+    room.ask("c", { key: "c" });
+    expect(["a", "b", "c"].filter((key) => room.registry.has(key))).toEqual(["a", "c"]);
+    expect(await room.outcome("b")).toBe("evicted");
+    claimed.payload.answer.resolve("accept");
+    expect(room.reply("c", "decline")).toBe(true);
+
+    expect(await room.outcomes()).toEqual({ a: "accept", b: "evicted", c: "decline" });
+    expect(room.registry.size).toBe(0);
+  });
+
+  it("lets a redelivery replace its predecessor without evicting another ask", async () => {
+    const room = new Room({ maxPending: 2 });
+    room.ask("a", { key: "a" });
+    room.ask("c1", { key: "c" });
+
+    room.ask("c2", { key: "c" });
+    expect(["a", "c"].filter((key) => room.registry.has(key))).toEqual(["a", "c"]);
+    expect(room.reply("c", "accept")).toBe(true);
+    await vi.advanceTimersByTimeAsync(DEADLINE_MS);
+
+    expect(await room.outcomes()).toEqual({ a: TIMED_OUT, c1: "replaced", c2: "accept" });
+    expect(room.registry.size).toBe(0);
+  });
+
+  it("refuses a redelivery of a claimed ask, leaving it to its claimant", async () => {
+    const room = new Room();
+    room.ask("a", { key: "a" });
+    const claimed = room.registry.tryClaim("a")!;
+
+    expect(room.ask("a-again", { key: "a" })).toBeNull();
+    expect(room.registry.has("a")).toBe(true);
+    claimed.payload.answer.resolve("accept");
+
+    expect(await room.outcomes()).toEqual({ a: "accept" });
+    expect(room.registry.size).toBe(0);
+  });
+
+  it("lets a claimant's late answer beat the deadline, while unclaimed asks time out", async () => {
+    const room = new Room();
     room.ask("a", { key: "a", timeoutMs: SHORT_DEADLINE_MS });
     room.ask("b", { key: "b" });
     const claimed = room.registry.tryClaim("a")!;
 
-    room.ask("c1", { key: "c" });
-    room.ask("c2", { key: "c" });
-    expect(room.ask("a-again", { key: "a" })).toBeNull();
-    expect(["a", "b", "c"].filter((key) => room.registry.has(key))).toEqual(["a", "c"]);
-
     await vi.advanceTimersByTimeAsync(DEADLINE_MS);
-    expect(await room.outcome("c2")).toBe(TIMED_OUT);
+    expect(await room.outcome("b")).toBe(TIMED_OUT);
     claimed.payload.answer.resolve("accept");
 
-    expect(await room.outcomes()).toEqual({ a: "accept", b: "evicted", c1: "replaced", c2: TIMED_OUT });
+    expect(await room.outcomes()).toEqual({ a: "accept", b: TIMED_OUT });
     expect(room.registry.size).toBe(0);
-    expect(room.reply("c", "accept")).toBe(false);
+    expect(room.reply("b", "accept")).toBe(false);
   });
 
-  it("resolves only a torn-down room's open asks", async () => {
-    // Teardown resolves the room's open asks, leaves a claimed one to its claimant, and never touches another room.
+  it("resolves a torn-down room's open asks, and leaves a claimed one to its claimant", async () => {
     const room = new Room();
     room.ask("open", { roomId: "room-1" });
     const claimedAsk = room.ask("claimed", { roomId: "room-1" })!;
-    room.ask("elsewhere", { roomId: "room-2" });
-    const abandoned = room.ask("abandoned", { roomId: "room-2" })!;
     const claimed = room.registry.tryClaim(claimedAsk.token)!;
 
     room.tearDown("room-1");
+    expect(await room.outcome("open")).toBe("cancelled");
     claimed.payload.answer.resolve("accept");
+
+    expect(await room.outcomes()).toEqual({ open: "cancelled", claimed: "accept" });
+    expect(room.registry.size).toBe(0);
+  });
+
+  it("never touches another room's asks on teardown", async () => {
+    const room = new Room();
+    room.ask("torn-down", { roomId: "room-1" });
+    room.ask("elsewhere", { roomId: "room-2" });
+    const abandoned = room.ask("abandoned", { roomId: "room-2" })!;
+
+    room.tearDown("room-1");
     room.abandon(abandoned);
 
     const [survivor] = room.registry.unclaimedInRoom("room-2");
     expect(survivor?.payload.name).toBe("elsewhere");
     expect(room.reply(survivor!.token, "decline")).toBe(true);
-    expect(await room.outcomes()).toEqual({ open: "cancelled", claimed: "accept", elsewhere: "decline", abandoned: "abandoned" });
+    expect(await room.outcomes()).toEqual({ "torn-down": "cancelled", elsewhere: "decline", abandoned: "abandoned" });
     expect(room.registry.size).toBe(0);
   });
 
-  it("races expiry timers against replies, redeliveries and teardown", async () => {
-    // A reply before the deadline stops that ask's timer; a redelivery drops its predecessor's timer and a stale
-    // handle can't arm a new one; and teardown during an expiry that already claimed its ask lets it finish.
+  it("stops an ask's expiry timer once a reply claims it", async () => {
+    const registry = new DecisionRegistry<Ask>();
+    const expiries = new Expiries();
+    registry.startTimeout(registry.registerKeyed(anAsk("answered"), { key: "p1" })!.entry, SHORT_DEADLINE_MS, expiries.record);
+    registry.startTimeout(registry.registerKeyed(anAsk("unanswered"), { key: "p2" })!.entry, DEADLINE_MS, expiries.record);
+
+    expect(registry.tryClaim("p1")).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(DEADLINE_MS);
+
+    expect(expiries.names).toEqual(["unanswered"]);
+  });
+
+  it("drops a redelivered ask's old timer, and never lets its stale handle arm another", async () => {
+    const registry = new DecisionRegistry<Ask>();
+    const expiries = new Expiries();
+    const first = registry.registerKeyed(anAsk("first"), { key: "p" })!.entry;
+    registry.startTimeout(first, SHORT_DEADLINE_MS, expiries.record);
+
+    const redelivery = registry.registerKeyed(anAsk("redelivery"), { key: "p" })!.entry;
+    registry.startTimeout(first, SHORT_DEADLINE_MS, expiries.record);
+    registry.startTimeout(redelivery, DEADLINE_MS, expiries.record);
+    await vi.advanceTimersByTimeAsync(SHORT_DEADLINE_MS);
+    expect(expiries.names).toEqual([]);
+    await vi.advanceTimersByTimeAsync(DEADLINE_MS - SHORT_DEADLINE_MS);
+
+    expect(expiries.names).toEqual(["redelivery"]);
+  });
+
+  it("lets an expiry that already claimed its ask finish through a teardown", async () => {
     const registry = new DecisionRegistry<Ask>();
     const expiries = new Expiries();
     const replying = createDeferred();
     const release = createDeferred();
-    const slowExpiry = async (entry: DecisionEntry<Ask>) => {
+    registry.startTimeout(registry.registerKeyed(anAsk("slow"), { key: "p" })!.entry, 0, async (entry) => {
       replying.resolve();
       await release.promise;
       expiries.record(entry);
-    };
-    const ask = (name: string, key: string) => registry.registerKeyed(anAsk(name), { key })!.entry;
+    });
 
-    registry.startTimeout(ask("answered", "p1"), SHORT_DEADLINE_MS, expiries.record);
-    const first = ask("first", "p2");
-    registry.startTimeout(first, SHORT_DEADLINE_MS, expiries.record);
-    const redelivery = ask("redelivery", "p2");
-    registry.startTimeout(first, SHORT_DEADLINE_MS, expiries.record);
-    registry.startTimeout(redelivery, DEADLINE_MS, expiries.record);
-    registry.startTimeout(ask("slow", "p3"), 0, slowExpiry);
-    expect(registry.tryClaim("p1")).not.toBeNull();
-
-    await vi.advanceTimersByTimeAsync(DEADLINE_MS);
+    await vi.advanceTimersByTimeAsync(0);
     await replying.promise;
-    expect(expiries.names).toEqual(["redelivery"]);
-
     expect(registry.cancelAll()).toEqual([]);
     release.resolve();
+
     await expiries.until("slow");
-    expect(expiries.names).toEqual(["redelivery", "slow"]);
+    expect(expiries.names).toEqual(["slow"]);
   });
 
-  it("never lets a stale handle act on a newer registration", async () => {
-    // A handle outlives its registration (replaced by a redelivery, or issued by a registry teardown has since
-    // replaced), and every operation through it must leave the newer registration alone.
+  it("never lets a handle replaced by a redelivery act on its successor", async () => {
     const registry = new DecisionRegistry<Ask>();
     const expiries = new Expiries();
     const oldAsk = anAsk("old");
@@ -196,15 +254,20 @@ describe("DecisionRegistry", () => {
     registry.startTimeout(old.entry, 0, expiries.record);
     const waited = registry.wait(old.entry, oldAsk.answer.promise, { timeoutMs: DEADLINE_MS });
     await vi.advanceTimersByTimeAsync(DEADLINE_MS);
+
     expect(await waited).toBe(TIMED_OUT);
     expect(expiries.names).toEqual([]);
+    expect(namesOf(registry.unclaimed())).toEqual(["new"]);
+  });
 
+  it("never lets a handle from a registry since replaced act on the new registry's ask", () => {
+    const stale = new DecisionRegistry<Ask>().registerKeyed(anAsk("old"), { key: "k" })!.entry;
     const fresh = new DecisionRegistry<Ask>();
     fresh.registerKeyed(anAsk("fresh"), { key: "k" });
-    fresh.forget(old.entry);
-    expect(fresh.withdraw(old.entry)).toBe(false);
 
-    expect(namesOf(registry.unclaimed())).toEqual(["new"]);
+    fresh.forget(stale);
+    expect(fresh.withdraw(stale)).toBe(false);
+
     expect(namesOf(fresh.unclaimed())).toEqual(["fresh"]);
   });
 });
