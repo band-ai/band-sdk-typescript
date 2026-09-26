@@ -137,7 +137,7 @@ export class FakeTools implements AgentToolsProtocol {
     }
     await this.heldMessages.pass(content);
     this.messages.push(content);
-    this.mentions.push(mentions ?? []);
+    this.mentions.push(mentions);
     this.traffic.record();
     return { ok: true };
   }
@@ -219,9 +219,13 @@ export class FakeTools implements AgentToolsProtocol {
   }
 }
 
-/** The failure event an adapter posted, located the way a client locates one. */
+/** The failure events an adapter posted, located the way a client locates one. */
+export function failureEvents(tools: FakeTools): CapturedToolEvent[] {
+  return tools.events.filter((event) => event.messageType === FAILURE_EVENT_TYPE);
+}
+
 export function findFailureEvent(tools: FakeTools): CapturedToolEvent | undefined {
-  return tools.events.find((event) => event.messageType === FAILURE_EVENT_TYPE);
+  return failureEvents(tools)[0];
 }
 
 export function makeRoster(participants: ParticipantRecord[]): ParticipantRoster {

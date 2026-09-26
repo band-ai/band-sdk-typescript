@@ -1,4 +1,5 @@
 import { stripLeadingMentions } from "../../runtime/formatters";
+import { asOptionalRecord, asString } from "../shared/coercion";
 import type { DecisionRegistry } from "../shared/decisions";
 import { OPENCODE_DECISION_MESSAGES } from "./messages";
 
@@ -28,12 +29,13 @@ export interface PendingQuestion {
 
 /** A `permission.asked` event's ask; null without a request id. */
 export function toPendingPermission(properties: Record<string, unknown>): PendingPermission | null {
-  if (typeof properties.id !== "string" || !properties.id) {
+  const requestId = asString(properties.id);
+  if (!requestId) {
     return null;
   }
   return {
-    requestId: properties.id,
-    permission: typeof properties.permission === "string" ? properties.permission : "unknown",
+    requestId,
+    permission: asString(properties.permission) ?? "unknown",
     patterns: Array.isArray(properties.patterns)
       ? properties.patterns.filter((value): value is string => typeof value === "string")
       : [],
@@ -42,13 +44,14 @@ export function toPendingPermission(properties: Record<string, unknown>): Pendin
 
 /** A `question.asked` event's ask, keeping only well-formed questions; null without a request id. */
 export function toPendingQuestion(properties: Record<string, unknown>): PendingQuestion | null {
-  if (typeof properties.id !== "string" || !properties.id) {
+  const requestId = asString(properties.id);
+  if (!requestId) {
     return null;
   }
   const questions = Array.isArray(properties.questions)
-    ? properties.questions.filter((value): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value))
+    ? properties.questions.filter((value): value is Record<string, unknown> => asOptionalRecord(value) !== undefined)
     : [];
-  return { requestId: properties.id, questions };
+  return { requestId, questions };
 }
 
 export interface RoomDecisions {
@@ -139,10 +142,8 @@ function routeNamedCommand(
     // An unknown id after "approve"/"always" is just the start of an answer.
     return answerOldestQuestion(raw, questions) ?? PASS;
   }
-  if (permissions.hasUnclaimed() || questions.hasUnclaimed()) {
-    return notice(OPENCODE_DECISION_MESSAGES.noLongerPending(permissions.hasUnclaimed() ? "permission" : "question", id));
-  }
-  return PASS;
+  const pendingKind = permissions.hasUnclaimed() ? "permission" : questions.hasUnclaimed() ? "question" : null;
+  return pendingKind ? notice(OPENCODE_DECISION_MESSAGES.noLongerPending(pendingKind, id)) : PASS;
 }
 
 // Without an id, only asks still awaiting an answer count: one a reply already claimed is not "the" pending ask.

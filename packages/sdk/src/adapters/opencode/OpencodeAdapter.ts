@@ -105,7 +105,7 @@ type TurnReleaseOutcome =
   | { kind: "foreground" }
   | { kind: "background" }
   | { kind: "cancelled" }
-  | { kind: "delivery_failed"; error: RecoverableTurnError };
+  | { kind: "interaction_failed"; error: RecoverableTurnError };
 
 // "completed": OpenCode itself finished the turn (session.idle/session.error).
 // "cancelled": something else ended it first — room cleanup (`onCleanup`) tore
@@ -146,7 +146,7 @@ interface RoomState {
   // `startTurn`'s caller — `watchTurnCompletion`'s "cancelled" branch
   // re-throws this instead, so `turnTask`'s own background observer (see
   // `startTurn`) still sees the failure.
-  pendingDeliveryFailure: RecoverableTurnError | null;
+  pendingInteractionFailure: RecoverableTurnError | null;
   // Who the turn answers; every room message it sends mentions them, since the platform drops one that mentions nobody.
   requesterMentions: MentionInput;
   textParts: Map<string, string>;
@@ -406,7 +406,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     }
 
     await turnTask;
-    if (release.kind === "delivery_failed") {
+    if (release.kind === "interaction_failed") {
       throw release.error;
     }
   }
@@ -443,7 +443,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       releaseWait: null,
       resolveReleaseWait: null,
       turnTask: null,
-      pendingDeliveryFailure: null,
+      pendingInteractionFailure: null,
       requesterMentions: [],
       textParts: new Map(),
       assistantMessageIds: new Set(),
@@ -747,12 +747,13 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       return;
     }
     const { requestId, questions } = pending;
+    const rejectAsk = (client: OpencodeClientLike) => client.rejectQuestion(requestId);
     if (questions.length === 0) {
       // Nothing to answer, so nobody would: reject it rather than leave OpenCode blocked on it.
       this.logger.warn("opencode_adapter.empty_question_rejected", { roomId: roomState.roomId, requestId });
       const client = this.client;
       if (client) {
-        this.rejectInBackground(roomState, () => client.rejectQuestion(requestId));
+        this.rejectInBackground(roomState, () => rejectAsk(client));
       }
       return;
     }
@@ -764,7 +765,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       timeoutReply: reject,
       timedOutNotice: OPENCODE_DECISION_MESSAGES.questionTimedOut(requestId),
       prompt: formatQuestionPrompt(questions, requestId),
-      rejectAsk: (client) => client.rejectQuestion(requestId),
+      rejectAsk,
     });
   }
 
@@ -961,7 +962,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       await send(entry, roomState.turnOutcome);
       return true;
     } catch (error) {
-      const turnError = roomState.pendingDeliveryFailure;
+      const turnError = roomState.pendingInteractionFailure;
       if (turnError instanceof ProviderTurnFailedError && turnError.cause === error && roomState.tools) {
         await safeSendFailure(roomState.tools, turnError.failure, this.logger, { roomId: roomState.roomId });
       } else {
@@ -1042,7 +1043,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     roomState.resolveReleaseWait = releaseWait.resolve;
     roomState.requesterMentions = [{ id: senderId }];
     roomState.turnTask = null;
-    roomState.pendingDeliveryFailure = null;
+    roomState.pendingInteractionFailure = null;
     roomState.textParts.clear();
     roomState.assistantMessageIds.clear();
     roomState.assistantPartTypes.clear();
@@ -1071,8 +1072,8 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
         // so this is the only channel left to surface it to `startTurn`'s
         // `void turnTask.catch(...)` observer. A room-cleanup cancellation
         // (`onCleanup`) leaves this unset and returns quietly, as before.
-        if (roomState.pendingDeliveryFailure) {
-          throw roomState.pendingDeliveryFailure;
+        if (roomState.pendingInteractionFailure) {
+          throw roomState.pendingInteractionFailure;
         }
         return;
       }
@@ -1188,9 +1189,9 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     // Reaches `startTurn`'s caller if it's still awaiting `releaseWait` (the
     // turn's first interactive prompt); otherwise a no-op, since that one-shot
     // channel was already spent on an earlier "background" release — in which
-    // case `pendingDeliveryFailure` below is what actually surfaces this.
-    this.releaseTurnWait(roomState, { kind: "delivery_failed", error: turnError });
-    roomState.pendingDeliveryFailure = turnError;
+    // case `pendingInteractionFailure` below is what actually surfaces this.
+    this.releaseTurnWait(roomState, { kind: "interaction_failed", error: turnError });
+    roomState.pendingInteractionFailure = turnError;
     // Settles a still-running watchTurnCompletion's race quietly (see
     // TurnEndOutcome) instead of letting it run to its timeout branch for a
     // turn that's already ending here.

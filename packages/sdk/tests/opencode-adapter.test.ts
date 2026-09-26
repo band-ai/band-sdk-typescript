@@ -6,7 +6,7 @@ import { OPENCODE_DECISION_MESSAGES, formatQuestionPrompt } from "../src/adapter
 import { DeliveryFailedError } from "../src/core/deliveryFailedError";
 import type { Logger } from "../src/core/logger";
 import type { OpencodeSessionState } from "../src/converters";
-import { CallHolds, FakeTools, TrafficLog, expectTurnFailed, findFailureEvent, makeMessage, type HeldCall } from "./testUtils";
+import { CallHolds, FakeTools, TrafficLog, expectTurnFailed, failureEvents, findFailureEvent, makeMessage, type HeldCall } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
 
 /**
@@ -2042,7 +2042,6 @@ describe("OpencodeAdapter", () => {
     }
 
     const permissionReplies = (client: FakeOpencodeClient) => client.permissionReplies.map(({ permissionId, response }) => [permissionId, response]);
-    const failureEvents = (tools: FakeTools) => tools.events.filter((event) => event.metadata?.failure !== undefined);
     const errorEvents = (tools: FakeTools) => tools.events.filter((event) => event.messageType === "error").map((event) => event.content);
 
     it("routes a busy room's replies to the asks still awaiting one, and only from allowed senders", async () => {
