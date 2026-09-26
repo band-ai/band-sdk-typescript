@@ -4,9 +4,11 @@
  * Room traffic is posted the way the platform would, and everything the agent
  * posts lands in a transcript that refuses what the platform refuses.
  */
+import { randomUUID } from "node:crypto";
+
 import type { FrameworkAdapter } from "../../../src/contracts/protocols";
 import type { ParticipantRecord } from "../../../src/contracts/dtos";
-import type { RestApi } from "../../../src/client/rest/types";
+import type { PaginatedResponse, PlatformChatMessage, RestApi } from "../../../src/client/rest/types";
 import { BandLink } from "../../../src/platform/BandLink";
 import { PlatformRuntime } from "../../../src/runtime/PlatformRuntime";
 import { CallHolds, FakeRestApi, FakeTransport, TrafficLog, type HeldCall } from "../../testUtils";
@@ -33,9 +35,15 @@ function roomPayload(roomId: string, status: "active" | "inactive") {
   return { id: roomId, status, type: "direct", title: roomId, task_id: null, inserted_at: now(), updated_at: now() };
 }
 
-/** The platform's REST surface as the agent sees it: it records every post and settles each message's outcome. */
-class RecordingRestApi extends FakeRestApi {
+interface HistoryEntry {
+  readonly roomId: string;
+  readonly item: PlatformChatMessage;
+}
+
+/** The platform's REST surface as the agent sees it: it records every post, keeps each room's history, and settles each message's outcome. */
+export class RecordingRestApi extends FakeRestApi {
   public readonly posted: Posted[] = [];
+  private readonly history: HistoryEntry[] = [];
   public readonly outcomes = new Map<string, Outcome>();
   public readonly traffic = new TrafficLog();
   public readonly messageHolds = new CallHolds<[roomId: string, content: string]>();
@@ -63,6 +71,15 @@ class RecordingRestApi extends FakeRestApi {
     return [...this.participants];
   }
 
+  /** The room's conversation as the platform hands it to a fresh session: what people said and what the agent posted. */
+  public async getChatContext(request: { chatId: string }): Promise<PaginatedResponse<PlatformChatMessage>> {
+    return { data: this.history.filter((entry) => entry.roomId === request.chatId).map((entry) => entry.item) };
+  }
+
+  public remember(roomId: string, item: PlatformChatMessage): void {
+    this.history.push({ roomId, item });
+  }
+
   public override async markMessageProcessed(_roomId: string, messageId: string) {
     return this.settle(messageId, "processed");
   }
@@ -79,6 +96,10 @@ class RecordingRestApi extends FakeRestApi {
 
   private record(posted: Posted): void {
     this.posted.push(posted);
+    this.remember(posted.roomId, {
+      id: `posted-${this.posted.length}`, content: posted.content, sender_id: AGENT_ID, sender_type: "Agent", sender_name: "Agent",
+      message_type: posted.messageType, metadata: posted.metadata ?? {}, inserted_at: now(), updated_at: now(),
+    });
     this.traffic.record();
   }
 }
@@ -148,10 +169,9 @@ export class BandPlatform implements AsyncDisposable {
   public readonly transport = new FakeTransport();
   public readonly rest: RecordingRestApi;
   private readonly runtime: PlatformRuntime;
-  private sent = 0;
 
-  private constructor(participants: readonly ParticipantRecord[]) {
-    this.rest = new RecordingRestApi(participants);
+  private constructor(participants: readonly ParticipantRecord[], rest?: RecordingRestApi) {
+    this.rest = rest ?? new RecordingRestApi(participants);
     this.runtime = new PlatformRuntime({
       agentId: AGENT_ID,
       apiKey: "flow-test-key",
@@ -159,8 +179,9 @@ export class BandPlatform implements AsyncDisposable {
     });
   }
 
-  public static async start(adapter: FrameworkAdapter, participants: readonly ParticipantRecord[]): Promise<BandPlatform> {
-    const platform = new BandPlatform(participants);
+  /** Starts the agent; pass an earlier platform's `rest` to restart it against the same rooms and history. */
+  public static async start(adapter: FrameworkAdapter, participants: readonly ParticipantRecord[], rest?: RecordingRestApi): Promise<BandPlatform> {
+    const platform = new BandPlatform(participants, rest);
     await platform.runtime.start(adapter);
     return platform;
   }
@@ -171,10 +192,10 @@ export class BandPlatform implements AsyncDisposable {
   }
 
   public async post(roomId: string, senderId: string, content: string): Promise<string> {
-    const id = `msg-${++this.sent}`;
-    await this.transport.emit(`chat_room:${roomId}`, "message_created", {
-      id, content, message_type: "text", sender_id: senderId, sender_type: "User", sender_name: senderId, inserted_at: now(), updated_at: now(),
-    });
+    const id = `msg-${randomUUID()}`;
+    const message = { id, content, message_type: "text", sender_id: senderId, sender_type: "User", sender_name: senderId, inserted_at: now(), updated_at: now() };
+    this.rest.remember(roomId, message);
+    await this.transport.emit(`chat_room:${roomId}`, "message_created", message);
     return id;
   }
 
