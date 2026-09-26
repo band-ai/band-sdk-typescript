@@ -24,7 +24,7 @@ import { errorResult, successResult } from "../../mcp/registrations";
 import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
 import { abandon } from "../shared/abandon";
 import { DecisionRegistry, senderAllowlist, type DecisionEntry } from "../shared/decisions";
-import { asErrorMessage, asNestedMessage, asOptionalRecord, toDisplayText, truncate } from "../shared/coercion";
+import { asErrorMessage, asNestedMessage, asOptionalRecord, asString, toDisplayText, truncate } from "../shared/coercion";
 import {
   DeliveryFailedError,
   deliverReply,
@@ -136,7 +136,7 @@ interface AskLifecycle<T> {
 interface RoomState {
   roomId: string;
   sessionId: string | null;
-  tools: AdapterToolsProtocol | null;
+  tools: AdapterToolsProtocol;
   turnOutcome: Promise<TurnEndOutcome> | null;
   resolveTurnOutcome: ((outcome: TurnEndOutcome) => void) | null;
   releaseWait: Promise<TurnReleaseOutcome> | null;
@@ -306,8 +306,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
-    const roomState = this.getOrCreateRoomState(context.roomId);
-    roomState.tools = tools;
+    const roomState = this.roomStateFor(context.roomId, tools);
 
     try {
       if (await this.handleControlMessage(roomState, message)) {
@@ -333,15 +332,10 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     }
 
     try {
-      await this.ensureClientStarted();
-      const client = this.client;
-      if (!client) {
-        throw new Error("OpenCode client is not initialized.");
-      }
-
-      const { sessionId, created, needsHistoryReplay } = await this.ensureSession(roomState, history);
+      const client = await this.ensureClientStarted();
+      const { sessionId, created, needsHistoryReplay } = await this.ensureSession(roomState, client, history);
       if (this.config.enableTaskEvents && (roomState.persistedSessionId !== sessionId || context.isSessionBootstrap)) {
-        await this.emitSessionTaskEvent(roomState, created ? "created" : "resumed");
+        await this.emitSessionTaskEvent(roomState, sessionId, created ? "created" : "resumed");
       }
 
       await this.startTurn(roomState, client, sessionId, message, participantsMessage, contactsMessage, history, needsHistoryReplay, context.roomId);
@@ -371,7 +365,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     needsHistoryReplay: boolean,
     roomId: string,
   ): Promise<void> {
-    const releaseWait = this.beginTurn(roomState, message.senderId);
+    const { releaseWait, turnOutcome } = this.beginTurn(roomState, message.senderId);
     try {
       await client.promptAsync(sessionId, {
         parts: this.buildPromptParts(message, participantsMessage, contactsMessage, {
@@ -391,7 +385,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     // can't happen there, before this call was known to succeed.
     roomState.forceFreshSession = false;
 
-    const turnTask = this.watchTurnCompletion(roomState);
+    const turnTask = this.watchTurnCompletion(roomState, turnOutcome);
     roomState.turnTask = turnTask;
     const release = await releaseWait;
 
@@ -427,16 +421,17 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     }
   }
 
-  private getOrCreateRoomState(roomId: string): RoomState {
+  private roomStateFor(roomId: string, tools: AdapterToolsProtocol): RoomState {
     const existing = this.rooms.get(roomId);
     if (existing) {
+      existing.tools = tools;
       return existing;
     }
 
     const created: RoomState = {
       roomId,
       sessionId: null,
-      tools: null,
+      tools,
       turnOutcome: null,
       resolveTurnOutcome: null,
       releaseWait: null,
@@ -463,24 +458,26 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     return created;
   }
 
-  private async ensureClientStarted(): Promise<void> {
-    const wasNew = this.client === null;
-    if (this.client === null) {
-      this.client = this.clientFactory(this.config);
+  private async ensureClientStarted(): Promise<OpencodeClientLike> {
+    if (this.client) {
+      return this.client;
     }
-    if (!this.eventTask) {
-      this.eventTask = this.runEventLoop();
-    }
-    if (wasNew) {
-      await this.registerMcpBackend();
-    }
+    const client = this.clientFactory(this.config);
+    this.client = client;
+    this.eventTask = this.runEventLoop();
+    await this.registerMcpBackend(client);
+    return client;
   }
 
-  private async ensureMcpBackend(): Promise<BandMcpBackend> {
-    if (this.mcpBackend) {
-      return this.mcpBackend;
+  // Replies and rejects only run for a live room's asks, and a live room keeps the client up.
+  private requireClient(): OpencodeClientLike {
+    if (!this.client) {
+      throw new Error("OpenCode client is not initialized.");
     }
+    return this.client;
+  }
 
+  private async startMcpBackend(): Promise<BandMcpBackend> {
     const backend = await this.mcpBackendFactory({
       kind: "http",
       enableMemoryTools: this.config.enableMemoryTools,
@@ -491,14 +488,9 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     return backend;
   }
 
-  private async registerMcpBackend(): Promise<void> {
-    const client = this.client;
-    if (!client) {
-      return;
-    }
-
+  private async registerMcpBackend(client: OpencodeClientLike): Promise<void> {
     try {
-      const backend = await this.ensureMcpBackend();
+      const backend = await this.startMcpBackend();
       const server = backend.server as { url?: string | null };
       if (!server.url) {
         this.logger.warn("OpenCode MCP backend has no URL.");
@@ -722,9 +714,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     if (!pending) {
       return;
     }
-    const { requestId } = pending;
-    // The reject belongs to the session that asked, whatever the room holds by the time it runs.
-    const sessionId = roomState.sessionId;
+    const { requestId, sessionId } = pending;
     const replyWith = (reply: OpencodeApprovalReply): ReplySender<PendingPermission> =>
       (entry, expectedTurn) => this.sendPermissionReply(roomState, entry, reply, expectedTurn);
     const { approvalMode, approvalTimeoutReply } = this.config;
@@ -735,8 +725,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       timeoutReply: replyWith(approvalTimeoutReply),
       timedOutNotice: OPENCODE_DECISION_MESSAGES.approvalTimedOut(requestId, approvalTimeoutReply),
       prompt: OPENCODE_DECISION_MESSAGES.approvalRequested(pending),
-      rejectAsk: (client) =>
-        sessionId ? client.replyPermission(sessionId, requestId, { response: REPLY_WORDS.reject }) : Promise.resolve(),
+      rejectAsk: (client) => client.replyPermission(sessionId, requestId, { response: REPLY_WORDS.reject }),
     });
   }
 
@@ -750,10 +739,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     if (questions.length === 0) {
       // Nothing to answer, so nobody would: reject it rather than leave OpenCode blocked on it.
       this.logger.warn("opencode_adapter.empty_question_rejected", { roomId: roomState.roomId, requestId });
-      const client = this.client;
-      if (client) {
-        this.rejectInBackground(roomState, () => rejectAsk(client));
-      }
+      this.rejectInBackground(roomState, () => rejectAsk(this.requireClient()));
       return;
     }
     const reject: ReplySender<PendingQuestion> = (entry, expectedTurn) => this.sendQuestionReject(roomState, entry, expectedTurn);
@@ -785,15 +771,12 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     roomState.decisions.knownIds.set(requestId, ask.kind);
 
     if (ask.autoReply) {
-      const claimed = registry.tryClaim(requestId);
-      if (claimed) {
-        await this.replyInBackground(roomState, claimed, ask.autoReply);
-      }
+      await this.replyInBackground(roomState, registry.tryClaim(requestId)!, ask.autoReply);
       return;
     }
     registry.startTimeout(entry, ask.timeoutMs, async (expired) => {
       if (await this.replyInBackground(roomState, expired, ask.timeoutReply)) {
-        await roomState.tools?.sendEvent(ask.timedOutNotice, "error");
+        await roomState.tools.sendEvent(ask.timedOutNotice, "error");
       }
     });
     await this.postAsk(roomState, registry, entry, ask.prompt, ask.rejectAsk);
@@ -816,7 +799,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   ): Promise<void> {
     const expectedTurn = roomState.turnOutcome;
     try {
-      await roomState.tools?.sendMessage(prompt, roomState.requesterMentions);
+      await roomState.tools.sendMessage(prompt, roomState.requesterMentions);
     } catch (error) {
       // A reply that claimed the ask meanwhile owns it, and so does whatever replaced or removed it.
       if (roomState.turnOutcome !== expectedTurn || !registry.withdraw(entry)) {
@@ -827,8 +810,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
         requestId: entry.token,
         error,
       });
-      const client = this.client;
-      this.failInteraction(roomState, new DeliveryFailedError(error), client ? () => rejectAsk(client) : undefined);
+      this.failInteraction(roomState, new DeliveryFailedError(error), () => rejectAsk(this.requireClient()));
       return;
     }
     if (roomState.turnOutcome !== expectedTurn || !registry.has(entry.token)) {
@@ -871,37 +853,20 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   ): Promise<string | null> {
     const { permissions, questions } = roomState.decisions;
     switch (action.kind) {
-      case REPLY_ACTION.permission: {
-        const permission = permissions.tryClaim(action.id);
-        if (!permission) {
-          return null;
-        }
-        await this.sendPermissionReply(roomState, permission, action.reply, expectedTurn);
-        return OPENCODE_DECISION_MESSAGES.approvalHandled(action.id, action.reply);
-      }
-      case REPLY_ACTION.rejectQuestion: {
-        const question = questions.tryClaim(action.id);
-        if (!question) {
-          return null;
-        }
-        await this.sendQuestionReject(roomState, question, expectedTurn);
-        return OPENCODE_DECISION_MESSAGES.questionRejected(action.id);
-      }
-      case REPLY_ACTION.answerQuestion: {
-        const question = questions.tryClaim(action.id);
-        if (!question) {
-          return null;
-        }
-        await this.sendQuestionReply(roomState, question, action.answers, expectedTurn);
-        return OPENCODE_DECISION_MESSAGES.questionAnswered(action.id);
-      }
+      case REPLY_ACTION.permission:
+        return claimAndSend(permissions, action.id, OPENCODE_DECISION_MESSAGES.approvalHandled(action.id, action.reply),
+          (entry) => this.sendPermissionReply(roomState, entry, action.reply, expectedTurn));
+      case REPLY_ACTION.rejectQuestion:
+        return claimAndSend(questions, action.id, OPENCODE_DECISION_MESSAGES.questionRejected(action.id),
+          (entry) => this.sendQuestionReject(roomState, entry, expectedTurn));
+      case REPLY_ACTION.answerQuestion:
+        return claimAndSend(questions, action.id, OPENCODE_DECISION_MESSAGES.questionAnswered(action.id),
+          (entry) => this.sendQuestionReply(roomState, entry, action.answers, expectedTurn));
     }
   }
 
   private async notifySender(roomState: RoomState, text: string, senderId: string): Promise<void> {
-    if (roomState.tools) {
-      await deliverReply(roomState.tools, text, [{ id: senderId }]);
-    }
+    await deliverReply(roomState.tools, text, [{ id: senderId }]);
   }
 
   private async sendPermissionReply(
@@ -910,13 +875,9 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     reply: OpencodeApprovalReply,
     expectedTurn: Promise<TurnEndOutcome> | null,
   ): Promise<void> {
-    await this.sendClaimedReply(roomState, roomState.decisions.permissions, entry, expectedTurn, (client) => {
-      const sessionId = roomState.sessionId;
-      if (!sessionId) {
-        throw new Error("OpenCode session is not established.");
-      }
-      return client.replyPermission(sessionId, entry.token, { response: reply });
-    });
+    await this.sendClaimedReply(roomState, roomState.decisions.permissions, entry, expectedTurn, (client) =>
+      client.replyPermission(entry.payload.sessionId, entry.token, { response: reply }),
+    );
   }
 
   private async sendQuestionReply(
@@ -948,11 +909,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     send: (client: OpencodeClientLike) => Promise<unknown>,
   ): Promise<void> {
     try {
-      const client = this.client;
-      if (!client) {
-        throw new Error("OpenCode client is not initialized.");
-      }
-      await send(client);
+      await send(this.requireClient());
     } catch (error) {
       if (roomState.turnOutcome === expectedTurn) {
         this.failInteraction(roomState, new ProviderTurnFailedError(this.toAgentFailure(error), error));
@@ -975,7 +932,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       return true;
     } catch (error) {
       const turnError = roomState.pendingInteractionFailure;
-      if (turnError instanceof ProviderTurnFailedError && turnError.cause === error && roomState.tools) {
+      if (turnError instanceof ProviderTurnFailedError && turnError.cause === error) {
         await safeSendFailure(roomState.tools, turnError.failure, this.logger, { roomId: roomState.roomId });
       } else {
         this.logger.warn("opencode_adapter.stale_reply_failed", { roomId: roomState.roomId, error });
@@ -994,13 +951,9 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
 
   private async ensureSession(
     roomState: RoomState,
+    client: OpencodeClientLike,
     history: OpencodeSessionState,
   ): Promise<{ sessionId: string; created: boolean; needsHistoryReplay: boolean }> {
-    const client = this.client;
-    if (!client) {
-      throw new Error("OpenCode client is not initialized.");
-    }
-
     // A timed-out turn's abort is fire-and-forget (see handleTurnTimeout) —
     // this room's session may still be settling server-side, so this turn
     // must not resume it, however history or in-memory state would otherwise
@@ -1037,7 +990,10 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       needsHistoryReplay = forceFreshSession && Boolean(priorSessionId);
     }
 
-    const sessionId = typeof session.id === "string" ? session.id : String(session.id ?? "");
+    const sessionId = asString(session.id);
+    if (!sessionId) {
+      throw new Error("OpenCode returned a session without an id.");
+    }
     if (roomState.sessionId && roomState.sessionId !== sessionId) {
       this.roomBySession.delete(roomState.sessionId);
     }
@@ -1046,7 +1002,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     return { sessionId, created, needsHistoryReplay };
   }
 
-  private beginTurn(roomState: RoomState, senderId: string): Promise<TurnReleaseOutcome> {
+  private beginTurn(roomState: RoomState, senderId: string): { releaseWait: Promise<TurnReleaseOutcome>; turnOutcome: Promise<TurnEndOutcome> } {
     const turnOutcome = createDeferred<TurnEndOutcome>();
     const releaseWait = createDeferred<TurnReleaseOutcome>();
     roomState.turnOutcome = turnOutcome.promise;
@@ -1063,15 +1019,10 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     roomState.reportedToolResults.clear();
     roomState.lastErrorMessage = null;
     roomState.sessionErrored = false;
-    return releaseWait.promise;
+    return { releaseWait: releaseWait.promise, turnOutcome: turnOutcome.promise };
   }
 
-  private async watchTurnCompletion(roomState: RoomState): Promise<void> {
-    const turnOutcome = roomState.turnOutcome;
-    if (!turnOutcome) {
-      return;
-    }
-
+  private async watchTurnCompletion(roomState: RoomState, turnOutcome: Promise<TurnEndOutcome>): Promise<void> {
     try {
       using watchdog = new Deadline(this.config.turnTimeoutMs);
       const outcome = await Promise.race([turnOutcome, watchdog.expired.then(() => "timed_out" as const)]);
@@ -1162,12 +1113,8 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   }
 
   private async reportTerminalFailure(roomState: RoomState, failure: AgentFailure): Promise<never> {
-    if (roomState.tools) {
-      // Best-effort: the failure itself is the truth we already know, and
-      // failing to report it must not leave the room's turn wait released
-      // forever.
-      await safeSendFailure(roomState.tools, failure, this.logger, { roomId: roomState.roomId });
-    }
+    // Best-effort: failing to report the failure must not leave the room's turn wait released forever.
+    await safeSendFailure(roomState.tools, failure, this.logger, { roomId: roomState.roomId });
     // Thrown, not returned: PlatformRuntime marks a message failed — and
     // retries it — only when onMessage throws. Matches every other terminal
     // provider failure in this adapter (see ProviderTurnFailedError).
@@ -1224,22 +1171,18 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     roomState.turnTask = null;
   }
 
-  private async emitSessionTaskEvent(roomState: RoomState, status: "created" | "resumed"): Promise<void> {
-    if (!roomState.tools || !roomState.sessionId) {
-      return;
-    }
-
+  private async emitSessionTaskEvent(roomState: RoomState, sessionId: string, status: "created" | "resumed"): Promise<void> {
     const createdAt = new Date().toISOString();
     await roomState.tools.sendEvent(
-      `OpenCode session ${status}: \`${roomState.sessionId}\``,
+      `OpenCode session ${status}: \`${sessionId}\``,
       "task",
       {
-        opencode_session_id: roomState.sessionId,
+        opencode_session_id: sessionId,
         opencode_room_id: roomState.roomId,
         opencode_created_at: createdAt,
       },
     );
-    roomState.persistedSessionId = roomState.sessionId;
+    roomState.persistedSessionId = sessionId;
   }
 
   /**
@@ -1248,7 +1191,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
    * passed, so it's safe to go on and send its own fallback message.
    */
   private async flushTurnText(roomState: RoomState): Promise<"sent" | "empty" | "blocked"> {
-    if (!roomState.tools || !this.config.fallbackSendAgentText) {
+    if (!this.config.fallbackSendAgentText) {
       return "blocked";
     }
 
@@ -1268,7 +1211,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
 
   private async deliverFallbackText(roomState: RoomState): Promise<void> {
     const outcome = await this.flushTurnText(roomState);
-    if (outcome !== "empty" || !roomState.tools) {
+    if (outcome !== "empty") {
       return;
     }
 
@@ -1285,9 +1228,6 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     state: Record<string, unknown>,
     callId: string,
   ): Promise<void> {
-    if (!roomState.tools) {
-      return;
-    }
     try {
       await roomState.tools.sendEvent(
         JSON.stringify({
@@ -1307,9 +1247,6 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     state: Record<string, unknown>,
     callId: string,
   ): Promise<void> {
-    if (!roomState.tools) {
-      return;
-    }
     const output = state.status === "error"
       ? { error: state.error ?? "OpenCode tool failed" }
       : state.output ?? "";
@@ -1384,3 +1321,17 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   }
 }
 
+/** Sends `id`'s reply and returns `notice`, or null when someone else already claimed it. */
+async function claimAndSend<T>(
+  registry: DecisionRegistry<T>,
+  id: string,
+  notice: string,
+  send: (entry: DecisionEntry<T>) => Promise<void>,
+): Promise<string | null> {
+  const entry = registry.tryClaim(id);
+  if (!entry) {
+    return null;
+  }
+  await send(entry);
+  return notice;
+}

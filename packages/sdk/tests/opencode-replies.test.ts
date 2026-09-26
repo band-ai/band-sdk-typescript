@@ -29,7 +29,7 @@ function room({ permissions = [], questions = [], resolved = {}, claimed = [] }:
     knownIds: new Map(Object.entries(resolved)),
   };
   for (const requestId of permissions) {
-    decisions.permissions.registerKeyed({ requestId, permission: "bash", patterns: [] }, { key: requestId });
+    decisions.permissions.registerKeyed({ requestId, sessionId: "ses_1", permission: "bash", patterns: [] }, { key: requestId });
     decisions.knownIds.set(requestId, ASK_KIND.permission);
   }
   for (const { id, count = 1 } of questions) {

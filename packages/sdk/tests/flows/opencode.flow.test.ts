@@ -358,6 +358,7 @@ describe("OpenCode in a Band room", () => {
     { payload: "a nested message", error: { name: "ProviderAuthError", data: { message: "invalid key" } }, shows: "invalid key" },
     { payload: "only a name", error: { name: "UnknownError" }, shows: "UnknownError" },
     { payload: "a bare string", error: "boom", shows: "OpenCode" },
+    { payload: "a message but no name", error: { data: { message: "quota exceeded" } }, shows: "OpenCodeError: quota exceeded" },
   ])("fails the turn on a session error carrying $payload, after delivering the text streamed so far", async ({ error, shows }) => {
     await using session = await opencodeRoom();
     const { room } = session;
@@ -633,16 +634,78 @@ describe("OpenCode in a Band room", () => {
     expect(server.requestsTo("POST", /^\/session$/)).toHaveLength(2);
   });
 
-  it("reports an automatic approval OpenCode refuses once, with no timeout notice", async () => {
-    await using session = await opencodeRoom({ approvalMode: "auto_accept" });
+  it.each([
+    { reply: "an automatic approval", config: { approvalMode: "auto_accept" }, waitMs: 0 },
+    { reply: "an expired approval's reply", config: { approvalWaitTimeoutMs: DEADLINE_MS }, waitMs: DEADLINE_MS },
+  ] as const)("reports $reply OpenCode refuses once, with no timeout notice", async ({ config, waitMs }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await using session = await opencodeRoom({ turnTimeoutMs: DEADLINE_MS * 2, ...config });
     const { room, server } = session;
     server.failNext("POST /permission/per_:id/reply", { status: 503, body: { name: "UnavailableError", data: { message: "busy" } } });
-    await session.start((turn) => void turn.askPermission());
-
+    const reply = server.awaitRequest("POST", "/permission/per_asked/reply");
+    await session.start((turn) => void turn.askPermission({ id: "per_asked" }));
+    if (waitMs > 0) {
+      await room.nextMessage((posted) => posted.content === approvalPrompt("per_asked"));
+      await vi.advanceTimersByTimeAsync(waitMs);
+    }
+    await reply;
     await room.until(() => room.events(FAILURE_EVENT_TYPE).length === 1);
     expect(room.events(FAILURE_EVENT_TYPE)[0]?.metadata?.failure).toMatchObject({ code: "503" });
     expect(room.events("error").map((event) => event.content)).toEqual([room.events(FAILURE_EVENT_TYPE)[0]?.content]);
     expect(server.eventStreamCount).toBe(1);
+  });
+
+  it("blames only the timeout when a reply still in flight is refused after its turn gave up", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await using session = await opencodeRoom({ approvalMode: "auto_accept", turnTimeoutMs: DEADLINE_MS });
+    const { room, server } = session;
+    const inFlight = server.hold("POST /permission/per_:id/reply");
+    server.failNext("POST /permission/per_:id/reply", { status: 503, body: "busy" });
+    const message = await session.start((turn) => void turn.askPermission());
+    await inFlight.sending;
+
+    await vi.advanceTimersByTimeAsync(DEADLINE_MS);
+    expect(await room.outcome(message)).toBe("failed");
+    inFlight.release();
+    await server.until(() => server.requestsTo("POST", /\/abort$/).length === 1);
+
+    expect(room.events(FAILURE_EVENT_TYPE).map((event) => event.metadata?.failure)).toEqual([expect.objectContaining({ code: "timeout" })]);
+  });
+
+  it("lets an approval expire while its prompt is still being posted, and finishes the turn on that reply", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await using session = await opencodeRoom({ approvalWaitTimeoutMs: SHORT_DEADLINE_MS, turnTimeoutMs: DEADLINE_MS });
+    const { room, server } = session;
+    const slowPrompt = room.holdMessage((content) => content === approvalPrompt("per_slow"));
+    const message = await session.start(async (turn) => {
+      await turn.askPermission({ id: "per_slow" }).reply;
+      turn.reply("Went ahead without it.");
+      turn.idle();
+    });
+    await slowPrompt.sending;
+
+    await vi.advanceTimersByTimeAsync(SHORT_DEADLINE_MS);
+    await room.until(() => room.events("error").length === 1);
+    slowPrompt.release();
+
+    await room.nextMessage((posted) => posted.content === "Went ahead without it.");
+    expect(await room.outcome(message)).toBe("processed");
+    expect(permissionReplies(server)).toEqual([["per_slow", "reject"]]);
+    expect(room.events("error").map((event) => event.content)).toEqual([SAYS.approvalTimedOut("per_slow", "reject")]);
+  });
+
+  it.each([
+    { cause: "the server is gone", setup: async (server: FakeOpencodeServer) => server[Symbol.asyncDispose](), shows: "OpenCode failed while processing the message" },
+    { cause: "a session comes back without an id", setup: (server: FakeOpencodeServer) => server.failNext("POST /session", { status: 200, body: {} }), shows: "session without an id" },
+  ])("fails the turn when $cause", async ({ setup, shows }) => {
+    await using server = await FakeOpencodeServer.start();
+    await using session = await opencodeRoom({}, { server });
+    const { room } = session;
+    await setup(server);
+
+    const message = await room.say(OWNER, "Please run the tests");
+    expect(await room.outcome(message)).toBe("failed");
+    expect(room.events(FAILURE_EVENT_TYPE)[0]?.content).toContain(shows);
   });
 
   it("fails a turn whose answer the platform refuses, so it is retried, without blaming OpenCode", async () => {

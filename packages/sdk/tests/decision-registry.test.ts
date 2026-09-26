@@ -117,7 +117,7 @@ describe("DecisionRegistry", () => {
     room.ask("c1", { key: "c" });
     room.ask("c2", { key: "c" });
     expect(room.ask("a-again", { key: "a" })).toBeNull();
-    expect(room.registry.keys()).toEqual(["a", "c"]);
+    expect(["a", "b", "c"].filter((key) => room.registry.has(key))).toEqual(["a", "c"]);
 
     await vi.advanceTimersByTimeAsync(DEADLINE_MS);
     expect(await room.outcome("c2")).toBe(TIMED_OUT);

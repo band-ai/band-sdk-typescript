@@ -331,6 +331,21 @@ describe("Cursor in a Band room", () => {
     expect(agent.receivedOf("session/prompt")).toHaveLength(2);
   });
 
+  it("settles a request whose Cursor turn crashes, and serves the room's next one", async () => {
+    await using session = await cursorRoom();
+    const { room, agent } = session;
+    void agent.nextTurn(async () => {
+      throw new Error("model crashed");
+    });
+    const crashed = await room.say(OWNER, "Please update the notes");
+    expect(await room.outcome(crashed)).toBe("failed");
+    expect(room.events("error").map((event) => event.metadata?.failure)).toEqual([expect.objectContaining({ detail: { details: "model crashed" } })]);
+
+    const { result, message } = await session.start(async (turn) => turn.sessionId);
+    expect(await result).toBe("cursor-session-1");
+    expect(await room.outcome(message)).toBe("processed");
+  });
+
   it("renders Cursor's todo, task and image updates as room events, tolerating partial payloads", async () => {
     await using session = await cursorRoom();
     const { room } = session;

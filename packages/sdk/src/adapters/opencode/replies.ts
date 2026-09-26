@@ -20,6 +20,8 @@ export type DecisionKind = (typeof ASK_KIND)[keyof typeof ASK_KIND];
 
 export interface PendingPermission {
   requestId: string;
+  /** The session that asked; its reply goes there whatever the room holds by then. */
+  sessionId: string;
   permission: string;
   patterns: string[];
 }
@@ -32,11 +34,13 @@ export interface PendingQuestion {
 /** A `permission.asked` event's ask; null without a request id. */
 export function toPendingPermission(properties: Record<string, unknown>): PendingPermission | null {
   const requestId = asString(properties.id);
-  if (!requestId) {
+  const sessionId = asString(properties.sessionID);
+  if (!requestId || !sessionId) {
     return null;
   }
   return {
     requestId,
+    sessionId,
     permission: asString(properties.permission) ?? "unknown",
     patterns: Array.isArray(properties.patterns)
       ? properties.patterns.filter((value): value is string => typeof value === "string")

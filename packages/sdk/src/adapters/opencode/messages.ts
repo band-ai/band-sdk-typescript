@@ -12,7 +12,7 @@ function idList(ids: readonly string[]): string {
 const DECISION_NOUNS: Record<DecisionKind, string> = { permission: "approval", question: "question" };
 
 export const OPENCODE_DECISION_MESSAGES = {
-  approvalRequested: ({ permission, patterns, requestId }: PendingPermission) =>
+  approvalRequested: ({ permission, patterns, requestId }: Omit<PendingPermission, "sessionId">) =>
     `OpenCode approval requested for \`${permission}\` (${patterns.join(", ") || "n/a"}). Reply with ${command("approve", requestId)}, ${command("always", requestId)}, or ${command("reject", requestId)}.`,
   approvalHandled: (requestId: string, reply: OpencodeApprovalReply) =>
     `OpenCode approval \`${requestId}\` handled with \`${reply}\`.`,

@@ -546,8 +546,10 @@ function permissionResult(action: string, args: readonly string[], decision: Pen
   switch (action) {
     case CURSOR_VERB.deny:
       return undefined;
-    case CURSOR_VERB.select:
-      return args.length === 1 && decision.choices.get(PERMISSION_CHOICE)?.includes(args[0] ?? "") ? args[0] : null;
+    case CURSOR_VERB.select: {
+      const [choice, ...extra] = args;
+      return choice && extra.length === 0 && decision.choices.get(PERMISSION_CHOICE)!.includes(choice) ? choice : null;
+    }
     default:
       return null;
   }

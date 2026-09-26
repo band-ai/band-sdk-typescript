@@ -39,7 +39,7 @@ export function senderAllowlist(senders?: Iterable<string> | null): ReadonlySet<
 }
 
 /** Pending asks by token, oldest first. Without `maxPending` it never evicts. */
-export class DecisionRegistry<T> implements Iterable<DecisionEntry<T>> {
+export class DecisionRegistry<T> {
   private readonly core: CoreDecisionRegistry;
   private readonly entries = new Map<string, DecisionEntry<T>>();
   private readonly timers = new Map<string, Deadline>();
@@ -60,14 +60,6 @@ export class DecisionRegistry<T> implements Iterable<DecisionEntry<T>> {
 
   public get size(): number {
     return this.entries.size;
-  }
-
-  public keys(): string[] {
-    return [...this.entries.keys()];
-  }
-
-  public [Symbol.iterator](): Iterator<DecisionEntry<T>> {
-    return this.entries.values();
   }
 
   /** Adds `payload` under a minted token, evicting the oldest open ask first when at capacity. */
@@ -99,7 +91,7 @@ export class DecisionRegistry<T> implements Iterable<DecisionEntry<T>> {
     this.cancelTimer(entry.token);
     const deadline = new Deadline(timeoutMs);
     this.timers.set(entry.token, deadline);
-    void deadline.expired.then(() => this.expire(entry, deadline, onTimeout));
+    void deadline.expired.then(() => this.expire(entry, onTimeout));
   }
 
   /** Takes ownership of whatever registration holds `token`; null if someone else has. Resolve without awaiting in between: a waiter defers to the claim. */
@@ -145,22 +137,14 @@ export class DecisionRegistry<T> implements Iterable<DecisionEntry<T>> {
     return this.entriesFor(this.core.unclaimedInRoom(roomId));
   }
 
-  public unclaimedCount(): number {
-    return this.core.unclaimedCount();
-  }
-
   public oldestUnclaimed(): DecisionEntry<T> | null {
     const token = this.core.oldestUnclaimed();
-    return token === undefined ? null : this.entries.get(token) ?? null;
+    return token === undefined ? null : this.entries.get(token)!;
   }
 
   /** Unlike `size`, ignores an entry whose claimant is still resolving it. */
   public hasUnclaimed(): boolean {
-    return this.unclaimedCount() > 0;
-  }
-
-  public hasClaimed(): boolean {
-    return this.size > this.unclaimedCount();
+    return this.core.unclaimedCount() > 0;
   }
 
   /** Removes every entry, returning the unclaimed ones for the caller to resolve; a claimed entry's claimant still resolves it. */
@@ -177,10 +161,8 @@ export class DecisionRegistry<T> implements Iterable<DecisionEntry<T>> {
     return this.entries.get(entry.token) === entry;
   }
 
-  private expire(entry: DecisionEntry<T>, deadline: Deadline, onTimeout: TimeoutHandler<T>): void {
-    if (this.timers.get(entry.token) === deadline) {
-      this.timers.delete(entry.token);
-    }
+  // Dropping a timer always disposes it, so one that fires still guards an unclaimed entry.
+  private expire(entry: DecisionEntry<T>, onTimeout: TimeoutHandler<T>): void {
     if (this.claim(entry) === "claimed") {
       abandon(async () => onTimeout(entry), (error) => {
         this.logger.warn("decisions.timeout_handler_failed", { token: entry.token, error });

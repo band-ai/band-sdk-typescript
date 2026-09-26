@@ -101,6 +101,7 @@ export class FakeOpencodeServer implements AsyncDisposable {
   private readonly failures = new Map<string, Failure[]>();
   private readonly holds = new CallHolds<[route: string]>();
   private ids = 0;
+  private port = 0;
   private mcp: Promise<Client> | null = null;
 
   private readonly http: Server = createServer((req, res) => void this.handle(req, res));
@@ -108,11 +109,13 @@ export class FakeOpencodeServer implements AsyncDisposable {
   public static async start(): Promise<FakeOpencodeServer> {
     const server = new FakeOpencodeServer();
     await new Promise<void>((resolve) => server.http.listen(0, "127.0.0.1", resolve));
+    server.port = (server.http.address() as AddressInfo).port;
     return server;
   }
 
+  /** Kept past disposal, so a client can be pointed at a server that is gone. */
   public get url(): string {
-    return `http://127.0.0.1:${(this.http.address() as AddressInfo).port}`;
+    return `http://127.0.0.1:${this.port}`;
   }
 
   public nextId(): string {
