@@ -357,6 +357,19 @@ describe("CursorACPAdapter decisions in a room", () => {
     expect(await room.finished()).toEqual([claimed.answered, CANCELLED]);
     expect(room.tools.messages.filter(isDecisionPrompt)).toEqual([]);
   });
+
+  it("posts no prompt for a permission whose turn was already cancelled", async () => {
+    const question = aQuestion();
+    const room = await cursorRoom({}, async (peer) => [await peer.extMethod("cursor/ask_question", question.params)]);
+    const [token] = await room.prompted(1);
+
+    const permission = { sessionId: "cursor-session", roomId: "room-1", toolCall: { toolCallId: "tool-call" }, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }] };
+    expect(await room.adapter.resolveCursorPermission(permission as never, AbortSignal.abort("cancelled"))).toBeUndefined();
+    await room.say(question.reply(token!));
+
+    expect(await room.finished()).toEqual([question.answered]);
+    expect(room.tools.messages.filter(isDecisionPrompt)).toHaveLength(1);
+  });
 });
 
 function cursorMessage(content: string, senderId: string, id = "msg-1") {

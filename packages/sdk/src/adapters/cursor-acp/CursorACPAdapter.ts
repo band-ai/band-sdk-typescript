@@ -334,6 +334,9 @@ export class CursorACPAdapter extends ACPClientAdapter {
   }
 
   private async waitForDecision(turn: CursorTurn, spec: DecisionSpec, prompt: (token: string) => string, signal?: AbortSignal): Promise<unknown> {
+    if (signal?.aborted) {
+      return undefined;
+    }
     const answer = createDeferred<unknown>();
     const registration = this.decisions.registerMinted(
       { ...spec, tools: turn.tools, requesterId: turn.requesterId, resolve: answer.resolve },
@@ -343,11 +346,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
     const { entry } = registration;
     if (signal) {
       // The ACP base class aborts on its own timeout too; the claim guard lets only one of them end the decision.
-      const onAbort = () => this.abandonDecision(entry, String(signal.reason));
-      signal.addEventListener("abort", onAbort, { once: true });
-      if (signal.aborted) {
-        onAbort();
-      }
+      signal.addEventListener("abort", () => this.abandonDecision(entry, String(signal.reason)), { once: true });
     }
     try {
       await turn.tools.sendMessage(prompt(entry.token), [turn.requesterId]);

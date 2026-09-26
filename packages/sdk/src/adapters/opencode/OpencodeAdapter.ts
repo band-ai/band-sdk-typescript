@@ -724,6 +724,8 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       return;
     }
     const { requestId } = pending;
+    // The reject belongs to the session that asked, whatever the room holds by the time it runs.
+    const sessionId = roomState.sessionId;
     const replyWith = (reply: OpencodeApprovalReply): ReplySender<PendingPermission> =>
       (entry, expectedTurn) => this.sendPermissionReply(roomState, entry, reply, expectedTurn);
     const { approvalMode, approvalTimeoutReply } = this.config;
@@ -734,10 +736,8 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       timeoutReply: replyWith(approvalTimeoutReply),
       timedOutNotice: OPENCODE_DECISION_MESSAGES.approvalTimedOut(requestId, approvalTimeoutReply),
       prompt: OPENCODE_DECISION_MESSAGES.approvalRequested(pending),
-      rejectAsk: (client) => {
-        const sessionId = roomState.sessionId;
-        return sessionId ? client.replyPermission(sessionId, requestId, { response: REPLY_WORDS.reject }) : Promise.resolve();
-      },
+      rejectAsk: (client) =>
+        sessionId ? client.replyPermission(sessionId, requestId, { response: REPLY_WORDS.reject }) : Promise.resolve(),
     });
   }
 
