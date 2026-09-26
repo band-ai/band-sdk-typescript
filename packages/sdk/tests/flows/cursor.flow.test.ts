@@ -19,8 +19,10 @@ const INTRUDER = "intruder";
 
 // Every decision prompt offers `/cursor <verb> <token> ...`; nothing else Cursor posts does.
 const DECISION_TOKEN = new RegExp(`\\${CURSOR_COMMAND} \\w+ ([^\\s\`]+)`);
-const tokenOf = (posted: Posted) => posted.content.match(DECISION_TOKEN)?.[1];
+const tokenIn = (content: string) => content.match(DECISION_TOKEN)?.[1];
+const tokenOf = (posted: Posted) => tokenIn(posted.content);
 const isPrompt = (posted: Posted) => tokenOf(posted) !== undefined;
+const isQuestionPrompt = (content: string) => content === SAYS.questionPrompt(tokenIn(content) ?? "");
 
 const CANCELLED = { outcome: { outcome: "cancelled" } };
 const selected = (optionId: string) => ({ outcome: { outcome: "selected", optionId } });
@@ -52,27 +54,24 @@ async function cursorRoom(options: Partial<CursorACPAdapterOptions> = {}) {
     connectionFactory: agent.connectionFactory,
     ...options,
   });
-  const platform = await BandPlatform.start(adapter, [OWNER, TEAMMATE, INTRUDER].map(person));
-  const room = await platform.room("room-1");
+  const joined = await BandPlatform.join(adapter, [OWNER, TEAMMATE, INTRUDER].map(person));
+  const { room } = joined;
   return {
+    ...joined,
     agent,
-    room,
-    platform,
     /** OWNER asks Cursor for something; Cursor runs `script`. Resolves once the room is asked `prompts` decisions. */
     async start<R>(script: (turn: CursorTurn) => Promise<R>, prompts = 0) {
       const result = agent.nextTurn(script);
       const message = await room.say(OWNER, "Please update the notes");
-      await room.until(() => room.messages.filter(isPrompt).length >= prompts);
-      return { result, message, tokens: room.messages.filter(isPrompt).map((posted) => tokenOf(posted)!) };
+      return { result, message, tokens: await promptTokens(room, prompts) };
     },
-    [Symbol.asyncDispose]: () => platform[Symbol.asyncDispose](),
   };
 }
 
-/** The latest prompt's token once `count` prompts have been posted. */
-async function promptedToken(room: BandRoom, count: number): Promise<string> {
+/** Every decision token posted in `room`, once there are at least `count`. */
+async function promptTokens(room: BandRoom, count: number): Promise<string[]> {
   await room.until(() => room.messages.filter(isPrompt).length >= count);
-  return tokenOf(room.messages.filter(isPrompt)[count - 1]!)!;
+  return room.messages.filter(isPrompt).map((posted) => tokenOf(posted)!);
 }
 
 describe("Cursor in a Band room", () => {
@@ -98,9 +97,9 @@ describe("Cursor in a Band room", () => {
     expect(await room.exchange(OWNER, "Actually, also fix the typo")).toEqual([SAYS.turnInProgress()]);
     expect(await room.exchange(OWNER, `${CURSOR_COMMAND} select ${write} allow`)).toContain(SAYS.resolved("permission", write!));
 
-    const remove = await promptedToken(room, 2);
-    expect(await room.exchange(TEAMMATE, `${CURSOR_COMMAND} deny ${remove}`)).toContain(SAYS.resolved("permission", remove));
-    expect(await room.exchange(OWNER, `${CURSOR_COMMAND} select ${remove} allow`)).toEqual([SAYS.notPending(remove)]);
+    const [, remove] = await promptTokens(room, 2);
+    expect(await room.exchange(TEAMMATE, `${CURSOR_COMMAND} deny ${remove}`)).toContain(SAYS.resolved("permission", remove!));
+    expect(await room.exchange(OWNER, `${CURSOR_COMMAND} select ${remove} allow`)).toEqual([SAYS.notPending(remove!)]);
 
     expect(await result).toEqual([selected("allow"), CANCELLED]);
     // The room was handed back when the first decision opened; the reply still reaches the requester.
@@ -145,9 +144,9 @@ describe("Cursor in a Band room", () => {
     expect(room.messages.find(isPrompt)?.content).toBe(SAYS.planPrompt("Cursor plan", untitled!));
     expect(await room.exchange(OWNER, `${CURSOR_COMMAND} answer ${untitled} x=y`)).toEqual([SAYS.invalidCommand("plan", untitled!)]);
     expect(await room.exchange(OWNER, `${CURSOR_COMMAND} reject ${untitled}`)).toContain(SAYS.resolved("plan", untitled!));
-    const titled = await promptedToken(room, 2);
-    expect(await room.exchange(OWNER, `${CURSOR_COMMAND} accept ${titled}`)).toContain(SAYS.resolved("plan", titled));
-    await promptedToken(room, 3);
+    const [, titled] = await promptTokens(room, 2);
+    expect(await room.exchange(OWNER, `${CURSOR_COMMAND} accept ${titled}`)).toContain(SAYS.resolved("plan", titled!));
+    await promptTokens(room, 3);
 
     await room.remove();
 
@@ -165,7 +164,10 @@ describe("Cursor in a Band room", () => {
       turn.plan({ title: "Plan" }),
     ]), 3);
     const [evicted, ...pending] = room.messages.filter(isPrompt);
-    const kindOf = (posted: Posted) => posted.content.startsWith("Cursor needs permission") ? "permission" : posted.content.startsWith("Cursor needs input") ? "question" : "plan";
+    const kindOf = (posted: Posted) => {
+      const token = tokenOf(posted)!;
+      return posted.content === SAYS.permissionPrompt(token) ? "permission" : posted.content === SAYS.questionPrompt(token) ? "question" : "plan";
+    };
     const listed = pending.map((posted) => `\`${tokenOf(posted)}\` (${kindOf(posted)})`);
 
     expect(await room.exchange(OWNER, CURSOR_COMMAND)).toEqual([SAYS.pendingList(listed)]);
@@ -177,7 +179,7 @@ describe("Cursor in a Band room", () => {
     expect(await room.exchange(OWNER, `${CURSOR_COMMAND} select ${tokenOf(evicted!)} allow`)).toEqual([SAYS.notPending(tokenOf(evicted!)!)]);
 
     await room.remove();
-    expect((await result).map((outcome) => JSON.stringify(outcome))).toEqual([CANCELLED, CANCELLED, CANCELLED].map((outcome) => JSON.stringify(outcome)));
+    expect(await result).toEqual([CANCELLED, CANCELLED, CANCELLED]);
   });
 
   it("times each ask out at its own deadline, tells the requester once, and survives a notice the platform refuses", async () => {
@@ -200,7 +202,8 @@ describe("Cursor in a Band room", () => {
 
     expect(await result).toEqual([CANCELLED, CANCELLED]);
     expect(await room.exchange(OWNER, `${CURSOR_COMMAND} answer ${question} mode=plan`)).toEqual([SAYS.notPending(question!)]);
-    expect(room.messages.filter((posted) => posted.content.includes("timed out"))).toEqual([
+    const timeoutNotices = [SAYS.timedOut("permission", permission!), SAYS.timedOut("question", question!)];
+    expect(room.messages.filter((posted) => timeoutNotices.includes(posted.content))).toEqual([
       expect.objectContaining({ content: SAYS.timedOut("permission", permission!), mentions: [OWNER] }),
     ]);
   });
@@ -216,7 +219,7 @@ describe("Cursor in a Band room", () => {
       await moreAsks.promise;
       return Promise.all([answeredFirst, turn.ask(ask("claimed")), turn.ask(ask("unclaimed"))]);
     }, 1);
-    const failedPrompts = [0, 1].map(() => room.holdMessage((content) => content.startsWith("Cursor needs input"), { error: new Error("platform timed out") }));
+    const failedPrompts = [0, 1].map(() => room.holdMessage(isQuestionPrompt, { error: new Error("platform timed out") }));
     moreAsks.resolve();
     const [[, claimedPrompt]] = await Promise.all(failedPrompts.map((prompt) => prompt.sending));
 
@@ -273,19 +276,22 @@ describe("Cursor in a Band room", () => {
     expect(session.room.messages.filter(isPrompt)).toEqual([]);
   });
 
-  it.each([
-    { allowlist: "unset, so anyone in the room", decisionAuthorizedSenders: undefined, intruder: SAYS.resolved("question", "{token}") },
-    { allowlist: "empty, so nobody", decisionAuthorizedSenders: [], intruder: SAYS.notAuthorized() },
-  ])("lets the room resolve decisions when the allowlist is $allowlist", async ({ decisionAuthorizedSenders, intruder }) => {
-    await using session = await cursorRoom({ decisionAuthorizedSenders });
+  it("lets anyone in the room resolve decisions when the allowlist is unset", async () => {
+    await using session = await cursorRoom({ decisionAuthorizedSenders: undefined });
+    const { result, tokens: [token] } = await session.start((turn) => turn.ask({ questions: [{ id: "mode", options: [{ id: "plan" }] }] }), 1);
+
+    expect(await session.room.exchange(INTRUDER, `${CURSOR_COMMAND} answer ${token} mode=plan`)).toContain(SAYS.resolved("question", token!));
+    expect(await result).toEqual(answered({ mode: ["plan"] }));
+  });
+
+  it("lets nobody resolve decisions when the allowlist is empty", async () => {
+    await using session = await cursorRoom({ decisionAuthorizedSenders: [] });
     const { room } = session;
     const { result, tokens: [token] } = await session.start((turn) => turn.ask({ questions: [{ id: "mode", options: [{ id: "plan" }] }] }), 1);
 
-    expect(await room.exchange(INTRUDER, `${CURSOR_COMMAND} answer ${token} mode=plan`)).toContain(intruder.replace("{token}", token!));
-    if (decisionAuthorizedSenders) {
-      await room.remove();
-    }
-    expect(await result).toEqual(decisionAuthorizedSenders ? CANCELLED : answered({ mode: ["plan"] }));
+    expect(await room.exchange(INTRUDER, `${CURSOR_COMMAND} answer ${token} mode=plan`)).toContain(SAYS.notAuthorized());
+    await room.remove();
+    expect(await result).toEqual(CANCELLED);
   });
 
   it("cancels asks that arrive for a turn that is no longer there, and ignores a malformed one", async () => {
