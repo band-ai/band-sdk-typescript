@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import { GenericAdapter } from "../src/adapters/GenericAdapter";
 import { HistoryProvider } from "../src/runtime/types";
-import { FakeTools, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
+import { FakeTools, failureEvents, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
-import { FAILURE_EVENT_TYPE, type AdapterToolsProtocol } from "../src/contracts/protocols";
+import type { AdapterToolsProtocol } from "../src/contracts/protocols";
 
 describe("GenericAdapter", () => {
   describeDeliveryContract([{
@@ -48,7 +48,7 @@ describe("GenericAdapter", () => {
       provider: "generic",
       message: "handler bug",
     });
-    expect(tools.events.filter((event) => event.messageType === FAILURE_EVENT_TYPE)).toHaveLength(1);
+    expect(failureEvents(tools)).toHaveLength(1);
   });
 
   it("works against a frozen tools object matching AgentTools.buildAdapterTools()'s production shape", async () => {

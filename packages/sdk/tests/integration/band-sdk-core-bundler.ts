@@ -184,6 +184,35 @@ async function main() {
   }
   pass("RoomRoster.reconcile runs against the real wasm binding");
 
+  const decisions = new core.DecisionRegistry(1);
+  const registered = decisions.registerKeyed("ask-1");
+  if (registered === undefined) {
+    fail("DecisionRegistry.registerKeyed", "expected a token and ticket for a fresh key");
+  }
+  const [token, ticket] = registered;
+  const outcome = decisions.tryClaim(token, ticket);
+  if (outcome !== "claimed" || decisions.unclaimedCount() !== 0 || decisions.registerKeyed("ask-1") !== undefined) {
+    fail("DecisionRegistry claim flow", `expected a claimed ask that refuses redelivery, got ${outcome}`);
+  }
+  const cancelled = decisions.cancelAll();
+  if (cancelled.unclaimed.length !== 0 || cancelled.claimed[0] !== token) {
+    fail("DecisionRegistry.cancelAll", `expected only the claimed ask, got ${JSON.stringify(cancelled)}`);
+  }
+  pass("DecisionRegistry keyed register/claim/cancel flow runs against the real wasm binding");
+
+  const authorizationChecks: Array<[readonly string[] | null, string | null, boolean]> = [
+    [null, "anyone", true],
+    [["owner"], "owner", true],
+    [["owner"], "intruder", false],
+    [[], "owner", false],
+  ];
+  for (const [senders, senderId, expected] of authorizationChecks) {
+    if (core.isAuthorizedSender(senders, senderId) !== expected) {
+      fail("isAuthorizedSender", `expected ${expected} for ${senderId} against ${JSON.stringify(senders)}`);
+    }
+  }
+  pass("isAuthorizedSender applies the allowlist policy against the real wasm binding");
+
   const topicChecks: Array<[string, string]> = [
     [core.chatRoomTopic("room-1"), "chat_room:room-1"],
     [core.roomParticipantsTopic("room-1"), "room_participants:room-1"],

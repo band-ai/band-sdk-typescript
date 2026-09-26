@@ -79,6 +79,10 @@ jobs:
         if: matrix.file == 'omp-acp-live.ts'
         run: npm install --global @oh-my-pi/pi-coding-agent
 
+      - name: Install OpenCode
+        if: matrix.file == 'opencode-live.ts'
+        run: npm install --global opencode-ai
+
       - name: Install GitHub Copilot CLI
         run: npm install --global @github/copilot
 
@@ -93,6 +97,7 @@ jobs:
           BAND_REST_URL: ${{ secrets.E2E_BAND_REST_URL }}
           BAND_WS_URL: ${{ secrets.E2E_BAND_WS_URL }}
           GEMINI_API_KEY: ${{ secrets.E2E_GOOGLE_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.E2E_ANTHROPIC_API_KEY }}
           COPILOT_PROVIDER_TYPE: anthropic
           COPILOT_PROVIDER_BASE_URL: https://api.anthropic.com
           COPILOT_PROVIDER_API_KEY: ${{ secrets.E2E_ANTHROPIC_API_KEY }}

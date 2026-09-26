@@ -23,7 +23,7 @@ export class DeliveryFailedError extends RecoverableTurnError {
 export async function deliverReply(
   tools: MessagingTools,
   content: string,
-  mentions: MentionInput = [],
+  mentions: MentionInput,
 ): Promise<ToolOperationResult> {
   try {
     return await tools.sendMessage(content, mentions);

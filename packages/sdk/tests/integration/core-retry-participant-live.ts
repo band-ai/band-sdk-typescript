@@ -22,18 +22,17 @@
  */
 import { randomUUID } from "node:crypto";
 
-import { BandClient } from "@band-ai/rest-client";
 
 import { Agent, GenericAdapter } from "../../src/index";
-import { FernRestAdapter } from "../../src/rest";
 import {
+  agentRest,
   createReporter,
   loadLiveEnv,
   provisionAgent,
+  type ProvisionedAgent,
   reapProvisioned,
   sleep,
   sweepOrphans,
-  type ProvisionedAgent,
 } from "./support/liveHarness";
 
 const TEST_NAME = "core-retry";
@@ -59,8 +58,8 @@ async function main() {
     provisioned.push(senderAgent);
     console.log(`core-retry Provisioned test agent "${testAgent.name}" (${testAgent.id}) and sender "${senderAgent.name}" (${senderAgent.id})`);
 
-    const testRest = new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey: testAgent.apiKey }));
-    const senderRest = new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey: senderAgent.apiKey }));
+    const testRest = agentRest(restUrl, testAgent.apiKey);
+    const senderRest = agentRest(restUrl, senderAgent.apiKey);
 
     // The test agent's own room — it's already a participant at creation.
     const chat = await testRest.createChat();

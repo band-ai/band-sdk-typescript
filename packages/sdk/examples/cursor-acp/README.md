@@ -13,6 +13,6 @@ Run the basic example from `packages/sdk/`:
 pnpm exec tsx examples/cursor-acp/01_basic_agent.ts
 ```
 
-Cursor questions, plans, and permissions require room approval by default. Use the `/cursor decisions` command to list pending requests, then answer, accept/reject, select, or deny with the token shown in the room.
+Cursor questions, plans, and permissions require room approval by default. Use the `/cursor decisions` command to list pending requests, then answer, accept/reject, select, or deny with the token shown in the room. A decision nobody answers within `decisionTimeoutMs` is cancelled, and the requester is told it timed out.
 
 Pass `resolveSessionConfig` to select only the model and effort options Cursor advertises for the live session. The adapter never embeds a model or effort catalog.

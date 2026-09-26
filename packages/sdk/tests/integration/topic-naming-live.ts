@@ -29,18 +29,17 @@
  */
 import { randomUUID } from "node:crypto";
 
-import { BandClient } from "@band-ai/rest-client";
 
 import { Agent, GenericAdapter } from "../../src/index";
-import { FernRestAdapter } from "../../src/rest";
 import {
+  agentRest,
   assertEventually,
   createReporter,
   loadLiveEnv,
   provisionAgent,
+  type ProvisionedAgent,
   reapProvisioned,
   sweepOrphans,
-  type ProvisionedAgent,
 } from "./support/liveHarness";
 
 const TEST_NAME = "topic-naming";
@@ -67,8 +66,8 @@ async function main() {
     provisioned.push(agentB);
     console.log(`topic-naming Provisioned sender "${agentA.name}" (${agentA.id}) and receiver "${agentB.name}" (${agentB.id})`);
 
-    const restA = new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey: agentA.apiKey }));
-    const restB = new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey: agentB.apiKey }));
+    const restA = agentRest(restUrl, agentA.apiKey);
+    const restB = agentRest(restUrl, agentB.apiKey);
 
     // `AddContactArgs.handle` is the platform's `owner_handle/agent_slug`
     // identifier (`AgentMe.handle`), not the plain `name` passed at

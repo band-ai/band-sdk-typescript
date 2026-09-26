@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { FAILURE_EVENT_TYPE } from "../src/contracts/protocols";
 import { RecoverableTurnError } from "../src/core/errors";
-import { FakeTools } from "./testUtils";
+import { FakeTools, failureEvents } from "./testUtils";
 
 /** What every case's delivery fails with, so one assertion can recognize it. */
 export const DELIVERY_ERROR = "chat delivery failed";
@@ -45,7 +44,7 @@ export function describeDeliveryContract(cases: DeliveryCase[]): void {
       expect(outcome, "not recoverable: this stops the room and every other room").toBeInstanceOf(RecoverableTurnError);
       expect((outcome as Error).message).toContain(DELIVERY_ERROR);
       expect(
-        tools.events.filter((event) => event.messageType === FAILURE_EVENT_TYPE),
+        failureEvents(tools),
         "a Band-side delivery failure was reported as a provider failure",
       ).toEqual([]);
     });

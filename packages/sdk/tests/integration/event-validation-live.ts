@@ -6,18 +6,17 @@
  */
 import { randomUUID } from "node:crypto";
 
-import { BandClient } from "@band-ai/rest-client";
 
 import { BandLink } from "../../src/platform/BandLink";
 import type { PlatformEvent } from "../../src/platform/events";
-import { FernRestAdapter } from "../../src/rest";
 import {
+  agentRest,
   createReporter,
   loadLiveEnv,
   provisionAgent,
+  type ProvisionedAgent,
   reapProvisioned,
   sweepOrphans,
-  type ProvisionedAgent,
 } from "./support/liveHarness";
 
 const TEST_NAME = "event-validation";
@@ -57,12 +56,8 @@ async function main() {
     const participant = await provisionAgent(userClient, runId, TEST_NAME, "participant");
     provisioned.push(participant);
 
-    const receiverRest = new FernRestAdapter(
-      new BandClient({ baseUrl: restUrl, apiKey: receiver.apiKey }),
-    );
-    const senderRest = new FernRestAdapter(
-      new BandClient({ baseUrl: restUrl, apiKey: sender.apiKey }),
-    );
+    const receiverRest = agentRest(restUrl, receiver.apiKey);
+    const senderRest = agentRest(restUrl, sender.apiKey);
     const receiverIdentity = await receiverRest.getAgentMe();
     if (!receiverIdentity.handle) {
       throw new Error("Receiver identity has no handle");

@@ -8,14 +8,11 @@
  *
  * Run: BAND_API_KEY_USER=... GEMINI_API_KEY=... npx tsx tests/integration/omp-acp-live.ts
  */
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
 
 import type { ToolCall, ToolKind } from "@agentclientprotocol/sdk";
-import { BandClient } from "@band-ai/rest-client";
 
 import {
   Agent,
@@ -25,18 +22,21 @@ import {
 } from "../../src/index";
 import { withTimeout } from "../../src/adapters/shared/withTimeout";
 import { BandLink } from "../../src/platform/BandLink";
-import { FernRestAdapter } from "../../src/rest";
+import type { FernRestAdapter } from "../../src/rest";
 import {
+  agentRest,
+  cliProbeFailure,
+  LiveResources,
   loadLiveEnv,
   provisionAgent,
-  reapProvisioned,
+  type ProvisionedAgent,
+  runLiveScript,
+  sendMentionedMessage,
   sweepOrphans,
   waitForEvent,
-  type ProvisionedAgent,
 } from "./support/liveHarness";
 
 const TEST_NAME = "omp-acp";
-const OMP_PROBE_TIMEOUT_MS = 10_000;
 const AGENT_STOP_TIMEOUT_MS = 5_000;
 const OMP_MODEL = "google/gemini-2.5-flash";
 const OMP_COMMAND = [...DEFAULT_OMP_ACP_COMMAND, "--model", OMP_MODEL];
@@ -77,13 +77,8 @@ function hasModelCredentials(): boolean {
 }
 
 function assertOmpAvailable(): void {
-  const ompProbe = spawnSync(DEFAULT_OMP_ACP_COMMAND[0], ["--version"], {
-    stdio: "ignore",
-    timeout: OMP_PROBE_TIMEOUT_MS,
-  });
-  if (ompProbe.error || ompProbe.signal || ompProbe.status !== 0) {
-    const outcome = ompProbe.error?.message
-      ?? (ompProbe.signal ? `terminated by ${ompProbe.signal}` : `exited with status ${ompProbe.status}`);
+  const outcome = cliProbeFailure(DEFAULT_OMP_ACP_COMMAND[0]);
+  if (outcome) {
     throw new Error(
       "omp-acp failed: OMP CLI is not installed or not on PATH, but provider credentials are configured " +
       `(a credential being configured means this environment is expected to have a working \`omp\`): ${outcome}`,
@@ -164,24 +159,6 @@ async function stopAgentWithFallback(target: Agent, timeoutMs: number): Promise<
   );
 }
 
-function flushOutput(stream: NodeJS.WriteStream): Promise<void> {
-  return new Promise((resolve) => {
-    stream.write("", () => resolve());
-  });
-}
-
-async function sendMentionedMessage(
-  rest: FernRestAdapter,
-  roomId: string,
-  recipient: ProvisionedAgent,
-  content: string,
-): Promise<void> {
-  await rest.createChatMessage(roomId, {
-    content,
-    mentions: [{ id: recipient.id, handle: recipient.name }],
-  });
-}
-
 async function assertMcpToolTrail(
   senderRest: FernRestAdapter,
   roomId: string,
@@ -223,7 +200,7 @@ async function runMcpSessionScenario({
 }: McpSessionScenario): Promise<void> {
   const firstMarker = `FIRST-${runId}`;
   const mcpMarker = `MCP-${runId}`;
-  await sendMentionedMessage(senderRest, roomId, ompIdentity, `@${ompIdentity.name} Reply with exactly ${firstMarker}.`);
+  await sendMentionedMessage(senderRest, roomId, ompIdentity, `Reply with exactly ${firstMarker}.`);
   await waitForEvent(
     observer,
     (event) =>
@@ -237,7 +214,7 @@ async function runMcpSessionScenario({
     senderRest,
     roomId,
     ompIdentity,
-    `@${ompIdentity.name} Use the band_add_participant MCP tool to add the available agent named ${helperIdentity.name} to this room as a member. This changes the room roster and cannot be done by replying with text. After it succeeds, reply in one message with the exact secret word from your previous turn, then ${mcpMarker}, then SECOND-${runId}.`,
+    `Use the band_add_participant MCP tool to add the available agent named ${helperIdentity.name} to this room as a member. This changes the room roster and cannot be done by replying with text. After it succeeds, reply in one message with the exact secret word from your previous turn, then ${mcpMarker}, then SECOND-${runId}.`,
   );
   let helperAdded = false;
   let secondResponseReceived = false;
@@ -287,7 +264,7 @@ async function runPermissionScenario({
     senderRest,
     roomId,
     ompIdentity,
-    `@${ompIdentity.name} Delete the file named ${GUARDED_FILE_NAME} in your current working directory, then reply with exactly ${permissionMarker} once you are done attempting it.`,
+    `Delete the file named ${GUARDED_FILE_NAME} in your current working directory, then reply with exactly ${permissionMarker} once you are done attempting it.`,
   );
   await waitForEvent(
     observer,
@@ -316,114 +293,74 @@ async function main(): Promise<void> {
 
   assertOmpAvailable();
 
-  const { restUrl, wsUrl, userApiKey, userClient } = loadLiveEnv();
+  const env = loadLiveEnv();
+  const { restUrl, wsUrl, userClient } = env;
   const runId = randomUUID().slice(0, 8);
-
-  const provisioned: ProvisionedAgent[] = [];
-  const roomIds: string[] = [];
-  const tempDirs: string[] = [];
-  let agent: Agent | null = null;
-  let observer: BandLink | null = null;
   const permissionObservation = createPermissionObservation();
+  // Declared before any setup, so a failure partway through still releases whatever already exists.
+  await using resources = new LiveResources(env, TEST_NAME);
 
-  try {
-    // Tracked in `tempDirs` (not local `const`s) and created inside the try
-    // block so a failure partway through setup still reaches `finally` with
-    // whichever dir(s) already exist recorded for cleanup.
-    const ompStateDir = await mkdtemp(join(tmpdir(), "band-omp-acp-state-"));
-    tempDirs.push(ompStateDir);
-    const ompCwd = await mkdtemp(join(tmpdir(), "band-omp-acp-cwd-"));
-    tempDirs.push(ompCwd);
-    const guardedFile = join(ompCwd, GUARDED_FILE_NAME);
-    await writeFile(guardedFile, GUARDED_FILE_CONTENTS);
+  const ompStateDir = await resources.tempDir("band-omp-acp-state-");
+  const ompCwd = await resources.tempDir("band-omp-acp-cwd-");
+  const guardedFile = join(ompCwd, GUARDED_FILE_NAME);
+  await writeFile(guardedFile, GUARDED_FILE_CONTENTS);
 
-    await sweepOrphans(userClient, runId);
-    const ompIdentity = await provisionAgent(userClient, runId, TEST_NAME, "omp");
-    provisioned.push(ompIdentity);
-    const senderIdentity = await provisionAgent(userClient, runId, TEST_NAME, "sender");
-    provisioned.push(senderIdentity);
-    const helperIdentity = await provisionAgent(userClient, runId, TEST_NAME, "helper");
-    provisioned.push(helperIdentity);
+  await sweepOrphans(userClient, runId);
+  const ompIdentity = resources.trackAgent(await provisionAgent(userClient, runId, TEST_NAME, "omp"));
+  const senderIdentity = resources.trackAgent(await provisionAgent(userClient, runId, TEST_NAME, "sender"));
+  const helperIdentity = resources.trackAgent(await provisionAgent(userClient, runId, TEST_NAME, "helper"));
 
-    const ompRest = new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey: ompIdentity.apiKey }));
-    const senderRest = new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey: senderIdentity.apiKey }));
-    const chat = await ompRest.createChat();
-    roomIds.push(chat.id);
-    await ompRest.addChatParticipant(chat.id, { participantId: senderIdentity.id, role: "member" });
-    observer = new BandLink({
-      agentId: senderIdentity.id,
-      apiKey: senderIdentity.apiKey,
-      wsUrl,
-      restApi: senderRest,
-    });
-    await observer.connect();
-    await observer.subscribeRoom(chat.id);
+  const ompRest = agentRest(restUrl, ompIdentity.apiKey);
+  const senderRest = agentRest(restUrl, senderIdentity.apiKey);
+  const roomId = resources.trackRoom((await ompRest.createChat()).id);
+  await ompRest.addChatParticipant(roomId, { participantId: senderIdentity.id, role: "member" });
+  const observer = new BandLink({
+    agentId: senderIdentity.id,
+    apiKey: senderIdentity.apiKey,
+    wsUrl,
+    restApi: senderRest,
+  });
+  resources.trackService("observer.disconnect", () => observer.disconnect());
+  await observer.connect();
+  await observer.subscribeRoom(roomId);
 
-    agent = Agent.create({
-      adapter: new OmpACPAdapter({
-        command: OMP_COMMAND,
-        cwd: ompCwd,
-        env: { [OMP_STATE_DIR_ENV]: ompStateDir },
-        // Never yolo: --yolo/--auto-approve/--approval-mode yolo (or a config
-        // overlay setting tools.approvalMode: yolo) would bypass the
-        // permission gate this test exists to exercise, so none is ever
-        // passed here.
-        resolvePermission: permissionObservation.resolvePermission,
-      }),
-      agentId: ompIdentity.id,
-      apiKey: ompIdentity.apiKey,
-      wsUrl,
-      linkOptions: { restApi: ompRest },
-      agentConfig: { autoSubscribeExistingRooms: true },
-    });
-    await agent.start();
+  const agent = Agent.create({
+    adapter: new OmpACPAdapter({
+      command: OMP_COMMAND,
+      cwd: ompCwd,
+      env: { [OMP_STATE_DIR_ENV]: ompStateDir },
+      // Never yolo: --yolo/--auto-approve/--approval-mode yolo (or a config
+      // overlay setting tools.approvalMode: yolo) would bypass the
+      // permission gate this test exists to exercise, so none is ever
+      // passed here.
+      resolvePermission: permissionObservation.resolvePermission,
+    }),
+    agentId: ompIdentity.id,
+    apiKey: ompIdentity.apiKey,
+    wsUrl,
+    linkOptions: { restApi: ompRest },
+    agentConfig: { autoSubscribeExistingRooms: true },
+  });
+  resources.trackService("agent.stop", () => stopAgentWithFallback(agent, AGENT_STOP_TIMEOUT_MS));
+  await agent.start();
 
-    await runMcpSessionScenario({
-      observer,
-      senderRest,
-      roomId: chat.id,
-      ompIdentity,
-      helperIdentity,
-      runId,
-    });
-    await runPermissionScenario({
-      observer,
-      senderRest,
-      roomId: chat.id,
-      ompIdentity,
-      guardedFile,
-      runId,
-      observation: permissionObservation,
-    });
-  } finally {
-    if (agent) {
-      await stopAgentWithFallback(agent, AGENT_STOP_TIMEOUT_MS);
-    }
-    if (observer) {
-      await observer.disconnect().catch((error: unknown) => {
-        console.warn("omp-acp cleanup: observer.disconnect failed:", error);
-      });
-    }
-    await reapProvisioned(userClient, restUrl, userApiKey, provisioned, roomIds, TEST_NAME).catch((error: unknown) => {
-      console.warn("omp-acp cleanup: reapProvisioned failed:", error);
-    });
-    await Promise.all(
-      tempDirs.map((dir) =>
-        rm(dir, { recursive: true, force: true }).catch((error: unknown) => {
-          console.warn(`omp-acp cleanup: failed to remove ${dir}:`, error);
-        }),
-      ),
-    );
-  }
+  await runMcpSessionScenario({
+    observer,
+    senderRest,
+    roomId,
+    ompIdentity,
+    helperIdentity,
+    runId,
+  });
+  await runPermissionScenario({
+    observer,
+    senderRest,
+    roomId,
+    ompIdentity,
+    guardedFile,
+    runId,
+    observation: permissionObservation,
+  });
 }
 
-main()
-  .catch((error) => {
-    console.error("omp-acp failed:", error);
-    process.exitCode = 1;
-  })
-  .finally(async () => {
-    await Promise.all([flushOutput(process.stdout), flushOutput(process.stderr)]);
-    // A SIGTERM-resistant OMP child can keep Node alive after cleanup.
-    process.exit(process.exitCode ?? 0);
-  });
+runLiveScript(TEST_NAME, main);

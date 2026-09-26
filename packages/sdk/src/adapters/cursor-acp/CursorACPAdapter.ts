@@ -1,5 +1,8 @@
 import type { PermissionOption } from "@agentclientprotocol/sdk";
 
+import { isAuthorizedSender } from "@band-ai/band-sdk-core";
+
+import { createDeferred, type Deferred } from "../../core/deferred";
 import { resolveLogger, type Logger } from "../../core/logger";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { PlatformMessage } from "../../runtime/types";
@@ -11,7 +14,13 @@ import {
   type ACPClientStdioOptions,
   type ACPPermissionRequest,
 } from "../acp";
-import type { CollectedChunk } from "../acp/types";
+import type { ACPPermissionAbandonReason, ACPPermissionEndReason, CollectedChunk } from "../acp/types";
+import { abandon } from "../shared/abandon";
+import { DecisionRegistry, senderAllowlist, TIMED_OUT, type DecisionEntry } from "../shared/decisions";
+import { replyToSender } from "../shared/replyToSender";
+import { runUntilReleased } from "../shared/runUntilReleased";
+import { commandWords } from "../../runtime/formatters";
+import { CURSOR_COMMAND, CURSOR_DECISION_MESSAGES, CURSOR_VERB, DECISION_KIND, type DecisionKind } from "./messages";
 
 export const DEFAULT_CURSOR_ACP_COMMAND = ["agent", "acp"] as const;
 export const DEFAULT_CURSOR_DECISION_TIMEOUT_MS = 300_000;
@@ -34,7 +43,19 @@ export interface CursorACPAdapterOptions extends Omit<ACPClientStdioOptions, "co
   decisionAuthorizedSenders?: readonly string[];
 }
 
-type DecisionKind = "permission" | "question" | "plan";
+// Why a decision ended without an answer. `timeout` is shared with the ACP base class, whose own permission timeout aborts with it.
+const END_REASON = {
+  timeout: "timeout" satisfies ACPPermissionAbandonReason,
+  turnFinished: "turn_finished",
+  roomCleanup: "room_cleanup",
+  stopped: "stopped",
+  evicted: "evicted",
+  promptDeliveryFailed: "prompt_delivery_failed",
+} as const;
+// A permission offers its options as a single choice under this key.
+const PERMISSION_CHOICE = DECISION_KIND.permission;
+
+type EndReason = (typeof END_REASON)[keyof typeof END_REASON] | ACPPermissionEndReason;
 
 interface CursorTurn {
   messageId: string;
@@ -42,15 +63,31 @@ interface CursorTurn {
   sessionId?: string;
   tools: AdapterToolsProtocol;
   requesterId: string;
+  // Hands the room's message queue back to the platform, so a reply to this turn's decision can reach the adapter.
+  releaseRoom: () => void;
 }
 
-interface PendingDecision {
+// What a decision asks for; the rest of `PendingDecision` comes from its turn.
+interface DecisionSpec {
   kind: DecisionKind;
-  roomId: string;
   choices: Map<string, readonly string[]>;
   multiSelect: ReadonlySet<string>;
-  resolve(value: unknown): void;
 }
+
+// A permission's option id, or an extension method's result; undefined denies or cancels.
+type DecisionAnswer = string | Record<string, unknown> | undefined;
+
+interface PendingDecision extends DecisionSpec {
+  roomId: string;
+  tools: AdapterToolsProtocol;
+  requesterId: string;
+  answer: Deferred<DecisionAnswer>;
+}
+
+// A room command that does not fit its decision.
+const INVALID: unique symbol = Symbol("invalid decision command");
+
+const CANCELLED = { outcome: { outcome: "cancelled" } };
 
 class CursorExtensions implements ACPClientExtensionHandler {
   private adapter: CursorACPAdapter | null = null;
@@ -147,12 +184,11 @@ export class CursorACPAdapter extends ACPClientAdapter {
   private readonly questionMode: CursorQuestionMode;
   private readonly planMode: CursorPlanMode;
   private readonly decisionTimeoutMs: number;
-  private readonly maxPendingDecisions: number;
   private readonly authorizedSenders: ReadonlySet<string> | null;
   private readonly decisionLogger: Logger;
   private readonly extensions: CursorExtensions;
   private readonly turns = new Map<string, CursorTurn>();
-  private readonly pending = new Map<string, PendingDecision>();
+  private readonly decisions: DecisionRegistry<PendingDecision>;
   private activeTurn: CursorTurn | null = null;
   private turnTail: Promise<void> = Promise.resolve();
 
@@ -174,11 +210,12 @@ export class CursorACPAdapter extends ACPClientAdapter {
     this.questionMode = options.questionMode ?? "manual";
     this.planMode = options.planMode ?? "manual";
     this.decisionTimeoutMs = options.decisionTimeoutMs ?? DEFAULT_CURSOR_DECISION_TIMEOUT_MS;
-    this.maxPendingDecisions = options.maxPendingDecisions ?? DEFAULT_CURSOR_MAX_PENDING_DECISIONS;
-    this.authorizedSenders = options.decisionAuthorizedSenders
-      ? new Set(options.decisionAuthorizedSenders)
-      : null;
+    this.authorizedSenders = senderAllowlist(options.decisionAuthorizedSenders);
     this.decisionLogger = resolveLogger(options.logger);
+    this.decisions = new DecisionRegistry({
+      maxPending: options.maxPendingDecisions ?? DEFAULT_CURSOR_MAX_PENDING_DECISIONS,
+      logger: this.decisionLogger,
+    });
   }
 
   public override async onMessage(
@@ -192,7 +229,36 @@ export class CursorACPAdapter extends ACPClientAdapter {
     if (await this.handleControl(message, tools, context.roomId)) {
       return;
     }
-    await this.withCursorTurnLock(() => super.onMessage(message, tools, history, participantsMessage, contactsMessage, context));
+    if (this.turns.has(context.roomId)) {
+      await replyToSender(tools, CURSOR_DECISION_MESSAGES.turnInProgress(), message.senderId);
+      return;
+    }
+    const released = createDeferred<void>();
+    const turn: CursorTurn = { messageId: message.id, roomId: context.roomId, tools, requesterId: message.senderId, releaseRoom: released.resolve };
+    // Removing a room waits on its message, so one queued behind another room's turn must not hold it.
+    const queued = this.turns.size > 0;
+    this.turns.set(context.roomId, turn);
+    const run = this.withCursorTurnLock(async () => {
+      if (this.turns.get(turn.roomId) === turn) {
+        await super.onMessage(message, tools, history, participantsMessage, contactsMessage, context);
+      }
+    }).finally(() => this.forgetTurn(turn));
+    if (queued) {
+      turn.releaseRoom();
+    }
+    await runUntilReleased(run, released.promise, (error) => {
+      this.decisionLogger.warn("cursor_acp.released_turn_failed", { roomId: turn.roomId, error: String(error) });
+    });
+  }
+
+  // Only `turn` itself goes: its room may already hold a newer turn.
+  private forgetTurn(turn: CursorTurn): void {
+    if (this.turns.get(turn.roomId) === turn) {
+      this.turns.delete(turn.roomId);
+    }
+    if (this.activeTurn === turn) {
+      this.activeTurn = null;
+    }
   }
 
   protected override async onAcpTurnStarted(
@@ -200,9 +266,10 @@ export class CursorACPAdapter extends ACPClientAdapter {
     tools: AdapterToolsProtocol,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
-    const turn = { messageId: message.id, roomId: context.roomId, tools, requesterId: message.senderId };
-    this.turns.set(context.roomId, turn);
-    this.activeTurn = turn;
+    const turn = this.turns.get(context.roomId);
+    if (turn?.messageId === message.id) {
+      this.activeTurn = turn;
+    }
   }
 
   protected override async onAcpSessionReady(
@@ -222,34 +289,28 @@ export class CursorACPAdapter extends ACPClientAdapter {
     _tools: AdapterToolsProtocol,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
+    // Forgotten now, so a late Cursor ask finds no turn to attach to.
     const turn = this.turns.get(context.roomId);
     if (turn?.messageId === message.id) {
-      this.turns.delete(context.roomId);
-      this.cancelRoom(context.roomId);
-    }
-    if (this.activeTurn?.messageId === message.id) {
-      this.activeTurn = null;
+      this.forgetTurn(turn);
+      this.cancelRoom(context.roomId, END_REASON.turnFinished);
     }
   }
 
   public override async onCleanup(roomId: string): Promise<void> {
-    const sessionId = this.turns.get(roomId)?.sessionId;
-    this.cancelRoom(roomId);
-    this.turns.delete(roomId);
-    if (this.activeTurn?.roomId === roomId) {
-      this.activeTurn = null;
+    const turn = this.turns.get(roomId);
+    this.cancelRoom(roomId, END_REASON.roomCleanup);
+    if (turn) {
+      this.forgetTurn(turn);
     }
     await super.onCleanup(roomId);
-    if (sessionId) {
-      this.extensions.forgetSession(sessionId);
+    if (turn?.sessionId) {
+      this.extensions.forgetSession(turn.sessionId);
     }
   }
 
   public override async stop(): Promise<void> {
-    for (const decision of this.pending.values()) {
-      decision.resolve(undefined);
-    }
-    this.pending.clear();
+    this.endUnanswered(this.decisions.cancelAll(), END_REASON.stopped);
     this.turns.clear();
     this.activeTurn = null;
     this.extensions.clearSessions();
@@ -264,13 +325,13 @@ export class CursorACPAdapter extends ACPClientAdapter {
     const roomId = sessionId ? this.roomIdForSession(sessionId) : this.activeTurn?.roomId;
     const turn = roomId ? this.turns.get(roomId) : undefined;
     if (!turn || (sessionId && turn.sessionId !== sessionId)) {
-      return { outcome: { outcome: "cancelled" } };
+      return CANCELLED;
     }
     if (method === "cursor/ask_question") {
-      return this.resolveQuestion(turn.roomId, turn, params);
+      return this.resolveQuestion(turn, params);
     }
     if (method === "cursor/create_plan") {
-      return this.resolvePlan(turn.roomId, turn, params);
+      return this.resolvePlan(turn, params);
     }
     return {};
   }
@@ -287,7 +348,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
       return undefined;
     }
     const options = request.options.map((option) => option.optionId);
-    const token = await this.waitForDecision("permission", request.roomId, turn, new Map([["permission", options]]), new Set(), `Cursor needs permission. Reply \`/cursor select {token} option-id\` or \`/cursor deny {token}\`.`, signal);
+    const token = await this.waitForDecision(turn, { kind: DECISION_KIND.permission, choices: new Map([[PERMISSION_CHOICE, options]]), multiSelect: new Set() }, CURSOR_DECISION_MESSAGES.permissionPrompt, signal);
     return typeof token === "string" && options.includes(token) ? token : undefined;
   }
 
@@ -295,93 +356,144 @@ export class CursorACPAdapter extends ACPClientAdapter {
     return this.activeTurn?.sessionId ?? null;
   }
 
-  private async resolveQuestion(roomId: string, turn: CursorTurn, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  private async resolveQuestion(turn: CursorTurn, params: Record<string, unknown>): Promise<Record<string, unknown>> {
     const questions = questionChoices(params.questions);
-    if (questions.choices.size === 0) {
-      return { outcome: { outcome: "cancelled" } };
-    }
-    if (this.questionMode === "autoCancel") {
-      return { outcome: { outcome: "cancelled" } };
+    if (questions.choices.size === 0 || this.questionMode === "autoCancel") {
+      return CANCELLED;
     }
     if (this.questionMode === "autoFirst") {
       return answered(Object.fromEntries([...questions.choices].map(([id, options]) => [id, [options[0]]])));
     }
-    const result = await this.waitForDecision("question", roomId, turn, questions.choices, questions.multiSelect, "Cursor needs input. Reply \`/cursor answer {token} question-id=option-id[,option-id] ...\`.");
-    return isRecord(result) ? result : { outcome: { outcome: "cancelled" } };
+    const result = await this.waitForDecision(turn, { kind: DECISION_KIND.question, ...questions }, CURSOR_DECISION_MESSAGES.questionPrompt);
+    return isRecord(result) ? result : CANCELLED;
   }
 
-  private async resolvePlan(roomId: string, turn: CursorTurn, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  private async resolvePlan(turn: CursorTurn, params: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (this.planMode === "autoAccept") {
-      return { outcome: { outcome: "accepted" } };
+      return planOutcome("accepted");
     }
     if (this.planMode === "autoDecline") {
-      return { outcome: { outcome: "rejected" } };
+      return planOutcome("rejected");
     }
     const title = stringValue(params.title) ?? "Cursor plan";
-    const result = await this.waitForDecision("plan", roomId, turn, new Map(), new Set(), `${title} needs approval. Reply \`/cursor accept {token}\` or \`/cursor reject {token}\`.`);
-    return isRecord(result) ? result : { outcome: { outcome: "cancelled" } };
+    const result = await this.waitForDecision(turn, { kind: DECISION_KIND.plan, choices: new Map(), multiSelect: new Set() }, (token) => CURSOR_DECISION_MESSAGES.planPrompt(title, token));
+    return isRecord(result) ? result : CANCELLED;
   }
 
-  private async waitForDecision(kind: DecisionKind, roomId: string, turn: CursorTurn, choices: Map<string, readonly string[]>, multiSelect: ReadonlySet<string>, prompt: string, signal?: AbortSignal): Promise<unknown> {
-    if (this.pending.size >= this.maxPendingDecisions) {
-      this.pending.values().next().value?.resolve(undefined);
+  private async waitForDecision(turn: CursorTurn, spec: DecisionSpec, prompt: (token: string) => string, signal?: AbortSignal): Promise<DecisionAnswer> {
+    if (signal?.aborted) {
+      return undefined;
     }
-    const token = crypto.randomUUID().slice(0, 8);
-    return new Promise<unknown>((resolve) => {
-      const timer = setTimeout(() => settle(undefined), this.decisionTimeoutMs);
-      const abort = () => settle(undefined);
-      const settle = (value: unknown) => {
-        clearTimeout(timer);
-        signal?.removeEventListener("abort", abort);
-        this.pending.delete(token);
-        resolve(value);
-      };
-      this.pending.set(token, { kind, roomId, choices, multiSelect, resolve: settle });
-      signal?.addEventListener("abort", abort, { once: true });
-      void turn.tools.sendMessage(prompt.replaceAll("{token}", token), [turn.requesterId]).catch((error: unknown) => {
-        this.decisionLogger.warn("cursor_acp.decision_prompt_delivery_failed", { roomId, kind, error: String(error) });
-        settle(undefined);
-      });
-    });
+    const entry = this.registerDecision(turn, spec, signal);
+    if (!(await this.postPrompt(turn, entry, prompt))) {
+      return undefined;
+    }
+    const result = await this.decisions.wait(entry, entry.payload.answer.promise, { timeoutMs: this.decisionTimeoutMs });
+    if (result !== TIMED_OUT) {
+      return result;
+    }
+    this.endTimedOut(entry);
+    return undefined;
   }
 
-  private async handleControl(message: PlatformMessage, tools: AdapterToolsProtocol, roomId: string): Promise<boolean> {
-    const words = message.content.trim().split(/\s+/);
-    if (words[0]?.toLowerCase() !== "/cursor") {
+  private registerDecision(turn: CursorTurn, spec: DecisionSpec, signal?: AbortSignal): DecisionEntry<PendingDecision> {
+    const { entry, removed } = this.decisions.registerMinted(
+      { ...spec, roomId: turn.roomId, tools: turn.tools, requesterId: turn.requesterId, answer: createDeferred<DecisionAnswer>() },
+      { roomId: turn.roomId },
+    );
+    this.endUnanswered(removed, END_REASON.evicted);
+    if (signal) {
+      // The ACP base class aborts on its own timeout too; the claim guard lets only one of them end the decision.
+      signal.addEventListener("abort", () => this.abandonDecision(entry, signal.reason as ACPPermissionEndReason), { once: true });
+    }
+    return entry;
+  }
+
+  // False when the prompt failed and the decision ended unanswered.
+  private async postPrompt(turn: CursorTurn, entry: DecisionEntry<PendingDecision>, prompt: (token: string) => string): Promise<boolean> {
+    try {
+      await replyToSender(turn.tools, prompt(entry.token), turn.requesterId);
+      return true;
+    } catch (error) {
+      this.decisionLogger.warn("cursor_acp.decision_prompt_delivery_failed", { roomId: turn.roomId, kind: entry.payload.kind, error: String(error) });
+      // A reply that claimed it meanwhile owns the answer; wait for it.
+      return !this.abandonDecision(entry, END_REASON.promptDeliveryFailed);
+    } finally {
+      // Whether or not the prompt landed, the room's reply must not queue behind this turn.
+      turn.releaseRoom();
+    }
+  }
+
+  // Ends a decision nobody has claimed; false when its claimant owns it.
+  private abandonDecision(entry: DecisionEntry<PendingDecision>, reason: EndReason): boolean {
+    if (!this.decisions.withdraw(entry)) {
       return false;
     }
-    if (words.length === 1 || words[1]?.toLowerCase() === "decisions") {
-      const entries = [...this.pending.entries()].filter(([, decision]) => decision.roomId === roomId).map(([token, decision]) => `\`${token}\` (${decision.kind})`);
-      await tools.sendMessage(`Pending Cursor decisions: ${entries.join(", ") || "none"}`);
-      return true;
+    switch (reason) {
+      case END_REASON.timeout:
+        this.endTimedOut(entry);
+        break;
+      default:
+        this.endUnanswered([entry], reason);
     }
-    const [_, action, token, ...args] = words;
-    const decision = token ? this.pending.get(token) : undefined;
-    if (!decision || decision.roomId !== roomId) {
-      await tools.sendMessage(`Cursor decision \`${token ?? ""}\` is not pending.`);
-      return true;
-    }
-    if (this.authorizedSenders && !this.authorizedSenders.has(message.senderId)) {
-      await tools.sendMessage("You are not authorized to resolve Cursor decisions.");
-      return true;
-    }
-    const result = commandResult(action ?? "", args, decision);
-    if (result === null) {
-      await tools.sendMessage(`That command is not valid for Cursor ${decision.kind} decision \`${token}\`.`);
-      return true;
-    }
-    decision.resolve(result);
-    await tools.sendMessage(`Cursor ${decision.kind} decision \`${token}\` resolved.`);
     return true;
   }
 
-  private cancelRoom(roomId: string): void {
-    for (const [token, decision] of this.pending) {
-      if (decision.roomId === roomId) {
-        decision.resolve(undefined);
-        this.pending.delete(token);
-      }
+  // Both deadlines, the registry's and the ACP base class's, tell the requester.
+  private endTimedOut(entry: DecisionEntry<PendingDecision>): void {
+    const { token, payload: decision } = entry;
+    this.endUnanswered([entry], END_REASON.timeout);
+    abandon(
+      () => replyToSender(decision.tools, CURSOR_DECISION_MESSAGES.timedOut(decision.kind, token), decision.requesterId),
+      (error) => {
+        this.decisionLogger.warn("cursor_acp.decision_timeout_notice_failed", { roomId: decision.roomId, kind: decision.kind, error: String(error) });
+      },
+    );
+  }
+
+  // Whoever removes an unclaimed ask resolves it.
+  private endUnanswered(entries: readonly DecisionEntry<PendingDecision>[], reason: EndReason): void {
+    for (const { payload: decision } of entries) {
+      decision.answer.resolve(undefined);
+      this.decisionLogger.info("cursor_acp.decision_ended", { roomId: decision.roomId, kind: decision.kind, reason });
     }
+  }
+
+  private async handleControl(message: PlatformMessage, tools: AdapterToolsProtocol, roomId: string): Promise<boolean> {
+    const words = commandWords(message.content);
+    if (words[0]?.toLowerCase() !== CURSOR_COMMAND) {
+      return false;
+    }
+    await replyToSender(tools, this.controlReply(words, message.senderId, roomId), message.senderId);
+    return true;
+  }
+
+  private controlReply(words: string[], senderId: string, roomId: string): string {
+    if (words.length === 1 || words[1]?.toLowerCase() === CURSOR_VERB.list) {
+      const entries = this.decisions.unclaimedInRoom(roomId).map(({ token, payload }) => `\`${token}\` (${payload.kind})`);
+      return CURSOR_DECISION_MESSAGES.pendingList(entries);
+    }
+    const [_, action = "", token = "", ...args] = words;
+    const decision = this.decisions.get(token);
+    if (!decision || decision.roomId !== roomId) {
+      return CURSOR_DECISION_MESSAGES.notPending(token);
+    }
+    if (!isAuthorizedSender(this.authorizedSenders, senderId)) {
+      return CURSOR_DECISION_MESSAGES.notAuthorized();
+    }
+    const result = commandResult(action, args, decision);
+    if (result === INVALID) {
+      return CURSOR_DECISION_MESSAGES.invalidCommand(decision.kind, token);
+    }
+    if (!this.decisions.tryClaim(token)) {
+      return CURSOR_DECISION_MESSAGES.notPending(token);
+    }
+    decision.answer.resolve(result);
+    return CURSOR_DECISION_MESSAGES.resolved(decision.kind, token);
+  }
+
+  private cancelRoom(roomId: string, reason: EndReason): void {
+    this.endUnanswered(this.decisions.cancelRoom(roomId), reason);
   }
 
   private async withCursorTurnLock<T>(run: () => Promise<T>): Promise<T> {
@@ -429,19 +541,64 @@ function questionChoices(value: unknown): { choices: Map<string, readonly string
   return { choices, multiSelect };
 }
 
-function commandResult(action: string, args: readonly string[], decision: PendingDecision): unknown {
-  if (decision.kind === "permission") return action === "deny" ? undefined : action === "select" && args.length === 1 && decision.choices.get("permission")?.includes(args[0] ?? "") ? args[0] : null;
-  if (decision.kind === "plan") return action === "accept" ? { outcome: { outcome: "accepted" } } : action === "reject" ? { outcome: { outcome: "rejected" } } : null;
-  if (action !== "answer") return null;
+type CommandResult = DecisionAnswer | typeof INVALID;
+
+function commandResult(action: string, args: readonly string[], decision: PendingDecision): CommandResult {
+  switch (decision.kind) {
+    case DECISION_KIND.permission:
+      return permissionResult(action, args, decision);
+    case DECISION_KIND.plan:
+      return planResult(action);
+    case DECISION_KIND.question:
+      return action === CURSOR_VERB.answer ? questionResult(args, decision) : INVALID;
+  }
+}
+
+function permissionResult(action: string, args: readonly string[], decision: PendingDecision): CommandResult {
+  switch (action) {
+    case CURSOR_VERB.deny:
+      return undefined;
+    case CURSOR_VERB.select: {
+      const [choice, ...extra] = args;
+      return choice && extra.length === 0 && decision.choices.get(PERMISSION_CHOICE)!.includes(choice) ? choice : INVALID;
+    }
+    default:
+      return INVALID;
+  }
+}
+
+function planResult(action: string): CommandResult {
+  switch (action) {
+    case CURSOR_VERB.accept:
+      return planOutcome("accepted");
+    case CURSOR_VERB.reject:
+      return planOutcome("rejected");
+    default:
+      return INVALID;
+  }
+}
+
+function questionResult(args: readonly string[], decision: PendingDecision): CommandResult {
   const selected: Record<string, string[]> = {};
   for (const argument of args) {
     const [id, raw] = argument.split("=", 2);
     const values = raw?.split(",") ?? [];
-    const offered = id ? decision.choices.get(id) : undefined;
-    if (!id || !offered || selected[id] || values.length === 0 || (values.length > 1 && !decision.multiSelect.has(id)) || values.some((value) => !offered.includes(value))) return null;
+    if (!isValidSelection(decision, selected, id, values)) return INVALID;
     selected[id] = values;
   }
-  return Object.keys(selected).length === decision.choices.size ? answered(selected) : null;
+  return Object.keys(selected).length === decision.choices.size ? answered(selected) : INVALID;
+}
+
+// An offered question, not yet answered, with offered values: several only where it allows them.
+function isValidSelection(decision: PendingDecision, selected: Record<string, string[]>, id: string | undefined, values: readonly string[]): id is string {
+  const offered = id ? decision.choices.get(id) : undefined;
+  return !!id && !!offered && !selected[id] && values.length > 0
+    && (values.length === 1 || decision.multiSelect.has(id))
+    && values.every((value) => offered.includes(value));
+}
+
+function planOutcome(outcome: "accepted" | "rejected"): Record<string, unknown> {
+  return { outcome: { outcome } };
 }
 
 function answered(selected: Record<string, readonly string[]>): Record<string, unknown> {

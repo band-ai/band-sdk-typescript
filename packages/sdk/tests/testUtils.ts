@@ -5,6 +5,7 @@ import type { PlatformMessage } from "../src/runtime";
 import type { AgentToolsProtocol } from "../src/core";
 import { DEFAULT_AGENT_TOOLS_CAPABILITIES, FAILURE_EVENT_TYPE, toFailureEvent } from "../src/contracts/protocols";
 import { isBlankEventContent } from "../src/contracts/chatEvents";
+import { createDeferred, type Deferred } from "../src/core/deferred";
 import type {
   AgentIdentity,
   PaginatedResponse,
@@ -31,6 +32,85 @@ interface CapturedToolEvent {
 
 type FakeToolMethod = keyof AgentToolsProtocol;
 
+/** What a fake saw, in order; a test awaits what it holds, so actors are ordered by what they did, never by time. */
+export class RecordLog<T> {
+  private readonly recorded: T[] = [];
+  private readonly checks = new Set<() => void>();
+
+  public get entries(): readonly T[] {
+    return this.recorded;
+  }
+
+  public record(entry: T): void {
+    this.recorded.push(entry);
+    this.checks.forEach((check) => check());
+  }
+
+  public until(predicate: () => boolean): Promise<void> {
+    return new Promise((resolve) => {
+      const check = () => {
+        if (predicate()) {
+          this.checks.delete(check);
+          resolve();
+        }
+      };
+      this.checks.add(check);
+      check();
+    });
+  }
+
+  /** Resolves with the first entry at or after index `from` that `matches`, once there is one. */
+  public async next(matches: (entry: T) => boolean, from = 0): Promise<T> {
+    const found = () => this.recorded.slice(from).find(matches);
+    await this.until(() => found() !== undefined);
+    return found()!;
+  }
+}
+
+/** The platform refuses a chat message that mentions nobody, so it never reaches the room. */
+export function assertMentioned<M extends readonly unknown[] | undefined>(mentions: M): asserts mentions is NonNullable<M> {
+  if (!mentions?.length) {
+    throw new Error("At least one mention is required");
+  }
+}
+
+/** A call a fake keeps in flight: `sending` settles with its arguments once it arrives; `release()` lets it finish, failing with the hold's error if it has one. */
+export interface HeldCall<A extends unknown[]> {
+  readonly sending: Promise<A>;
+  release(): void;
+}
+
+interface Hold<A extends unknown[]> {
+  matches: (...args: A) => boolean;
+  error?: Error;
+  sending: Deferred<A>;
+  released: Deferred;
+}
+
+/** One-shot holds on a fake's calls; each hold parks the first call it matches. */
+export class CallHolds<A extends unknown[]> {
+  private readonly holds: Hold<A>[] = [];
+
+  public hold(matches: (...args: A) => boolean, options: { error?: Error } = {}): HeldCall<A> {
+    const hold: Hold<A> = { matches, error: options.error, sending: createDeferred<A>(), released: createDeferred() };
+    this.holds.push(hold);
+    return { sending: hold.sending.promise, release: () => hold.released.resolve() };
+  }
+
+  public async pass(...args: A): Promise<void> {
+    const hold = this.holds.find((candidate) => candidate.matches(...args));
+    if (!hold) {
+      return;
+    }
+    this.holds.splice(this.holds.indexOf(hold), 1);
+    hold.sending.resolve(args);
+    await hold.released.promise;
+    if (hold.error) {
+      throw hold.error;
+    }
+  }
+}
+
 interface FakeToolsOptions {
   failOn?: Iterable<FakeToolMethod>;
   errorFactory?: (method: FakeToolMethod) => Error;
@@ -53,9 +133,10 @@ export class FakeTools implements AgentToolsProtocol {
 
   public async sendMessage(
     content: string,
-    _mentions?: string[] | Array<{ id: string; handle?: string }>,
+    mentions?: string[] | Array<{ id: string; handle?: string }>,
   ): Promise<Record<string, unknown>> {
     this.maybeFail("sendMessage");
+    assertMentioned(mentions);
     this.messages.push(content);
     return { ok: true };
   }
@@ -136,9 +217,13 @@ export class FakeTools implements AgentToolsProtocol {
   }
 }
 
-/** The failure event an adapter posted, located the way a client locates one. */
+/** The failure events an adapter posted, located the way a client locates one. */
+export function failureEvents(tools: FakeTools): CapturedToolEvent[] {
+  return tools.events.filter((event) => event.messageType === FAILURE_EVENT_TYPE);
+}
+
 export function findFailureEvent(tools: FakeTools): CapturedToolEvent | undefined {
-  return tools.events.find((event) => event.messageType === FAILURE_EVENT_TYPE);
+  return failureEvents(tools)[0];
 }
 
 export function makeRoster(participants: ParticipantRecord[]): ParticipantRoster {

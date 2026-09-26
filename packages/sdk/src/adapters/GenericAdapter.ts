@@ -20,7 +20,7 @@ function toolsWithDeliverySafeSendMessage(tools: AdapterToolsProtocol): AdapterT
     get(_target, key) {
       if (key === "sendMessage") {
         return (content: string, mentions?: Parameters<AdapterToolsProtocol["sendMessage"]>[1]) =>
-          deliverReply(tools, content, mentions);
+          deliverReply(tools, content, mentions ?? []);
       }
       const value: unknown = Reflect.get(tools, key, tools);
       return typeof value === "function" ? (value.bind(tools) as unknown) : value;

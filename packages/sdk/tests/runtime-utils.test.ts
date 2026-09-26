@@ -10,6 +10,7 @@ import {
   renderSystemPrompt,
   replaceUuidMentions,
 } from "../src/runtime";
+import { stripLeadingMentions } from "../src/runtime/formatters";
 import {
   CHAT_EVENT_TYPES,
   assertChatEventType,
@@ -29,6 +30,20 @@ describe("runtime utilities", () => {
       { id: "u1", handle: "@john" },
     ]);
     expect(replaced).toBe("hello @john");
+  });
+
+  describe("stripLeadingMentions", () => {
+    it("strips a leading block of platform and handle mentions to expose a command", () => {
+      expect(stripLeadingMentions("@[[agent-uuid]] @owner/agent approve perm-1")).toBe("approve perm-1");
+    });
+
+    it("keeps an answer that itself begins with an @handle when only the delivery mention is stripped", () => {
+      expect(stripLeadingMentions("@agent @alice should review it", { onlyFirst: true })).toBe("@alice should review it");
+    });
+
+    it("keeps the newlines separating a multi-answer reply", () => {
+      expect(stripLeadingMentions("@agent first answer\nsecond answer", { onlyFirst: true })).toBe("first answer\nsecond answer");
+    });
   });
 
   describe("mentionSubjectsFromMetadata", () => {
