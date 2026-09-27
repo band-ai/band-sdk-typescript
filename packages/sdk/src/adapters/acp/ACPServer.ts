@@ -30,6 +30,12 @@ import { BandACPServerAdapter, ConcurrentACPPromptError } from "./BandACPServerA
 import { CursorExtensionHandler } from "./cursorExtensions";
 import type { ACPExtensionHandler } from "./extensions";
 import { acpModule } from "./loader";
+import type { ACPPromptOutcome } from "./types";
+
+const PROMPT_STOP_REASONS = {
+  completed: "end_turn",
+  cancelled: "cancelled",
+} as const satisfies Record<Exclude<ACPPromptOutcome["kind"], "failure">, PromptResponse["stopReason"]>;
 
 export interface ACPServerOptions {
   modes?: SessionMode[];
@@ -268,7 +274,7 @@ export class ACPServer implements Agent {
     params: PromptRequest,
   ): Promise<PromptResponse> {
     const text = extractPromptText(params.prompt)
-    let outcome: Awaited<ReturnType<BandACPServerAdapter["handlePrompt"]>>
+    let outcome: ACPPromptOutcome
     try {
       outcome = await this.adapter.handlePrompt(params.sessionId, text)
     } catch (error) {
@@ -282,7 +288,7 @@ export class ACPServer implements Agent {
       const acp = await acpModule.get()
       throw acp.RequestError.internalError(outcome.failure.toExtensionData())
     }
-    return { stopReason: outcome.kind === "completed" ? "end_turn" : "cancelled" }
+    return { stopReason: PROMPT_STOP_REASONS[outcome.kind] }
   }
 
   public async cancel(
