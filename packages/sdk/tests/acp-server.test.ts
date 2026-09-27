@@ -142,7 +142,9 @@ describe("ACPServer", () => {
 
     const first = request("fail")
     await vi.waitFor(() => expect(sentMessages).toHaveLength(1))
-    await expect(request("overlapping")).rejects.toMatchObject({ code: -32602 })
+    await expect(request("overlapping")).rejects.toMatchObject({
+      code: RequestError.invalidParams().code,
+    })
     expect(sentMessages).toHaveLength(1)
     const failure = new AgentFailure("peer", "failed", "E_FAIL", {
       reason: "offline", trace: "Bearer sk-private", API_KEY: "sk-private",
@@ -154,7 +156,7 @@ describe("ACPServer", () => {
     const promptError: unknown = await first.then(() => null, (error: unknown) => error)
     expect(promptError).toBeInstanceOf(RequestError)
     if (!(promptError instanceof RequestError)) throw new Error("Expected ACP request error")
-    expect(promptError.code).toBe(-32603)
+    expect(promptError.code).toBe(RequestError.internalError().code)
     expect(promptError.data).toEqual(projection)
     await vi.waitFor(() => expect(updates).toHaveLength(1))
     expect(updates[0]).toEqual({
@@ -196,7 +198,7 @@ describe("ACPServer", () => {
     await vi.waitFor(() => expect(sentMessages).toHaveLength(3))
     await adapter.onCleanup("room-1")
     await expect(closed).rejects.toMatchObject({
-      code: -32603,
+      code: RequestError.internalError().code,
       data: new AgentFailure("band", "Band room closed before prompt completed.").toExtensionData(),
     })
   })
