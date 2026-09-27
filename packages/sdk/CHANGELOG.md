@@ -1,6 +1,13 @@
 # Changelog
 
 
+## [0.4.7](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.4.6...sdk-v0.4.7) (2026-09-27)
+
+
+### Bug Fixes
+
+* **adapters:** surface Band ACP server failures to clients (INT-1560) ([#253](https://github.com/band-ai/band-sdk-typescript/issues/253)) ([94fbdc9](https://github.com/band-ai/band-sdk-typescript/commit/94fbdc9eb64d46e55ab8340cf629bd1d131251a2))
+
 ## [0.4.6](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.4.5...sdk-v0.4.6) (2026-09-26)
 
 
