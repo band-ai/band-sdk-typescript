@@ -13,6 +13,8 @@ function makeFailure(content: string, roomId: string, metadata: Record<string, u
 async function createFixture(options: {
   graceMs?: number;
   timeoutMs?: number;
+  pauseBeforeSend?: Promise<void>;
+  messageDelivery?: () => Promise<void>;
   sessionUpdate?: (params: Record<string, unknown>) => Promise<void>;
 } = {}) {
   let nextRoom = 0
@@ -23,11 +25,13 @@ async function createFixture(options: {
       createChat: async () => ({ id: `room-${++nextRoom}` }),
       createChatMessage: async (_roomId, message) => {
         sentMessages.push(message as Record<string, unknown>)
+        await options.messageDelivery?.()
         return { ok: true }
       },
-      listChatParticipants: async () => [
-        { id: "peer-1", name: "Peer", type: "Agent", handle: "peer" },
-      ],
+      listChatParticipants: async () => {
+        await options.pauseBeforeSend
+        return [{ id: "peer-1", name: "Peer", type: "Agent", handle: "peer" }]
+      },
     }, { id: "agent-1", name: "Band Agent", description: null }),
     promptCompletionGraceMs: options.graceMs ?? 10,
     responseTimeoutMs: options.timeoutMs ?? 150,
@@ -272,14 +276,14 @@ describe("BandACPServerAdapter", () => {
       provider: "openai",
       message: "provider failed",
       code: "rate_limit",
-      detail: { trace: ["Bearer sk-private", { api_key: "sk-private", note: "retry" }] },
+      detail: { trace: ["Bearer sk-private", { API_KEY: "sk-private", note: "retry", attempts: 2, allowed: false, extra: null }] },
     } }
     await emit(makeFailure("provider failed", "room-1", metadata))
     const outcome = await prompt
     expect(outcome.kind).toBe("failure")
     if (outcome.kind !== "failure") throw new Error("Expected failure")
     const projection = new AgentFailure("openai", "provider failed", "rate_limit", {
-      trace: ["Bearer [REDACTED]", { api_key: "[REDACTED]", note: "retry" }],
+      trace: ["Bearer [REDACTED]", { API_KEY: "[REDACTED]", note: "retry", attempts: 2, allowed: false, extra: null }],
     }).toExtensionData()
     expect(outcome.failure.toExtensionData()).toEqual(projection)
     expect(updates[0]).toEqual({
@@ -401,6 +405,47 @@ describe("BandACPServerAdapter", () => {
     await emit(makeMessage("done", "room-2"))
     expect((await first).kind).toBe("completed")
     expect((await otherRoom).kind).toBe("completed")
+  })
+
+  it("keeps the first prompt active during participant lookup, then settles on room failure", async () => {
+    let releaseParticipants: (() => void) | undefined
+    const pauseBeforeSend = new Promise<void>((resolve) => { releaseParticipants = resolve })
+    const { adapter, sentMessages, emit } = await createFixture({ pauseBeforeSend })
+    const sessionId = await adapter.createSession()
+    const first = adapter.handlePrompt(sessionId, "first")
+
+    await expect(adapter.handlePrompt(sessionId, "overlapping")).rejects.toThrow("already active")
+    await emit(makeFailure("failed during lookup", "room-1", {
+      failure: { provider: "peer", message: "failed during lookup" },
+    }))
+    releaseParticipants?.()
+
+    const outcome = await first
+    expect(outcome.kind).toBe("failure")
+    if (outcome.kind !== "failure") throw new Error("Expected failure")
+    expect(outcome.failure.toExtensionData()).toEqual(
+      new AgentFailure("peer", "failed during lookup").toExtensionData(),
+    )
+    expect(sentMessages).toHaveLength(0)
+  })
+
+  it("keeps a room failure when the in-flight prompt delivery later fails", async () => {
+    let rejectDelivery: ((error: Error) => void) | undefined
+    const delivery = new Promise<void>((_, reject) => { rejectDelivery = reject })
+    const { adapter, sentMessages, emit } = await createFixture({
+      messageDelivery: () => delivery,
+    })
+    const sessionId = await adapter.createSession()
+    const prompt = adapter.handlePrompt(sessionId, "fix")
+    await vi.waitFor(() => expect(sentMessages).toHaveLength(1))
+
+    await emit(makeFailure("peer failed", "room-1"))
+    rejectDelivery?.(new Error("Band send failed"))
+
+    const outcome = await prompt
+    expect(outcome.kind).toBe("failure")
+    if (outcome.kind !== "failure") throw new Error("Expected failure")
+    expect(outcome.failure.message).toBe("peer failed")
   })
 
   it("does not let an old completion timer finish a later prompt", async () => {

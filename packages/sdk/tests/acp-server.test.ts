@@ -143,20 +143,25 @@ describe("ACPServer", () => {
     await vi.waitFor(() => expect(sentMessages).toHaveLength(1))
     await expect(request("overlapping")).rejects.toMatchObject({ code: -32602 })
     expect(sentMessages).toHaveLength(1)
-    const failure = new AgentFailure("peer", "failed", "E_FAIL", { reason: "offline" })
+    const failure = new AgentFailure("peer", "failed", "E_FAIL", {
+      reason: "offline", trace: "Bearer sk-private", API_KEY: "sk-private",
+    })
+    const projection = new AgentFailure("peer", "failed", "E_FAIL", {
+      reason: "offline", trace: "Bearer [REDACTED]", API_KEY: "[REDACTED]",
+    }).toExtensionData()
     await emit({ ...makeMessage("failed", "room-1", { failure: failure.toObject() }), messageType: "error" })
     const promptError: unknown = await first.then(() => null, (error: unknown) => error)
     expect(promptError).toBeInstanceOf(RequestError)
     if (!(promptError instanceof RequestError)) throw new Error("Expected ACP request error")
     expect(promptError.code).toBe(-32603)
-    expect(promptError.data).toEqual(failure.toExtensionData())
+    expect(promptError.data).toEqual(projection)
     await vi.waitFor(() => expect(updates).toHaveLength(1))
     expect(updates[0]).toEqual({
       sessionId,
       update: {
         sessionUpdate: "agent_message_chunk",
         content: { type: "text", text: "[Error] failed" },
-        _meta: failure.toExtensionData(),
+        _meta: projection,
       },
     })
 
@@ -167,7 +172,7 @@ describe("ACPServer", () => {
       update: {
         sessionUpdate: "agent_message_chunk",
         content: { type: "text", text: "[Error] unsolicited" },
-        _meta: failure.toExtensionData(),
+        _meta: projection,
       },
     })
     expect(updates[1]).not.toHaveProperty("_meta")
