@@ -4,12 +4,15 @@ import { z } from "zod";
 import { FAILURE_METADATA_KEY } from "../../contracts/protocols";
 import { agentFailure } from "../../core/providerFailure";
 import {
-  GATEWAY_FREE_TEXT_SENSITIVE_KEY_TERMS,
+  FREE_TEXT_SENSITIVE_KEY_TERMS,
+  REDACTED_VALUE,
   redactCredentialText,
 } from "../../core/sensitiveTerms";
 import type { PlatformMessage } from "../../runtime/types";
 
-const SENSITIVE_KEY_PATTERN = new RegExp(`^(?:${GATEWAY_FREE_TEXT_SENSITIVE_KEY_TERMS})$`, "i");
+export const ACP_LOCAL_FAILURE_PROVIDER = "band";
+
+const SENSITIVE_KEY_PATTERN = new RegExp(`^(?:${FREE_TEXT_SENSITIVE_KEY_TERMS})$`, "i");
 // z.json() accepts cycles, which cannot be forwarded through JSON-RPC.
 const detailSchema = z.json().refine((value) => {
   try {
@@ -23,7 +26,7 @@ type JsonDetail = z.infer<typeof detailSchema>;
 
 export function decodeACPFailure(message: PlatformMessage): AgentFailure {
   const fallback = () => agentFailure(
-    "band",
+    ACP_LOCAL_FAILURE_PROVIDER,
     redactCredentialText(message.content.trim() || "Band peer reported a failure."),
   );
   const value = message.metadata?.[FAILURE_METADATA_KEY];
@@ -61,7 +64,7 @@ function redactDetail(value: JsonDetail): JsonDetail {
   if (value !== null && typeof value === "object") {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [
       key,
-      SENSITIVE_KEY_PATTERN.test(key) ? "[REDACTED]" : redactDetail(item),
+      SENSITIVE_KEY_PATTERN.test(key) ? REDACTED_VALUE : redactDetail(item),
     ]));
   }
   return value;

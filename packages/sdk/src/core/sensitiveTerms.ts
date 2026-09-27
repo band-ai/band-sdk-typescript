@@ -16,17 +16,19 @@
  */
 export const SENSITIVE_KEY_TERMS = "authorization|api[-_ ]?key|token|secret|password|cookie";
 
+export const REDACTED_VALUE = "[REDACTED]";
+
 /** Extra free-text keys (credential-shaped `session=` values). */
-export const GATEWAY_FREE_TEXT_SENSITIVE_KEY_TERMS = `${SENSITIVE_KEY_TERMS}|session`;
+export const FREE_TEXT_SENSITIVE_KEY_TERMS = `${SENSITIVE_KEY_TERMS}|session`;
 
 // Shared by gateway and ACP error forwarding so the credential rules agree.
 const SENSITIVE_VALUE_PATTERN = new RegExp(
-  `(${GATEWAY_FREE_TEXT_SENSITIVE_KEY_TERMS})"?\\s*(?:[A-Za-z]+\\s*)?[:=]\\s*"?(?:[A-Za-z][\\w-]*\\s+)?[^\\s,;"]+`,
+  `(${FREE_TEXT_SENSITIVE_KEY_TERMS})"?\\s*(?:[A-Za-z]+\\s*)?[:=]\\s*"?(?:[A-Za-z][\\w-]*\\s+)?[^\\s,;"]+`,
   "gi",
 );
 
 export function redactCredentialText(value: string): string {
   return value
-    .replace(/Bearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
-    .replace(SENSITIVE_VALUE_PATTERN, "$1=[REDACTED]");
+    .replace(/Bearer\s+[^\s,;]+/gi, `Bearer ${REDACTED_VALUE}`)
+    .replace(SENSITIVE_VALUE_PATTERN, `$1=${REDACTED_VALUE}`);
 }

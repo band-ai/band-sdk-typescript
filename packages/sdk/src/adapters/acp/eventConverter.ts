@@ -5,6 +5,7 @@ import type {
 } from "@agentclientprotocol/sdk";
 import type { AgentFailure } from "@band-ai/band-sdk-core";
 
+import { FAILURE_EVENT_TYPE } from "../../contracts/protocols";
 import { parseToolCall, parseToolResult } from "../../converters/shared";
 import type { PlatformMessage } from "../../runtime/types";
 import { redactCredentialText } from "../../core/sensitiveTerms";
@@ -33,7 +34,7 @@ export class EventConverter {
         return this.convertToolCall(message.content)
       case "tool_result":
         return this.convertToolResult(message.content)
-      case "error":
+      case FAILURE_EVENT_TYPE:
         return {
           sessionUpdate: "agent_message_chunk",
           content: {

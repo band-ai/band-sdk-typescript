@@ -6,6 +6,7 @@ import {
   BandACPServerAdapter,
 } from "../src/adapters/acp";
 import { ClientSideConnection, RequestError, ndJsonStream } from "@agentclientprotocol/sdk";
+import { FAILURE_EVENT_TYPE, FAILURE_METADATA_KEY } from "../src/contracts/protocols";
 import { FakeRestApi, FakeTools, makeMessage } from "./testUtils";
 
 describe("ACPServer", () => {
@@ -149,7 +150,7 @@ describe("ACPServer", () => {
     const projection = new AgentFailure("peer", "failed", "E_FAIL", {
       reason: "offline", trace: "Bearer [REDACTED]", API_KEY: "[REDACTED]",
     }).toExtensionData()
-    await emit({ ...makeMessage("failed", "room-1", { failure: failure.toObject() }), messageType: "error" })
+    await emit({ ...makeMessage("failed", "room-1", { [FAILURE_METADATA_KEY]: failure.toObject() }), messageType: FAILURE_EVENT_TYPE })
     const promptError: unknown = await first.then(() => null, (error: unknown) => error)
     expect(promptError).toBeInstanceOf(RequestError)
     if (!(promptError instanceof RequestError)) throw new Error("Expected ACP request error")
@@ -165,7 +166,7 @@ describe("ACPServer", () => {
       },
     })
 
-    await emit({ ...makeMessage("unsolicited", "room-1", { failure: failure.toObject() }), messageType: "error" })
+    await emit({ ...makeMessage("unsolicited", "room-1", { [FAILURE_METADATA_KEY]: failure.toObject() }), messageType: FAILURE_EVENT_TYPE })
     await vi.waitFor(() => expect(updates).toHaveLength(2))
     expect(updates[1]).toEqual({
       sessionId,
@@ -177,7 +178,7 @@ describe("ACPServer", () => {
     })
     expect(updates[1]).not.toHaveProperty("_meta")
 
-    await emit({ ...makeMessage("token=hidden", "room-1", { failure: { provider: "", message: "bad" } }), messageType: "error" })
+    await emit({ ...makeMessage("token=hidden", "room-1", { [FAILURE_METADATA_KEY]: { provider: "", message: "bad" } }), messageType: FAILURE_EVENT_TYPE })
     await vi.waitFor(() => expect(updates).toHaveLength(3))
     expect(updates[2]).toMatchObject({
       update: {

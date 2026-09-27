@@ -1,13 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { AgentFailure } from "@band-ai/band-sdk-core";
 
+import { FAILURE_EVENT_TYPE, FAILURE_METADATA_KEY } from "../src/contracts/protocols";
 import {
   BandACPServerAdapter,
 } from "../src/adapters/acp";
 import { FakeRestApi, FakeTools, makeMessage } from "./testUtils";
 
 function makeFailure(content: string, roomId: string, metadata: Record<string, unknown> = {}) {
-  return { ...makeMessage(content, roomId, metadata), messageType: "error" as const }
+  return { ...makeMessage(content, roomId, metadata), messageType: FAILURE_EVENT_TYPE }
 }
 
 async function createFixture(options: {
@@ -272,7 +273,7 @@ describe("BandACPServerAdapter", () => {
     const prompt = adapter.handlePrompt(sessionId, "fix this")
     await vi.waitFor(() => expect(sentMessages).toHaveLength(1))
 
-    const metadata = { failure: {
+    const metadata = { [FAILURE_METADATA_KEY]: {
       provider: "openai",
       message: "provider failed",
       code: "rate_limit",
@@ -299,10 +300,10 @@ describe("BandACPServerAdapter", () => {
     cyclicDetail.self = cyclicDetail
     for (const metadata of [
       {},
-      { failure: { provider: "", message: "bad", detail: { token: "secret" } } },
-      { failure: { provider: "peer", message: "bad", code: 42 } },
-      { failure: { provider: "peer", message: "bad", detail: { nested: undefined } } },
-      { failure: { provider: "peer", message: "bad", detail: cyclicDetail } },
+      { [FAILURE_METADATA_KEY]: { provider: "", message: "bad", detail: { token: "secret" } } },
+      { [FAILURE_METADATA_KEY]: { provider: "peer", message: "bad", code: 42 } },
+      { [FAILURE_METADATA_KEY]: { provider: "peer", message: "bad", detail: { nested: undefined } } },
+      { [FAILURE_METADATA_KEY]: { provider: "peer", message: "bad", detail: cyclicDetail } },
     ]) {
       const prompt = adapter.handlePrompt(sessionId, "retry")
       const expectedCount = sentMessages.length + 1
@@ -416,7 +417,7 @@ describe("BandACPServerAdapter", () => {
 
     await expect(adapter.handlePrompt(sessionId, "overlapping")).rejects.toThrow("already active")
     await emit(makeFailure("failed during lookup", "room-1", {
-      failure: { provider: "peer", message: "failed during lookup" },
+      [FAILURE_METADATA_KEY]: { provider: "peer", message: "failed during lookup" },
     }))
     const outcome = await first
     releaseParticipants?.()

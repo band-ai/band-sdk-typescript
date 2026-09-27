@@ -12,11 +12,12 @@ import type {
 import { ACPServerHistoryConverter, type ACPServerSessionState } from "../../converters/acp-server";
 import type { ChatMessageMention, RestApi } from "../../client/rest/types";
 import { SimpleAdapter } from "../../core/simpleAdapter";
+import { FAILURE_EVENT_TYPE } from "../../contracts/protocols";
 import type { MessagingTools } from "../../contracts/protocols";
 import type { PlatformMessage } from "../../runtime/types";
 import { ensureHandlePrefix } from "../../runtime/types";
 import { EventConverter } from "./eventConverter";
-import { decodeACPFailure } from "./failure";
+import { ACP_LOCAL_FAILURE_PROVIDER, decodeACPFailure } from "./failure";
 import { ACPPushHandler } from "./pushHandler";
 import { AgentRouter } from "./router";
 import {
@@ -285,7 +286,7 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
     }
     if (pending.outcome) return
 
-    if (message.messageType === "error") {
+    if (message.messageType === FAILURE_EVENT_TYPE) {
       const failure = decodeACPFailure(message)
       this.settlePendingPrompt(context.roomId, pending, { kind: "failure", failure })
       const update = EventConverter.convert(message, failure)
@@ -314,7 +315,7 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
     const pending = this.pendingPrompts.get(roomId)
     if (pending) this.settlePendingPrompt(roomId, pending, {
       kind: "failure",
-      failure: new AgentFailure("band", "Band room closed before prompt completed."),
+      failure: new AgentFailure(ACP_LOCAL_FAILURE_PROVIDER, "Band room closed before prompt completed."),
     })
   }
 

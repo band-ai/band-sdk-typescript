@@ -1,4 +1,4 @@
-import { SENSITIVE_KEY_TERMS } from "./sensitiveTerms";
+import { REDACTED_VALUE, SENSITIVE_KEY_TERMS } from "./sensitiveTerms";
 
 export interface Logger {
   debug(message: string, context?: Record<string, unknown>): void;
@@ -8,7 +8,6 @@ export interface Logger {
 }
 
 const noop = (): void => undefined;
-const REDACTED_VALUE = "[REDACTED]";
 const CIRCULAR_VALUE = "[Circular]";
 const SENSITIVE_KEY_PATTERN = new RegExp(`(${SENSITIVE_KEY_TERMS})`, "i");
 
