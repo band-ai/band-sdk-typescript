@@ -6,13 +6,17 @@ import { agentFailure } from "../../core/providerFailure";
 import {
   FREE_TEXT_SENSITIVE_KEY_TERMS,
   REDACTED_VALUE,
+  SENSITIVE_KEY_TERMS,
   redactCredentialText,
 } from "../../core/sensitiveTerms";
 import type { PlatformMessage } from "../../runtime/types";
 
 export const ACP_LOCAL_FAILURE_PROVIDER = "band";
 
-const SENSITIVE_KEY_PATTERN = new RegExp(`^(?:${FREE_TEXT_SENSITIVE_KEY_TERMS})$`, "i");
+const SENSITIVE_DETAIL_KEY_PATTERN = new RegExp(
+  `(?:${SENSITIVE_KEY_TERMS})|^(?:${FREE_TEXT_SENSITIVE_KEY_TERMS})$`,
+  "i",
+);
 // z.json() accepts cycles, which cannot be forwarded through JSON-RPC.
 const detailSchema = z.json().refine((value) => {
   try {
@@ -38,8 +42,8 @@ export function decodeACPFailure(message: PlatformMessage): AgentFailure {
   }
 
   try {
-    // ACP clients need structured detail for debugging; preserve its JSON shape
-    // while redacting credentials at every depth, as the Python gateway does.
+    // Preserve JSON shape as the Python gateway does; sensitive keys also
+    // protect opaque string values that have no credential prefix.
     const detail = "detail" in value
       ? redactDetail(detailSchema.parse(value.detail))
       : undefined;
@@ -58,13 +62,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function redactDetail(value: JsonDetail): JsonDetail {
-  if (typeof value === "string") return redactCredentialText(value);
-  if (Array.isArray(value)) return value.map(redactDetail);
+function redactDetail(value: JsonDetail, sensitive = false): JsonDetail {
+  if (typeof value === "string") return sensitive ? REDACTED_VALUE : redactCredentialText(value);
+  if (Array.isArray(value)) return value.map((item) => redactDetail(item, sensitive));
   if (value !== null && typeof value === "object") {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => [
       key,
-      SENSITIVE_KEY_PATTERN.test(key) ? REDACTED_VALUE : redactDetail(item),
+      redactDetail(item, sensitive || SENSITIVE_DETAIL_KEY_PATTERN.test(key)),
     ]));
   }
   return value;

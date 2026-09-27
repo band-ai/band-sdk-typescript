@@ -5,7 +5,13 @@ import {
   ACPServer,
   BandACPServerAdapter,
 } from "../src/adapters/acp";
-import { ClientSideConnection, RequestError, ndJsonStream } from "@agentclientprotocol/sdk";
+import {
+  CLIENT_METHODS,
+  ClientSideConnection,
+  RequestError,
+  ndJsonStream,
+  type AnyMessage,
+} from "@agentclientprotocol/sdk";
 import { FAILURE_EVENT_TYPE, FAILURE_METADATA_KEY } from "../src/contracts/protocols";
 import { FakeRestApi, FakeTools, makeMessage } from "./testUtils";
 
@@ -201,6 +207,77 @@ describe("ACPServer", () => {
       code: RequestError.internalError().code,
       data: new AgentFailure("band", "Band room closed before prompt completed.").toExtensionData(),
     })
+  })
+
+  it("rejects a prompt while its readable error update is stalled on the ACP transport", async () => {
+    const sentMessages: Array<Record<string, unknown>> = []
+    const adapter = new BandACPServerAdapter({
+      bandRest: new FakeRestApi({
+        createChat: async () => ({ id: "room-1" }),
+        createChatMessage: async (_roomId, message) => {
+          sentMessages.push(message as Record<string, unknown>)
+          return { ok: true }
+        },
+        listChatParticipants: async () => [{ id: "peer-1", name: "Peer", type: "Agent", handle: "peer" }],
+      }, { id: "agent-1", name: "Band Agent", description: null }),
+      responseTimeoutMs: 1_000,
+    })
+    await adapter.onStarted("Band Agent", "ACP server")
+
+    const toAgent = new TransformStream<Uint8Array, Uint8Array>()
+    const toClient = new TransformStream<Uint8Array, Uint8Array>()
+    const serverStream = ndJsonStream(toClient.writable, toAgent.readable)
+    const serverWriter = serverStream.writable.getWriter()
+    let releaseUpdate: (() => void) | undefined
+    let updateWriting = false
+    const updateGate = new Promise<void>((resolve) => { releaseUpdate = resolve })
+    await new ACPServer(adapter).connectStream({
+      readable: serverStream.readable,
+      writable: new WritableStream<AnyMessage>({
+        async write(message) {
+          if ("method" in message && message.method === CLIENT_METHODS.session_update) {
+            updateWriting = true
+            await updateGate
+          }
+          await serverWriter.write(message)
+        },
+      }),
+    })
+
+    const updates: Array<Record<string, unknown>> = []
+    const client = new ClientSideConnection(() => ({
+      requestPermission: async () => ({ outcome: { outcome: "cancelled" } }),
+      sessionUpdate: async (params) => { updates.push(params as Record<string, unknown>) },
+    }), ndJsonStream(toAgent.writable, toClient.readable))
+    await client.initialize({ protocolVersion: 1, clientCapabilities: {} })
+    const { sessionId } = await client.newSession({ cwd: "/workspace", mcpServers: [] })
+    let promptError: unknown
+    const prompt = client.prompt({ sessionId, prompt: [{ type: "text", text: "fix" }] })
+      .then(() => null, (error: unknown) => error)
+    void prompt.then((error) => { promptError = error })
+    await vi.waitFor(() => expect(sentMessages).toHaveLength(1))
+
+    const failure = new AgentFailure("peer", "failed")
+    await adapter.onMessage(
+      { ...makeMessage("failed", "room-1", { [FAILURE_METADATA_KEY]: failure.toObject() }), messageType: FAILURE_EVENT_TYPE },
+      new FakeTools(),
+      { sessionToRoom: {}, sessionCwd: {}, sessionMcpServers: {} },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    )
+    await vi.waitFor(() => expect(updateWriting).toBe(true))
+    try {
+      await vi.waitFor(() => expect(promptError).toBeInstanceOf(RequestError))
+      expect(await prompt).toMatchObject({
+        code: RequestError.internalError().code,
+        data: failure.toExtensionData(),
+      })
+      expect(updates).toHaveLength(0)
+    } finally {
+      releaseUpdate?.()
+    }
+    await vi.waitFor(() => expect(updates).toHaveLength(1))
   })
 
   it("applies ACPServer mode overrides to the adapter session state", async () => {

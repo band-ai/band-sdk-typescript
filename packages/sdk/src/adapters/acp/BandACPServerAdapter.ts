@@ -461,11 +461,15 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
   }
 
   private sendUpdateBestEffort(sessionId: string, update: SessionUpdate): void {
-    try {
-      void this.connection?.sessionUpdate({ sessionId, update }).catch(() => undefined)
-    } catch {
-      // Delivery cannot replace an already-settled prompt failure.
-    }
+    const connection = this.connection
+    // The ACP SDK shares one write queue for updates and prompt responses.
+    setImmediate(() => {
+      try {
+        void connection?.sessionUpdate({ sessionId, update }).catch(() => undefined)
+      } catch {
+        // Delivery cannot replace an already-settled prompt failure.
+      }
+    })
   }
 }
 

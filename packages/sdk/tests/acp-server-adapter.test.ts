@@ -277,16 +277,27 @@ describe("BandACPServerAdapter", () => {
       provider: "openai",
       message: "provider failed",
       code: "rate_limit",
-      detail: { trace: ["Bearer sk-private", { API_KEY: "sk-private", note: "retry", attempts: 2, allowed: false, extra: null }] },
+      detail: { trace: ["Bearer sk-private", {
+        API_KEY: "sk-private",
+        client_secret: "opaque-private",
+        token: { value: "opaque-token", attempts: 2, history: ["older-token", null] },
+        note: "retry", attempts: 2, allowed: false, extra: null,
+      }] },
     } }
     await emit(makeFailure("provider failed", "room-1", metadata))
     const outcome = await prompt
     expect(outcome.kind).toBe("failure")
     if (outcome.kind !== "failure") throw new Error("Expected failure")
     const projection = new AgentFailure("openai", "provider failed", "rate_limit", {
-      trace: ["Bearer [REDACTED]", { API_KEY: "[REDACTED]", note: "retry", attempts: 2, allowed: false, extra: null }],
+      trace: ["Bearer [REDACTED]", {
+        API_KEY: "[REDACTED]",
+        client_secret: "[REDACTED]",
+        token: { value: "[REDACTED]", attempts: 2, history: ["[REDACTED]", null] },
+        note: "retry", attempts: 2, allowed: false, extra: null,
+      }],
     }).toExtensionData()
     expect(outcome.failure.toExtensionData()).toEqual(projection)
+    await vi.waitFor(() => expect(updates).toHaveLength(1))
     expect(updates[0]).toEqual({
       sessionId,
       update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "[Error] provider failed" }, _meta: projection },
@@ -345,7 +356,7 @@ describe("BandACPServerAdapter", () => {
     await emit(makeMessage("partial answer", "room-1"))
     await emit(makeFailure("failed", "room-1"))
     expect((await prompt).kind).toBe("failure")
-    expect(updates).toHaveLength(2)
+    await vi.waitFor(() => expect(updates).toHaveLength(2))
     releaseUpdate?.()
   })
 
