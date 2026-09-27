@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/band-ai/band-sdk-typescript/compare/openclaw-channel-band-v0.3.1...openclaw-channel-band-v0.3.2) (2026-09-27)
+
+
+### Bug Fixes
+
+* **adapters:** surface Band ACP server failures to clients (INT-1560) ([#253](https://github.com/band-ai/band-sdk-typescript/issues/253)) ([94fbdc9](https://github.com/band-ai/band-sdk-typescript/commit/94fbdc9eb64d46e55ab8340cf629bd1d131251a2))
+
 ## [0.3.1](https://github.com/band-ai/band-sdk-typescript/compare/openclaw-channel-band-v0.3.0...openclaw-channel-band-v0.3.1) (2026-09-22)
 
 
