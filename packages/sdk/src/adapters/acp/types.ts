@@ -6,6 +6,7 @@ import type {
   RequestPermissionRequest,
   RequestPermissionResponse,
 } from "@agentclientprotocol/sdk";
+import type { AgentFailure } from "@band-ai/band-sdk-core";
 
 export interface CollectedChunk {
   chunkType: "text" | "thought" | "tool_call" | "tool_result" | "plan";
@@ -44,11 +45,16 @@ export interface ACPClientExtensionContext {
   sessionId: string | null;
 }
 
+export type ACPPromptOutcome =
+  | { kind: "completed" }
+  | { kind: "cancelled" }
+  | { kind: "failure"; failure: AgentFailure };
+
 export interface PendingACPPrompt {
   sessionId: string;
-  done: Promise<void>;
-  markDone(): void;
-  terminalMessageSeen: boolean;
+  done: Promise<ACPPromptOutcome>;
+  outcome: ACPPromptOutcome | null;
+  settle(outcome: ACPPromptOutcome): boolean;
   completionTimer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -122,16 +128,25 @@ export const DEFAULT_ACP_SERVER_MODES: Array<{
 ]
 
 export function createPendingPrompt(sessionId: string): PendingACPPrompt {
-  let markDone: () => void = () => undefined
-  const done = new Promise<void>((resolve) => {
-    markDone = resolve
+  let resolveDone: (outcome: ACPPromptOutcome) => void = () => undefined
+  const done = new Promise<ACPPromptOutcome>((resolve) => {
+    resolveDone = resolve
   })
 
   return {
     sessionId,
     done,
-    markDone,
-    terminalMessageSeen: false,
+    outcome: null,
+    settle(outcome) {
+      if (this.outcome) return false
+      this.outcome = outcome
+      if (this.completionTimer) {
+        clearTimeout(this.completionTimer)
+        this.completionTimer = null
+      }
+      resolveDone(outcome)
+      return true
+    },
     completionTimer: null,
   }
 }

@@ -26,7 +26,7 @@ import type {
   Stream,
 } from "@agentclientprotocol/sdk";
 
-import { BandACPServerAdapter } from "./BandACPServerAdapter";
+import { BandACPServerAdapter, ConcurrentACPPromptError } from "./BandACPServerAdapter";
 import { CursorExtensionHandler } from "./cursorExtensions";
 import type { ACPExtensionHandler } from "./extensions";
 import { acpModule } from "./loader";
@@ -268,10 +268,21 @@ export class ACPServer implements Agent {
     params: PromptRequest,
   ): Promise<PromptResponse> {
     const text = extractPromptText(params.prompt)
-    await this.adapter.handlePrompt(params.sessionId, text)
-    return {
-      stopReason: "end_turn",
+    let outcome: Awaited<ReturnType<BandACPServerAdapter["handlePrompt"]>>
+    try {
+      outcome = await this.adapter.handlePrompt(params.sessionId, text)
+    } catch (error) {
+      if (error instanceof ConcurrentACPPromptError) {
+        const acp = await acpModule.get()
+        throw acp.RequestError.invalidParams(undefined, error.message)
+      }
+      throw error
     }
+    if (outcome.kind === "failure") {
+      const acp = await acpModule.get()
+      throw acp.RequestError.internalError(outcome.failure.toExtensionData())
+    }
+    return { stopReason: outcome.kind === "completed" ? "end_turn" : "cancelled" }
   }
 
   public async cancel(

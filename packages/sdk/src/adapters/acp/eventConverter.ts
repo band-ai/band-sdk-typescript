@@ -3,12 +3,15 @@ import type {
   SessionUpdate,
   ToolCallContent,
 } from "@agentclientprotocol/sdk";
+import type { AgentFailure } from "@band-ai/band-sdk-core";
 
 import { parseToolCall, parseToolResult } from "../../converters/shared";
 import type { PlatformMessage } from "../../runtime/types";
+import { redactCredentialText } from "../../core/sensitiveTerms";
+import { decodeACPFailure } from "./failure";
 
 export class EventConverter {
-  public static convert(message: PlatformMessage): SessionUpdate | null {
+  public static convert(message: PlatformMessage, failure?: AgentFailure): SessionUpdate | null {
     switch (message.messageType) {
       case "text":
         return {
@@ -35,8 +38,9 @@ export class EventConverter {
           sessionUpdate: "agent_message_chunk",
           content: {
             type: "text",
-            text: `[Error] ${message.content}`,
+            text: `[Error] ${redactCredentialText(message.content)}`,
           },
+          _meta: (failure ?? decodeACPFailure(message)).toExtensionData(),
         }
       case "task":
         return {

@@ -1,5 +1,6 @@
 import type { PlatformMessage } from "../../runtime/types";
 import { EventConverter } from "./eventConverter";
+import { decodeACPFailure } from "./failure";
 import type { BandACPServerAdapter } from "./BandACPServerAdapter";
 
 export class ACPPushHandler {
@@ -19,7 +20,10 @@ export class ACPPushHandler {
       return
     }
 
-    const update = EventConverter.convert(message)
+    const update = EventConverter.convert(
+      message,
+      message.messageType === "error" ? decodeACPFailure(message) : undefined,
+    )
     if (!update) {
       return
     }
