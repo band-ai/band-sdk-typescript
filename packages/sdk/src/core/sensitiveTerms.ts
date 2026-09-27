@@ -14,7 +14,7 @@
  * it would redact ordinary `sessionId` / `sessionID` fields at every log site.
  * Free-text redaction adds `session` separately for `session=` secrets.
  */
-export const SENSITIVE_KEY_TERMS = "authorization|api[-_ ]?key|token|secret|password|cookie";
+export const SENSITIVE_KEY_TERMS = "authorization|api[-_ ]?key|access[-_ ]?key|token|secret|password|cookie";
 
 export const REDACTED_VALUE = "[REDACTED]";
 

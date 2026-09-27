@@ -277,8 +277,9 @@ describe("BandACPServerAdapter", () => {
       provider: "openai",
       message: "provider failed",
       code: "rate_limit",
-      detail: { trace: ["Bearer sk-private", {
+      detail: { trace: ["Bearer sk-private", "access_key=AKIAEXAMPLE123", {
         API_KEY: "sk-private",
+        access_key: "AKIAEXAMPLE456",
         client_secret: "opaque-private",
         token: { value: "opaque-token", attempts: 2, history: ["older-token", null] },
         note: "retry", attempts: 2, allowed: false, extra: null,
@@ -289,8 +290,9 @@ describe("BandACPServerAdapter", () => {
     expect(outcome.kind).toBe("failure")
     if (outcome.kind !== "failure") throw new Error("Expected failure")
     const projection = new AgentFailure("openai", "provider failed", "rate_limit", {
-      trace: ["Bearer [REDACTED]", {
+      trace: ["Bearer [REDACTED]", "access_key=[REDACTED]", {
         API_KEY: "[REDACTED]",
+        access_key: "[REDACTED]",
         client_secret: "[REDACTED]",
         token: { value: "[REDACTED]", attempts: 2, history: ["[REDACTED]", null] },
         note: "retry", attempts: 2, allowed: false, extra: null,
