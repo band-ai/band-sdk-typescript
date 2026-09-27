@@ -1,32 +1,38 @@
 import { randomUUID } from "node:crypto";
+import { AgentFailure } from "@band-ai/band-sdk-core";
 
 import type {
   AgentSideConnection,
   McpServer,
   SessionMode,
   SessionModeState,
+  SessionUpdate,
 } from "@agentclientprotocol/sdk";
 
 import { ACPServerHistoryConverter, type ACPServerSessionState } from "../../converters/acp-server";
 import type { ChatMessageMention, RestApi } from "../../client/rest/types";
 import { SimpleAdapter } from "../../core/simpleAdapter";
+import { FAILURE_EVENT_TYPE } from "../../contracts/protocols";
 import type { MessagingTools } from "../../contracts/protocols";
 import type { PlatformMessage } from "../../runtime/types";
 import { ensureHandlePrefix } from "../../runtime/types";
 import { EventConverter } from "./eventConverter";
+import { ACP_LOCAL_FAILURE_PROVIDER, decodeACPFailure } from "./failure";
 import { ACPPushHandler } from "./pushHandler";
 import { AgentRouter } from "./router";
 import {
   DEFAULT_ACP_SERVER_MODES,
-  asJsonSafe,
   createPendingPrompt,
   normalizeMcpServers,
   type PendingACPPrompt,
+  type ACPPromptOutcome,
 } from "./types";
 
 const DEFAULT_MAX_SESSIONS = 100
 const DEFAULT_PROMPT_TIMEOUT_MS = 300_000
 const DEFAULT_PROMPT_COMPLETION_GRACE_MS = 250
+
+export class ConcurrentACPPromptError extends Error {}
 
 export interface BandACPServerAdapterOptions {
   bandRest: RestApi;
@@ -222,37 +228,38 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
     }
   }
 
-  public async handlePrompt(sessionId: string, text: string): Promise<void> {
+  public async handlePrompt(sessionId: string, text: string): Promise<ACPPromptOutcome> {
     const roomId = this.sessionToRoom.get(sessionId)
     if (!roomId) {
       throw new Error(`Unknown ACP session: ${sessionId}`)
     }
+    if (this.pendingPrompts.has(roomId)) {
+      throw new ConcurrentACPPromptError("A prompt is already active in this room")
+    }
 
     const pending = createPendingPrompt(sessionId)
     this.pendingPrompts.set(roomId, pending)
-
-    const resolved = this.router.resolve(text, this.sessionModeIds.get(sessionId))
-    const promptText = this.prependSessionContext(sessionId, resolved.text)
-    const participants = await this.bandRest.listChatParticipants(roomId)
-    const mentions = this.resolveMentions(participants, resolved.targetPeer)
+    let timeout: ReturnType<typeof setTimeout> | null = null
 
     try {
-      await this.bandRest.createChatMessage(roomId, {
-        content: promptText,
-        mentions,
-      })
+      await Promise.race([this.sendPrompt(roomId, sessionId, text, pending), pending.done])
+      if (pending.outcome) return pending.outcome
 
-      await Promise.race([
+      return await Promise.race([
         pending.done,
         new Promise<never>((_, reject) => {
-          const timer = setTimeout(() => {
+          timeout = setTimeout(() => {
             reject(new Error(`ACP prompt timed out after ${this.responseTimeoutMs}ms`))
           }, this.responseTimeoutMs)
-          pending.done.finally(() => clearTimeout(timer)).catch(() => undefined)
         }),
       ])
+    } catch (error) {
+      if (pending.outcome) return pending.outcome
+      throw error
     } finally {
-      this.finishPendingPrompt(roomId, pending, false)
+      if (timeout) clearTimeout(timeout)
+      if (this.pendingPrompts.get(roomId) === pending) this.pendingPrompts.delete(roomId)
+      if (pending.completionTimer) clearTimeout(pending.completionTimer)
     }
   }
 
@@ -273,28 +280,25 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
     }
 
     const pending = this.pendingPrompts.get(context.roomId)
-    if (pending && this.connection) {
-      const update = EventConverter.convert(message)
-      if (update) {
-        await this.connection.sessionUpdate({
-          sessionId: pending.sessionId,
-          update,
-        })
-      }
+    if (!pending) {
+      await this.pushHandler.handlePushEvent(message, context.roomId)
+      return
+    }
+    if (pending.outcome) return
 
-      if (message.messageType === "text" || message.messageType === "error") {
-        pending.terminalMessageSeen = true
-      }
-
-      if (update || pending.terminalMessageSeen) {
-        this.schedulePromptCompletion(context.roomId, pending)
-      }
+    if (message.messageType === FAILURE_EVENT_TYPE) {
+      const failure = decodeACPFailure(message)
+      this.settlePendingPrompt(context.roomId, pending, { kind: "failure", failure })
+      const update = EventConverter.convert(message, failure)
+      if (update) this.sendUpdateBestEffort(pending.sessionId, update)
       return
     }
 
-    if (this.connection) {
-      await this.pushHandler.handlePushEvent(message, context.roomId)
+    const update = EventConverter.convert(message)
+    if (update && this.connection) {
+      await this.connection.sessionUpdate({ sessionId: pending.sessionId, update })
     }
+    if (message.messageType === "text") this.schedulePromptCompletion(context.roomId, pending)
   }
 
   public async onCleanup(roomId: string): Promise<void> {
@@ -308,7 +312,11 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
       this.sessionMcpServers.delete(sessionId)
     }
 
-    this.finishPendingPrompt(roomId, this.pendingPrompts.get(roomId) ?? null, true)
+    const pending = this.pendingPrompts.get(roomId)
+    if (pending) this.settlePendingPrompt(roomId, pending, {
+      kind: "failure",
+      failure: new AgentFailure(ACP_LOCAL_FAILURE_PROVIDER, "Band room closed before prompt completed."),
+    })
   }
 
   public async onRuntimeStop(): Promise<void> {
@@ -324,7 +332,8 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
       return
     }
 
-    this.finishPendingPrompt(roomId, this.pendingPrompts.get(roomId) ?? null, true)
+    const pending = this.pendingPrompts.get(roomId)
+    if (pending) this.settlePendingPrompt(roomId, pending, { kind: "cancelled" })
   }
 
   public async closeSession(sessionId: string): Promise<void> {
@@ -334,6 +343,20 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
     }
 
     await this.onCleanup(roomId)
+  }
+
+  private async sendPrompt(
+    roomId: string,
+    sessionId: string,
+    text: string,
+    pending: PendingACPPrompt,
+  ): Promise<void> {
+    const resolved = this.router.resolve(text, this.sessionModeIds.get(sessionId))
+    const promptText = this.prependSessionContext(sessionId, resolved.text)
+    const participants = await this.bandRest.listChatParticipants(roomId)
+    if (pending.outcome) return
+    const mentions = this.resolveMentions(participants, resolved.targetPeer)
+    await this.bandRest.createChatMessage(roomId, { content: promptText, mentions })
   }
 
   private rehydrate(history: ACPServerSessionState): void {
@@ -416,7 +439,7 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
     roomId: string,
     pending: PendingACPPrompt,
   ): void {
-    if (this.pendingPrompts.get(roomId) !== pending) {
+    if (this.pendingPrompts.get(roomId) !== pending || pending.outcome) {
       return
     }
 
@@ -425,30 +448,28 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
     }
 
     pending.completionTimer = setTimeout(() => {
-      this.finishPendingPrompt(roomId, pending, true)
+      this.settlePendingPrompt(roomId, pending, { kind: "completed" })
     }, this.promptCompletionGraceMs)
   }
 
-  private finishPendingPrompt(
+  private settlePendingPrompt(
     roomId: string,
-    pending: PendingACPPrompt | null,
-    setDone: boolean,
+    pending: PendingACPPrompt,
+    outcome: ACPPromptOutcome,
   ): void {
-    const current = this.pendingPrompts.get(roomId)
-    if (!current || (pending && current !== pending)) {
-      return
-    }
+    if (this.pendingPrompts.get(roomId) === pending) pending.settle(outcome)
+  }
 
-    this.pendingPrompts.delete(roomId)
-
-    if (current.completionTimer) {
-      clearTimeout(current.completionTimer)
-      current.completionTimer = null
-    }
-
-    if (setDone) {
-      current.markDone()
-    }
+  private sendUpdateBestEffort(sessionId: string, update: SessionUpdate): void {
+    const connection = this.connection
+    // The ACP SDK shares one write queue for updates and prompt responses.
+    setImmediate(() => {
+      try {
+        void connection?.sessionUpdate({ sessionId, update }).catch(() => undefined)
+      } catch {
+        // Delivery cannot replace an already-settled prompt failure.
+      }
+    })
   }
 }
 

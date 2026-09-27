@@ -2,19 +2,10 @@ import { AgentFailure } from "@band-ai/band-sdk-core";
 
 import { FAILURE_METADATA_KEY } from "../../contracts/protocols";
 import { asOptionalRecord, asString } from "../shared/coercion";
-import { GATEWAY_FREE_TEXT_SENSITIVE_KEY_TERMS } from "../../core/sensitiveTerms";
+import { redactCredentialText } from "../../core/sensitiveTerms";
 
 /** This gateway's `AgentFailure.provider` identity. */
 export const PROVIDER = "a2a-gateway";
-
-// Compiled once at module load, not per call: this fires on every gateway
-// failure. Matches key=value/key:value credentials in free-form error text —
-// see `GATEWAY_FREE_TEXT_SENSITIVE_KEY_TERMS`'s doc comment for why this needs its own shape
-// rather than sharing a compiled regex with `logger.ts`'s isolated-key match.
-const SENSITIVE_VALUE_PATTERN = new RegExp(
-  `(${GATEWAY_FREE_TEXT_SENSITIVE_KEY_TERMS})"?\\s*(?:[A-Za-z]+\\s*)?[:=]\\s*"?(?:[A-Za-z][\\w-]*\\s+)?[^\\s,;"]+`,
-  "gi",
-);
 
 /**
  * Builds the `metadata.failure` payload every gateway failure event posts,
@@ -61,9 +52,7 @@ export function sanitizeGatewayErrorMessage(error: unknown): string {
   // (`"api_key":"sk-..."`), so the key/value boundary needs an optional
   // quote on each side — without it the quote right after the key breaks
   // the `[:=]` match and the whole credential survives unredacted.
-  const withBearerRedaction = trimmed
-    .replace(/Bearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
-    .replace(SENSITIVE_VALUE_PATTERN, "$1=[REDACTED]");
+  const withBearerRedaction = redactCredentialText(trimmed);
 
   const maxLength = 240;
   if (withBearerRedaction.length <= maxLength) {

@@ -26,10 +26,16 @@ import type {
   Stream,
 } from "@agentclientprotocol/sdk";
 
-import { BandACPServerAdapter } from "./BandACPServerAdapter";
+import { BandACPServerAdapter, ConcurrentACPPromptError } from "./BandACPServerAdapter";
 import { CursorExtensionHandler } from "./cursorExtensions";
 import type { ACPExtensionHandler } from "./extensions";
 import { acpModule } from "./loader";
+import type { ACPPromptOutcome } from "./types";
+
+const PROMPT_STOP_REASONS = {
+  completed: "end_turn",
+  cancelled: "cancelled",
+} as const satisfies Record<Exclude<ACPPromptOutcome["kind"], "failure">, PromptResponse["stopReason"]>;
 
 export interface ACPServerOptions {
   modes?: SessionMode[];
@@ -268,10 +274,21 @@ export class ACPServer implements Agent {
     params: PromptRequest,
   ): Promise<PromptResponse> {
     const text = extractPromptText(params.prompt)
-    await this.adapter.handlePrompt(params.sessionId, text)
-    return {
-      stopReason: "end_turn",
+    let outcome: ACPPromptOutcome
+    try {
+      outcome = await this.adapter.handlePrompt(params.sessionId, text)
+    } catch (error) {
+      if (error instanceof ConcurrentACPPromptError) {
+        const acp = await acpModule.get()
+        throw acp.RequestError.invalidParams(undefined, error.message)
+      }
+      throw error
     }
+    if (outcome.kind === "failure") {
+      const acp = await acpModule.get()
+      throw acp.RequestError.internalError(outcome.failure.toExtensionData())
+    }
+    return { stopReason: PROMPT_STOP_REASONS[outcome.kind] }
   }
 
   public async cancel(
