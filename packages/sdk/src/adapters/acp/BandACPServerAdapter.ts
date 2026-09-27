@@ -241,15 +241,7 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
     let timeout: ReturnType<typeof setTimeout> | null = null
 
     try {
-      const resolved = this.router.resolve(text, this.sessionModeIds.get(sessionId))
-      const promptText = this.prependSessionContext(sessionId, resolved.text)
-      const participants = await this.bandRest.listChatParticipants(roomId)
-      if (pending.outcome) return pending.outcome
-      const mentions = this.resolveMentions(participants, resolved.targetPeer)
-      await this.bandRest.createChatMessage(roomId, {
-        content: promptText,
-        mentions,
-      })
+      await Promise.race([this.sendPrompt(roomId, sessionId, text, pending), pending.done])
       if (pending.outcome) return pending.outcome
 
       return await Promise.race([
@@ -350,6 +342,20 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
     }
 
     await this.onCleanup(roomId)
+  }
+
+  private async sendPrompt(
+    roomId: string,
+    sessionId: string,
+    text: string,
+    pending: PendingACPPrompt,
+  ): Promise<void> {
+    const resolved = this.router.resolve(text, this.sessionModeIds.get(sessionId))
+    const promptText = this.prependSessionContext(sessionId, resolved.text)
+    const participants = await this.bandRest.listChatParticipants(roomId)
+    if (pending.outcome) return
+    const mentions = this.resolveMentions(participants, resolved.targetPeer)
+    await this.bandRest.createChatMessage(roomId, { content: promptText, mentions })
   }
 
   private rehydrate(history: ACPServerSessionState): void {

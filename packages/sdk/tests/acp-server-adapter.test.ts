@@ -418,9 +418,8 @@ describe("BandACPServerAdapter", () => {
     await emit(makeFailure("failed during lookup", "room-1", {
       failure: { provider: "peer", message: "failed during lookup" },
     }))
-    releaseParticipants?.()
-
     const outcome = await first
+    releaseParticipants?.()
     expect(outcome.kind).toBe("failure")
     if (outcome.kind !== "failure") throw new Error("Expected failure")
     expect(outcome.failure.toExtensionData()).toEqual(
@@ -440,9 +439,8 @@ describe("BandACPServerAdapter", () => {
     await vi.waitFor(() => expect(sentMessages).toHaveLength(1))
 
     await emit(makeFailure("peer failed", "room-1"))
-    rejectDelivery?.(new Error("Band send failed"))
-
     const outcome = await prompt
+    rejectDelivery?.(new Error("Band send failed"))
     expect(outcome.kind).toBe("failure")
     if (outcome.kind !== "failure") throw new Error("Expected failure")
     expect(outcome.failure.message).toBe("peer failed")
