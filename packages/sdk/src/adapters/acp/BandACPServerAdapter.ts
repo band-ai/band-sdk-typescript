@@ -6,6 +6,7 @@ import type {
   McpServer,
   SessionMode,
   SessionModeState,
+  SessionUpdate,
 } from "@agentclientprotocol/sdk";
 
 import { ACPServerHistoryConverter, type ACPServerSessionState } from "../../converters/acp-server";
@@ -286,32 +287,25 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
     }
 
     const pending = this.pendingPrompts.get(context.roomId)
-    if (pending) {
-      if (pending.outcome) return
-      const failure = message.messageType === "error" ? decodeACPFailure(message) : undefined
-      if (failure) this.settlePendingPrompt(context.roomId, pending, { kind: "failure", failure })
-      const update = EventConverter.convert(message, failure)
-      if (update) {
-        if (failure) {
-          try {
-            void this.connection?.sessionUpdate({ sessionId: pending.sessionId, update }).catch(() => undefined)
-          } catch {
-            // The prompt failure is already settled; the chunk is best effort.
-          }
-        } else if (this.connection) {
-          await this.connection.sessionUpdate({ sessionId: pending.sessionId, update })
-        }
-      }
+    if (!pending) {
+      await this.pushHandler.handlePushEvent(message, context.roomId)
+      return
+    }
+    if (pending.outcome) return
 
-      if (message.messageType === "text") {
-        this.schedulePromptCompletion(context.roomId, pending)
-      }
+    if (message.messageType === "error") {
+      const failure = decodeACPFailure(message)
+      this.settlePendingPrompt(context.roomId, pending, { kind: "failure", failure })
+      const update = EventConverter.convert(message, failure)
+      if (update) this.sendUpdateBestEffort(pending.sessionId, update)
       return
     }
 
-    if (this.connection) {
-      await this.pushHandler.handlePushEvent(message, context.roomId)
+    const update = EventConverter.convert(message)
+    if (update && this.connection) {
+      await this.connection.sessionUpdate({ sessionId: pending.sessionId, update })
     }
+    if (message.messageType === "text") this.schedulePromptCompletion(context.roomId, pending)
   }
 
   public async onCleanup(roomId: string): Promise<void> {
@@ -457,6 +451,14 @@ export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, M
     outcome: ACPPromptOutcome,
   ): void {
     if (this.pendingPrompts.get(roomId) === pending) pending.settle(outcome)
+  }
+
+  private sendUpdateBestEffort(sessionId: string, update: SessionUpdate): void {
+    try {
+      void this.connection?.sessionUpdate({ sessionId, update }).catch(() => undefined)
+    } catch {
+      // Delivery cannot replace an already-settled prompt failure.
+    }
   }
 }
 

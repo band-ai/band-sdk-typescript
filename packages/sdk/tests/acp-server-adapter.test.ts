@@ -291,11 +291,14 @@ describe("BandACPServerAdapter", () => {
   it("falls back to a local failure for missing or malformed room metadata", async () => {
     const { adapter, sentMessages, emit } = await createFixture()
     const sessionId = await adapter.createSession()
+    const cyclicDetail: Record<string, unknown> = {}
+    cyclicDetail.self = cyclicDetail
     for (const metadata of [
       {},
       { failure: { provider: "", message: "bad", detail: { token: "secret" } } },
       { failure: { provider: "peer", message: "bad", code: 42 } },
       { failure: { provider: "peer", message: "bad", detail: { nested: undefined } } },
+      { failure: { provider: "peer", message: "bad", detail: cyclicDetail } },
     ]) {
       const prompt = adapter.handlePrompt(sessionId, "retry")
       const expectedCount = sentMessages.length + 1
