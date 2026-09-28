@@ -9,5 +9,6 @@ export default defineConfig({
     include: [`${BASELINE_SCENARIOS}/*.test.ts`],
     testTimeout: LIVE_EVENT_TIMEOUT_MS,
     hookTimeout: LIVE_EVENT_TIMEOUT_MS,
+    reporters: ["default", "./tests/baseline/toolkit/scorecardReporter.ts"],
   },
 });
