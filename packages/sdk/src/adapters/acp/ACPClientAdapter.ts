@@ -19,7 +19,7 @@ import type {
   SessionModeState,
 } from "@agentclientprotocol/sdk";
 
-import { ACPClientHistoryConverter, type ACPClientSessionState } from "../../converters/acp-client";
+import { ACP_SESSION_EVENT, ACPClientHistoryConverter, type ACPClientSessionState } from "../../converters/acp-client";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { rethrowIfRecoverableTurnFailure, ValidationError } from "../../core/errors";
@@ -554,9 +554,9 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         senderHandle: message.senderName ?? message.senderType,
       })
 
-      await tools.sendEvent("ACP client session", "task", {
-        acp_client_session_id: sessionId,
-        acp_client_room_id: context.roomId,
+      await tools.sendEvent(ACP_SESSION_EVENT.content, "task", {
+        [ACP_SESSION_EVENT.sessionIdKey]: sessionId,
+        [ACP_SESSION_EVENT.roomIdKey]: context.roomId,
       })
 
       if (response.stopReason !== "end_turn") {
