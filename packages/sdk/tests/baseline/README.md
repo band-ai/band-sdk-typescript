@@ -42,11 +42,12 @@ sticky comment on the branch's PR, or in the job summary when there is none.
 | `toolkit/perAdapter.ts` | `perAdapter` (one test per adapter) and `withAdapters` (one shared room). |
 | `toolkit/agents.ts`, `rooms.ts` | Provisioned identities, running agents, rooms and messages; all `await using`. |
 | `toolkit/observeMessages.ts` | The reply wait, and the room's stored history. |
-| `toolkit/observeDelivery.ts` | The delivery wait. |
+| `toolkit/observeDelivery.ts` | The delivery wait, a message's current `status()`, and the `history()` of statuses it passed through. |
+| `toolkit/droppableTransport.ts` | An agent transport whose live socket a scenario can drop, as a network failure would. |
 | `toolkit/assert*.ts` | Plain assertion functions. |
 | `toolkit/scorecard.ts`, `scorecardReporter.ts` | The scorecard's shape and grid, and the vitest reporter that fills it. |
 | `scenarios/<category>/*.test.ts` | Scenarios; the category is the first part of the scenario id. |
-| `scenarios/samples/` | Shared scenario pieces: markers, the MCP roster flow, approval dialects. |
+| `scenarios/samples/` | Shared scenario pieces: markers, the MCP roster flow, approval dialects, an opaque lookup tool. |
 
 ## Writing a scenario
 
@@ -62,7 +63,8 @@ perAdapter(scenarioId(CATEGORY.platform, "repliesToMention"), async ({ agent, ro
 The id is `<category>.<name>`, built with `scenarioId`, and each test is titled
 `<scenario> > <adapter>`; the scorecard reads both from the title. `perAdapter` takes `supports` / `without` / `exclude` to narrow the
 adapters, `prompt` to steer them, and `build` when a scenario needs an adapter built other than
-its registered way (manual approvals, a permission resolver). `withAdapters(ids, …)` puts the
+its registered way (manual approvals, a permission resolver, custom tools for adapters that support
+`CAPABILITY.customTools`). `withAdapters(ids, …)` puts the
 given adapters in one room, in the given order.
 
 The rules:

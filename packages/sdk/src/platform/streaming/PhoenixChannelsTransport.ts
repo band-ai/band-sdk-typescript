@@ -485,7 +485,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 }
 
-function resolveWebSocketFactory(apiKey: string): typeof WebSocket {
+export function resolveWebSocketFactory(apiKey: string): typeof WebSocket {
   if (typeof process !== "undefined" && process.versions?.node) {
     return createNodeWebSocketFactory({ "x-api-key": apiKey });
   }
