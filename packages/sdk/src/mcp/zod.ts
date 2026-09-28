@@ -48,7 +48,8 @@ function jsonSchemaToZod(
   }
 
   if (type === "object") {
-    return z.record(z.string(), z.unknown());
+    // Not z.record: the Agent SDK's bundled JSON-schema converter can't render one, which fails its whole tools/list.
+    return z.looseObject({});
   }
 
   return z.unknown();

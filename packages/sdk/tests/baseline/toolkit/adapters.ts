@@ -26,6 +26,7 @@ import {
   OpenAIAdapter,
   OpencodeAdapter,
   ParlantAdapter,
+  type ClaudeSDKAdapterOptions,
   type OmpACPAdapterOptions,
   type OpencodeAdapterConfig,
 } from "../../../src/adapters";
@@ -59,6 +60,11 @@ const GOOGLE_KEY = requires.anyEnvVar(...GOOGLE_KEY_VARS);
 /** The Gemini API key every Google-model adapter is given, so none picks a different one of the two. */
 function googleApiKey(): string | undefined {
   return GOOGLE_KEY_VARS.map((name) => process.env[name]).find(Boolean);
+}
+
+/** Claude Code on the pinned Anthropic model in the cell's working directory, `options` layered over the defaults. */
+export function buildClaudeSdk({ prompt, workDir }: BuildOptions, options: ClaudeSDKAdapterOptions = {}): ClaudeSDKAdapter {
+  return new ClaudeSDKAdapter({ model: ANTHROPIC_MODEL, customSection: prompt, cwd: workDir, ...options });
 }
 
 /** OMP on the pinned Google model. */
@@ -127,7 +133,7 @@ const SPECS = {
     id: "claude-sdk",
     requires: [ANTHROPIC_KEY, requires.peerPackage("@anthropic-ai/claude-agent-sdk")],
     supports: [],
-    build: ({ prompt, workDir }) => new ClaudeSDKAdapter({ model: ANTHROPIC_MODEL, customSection: prompt, cwd: workDir }),
+    build: (options) => buildClaudeSdk(options),
   },
   codex: {
     id: "codex",
