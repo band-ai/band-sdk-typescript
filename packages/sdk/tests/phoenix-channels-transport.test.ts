@@ -275,6 +275,15 @@ describe("PhoenixChannelsTransport", () => {
     expect(transport.isConnected()).toBe(true);
   });
 
+  it("omits agent_id for a user connection, which the platform rejects when present", () => {
+    new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "user-key",
+    });
+
+    expect(phoenixMock.FakeSocket.instances[0]?.params).not.toHaveProperty("agent_id");
+  });
+
   it("passes explicit conflict policy as a socket param", () => {
     new PhoenixChannelsTransport({
       wsUrl: "wss://example.test/socket",

@@ -103,7 +103,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
 
     this.socket = new Socket(wsUrl, {
       params: {
-        agent_id: options.agentId,
+        ...(options.agentId ? { agent_id: options.agentId } : {}),
         ...(options.conflictPolicy
           ? { on_conflict: options.conflictPolicy }
           : {}),
