@@ -1,7 +1,8 @@
 /**
  * Two agents on different frameworks, asked in turn to greet each other,
  * each address the other: the greeting mentions the other agent or names it.
- * Structural, so no judge decides whether it was warm enough.
+ * Structural, so no judge decides whether it was warm enough. Anthropic and
+ * Gemini: two different model providers, both runnable in CI.
  */
 import { ADAPTER } from "../../toolkit/adapters";
 import type { AgentIdentity } from "../../toolkit/agents";
