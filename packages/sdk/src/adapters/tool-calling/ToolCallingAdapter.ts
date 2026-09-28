@@ -212,17 +212,17 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     participantsMessage: string | null,
     contactsMessage: string | null,
   ): ToolModelMessage[] {
-    const base = formatHistoryForLlm(history.raw);
+    const base = formatHistoryForLlm(history.raw).map((entry) => this.asConversationTurn(entry));
     const historyAlreadyContainsMessage = history.raw.some((entry) => entry.id === message.id);
     if (!historyAlreadyContainsMessage) {
-      base.push({
-        role: message.senderType === "Agent" ? "assistant" : "user",
+      base.push(this.asConversationTurn({
+        role: "user",
         content: message.content,
         sender_name: message.senderName,
         sender_type: message.senderType,
         message_type: message.messageType,
         metadata: message.metadata,
-      });
+      }));
     }
 
     if (participantsMessage) {
@@ -234,6 +234,19 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     }
 
     return base;
+  }
+
+  /**
+   * Only this agent's own messages are its turns. Everyone else's — users and
+   * other agents alike — is a user turn attributed to its sender; otherwise
+   * the model reads another agent's request as something it said itself.
+   */
+  private asConversationTurn(entry: ToolModelMessage): ToolModelMessage {
+    if (entry.sender_type === "Agent" && entry.sender_name === this.agentName) {
+      return { ...entry, role: "assistant" };
+    }
+    const sender = entry.sender_name;
+    return { ...entry, role: "user", content: sender ? `[${sender}]: ${String(entry.content)}` : entry.content };
   }
 
   private async reportExecutionEvent(

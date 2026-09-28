@@ -215,6 +215,35 @@ describe("ToolCallingAdapter", () => {
     expect(helloCount).toBe(1);
   });
 
+  it("shows only its own messages as its turns, attributing everyone else's", async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const model: ToolCallingModel = {
+      complete: async (request) => {
+        seen.push(...(request.messages ?? []));
+        return { text: "ok" };
+      },
+    };
+    const adapter = new OpenAIAdapter({ model });
+    await adapter.onStarted("helper-agent", "");
+    const history = {
+      raw: [
+        { id: "h1", sender_type: "Agent", sender_name: "helper-agent", content: "earlier answer" },
+        { id: "h2", sender_type: "User", sender_name: "Jane", content: "thanks" },
+      ],
+      convert: () => [],
+      length: 2,
+    } as unknown as HistoryProvider;
+    const fromAnotherAgent: PlatformMessage = { ...fakeMessage, id: "m2", senderType: "Agent", senderName: "planner-agent" };
+
+    await adapter.onMessage(fromAnotherAgent, new FakeTools(), history, null, null, { isSessionBootstrap: false, roomId: "r1" });
+
+    expect(seen.map(({ role, content }) => ({ role, content }))).toEqual([
+      { role: "assistant", content: "earlier answer" },
+      { role: "user", content: "[Jane]: thanks" },
+      { role: "user", content: "[planner-agent]: hello" },
+    ]);
+  });
+
   it("runs tool rounds then sends final text", async () => {
     const model = new FakeModel();
     const adapter = new OpenAIAdapter({

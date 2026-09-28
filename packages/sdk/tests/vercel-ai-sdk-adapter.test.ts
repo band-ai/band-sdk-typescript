@@ -113,7 +113,7 @@ describe("VercelAISDKAdapter", () => {
     expect(requests[1]?.messages).toEqual([
       {
         role: "user",
-        content: "hello",
+        content: "[User]: hello",
       },
       {
         role: "assistant",
