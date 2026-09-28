@@ -3,7 +3,7 @@
  * host's, with no tool that reaches other local sessions, no host plugins or
  * connectors, and the Band tools connected and listed from the first turn.
  */
-import { query, type SDKSystemMessage } from "@anthropic-ai/claude-agent-sdk";
+import { query, type McpServerStatus, type SDKSystemMessage } from "@anthropic-ai/claude-agent-sdk";
 import { expect } from "vitest";
 
 import {
@@ -23,7 +23,7 @@ import { CATEGORY, scenarioId } from "../../toolkit/registry";
 import { Rooms } from "../../toolkit/rooms";
 
 const INIT = { type: "system", subtype: "init" } as const satisfies Pick<SDKSystemMessage, "type" | "subtype">;
-const MCP_CONNECTED = "connected";
+const MCP_CONNECTED = "connected" satisfies McpServerStatus["status"];
 const REQUEST = "Reply with the single word: pineapple";
 
 /** The real SDK `query`, passing every message through while keeping the last init and the options it was called with. */
