@@ -70,7 +70,14 @@ export function observeAgent(agent: AgentIdentity, room: Room) {
     timeoutMs = LIVE_EVENT_TIMEOUT_MS,
   ): Promise<DeliveryState> => {
     const current = () => latestState(room.deliveryUpdates.entries, message.id, agent.id);
-    const reached = await waitFor(room.deliveryUpdates, () => (current().status === status ? current() : undefined), timeoutMs);
+    const reached = await waitFor(
+      room.deliveryUpdates,
+      () => {
+        const state = current();
+        return state.status === status ? state : undefined;
+      },
+      timeoutMs,
+    );
     return reached ?? current();
   };
 

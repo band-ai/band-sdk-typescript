@@ -12,13 +12,7 @@ import { Agent, type AgentCreateOptions } from "../../../src/agent/Agent";
 import type { FrameworkAdapter } from "../../../src/contracts/protocols";
 import { BandLink } from "../../../src/platform/BandLink";
 import { withTimeout } from "../../../src/adapters/shared/withTimeout";
-import {
-  agentRest,
-  EventRecordingRest,
-  NAME_PREFIX,
-  provisionAgent,
-  reapProvisioned,
-} from "../../integration/support/liveHarness";
+import { agentRest, NAME_PREFIX, provisionAgent, reapProvisioned } from "../../integration/support/liveHarness";
 import { liveRun, warnTeardown } from "./liveRun";
 import type { RosterSpec } from "./adapters";
 import type { AdapterBuilder } from "./registry";
@@ -69,8 +63,6 @@ export class RunningAgent implements AsyncDisposable {
   public constructor(
     public readonly identity: AgentIdentity,
     private readonly agent: Agent,
-    /** Every event the running agent posted, since agents don't receive their own events over the socket. */
-    public readonly events: EventRecordingRest,
   ) {}
 
   public async [Symbol.asyncDispose](): Promise<void> {
@@ -90,17 +82,16 @@ async function provision(testName: string, label: string): Promise<AgentIdentity
 
 async function runAs(identity: AgentIdentity, adapter: FrameworkAdapter, options: RunOptions = {}): Promise<RunningAgent> {
   const { env } = await liveRun();
-  const events = new EventRecordingRest(env.restUrl, identity.apiKey);
   const agent = Agent.create({
     adapter,
     agentId: identity.id,
     apiKey: identity.apiKey,
     wsUrl: env.wsUrl,
-    linkOptions: { restApi: events },
+    linkOptions: { restApi: identity.rest },
     agentConfig: { autoSubscribeExistingRooms: true },
     ...options,
   });
-  const running = new RunningAgent(identity, agent, events);
+  const running = new RunningAgent(identity, agent);
   try {
     await agent.start();
   } catch (error) {
@@ -112,10 +103,11 @@ async function runAs(identity: AgentIdentity, adapter: FrameworkAdapter, options
 
 /** A provisioned identity with the cell's adapter running as it; stops, then reaps. */
 export class CellAgent implements AsyncDisposable {
-  public constructor(
-    public readonly identity: AgentIdentity,
-    public readonly running: RunningAgent,
-  ) {}
+  public constructor(public readonly running: RunningAgent) {}
+
+  public get identity(): AgentIdentity {
+    return this.running.identity;
+  }
 
   public async [Symbol.asyncDispose](): Promise<void> {
     await this.running[Symbol.asyncDispose]();
@@ -155,7 +147,7 @@ export class AdapterCell implements AsyncDisposable {
   public async running(label?: string): Promise<CellAgent> {
     const identity = await this.provision(label);
     try {
-      return new CellAgent(identity, await this.runAs(identity));
+      return new CellAgent(await this.runAs(identity));
     } catch (error) {
       await identity[Symbol.asyncDispose]();
       throw error;

@@ -26,6 +26,7 @@ import {
   OpenAIAdapter,
   OpencodeAdapter,
   ParlantAdapter,
+  type OmpACPAdapterOptions,
   type OpencodeAdapterConfig,
 } from "../../../src/adapters";
 import { AdapterRegistry, CAPABILITY, requires, type AdapterSpec, type BuildOptions } from "./registry";
@@ -61,11 +62,18 @@ function googleApiKey(): string | undefined {
 }
 
 /** OMP on the pinned Google model. */
-export const OMP_COMMAND = [...DEFAULT_OMP_ACP_COMMAND, "--model", `google/${GEMINI_MODEL}`];
+const OMP_COMMAND = [...DEFAULT_OMP_ACP_COMMAND, "--model", `google/${GEMINI_MODEL}`];
 
-/** OMP's environment: an isolated state directory, and the Google key (OMP reads only GEMINI_API_KEY). */
-export function ompStateEnv(workDir: string): Record<string, string> {
-  return { PI_CODING_AGENT_DIR: stateDir(workDir, ".omp-state"), [ENV.geminiKey]: googleApiKey() ?? "" };
+/** OMP on the pinned Google model with an isolated state directory, `options` layered over the defaults. */
+export function buildOmp({ prompt, workDir }: BuildOptions, options: OmpACPAdapterOptions = {}): OmpACPAdapter {
+  return new OmpACPAdapter({
+    command: OMP_COMMAND,
+    cwd: workDir,
+    customSection: prompt,
+    // OMP reads only GEMINI_API_KEY.
+    env: { PI_CODING_AGENT_DIR: stateDir(workDir, ".omp-state"), [ENV.geminiKey]: googleApiKey() ?? "" },
+    ...options,
+  });
 }
 
 /** A fresh directory under the cell's working directory, for a CLI's own state. */
@@ -185,8 +193,7 @@ const SPECS = {
     id: "omp-acp",
     requires: [ACP_SDK, requires.cli(DEFAULT_OMP_ACP_COMMAND[0]), GOOGLE_KEY],
     supports: [],
-    build: ({ prompt, workDir }) =>
-      new OmpACPAdapter({ command: OMP_COMMAND, cwd: workDir, customSection: prompt, env: ompStateEnv(workDir) }),
+    build: (options) => buildOmp(options),
   },
   openai: {
     id: "openai",

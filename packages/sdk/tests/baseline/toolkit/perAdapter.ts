@@ -15,7 +15,7 @@
 import { describe, it } from "vitest";
 
 import type { FrameworkAdapter } from "../../../src/contracts/protocols";
-import { specs, type AdapterId, type RosterSpec } from "./adapters";
+import { registry, specs, type AdapterId, type RosterSpec } from "./adapters";
 import { Agents, type AdapterCell, type AgentIdentity } from "./agents";
 import {
   CAST_SEPARATOR,
@@ -148,6 +148,6 @@ export function withAdapters(
   options: ScenarioOptions = {},
 ): void {
   // In the order given: a cast's roles (e.g. who coordinates) follow it.
-  const chosen = ids.flatMap((id) => specs({ include: [id], includePending: true }));
+  const chosen = ids.map((id) => registry.get(id));
   describe(name, () => defineRun(ids.join(CAST_SEPARATOR), chosen, body, options));
 }

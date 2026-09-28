@@ -40,11 +40,10 @@ export function postScorecard({ repo, branch, body, api, notice }) {
   ])
     .split("\n")
     .filter(Boolean);
-  if (existing) {
-    api([`repos/${repo}/issues/comments/${existing}`, "--method", "PATCH", "-f", `body=${body}`]);
-  } else {
-    api([`repos/${repo}/issues/${pr}/comments`, "--method", "POST", "-f", `body=${body}`]);
-  }
+  const [endpoint, method] = existing
+    ? [`repos/${repo}/issues/comments/${existing}`, "PATCH"]
+    : [`repos/${repo}/issues/${pr}/comments`, "POST"];
+  api([endpoint, "--method", method, "-f", `body=${body}`]);
 }
 
 function ghApi(args) {

@@ -25,6 +25,7 @@ import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
 import { abandon } from "../shared/abandon";
 import { senderAllowlist, type DecisionEntry, type DecisionRegistry, type Registration } from "../shared/decisions";
 import { replyToSender } from "../shared/replyToSender";
+import { roomContextLines } from "../shared/roomContext";
 import { runUntilReleased } from "../shared/runUntilReleased";
 import { asErrorMessage, asNestedMessage, asOptionalRecord, asString, toDisplayText, truncate } from "../shared/coercion";
 import {
@@ -1196,19 +1197,13 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     };
   }
 
-  /**
-   * The static system prompt plus this turn's room context. The Band MCP tools
-   * require a `room_id` (one server serves every room), so without it the
-   * model cannot call them.
-   */
+  /** The static system prompt plus this turn's room context, without which the Band MCP tools cannot be called. */
   private buildTurnSystem(roomId: string, message: PlatformMessage): string {
     return [
       this.systemPrompt,
       "",
       "## Room Context",
-      `Current room_id: ${roomId}`,
-      `Current requester name: ${message.senderName ?? message.senderId}`,
-      `Current requester id: ${message.senderId}`,
+      ...roomContextLines(roomId, message),
       "",
       "When a Band tool needs the current room, pass the Current room_id above.",
     ].join("\n");

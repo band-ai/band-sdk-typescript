@@ -51,7 +51,7 @@ function outcome(adapter: AdapterId, test: ReportedTest): ScorecardOutcome | nul
     case TEST_STATE.skipped: {
       // A test filtered out of this run (`-t`, a path) is skipped with no note: it did not run, so no row.
       if (!result.note) return null;
-      const pending = registry.specs({ include: [adapter], includePending: true })[0]?.pending;
+      const { pending } = registry.get(adapter);
       return pending ? { status: SCORECARD_STATUS.na, reason: pending } : { status: SCORECARD_STATUS.skip, reason: result.note };
     }
     case TEST_STATE.pending:

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TestResult } from "vitest/node";
 
-import { ADAPTER, specs } from "./adapters";
+import { ADAPTER, registry } from "./adapters";
 import { CAST_SEPARATOR, CATEGORY, scenarioId } from "./registry";
 import { SCORECARD_STATUS } from "./scorecard";
 import { TEST_PARENT, TEST_STATE, scorecardRows, type ReportedTest } from "./scorecardReporter";
@@ -47,10 +47,9 @@ describe("scorecardRows", () => {
   });
 
   it("records a pending adapter as N/A with its registry reason", () => {
-    const [letta] = specs({ include: [ADAPTER.letta], includePending: true });
     expect(scorecardRows(reported(REPLIES, ADAPTER.letta, skipped("anything")))[0]?.outcome).toEqual({
       status: SCORECARD_STATUS.na,
-      reason: letta!.pending,
+      reason: registry.get(ADAPTER.letta).pending,
     });
   });
 

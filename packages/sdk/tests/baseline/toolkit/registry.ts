@@ -125,11 +125,20 @@ export class AdapterRegistry<Id extends string = string> {
     return [...this.entries.keys()].sort();
   }
 
+  /** The spec registered as `id`, pending or not. */
+  public get(id: Id): AdapterSpec<Id> {
+    const spec = this.entries.get(id);
+    if (!spec) {
+      throw new Error(`adapter "${id}" is not registered`);
+    }
+    return spec;
+  }
+
   /** The registered specs narrowed by `filter`, in stable id order. */
   public specs(filter: SpecFilter<Id> = {}): AdapterSpec<Id>[] {
     const { include, exclude, supports = [], without = [], includePending = false } = filter;
     return this.ids()
-      .map((id) => this.entries.get(id) as AdapterSpec<Id>)
+      .map((id) => this.get(id))
       .filter(
         (spec) =>
           (include === undefined || include.includes(spec.id)) &&

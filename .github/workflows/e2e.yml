@@ -37,8 +37,9 @@ jobs:
       group: e2e-baseline-${{ github.event_name }}-${{ github.ref }}
       cancel-in-progress: false
     env:
-      SCORECARD_JSON: ${{ github.workspace }}/scorecard/scorecard.json
+      BAND_E2E_SCORECARD_JSON: ${{ github.workspace }}/scorecard/scorecard.json
       SCORECARD_MD: ${{ github.workspace }}/scorecard/scorecard.md
+      FILTER: ${{ inputs.filter }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -77,8 +78,6 @@ jobs:
           COPILOT_PROVIDER_BASE_URL: https://api.anthropic.com
           COPILOT_PROVIDER_API_KEY: ${{ secrets.E2E_ANTHROPIC_API_KEY }}
           COPILOT_MODEL: claude-haiku-4-5
-          BAND_E2E_SCORECARD_JSON: ${{ env.SCORECARD_JSON }}
-          FILTER: ${{ inputs.filter }}
         run: |
           # FILTER carries vitest arguments, so it is word-split on purpose.
           # shellcheck disable=SC2086
@@ -108,5 +107,4 @@ jobs:
         if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && hashFiles('scorecard/scorecard.md') != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          FILTER: ${{ inputs.filter }}
         run: node .github/scripts/post-baseline-scorecard.mjs

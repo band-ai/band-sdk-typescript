@@ -337,10 +337,6 @@ export class Execution {
           break;
         }
         this.syncBoundaries.recordExecuted(nextMessage.id);
-        if (this.syncBoundaries.isSyncPoint(boundary, nextMessage.id)) {
-          break;
-        }
-        continue;
       }
 
       // Already executed — by this scan, an earlier scan, or bootstrap/stale

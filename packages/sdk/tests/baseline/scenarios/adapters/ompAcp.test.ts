@@ -8,9 +8,8 @@ import { join } from "node:path";
 import type { PermissionOptionKind, RequestPermissionRequest, ToolKind } from "@agentclientprotocol/sdk";
 import { expect } from "vitest";
 
-import { OmpACPAdapter } from "../../../../src/adapters";
 import { ACP_SESSION_EVENT } from "../../../../src/converters/acp-client";
-import { ADAPTER, OMP_COMMAND, ompStateEnv } from "../../toolkit/adapters";
+import { ADAPTER, buildOmp } from "../../toolkit/adapters";
 import { assertDeliveryStatus } from "../../toolkit/assertDelivery";
 import { assertReplied } from "../../toolkit/assertMessages";
 import { DELIVERY_STATUS, observeAgent } from "../../toolkit/observeDelivery";
@@ -127,13 +126,6 @@ withAdapters(
   },
   {
     // Never yolo: an auto-approve mode would bypass the gate under test.
-    build: (_spec, { prompt, workDir }) =>
-      new OmpACPAdapter({
-        command: OMP_COMMAND,
-        cwd: workDir,
-        customSection: prompt,
-        env: ompStateEnv(workDir),
-        resolvePermission: gate.resolvePermission,
-      }),
+    build: (_spec, options) => buildOmp(options, { resolvePermission: gate.resolvePermission }),
   },
 );

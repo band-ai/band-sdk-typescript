@@ -1,105 +1,22 @@
 /**
  * Shared plumbing for live runs against the real Band platform — the baseline
  * suite (tests/baseline) and the operator scripts under scripts/:
- * provisioning/reaping disposable test agents, a pass/fail/assert reporter,
- * and small polling helpers (mirrors tests/support's role for unit-test fakes).
+ * provisioning/reaping disposable test agents and loading the live env
+ * (mirrors tests/support's role for unit-test fakes).
  */
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import { BandClient } from "@band-ai/rest-client";
 
 import { FernRestAdapter } from "../../../src/rest";
-import { withTimeout } from "../../../src/adapters/shared/withTimeout";
-import { RecordLog } from "../../testUtils";
-
-import type { BandLink } from "../../../src/platform/BandLink";
-import type { PlatformEvent } from "../../../src/platform/events";
 
 export const NAME_PREFIX = "e2e-ts-";
 export const DEFAULT_REST_URL = "https://app.band.ai/";
 const ORPHAN_MAX_AGE_MINUTES = 60;
 const CLI_PROBE_TIMEOUT_MS = 10_000;
 
-export interface TestResult {
-  name: string;
-  passed: boolean;
-  error?: string;
-}
-
-export interface Reporter {
-  pass(name: string): void;
-  fail(name: string, error: string): void;
-  assert(name: string, condition: boolean, errorMsg: string): void;
-  /** Prints the `${passed}/${total} passed` summary and sets a failing exit code if any failed. */
-  summarize(label: string): void;
-}
-
-export function createReporter(): Reporter {
-  const results: TestResult[] = [];
-
-  const pass = (name: string): void => {
-    results.push({ name, passed: true });
-    console.log(`  ✅ ${name}`);
-  };
-
-  const fail = (name: string, error: string): void => {
-    results.push({ name, passed: false, error });
-    console.log(`  ❌ ${name}: ${error}`);
-  };
-
-  const assert = (name: string, condition: boolean, errorMsg: string): void => {
-    condition ? pass(name) : fail(name, errorMsg);
-  };
-
-  const summarize = (label: string): void => {
-    const failed = results.filter((r) => !r.passed);
-    console.log(`\n${label} ${results.length - failed.length}/${results.length} passed`);
-    if (failed.length > 0) {
-      process.exitCode = 1;
-    }
-  };
-
-  return { pass, fail, assert, summarize };
-}
-
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Polls `predicate` until it returns true, throwing if `timeoutMs` elapses first. */
-export async function waitUntil(
-  predicate: () => boolean,
-  options: { timeoutMs?: number; intervalMs?: number } = {},
-): Promise<void> {
-  const timeoutMs = options.timeoutMs ?? 10_000;
-  const intervalMs = options.intervalMs ?? 200;
-  const deadline = Date.now() + timeoutMs;
-
-  while (!predicate()) {
-    if (Date.now() >= deadline) {
-      throw new Error(`waitUntil timed out after ${timeoutMs}ms`);
-    }
-    await sleep(intervalMs);
-  }
-}
-
-/** `waitUntil`, reported through `reporter` (pass/fail) instead of throwing on timeout. */
-export async function assertEventually(
-  reporter: Pick<Reporter, "pass" | "fail">,
-  name: string,
-  predicate: () => boolean,
-  describeState: () => string,
-  options?: { timeoutMs?: number; intervalMs?: number },
-): Promise<void> {
-  try {
-    await waitUntil(predicate, options);
-    reporter.pass(name);
-  } catch (error) {
-    reporter.fail(name, `${describeState()} error=${error instanceof Error ? error.message : String(error)}`);
-  }
 }
 
 export function requireEnv(name: string): string {
@@ -142,49 +59,7 @@ export function cliProbeFailure(command: string): string | null {
 
 /** A REST client acting as the agent that owns `apiKey`. */
 export function agentRest(restUrl: string, apiKey: string): FernRestAdapter {
-  return new FernRestAdapter(agentClient(restUrl, apiKey));
-}
-
-function agentClient(restUrl: string, apiKey: string): BandClient {
-  return new BandClient({ baseUrl: restUrl, apiKey });
-}
-
-/** An agent's REST client that records the events it posts, so a script waits on them instead of polling the room. */
-export class EventRecordingRest extends FernRestAdapter {
-  private readonly posted = new RecordLog<string>();
-
-  public constructor(restUrl: string, apiKey: string) {
-    super(agentClient(restUrl, apiKey));
-  }
-
-  /** Every event content posted so far. */
-  public get events(): readonly string[] {
-    return this.posted.entries;
-  }
-
-  public override async createChatEvent(...args: Parameters<FernRestAdapter["createChatEvent"]>) {
-    const result = await super.createChatEvent(...args);
-    this.posted.record(args[1].content);
-    return result;
-  }
-
-  /** The first posted event that contains `text`, once there is one. */
-  public eventContaining(text: string, timeoutMs = LIVE_EVENT_TIMEOUT_MS): Promise<string> {
-    return withTimeout(this.posted.next((content) => content.includes(text)), timeoutMs, `no event containing: ${text}`);
-  }
-}
-
-/** Posts `text` to the room as `rest`'s agent, @mentioning `recipient` so it is delivered to them. */
-export async function sendMentionedMessage(
-  rest: FernRestAdapter,
-  roomId: string,
-  recipient: ProvisionedAgent,
-  text: string,
-): Promise<void> {
-  await rest.createChatMessage(roomId, {
-    content: `@${recipient.name} ${text}`,
-    mentions: [{ id: recipient.id, handle: recipient.name }],
-  });
+  return new FernRestAdapter(new BandClient({ baseUrl: restUrl, apiKey }));
 }
 
 export interface ProvisionedAgent {
@@ -292,95 +167,4 @@ export async function reapProvisioned(
   ]);
 }
 
-/**
- * What a live script provisions, released when its `await using` scope ends:
- * running services stop first (last started, first stopped), then agents and
- * rooms are reaped and temp dirs removed. Each failure is logged, never thrown,
- * so one failed step never skips the rest.
- */
-export class LiveResources implements AsyncDisposable {
-  private readonly agents: ProvisionedAgent[] = [];
-  private readonly roomIds: string[] = [];
-  private readonly tempDirs: string[] = [];
-  private readonly stops: Array<{ what: string; stop: () => Promise<unknown> }> = [];
-
-  public constructor(
-    private readonly env: LiveEnv,
-    private readonly label: string,
-  ) {}
-
-  public trackAgent(agent: ProvisionedAgent): ProvisionedAgent {
-    this.agents.push(agent);
-    return agent;
-  }
-
-  public trackRoom(roomId: string): string {
-    this.roomIds.push(roomId);
-    return roomId;
-  }
-
-  /** Registers `stop` (named `what` in a failure log) to run before anything is reaped. */
-  public trackService(what: string, stop: () => Promise<unknown>): void {
-    this.stops.push({ what, stop });
-  }
-
-  public async tempDir(prefix: string): Promise<string> {
-    const dir = await mkdtemp(join(tmpdir(), prefix));
-    this.tempDirs.push(dir);
-    return dir;
-  }
-
-  public async [Symbol.asyncDispose](): Promise<void> {
-    for (const { what, stop } of [...this.stops].reverse()) {
-      await stop().catch((error: unknown) => this.warn(`${what} failed`, error));
-    }
-    const { userClient, restUrl, userApiKey } = this.env;
-    await reapProvisioned(userClient, restUrl, userApiKey, this.agents, this.roomIds, this.label)
-      .catch((error: unknown) => this.warn("reapProvisioned failed", error));
-    await Promise.all(
-      this.tempDirs.map((dir) => rm(dir, { recursive: true, force: true }).catch((error: unknown) => this.warn(`failed to remove ${dir}`, error))),
-    );
-  }
-
-  private warn(what: string, error: unknown): void {
-    console.warn(`${this.label} cleanup: ${what}:`, error);
-  }
-}
-
 export const LIVE_EVENT_TIMEOUT_MS = 180_000;
-
-/** Reads the link until `predicate` matches, or `timeoutMs` elapses. */
-export async function waitForEvent(
-  link: BandLink,
-  predicate: (event: PlatformEvent) => boolean,
-  message: string,
-  timeoutMs = LIVE_EVENT_TIMEOUT_MS,
-): Promise<void> {
-  const signal = AbortSignal.timeout(timeoutMs);
-  for (let event = await link.nextEvent(signal); event; event = await link.nextEvent(signal)) {
-    if (predicate(event)) {
-      return;
-    }
-  }
-  throw new Error(message);
-}
-
-function flushOutput(stream: NodeJS.WriteStream): Promise<void> {
-  return new Promise((resolve) => {
-    stream.write("", () => resolve());
-  });
-}
-
-/** Runs a live script's `main`, reports a failure under `label`, and exits once output is flushed. */
-export function runLiveScript(label: string, main: () => Promise<void>): void {
-  main()
-    .catch((error) => {
-      console.error(`${label} failed:`, error);
-      process.exitCode = 1;
-    })
-    .finally(async () => {
-      await Promise.all([flushOutput(process.stdout), flushOutput(process.stderr)]);
-      // A managed CLI child can keep Node alive after cleanup.
-      process.exit(process.exitCode ?? 0);
-    });
-}
