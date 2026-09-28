@@ -7,6 +7,7 @@ import { SEND_MESSAGE_TOOL_NAME } from "../src/runtime/tools/schemas";
 import type { AgentToolsProtocol } from "../src/core";
 import { FakeTools, makeMessage, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
+import { createDeferred } from "../src/core/deferred";
 
 class GoogleAdkTestTools extends FakeTools {
   public readonly executedCalls: Array<{ toolName: string; args: Record<string, unknown> }> = [];
@@ -60,11 +61,11 @@ class SendMessageTools extends GoogleAdkTestTools {
     }];
   }
 
-  public override async sendMessage(content: string): Promise<Record<string, unknown>> {
+  public override async sendMessage(...[content, mentions]: Parameters<FakeTools["sendMessage"]>): Promise<Record<string, unknown>> {
     if (this.failDeliveredText !== null && content === this.failDeliveredText) {
       throw new Error("send failed");
     }
-    return super.sendMessage(content);
+    return super.sendMessage(content, mentions);
   }
 
   public override async executeToolCall(toolName: string, args: Record<string, unknown>): Promise<unknown> {
@@ -278,6 +279,37 @@ describe("GoogleADKAdapter", () => {
 
     expect(seenPrompts[1]).toContain("[User]: please finish");
     expect(seenPrompts[1]).not.toContain("all done");
+  });
+
+  it("runs a new session's turn while a parked turn from before cleanup is still in flight, and drops that transcript", async () => {
+    const parked = createDeferred();
+    const firstStarted = createDeferred();
+    const seenPrompts: string[] = [];
+    const adapter = new GoogleADKAdapter({
+      sdkFactory: createFakeGoogleAdkSdk(async function* (_agent, request) {
+        seenPrompts.push(request.newMessage.parts[0]?.text ?? "");
+        if (seenPrompts.length === 1) {
+          firstStarted.resolve();
+          await parked.promise;
+          yield { final: true, text: "pineapple" };
+          return;
+        }
+        yield { final: true, text: "mango" };
+      }),
+    });
+    const tools = new SendMessageTools();
+    const first = adapter.onMessage(makeMessage("stale question"), tools, [], null, null, { isSessionBootstrap: true, roomId: "room-1" });
+    await firstStarted.promise;
+    await adapter.onCleanup("room-1");
+
+    await adapter.onMessage(makeMessage("next question"), tools, [], null, null, { isSessionBootstrap: true, roomId: "room-1" });
+    parked.resolve();
+    await first;
+    await adapter.onMessage(makeMessage("last question"), tools, [], null, null, { isSessionBootstrap: false, roomId: "room-1" });
+
+    expect(seenPrompts.at(-1)).toContain("[User]: next question\nmango");
+    expect(seenPrompts.at(-1)).not.toContain("stale question");
+    expect(seenPrompts.at(-1)).not.toContain("pineapple");
   });
 
   it("remembers the string a non-string send argument was posted as", async () => {

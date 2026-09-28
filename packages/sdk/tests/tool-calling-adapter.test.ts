@@ -11,6 +11,7 @@ import { SEND_MESSAGE_TOOL_NAME } from "../src/runtime/tools/schemas";
 import type { ToolCallingModel } from "../src/adapters";
 import { describeDeliveryContract } from "./deliveryContract";
 import { expectTurnFailed } from "./testUtils";
+import { createDeferred } from "../src/core/deferred";
 import type {
   ContactRequestsResult,
   ContactRecord,
@@ -521,49 +522,35 @@ describe("ToolCallingAdapter", () => {
     expect(prompts[0]!.some((content) => content.includes("room-a-ask"))).toBe(false);
   });
 
-  it("waits out a parked turn after cleanup and drops that transcript", async () => {
-    let releaseFirst: () => void = () => undefined;
-    const gate = new Promise<void>((resolve) => {
-      releaseFirst = resolve;
-    });
-    let markStarted: () => void = () => undefined;
-    const started = new Promise<void>((resolve) => {
-      markStarted = resolve;
-    });
+  it("runs a new session's turn while a parked turn from before cleanup is still in flight, and drops that transcript", async () => {
+    const parked = createDeferred();
+    const firstStarted = createDeferred();
     const prompts: string[][] = [];
-    let secondEntered = false;
     const model: ToolCallingModel = {
       complete: async (request) => {
         const contents = (request.messages ?? []).map((message) => String(message.content));
-        if (prompts.length === 0) {
-          markStarted();
-          await gate;
-        } else {
-          secondEntered = true;
-        }
         prompts.push(contents);
-        return { text: prompts.length === 1 ? "pineapple" : "mango" };
+        if (prompts.length === 1) {
+          firstStarted.resolve();
+          await parked.promise;
+          return { text: "pineapple" };
+        }
+        return { text: "mango" };
       },
     };
     const adapter = new OpenAIAdapter({ model });
-    const next = { ...fakeMessage, id: "m2", content: "next question" };
     const first = adapter.onMessage(fakeMessage, new FakeTools(), inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "r1" });
-    await started;
+    await firstStarted.promise;
     await adapter.onCleanup("r1");
-    const second = adapter.onMessage(next, new FakeTools(), inboundOnly(), null, null, { isSessionBootstrap: false, roomId: "r1" });
-    const finished = await Promise.race([
-      second.then(() => "done" as const),
-      new Promise<"waiting">((resolve) => {
-        setTimeout(() => resolve("waiting"), 50);
-      }),
-    ]);
-    expect(finished).toBe("waiting");
-    expect(secondEntered).toBe(false);
-    releaseFirst();
-    await first;
-    await second;
 
-    expect(prompts.at(-1)).toEqual(["[Jane]: next question"]);
+    const next = { ...fakeMessage, id: "m2", content: "next question" };
+    await adapter.onMessage(next, new FakeTools(), inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "r1" });
+    parked.resolve();
+    await first;
+    const last = { ...fakeMessage, id: "m3", content: "last question" };
+    await adapter.onMessage(last, new FakeTools(), inboundOnly(), null, null, { isSessionBootstrap: false, roomId: "r1" });
+
+    expect(prompts.at(-1)).toEqual(["[Jane]: next question", "mango", "[Jane]: last question"]);
   });
 
   it("runs tool rounds then sends final text", async () => {
