@@ -21,7 +21,7 @@
     "build": "pnpm --filter @band-ai/sdk build && tsup && node scripts/sync-plugin-version.js",
     "dev": "tsup --watch",
     "typecheck": "pnpm --filter @band-ai/sdk build && tsc --noEmit",
-    "lint": "eslint src/",
+    "lint": "eslint .",
     "test": "pnpm --filter @band-ai/sdk build && vitest run",
     "test:watch": "vitest",
     "test:coverage": "pnpm --filter @band-ai/sdk build && vitest run --coverage",

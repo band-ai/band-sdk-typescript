@@ -3,6 +3,7 @@ import type { Logger } from "@band-ai/sdk/core";
 import { BandMcpStdioServer } from "@band-ai/sdk/mcp";
 import { AgentRuntime } from "@band-ai/sdk/runtime";
 
+import { parseAllowedSenders, sanitizeMeta, shouldForwardMessage } from "./gating.js";
 import { BAND_INSTRUCTIONS } from "./prompt.js";
 
 /**
@@ -50,6 +51,9 @@ async function main(): Promise<void> {
 
   const me = await link.rest.getAgentMe();
   const selfAgentId = me.id;
+  const ownerId = me.ownerUuid ?? null;
+  const allowedSenderIds = parseAllowedSenders(process.env.BAND_ALLOWED_SENDERS);
+  const self = { id: selfAgentId, name: me.name, handle: me.handle };
 
   const runtime = new AgentRuntime({
     link,
@@ -63,18 +67,49 @@ async function main(): Promise<void> {
       if (payload.sender_id === selfAgentId) return;
       if (payload.message_type !== "text") return;
 
-      // Sender/mention gating (task #4) and the processing->processed ack
-      // lifecycle (task #5) land in follow-up commits; every message that
-      // reaches here is currently pushed unconditionally.
+      // Fail closed: an unknown owner means nothing passes the sender gate.
+      if (!ownerId) {
+        stderrLogger.warn("dropping message: agent has no owner on record", {
+          room_id: context.roomId,
+        });
+        return;
+      }
+
+      // Best-effort: an empty roster only disables the 1:1-room mention
+      // shortcut, it never widens who the sender gate allows.
+      let roomParticipantIds: string[] = [];
+      try {
+        const participants = await link.rest.listChatParticipants(context.roomId);
+        roomParticipantIds = participants.map((p) => p.id);
+      } catch (error) {
+        stderrLogger.warn("could not list participants", {
+          room_id: context.roomId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      const forward = shouldForwardMessage({
+        text: payload.content,
+        senderId: payload.sender_id,
+        self,
+        ownerId,
+        allowedSenderIds,
+        roomParticipantIds,
+      });
+
+      // The processing->processed ack lifecycle (task #5) lands as its own
+      // follow-up commit, for both the forwarded and gated-out paths below.
+      if (!forward) return;
+
       try {
         await server.notify("notifications/claude/channel", {
           content: payload.content,
-          meta: {
+          meta: sanitizeMeta({
             room_id: context.roomId,
             sender_id: payload.sender_id,
             sender_name: payload.sender_name ?? "",
             message_id: payload.id,
-          },
+          }),
         });
       } catch (error) {
         stderrLogger.error("failed to push notifications/claude/channel", {
