@@ -36,12 +36,7 @@ describe("claude/codex examples", () => {
     let systemPrompt = "";
     const adapter = buildClaudeSdkExampleAdapter({
       customSection: generateTomPrompt("Tom").trim(),
-      queryFn: ({
-        options,
-      }: {
-        prompt: string;
-        options?: { systemPrompt?: string };
-      }) => {
+      queryFn: ({ options }) => {
         systemPrompt = typeof options?.systemPrompt === "string" ? options.systemPrompt : "";
         return claudeSuccessStream();
       },

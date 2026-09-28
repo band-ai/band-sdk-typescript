@@ -22,11 +22,11 @@ function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
 
 describe("ClaudeSDKAdapter", () => {
   it("uses the stable query API and resumes by session id", async () => {
-    const calls: Array<{ prompt: string; options?: Record<string, unknown> }> = [];
+    const calls: ClaudeSDKQueryParams[] = [];
     let turn = 0;
 
     const queryFn: ClaudeSDKQuery = ({ prompt, options }) => {
-      calls.push({ prompt, options: options as Record<string, unknown> });
+      calls.push({ prompt, options });
       turn += 1;
 
       if (turn === 1) {
@@ -188,9 +188,9 @@ describe("ClaudeSDKAdapter", () => {
   });
 
   it("rehydrates session id from bootstrap task metadata without prompting it", async () => {
-    const calls: Array<{ prompt: string; options?: Record<string, unknown> }> = [];
+    const calls: ClaudeSDKQueryParams[] = [];
     const queryFn: ClaudeSDKQuery = ({ prompt, options }) => {
-      calls.push({ prompt, options: options as Record<string, unknown> });
+      calls.push({ prompt, options });
       return streamFrom([
         {
           type: "assistant",
@@ -231,9 +231,9 @@ describe("ClaudeSDKAdapter", () => {
   });
 
   it("prompts only text history on bootstrap and keeps session resume off the prompt", async () => {
-    const calls: Array<{ prompt: string; options?: Record<string, unknown> }> = [];
+    const calls: ClaudeSDKQueryParams[] = [];
     const queryFn: ClaudeSDKQuery = ({ prompt, options }) => {
-      calls.push({ prompt, options: options as Record<string, unknown> });
+      calls.push({ prompt, options });
       return streamFrom([
         {
           type: "assistant",
@@ -287,9 +287,9 @@ describe("ClaudeSDKAdapter", () => {
   });
 
   it("rehydrates legacy Claude session markers from bootstrap task metadata", async () => {
-    const calls: Array<{ options?: Record<string, unknown> }> = [];
+    const calls: Array<Pick<ClaudeSDKQueryParams, "options">> = [];
     const queryFn: ClaudeSDKQuery = ({ options }) => {
-      calls.push({ options: options as Record<string, unknown> });
+      calls.push({ options });
       return streamFrom([
         {
           type: "assistant",
@@ -404,7 +404,7 @@ describe("ClaudeSDKAdapter", () => {
         {
           type: "result",
           subtype: "error_max_turns",
-          result: "hit the turn cap",
+          errors: ["hit the turn cap"],
           session_id: "session-fail",
         } as never,
       ]) as never;
@@ -445,7 +445,7 @@ describe("ClaudeSDKAdapter", () => {
         {
           type: "result",
           subtype: "error_during_execution",
-          summary: "tool crashed",
+          errors: ["tool crashed"],
           session_id: "session-partial",
         } as never,
       ]) as never;
@@ -486,7 +486,7 @@ describe("ClaudeSDKAdapter", () => {
         {
           type: "result",
           subtype: "error_during_execution",
-          summary: "tool crashed",
+          errors: ["tool crashed"],
           session_id: "session-partial-delivery",
         } as never,
       ]) as never;

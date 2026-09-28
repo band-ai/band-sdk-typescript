@@ -29,8 +29,6 @@ const REQUEST = "Reply with the single word: pineapple";
 function recordingQuery() {
   let init: SDKSystemMessage | undefined;
   let options: ClaudeSDKQueryParams["options"];
-  const realQuery = query as ClaudeSDKQuery;
-
   return {
     get init() {
       return init;
@@ -40,10 +38,10 @@ function recordingQuery() {
     },
     queryFn: async function* (params: ClaudeSDKQueryParams) {
       options = params.options;
-      for await (const message of realQuery(params)) {
+      for await (const message of query(params)) {
         // Init can be re-emitted; the last one describes the session that ran.
         if (message.type === INIT.type && message.subtype === INIT.subtype) {
-          init = message as unknown as SDKSystemMessage;
+          init = message;
         }
         yield message;
       }
