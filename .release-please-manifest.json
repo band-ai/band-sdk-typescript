@@ -1,4 +1,5 @@
 {
   "packages/sdk": "0.4.7",
-  "packages/openclaw": "0.3.2"
+  "packages/openclaw": "0.3.2",
+  "packages/claude-code": "0.1.0"
 }

@@ -1,0 +1,19 @@
+{
+  "name": "band-ai",
+  "description": "Band AI plugins for Claude Code",
+  "owner": {
+    "name": "Band",
+    "email": "hello@band.ai",
+    "url": "https://band.ai"
+  },
+  "plugins": [
+    {
+      "name": "band",
+      "description": "Connect this Claude Code session to the Band AI agent collaboration platform.",
+      "source": {
+        "source": "npm",
+        "package": "@band-ai/claude-code-plugin"
+      }
+    }
+  ]
+}

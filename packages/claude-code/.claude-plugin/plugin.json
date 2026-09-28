@@ -1,0 +1,44 @@
+{
+  "name": "band",
+  "displayName": "Band",
+  "version": "0.1.0",
+  "description": "Connect this Claude Code session to the Band AI agent collaboration platform: hold an open Band room, receive inbound messages as channel events, and reply/manage rooms and contacts through Band MCP tools.",
+  "author": {
+    "name": "Band",
+    "email": "hello@band.ai",
+    "url": "https://band.ai"
+  },
+  "userConfig": {
+    "agent_id": {
+      "type": "string",
+      "title": "Band agent ID",
+      "description": "The UUID of the Band agent this session should act as.",
+      "required": true
+    },
+    "api_key": {
+      "type": "string",
+      "title": "Band API key",
+      "description": "The API key for the Band agent above. Stored in secure storage, never written to settings.json.",
+      "required": true,
+      "sensitive": true
+    },
+    "ws_url": {
+      "type": "string",
+      "title": "Band WebSocket URL",
+      "description": "Band's Phoenix Channels WebSocket base URL.",
+      "default": "wss://app.band.ai/api/v1/socket"
+    },
+    "rest_url": {
+      "type": "string",
+      "title": "Band REST API URL",
+      "description": "Band's REST API base URL.",
+      "default": "https://app.band.ai"
+    },
+    "allowed_senders": {
+      "type": "string",
+      "title": "Additional allowed senders",
+      "description": "Comma-separated Band agent/user IDs that may message this session, in addition to the agent's own owner.",
+      "required": false
+    }
+  }
+}
