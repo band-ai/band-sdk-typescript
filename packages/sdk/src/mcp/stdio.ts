@@ -1,5 +1,7 @@
 import type { Readable, Writable } from "node:stream";
 
+import type { ServerCapabilities } from "@modelcontextprotocol/sdk/types.js";
+
 import type { AdapterToolsProtocol } from "../contracts/protocols";
 import type {
   BuildRegistrationsOptions,
@@ -20,6 +22,8 @@ export interface BandMcpStdioServerOptions {
   additionalTools?: McpToolRegistration[];
   stdin?: Readable;
   stdout?: Writable;
+  capabilities?: ServerCapabilities;
+  instructions?: string;
 }
 
 export class BandMcpStdioServer {
@@ -57,10 +61,16 @@ export class BandMcpStdioServer {
     const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
     const { z } = await import("zod");
 
-    const mcpServer = new McpServer({
-      name: this.options.name ?? MCP_SERVER_NAME,
-      version: "1.0.0",
-    });
+    const mcpServer = new McpServer(
+      {
+        name: this.options.name ?? MCP_SERVER_NAME,
+        version: "1.0.0",
+      },
+      {
+        capabilities: this.options.capabilities,
+        instructions: this.options.instructions,
+      },
+    );
 
     registerTools(mcpServer, z, this.registrations);
 
