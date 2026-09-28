@@ -14,7 +14,12 @@ on:
   schedule:
     # Off-peak minute avoids GitHub's top-of-hour thundering herd.
     - cron: "23 4 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: "vitest arguments scoping the baseline run, e.g. `-t anthropic` or `tests/baseline/scenarios/adapters` (blank = full suite)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -103,3 +108,109 @@ jobs:
           COPILOT_PROVIDER_API_KEY: ${{ secrets.E2E_ANTHROPIC_API_KEY }}
           COPILOT_MODEL: claude-haiku-4-5
         run: npx tsx tests/integration/${{ matrix.file }}
+
+  # The live baseline (tests/baseline): every scenario fanned out across the
+  # adapter registry in one job; vitest isolates the files. A scheduled run is
+  # the full suite and the canonical scorecard; a manual run may be scoped by
+  # `filter` and reports to the dispatcher on their PR.
+  baseline:
+    name: baseline (live)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      pull-requests: write # the scorecard comment on a manual run's PR
+    concurrency:
+      # Never cancel in progress: a killed run skips its teardown, orphaning
+      # the agents and rooms it provisioned on the real platform.
+      group: e2e-baseline-${{ github.event_name }}-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      SCORECARD_JSON: ${{ github.workspace }}/scorecard/scorecard.json
+      SCORECARD_MD: ${{ github.workspace }}/scorecard/scorecard.md
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Every adapter's CLI, unconditionally: the registry decides what runs.
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install adapter CLIs
+        run: npm install --global @oh-my-pi/pi-coding-agent opencode-ai @github/copilot
+
+      - name: Run the live baseline
+        working-directory: packages/sdk
+        env:
+          BAND_API_KEY_USER: ${{ secrets.E2E_BAND_API_KEY_USER }}
+          BAND_REST_URL: ${{ secrets.E2E_BAND_REST_URL }}
+          BAND_WS_URL: ${{ secrets.E2E_BAND_WS_URL }}
+          GEMINI_API_KEY: ${{ secrets.E2E_GOOGLE_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.E2E_ANTHROPIC_API_KEY }}
+          COPILOT_PROVIDER_TYPE: anthropic
+          COPILOT_PROVIDER_BASE_URL: https://api.anthropic.com
+          COPILOT_PROVIDER_API_KEY: ${{ secrets.E2E_ANTHROPIC_API_KEY }}
+          COPILOT_MODEL: claude-haiku-4-5
+          BAND_E2E_SCORECARD_JSON: ${{ env.SCORECARD_JSON }}
+          FILTER: ${{ inputs.filter }}
+        run: |
+          # FILTER carries vitest arguments, so it is word-split on purpose.
+          # shellcheck disable=SC2086
+          pnpm run test:baseline-live $FILTER
+
+      - name: Upload the scorecard
+        if: ${{ !cancelled() && hashFiles('scorecard/scorecard.json') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: baseline-scorecard
+          path: scorecard/
+
+      - name: Scorecard to the job summary
+        if: ${{ !cancelled() && hashFiles('scorecard/scorecard.md') != '' }}
+        run: cat "$SCORECARD_MD" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Scorecard to the dispatcher's PR
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && hashFiles('scorecard/scorecard.md') != '' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require("fs");
+            const marker = "<!-- baseline-scorecard-report -->";
+            const { owner, repo } = context.repo;
+            const branch = context.ref.replace(/^refs\/heads\//, "");
+            const { data: prs } = await github.rest.pulls.list({ owner, repo, head: `${owner}:${branch}`, state: "open" });
+            if (prs.length === 0) {
+              core.notice(`No open PR for ${branch}: the scorecard is in this run's job summary only.`);
+              return;
+            }
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const filter = process.env.FILTER || "full suite";
+            const body = [
+              marker,
+              `@${context.actor} your baseline run ([#${context.runNumber}](${runUrl}), \`${filter}\`) finished.`,
+              "",
+              fs.readFileSync(process.env.SCORECARD_MD, "utf8"),
+              "Failure details are in the run's `baseline-scorecard` artifact.",
+            ].join("\n");
+            const issue_number = prs[0].number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const existing = comments.find((comment) => comment.body?.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+        env:
+          FILTER: ${{ inputs.filter }}
