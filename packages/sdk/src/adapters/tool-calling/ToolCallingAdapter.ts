@@ -10,7 +10,7 @@ import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { formatHistoryForLlm } from "../../runtime/formatters";
-import { SEND_MESSAGE_TOOL_NAME } from "../../runtime/tools/schemas";
+import { postedSendContent } from "../../runtime/tools/schemas";
 import { asErrorMessage } from "../shared/coercion";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
 import { reportProviderTurnFailure } from "../../core/providerFailure";
@@ -106,7 +106,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
     const conversation = this.conversationFor(context, history, message);
-    conversation.push(...this.turnInput(message, participantsMessage, contactsMessage));
+    conversation.push(this.userTurn(message));
     const toolRounds: ToolRound[] = [];
     let text: string | undefined;
     try {
@@ -116,7 +116,8 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
       const customSchemas = customToolsToSchemas(this.customTools, this.toolFormat);
       const schemas = [...platformSchemas, ...customSchemas];
 
-      const messages = [...conversation];
+      // Notices are for this turn only. The durable conversation keeps what was said in the room.
+      const messages = [...conversation, ...this.turnNotices(participantsMessage, contactsMessage)];
 
       let response = await this.model.complete({
         systemPrompt: this.systemPrompt,
@@ -192,11 +193,9 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
             isError,
           });
           // A later provider failure throws out of this turn. Remember a post now, or the next turn answers it again.
-          if (call.name === SEND_MESSAGE_TOOL_NAME && !isError) {
-            conversation.push({
-              role: "assistant",
-              content: String(call.input.content ?? ""),
-            });
+          const posted = postedSendContent(call.name, call.input.content, isError);
+          if (posted !== undefined) {
+            conversation.push({ role: "assistant", content: posted });
           }
 
           if (this.enableExecutionReporting) {
@@ -261,26 +260,29 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     return seeded;
   }
 
-  private turnInput(
-    message: PlatformMessage,
-    participantsMessage: string | null,
-    contactsMessage: string | null,
-  ): ToolModelMessage[] {
-    const turn: ToolModelMessage[] = [this.asConversationTurn({
+  private userTurn(message: PlatformMessage): ToolModelMessage {
+    return this.asConversationTurn({
       role: "user",
       content: message.content,
       sender_name: message.senderName,
       sender_type: message.senderType,
       message_type: message.messageType,
       metadata: message.metadata,
-    })];
+    });
+  }
+
+  private turnNotices(
+    participantsMessage: string | null,
+    contactsMessage: string | null,
+  ): ToolModelMessage[] {
+    const notices: ToolModelMessage[] = [];
     if (participantsMessage) {
-      turn.push({ role: "system", content: participantsMessage });
+      notices.push({ role: "system", content: participantsMessage });
     }
     if (contactsMessage) {
-      turn.push({ role: "system", content: contactsMessage });
+      notices.push({ role: "system", content: contactsMessage });
     }
-    return turn;
+    return notices;
   }
 
   /**

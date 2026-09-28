@@ -456,6 +456,116 @@ describe("ToolCallingAdapter", () => {
     ]);
   });
 
+  it("keeps a participant notice on this turn only", async () => {
+    const seen: Array<Array<Record<string, unknown>>> = [];
+    const model: ToolCallingModel = {
+      complete: async (request) => {
+        seen.push(request.messages ?? []);
+        if (seen.length === 1) {
+          return { toolCalls: [{ id: "c1", name: SEND_MESSAGE_TOOL_NAME, input: { content: "pineapple" } }] };
+        }
+        return {};
+      },
+    };
+    const adapter = new OpenAIAdapter({ model });
+    const next = { ...fakeMessage, id: "m2", content: "Reply with: mango" };
+
+    await adapter.onMessage(fakeMessage, new FakeTools(), inboundOnly(), "Alice joined the room.", null, { isSessionBootstrap: true, roomId: "r1" });
+    await adapter.onMessage(next, new FakeTools(), inboundOnly(fakeMessage), null, "Bob is now a contact.", { isSessionBootstrap: false, roomId: "r1" });
+
+    expect(turnLines(seen[0]!)).toContainEqual({ role: "system", content: "Alice joined the room." });
+    const later = turnLines(seen.at(-1)!);
+    expect(later).not.toContainEqual({ role: "system", content: "Alice joined the room." });
+    expect(later).toContainEqual({ role: "system", content: "Bob is now a contact." });
+  });
+
+  it("does not share one room's turn or transcript with another room", async () => {
+    let releaseA: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+    let markStarted: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const prompts: string[][] = [];
+    const model: ToolCallingModel = {
+      complete: async (request) => {
+        const contents = (request.messages ?? []).map((message) => String(message.content));
+        if (contents.some((content) => content.includes("room-a-ask")) && prompts.length === 0) {
+          markStarted();
+          await gate;
+        }
+        prompts.push(contents);
+        return { text: "ok" };
+      },
+    };
+    const adapter = new OpenAIAdapter({ model });
+    const tools = new FakeTools();
+    const roomA = { ...fakeMessage, id: "a", roomId: "room-a", content: "room-a-ask" };
+    const roomB = { ...fakeMessage, id: "b", roomId: "room-b", content: "room-b-ask" };
+    const first = adapter.onMessage(roomA, tools, inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "room-a" });
+    await started;
+    const second = adapter.onMessage(roomB, tools, inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "room-b" });
+    const finished = await Promise.race([
+      second.then(() => "done" as const),
+      new Promise<"blocked">((resolve) => {
+        setTimeout(() => resolve("blocked"), 200);
+      }),
+    ]);
+    releaseA();
+    await first;
+    await second;
+
+    expect(finished).toBe("done");
+    expect(prompts[0]!.some((content) => content.includes("room-a-ask"))).toBe(false);
+  });
+
+  it("waits out a parked turn after cleanup and drops that transcript", async () => {
+    let releaseFirst: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let markStarted: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const prompts: string[][] = [];
+    let secondEntered = false;
+    const model: ToolCallingModel = {
+      complete: async (request) => {
+        const contents = (request.messages ?? []).map((message) => String(message.content));
+        if (prompts.length === 0) {
+          markStarted();
+          await gate;
+        } else {
+          secondEntered = true;
+        }
+        prompts.push(contents);
+        return { text: prompts.length === 1 ? "pineapple" : "mango" };
+      },
+    };
+    const adapter = new OpenAIAdapter({ model });
+    const next = { ...fakeMessage, id: "m2", content: "next question" };
+    const first = adapter.onMessage(fakeMessage, new FakeTools(), inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "r1" });
+    await started;
+    await adapter.onCleanup("r1");
+    const second = adapter.onMessage(next, new FakeTools(), inboundOnly(), null, null, { isSessionBootstrap: false, roomId: "r1" });
+    const finished = await Promise.race([
+      second.then(() => "done" as const),
+      new Promise<"waiting">((resolve) => {
+        setTimeout(() => resolve("waiting"), 50);
+      }),
+    ]);
+    expect(finished).toBe("waiting");
+    expect(secondEntered).toBe(false);
+    releaseFirst();
+    await first;
+    await second;
+
+    expect(prompts.at(-1)).toEqual(["[Jane]: next question"]);
+  });
+
   it("runs tool rounds then sends final text", async () => {
     const model = new FakeModel();
     const adapter = new OpenAIAdapter({

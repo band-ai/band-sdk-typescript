@@ -392,6 +392,14 @@ export const MCP_SERVER_NAME = "band";
 
 /** Canonical names for the tools with special adapter handling (reporting/reply delivery). */
 export const SEND_MESSAGE_TOOL_NAME = "band_send_message";
+
+/** The text a successful `band_send_message` posted, or undefined when this call did not. */
+export function postedSendContent(toolName: string, content: unknown, failed: boolean): string | undefined {
+  if (toolName !== SEND_MESSAGE_TOOL_NAME || failed) {
+    return undefined;
+  }
+  return String(content ?? "");
+}
 export const SEND_EVENT_TOOL_NAME = "band_send_event";
 
 export function mcpToolNames(names: Set<string>): string[] {

@@ -7,7 +7,7 @@ import { isFailedToolOutput, type AdapterToolsProtocol } from "../../contracts/p
 import type { MetadataMap, ToolOperationResult } from "../../contracts/dtos";
 import { formatMessageForLlm } from "../../runtime/formatters";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import { SEND_MESSAGE_TOOL_NAME } from "../../runtime/tools/schemas";
+import { postedSendContent } from "../../runtime/tools/schemas";
 import type { PlatformMessage } from "../../runtime/types";
 import {
   customToolToOpenAISchema,
@@ -417,8 +417,9 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
         const args = asToolArgs(input);
         const result = await tools.executeToolCall(name, args);
         // The handler posts String(content). Remember that string only when the send succeeded.
-        if (name === SEND_MESSAGE_TOOL_NAME && !isFailedToolOutput(result)) {
-          posted.push(String(args.content ?? ""));
+        const sent = postedSendContent(name, args.content, isFailedToolOutput(result));
+        if (sent !== undefined) {
+          posted.push(sent);
         }
         return stringifyToolResult(result);
       },
