@@ -39,8 +39,9 @@ perAdapter(
     await lookUp(room, agent, KEY.alpha);
     await lookUp(room, other.identity, KEY.beta);
 
-    expect(await keysOf(room, agent), "the first agent's calls").toEqual([KEY.alpha]);
-    expect(await keysOf(room, other.identity), "the other agent's calls").toEqual([KEY.beta]);
+    const [agentKeys, otherKeys] = await Promise.all([keysOf(room, agent), keysOf(room, other.identity)]);
+    expect(agentKeys, "the first agent's calls").toEqual([KEY.alpha]);
+    expect(otherKeys, "the other agent's calls").toEqual([KEY.beta]);
   },
   WITH_LOOKUP,
 );
@@ -53,8 +54,9 @@ perAdapter(
 
     await Promise.all([lookUp(room, agent, KEY.alpha), lookUp(second, agent, KEY.beta)]);
 
-    expect(await keysOf(room, agent), "the first room's calls").toEqual([KEY.alpha]);
-    expect(await keysOf(second, agent), "the second room's calls").toEqual([KEY.beta]);
+    const [firstKeys, secondKeys] = await Promise.all([keysOf(room, agent), keysOf(second, agent)]);
+    expect(firstKeys, "the first room's calls").toEqual([KEY.alpha]);
+    expect(secondKeys, "the second room's calls").toEqual([KEY.beta]);
   },
   WITH_LOOKUP,
 );

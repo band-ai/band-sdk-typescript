@@ -102,9 +102,9 @@ export function buildOpencode({ prompt, workDir }: BuildOptions, config: Opencod
   });
 }
 
-/** A scenario's custom tools, with every call reported as a `tool_call` event the scenario can read back. */
-function reportedTools(tools: BuildOptions["customTools"] = []) {
-  return { customTools: [...tools], enableExecutionReporting: tools.length > 0 };
+/** Reports every custom-tool call as a `tool_call` event, so a scenario that gives tools can read them back. */
+function reportsTools(tools: BuildOptions["customTools"]) {
+  return { enableExecutionReporting: Boolean(tools?.length) };
 }
 
 /** A builder for an adapter that cannot run yet; it names why instead of half-building one. */
@@ -121,7 +121,7 @@ const SPECS = {
     requires: [ANTHROPIC_KEY, requires.peerPackage("@anthropic-ai/sdk")],
     supports: [CAPABILITY.customTools],
     build: ({ prompt, customTools }) =>
-      new AnthropicAdapter({ anthropicModel: ANTHROPIC_MODEL, systemPrompt: prompt, ...reportedTools(customTools) }),
+      new AnthropicAdapter({ anthropicModel: ANTHROPIC_MODEL, systemPrompt: prompt, customTools, ...reportsTools(customTools) }),
   },
   claudeSdk: {
     id: "claude-sdk",
@@ -166,16 +166,20 @@ const SPECS = {
     requires: [GOOGLE_KEY, requires.peerPackage("@google/genai")],
     supports: [CAPABILITY.customTools],
     build: ({ prompt, customTools }) =>
-      new GeminiAdapter({ geminiModel: GEMINI_MODEL, apiKey: googleApiKey(), systemPrompt: prompt, ...reportedTools(customTools) }),
+      new GeminiAdapter({ geminiModel: GEMINI_MODEL, apiKey: googleApiKey(), systemPrompt: prompt, customTools, ...reportsTools(customTools) }),
   },
   googleAdk: {
     id: "google-adk",
     requires: [GOOGLE_KEY, requires.peerPackage("@google/adk")],
     supports: [CAPABILITY.customTools],
-    build: ({ prompt, customTools }) => {
-      const { customTools: additionalTools, enableExecutionReporting } = reportedTools(customTools);
-      return new GoogleADKAdapter({ model: GEMINI_MODEL, apiKey: googleApiKey(), systemPrompt: prompt, additionalTools, enableExecutionReporting });
-    },
+    build: ({ prompt, customTools }) =>
+      new GoogleADKAdapter({
+        model: GEMINI_MODEL,
+        apiKey: googleApiKey(),
+        systemPrompt: prompt,
+        additionalTools: customTools,
+        ...reportsTools(customTools),
+      }),
   },
   kiroAcp: {
     id: "kiro-acp",
@@ -210,7 +214,7 @@ const SPECS = {
     requires: [requires.envVar(ENV.openaiKey), requires.peerPackage("openai")],
     supports: [CAPABILITY.customTools],
     pending: "needs an OPENAI_API_KEY provisioned in CI",
-    build: ({ prompt, customTools }) => new OpenAIAdapter({ openAIModel: OPENAI_MODEL, systemPrompt: prompt, ...reportedTools(customTools) }),
+    build: ({ prompt, customTools }) => new OpenAIAdapter({ openAIModel: OPENAI_MODEL, systemPrompt: prompt, customTools, ...reportsTools(customTools) }),
   },
   opencode: {
     id: "opencode",

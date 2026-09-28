@@ -24,21 +24,18 @@ type SocketConstructor = new (address: string | URL, protocols?: string | string
 
 export class DroppableTransport {
   public readonly transport: PhoenixChannelsTransport;
-  /** Every socket the transport opened, the live one last. */
-  private readonly sockets: NodeSocket[] = [];
+  /** The socket the transport opened last, the one a drop severs. */
+  private live: NodeSocket | undefined;
   /** Every reconnect the transport settled, in order. */
   private readonly reconnects = new RecordLog<ReconnectSnapshot>();
-  private reconnectsBeforeDrop = 0;
 
   public constructor(identity: AgentIdentity, wsUrl: string) {
     const Socket = resolveWebSocketFactory(identity.apiKey) as unknown as SocketConstructor;
-    const opened = this.sockets;
+    const record = (socket: NodeSocket) => (this.live = socket);
     // Constructing the real socket and returning it keeps every behaviour the transport relies on.
     class RecordedSocket {
       public constructor(address: string | URL, protocols?: string | string[]) {
-        const socket = new Socket(address, protocols);
-        opened.push(socket);
-        return socket;
+        return record(new Socket(address, protocols));
       }
     }
     this.transport = new PhoenixChannelsTransport({
@@ -55,18 +52,17 @@ export class DroppableTransport {
     return new DroppableTransport(identity, env.wsUrl ?? DEFAULT_WS_URL);
   }
 
-  /** Drops the live socket without a close handshake. */
-  public drop(): void {
-    const live = this.sockets.at(-1);
-    if (!live) {
+  /** Drops the live socket without a close handshake, and returns the reconnect the transport settles after it. */
+  public async dropAndReconnect(timeoutMs = LIVE_EVENT_TIMEOUT_MS): Promise<ReconnectSnapshot> {
+    if (!this.live) {
       throw new Error("the transport has no socket to drop; start the agent first");
     }
-    this.reconnectsBeforeDrop = this.reconnects.entries.length;
-    live.terminate();
-  }
-
-  /** The reconnect the transport settled after the last drop, or undefined if none did in time. */
-  public untilReconnected(timeoutMs = LIVE_EVENT_TIMEOUT_MS): Promise<ReconnectSnapshot | undefined> {
-    return waitFor(this.reconnects, () => this.reconnects.entries[this.reconnectsBeforeDrop], timeoutMs);
+    const settledBefore = this.reconnects.entries.length;
+    this.live.terminate();
+    const reconnect = await waitFor(this.reconnects, () => this.reconnects.entries[settledBefore], timeoutMs);
+    if (!reconnect) {
+      throw new Error(`the transport did not reconnect within ${timeoutMs}ms of the drop`);
+    }
+    return reconnect;
   }
 }

@@ -72,7 +72,7 @@ export interface BuildOptions {
   /** A scratch working directory for adapters that drive a local coding agent. */
   workDir: string;
   /** Tools a scenario gives the agent; builders that support `CAPABILITY.customTools` report each call as a `tool_call` event. */
-  customTools?: readonly CustomToolDef[];
+  customTools?: CustomToolDef[];
 }
 
 export type AdapterBuilder = (options: BuildOptions) => FrameworkAdapter;

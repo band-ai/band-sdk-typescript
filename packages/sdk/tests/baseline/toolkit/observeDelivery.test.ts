@@ -46,7 +46,8 @@ describe("observeAgent", () => {
 
   it("is unobserved, with no history, before any update for this agent", () => {
     const room = roomWith({ recipient: OTHER, status: DELIVERY_STATUS.processed });
-    expect(observeAgent(AGENT, room).status(SENT).status).toBe(DELIVERY_STATUS.unobserved);
-    expect(observeAgent(AGENT, room).history(SENT)).toEqual([]);
+    const delivery = observeAgent(AGENT, room);
+    expect(delivery.status(SENT).status).toBe(DELIVERY_STATUS.unobserved);
+    expect(delivery.history(SENT)).toEqual([]);
   });
 });

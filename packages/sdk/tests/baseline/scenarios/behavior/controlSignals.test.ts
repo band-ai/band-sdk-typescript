@@ -15,12 +15,11 @@ import { CATEGORY, scenarioId } from "../../toolkit/registry";
 const UNSUPPORTED =
   "the TS runtime does not handle stop, play or interrupt control signals, and @band-ai/rest-client has no endpoint to send them";
 
-describe(scenarioId(CATEGORY.behavior, "controlSignals"), () => {
-  it("stop cancels the active turn, then play replays its message", () => {
-    throw new Error(`cannot run: ${UNSUPPORTED}`);
-  });
+const cannotRun = (): never => {
+  throw new Error(`cannot run: ${UNSUPPORTED}`);
+};
 
-  it("interrupt cancels the active turn and consumes its message", () => {
-    throw new Error(`cannot run: ${UNSUPPORTED}`);
-  });
+describe(scenarioId(CATEGORY.behavior, "controlSignals"), () => {
+  it("stop cancels the active turn, then play replays its message", cannotRun);
+  it("interrupt cancels the active turn and consumes its message", cannotRun);
 });

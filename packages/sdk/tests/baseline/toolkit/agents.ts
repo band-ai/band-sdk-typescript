@@ -10,8 +10,7 @@ import { join } from "node:path";
 
 import { Agent, type AgentCreateOptions } from "../../../src/agent/Agent";
 import type { FrameworkAdapter } from "../../../src/contracts/protocols";
-import { BandLink } from "../../../src/platform/BandLink";
-import type { StreamingTransport } from "../../../src/platform/streaming/transport";
+import { BandLink, type BandLinkOptions } from "../../../src/platform/BandLink";
 import { withTimeout } from "../../../src/adapters/shared/withTimeout";
 import { agentRest, NAME_PREFIX, provisionAgent, reapProvisioned } from "../../integration/support/liveHarness";
 import { liveRun, warnTeardown } from "./liveRun";
@@ -26,7 +25,7 @@ export type ProvisionedName = `${typeof NAME_PREFIX}${string}`;
 const AGENT_STOP_TIMEOUT_MS = 10_000;
 
 /** Runtime options a scenario may set on a running agent, and the transport it connects over. */
-export type RunOptions = Pick<AgentCreateOptions, "sessionConfig" | "contactConfig"> & { transport?: StreamingTransport };
+export type RunOptions = Pick<AgentCreateOptions, "sessionConfig" | "contactConfig"> & Pick<BandLinkOptions, "transport">;
 
 /** A provisioned Band agent identity, reaped when its scope ends. */
 export class AgentIdentity implements AsyncDisposable {

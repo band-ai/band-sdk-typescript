@@ -21,13 +21,11 @@ const NO_SUCH_CODE = "NO-SUCH-CODE";
 
 const LOOKUP_ARGS = z.object({ key: z.string().describe("The project key") });
 
-type LookupArgs = z.infer<typeof LOOKUP_ARGS>;
-
 export const LOOKUP_TOOL: CustomToolDef = {
   name: "lookup_access_code",
   description: "Look up the secret access code for a project key. The codes cannot be guessed.",
   schema: LOOKUP_ARGS,
-  handler: (args) => ACCESS_CODES[(args as LookupArgs).key.toLowerCase()] ?? NO_SUCH_CODE,
+  handler: (args) => ACCESS_CODES[String(args.key).toLowerCase()] ?? NO_SUCH_CODE,
 };
 
 export const LOOKUP_PROMPT =
@@ -40,7 +38,7 @@ export function lookupRequest(key: string): string {
   return `look up the access code for key '${key}'`;
 }
 
-/** A lookup `sender` made in `room`, read from the room's stored tool-call events. */
+/** One stored lookup call: its event id and the key it looked up. */
 export interface LookupCall {
   id: string;
   key: string;
@@ -51,6 +49,6 @@ export async function lookupCalls(room: Room, sender: AgentIdentity): Promise<Lo
   const events = (await observeRoom(room).history(MESSAGE_TYPE.ToolCall)).filter((event) => event.senderId === sender.id);
   return events.flatMap((event) => {
     const call = parseToolCall(event.content);
-    return call?.name === LOOKUP_TOOL.name ? [{ id: event.id, key: String((call.args as Partial<LookupArgs>).key) }] : [];
+    return call?.name === LOOKUP_TOOL.name ? [{ id: event.id, key: String(call.args.key) }] : [];
   });
 }

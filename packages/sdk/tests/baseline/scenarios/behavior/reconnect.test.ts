@@ -9,13 +9,12 @@
 import { describe, expect, it } from "vitest";
 
 import { GenericAdapter } from "../../../../src/index";
-import { Agents } from "../../toolkit/agents";
+import { Agents, type AgentIdentity } from "../../toolkit/agents";
 import { assertReplyContains } from "../../toolkit/assertMessages";
 import { DroppableTransport } from "../../toolkit/droppableTransport";
 import { observeRoom } from "../../toolkit/observeMessages";
 import { CATEGORY, scenarioId } from "../../toolkit/registry";
 import { Rooms, type Room } from "../../toolkit/rooms";
-import type { AgentIdentity } from "../../toolkit/agents";
 import { uniqueMarker } from "../samples/markers";
 
 const SCENARIO = scenarioId(CATEGORY.behavior, "reconnect");
@@ -41,10 +40,8 @@ describe(SCENARIO, () => {
 
     await answersProbe(room, identity, "before");
 
-    link.drop();
-    const reconnect = await link.untilReconnected();
-    expect(reconnect, "the transport reconnected after the drop").toBeDefined();
-    expect(reconnect!.joinedTopics, "every channel rejoined").toEqual(reconnect!.attemptedTopics);
+    const reconnect = await link.dropAndReconnect();
+    expect(reconnect.joinedTopics, "every channel rejoined").toEqual(reconnect.attemptedTopics);
 
     await answersProbe(room, identity, "after");
   });
