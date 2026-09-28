@@ -1,10 +1,11 @@
-import { BandLink, loadAgentConfigFromEnv, type PlatformEvent } from "@band-ai/sdk";
+import { BandLink, loadAgentConfigFromEnv } from "@band-ai/sdk";
 import type { Logger } from "@band-ai/sdk/core";
 import { BandMcpStdioServer } from "@band-ai/sdk/mcp";
 import { AgentRuntime } from "@band-ai/sdk/runtime";
 
 import { AckTracker, wrapToolsForAck } from "./ack.js";
-import { parseAllowedSenders, sanitizeMeta, shouldForwardMessage } from "./gating.js";
+import { parseAllowedSenders } from "./gating.js";
+import { createMessageHandler } from "./handler.js";
 import { LastSenderTracker, wrapToolsForMentionFallback } from "./mentions.js";
 import { BAND_INSTRUCTIONS } from "./prompt.js";
 
@@ -69,79 +70,23 @@ async function main(): Promise<void> {
   const allowedSenderIds = parseAllowedSenders(process.env.BAND_ALLOWED_SENDERS);
   const self = { id: selfAgentId, name: me.name, handle: me.handle };
 
+  const onExecute = createMessageHandler({
+    self,
+    ownerId,
+    allowedSenderIds,
+    listParticipants: (roomId) => link.rest.listChatParticipants(roomId),
+    ackTracker,
+    lastSenderTracker,
+    notify: (content, meta) => server.notify("notifications/claude/channel", { content, meta }),
+    logger: stderrLogger,
+  });
+
   const runtime = new AgentRuntime({
     link,
     agentId: selfAgentId,
     logger: stderrLogger,
     agentConfig: { autoSubscribeExistingRooms: true },
-    onExecute: async (context, event: PlatformEvent) => {
-      if (event.type !== "message_created") return;
-
-      const payload = event.payload;
-      if (payload.sender_id === selfAgentId) return;
-      if (payload.message_type !== "text") return;
-
-      // Fail closed: an unknown owner means nothing passes the sender gate.
-      if (!ownerId) {
-        stderrLogger.warn("dropping message: agent has no owner on record", {
-          room_id: context.roomId,
-        });
-        return;
-      }
-
-      // Best-effort: an empty roster only disables the 1:1-room mention
-      // shortcut, it never widens who the sender gate allows.
-      let roomParticipantIds: string[] = [];
-      try {
-        const participants = await link.rest.listChatParticipants(context.roomId);
-        roomParticipantIds = participants.map((p) => p.id);
-      } catch (error) {
-        stderrLogger.warn("could not list participants", {
-          room_id: context.roomId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-
-      const forward = shouldForwardMessage({
-        text: payload.content,
-        senderId: payload.sender_id,
-        self,
-        ownerId,
-        allowedSenderIds,
-        roomParticipantIds,
-      });
-
-      if (!forward) {
-        await ackTracker.markGatedOut(context.roomId, payload.id);
-        return;
-      }
-
-      // Mark processing before the push, not after: a crash between the two
-      // would otherwise leave the message stuck at `sent`, which the backlog
-      // catch-up sweep does not distinguish from "never seen".
-      await ackTracker.markPushed(context.roomId, payload.id);
-      lastSenderTracker.track(context.roomId, {
-        senderId: payload.sender_id,
-        senderName: payload.sender_name ?? "",
-      });
-
-      try {
-        await server.notify("notifications/claude/channel", {
-          content: payload.content,
-          meta: sanitizeMeta({
-            room_id: context.roomId,
-            sender_id: payload.sender_id,
-            sender_name: payload.sender_name ?? "",
-            message_id: payload.id,
-          }),
-        });
-      } catch (error) {
-        stderrLogger.error("failed to push notifications/claude/channel", {
-          room_id: context.roomId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    },
+    onExecute,
     onError: (error, event) => {
       stderrLogger.error("fatal runtime error", {
         room_id: event.roomId ?? undefined,

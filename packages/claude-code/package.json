@@ -22,9 +22,9 @@
     "dev": "tsup --watch",
     "typecheck": "pnpm --filter @band-ai/sdk build && tsc --noEmit",
     "lint": "eslint .",
-    "test": "pnpm --filter @band-ai/sdk build && vitest run",
+    "test": "pnpm run build && vitest run",
     "test:watch": "vitest",
-    "test:coverage": "pnpm --filter @band-ai/sdk build && vitest run --coverage",
+    "test:coverage": "pnpm run build && vitest run --coverage",
     "clean": "rm -rf dist"
   },
   "devDependencies": {
@@ -37,7 +37,8 @@
     "tsup": "^8.5.1",
     "typescript": "^5.8.2",
     "typescript-eslint": "^8.70.0",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.0",
+    "ws": "^8.21.3"
   },
   "engines": {
     "node": ">=22.14.0"
