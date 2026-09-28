@@ -11,7 +11,7 @@ Spawn **GitHub Copilot CLI** in ACP stdio mode and bridge Band room messages thr
    - BYOK: `COPILOT_PROVIDER_BASE_URL`, `COPILOT_MODEL`, and provider API key env vars Copilot expects
 4. **Band agent** — `copilot_acp_agent` in `agent_config.yaml`
 
-Optional: `COPILOT_HOME` (isolated config dir), `COPILOT_ALLOW_ALL=true` for unattended smoke runs (see `tests/integration/copilot-acp-live.ts`).
+Optional: `COPILOT_HOME` (isolated config dir), `COPILOT_ALLOW_ALL=true` for unattended smoke runs (see `tests/baseline/toolkit/adapters.ts`).
 
 ## Examples
 

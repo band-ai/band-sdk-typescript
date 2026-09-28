@@ -25,6 +25,7 @@ import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
 import { abandon } from "../shared/abandon";
 import { senderAllowlist, type DecisionEntry, type DecisionRegistry, type Registration } from "../shared/decisions";
 import { replyToSender } from "../shared/replyToSender";
+import { roomContextLines } from "../shared/roomContext";
 import { runUntilReleased } from "../shared/runUntilReleased";
 import { asErrorMessage, asNestedMessage, asOptionalRecord, asString, toDisplayText, truncate } from "../shared/coercion";
 import {
@@ -375,7 +376,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
         parts: this.buildPromptParts(message, participantsMessage, contactsMessage, {
           replayMessages: needsHistoryReplay ? history.replayMessages : null,
         }),
-        system: this.systemPrompt,
+        system: this.buildTurnSystem(roomId, message),
         model: this.buildModelPayload(),
         agent: this.config.agent || undefined,
         variant: this.config.variant || undefined,
@@ -1194,6 +1195,18 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       providerID: this.config.providerId,
       modelID: this.config.modelId,
     };
+  }
+
+  /** The static system prompt plus this turn's room context, without which the Band MCP tools cannot be called. */
+  private buildTurnSystem(roomId: string, message: PlatformMessage): string {
+    return [
+      this.systemPrompt,
+      "",
+      "## Room Context",
+      ...roomContextLines(roomId, message),
+      "",
+      "When a Band tool needs the current room, pass the Current room_id above.",
+    ].join("\n");
   }
 
   private buildPromptParts(

@@ -78,6 +78,7 @@
     "test": "vitest run",
     "coverage": "vitest run --coverage",
     "test:watch": "vitest",
+    "test:baseline-live": "vitest run --config vitest.baseline.config.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "clean": "rm -rf dist",

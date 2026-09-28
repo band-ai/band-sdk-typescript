@@ -1,6 +1,16 @@
 import type { HistoryConverter } from "../contracts/protocols";
 import { resolveReplayLineContent } from "./shared";
 
+/**
+ * The task event `ACPClientAdapter` posts once per turn to record which ACP
+ * session served a room, and this converter reads back to restore it.
+ */
+export const ACP_SESSION_EVENT = {
+  content: "ACP client session",
+  sessionIdKey: "acp_client_session_id",
+  roomIdKey: "acp_client_room_id",
+} as const;
+
 export interface ACPClientReplayMessage {
   id: string;
   line: string;
@@ -61,8 +71,8 @@ export class ACPClientHistoryConverter implements HistoryConverter<ACPClientSess
       }
       const metadata = metadataRaw as Record<string, unknown>;
 
-      const sessionId = metadata.acp_client_session_id;
-      const roomId = metadata.acp_client_room_id;
+      const sessionId = metadata[ACP_SESSION_EVENT.sessionIdKey];
+      const roomId = metadata[ACP_SESSION_EVENT.roomIdKey];
       if (
         typeof sessionId === "string" && typeof roomId === "string" && sessionId && roomId
         && roomId === entry.room_id

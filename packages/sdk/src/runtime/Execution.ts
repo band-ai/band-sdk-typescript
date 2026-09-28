@@ -15,6 +15,8 @@ import {
 import type { RetryTracker } from "@band-ai/band-sdk-core";
 import { SyncBoundaryTracker, type SyncBoundary } from "./SyncBoundaryTracker";
 
+export const PERMANENT_FAILURE_ERROR = "Message permanently failed after max retries";
+
 export type ExecutionHandler = (
   context: ExecutionContext,
   event: PlatformEvent,
@@ -324,24 +326,24 @@ export class Execution {
         break;
       }
 
+      // A failed mark is what moves /next past this message. One seen again
+      // (or whose mark did not take) is still the head, and re-polling would spin.
+      if (this.retryTracker.isPermanentlyFailed(nextMessage.id)) {
+        if (this.syncBoundaries.isExecuted(nextMessage.id) || !(await this.markPermanentlyFailed(nextMessage.id))) {
+          this.logger.warn("Permanently failed message still heads /next; ending sync", {
+            roomId: this.roomId,
+            messageId: nextMessage.id,
+          });
+          break;
+        }
+        this.syncBoundaries.recordExecuted(nextMessage.id);
+      }
+
       // Already executed — by this scan, an earlier scan, or bootstrap/stale
       // recovery. Never redo it, but a repeat sighting of the boundary's own
       // live message still ends this scan early: nothing further in the
       // backlog needs a REST round trip once we've caught up to live traffic.
       if (this.syncBoundaries.isExecuted(nextMessage.id)) {
-        if (this.syncBoundaries.isSyncPoint(boundary, nextMessage.id)) {
-          break;
-        }
-        continue;
-      }
-
-      if (this.retryTracker.isPermanentlyFailed(nextMessage.id)) {
-        this.logger.warn("Skipping permanently failed message during sync", {
-          roomId: this.roomId,
-          messageId: nextMessage.id,
-        });
-        await this.markMessageFailed(nextMessage.id, "Message permanently failed after max retries");
-        this.syncBoundaries.recordExecuted(nextMessage.id);
         if (this.syncBoundaries.isSyncPoint(boundary, nextMessage.id)) {
           break;
         }
@@ -377,7 +379,7 @@ export class Execution {
         messageId,
         maxRetries: this.retryTracker.maxRetries,
       });
-      await this.markMessageFailed(messageId, "Message permanently failed after max retries");
+      await this.markPermanentlyFailed(messageId);
       return;
     }
 
@@ -485,14 +487,20 @@ export class Execution {
     }
   }
 
-  private async markMessageFailed(messageId: string, error: string): Promise<void> {
+  /** Records on the platform that `messageId` is given up on; false when the platform did not take it. */
+  private async markPermanentlyFailed(messageId: string): Promise<boolean> {
     try {
-      await this.link.markFailed(this.roomId, messageId, error, { bestEffort: true });
-    } catch {
+      // The platform records a failure only against an open processing attempt.
+      await this.link.markProcessing(this.roomId, messageId);
+      await this.link.markFailed(this.roomId, messageId, PERMANENT_FAILURE_ERROR);
+      return true;
+    } catch (error: unknown) {
       this.logger.warn("Failed to mark message as failed on server", {
         roomId: this.roomId,
         messageId,
+        error,
       });
+      return false;
     }
   }
 }

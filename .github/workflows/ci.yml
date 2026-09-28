@@ -181,6 +181,9 @@ jobs:
       - name: Test TypeScript core coverage workflow
         run: pnpm test:typescript-core-coverage-workflow
 
+      - name: Test baseline scorecard comment
+        run: pnpm test:baseline-scorecard-comment
+
   packaging:
     runs-on: ubuntu-latest
     steps:

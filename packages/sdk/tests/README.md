@@ -9,19 +9,17 @@ Rationale:
 
 When this directory grows substantially beyond the current footprint, group by domain (`adapters/`, `runtime/`, `integrations/`) and keep `examples-*` tests together.
 
-`tests/integration/` is intentionally excluded from the default `vitest run`
-(none of its files end in `.test.ts`/`.spec.ts`, vitest's default include pattern).
-Scripts named `*-live.ts` are discovered by `.github/workflows/e2e.yml` and
-run nightly or through manual dispatch; the remaining scripts are operator-run.
+`tests/baseline/` is the live baseline suite: scenarios against the real Band
+platform, fanned out across every adapter in its registry, with a scenario ×
+adapter scorecard. See [`baseline/README.md`](baseline/README.md).
+- `pnpm run test:baseline-live` runs the scenarios (`tests/baseline/scenarios/**`), which the
+  default `vitest run` excludes. Scope a run with `-t <adapter|scenario>` or a scenario path, with
+  no `--`. `BAND_E2E_INCLUDE_PENDING=1` also runs the adapters marked pending. Runs nightly and on
+  manual dispatch via `.github/workflows/e2e.yml`.
+- The toolkit's unit tests, including the `registry.test.ts` drift guard, run in the default
+  `pnpm test`.
 
-Current harnesses:
-- `smoke.ts`, `e2e.ts`, `two-codex-agents.ts`, and `codex-acp-smoke.ts` (that one needs `RUN_CODEX_ACP_E2E=1`) — operator-run only, not wired into any workflow; each needs live credentials from `agent_config.yaml`.
+`tests/integration/` holds runnable scripts, excluded from the default `vitest run`
+(none of its files end in `.test.ts`/`.spec.ts`, vitest's default include pattern):
 - `pnpm build && npx tsx tests/integration/band-sdk-core-bundler.ts` — reads `dist/`, so build first; no secrets/network needed. Runs on every PR via `.github/workflows/ci.yml`'s `test` job.
-- `BAND_API_KEY_USER=... npx tsx tests/integration/core-retry-participant-live.ts` — hits the real Band platform; nightly + manual dispatch only, via `.github/workflows/e2e.yml`.
-- `BAND_API_KEY_USER=... npx tsx tests/integration/event-validation-live.ts` — drives a disposable three-agent room/contact lifecycle through real Phoenix topics and Core event validation.
-- `npx tsx tests/integration/omp-acp-live.ts` — requires `BAND_API_KEY_USER`, the OMP CLI, and `GEMINI_API_KEY` for its pinned Google model. Runs enabled nightly via `E2E_GOOGLE_API_KEY`. Reports a missing-prerequisite skip distinctly from an enabled live pass — once the model credential is present, every later step (binary presence, the ACP handshake, each scenario) is a hard failure, not a skip.
-- `npx tsx tests/integration/opencode-live.ts` — requires `BAND_API_KEY_USER`, the OpenCode CLI (`npm install --global opencode-ai`), and `ANTHROPIC_API_KEY`. Runs enabled nightly via `E2E_ANTHROPIC_API_KEY`. BYOK: a temp config passed through `OPENCODE_CONFIG` points OpenCode's Anthropic provider at that key and gates bash behind `ask`. Three scenarios drive a real bash approval from the room: approve, reject, and a timeout followed by a late reply. A missing key is the only skip; once it is set, a missing binary or any scenario failure is a hard failure.
-- `npx tsx tests/integration/copilot-acp-live.ts` — requires `BAND_API_KEY_USER`, the Copilot CLI, and either a Copilot GitHub token (`COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`) or BYOK provider configuration (`COPILOT_PROVIDER_BASE_URL`, `COPILOT_MODEL`, and any provider authentication it needs, such as `COPILOT_PROVIDER_API_KEY`). It reports a prerequisite skip when those are absent; that is distinct from an enabled live pass.
-
-Adding a new `*-live.ts` script enrolls it in the live workflow automatically;
-add it to this list and ensure it gates unavailable external prerequisites.
+- `support/liveHarness.ts` — shared live-platform plumbing (provisioning, reaping, env loading) for the baseline suite and `scripts/`.

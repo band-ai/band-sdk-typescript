@@ -19,7 +19,7 @@ import type {
   SessionModeState,
 } from "@agentclientprotocol/sdk";
 
-import { ACPClientHistoryConverter, type ACPClientSessionState } from "../../converters/acp-client";
+import { ACP_SESSION_EVENT, ACPClientHistoryConverter, type ACPClientSessionState } from "../../converters/acp-client";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { rethrowIfRecoverableTurnFailure, ValidationError } from "../../core/errors";
@@ -28,6 +28,7 @@ import { renderSystemPrompt } from "../../runtime/prompts";
 import { mentionSubjectsFromMetadata, replaceUuidMentions } from "../../runtime/formatters";
 import { systemUpdateParts } from "../shared/conversationPrompt";
 import { asErrorMessage } from "../shared/coercion";
+import { roomContextLines } from "../shared/roomContext";
 import { withTimeout } from "../shared/withTimeout";
 import { abandon } from "../shared/abandon";
 import { deliverReply } from "../../core/deliveryFailedError";
@@ -554,9 +555,9 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
         senderHandle: message.senderName ?? message.senderType,
       })
 
-      await tools.sendEvent("ACP client session", "task", {
-        acp_client_session_id: sessionId,
-        acp_client_room_id: context.roomId,
+      await tools.sendEvent(ACP_SESSION_EVENT.content, "task", {
+        [ACP_SESSION_EVENT.sessionIdKey]: sessionId,
+        [ACP_SESSION_EVENT.roomIdKey]: context.roomId,
       })
 
       if (response.stopReason !== "end_turn") {
@@ -1577,9 +1578,6 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   }
 
   private buildSystemContext(roomId: string, message: PlatformMessage): string {
-    const requesterName = message.senderName ?? message.senderId
-    const requesterId = message.senderId
-
     return [
       "[System Context]",
       this.systemPrompt,
@@ -1588,9 +1586,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       "You are connected to Band using Band MCP tools.",
       "Use the Band tools for any visible room action. Plain text output is not posted back to the room.",
       "",
-      `Current room_id: ${roomId}`,
-      `Current requester name: ${requesterName}`,
-      `Current requester id: ${requesterId}`,
+      ...roomContextLines(roomId, message),
       "",
       "All Band MCP tool calls must include room_id.",
     ].join("\n")

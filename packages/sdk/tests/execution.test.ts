@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { RecoverableTurnError } from "../src/core/errors";
 import type { PlatformEvent } from "../src/platform/events";
-import { Execution } from "../src/runtime/Execution";
+import { Execution, PERMANENT_FAILURE_ERROR } from "../src/runtime/Execution";
 import type { ExecutionState } from "../src/runtime/ExecutionContext";
 import { RetryTracker } from "@band-ai/band-sdk-core";
 
@@ -52,6 +52,40 @@ function makeBacklogMessage(id: string, content = "backlog"): BacklogMessage {
     metadata: {},
     createdAt: new Date("2026-03-05T00:00:00.000Z"),
   };
+}
+
+/**
+ * The platform's backlog as the live platform behaves: /next returns the
+ * oldest message not yet processed — a failed one stays the head — and a
+ * failure is recorded only against an open processing attempt.
+ */
+class FakeBacklog {
+  public readonly failed = new Map<string, string>();
+  public polls = 0;
+  private readonly attempts = new Set<string>();
+
+  public constructor(private readonly messages: BacklogMessage[]) {}
+
+  public link(overrides: { markFailed?: () => Promise<void> } = {}) {
+    return {
+      getNextMessage: async () => {
+        this.polls += 1;
+        return this.messages[0] ?? null;
+      },
+      getStaleProcessingMessages: async () => [],
+      markProcessing: async (_roomId: string, messageId: string) => {
+        this.attempts.add(messageId);
+      },
+      markFailed:
+        overrides.markFailed
+        ?? (async (_roomId: string, messageId: string, error: string) => {
+          if (!this.attempts.delete(messageId)) {
+            throw new Error("422: no active processing attempt");
+          }
+          this.failed.set(messageId, error);
+        }),
+    };
+  }
 }
 
 function makeContext(maxRetries = 1) {
@@ -283,23 +317,14 @@ describe("Execution crash recovery", () => {
     await execution.stop();
   });
 
-  it("skips permanently failed messages during /next sync and marks them failed on server", async () => {
+  it("records a permanently failed /next head as failed, then stops polling it", async () => {
     const context = makeContext(1);
     context.retryTracker.markPermanentlyFailed("next-poison");
-
-    const markFailed = vi.fn(async () => {});
-
+    const backlog = new FakeBacklog([makeBacklogMessage("next-poison"), makeBacklogMessage("next-good")]);
     const processed: string[] = [];
     const execution = new Execution({
       roomId: "room-1",
-      link: {
-        getNextMessage: vi.fn<() => Promise<BacklogMessage | null>>()
-          .mockResolvedValueOnce(makeBacklogMessage("next-poison"))
-          .mockResolvedValueOnce(makeBacklogMessage("next-good"))
-          .mockResolvedValueOnce(null),
-        getStaleProcessingMessages: async () => [],
-        markFailed,
-      } as never,
+      link: backlog.link() as never,
       context: context as never,
       onExecute: async (_context, event) => {
         if (event.type === "message_created") {
@@ -309,13 +334,26 @@ describe("Execution crash recovery", () => {
     });
 
     await execution.waitForIdle();
-    expect(processed).toEqual(["next-good"]);
-    expect(markFailed).toHaveBeenCalledWith(
-      "room-1",
-      "next-poison",
-      "Message permanently failed after max retries",
-      { bestEffort: true },
-    );
+    expect(backlog.failed.get("next-poison")).toBe(PERMANENT_FAILURE_ERROR);
+    expect(processed).toEqual([]);
+    // Seen once to mark, once more still heading /next: then the scan ends instead of spinning.
+    expect(backlog.polls).toBe(2);
+    await execution.stop();
+  });
+
+  it("stops polling, rather than spinning, when the platform refuses the failure mark", async () => {
+    const context = makeContext(1);
+    context.retryTracker.markPermanentlyFailed("next-poison");
+    const backlog = new FakeBacklog([makeBacklogMessage("next-poison")]);
+    const execution = new Execution({
+      roomId: "room-1",
+      link: backlog.link({ markFailed: async () => { throw new Error("503"); } }) as never,
+      context: context as never,
+      onExecute: async () => {},
+    });
+
+    await execution.waitForIdle();
+    expect(backlog.polls).toBe(1);
     await execution.stop();
   });
 
@@ -372,21 +410,17 @@ describe("Execution crash recovery", () => {
   });
 
   it("marks message permanently failed when retries exceeded during sync", async () => {
-    const markFailed = vi.fn(async () => {});
     const context = makeContext(1);
     // Record one attempt already so next attempt exceeds
     context.retryTracker.recordAttempt("retry-msg");
 
     const staleMessages = [makeBacklogMessage("retry-msg", "will exceed")];
+    const backlog = new FakeBacklog([]);
 
     const processed: string[] = [];
     const execution = new Execution({
       roomId: "room-1",
-      link: {
-        getNextMessage: async () => null,
-        getStaleProcessingMessages: async () => staleMessages,
-        markFailed,
-      } as never,
+      link: { ...backlog.link(), getStaleProcessingMessages: async () => staleMessages } as never,
       context: context as never,
       onExecute: async (_context, event) => {
         if (event.type === "message_created") {
@@ -397,12 +431,7 @@ describe("Execution crash recovery", () => {
 
     await execution.waitForIdle();
     expect(processed).toEqual([]);
-    expect(markFailed).toHaveBeenCalledWith(
-      "room-1",
-      "retry-msg",
-      "Message permanently failed after max retries",
-      { bestEffort: true },
-    );
+    expect(backlog.failed.get("retry-msg")).toBe(PERMANENT_FAILURE_ERROR);
     expect(context.retryTracker.isPermanentlyFailed("retry-msg")).toBe(true);
     await execution.stop();
   });

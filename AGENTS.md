@@ -365,12 +365,14 @@ Rules:
 ```
 packages/sdk/tests/
 ├── *.test.ts          # Unit tests (per adapter, runtime, tools, MCP, Linear, etc.)
-└── integration/       # Integration & e2e harnesses (runnable scripts)
+├── baseline/          # Live baseline E2E: adapter registry, toolkit, scenarios, scorecard
+└── integration/       # Runnable scripts (the core bundler check) and shared live-platform plumbing
 ```
 
 - Test runner: `vitest` (with v8 coverage via `@vitest/coverage-v8`)
-- Integration tests under `tests/integration/` are runnable scripts, not in the default `vitest run` set
-- See `packages/sdk/tests/README.md` for the current harness list and how to run each one
+- Live E2E is the baseline suite: `pnpm run test:baseline-live`, never part of the default `vitest run`.
+  See `packages/sdk/tests/baseline/README.md` for how to run it and write a scenario
+- See `packages/sdk/tests/README.md` for the test layout and the remaining scripts
 
 ## Commands
 
@@ -455,7 +457,7 @@ When adding a new adapter, follow this workflow. Use the lowercase module name (
 
 - Unit tests at `packages/sdk/tests/<framework>-adapter.test.ts` covering: invocation flow, tool execution, error handling, custom tools, history conversion edge cases.
 - Use `FakeAgentTools` from `@band-ai/sdk/testing` to mock the platform side.
-- Optionally add an integration smoke test under `tests/integration/`.
+- Register the adapter in the baseline suite (`packages/sdk/tests/baseline/toolkit/`; see its README), so every live scenario runs against it.
 
 ### Phase 5: Example
 

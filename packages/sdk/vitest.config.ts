@@ -1,7 +1,11 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
+
+/** Live baseline scenarios; they need the platform and real LLMs, so only `vitest.baseline.config.ts` runs them. */
+export const BASELINE_SCENARIOS = "tests/baseline/scenarios/**";
 
 export default defineConfig({
   test: {
+    exclude: [...configDefaults.exclude, BASELINE_SCENARIOS],
     // Vitest's 5s default is far below the honest cost of this suite's slowest
     // work. The import-boundary proofs reset the module registry and import a
     // whole entrypoint, forcing a fresh transform of the entire module graph:
