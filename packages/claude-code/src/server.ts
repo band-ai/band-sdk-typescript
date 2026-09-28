@@ -5,6 +5,7 @@ import { AgentRuntime } from "@band-ai/sdk/runtime";
 
 import { AckTracker, wrapToolsForAck } from "./ack.js";
 import { parseAllowedSenders, sanitizeMeta, shouldForwardMessage } from "./gating.js";
+import { LastSenderTracker, wrapToolsForMentionFallback } from "./mentions.js";
 import { BAND_INSTRUCTIONS } from "./prompt.js";
 
 /**
@@ -38,11 +39,19 @@ async function main(): Promise<void> {
   // happen before both `server.start()` and `runtime.start()` have completed.
   const runtimeRef: { current?: AgentRuntime } = {};
   const ackTracker = new AckTracker(link, stderrLogger);
+  const lastSenderTracker = new LastSenderTracker();
 
   const server = new BandMcpStdioServer({
     tools: (roomId) => {
       const tools = runtimeRef.current?.getOrCreateContext(roomId).getTools();
-      return tools && wrapToolsForAck(tools, roomId, ackTracker);
+      if (!tools) return undefined;
+      const withMentionFallback = wrapToolsForMentionFallback(tools, roomId, {
+        listParticipants: (id) => link.rest.listChatParticipants(id),
+        selfId: selfAgentId,
+        lastSenderTracker,
+        logger: stderrLogger,
+      });
+      return wrapToolsForAck(withMentionFallback, roomId, ackTracker);
     },
     capabilities: {
       experimental: { "claude/channel": {} },
@@ -111,6 +120,10 @@ async function main(): Promise<void> {
       // would otherwise leave the message stuck at `sent`, which the backlog
       // catch-up sweep does not distinguish from "never seen".
       await ackTracker.markPushed(context.roomId, payload.id);
+      lastSenderTracker.track(context.roomId, {
+        senderId: payload.sender_id,
+        senderName: payload.sender_name ?? "",
+      });
 
       try {
         await server.notify("notifications/claude/channel", {
