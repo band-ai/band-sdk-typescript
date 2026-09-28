@@ -94,8 +94,11 @@ export const DENIED_CLAUDE_CODE_TOOLS = ["ListAgents", "SendMessage", "SendFile"
 /** Excluding it runs the session without tool search, so the first turn waits for the Band server and nothing is deferred. */
 export const TOOL_SEARCH = "ToolSearch";
 
-/** Other sessions on the host must not be able to prompt a Band agent. */
-export const CROSS_SESSION_INBOUND = "refuse" satisfies Settings["crossSessionInbound"];
+/** Flag settings that keep the host's other sessions from prompting the agent and its claude.ai connectors (auth-based, not settings-file-based) from loading. */
+export const ISOLATION_SETTINGS = {
+  crossSessionInbound: "refuse",
+  disableClaudeAiConnectors: true,
+} as const satisfies Settings;
 
 interface BandMcpBridge {
   serverConfig: Record<string, unknown>;
@@ -318,7 +321,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
       systemPrompt: this.systemPrompt,
       settingSources: this.settingSources,
       disallowedTools: [...DENIED_CLAUDE_CODE_TOOLS, TOOL_SEARCH],
-      settings: { crossSessionInbound: CROSS_SESSION_INBOUND },
+      settings: { ...ISOLATION_SETTINGS },
     };
     if (this.permissionMode === "bypassPermissions") {
       options.allowDangerouslySkipPermissions = true;

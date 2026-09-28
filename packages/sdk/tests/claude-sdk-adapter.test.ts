@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   ClaudeSDKAdapter,
-  CROSS_SESSION_INBOUND,
   DENIED_CLAUDE_CODE_TOOLS,
+  ISOLATION_SETTINGS,
   TOOL_SEARCH,
   type ClaudeSDKAdapterOptions,
   type ClaudeSDKQueryParams,
@@ -132,12 +132,12 @@ describe("ClaudeSDKAdapter", () => {
       return captured;
     }
 
-    it("loads no host settings, denies cross-session tools and tool search, and refuses inbound peers by default", async () => {
+    it("loads no host settings, denies cross-session tools and tool search, refuses inbound peers, and disables claude.ai connectors by default", async () => {
       const options = await firstQueryOptions();
 
       expect(options?.settingSources).toEqual([]);
       expect(options?.disallowedTools).toEqual([...DENIED_CLAUDE_CODE_TOOLS, TOOL_SEARCH]);
-      expect(options?.settings?.crossSessionInbound).toBe(CROSS_SESSION_INBOUND);
+      expect(options?.settings).toEqual(ISOLATION_SETTINGS);
     });
 
     it("forwards the caller's settingSources unchanged", async () => {
