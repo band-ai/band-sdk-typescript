@@ -111,6 +111,16 @@ describe("OpenCode in a Band room", () => {
     expect(registration!.body).toMatchObject({ name: "band", config: { type: "remote", headers: { Authorization: expect.stringMatching(/^Bearer /) } } });
   });
 
+  it("tells OpenCode which room and requester each turn is for, so its Band tools are callable", async () => {
+    await using session = await opencodeRoom();
+    await session.start((turn) => turn.answer("Done."));
+    await session.room.nextMessage((posted) => posted.content === "Done.");
+
+    const [prompt] = session.server.requestsTo("POST", /\/prompt_async$/);
+    expect(prompt!.body.system).toEqual(expect.stringContaining("Current room_id: room-1"));
+    expect(prompt!.body.system).toEqual(expect.stringContaining(`Current requester id: ${OWNER}`));
+  });
+
   it("ignores what a finished turn's session sends once the turn is over", async () => {
     await using session = await opencodeRoom({ enableExecutionReporting: true });
     const { room, server } = session;

@@ -375,7 +375,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
         parts: this.buildPromptParts(message, participantsMessage, contactsMessage, {
           replayMessages: needsHistoryReplay ? history.replayMessages : null,
         }),
-        system: this.systemPrompt,
+        system: this.buildTurnSystem(roomId, message),
         model: this.buildModelPayload(),
         agent: this.config.agent || undefined,
         variant: this.config.variant || undefined,
@@ -1194,6 +1194,24 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       providerID: this.config.providerId,
       modelID: this.config.modelId,
     };
+  }
+
+  /**
+   * The static system prompt plus this turn's room context. The Band MCP tools
+   * require a `room_id` (one server serves every room), so without it the
+   * model cannot call them.
+   */
+  private buildTurnSystem(roomId: string, message: PlatformMessage): string {
+    return [
+      this.systemPrompt,
+      "",
+      "## Room Context",
+      `Current room_id: ${roomId}`,
+      `Current requester name: ${message.senderName ?? message.senderId}`,
+      `Current requester id: ${message.senderId}`,
+      "",
+      "When a Band tool needs the current room, pass the Current room_id above.",
+    ].join("\n");
   }
 
   private buildPromptParts(
