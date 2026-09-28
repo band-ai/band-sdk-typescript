@@ -32,15 +32,22 @@ const ANTHROPIC_MODEL = "claude-haiku-4-5";
 const GEMINI_MODEL = "gemini-2.5-flash";
 const OPENAI_MODEL = "gpt-5.2";
 const ANTHROPIC_KEY: Dep = { kind: "envVar", name: "ANTHROPIC_API_KEY" };
-const GEMINI_KEY: Dep = { kind: "envVar", name: "GEMINI_API_KEY" };
+// Either variable, as in band-sdk-python; when both are set, GOOGLE_API_KEY wins, as it does in Google's SDKs.
+const GOOGLE_KEY_VARS = ["GOOGLE_API_KEY", "GEMINI_API_KEY"] as const;
+const GOOGLE_KEY: Dep = { kind: "anyEnvVar", names: GOOGLE_KEY_VARS };
+
+/** The Gemini API key every Google-model adapter uses, so none picks a different one of the two. */
+function googleApiKey(): string | undefined {
+  return GOOGLE_KEY_VARS.map((name) => process.env[name]).find(Boolean);
+}
 const ACP_SDK: Dep = { kind: "peerPackage", name: "@agentclientprotocol/sdk" };
 
 /** OMP on the pinned Google model. */
 export const OMP_COMMAND = [...DEFAULT_OMP_ACP_COMMAND, "--model", `google/${GEMINI_MODEL}`];
 
-/** An isolated OMP state directory under the cell's working directory. */
+/** OMP's environment: an isolated state directory, and the Google key (OMP reads only GEMINI_API_KEY). */
 export function ompStateEnv(workDir: string): Record<string, string> {
-  return { PI_CODING_AGENT_DIR: stateDir(workDir, ".omp-state") };
+  return { PI_CODING_AGENT_DIR: stateDir(workDir, ".omp-state"), GEMINI_API_KEY: googleApiKey() ?? "" };
 }
 
 /** A fresh directory under the cell's working directory, for a CLI's own state. */
@@ -120,13 +127,13 @@ registerAdapter("cursor-acp", {
 });
 
 registerAdapter("gemini", {
-  requires: [GEMINI_KEY, { kind: "peerPackage", name: "@google/genai" }],
+  requires: [GOOGLE_KEY, { kind: "peerPackage", name: "@google/genai" }],
   supports: [],
-  build: ({ prompt }) => new GeminiAdapter({ geminiModel: GEMINI_MODEL, systemPrompt: prompt }),
+  build: ({ prompt }) => new GeminiAdapter({ geminiModel: GEMINI_MODEL, apiKey: googleApiKey(), systemPrompt: prompt }),
 });
 
 registerAdapter("google-adk", {
-  requires: [GEMINI_KEY, { kind: "peerPackage", name: "@google/adk" }],
+  requires: [GOOGLE_KEY, { kind: "peerPackage", name: "@google/adk" }],
   supports: [],
   build: ({ prompt }) => new GoogleADKAdapter({ model: GEMINI_MODEL, systemPrompt: prompt }),
 });
@@ -158,7 +165,7 @@ registerAdapter("letta", {
 });
 
 registerAdapter("omp-acp", {
-  requires: [ACP_SDK, { kind: "cli", command: DEFAULT_OMP_ACP_COMMAND[0] }, GEMINI_KEY],
+  requires: [ACP_SDK, { kind: "cli", command: DEFAULT_OMP_ACP_COMMAND[0] }, GOOGLE_KEY],
   supports: [],
   build: ({ prompt, workDir }) =>
     new OmpACPAdapter({

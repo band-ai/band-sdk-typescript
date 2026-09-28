@@ -71,6 +71,9 @@ jobs:
           BAND_API_KEY_USER: ${{ secrets.E2E_BAND_API_KEY_USER }}
           BAND_REST_URL: ${{ secrets.E2E_BAND_REST_URL }}
           BAND_WS_URL: ${{ secrets.E2E_BAND_WS_URL }}
+          # One key under both names: band-sdk-python reads GOOGLE_API_KEY, while
+          # @google/adk and OMP read only GEMINI_API_KEY.
+          GOOGLE_API_KEY: ${{ secrets.E2E_GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.E2E_GOOGLE_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.E2E_ANTHROPIC_API_KEY }}
           COPILOT_PROVIDER_TYPE: anthropic
