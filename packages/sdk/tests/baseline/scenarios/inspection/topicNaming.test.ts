@@ -7,17 +7,25 @@ import { describe, expect, it } from "vitest";
 
 import { GenericAdapter } from "../../../../src/index";
 import { RecordLog } from "../../../testUtils";
+import type { PlatformEvent } from "../../../../src/platform/events";
+import type { ContactEventStrategy } from "../../../../src/runtime/types";
 import { Agents } from "../../toolkit/agents";
+import { CATEGORY, scenarioId } from "../../toolkit/registry";
 import { Rooms } from "../../toolkit/rooms";
 import { waitFor } from "../../toolkit/waitFor";
+
+const SCENARIO = scenarioId(CATEGORY.inspection, "topicNaming");
+const CONTACT_REQUEST_RECEIVED: PlatformEvent["type"] = "contact_request_received";
+/** Contact events go to a callback, where the test records them. */
+const CALLBACK_STRATEGY: ContactEventStrategy = "callback";
 
 const ROUTE_TIMEOUT_MS = 15_000;
 const GREETING = "hello from the topic-naming check";
 
-describe("inspection.topicNaming", () => {
+describe(SCENARIO, () => {
   it("routes a room message and a contact request to the running agent", async () => {
-    await using receiver = await Agents.provision("topic-naming", "receiver");
-    await using sender = await Agents.provision("topic-naming", "sender");
+    await using receiver = await Agents.provision(SCENARIO, "receiver");
+    await using sender = await Agents.provision(SCENARIO, "sender");
     await using room = await Rooms.create();
     await Rooms.addParticipant(room, receiver);
 
@@ -26,7 +34,7 @@ describe("inspection.topicNaming", () => {
     await using _running = await Agents.runAs(
       receiver,
       new GenericAdapter(async ({ message }) => messages.record(message.content)),
-      { contactConfig: { strategy: "callback", onEvent: async (event) => contactEvents.record(event.type) } },
+      { contactConfig: { strategy: CALLBACK_STRATEGY, onEvent: async (event) => contactEvents.record(event.type) } },
     );
 
     await Rooms.sendMention(room, receiver, GREETING);
@@ -36,7 +44,7 @@ describe("inspection.topicNaming", () => {
     await Agents.requestContact(sender, receiver);
     const request = await waitFor(
       contactEvents,
-      () => contactEvents.entries.find((type) => type === "contact_request_received"),
+      () => contactEvents.entries.find((type) => type === CONTACT_REQUEST_RECEIVED),
       ROUTE_TIMEOUT_MS,
     );
     expect(request, "the contact request arrived over the contacts join").toBeDefined();

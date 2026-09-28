@@ -4,7 +4,7 @@
  * the processed frame are unordered platform events, so assert on reply text
  * only after this, never after `untilProcessed`.
  */
-import type { Band } from "@band-ai/rest-client";
+import { Band } from "@band-ai/rest-client";
 
 import { FAILURE_EVENT_TYPE } from "../../../src/contracts/protocols";
 import type { MessageCreatedPayload } from "../../../src/platform/events";
@@ -18,16 +18,23 @@ export interface CapturedMessage {
   id: string;
   content: string;
   senderId: string;
-  /** `text` for a chat message; an event's type (`task`, `tool_call`, …) otherwise. */
+  /** `MESSAGE_TYPE.Text` for a chat message; an event's type (`Task`, `ToolCall`, …) otherwise. */
   messageType: string;
   mentionIds: string[];
   metadata: Record<string, unknown>;
 }
 
+/** The platform's message types, for reading a room's stored `history()`. */
+export const MESSAGE_TYPE = Band.ListMyChatMessagesRequestMessageType;
+
+export type MessageType = Band.ListMyChatMessagesRequestMessageType;
+
+export const REPLY_WAIT = { reply: "reply", timeout: "timeout" } as const;
+
 export type ReplyWait =
-  | { kind: "reply"; message: CapturedMessage }
+  | { kind: typeof REPLY_WAIT.reply; message: CapturedMessage }
   /** `failures`: what the agent reported failing in the room meanwhile, the likeliest reason. */
-  | { kind: "timeout"; waitedMs: number; failures: string[] };
+  | { kind: typeof REPLY_WAIT.timeout; waitedMs: number; failures: string[] };
 
 type MessageRecord = Pick<MessageCreatedPayload, "id" | "content" | "sender_id" | "message_type"> & {
   metadata?: Record<string, unknown> & { mentions?: Array<{ id?: string }> };
@@ -66,7 +73,7 @@ function replyAfter(
  * The room's stored messages, oldest first, read as the user — including the
  * tool and task events the platform never streams to a user's socket.
  */
-async function history(room: Room, messageType?: Band.ListMyChatMessagesRequestMessageType): Promise<CapturedMessage[]> {
+async function history(room: Room, messageType?: MessageType): Promise<CapturedMessage[]> {
   const { env } = await liveRun();
   const messages: CapturedMessage[] = [];
   let cursor: string | undefined;
@@ -95,10 +102,10 @@ export function observeRoom(room: Room) {
     }
     const message = await waitFor(room.messages, () => replyAfter(room.messages.entries, after.id, from.id, matches), timeoutMs);
     if (message) {
-      return { kind: "reply", message };
+      return { kind: REPLY_WAIT.reply, message };
     }
     const failures = (await history(room, FAILURE_EVENT_TYPE)).filter((event) => event.senderId === from.id);
-    return { kind: "timeout", waitedMs: timeoutMs, failures: failures.map((event) => event.content) };
+    return { kind: REPLY_WAIT.timeout, waitedMs: timeoutMs, failures: failures.map((event) => event.content) };
   };
 
   return {
@@ -106,6 +113,6 @@ export function observeRoom(room: Room) {
     untilReply: (from: AgentIdentity, options?: ReplyWaitOptions) => untilReplyMatching(from, () => true, options),
     /** `from`'s first message after the room's last posted one that `matches` — for a turn that posts several. */
     untilReplyMatching,
-    history: (messageType?: Band.ListMyChatMessagesRequestMessageType) => history(room, messageType),
+    history: (messageType?: MessageType) => history(room, messageType),
   };
 }

@@ -4,18 +4,35 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { SCORECARD_JSON_ENV, merge, toMarkdown, writeScorecard, type ScorecardOutcome, type ScorecardRow } from "./scorecard";
+import { ADAPTER } from "./adapters";
+import { CATEGORY, scenarioId } from "./registry";
+import {
+  SCORECARD_JSON_ENV,
+  SCORECARD_STATUS,
+  markdownPath,
+  merge,
+  toMarkdown,
+  writeScorecard,
+  type ScorecardOutcome,
+  type ScorecardRow,
+} from "./scorecard";
 
-const row = (outcome: ScorecardOutcome, adapter: ScorecardRow["adapter"] = "anthropic"): ScorecardRow => ({
-  scenario: "platform.repliesToMention",
+const REPLIES = scenarioId(CATEGORY.platform, "repliesToMention");
+const APPROVALS = scenarioId(CATEGORY.behavior, "approvals");
+
+const row = (outcome: ScorecardOutcome, adapter: ScorecardRow["adapter"] = ADAPTER.anthropic): ScorecardRow => ({
+  scenario: REPLIES,
   adapter,
   outcome,
 });
 
-const pass: ScorecardOutcome = { status: "pass", durationMs: 5 };
-const fail: ScorecardOutcome = { status: "fail", error: "boom", durationMs: 5 };
-const skip: ScorecardOutcome = { status: "skip", reason: "opt-in gate off" };
-const na: ScorecardOutcome = { status: "na", reason: "needs a server" };
+/** A failure's detail, which the markdown must never show. */
+const FAILURE_DETAIL = "boom";
+
+const pass: ScorecardOutcome = { status: SCORECARD_STATUS.pass, durationMs: 5 };
+const fail: ScorecardOutcome = { status: SCORECARD_STATUS.fail, error: FAILURE_DETAIL, durationMs: 5 };
+const skip: ScorecardOutcome = { status: SCORECARD_STATUS.skip, reason: "opt-in gate off" };
+const na: ScorecardOutcome = { status: SCORECARD_STATUS.na, reason: "needs a server" };
 
 describe("merge", () => {
   it.each([
@@ -28,17 +45,20 @@ describe("merge", () => {
   });
 
   it("keeps every distinct cell, in stable order", () => {
-    expect(merge([row(pass, "gemini")], [row(fail, "anthropic")]).map((cell) => cell.adapter)).toEqual(["anthropic", "gemini"]);
+    expect(merge([row(pass, ADAPTER.gemini)], [row(fail, ADAPTER.anthropic)]).map((cell) => cell.adapter)).toEqual([
+      ADAPTER.anthropic,
+      ADAPTER.gemini,
+    ]);
   });
 });
 
 describe("toMarkdown", () => {
   it("pivots scenario × adapter and lists reasons, never failure details", () => {
     const markdown = toMarkdown([
-      row(pass, "anthropic"),
-      row(fail, "gemini"),
-      row(na, "letta"),
-      { scenario: "behavior.approvals", adapter: "opencode", outcome: skip },
+      row(pass, ADAPTER.anthropic),
+      row(fail, ADAPTER.gemini),
+      row(na, ADAPTER.letta),
+      { scenario: APPROVALS, adapter: ADAPTER.opencode, outcome: skip },
     ]);
 
     expect(markdown).toBe(
@@ -55,7 +75,7 @@ describe("toMarkdown", () => {
         "",
       ].join("\n"),
     );
-    expect(markdown).not.toContain("boom");
+    expect(markdown).not.toContain(FAILURE_DETAIL);
   });
 });
 
@@ -75,6 +95,6 @@ describe("writeScorecard", () => {
 
     expect(writeScorecard([row(pass)], { [SCORECARD_JSON_ENV]: path })).toBe(path);
     expect(JSON.parse(readFileSync(path, "utf8"))).toEqual([row(pass)]);
-    expect(readFileSync(join(dir, "out", "scorecard.md"), "utf8")).toBe(toMarkdown([row(pass)]));
+    expect(readFileSync(markdownPath(path), "utf8")).toBe(toMarkdown([row(pass)]));
   });
 });

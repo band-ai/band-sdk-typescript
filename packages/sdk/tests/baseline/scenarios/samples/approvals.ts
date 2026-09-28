@@ -4,39 +4,63 @@
  * `approvals` capability has one here.
  */
 import type { FrameworkAdapter } from "../../../../src/contracts/protocols";
+import type { OpencodeApprovalMode } from "../../../../src/adapters/opencode/OpencodeAdapter";
 import { OPENCODE_DECISION_MESSAGES } from "../../../../src/adapters/opencode/messages";
-import { buildOpencode } from "../../toolkit/adapters";
-import type { AdapterId, BuildOptions } from "../../toolkit/registry";
+import { ASK_KIND, REPLY_WORDS, type ReplyWord } from "../../../../src/adapters/opencode/replies";
+import { ADAPTER, buildOpencode, type AdapterId } from "../../toolkit/adapters";
+import type { BuildOptions } from "../../toolkit/registry";
 
-export type Outcome = "approve" | "reject" | "timeout";
+export const OUTCOME = { approve: "approve", reject: "reject", timeout: "timeout" } as const;
+
+export type Outcome = (typeof OUTCOME)[keyof typeof OUTCOME];
+
+/** An outcome a room reply decides; a timeout is the absence of one. */
+export type Decision = Exclude<Outcome, typeof OUTCOME.timeout>;
 
 export interface ApprovalDialect {
   /** The adapter in manual approval mode, giving up after `waitMs` with a reject. */
   build(options: BuildOptions, waitMs: number): FrameworkAdapter;
   /** The request id an approval prompt carries, or null for any other message. */
   requestId(content: string): string | null;
-  reply(outcome: Exclude<Outcome, "timeout">, requestId: string): string;
+  reply(decision: Decision, requestId: string): string;
   /** The adapter's confirmation of an outcome; a timeout's may be an event only a history read sees. */
   notice(outcome: Outcome, requestId: string): string;
   /** What a reply to an ask that is already gone is told. */
   lateNotice(requestId: string): string;
 }
 
-const OPENCODE_REQUEST = /`approve (\S+)`/;
+/** OpenCode's room words, as its reply grammar defines them. */
+const OPENCODE_WORD = Object.fromEntries(Object.keys(REPLY_WORDS).map((word) => [word, word])) as {
+  readonly [Word in ReplyWord]: Word;
+};
+
+const OPENCODE_DECISION_WORD: Record<Decision, ReplyWord> = {
+  [OUTCOME.approve]: OPENCODE_WORD.approve,
+  [OUTCOME.reject]: OPENCODE_WORD.reject,
+};
+
+const OPENCODE_MANUAL: OpencodeApprovalMode = "manual";
+const OPENCODE_TIMEOUT_REPLY = REPLY_WORDS.reject;
+/** The prompt names the request in its `approve <id>` command. */
+const OPENCODE_REQUEST = new RegExp(`\`${OPENCODE_WORD.approve} (\\S+)\``);
 
 const opencode: ApprovalDialect = {
   build: (options, waitMs) =>
-    buildOpencode(options, { approvalMode: "manual", approvalWaitTimeoutMs: waitMs, approvalTimeoutReply: "reject" }),
+    buildOpencode(options, {
+      approvalMode: OPENCODE_MANUAL,
+      approvalWaitTimeoutMs: waitMs,
+      approvalTimeoutReply: OPENCODE_TIMEOUT_REPLY,
+    }),
   requestId: (content) => OPENCODE_REQUEST.exec(content)?.[1] ?? null,
-  reply: (outcome, requestId) => `${outcome} ${requestId}`,
+  reply: (decision, requestId) => `${OPENCODE_DECISION_WORD[decision]} ${requestId}`,
   notice: (outcome, requestId) =>
-    outcome === "timeout"
-      ? OPENCODE_DECISION_MESSAGES.approvalTimedOut(requestId, "reject")
-      : OPENCODE_DECISION_MESSAGES.approvalHandled(requestId, outcome === "approve" ? "once" : "reject"),
-  lateNotice: (requestId) => OPENCODE_DECISION_MESSAGES.noLongerPending("permission", requestId),
+    outcome === OUTCOME.timeout
+      ? OPENCODE_DECISION_MESSAGES.approvalTimedOut(requestId, OPENCODE_TIMEOUT_REPLY)
+      : OPENCODE_DECISION_MESSAGES.approvalHandled(requestId, REPLY_WORDS[OPENCODE_DECISION_WORD[outcome]]),
+  lateNotice: (requestId) => OPENCODE_DECISION_MESSAGES.noLongerPending(ASK_KIND.permission, requestId),
 };
 
-const DIALECTS: Partial<Record<AdapterId, ApprovalDialect>> = { opencode };
+const DIALECTS: Partial<Record<AdapterId, ApprovalDialect>> = { [ADAPTER.opencode]: opencode };
 
 export function dialectFor(id: AdapterId): ApprovalDialect {
   const dialect = DIALECTS[id];

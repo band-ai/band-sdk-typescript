@@ -4,22 +4,22 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { GenericAdapter } from "../../../src/adapters";
+import { ADAPTER, ADAPTER_IDS } from "./adapters";
 import {
-  ADAPTER_IDS,
   AdapterRegistry,
+  CAPABILITY,
   CATEGORIES,
   NON_ADAPTER_DIRS,
-  registry,
+  requires,
   unmetRequirements,
-  type AdapterId,
   type AdapterSpec,
   type Capability,
   type Dep,
 } from "./registry";
-import "./adapters";
 
 const ADAPTERS_DIR = fileURLToPath(new URL("../../../src/adapters/", import.meta.url));
 const SCENARIOS_DIR = fileURLToPath(new URL("../scenarios/", import.meta.url));
+/** Shared scenario pieces, not a category. */
 const NON_SCENARIO_DIRS = ["samples"];
 
 function subdirectories(dir: string, excluded: readonly string[]): string[] {
@@ -37,18 +37,16 @@ function drift(reference: readonly string[], sources: Record<string, readonly st
 }
 
 describe("adapter registry drift guard", () => {
-  it("ADAPTER_IDS, src/adapters/, and the populated registry name the same adapters", () => {
+  it("the roster in adapters.ts and src/adapters/ name the same adapters", () => {
     const sources = {
-      ADAPTER_IDS: [...ADAPTER_IDS],
+      roster: [...ADAPTER_IDS],
       "src/adapters/": subdirectories(ADAPTERS_DIR, NON_ADAPTER_DIRS),
-      registry: registry.ids(),
     };
     const union = [...new Set(Object.values(sources).flat())].sort();
 
     expect(drift(union, sources), "each source lists the adapters it is missing").toEqual({
-      ADAPTER_IDS: [],
+      roster: [],
       "src/adapters/": [],
-      registry: [],
     });
   });
 
@@ -59,33 +57,36 @@ describe("adapter registry drift guard", () => {
 
 const fakeBuild = () => new GenericAdapter(async () => {});
 
-function fakeRegistry(entries: Record<string, readonly Capability[]>, pending: Partial<Record<AdapterId, string>> = {}): AdapterRegistry {
-  const fake = new AdapterRegistry();
-  for (const [id, supports] of Object.entries(entries)) {
-    fake.register(id as AdapterId, { requires: [], supports, build: fakeBuild, pending: pending[id as AdapterId] });
-  }
-  return fake;
-}
+const fakeSpec = (id: string, supports: readonly Capability[] = [], pending?: string): AdapterSpec => ({
+  id,
+  requires: [],
+  supports,
+  build: fakeBuild,
+  pending,
+});
 
 describe("specs()", () => {
-  const fake = fakeRegistry({ openai: ["approvals"], codex: [], anthropic: [], letta: [] }, { letta: "needs a server" });
+  const fake = new AdapterRegistry([
+    fakeSpec(ADAPTER.openai, [CAPABILITY.approvals]),
+    fakeSpec(ADAPTER.codex),
+    fakeSpec(ADAPTER.anthropic),
+    fakeSpec(ADAPTER.letta, [], "needs a server"),
+  ]);
 
-  it.each<{ name: string; filter: Parameters<AdapterRegistry["specs"]>[0]; expected: AdapterId[] }>([
-    { name: "no filter keeps every adapter in id order", filter: {}, expected: ["anthropic", "codex", "openai"] },
-    { name: "include keeps only the named adapters", filter: { include: ["codex", "openai"] }, expected: ["codex", "openai"] },
-    { name: "exclude drops the named adapters", filter: { exclude: ["codex"] }, expected: ["anthropic", "openai"] },
-    { name: "supports keeps adapters with every capability", filter: { supports: ["approvals"] }, expected: ["openai"] },
-    { name: "without keeps adapters with none of the capabilities", filter: { without: ["approvals"] }, expected: ["anthropic", "codex"] },
-    { name: "filters combine", filter: { without: ["approvals"], exclude: ["anthropic"] }, expected: ["codex"] },
-    { name: "includePending keeps pending adapters", filter: { includePending: true, include: ["letta"] }, expected: ["letta"] },
+  it.each<{ name: string; filter: Parameters<AdapterRegistry["specs"]>[0]; expected: string[] }>([
+    { name: "no filter keeps every adapter in id order", filter: {}, expected: [ADAPTER.anthropic, ADAPTER.codex, ADAPTER.openai] },
+    { name: "include keeps only the named adapters", filter: { include: [ADAPTER.codex, ADAPTER.openai] }, expected: [ADAPTER.codex, ADAPTER.openai] },
+    { name: "exclude drops the named adapters", filter: { exclude: [ADAPTER.codex] }, expected: [ADAPTER.anthropic, ADAPTER.openai] },
+    { name: "supports keeps adapters with every capability", filter: { supports: [CAPABILITY.approvals] }, expected: [ADAPTER.openai] },
+    { name: "without keeps adapters with none of the capabilities", filter: { without: [CAPABILITY.approvals] }, expected: [ADAPTER.anthropic, ADAPTER.codex] },
+    { name: "filters combine", filter: { without: [CAPABILITY.approvals], exclude: [ADAPTER.anthropic] }, expected: [ADAPTER.codex] },
+    { name: "includePending keeps pending adapters", filter: { includePending: true, include: [ADAPTER.letta] }, expected: [ADAPTER.letta] },
   ])("$name", ({ filter, expected }) => {
     expect(fake.specs(filter).map((spec) => spec.id)).toEqual(expected);
   });
 
   it("rejects registering the same adapter twice", () => {
-    expect(() => fakeRegistry({ codex: [] }).register("codex", { requires: [], supports: [], build: fakeBuild })).toThrow(
-      /already registered/,
-    );
+    expect(() => new AdapterRegistry([fakeSpec(ADAPTER.codex), fakeSpec(ADAPTER.codex)])).toThrow(/registered twice/);
   });
 });
 
@@ -94,21 +95,21 @@ describe("unmetRequirements()", () => {
     vi.unstubAllEnvs();
   });
 
-  const specRequiring = (...requires: Dep[]): AdapterSpec => ({ id: "openai", requires, supports: [], build: fakeBuild });
+  const specRequiring = (...deps: Dep[]): AdapterSpec => ({ ...fakeSpec(ADAPTER.openai), requires: deps });
 
   it("names every unmet requirement", () => {
     vi.stubEnv("BASELINE_SET", "value");
     vi.stubEnv("BASELINE_UNSET", "");
 
     const spec = specRequiring(
-      { kind: "envVar", name: "BASELINE_SET" },
-      { kind: "envVar", name: "BASELINE_UNSET" },
-      { kind: "anyEnvVar", names: ["BASELINE_UNSET", "BASELINE_SET"] },
-      { kind: "anyEnvVar", names: ["BASELINE_UNSET"] },
-      { kind: "peerPackage", name: "vitest" },
-      { kind: "peerPackage", name: "not-a-real-package" },
-      { kind: "cli", command: "node" },
-      { kind: "cli", command: "not-a-real-cli" },
+      requires.envVar("BASELINE_SET"),
+      requires.envVar("BASELINE_UNSET"),
+      requires.anyEnvVar("BASELINE_UNSET", "BASELINE_SET"),
+      requires.anyEnvVar("BASELINE_UNSET"),
+      requires.peerPackage("vitest"),
+      requires.peerPackage("not-a-real-package"),
+      requires.cli("node"),
+      requires.cli("not-a-real-cli"),
     );
 
     expect(unmetRequirements(spec)).toEqual([

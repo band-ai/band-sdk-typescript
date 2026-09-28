@@ -3,11 +3,13 @@ import { describe, expect, it } from "vitest";
 import type { MessageCreatedPayload } from "../../../src/platform/events";
 import { RecordLog } from "../../testUtils";
 import { assertMessageCount, assertReplied, assertReplyContains } from "./assertMessages";
-import type { ReplyWait } from "./observeMessages";
+import { MESSAGE_TYPE, REPLY_WAIT, type ReplyWait } from "./observeMessages";
+
+const REPLY_WORD = "pineapple";
 
 const reply = (content: string): ReplyWait => ({
-  kind: "reply",
-  message: { id: "m1", content, senderId: "agent", messageType: "text", mentionIds: ["user"], metadata: {} },
+  kind: REPLY_WAIT.reply,
+  message: { id: "m1", content, senderId: "agent", messageType: MESSAGE_TYPE.Text, mentionIds: ["user"], metadata: {} },
 });
 
 function roomWith(...senderIds: string[]) {
@@ -16,7 +18,7 @@ function roomWith(...senderIds: string[]) {
     messages.record({
       id: `m${index}`,
       content: "hi",
-      message_type: "text",
+      message_type: MESSAGE_TYPE.Text,
       sender_id: senderId,
       sender_type: "Agent",
       inserted_at: "",
@@ -30,19 +32,19 @@ const sender = { id: "agent", name: "e2e-ts-agent" } as const;
 
 describe("assertReplyContains", () => {
   it("passes on a case-insensitive substring", () => {
-    expect(() => assertReplyContains(reply("Sure — PINEAPPLE it is"), "pineapple")).not.toThrow();
+    expect(() => assertReplyContains(reply(`Sure — ${REPLY_WORD.toUpperCase()} it is`), REPLY_WORD)).not.toThrow();
   });
 
   it("fails when the reply lacks the text", () => {
-    expect(() => assertReplyContains(reply("mango"), "pineapple")).toThrow(/reply does not contain "pineapple"/);
+    expect(() => assertReplyContains(reply("mango"), REPLY_WORD)).toThrow(`reply does not contain "${REPLY_WORD}"`);
   });
 
   it("fails naming the wait when no reply came", () => {
-    expect(() => assertReplyContains({ kind: "timeout", waitedMs: 5, failures: [] }, "pineapple")).toThrow("no reply within 5ms");
+    expect(() => assertReplyContains({ kind: REPLY_WAIT.timeout, waitedMs: 5, failures: [] }, REPLY_WORD)).toThrow("no reply within 5ms");
   });
 
   it("names what the agent reported failing while no reply came", () => {
-    const timedOut = { kind: "timeout" as const, waitedMs: 5, failures: ["ACP turn ended with stop reason: cancelled."] };
+    const timedOut = { kind: REPLY_WAIT.timeout, waitedMs: 5, failures: ["ACP turn ended with stop reason: cancelled."] };
     expect(() => assertReplied(timedOut)).toThrow("no reply within 5ms; the agent reported: ACP turn ended with stop reason: cancelled.");
   });
 });

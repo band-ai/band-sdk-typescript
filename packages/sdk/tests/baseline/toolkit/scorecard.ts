@@ -9,7 +9,8 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-import type { AdapterId, ScenarioId } from "./registry";
+import type { AdapterId } from "./adapters";
+import type { ScenarioId } from "./registry";
 
 /** Where to write the scorecard JSON; unset writes nothing. Named as in band-sdk-python. */
 export const SCORECARD_JSON_ENV = "BAND_E2E_SCORECARD_JSON";
@@ -18,11 +19,13 @@ export const SCORECARD_JSON_ENV = "BAND_E2E_SCORECARD_JSON";
  * `na` — the adapter is registered but deliberately not run (pending);
  * `skip` — collected, but an opt-in gate kept it from running this time.
  */
+export const SCORECARD_STATUS = { pass: "pass", fail: "fail", skip: "skip", na: "na" } as const;
+
 export type ScorecardOutcome =
-  | { status: "pass"; durationMs: number }
-  | { status: "fail"; error: string; durationMs: number }
-  | { status: "skip"; reason: string }
-  | { status: "na"; reason: string };
+  | { status: typeof SCORECARD_STATUS.pass; durationMs: number }
+  | { status: typeof SCORECARD_STATUS.fail; error: string; durationMs: number }
+  | { status: typeof SCORECARD_STATUS.skip; reason: string }
+  | { status: typeof SCORECARD_STATUS.na; reason: string };
 
 export type ScorecardStatus = ScorecardOutcome["status"];
 
@@ -33,9 +36,27 @@ export interface ScorecardRow {
 }
 
 /** A real outcome beats a stale skip when scorecards are merged. */
-const RANK: Record<ScorecardStatus, number> = { skip: 0, na: 1, pass: 2, fail: 3 };
+const RANK: Record<ScorecardStatus, number> = {
+  [SCORECARD_STATUS.skip]: 0,
+  [SCORECARD_STATUS.na]: 1,
+  [SCORECARD_STATUS.pass]: 2,
+  [SCORECARD_STATUS.fail]: 3,
+};
 
-const SYMBOL: Record<ScorecardStatus, string> = { pass: "✅", fail: "❌", skip: "⏭️", na: "N/A" };
+const SYMBOL: Record<ScorecardStatus, string> = {
+  [SCORECARD_STATUS.pass]: "✅",
+  [SCORECARD_STATUS.fail]: "❌",
+  [SCORECARD_STATUS.skip]: "⏭️",
+  [SCORECARD_STATUS.na]: "N/A",
+};
+
+/** The grid's mark for a cell the run has no row for. */
+const NO_ROW = "·";
+
+/** The statuses that carry a reason, listed under the grid. */
+const REASONED: ReadonlySet<ScorecardStatus> = new Set([SCORECARD_STATUS.na, SCORECARD_STATUS.skip]);
+
+const cellKey = (scenario: string, adapter: string) => `${scenario}\u0000${adapter}`;
 
 const byCell = (a: ScorecardRow, b: ScorecardRow) =>
   a.scenario.localeCompare(b.scenario) || a.adapter.localeCompare(b.adapter);
@@ -44,7 +65,7 @@ const byCell = (a: ScorecardRow, b: ScorecardRow) =>
 export function merge(...scorecards: ScorecardRow[][]): ScorecardRow[] {
   const best = new Map<string, ScorecardRow>();
   for (const row of scorecards.flat()) {
-    const key = `${row.scenario}\u0000${row.adapter}`;
+    const key = cellKey(row.scenario, row.adapter);
     const current = best.get(key);
     if (!current || RANK[row.outcome.status] > RANK[current.outcome.status]) {
       best.set(key, row);
@@ -57,10 +78,10 @@ export function merge(...scorecards: ScorecardRow[][]): ScorecardRow[] {
 export function toMarkdown(rows: ScorecardRow[]): string {
   const scenarios = [...new Set(rows.map((row) => row.scenario))].sort();
   const adapters = [...new Set(rows.map((row) => row.adapter))].sort();
-  const status = new Map(rows.map((row) => [`${row.scenario}\u0000${row.adapter}`, row.outcome.status]));
+  const status = new Map(rows.map((row) => [cellKey(row.scenario, row.adapter), row.outcome.status]));
   const symbolAt = (scenario: string, adapter: string) => {
-    const cell = status.get(`${scenario}\u0000${adapter}`);
-    return cell ? SYMBOL[cell] : "·";
+    const cell = status.get(cellKey(scenario, adapter));
+    return cell ? SYMBOL[cell] : NO_ROW;
   };
 
   const lines = [
@@ -69,7 +90,7 @@ export function toMarkdown(rows: ScorecardRow[]): string {
     ...scenarios.map((scenario) => `| ${scenario} | ${adapters.map((adapter) => symbolAt(scenario, adapter)).join(" | ")} |`),
   ];
 
-  const reasoned = rows.filter((row) => row.outcome.status === "na" || row.outcome.status === "skip").sort(byCell);
+  const reasoned = rows.filter((row) => REASONED.has(row.outcome.status)).sort(byCell);
   if (reasoned.length > 0) {
     lines.push("", "**N/A and skip reasons**", "");
     for (const row of reasoned) {
@@ -78,6 +99,11 @@ export function toMarkdown(rows: ScorecardRow[]): string {
     }
   }
   return `${lines.join("\n")}\n`;
+}
+
+/** Where the markdown grid is written, beside the JSON. */
+export function markdownPath(jsonPath: string): string {
+  return jsonPath.replace(/\.json$/, "") + ".md";
 }
 
 /**
@@ -92,6 +118,6 @@ export function writeScorecard(rows: ScorecardRow[], env: NodeJS.ProcessEnv = pr
   const sorted = [...rows].sort(byCell);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(sorted, null, 2)}\n`);
-  writeFileSync(path.replace(/\.json$/, "") + ".md", toMarkdown(sorted));
+  writeFileSync(markdownPath(path), toMarkdown(sorted));
   return path;
 }

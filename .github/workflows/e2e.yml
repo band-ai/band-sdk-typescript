@@ -106,34 +106,7 @@ jobs:
 
       - name: Scorecard to the dispatcher's PR
         if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && hashFiles('scorecard/scorecard.md') != '' }}
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          script: |
-            const fs = require("fs");
-            const marker = "<!-- baseline-scorecard-report -->";
-            const { owner, repo } = context.repo;
-            const branch = context.ref.replace(/^refs\/heads\//, "");
-            const { data: prs } = await github.rest.pulls.list({ owner, repo, head: `${owner}:${branch}`, state: "open" });
-            if (prs.length === 0) {
-              core.notice(`No open PR for ${branch}: the scorecard is in this run's job summary only.`);
-              return;
-            }
-            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
-            const filter = process.env.FILTER || "full suite";
-            const body = [
-              marker,
-              `@${context.actor} your baseline run ([#${context.runNumber}](${runUrl}), \`${filter}\`) finished.`,
-              "",
-              fs.readFileSync(process.env.SCORECARD_MD, "utf8"),
-              "Failure details are in the run's `baseline-scorecard` artifact.",
-            ].join("\n");
-            const issue_number = prs[0].number;
-            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
-            const existing = comments.find((comment) => comment.body?.includes(marker));
-            if (existing) {
-              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
-            } else {
-              await github.rest.issues.createComment({ owner, repo, issue_number, body });
-            }
         env:
+          GH_TOKEN: ${{ github.token }}
           FILTER: ${{ inputs.filter }}
+        run: node .github/scripts/post-baseline-scorecard.mjs

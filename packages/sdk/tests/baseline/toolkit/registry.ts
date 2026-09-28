@@ -1,8 +1,8 @@
 /**
- * The baseline adapter registry: the single source of truth for which
- * framework adapters the live suite fans out across, what each needs before it
- * can run, and how to build it. Scenarios never hard-code an adapter list —
- * they query `specs()`.
+ * The baseline registry's vocabulary and mechanics: what an adapter spec is,
+ * what it can require and support, and how a scenario selects specs. The
+ * adapters themselves are registered in `adapters.ts`, whose registrations
+ * are the roster.
  */
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -11,27 +11,6 @@ import type { FrameworkAdapter } from "../../../src/contracts/protocols";
 import { cliProbeFailure } from "../../integration/support/liveHarness";
 
 const SDK_NODE_MODULES = fileURLToPath(new URL("../../../node_modules/", import.meta.url));
-
-/** Every framework adapter under `src/adapters/`, by directory name. */
-export const ADAPTER_IDS = [
-  "anthropic",
-  "claude-sdk",
-  "codex",
-  "copilot-acp",
-  "cursor-acp",
-  "gemini",
-  "google-adk",
-  "kiro-acp",
-  "langgraph",
-  "letta",
-  "omp-acp",
-  "openai",
-  "opencode",
-  "parlant",
-  "vercel-ai-sdk",
-] as const;
-
-export type AdapterId = (typeof ADAPTER_IDS)[number];
 
 /**
  * Directories under `src/adapters/` that are not framework adapters: shared
@@ -44,22 +23,46 @@ export const NON_ADAPTER_DIRS = ["shared", "tool-calling", "a2a", "a2a-gateway",
 export const CAST_SEPARATOR = " + ";
 
 /** Scenario folders under `scenarios/`; a scenario id is namespaced by one. */
-export const CATEGORIES = ["adapters", "behavior", "inspection", "platform"] as const;
+export const CATEGORY = {
+  adapters: "adapters",
+  behavior: "behavior",
+  inspection: "inspection",
+  platform: "platform",
+} as const;
 
-export type Category = (typeof CATEGORIES)[number];
+export type Category = (typeof CATEGORY)[keyof typeof CATEGORY];
+
+export const CATEGORIES: readonly Category[] = Object.values(CATEGORY);
 
 /** A scenario's scorecard key and test title, e.g. `platform.repliesToMention`. */
 export type ScenarioId = `${Category}.${string}`;
 
-/** What an adapter needs before it can run. */
-export type Dep =
-  | { kind: "envVar"; name: string }
-  | { kind: "anyEnvVar"; names: readonly string[] }
-  | { kind: "peerPackage"; name: string }
-  | { kind: "cli"; command: string };
+/** A scenario id: its category folder, then its name. */
+export function scenarioId(category: Category, name: string): ScenarioId {
+  return `${category}.${name}`;
+}
 
-/** What a scenario can select adapters on. Grows only as scenarios filter on it. */
-export type Capability = "approvals";
+/** What an adapter can select on. Grows only as scenarios filter on it. */
+export const CAPABILITY = { approvals: "approvals" } as const;
+
+export type Capability = (typeof CAPABILITY)[keyof typeof CAPABILITY];
+
+const DEP_KIND = { envVar: "envVar", anyEnvVar: "anyEnvVar", peerPackage: "peerPackage", cli: "cli" } as const;
+
+/** What an adapter needs before it can run. Built with `requires`. */
+export type Dep =
+  | { kind: typeof DEP_KIND.envVar; name: string }
+  | { kind: typeof DEP_KIND.anyEnvVar; names: readonly string[] }
+  | { kind: typeof DEP_KIND.peerPackage; name: string }
+  | { kind: typeof DEP_KIND.cli; command: string };
+
+export const requires = {
+  envVar: (name: string): Dep => ({ kind: DEP_KIND.envVar, name }),
+  /** Any one of `names`. */
+  anyEnvVar: (...names: string[]): Dep => ({ kind: DEP_KIND.anyEnvVar, names }),
+  peerPackage: (name: string): Dep => ({ kind: DEP_KIND.peerPackage, name }),
+  cli: (command: string): Dep => ({ kind: DEP_KIND.cli, command }),
+};
 
 /** What a scenario hands a builder to shape the adapter it runs. */
 export interface BuildOptions {
@@ -71,8 +74,9 @@ export interface BuildOptions {
 
 export type AdapterBuilder = (options: BuildOptions) => FrameworkAdapter;
 
-export interface AdapterSpec {
-  id: AdapterId;
+export interface AdapterSpec<Id extends string = string> {
+  /** The adapter's directory under `src/adapters/`. */
+  id: Id;
   requires: readonly Dep[];
   supports: readonly Capability[];
   build: AdapterBuilder;
@@ -83,9 +87,9 @@ export interface AdapterSpec {
   pending?: string;
 }
 
-export interface SpecFilter {
-  include?: readonly AdapterId[];
-  exclude?: readonly AdapterId[];
+export interface SpecFilter<Id extends string = string> {
+  include?: readonly Id[];
+  exclude?: readonly Id[];
   /** Keep adapters that support ALL of these. */
   supports?: readonly Capability[];
   /** Keep adapters that support NONE of these. */
@@ -93,32 +97,39 @@ export interface SpecFilter {
   includePending?: boolean;
 }
 
-/** Set to `1` to run pending adapters too, where the local environment has what CI lacks. */
+/** The value that turns an opt-in environment flag on, e.g. `BAND_E2E_INCLUDE_PENDING=1`. */
+export const FLAG_ON = "1";
+
+/** Set to `FLAG_ON` to run pending adapters too, where the local environment has what CI lacks. */
 export const INCLUDE_PENDING_ENV = "BAND_E2E_INCLUDE_PENDING";
 
 export function includePending(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env[INCLUDE_PENDING_ENV] === "1";
+  return env[INCLUDE_PENDING_ENV] === FLAG_ON;
 }
 
-export class AdapterRegistry {
-  private readonly entries = new Map<AdapterId, AdapterSpec>();
+export class AdapterRegistry<Id extends string = string> {
+  private readonly entries: ReadonlyMap<Id, AdapterSpec<Id>>;
 
-  public register(id: AdapterId, spec: Omit<AdapterSpec, "id">): void {
-    if (this.entries.has(id)) {
-      throw new Error(`adapter "${id}" is already registered`);
+  public constructor(specs: Iterable<AdapterSpec<Id>>) {
+    const entries = new Map<Id, AdapterSpec<Id>>();
+    for (const spec of specs) {
+      if (entries.has(spec.id)) {
+        throw new Error(`adapter "${spec.id}" is registered twice`);
+      }
+      entries.set(spec.id, spec);
     }
-    this.entries.set(id, { id, ...spec });
+    this.entries = entries;
   }
 
-  public ids(): AdapterId[] {
+  public ids(): Id[] {
     return [...this.entries.keys()].sort();
   }
 
   /** The registered specs narrowed by `filter`, in stable id order. */
-  public specs(filter: SpecFilter = {}): AdapterSpec[] {
+  public specs(filter: SpecFilter<Id> = {}): AdapterSpec<Id>[] {
     const { include, exclude, supports = [], without = [], includePending = false } = filter;
     return this.ids()
-      .map((id) => this.entries.get(id) as AdapterSpec)
+      .map((id) => this.entries.get(id) as AdapterSpec<Id>)
       .filter(
         (spec) =>
           (include === undefined || include.includes(spec.id)) &&
@@ -130,26 +141,16 @@ export class AdapterRegistry {
   }
 }
 
-export const registry = new AdapterRegistry();
-
-export function registerAdapter(id: AdapterId, spec: Omit<AdapterSpec, "id">): void {
-  registry.register(id, spec);
-}
-
-export function specs(filter?: SpecFilter): AdapterSpec[] {
-  return registry.specs(filter);
-}
-
 /** Why `dep` is unavailable in this environment, or null when it is met. */
 function unmetReason(dep: Dep): string | null {
   switch (dep.kind) {
-    case "envVar":
+    case DEP_KIND.envVar:
       return process.env[dep.name] ? null : `env var ${dep.name} is not set`;
-    case "anyEnvVar":
+    case DEP_KIND.anyEnvVar:
       return dep.names.some((name) => process.env[name]) ? null : `none of ${dep.names.join(", ")} is set`;
-    case "peerPackage":
+    case DEP_KIND.peerPackage:
       return existsSync(`${SDK_NODE_MODULES}${dep.name}`) ? null : `package ${dep.name} is not installed`;
-    case "cli": {
+    case DEP_KIND.cli: {
       const failure = cliProbeFailure(dep.command);
       return failure && `CLI ${dep.command} is unavailable: ${failure}`;
     }

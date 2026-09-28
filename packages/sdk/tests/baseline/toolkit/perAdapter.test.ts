@@ -1,14 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { GenericAdapter } from "../../../src/adapters";
+import { ADAPTER, type RosterSpec } from "./adapters";
 import type { AgentIdentity } from "./agents";
 import { perAdapter, runScenario, type OpenCast } from "./perAdapter";
-import type { AdapterSpec } from "./registry";
+import { CAPABILITY, CATEGORY, requires, scenarioId } from "./registry";
 import { ResourceStack } from "./resourceStack";
 import type { Room } from "./rooms";
 
-const fakeSpec = (overrides: Partial<AdapterSpec> = {}): AdapterSpec => ({
-  id: "openai",
+const fakeSpec = (overrides: Partial<RosterSpec> = {}): RosterSpec => ({
+  id: ADAPTER.openai,
   requires: [],
   supports: [],
   build: () => new GenericAdapter(async () => {}),
@@ -44,13 +45,13 @@ describe("runScenario", () => {
       }, setup, recordingOpener(released)),
     ).rejects.toThrow("scenario failed");
 
-    expect(released).toEqual(["openai"]);
+    expect(released).toEqual([ADAPTER.openai]);
   });
 
   it("fails loudly on an unmet requirement without opening a cell", async () => {
     vi.stubEnv("BASELINE_MISSING_KEY", "");
     const released: string[] = [];
-    const spec = fakeSpec({ requires: [{ kind: "envVar", name: "BASELINE_MISSING_KEY" }] });
+    const spec = fakeSpec({ requires: [requires.envVar("BASELINE_MISSING_KEY")] });
 
     await expect(runScenario([spec], async () => {}, setup, recordingOpener(released))).rejects.toThrow(
       "cannot run: openai: env var BASELINE_MISSING_KEY is not set",
@@ -83,7 +84,10 @@ describe("ResourceStack", () => {
 
 describe("perAdapter", () => {
   it("refuses a selection of no adapters instead of passing vacuously", () => {
-    expect(() => perAdapter("platform.nothing", async () => {}, { supports: ["approvals"], without: ["approvals"] })).toThrow(
+    expect(() => perAdapter(scenarioId(CATEGORY.platform, "nothing"), async () => {}, {
+        supports: [CAPABILITY.approvals],
+        without: [CAPABILITY.approvals],
+      })).toThrow(
       /selects no adapters/,
     );
   });

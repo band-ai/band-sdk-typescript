@@ -17,11 +17,15 @@ import { LIVE_EVENT_TIMEOUT_MS } from "../../../integration/support/liveHarness"
 import { assertReplied } from "../../toolkit/assertMessages";
 import { observeRoom, type CapturedMessage } from "../../toolkit/observeMessages";
 import { perAdapter, type ScenarioCell } from "../../toolkit/perAdapter";
+import { CAPABILITY, CATEGORY, scenarioId } from "../../toolkit/registry";
 import { Rooms } from "../../toolkit/rooms";
 import { uniqueMarker } from "../samples/markers";
-import { dialectFor, type ApprovalDialect, type Outcome } from "../samples/approvals";
+import { OUTCOME, dialectFor, type ApprovalDialect, type Outcome } from "../samples/approvals";
 
 const SHELL_PROMPT = "Keep responses short. Use your shell tool when asked.";
+/** The file the gated command writes its marker to, in the agent's working directory. */
+const TARGET_FILE = "approval.txt";
+const TEXT = "utf8";
 // Short enough to expire promptly, long enough that the request is captured first.
 const EXPIRING_WAIT_MS = 10_000;
 // Outlasts the request and the closing-reply barriers.
@@ -52,7 +56,7 @@ async function approvalFlow(outcome: Outcome, scenario: ScenarioCell): Promise<v
   const { agent, room, cell } = scenario;
   const dialect = dialectFor(cell.spec.id);
   const marker = uniqueMarker("approval");
-  const target = join(cell.workDir, "approval.txt");
+  const target = join(cell.workDir, TARGET_FILE);
   await Rooms.sendMention(
     room,
     agent,
@@ -61,11 +65,11 @@ async function approvalFlow(outcome: Outcome, scenario: ScenarioCell): Promise<v
   const { request, requestId } = await untilRequested(scenario, dialect);
   const notice = dialect.notice(outcome, requestId);
 
-  if (outcome === "timeout") {
+  if (outcome === OUTCOME.timeout) {
     await untilClosed(scenario, request, notice, requestId);
     const contents = (await observeRoom(room).history()).map((message) => message.content);
     expect(contents, "the expired wait was announced").toContain(notice);
-    await Rooms.sendMention(room, agent, dialect.reply("approve", requestId));
+    await Rooms.sendMention(room, agent, dialect.reply(OUTCOME.approve, requestId));
     await untilShown(scenario, dialect.lateNotice(requestId));
   } else {
     await Rooms.sendMention(room, agent, dialect.reply(outcome, requestId));
@@ -73,19 +77,17 @@ async function approvalFlow(outcome: Outcome, scenario: ScenarioCell): Promise<v
     await untilClosed(scenario, request, notice, requestId);
   }
 
-  if (outcome === "approve") {
-    expect((await readFile(target, "utf8")).trim()).toBe(marker);
+  if (outcome === OUTCOME.approve) {
+    expect((await readFile(target, TEXT)).trim()).toBe(marker);
   } else {
     expect(existsSync(target), `${outcome} still ran the gated command`).toBe(false);
   }
 }
 
-const OUTCOMES: readonly Outcome[] = ["approve", "reject", "timeout"];
-
-for (const outcome of OUTCOMES) {
-  perAdapter(`behavior.approvals.${outcome}`, (scenario) => approvalFlow(outcome, scenario), {
-    supports: ["approvals"],
+for (const outcome of Object.values(OUTCOME)) {
+  perAdapter(scenarioId(CATEGORY.behavior, `approvals.${outcome}`), (scenario) => approvalFlow(outcome, scenario), {
+    supports: [CAPABILITY.approvals],
     prompt: SHELL_PROMPT,
-    build: (spec, options) => dialectFor(spec.id).build(options, outcome === "timeout" ? EXPIRING_WAIT_MS : PATIENT_WAIT_MS),
+    build: (spec, options) => dialectFor(spec.id).build(options, outcome === OUTCOME.timeout ? EXPIRING_WAIT_MS : PATIENT_WAIT_MS),
   });
 }

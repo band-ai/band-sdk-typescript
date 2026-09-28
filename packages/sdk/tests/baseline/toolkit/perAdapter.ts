@@ -15,15 +15,12 @@
 import { describe, it } from "vitest";
 
 import type { FrameworkAdapter } from "../../../src/contracts/protocols";
+import { specs, type AdapterId, type RosterSpec } from "./adapters";
 import { Agents, type AdapterCell, type AgentIdentity } from "./agents";
-import "./adapters";
 import {
   CAST_SEPARATOR,
   includePending,
-  specs,
   unmetRequirements,
-  type AdapterId,
-  type AdapterSpec,
   type BuildOptions,
   type Capability,
   type ScenarioId,
@@ -50,7 +47,7 @@ export interface ScenarioCell {
 }
 
 /** Builds an adapter for a scenario that needs other than its registered builder. */
-export type ScenarioBuilder = (spec: AdapterSpec, options: BuildOptions) => FrameworkAdapter;
+export type ScenarioBuilder = (spec: RosterSpec, options: BuildOptions) => FrameworkAdapter;
 
 export interface ScenarioOptions {
   /** The adapters' steering prompt. */
@@ -70,9 +67,9 @@ interface CastSetup {
 }
 
 /** Acquires a cast; disposing it releases everything acquired. */
-export type OpenCast = (chosen: AdapterSpec[], setup: CastSetup) => Promise<Cast & AsyncDisposable>;
+export type OpenCast = (chosen: RosterSpec[], setup: CastSetup) => Promise<Cast & AsyncDisposable>;
 
-async function openLiveCast(chosen: AdapterSpec[], { prompt, build }: CastSetup): Promise<Cast & AsyncDisposable> {
+async function openLiveCast(chosen: RosterSpec[], { prompt, build }: CastSetup): Promise<Cast & AsyncDisposable> {
   const stack = new ResourceStack();
   try {
     const room = stack.use(await Rooms.create());
@@ -94,7 +91,7 @@ async function openLiveCast(chosen: AdapterSpec[], { prompt, build }: CastSetup)
 
 /** One run of a scenario: fail loudly on unmet requirements, then run the body with its cast. */
 export async function runScenario(
-  chosen: AdapterSpec[],
+  chosen: RosterSpec[],
   body: (cast: Cast) => Promise<void>,
   setup: CastSetup,
   open: OpenCast = openLiveCast,
@@ -108,7 +105,7 @@ export async function runScenario(
 }
 
 /** Why `chosen` may not run yet, or null when all may. */
-function pendingReason(chosen: AdapterSpec[]): string | null {
+function pendingReason(chosen: RosterSpec[]): string | null {
   if (includePending()) {
     return null;
   }
@@ -116,7 +113,7 @@ function pendingReason(chosen: AdapterSpec[]): string | null {
   return pending.length > 0 ? pending.map((spec) => `${spec.id}: ${spec.pending}`).join("; ") : null;
 }
 
-function defineRun(title: string, chosen: AdapterSpec[], body: (cast: Cast) => Promise<void>, options: ScenarioOptions): void {
+function defineRun(title: string, chosen: RosterSpec[], body: (cast: Cast) => Promise<void>, options: ScenarioOptions): void {
   it(title, async ({ skip }) => {
     const pending = pendingReason(chosen);
     if (pending) {

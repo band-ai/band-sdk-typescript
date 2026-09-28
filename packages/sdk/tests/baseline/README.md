@@ -37,8 +37,8 @@ sticky comment on the branch's PR, or in the job summary when there is none.
 
 | Path | What it is |
 | --- | --- |
-| `toolkit/registry.ts` | The adapter roster (`ADAPTER_IDS`), scenario categories, and the `specs()` query. |
-| `toolkit/adapters.ts` | One `registerAdapter` per adapter: requirements, capabilities, builder, `pending` reason. |
+| `toolkit/adapters.ts` | The roster: one spec per adapter (requirements, capabilities, builder, `pending` reason). `ADAPTER`, `ADAPTER_IDS`, `AdapterId` and `specs()` are derived from it. |
+| `toolkit/registry.ts` | The registry's vocabulary and mechanics: `requires`, `CAPABILITY`, `CATEGORY` / `scenarioId`, and spec filtering. |
 | `toolkit/perAdapter.ts` | `perAdapter` (one test per adapter) and `withAdapters` (one shared room). |
 | `toolkit/agents.ts`, `rooms.ts` | Provisioned identities, running agents, rooms and messages; all `await using`. |
 | `toolkit/observeMessages.ts` | The reply wait, and the room's stored history. |
@@ -51,23 +51,29 @@ sticky comment on the branch's PR, or in the job summary when there is none.
 ## Writing a scenario
 
 ```ts
-perAdapter("platform.repliesToMention", async ({ agent, room }) => {
-  await Rooms.sendMention(room, agent, "Reply with the single word: pineapple");
-  assertReplyContains(await observeRoom(room).untilReply(agent), "pineapple");
+const REPLY_WORD = "pineapple";
+
+perAdapter(scenarioId(CATEGORY.platform, "repliesToMention"), async ({ agent, room }) => {
+  await Rooms.sendMention(room, agent, `Reply with the single word: ${REPLY_WORD}`);
+  assertReplyContains(await observeRoom(room).untilReply(agent), REPLY_WORD);
 });
 ```
 
-The id is `<category>.<name>`, and each test is titled `<scenario> > <adapter>`; the scorecard
-reads both from the title. `perAdapter` takes `supports` / `without` / `exclude` to narrow the
+The id is `<category>.<name>`, built with `scenarioId`, and each test is titled
+`<scenario> > <adapter>`; the scorecard reads both from the title. `perAdapter` takes `supports` / `without` / `exclude` to narrow the
 adapters, `prompt` to steer them, and `build` when a scenario needs an adapter built other than
 its registered way (manual approvals, a permission resolver). `withAdapters(ids, …)` puts the
 given adapters in one room, in the given order.
 
 The rules:
 
-- **Never hardcode an adapter list.** Select by capability (`supports: ["approvals"]`) and let
-  the registry decide; name adapters with `withAdapters` only when the scenario is about those
-  particular ones.
+- **Never hardcode an adapter list.** Select by capability (`supports: [CAPABILITY.approvals]`)
+  and let the registry decide; name adapters with `withAdapters([ADAPTER.codex], …)` only when
+  the scenario is about those particular ones.
+- **No magic strings or numbers.** Each vocabulary is defined once and referenced:
+  `DELIVERY_STATUS`, `REPLY_WAIT`, `MESSAGE_TYPE` (the platform's own), `SCORECARD_STATUS`,
+  `ADAPTER`, `CAPABILITY`, `CATEGORY`. Where the SDK or a library already defines a value, use
+  theirs; where it only defines a type, name the value once with `satisfies` against that type.
 - **Fail loudly, never skip.** A missing key, package or CLI fails the test with its reason. The
   only skips are an adapter's `pending` reason (shown as N/A) and an explicit opt-in flag.
 - **Two waits, never confused:**
@@ -87,9 +93,9 @@ The rules:
 
 ## Adding an adapter
 
-Add its id to `ADAPTER_IDS` in `toolkit/registry.ts` and register it in `toolkit/adapters.ts`. The
-`registry.test.ts` drift guard fails until the roster, the folders under `src/adapters/`, and the
-registrations all agree. An adapter CI can't run yet gets a plain-language `pending` reason, and
+Add its spec to `SPECS` in `toolkit/adapters.ts`, with `id` set to its directory under
+`src/adapters/`; its `ADAPTER` handle and everything else follow from that. The `registry.test.ts`
+drift guard fails until the roster and the folders under `src/adapters/` agree. An adapter CI can't run yet gets a plain-language `pending` reason, and
 the scorecard shows it as N/A with that reason.
 
 ## Design values
@@ -97,8 +103,8 @@ the scorecard shows it as N/A with that reason.
 - **Consistency** — one way to do each thing: agents come from `perAdapter` / `withAdapters`,
   waits from the two observers, checks from the assertion functions. Everything fails loudly
   with a reason.
-- **Single source of truth** — the roster, a capability, a timeout, a scorecard variable each
-  live in one place and are referenced, never re-spelled.
+- **Single source of truth** — the roster, a capability, a status, a timeout, a scorecard
+  variable each live in one place and are referenced, never re-spelled.
 - **Simplicity** — the test is the scenario, not the scaffolding. Provisioning, running, reaping
   and cleanup live in the toolkit, so a body is "send this, expect that". If a test grows
   plumbing, the plumbing belongs in the toolkit.

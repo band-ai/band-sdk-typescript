@@ -20,7 +20,8 @@ import {
   reapProvisioned,
 } from "../../integration/support/liveHarness";
 import { liveRun, warnTeardown } from "./liveRun";
-import type { AdapterBuilder, AdapterSpec } from "./registry";
+import type { RosterSpec } from "./adapters";
+import type { AdapterBuilder } from "./registry";
 
 import type { FernRestAdapter } from "../../../src/rest";
 
@@ -125,7 +126,7 @@ export class CellAgent implements AsyncDisposable {
 /** One adapter under test: build it, provision identities for it, and run it as them. */
 export class AdapterCell implements AsyncDisposable {
   private constructor(
-    public readonly spec: AdapterSpec,
+    public readonly spec: RosterSpec,
     private readonly prompt: string,
     /** The adapter's scratch working directory, for scenarios that check what it did there. */
     public readonly workDir: string,
@@ -133,7 +134,7 @@ export class AdapterCell implements AsyncDisposable {
   ) {}
 
   /** A cell for `spec`, built by `build` when a scenario needs other than the registered builder. */
-  public static async create(spec: AdapterSpec, prompt: string, build: AdapterBuilder = spec.build): Promise<AdapterCell> {
+  public static async create(spec: RosterSpec, prompt: string, build: AdapterBuilder = spec.build): Promise<AdapterCell> {
     return new AdapterCell(spec, prompt, await realpath(await mkdtemp(join(tmpdir(), `band-baseline-${spec.id}-`))), build);
   }
 
