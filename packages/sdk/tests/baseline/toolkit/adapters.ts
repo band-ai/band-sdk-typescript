@@ -36,7 +36,7 @@ const ANTHROPIC_KEY: Dep = { kind: "envVar", name: "ANTHROPIC_API_KEY" };
 const GOOGLE_KEY_VARS = ["GOOGLE_API_KEY", "GEMINI_API_KEY"] as const;
 const GOOGLE_KEY: Dep = { kind: "anyEnvVar", names: GOOGLE_KEY_VARS };
 
-/** The Gemini API key every Google-model adapter uses, so none picks a different one of the two. */
+/** The Gemini API key every Google-model adapter is given, so none picks a different one of the two. */
 function googleApiKey(): string | undefined {
   return GOOGLE_KEY_VARS.map((name) => process.env[name]).find(Boolean);
 }
@@ -135,7 +135,7 @@ registerAdapter("gemini", {
 registerAdapter("google-adk", {
   requires: [GOOGLE_KEY, { kind: "peerPackage", name: "@google/adk" }],
   supports: [],
-  build: ({ prompt }) => new GoogleADKAdapter({ model: GEMINI_MODEL, systemPrompt: prompt }),
+  build: ({ prompt }) => new GoogleADKAdapter({ model: GEMINI_MODEL, apiKey: googleApiKey(), systemPrompt: prompt }),
 });
 
 registerAdapter("kiro-acp", {

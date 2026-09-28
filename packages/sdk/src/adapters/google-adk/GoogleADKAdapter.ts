@@ -58,9 +58,12 @@ interface GoogleAdkRunnerLike {
 }
 
 interface GoogleAdkSdkLike {
+  /** A Gemini model bound to an explicit API key. */
+  createModel(params: { model: string; apiKey: string }): unknown;
   createAgent(params: {
     name: string;
-    model: string;
+    /** A model name, resolved by ADK with its own key lookup, or a `createModel` result. */
+    model: unknown;
     instruction: string;
     tools: unknown[];
   }): unknown;
@@ -82,6 +85,8 @@ interface GoogleAdkSdkLike {
 
 export interface GoogleADKAdapterOptions {
   model?: string;
+  /** The Gemini API key. Unset, `@google/adk` reads `GOOGLE_GENAI_API_KEY` or `GEMINI_API_KEY`. */
+  apiKey?: string;
   systemPrompt?: string;
   customSection?: string;
   enableExecutionReporting?: boolean;
@@ -137,6 +142,7 @@ async function loadGoogleAdkSdk(): Promise<GoogleAdkSdkLike> {
   }
 
   const LlmAgent = sdkModule.LlmAgent;
+  const Gemini = sdkModule.Gemini;
   const FunctionTool = sdkModule.FunctionTool;
   const InMemoryRunner = sdkModule.InMemoryRunner;
   const isFinalResponse = sdkModule.isFinalResponse;
@@ -146,6 +152,7 @@ async function loadGoogleAdkSdk(): Promise<GoogleAdkSdkLike> {
 
   if (
     typeof LlmAgent !== "function"
+    || typeof Gemini !== "function"
     || typeof FunctionTool !== "function"
     || typeof InMemoryRunner !== "function"
     || typeof isFinalResponse !== "function"
@@ -157,6 +164,7 @@ async function loadGoogleAdkSdk(): Promise<GoogleAdkSdkLike> {
   }
 
   return {
+    createModel: (params) => new (Gemini as new (params: { model: string; apiKey: string }) => unknown)(params),
     createAgent: (params) => new (LlmAgent as new (params: Record<string, unknown>) => unknown)(params),
     createFunctionTool: (params) => new (
       FunctionTool as new (params: Record<string, unknown>) => unknown
@@ -175,6 +183,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
   protected readonly provider = "google-adk";
 
   private readonly model: string;
+  private readonly apiKey?: string;
   private readonly systemPromptOverride?: string;
   private readonly customSection: string;
   private readonly enableExecutionReporting: boolean;
@@ -194,6 +203,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
     super({ historyConverter });
 
     this.model = options.model ?? "gemini-2.5-flash";
+    this.apiKey = options.apiKey;
     this.systemPromptOverride = options.systemPrompt;
     this.customSection = options.customSection ?? "";
     this.enableExecutionReporting = options.enableExecutionReporting ?? false;
@@ -305,7 +315,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
   ): unknown {
     return sdk.createAgent({
       name: this.agentName || "band_agent",
-      model: this.model,
+      model: this.apiKey ? sdk.createModel({ model: this.model, apiKey: this.apiKey }) : this.model,
       instruction: this.systemPrompt,
       tools: this.buildTools(sdk, tools),
     });

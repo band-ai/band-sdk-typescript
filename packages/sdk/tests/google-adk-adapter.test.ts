@@ -48,6 +48,7 @@ function createFakeGoogleAdkSdk(
   capture?: GoogleAdkCapture,
 ): () => Promise<any> {
   return async () => ({
+    createModel: (params: { model: string; apiKey: string }) => ({ gemini: params }),
     createAgent: (params: Record<string, unknown>) => {
       capture?.createAgentCalls?.push(params);
       return params;
@@ -335,6 +336,30 @@ describe("GoogleADKAdapter", () => {
     expect(capture.createAgentCalls[0]?.name).toBe("band_agent");
   });
 
+  it.each([
+    { name: "binds the model to an explicit apiKey", apiKey: "explicit-key", model: { gemini: { model: "gemini-2.5-flash", apiKey: "explicit-key" } } },
+    { name: "leaves key lookup to ADK when apiKey is unset", apiKey: undefined, model: "gemini-2.5-flash" },
+  ])("$name", async ({ apiKey, model }) => {
+    const capture: GoogleAdkCapture = { createAgentCalls: [], createRunnerCalls: [], createSessionCalls: [] };
+    const adapter = new GoogleADKAdapter({
+      apiKey,
+      sdkFactory: createFakeGoogleAdkSdk(async function* () {
+        yield { final: true, text: "done" };
+      }, capture),
+    });
+
+    await adapter.onMessage(
+      makeMessage("hello", "room-key"),
+      new GoogleAdkTestTools(),
+      new GoogleADKHistoryConverter().convert([]),
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-key" },
+    );
+
+    expect(capture.createAgentCalls[0]?.model).toEqual(model);
+  });
+
   it("reports a plain thrown Error from the run loop as a generic sendFailure fallback, then fails the turn", async () => {
     const tools = new GoogleAdkTestTools();
 
@@ -374,6 +399,7 @@ describe("GoogleADKAdapter", () => {
 
     const adapter = new GoogleADKAdapter({
       sdkFactory: async () => ({
+        createModel: (params: { model: string; apiKey: string }) => params,
         createAgent: (params: Record<string, unknown>) => params,
         createFunctionTool: (params: Record<string, unknown>) => params,
         createRunner: () => ({
