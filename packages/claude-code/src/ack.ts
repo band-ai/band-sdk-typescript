@@ -1,4 +1,4 @@
-import type { Logger } from "@band-ai/sdk/core";
+import { isToolExecutorError, type AdapterToolsProtocol, type Logger } from "@band-ai/sdk/core";
 
 export interface AckLink {
   markProcessing(roomId: string, messageId: string): Promise<void>;
@@ -84,4 +84,30 @@ export class AckTracker {
     }
     return set;
   }
+}
+
+const REPLY_TOOL_NAMES = new Set(["band_send_message", "band_send_event"]);
+
+/**
+ * Wrap a room's tools so a successful band_send_message/band_send_event call
+ * clears every message id currently pending an ack in that room. "Successful"
+ * means executeToolCall neither threw nor returned a ToolExecutorError shape
+ * (a validation failure, e.g. an unresolved mention, returns the latter
+ * without throwing) — see AckTracker.markRepliedIn.
+ */
+export function wrapToolsForAck(
+  tools: AdapterToolsProtocol,
+  roomId: string,
+  ackTracker: AckTracker,
+): AdapterToolsProtocol {
+  return {
+    ...tools,
+    executeToolCall: async (toolName, toolArgs) => {
+      const result = await tools.executeToolCall(toolName, toolArgs);
+      if (REPLY_TOOL_NAMES.has(toolName) && !isToolExecutorError(result)) {
+        await ackTracker.markRepliedIn(roomId);
+      }
+      return result;
+    },
+  };
 }

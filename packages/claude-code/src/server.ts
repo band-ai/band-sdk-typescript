@@ -3,7 +3,7 @@ import type { Logger } from "@band-ai/sdk/core";
 import { BandMcpStdioServer } from "@band-ai/sdk/mcp";
 import { AgentRuntime } from "@band-ai/sdk/runtime";
 
-import { AckTracker } from "./ack.js";
+import { AckTracker, wrapToolsForAck } from "./ack.js";
 import { parseAllowedSenders, sanitizeMeta, shouldForwardMessage } from "./gating.js";
 import { BAND_INSTRUCTIONS } from "./prompt.js";
 
@@ -37,9 +37,13 @@ async function main(): Promise<void> {
   // tool resolver is only ever invoked from an MCP tool call, which cannot
   // happen before both `server.start()` and `runtime.start()` have completed.
   const runtimeRef: { current?: AgentRuntime } = {};
+  const ackTracker = new AckTracker(link, stderrLogger);
 
   const server = new BandMcpStdioServer({
-    tools: (roomId) => runtimeRef.current?.getOrCreateContext(roomId).getTools(),
+    tools: (roomId) => {
+      const tools = runtimeRef.current?.getOrCreateContext(roomId).getTools();
+      return tools && wrapToolsForAck(tools, roomId, ackTracker);
+    },
     capabilities: {
       experimental: { "claude/channel": {} },
       tools: {},
@@ -55,7 +59,6 @@ async function main(): Promise<void> {
   const ownerId = me.ownerUuid ?? null;
   const allowedSenderIds = parseAllowedSenders(process.env.BAND_ALLOWED_SENDERS);
   const self = { id: selfAgentId, name: me.name, handle: me.handle };
-  const ackTracker = new AckTracker(link, stderrLogger);
 
   const runtime = new AgentRuntime({
     link,

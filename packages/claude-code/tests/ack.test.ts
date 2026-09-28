@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AckTracker, type AckLink } from "../src/ack";
+import type { AdapterToolsProtocol } from "@band-ai/sdk/core";
+
+import { AckTracker, wrapToolsForAck, type AckLink } from "../src/ack";
 
 const noopLogger = {
   debug: vi.fn(),
@@ -102,5 +104,89 @@ describe("AckTracker", () => {
       expect.objectContaining({ room_id: "room-1", message_id: "msg-1" }),
     );
     expect(tracker.pendingCount("room-1")).toBe(0);
+  });
+});
+
+function fakeAdapterTools(executeToolCall: (toolName: string, args: unknown) => Promise<unknown>): AdapterToolsProtocol {
+  return { executeToolCall } as unknown as AdapterToolsProtocol;
+}
+
+describe("wrapToolsForAck", () => {
+  it("marks the room's pending messages replied-in after a successful band_send_message call", async () => {
+    const link = fakeLink();
+    const tracker = new AckTracker(link, noopLogger);
+    await tracker.markPushed("room-1", "msg-1");
+
+    const tools = fakeAdapterTools(async () => ({ id: "sent-1", status: "sent" }));
+    const wrapped = wrapToolsForAck(tools, "room-1", tracker);
+
+    await wrapped.executeToolCall("band_send_message", { content: "hi", room_id: "room-1" });
+
+    expect(link.markProcessed).toHaveBeenCalledWith("room-1", "msg-1");
+    expect(tracker.pendingCount("room-1")).toBe(0);
+  });
+
+  it("marks replied-in after a successful band_send_event call too", async () => {
+    const link = fakeLink();
+    const tracker = new AckTracker(link, noopLogger);
+    await tracker.markPushed("room-1", "msg-1");
+
+    const tools = fakeAdapterTools(async () => ({ id: "evt-1", status: "sent" }));
+    const wrapped = wrapToolsForAck(tools, "room-1", tracker);
+
+    await wrapped.executeToolCall("band_send_event", { content: "thinking", room_id: "room-1" });
+
+    expect(link.markProcessed).toHaveBeenCalledWith("room-1", "msg-1");
+  });
+
+  it("does not ack on an unrelated tool call, even a successful one", async () => {
+    const link = fakeLink();
+    const tracker = new AckTracker(link, noopLogger);
+    await tracker.markPushed("room-1", "msg-1");
+
+    const tools = fakeAdapterTools(async () => [{ id: "peer-1" }]);
+    const wrapped = wrapToolsForAck(tools, "room-1", tracker);
+
+    await wrapped.executeToolCall("band_lookup_peers", { room_id: "room-1" });
+
+    expect(link.markProcessed).not.toHaveBeenCalled();
+    expect(tracker.pendingCount("room-1")).toBe(1);
+  });
+
+  it("does not ack when band_send_message returns a ToolExecutorError shape without throwing", async () => {
+    const link = fakeLink();
+    const tracker = new AckTracker(link, noopLogger);
+    await tracker.markPushed("room-1", "msg-1");
+
+    const tools = fakeAdapterTools(async () => ({
+      ok: false,
+      errorType: "ToolExecutionError",
+      toolName: "band_send_message",
+      message: "Mention not found",
+      legacyMessage: "Mention not found",
+    }));
+    const wrapped = wrapToolsForAck(tools, "room-1", tracker);
+
+    await wrapped.executeToolCall("band_send_message", { content: "hi", room_id: "room-1" });
+
+    expect(link.markProcessed).not.toHaveBeenCalled();
+    expect(tracker.pendingCount("room-1")).toBe(1);
+  });
+
+  it("propagates a throw from the underlying tool call without acking", async () => {
+    const link = fakeLink();
+    const tracker = new AckTracker(link, noopLogger);
+    await tracker.markPushed("room-1", "msg-1");
+
+    const tools = fakeAdapterTools(async () => {
+      throw new Error("network error");
+    });
+    const wrapped = wrapToolsForAck(tools, "room-1", tracker);
+
+    await expect(wrapped.executeToolCall("band_send_message", { room_id: "room-1" })).rejects.toThrow(
+      "network error",
+    );
+    expect(link.markProcessed).not.toHaveBeenCalled();
+    expect(tracker.pendingCount("room-1")).toBe(1);
   });
 });
