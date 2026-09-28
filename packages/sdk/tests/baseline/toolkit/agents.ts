@@ -10,7 +10,7 @@ import { join } from "node:path";
 
 import { Agent, type AgentCreateOptions } from "../../../src/agent/Agent";
 import type { FrameworkAdapter } from "../../../src/contracts/protocols";
-import { BandLink } from "../../../src/platform/BandLink";
+import { BandLink, type BandLinkOptions } from "../../../src/platform/BandLink";
 import { withTimeout } from "../../../src/adapters/shared/withTimeout";
 import { agentRest, NAME_PREFIX, provisionAgent, reapProvisioned } from "../../integration/support/liveHarness";
 import { liveRun, warnTeardown } from "./liveRun";
@@ -24,8 +24,8 @@ export type ProvisionedName = `${typeof NAME_PREFIX}${string}`;
 
 const AGENT_STOP_TIMEOUT_MS = 10_000;
 
-/** Runtime options a scenario may set on a running agent. */
-export type RunOptions = Pick<AgentCreateOptions, "sessionConfig" | "contactConfig">;
+/** Runtime options a scenario may set on a running agent, and the transport it connects over. */
+export type RunOptions = Pick<AgentCreateOptions, "sessionConfig" | "contactConfig"> & Pick<BandLinkOptions, "transport">;
 
 /** A provisioned Band agent identity, reaped when its scope ends. */
 export class AgentIdentity implements AsyncDisposable {
@@ -80,14 +80,18 @@ async function provision(testName: string, label: string): Promise<AgentIdentity
   return new AgentIdentity(agent.id, agent.name as ProvisionedName, agent.apiKey, env.restUrl);
 }
 
-async function runAs(identity: AgentIdentity, adapter: FrameworkAdapter, options: RunOptions = {}): Promise<RunningAgent> {
+async function runAs(
+  identity: AgentIdentity,
+  adapter: FrameworkAdapter,
+  { transport, ...options }: RunOptions = {},
+): Promise<RunningAgent> {
   const { env } = await liveRun();
   const agent = Agent.create({
     adapter,
     agentId: identity.id,
     apiKey: identity.apiKey,
     wsUrl: env.wsUrl,
-    linkOptions: { restApi: identity.rest },
+    linkOptions: { restApi: identity.rest, transport },
     agentConfig: { autoSubscribeExistingRooms: true },
     ...options,
   });

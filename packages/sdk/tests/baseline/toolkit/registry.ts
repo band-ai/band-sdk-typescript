@@ -8,6 +8,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import type { FrameworkAdapter } from "../../../src/contracts/protocols";
+import type { CustomToolDef } from "../../../src/runtime/tools/customTools";
 import { cliProbeFailure } from "../../integration/support/liveHarness";
 
 const SDK_NODE_MODULES = fileURLToPath(new URL("../../../node_modules/", import.meta.url));
@@ -43,7 +44,7 @@ export function scenarioId(category: Category, name: string): ScenarioId {
 }
 
 /** What an adapter can select on. Grows only as scenarios filter on it. */
-export const CAPABILITY = { approvals: "approvals" } as const;
+export const CAPABILITY = { approvals: "approvals", customTools: "customTools" } as const;
 
 export type Capability = (typeof CAPABILITY)[keyof typeof CAPABILITY];
 
@@ -70,6 +71,8 @@ export interface BuildOptions {
   prompt: string;
   /** A scratch working directory for adapters that drive a local coding agent. */
   workDir: string;
+  /** Tools a scenario gives the agent; builders that support `CAPABILITY.customTools` report each call as a `tool_call` event. */
+  customTools?: CustomToolDef[];
 }
 
 export type AdapterBuilder = (options: BuildOptions) => FrameworkAdapter;
