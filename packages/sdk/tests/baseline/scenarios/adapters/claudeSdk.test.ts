@@ -7,8 +7,7 @@ import { query, type McpServerStatus, type SDKSystemMessage } from "@anthropic-a
 import { expect } from "vitest";
 
 import {
-  DENIED_CLAUDE_CODE_TOOLS,
-  TOOL_SEARCH,
+  DISALLOWED_CLAUDE_CODE_TOOLS,
   type ClaudeSDKQuery,
   type ClaudeSDKQueryParams,
 } from "../../../../src/adapters/claude-sdk/ClaudeSDKAdapter";
@@ -57,7 +56,7 @@ function assertToolIsolation(init: SDKSystemMessage | undefined, allowedTools: s
   if (!allowedTools) throw new Error("the adapter registered no Band tools");
   const { tools, mcp_servers: mcpServers, plugins } = init;
 
-  for (const denied of [...DENIED_CLAUDE_CODE_TOOLS, TOOL_SEARCH]) {
+  for (const denied of DISALLOWED_CLAUDE_CODE_TOOLS) {
     expect(tools, `init tools include the denied ${denied}`).not.toContain(denied);
   }
   expect(tools, "init lists every registered Band tool").toEqual(expect.arrayContaining(allowedTools));

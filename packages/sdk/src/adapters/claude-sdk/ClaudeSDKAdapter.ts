@@ -94,6 +94,9 @@ export const DENIED_CLAUDE_CODE_TOOLS = ["ListAgents", "SendMessage", "SendFile"
 /** Excluding it runs the session without tool search, so the first turn waits for the Band server and nothing is deferred. */
 export const TOOL_SEARCH = "ToolSearch";
 
+/** Every tool a Band agent's Claude Code session is started without. */
+export const DISALLOWED_CLAUDE_CODE_TOOLS = [...DENIED_CLAUDE_CODE_TOOLS, TOOL_SEARCH] as const;
+
 /** Flag settings that keep the host's other sessions from prompting the agent and its claude.ai connectors (auth-based, not settings-file-based) from loading. */
 export const ISOLATION_SETTINGS = {
   crossSessionInbound: "refuse",
@@ -320,7 +323,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
       permissionMode: this.permissionMode,
       systemPrompt: this.systemPrompt,
       settingSources: this.settingSources,
-      disallowedTools: [...DENIED_CLAUDE_CODE_TOOLS, TOOL_SEARCH],
+      disallowedTools: [...DISALLOWED_CLAUDE_CODE_TOOLS],
       settings: { ...ISOLATION_SETTINGS },
     };
     if (this.permissionMode === "bypassPermissions") {

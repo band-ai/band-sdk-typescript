@@ -2,8 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   ClaudeSDKAdapter,
-  DENIED_CLAUDE_CODE_TOOLS,
-  TOOL_SEARCH,
   type ClaudeSDKAdapterOptions,
   type ClaudeSDKQueryParams,
   type ClaudeSDKQuery,
@@ -135,8 +133,8 @@ describe("ClaudeSDKAdapter", () => {
       const options = await firstQueryOptions();
 
       expect(options?.settingSources).toEqual([]);
-      expect(options?.disallowedTools).toEqual([...DENIED_CLAUDE_CODE_TOOLS, TOOL_SEARCH]);
-      // Spelled out, not ISOLATION_SETTINGS: the contract must fail if the constant loses a key.
+      // Spelled out, not the adapter's constants: the contract must fail if a constant loses an entry.
+      expect(options?.disallowedTools).toEqual(["ListAgents", "SendMessage", "SendFile", "ToolSearch"]);
       expect(options?.settings).toMatchObject({ crossSessionInbound: "refuse", disableClaudeAiConnectors: true });
     });
 

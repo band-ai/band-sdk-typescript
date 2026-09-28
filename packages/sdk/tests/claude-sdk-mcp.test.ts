@@ -74,17 +74,41 @@ describe("createBandSdkMcpServer", () => {
     expect(result.isError).toBeUndefined();
   });
 
-  it("lists every Band tool through the Agent SDK's in-process MCP server", async () => {
-    const bridge = createBandSdkMcpServer({ enableMemoryTools: true, getToolsForRoom: () => undefined });
+  /** An MCP client connected to the bridge's in-process server, so calls go through its listing and validation. */
+  async function connectClient(bridge: ReturnType<typeof createBandSdkMcpServer>): Promise<Client> {
     const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
     await bridge.serverConfig.instance.connect(serverTransport);
     const client = new Client({ name: "band-tools-probe", version: "1.0.0" });
     await client.connect(clientTransport);
+    return client;
+  }
+
+  it("lists every Band tool through the Agent SDK's in-process MCP server", async () => {
+    const bridge = createBandSdkMcpServer({ enableMemoryTools: true, getToolsForRoom: () => undefined });
+    const client = await connectClient(bridge);
 
     try {
       // One schema the SDK's converter can't render fails the whole listing, so the agent sees no Band tools.
       const { tools } = await client.listTools();
       expect(tools.map((listed) => listed.name).sort()).toEqual(bridge.toolDefinitions.map((entry) => entry.name).sort());
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("passes an object-typed argument through the server's validation unchanged", async () => {
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const roomTools = makeTools(calls);
+    const bridge = createBandSdkMcpServer({ enableMemoryTools: false, getToolsForRoom: () => roomTools });
+    const client = await connectClient(bridge);
+    const metadata = { key: "value", nested: { count: 1 } };
+
+    try {
+      await client.callTool({
+        name: "band_send_event",
+        arguments: { room_id: "room-1", content: "thinking", message_type: "thought", metadata },
+      });
+      expect(calls[0]?.args.metadata).toEqual(metadata);
     } finally {
       await client.close();
     }
