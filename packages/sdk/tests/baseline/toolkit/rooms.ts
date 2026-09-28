@@ -71,18 +71,54 @@ async function addParticipant(room: Room, participant: AgentIdentity): Promise<v
   });
 }
 
-/** Posts `text` as the user, @mentioning `recipient` so it is delivered to them. */
-async function sendMention(room: Room, recipient: AgentIdentity, text: string): Promise<SentMessage> {
+async function removeParticipant(room: Room, participant: AgentIdentity): Promise<void> {
+  const { env } = await liveRun();
+  await env.userClient.humanApiParticipants.removeMyChatParticipant(room.id, participant.id);
+}
+
+/** The ids of everyone in the room. */
+async function participantIds(room: Room): Promise<string[]> {
+  const { env } = await liveRun();
+  const { data } = await env.userClient.humanApiParticipants.listMyChatParticipants(room.id);
+  return data.map((participant) => participant.id);
+}
+
+/**
+ * Posts `text` @mentioning `recipient` so it is delivered to them — as the
+ * user, or as the agent `from` for agent-to-agent traffic.
+ */
+async function sendMention(
+  room: Room,
+  recipient: AgentIdentity,
+  text: string,
+  { from }: { from?: AgentIdentity } = {},
+): Promise<SentMessage> {
+  const content = `@${recipient.name} ${text}`;
+  const id = from ? await sendAsAgent(from, room, recipient, content) : await sendAsUser(room, recipient, content);
+  room.lastSent = { id };
+  return room.lastSent;
+}
+
+async function sendAsUser(room: Room, recipient: AgentIdentity, content: string): Promise<string> {
   const { env } = await liveRun();
   const sent = await env.userClient.humanApiMessages.sendMyChatMessage(room.id, {
-    message: { content: `@${recipient.name} ${text}`, mentions: [{ id: recipient.id, name: recipient.name }] },
+    message: { content, mentions: [{ id: recipient.id, name: recipient.name }] },
   });
-  room.lastSent = { id: sent.data.id };
-  return room.lastSent;
+  return sent.data.id;
+}
+
+async function sendAsAgent(from: AgentIdentity, room: Room, recipient: AgentIdentity, content: string): Promise<string> {
+  const sent = await from.rest.createChatMessage(room.id, { content, mentions: [{ id: recipient.id, handle: recipient.name }] });
+  if (typeof sent.id !== "string") {
+    throw new Error(`createChatMessage returned no message id for room ${room.id}`);
+  }
+  return sent.id;
 }
 
 export const Rooms = {
   create: Room.create,
   addParticipant,
+  removeParticipant,
+  participantIds,
   sendMention,
 };

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { GenericAdapter } from "../../../src/adapters";
 import type { AgentIdentity } from "./agents";
-import { perAdapter, runScenario, type OpenCell } from "./perAdapter";
+import { perAdapter, runScenario, type OpenCast } from "./perAdapter";
 import type { AdapterSpec } from "./registry";
 import { ResourceStack } from "./resourceStack";
 import type { Room } from "./rooms";
@@ -15,17 +15,19 @@ const fakeSpec = (overrides: Partial<AdapterSpec> = {}): AdapterSpec => ({
   ...overrides,
 });
 
-/** An opener whose cell records its own release instead of touching the platform. */
-function recordingOpener(released: string[]): OpenCell {
-  return async (spec) => ({
-    agent: { id: "agent" } as AgentIdentity,
+/** An opener whose cast records its own release instead of touching the platform. */
+function recordingOpener(released: string[]): OpenCast {
+  return async (chosen) => ({
+    agents: [{ id: "agent" } as AgentIdentity],
     room: { id: "room" } as Room,
-    cell: {} as never,
+    cells: [],
     [Symbol.asyncDispose]: async () => {
-      released.push(spec.id);
+      released.push(...chosen.map((spec) => spec.id));
     },
   });
 }
+
+const setup = { prompt: "prompt" };
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -37,9 +39,9 @@ describe("runScenario", () => {
     const released: string[] = [];
 
     await expect(
-      runScenario(fakeSpec(), async () => {
+      runScenario([fakeSpec()], async () => {
         throw new Error("scenario failed");
-      }, "prompt", recordingOpener(released)),
+      }, setup, recordingOpener(released)),
     ).rejects.toThrow("scenario failed");
 
     expect(released).toEqual(["openai"]);
@@ -50,8 +52,8 @@ describe("runScenario", () => {
     const released: string[] = [];
     const spec = fakeSpec({ requires: [{ kind: "envVar", name: "BASELINE_MISSING_KEY" }] });
 
-    await expect(runScenario(spec, async () => {}, "prompt", recordingOpener(released))).rejects.toThrow(
-      "openai cannot run: env var BASELINE_MISSING_KEY is not set",
+    await expect(runScenario([spec], async () => {}, setup, recordingOpener(released))).rejects.toThrow(
+      "cannot run: openai: env var BASELINE_MISSING_KEY is not set",
     );
     expect(released).toEqual([]);
   });

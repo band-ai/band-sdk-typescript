@@ -3,7 +3,7 @@
  * a helpful agent from a steering prompt. Import this module for its
  * registration side effect before querying the registry.
  */
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -24,8 +24,9 @@ import {
   OpenAIAdapter,
   OpencodeAdapter,
   ParlantAdapter,
+  type OpencodeAdapterConfig,
 } from "../../../src/adapters";
-import { registerAdapter, type AdapterId, type Dep } from "./registry";
+import { registerAdapter, type AdapterId, type BuildOptions, type Dep } from "./registry";
 
 const ANTHROPIC_MODEL = "claude-haiku-4-5";
 const GEMINI_MODEL = "gemini-2.5-flash";
@@ -33,6 +34,37 @@ const OPENAI_MODEL = "gpt-5.2";
 const ANTHROPIC_KEY: Dep = { kind: "envVar", name: "ANTHROPIC_API_KEY" };
 const GEMINI_KEY: Dep = { kind: "envVar", name: "GEMINI_API_KEY" };
 const ACP_SDK: Dep = { kind: "peerPackage", name: "@agentclientprotocol/sdk" };
+
+/** OMP on the pinned Google model. */
+export const OMP_COMMAND = [...DEFAULT_OMP_ACP_COMMAND, "--model", `google/${GEMINI_MODEL}`];
+
+/** An isolated OMP state directory under the cell's working directory. */
+export function ompStateEnv(workDir: string): Record<string, string> {
+  return { PI_CODING_AGENT_DIR: stateDir(workDir, ".omp-state") };
+}
+
+/** A fresh directory under the cell's working directory, for a CLI's own state. */
+function stateDir(workDir: string, name: string): string {
+  const dir = join(workDir, name);
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/** OpenCode on Anthropic, `config` layered over the defaults. */
+export function buildOpencode({ prompt, workDir }: BuildOptions, config: OpencodeAdapterConfig = {}): OpencodeAdapter {
+  // Project config: OpenCode reaches Anthropic with our own key (BYOK) and asks before any bash.
+  writeFileSync(
+    join(workDir, "opencode.json"),
+    JSON.stringify({
+      $schema: "https://opencode.ai/config.json",
+      provider: { anthropic: { options: { apiKey: "{env:ANTHROPIC_API_KEY}" } } },
+      permission: { bash: { "*": "ask" } },
+    }),
+  );
+  return new OpencodeAdapter({
+    config: { directory: workDir, providerId: "anthropic", modelId: ANTHROPIC_MODEL, customSection: prompt, ...config },
+  });
+}
 
 /** A builder for an adapter that cannot run yet; it names why instead of half-building one. */
 function unbuildable(id: AdapterId, reason: string): () => never {
@@ -70,12 +102,18 @@ registerAdapter("copilot-acp", {
     { kind: "anyEnvVar", names: ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "COPILOT_PROVIDER_BASE_URL"] },
   ],
   supports: [],
-  build: ({ prompt, workDir }) => new CopilotACPAdapter({ cwd: workDir, customSection: prompt }),
+  build: ({ prompt, workDir }) =>
+    new CopilotACPAdapter({
+      cwd: workDir,
+      customSection: prompt,
+      // An isolated Copilot home, and no interactive tool confirmations.
+      env: { COPILOT_HOME: stateDir(workDir, ".copilot-home"), COPILOT_ALLOW_ALL: "true" },
+    }),
 });
 
 registerAdapter("cursor-acp", {
   requires: [ACP_SDK, { kind: "cli", command: DEFAULT_CURSOR_ACP_COMMAND[0] }, { kind: "envVar", name: "CURSOR_API_KEY" }],
-  supports: ["approvals"],
+  supports: [],
   pending: "needs the Cursor agent CLI and a CURSOR_API_KEY provisioned in CI",
   build: ({ prompt, workDir }) =>
     new CursorACPAdapter({ cwd: workDir, customSection: prompt, apiKey: process.env.CURSOR_API_KEY }),
@@ -124,9 +162,10 @@ registerAdapter("omp-acp", {
   supports: [],
   build: ({ prompt, workDir }) =>
     new OmpACPAdapter({
-      command: [...DEFAULT_OMP_ACP_COMMAND, "--model", `google/${GEMINI_MODEL}`],
+      command: OMP_COMMAND,
       cwd: workDir,
       customSection: prompt,
+      env: ompStateEnv(workDir),
     }),
 });
 
@@ -140,20 +179,7 @@ registerAdapter("openai", {
 registerAdapter("opencode", {
   requires: [ANTHROPIC_KEY, { kind: "peerPackage", name: "@opencode-ai/sdk" }, { kind: "cli", command: "opencode" }],
   supports: ["approvals"],
-  build: ({ prompt, workDir }) => {
-    // Project config: OpenCode reaches Anthropic with our own key (BYOK) and asks before any bash.
-    writeFileSync(
-      join(workDir, "opencode.json"),
-      JSON.stringify({
-        $schema: "https://opencode.ai/config.json",
-        provider: { anthropic: { options: { apiKey: "{env:ANTHROPIC_API_KEY}" } } },
-        permission: { bash: { "*": "ask" } },
-      }),
-    );
-    return new OpencodeAdapter({
-      config: { directory: workDir, providerId: "anthropic", modelId: ANTHROPIC_MODEL, customSection: prompt },
-    });
-  },
+  build: (options) => buildOpencode(options),
 });
 
 registerAdapter("parlant", {

@@ -19,7 +19,10 @@ function describeState(state: DeliveryState): string {
 }
 
 /** Fails unless the delivery reached `status`, naming the state it did reach. */
-export function assertDeliveryStatus(state: DeliveryState, status: DeliveryState["status"]): void {
+export function assertDeliveryStatus<S extends DeliveryState["status"]>(
+  state: DeliveryState,
+  status: S,
+): asserts state is Extract<DeliveryState, { status: S }> {
   if (state.status !== status) {
     throw new Error(`expected delivery status "${status}", but it was ${describeState(state)}`);
   }

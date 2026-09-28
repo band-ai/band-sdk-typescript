@@ -1,13 +1,14 @@
 /**
  * The one wiring point between vitest and the scorecard: reads every finished
- * `<scenario> > <adapter>` test (the title `perAdapter` gives it) at run end
- * and writes the scorecard. Neither `perAdapter.ts` nor `scorecard.ts` knows
+ * `<scenario> > <adapter>` test (the title `perAdapter` gives it, or
+ * `<scenario> > <adapter> + <adapter>` for a shared cast, one row each) at run
+ * end and writes the scorecard. Neither `perAdapter.ts` nor `scorecard.ts` knows
  * about the other.
  */
 import type { Reporter, TestModule, TestResult } from "vitest/node";
 
 import "./adapters";
-import { ADAPTER_IDS, CATEGORIES, registry, type AdapterId, type ScenarioId } from "./registry";
+import { ADAPTER_IDS, CAST_SEPARATOR, CATEGORIES, registry, type AdapterId, type ScenarioId } from "./registry";
 import { writeScorecard, type ScorecardOutcome, type ScorecardRow } from "./scorecard";
 
 /** The slice of vitest's `TestCase` a scorecard row is read from. */
@@ -47,21 +48,24 @@ function outcome(adapter: AdapterId, test: ReportedTest): ScorecardOutcome | nul
   }
 }
 
-/** The scorecard row for a finished test, or null when it is not a scenario cell or did not run. */
-export function scorecardRow(test: ReportedTest): ScorecardRow | null {
-  if (test.parent.type !== "suite" || !isScenarioId(test.parent.name) || !isAdapterId(test.name)) {
-    return null;
+/** The scorecard rows for a finished test — one per adapter in its cast — or none when it is not a scenario cell or did not run. */
+export function scorecardRows(test: ReportedTest): ScorecardRow[] {
+  const cast = test.name.split(CAST_SEPARATOR);
+  if (test.parent.type !== "suite" || !isScenarioId(test.parent.name) || !cast.every(isAdapterId)) {
+    return [];
   }
-  const result = outcome(test.name, test);
-  return result && { scenario: test.parent.name, adapter: test.name, outcome: result };
+  const scenario = test.parent.name;
+  return cast.flatMap((adapter) => {
+    const result = outcome(adapter, test);
+    return result ? [{ scenario, adapter, outcome: result }] : [];
+  });
 }
 
 export default class ScorecardReporter implements Reporter {
   public onTestRunEnd(testModules: ReadonlyArray<TestModule>): void {
     const rows = testModules
       .flatMap((module) => [...module.children.allTests()])
-      .map((test) => scorecardRow(test))
-      .filter((row) => row !== null);
+      .flatMap((test) => scorecardRows(test));
     const path = writeScorecard(rows);
     if (path) {
       console.warn(`baseline scorecard: ${rows.length} row(s) written to ${path}`);

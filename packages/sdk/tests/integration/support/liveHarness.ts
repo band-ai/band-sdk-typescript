@@ -1,9 +1,8 @@
 /**
- * Shared plumbing for live E2E scripts under tests/integration/*-live.ts:
- * provisioning/reaping disposable test agents on the real Band platform, a
- * pass/fail/assert reporter, and small polling helpers. Extracted from
- * core-retry-participant-live.ts so a second live script doesn't re-implement
- * the same primitives (mirrors tests/support's role for unit-test fakes).
+ * Shared plumbing for live runs against the real Band platform — the baseline
+ * suite (tests/baseline) and the operator scripts under scripts/:
+ * provisioning/reaping disposable test agents, a pass/fail/assert reporter,
+ * and small polling helpers (mirrors tests/support's role for unit-test fakes).
  */
 import { spawnSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";

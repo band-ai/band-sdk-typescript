@@ -5,7 +5,7 @@ Bridge Band to an **OMP** subprocess speaking ACP over stdio via `OmpACPAdapter`
 ## Prerequisites
 
 1. **OMP CLI** on `PATH` — default command `omp acp` (see `DEFAULT_OMP_ACP_COMMAND`)
-2. **Model credentials** — typically `GEMINI_API_KEY` or `GOOGLE_API_KEY` for the pinned Google model OMP uses (see `tests/integration/omp-acp-live.ts`)
+2. **Model credentials** — typically `GEMINI_API_KEY` or `GOOGLE_API_KEY` for the pinned Google model OMP uses (see `tests/baseline/toolkit/adapters.ts`)
 3. **Band agent** — `omp_acp_agent` in `agent_config.yaml`
 
 Optional: set `cwd` when constructing the adapter for an isolated working directory.

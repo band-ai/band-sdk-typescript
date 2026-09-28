@@ -7,7 +7,7 @@ import type { ReplyWait } from "./observeMessages";
 
 const reply = (content: string): ReplyWait => ({
   kind: "reply",
-  message: { id: "m1", content, senderId: "agent", mentionIds: ["user"] },
+  message: { id: "m1", content, senderId: "agent", messageType: "text", mentionIds: ["user"], metadata: {} },
 });
 
 function roomWith(...senderIds: string[]) {

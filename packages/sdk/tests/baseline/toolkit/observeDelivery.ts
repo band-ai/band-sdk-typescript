@@ -4,7 +4,7 @@
  * from reply text. Proves the turn finished and its durable state is saved;
  * it does NOT prove the reply frame is captured yet — that is `untilReply`.
  *
- * `FAILED` is not terminal (the platform retries), so the wait holds through it.
+ * `FAILED` is not terminal (the platform retries), so `untilProcessed` holds through it.
  */
 import type { MessageCreatedPayload } from "../../../src/platform/events";
 import { LIVE_EVENT_TIMEOUT_MS } from "../../integration/support/liveHarness";
@@ -49,16 +49,20 @@ function latestState(updates: readonly MessageCreatedPayload[], messageId: strin
 }
 
 export function observeAgent(agent: AgentIdentity, room: Room) {
+  /** The state `message` reached for this agent: `status`, or the last one seen when the wait timed out. */
+  const untilStatus = async (
+    message: SentMessage,
+    status: DeliveryState["status"],
+    timeoutMs = LIVE_EVENT_TIMEOUT_MS,
+  ): Promise<DeliveryState> => {
+    const current = () => latestState(room.deliveryUpdates.entries, message.id, agent.id);
+    const reached = await waitFor(room.deliveryUpdates, () => (current().status === status ? current() : undefined), timeoutMs);
+    return reached ?? current();
+  };
+
   return {
-    /** The state `message` reached for this agent: `processed`, or the last one seen when the wait timed out. */
-    async untilProcessed(message: SentMessage, timeoutMs = LIVE_EVENT_TIMEOUT_MS): Promise<DeliveryState> {
-      const current = () => latestState(room.deliveryUpdates.entries, message.id, agent.id);
-      const processed = await waitFor(
-        room.deliveryUpdates,
-        () => (current().status === "processed" ? current() : undefined),
-        timeoutMs,
-      );
-      return processed ?? current();
-    },
+    untilStatus,
+    /** The common barrier: the turn finished and its durable state is saved. */
+    untilProcessed: (message: SentMessage, timeoutMs?: number) => untilStatus(message, "processed", timeoutMs),
   };
 }

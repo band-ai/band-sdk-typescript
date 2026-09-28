@@ -40,6 +40,9 @@ export type AdapterId = (typeof ADAPTER_IDS)[number];
  */
 export const NON_ADAPTER_DIRS = ["shared", "tool-calling", "a2a", "a2a-gateway", "acp"] as const;
 
+/** Joins a shared cast's adapter ids into its test title, e.g. `anthropic + google-adk`. */
+export const CAST_SEPARATOR = " + ";
+
 /** Scenario folders under `scenarios/`; a scenario id is namespaced by one. */
 export const CATEGORIES = ["adapters", "behavior", "inspection", "platform"] as const;
 
@@ -88,6 +91,13 @@ export interface SpecFilter {
   /** Keep adapters that support NONE of these. */
   without?: readonly Capability[];
   includePending?: boolean;
+}
+
+/** Set to `1` to run pending adapters too, where the local environment has what CI lacks. */
+export const INCLUDE_PENDING_ENV = "BAND_E2E_INCLUDE_PENDING";
+
+export function includePending(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env[INCLUDE_PENDING_ENV] === "1";
 }
 
 export class AdapterRegistry {

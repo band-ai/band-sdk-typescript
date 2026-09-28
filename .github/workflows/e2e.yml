@@ -1,14 +1,9 @@
 name: E2E (live)
 
-# Live E2E against the real Band platform. Provisions real agents, hits
-# live REST/WS — nightly/on-demand only, never per-PR.
-#
-# Live scripts are DISCOVERED, not hand-listed here: any
-# packages/sdk/tests/integration/*-live.ts file is picked up by the
-# `discover` job below and run as its own matrix cell in `e2e` — adding a new
-# live test needs no edit to this file. Mirrors band-sdk-python's
-# lanes -> e2e pattern (see its e2e.yml): derive the CI matrix from a source
-# of truth instead of hand-listing jobs.
+# Live E2E against the real Band platform: the baseline suite in
+# packages/sdk/tests/baseline. Provisions real agents, hits live REST/WS —
+# nightly/on-demand only, never per-PR. What runs is derived from the adapter
+# registry and the scenario files, never hand-listed here.
 
 on:
   schedule:
@@ -25,90 +20,6 @@ permissions:
   contents: read
 
 jobs:
-  discover:
-    name: discover live tests
-    runs-on: ubuntu-latest
-    outputs:
-      files: ${{ steps.find.outputs.files }}
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Find *-live.ts scripts
-        id: find
-        working-directory: packages/sdk/tests/integration
-        run: |
-          files=$(ls *-live.ts | jq -R -s -c 'split("\n")[:-1]')
-          echo "files=$files" >> "$GITHUB_OUTPUT"
-
-  e2e:
-    name: e2e (${{ matrix.file }})
-    needs: discover
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      # A red script must not cancel the others in flight.
-      fail-fast: false
-      matrix:
-        file: ${{ fromJSON(needs.discover.outputs.files) }}
-    concurrency:
-      # Never cancel in progress: a killed run skips its `finally` reap,
-      # orphaning the agents and rooms it provisioned on the real platform.
-      # Queue instead. Partial protection — `sweepOrphans` recovers stale
-      # agents on a later run, but nothing reaps rooms, and a job timeout
-      # skips the reap just the same. Scoped per file so rerunning one live
-      # test never queues behind, or cancels, another's run.
-      group: e2e-live-${{ github.event_name }}-${{ matrix.file }}
-      cancel-in-progress: false
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v6
-
-      - name: Setup Node
-        uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Set up Bun
-        if: matrix.file == 'omp-acp-live.ts'
-        uses: oven-sh/setup-bun@v2
-
-      - name: Install OMP
-        if: matrix.file == 'omp-acp-live.ts'
-        run: npm install --global @oh-my-pi/pi-coding-agent
-
-      - name: Install OpenCode
-        if: matrix.file == 'opencode-live.ts'
-        run: npm install --global opencode-ai
-
-      - name: Install GitHub Copilot CLI
-        run: npm install --global @github/copilot
-
-      # BAND_API_KEY_USER is the same Band user credential band-sdk-python's
-      # e2e.yml uses (its E2E_BAND_API_KEY_USER secret) to dynamically
-      # provision/reap its own test agents — same secret name/shape here so
-      # the value can be shared across both repos' E2E secrets.
-      - name: Run ${{ matrix.file }}
-        working-directory: packages/sdk
-        env:
-          BAND_API_KEY_USER: ${{ secrets.E2E_BAND_API_KEY_USER }}
-          BAND_REST_URL: ${{ secrets.E2E_BAND_REST_URL }}
-          BAND_WS_URL: ${{ secrets.E2E_BAND_WS_URL }}
-          GEMINI_API_KEY: ${{ secrets.E2E_GOOGLE_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.E2E_ANTHROPIC_API_KEY }}
-          COPILOT_PROVIDER_TYPE: anthropic
-          COPILOT_PROVIDER_BASE_URL: https://api.anthropic.com
-          COPILOT_PROVIDER_API_KEY: ${{ secrets.E2E_ANTHROPIC_API_KEY }}
-          COPILOT_MODEL: claude-haiku-4-5
-        run: npx tsx tests/integration/${{ matrix.file }}
-
   # The live baseline (tests/baseline): every scenario fanned out across the
   # adapter registry in one job; vitest isolates the files. A scheduled run is
   # the full suite and the canonical scorecard; a manual run may be scoped by
@@ -151,6 +62,9 @@ jobs:
       - name: Install adapter CLIs
         run: npm install --global @oh-my-pi/pi-coding-agent opencode-ai @github/copilot
 
+      # BAND_API_KEY_USER is the same Band user credential band-sdk-python's
+      # e2e.yml uses (its E2E_BAND_API_KEY_USER secret) to provision and reap
+      # its own test agents, so the value is shared across both repos.
       - name: Run the live baseline
         working-directory: packages/sdk
         env:

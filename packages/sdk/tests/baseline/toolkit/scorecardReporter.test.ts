@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TestResult } from "vitest/node";
 
-import { scorecardRow, type ReportedTest } from "./scorecardReporter";
+import { scorecardRows, type ReportedTest } from "./scorecardReporter";
 
 /** A finished test as vitest reports it, titled the way `perAdapter` titles it. */
 function reported(suite: string, name: string, result: TestResult, duration = 42): ReportedTest {
@@ -15,18 +15,21 @@ function reported(suite: string, name: string, result: TestResult, duration = 42
 
 const passed: TestResult = { state: "passed", errors: undefined };
 
-describe("scorecardRow", () => {
+describe("scorecardRows", () => {
   it("reads the scenario from the suite and the adapter from the test", () => {
-    expect(scorecardRow(reported("platform.repliesToMention", "anthropic", passed))).toEqual({
-      scenario: "platform.repliesToMention",
-      adapter: "anthropic",
-      outcome: { status: "pass", durationMs: 42 },
-    });
+    expect(scorecardRows(reported("platform.repliesToMention", "anthropic", passed))).toEqual([
+      { scenario: "platform.repliesToMention", adapter: "anthropic", outcome: { status: "pass", durationMs: 42 } },
+    ]);
+  });
+
+  it("gives each adapter of a shared cast its own row", () => {
+    const rows = scorecardRows(reported("behavior.multiAgentCollaboration", "anthropic + google-adk", passed));
+    expect(rows.map((row) => row.adapter)).toEqual(["anthropic", "google-adk"]);
   });
 
   it("records a failure with its error messages", () => {
     const failed: TestResult = { state: "failed", errors: [{ message: "no reply within 5ms" } as never] };
-    expect(scorecardRow(reported("platform.repliesToMention", "gemini", failed))?.outcome).toEqual({
+    expect(scorecardRows(reported("platform.repliesToMention", "gemini", failed))[0]?.outcome).toEqual({
       status: "fail",
       error: "no reply within 5ms",
       durationMs: 42,
@@ -35,7 +38,7 @@ describe("scorecardRow", () => {
 
   it("records a pending adapter as N/A with its registry reason", () => {
     const skipped: TestResult = { state: "skipped", errors: undefined, note: "anything" };
-    expect(scorecardRow(reported("platform.repliesToMention", "letta", skipped))?.outcome).toEqual({
+    expect(scorecardRows(reported("platform.repliesToMention", "letta", skipped))[0]?.outcome).toEqual({
       status: "na",
       reason: "needs a Letta server provisioned in CI",
     });
@@ -45,11 +48,11 @@ describe("scorecardRow", () => {
     const optIn: TestResult = { state: "skipped", errors: undefined, note: "set RUN_CODEX_ACP_E2E=1" };
     const filtered: TestResult = { state: "skipped", errors: undefined, note: undefined };
 
-    expect(scorecardRow(reported("adapters.codexAcpSmoke", "anthropic", optIn))?.outcome).toEqual({
+    expect(scorecardRows(reported("adapters.codexAcpSmoke", "anthropic", optIn))[0]?.outcome).toEqual({
       status: "skip",
       reason: "set RUN_CODEX_ACP_E2E=1",
     });
-    expect(scorecardRow(reported("platform.repliesToMention", "anthropic", filtered))).toBeNull();
+    expect(scorecardRows(reported("platform.repliesToMention", "anthropic", filtered))).toEqual([]);
   });
 
   it.each([
@@ -57,6 +60,6 @@ describe("scorecardRow", () => {
     { name: "a suite that is not a scenario id", test: reported("ToolCallingAdapter", "anthropic", passed) },
     { name: "a test that is not an adapter id", test: reported("platform.repliesToMention", "some other case", passed) },
   ])("ignores $name", ({ test }) => {
-    expect(scorecardRow(test)).toBeNull();
+    expect(scorecardRows(test)).toEqual([]);
   });
 });

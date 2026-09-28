@@ -4,12 +4,13 @@
  * re-run one identity to prove platform rehydration). Every handle is released
  * by `await using`; release never throws.
  */
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Agent } from "../../../src/agent/Agent";
+import { Agent, type AgentCreateOptions } from "../../../src/agent/Agent";
 import type { FrameworkAdapter } from "../../../src/contracts/protocols";
+import { BandLink } from "../../../src/platform/BandLink";
 import { withTimeout } from "../../../src/adapters/shared/withTimeout";
 import {
   agentRest,
@@ -19,7 +20,7 @@ import {
   reapProvisioned,
 } from "../../integration/support/liveHarness";
 import { liveRun, warnTeardown } from "./liveRun";
-import type { AdapterSpec } from "./registry";
+import type { AdapterBuilder, AdapterSpec } from "./registry";
 
 import type { FernRestAdapter } from "../../../src/rest";
 
@@ -27,6 +28,9 @@ import type { FernRestAdapter } from "../../../src/rest";
 export type ProvisionedName = `${typeof NAME_PREFIX}${string}`;
 
 const AGENT_STOP_TIMEOUT_MS = 10_000;
+
+/** Runtime options a scenario may set on a running agent. */
+export type RunOptions = Pick<AgentCreateOptions, "sessionConfig" | "contactConfig">;
 
 /** A provisioned Band agent identity, reaped when its scope ends. */
 export class AgentIdentity implements AsyncDisposable {
@@ -40,6 +44,15 @@ export class AgentIdentity implements AsyncDisposable {
     restUrl: string,
   ) {
     this.rest = agentRest(restUrl, apiKey);
+  }
+
+  /** The platform handle (`owner/agent`) others address this agent by. */
+  public async handle(): Promise<string> {
+    const { handle } = await this.rest.getAgentMe();
+    if (!handle) {
+      throw new Error(`agent ${this.name} has no handle`);
+    }
+    return handle;
   }
 
   public async [Symbol.asyncDispose](): Promise<void> {
@@ -74,7 +87,7 @@ async function provision(testName: string, label: string): Promise<AgentIdentity
   return new AgentIdentity(agent.id, agent.name as ProvisionedName, agent.apiKey, env.restUrl);
 }
 
-async function runAs(identity: AgentIdentity, adapter: FrameworkAdapter): Promise<RunningAgent> {
+async function runAs(identity: AgentIdentity, adapter: FrameworkAdapter, options: RunOptions = {}): Promise<RunningAgent> {
   const { env } = await liveRun();
   const events = new EventRecordingRest(env.restUrl, identity.apiKey);
   const agent = Agent.create({
@@ -84,6 +97,7 @@ async function runAs(identity: AgentIdentity, adapter: FrameworkAdapter): Promis
     wsUrl: env.wsUrl,
     linkOptions: { restApi: events },
     agentConfig: { autoSubscribeExistingRooms: true },
+    ...options,
   });
   const running = new RunningAgent(identity, agent, events);
   try {
@@ -113,16 +127,19 @@ export class AdapterCell implements AsyncDisposable {
   private constructor(
     public readonly spec: AdapterSpec,
     private readonly prompt: string,
-    private readonly workDir: string,
+    /** The adapter's scratch working directory, for scenarios that check what it did there. */
+    public readonly workDir: string,
+    private readonly builder: AdapterBuilder,
   ) {}
 
-  public static async create(spec: AdapterSpec, prompt: string): Promise<AdapterCell> {
-    return new AdapterCell(spec, prompt, await mkdtemp(join(tmpdir(), `band-baseline-${spec.id}-`)));
+  /** A cell for `spec`, built by `build` when a scenario needs other than the registered builder. */
+  public static async create(spec: AdapterSpec, prompt: string, build: AdapterBuilder = spec.build): Promise<AdapterCell> {
+    return new AdapterCell(spec, prompt, await realpath(await mkdtemp(join(tmpdir(), `band-baseline-${spec.id}-`))), build);
   }
 
   /** A fresh adapter instance: no in-memory state carries over from an earlier build. */
   public build(prompt = this.prompt): FrameworkAdapter {
-    return this.spec.build({ prompt, workDir: this.workDir });
+    return this.builder({ prompt, workDir: this.workDir });
   }
 
   public provision(label: string = this.spec.id): Promise<AgentIdentity> {
@@ -149,8 +166,36 @@ export class AdapterCell implements AsyncDisposable {
   }
 }
 
+/** An agent's own platform connection — the SDK link itself — disconnected when its scope ends. */
+export class AgentLink implements AsyncDisposable {
+  public constructor(public readonly link: BandLink) {}
+
+  public async [Symbol.asyncDispose](): Promise<void> {
+    await this.link.disconnect().catch(warnTeardown(`disconnect link of ${this.link.agentId}`));
+  }
+}
+
+async function connect(identity: AgentIdentity): Promise<AgentLink> {
+  const { env } = await liveRun();
+  const link = new AgentLink(new BandLink({ agentId: identity.id, apiKey: identity.apiKey, wsUrl: env.wsUrl, restApi: identity.rest }));
+  try {
+    await link.link.connect();
+  } catch (error) {
+    await link[Symbol.asyncDispose]();
+    throw error;
+  }
+  return link;
+}
+
+/** Sends a contact request from `from` to `to`. */
+async function requestContact(from: AgentIdentity, to: AgentIdentity): Promise<void> {
+  await from.rest.addContact({ handle: await to.handle() });
+}
+
 export const Agents = {
   provision,
   runAs,
+  connect,
+  requestContact,
   cell: AdapterCell.create,
 };
