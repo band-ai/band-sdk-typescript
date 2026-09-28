@@ -95,6 +95,19 @@ describe("contracts/protocols", () => {
     expect(toLegacyToolExecutorErrorMessage({ ok: true })).toBeNull();
   });
 
+  it("re-exports isToolExecutorError from @band-ai/sdk/core, so a consumer of executeToolCall's return value doesn't need to duplicate the ok === false shape check", async () => {
+    const core = await import("../src/core");
+
+    const error = createToolExecutorError({
+      errorType: "ToolExecutionError",
+      toolName: "band_send_message",
+      message: "Mention not found",
+    });
+
+    expect(core.isToolExecutorError(error)).toBe(true);
+    expect(core.isToolExecutorError({ ok: true })).toBe(false);
+  });
+
   describe("toFailureEvent", () => {
     it("uses the failure's message verbatim as content, with no adapter-added prefix", () => {
       const failure = new AgentFailure("acp", "agent went away", "timeout", { raw: true });

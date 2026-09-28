@@ -443,6 +443,7 @@
         "WebSocketDisconnectError",
         "agentFailure",
         "deliverReply",
+        "isToolExecutorError",
         "reportTurnFailure",
         "toFailureEvent"
       ],
@@ -472,6 +473,7 @@
         "RuntimeStateError",
         "SimpleAdapter",
         "ToolExecutor",
+        "ToolExecutorError",
         "ToolSchemaProvider",
         "TransportError",
         "UnsupportedFeatureError",
@@ -481,6 +483,7 @@
         "WebSocketDisconnectReason",
         "agentFailure",
         "deliverReply",
+        "isToolExecutorError",
         "reportTurnFailure",
         "toFailureEvent"
       ]
