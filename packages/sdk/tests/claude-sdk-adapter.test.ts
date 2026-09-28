@@ -2,6 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   ClaudeSDKAdapter,
+  CROSS_SESSION_INBOUND,
+  DENIED_CLAUDE_CODE_TOOLS,
+  TOOL_SEARCH,
+  type ClaudeSDKAdapterOptions,
+  type ClaudeSDKQueryParams,
   type ClaudeSDKQuery,
 } from "../src/adapters/claude-sdk/ClaudeSDKAdapter";
 import { HistoryProvider } from "../src/runtime/types";
@@ -108,6 +113,38 @@ describe("ClaudeSDKAdapter", () => {
     expect(calls[0]?.prompt).toContain("[System]: Contacts updated");
     expect(calls[0]?.prompt).toContain("room_id=\"room-1\"");
     expect(calls[1]?.options?.resume).toBe("session-1");
+  });
+
+  describe("isolation from the host's Claude Code", () => {
+    /** The options the adapter's first query was started with. */
+    async function firstQueryOptions(options: ClaudeSDKAdapterOptions = {}): Promise<ClaudeSDKQueryParams["options"]> {
+      let captured: ClaudeSDKQueryParams["options"];
+      const queryFn: ClaudeSDKQuery = ({ options: queryOptions }) => {
+        captured = queryOptions;
+        return streamFrom([]);
+      };
+      const adapter = new ClaudeSDKAdapter({ ...options, queryFn });
+      await adapter.onStarted("Isolated Agent", "Isolation test agent");
+      await adapter.onMessage(makeMessage("hello"), new FakeTools(), new HistoryProvider([]), null, null, {
+        isSessionBootstrap: false,
+        roomId: "room-1",
+      });
+      return captured;
+    }
+
+    it("loads no host settings, denies cross-session tools and tool search, and refuses inbound peers by default", async () => {
+      const options = await firstQueryOptions();
+
+      expect(options?.settingSources).toEqual([]);
+      expect(options?.disallowedTools).toEqual([...DENIED_CLAUDE_CODE_TOOLS, TOOL_SEARCH]);
+      expect(options?.settings?.crossSessionInbound).toBe(CROSS_SESSION_INBOUND);
+    });
+
+    it("forwards the caller's settingSources unchanged", async () => {
+      const options = await firstQueryOptions({ settingSources: ["user"] });
+
+      expect(options?.settingSources).toEqual(["user"]);
+    });
   });
 
   it("reports tool summary events when execution reporting is enabled", async () => {

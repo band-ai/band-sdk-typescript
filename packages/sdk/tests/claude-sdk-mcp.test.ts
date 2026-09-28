@@ -1,3 +1,5 @@
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentToolsProtocol } from "../src/core";
@@ -70,6 +72,22 @@ describe("createBandSdkMcpServer", () => {
       },
     ]);
     expect(result.isError).toBeUndefined();
+  });
+
+  it("lists every Band tool through the Agent SDK's in-process MCP server", async () => {
+    const bridge = createBandSdkMcpServer({ enableMemoryTools: true, getToolsForRoom: () => undefined });
+    const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+    await bridge.serverConfig.instance.connect(serverTransport);
+    const client = new Client({ name: "band-tools-probe", version: "1.0.0" });
+    await client.connect(clientTransport);
+
+    try {
+      // One schema the SDK's converter can't render fails the whole listing, so the agent sees no Band tools.
+      const { tools } = await client.listTools();
+      expect(tools.map((listed) => listed.name).sort()).toEqual(bridge.toolDefinitions.map((entry) => entry.name).sort());
+    } finally {
+      await client.close();
+    }
   });
 
   it("builds room-aware system prompt context and caches it", async () => {

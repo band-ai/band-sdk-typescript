@@ -1,3 +1,5 @@
+import type { SettingSource, Settings } from "@anthropic-ai/claude-agent-sdk";
+
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
@@ -55,6 +57,9 @@ interface ClaudeQueryOptions {
   resume?: string;
   mcpServers?: Record<string, unknown>;
   allowedTools?: string[];
+  disallowedTools?: string[];
+  settingSources?: SettingSource[];
+  settings?: Settings;
 }
 
 export interface ClaudeSDKQueryParams {
@@ -75,11 +80,22 @@ export interface ClaudeSDKAdapterOptions {
   enableMcpTools?: boolean;
   additionalMcpTools?: McpToolRegistration[];
   cwd?: string;
+  /** Host Claude Code settings to load; `[]` (the default) loads none, e.g. `["user", "project"]` opts back in. */
+  settingSources?: SettingSource[];
   queryFn?: ClaudeSDKQuery;
   logger?: Logger;
 }
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
+
+/** They list, prompt, or send files to the OS user's other Claude Code sessions; a Band agent talks only through Band tools. */
+export const DENIED_CLAUDE_CODE_TOOLS = ["ListAgents", "SendMessage", "SendFile"] as const;
+
+/** Excluding it runs the session without tool search, so the first turn waits for the Band server and nothing is deferred. */
+export const TOOL_SEARCH = "ToolSearch";
+
+/** Other sessions on the host must not be able to prompt a Band agent. */
+export const CROSS_SESSION_INBOUND = "refuse" satisfies Settings["crossSessionInbound"];
 
 interface BandMcpBridge {
   serverConfig: Record<string, unknown>;
@@ -171,6 +187,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
   private readonly enableMcpTools: boolean;
   private readonly additionalMcpTools: McpToolRegistration[];
   private readonly cwd?: string;
+  private readonly settingSources: SettingSource[];
   private readonly queryFnOverride?: ClaudeSDKQuery;
   private readonly logger: Logger;
   private readonly sessionIds = new Map<string, string>();
@@ -191,6 +208,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     this.enableMcpTools = options?.enableMcpTools ?? true;
     this.additionalMcpTools = options?.additionalMcpTools ?? [];
     this.cwd = options?.cwd;
+    this.settingSources = options?.settingSources ?? [];
     this.queryFnOverride = options?.queryFn;
     this.logger = resolveLogger(options?.logger);
   }
@@ -298,6 +316,9 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
       model: this.model,
       permissionMode: this.permissionMode,
       systemPrompt: this.systemPrompt,
+      settingSources: this.settingSources,
+      disallowedTools: [...DENIED_CLAUDE_CODE_TOOLS, TOOL_SEARCH],
+      settings: { crossSessionInbound: CROSS_SESSION_INBOUND },
     };
     if (this.permissionMode === "bypassPermissions") {
       options.allowDangerouslySkipPermissions = true;
