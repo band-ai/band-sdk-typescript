@@ -7,6 +7,7 @@ import type { HistoryProvider, PlatformMessage } from "../src/runtime";
 import type { CustomToolDef } from "../src/runtime/tools/customTools";
 import type { AgentToolsProtocol } from "../src/core";
 import { toFailureEvent } from "../src/contracts/protocols";
+import { SEND_MESSAGE_TOOL_NAME } from "../src/runtime/tools/schemas";
 import type { ToolCallingModel } from "../src/adapters";
 import { describeDeliveryContract } from "./deliveryContract";
 import { expectTurnFailed } from "./testUtils";
@@ -207,11 +208,11 @@ describe("ToolCallingAdapter", () => {
     } as unknown as HistoryProvider;
 
     await adapter.onMessage(fakeMessage, tools, historyWithCurrentMessage, null, null, {
-      isSessionBootstrap: false,
+      isSessionBootstrap: true,
       roomId: "r1",
     });
 
-    const helloCount = model.seenMessages.filter((entry) => entry.content === "hello").length;
+    const helloCount = model.seenMessages.filter((entry) => String(entry.content).endsWith("hello")).length;
     expect(helloCount).toBe(1);
   });
 
@@ -235,12 +236,41 @@ describe("ToolCallingAdapter", () => {
     } as unknown as HistoryProvider;
     const fromAnotherAgent: PlatformMessage = { ...fakeMessage, id: "m2", senderType: "Agent", senderName: "planner-agent" };
 
-    await adapter.onMessage(fromAnotherAgent, new FakeTools(), history, null, null, { isSessionBootstrap: false, roomId: "r1" });
+    await adapter.onMessage(fromAnotherAgent, new FakeTools(), history, null, null, { isSessionBootstrap: true, roomId: "r1" });
 
     expect(seen.map(({ role, content }) => ({ role, content }))).toEqual([
       { role: "assistant", content: "earlier answer" },
       { role: "user", content: "[Jane]: thanks" },
       { role: "user", content: "[planner-agent]: hello" },
+    ]);
+  });
+
+  it("carries what it posted into later turns, so it never re-answers an earlier request", async () => {
+    const firstRequest = { ...fakeMessage, id: "m1", content: "Reply with: pineapple" };
+    const secondRequest = { ...fakeMessage, id: "m2", content: "Reply with: mango" };
+    const seen: Array<Array<Record<string, unknown>>> = [];
+    const model: ToolCallingModel = {
+      complete: async (request) => {
+        seen.push(request.messages ?? []);
+        // Turn 1 answers through the send tool, turn 2 in final text.
+        if (seen.length === 1) {
+          return { toolCalls: [{ id: "c1", name: SEND_MESSAGE_TOOL_NAME, input: { content: "pineapple" } }] };
+        }
+        return { text: seen.length === 2 ? undefined : "mango" };
+      },
+    };
+    const adapter = new OpenAIAdapter({ model });
+    const tools = new FakeTools();
+    // After bootstrap the runtime's history holds only what was delivered to the agent.
+    const inboundOnly = (...raw: PlatformMessage[]) => ({ raw, convert: () => [], length: raw.length }) as unknown as HistoryProvider;
+
+    await adapter.onMessage(firstRequest, tools, inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "r1" });
+    await adapter.onMessage(secondRequest, tools, inboundOnly(firstRequest), null, null, { isSessionBootstrap: false, roomId: "r1" });
+
+    expect(seen.at(-1)!.map(({ role, content }) => ({ role, content }))).toEqual([
+      { role: "user", content: "[Jane]: Reply with: pineapple" },
+      { role: "assistant", content: "pineapple" },
+      { role: "user", content: "[Jane]: Reply with: mango" },
     ]);
   });
 

@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { GoogleADKAdapter } from "../src/adapters";
 import { GoogleADKHistoryConverter } from "../src/converters";
+import { SEND_MESSAGE_TOOL_NAME } from "../src/runtime/tools/schemas";
 import type { AgentToolsProtocol } from "../src/core";
 import { FakeTools, makeMessage, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
@@ -159,6 +160,28 @@ describe("GoogleADKAdapter", () => {
     expect(seenPrompts[0]).toContain("[Previous conversation context]");
     expect(seenPrompts[0]).toContain("Participants changed");
     expect(seenPrompts[0]).toContain("Contacts changed");
+  });
+
+  it("carries a reply it posted through the send tool into the next turn's context", async () => {
+    const seenPrompts: string[] = [];
+    const adapter = new GoogleADKAdapter({
+      sdkFactory: createFakeGoogleAdkSdk(async function* (_agent, request) {
+        seenPrompts.push(request.newMessage.parts[0]?.text ?? "");
+        if (seenPrompts.length === 1) {
+          yield { functionCalls: [{ id: "call-1", name: SEND_MESSAGE_TOOL_NAME, args: { content: "pineapple" } }] };
+        }
+        yield { final: true, text: "" };
+      }),
+    });
+    const tools = new GoogleAdkTestTools();
+
+    await adapter.onMessage(makeMessage("Reply with: pineapple"), tools, [], null, null, { isSessionBootstrap: true, roomId: "room-1" });
+    await adapter.onMessage(makeMessage("Reply with: mango"), tools, [], null, null, { isSessionBootstrap: false, roomId: "room-1" });
+
+    const [context] = seenPrompts[1]!.split("[End of previous context]");
+    expect(context!.split("\n"), "the request, then its answer as the agent's own line").toEqual(
+      expect.arrayContaining(["[User]: Reply with: pineapple", "pineapple"]),
+    );
   });
 
   it("logs a warning instead of silently swallowing a failed tool-call/tool-result event send", async () => {

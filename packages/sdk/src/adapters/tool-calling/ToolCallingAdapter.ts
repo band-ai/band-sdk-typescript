@@ -10,6 +10,7 @@ import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { formatHistoryForLlm } from "../../runtime/formatters";
+import { SEND_MESSAGE_TOOL_NAME } from "../../runtime/tools/schemas";
 import { asErrorMessage } from "../shared/coercion";
 import { reportProviderTurnFailure } from "../../core/providerFailure";
 import { deliverReply } from "../../core/deliveryFailedError";
@@ -59,6 +60,8 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
   private readonly customTools: CustomToolDef[];
   private readonly customToolIndex: Map<string, CustomToolDef>;
   private readonly logger: Logger;
+  /** Each room's conversation, carried across turns; platform history seeds it only at session bootstrap. */
+  private readonly conversations = new Map<string, ToolModelMessage[]>();
 
   public constructor(options: ToolCallingAdapterOptions) {
     super();
@@ -80,8 +83,11 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     history: HistoryProvider,
     participantsMessage: string | null,
     contactsMessage: string | null,
-    _context: { isSessionBootstrap: boolean; roomId: string },
+    context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
+    const conversation = this.conversationFor(context, history, message);
+    conversation.push(...this.turnInput(message, participantsMessage, contactsMessage));
+    const toolRounds: ToolRound[] = [];
     let text: string | undefined;
     try {
       const platformSchemas = tools.getToolSchemas(this.toolFormat, {
@@ -90,9 +96,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
       const customSchemas = customToolsToSchemas(this.customTools, this.toolFormat);
       const schemas = [...platformSchemas, ...customSchemas];
 
-      const messages = this.buildMessages(history, message, participantsMessage, contactsMessage);
-
-      const toolRounds: ToolRound[] = [];
+      const messages = [...conversation];
 
       let response = await this.model.complete({
         systemPrompt: this.systemPrompt,
@@ -201,39 +205,54 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
       await reportProviderTurnFailure(tools, this.logger, this.provider, "Tool-calling adapter request failed", error, { messageId: message.id });
     }
 
+    conversation.push(...answersOf(toolRounds, text));
+
     if (text) {
       await deliverReply(tools, text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
     }
   }
 
-  private buildMessages(
+  public override async onCleanup(roomId: string): Promise<void> {
+    this.conversations.delete(roomId);
+  }
+
+  /** The room's conversation so far, seeded from platform history at session bootstrap (without the current message). */
+  private conversationFor(
+    context: { isSessionBootstrap: boolean; roomId: string },
     history: HistoryProvider,
+    message: PlatformMessage,
+  ): ToolModelMessage[] {
+    const existing = this.conversations.get(context.roomId);
+    if (existing && !context.isSessionBootstrap) {
+      return existing;
+    }
+    const seeded = context.isSessionBootstrap
+      ? formatHistoryForLlm(history.raw, { excludeId: message.id }).map((entry) => this.asConversationTurn(entry))
+      : [];
+    this.conversations.set(context.roomId, seeded);
+    return seeded;
+  }
+
+  private turnInput(
     message: PlatformMessage,
     participantsMessage: string | null,
     contactsMessage: string | null,
   ): ToolModelMessage[] {
-    const base = formatHistoryForLlm(history.raw).map((entry) => this.asConversationTurn(entry));
-    const historyAlreadyContainsMessage = history.raw.some((entry) => entry.id === message.id);
-    if (!historyAlreadyContainsMessage) {
-      base.push(this.asConversationTurn({
-        role: "user",
-        content: message.content,
-        sender_name: message.senderName,
-        sender_type: message.senderType,
-        message_type: message.messageType,
-        metadata: message.metadata,
-      }));
-    }
-
+    const turn: ToolModelMessage[] = [this.asConversationTurn({
+      role: "user",
+      content: message.content,
+      sender_name: message.senderName,
+      sender_type: message.senderType,
+      message_type: message.messageType,
+      metadata: message.metadata,
+    })];
     if (participantsMessage) {
-      base.push({ role: "system", content: participantsMessage });
+      turn.push({ role: "system", content: participantsMessage });
     }
-
     if (contactsMessage) {
-      base.push({ role: "system", content: contactsMessage });
+      turn.push({ role: "system", content: contactsMessage });
     }
-
-    return base;
+    return turn;
   }
 
   /**
@@ -264,6 +283,23 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
       });
     }
   }
+}
+
+/**
+ * What the agent said in the room this turn, as its own turns: every message it
+ * posted through the send tool, then its final text. Without these the next
+ * turn sees this turn's request as still unanswered.
+ */
+function answersOf(toolRounds: ToolRound[], text: string | undefined): ToolModelMessage[] {
+  const sent = toolRounds.flatMap(({ toolCalls, toolResults }) =>
+    toolCalls
+      .filter((call) => call.name === SEND_MESSAGE_TOOL_NAME)
+      .filter((call) => !toolResults.find((result) => result.toolCallId === call.id)?.isError)
+      .map((call) => call.input.content),
+  );
+  return [...sent, text]
+    .filter((content): content is string => typeof content === "string" && content.length > 0)
+    .map((content) => ({ role: "assistant", content }));
 }
 
 function isToolOutputError(output: unknown): boolean {

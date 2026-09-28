@@ -7,6 +7,7 @@ import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { MetadataMap, ToolOperationResult } from "../../contracts/dtos";
 import { formatMessageForLlm } from "../../runtime/formatters";
 import { renderSystemPrompt } from "../../runtime/prompts";
+import { SEND_MESSAGE_TOOL_NAME } from "../../runtime/tools/schemas";
 import type { PlatformMessage } from "../../runtime/types";
 import {
   customToolToOpenAISchema,
@@ -120,6 +121,14 @@ function stripAdditionalProperties(value: unknown): unknown {
 
 function asToolArgs(value: unknown): Record<string, unknown> {
   return asOptionalRecord(value) ?? {};
+}
+
+/** The messages an ADK event posted to the room through the send tool. */
+function sentMessageContents(sdk: GoogleAdkSdkLike, event: unknown): string[] {
+  return sdk.getFunctionCalls(event)
+    .filter((call) => call.name === SEND_MESSAGE_TOOL_NAME)
+    .map((call) => asToolArgs(call.args).content)
+    .filter((content): content is string => typeof content === "string");
 }
 
 function stringifyToolResult(result: unknown): string {
@@ -256,6 +265,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
     );
 
     let finalResponseText = "";
+    const sentMessages: string[] = [];
     try {
       const sdk = await this.sdkLoader.get();
       const runner = sdk.createRunner({
@@ -281,6 +291,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
         if (this.enableExecutionReporting) {
           await this.reportExecutionEvent(sdk, event, tools);
         }
+        sentMessages.push(...sentMessageContents(sdk, event));
         if (sdk.isFinalResponse(event)) {
           finalResponseText = sdk.stringifyContent(event);
         }
@@ -294,6 +305,8 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
       role: "user",
       content: this.formatIncomingMessage(message),
     });
+    // What the agent posted through the send tool is its answer too; without it the next turn answers again.
+    nextHistory.push(...sentMessages.map((content) => ({ role: "model" as const, content })));
     if (finalResponseText.length > 0) {
       nextHistory.push({
         role: "model",
