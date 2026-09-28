@@ -7,7 +7,7 @@ import type { ReplyWait } from "./observeMessages";
 
 const reply = (content: string): ReplyWait => ({
   kind: "reply",
-  message: { id: "m1", content, senderId: "agent", mentionIds: ["owner"] },
+  message: { id: "m1", content, senderId: "agent", mentionIds: ["user"] },
 });
 
 function roomWith(...senderIds: string[]) {
@@ -43,7 +43,7 @@ describe("assertReplyContains", () => {
 });
 
 describe("assertMessageCount", () => {
-  const room = roomWith("owner", "agent", "agent");
+  const room = roomWith("user", "agent", "agent");
 
   it.each([
     { name: "counts every captured message", count: 3, from: undefined },
