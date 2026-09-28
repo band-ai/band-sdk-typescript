@@ -18,9 +18,9 @@
     "skills"
   ],
   "scripts": {
-    "build": "pnpm --filter @band-ai/sdk build && tsup && node scripts/sync-plugin-version.js",
+    "build": "tsup && node scripts/sync-plugin-version.js",
     "dev": "tsup --watch",
-    "typecheck": "pnpm --filter @band-ai/sdk build && tsc --noEmit",
+    "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "pnpm run build && vitest run",
     "test:watch": "vitest",
