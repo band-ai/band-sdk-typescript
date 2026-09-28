@@ -7,7 +7,7 @@ import { AckTracker, wrapToolsForAck } from "./ack.js";
 import { parseAllowedSenders } from "./gating.js";
 import { createMessageHandler } from "./handler.js";
 import { LastSenderTracker, wrapToolsForMentionFallback } from "./mentions.js";
-import { BAND_INSTRUCTIONS } from "./prompt.js";
+import { buildInstructions } from "./prompt.js";
 
 /**
  * All logging must go to stderr: stdout is the MCP protocol pipe to Claude
@@ -58,7 +58,9 @@ async function main(): Promise<void> {
       experimental: { "claude/channel": {} },
       tools: {},
     },
-    instructions: BAND_INSTRUCTIONS,
+    // Task #12 threads the real AgentToolsCapabilities (enable_contacts/
+    // enable_memory) through here instead of this empty stub.
+    instructions: buildInstructions(),
   });
 
   await server.start();
