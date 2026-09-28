@@ -8,7 +8,11 @@ import { FakeTools } from "./testUtils";
 const connect = vi.fn().mockResolvedValue(undefined);
 const close = vi.fn().mockResolvedValue(undefined);
 const registerTool = vi.fn();
-const mcpServerCtor = vi.fn(function MockMcpServer(this: Record<string, unknown>) {
+const mcpServerCtor = vi.fn(function MockMcpServer(
+  this: Record<string, unknown>,
+  _serverInfo: unknown,
+  _options: unknown,
+) {
   this.connect = connect;
   this.registerTool = registerTool;
 });
