@@ -44,6 +44,46 @@ interface GoogleAdkCapture {
   createSessionCalls: Array<{ appName: string; userId: string; sessionId: string }>;
 }
 
+
+class SendMessageTools extends GoogleAdkTestTools {
+  public failSend = false;
+  public failDeliveredText: string | null = null;
+
+  public override getOpenAIToolSchemas(): Array<Record<string, unknown>> {
+    return [{
+      type: "function",
+      function: {
+        name: SEND_MESSAGE_TOOL_NAME,
+        description: "Send a message",
+        parameters: { type: "object", properties: { content: {} }, required: ["content"] },
+      },
+    }];
+  }
+
+  public override async sendMessage(content: string): Promise<Record<string, unknown>> {
+    if (this.failDeliveredText !== null && content === this.failDeliveredText) {
+      throw new Error("send failed");
+    }
+    return super.sendMessage(content);
+  }
+
+  public override async executeToolCall(toolName: string, args: Record<string, unknown>): Promise<unknown> {
+    this.executedCalls.push({ toolName, args });
+    if (toolName === SEND_MESSAGE_TOOL_NAME && this.failSend) {
+      return { ok: false, message: "send failed" };
+    }
+    return { ok: true };
+  }
+}
+
+function sendToolOf(agent: Record<string, unknown>): (input: unknown) => Promise<unknown> {
+  const tool = (agent.tools as Array<Record<string, unknown>>).find((candidate) => candidate.name === SEND_MESSAGE_TOOL_NAME);
+  if (!tool || typeof tool.execute !== "function") {
+    throw new Error("send tool was not registered");
+  }
+  return tool.execute as (input: unknown) => Promise<unknown>;
+}
+
 function createFakeGoogleAdkSdk(
   run: (agent: Record<string, unknown>, request: { userId: string; sessionId: string; newMessage: { role: "user"; parts: Array<{ text: string }> } }) => AsyncIterable<unknown>,
   capture?: GoogleAdkCapture,
@@ -165,23 +205,98 @@ describe("GoogleADKAdapter", () => {
   it("carries a reply it posted through the send tool into the next turn's context", async () => {
     const seenPrompts: string[] = [];
     const adapter = new GoogleADKAdapter({
-      sdkFactory: createFakeGoogleAdkSdk(async function* (_agent, request) {
+      sdkFactory: createFakeGoogleAdkSdk(async function* (agent, request) {
         seenPrompts.push(request.newMessage.parts[0]?.text ?? "");
         if (seenPrompts.length === 1) {
-          yield { functionCalls: [{ id: "call-1", name: SEND_MESSAGE_TOOL_NAME, args: { content: "pineapple" } }] };
+          await sendToolOf(agent)({ content: "pineapple" });
         }
         yield { final: true, text: "" };
       }),
     });
-    const tools = new GoogleAdkTestTools();
+    const tools = new SendMessageTools();
 
     await adapter.onMessage(makeMessage("Reply with: pineapple"), tools, [], null, null, { isSessionBootstrap: true, roomId: "room-1" });
     await adapter.onMessage(makeMessage("Reply with: mango"), tools, [], null, null, { isSessionBootstrap: false, roomId: "room-1" });
 
-    const [context] = seenPrompts[1]!.split("[End of previous context]");
-    expect(context!.split("\n"), "the request, then its answer as the agent's own line").toEqual(
-      expect.arrayContaining(["[User]: Reply with: pineapple", "pineapple"]),
-    );
+    expect(seenPrompts[1]).toContain("[User]: Reply with: pineapple\npineapple");
+  });
+
+  it("does not remember a send that failed", async () => {
+    const seenPrompts: string[] = [];
+    const tools = new SendMessageTools();
+    tools.failSend = true;
+    const adapter = new GoogleADKAdapter({
+      sdkFactory: createFakeGoogleAdkSdk(async function* (agent, request) {
+        seenPrompts.push(request.newMessage.parts[0]?.text ?? "");
+        if (seenPrompts.length === 1) {
+          await sendToolOf(agent)({ content: "pineapple" });
+        }
+        yield { final: true, text: "" };
+      }),
+    });
+
+    await adapter.onMessage(makeMessage("Reply with: pineapple"), tools, [], null, null, { isSessionBootstrap: true, roomId: "room-1" });
+    await adapter.onMessage(makeMessage("Reply with: mango"), tools, [], null, null, { isSessionBootstrap: false, roomId: "room-1" });
+
+    expect(seenPrompts[1]).toContain("[User]: Reply with: pineapple");
+    expect(seenPrompts[1]).not.toContain("\npineapple");
+  });
+
+  it("keeps a send that landed when the runner then throws", async () => {
+    const seenPrompts: string[] = [];
+    const adapter = new GoogleADKAdapter({
+      sdkFactory: createFakeGoogleAdkSdk(async function* (agent, request) {
+        seenPrompts.push(request.newMessage.parts[0]?.text ?? "");
+        if (seenPrompts.length === 1) {
+          await sendToolOf(agent)({ content: "pineapple" });
+          throw new Error("provider blew up");
+        }
+        yield { final: true, text: "" };
+      }),
+    });
+    const tools = new SendMessageTools();
+
+    await expect(adapter.onMessage(makeMessage("Reply with: pineapple"), tools, [], null, null, { isSessionBootstrap: true, roomId: "room-1" })).rejects.toThrow();
+    await adapter.onMessage(makeMessage("Reply with: mango"), tools, [], null, null, { isSessionBootstrap: false, roomId: "room-1" });
+
+    expect(seenPrompts[1]).toContain("[User]: Reply with: pineapple\npineapple");
+  });
+
+  it("does not remember final text that was not delivered", async () => {
+    const seenPrompts: string[] = [];
+    const adapter = new GoogleADKAdapter({
+      sdkFactory: createFakeGoogleAdkSdk(async function* (_agent, request) {
+        seenPrompts.push(request.newMessage.parts[0]?.text ?? "");
+        yield { final: true, text: seenPrompts.length === 1 ? "all done" : "" };
+      }),
+    });
+    const tools = new SendMessageTools();
+    tools.failDeliveredText = "all done";
+
+    await expect(adapter.onMessage(makeMessage("please finish"), tools, [], null, null, { isSessionBootstrap: true, roomId: "room-1" })).rejects.toThrow();
+    await adapter.onMessage(makeMessage("next question"), tools, [], null, null, { isSessionBootstrap: false, roomId: "room-1" });
+
+    expect(seenPrompts[1]).toContain("[User]: please finish");
+    expect(seenPrompts[1]).not.toContain("all done");
+  });
+
+  it("remembers the string a non-string send argument was posted as", async () => {
+    const seenPrompts: string[] = [];
+    const adapter = new GoogleADKAdapter({
+      sdkFactory: createFakeGoogleAdkSdk(async function* (agent, request) {
+        seenPrompts.push(request.newMessage.parts[0]?.text ?? "");
+        if (seenPrompts.length === 1) {
+          await sendToolOf(agent)({ content: 42 });
+        }
+        yield { final: true, text: "" };
+      }),
+    });
+    const tools = new SendMessageTools();
+
+    await adapter.onMessage(makeMessage("send a number"), tools, [], null, null, { isSessionBootstrap: true, roomId: "room-1" });
+    await adapter.onMessage(makeMessage("next question"), tools, [], null, null, { isSessionBootstrap: false, roomId: "room-1" });
+
+    expect(seenPrompts[1]).toContain("[User]: send a number\n42");
   });
 
   it("logs a warning instead of silently swallowing a failed tool-call/tool-result event send", async () => {

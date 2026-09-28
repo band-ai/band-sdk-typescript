@@ -173,6 +173,16 @@ const fakeHistory = {
   length: 0,
 } as unknown as HistoryProvider;
 
+
+/** Platform history after bootstrap holds only what was delivered to the agent. */
+function inboundOnly(...raw: PlatformMessage[]): HistoryProvider {
+  return { raw, convert: () => [], length: raw.length } as unknown as HistoryProvider;
+}
+
+function turnLines(messages: Array<Record<string, unknown>>): Array<{ role: unknown; content: unknown }> {
+  return messages.map(({ role, content }) => ({ role, content }));
+}
+
 const fakeMessage: PlatformMessage = {
   id: "m1",
   roomId: "r1",
@@ -245,32 +255,204 @@ describe("ToolCallingAdapter", () => {
     ]);
   });
 
-  it("carries what it posted into later turns, so it never re-answers an earlier request", async () => {
-    const firstRequest = { ...fakeMessage, id: "m1", content: "Reply with: pineapple" };
-    const secondRequest = { ...fakeMessage, id: "m2", content: "Reply with: mango" };
+  it("carries a send-tool reply and later final text into the following turn", async () => {
+    const pineapple = { ...fakeMessage, id: "m1", content: "Reply with: pineapple" };
+    const mango = { ...fakeMessage, id: "m2", content: "Reply with: mango" };
+    const kiwi = { ...fakeMessage, id: "m3", content: "Reply with: kiwi" };
     const seen: Array<Array<Record<string, unknown>>> = [];
     const model: ToolCallingModel = {
       complete: async (request) => {
         seen.push(request.messages ?? []);
-        // Turn 1 answers through the send tool, turn 2 in final text.
         if (seen.length === 1) {
           return { toolCalls: [{ id: "c1", name: SEND_MESSAGE_TOOL_NAME, input: { content: "pineapple" } }] };
         }
-        return { text: seen.length === 2 ? undefined : "mango" };
+        if (seen.length === 3) {
+          return { text: "mango" };
+        }
+        return {};
       },
     };
     const adapter = new OpenAIAdapter({ model });
     const tools = new FakeTools();
-    // After bootstrap the runtime's history holds only what was delivered to the agent.
-    const inboundOnly = (...raw: PlatformMessage[]) => ({ raw, convert: () => [], length: raw.length }) as unknown as HistoryProvider;
+    const room = { isSessionBootstrap: false, roomId: "r1" };
 
-    await adapter.onMessage(firstRequest, tools, inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "r1" });
-    await adapter.onMessage(secondRequest, tools, inboundOnly(firstRequest), null, null, { isSessionBootstrap: false, roomId: "r1" });
+    await adapter.onMessage(pineapple, tools, inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "r1" });
+    await adapter.onMessage(mango, tools, inboundOnly(pineapple), null, null, room);
+    await adapter.onMessage(kiwi, tools, inboundOnly(pineapple, mango), null, null, room);
 
-    expect(seen.at(-1)!.map(({ role, content }) => ({ role, content }))).toEqual([
+    expect(turnLines(seen[2]!)).toEqual([
       { role: "user", content: "[Jane]: Reply with: pineapple" },
       { role: "assistant", content: "pineapple" },
       { role: "user", content: "[Jane]: Reply with: mango" },
+    ]);
+    expect(turnLines(seen[3]!)).toEqual([
+      { role: "user", content: "[Jane]: Reply with: pineapple" },
+      { role: "assistant", content: "pineapple" },
+      { role: "user", content: "[Jane]: Reply with: mango" },
+      { role: "assistant", content: "mango" },
+      { role: "user", content: "[Jane]: Reply with: kiwi" },
+    ]);
+  });
+
+  it("leaves a failed send out of the next turn and keeps the one that landed", async () => {
+    const seen: Array<Array<Record<string, unknown>>> = [];
+    const model: ToolCallingModel = {
+      complete: async (request) => {
+        seen.push(request.messages ?? []);
+        if (seen.length === 1) {
+          return {
+            toolCalls: [
+              { id: "c1", name: SEND_MESSAGE_TOOL_NAME, input: { content: "pineapple" } },
+              { id: "c2", name: SEND_MESSAGE_TOOL_NAME, input: { content: "nope" } },
+            ],
+          };
+        }
+        return {};
+      },
+    };
+    const adapter = new OpenAIAdapter({ model });
+    const tools = new FakeTools();
+    tools.executeToolCall = async (name, args) => {
+      if (name === SEND_MESSAGE_TOOL_NAME && args.content === "nope") {
+        return { ok: false, message: "send failed" };
+      }
+      return { ok: true };
+    };
+    const next = { ...fakeMessage, id: "m2", content: "Reply with: mango" };
+
+    await adapter.onMessage(fakeMessage, tools, inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "r1" });
+    await adapter.onMessage(next, tools, inboundOnly(fakeMessage), null, null, { isSessionBootstrap: false, roomId: "r1" });
+
+    expect(turnLines(seen.at(-1)!)).toEqual([
+      { role: "user", content: "[Jane]: hello" },
+      { role: "assistant", content: "pineapple" },
+      { role: "user", content: "[Jane]: Reply with: mango" },
+    ]);
+  });
+
+  it("keeps a send that landed when a later model call throws", async () => {
+    const seen: Array<Array<Record<string, unknown>>> = [];
+    const model: ToolCallingModel = {
+      complete: async (request) => {
+        seen.push(request.messages ?? []);
+        if (seen.length === 1) {
+          return { toolCalls: [{ id: "c1", name: SEND_MESSAGE_TOOL_NAME, input: { content: "pineapple" } }] };
+        }
+        if (seen.length === 2) {
+          throw new Error("provider blew up");
+        }
+        return {};
+      },
+    };
+    const adapter = new OpenAIAdapter({ model });
+    const next = { ...fakeMessage, id: "m2", content: "Reply with: mango" };
+
+    await expect(adapter.onMessage(fakeMessage, new FakeTools(), inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "r1" })).rejects.toThrow();
+    await adapter.onMessage(next, new FakeTools(), inboundOnly(fakeMessage), null, null, { isSessionBootstrap: false, roomId: "r1" });
+
+    expect(turnLines(seen.at(-1)!)).toEqual([
+      { role: "user", content: "[Jane]: hello" },
+      { role: "assistant", content: "pineapple" },
+      { role: "user", content: "[Jane]: Reply with: mango" },
+    ]);
+  });
+
+  it("does not remember final text that was not delivered", async () => {
+    const seen: Array<Array<Record<string, unknown>>> = [];
+    const model: ToolCallingModel = {
+      complete: async (request) => {
+        seen.push(request.messages ?? []);
+        if (seen.length === 1) {
+          return { text: "all done" };
+        }
+        return {};
+      },
+    };
+    const tools = new FakeTools();
+    tools.sendMessage = async () => {
+      throw new Error("send failed");
+    };
+    const adapter = new OpenAIAdapter({ model });
+    const next = { ...fakeMessage, id: "m2", content: "next question" };
+
+    await expect(adapter.onMessage(fakeMessage, tools, inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "r1" })).rejects.toThrow();
+    await adapter.onMessage(next, new FakeTools(), inboundOnly(fakeMessage), null, null, { isSessionBootstrap: false, roomId: "r1" });
+
+    expect(turnLines(seen.at(-1)!)).toEqual([
+      { role: "user", content: "[Jane]: hello" },
+      { role: "user", content: "[Jane]: next question" },
+    ]);
+  });
+
+  it("remembers the string a non-string or empty send was posted as", async () => {
+    const seen: Array<Array<Record<string, unknown>>> = [];
+    const model: ToolCallingModel = {
+      complete: async (request) => {
+        seen.push(request.messages ?? []);
+        if (seen.length === 1) {
+          return {
+            toolCalls: [
+              { id: "c1", name: SEND_MESSAGE_TOOL_NAME, input: { content: 42 } },
+              { id: "c2", name: SEND_MESSAGE_TOOL_NAME, input: { content: "" } },
+            ],
+          };
+        }
+        return {};
+      },
+    };
+    const adapter = new OpenAIAdapter({ model });
+    const next = { ...fakeMessage, id: "m2", content: "next question" };
+
+    await adapter.onMessage(fakeMessage, new FakeTools(), inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "r1" });
+    await adapter.onMessage(next, new FakeTools(), inboundOnly(fakeMessage), null, null, { isSessionBootstrap: false, roomId: "r1" });
+
+    expect(turnLines(seen.at(-1)!)).toEqual([
+      { role: "user", content: "[Jane]: hello" },
+      { role: "assistant", content: "42" },
+      { role: "assistant", content: "" },
+      { role: "user", content: "[Jane]: next question" },
+    ]);
+  });
+
+  it("does not interleave two turns of the same room", async () => {
+    let releaseFirst: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let markStarted: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const seen: string[][] = [];
+    let calls = 0;
+    const model: ToolCallingModel = {
+      complete: async (request) => {
+        calls += 1;
+        const contents = (request.messages ?? []).map((message) => String(message.content));
+        if (calls === 1) {
+          markStarted();
+          await gate;
+        }
+        seen.push(contents);
+        return { text: calls === 1 ? "pineapple" : "mango" };
+      },
+    };
+    const adapter = new OpenAIAdapter({ model });
+    const tools = new FakeTools();
+    const mango = { ...fakeMessage, id: "m2", content: "Reply with: mango" };
+    const room = { isSessionBootstrap: false, roomId: "r1" };
+
+    const first = adapter.onMessage(fakeMessage, tools, inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "r1" });
+    await started;
+    const second = adapter.onMessage(mango, tools, inboundOnly(fakeMessage), null, null, room);
+    releaseFirst();
+    await first;
+    await second;
+
+    expect(seen[1]).toEqual([
+      "[Jane]: hello",
+      "pineapple",
+      "[Jane]: Reply with: mango",
     ]);
   });
 

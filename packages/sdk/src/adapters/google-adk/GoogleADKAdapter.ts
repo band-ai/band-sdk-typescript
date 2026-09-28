@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import { SimpleAdapter } from "../../core/simpleAdapter";
-import type { AdapterToolsProtocol } from "../../contracts/protocols";
+import { isFailedToolOutput, type AdapterToolsProtocol } from "../../contracts/protocols";
 import type { MetadataMap, ToolOperationResult } from "../../contracts/dtos";
 import { formatMessageForLlm } from "../../runtime/formatters";
 import { renderSystemPrompt } from "../../runtime/prompts";
@@ -18,6 +18,7 @@ import { asOptionalRecord } from "../shared/coercion";
 import { reportProviderTurnFailure } from "../../core/providerFailure";
 import { deliverReply } from "../../core/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
+import { createRoomTurnLock } from "../shared/roomTurnLock";
 import {
   GoogleADKHistoryConverter,
   type GoogleADKMessages,
@@ -123,14 +124,6 @@ function asToolArgs(value: unknown): Record<string, unknown> {
   return asOptionalRecord(value) ?? {};
 }
 
-/** The messages an ADK event posted to the room through the send tool. */
-function sentMessageContents(sdk: GoogleAdkSdkLike, event: unknown): string[] {
-  return sdk.getFunctionCalls(event)
-    .filter((call) => call.name === SEND_MESSAGE_TOOL_NAME)
-    .map((call) => asToolArgs(call.args).content)
-    .filter((content): content is string => typeof content === "string");
-}
-
 function stringifyToolResult(result: unknown): string {
   if (typeof result === "string") {
     return result;
@@ -205,6 +198,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
   private readonly sdkLoader: LazyAsyncValue<GoogleAdkSdkLike>;
   private readonly roomHistory = new Map<string, GoogleADKMessages>();
   private readonly roomSessions = new Map<string, string>();
+  private readonly roomTurns = createRoomTurnLock();
   private systemPrompt = "";
 
   public constructor(options: GoogleADKAdapterOptions = {}) {
@@ -251,25 +245,47 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
     contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
+    await this.roomTurns.run(context.roomId, () => this.handleTurn(
+      message,
+      tools,
+      history,
+      participantsMessage,
+      contactsMessage,
+      context,
+    ));
+  }
+
+  private async handleTurn(
+    message: PlatformMessage,
+    tools: AdapterToolsProtocol,
+    history: GoogleADKMessages,
+    participantsMessage: string | null,
+    contactsMessage: string | null,
+    context: { isSessionBootstrap: boolean; roomId: string },
+  ): Promise<void> {
     if (context.isSessionBootstrap) {
       this.roomHistory.set(context.roomId, [...history]);
     } else if (!this.roomHistory.has(context.roomId)) {
       this.roomHistory.set(context.roomId, []);
+    }
+    const roomHistory = this.roomHistory.get(context.roomId);
+    if (!roomHistory) {
+      return;
     }
 
     const prompt = this.buildPrompt(
       message,
       participantsMessage,
       contactsMessage,
-      this.roomHistory.get(context.roomId) ?? [],
+      roomHistory,
     );
 
     let finalResponseText = "";
-    const sentMessages: string[] = [];
+    const posted: string[] = [];
     try {
       const sdk = await this.sdkLoader.get();
       const runner = sdk.createRunner({
-        agent: this.buildAgent(sdk, tools),
+        agent: this.buildAgent(sdk, tools, posted),
         appName: APP_NAME,
       });
       const sessionId = randomUUID();
@@ -291,58 +307,87 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
         if (this.enableExecutionReporting) {
           await this.reportExecutionEvent(sdk, event, tools);
         }
-        sentMessages.push(...sentMessageContents(sdk, event));
         if (sdk.isFinalResponse(event)) {
           finalResponseText = sdk.stringifyContent(event);
         }
       }
     } catch (error) {
+      this.rememberExchange(context.roomId, roomHistory, message, posted);
       await reportProviderTurnFailure(tools, this.logger, this.provider, "Google ADK adapter request failed", error, { roomId: context.roomId });
+      return;
     }
 
-    const nextHistory = this.roomHistory.get(context.roomId) ?? [];
-    nextHistory.push({
-      role: "user",
-      content: this.formatIncomingMessage(message),
-    });
-    // What the agent posted through the send tool is its answer too; without it the next turn answers again.
-    nextHistory.push(...sentMessages.map((content) => ({ role: "model" as const, content })));
+    const stored = this.rememberExchange(context.roomId, roomHistory, message, posted);
     if (finalResponseText.length > 0) {
-      nextHistory.push({
-        role: "model",
-        content: finalResponseText,
-      });
       await deliverReply(tools, finalResponseText, [{ id: message.senderId }]);
+      // Only text that was delivered belongs in the next turn.
+      this.rememberModelLine(context.roomId, stored, finalResponseText);
     }
-    this.roomHistory.set(context.roomId, trimRoomHistory(nextHistory, this.maxHistoryMessages));
   }
 
   public async onCleanup(roomId: string): Promise<void> {
     this.roomHistory.delete(roomId);
     this.roomSessions.delete(roomId);
+    this.roomTurns.release(roomId);
+  }
+
+  /**
+   * Append this turn's request and the sends that already landed.
+   * Returns the array now stored for the room, or null when this turn's
+   * history was replaced (the room was cleaned up, or a later session took it).
+   */
+  private rememberExchange(
+    roomId: string,
+    roomHistory: GoogleADKMessages,
+    message: PlatformMessage,
+    posted: readonly string[],
+  ): GoogleADKMessages | null {
+    if (this.roomHistory.get(roomId) !== roomHistory) {
+      return null;
+    }
+    roomHistory.push({
+      role: "user",
+      content: this.formatIncomingMessage(message),
+    });
+    for (const content of posted) {
+      roomHistory.push({ role: "model", content });
+    }
+    const trimmed = trimRoomHistory(roomHistory, this.maxHistoryMessages);
+    this.roomHistory.set(roomId, trimmed);
+    return trimmed;
+  }
+
+  private rememberModelLine(roomId: string, roomHistory: GoogleADKMessages | null, content: string): void {
+    if (!roomHistory || this.roomHistory.get(roomId) !== roomHistory) {
+      return;
+    }
+    roomHistory.push({ role: "model", content });
+    this.roomHistory.set(roomId, trimRoomHistory(roomHistory, this.maxHistoryMessages));
   }
 
   private buildAgent(
     sdk: GoogleAdkSdkLike,
     tools: AdapterToolsProtocol,
+    posted: string[],
   ): unknown {
     return sdk.createAgent({
       name: this.agentName || "band_agent",
       model: this.apiKey ? sdk.createModel({ model: this.model, apiKey: this.apiKey }) : this.model,
       instruction: this.systemPrompt,
-      tools: this.buildTools(sdk, tools),
+      tools: this.buildTools(sdk, tools, posted),
     });
   }
 
   private buildTools(
     sdk: GoogleAdkSdkLike,
     tools: AdapterToolsProtocol,
+    posted: string[],
   ): unknown[] {
     const toolSchemas = tools.getOpenAIToolSchemas({
       includeMemory: this.enableMemoryTools,
     });
     const adkTools = toolSchemas
-      .map((schema) => this.buildPlatformTool(sdk, tools, schema))
+      .map((schema) => this.buildPlatformTool(sdk, tools, schema, posted))
       .filter((tool): tool is unknown => tool !== null);
 
     for (const customTool of this.customTools) {
@@ -356,6 +401,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
     sdk: GoogleAdkSdkLike,
     tools: AdapterToolsProtocol,
     schema: Record<string, unknown>,
+    posted: string[],
   ): unknown {
     const functionDef = asOptionalRecord(schema.function) ?? {};
     const name = functionDef?.name;
@@ -367,7 +413,15 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
       name,
       description: typeof functionDef.description === "string" ? functionDef.description : "",
       parameters: asOptionalRecord(stripAdditionalProperties(functionDef.parameters)) ?? undefined,
-      execute: async (input) => stringifyToolResult(await tools.executeToolCall(name, asToolArgs(input))),
+      execute: async (input) => {
+        const args = asToolArgs(input);
+        const result = await tools.executeToolCall(name, args);
+        // The handler posts String(content). Remember that string only when the send succeeded.
+        if (name === SEND_MESSAGE_TOOL_NAME && !isFailedToolOutput(result)) {
+          posted.push(String(args.content ?? ""));
+        }
+        return stringifyToolResult(result);
+      },
     });
   }
 

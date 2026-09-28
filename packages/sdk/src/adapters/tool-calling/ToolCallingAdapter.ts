@@ -1,6 +1,6 @@
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import {
-  isToolExecutorError,
+  isFailedToolOutput,
   type MessagingTools,
   type ToolExecutor,
   type ToolSchemaProvider,
@@ -12,6 +12,7 @@ import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { formatHistoryForLlm } from "../../runtime/formatters";
 import { SEND_MESSAGE_TOOL_NAME } from "../../runtime/tools/schemas";
 import { asErrorMessage } from "../shared/coercion";
+import { createRoomTurnLock } from "../shared/roomTurnLock";
 import { reportProviderTurnFailure } from "../../core/providerFailure";
 import { deliverReply } from "../../core/deliveryFailedError";
 import {
@@ -62,6 +63,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
   private readonly logger: Logger;
   /** Each room's conversation, carried across turns; platform history seeds it only at session bootstrap. */
   private readonly conversations = new Map<string, ToolModelMessage[]>();
+  private readonly roomTurns = createRoomTurnLock();
 
   public constructor(options: ToolCallingAdapterOptions) {
     super();
@@ -78,6 +80,24 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
   }
 
   public async onMessage(
+    message: PlatformMessage,
+    tools: ToolCallingTools,
+    history: HistoryProvider,
+    participantsMessage: string | null,
+    contactsMessage: string | null,
+    context: { isSessionBootstrap: boolean; roomId: string },
+  ): Promise<void> {
+    await this.roomTurns.run(context.roomId, () => this.handleTurn(
+      message,
+      tools,
+      history,
+      participantsMessage,
+      contactsMessage,
+      context,
+    ));
+  }
+
+  private async handleTurn(
     message: PlatformMessage,
     tools: ToolCallingTools,
     history: HistoryProvider,
@@ -164,13 +184,20 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
               output = await tools.executeToolCall(call.name, call.input);
             }
           }
-          const isError = isToolOutputError(output);
+          const isError = isFailedToolOutput(output);
           roundToolResults.push({
             toolCallId: call.id,
             name: call.name,
             output,
             isError,
           });
+          // A later provider failure throws out of this turn. Remember a post now, or the next turn answers it again.
+          if (call.name === SEND_MESSAGE_TOOL_NAME && !isError) {
+            conversation.push({
+              role: "assistant",
+              content: String(call.input.content ?? ""),
+            });
+          }
 
           if (this.enableExecutionReporting) {
             await this.reportExecutionEvent(
@@ -205,15 +232,16 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
       await reportProviderTurnFailure(tools, this.logger, this.provider, "Tool-calling adapter request failed", error, { messageId: message.id });
     }
 
-    conversation.push(...answersOf(toolRounds, text));
-
     if (text) {
       await deliverReply(tools, text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
+      // Only text that was actually delivered belongs in the next turn.
+      conversation.push({ role: "assistant", content: text });
     }
   }
 
   public override async onCleanup(roomId: string): Promise<void> {
     this.conversations.delete(roomId);
+    this.roomTurns.release(roomId);
   }
 
   /** The room's conversation so far, seeded from platform history at session bootstrap (without the current message). */
@@ -283,40 +311,6 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
       });
     }
   }
-}
-
-/**
- * What the agent said in the room this turn, as its own turns: every message it
- * posted through the send tool, then its final text. Without these the next
- * turn sees this turn's request as still unanswered.
- */
-function answersOf(toolRounds: ToolRound[], text: string | undefined): ToolModelMessage[] {
-  const sent = toolRounds.flatMap(({ toolCalls, toolResults }) =>
-    toolCalls
-      .filter((call) => call.name === SEND_MESSAGE_TOOL_NAME)
-      .filter((call) => !toolResults.find((result) => result.toolCallId === call.id)?.isError)
-      .map((call) => call.input.content),
-  );
-  return [...sent, text]
-    .filter((content): content is string => typeof content === "string" && content.length > 0)
-    .map((content) => ({ role: "assistant", content }));
-}
-
-function isToolOutputError(output: unknown): boolean {
-  if (isToolExecutorError(output)) {
-    return true;
-  }
-
-  if (typeof output === "string") {
-    const lower = output.toLowerCase();
-    return lower.startsWith("error:") || lower.startsWith("error executing ");
-  }
-
-  if (output && typeof output === "object" && "ok" in output) {
-    return (output as Record<string, unknown>).ok === false;
-  }
-
-  return false;
 }
 
 export function runSingleToolRound(
