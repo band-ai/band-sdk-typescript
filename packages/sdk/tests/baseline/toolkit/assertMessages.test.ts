@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { MessageCreatedPayload } from "../../../src/platform/events";
 import { RecordLog } from "../../testUtils";
-import { assertMessageCount, assertReplyContains } from "./assertMessages";
+import { assertMessageCount, assertReplied, assertReplyContains } from "./assertMessages";
 import type { ReplyWait } from "./observeMessages";
 
 const reply = (content: string): ReplyWait => ({
@@ -38,7 +38,12 @@ describe("assertReplyContains", () => {
   });
 
   it("fails naming the wait when no reply came", () => {
-    expect(() => assertReplyContains({ kind: "timeout", waitedMs: 5 }, "pineapple")).toThrow("no reply within 5ms");
+    expect(() => assertReplyContains({ kind: "timeout", waitedMs: 5, failures: [] }, "pineapple")).toThrow("no reply within 5ms");
+  });
+
+  it("names what the agent reported failing while no reply came", () => {
+    const timedOut = { kind: "timeout" as const, waitedMs: 5, failures: ["ACP turn ended with stop reason: cancelled."] };
+    expect(() => assertReplied(timedOut)).toThrow("no reply within 5ms; the agent reported: ACP turn ended with stop reason: cancelled.");
   });
 });
 

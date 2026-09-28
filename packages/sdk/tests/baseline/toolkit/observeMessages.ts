@@ -6,6 +6,7 @@
  */
 import type { Band } from "@band-ai/rest-client";
 
+import { FAILURE_EVENT_TYPE } from "../../../src/contracts/protocols";
 import type { MessageCreatedPayload } from "../../../src/platform/events";
 import { LIVE_EVENT_TIMEOUT_MS } from "../../integration/support/liveHarness";
 import type { AgentIdentity } from "./agents";
@@ -25,7 +26,8 @@ export interface CapturedMessage {
 
 export type ReplyWait =
   | { kind: "reply"; message: CapturedMessage }
-  | { kind: "timeout"; waitedMs: number };
+  /** `failures`: what the agent reported failing in the room meanwhile, the likeliest reason. */
+  | { kind: "timeout"; waitedMs: number; failures: string[] };
 
 type MessageRecord = Pick<MessageCreatedPayload, "id" | "content" | "sender_id" | "message_type"> & {
   metadata?: Record<string, unknown> & { mentions?: Array<{ id?: string }> };
@@ -92,7 +94,11 @@ export function observeRoom(room: Room) {
       throw new Error("a reply wait needs a posted message to answer; send one with Rooms.sendMention first");
     }
     const message = await waitFor(room.messages, () => replyAfter(room.messages.entries, after.id, from.id, matches), timeoutMs);
-    return message ? { kind: "reply", message } : { kind: "timeout", waitedMs: timeoutMs };
+    if (message) {
+      return { kind: "reply", message };
+    }
+    const failures = (await history(room, FAILURE_EVENT_TYPE)).filter((event) => event.senderId === from.id);
+    return { kind: "timeout", waitedMs: timeoutMs, failures: failures.map((event) => event.content) };
   };
 
   return {

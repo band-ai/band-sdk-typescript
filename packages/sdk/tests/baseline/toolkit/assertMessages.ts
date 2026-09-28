@@ -11,7 +11,8 @@ import type { Room } from "./rooms";
 /** Fails unless the wait captured a reply; narrows it to that reply. */
 export function assertReplied(reply: ReplyWait): asserts reply is { kind: "reply"; message: CapturedMessage } {
   if (reply.kind === "timeout") {
-    throw new Error(`no reply within ${reply.waitedMs}ms`);
+    const reported = reply.failures.length > 0 ? `; the agent reported: ${reply.failures.join(" | ")}` : "";
+    throw new Error(`no reply within ${reply.waitedMs}ms${reported}`);
   }
 }
 

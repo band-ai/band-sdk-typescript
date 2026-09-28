@@ -91,6 +91,15 @@ jobs:
           name: baseline-scorecard
           path: scorecard/
 
+      # OMP logs its turns (provider errors included) to its own files, never to the test output.
+      - name: Upload OMP logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: omp-logs
+          path: ~/.omp/logs/
+          if-no-files-found: ignore
+
       - name: Scorecard to the job summary
         if: ${{ !cancelled() && hashFiles('scorecard/scorecard.md') != '' }}
         run: cat "$SCORECARD_MD" >> "$GITHUB_STEP_SUMMARY"

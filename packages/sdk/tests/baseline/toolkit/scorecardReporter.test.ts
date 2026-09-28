@@ -53,6 +53,7 @@ describe("scorecardRows", () => {
       reason: "set RUN_CODEX_ACP_E2E=1",
     });
     expect(scorecardRows(reported("platform.repliesToMention", "anthropic", filtered))).toEqual([]);
+    expect(scorecardRows(reported("platform.repliesToMention", "letta", filtered)), "a filtered-out pending adapter").toEqual([]);
   });
 
   it.each([
