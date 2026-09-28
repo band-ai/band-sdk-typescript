@@ -86,6 +86,17 @@ export class BandMcpStdioServer {
     this.transport = null;
     this.mcpServer = null;
   }
+
+  /**
+   * Push a server-initiated notification (e.g. `notifications/claude/channel`)
+   * to the connected client. Requires `start()` to have already run.
+   */
+  public async notify(method: string, params?: Record<string, unknown>): Promise<void> {
+    if (!this.mcpServer) {
+      throw new Error("BandMcpStdioServer.notify called before start()");
+    }
+    await this.mcpServer.server.notification({ method, params });
+  }
 }
 
 function registerTools(
