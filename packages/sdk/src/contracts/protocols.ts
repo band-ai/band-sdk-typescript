@@ -206,6 +206,24 @@ export function isToolExecutorError(value: unknown): value is ToolExecutorError 
   );
 }
 
+/** A tool result the model should treat as a failed call: a structured `{ ok: false }`, or a legacy error string. */
+export function isFailedToolOutput(output: unknown): boolean {
+  if (isToolExecutorError(output)) {
+    return true;
+  }
+
+  if (typeof output === "string") {
+    const lower = output.toLowerCase();
+    return lower.startsWith("error:") || lower.startsWith("error executing ");
+  }
+
+  if (output && typeof output === "object" && "ok" in output) {
+    return (output as Record<string, unknown>).ok === false;
+  }
+
+  return false;
+}
+
 /** An `{ok:false}` result carrying a human-readable `message`, not yet shaped as a `ToolExecutorError`. */
 export function isStructuredToolFailure(value: unknown): value is { ok: false; message: string } {
   if (!value || typeof value !== "object") {

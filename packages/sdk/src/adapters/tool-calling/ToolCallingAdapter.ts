@@ -1,6 +1,6 @@
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import {
-  isToolExecutorError,
+  isFailedToolOutput,
   type MessagingTools,
   type ToolExecutor,
   type ToolSchemaProvider,
@@ -10,7 +10,9 @@ import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { formatHistoryForLlm } from "../../runtime/formatters";
+import { postedSendContent } from "../../runtime/tools/schemas";
 import { asErrorMessage } from "../shared/coercion";
+import { createRoomTurnLock } from "../shared/roomTurnLock";
 import { reportProviderTurnFailure } from "../../core/providerFailure";
 import { deliverReply } from "../../core/deliveryFailedError";
 import {
@@ -59,6 +61,9 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
   private readonly customTools: CustomToolDef[];
   private readonly customToolIndex: Map<string, CustomToolDef>;
   private readonly logger: Logger;
+  /** Each room's conversation, carried across turns; platform history seeds it only at session bootstrap. */
+  private readonly conversations = new Map<string, ToolModelMessage[]>();
+  private readonly roomTurns = createRoomTurnLock();
 
   public constructor(options: ToolCallingAdapterOptions) {
     super();
@@ -80,8 +85,29 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     history: HistoryProvider,
     participantsMessage: string | null,
     contactsMessage: string | null,
-    _context: { isSessionBootstrap: boolean; roomId: string },
+    context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
+    await this.roomTurns.run(context.roomId, () => this.handleTurn(
+      message,
+      tools,
+      history,
+      participantsMessage,
+      contactsMessage,
+      context,
+    ));
+  }
+
+  private async handleTurn(
+    message: PlatformMessage,
+    tools: ToolCallingTools,
+    history: HistoryProvider,
+    participantsMessage: string | null,
+    contactsMessage: string | null,
+    context: { isSessionBootstrap: boolean; roomId: string },
+  ): Promise<void> {
+    const conversation = this.conversationFor(context, history, message);
+    conversation.push(this.userTurn(message));
+    const toolRounds: ToolRound[] = [];
     let text: string | undefined;
     try {
       const platformSchemas = tools.getToolSchemas(this.toolFormat, {
@@ -90,9 +116,8 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
       const customSchemas = customToolsToSchemas(this.customTools, this.toolFormat);
       const schemas = [...platformSchemas, ...customSchemas];
 
-      const messages = this.buildMessages(history, message, participantsMessage, contactsMessage);
-
-      const toolRounds: ToolRound[] = [];
+      // Notices are for this turn only. The durable conversation keeps what was said in the room.
+      const messages = [...conversation, ...this.turnNotices(participantsMessage, contactsMessage)];
 
       let response = await this.model.complete({
         systemPrompt: this.systemPrompt,
@@ -160,13 +185,18 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
               output = await tools.executeToolCall(call.name, call.input);
             }
           }
-          const isError = isToolOutputError(output);
+          const isError = isFailedToolOutput(output);
           roundToolResults.push({
             toolCallId: call.id,
             name: call.name,
             output,
             isError,
           });
+          // A later provider failure throws out of this turn. Remember a post now, or the next turn answers it again.
+          const posted = postedSendContent(call.name, call.input.content, isError);
+          if (posted !== undefined) {
+            conversation.push({ role: "assistant", content: posted });
+          }
 
           if (this.enableExecutionReporting) {
             await this.reportExecutionEvent(
@@ -203,37 +233,56 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
 
     if (text) {
       await deliverReply(tools, text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
+      // Only text that was actually delivered belongs in the next turn.
+      conversation.push({ role: "assistant", content: text });
     }
   }
 
-  private buildMessages(
+  public override async onCleanup(roomId: string): Promise<void> {
+    this.conversations.delete(roomId);
+    this.roomTurns.release(roomId);
+  }
+
+  /** The room's conversation so far, seeded from platform history at session bootstrap (without the current message). */
+  private conversationFor(
+    context: { isSessionBootstrap: boolean; roomId: string },
     history: HistoryProvider,
     message: PlatformMessage,
+  ): ToolModelMessage[] {
+    const existing = this.conversations.get(context.roomId);
+    if (existing && !context.isSessionBootstrap) {
+      return existing;
+    }
+    const seeded = context.isSessionBootstrap
+      ? formatHistoryForLlm(history.raw, { excludeId: message.id }).map((entry) => this.asConversationTurn(entry))
+      : [];
+    this.conversations.set(context.roomId, seeded);
+    return seeded;
+  }
+
+  private userTurn(message: PlatformMessage): ToolModelMessage {
+    return this.asConversationTurn({
+      role: "user",
+      content: message.content,
+      sender_name: message.senderName,
+      sender_type: message.senderType,
+      message_type: message.messageType,
+      metadata: message.metadata,
+    });
+  }
+
+  private turnNotices(
     participantsMessage: string | null,
     contactsMessage: string | null,
   ): ToolModelMessage[] {
-    const base = formatHistoryForLlm(history.raw).map((entry) => this.asConversationTurn(entry));
-    const historyAlreadyContainsMessage = history.raw.some((entry) => entry.id === message.id);
-    if (!historyAlreadyContainsMessage) {
-      base.push(this.asConversationTurn({
-        role: "user",
-        content: message.content,
-        sender_name: message.senderName,
-        sender_type: message.senderType,
-        message_type: message.messageType,
-        metadata: message.metadata,
-      }));
-    }
-
+    const notices: ToolModelMessage[] = [];
     if (participantsMessage) {
-      base.push({ role: "system", content: participantsMessage });
+      notices.push({ role: "system", content: participantsMessage });
     }
-
     if (contactsMessage) {
-      base.push({ role: "system", content: contactsMessage });
+      notices.push({ role: "system", content: contactsMessage });
     }
-
-    return base;
+    return notices;
   }
 
   /**
@@ -264,23 +313,6 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
       });
     }
   }
-}
-
-function isToolOutputError(output: unknown): boolean {
-  if (isToolExecutorError(output)) {
-    return true;
-  }
-
-  if (typeof output === "string") {
-    const lower = output.toLowerCase();
-    return lower.startsWith("error:") || lower.startsWith("error executing ");
-  }
-
-  if (output && typeof output === "object" && "ok" in output) {
-    return (output as Record<string, unknown>).ok === false;
-  }
-
-  return false;
 }
 
 export function runSingleToolRound(
