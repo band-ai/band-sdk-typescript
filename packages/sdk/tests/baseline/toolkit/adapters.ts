@@ -102,6 +102,11 @@ export function buildOpencode({ prompt, workDir }: BuildOptions, config: Opencod
   });
 }
 
+/** A scenario's custom tools, with every call reported as a `tool_call` event the scenario can read back. */
+function reportedTools(tools: BuildOptions["customTools"] = []) {
+  return { customTools: [...tools], enableExecutionReporting: tools.length > 0 };
+}
+
 /** A builder for an adapter that cannot run yet; it names why instead of half-building one. */
 function unbuildable(reason: string): () => never {
   return () => {
@@ -114,8 +119,9 @@ const SPECS = {
   anthropic: {
     id: "anthropic",
     requires: [ANTHROPIC_KEY, requires.peerPackage("@anthropic-ai/sdk")],
-    supports: [],
-    build: ({ prompt }) => new AnthropicAdapter({ anthropicModel: ANTHROPIC_MODEL, systemPrompt: prompt }),
+    supports: [CAPABILITY.customTools],
+    build: ({ prompt, customTools }) =>
+      new AnthropicAdapter({ anthropicModel: ANTHROPIC_MODEL, systemPrompt: prompt, ...reportedTools(customTools) }),
   },
   claudeSdk: {
     id: "claude-sdk",
@@ -158,14 +164,18 @@ const SPECS = {
   gemini: {
     id: "gemini",
     requires: [GOOGLE_KEY, requires.peerPackage("@google/genai")],
-    supports: [],
-    build: ({ prompt }) => new GeminiAdapter({ geminiModel: GEMINI_MODEL, apiKey: googleApiKey(), systemPrompt: prompt }),
+    supports: [CAPABILITY.customTools],
+    build: ({ prompt, customTools }) =>
+      new GeminiAdapter({ geminiModel: GEMINI_MODEL, apiKey: googleApiKey(), systemPrompt: prompt, ...reportedTools(customTools) }),
   },
   googleAdk: {
     id: "google-adk",
     requires: [GOOGLE_KEY, requires.peerPackage("@google/adk")],
-    supports: [],
-    build: ({ prompt }) => new GoogleADKAdapter({ model: GEMINI_MODEL, apiKey: googleApiKey(), systemPrompt: prompt }),
+    supports: [CAPABILITY.customTools],
+    build: ({ prompt, customTools }) => {
+      const { customTools: additionalTools, enableExecutionReporting } = reportedTools(customTools);
+      return new GoogleADKAdapter({ model: GEMINI_MODEL, apiKey: googleApiKey(), systemPrompt: prompt, additionalTools, enableExecutionReporting });
+    },
   },
   kiroAcp: {
     id: "kiro-acp",
@@ -198,9 +208,9 @@ const SPECS = {
   openai: {
     id: "openai",
     requires: [requires.envVar(ENV.openaiKey), requires.peerPackage("openai")],
-    supports: [],
+    supports: [CAPABILITY.customTools],
     pending: "needs an OPENAI_API_KEY provisioned in CI",
-    build: ({ prompt }) => new OpenAIAdapter({ openAIModel: OPENAI_MODEL, systemPrompt: prompt }),
+    build: ({ prompt, customTools }) => new OpenAIAdapter({ openAIModel: OPENAI_MODEL, systemPrompt: prompt, ...reportedTools(customTools) }),
   },
   opencode: {
     id: "opencode",

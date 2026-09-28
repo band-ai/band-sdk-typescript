@@ -82,7 +82,8 @@ async function history(room: Room, messageType?: MessageType): Promise<CapturedM
     messages.push(...page.data.map((message) => captured(message as MessageRecord)));
     cursor = page.metadata.has_more ? page.metadata.next_cursor : undefined;
   } while (cursor);
-  return messages;
+  // The platform lists newest first.
+  return messages.reverse();
 }
 
 export interface ReplyWaitOptions {

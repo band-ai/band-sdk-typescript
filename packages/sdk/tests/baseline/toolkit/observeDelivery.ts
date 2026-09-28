@@ -52,36 +52,44 @@ function deliveryState(delivery: RecipientDelivery): DeliveryState {
   }
 }
 
-/** The latest delivery state of `messageId` for `recipientId` among the captured updates. */
-function latestState(updates: readonly MessageCreatedPayload[], messageId: string, recipientId: string): DeliveryState {
-  const latest = updates
+/** Every delivery state of `messageId` for `recipientId` among the captured updates, in arrival order. */
+function statesOf(updates: readonly MessageCreatedPayload[], messageId: string, recipientId: string): DeliveryState[] {
+  return updates
     .filter((update) => update.id === messageId)
     .map((update) => (update.metadata?.delivery_status as Record<string, RecipientDelivery> | undefined)?.[recipientId])
     .filter((delivery) => delivery !== undefined)
-    .at(-1);
-  return latest ? deliveryState(latest) : { status: DELIVERY_STATUS.unobserved };
+    .map(deliveryState);
 }
 
-export function observeAgent(agent: AgentIdentity, room: Room) {
+export function observeAgent(agent: Pick<AgentIdentity, "id">, room: Pick<Room, "deliveryUpdates">) {
+  const states = (message: SentMessage) => statesOf(room.deliveryUpdates.entries, message.id, agent.id);
+  /** The state `message` is in now, from the updates already captured; never waits. */
+  const current = (message: SentMessage): DeliveryState => states(message).at(-1) ?? { status: DELIVERY_STATUS.unobserved };
+
   /** The state `message` reached for this agent: `status`, or the last one seen when the wait timed out. */
   const untilStatus = async (
     message: SentMessage,
     status: DeliveryStatus,
     timeoutMs = LIVE_EVENT_TIMEOUT_MS,
   ): Promise<DeliveryState> => {
-    const current = () => latestState(room.deliveryUpdates.entries, message.id, agent.id);
     const reached = await waitFor(
       room.deliveryUpdates,
       () => {
-        const state = current();
+        const state = current(message);
         return state.status === status ? state : undefined;
       },
       timeoutMs,
     );
-    return reached ?? current();
+    return reached ?? current(message);
   };
 
   return {
+    status: current,
+    /** The statuses `message` passed through for this agent, in order, each repeat collapsed. */
+    history: (message: SentMessage): DeliveryStatus[] =>
+      states(message)
+        .map((state) => state.status)
+        .filter((status, index, all) => status !== all[index - 1]),
     untilStatus,
     /** The common barrier: the turn finished and its durable state is saved. */
     untilProcessed: (message: SentMessage, timeoutMs?: number) => untilStatus(message, DELIVERY_STATUS.processed, timeoutMs),
