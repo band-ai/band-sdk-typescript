@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ClaudeSDKAdapter,
   DENIED_CLAUDE_CODE_TOOLS,
-  ISOLATION_SETTINGS,
   TOOL_SEARCH,
   type ClaudeSDKAdapterOptions,
   type ClaudeSDKQueryParams,
@@ -137,7 +136,8 @@ describe("ClaudeSDKAdapter", () => {
 
       expect(options?.settingSources).toEqual([]);
       expect(options?.disallowedTools).toEqual([...DENIED_CLAUDE_CODE_TOOLS, TOOL_SEARCH]);
-      expect(options?.settings).toEqual(ISOLATION_SETTINGS);
+      // Spelled out, not ISOLATION_SETTINGS: the contract must fail if the constant loses a key.
+      expect(options?.settings).toMatchObject({ crossSessionInbound: "refuse", disableClaudeAiConnectors: true });
     });
 
     it("forwards the caller's settingSources unchanged", async () => {
