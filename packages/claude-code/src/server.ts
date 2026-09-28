@@ -3,6 +3,7 @@ import type { Logger } from "@band-ai/sdk/core";
 import { BandMcpStdioServer } from "@band-ai/sdk/mcp";
 import { AgentRuntime } from "@band-ai/sdk/runtime";
 
+import { AckTracker } from "./ack.js";
 import { parseAllowedSenders, sanitizeMeta, shouldForwardMessage } from "./gating.js";
 import { BAND_INSTRUCTIONS } from "./prompt.js";
 
@@ -54,6 +55,7 @@ async function main(): Promise<void> {
   const ownerId = me.ownerUuid ?? null;
   const allowedSenderIds = parseAllowedSenders(process.env.BAND_ALLOWED_SENDERS);
   const self = { id: selfAgentId, name: me.name, handle: me.handle };
+  const ackTracker = new AckTracker(link, stderrLogger);
 
   const runtime = new AgentRuntime({
     link,
@@ -97,9 +99,15 @@ async function main(): Promise<void> {
         roomParticipantIds,
       });
 
-      // The processing->processed ack lifecycle (task #5) lands as its own
-      // follow-up commit, for both the forwarded and gated-out paths below.
-      if (!forward) return;
+      if (!forward) {
+        await ackTracker.markGatedOut(context.roomId, payload.id);
+        return;
+      }
+
+      // Mark processing before the push, not after: a crash between the two
+      // would otherwise leave the message stuck at `sent`, which the backlog
+      // catch-up sweep does not distinguish from "never seen".
+      await ackTracker.markPushed(context.roomId, payload.id);
 
       try {
         await server.notify("notifications/claude/channel", {
