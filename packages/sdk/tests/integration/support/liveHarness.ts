@@ -175,17 +175,24 @@ export class EventRecordingRest extends FernRestAdapter {
   }
 }
 
-/** Posts `text` to the room as `rest`'s agent, @mentioning `recipient` so it is delivered to them. */
+/**
+ * Posts `text` to the room as `rest`'s agent, @mentioning `recipient` so it is
+ * delivered to them. Resolves with the posted message's id.
+ */
 export async function sendMentionedMessage(
   rest: FernRestAdapter,
   roomId: string,
-  recipient: ProvisionedAgent,
+  recipient: Pick<ProvisionedAgent, "id" | "name">,
   text: string,
-): Promise<void> {
-  await rest.createChatMessage(roomId, {
+): Promise<string> {
+  const created = await rest.createChatMessage(roomId, {
     content: `@${recipient.name} ${text}`,
     mentions: [{ id: recipient.id, handle: recipient.name }],
   });
+  if (typeof created.id !== "string") {
+    throw new Error(`createChatMessage returned no message id for room ${roomId}`);
+  }
+  return created.id;
 }
 
 export interface ProvisionedAgent {

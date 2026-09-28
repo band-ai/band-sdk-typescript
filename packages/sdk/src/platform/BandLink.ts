@@ -48,7 +48,7 @@ export interface BandLinkOptions {
   conflictPolicy?: WebSocketConflictPolicy;
 }
 
-const DEFAULT_WS_URL = "wss://app.band.ai/api/v1/socket";
+export const DEFAULT_WS_URL = "wss://app.band.ai/api/v1/socket";
 
 export function deriveDefaultRestUrl(wsUrl: string): string {
   const parsed = new URL(wsUrl);
