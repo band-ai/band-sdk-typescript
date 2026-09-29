@@ -180,7 +180,6 @@ const SPECS = {
     id: "cursor-acp",
     requires: [ACP_SDK, requires.cli(DEFAULT_CURSOR_ACP_COMMAND[0]), requires.envVar(ENV.cursorKey)],
     supports: [],
-    pending: "needs the Cursor agent CLI and a CURSOR_API_KEY provisioned in CI",
     build: ({ prompt, workDir }) =>
       new CursorACPAdapter({ cwd: workDir, customSection: prompt, apiKey: process.env[ENV.cursorKey] }),
   },

@@ -69,6 +69,12 @@ jobs:
       - name: Install adapter CLIs
         run: npm install --global @oh-my-pi/pi-coding-agent opencode-ai @github/copilot
 
+      # Cursor ships its CLI (`agent`) as an installer script, not an npm package.
+      - name: Install the Cursor agent CLI
+        run: |
+          curl https://cursor.com/install -fsS | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
@@ -97,6 +103,7 @@ jobs:
           GOOGLE_API_KEY: ${{ secrets.E2E_GOOGLE_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.E2E_ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.E2E_OPENAI_API_KEY }}
+          CURSOR_API_KEY: ${{ secrets.E2E_CURSOR_API_KEY }}
           COPILOT_PROVIDER_TYPE: anthropic
           COPILOT_PROVIDER_BASE_URL: https://api.anthropic.com
           COPILOT_PROVIDER_API_KEY: ${{ secrets.E2E_ANTHROPIC_API_KEY }}
