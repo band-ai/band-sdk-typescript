@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { LangGraphAdapter } from "../src/adapters/langgraph";
+import { MEMORY_SECTION } from "../src/runtime/prompts";
 import { HistoryProvider } from "../src/runtime/types";
 import { FakeTools, makeMessage, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
@@ -24,6 +25,28 @@ function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
       yield item;
     }
   })();
+}
+
+/** Tools whose one schema is band_send_message, so the adapter builds a send tool for the graph. */
+class FakeToolsWithSchemas extends FakeTools {
+  public getToolSchemas(): Array<Record<string, unknown>> {
+    return [
+      {
+        type: "function",
+        function: {
+          name: "band_send_message",
+          description: "Send a message",
+          parameters: {
+            type: "object",
+            properties: {
+              content: { type: "string" },
+            },
+            required: ["content"],
+          },
+        },
+      },
+    ];
+  }
 }
 
 describe("LangGraphAdapter", () => {
@@ -60,27 +83,6 @@ describe("LangGraphAdapter", () => {
     langGraphMocks.createReactAgent.mockReturnValue(graph);
     langGraphMocks.tool.mockImplementation((_fn, fields) => ({ name: fields.name }));
 
-    class FakeToolsWithSchemas extends FakeTools {
-      public getToolSchemas(): Array<Record<string, unknown>> {
-        return [
-          {
-            type: "function",
-            function: {
-              name: "band_send_message",
-              description: "Send a message",
-              parameters: {
-                type: "object",
-                properties: {
-                  content: { type: "string" },
-                },
-                required: ["content"],
-              },
-            },
-          },
-        ];
-      }
-    }
-
     const llm = { provider: "test-llm" };
     const adapter = new LangGraphAdapter({ llm });
     await adapter.onStarted("LangGraph Agent", "Graph-backed assistant");
@@ -107,6 +109,34 @@ describe("LangGraphAdapter", () => {
     expect(typeof args.prompt).toBe("string");
     expect(args.prompt).toContain("LangGraph Agent");
     expect(tools.messages).toEqual(["SDK graph reply"]);
+  });
+
+  it.each([
+    { sendResult: { ok: true }, delivered: [] },
+    { sendResult: { ok: false, message: "unknown mention" }, delivered: ["Posted it."] },
+  ])("treats a band_send_message post as the reply, its final text as a fallback (send: $sendResult)", async ({ sendResult, delivered }) => {
+    langGraphMocks.createReactAgent.mockReset();
+    langGraphMocks.tool.mockReset();
+    langGraphMocks.tool.mockImplementation((_fn, fields) => ({ name: fields.name }));
+    langGraphMocks.createReactAgent.mockReturnValue({
+      async invoke() {
+        // The model calls the send tool the adapter built, then narrates it.
+        const [runSend] = langGraphMocks.tool.mock.calls[0] as [(args: Record<string, unknown>) => Promise<unknown>];
+        await runSend({ content: "Hello!" });
+        return { messages: [["assistant", "Posted it."]] };
+      },
+    });
+
+    const adapter = new LangGraphAdapter({ llm: { provider: "test-llm" } });
+    await adapter.onStarted("LangGraph Agent", "Graph-backed assistant");
+    const tools = new FakeToolsWithSchemas();
+    tools.executeToolCall = async () => sendResult;
+    await adapter.onMessage(makeMessage("hello"), tools, new HistoryProvider([]), null, null, {
+      isSessionBootstrap: true,
+      roomId: "room-posted",
+    });
+
+    expect(tools.messages).toEqual(delivered);
   });
 
   it("builds bootstrap messages and forwards final assistant text", async () => {
@@ -144,6 +174,38 @@ describe("LangGraphAdapter", () => {
       "hello",
     ]);
     expect(tools.messages).toEqual(["LangGraph reply"]);
+  });
+
+  describe("memory guidance in a raw system prompt", () => {
+    const RAW_PROMPT = "You are a terse assistant.";
+
+    /** The system message the graph is invoked with, for a raw `systemPrompt`. */
+    async function systemMessageFor(includeMemoryTools: boolean): Promise<string | undefined> {
+      const invokeCalls: Array<{ messages?: Array<[string, string]> }> = [];
+      const graph = {
+        async invoke(input: Record<string, unknown>) {
+          invokeCalls.push(input as { messages?: Array<[string, string]> });
+          return { messages: [["assistant", "ok"]] };
+        },
+      };
+      const adapter = new LangGraphAdapter({ graph, systemPrompt: RAW_PROMPT, includeMemoryTools });
+      await adapter.onStarted("LangGraph Agent", "Graph-backed assistant");
+      await adapter.onMessage(makeMessage("remember this", "room-memory"), new FakeTools(), new HistoryProvider([]), null, null, {
+        isSessionBootstrap: true,
+        roomId: "room-memory",
+      });
+      return invokeCalls[0]?.messages?.find(([role]) => role === "system")?.[1];
+    }
+
+    it("adds the guidance when memory tools are exposed", async () => {
+      const system = await systemMessageFor(true);
+      expect(system).toContain(RAW_PROMPT);
+      expect(system).toContain(MEMORY_SECTION);
+    });
+
+    it("leaves the prompt as given when they are not", async () => {
+      expect(await systemMessageFor(false)).toBe(RAW_PROMPT);
+    });
   });
 
   it("replays history on follow-ups with the triggering message kept exactly once, last", async () => {

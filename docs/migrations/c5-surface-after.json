@@ -254,7 +254,6 @@
         "OpenAIToolCallingModel",
         "OpencodeAdapter",
         "ParlantAdapter",
-        "ParlantHistoryConverter",
         "ToolCallingAdapter",
         "VercelAISDKAdapter",
         "VercelAISDKToolCallingModel",
@@ -389,9 +388,6 @@
         "ParlantAdapterOptions",
         "ParlantClientFactory",
         "ParlantClientLike",
-        "ParlantHistoryConverter",
-        "ParlantMessage",
-        "ParlantMessages",
         "PendingA2ATask",
         "ToolCall",
         "ToolCallingAdapter",
@@ -498,7 +494,6 @@
         "GoogleADKHistoryConverter",
         "LangChainHistoryConverter",
         "OpencodeHistoryConverter",
-        "ParlantHistoryConverter",
         "VercelAISDKHistoryConverter",
         "buildA2AAuthHeaders",
         "extractClaudeSessionId",
@@ -535,9 +530,6 @@
         "LangChainMessages",
         "OpencodeHistoryConverter",
         "OpencodeSessionState",
-        "ParlantHistoryConverter",
-        "ParlantMessage",
-        "ParlantMessages",
         "VercelAISDKHistoryConverter",
         "VercelAISDKMessage",
         "VercelAISDKMessages",
@@ -713,7 +705,8 @@
         "renderSystemPrompt",
         "replaceUuidMentions",
         "runWithGracefulShutdown",
-        "sessionConfigSchema"
+        "sessionConfigSchema",
+        "withMemoryGuidance"
       ],
       "declarations": [
         "ALL_TOOL_NAMES",
@@ -783,7 +776,8 @@
         "renderSystemPrompt",
         "replaceUuidMentions",
         "runWithGracefulShutdown",
-        "sessionConfigSchema"
+        "sessionConfigSchema",
+        "withMemoryGuidance"
       ]
     },
     "./testing": {

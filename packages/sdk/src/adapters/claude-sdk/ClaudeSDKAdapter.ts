@@ -1,3 +1,13 @@
+import type {
+  McpSdkServerConfigWithInstance,
+  Options,
+  SDKAssistantMessage,
+  SDKMessage,
+  SDKResultMessage,
+  SettingSource,
+  Settings,
+} from "@anthropic-ai/claude-agent-sdk";
+
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
@@ -5,7 +15,7 @@ import { resolveLogger } from "../../core/logger";
 import { UnsupportedFeatureError } from "../../core/errors";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import { mcpToolNames, MCP_SERVER_NAME } from "../../runtime/tools/schemas";
+import { mcpToolNames, MCP_SERVER_NAME, postedSendContent } from "../../runtime/tools/schemas";
 import { agentFailure, reportProviderTurnFailure, reportTurnFailure, safeSendFailure } from "../../core/providerFailure";
 import { deliverReply } from "../../core/deliveryFailedError";
 import { buildConversationPrompt } from "../shared/conversationPrompt";
@@ -18,51 +28,32 @@ import {
 import { buildZodShape } from "../../mcp/zod";
 import { z } from "zod";
 
-export type ClaudePermissionMode =
-  | "default"
-  | "acceptEdits"
-  | "bypassPermissions"
-  | "plan"
-  | "dontAsk";
+export type ClaudePermissionMode = NonNullable<Options["permissionMode"]>;
 
-interface ClaudeAssistantTextBlock {
-  type?: string;
-  text?: string;
-}
-
-interface ClaudeAssistantMessage {
-  content: ClaudeAssistantTextBlock[];
-}
-
-interface ClaudeSDKMessageLike {
-  type: string;
-  session_id?: string;
-  subtype?: string;
-  is_error?: boolean;
-  result?: unknown;
-  summary?: string;
-  message?: ClaudeAssistantMessage;
-  [key: string]: unknown;
-}
-
-interface ClaudeQueryOptions {
-  model?: string;
-  permissionMode?: ClaudePermissionMode;
-  systemPrompt?: string;
-  allowDangerouslySkipPermissions?: boolean;
-  maxThinkingTokens?: number;
-  cwd?: string;
-  resume?: string;
-  mcpServers?: Record<string, unknown>;
-  allowedTools?: string[];
-}
+/** The SDK options the adapter sets; picked from the SDK so a renamed or retyped option fails to compile. */
+type ClaudeQueryOptions = Pick<
+  Options,
+  | "model"
+  | "permissionMode"
+  | "systemPrompt"
+  | "allowDangerouslySkipPermissions"
+  | "maxThinkingTokens"
+  | "cwd"
+  | "resume"
+  | "mcpServers"
+  | "allowedTools"
+  | "disallowedTools"
+  | "settingSources"
+  | "settings"
+>;
 
 export interface ClaudeSDKQueryParams {
   prompt: string;
   options?: ClaudeQueryOptions;
 }
 
-export type ClaudeSDKQuery = (params: ClaudeSDKQueryParams) => AsyncIterable<ClaudeSDKMessageLike>;
+/** The SDK's `query`, narrowed to what the adapter calls it with; the real `query` satisfies it as-is. */
+export type ClaudeSDKQuery = (params: ClaudeSDKQueryParams) => AsyncIterable<SDKMessage>;
 
 export interface ClaudeSDKAdapterOptions {
   model?: string;
@@ -75,27 +66,38 @@ export interface ClaudeSDKAdapterOptions {
   enableMcpTools?: boolean;
   additionalMcpTools?: McpToolRegistration[];
   cwd?: string;
+  /** Host Claude Code settings to load; `[]` (the default) loads none, e.g. `["user", "project"]` opts back in. */
+  settingSources?: SettingSource[];
   queryFn?: ClaudeSDKQuery;
   logger?: Logger;
 }
 
 const DEFAULT_MODEL = "claude-sonnet-4-6";
 
+/** They list, prompt, or send files to the OS user's other Claude Code sessions; a Band agent talks only through Band tools. */
+export const DENIED_CLAUDE_CODE_TOOLS = ["ListAgents", "SendMessage", "SendFile"] as const;
+
+/** Excluding it runs the session without tool search, so the first turn waits for the Band server and nothing is deferred. */
+export const TOOL_SEARCH = "ToolSearch";
+
+/** Every tool a Band agent's Claude Code session is started without. */
+export const DISALLOWED_CLAUDE_CODE_TOOLS = [...DENIED_CLAUDE_CODE_TOOLS, TOOL_SEARCH] as const;
+
+/** Flag settings that keep the host's other sessions from prompting the agent and its claude.ai connectors (auth-based, not settings-file-based) from loading. */
+export const ISOLATION_SETTINGS = {
+  crossSessionInbound: "refuse",
+  disableClaudeAiConnectors: true,
+} as const satisfies Settings;
+
 interface BandMcpBridge {
-  serverConfig: Record<string, unknown>;
+  serverConfig: McpSdkServerConfigWithInstance;
   allowedTools: string[];
 }
-
-type ClaudeSdkToolFactory = (
-  name: string,
-  description: string,
-  shape: Record<string, z.ZodType>,
-  handler: (args: Record<string, unknown>) => Promise<unknown>,
-) => unknown;
 
 type BandMcpBridgeFactory = (input: {
   enableMemoryTools: boolean;
   getToolsForRoom: (roomId: string) => AdapterToolsProtocol | undefined;
+  onMessageSent: (roomId: string) => void;
   additionalTools?: McpToolRegistration[];
 }) => BandMcpBridge;
 
@@ -116,11 +118,7 @@ const bandMcpBridgeFactory = new LazyAsyncValue<BandMcpBridgeFactory>({
       )
     }
 
-    const createSdkMcpServer = module.createSdkMcpServer as (input: {
-      name: string;
-      tools: unknown[];
-    }) => Record<string, unknown>
-    const defineTool = module.tool as ClaudeSdkToolFactory
+    const { createSdkMcpServer, tool: defineTool } = module
 
     return (input) => {
       const registrations = buildRoomScopedRegistrations(
@@ -143,7 +141,13 @@ const bandMcpBridgeFactory = new LazyAsyncValue<BandMcpBridgeFactory>({
           registration.name,
           registration.description,
           shape,
-          async (args: Record<string, unknown>) => registration.execute(args),
+          async (args: Record<string, unknown>) => {
+            const result = await registration.execute(args)
+            if (postedSendContent(registration.name, args.content, result.isError === true) !== undefined) {
+              input.onMessageSent(String(args.room_id))
+            }
+            return result
+          },
         )
       })
 
@@ -171,11 +175,14 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
   private readonly enableMcpTools: boolean;
   private readonly additionalMcpTools: McpToolRegistration[];
   private readonly cwd?: string;
+  private readonly settingSources: SettingSource[];
   private readonly queryFnOverride?: ClaudeSDKQuery;
   private readonly logger: Logger;
   private readonly sessionIds = new Map<string, string>();
   private readonly sessionInitLocks = new Map<string, Promise<void>>();
   private readonly roomTools = new Map<string, AdapterToolsProtocol>();
+  /** Rooms the agent posted to with band_send_message during their current turn. */
+  private readonly roomsSentToThisTurn = new Set<string>();
   private mcpBridge: BandMcpBridge | null = null;
   private systemPrompt = "";
 
@@ -191,6 +198,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     this.enableMcpTools = options?.enableMcpTools ?? true;
     this.additionalMcpTools = options?.additionalMcpTools ?? [];
     this.cwd = options?.cwd;
+    this.settingSources = options?.settingSources ?? [];
     this.queryFnOverride = options?.queryFn;
     this.logger = resolveLogger(options?.logger);
   }
@@ -210,6 +218,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
       this.mcpBridge = createBandMcpBridge({
         enableMemoryTools: this.enableMemoryTools,
         getToolsForRoom: (roomId) => this.roomTools.get(roomId),
+        onMessageSent: (roomId) => this.roomsSentToThisTurn.add(roomId),
         additionalTools: this.additionalMcpTools.length > 0 ? this.additionalMcpTools : undefined,
       });
     }
@@ -253,6 +262,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
   ): Promise<void> {
     let finalText = "";
     let resultFailure: ClaudeResultFailure | null = null;
+    this.roomsSentToThisTurn.delete(context.roomId);
     try {
       const query = await this.startQuery(message, history, participantsMessage, contactsMessage, context, tools);
       const consumed = await this.consumeQueryEvents(query, tools, context.roomId);
@@ -263,7 +273,9 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     }
 
     const mention = [{ id: message.senderId, handle: message.senderName ?? message.senderType }];
-    const replyText = finalText.trim();
+    const sentThroughTool = this.roomsSentToThisTurn.delete(context.roomId);
+    // Once the agent answered through band_send_message, its closing text is narration, not a second reply.
+    const replyText = sentThroughTool ? "" : finalText.trim();
     if (resultFailure) {
       const failure = agentFailure(this.provider, resultFailure.message, resultFailure.code, resultFailure.detail);
       // Preceding assistant text is already decided output; posting it must
@@ -291,13 +303,16 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
     tools: AdapterToolsProtocol,
-  ): Promise<AsyncIterable<ClaudeSDKMessageLike>> {
+  ): Promise<AsyncIterable<SDKMessage>> {
     const queryFn = this.queryFnOverride ?? (await loadClaudeQuery());
 
     const options: ClaudeQueryOptions = {
       model: this.model,
       permissionMode: this.permissionMode,
       systemPrompt: this.systemPrompt,
+      settingSources: this.settingSources,
+      disallowedTools: [...DISALLOWED_CLAUDE_CODE_TOOLS],
+      settings: { ...ISOLATION_SETTINGS },
     };
     if (this.permissionMode === "bypassPermissions") {
       options.allowDangerouslySkipPermissions = true;
@@ -341,16 +356,15 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
   }
 
   private async consumeQueryEvents(
-    query: AsyncIterable<ClaudeSDKMessageLike>,
+    query: AsyncIterable<SDKMessage>,
     tools: AdapterToolsProtocol,
     roomId: string,
   ): Promise<{ finalText: string; resultFailure: ClaudeResultFailure | null }> {
     let finalText = "";
     let resultFailure: ClaudeResultFailure | null = null;
     for await (const event of query) {
-      const type = event.type;
       const sessionId = event.session_id;
-      if (typeof sessionId === "string" && sessionId) {
+      if (sessionId) {
         const previousSessionId = this.sessionIds.get(roomId) ?? null;
         this.sessionIds.set(roomId, sessionId);
         if (sessionId !== previousSessionId) {
@@ -358,21 +372,21 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
         }
       }
 
-      if (type === "assistant") {
+      if (event.type === "assistant") {
         const text = extractAssistantText(event);
         if (text) {
           finalText = text;
         }
       }
 
-      if (type === "result") {
+      if (event.type === "result") {
         resultFailure = claudeNonSuccessResult(event);
-        if (!resultFailure && typeof event.result === "string") {
+        if (!resultFailure && event.subtype === "success") {
           finalText = event.result;
         }
       }
 
-      if (this.enableExecutionReporting && type === "tool_use_summary") {
+      if (this.enableExecutionReporting && event.type === "tool_use_summary") {
         try {
           await tools.sendEvent(JSON.stringify(event), "tool_call");
         } catch (error) {
@@ -391,6 +405,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     this.sessionIds.delete(roomId);
     this.sessionInitLocks.delete(roomId);
     this.roomTools.delete(roomId);
+    this.roomsSentToThisTurn.delete(roomId);
   }
 
   private async reportSessionId(
@@ -417,9 +432,7 @@ async function loadClaudeQuery(): Promise<ClaudeSDKQuery> {
     throw new UnsupportedFeatureError(
       `ClaudeSDKAdapter requires optional dependency "@anthropic-ai/claude-agent-sdk". Install it with "pnpm add @anthropic-ai/claude-agent-sdk". (${error instanceof Error ? error.message : String(error)})`,
     );
-  }) as {
-    query?: ClaudeSDKQuery;
-  };
+  });
 
   if (!module.query) {
     throw new UnsupportedFeatureError("@anthropic-ai/claude-agent-sdk did not export query()");
@@ -435,36 +448,29 @@ interface ClaudeResultFailure {
   detail: Record<string, unknown>;
 }
 
-function claudeNonSuccessResult(event: ClaudeSDKMessageLike): ClaudeResultFailure | null {
-  const flaggedError = event.is_error === true;
-  if (!flaggedError && event.subtype === "success") {
-    return null;
+function claudeNonSuccessResult(event: SDKResultMessage): ClaudeResultFailure | null {
+  if (event.subtype === "success") {
+    // `is_error` on a success result is still terminal, under code "error" rather than "success".
+    return event.is_error ? claudeResultFailure(event, "error", event.result) : null;
   }
-  const subtype = typeof event.subtype === "string" ? event.subtype.trim() : "";
-  // `subtype: "success"` with `is_error: true` is still terminal; never use code "success".
-  const code = subtype.length === 0 || subtype === "success" ? "error" : subtype;
-  const resultText = typeof event.result === "string" ? event.result.trim() : "";
-  const summaryText = typeof event.summary === "string" ? event.summary.trim() : "";
-  const message = resultText || summaryText || `Claude Agent SDK result: ${code}`;
+  return claudeResultFailure(event, event.subtype, event.errors.join("\n"));
+}
+
+function claudeResultFailure(event: SDKResultMessage, code: string, text: string): ClaudeResultFailure {
   return {
     code,
-    message,
+    message: text.trim() || `Claude Agent SDK result: ${code}`,
     detail: {
-      subtype: event.subtype ?? null,
-      is_error: event.is_error ?? null,
-      result: event.result ?? null,
-      session_id: event.session_id ?? null,
+      subtype: event.subtype,
+      is_error: event.is_error,
+      session_id: event.session_id,
+      ...(event.subtype === "success" ? { result: event.result } : { errors: event.errors }),
     },
   };
 }
-function extractAssistantText(event: ClaudeSDKMessageLike): string {
-  if (event.type !== "assistant") {
-    return "";
-  }
 
-  const blocks = event.message?.content ?? [];
-  return blocks
-    .map((block: { type?: string; text?: string }) => (block.type === "text" ? block.text ?? "" : ""))
-    .filter((text: string) => text.length > 0)
+function extractAssistantText(event: SDKAssistantMessage): string {
+  return event.message.content
+    .flatMap((block) => (block.type === "text" && block.text ? [block.text] : []))
     .join("\n");
 }

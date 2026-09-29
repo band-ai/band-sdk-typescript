@@ -26,6 +26,8 @@ import {
   OpenAIAdapter,
   OpencodeAdapter,
   ParlantAdapter,
+  type ClaudeSDKAdapterOptions,
+  type LettaAdapterOptions,
   type OmpACPAdapterOptions,
   type OpencodeAdapterConfig,
 } from "../../../src/adapters";
@@ -45,7 +47,6 @@ const ENV = {
   lettaUrl: "LETTA_BASE_URL",
   lettaKey: "LETTA_API_KEY",
   parlantEnvironment: "PARLANT_ENVIRONMENT",
-  parlantAgentId: "PARLANT_AGENT_ID",
   parlantKey: "PARLANT_API_KEY",
 } as const;
 
@@ -59,6 +60,11 @@ const GOOGLE_KEY = requires.anyEnvVar(...GOOGLE_KEY_VARS);
 /** The Gemini API key every Google-model adapter is given, so none picks a different one of the two. */
 function googleApiKey(): string | undefined {
   return GOOGLE_KEY_VARS.map((name) => process.env[name]).find(Boolean);
+}
+
+/** Claude Code on the pinned Anthropic model in the cell's working directory, `options` layered over the defaults. */
+export function buildClaudeSdk({ prompt, workDir }: BuildOptions, options: ClaudeSDKAdapterOptions = {}): ClaudeSDKAdapter {
+  return new ClaudeSDKAdapter({ model: ANTHROPIC_MODEL, customSection: prompt, cwd: workDir, ...options });
 }
 
 /** OMP on the pinned Google model. */
@@ -83,6 +89,17 @@ function stateDir(workDir: string, name: string): string {
   return dir;
 }
 
+/** Letta on the pinned Anthropic model, `options` layered over the defaults. The server holds the model key. */
+export function buildLetta({ prompt }: BuildOptions, options: LettaAdapterOptions = {}): LettaAdapter {
+  return new LettaAdapter({
+    lettaBaseUrl: process.env[ENV.lettaUrl],
+    lettaApiKey: process.env[ENV.lettaKey],
+    model: `anthropic/${ANTHROPIC_MODEL}`,
+    customSection: prompt,
+    ...options,
+  });
+}
+
 /** The OpenCode provider the baseline runs it on, with our own key (BYOK). */
 const OPENCODE_PROVIDER = "anthropic";
 
@@ -102,9 +119,9 @@ export function buildOpencode({ prompt, workDir }: BuildOptions, config: Opencod
   });
 }
 
-/** Reports every custom-tool call as a `tool_call` event, so a scenario that gives tools can read them back. */
-function reportsTools(tools: BuildOptions["customTools"]) {
-  return { enableExecutionReporting: Boolean(tools?.length) };
+/** Reports every tool call as a `tool_call` event, so a scenario that gives tools or memory can read them back. */
+function reportsTools({ customTools, memory }: Pick<BuildOptions, "customTools" | "memory">) {
+  return { enableExecutionReporting: Boolean(customTools?.length) || Boolean(memory) };
 }
 
 /** A builder for an adapter that cannot run yet; it names why instead of half-building one. */
@@ -119,15 +136,21 @@ const SPECS = {
   anthropic: {
     id: "anthropic",
     requires: [ANTHROPIC_KEY, requires.peerPackage("@anthropic-ai/sdk")],
-    supports: [CAPABILITY.customTools],
-    build: ({ prompt, customTools }) =>
-      new AnthropicAdapter({ anthropicModel: ANTHROPIC_MODEL, systemPrompt: prompt, customTools, ...reportsTools(customTools) }),
+    supports: [CAPABILITY.customTools, CAPABILITY.memory],
+    build: ({ prompt, customTools, memory }) =>
+      new AnthropicAdapter({
+        anthropicModel: ANTHROPIC_MODEL,
+        systemPrompt: prompt,
+        customTools,
+        includeMemoryTools: memory,
+        ...reportsTools({ customTools, memory }),
+      }),
   },
   claudeSdk: {
     id: "claude-sdk",
     requires: [ANTHROPIC_KEY, requires.peerPackage("@anthropic-ai/claude-agent-sdk")],
     supports: [],
-    build: ({ prompt, workDir }) => new ClaudeSDKAdapter({ model: ANTHROPIC_MODEL, customSection: prompt, cwd: workDir }),
+    build: (options) => buildClaudeSdk(options),
   },
   codex: {
     id: "codex",
@@ -164,21 +187,29 @@ const SPECS = {
   gemini: {
     id: "gemini",
     requires: [GOOGLE_KEY, requires.peerPackage("@google/genai")],
-    supports: [CAPABILITY.customTools],
-    build: ({ prompt, customTools }) =>
-      new GeminiAdapter({ geminiModel: GEMINI_MODEL, apiKey: googleApiKey(), systemPrompt: prompt, customTools, ...reportsTools(customTools) }),
+    supports: [CAPABILITY.customTools, CAPABILITY.memory],
+    build: ({ prompt, customTools, memory }) =>
+      new GeminiAdapter({
+        geminiModel: GEMINI_MODEL,
+        apiKey: googleApiKey(),
+        systemPrompt: prompt,
+        customTools,
+        includeMemoryTools: memory,
+        ...reportsTools({ customTools, memory }),
+      }),
   },
   googleAdk: {
     id: "google-adk",
     requires: [GOOGLE_KEY, requires.peerPackage("@google/adk")],
-    supports: [CAPABILITY.customTools],
-    build: ({ prompt, customTools }) =>
+    supports: [CAPABILITY.customTools, CAPABILITY.memory],
+    build: ({ prompt, customTools, memory }) =>
       new GoogleADKAdapter({
         model: GEMINI_MODEL,
         apiKey: googleApiKey(),
         systemPrompt: prompt,
         additionalTools: customTools,
-        ...reportsTools(customTools),
+        enableMemoryTools: memory,
+        ...reportsTools({ customTools, memory }),
       }),
   },
   kiroAcp: {
@@ -199,9 +230,7 @@ const SPECS = {
     id: "letta",
     requires: [requires.peerPackage("@letta-ai/letta-client"), requires.envVar(ENV.lettaUrl)],
     supports: [],
-    pending: "needs a Letta server provisioned in CI",
-    build: ({ prompt }) =>
-      new LettaAdapter({ lettaBaseUrl: process.env[ENV.lettaUrl], lettaApiKey: process.env[ENV.lettaKey], customSection: prompt }),
+    build: (options) => buildLetta(options),
   },
   ompAcp: {
     id: "omp-acp",
@@ -212,9 +241,16 @@ const SPECS = {
   openai: {
     id: "openai",
     requires: [requires.envVar(ENV.openaiKey), requires.peerPackage("openai")],
-    supports: [CAPABILITY.customTools],
+    supports: [CAPABILITY.customTools, CAPABILITY.memory],
     pending: "needs an OPENAI_API_KEY provisioned in CI",
-    build: ({ prompt, customTools }) => new OpenAIAdapter({ openAIModel: OPENAI_MODEL, systemPrompt: prompt, customTools, ...reportsTools(customTools) }),
+    build: ({ prompt, customTools, memory }) =>
+      new OpenAIAdapter({
+        openAIModel: OPENAI_MODEL,
+        systemPrompt: prompt,
+        customTools,
+        includeMemoryTools: memory,
+        ...reportsTools({ customTools, memory }),
+      }),
   },
   opencode: {
     id: "opencode",
@@ -224,17 +260,14 @@ const SPECS = {
   },
   parlant: {
     id: "parlant",
-    requires: [
-      requires.peerPackage("parlant-client"),
-      requires.envVar(ENV.parlantEnvironment),
-      requires.envVar(ENV.parlantAgentId),
-    ],
+    requires: [requires.peerPackage("parlant-client"), requires.envVar(ENV.parlantEnvironment)],
     supports: [],
-    pending: "needs a Parlant server provisioned in CI",
+    // As in band-sdk-python, whose Parlant agent does hold the Band tools, via a Parlant tool service.
+    bespokeOnly: "has no Band platform tools, which the generic scenarios assume",
+    // No agentId: the adapter creates its agent from the prompt.
     build: ({ prompt }) =>
       new ParlantAdapter({
         environment: process.env[ENV.parlantEnvironment] ?? "",
-        agentId: process.env[ENV.parlantAgentId] ?? "",
         apiKey: process.env[ENV.parlantKey],
         customSection: prompt,
       }),

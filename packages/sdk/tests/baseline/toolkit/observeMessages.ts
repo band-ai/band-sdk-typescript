@@ -7,7 +7,9 @@
 import { Band } from "@band-ai/rest-client";
 
 import { FAILURE_EVENT_TYPE } from "../../../src/contracts/protocols";
+import { parseToolCall } from "../../../src/converters/shared";
 import type { MessageCreatedPayload } from "../../../src/platform/events";
+import { MEMORY_TOOL_NAMES } from "../../../src/runtime/tools/schemas";
 import { LIVE_EVENT_TIMEOUT_MS } from "../../integration/support/liveHarness";
 import type { AgentIdentity } from "./agents";
 import { liveRun } from "./liveRun";
@@ -33,8 +35,11 @@ export const REPLY_WAIT = { reply: "reply", timeout: "timeout" } as const;
 
 export type ReplyWait =
   | { kind: typeof REPLY_WAIT.reply; message: CapturedMessage }
-  /** `failures`: what the agent reported failing in the room meanwhile, the likeliest reason. */
-  | { kind: typeof REPLY_WAIT.timeout; waitedMs: number; failures: string[] };
+  /**
+   * `unmatched`: what the agent did post after the message, none of it a match.
+   * `failures`: what it reported failing in the room meanwhile, the likeliest reason.
+   */
+  | { kind: typeof REPLY_WAIT.timeout; waitedMs: number; unmatched: string[]; failures: string[] };
 
 type MessageRecord = Pick<MessageCreatedPayload, "id" | "content" | "sender_id" | "message_type"> & {
   metadata?: Record<string, unknown> & { mentions?: Array<{ id?: string }> };
@@ -51,22 +56,16 @@ function captured(payload: MessageRecord): CapturedMessage {
   };
 }
 
-/** The first message from `senderId` after the message `afterId` that `matches`, once both are captured. */
-function replyAfter(
-  messages: readonly MessageCreatedPayload[],
-  afterId: string,
-  senderId: string,
-  matches: (message: CapturedMessage) => boolean,
-): CapturedMessage | undefined {
+/** What `senderId` posted after the message `afterId`, oldest first; nothing until `afterId` is captured. */
+function postedAfter(messages: readonly MessageCreatedPayload[], afterId: string, senderId: string): CapturedMessage[] {
   const sentAt = messages.findIndex((message) => message.id === afterId);
   if (sentAt < 0) {
-    return undefined;
+    return [];
   }
   return messages
     .slice(sentAt + 1)
     .filter((message) => message.sender_id === senderId)
-    .map(captured)
-    .find(matches);
+    .map(captured);
 }
 
 /**
@@ -86,6 +85,41 @@ async function history(room: Room, messageType?: MessageType): Promise<CapturedM
   return messages.reverse();
 }
 
+/** The room's stored `messageType` events from `sender`, oldest first. Read only after `untilProcessed`. */
+export async function eventsFrom(room: Room, messageType: MessageType, sender: Pick<AgentIdentity, "id">): Promise<CapturedMessage[]> {
+  return (await history(room, messageType)).filter((event) => event.senderId === sender.id);
+}
+
+/** One stored tool call. `id` is the event's own id, which tells one turn's calls from another's. */
+export interface ToolCallEvent {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+}
+
+export interface ToolCallsOptions {
+  /** Keep the Band memory tools' calls, which the general view leaves out. */
+  includeMemory?: boolean;
+}
+
+/**
+ * Every tool `sender` called in `room`, oldest first. An event that is not a
+ * parseable call is dropped. Read only after `untilProcessed`.
+ */
+export async function toolCalls(
+  room: Room,
+  sender: Pick<AgentIdentity, "id">,
+  { includeMemory = false }: ToolCallsOptions = {},
+): Promise<ToolCallEvent[]> {
+  const events = await eventsFrom(room, MESSAGE_TYPE.ToolCall, sender);
+  return events
+    .flatMap((event) => {
+      const call = parseToolCall(event.content);
+      return call ? [{ id: event.id, name: call.name, args: call.args }] : [];
+    })
+    .filter((call) => includeMemory || !MEMORY_TOOL_NAMES.has(call.name));
+}
+
 export interface ReplyWaitOptions {
   /** The message the reply follows; the room's last posted one by default. */
   after?: { id: string };
@@ -101,12 +135,18 @@ export function observeRoom(room: Room) {
     if (!after) {
       throw new Error("a reply wait needs a posted message to answer; send one with Rooms.sendMention first");
     }
-    const message = await waitFor(room.messages, () => replyAfter(room.messages.entries, after.id, from.id, matches), timeoutMs);
+    const postedByFrom = () => postedAfter(room.messages.entries, after.id, from.id);
+    const message = await waitFor(room.messages, () => postedByFrom().find(matches), timeoutMs);
     if (message) {
       return { kind: REPLY_WAIT.reply, message };
     }
     const failures = (await history(room, FAILURE_EVENT_TYPE)).filter((event) => event.senderId === from.id);
-    return { kind: REPLY_WAIT.timeout, waitedMs: timeoutMs, failures: failures.map((event) => event.content) };
+    return {
+      kind: REPLY_WAIT.timeout,
+      waitedMs: timeoutMs,
+      unmatched: postedByFrom().map((posted) => posted.content),
+      failures: failures.map((event) => event.content),
+    };
   };
 
   return {

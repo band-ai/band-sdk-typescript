@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { GoogleADKAdapter } from "../src/adapters";
 import { GoogleADKHistoryConverter } from "../src/converters";
+import { MEMORY_SECTION } from "../src/runtime/prompts";
 import { SEND_MESSAGE_TOOL_NAME } from "../src/runtime/tools/schemas";
 import type { AgentToolsProtocol } from "../src/core";
 import { FakeTools, makeMessage, expectTurnFailed } from "./testUtils";
@@ -220,6 +221,24 @@ describe("GoogleADKAdapter", () => {
     await adapter.onMessage(makeMessage("Reply with: mango"), tools, [], null, null, { isSessionBootstrap: false, roomId: "room-1" });
 
     expect(seenPrompts[1]).toContain("[User]: Reply with: pineapple\npineapple");
+  });
+
+  it.each([
+    { failSend: false, delivered: [] },
+    { failSend: true, delivered: ["I posted it."] },
+  ])("treats a send-tool post as the reply, its final text as a fallback (send failed: $failSend)", async ({ failSend, delivered }) => {
+    const adapter = new GoogleADKAdapter({
+      sdkFactory: createFakeGoogleAdkSdk(async function* (agent) {
+        await sendToolOf(agent)({ content: "pineapple" });
+        yield { final: true, text: "I posted it." };
+      }),
+    });
+    const tools = new SendMessageTools();
+    tools.failSend = failSend;
+
+    await adapter.onMessage(makeMessage("Reply with: pineapple"), tools, [], null, null, { isSessionBootstrap: true, roomId: "room-1" });
+
+    expect(tools.messages).toEqual(delivered);
   });
 
   it("does not remember a send that failed", async () => {
@@ -480,6 +499,42 @@ describe("GoogleADKAdapter", () => {
     expect(capture.createRunnerCalls).toEqual([{ appName: "band" }]);
     expect(capture.createSessionCalls).toHaveLength(1);
     expect(capture.createSessionCalls[0]?.appName).toBe("band");
+  });
+
+  describe("memory guidance in a raw system prompt", () => {
+    const RAW_PROMPT = "You are a terse assistant.";
+
+    /** The instruction the ADK agent is created with, for a raw `systemPrompt`. */
+    async function instructionFor(enableMemoryTools: boolean): Promise<unknown> {
+      const capture: GoogleAdkCapture = { createAgentCalls: [], createRunnerCalls: [], createSessionCalls: [] };
+      const adapter = new GoogleADKAdapter({
+        systemPrompt: RAW_PROMPT,
+        enableMemoryTools,
+        sdkFactory: createFakeGoogleAdkSdk(async function* () {
+          yield { final: true, text: "done" };
+        }, capture),
+      });
+      await adapter.onStarted("Memory Agent", "Remembers things");
+      await adapter.onMessage(
+        makeMessage("remember this", "room-memory"),
+        new GoogleAdkTestTools(),
+        new GoogleADKHistoryConverter().convert([]),
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-memory" },
+      );
+      return capture.createAgentCalls[0]?.instruction;
+    }
+
+    it("adds the guidance when memory tools are exposed", async () => {
+      const instruction = await instructionFor(true);
+      expect(instruction).toContain(RAW_PROMPT);
+      expect(instruction).toContain(MEMORY_SECTION);
+    });
+
+    it("leaves the prompt as given when they are not", async () => {
+      expect(await instructionFor(false)).toBe(RAW_PROMPT);
+    });
   });
 
   it("names the default agent \"band_agent\" when agentName is unset", async () => {

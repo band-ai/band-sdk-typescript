@@ -48,7 +48,11 @@ function jsonSchemaToZod(
   }
 
   if (type === "object") {
-    return z.record(z.string(), z.unknown());
+    // Not z.record: the Agent SDK's bundled JSON-schema converter can't render one, which fails its whole tools/list.
+    // Loose, so keys beyond the declared properties still pass through.
+    const properties = (schema.properties ?? {}) as Record<string, unknown>;
+    const required = Array.isArray(schema.required) ? (schema.required as string[]) : [];
+    return z.looseObject(buildZodShape(z, properties, new Set(required)));
   }
 
   return z.unknown();

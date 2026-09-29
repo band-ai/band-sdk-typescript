@@ -7,6 +7,7 @@ import type { HistoryProvider, PlatformMessage } from "../src/runtime";
 import type { CustomToolDef } from "../src/runtime/tools/customTools";
 import type { AgentToolsProtocol } from "../src/core";
 import { toFailureEvent } from "../src/contracts/protocols";
+import { MEMORY_SECTION, renderSystemPrompt } from "../src/runtime/prompts";
 import { SEND_MESSAGE_TOOL_NAME } from "../src/runtime/tools/schemas";
 import type { ToolCallingModel } from "../src/adapters";
 import { describeDeliveryContract } from "./deliveryContract";
@@ -134,6 +135,7 @@ class FakeTools implements AgentToolsProtocol {
 class FakeModel implements ToolCallingModel {
   private turns = 0;
   public readonly requests: Array<{
+    systemPrompt?: string;
     toolRounds?: Array<{
       toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
       toolResults: Array<{ toolCallId: string; name: string; output: unknown; isError?: boolean }>;
@@ -142,6 +144,7 @@ class FakeModel implements ToolCallingModel {
 
   public async complete(
     request: {
+      systemPrompt?: string;
       toolRounds?: Array<{
         toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
         toolResults: Array<{ toolCallId: string; name: string; output: unknown; isError?: boolean }>;
@@ -149,6 +152,7 @@ class FakeModel implements ToolCallingModel {
     },
   ): Promise<{ text?: string; toolCalls?: Array<{ id: string; name: string; input: Record<string, unknown> }> }> {
     this.requests.push({
+      systemPrompt: request.systemPrompt,
       toolRounds: request.toolRounds,
     });
     this.turns += 1;
@@ -157,8 +161,9 @@ class FakeModel implements ToolCallingModel {
         toolCalls: [
           {
             id: "tc1",
-            name: "band_send_message",
-            input: { content: "ignored" },
+            // Not band_send_message: a posted reply would make the final text a mere fallback.
+            name: "band_get_participants",
+            input: {},
           },
         ],
       };
@@ -385,7 +390,7 @@ describe("ToolCallingAdapter", () => {
     ]);
   });
 
-  it("remembers the string a non-string or empty send was posted as", async () => {
+  it("remembers the string a non-string send was posted as, and ignores an empty one", async () => {
     const seen: Array<Array<Record<string, unknown>>> = [];
     const model: ToolCallingModel = {
       complete: async (request) => {
@@ -410,7 +415,6 @@ describe("ToolCallingAdapter", () => {
     expect(turnLines(seen.at(-1)!)).toEqual([
       { role: "user", content: "[Jane]: hello" },
       { role: "assistant", content: "42" },
-      { role: "assistant", content: "" },
       { role: "user", content: "[Jane]: next question" },
     ]);
   });
@@ -575,10 +579,56 @@ describe("ToolCallingAdapter", () => {
       expect.arrayContaining([
         expect.objectContaining({
           toolCallId: "tc1",
-          name: "band_send_message",
+          name: "band_get_participants",
         }),
       ]),
     );
+  });
+
+  describe("memory guidance in a raw system prompt", () => {
+    const RAW_PROMPT = "You are a terse assistant.";
+
+    /** The system prompt of every model request in a turn that makes one tool round, so two requests. */
+    async function promptsSent(includeMemoryTools: boolean): Promise<Array<string | undefined>> {
+      const model = new FakeModel();
+      const adapter = new OpenAIAdapter({ model, systemPrompt: RAW_PROMPT, includeMemoryTools });
+      await adapter.onMessage(fakeMessage, new FakeTools(), fakeHistory, null, null, { isSessionBootstrap: true, roomId: "r1" });
+      return model.requests.map((request) => request.systemPrompt);
+    }
+
+    it("adds the guidance to the first request and the follow-up round when memory tools are exposed", async () => {
+      const prompts = await promptsSent(true);
+      expect(prompts).toHaveLength(2);
+      for (const prompt of prompts) {
+        expect(prompt).toContain(RAW_PROMPT);
+        expect(prompt).toContain(MEMORY_SECTION);
+      }
+    });
+
+    it("leaves the prompt as given when they are not", async () => {
+      expect(await promptsSent(false)).toEqual([RAW_PROMPT, RAW_PROMPT]);
+    });
+
+    it("sends memory guidance alone when memory tools are on and no system prompt was given", async () => {
+      const model = new FakeModel();
+      const adapter = new OpenAIAdapter({ model, includeMemoryTools: true });
+      await adapter.onMessage(fakeMessage, new FakeTools(), fakeHistory, null, null, { isSessionBootstrap: true, roomId: "r1" });
+
+      for (const prompt of model.requests.map((request) => request.systemPrompt)) {
+        expect(prompt).toContain(MEMORY_SECTION);
+      }
+    });
+
+    it("does not duplicate memory guidance when the prompt already came from renderSystemPrompt", async () => {
+      const model = new FakeModel();
+      const systemPrompt = renderSystemPrompt({ customSection: RAW_PROMPT, capabilities: { memory: true } });
+      const adapter = new OpenAIAdapter({ model, systemPrompt, includeMemoryTools: true });
+      await adapter.onMessage(fakeMessage, new FakeTools(), fakeHistory, null, null, { isSessionBootstrap: true, roomId: "r1" });
+
+      for (const prompt of model.requests.map((request) => request.systemPrompt)) {
+        expect((prompt?.match(/## Memory Tools/g) ?? []).length).toBe(1);
+      }
+    });
   });
 
   it("emits tool_call and tool_result events when execution reporting is enabled", async () => {
@@ -736,6 +786,29 @@ describe("ToolCallingAdapter", () => {
     expect((tools.events[0]?.metadata as { failure?: { message?: string } })?.failure?.message).toContain(
       "Stopped tool loop after 1 rounds",
     );
+  });
+
+  it.each([
+    { sendResult: { ok: true }, delivered: [] },
+    { sendResult: { ok: false, message: "unknown mention" }, delivered: ["Posted it."] },
+  ])("treats a band_send_message post as the reply, its final text as a fallback (send: $sendResult)", async ({ sendResult, delivered }) => {
+    let turns = 0;
+    const model: ToolCallingModel = {
+      complete: async () => {
+        turns += 1;
+        return turns === 1
+          ? { toolCalls: [{ id: "tc1", name: "band_send_message", input: { content: "Hello!", mentions: ["@user"] } }] }
+          : { text: "Posted it." };
+      },
+    };
+    const tools = new FakeTools();
+    tools.executeToolCall = async () => sendResult;
+    await new OpenAIAdapter({ model }).onMessage(fakeMessage, tools, fakeHistory, null, null, {
+      isSessionBootstrap: true,
+      roomId: "r1",
+    });
+
+    expect(tools.messages).toEqual(delivered);
   });
 
   describeDeliveryContract([{

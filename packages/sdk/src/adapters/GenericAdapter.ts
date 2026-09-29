@@ -4,47 +4,13 @@ import type { AdapterToolsProtocol } from "../contracts/protocols";
 import type { HistoryProvider, PlatformMessage } from "../runtime/types";
 import { asErrorMessage } from "./shared/coercion";
 import { deliverReply } from "../core/deliveryFailedError";
+import { overrideTools } from "../core/overrideTools";
 import { agentFailure, reportTurnFailure } from "../core/providerFailure";
 
-/**
- * Route handler `sendMessage` through `deliverReply` via a Proxy over a fresh
- * empty target: `tools` is frozen, so the `sendMessage` override cannot live
- * on it. `Reflect.get(tools, key, tools)` keeps inherited accessors/methods
- * bound to the real tools instance.
- */
+/** Route handler `sendMessage` through `deliverReply`. */
 function toolsWithDeliverySafeSendMessage(tools: AdapterToolsProtocol): AdapterToolsProtocol {
-  return new Proxy({} as AdapterToolsProtocol, {
-    has(_target, key) {
-      return Reflect.has(tools, key);
-    },
-    get(_target, key) {
-      if (key === "sendMessage") {
-        return (content: string, mentions?: Parameters<AdapterToolsProtocol["sendMessage"]>[1]) =>
-          deliverReply(tools, content, mentions ?? []);
-      }
-      const value: unknown = Reflect.get(tools, key, tools);
-      return typeof value === "function" ? (value.bind(tools) as unknown) : value;
-    },
-    // Without this, a write against the empty target would silently succeed
-    // and vanish — invisible even to the handler that made it, since `get`
-    // never consults the target. `tools` is frozen, so forwarding here
-    // throws the same `TypeError` a write against the real, unwrapped
-    // `tools` always has.
-    set(_target, key, value) {
-      return Reflect.set(tools, key, value, tools);
-    },
-    // Without these two traps, `Object.keys`/spread/`Object.assign` fall back
-    // to the empty target's own keys — reporting no properties at all, even
-    // though `has`/`get` resolve every one of them. `configurable: true` is
-    // required, not a choice: the target has no own properties of its own, so
-    // the Proxy invariants forbid reporting any key as non-configurable.
-    ownKeys() {
-      return Reflect.ownKeys(tools);
-    },
-    getOwnPropertyDescriptor(_target, key) {
-      const descriptor = Reflect.getOwnPropertyDescriptor(tools, key);
-      return descriptor && { ...descriptor, configurable: true };
-    },
+  return overrideTools(tools, {
+    sendMessage: (content, mentions) => deliverReply(tools, content, mentions ?? []),
   });
 }
 
