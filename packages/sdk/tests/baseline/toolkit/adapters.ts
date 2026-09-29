@@ -242,7 +242,6 @@ const SPECS = {
     id: "openai",
     requires: [requires.envVar(ENV.openaiKey), requires.peerPackage("openai")],
     supports: [CAPABILITY.customTools, CAPABILITY.memory],
-    pending: "needs an OPENAI_API_KEY provisioned in CI",
     build: ({ prompt, customTools, memory }) =>
       new OpenAIAdapter({
         openAIModel: OPENAI_MODEL,
