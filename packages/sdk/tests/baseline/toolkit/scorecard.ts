@@ -69,7 +69,13 @@ const cellKey = (scenario: string, adapter: string) => `${scenario}\u0000${adapt
 const byCell = (a: ScorecardRow, b: ScorecardRow) =>
   a.scenario.localeCompare(b.scenario) || a.adapter.localeCompare(b.adapter);
 
-/** Unions scorecards, keeping each cell's highest-ranked outcome; of equal ranks, the first row wins. */
+const joinFailErrors = (left: string, right: string): string => {
+  if (left === right || left.includes(right)) return left;
+  if (right.includes(left)) return right;
+  return `${left}\n${right}`;
+};
+
+/** Unions scorecards, keeping each cell's highest-ranked outcome; equal `fail` ranks concatenate error text. */
 export function merge(...scorecards: ScorecardRow[][]): ScorecardRow[] {
   const best = new Map<string, ScorecardRow>();
   for (const row of scorecards.flat()) {
@@ -77,6 +83,20 @@ export function merge(...scorecards: ScorecardRow[][]): ScorecardRow[] {
     const current = best.get(key);
     if (!current || RANK[row.outcome.status] > RANK[current.outcome.status]) {
       best.set(key, row);
+      continue;
+    }
+    if (
+      RANK[row.outcome.status] === RANK[current.outcome.status] &&
+      row.outcome.status === SCORECARD_STATUS.fail &&
+      current.outcome.status === SCORECARD_STATUS.fail
+    ) {
+      best.set(key, {
+        ...current,
+        outcome: {
+          ...current.outcome,
+          error: joinFailErrors(current.outcome.error, row.outcome.error),
+        },
+      });
     }
   }
   return [...best.values()].sort(byCell);

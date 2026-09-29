@@ -46,9 +46,11 @@ describe("merge", () => {
     expect(merge(...cards.map((outcomes) => outcomes.map((outcome) => row(outcome))))).toEqual([row(winner)]);
   });
 
-  it("keeps the first of two equal outcomes", () => {
+  it("joins two equal fail outcomes in one cell", () => {
     const first: ScorecardOutcome = { ...fail, error: "first" };
-    expect(merge([row(first)], [row({ ...fail, error: "second" })])).toEqual([row(first)]);
+    expect(merge([row(first)], [row({ ...fail, error: "second" })])).toEqual([
+      row({ ...fail, error: "first\nsecond" }),
+    ]);
   });
 
   it("keeps every distinct cell, in stable order", () => {

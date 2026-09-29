@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { TestResult } from "vitest/node";
+import type { TestModule, TestResult } from "vitest/node";
 
 import { ADAPTER, type AdapterId } from "./adapters";
 import { fakeSpec } from "./fakeSpec";
@@ -13,6 +13,8 @@ import {
   NO_ADAPTER,
   SCORECARD_JSON_ENV,
   SCORECARD_STATUS,
+  markdownPath,
+  toMarkdown,
   type ScorecardOutcome,
   type ScorecardRow,
 } from "./scorecard";
@@ -33,6 +35,7 @@ const REPLIES = scenarioId(CATEGORY.platform, "repliesToMention");
 const REPLIES_FILE = "tests/baseline/scenarios/platform/repliesToMention.test.ts";
 const RECONNECT = scenarioId(CATEGORY.behavior, "reconnect");
 const RECONNECT_FILE = "tests/baseline/scenarios/behavior/reconnect.test.ts";
+const LOOSE_FILE = "tests/baseline/scenarios/loose.test.ts";
 const BEHAVIOUR_TITLE = "keeps going";
 const DURATION_MS = 42;
 const FAILURE = "no reply within 5ms";
@@ -187,6 +190,20 @@ describe("scorecardRows", () => {
       ]);
     });
   });
+
+  it("fails the (general) cell for a failed test in a file outside the scenario layout", () => {
+    const test: ReportedTest = {
+      name: BEHAVIOUR_TITLE,
+      fullName: BEHAVIOUR_TITLE,
+      module: { relativeModuleId: LOOSE_FILE },
+      parent: { type: TEST_PARENT.suite, name: "loose group" },
+      result: () => failed,
+      diagnostic: () => ({ duration: DURATION_MS }),
+    };
+    expect(scorecardRows(test, roster)).toEqual([
+      noAdapter(GENERAL_SCENARIO, failWith(`${LOOSE_FILE}${SOURCE_SEPARATOR}${BEHAVIOUR_TITLE}: ${FAILURE}`, DURATION_MS)),
+    ]);
+  });
 });
 
 describe("errorRows", () => {
@@ -211,6 +228,17 @@ describe("errorRows", () => {
   it("has nothing to report when neither the file nor its suites errored", () => {
     expect(errorRows(reportedModule(REPLIES_FILE, { suites: [reportedSuite(REPLIES)] }))).toEqual([]);
   });
+
+  it("reports both a load error and a suite hook error on the same module", () => {
+    const module = reportedModule(RECONNECT_FILE, {
+      errors: [FAILURE],
+      suites: [reportedSuite("nested group", [HOOK_FAILURE])],
+    });
+    expect(errorRows(module)).toEqual([
+      noAdapter(RECONNECT, failWith(`${RECONNECT_FILE}: ${FAILURE}`)),
+      noAdapter(RECONNECT, failWith(`${RECONNECT_FILE}${SOURCE_SEPARATOR}nested group: ${HOOK_FAILURE}`)),
+    ]);
+  });
 });
 
 describe("runRows", () => {
@@ -227,13 +255,20 @@ describe("runRows", () => {
     ]);
   });
 
-  it("keeps a hook's error text over a failing test's in the same cell", () => {
+  it("joins a hook error and a failing adapterless test in the same cell", () => {
     const module = reportedModule(REPLIES_FILE, {
       suites: [reportedSuite(REPLIES, [HOOK_FAILURE])],
       tests: [reported(REPLIES, BEHAVIOUR_TITLE, failed)],
     });
-    expect(runRows([module], [], roster)).toEqual([
-      noAdapter(REPLIES, failWith(`${REPLIES_FILE}${SOURCE_SEPARATOR}${REPLIES}: ${HOOK_FAILURE}`)),
+    const hook = `${REPLIES_FILE}${SOURCE_SEPARATOR}${REPLIES}: ${HOOK_FAILURE}`;
+    const test = `${BEHAVIOUR_TITLE}: ${FAILURE}`;
+    expect(runRows([module], [], roster)).toEqual([noAdapter(REPLIES, failWith(`${hook}\n${test}`, NO_TEST_DURATION_MS))]);
+  });
+
+  it("joins unhandled errors into an existing (general) cell", () => {
+    const broken = reportedModule(LOOSE_FILE, { errors: [FAILURE] });
+    expect(runRows([broken], toErrors([UNHANDLED_FAILURE]), roster)).toEqual([
+      noAdapter(GENERAL_SCENARIO, failWith(`${LOOSE_FILE}: ${FAILURE}\n${UNHANDLED_FAILURE}`)),
     ]);
   });
 });
@@ -254,12 +289,11 @@ describe("ScorecardReporter.onTestRunEnd", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const module = reportedModule(RECONNECT_FILE, { tests: [reported(RECONNECT, BEHAVIOUR_TITLE, passed)] });
 
-    new ScorecardReporter().onTestRunEnd([module], toErrors([UNHANDLED_FAILURE]));
+    new ScorecardReporter().onTestRunEnd([module as TestModule], toErrors([UNHANDLED_FAILURE]));
 
-    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual([
-      noAdapter(GENERAL_SCENARIO, failWith(UNHANDLED_FAILURE)),
-      noAdapter(RECONNECT, PASS),
-    ]);
+    const expected = [noAdapter(GENERAL_SCENARIO, failWith(UNHANDLED_FAILURE)), noAdapter(RECONNECT, PASS)];
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(expected);
+    expect(readFileSync(markdownPath(path), "utf8")).toBe(toMarkdown(expected));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining(path));
   });
 });

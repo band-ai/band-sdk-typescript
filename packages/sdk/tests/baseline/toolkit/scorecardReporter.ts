@@ -5,12 +5,10 @@
  * `(no adapter)` cell, and one no scenario owns is the `(general)` row. Neither `perAdapter.ts` nor `scorecard.ts`
  * knows about the other.
  */
-import { basename, dirname } from "node:path";
-
-import type { Reporter, TestResult } from "vitest/node";
+import type { Reporter, SerializedError, TestModule, TestResult } from "vitest/node";
 
 import { ADAPTER_IDS, registry, type AdapterId } from "./adapters";
-import { CAST_SEPARATOR, CATEGORIES, type AdapterRegistry, type ScenarioId } from "./registry";
+import { CAST_SEPARATOR, CATEGORIES, scenarioIdFromModulePath, type AdapterRegistry, type ScenarioId } from "./registry";
 import {
   GENERAL_SCENARIO,
   NO_ADAPTER,
@@ -61,9 +59,6 @@ export const TEST_STATE = {
   pending: "pending",
 } as const satisfies Record<string, TestResult["state"]>;
 
-/** The suffix of a scenario file, whose stem names the scenario it defines. */
-const TEST_FILE_SUFFIX = ".test.ts";
-
 /** Joins a file to what failed in it; the separator vitest itself uses in a test's `fullName`. */
 export const SOURCE_SEPARATOR = " > ";
 
@@ -84,8 +79,8 @@ function isAdapterId(name: string): name is AdapterId {
 export type ScorecardRoster = Pick<AdapterRegistry<AdapterId>, "get">;
 
 /** A failed outcome; `source` says where the errors came from when no test title does. */
-function failure(errors: ReadonlyArray<ReportedError>, durationMs: number, source?: string): ScorecardOutcome {
-  const messages = errors.map((error) => error.message).join("\n");
+function failure(errors: ReadonlyArray<ReportedError> | undefined, durationMs: number, source?: string): ScorecardOutcome {
+  const messages = (errors ?? []).map((error) => error.message).join("\n");
   return { status: SCORECARD_STATUS.fail, error: source ? `${source}: ${messages}` : messages, durationMs };
 }
 
@@ -103,7 +98,7 @@ const inModule = (relativeModuleId: string, name: string) => `${relativeModuleId
  * A file that defines several scenarios has no cell of that id, which still names the file.
  */
 function moduleScenario(relativeModuleId: string): ScorecardRow["scenario"] {
-  const candidate = `${basename(dirname(relativeModuleId))}.${basename(relativeModuleId, TEST_FILE_SUFFIX)}`;
+  const candidate = scenarioIdFromModulePath(relativeModuleId);
   return isScenarioId(candidate) ? candidate : GENERAL_SCENARIO;
 }
 
@@ -169,8 +164,8 @@ export function errorRows(module: ReportedModule): ScorecardRow[] {
 }
 
 /**
- * Every row of a finished run. Structural errors come first, so a hook's error text wins its cell over a test's;
- * `merge` keeps each cell's worst outcome, because the markdown grid keeps the last row it sees.
+ * Every row of a finished run. Structural errors are merged before test rows so hook failures are recorded before
+ * adapterless test failures in the same cell; `merge` keeps the worst rank per cell and joins equal `fail` messages.
  */
 export function runRows(
   modules: ReadonlyArray<ReportedModule>,
@@ -186,7 +181,7 @@ export function runRows(
 }
 
 export default class ScorecardReporter implements Reporter {
-  public onTestRunEnd(testModules: ReadonlyArray<ReportedModule>, unhandledErrors: ReadonlyArray<ReportedError>): void {
+  public onTestRunEnd(testModules: ReadonlyArray<TestModule>, unhandledErrors: ReadonlyArray<SerializedError>): void {
     const rows = runRows(testModules, unhandledErrors);
     const path = writeScorecard(rows);
     if (path) {
