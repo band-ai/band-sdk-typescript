@@ -9,7 +9,6 @@ import { postedSendContent } from "./schemas";
  * That post is the turn's reply; its final text only narrates it, so that
  * text is a fallback for a turn that posted nothing (`deliverFallbackReply`).
  */
-/** What tracking needs of a turn's tools: running tool calls, and posting the fallback. */
 export type TrackableTools = MessagingTools & ToolExecutor;
 
 export interface PostedReplyTracker<T extends TrackableTools = TrackableTools> {

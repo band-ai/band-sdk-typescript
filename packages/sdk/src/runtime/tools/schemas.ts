@@ -398,7 +398,8 @@ export function postedSendContent(toolName: string, content: unknown, failed: bo
   if (toolName !== SEND_MESSAGE_TOOL_NAME || failed) {
     return undefined;
   }
-  return String(content ?? "");
+  const text = String(content ?? "").trim();
+  return text.length > 0 ? text : undefined;
 }
 export const SEND_EVENT_TOOL_NAME = "band_send_event";
 

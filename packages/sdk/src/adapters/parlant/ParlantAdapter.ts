@@ -141,6 +141,7 @@ export class ParlantAdapter
   private readonly roomSessions = new Map<string, string>();
   private readonly roomCustomers = new Map<string, string>();
   private readonly roomSessionInitPromises = new Map<string, Promise<string>>();
+  private readonly cleaningUpRooms = new Set<string>();
 
   public constructor(options: ParlantAdapterOptions) {
     super();
@@ -226,6 +227,12 @@ export class ParlantAdapter
     contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
+    if (this.cleaningUpRooms.has(context.roomId)) {
+      const reason = `Room ${context.roomId} is being cleaned up; message rejected`;
+      this.logger.warn(reason, { roomId: context.roomId });
+      throw new RuntimeStateError(reason);
+    }
+
     const senderName = message.senderName ?? message.senderId ?? "User";
 
     try {
@@ -289,24 +296,34 @@ export class ParlantAdapter
   }
 
   public async onCleanup(roomId: string): Promise<void> {
-    // Await in-flight initialization before deleting state to avoid orphaned writes.
-    await this.roomSessionInitPromises.get(roomId)?.catch(() => {});
-
-    const sessionId = this.roomSessions.get(roomId);
-    const customerId = this.roomCustomers.get(roomId);
-    this.roomSessions.delete(roomId);
-    this.roomCustomers.delete(roomId);
-    this.roomSessionInitPromises.delete(roomId);
-
-    const client = this.clientLoader.current;
-    if (!client) {
+    if (this.cleaningUpRooms.has(roomId)) {
       return;
     }
-    // Independent on the server: deleting a customer never checks its sessions.
-    await Promise.all([
-      sessionId && this.deleteQuietly("session", client.sessions, sessionId),
-      customerId && this.deleteQuietly("customer", client.customers, customerId),
-    ]);
+
+    this.cleaningUpRooms.add(roomId);
+
+    try {
+      // Await in-flight initialization before deleting state to avoid orphaned writes.
+      await this.roomSessionInitPromises.get(roomId)?.catch(() => {});
+
+      const sessionId = this.roomSessions.get(roomId);
+      const customerId = this.roomCustomers.get(roomId);
+      this.roomSessions.delete(roomId);
+      this.roomCustomers.delete(roomId);
+      this.roomSessionInitPromises.delete(roomId);
+
+      const client = this.clientLoader.current;
+      if (!client) {
+        return;
+      }
+      // Independent on the server: deleting a customer never checks its sessions.
+      await Promise.all([
+        sessionId && this.deleteQuietly("session", client.sessions, sessionId),
+        customerId && this.deleteQuietly("customer", client.customers, customerId),
+      ]);
+    } finally {
+      this.cleaningUpRooms.delete(roomId);
+    }
   }
 
   private async createOwnedAgent(agentName: string, description: string): Promise<string> {
@@ -460,7 +477,8 @@ export class ParlantAdapter
           );
         }
 
-        const text = extractEventMessage(event);
+        const text =
+          String(event.kind ?? "") === "message" ? extractEventMessage(event) : null;
         if (text) {
           return text;
         }

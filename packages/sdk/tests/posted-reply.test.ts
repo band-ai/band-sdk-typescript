@@ -14,15 +14,16 @@ function trackedTools(execute: FakeTools["executeToolCall"] = async () => ({ ok:
 describe("trackPostedReply", () => {
   it.each([
     { name: "band_send_message", result: { ok: true }, posted: true },
+    { name: "band_send_message", result: { ok: true }, content: "", posted: false },
     { name: "band_send_message", result: { ok: false, message: "unknown mention" }, posted: false },
     { name: "band_send_message", result: "Error: room gone", posted: false },
     { name: "band_get_participants", result: { ok: true }, posted: false },
-  ])("$name returning $result posted: $posted", async ({ name, result, posted }) => {
+  ])("$name returning $result posted: $posted", async ({ name, result, posted, content = "Hi" }) => {
     const posts: string[] = [];
     const { reply } = trackedTools(async () => result, (content) => posts.push(content));
-    await reply.tools.executeToolCall(name, { content: "Hi", mentions: ["@user"] });
+    await reply.tools.executeToolCall(name, { content, mentions: ["@user"] });
     expect(reply.posted()).toBe(posted);
-    expect(posts).toEqual(posted ? ["Hi"] : []);
+    expect(posts).toEqual(posted ? [content] : []);
   });
 
   it("does not count a send that threw", async () => {

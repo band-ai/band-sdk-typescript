@@ -430,4 +430,39 @@ describe("ParlantAdapter", () => {
       ),
     ).toBe(false);
   });
+  it("throws when a message arrives for a room being cleaned up", async () => {
+    const client = new FakeParlantClient();
+    replyWith(client, "hello");
+
+    const logger = fakeLogger();
+    const adapter = await startedAdapter(client, { logger });
+
+    const tools = new FakeTools();
+    await turn(adapter, "room-drop", { tools });
+
+    const cleanupPromise = adapter.onCleanup("room-drop");
+    await expect(
+      turn(adapter, "room-drop", { tools }),
+    ).rejects.toThrow("Room room-drop is being cleaned up; message rejected");
+    await cleanupPromise;
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("being cleaned up"),
+      expect.objectContaining({ roomId: "room-drop" }),
+    );
+  });
+
+  it("waits for a message event instead of status payload text", async () => {
+    const client = new FakeParlantClient();
+    client.eventPollBatches.push([
+      { kind: "status", offset: 1, data: { message: "status-only reply" } },
+      { kind: "message", offset: 2, data: { message: "real reply" } },
+    ]);
+
+    const tools = new FakeTools();
+    await turn(await startedAdapter(client), "room-status", { tools });
+
+    expect(tools.messages).toEqual(["real reply"]);
+  });
+
 });

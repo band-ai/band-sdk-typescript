@@ -41,7 +41,7 @@ describe("buildConversationPrompt", () => {
   });
 
   it("keeps only text entries from the raw bootstrap window", () => {
-    const outsideWindow = { sender_name: "Old", content: "outside the window" };
+    const outsideWindow = { message_type: "task", content: "outside the window" };
     const inWindow = [
       { sender_name: "Alice", message_type: "text", content: "typed text" },
       { sender_name: "Bob", content: "legacy text" },
@@ -70,6 +70,24 @@ describe("buildConversationPrompt", () => {
       expect(prompt).not.toContain(`${message_type} content`);
     }
     expect(prompt).not.toContain("unrecognized content");
+  });
+
+  it("does not let non-text rows consume the bootstrap cap", () => {
+    const prompt = buildConversationPrompt({
+      history: new HistoryProvider([
+        { sender_name: "Alice", message_type: "text", content: "keep me" },
+        { message_type: "task", content: "task marker" },
+      ]),
+      isSessionBootstrap: true,
+      participantsMessage: null,
+      contactsMessage: null,
+      historyHeader: "[History]",
+      currentMessage: "Current message",
+      maxHistoryMessages: 1,
+    });
+
+    expect(prompt).toContain("[Alice]: keep me");
+    expect(prompt).not.toContain("task marker");
   });
 
   it("folds in no history when the cap is zero", () => {
