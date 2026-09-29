@@ -71,6 +71,7 @@ describe("specs()", () => {
     fakeSpec(ADAPTER.codex),
     fakeSpec(ADAPTER.anthropic),
     fakeSpec(ADAPTER.letta, [], "needs a server"),
+    { ...fakeSpec(ADAPTER.parlant), bespokeOnly: "runs only where named" },
   ]);
 
   it.each<{ name: string; filter: Parameters<AdapterRegistry["specs"]>[0]; expected: string[] }>([
@@ -81,6 +82,7 @@ describe("specs()", () => {
     { name: "without keeps adapters with none of the capabilities", filter: { without: [CAPABILITY.approvals] }, expected: [ADAPTER.anthropic, ADAPTER.codex] },
     { name: "filters combine", filter: { without: [CAPABILITY.approvals], exclude: [ADAPTER.anthropic] }, expected: [ADAPTER.codex] },
     { name: "includePending keeps pending adapters", filter: { includePending: true, include: [ADAPTER.letta] }, expected: [ADAPTER.letta] },
+    { name: "a bespoke-only adapter is never in a fan-out", filter: { includePending: true, include: [ADAPTER.parlant] }, expected: [] },
   ])("$name", ({ filter, expected }) => {
     expect(fake.specs(filter).map((spec) => spec.id)).toEqual(expected);
   });

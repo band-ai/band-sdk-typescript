@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TestResult } from "vitest/node";
 
-import { ADAPTER, registry } from "./adapters";
+import { ADAPTER, registry, specs } from "./adapters";
 import { CAST_SEPARATOR, CATEGORY, scenarioId } from "./registry";
 import { SCORECARD_STATUS } from "./scorecard";
 import { TEST_PARENT, TEST_STATE, scorecardRows, type ReportedTest } from "./scorecardReporter";
@@ -10,6 +10,8 @@ const REPLIES = scenarioId(CATEGORY.platform, "repliesToMention");
 const DURATION_MS = 42;
 const FAILURE = "no reply within 5ms";
 const OPT_IN_NOTE = "set RUN_CODEX_ACP_E2E=1";
+// Any roster adapter still pending; which one changes as CI gains servers and keys.
+const PENDING = specs({ includePending: true }).find((spec) => spec.pending)!.id;
 
 /** A finished test as vitest reports it, titled the way `perAdapter` titles it. */
 function reported(suite: string, name: string, result: TestResult): ReportedTest {
@@ -47,9 +49,9 @@ describe("scorecardRows", () => {
   });
 
   it("records a pending adapter as N/A with its registry reason", () => {
-    expect(scorecardRows(reported(REPLIES, ADAPTER.letta, skipped("anything")))[0]?.outcome).toEqual({
+    expect(scorecardRows(reported(REPLIES, PENDING, skipped("anything")))[0]?.outcome).toEqual({
       status: SCORECARD_STATUS.na,
-      reason: registry.get(ADAPTER.letta).pending,
+      reason: registry.get(PENDING).pending,
     });
   });
 
@@ -59,7 +61,7 @@ describe("scorecardRows", () => {
       reason: OPT_IN_NOTE,
     });
     expect(scorecardRows(reported(REPLIES, ADAPTER.anthropic, skipped()))).toEqual([]);
-    expect(scorecardRows(reported(REPLIES, ADAPTER.letta, skipped())), "a filtered-out pending adapter").toEqual([]);
+    expect(scorecardRows(reported(REPLIES, PENDING, skipped())), "a filtered-out pending adapter").toEqual([]);
   });
 
   it.each([

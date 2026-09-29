@@ -88,6 +88,11 @@ export interface AdapterSpec<Id extends string = string> {
    * `specs()` leaves pending adapters out unless asked.
    */
   pending?: string;
+  /**
+   * Why the adapter runs only in scenarios that name it (`withAdapters`),
+   * never a fan-out: `specs()` always leaves it out.
+   */
+  bespokeOnly?: string;
 }
 
 export interface SpecFilter<Id extends string = string> {
@@ -146,6 +151,7 @@ export class AdapterRegistry<Id extends string = string> {
         (spec) =>
           (include === undefined || include.includes(spec.id)) &&
           !exclude?.includes(spec.id) &&
+          spec.bespokeOnly === undefined &&
           (includePending || spec.pending === undefined) &&
           supports.every((capability) => spec.supports.includes(capability)) &&
           !without.some((capability) => spec.supports.includes(capability)),
