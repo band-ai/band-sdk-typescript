@@ -140,40 +140,31 @@ function pairUserAssistantTurns<T extends ChatTurn>(turns: readonly T[]): T[] {
 }
 
 /**
+ * The last `cap` items.  A `cap` of `0` or less, or `NaN`, keeps none: a
+ * plain `slice(-cap)` keeps everything for both, since `-0` and `-NaN` read
+ * as `slice(0)`.  (`NaN` arrives from e.g. `Number()` of a malformed env var.)
+ */
+export function takeLast<T>(items: readonly T[], cap: number): T[] {
+  const count = Number.isNaN(cap) ? 0 : Math.floor(cap);
+  return count > 0 ? items.slice(-count) : [];
+}
+
+/**
  * Keep the most recent `limit` turns.  A plain `slice(-limit)` can land
  * between a question and its answer, so an assistant turn left leading by
  * the cut is dropped rather than replayed without the question it answers -
  * which is why the result can be one turn shorter than `limit`, and why a
  * `limit` of `1` selects nothing whenever the newest turn is an answer.
  *
- * A `limit` of `0` or less selects nothing, reading the option as the cap it
- * is named for.  The call site this replaced ended in `.slice(-limit)`, where
- * `-0 === 0` made `slice(0)` return the whole history - so `0` used to mean
- * "everything" and a negative meant "drop that many from the front".  Both
- * were artefacts of the expression rather than anything chosen, and neither
- * is a reading of `maxHistoryMessages` a caller could arrive at on purpose.
- *
- * `NaN` is the same artefact once removed: it fails every comparison and
- * reaches `slice(-NaN)`, which is `slice(0)` - the entire history, unbounded.
- * It arrives from things like `Number(someEnvVar)` on a malformed value, so
- * it is treated as the mistake it is rather than as "no limit".
+ * The cap itself reads as `takeLast` does: `0`, a negative or `NaN` selects
+ * nothing.
  */
 function takeRecentTurns<T extends ChatTurn>(
   turns: readonly T[],
   limit: number,
 ): T[] {
-  const cap = Number.isNaN(limit) ? 0 : Math.floor(limit);
-
-  if (cap <= 0) {
-    return [];
-  }
-
-  if (turns.length <= cap) {
-    return [...turns];
-  }
-
-  const truncated = turns.slice(-cap);
-  if (truncated[0]?.role === "assistant") {
+  const truncated = takeLast(turns, limit);
+  if (truncated.length < turns.length && truncated[0]?.role === "assistant") {
     truncated.shift();
   }
 

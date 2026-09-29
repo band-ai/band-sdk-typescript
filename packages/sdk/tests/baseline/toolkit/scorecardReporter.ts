@@ -8,7 +8,7 @@
 import type { Reporter, TestModule, TestResult } from "vitest/node";
 
 import { ADAPTER_IDS, registry, type AdapterId } from "./adapters";
-import { CAST_SEPARATOR, CATEGORIES, type ScenarioId } from "./registry";
+import { CAST_SEPARATOR, CATEGORIES, type AdapterRegistry, type ScenarioId } from "./registry";
 import { SCORECARD_STATUS, writeScorecard, type ScorecardOutcome, type ScorecardRow } from "./scorecard";
 
 /** What vitest reports a test's parent as. */
@@ -40,7 +40,10 @@ function isAdapterId(name: string): name is AdapterId {
   return (ADAPTER_IDS as readonly string[]).includes(name);
 }
 
-function outcome(adapter: AdapterId, test: ReportedTest): ScorecardOutcome | null {
+/** The roster a scorecard reads why an adapter did not run from. */
+export type ScorecardRoster = Pick<AdapterRegistry<AdapterId>, "get">;
+
+function outcome(adapter: AdapterId, test: ReportedTest, roster: ScorecardRoster): ScorecardOutcome | null {
   const result = test.result();
   const durationMs = test.diagnostic()?.duration ?? 0;
   switch (result.state) {
@@ -51,8 +54,9 @@ function outcome(adapter: AdapterId, test: ReportedTest): ScorecardOutcome | nul
     case TEST_STATE.skipped: {
       // A test filtered out of this run (`-t`, a path) is skipped with no note: it did not run, so no row.
       if (!result.note) return null;
-      const { pending } = registry.get(adapter);
-      return pending ? { status: SCORECARD_STATUS.na, reason: pending } : { status: SCORECARD_STATUS.skip, reason: result.note };
+      const { pending, bespokeOnly } = roster.get(adapter);
+      const notRun = pending ?? bespokeOnly;
+      return notRun ? { status: SCORECARD_STATUS.na, reason: notRun } : { status: SCORECARD_STATUS.skip, reason: result.note };
     }
     case TEST_STATE.pending:
       return null;
@@ -60,14 +64,14 @@ function outcome(adapter: AdapterId, test: ReportedTest): ScorecardOutcome | nul
 }
 
 /** The scorecard rows for a finished test — one per adapter in its cast — or none when it is not a scenario cell or did not run. */
-export function scorecardRows(test: ReportedTest): ScorecardRow[] {
+export function scorecardRows(test: ReportedTest, roster: ScorecardRoster = registry): ScorecardRow[] {
   const cast = test.name.split(CAST_SEPARATOR);
   if (test.parent.type !== TEST_PARENT.suite || !isScenarioId(test.parent.name) || !cast.every(isAdapterId)) {
     return [];
   }
   const scenario = test.parent.name;
   return cast.flatMap((adapter) => {
-    const result = outcome(adapter, test);
+    const result = outcome(adapter, test, roster);
     return result ? [{ scenario, adapter, outcome: result }] : [];
   });
 }

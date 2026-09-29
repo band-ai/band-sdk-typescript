@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Start a self-hosted Letta server (docker) for the baseline's letta adapter.
-#
-# Reads ANTHROPIC_API_KEY (the server's own model key: the baseline runs Letta
-# on anthropic/claude-haiku-4-5) and exports LETTA_BASE_URL to later steps.
+# A self-hosted Letta server (docker) for the baseline's letta adapter, in two
+# steps so it boots while the job does other work:
+#   setup-letta.sh start  - pull and start the container (needs ANTHROPIC_API_KEY,
+#                           the server's own model key: the baseline runs Letta
+#                           on anthropic/claude-haiku-4-5)
+#   setup-letta.sh wait   - wait until it is healthy, then export LETTA_BASE_URL
 #
 # Unlike band-sdk-python's setup-letta.sh, no MCP URL-guard patch and no
 # host-gateway: the TS adapter hands Letta the Band tools as client tools and
@@ -17,23 +19,33 @@ LETTA_IMAGE="letta/letta:0.16.8@sha256:aa66c3eeee13d2dfc40c650d709b550237ee31bfc
 LETTA_PORT=8283
 LETTA_URL="http://localhost:${LETTA_PORT}"
 
-# Loopback only: the tests run on this host, and the test server is unauthenticated.
-docker run -d --name letta-server \
-  -p "127.0.0.1:${LETTA_PORT}:8283" \
-  -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is required for the Letta server}" \
-  "$LETTA_IMAGE"
+start() {
+  # Loopback only: the tests run on this host, and the test server is unauthenticated.
+  docker run -d --name letta-server \
+    -p "127.0.0.1:${LETTA_PORT}:8283" \
+    -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is required for the Letta server}" \
+    "$LETTA_IMAGE"
+}
 
 # Fail loudly if it never comes up, rather than let the tests fail opaquely.
 # --max-time keeps one hung response from wedging the loop; a container that
 # exited stops the wait at once.
-for _ in $(seq 1 45); do
-  if curl -fsS --max-time 5 "${LETTA_URL}/v1/health/" 2>/dev/null; then
-    echo "LETTA_BASE_URL=${LETTA_URL}" >> "$GITHUB_ENV"
-    exit 0
-  fi
-  [ "$(docker inspect -f '{{.State.Running}}' letta-server)" = true ] || break
-  sleep 2
-done
-echo "Letta server did not become healthy on :${LETTA_PORT}" >&2
-docker logs letta-server 2>&1 | tail -50 || true
-exit 1
+wait_healthy() {
+  for _ in $(seq 1 45); do
+    if curl -fsS --max-time 5 "${LETTA_URL}/v1/health/" 2>/dev/null; then
+      echo "LETTA_BASE_URL=${LETTA_URL}" >> "$GITHUB_ENV"
+      return 0
+    fi
+    [ "$(docker inspect -f '{{.State.Running}}' letta-server)" = true ] || break
+    sleep 2
+  done
+  echo "Letta server did not become healthy on :${LETTA_PORT}" >&2
+  docker logs letta-server 2>&1 | tail -50 || true
+  return 1
+}
+
+case "${1:-}" in
+  start) start ;;
+  wait) wait_healthy ;;
+  *) echo "usage: $0 start|wait" >&2; exit 2 ;;
+esac

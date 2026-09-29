@@ -99,8 +99,8 @@ Add its spec to `SPECS` in `toolkit/adapters.ts`, with `id` set to its directory
 `src/adapters/`; its `ADAPTER` handle and everything else follow from that. The `registry.test.ts`
 drift guard fails until the roster and the folders under `src/adapters/` agree. An adapter CI can't run yet gets a plain-language `pending` reason, and
 the scorecard shows it as N/A with that reason. An adapter the generic scenarios don't fit (Parlant
-has no Band tools) gets a `bespokeOnly` reason instead: it never joins a fan-out and runs only in the
-`adapters.*` scenarios that name it.
+has no Band tools) gets a `bespokeOnly` reason instead: it runs only in the `adapters.*` scenarios that name it, and
+`perAdapter` fan-outs show it as N/A with that reason.
 
 ## Design values
 

@@ -82,7 +82,8 @@ describe("specs()", () => {
     { name: "without keeps adapters with none of the capabilities", filter: { without: [CAPABILITY.approvals] }, expected: [ADAPTER.anthropic, ADAPTER.codex] },
     { name: "filters combine", filter: { without: [CAPABILITY.approvals], exclude: [ADAPTER.anthropic] }, expected: [ADAPTER.codex] },
     { name: "includePending keeps pending adapters", filter: { includePending: true, include: [ADAPTER.letta] }, expected: [ADAPTER.letta] },
-    { name: "a bespoke-only adapter is never in a fan-out", filter: { includePending: true, include: [ADAPTER.parlant] }, expected: [] },
+    { name: "a bespoke-only adapter is left out by default", filter: { includePending: true, include: [ADAPTER.parlant] }, expected: [] },
+    { name: "includeBespokeOnly keeps bespoke-only adapters", filter: { includeBespokeOnly: true, include: [ADAPTER.parlant] }, expected: [ADAPTER.parlant] },
   ])("$name", ({ filter, expected }) => {
     expect(fake.specs(filter).map((spec) => spec.id)).toEqual(expected);
   });

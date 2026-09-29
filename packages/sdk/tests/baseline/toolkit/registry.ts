@@ -90,7 +90,8 @@ export interface AdapterSpec<Id extends string = string> {
   pending?: string;
   /**
    * Why the adapter runs only in scenarios that name it (`withAdapters`),
-   * never a fan-out: `specs()` always leaves it out.
+   * never a fan-out. `specs()` leaves it out unless asked; a fan-out that
+   * asks shows it as N/A with this reason.
    */
   bespokeOnly?: string;
 }
@@ -103,6 +104,7 @@ export interface SpecFilter<Id extends string = string> {
   /** Keep adapters that support NONE of these. */
   without?: readonly Capability[];
   includePending?: boolean;
+  includeBespokeOnly?: boolean;
 }
 
 /** The value that turns an opt-in environment flag on, e.g. `BAND_E2E_INCLUDE_PENDING=1`. */
@@ -144,14 +146,14 @@ export class AdapterRegistry<Id extends string = string> {
 
   /** The registered specs narrowed by `filter`, in stable id order. */
   public specs(filter: SpecFilter<Id> = {}): AdapterSpec<Id>[] {
-    const { include, exclude, supports = [], without = [], includePending = false } = filter;
+    const { include, exclude, supports = [], without = [], includePending = false, includeBespokeOnly = false } = filter;
     return this.ids()
       .map((id) => this.get(id))
       .filter(
         (spec) =>
           (include === undefined || include.includes(spec.id)) &&
           !exclude?.includes(spec.id) &&
-          spec.bespokeOnly === undefined &&
+          (includeBespokeOnly || spec.bespokeOnly === undefined) &&
           (includePending || spec.pending === undefined) &&
           supports.every((capability) => spec.supports.includes(capability)) &&
           !without.some((capability) => spec.supports.includes(capability)),
