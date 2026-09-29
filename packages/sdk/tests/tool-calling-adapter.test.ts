@@ -7,7 +7,7 @@ import type { HistoryProvider, PlatformMessage } from "../src/runtime";
 import type { CustomToolDef } from "../src/runtime/tools/customTools";
 import type { AgentToolsProtocol } from "../src/core";
 import { toFailureEvent } from "../src/contracts/protocols";
-import { MEMORY_SECTION } from "../src/runtime/prompts";
+import { MEMORY_SECTION, renderSystemPrompt } from "../src/runtime/prompts";
 import { SEND_MESSAGE_TOOL_NAME } from "../src/runtime/tools/schemas";
 import type { ToolCallingModel } from "../src/adapters";
 import { describeDeliveryContract } from "./deliveryContract";
@@ -620,6 +620,27 @@ describe("ToolCallingAdapter", () => {
 
     it("leaves the prompt as given when they are not", async () => {
       expect(await promptsSent(false)).toEqual([RAW_PROMPT, RAW_PROMPT]);
+    });
+
+    it("sends memory guidance alone when memory tools are on and no system prompt was given", async () => {
+      const model = new FakeModel();
+      const adapter = new OpenAIAdapter({ model, includeMemoryTools: true });
+      await adapter.onMessage(fakeMessage, new FakeTools(), fakeHistory, null, null, { isSessionBootstrap: true, roomId: "r1" });
+
+      for (const prompt of model.requests.map((request) => request.systemPrompt)) {
+        expect(prompt).toContain(MEMORY_SECTION);
+      }
+    });
+
+    it("does not duplicate memory guidance when the prompt already came from renderSystemPrompt", async () => {
+      const model = new FakeModel();
+      const systemPrompt = renderSystemPrompt({ customSection: RAW_PROMPT, capabilities: { memory: true } });
+      const adapter = new OpenAIAdapter({ model, systemPrompt, includeMemoryTools: true });
+      await adapter.onMessage(fakeMessage, new FakeTools(), fakeHistory, null, null, { isSessionBootstrap: true, roomId: "r1" });
+
+      for (const prompt of model.requests.map((request) => request.systemPrompt)) {
+        expect((prompt?.match(/## Memory Tools/g) ?? []).length).toBe(1);
+      }
     });
   });
 

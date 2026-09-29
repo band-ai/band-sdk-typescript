@@ -13,7 +13,7 @@ import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import { rethrowIfRecoverableTurnFailure } from "../../core/errors";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
-import { renderSystemPrompt } from "../../runtime/prompts";
+import { renderSystemPrompt, withMemoryGuidance } from "../../runtime/prompts";
 import { SEND_MESSAGE_TOOL_NAME, SEND_EVENT_TOOL_NAME } from "../../runtime/tools/schemas";
 import { abandon } from "../shared/abandon";
 import { withTimeout } from "../shared/withTimeout";
@@ -552,7 +552,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
 
     const systemPromptOverride = this.baseConfig.systemPrompt?.trim() ?? "";
     if (systemPromptOverride.length > 0) {
-      this.systemPrompt = systemPromptOverride;
+      this.systemPrompt = withMemoryGuidance(systemPromptOverride, this.includeMemoryTools);
       return;
     }
 

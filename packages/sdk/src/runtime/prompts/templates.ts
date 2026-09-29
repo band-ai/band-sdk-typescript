@@ -22,7 +22,13 @@ export interface RenderSystemPromptOptions {
  * it the model gets the tools but not the scope and subject rules.
  */
 export function withMemoryGuidance(prompt: string, memory?: boolean): string {
-  return memory ? [prompt, MEMORY_SECTION].join("\n\n") : prompt;
+  if (!memory || prompt.includes(MEMORY_SECTION)) {
+    return prompt;
+  }
+  if (!prompt.trim()) {
+    return MEMORY_SECTION;
+  }
+  return [prompt, MEMORY_SECTION].join("\n\n");
 }
 
 export function renderSystemPrompt(options?: RenderSystemPromptOptions): string {
@@ -32,7 +38,8 @@ export function renderSystemPrompt(options?: RenderSystemPromptOptions): string 
   const includeBaseInstructions = options?.includeBaseInstructions ?? true;
 
   if (!includeBaseInstructions) {
-    return `You are ${agentName}, ${agentDescription}.\n\n${customSection}`.trim();
+    const minimal = `You are ${agentName}, ${agentDescription}.\n\n${customSection}`.trim();
+    return withMemoryGuidance(minimal, options?.capabilities?.memory);
   }
 
   const template = options?.template ?? "default";
