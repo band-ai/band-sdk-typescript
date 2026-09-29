@@ -27,6 +27,10 @@ export interface HistoryConverter<T> {
 export interface PlatformMessageLike {
   id: string;
   roomId: string;
+  /**
+   * The default preprocessor replaces `@[[id]]` tokens with the mentioned participant's label from
+   * `metadata.mentions`; a token with no label stays raw. A custom `Preprocessor` bypasses this.
+   */
   content: string;
   senderId: string;
   senderType: string;

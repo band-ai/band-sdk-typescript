@@ -90,8 +90,8 @@ describe("renderSystemPrompt", () => {
     expect(result).toContain("## Memory Tools");
     expect(result).toContain("band_store_memory");
     expect(result).toContain('scope="agent"');
-    expect(result).toContain("private to this agent");
-    expect(result).toContain("defaults to agent scope");
+    expect(result).toContain("private to you");
+    expect(result).toContain('Default to `scope="agent"`');
     expect(result).toContain('scope="organization"');
     expect(result).toContain("real `subject_id` UUID");
   });
