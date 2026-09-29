@@ -117,7 +117,7 @@ export class GeminiToolCallingModel implements ToolCallingModel {
     });
   }
 
-  public async complete(request: ToolCallingModelRequest): Promise<ToolCallingResponse> {
+  public async complete(request: ToolCallingModelRequest, options?: { signal?: AbortSignal }): Promise<ToolCallingResponse> {
     const client = await this.getClient();
     await this.ensurePartFactories();
 
@@ -127,6 +127,7 @@ export class GeminiToolCallingModel implements ToolCallingModel {
       config: {
         systemInstruction: request.systemPrompt,
         tools: this.toGeminiTools(request.tools),
+        abortSignal: options?.signal,
       },
     });
 

@@ -24,7 +24,7 @@ interface OpenAIChatCompletionResponseLike {
 interface OpenAIClientLike {
   chat: {
     completions: {
-      create(params: Record<string, unknown>): Promise<OpenAIChatCompletionResponseLike>;
+      create(params: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<OpenAIChatCompletionResponseLike>;
     };
   };
 }
@@ -55,7 +55,7 @@ export class OpenAIToolCallingModel implements ToolCallingModel {
     });
   }
 
-  public async complete(request: ToolCallingModelRequest): Promise<ToolCallingResponse> {
+  public async complete(request: ToolCallingModelRequest, options?: { signal?: AbortSignal }): Promise<ToolCallingResponse> {
     const client = await this.getClient();
 
     const messages = toOpenAIMessages(request);
@@ -66,7 +66,7 @@ export class OpenAIToolCallingModel implements ToolCallingModel {
       messages,
       tools,
       tool_choice: tools.length > 0 ? "auto" : undefined,
-    });
+    }, options);
 
     return parseOpenAIResponse(response);
   }

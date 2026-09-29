@@ -124,6 +124,14 @@ function reportsTools({ customTools, memory }: Pick<BuildOptions, "customTools" 
   return { enableExecutionReporting: Boolean(customTools?.length) || Boolean(memory) };
 }
 
+/**
+ * A tool-calling adapter's turn cap in a baseline run, well inside the delivery wait: a hung provider
+ * call then fails its own message, and the next message's normal turn still finishes within the wait.
+ * Long enough that a tool-heavy turn never trips it.
+ */
+const BASELINE_TURN_TIMEOUT_MS = 120_000;
+const TOOL_CALLING_TURN_TIMEOUT = { turnTimeoutMs: BASELINE_TURN_TIMEOUT_MS };
+
 /** A builder for an adapter that cannot run yet; it names why instead of half-building one. */
 function unbuildable(reason: string): () => never {
   return () => {
@@ -144,6 +152,7 @@ const SPECS = {
         customTools,
         includeMemoryTools: memory,
         ...reportsTools({ customTools, memory }),
+        ...TOOL_CALLING_TURN_TIMEOUT,
       }),
   },
   claudeSdk: {
@@ -195,6 +204,7 @@ const SPECS = {
         customTools,
         includeMemoryTools: memory,
         ...reportsTools({ customTools, memory }),
+        ...TOOL_CALLING_TURN_TIMEOUT,
       }),
   },
   googleAdk: {
@@ -249,6 +259,7 @@ const SPECS = {
         customTools,
         includeMemoryTools: memory,
         ...reportsTools({ customTools, memory }),
+        ...TOOL_CALLING_TURN_TIMEOUT,
       }),
   },
   opencode: {

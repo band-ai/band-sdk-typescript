@@ -56,7 +56,7 @@ export class VercelAISDKToolCallingModel implements ToolCallingModel {
     });
   }
 
-  public async complete(request: ToolCallingModelRequest): Promise<ToolCallingResponse> {
+  public async complete(request: ToolCallingModelRequest, options?: { signal?: AbortSignal }): Promise<ToolCallingResponse> {
     const runtime = await this.runtimeLoader.get();
     const tools = toVercelAISDKTools(request.tools, runtime.tool);
 
@@ -65,6 +65,7 @@ export class VercelAISDKToolCallingModel implements ToolCallingModel {
       ...(request.systemPrompt?.trim() ? { system: request.systemPrompt.trim() } : {}),
       messages: toVercelAISDKMessages(request),
       ...(Object.keys(tools).length > 0 ? { tools } : {}),
+      abortSignal: options?.signal,
     });
 
     return parseVercelAISDKResponse(response);

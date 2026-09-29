@@ -448,7 +448,7 @@ When adding a new adapter, follow this workflow. Use the lowercase module name (
 
 ### Phase 3: Implement the Adapter
 
-- For `ToolCallingAdapter`: implement a `ToolCallingModel` that converts the platform `TOOL_MODELS` into the framework's tool-call format, executes the LLM call, and returns tool calls/results.
+- For `ToolCallingAdapter`: implement a `ToolCallingModel` that converts the platform `TOOL_MODELS` into the framework's tool-call format, executes the LLM call, and returns tool calls/results. Pass `options.signal` (aborted when the turn's `turnTimeoutMs` runs out) to the provider call, so an abandoned request is released.
 - For `SimpleAdapter`: implement `onMessage(message, tools)` directly. Use `tools.sendMessage`, `tools.sendEvent`, etc.
 - Honour `agent_name` and own-agent filtering when converting history.
 - Reuse helpers from `packages/sdk/src/adapters/shared/` (`conversationPrompt`, `history`, `coercion`, `lazyAsyncValue`).

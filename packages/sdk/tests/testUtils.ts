@@ -559,3 +559,25 @@ export class FakeRestApi implements RestApi {
 export async function expectTurnFailed(turn: Promise<unknown>): Promise<void> {
   await expect(turn).rejects.toBeInstanceOf(ProviderTurnFailedError);
 }
+
+/** A turn budget short enough for a test on real timers to outlive. */
+export const SHORT_TURN_TIMEOUT_MS = 20;
+
+/**
+ * A provider request that never answers: it stays pending until its signal
+ * aborts, then rejects at once. `signal` is the one it was made with.
+ */
+export function hangUntilAborted(): { readonly signal: AbortSignal | undefined; request(signal?: AbortSignal): Promise<never> } {
+  let seen: AbortSignal | undefined;
+  return {
+    get signal() {
+      return seen;
+    },
+    request(signal) {
+      seen = signal;
+      return new Promise<never>((_, reject) => {
+        signal?.addEventListener("abort", () => reject(new Error("request aborted")), { once: true });
+      });
+    },
+  };
+}

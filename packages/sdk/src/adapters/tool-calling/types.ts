@@ -32,5 +32,9 @@ export interface ToolCallingModelRequest {
 }
 
 export interface ToolCallingModel {
-  complete(request: ToolCallingModelRequest): Promise<ToolCallingResponse>;
+  /**
+   * `options.signal` aborts when the turn's time budget runs out. Honour it by
+   * passing it to the provider call, so the abandoned request is released.
+   */
+  complete(request: ToolCallingModelRequest, options?: { signal?: AbortSignal }): Promise<ToolCallingResponse>;
 }

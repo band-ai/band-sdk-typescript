@@ -6,6 +6,7 @@ import {
   type ToolSchemaProvider,
 } from "../../contracts/protocols";
 import type { ToolModelMessage } from "../../contracts/dtos";
+import { Deadline } from "../../core/deadline";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
@@ -14,7 +15,13 @@ import { withMemoryGuidance } from "../../runtime/prompts";
 import { deliverFallbackReply, trackPostedReply } from "../../runtime/tools/postedReply";
 import { asErrorMessage } from "../shared/coercion";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
-import { reportProviderTurnFailure } from "../../core/providerFailure";
+import { assertTurnTimeoutMs } from "../shared/turnTimeout";
+import {
+  FAILURE_CODE_TIMEOUT,
+  agentFailure,
+  reportProviderTurnFailure,
+  reportTurnFailure,
+} from "../../core/providerFailure";
 import {
   CustomToolExecutionError,
   CustomToolValidationError,
@@ -35,6 +42,62 @@ import type {
 /** `AgentFailure.provider` for a subclass that does not name itself. */
 const DEFAULT_PROVIDER = "tool-calling";
 
+/** Caps a whole turn, every tool round included; matches the OpenCode adapter's cap. */
+const DEFAULT_TURN_TIMEOUT_MS = 300_000;
+
+class TurnTimedOutError extends Error {
+  public constructor() {
+    super("Tool-calling turn timed out");
+    this.name = "TurnTimedOutError";
+  }
+}
+
+/**
+ * One turn's time budget, enforced from inside the turn. Racing the whole turn
+ * from outside would free the room's turn lock while its tool loop kept
+ * running, overlapping the next turn on the same conversation.
+ */
+class TurnBudget implements Disposable {
+  private readonly deadline: Deadline;
+  private readonly controller = new AbortController();
+  private expired = false;
+
+  public constructor(timeoutMs: number) {
+    this.deadline = new Deadline(timeoutMs);
+    // The flag goes up before the abort: a model that rejects the moment it is
+    // aborted must still be classed as a timeout, not as its own abort error.
+    void this.deadline.expired.then(() => {
+      this.expired = true;
+      this.controller.abort();
+    });
+  }
+
+  public get hasExpired(): boolean {
+    return this.expired;
+  }
+
+  public throwIfExpired(): void {
+    if (this.expired) {
+      throw new TurnTimedOutError();
+    }
+  }
+
+  /** Runs `call` with the turn's abort signal, and stops waiting on it at the deadline even if it ignores the signal. */
+  public async run<T>(call: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    this.throwIfExpired();
+    return Promise.race([
+      call(this.controller.signal),
+      this.deadline.expired.then((): never => {
+        throw new TurnTimedOutError();
+      }),
+    ]);
+  }
+
+  public [Symbol.dispose](): void {
+    this.deadline[Symbol.dispose]();
+  }
+}
+
 export interface ToolCallingAdapterOptions {
   model: ToolCallingModel;
   toolFormat: "openai" | "anthropic";
@@ -43,6 +106,8 @@ export interface ToolCallingAdapterOptions {
   systemPrompt?: string;
   includeMemoryTools?: boolean;
   maxToolRounds?: number;
+  /** Caps one whole turn, every tool round included, at this many milliseconds; `Infinity` removes the cap. Defaults to five minutes. */
+  turnTimeoutMs?: number;
   enableExecutionReporting?: boolean;
   customTools?: CustomToolDef[];
   logger?: Logger;
@@ -57,6 +122,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
   private readonly systemPrompt?: string;
   private readonly includeMemoryTools: boolean;
   private readonly maxToolRounds: number;
+  private readonly turnTimeoutMs: number;
   private readonly enableExecutionReporting: boolean;
   private readonly customTools: CustomToolDef[];
   private readonly customToolIndex: Map<string, CustomToolDef>;
@@ -76,6 +142,8 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
         ? undefined
         : withMemoryGuidance(options.systemPrompt ?? "", this.includeMemoryTools);
     this.maxToolRounds = options.maxToolRounds ?? 8;
+    this.turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
+    assertTurnTimeoutMs(this.turnTimeoutMs);
     this.enableExecutionReporting = options.enableExecutionReporting ?? false;
     this.customTools = options.customTools ?? [];
     this.customToolIndex = buildCustomToolIndex(this.customTools);
@@ -108,6 +176,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
+    using turn = new TurnBudget(this.turnTimeoutMs);
     const conversation = this.conversationFor(context, history, message);
     conversation.push(this.userTurn(message));
     const toolRounds: ToolRound[] = [];
@@ -124,11 +193,11 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
       // Notices are for this turn only. The durable conversation keeps what was said in the room.
       const messages = [...conversation, ...this.turnNotices(participantsMessage, contactsMessage)];
 
-      let response = await this.model.complete({
+      let response = await turn.run((signal) => this.model.complete({
         systemPrompt: this.systemPrompt,
         messages,
         tools: schemas,
-      });
+      }, { signal }));
 
       let roundCount = 0;
       while ((response.toolCalls?.length ?? 0) > 0) {
@@ -143,6 +212,8 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
 
         const roundToolResults: ToolResult[] = [];
         for (const call of roundToolCalls) {
+          // Before the call is reported, so no tool_call is left without its tool_result.
+          turn.throwIfExpired();
           if (this.enableExecutionReporting) {
             await this.reportExecutionEvent(
               tools,
@@ -213,12 +284,12 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
 
         toolRounds.push({ toolCalls: roundToolCalls, toolResults: roundToolResults });
 
-        response = await this.model.complete({
+        response = await turn.run((signal) => this.model.complete({
           systemPrompt: this.systemPrompt,
           messages,
           tools: schemas,
           toolRounds,
-        });
+        }, { signal }));
       }
 
       text = response.text?.trim();
@@ -228,7 +299,12 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
         });
       }
     } catch (error) {
-      await reportProviderTurnFailure(tools, this.logger, this.provider, "Tool-calling adapter request failed", error, { messageId: message.id });
+      if (turn.hasExpired) {
+        const timedOut = agentFailure(this.provider, `${this.provider} turn timed out.`, FAILURE_CODE_TIMEOUT);
+        await reportTurnFailure(tools, timedOut, this.logger, { messageId: message.id });
+      } else {
+        await reportProviderTurnFailure(tools, this.logger, this.provider, "Tool-calling adapter request failed", error, { messageId: message.id });
+      }
     }
 
     const mention = [{ id: message.senderId, handle: message.senderName ?? message.senderType }];
