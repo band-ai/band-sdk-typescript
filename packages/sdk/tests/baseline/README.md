@@ -100,19 +100,10 @@ The rules:
 
 Add its spec to `SPECS` in `toolkit/adapters.ts`, with `id` set to its directory under
 `src/adapters/`; its `ADAPTER` handle and everything else follow from that. The `registry.test.ts`
-drift guard fails until the roster and the folders under `src/adapters/` agree. An adapter CI can't run yet gets a plain-language `pending` reason, and
-the scorecard shows it as N/A with that reason (skipped in `perAdapter` fan-outs unless `BAND_E2E_INCLUDE_PENDING=1`; `withAdapters` scenarios that name a pending adapter skip that row with the same reason). An adapter the generic scenarios don't fit (Parlant
-has no Band tools) gets a `bespokeOnly` reason instead: it runs only in the `adapters.*` scenarios that name it, and
+drift guard fails until the roster and the folders under `src/adapters/` agree. An adapter CI can't run yet gets a plain-language `pending` reason and is
+left out of `perAdapter` fan-out until `BAND_E2E_INCLUDE_PENDING=1`. `withAdapters` scenarios that name only a pending adapter still record N/A via a vitest skip on that row.
+An adapter the generic scenarios don't fit (Parlant has no Band tools) gets a `bespokeOnly` reason instead: it runs only in the `adapters.*` scenarios that name it, and
 `perAdapter` fan-outs show it as N/A with that reason.
-
-## Planned scenarios (not in the tree yet)
-
-Add these as real scenarios when the SDK or platform exposes what they need — no placeholder `it()` blocks that only throw or skip.
-
-| Id | Blocked on |
-| --- | --- |
-| `inspection.usage` | Per-turn token usage reported by the SDK (band-sdk-python usage smokes). |
-| `behavior.controlSignals` | User stop/play/interrupt on the platform and handling in the TS runtime (Python `test_next_actionable_semantics`). |
 
 ## Planned scenarios (not in the tree yet)
 
