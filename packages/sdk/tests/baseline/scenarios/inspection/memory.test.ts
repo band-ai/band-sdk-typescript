@@ -102,9 +102,14 @@ perAdapter(
     const marker = uniqueMarker("mem");
     await takeTurn(room, agent, storeRequest(marker));
 
-    expect((await toolCalls(room, agent)).filter((call) => MEMORY_TOOL_NAMES.has(call.name)), "memory calls in the general view").toEqual([]);
-    assertToolFired(await toolCalls(room, agent, { includeMemory: true }), MEMORY_TOOL.store);
-    assertToolFired(await memoryCalls(room, agent), MEMORY_TOOL.store, { content: marker });
+    const [general, withMemory, memories] = await Promise.all([
+      toolCalls(room, agent),
+      toolCalls(room, agent, { includeMemory: true }),
+      memoryCalls(room, agent),
+    ]);
+    expect(general.filter((call) => MEMORY_TOOL_NAMES.has(call.name)), "memory calls in the general view").toEqual([]);
+    assertToolFired(withMemory, MEMORY_TOOL.store);
+    assertToolFired(memories, MEMORY_TOOL.store, { content: marker });
   },
   WITH_MEMORY,
 );

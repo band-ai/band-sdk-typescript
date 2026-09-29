@@ -557,13 +557,15 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     }
 
     const customSection = this.baseConfig.customSection?.trim() ?? "";
-    const prompt = renderSystemPrompt({
-      agentName: this.agentName,
-      agentDescription: this.agentDescription,
-      customSection,
-      includeBaseInstructions: this.baseConfig.includeBaseInstructions ?? true,
-      capabilities: { memory: this.includeMemoryTools },
-    }).trim();
+    const prompt = withMemoryGuidance(
+      renderSystemPrompt({
+        agentName: this.agentName,
+        agentDescription: this.agentDescription,
+        customSection,
+        includeBaseInstructions: this.baseConfig.includeBaseInstructions ?? true,
+      }).trim(),
+      this.includeMemoryTools,
+    );
 
     this.systemPrompt = prompt.length > 0 ? prompt : null;
   }

@@ -73,11 +73,9 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     this.provider = options.provider ?? DEFAULT_PROVIDER;
     this.includeMemoryTools = options.includeMemoryTools ?? false;
     this.systemPrompt =
-      options.systemPrompt !== undefined
-        ? withMemoryGuidance(options.systemPrompt, this.includeMemoryTools)
-        : this.includeMemoryTools
-          ? withMemoryGuidance("", true)
-          : undefined;
+      options.systemPrompt === undefined && !this.includeMemoryTools
+        ? undefined
+        : withMemoryGuidance(options.systemPrompt ?? "", this.includeMemoryTools);
     this.maxToolRounds = options.maxToolRounds ?? 8;
     this.enableExecutionReporting = options.enableExecutionReporting ?? false;
     this.customTools = options.customTools ?? [];

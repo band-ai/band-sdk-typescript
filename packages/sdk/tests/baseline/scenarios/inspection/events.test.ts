@@ -14,7 +14,7 @@
 import { expect } from "vitest";
 
 import { ADAPTER } from "../../toolkit/adapters";
-import { MESSAGE_TYPE, eventsFrom } from "../../toolkit/observeMessages";
+import { MESSAGE_TYPE, eventsFrom, observeRoom } from "../../toolkit/observeMessages";
 import { withAdapters, type Cast } from "../../toolkit/perAdapter";
 import { CATEGORY, scenarioId } from "../../toolkit/registry";
 import { Rooms } from "../../toolkit/rooms";
@@ -42,8 +42,18 @@ withAnthropic("allTypesOneTurn", async ({ agents: [agent], room }) => {
   const emissions = EMITTED_EVENT_TYPES.map((type) => ({ type, marker: uniqueMarker(type) }));
   await takeTurn(room, agent!, emitEventsRequest(emissions));
 
+  const senderId = agent!.id;
+  const byType = new Map<string, Awaited<ReturnType<typeof eventsFrom>>>();
+  for (const message of await observeRoom(room).history()) {
+    if (message.senderId !== senderId) {
+      continue;
+    }
+    const events = byType.get(message.messageType) ?? [];
+    events.push(message);
+    byType.set(message.messageType, events);
+  }
   for (const { type, marker } of emissions) {
-    expect(await eventsFrom(room, type, agent!), `${type} events`).toContainEqual(carrying(marker));
+    expect(byType.get(type) ?? [], `${type} events`).toContainEqual(carrying(marker));
   }
 });
 
@@ -66,10 +76,9 @@ withAnthropic("senderIsolation", async ({ agents: [agent], room, cells: [cell] }
   await takeTurn(room, agent!, emitEventRequest(MESSAGE_TYPE.Thought, mine));
   await takeTurn(room, other.identity, emitEventRequest(MESSAGE_TYPE.Thought, theirs));
 
-  const [agentThoughts, otherThoughts] = await Promise.all([
-    eventsFrom(room, MESSAGE_TYPE.Thought, agent!),
-    eventsFrom(room, MESSAGE_TYPE.Thought, other.identity),
-  ]);
+  const thoughts = await observeRoom(room).history(MESSAGE_TYPE.Thought);
+  const agentThoughts = thoughts.filter((event) => event.senderId === agent!.id);
+  const otherThoughts = thoughts.filter((event) => event.senderId === other.identity.id);
   expect(agentThoughts, "the first agent's thoughts").toContainEqual(carrying(mine));
   expect(agentThoughts, "the first agent's thoughts").not.toContainEqual(carrying(theirs));
   expect(otherThoughts, "the other agent's thoughts").toContainEqual(carrying(theirs));
