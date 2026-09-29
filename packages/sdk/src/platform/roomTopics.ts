@@ -8,7 +8,10 @@ export function roomTopics(roomId: string): { chat: string; participants: string
 /** The room a `chat_room:` topic belongs to, or `undefined` for any other topic. */
 export function roomIdOfChatTopic(topic: string): string | undefined {
   const prefix = chatRoomTopic("");
-  return (topic.startsWith(prefix) ? topic.slice(prefix.length) : "") || undefined;
+  if (!topic.startsWith(prefix)) {
+    return undefined;
+  }
+  return topic.slice(prefix.length) || undefined;
 }
 
 function isRejected(

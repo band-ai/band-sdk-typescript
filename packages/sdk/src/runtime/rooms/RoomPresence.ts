@@ -24,10 +24,8 @@ interface RoomPresenceOptions {
 
 type RoomPresenceJoinHandler = (roomId: string, payload: MetadataMap) => Promise<void>;
 type RoomPresenceLeaveHandler = (roomId: string) => Promise<void>;
-type RoomPresenceEventHandler = (
-  roomId: string,
-  event: MessageEvent | ParticipantAddedEvent | ParticipantRemovedEvent | ReconnectedEvent,
-) => Promise<void>;
+type RoomEvent = MessageEvent | ParticipantAddedEvent | ParticipantRemovedEvent | ReconnectedEvent;
+type RoomPresenceEventHandler = (roomId: string, event: RoomEvent) => Promise<void>;
 type RoomPresenceContactHandler = (event: ContactEvent) => Promise<void>;
 
 export class RoomPresence implements AsyncDisposable {
@@ -272,7 +270,8 @@ export class RoomPresence implements AsyncDisposable {
           await this.forwardToAdmittedRoom(event);
           break;
         case "reconnected":
-          await this.handleReconnected(event);
+          // A room-scoped one (a chat channel rejoined on a live socket) needs only that room's catch-up.
+          await (event.roomId === null ? this.handleReconnected(event) : this.forwardToAdmittedRoom(event));
           break;
         default:
           assertNever(event);
@@ -281,7 +280,7 @@ export class RoomPresence implements AsyncDisposable {
   }
 
   /** Hands `event` to its room's handler, or drops it, with a debug line, if that room is not admitted. */
-  private async forwardToAdmittedRoom(event: Parameters<RoomPresenceEventHandler>[1]): Promise<void> {
+  private async forwardToAdmittedRoom(event: RoomEvent): Promise<void> {
     if (event.roomId && this.roster.roomMembership(event.roomId) === "admitted") {
       await this.onRoomEvent?.(event.roomId, event);
       return;
@@ -327,16 +326,8 @@ export class RoomPresence implements AsyncDisposable {
    * reconnect to every currently tracked room regardless, so each room's
    * `Execution` can still re-run its `/next` synchronization even when
    * membership reconciliation itself has to wait for the next reconnect.
-   *
-   * A room-scoped event (one chat channel rejoined on a live socket) needs
-   * only that room's catch-up: the agent-level channels never dropped.
    */
   private async handleReconnected(event: ReconnectedEvent): Promise<void> {
-    if (event.roomId !== null) {
-      await this.forwardToAdmittedRoom(event);
-      return;
-    }
-
     // Independent of each other (no shared state), same as the equivalent
     // start-up concurrency in `startBody`.
     const [, , accepted] = await Promise.all([

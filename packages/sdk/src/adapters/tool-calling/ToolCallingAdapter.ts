@@ -118,6 +118,11 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     ));
   }
 
+  /** Every model call of a turn goes through here, so the turn's abort signal always reaches the provider. */
+  private complete(turn: TurnBudget, request: ToolCallingModelRequest): Promise<ToolCallingResponse> {
+    return turn.run((signal) => this.model.complete(request, { signal }));
+  }
+
   private async handleTurn(
     message: PlatformMessage,
     tools: ToolCallingTools,
@@ -143,11 +148,11 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
       // Notices are for this turn only. The durable conversation keeps what was said in the room.
       const messages = [...conversation, ...this.turnNotices(participantsMessage, contactsMessage)];
 
-      let response = await turn.run((signal) => this.model.complete({
+      let response = await this.complete(turn, {
         systemPrompt: this.systemPrompt,
         messages,
         tools: schemas,
-      }, { signal }));
+      });
 
       let roundCount = 0;
       while ((response.toolCalls?.length ?? 0) > 0) {
@@ -234,12 +239,12 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
 
         toolRounds.push({ toolCalls: roundToolCalls, toolResults: roundToolResults });
 
-        response = await turn.run((signal) => this.model.complete({
+        response = await this.complete(turn, {
           systemPrompt: this.systemPrompt,
           messages,
           tools: schemas,
           toolRounds,
-        }, { signal }));
+        });
       }
 
       text = response.text?.trim();
