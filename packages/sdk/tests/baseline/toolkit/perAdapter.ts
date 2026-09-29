@@ -104,6 +104,7 @@ export async function runScenario(
   await body(cast);
 }
 
+
 /** Why `chosen` may not run yet, or null when all may. */
 function pendingReason(chosen: RosterSpec[]): string | null {
   if (includePending()) {
@@ -113,20 +114,29 @@ function pendingReason(chosen: RosterSpec[]): string | null {
   return pending.length > 0 ? pending.map((spec) => `${spec.id}: ${spec.pending}`).join("; ") : null;
 }
 
-function defineRun(title: string, chosen: RosterSpec[], body: (cast: Cast) => Promise<void>, options: ScenarioOptions): void {
+function defineRun(
+  title: string,
+  chosen: RosterSpec[],
+  body: (cast: Cast) => Promise<void>,
+  options: ScenarioOptions,
+  { skipWhenPending = false }: { skipWhenPending?: boolean } = {},
+): void {
   it(title, async ({ skip }) => {
-    const pending = pendingReason(chosen);
-    if (pending) {
-      skip(pending);
+    if (skipWhenPending) {
+      const pending = pendingReason(chosen);
+      if (pending) {
+        skip(pending);
+      }
     }
+    
     await runScenario(chosen, body, { prompt: options.prompt ?? DEFAULT_PROMPT, build: options.build });
   });
 }
 
-/** Runs `body` once per registered adapter, narrowed by `options`. Pending adapters show as skipped. */
+/** Runs `body` once per registered adapter, narrowed by `options`. Pending adapters are omitted unless `BAND_E2E_INCLUDE_PENDING=1`. */
 export function perAdapter(name: ScenarioId, body: (cell: ScenarioCell) => Promise<void>, options: PerAdapterOptions = {}): void {
   const { prompt, build, ...filter } = options;
-  const chosen = specs({ ...filter, includePending: true });
+  const chosen = specs({ ...filter, includePending: includePending() });
   if (chosen.length === 0) {
     throw new Error(`${name} selects no adapters; a scenario over nothing would pass vacuously`);
   }
@@ -149,5 +159,5 @@ export function withAdapters(
 ): void {
   // In the order given: a cast's roles (e.g. who coordinates) follow it.
   const chosen = ids.map((id) => registry.get(id));
-  describe(name, () => defineRun(ids.join(CAST_SEPARATOR), chosen, body, options));
+  describe(name, () => defineRun(ids.join(CAST_SEPARATOR), chosen, body, options, { skipWhenPending: true }));
 }

@@ -24,6 +24,8 @@ import { Rooms } from "../../toolkit/rooms";
 
 const INIT = { type: "system", subtype: "init" } as const satisfies Pick<SDKSystemMessage, "type" | "subtype">;
 const MCP_CONNECTED = "connected" satisfies McpServerStatus["status"];
+/** The path the CLI reports for a plugin bundled with it, which is not host config and loads on the CLI's own flags. */
+const BUILTIN_PLUGIN_PATH = "builtin";
 const REQUEST = "Reply with the single word: pineapple";
 const SEND_MESSAGE_TOOL = `${MCP_TOOL_PREFIX}${SEND_MESSAGE_TOOL_NAME}`;
 
@@ -47,10 +49,10 @@ function recordingQuery() {
       for await (const message of realQuery(params)) {
         // Init can be re-emitted; the last one describes the session that ran.
         if (message.type === INIT.type && message.subtype === INIT.subtype) {
-          init = message as unknown as SDKSystemMessage;
+          init = message;
         }
         if (message.type === "assistant") {
-          for (const block of (message as unknown as SDKAssistantMessage).message.content) {
+          for (const block of message.message.content) {
             if (block.type === "tool_use") toolsCalled.push(block.name);
           }
         }
@@ -72,7 +74,7 @@ function assertToolIsolation(init: SDKSystemMessage | undefined, allowedTools: s
   expect(mcpServers, "the Band MCP server alone, connected before the first turn").toEqual([
     expect.objectContaining({ name: MCP_SERVER_NAME, status: MCP_CONNECTED }),
   ]);
-  expect(plugins, "no host plugins loaded").toEqual([]);
+  expect(plugins.filter((plugin) => plugin.path !== BUILTIN_PLUGIN_PATH), "no host plugins loaded").toEqual([]);
 }
 
 const tap = recordingQuery();

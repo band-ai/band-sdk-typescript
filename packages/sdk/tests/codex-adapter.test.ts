@@ -1665,4 +1665,41 @@ describe("CodexAdapter", () => {
     expect(clientInfo.name).toBe("custom_codex_adapter");
     expect(clientInfo.title).toBe("Custom Codex Adapter");
   });
+
+  it("appends memory guidance to a raw systemPrompt when memory tools are enabled", async () => {
+    const rawPrompt = "Coordinate room work and use tools.";
+    const fakeClient = new FakeCodexClient({
+      events: [
+        {
+          kind: "notification",
+          method: "turn/completed",
+          params: { turn: { id: "turn-1", status: "completed", error: null } },
+        },
+      ],
+    });
+    const adapter = new CodexAdapter({
+      includeMemoryTools: true,
+      config: {
+        model: "gpt-5.3-codex",
+        cwd: "/tmp/workdir",
+        approvalPolicy: "never",
+        sandboxMode: "workspace-write",
+        systemPrompt: rawPrompt,
+      },
+      factory: async () => fakeClient,
+    });
+    await adapter.onStarted("Codex Agent", "Codex parity adapter");
+    await adapter.onMessage(
+      makeMessage("remember this"),
+      new FakeTools(),
+      new HistoryProvider([]),
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-memory-guidance" },
+    );
+
+    const instructions = fakeClient.requestCalls.find((call) => call.method === "thread/start")?.params.developerInstructions;
+    expect(instructions).toContain(rawPrompt);
+    expect(instructions).toContain("## Memory Tools");
+  });
 });
