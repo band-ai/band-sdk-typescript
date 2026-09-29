@@ -2,6 +2,7 @@ import type { Preprocessor, PreprocessorContext } from "../../contracts/protocol
 import { HistoryProvider, type AgentInput, type PlatformMessage } from "../types";
 import type { PlatformEvent } from "../../platform/events";
 import { isSelfEcho } from "@band-ai/band-sdk-core";
+import { resolveMentions } from "../formatters";
 
 function toPlatformMessage(roomId: string, payload: {
   id: string;
@@ -16,7 +17,7 @@ function toPlatformMessage(roomId: string, payload: {
     return {
       id: payload.id,
       roomId,
-      content: payload.content,
+      content: resolveMentions(payload.content, payload.metadata),
       senderId: payload.sender_id,
       senderType: payload.sender_type,
       senderName: payload.sender_name ?? null,

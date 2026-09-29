@@ -140,6 +140,41 @@ describe("ExecutionContext coverage", () => {
     expect(history).toEqual([]);
   });
 
+  it("resolves mention tokens in hydrated history from each message's own metadata", async () => {
+    const mention = (id: string, handle: string) => ({ id, name: handle, handle, type: "user", kind: "mention" });
+    const item = (id: string, content: string, mentions: unknown[]) => ({
+      id,
+      content,
+      sender_id: "u1",
+      sender_type: "User",
+      inserted_at: "2026-03-01T00:00:00.000Z",
+      message_type: "text",
+      metadata: { mentions },
+    });
+    const ctx = new ExecutionContext({
+      roomId: "room-1",
+      link: {
+        rest: {
+          ...(new FakeRestApi() as RestApi),
+          listChatParticipants: async () => [],
+          getChatContext: async () => ({
+            data: [
+              item("m1", "@[[p1]] first", [mention("p1", "alice")]),
+              item("m2", "@[[p2]] second @[[p1]]", [mention("p2", "bob")]),
+            ],
+            metadata: { page: 1, pageSize: 3, totalPages: 1 },
+          }),
+        },
+        capabilities: {},
+      },
+      maxContextMessages: 3,
+    });
+
+    const history = await ctx.getHydratedHistory();
+
+    expect(history.map((entry) => entry.content)).toEqual(["@alice first", "@bob second @[[p1]]"]);
+  });
+
   it("updates the cached context when new messages and participants arrive and trims history", async () => {
     const ctx = makeContext({
       listChatParticipants: async () => [],
