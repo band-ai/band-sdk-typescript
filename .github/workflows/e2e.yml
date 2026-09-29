@@ -80,7 +80,7 @@ jobs:
       - name: Start the Parlant server
         env:
           OPENAI_API_KEY: ${{ secrets.E2E_OPENAI_API_KEY }}
-        run: .github/scripts/setup-parlant.sh
+        run: .github/scripts/setup-parlant.sh start
 
       - name: Wait for the Letta server
         run: .github/scripts/setup-letta.sh wait
@@ -125,7 +125,7 @@ jobs:
       # The teardown below removes the Letta container, and its log with it.
       - name: Save the Letta server log
         if: ${{ failure() }}
-        run: docker logs letta-server > "$RUNNER_TEMP/letta-server.log" 2>&1 || true
+        run: .github/scripts/setup-letta.sh logs
 
       - name: Upload the server logs
         if: ${{ failure() }}
@@ -133,15 +133,15 @@ jobs:
         with:
           name: server-logs
           path: |
-            ${{ runner.temp }}/letta-server.log
+            ${{ runner.temp }}/letta/server.log
             ${{ runner.temp }}/parlant/server.log
           if-no-files-found: ignore
 
       - name: Stop the Letta and Parlant servers
         if: ${{ always() }}
         run: |
-          docker rm -f letta-server || true
-          if [ -f "$RUNNER_TEMP/parlant/pid" ]; then kill "$(cat "$RUNNER_TEMP/parlant/pid")" || true; fi
+          .github/scripts/setup-letta.sh stop
+          .github/scripts/setup-parlant.sh stop
 
       - name: Scorecard to the job summary
         if: ${{ !cancelled() && hashFiles('scorecard/scorecard.md') != '' }}
