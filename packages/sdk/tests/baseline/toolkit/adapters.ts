@@ -30,7 +30,6 @@ import {
   type LettaAdapterOptions,
   type OmpACPAdapterOptions,
   type OpencodeAdapterConfig,
-  type ParlantAdapterOptions,
 } from "../../../src/adapters";
 import { AdapterRegistry, CAPABILITY, requires, type AdapterSpec, type BuildOptions } from "./registry";
 
@@ -96,16 +95,6 @@ export function buildLetta({ prompt }: BuildOptions, options: LettaAdapterOption
     lettaBaseUrl: process.env[ENV.lettaUrl],
     lettaApiKey: process.env[ENV.lettaKey],
     model: `anthropic/${ANTHROPIC_MODEL}`,
-    customSection: prompt,
-    ...options,
-  });
-}
-
-/** Parlant on an agent it creates from the prompt, `options` layered over the defaults. */
-export function buildParlant({ prompt }: BuildOptions, options: Partial<ParlantAdapterOptions> = {}): ParlantAdapter {
-  return new ParlantAdapter({
-    environment: process.env[ENV.parlantEnvironment] ?? "",
-    apiKey: process.env[ENV.parlantKey],
     customSection: prompt,
     ...options,
   });
@@ -253,7 +242,13 @@ const SPECS = {
     supports: [],
     // As in band-sdk-python, whose Parlant agent does hold the Band tools, via a Parlant tool service.
     bespokeOnly: "has no Band platform tools, which the generic scenarios assume",
-    build: (options) => buildParlant(options),
+    // No agentId: the adapter creates its agent from the prompt.
+    build: ({ prompt }) =>
+      new ParlantAdapter({
+        environment: process.env[ENV.parlantEnvironment] ?? "",
+        apiKey: process.env[ENV.parlantKey],
+        customSection: prompt,
+      }),
   },
   vercelAiSdk: {
     id: "vercel-ai-sdk",

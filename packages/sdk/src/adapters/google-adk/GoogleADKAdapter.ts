@@ -18,6 +18,7 @@ import { asOptionalRecord } from "../shared/coercion";
 import { reportProviderTurnFailure } from "../../core/providerFailure";
 import { deliverReply } from "../../core/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
+import { PREVIOUS_CONTEXT_HEADER } from "../shared/conversationPrompt";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
 import {
   GoogleADKHistoryConverter,
@@ -449,7 +450,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
     const parts: string[] = [];
     const transcript = formatHistoryTranscript(roomHistory, this.maxHistoryMessages, this.maxTranscriptChars);
     if (transcript.length > 0) {
-      parts.push("[Previous conversation context]");
+      parts.push(PREVIOUS_CONTEXT_HEADER);
       parts.push(transcript);
       parts.push("[End of previous context]");
     }

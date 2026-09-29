@@ -1,5 +1,8 @@
 import type { HistoryProvider } from "../../runtime/types";
 
+/** The header adapters put above the room history they fold into a new session's first turn. */
+export const PREVIOUS_CONTEXT_HEADER = "[Previous conversation context]";
+
 interface BuildConversationPromptOptions {
   history: HistoryProvider;
   isSessionBootstrap: boolean;

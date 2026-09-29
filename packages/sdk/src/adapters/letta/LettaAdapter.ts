@@ -1,11 +1,11 @@
 import { SimpleAdapter } from "../../core/simpleAdapter";
-import type { AdapterToolsProtocol } from "../../contracts/protocols";
+import { isFailedToolOutput, type AdapterToolsProtocol } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import { RuntimeStateError, UnsupportedFeatureError, rethrowIfRecoverableTurnFailure } from "../../core/errors";
 import type { PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import { SEND_MESSAGE_TOOL_NAME } from "../../runtime/tools/schemas";
+import { postedSendContent } from "../../runtime/tools/schemas";
 import { asErrorMessage, toWireString } from "../shared/coercion";
 import { selectCompleteExchanges } from "../shared/history";
 import {
@@ -782,7 +782,7 @@ export class LettaAdapter extends SimpleAdapter<
       const toolResults = await this.executeToolCalls(approvals, tools);
       postedReply ||= toolResults.tool_returns.some(
         (toolReturn, index) =>
-          toolReturn.status === "success" && approvals[index].tool_call.name === SEND_MESSAGE_TOOL_NAME,
+          postedSendContent(approvals[index].tool_call.name, toolReturn.tool_return, toolReturn.status !== "success") !== undefined,
       );
 
       response = await this.timedMessageCreate(
@@ -819,8 +819,9 @@ export class LettaAdapter extends SimpleAdapter<
       try {
         const args = safeParseToolArgs(argsJson, this.logger);
         const result = await tools.executeToolCall(name, args);
+        // Band tools report most failures as a returned error, not a throw.
         return {
-          status: "success" as const,
+          status: isFailedToolOutput(result) ? ("error" as const) : ("success" as const),
           tool_call_id,
           tool_return: toWireString(result),
         };

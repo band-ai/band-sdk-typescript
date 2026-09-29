@@ -6,6 +6,13 @@ import { HistoryProvider } from "../src/runtime/types";
 import { FakeTools, failureEvents, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
 
+type SessionCreateParams = {
+  agentId: string;
+  customerId?: string;
+  title?: string;
+  metadata?: Record<string, unknown>;
+};
+
 class FakeParlantClient {
   public readonly agents = {
     create: async (params: { name: string; description?: string }) => {
@@ -32,15 +39,9 @@ class FakeParlantClient {
   };
 
   public readonly sessions = {
-    create: async (_params: {
-      agentId: string;
-      customerId?: string;
-      title?: string;
-      metadata?: Record<string, unknown>;
-    }) => {
-      this.sessionCreateCount += 1;
-      this.sessionCreateCalls.push(_params);
-      return { id: `session-${this.sessionCreateCount}` };
+    create: async (params: SessionCreateParams) => {
+      this.sessionCreateCalls.push(params);
+      return { id: `session-${this.sessionCreateCalls.length}` };
     },
     delete: async (sessionId: string) => {
       this.deleted.push(`session:${sessionId}`);
@@ -71,9 +72,8 @@ class FakeParlantClient {
   };
 
   public customerCreateCount = 0;
-  public sessionCreateCount = 0;
   public readonly agentCreateCalls: Array<{ name: string; description?: string }> = [];
-  public readonly sessionCreateCalls: Array<{ agentId: string }> = [];
+  public readonly sessionCreateCalls: SessionCreateParams[] = [];
   public readonly deleted: string[] = [];
   public nextOffset = 0;
   public readonly eventCreateCalls: Array<{
@@ -100,15 +100,7 @@ const replyWith = (client: FakeParlantClient, ...replies: string[]) => {
 describe("ParlantAdapter", () => {
   it("creates a session and forwards ai-agent response", async () => {
     const client = new FakeParlantClient();
-    client.eventPollBatches.push([
-      {
-        kind: "message",
-        offset: 10,
-        data: {
-          message: "Parlant says hello",
-        },
-      },
-    ]);
+    replyWith(client, "Parlant says hello");
 
     const adapter = new ParlantAdapter({
       environment: "https://parlant.example",
@@ -130,7 +122,7 @@ describe("ParlantAdapter", () => {
     );
 
     expect(client.customerCreateCount).toBe(1);
-    expect(client.sessionCreateCount).toBe(1);
+    expect(client.sessionCreateCalls).toHaveLength(1);
     expect(
       client.eventCreateCalls.some((call) => call.params.source === "customer"),
     ).toBe(true);
@@ -141,9 +133,7 @@ describe("ParlantAdapter", () => {
     path: "agent message",
     turn: async (tools) => {
       const client = new FakeParlantClient();
-      client.eventPollBatches.push([
-        { kind: "message", offset: 10, data: { message: "Parlant says hello" } },
-      ]);
+      replyWith(client, "Parlant says hello");
 
       const adapter = new ParlantAdapter({
         environment: "https://parlant.example",
@@ -223,7 +213,7 @@ describe("ParlantAdapter", () => {
     );
 
     expect(client.customerCreateCount).toBe(1);
-    expect(client.sessionCreateCount).toBe(1);
+    expect(client.sessionCreateCalls).toHaveLength(1);
     expect(tools.messages).toHaveLength(2);
   });
 
@@ -327,21 +317,9 @@ describe("ParlantAdapter", () => {
 
   it("stamps band_room_id metadata and a \"Band Room \" title on session creation", async () => {
     const client = new FakeParlantClient();
-    client.eventPollBatches.push([
-      { kind: "message", offset: 70, data: { message: "hello" } },
-    ]);
+    replyWith(client, "hello");
 
-    const sessionCreateCalls: Array<{
-      agentId: string;
-      customerId?: string;
-      title?: string;
-      metadata?: Record<string, unknown>;
-    }> = [];
-    const originalCreate = client.sessions.create;
-    client.sessions.create = async (params) => {
-      sessionCreateCalls.push(params);
-      return originalCreate(params);
-    };
+    const { sessionCreateCalls } = client;
 
     const adapter = new ParlantAdapter({
       environment: "https://parlant.example",
@@ -372,9 +350,7 @@ describe("ParlantAdapter", () => {
 
   it("forwards the customer message event with band_source and band_room_id metadata (not thenvoi_room_id)", async () => {
     const client = new FakeParlantClient();
-    client.eventPollBatches.push([
-      { kind: "message", offset: 80, data: { message: "hello" } },
-    ]);
+    replyWith(client, "hello");
 
     const adapter = new ParlantAdapter({
       environment: "https://parlant.example",
@@ -490,28 +466,47 @@ describe("ParlantAdapter", () => {
     expect(tools.messages).toEqual(["First response", "Second response"]);
   });
 
-  it("deletes the room's session and customer on cleanup, and only its own agent on stop", async () => {
-    for (const agentId of [undefined, "agent-1"]) {
-      const client = new FakeParlantClient();
-      replyWith(client, "hello");
-      const adapter = new ParlantAdapter({
-        environment: "https://parlant.example",
-        agentId,
-        clientFactory: async () => client,
-        responseTimeoutSeconds: 1,
-      });
-      await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
-      await adapter.onMessage(makeMessage("Hi", "room-cleanup"), new FakeTools(), NO_HISTORY, null, null, {
-        isSessionBootstrap: true,
-        roomId: "room-cleanup",
-      });
+  it.each([
+    { agentId: undefined, ownAgent: ["agent:agent-owned-1"] },
+    { agentId: "agent-1", ownAgent: [] },
+  ])("deletes the room's session and customer on cleanup, and only its own agent on stop (agentId: $agentId)", async ({ agentId, ownAgent }) => {
+    const client = new FakeParlantClient();
+    replyWith(client, "hello");
+    const adapter = new ParlantAdapter({
+      environment: "https://parlant.example",
+      agentId,
+      clientFactory: async () => client,
+      responseTimeoutSeconds: 1,
+    });
+    await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
+    await adapter.onMessage(makeMessage("Hi", "room-cleanup"), new FakeTools(), NO_HISTORY, null, null, {
+      isSessionBootstrap: true,
+      roomId: "room-cleanup",
+    });
 
-      await adapter.onCleanup("room-cleanup");
-      await adapter.onRuntimeStop();
+    await adapter.onCleanup("room-cleanup");
+    await adapter.onRuntimeStop();
 
-      const ownAgent = agentId ? [] : ["agent:agent-owned-1"];
-      expect(client.deleted).toEqual(["session:session-1", "customer:customer-1", ...ownAgent]);
-    }
+    expect(client.deleted).toEqual(["session:session-1", "customer:customer-1", ...ownAgent]);
+  });
+
+  it("deletes an agent still being created when the runtime stops", async () => {
+    const client = new FakeParlantClient();
+    let finishCreate!: () => void;
+    const create = client.agents.create;
+    client.agents.create = async (params) => {
+      await new Promise<void>((resolve) => (finishCreate = resolve));
+      return create(params);
+    };
+    const adapter = new ParlantAdapter({ environment: "https://parlant.example", clientFactory: async () => client });
+
+    const starting = adapter.onStarted("Parlant Bridge", "Bridge to parlant");
+    await vi.waitFor(() => expect(finishCreate).toBeDefined());
+    const stopping = adapter.onRuntimeStop();
+    finishCreate();
+    await Promise.all([starting, stopping]);
+
+    expect(client.deleted).toEqual(["agent:agent-owned-1"]);
   });
 
   it("logs a failed delete on cleanup instead of throwing", async () => {
@@ -541,21 +536,9 @@ describe("ParlantAdapter", () => {
 
   it("never emits legacy thenvoi_ keys or Thenvoi brand values in any outbound payload", async () => {
     const client = new FakeParlantClient();
-    client.eventPollBatches.push([
-      { kind: "message", offset: 100, data: { message: "hello" } },
-    ]);
+    replyWith(client, "hello");
 
-    const sessionCreateCalls: Array<{
-      agentId: string;
-      customerId?: string;
-      title?: string;
-      metadata?: Record<string, unknown>;
-    }> = [];
-    const originalCreate = client.sessions.create;
-    client.sessions.create = async (params) => {
-      sessionCreateCalls.push(params);
-      return originalCreate(params);
-    };
+    const { sessionCreateCalls } = client;
     const customerCreateCalls: Array<{
       id?: string;
       name: string;

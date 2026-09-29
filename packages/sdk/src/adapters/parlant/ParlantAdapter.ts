@@ -11,7 +11,7 @@ import {
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { asErrorMessage, asNonEmptyString, asOptionalRecord } from "../shared/coercion";
-import { buildConversationPrompt } from "../shared/conversationPrompt";
+import { PREVIOUS_CONTEXT_HEADER, buildConversationPrompt } from "../shared/conversationPrompt";
 import {
   FAILURE_CODE_TIMEOUT,
   agentFailure,
@@ -118,7 +118,6 @@ const DEFAULT_RESPONSE_TIMEOUT_SECONDS = 120;
 const DEFAULT_MAX_HISTORY_MESSAGES = 100;
 // Marks agents this adapter created, so a leaked one is recognisable on the server.
 const OWNED_AGENT_NAME_PREFIX = "band-";
-const HISTORY_HEADER = "[Previous conversation context]";
 
 export class ParlantAdapter
   extends SimpleAdapter<HistoryProvider, MessagingTools>
@@ -127,8 +126,10 @@ export class ParlantAdapter
 
   private readonly environment: string;
   private readonly baseUrl?: string;
-  private readonly borrowedAgentId?: string;
-  private ownedAgentId: string | null = null;
+  /** Created in `onStarted` and deleted on stop, or borrowed from `options.agentId` and left alone. */
+  private readonly ownsAgent: boolean;
+  private agentId: string | null;
+  private ownedAgentCreation: Promise<string> | null = null;
   private readonly apiKey?: string;
   private readonly headers: Record<string, string>;
   private readonly systemPromptOverride?: string;
@@ -158,7 +159,8 @@ export class ParlantAdapter
 
     this.environment = options.environment;
     this.baseUrl = options.baseUrl;
-    this.borrowedAgentId = options.agentId;
+    this.ownsAgent = !options.agentId;
+    this.agentId = options.agentId ?? null;
     this.apiKey = options.apiKey;
     this.headers = { ...(options.headers ?? {}) };
     this.systemPromptOverride = options.systemPrompt;
@@ -186,7 +188,7 @@ export class ParlantAdapter
     agentDescription: string,
   ): Promise<void> {
     await super.onStarted(agentName, agentDescription);
-    if (this.borrowedAgentId) {
+    if (!this.ownsAgent) {
       return;
     }
 
@@ -199,20 +201,27 @@ export class ParlantAdapter
         customSection: this.customSection,
         includeBaseInstructions: this.includeBaseInstructions,
       });
-    const client = await this.ensureClient();
-    const agent = await client.agents.create(
-      { name: `${OWNED_AGENT_NAME_PREFIX}${agentName}`, description },
-      this.requestOptions(),
-    );
-    this.ownedAgentId = agent.id;
+    const creation = this.createOwnedAgent(agentName, description);
+    this.ownedAgentCreation = creation;
+    const agentId = await creation;
+    // A stop that landed mid-create has already claimed (and deleted) this agent.
+    if (this.ownedAgentCreation === creation) {
+      this.agentId = agentId;
+    }
   }
 
   public async onRuntimeStop(): Promise<void> {
-    const agentId = this.ownedAgentId;
+    if (!this.ownsAgent) {
+      return;
+    }
+    const creation = this.ownedAgentCreation;
+    this.ownedAgentCreation = null;
+    this.agentId = null;
+    // Awaited so an agent still being created when the stop lands is deleted too.
+    const agentId = await creation?.catch(() => null);
     const client = this.clientLoader.current;
-    this.ownedAgentId = null;
     if (agentId && client) {
-      await this.deleteQuietly("agent", agentId, () => client.agents.delete(agentId, this.requestOptions()));
+      await this.deleteQuietly("agent", client.agents, agentId);
     }
   }
 
@@ -240,7 +249,7 @@ export class ParlantAdapter
         isSessionBootstrap: context.isSessionBootstrap,
         participantsMessage,
         contactsMessage,
-        historyHeader: HISTORY_HEADER,
+        historyHeader: PREVIOUS_CONTEXT_HEADER,
         currentMessage: message.content,
         maxHistoryMessages: this.maxHistoryMessages,
       });
@@ -271,7 +280,7 @@ export class ParlantAdapter
           tools,
           agentFailure(this.provider, "Parlant did not return a response before timeout.", FAILURE_CODE_TIMEOUT),
           this.logger,
-          { roomId: context.roomId, agentId: this.agentId },
+          { roomId: context.roomId, agentId: this.agentId ?? undefined },
         );
       }
 
@@ -281,21 +290,21 @@ export class ParlantAdapter
 
       this.logger.error("Parlant adapter request failed", {
         roomId: context.roomId,
-        agentId: this.agentId,
+        agentId: this.agentId ?? undefined,
         error,
       });
       await reportTurnFailure(
         tools,
         agentFailure(this.provider, asErrorMessage(error)),
         this.logger,
-        { roomId: context.roomId, agentId: this.agentId },
+        { roomId: context.roomId, agentId: this.agentId ?? undefined },
       );
     }
   }
 
   public async onCleanup(roomId: string): Promise<void> {
     // Await in-flight initialization before deleting state to avoid orphaned writes.
-    await Promise.allSettled([this.roomSessionInitPromises.get(roomId)]);
+    await this.roomSessionInitPromises.get(roomId)?.catch(() => {});
 
     const sessionId = this.roomSessions.get(roomId);
     const customerId = this.roomCustomers.get(roomId);
@@ -308,24 +317,33 @@ export class ParlantAdapter
       return;
     }
     if (sessionId) {
-      await this.deleteQuietly("session", sessionId, () => client.sessions.delete(sessionId, this.requestOptions()));
+      await this.deleteQuietly("session", client.sessions, sessionId);
     }
     if (customerId) {
-      await this.deleteQuietly("customer", customerId, () => client.customers.delete(customerId, this.requestOptions()));
+      await this.deleteQuietly("customer", client.customers, customerId);
     }
+  }
+
+  private async createOwnedAgent(agentName: string, description: string): Promise<string> {
+    const client = await this.ensureClient();
+    const agent = await client.agents.create(
+      { name: `${OWNED_AGENT_NAME_PREFIX}${agentName}`, description },
+      this.requestOptions(),
+    );
+    return agent.id;
   }
 
   /** Teardown never throws: a failed delete leaves server state behind, which is logged, not fatal. */
-  private async deleteQuietly(kind: string, id: string, remove: () => Promise<void>): Promise<void> {
+  private async deleteQuietly(
+    kind: string,
+    resource: { delete(id: string, requestOptions?: ParlantRequestOptions): Promise<void> },
+    id: string,
+  ): Promise<void> {
     try {
-      await remove();
+      await resource.delete(id, this.requestOptions());
     } catch (error) {
       this.logger.warn(`Failed to delete the Parlant ${kind}`, { id, error });
     }
-  }
-
-  private get agentId(): string | undefined {
-    return this.borrowedAgentId ?? this.ownedAgentId ?? undefined;
   }
 
   private requireAgentId(): string {

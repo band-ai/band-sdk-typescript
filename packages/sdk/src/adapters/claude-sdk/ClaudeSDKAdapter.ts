@@ -10,7 +10,7 @@ import { renderSystemPrompt } from "../../runtime/prompts";
 import { mcpToolNames, MCP_SERVER_NAME } from "../../runtime/tools/schemas";
 import { agentFailure, reportProviderTurnFailure, reportTurnFailure, safeSendFailure } from "../../core/providerFailure";
 import { deliverReply } from "../../core/deliveryFailedError";
-import { buildConversationPrompt } from "../shared/conversationPrompt";
+import { PREVIOUS_CONTEXT_HEADER, buildConversationPrompt } from "../shared/conversationPrompt";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { extractClaudeSessionId } from "../../converters/claude-sdk";
 import {
@@ -359,7 +359,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
         isSessionBootstrap: context.isSessionBootstrap,
         participantsMessage,
         contactsMessage,
-        historyHeader: "[Previous conversation context]",
+        historyHeader: PREVIOUS_CONTEXT_HEADER,
         currentMessage: message.content,
         maxHistoryMessages: 50,
       }) + roomToolHint,

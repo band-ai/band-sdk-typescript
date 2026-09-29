@@ -8,6 +8,7 @@ import type {
   LettaMessageCreateParams,
 } from "../src/adapters/letta/LettaAdapter";
 import { LettaHistoryConverter } from "../src/adapters/letta/types";
+import { createToolExecutorError } from "../src/contracts/protocols";
 import { FakeTools, failureEvents, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
 
@@ -321,9 +322,8 @@ describe("LettaAdapter", () => {
     await adapter.onStarted("Agent", "An agent");
 
     const tools = new FakeTools();
-    tools.executeToolCall = async () => {
-      throw new Error("unknown mention");
-    };
+    tools.executeToolCall = async (toolName) =>
+      createToolExecutorError({ errorType: "ToolExecutionError", toolName, message: "unknown mention" });
     await adapter.onMessage(makeMessage("Remember this", "room-unposted"), tools, [], null, null, {
       isSessionBootstrap: false,
       roomId: "room-unposted",
