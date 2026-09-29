@@ -3,8 +3,8 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { GenericAdapter } from "../../../src/adapters";
-import { ADAPTER, ADAPTER_IDS } from "./adapters";
+import { ADAPTER, ADAPTER_IDS, type AdapterId } from "./adapters";
+import { fakeSpec } from "./fakeSpec";
 import {
   AdapterRegistry,
   CAPABILITY,
@@ -13,8 +13,8 @@ import {
   requires,
   unmetRequirements,
   type AdapterSpec,
-  type Capability,
   type Dep,
+  type SpecFilter,
 } from "./registry";
 
 const ADAPTERS_DIR = fileURLToPath(new URL("../../../src/adapters/", import.meta.url));
@@ -55,26 +55,16 @@ describe("adapter registry drift guard", () => {
   });
 });
 
-const fakeBuild = () => new GenericAdapter(async () => {});
-
-const fakeSpec = (id: string, supports: readonly Capability[] = [], pending?: string): AdapterSpec => ({
-  id,
-  requires: [],
-  supports,
-  build: fakeBuild,
-  pending,
-});
-
 describe("specs()", () => {
   const fake = new AdapterRegistry([
-    fakeSpec(ADAPTER.openai, [CAPABILITY.approvals]),
+    fakeSpec(ADAPTER.openai, { supports: [CAPABILITY.approvals] }),
     fakeSpec(ADAPTER.codex),
     fakeSpec(ADAPTER.anthropic),
-    fakeSpec(ADAPTER.letta, [], "needs a server"),
-    { ...fakeSpec(ADAPTER.parlant), bespokeOnly: "runs only where named" },
+    fakeSpec(ADAPTER.letta, { pending: "needs a server" }),
+    fakeSpec(ADAPTER.parlant, { bespokeOnly: "runs only where named" }),
   ]);
 
-  it.each<{ name: string; filter: Parameters<AdapterRegistry["specs"]>[0]; expected: string[] }>([
+  it.each<{ name: string; filter: SpecFilter<AdapterId>; expected: string[] }>([
     { name: "no filter keeps every adapter in id order", filter: {}, expected: [ADAPTER.anthropic, ADAPTER.codex, ADAPTER.openai] },
     { name: "include keeps only the named adapters", filter: { include: [ADAPTER.codex, ADAPTER.openai] }, expected: [ADAPTER.codex, ADAPTER.openai] },
     { name: "exclude drops the named adapters", filter: { exclude: [ADAPTER.codex] }, expected: [ADAPTER.anthropic, ADAPTER.openai] },

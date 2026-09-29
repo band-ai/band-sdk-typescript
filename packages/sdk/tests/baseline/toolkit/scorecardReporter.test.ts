@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { TestResult } from "vitest/node";
 
 import { ADAPTER, type AdapterId } from "./adapters";
-import { AdapterRegistry, CAST_SEPARATOR, CATEGORY, scenarioId, type AdapterSpec } from "./registry";
+import { fakeSpec } from "./fakeSpec";
+import { AdapterRegistry, CAST_SEPARATOR, CATEGORY, scenarioId } from "./registry";
 import { SCORECARD_STATUS } from "./scorecard";
 import { TEST_PARENT, TEST_STATE, scorecardRows, type ReportedTest } from "./scorecardReporter";
 
@@ -12,16 +13,6 @@ const FAILURE = "no reply within 5ms";
 const OPT_IN_NOTE = "set RUN_CODEX_ACP_E2E=1";
 const PENDING_REASON = "needs a server";
 const BESPOKE_REASON = "has no Band tools";
-
-const fakeSpec = (id: AdapterId, notRun: Pick<AdapterSpec, "pending" | "bespokeOnly"> = {}): AdapterSpec<AdapterId> => ({
-  id,
-  requires: [],
-  supports: [],
-  build: () => {
-    throw new Error("never built");
-  },
-  ...notRun,
-});
 
 const PENDING = ADAPTER.letta;
 const BESPOKE = ADAPTER.parlant;
