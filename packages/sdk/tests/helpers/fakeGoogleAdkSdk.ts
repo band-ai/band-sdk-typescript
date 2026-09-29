@@ -1,3 +1,7 @@
+import type { GoogleADKAdapterOptions } from "../../src/adapters/google-adk";
+
+type SdkFactory = NonNullable<GoogleADKAdapterOptions["sdkFactory"]>;
+
 export interface GoogleAdkCapture {
   createAgentCalls: Array<Record<string, unknown>>;
   createRunnerCalls: Array<{ appName: string }>;
@@ -8,7 +12,7 @@ export interface GoogleAdkCapture {
 export function createFakeGoogleAdkSdk(
   run: (agent: Record<string, unknown>, request: { userId: string; sessionId: string; newMessage: { role: "user"; parts: Array<{ text: string }> } }) => AsyncIterable<unknown>,
   capture?: GoogleAdkCapture,
-): () => Promise<any> {
+): SdkFactory {
   return async () => ({
     createModel: (params: { model: string; apiKey: string }) => ({ gemini: params }),
     createAgent: (params: Record<string, unknown>) => {
