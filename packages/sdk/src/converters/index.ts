@@ -34,12 +34,6 @@ export {
 } from "../adapters/a2a-gateway";
 
 export {
-  ParlantHistoryConverter,
-  type ParlantMessage,
-  type ParlantMessages,
-} from "../adapters/parlant";
-
-export {
   ClaudeSDKHistoryConverter,
   extractClaudeSessionId,
   type ClaudeSDKSessionState,

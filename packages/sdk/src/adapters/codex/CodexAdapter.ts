@@ -15,6 +15,7 @@ import { rethrowIfRecoverableTurnFailure } from "../../core/errors";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt, withMemoryGuidance } from "../../runtime/prompts";
 import { SEND_MESSAGE_TOOL_NAME, SEND_EVENT_TOOL_NAME } from "../../runtime/tools/schemas";
+import { deliverFallbackReply, trackPostedReply, type PostedReplyTracker } from "../../runtime/tools/postedReply";
 import { abandon } from "../shared/abandon";
 import { withTimeout } from "../shared/withTimeout";
 import { systemUpdateParts } from "../shared/conversationPrompt";
@@ -30,7 +31,7 @@ import {
 import { asErrorMessage, asNonEmptyString, asOptionalRecord, asRecord, asString, toWireString } from "../shared/coercion";
 import { FAILURE_CODE_TIMEOUT, ProviderTurnFailedError, agentFailure, reportTurnFailure, safeSendFailure } from "../../core/providerFailure";
 import { deliverReply } from "../../core/deliveryFailedError";
-import { findLatestTaskMetadata } from "../shared/history";
+import { findLatestTaskMetadata, takeLast } from "../shared/history";
 import {
   CodexAppServerStdioClient,
   CodexJsonRpcError,
@@ -267,11 +268,12 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     });
 
     const turnId = turnStarted.turn.id;
-    const { finalText, sawSendMessageTool, turnStatus, turnError, reportedFailureInLoop } = await this.runEventLoop(
+    const reply = trackPostedReply(tools);
+    const { finalText, turnStatus, turnError, reportedFailureInLoop } = await this.runEventLoop(
       client,
       threadId,
       turnId,
-      tools,
+      reply.tools,
       config,
       context.roomId,
     );
@@ -285,7 +287,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       turnStatus,
       turnError,
       finalText,
-      sawSendMessageTool,
+      reply,
       reportedFailureInLoop,
       fallbackSendAgentText: config.fallbackSendAgentText ?? true,
     });
@@ -361,13 +363,11 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     roomId: string,
   ): Promise<{
     finalText: string;
-    sawSendMessageTool: boolean;
     turnStatus: TurnStatus;
     turnError: string;
     reportedFailureInLoop: boolean;
   }> {
     let finalText = "";
-    let sawSendMessageTool = false;
     let turnStatus: TurnStatus = "failed";
     let turnError = "";
     let reportedFailureInLoop = false;
@@ -429,14 +429,13 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
 
       if (event.kind === "request") {
         try {
-          const usedSendMessage = await this.handleServerRequest({
+          await this.handleServerRequest({
             client,
             tools,
             roomId,
             event,
             enableExecutionReporting: config.enableExecutionReporting ?? false,
           });
-          sawSendMessageTool = sawSendMessageTool || usedSendMessage;
         } catch (error) {
           rethrowIfRecoverableTurnFailure(error);
           await this.evictOnTransportFailure(error, client);
@@ -526,7 +525,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       }
     }
 
-    return { finalText, sawSendMessageTool, turnStatus, turnError, reportedFailureInLoop };
+    return { finalText, turnStatus, turnError, reportedFailureInLoop };
   }
 
   public override async onCleanup(roomId: string): Promise<void> {
@@ -919,7 +918,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
       return null;
     }
 
-    const truncated = lines.slice(-maxHistoryMessages);
+    const truncated = takeLast(lines, maxHistoryMessages);
     return [
       "[Conversation History]",
       "The following is the conversation history from a previous session. Use it to maintain continuity.",
@@ -952,14 +951,14 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     roomId: string;
     event: CodexRpcEvent & { kind: "request" };
     enableExecutionReporting: boolean;
-  }): Promise<boolean> {
+  }): Promise<void> {
     const { client, tools, event } = input;
 
     if (event.method === "item/tool/call") {
       const params = parseDynamicToolCallParams(event.params);
       if (!params) {
         await client.respondError(event.id, -32602, "Invalid params for item/tool/call");
-        return false;
+        return;
       }
       const toolName = params.tool;
       const callId = params.callId;
@@ -1008,7 +1007,7 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
           }), "tool_result");
         }
 
-        return !isError && toolName === SEND_MESSAGE_TOOL_NAME;
+        return;
       } catch (error) {
         const output = {
           ok: false,
@@ -1035,22 +1034,21 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
           }), "tool_result");
         }
 
-        return false;
+        return;
       }
     }
 
     if (event.method === "item/commandExecution/requestApproval") {
       await client.respond(event.id, { decision: "decline" });
-      return false;
+      return;
     }
 
     if (event.method === "item/fileChange/requestApproval") {
       await client.respond(event.id, { decision: "decline" });
-      return false;
+      return;
     }
 
     await client.respondError(event.id, -32601, `Unhandled server request: ${event.method}`);
-    return false;
   }
 
   private async emitItemCompletedEvents(
@@ -1178,15 +1176,15 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     turnStatus: TurnStatus;
     turnError: string;
     finalText: string;
-    sawSendMessageTool: boolean;
+    reply: PostedReplyTracker;
     reportedFailureInLoop: boolean;
     fallbackSendAgentText: boolean;
   }): Promise<void> {
     const mention = this.currentMention(input.message);
 
     if (input.turnStatus === "completed") {
-      if (input.fallbackSendAgentText && input.finalText.trim() && !input.sawSendMessageTool) {
-        await deliverReply(input.tools, input.finalText.trim(), mention);
+      if (input.fallbackSendAgentText) {
+        await deliverFallbackReply(input.reply, input.finalText.trim(), mention);
       }
       return;
     }

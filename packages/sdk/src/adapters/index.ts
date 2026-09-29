@@ -112,12 +112,9 @@ export {
 } from "./a2a-gateway";
 export {
   ParlantAdapter,
-  ParlantHistoryConverter,
   type ParlantAdapterOptions,
   type ParlantClientFactory,
   type ParlantClientLike,
-  type ParlantMessage,
-  type ParlantMessages,
 } from "./parlant";
 export {
   LettaAdapter,

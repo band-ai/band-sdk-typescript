@@ -23,7 +23,10 @@ Scope with vitest's own `-t` or a path, with no `--` (it breaks `-t` filtering).
 | `BAND_E2E_INCLUDE_PENDING=1` | Fans `perAdapter` scenarios out to adapters marked `pending` too (they are omitted by default). |
 | `RUN_CODEX_ACP_E2E=1` | Includes `adapters.codexAcpSmoke` in the baseline run (needs a local `codex-acp`); excluded from `vitest.baseline.config.ts` when unset. |
 
-Each adapter also needs its own model key or CLI (see `requires` in `toolkit/adapters.ts`).
+Each adapter also needs its own model key or CLI (see `requires` in `toolkit/adapters.ts`). letta and
+parlant need a running server: CI starts them with `.github/scripts/setup-letta.sh` (docker) and
+`setup-parlant.sh`, which pin the image and version. Locally, start one the same way and export
+`LETTA_BASE_URL` / `PARLANT_ENVIRONMENT`.
 
 The toolkit's own unit tests, including the `registry.test.ts` drift guard, run in the default
 `pnpm test` (Tier 1). The scenarios run only through `test:baseline-live` (Tier 2): the default
@@ -99,6 +102,8 @@ Add its spec to `SPECS` in `toolkit/adapters.ts`, with `id` set to its directory
 `src/adapters/`; its `ADAPTER` handle and everything else follow from that. The `registry.test.ts`
 drift guard fails until the roster and the folders under `src/adapters/` agree. An adapter CI can't run yet gets a plain-language `pending` reason and is
 left out of `perAdapter` fan-out until `BAND_E2E_INCLUDE_PENDING=1`. `withAdapters` scenarios that name only a pending adapter still record N/A via a vitest skip on that row.
+An adapter the generic scenarios don't fit (Parlant has no Band tools) gets a `bespokeOnly` reason instead: it runs only in the `adapters.*` scenarios that name it, and
+`perAdapter` fan-outs show it as N/A with that reason.
 
 ## Planned scenarios (not in the tree yet)
 

@@ -1,4 +1,8 @@
 import type { HistoryProvider } from "../../runtime/types";
+import { takeLast } from "./history";
+
+/** The header adapters put above the room history they fold into a new session's first turn. */
+export const PREVIOUS_CONTEXT_HEADER = "[Previous conversation context]";
 
 interface BuildConversationPromptOptions {
   history: HistoryProvider;
@@ -32,9 +36,10 @@ export function buildConversationPrompt(options: BuildConversationPromptOptions)
   const parts: string[] = [];
 
   if (options.isSessionBootstrap) {
-    const historyText = options.history.raw
-      .slice(-(options.maxHistoryMessages ?? 50))
-      .filter(isTextHistoryEntry)
+    const historyText = takeLast(
+      options.history.raw.filter(isTextHistoryEntry),
+      options.maxHistoryMessages ?? 50,
+    )
       .map(formatHistoryLine)
       .join("\n");
     if (historyText) {

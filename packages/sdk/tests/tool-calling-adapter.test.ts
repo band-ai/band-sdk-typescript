@@ -160,8 +160,9 @@ class FakeModel implements ToolCallingModel {
         toolCalls: [
           {
             id: "tc1",
-            name: "band_send_message",
-            input: { content: "ignored" },
+            // Not band_send_message: a posted reply would make the final text a mere fallback.
+            name: "band_get_participants",
+            input: {},
           },
         ],
       };
@@ -388,7 +389,7 @@ describe("ToolCallingAdapter", () => {
     ]);
   });
 
-  it("remembers the string a non-string or empty send was posted as", async () => {
+  it("remembers the string a non-string send was posted as, and ignores an empty one", async () => {
     const seen: Array<Array<Record<string, unknown>>> = [];
     const model: ToolCallingModel = {
       complete: async (request) => {
@@ -413,7 +414,6 @@ describe("ToolCallingAdapter", () => {
     expect(turnLines(seen.at(-1)!)).toEqual([
       { role: "user", content: "[Jane]: hello" },
       { role: "assistant", content: "42" },
-      { role: "assistant", content: "" },
       { role: "user", content: "[Jane]: next question" },
     ]);
   });
@@ -592,7 +592,7 @@ describe("ToolCallingAdapter", () => {
       expect.arrayContaining([
         expect.objectContaining({
           toolCallId: "tc1",
-          name: "band_send_message",
+          name: "band_get_participants",
         }),
       ]),
     );
@@ -799,6 +799,29 @@ describe("ToolCallingAdapter", () => {
     expect((tools.events[0]?.metadata as { failure?: { message?: string } })?.failure?.message).toContain(
       "Stopped tool loop after 1 rounds",
     );
+  });
+
+  it.each([
+    { sendResult: { ok: true }, delivered: [] },
+    { sendResult: { ok: false, message: "unknown mention" }, delivered: ["Posted it."] },
+  ])("treats a band_send_message post as the reply, its final text as a fallback (send: $sendResult)", async ({ sendResult, delivered }) => {
+    let turns = 0;
+    const model: ToolCallingModel = {
+      complete: async () => {
+        turns += 1;
+        return turns === 1
+          ? { toolCalls: [{ id: "tc1", name: "band_send_message", input: { content: "Hello!", mentions: ["@user"] } }] }
+          : { text: "Posted it." };
+      },
+    };
+    const tools = new FakeTools();
+    tools.executeToolCall = async () => sendResult;
+    await new OpenAIAdapter({ model }).onMessage(fakeMessage, tools, fakeHistory, null, null, {
+      isSessionBootstrap: true,
+      roomId: "r1",
+    });
+
+    expect(tools.messages).toEqual(delivered);
   });
 
   describeDeliveryContract([{

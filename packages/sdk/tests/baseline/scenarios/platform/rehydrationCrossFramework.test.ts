@@ -7,8 +7,8 @@ import { describe, expect, it } from "vitest";
 
 import { ADAPTER, registry, specs } from "../../toolkit/adapters";
 import { Agents, type AgentIdentity } from "../../toolkit/agents";
-import { assertReplied, assertReplyContains } from "../../toolkit/assertMessages";
-import { observeRoom } from "../../toolkit/observeMessages";
+import { assertReplied } from "../../toolkit/assertMessages";
+import { observeRoom, type CapturedMessage } from "../../toolkit/observeMessages";
 import { CATEGORY, scenarioId } from "../../toolkit/registry";
 import { Rooms } from "../../toolkit/rooms";
 import { uniqueMarker } from "../samples/markers";
@@ -63,8 +63,13 @@ describe(SCENARIO, () => {
         recaller,
         "Earlier the other participant sent you a short note with a token. Reply with just that token.",
       );
-      const reply = await observeRoom(room).untilReply(recaller, { after: recall, timeoutMs: REHYDRATION_EXTENDED_WAIT_MS });
-      assertReplyContains(reply, marker);
+      // A cold boot answers the note B left as well as this recall, in two turns; either reply may carry it.
+      const carriesMarker = (message: CapturedMessage) => message.content.toLowerCase().includes(marker.toLowerCase());
+      const reply = await observeRoom(room).untilReplyMatching(recaller, carriesMarker, {
+        after: recall,
+        timeoutMs: REHYDRATION_EXTENDED_WAIT_MS,
+      });
+      assertReplied(reply);
     }, REHYDRATION_SCENARIO_TIMEOUT_MS);
   }
 });

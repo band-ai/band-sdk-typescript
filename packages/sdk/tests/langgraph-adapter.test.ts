@@ -27,6 +27,28 @@ function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
   })();
 }
 
+/** Tools whose one schema is band_send_message, so the adapter builds a send tool for the graph. */
+class FakeToolsWithSchemas extends FakeTools {
+  public getToolSchemas(): Array<Record<string, unknown>> {
+    return [
+      {
+        type: "function",
+        function: {
+          name: "band_send_message",
+          description: "Send a message",
+          parameters: {
+            type: "object",
+            properties: {
+              content: { type: "string" },
+            },
+            required: ["content"],
+          },
+        },
+      },
+    ];
+  }
+}
+
 describe("LangGraphAdapter", () => {
   describeDeliveryContract([{
     path: "graph reply",
@@ -61,27 +83,6 @@ describe("LangGraphAdapter", () => {
     langGraphMocks.createReactAgent.mockReturnValue(graph);
     langGraphMocks.tool.mockImplementation((_fn, fields) => ({ name: fields.name }));
 
-    class FakeToolsWithSchemas extends FakeTools {
-      public getToolSchemas(): Array<Record<string, unknown>> {
-        return [
-          {
-            type: "function",
-            function: {
-              name: "band_send_message",
-              description: "Send a message",
-              parameters: {
-                type: "object",
-                properties: {
-                  content: { type: "string" },
-                },
-                required: ["content"],
-              },
-            },
-          },
-        ];
-      }
-    }
-
     const llm = { provider: "test-llm" };
     const adapter = new LangGraphAdapter({ llm });
     await adapter.onStarted("LangGraph Agent", "Graph-backed assistant");
@@ -108,6 +109,34 @@ describe("LangGraphAdapter", () => {
     expect(typeof args.prompt).toBe("string");
     expect(args.prompt).toContain("LangGraph Agent");
     expect(tools.messages).toEqual(["SDK graph reply"]);
+  });
+
+  it.each([
+    { sendResult: { ok: true }, delivered: [] },
+    { sendResult: { ok: false, message: "unknown mention" }, delivered: ["Posted it."] },
+  ])("treats a band_send_message post as the reply, its final text as a fallback (send: $sendResult)", async ({ sendResult, delivered }) => {
+    langGraphMocks.createReactAgent.mockReset();
+    langGraphMocks.tool.mockReset();
+    langGraphMocks.tool.mockImplementation((_fn, fields) => ({ name: fields.name }));
+    langGraphMocks.createReactAgent.mockReturnValue({
+      async invoke() {
+        // The model calls the send tool the adapter built, then narrates it.
+        const [runSend] = langGraphMocks.tool.mock.calls[0] as [(args: Record<string, unknown>) => Promise<unknown>];
+        await runSend({ content: "Hello!" });
+        return { messages: [["assistant", "Posted it."]] };
+      },
+    });
+
+    const adapter = new LangGraphAdapter({ llm: { provider: "test-llm" } });
+    await adapter.onStarted("LangGraph Agent", "Graph-backed assistant");
+    const tools = new FakeToolsWithSchemas();
+    tools.executeToolCall = async () => sendResult;
+    await adapter.onMessage(makeMessage("hello"), tools, new HistoryProvider([]), null, null, {
+      isSessionBootstrap: true,
+      roomId: "room-posted",
+    });
+
+    expect(tools.messages).toEqual(delivered);
   });
 
   it("builds bootstrap messages and forwards final assistant text", async () => {

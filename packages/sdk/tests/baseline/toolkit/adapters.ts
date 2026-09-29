@@ -27,6 +27,7 @@ import {
   OpencodeAdapter,
   ParlantAdapter,
   type ClaudeSDKAdapterOptions,
+  type LettaAdapterOptions,
   type OmpACPAdapterOptions,
   type OpencodeAdapterConfig,
 } from "../../../src/adapters";
@@ -46,7 +47,6 @@ const ENV = {
   lettaUrl: "LETTA_BASE_URL",
   lettaKey: "LETTA_API_KEY",
   parlantEnvironment: "PARLANT_ENVIRONMENT",
-  parlantAgentId: "PARLANT_AGENT_ID",
   parlantKey: "PARLANT_API_KEY",
 } as const;
 
@@ -87,6 +87,17 @@ function stateDir(workDir: string, name: string): string {
   const dir = join(workDir, name);
   mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+/** Letta on the pinned Anthropic model, `options` layered over the defaults. The server holds the model key. */
+export function buildLetta({ prompt }: BuildOptions, options: LettaAdapterOptions = {}): LettaAdapter {
+  return new LettaAdapter({
+    lettaBaseUrl: process.env[ENV.lettaUrl],
+    lettaApiKey: process.env[ENV.lettaKey],
+    model: `anthropic/${ANTHROPIC_MODEL}`,
+    customSection: prompt,
+    ...options,
+  });
 }
 
 /** The OpenCode provider the baseline runs it on, with our own key (BYOK). */
@@ -219,9 +230,7 @@ const SPECS = {
     id: "letta",
     requires: [requires.peerPackage("@letta-ai/letta-client"), requires.envVar(ENV.lettaUrl)],
     supports: [],
-    pending: "needs a Letta server provisioned in CI",
-    build: ({ prompt }) =>
-      new LettaAdapter({ lettaBaseUrl: process.env[ENV.lettaUrl], lettaApiKey: process.env[ENV.lettaKey], customSection: prompt }),
+    build: (options) => buildLetta(options),
   },
   ompAcp: {
     id: "omp-acp",
@@ -251,17 +260,14 @@ const SPECS = {
   },
   parlant: {
     id: "parlant",
-    requires: [
-      requires.peerPackage("parlant-client"),
-      requires.envVar(ENV.parlantEnvironment),
-      requires.envVar(ENV.parlantAgentId),
-    ],
+    requires: [requires.peerPackage("parlant-client"), requires.envVar(ENV.parlantEnvironment)],
     supports: [],
-    pending: "needs a Parlant server provisioned in CI",
+    // As in band-sdk-python, whose Parlant agent does hold the Band tools, via a Parlant tool service.
+    bespokeOnly: "has no Band platform tools, which the generic scenarios assume",
+    // No agentId: the adapter creates its agent from the prompt.
     build: ({ prompt }) =>
       new ParlantAdapter({
         environment: process.env[ENV.parlantEnvironment] ?? "",
-        agentId: process.env[ENV.parlantAgentId] ?? "",
         apiKey: process.env[ENV.parlantKey],
         customSection: prompt,
       }),

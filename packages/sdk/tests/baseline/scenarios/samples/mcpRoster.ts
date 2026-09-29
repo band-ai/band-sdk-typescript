@@ -1,7 +1,8 @@
 /**
- * A coding agent changes the room roster through its Band MCP tools, and
- * remembers its previous turn while doing it: the flow the ACP coding agents
- * share.
+ * An agent changes the room roster through its Band tools, and remembers its
+ * previous turn while doing it: the flow shared by agents that hold the Band
+ * tools themselves (over MCP for the ACP coding agents, as client tools for
+ * Letta).
  */
 import { expect } from "vitest";
 

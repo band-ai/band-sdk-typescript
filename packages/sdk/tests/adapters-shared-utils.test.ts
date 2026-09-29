@@ -10,6 +10,7 @@ import {
 import {
   findLatestTaskMetadata,
   selectCompleteExchanges,
+  takeLast,
 } from "../src/adapters/shared/history";
 import { withTimeout } from "../src/adapters/shared/withTimeout";
 import { mapConversationMessages } from "../src/adapters/tool-calling/valueUtils";
@@ -308,6 +309,18 @@ describe("adapter shared utilities", () => {
         vi.useRealTimers();
       }
     });
+  });
+});
+
+describe("takeLast", () => {
+  it.each([
+    { cap: 2, expected: [2, 3] },
+    { cap: 5, expected: [1, 2, 3] },
+    { cap: 0, expected: [] },
+    { cap: -1, expected: [] },
+    { cap: Number.NaN, expected: [] },
+  ])("keeps the last $cap items", ({ cap, expected }) => {
+    expect(takeLast([1, 2, 3], cap)).toEqual(expected);
   });
 });
 

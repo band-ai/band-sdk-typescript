@@ -11,11 +11,10 @@ import { resolveLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { formatHistoryForLlm } from "../../runtime/formatters";
 import { withMemoryGuidance } from "../../runtime/prompts";
-import { postedSendContent } from "../../runtime/tools/schemas";
+import { deliverFallbackReply, trackPostedReply } from "../../runtime/tools/postedReply";
 import { asErrorMessage } from "../shared/coercion";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
 import { reportProviderTurnFailure } from "../../core/providerFailure";
-import { deliverReply } from "../../core/deliveryFailedError";
 import {
   CustomToolExecutionError,
   CustomToolValidationError,
@@ -112,6 +111,8 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     const conversation = this.conversationFor(context, history, message);
     conversation.push(this.userTurn(message));
     const toolRounds: ToolRound[] = [];
+    // A later provider failure throws out of this turn. Remember a post as it lands, or the next turn answers it again.
+    const reply = trackPostedReply(tools, (content) => conversation.push({ role: "assistant", content }));
     let text: string | undefined;
     try {
       const platformSchemas = tools.getToolSchemas(this.toolFormat, {
@@ -186,7 +187,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
                 }
               }
             } else {
-              output = await tools.executeToolCall(call.name, call.input);
+              output = await reply.tools.executeToolCall(call.name, call.input);
             }
           }
           const isError = isFailedToolOutput(output);
@@ -196,11 +197,6 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
             output,
             isError,
           });
-          // A later provider failure throws out of this turn. Remember a post now, or the next turn answers it again.
-          const posted = postedSendContent(call.name, call.input.content, isError);
-          if (posted !== undefined) {
-            conversation.push({ role: "assistant", content: posted });
-          }
 
           if (this.enableExecutionReporting) {
             await this.reportExecutionEvent(
@@ -235,9 +231,9 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
       await reportProviderTurnFailure(tools, this.logger, this.provider, "Tool-calling adapter request failed", error, { messageId: message.id });
     }
 
-    if (text) {
-      await deliverReply(tools, text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
-      // Only text that was actually delivered belongs in the next turn.
+    const mention = [{ id: message.senderId, handle: message.senderName ?? message.senderType }];
+    // Only text that was actually delivered belongs in the next turn.
+    if (await deliverFallbackReply(reply, text, mention)) {
       conversation.push({ role: "assistant", content: text });
     }
   }

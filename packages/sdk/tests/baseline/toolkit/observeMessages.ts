@@ -35,8 +35,11 @@ export const REPLY_WAIT = { reply: "reply", timeout: "timeout" } as const;
 
 export type ReplyWait =
   | { kind: typeof REPLY_WAIT.reply; message: CapturedMessage }
-  /** `failures`: what the agent reported failing in the room meanwhile, the likeliest reason. */
-  | { kind: typeof REPLY_WAIT.timeout; waitedMs: number; failures: string[] };
+  /**
+   * `unmatched`: what the agent did post after the message, none of it a match.
+   * `failures`: what it reported failing in the room meanwhile, the likeliest reason.
+   */
+  | { kind: typeof REPLY_WAIT.timeout; waitedMs: number; unmatched: string[]; failures: string[] };
 
 type MessageRecord = Pick<MessageCreatedPayload, "id" | "content" | "sender_id" | "message_type"> & {
   metadata?: Record<string, unknown> & { mentions?: Array<{ id?: string }> };
@@ -53,22 +56,16 @@ function captured(payload: MessageRecord): CapturedMessage {
   };
 }
 
-/** The first message from `senderId` after the message `afterId` that `matches`, once both are captured. */
-function replyAfter(
-  messages: readonly MessageCreatedPayload[],
-  afterId: string,
-  senderId: string,
-  matches: (message: CapturedMessage) => boolean,
-): CapturedMessage | undefined {
+/** What `senderId` posted after the message `afterId`, oldest first; nothing until `afterId` is captured. */
+function postedAfter(messages: readonly MessageCreatedPayload[], afterId: string, senderId: string): CapturedMessage[] {
   const sentAt = messages.findIndex((message) => message.id === afterId);
   if (sentAt < 0) {
-    return undefined;
+    return [];
   }
   return messages
     .slice(sentAt + 1)
     .filter((message) => message.sender_id === senderId)
-    .map(captured)
-    .find(matches);
+    .map(captured);
 }
 
 /**
@@ -138,12 +135,18 @@ export function observeRoom(room: Room) {
     if (!after) {
       throw new Error("a reply wait needs a posted message to answer; send one with Rooms.sendMention first");
     }
-    const message = await waitFor(room.messages, () => replyAfter(room.messages.entries, after.id, from.id, matches), timeoutMs);
+    const postedByFrom = () => postedAfter(room.messages.entries, after.id, from.id);
+    const message = await waitFor(room.messages, () => postedByFrom().find(matches), timeoutMs);
     if (message) {
       return { kind: REPLY_WAIT.reply, message };
     }
     const failures = (await history(room, FAILURE_EVENT_TYPE)).filter((event) => event.senderId === from.id);
-    return { kind: REPLY_WAIT.timeout, waitedMs: timeoutMs, failures: failures.map((event) => event.content) };
+    return {
+      kind: REPLY_WAIT.timeout,
+      waitedMs: timeoutMs,
+      unmatched: postedByFrom().map((posted) => posted.content),
+      failures: failures.map((event) => event.content),
+    };
   };
 
   return {
