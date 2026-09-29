@@ -10,6 +10,7 @@ import { HistoryProvider } from "../src/runtime/types";
 import { DeliveryFailedError } from "../src/core/deliveryFailedError";
 import { FakeTools, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
+import { connectMcpClient } from "./mcpClient";
 import { MCP_SERVER_NAME } from "../src/runtime/tools/schemas";
 
 function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
@@ -544,6 +545,39 @@ describe("ClaudeSDKAdapter", () => {
       code: "error",
       message: "Not logged in",
     });
+  });
+
+  it.each([
+    { sendResult: { ok: true }, delivered: [] },
+    { sendResult: { ok: false, message: "unknown mention" }, delivered: ["Posted it."] },
+  ])("treats a band_send_message post as the reply, its final text as a fallback (send: $sendResult)", async ({ sendResult, delivered }) => {
+    const queryFn: ClaudeSDKQuery = ({ options }) =>
+      (async function* () {
+        // The model calls the Band MCP tool the adapter registered for this room, then narrates it.
+        const servers = options?.mcpServers as Record<string, { instance: Parameters<typeof connectMcpClient>[0] }>;
+        const client = await connectMcpClient(servers[MCP_SERVER_NAME]!.instance);
+        try {
+          await client.callTool({
+            name: "band_send_message",
+            arguments: { room_id: "room-posted", content: "Hello!", mentions: ["@user"] },
+          });
+        } finally {
+          await client.close();
+        }
+        yield { type: "result", subtype: "success", result: "Posted it.", session_id: "session-posted" } as never;
+      })() as never;
+
+    const adapter = new ClaudeSDKAdapter({ queryFn });
+    await adapter.onStarted("Parity Agent", "Parity test agent");
+    const tools = new FakeTools();
+    tools.executeToolCall = async () => sendResult;
+
+    await adapter.onMessage(makeMessage("hello", "room-posted"), tools, new HistoryProvider([]), null, null, {
+      isSessionBootstrap: false,
+      roomId: "room-posted",
+    });
+
+    expect(tools.messages).toEqual(delivered);
   });
 
   it("still delivers a success result when is_error is false", async () => {

@@ -33,8 +33,8 @@ export interface ChatTurn {
   content: string;
   /**
    * Display name of whoever produced the turn.  Optional so a caller with no
-   * notion of per-turn identity still satisfies the constraint; both adapter
-   * message types supply it.
+   * notion of per-turn identity still satisfies the constraint; Letta's
+   * message type supplies it.
    */
   sender?: string;
 }
@@ -45,8 +45,7 @@ export interface ChatTurn {
  *
  * A run can span several speakers, and the merged turn carries only one
  * identity downstream: `LettaAdapter` prefixes the whole block with
- * `item.sender`, `ParlantAdapter` sends it under one participant's
- * `displayName`.  Any later speaker's name therefore has to travel inside
+ * `item.sender`.  Any later speaker's name therefore has to travel inside
  * the text, or their lines are replayed under whoever the block is currently
  * attributed to - which is the last speaker *named* in it, not the one who
  * opened it.  A three-speaker run A -> B -> A has to name A again on return,

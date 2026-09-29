@@ -4,11 +4,7 @@ import { deliverReply } from "../../core/deliveryFailedError";
 import { overrideTools } from "../../core/overrideTools";
 import { postedSendContent } from "./schemas";
 
-/**
- * A turn's tools, noticing when the model answers through band_send_message.
- * That post is the turn's reply; its final text only narrates it, so that
- * text is a fallback for a turn that posted nothing (`deliverFallbackReply`).
- */
+/** What tracking needs of a turn's tools: running tool calls, and posting the fallback. */
 export type TrackableTools = MessagingTools & ToolExecutor;
 
 export interface PostedReplyTracker<T extends TrackableTools = TrackableTools> {
@@ -17,7 +13,13 @@ export interface PostedReplyTracker<T extends TrackableTools = TrackableTools> {
   posted(): boolean;
 }
 
-/** `onPost` sees the content of each send that landed, for an adapter that keeps its own record of the turn. */
+/**
+ * A turn's tools, noticing when the model answers through band_send_message.
+ * That post is the turn's reply; its final text only narrates it, so that
+ * text is a fallback for a turn that posted nothing (`deliverFallbackReply`).
+ * `onPost` sees the content of each send that landed, for an adapter that
+ * keeps its own record of the turn.
+ */
 export function trackPostedReply<T extends TrackableTools>(tools: T, onPost?: (content: string) => void): PostedReplyTracker<T> {
   let posted = false;
   return {

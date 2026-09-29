@@ -60,11 +60,11 @@ class SendMessageTools extends GoogleAdkTestTools {
     }];
   }
 
-  public override async sendMessage(content: string): Promise<Record<string, unknown>> {
+  public override async sendMessage(content: string, mentions?: Parameters<GoogleAdkTestTools["sendMessage"]>[1]): Promise<Record<string, unknown>> {
     if (this.failDeliveredText !== null && content === this.failDeliveredText) {
       throw new Error("send failed");
     }
-    return super.sendMessage(content);
+    return super.sendMessage(content, mentions);
   }
 
   public override async executeToolCall(toolName: string, args: Record<string, unknown>): Promise<unknown> {
@@ -219,6 +219,24 @@ describe("GoogleADKAdapter", () => {
     await adapter.onMessage(makeMessage("Reply with: mango"), tools, [], null, null, { isSessionBootstrap: false, roomId: "room-1" });
 
     expect(seenPrompts[1]).toContain("[User]: Reply with: pineapple\npineapple");
+  });
+
+  it.each([
+    { failSend: false, delivered: [] },
+    { failSend: true, delivered: ["I posted it."] },
+  ])("treats a send-tool post as the reply, its final text as a fallback (send failed: $failSend)", async ({ failSend, delivered }) => {
+    const adapter = new GoogleADKAdapter({
+      sdkFactory: createFakeGoogleAdkSdk(async function* (agent) {
+        await sendToolOf(agent)({ content: "pineapple" });
+        yield { final: true, text: "I posted it." };
+      }),
+    });
+    const tools = new SendMessageTools();
+    tools.failSend = failSend;
+
+    await adapter.onMessage(makeMessage("Reply with: pineapple"), tools, [], null, null, { isSessionBootstrap: true, roomId: "room-1" });
+
+    expect(tools.messages).toEqual(delivered);
   });
 
   it("does not remember a send that failed", async () => {

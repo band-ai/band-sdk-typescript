@@ -1047,7 +1047,6 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
     }
 
     await client.respondError(event.id, -32601, `Unhandled server request: ${event.method}`);
-    return;
   }
 
   private async emitItemCompletedEvents(

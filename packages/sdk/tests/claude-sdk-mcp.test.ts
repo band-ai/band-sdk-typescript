@@ -1,9 +1,8 @@
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AgentToolsProtocol } from "../src/core";
 import { createBandSdkMcpServer } from "../src/mcp/sdk";
+import { connectMcpClient } from "./mcpClient";
 import { FakeRestApi } from "./testUtils";
 
 describe("createBandSdkMcpServer", () => {
@@ -74,18 +73,9 @@ describe("createBandSdkMcpServer", () => {
     expect(result.isError).toBeUndefined();
   });
 
-  /** An MCP client connected to the bridge's in-process server, so calls go through its listing and validation. */
-  async function connectClient(bridge: ReturnType<typeof createBandSdkMcpServer>): Promise<Client> {
-    const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
-    await bridge.serverConfig.instance.connect(serverTransport);
-    const client = new Client({ name: "band-tools-probe", version: "1.0.0" });
-    await client.connect(clientTransport);
-    return client;
-  }
-
   it("lists every Band tool through the Agent SDK's in-process MCP server", async () => {
     const bridge = createBandSdkMcpServer({ enableMemoryTools: true, getToolsForRoom: () => undefined });
-    const client = await connectClient(bridge);
+    const client = await connectMcpClient(bridge.serverConfig.instance);
 
     try {
       // One schema the SDK's converter can't render fails the whole listing, so the agent sees no Band tools.
@@ -100,7 +90,7 @@ describe("createBandSdkMcpServer", () => {
     const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
     const roomTools = makeTools(calls);
     const bridge = createBandSdkMcpServer({ enableMemoryTools: false, getToolsForRoom: () => roomTools });
-    const client = await connectClient(bridge);
+    const client = await connectMcpClient(bridge.serverConfig.instance);
     const metadata = { key: "value", nested: { count: 1 } };
 
     try {
