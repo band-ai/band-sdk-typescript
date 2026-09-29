@@ -22,11 +22,11 @@ import {
 const REPLIES = scenarioId(CATEGORY.platform, "repliesToMention");
 const APPROVALS = scenarioId(CATEGORY.behavior, "approvals");
 
-const row = (outcome: ScorecardOutcome, adapter: ScorecardRow["adapter"] = ADAPTER.anthropic): ScorecardRow => ({
-  scenario: REPLIES,
-  adapter,
-  outcome,
-});
+const row = (
+  outcome: ScorecardOutcome,
+  adapter: ScorecardRow["adapter"] = ADAPTER.anthropic,
+  scenario: ScorecardRow["scenario"] = REPLIES,
+): ScorecardRow => ({ scenario, adapter, outcome });
 
 /** A failure's detail, which the markdown must never show. */
 const FAILURE_DETAIL = "boom";
@@ -44,6 +44,11 @@ describe("merge", () => {
     { name: "fail beats pass", cards: [[pass], [fail]], winner: fail },
   ])("$name", ({ cards, winner }) => {
     expect(merge(...cards.map((outcomes) => outcomes.map((outcome) => row(outcome))))).toEqual([row(winner)]);
+  });
+
+  it("keeps the first of two equal outcomes", () => {
+    const first: ScorecardOutcome = { ...fail, error: "first" };
+    expect(merge([row(first)], [row({ ...fail, error: "second" })])).toEqual([row(first)]);
   });
 
   it("keeps every distinct cell, in stable order", () => {
@@ -80,14 +85,8 @@ describe("toMarkdown", () => {
     expect(markdown).not.toContain(FAILURE_DETAIL);
   });
 
-  it("puts (no adapter) in the first column and (general) in the first row, still without failure details", () => {
-    const markdown = toMarkdown([
-      row(pass, ADAPTER.anthropic),
-      row(fail, NO_ADAPTER),
-      { scenario: GENERAL_SCENARIO, adapter: NO_ADAPTER, outcome: fail },
-    ]);
-
-    expect(markdown).toBe(
+  it("puts (no adapter) in the first column and (general) in the first row", () => {
+    expect(toMarkdown([row(pass, ADAPTER.anthropic), row(fail, NO_ADAPTER), row(fail, NO_ADAPTER, GENERAL_SCENARIO)])).toBe(
       [
         "| scenario | (no adapter) | anthropic |",
         "| --- | --- | --- |",
@@ -96,7 +95,6 @@ describe("toMarkdown", () => {
         "",
       ].join("\n"),
     );
-    expect(markdown).not.toContain(FAILURE_DETAIL);
   });
 });
 

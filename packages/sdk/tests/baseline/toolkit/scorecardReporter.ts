@@ -1,9 +1,8 @@
 /**
- * The one wiring point between vitest and the scorecard: reads every finished test at run end and writes the
- * scorecard. A `<scenario> > <adapter>` test (the title `perAdapter` gives it, or `<scenario> > <adapter> + <adapter>`
- * for a shared cast) is one row per adapter; a test in a scenario under any other title is a `(no adapter)` cell.
- * A file or suite that errors outside any test, and a failed test no scenario owns, fail a `(no adapter)` cell of the
- * scenario their file defines; an unhandled error fails the `(general)` row. Neither `perAdapter.ts` nor `scorecard.ts`
+ * The one wiring point between vitest and the scorecard: at run end, reads every finished test, file or suite error
+ * and unhandled error and writes the scorecard. A `<scenario> > <adapter>` test (the title `perAdapter` gives it, or
+ * `<scenario> > <adapter> + <adapter>` for a shared cast) is one row per adapter; a failure with no adapter is a
+ * `(no adapter)` cell, and one no scenario owns is the `(general)` row. Neither `perAdapter.ts` nor `scorecard.ts`
  * knows about the other.
  */
 import { basename, dirname } from "node:path";
@@ -84,34 +83,25 @@ function isAdapterId(name: string): name is AdapterId {
 /** The roster a scorecard reads why an adapter did not run from. */
 export type ScorecardRoster = Pick<AdapterRegistry<AdapterId>, "get">;
 
-/** Why the roster keeps an adapter from running, if it does. A cell with no adapter is not in the roster. */
-function notRunReason(adapter: ScorecardRow["adapter"], roster: ScorecardRoster): string | undefined {
-  if (adapter === NO_ADAPTER) return undefined;
-  const { pending, bespokeOnly } = roster.get(adapter);
-  return pending ?? bespokeOnly;
-}
-
 /** A failed outcome; `source` says where the errors came from when no test title does. */
 function failure(errors: ReadonlyArray<ReportedError>, durationMs: number, source?: string): ScorecardOutcome {
   const messages = errors.map((error) => error.message).join("\n");
   return { status: SCORECARD_STATUS.fail, error: source ? `${source}: ${messages}` : messages, durationMs };
 }
 
-/** A failure that has no roster adapter behind it. */
-function noAdapterFailure(
-  scenario: ScorecardRow["scenario"],
-  errors: ReadonlyArray<ReportedError>,
-  source?: string,
-  durationMs = NO_TEST_DURATION_MS,
-): ScorecardRow {
-  return { scenario, adapter: NO_ADAPTER, outcome: failure(errors, durationMs, source) };
+/** The `(no adapter)` row for errors raised outside any test; none when there are none. */
+function failureRows(scenario: ScorecardRow["scenario"], errors: ReadonlyArray<ReportedError>, source?: string): ScorecardRow[] {
+  return errors.length > 0 ? [{ scenario, adapter: NO_ADAPTER, outcome: failure(errors, NO_TEST_DURATION_MS, source) }] : [];
 }
 
 const durationOf = (test: ReportedTest) => test.diagnostic()?.duration ?? NO_TEST_DURATION_MS;
 
 const inModule = (relativeModuleId: string, name: string) => `${relativeModuleId}${SOURCE_SEPARATOR}${name}`;
 
-/** The scenario a file most plausibly defines, from `<category>/<name>.test.ts`; `(general)` outside that layout. */
+/**
+ * The scenario id a file is named after, from `<category>/<name>.test.ts`; `(general)` outside that layout.
+ * A file that defines several scenarios has no cell of that id, which still names the file.
+ */
 function moduleScenario(relativeModuleId: string): ScorecardRow["scenario"] {
   const candidate = `${basename(dirname(relativeModuleId))}.${basename(relativeModuleId, TEST_FILE_SUFFIX)}`;
   return isScenarioId(candidate) ? candidate : GENERAL_SCENARIO;
@@ -128,7 +118,9 @@ function outcome(adapter: ScorecardRow["adapter"], test: ReportedTest, roster: S
     case TEST_STATE.skipped: {
       // A test filtered out of this run (`-t`, a path) is skipped with no note: it did not run, so no row.
       if (!result.note) return null;
-      const notRun = notRunReason(adapter, roster);
+      // A cell with no adapter is not in the roster.
+      const spec = adapter === NO_ADAPTER ? undefined : roster.get(adapter);
+      const notRun = spec?.pending ?? spec?.bespokeOnly;
       return notRun ? { status: SCORECARD_STATUS.na, reason: notRun } : { status: SCORECARD_STATUS.skip, reason: result.note };
     }
     case TEST_STATE.pending:
@@ -141,8 +133,8 @@ function unmappedRows(test: ReportedTest): ScorecardRow[] {
   const result = test.result();
   if (result.state !== TEST_STATE.failed) return [];
   const { relativeModuleId } = test.module;
-  const source = inModule(relativeModuleId, test.fullName);
-  return [noAdapterFailure(moduleScenario(relativeModuleId), result.errors, source, durationOf(test))];
+  const outcome = failure(result.errors, durationOf(test), inModule(relativeModuleId, test.fullName));
+  return [{ scenario: moduleScenario(relativeModuleId), adapter: NO_ADAPTER, outcome }];
 }
 
 /**
@@ -167,20 +159,13 @@ export function scorecardRows(test: ReportedTest, roster: ScorecardRoster = regi
 export function errorRows(module: ReportedModule): ScorecardRow[] {
   const { relativeModuleId } = module;
   const fileScenario = moduleScenario(relativeModuleId);
-  const fileErrors = module.errors();
-  const suitesWithErrors = [...module.children.allSuites()].filter((suite) => suite.errors().length > 0);
   return [
-    ...(fileErrors.length > 0 ? [noAdapterFailure(fileScenario, fileErrors, relativeModuleId)] : []),
-    ...suitesWithErrors.map((suite) => {
+    ...failureRows(fileScenario, module.errors(), relativeModuleId),
+    ...[...module.children.allSuites()].flatMap((suite) => {
       const scenario = isScenarioId(suite.name) ? suite.name : fileScenario;
-      return noAdapterFailure(scenario, suite.errors(), inModule(relativeModuleId, suite.fullName));
+      return failureRows(scenario, suite.errors(), inModule(relativeModuleId, suite.fullName));
     }),
   ];
-}
-
-/** The row for errors raised outside every test, which vitest still exits non-zero on. */
-export function unhandledErrorRows(errors: ReadonlyArray<ReportedError>): ScorecardRow[] {
-  return errors.length > 0 ? [noAdapterFailure(GENERAL_SCENARIO, errors)] : [];
 }
 
 /**
@@ -195,7 +180,8 @@ export function runRows(
   return merge(
     modules.flatMap((module) => errorRows(module)),
     modules.flatMap((module) => [...module.children.allTests()].flatMap((test) => scorecardRows(test, roster))),
-    unhandledErrorRows(unhandledErrors),
+    // Errors raised outside every test, which vitest still exits non-zero on.
+    failureRows(GENERAL_SCENARIO, unhandledErrors),
   );
 }
 

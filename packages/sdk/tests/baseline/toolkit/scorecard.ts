@@ -30,15 +30,11 @@ export type ScorecardOutcome =
 export type ScorecardStatus = ScorecardOutcome["status"];
 
 /**
- * The column for a result with no roster adapter behind it: a test, file or suite that has none in its title.
- * Starts with `(` so the grid's code-point sort puts it first.
+ * Reserved labels, both starting with `(` so the grid's code-point sort puts them first: the column for a result with
+ * no roster adapter behind it, and the row for a failure no scenario can own (an unhandled error, a file outside
+ * `scenarios/<category>/`).
  */
 export const NO_ADAPTER = "(no adapter)";
-
-/**
- * The row for a failure no scenario can own, such as an unhandled error or a file outside `scenarios/<category>/`.
- * Starts with `(` so the grid's code-point sort puts it first.
- */
 export const GENERAL_SCENARIO = "(general)";
 
 export interface ScorecardRow {
@@ -73,7 +69,7 @@ const cellKey = (scenario: string, adapter: string) => `${scenario}\u0000${adapt
 const byCell = (a: ScorecardRow, b: ScorecardRow) =>
   a.scenario.localeCompare(b.scenario) || a.adapter.localeCompare(b.adapter);
 
-/** Unions scorecards, keeping each cell's highest-ranked outcome. */
+/** Unions scorecards, keeping each cell's highest-ranked outcome; of equal ranks, the first row wins. */
 export function merge(...scorecards: ScorecardRow[][]): ScorecardRow[] {
   const best = new Map<string, ScorecardRow>();
   for (const row of scorecards.flat()) {
