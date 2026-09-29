@@ -130,8 +130,7 @@ function reportsTools({ customTools, memory }: Pick<BuildOptions, "customTools" 
  * then fails its own message, and the next message's normal turn still finishes in the other half.
  * Long enough that a tool-heavy turn never trips it.
  */
-const BASELINE_TURN_TIMEOUT_MS = LIVE_EVENT_TIMEOUT_MS / 2;
-const TOOL_CALLING_TURN_TIMEOUT = { turnTimeoutMs: BASELINE_TURN_TIMEOUT_MS };
+const TOOL_CALLING_TURN_TIMEOUT = { turnTimeoutMs: LIVE_EVENT_TIMEOUT_MS / 2 };
 
 /** A builder for an adapter that cannot run yet; it names why instead of half-building one. */
 function unbuildable(reason: string): () => never {

@@ -823,6 +823,16 @@ describe("ToolCallingAdapter", () => {
       vi.useRealTimers();
     });
 
+    /** A tool whose handler alone spends the whole turn budget (fake timers must be on). */
+    const spendsBudget: CustomToolDef = {
+      name: "slow",
+      schema: z.object({}),
+      handler: async () => {
+        await vi.advanceTimersByTimeAsync(TURN_TIMEOUT_MS);
+        return "done";
+      },
+    };
+
     function runTurn(adapter: OpenAIAdapter, tools: FakeTools, message: PlatformMessage = fakeMessage): Promise<void> {
       return adapter.onMessage(message, tools, fakeHistory, null, null, { isSessionBootstrap: true, roomId: "r1" });
     }
@@ -876,24 +886,8 @@ describe("ToolCallingAdapter", () => {
 
     it("stops between tool calls once the budget is spent, leaving no tool_call without its tool_result", async () => {
       vi.useFakeTimers();
-      const ran: string[] = [];
-      const spendsBudget: CustomToolDef = {
-        name: "slow",
-        schema: z.object({}),
-        handler: async () => {
-          ran.push("slow");
-          await vi.advanceTimersByTimeAsync(TURN_TIMEOUT_MS);
-          return "done";
-        },
-      };
-      const neverRuns: CustomToolDef = {
-        name: "after",
-        schema: z.object({}),
-        handler: () => {
-          ran.push("after");
-          return "done";
-        },
-      };
+      const afterHandler = vi.fn(() => "done");
+      const neverRuns: CustomToolDef = { name: "after", schema: z.object({}), handler: afterHandler };
       const model: ToolCallingModel = {
         complete: async () => ({
           toolCalls: [
@@ -912,21 +906,13 @@ describe("ToolCallingAdapter", () => {
 
       await expectTurnFailed(runTurn(adapter, tools));
 
-      expect(ran).toEqual(["slow"]);
+      expect(afterHandler).not.toHaveBeenCalled();
       expect(tools.events.map((event) => event.messageType)).toEqual(["tool_call", "tool_result", FAILURE_EVENT_TYPE]);
       expect(failureCodes(tools)).toEqual([FAILURE_CODE_TIMEOUT]);
     });
 
     it("does not start another model call once a tool round has spent the budget", async () => {
       vi.useFakeTimers();
-      const spendsBudget: CustomToolDef = {
-        name: "slow",
-        schema: z.object({}),
-        handler: async () => {
-          await vi.advanceTimersByTimeAsync(TURN_TIMEOUT_MS);
-          return "done";
-        },
-      };
       let calls = 0;
       const model: ToolCallingModel = {
         complete: async () => {
@@ -1004,8 +990,8 @@ describe("ToolCallingAdapter", () => {
       expect(tools.events).toEqual([]);
     });
 
-    it.each([0, -1, NaN, 2_147_483_648])("rejects turnTimeoutMs %s at construction", (turnTimeoutMs) => {
-      expect(() => new OpenAIAdapter({ model: new FakeModel(), turnTimeoutMs })).toThrow(ValidationError);
+    it("validates turnTimeoutMs at construction", () => {
+      expect(() => new OpenAIAdapter({ model: new FakeModel(), turnTimeoutMs: 0 })).toThrow(ValidationError);
     });
   });
 

@@ -128,13 +128,13 @@ export function observeAgent(
 
   /** Reads the platform's stored state after a wait gave up; a failed read must not mask the timeout. */
   const stalledWait = async (message: SentMessage, waitedMs: number, waitStartedAt: Date): Promise<StalledWait> => {
+    let stored: StoredDelivery[] | undefined;
     try {
-      const stored = storedDeliveries(await readMessages(room), agent.id, message.id);
-      return { waitedMs, waitStartedAt, readAt: new Date(), stored };
+      stored = storedDeliveries(await readMessages(room), agent.id, message.id);
     } catch (error) {
       console.warn(`baseline: could not read back room ${room.id} after a stalled delivery wait:`, error);
-      return { waitedMs, waitStartedAt, readAt: new Date(), stored: undefined };
     }
+    return { waitedMs, waitStartedAt, readAt: new Date(), stored };
   };
 
   /**
