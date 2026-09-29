@@ -32,8 +32,10 @@ export function buildConversationPrompt(options: BuildConversationPromptOptions)
   const parts: string[] = [];
 
   if (options.isSessionBootstrap) {
-    const historyText = options.history.raw
-      .slice(-(options.maxHistoryMessages ?? 50))
+    const raw = options.history.raw;
+    // Not `slice(-max)`: `slice(-0)` would keep everything instead of nothing.
+    const historyText = raw
+      .slice(Math.max(0, raw.length - (options.maxHistoryMessages ?? 50)))
       .filter(isTextHistoryEntry)
       .map(formatHistoryLine)
       .join("\n");

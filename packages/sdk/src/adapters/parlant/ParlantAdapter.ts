@@ -2,11 +2,16 @@ import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { MessagingTools } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
-import { UnsupportedFeatureError, rethrowIfRecoverableTurnFailure } from "../../core/errors";
-import type { PlatformMessage } from "../../runtime/types";
+import {
+  RuntimeStateError,
+  UnsupportedFeatureError,
+  ValidationError,
+  rethrowIfRecoverableTurnFailure,
+} from "../../core/errors";
+import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { asErrorMessage, asNonEmptyString, asOptionalRecord } from "../shared/coercion";
-import { selectCompleteExchanges } from "../shared/history";
+import { buildConversationPrompt } from "../shared/conversationPrompt";
 import {
   FAILURE_CODE_TIMEOUT,
   agentFailure,
@@ -20,7 +25,16 @@ import {
   type ParlantMessages,
 } from "./types";
 
+type ParlantRequestOptions = { headers?: Record<string, string> };
+
 export interface ParlantClientLike {
+  agents: {
+    create(
+      params: { name: string; description?: string },
+      requestOptions?: ParlantRequestOptions,
+    ): Promise<{ id: string }>;
+    delete(agentId: string, requestOptions?: ParlantRequestOptions): Promise<void>;
+  };
   customers: {
     create(
       params: {
@@ -28,8 +42,9 @@ export interface ParlantClientLike {
         name: string;
         metadata?: Record<string, string | undefined>;
       },
-      requestOptions?: { headers?: Record<string, string> },
+      requestOptions?: ParlantRequestOptions,
     ): Promise<{ id: string }>;
+    delete(customerId: string, requestOptions?: ParlantRequestOptions): Promise<void>;
   };
   sessions: {
     create(
@@ -39,8 +54,9 @@ export interface ParlantClientLike {
         title?: string;
         metadata?: Record<string, unknown>;
       },
-      requestOptions?: { headers?: Record<string, string> },
+      requestOptions?: ParlantRequestOptions,
     ): Promise<{ id: string }>;
+    delete(sessionId: string, requestOptions?: ParlantRequestOptions): Promise<void>;
     createEvent(
       sessionId: string,
       params: {
@@ -50,14 +66,13 @@ export interface ParlantClientLike {
           | "customer_ui"
           | "human_agent"
           | "human_agent_on_behalf_of_ai_agent"
-          | "ai_agent"
-          | "system";
+          | "ai_agent";
         message?: string;
         data?: unknown;
         moderation?: "auto" | "paranoid" | "none";
         metadata?: Record<string, unknown>;
       },
-      requestOptions?: { headers?: Record<string, string> },
+      requestOptions?: ParlantRequestOptions,
     ): Promise<{ id: string; offset: number }>;
     listEvents(
       sessionId: string,
@@ -67,7 +82,7 @@ export interface ParlantClientLike {
         kinds?: string;
         waitForData?: number;
       },
-      requestOptions?: { headers?: Record<string, string> },
+      requestOptions?: ParlantRequestOptions,
     ): Promise<Array<Record<string, unknown>>>;
   };
 }
@@ -75,7 +90,13 @@ export interface ParlantClientLike {
 export interface ParlantAdapterOptions {
   environment: string;
   baseUrl?: string;
-  agentId: string;
+  /**
+   * An existing Parlant agent to talk through, used as-is: its own description
+   * and guidelines define its behaviour, so it cannot be combined with
+   * `systemPrompt` or `customSection`. Omit it to have the adapter create an
+   * agent from the rendered prompt and delete it when the runtime stops.
+   */
+  agentId?: string;
   apiKey?: string;
   headers?: Record<string, string>;
   systemPrompt?: string;
@@ -83,15 +104,10 @@ export interface ParlantAdapterOptions {
   includeBaseInstructions?: boolean;
   responseTimeoutSeconds?: number;
   /**
-   * Most turns of prior conversation to replay into a new session.
-   * Defaults to 100.  The value is a cap, not a toggle: `0` replays none.
-   *
-   * A reply is never replayed without the question it answers, so the result
-   * can be one turn shorter than the cap - and `1` replays nothing whenever
-   * the newest turn is an answer.
+   * Most prior room messages folded into a new session's first turn.
+   * Defaults to 100.  The value is a cap, not a toggle: `0` folds in none.
    */
   maxHistoryMessages?: number;
-  historyConverter?: ParlantHistoryConverter;
   clientFactory?: ParlantClientFactory;
   logger?: Logger;
 }
@@ -100,15 +116,19 @@ export type ParlantClientFactory = () => Promise<ParlantClientLike>;
 
 const DEFAULT_RESPONSE_TIMEOUT_SECONDS = 120;
 const DEFAULT_MAX_HISTORY_MESSAGES = 100;
+// Marks agents this adapter created, so a leaked one is recognisable on the server.
+const OWNED_AGENT_NAME_PREFIX = "band-";
+const HISTORY_HEADER = "[Previous conversation context]";
 
 export class ParlantAdapter
-  extends SimpleAdapter<ParlantMessages, MessagingTools>
+  extends SimpleAdapter<HistoryProvider, MessagingTools>
 {
   protected readonly provider = "parlant";
 
   private readonly environment: string;
   private readonly baseUrl?: string;
-  private readonly agentId: string;
+  private readonly borrowedAgentId?: string;
+  private ownedAgentId: string | null = null;
   private readonly apiKey?: string;
   private readonly headers: Record<string, string>;
   private readonly systemPromptOverride?: string;
@@ -121,21 +141,24 @@ export class ParlantAdapter
 
   private readonly clientLoader: LazyAsyncValue<ParlantClientLike>;
   private lastInitFailure = 0;
-  private systemPrompt = "";
   private readonly roomSessions = new Map<string, string>();
   private readonly roomCustomers = new Map<string, string>();
-  private readonly bootstrappedRooms = new Set<string>();
   private readonly roomSessionInitPromises = new Map<string, Promise<string>>();
-  private readonly roomBootstrapInitPromises = new Map<string, Promise<void>>();
 
   public constructor(options: ParlantAdapterOptions) {
-    super({
-      historyConverter: options.historyConverter ?? new ParlantHistoryConverter(),
-    });
+    super();
+
+    // A borrowed agent is never modified, so there is nowhere to put a prompt.
+    if (options.agentId && (options.systemPrompt !== undefined || options.customSection !== undefined)) {
+      throw new ValidationError(
+        "ParlantAdapter cannot apply systemPrompt or customSection to an existing agentId; " +
+          "configure that agent on the Parlant server, or omit agentId to let the adapter create one.",
+      );
+    }
 
     this.environment = options.environment;
     this.baseUrl = options.baseUrl;
-    this.agentId = options.agentId;
+    this.borrowedAgentId = options.agentId;
     this.apiKey = options.apiKey;
     this.headers = { ...(options.headers ?? {}) };
     this.systemPromptOverride = options.systemPrompt;
@@ -163,8 +186,12 @@ export class ParlantAdapter
     agentDescription: string,
   ): Promise<void> {
     await super.onStarted(agentName, agentDescription);
+    if (this.borrowedAgentId) {
+      return;
+    }
 
-    this.systemPrompt =
+    // Parlant takes no system messages; an agent's description is its prompt.
+    const description =
       this.systemPromptOverride ??
       renderSystemPrompt({
         agentName,
@@ -172,12 +199,27 @@ export class ParlantAdapter
         customSection: this.customSection,
         includeBaseInstructions: this.includeBaseInstructions,
       });
+    const client = await this.ensureClient();
+    const agent = await client.agents.create(
+      { name: `${OWNED_AGENT_NAME_PREFIX}${agentName}`, description },
+      this.requestOptions(),
+    );
+    this.ownedAgentId = agent.id;
+  }
+
+  public async onRuntimeStop(): Promise<void> {
+    const agentId = this.ownedAgentId;
+    const client = this.clientLoader.current;
+    this.ownedAgentId = null;
+    if (agentId && client) {
+      await this.deleteQuietly("agent", agentId, () => client.agents.delete(agentId, this.requestOptions()));
+    }
   }
 
   public async onMessage(
     message: PlatformMessage,
     tools: MessagingTools,
-    history: ParlantMessages,
+    history: HistoryProvider,
     participantsMessage: string | null,
     contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
@@ -192,14 +234,15 @@ export class ParlantAdapter
         senderName,
       );
 
-      if (context.isSessionBootstrap) {
-        await this.ensureBootstrapHistory(client, sessionId, context.roomId, history);
-      }
-
-      const userMessage = buildUserMessage({
-        content: message.content,
+      // Replayed REST events would each trigger a generation, so history rides in the turn itself.
+      const userMessage = buildConversationPrompt({
+        history,
+        isSessionBootstrap: context.isSessionBootstrap,
         participantsMessage,
         contactsMessage,
+        historyHeader: HISTORY_HEADER,
+        currentMessage: message.content,
+        maxHistoryMessages: this.maxHistoryMessages,
       });
 
       const createdEvent = await client.sessions.createEvent(
@@ -251,20 +294,46 @@ export class ParlantAdapter
   }
 
   public async onCleanup(roomId: string): Promise<void> {
-    const pendingSession = this.roomSessionInitPromises.get(roomId);
-    const pendingBootstrap = this.roomBootstrapInitPromises.get(roomId);
-
     // Await in-flight initialization before deleting state to avoid orphaned writes.
-    const pendingOperations = [pendingSession, pendingBootstrap].filter(
-      (promise): promise is Promise<void> => promise !== undefined,
-    );
-    await Promise.allSettled(pendingOperations);
+    await Promise.allSettled([this.roomSessionInitPromises.get(roomId)]);
 
+    const sessionId = this.roomSessions.get(roomId);
+    const customerId = this.roomCustomers.get(roomId);
     this.roomSessions.delete(roomId);
     this.roomCustomers.delete(roomId);
-    this.bootstrappedRooms.delete(roomId);
     this.roomSessionInitPromises.delete(roomId);
-    this.roomBootstrapInitPromises.delete(roomId);
+
+    const client = this.clientLoader.current;
+    if (!client) {
+      return;
+    }
+    if (sessionId) {
+      await this.deleteQuietly("session", sessionId, () => client.sessions.delete(sessionId, this.requestOptions()));
+    }
+    if (customerId) {
+      await this.deleteQuietly("customer", customerId, () => client.customers.delete(customerId, this.requestOptions()));
+    }
+  }
+
+  /** Teardown never throws: a failed delete leaves server state behind, which is logged, not fatal. */
+  private async deleteQuietly(kind: string, id: string, remove: () => Promise<void>): Promise<void> {
+    try {
+      await remove();
+    } catch (error) {
+      this.logger.warn(`Failed to delete the Parlant ${kind}`, { id, error });
+    }
+  }
+
+  private get agentId(): string | undefined {
+    return this.borrowedAgentId ?? this.ownedAgentId ?? undefined;
+  }
+
+  private requireAgentId(): string {
+    const agentId = this.agentId;
+    if (!agentId) {
+      throw new RuntimeStateError("ParlantAdapter has no Parlant agent; onStarted has not completed.");
+    }
+    return agentId;
   }
 
   private async getOrCreateSession(
@@ -286,7 +355,7 @@ export class ParlantAdapter
       const customerId = await this.getOrCreateCustomer(client, roomId, customerName);
       const session = await client.sessions.create(
         {
-          agentId: this.agentId,
+          agentId: this.requireAgentId(),
           customerId,
           title: `Band Room ${roomId.slice(0, 8)}`,
           metadata: {
@@ -295,21 +364,6 @@ export class ParlantAdapter
         },
         this.requestOptions(),
       );
-
-      if (this.systemPrompt.trim().length > 0) {
-        await client.sessions.createEvent(
-          session.id,
-          {
-            kind: "message",
-            source: "system",
-            message: this.systemPrompt,
-            metadata: {
-              band_system_prompt: true,
-            },
-          },
-          this.requestOptions(),
-        );
-      }
 
       this.roomSessions.set(roomId, session.id);
       return session.id;
@@ -322,41 +376,6 @@ export class ParlantAdapter
       const pending = this.roomSessionInitPromises.get(roomId);
       if (pending === initPromise) {
         this.roomSessionInitPromises.delete(roomId);
-      }
-    }
-  }
-
-  private async ensureBootstrapHistory(
-    client: ParlantClientLike,
-    sessionId: string,
-    roomId: string,
-    history: ParlantMessages,
-  ): Promise<void> {
-    if (this.bootstrappedRooms.has(roomId)) {
-      return;
-    }
-
-    const initializing = this.roomBootstrapInitPromises.get(roomId);
-    if (initializing) {
-      await initializing;
-      return;
-    }
-
-    const initPromise = (async (): Promise<void> => {
-      if (this.bootstrappedRooms.has(roomId)) {
-        return;
-      }
-      await this.injectHistory(client, sessionId, history);
-      this.bootstrappedRooms.add(roomId);
-    })();
-
-    this.roomBootstrapInitPromises.set(roomId, initPromise);
-    try {
-      await initPromise;
-    } finally {
-      const pending = this.roomBootstrapInitPromises.get(roomId);
-      if (pending === initPromise) {
-        this.roomBootstrapInitPromises.delete(roomId);
       }
     }
   }
@@ -383,75 +402,6 @@ export class ParlantAdapter
 
     this.roomCustomers.set(roomId, customer.id);
     return customer.id;
-  }
-
-  private async injectHistory(
-    client: ParlantClientLike,
-    sessionId: string,
-    history: ParlantMessages,
-  ): Promise<void> {
-    if (history.length === 0) {
-      return;
-    }
-
-    const completeHistory = selectCompleteExchanges(
-      history,
-      this.maxHistoryMessages,
-    );
-    let failedEvents = 0;
-
-    for (const item of completeHistory) {
-      try {
-        if (item.role === "user") {
-          await client.sessions.createEvent(
-            sessionId,
-            {
-              kind: "message",
-              source: "customer",
-              message: item.content,
-              moderation: "none",
-              metadata: {
-                historical: true,
-              },
-            },
-            this.requestOptions(),
-          );
-          continue;
-        }
-
-        await client.sessions.createEvent(
-          sessionId,
-          {
-            kind: "message",
-            source: "ai_agent",
-            data: {
-              message: item.content,
-              participant: {
-                displayName: item.sender || this.agentName || "Assistant",
-              },
-            },
-            metadata: {
-              historical: true,
-            },
-          },
-            this.requestOptions(),
-          );
-      } catch (error) {
-        failedEvents += 1;
-        this.logger.warn("Parlant history injection failed", {
-          sessionId,
-          roomRole: item.role,
-          error,
-        });
-      }
-    }
-
-    if (failedEvents > 0) {
-      this.logger.warn("Parlant history injection completed with skipped events", {
-        sessionId,
-        failedEvents,
-      });
-    }
   }
 
   private async waitForAiResponse(
@@ -549,26 +499,6 @@ export class ParlantAdapter
     }));
     return factory();
   }
-}
-
-function buildUserMessage(input: {
-  content: string;
-  participantsMessage: string | null;
-  contactsMessage: string | null;
-}): string {
-  const updates: string[] = [];
-  if (input.participantsMessage) {
-    updates.push(`[System Update]: ${input.participantsMessage}`);
-  }
-  if (input.contactsMessage) {
-    updates.push(`[System Update]: ${input.contactsMessage}`);
-  }
-
-  if (updates.length === 0) {
-    return input.content;
-  }
-
-  return `${updates.join("\n\n")}\n\n${input.content}`;
 }
 
 async function loadParlantClientFactory(config: {

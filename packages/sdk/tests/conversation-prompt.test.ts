@@ -72,6 +72,20 @@ describe("buildConversationPrompt", () => {
     expect(prompt).not.toContain("unrecognized content");
   });
 
+  it("folds in no history when the cap is zero", () => {
+    const prompt = buildConversationPrompt({
+      history: new HistoryProvider([{ sender_name: "Alice", content: "historic message" }]),
+      isSessionBootstrap: true,
+      participantsMessage: null,
+      contactsMessage: null,
+      historyHeader: "[History]",
+      currentMessage: "Current message",
+      maxHistoryMessages: 0,
+    });
+
+    expect(prompt).toBe("Current message");
+  });
+
   it("omits the history header when no bootstrap entries are text", () => {
     const prompt = buildConversationPrompt({
       history: new HistoryProvider([
