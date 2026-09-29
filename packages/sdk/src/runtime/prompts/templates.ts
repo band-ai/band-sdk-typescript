@@ -16,6 +16,15 @@ export interface RenderSystemPromptOptions {
   capabilities?: Partial<AgentToolsCapabilities>;
 }
 
+/**
+ * `prompt` plus the memory guidance, when the memory tools are exposed. Every
+ * prompt an adapter sends needs it, including a caller's own raw one: without
+ * it the model gets the tools but not the scope and subject rules.
+ */
+export function withMemoryGuidance(prompt: string, memory?: boolean): string {
+  return memory ? [prompt, MEMORY_SECTION].join("\n\n") : prompt;
+}
+
 export function renderSystemPrompt(options?: RenderSystemPromptOptions): string {
   const agentName = options?.agentName ?? "Agent";
   const agentDescription = options?.agentDescription ?? "An AI assistant";
@@ -28,16 +37,10 @@ export function renderSystemPrompt(options?: RenderSystemPromptOptions): string 
 
   const template = options?.template ?? "default";
   const templateString = TEMPLATES[template] ?? TEMPLATES.default;
-  const parts = [
-    templateString
-      .replaceAll("{agent_name}", agentName)
-      .replaceAll("{agent_description}", agentDescription)
-      .replaceAll("{custom_section}", customSection),
-  ];
+  const rendered = templateString
+    .replaceAll("{agent_name}", agentName)
+    .replaceAll("{agent_description}", agentDescription)
+    .replaceAll("{custom_section}", customSection);
 
-  if (options?.capabilities?.memory) {
-    parts.push(MEMORY_SECTION);
-  }
-
-  return parts.join("\n\n");
+  return withMemoryGuidance(rendered, options?.capabilities?.memory);
 }
