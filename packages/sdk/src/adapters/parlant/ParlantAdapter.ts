@@ -19,11 +19,7 @@ import {
 } from "../../core/providerFailure";
 import { deliverReply } from "../../core/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
-import {
-  ParlantHistoryConverter,
-  type ParlantMessage,
-  type ParlantMessages,
-} from "./types";
+import { withTimeout } from "../shared/withTimeout";
 
 type ParlantRequestOptions = { headers?: Record<string, string> };
 
@@ -316,12 +312,11 @@ export class ParlantAdapter
     if (!client) {
       return;
     }
-    if (sessionId) {
-      await this.deleteQuietly("session", client.sessions, sessionId);
-    }
-    if (customerId) {
-      await this.deleteQuietly("customer", client.customers, customerId);
-    }
+    // Independent on the server: deleting a customer never checks its sessions.
+    await Promise.all([
+      sessionId && this.deleteQuietly("session", client.sessions, sessionId),
+      customerId && this.deleteQuietly("customer", client.customers, customerId),
+    ]);
   }
 
   private async createOwnedAgent(agentName: string, description: string): Promise<string> {
@@ -333,14 +328,18 @@ export class ParlantAdapter
     return agent.id;
   }
 
-  /** Teardown never throws: a failed delete leaves server state behind, which is logged, not fatal. */
+  /** Teardown never throws or hangs: a failed or stalled delete leaves server state behind, which is logged, not fatal. */
   private async deleteQuietly(
     kind: string,
     resource: { delete(id: string, requestOptions?: ParlantRequestOptions): Promise<void> },
     id: string,
   ): Promise<void> {
     try {
-      await resource.delete(id, this.requestOptions());
+      await withTimeout(
+        resource.delete(id, this.requestOptions()),
+        this.responseTimeoutSeconds * 1_000,
+        `Parlant ${kind} deletion timed out`,
+      );
     } catch (error) {
       this.logger.warn(`Failed to delete the Parlant ${kind}`, { id, error });
     }
@@ -604,9 +603,3 @@ function asNumber(value: unknown): number | null {
 
   return null;
 }
-
-export {
-  ParlantHistoryConverter,
-  type ParlantMessage,
-  type ParlantMessages,
-};
