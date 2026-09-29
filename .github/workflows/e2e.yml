@@ -63,6 +63,22 @@ jobs:
       - name: Install adapter CLIs
         run: npm install --global @oh-my-pi/pi-coding-agent opencode-ai @github/copilot
 
+      # The servers the letta and parlant adapters talk to, each on its own model key.
+      - name: Start the Letta server
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.E2E_ANTHROPIC_API_KEY }}
+        run: .github/scripts/setup-letta.sh
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Start the Parlant server
+        env:
+          OPENAI_API_KEY: ${{ secrets.E2E_OPENAI_API_KEY }}
+        run: .github/scripts/setup-parlant.sh
+
       # BAND_API_KEY_USER is the same Band user credential band-sdk-python's
       # e2e.yml uses (its E2E_BAND_API_KEY_USER secret) to provision and reap
       # its own test agents, so the value is shared across both repos.
@@ -74,6 +90,7 @@ jobs:
           BAND_WS_URL: ${{ secrets.E2E_BAND_WS_URL }}
           GOOGLE_API_KEY: ${{ secrets.E2E_GOOGLE_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.E2E_ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.E2E_OPENAI_API_KEY }}
           COPILOT_PROVIDER_TYPE: anthropic
           COPILOT_PROVIDER_BASE_URL: https://api.anthropic.com
           COPILOT_PROVIDER_API_KEY: ${{ secrets.E2E_ANTHROPIC_API_KEY }}
@@ -98,6 +115,20 @@ jobs:
           name: omp-logs
           path: ~/.omp/logs/
           if-no-files-found: ignore
+
+      - name: Upload the Parlant server log
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: parlant-server-log
+          path: ${{ runner.temp }}/parlant/server.log
+          if-no-files-found: ignore
+
+      - name: Stop the Letta and Parlant servers
+        if: ${{ always() }}
+        run: |
+          docker rm -f letta-server || true
+          if [ -f "$RUNNER_TEMP/parlant/pid" ]; then kill "$(cat "$RUNNER_TEMP/parlant/pid")" || true; fi
 
       - name: Scorecard to the job summary
         if: ${{ !cancelled() && hashFiles('scorecard/scorecard.md') != '' }}
