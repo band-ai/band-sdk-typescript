@@ -12,7 +12,8 @@ import {
   selectCompleteExchanges,
   takeLast,
 } from "../src/adapters/shared/history";
-import { withTimeout } from "../src/adapters/shared/withTimeout";
+import { assertTurnTimeoutMs } from "../src/adapters/shared/turnTimeout";
+import { MAX_SETTIMEOUT_DELAY_MS, withTimeout } from "../src/adapters/shared/withTimeout";
 import { mapConversationMessages } from "../src/adapters/tool-calling/valueUtils";
 
 describe("adapter shared utilities", () => {
@@ -584,5 +585,21 @@ describe("selectCompleteExchanges", () => {
 
   it("returns nothing for an empty history", () => {
     expect(selectCompleteExchanges([], NO_LIMIT)).toEqual([]);
+  });
+});
+
+describe("assertTurnTimeoutMs", () => {
+  it.each([1, 300_000, MAX_SETTIMEOUT_DELAY_MS, Infinity])("accepts %s", (value) => {
+    expect(() => assertTurnTimeoutMs(value)).not.toThrow();
+  });
+
+  it.each([0, -1, NaN, "3000" as unknown as number])("rejects %s as not a positive number", (value) => {
+    expect(() => assertTurnTimeoutMs(value)).toThrow(/turnTimeoutMs must be a positive number or Infinity/);
+  });
+
+  it("rejects a finite value setTimeout would truncate to about a millisecond", () => {
+    expect(() => assertTurnTimeoutMs(MAX_SETTIMEOUT_DELAY_MS + 1)).toThrow(
+      `turnTimeoutMs must be Infinity or at most ${MAX_SETTIMEOUT_DELAY_MS}`,
+    );
   });
 });

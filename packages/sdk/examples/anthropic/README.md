@@ -84,4 +84,4 @@ Provider credentials come from the environment (`ANTHROPIC_API_KEY`), not from t
 
 ## Architecture
 
-`AnthropicAdapter` provides per-room conversation history, platform history hydration, participant updates, and the Band platform tool loop. Set `enableExecutionReporting: true` (as in `02`) to post tool activity into the room.
+`AnthropicAdapter` provides per-room conversation history, platform history hydration, participant updates, and the Band platform tool loop. Set `enableExecutionReporting: true` (as in `02`) to post tool activity into the room. A turn is capped at `turnTimeoutMs` (default five minutes; `Infinity` removes the cap): one that hits it fails its message and frees the room, but a tool already running is not interrupted.

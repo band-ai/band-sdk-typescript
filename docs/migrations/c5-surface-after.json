@@ -393,6 +393,7 @@
         "ToolCallingAdapter",
         "ToolCallingAdapterOptions",
         "ToolCallingModel",
+        "ToolCallingModelOptions",
         "ToolCallingModelRequest",
         "ToolCallingResponse",
         "ToolResult",

@@ -95,7 +95,9 @@ export type ContactRemovedEvent = BaseEvent<"contact_removed", ContactRemovedPay
 /**
  * Synthetic — never a wire event. Queued once per settled transport
  * reconnect generation, after tracker reconciliation, so a room's
- * `Execution` can re-run its `/next` synchronization boundary.
+ * `Execution` can re-run its `/next` synchronization boundary. Also queued,
+ * with `roomId` set to that room, when a single chat channel rejoins on a
+ * socket that never dropped, since what was sent while it was gone is lost.
  */
 export type ReconnectedEvent = BaseEvent<"reconnected", Record<string, never>>;
 
@@ -117,6 +119,12 @@ export type PlatformEvent =
   | ContactAddedEvent
   | ContactRemovedEvent
   | ReconnectedEvent;
+
+/** The id of the message a `message_created` event carries; every other event carries none. Takes the raw wire shape too. */
+export function messageIdOf(event: { type: string; payload: { id?: unknown } }): string | undefined {
+  const { id } = event.payload;
+  return event.type === "message_created" && typeof id === "string" ? id : undefined;
+}
 
 /** Socket events owned by BandLink's regular event queue, not every Core EventType. */
 export type SupportedSocketEvent = Exclude<PlatformEvent["type"], "reconnected">;

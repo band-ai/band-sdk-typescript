@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import type { HistoryProvider } from "../src/runtime";
 import { GeminiAdapter } from "../src/index";
 import { GeminiToolCallingModel } from "../src/adapters";
-import { FakeTools, expectTurnFailed, findFailureEvent, makeMessage } from "./testUtils";
+import { FAILURE_CODE_TIMEOUT } from "../src/core/providerFailure";
+import { FakeTools, SHORT_TURN_TIMEOUT_MS, expectTurnFailed, findFailureEvent, hangUntilAborted, makeMessage } from "./testUtils";
 
 class GeminiTestTools extends FakeTools {
   public readonly executed: Array<{ name: string; input: Record<string, unknown> }> = [];
@@ -188,5 +189,31 @@ describe("GeminiAdapter", () => {
       provider: "gemini",
       message: "Gemini API exploded",
     });
+  });
+
+  it("aborts the provider request when the turn times out", async () => {
+    const hung = hangUntilAborted();
+    const model = new GeminiToolCallingModel({
+      model: "gemini-3-flash-preview",
+      clientFactory: async () => ({
+        models: {
+          generateContent: (params: Record<string, unknown>) =>
+            hung.request((params.config as { abortSignal?: AbortSignal }).abortSignal),
+        },
+      }),
+      partFactory: {
+        createPartFromFunctionCall: (name, args) => ({ functionCall: { name, args } }),
+        createPartFromFunctionResponse: (id, name, response) => ({ functionResponse: { id, name, response } }),
+      },
+    });
+    const adapter = new GeminiAdapter({ model, turnTimeoutMs: SHORT_TURN_TIMEOUT_MS });
+    const tools = new GeminiTestTools();
+
+    await expectTurnFailed(
+      adapter.onMessage(makeMessage("hello"), tools, history, null, null, { isSessionBootstrap: true, roomId: "room-1" }),
+    );
+
+    expect(hung.signal?.aborted).toBe(true);
+    expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({ provider: "gemini", code: FAILURE_CODE_TIMEOUT });
   });
 });

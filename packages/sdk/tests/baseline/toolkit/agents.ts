@@ -13,6 +13,7 @@ import type { FrameworkAdapter } from "../../../src/contracts/protocols";
 import { BandLink, type BandLinkOptions } from "../../../src/platform/BandLink";
 import { withTimeout } from "../../../src/adapters/shared/withTimeout";
 import { agentRest, NAME_PREFIX, provisionAgent, reapProvisioned } from "../../integration/support/liveHarness";
+import { debugLogger } from "./debugLogger";
 import { liveRun, warnTeardown } from "./liveRun";
 import type { RosterSpec } from "./adapters";
 import type { AdapterBuilder } from "./registry";
@@ -91,6 +92,7 @@ async function runAs(
     agentId: identity.id,
     apiKey: identity.apiKey,
     wsUrl: env.wsUrl,
+    logger: debugLogger(identity.name),
     linkOptions: { restApi: identity.rest, transport },
     agentConfig: { autoSubscribeExistingRooms: true },
     ...options,

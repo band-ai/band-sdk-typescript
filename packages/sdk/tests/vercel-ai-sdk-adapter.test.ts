@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import type { HistoryProvider } from "../src/runtime";
 import { VercelAISDKAdapter } from "../src/index";
-import { FakeTools, expectTurnFailed, findFailureEvent, makeMessage } from "./testUtils";
+import { FAILURE_CODE_TIMEOUT } from "../src/core/providerFailure";
+import { FakeTools, SHORT_TURN_TIMEOUT_MS, expectTurnFailed, findFailureEvent, hangUntilAborted, makeMessage } from "./testUtils";
 
 class VercelAISDKTestTools extends FakeTools {
   public readonly executed: Array<{ name: string; input: Record<string, unknown> }> = [];
@@ -182,5 +183,23 @@ describe("VercelAISDKAdapter", () => {
       provider: "vercel-ai-sdk",
       message: "Vercel AI SDK exploded",
     });
+  });
+
+  it("aborts the provider request when the turn times out", async () => {
+    const hung = hangUntilAborted();
+    const adapter = new VercelAISDKAdapter({
+      model: { id: "test-model" },
+      generateText: (params) => hung.request(params.abortSignal as AbortSignal | undefined),
+      toolFactory: (definition) => definition,
+      turnTimeoutMs: SHORT_TURN_TIMEOUT_MS,
+    });
+    const tools = new VercelAISDKTestTools();
+
+    await expectTurnFailed(
+      adapter.onMessage(makeMessage("hello"), tools, history, null, null, { isSessionBootstrap: true, roomId: "room-3" }),
+    );
+
+    expect(hung.signal?.aborted).toBe(true);
+    expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({ provider: "vercel-ai-sdk", code: FAILURE_CODE_TIMEOUT });
   });
 });

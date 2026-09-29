@@ -1,6 +1,7 @@
 import type {
   ToolCall,
   ToolCallingModel,
+  ToolCallingModelOptions,
   ToolCallingModelRequest,
   ToolCallingResponse,
 } from "../tool-calling";
@@ -19,7 +20,7 @@ interface AnthropicMessageResponseLike {
 
 interface AnthropicClientLike {
   messages: {
-    create(params: Record<string, unknown>): Promise<AnthropicMessageResponseLike>;
+    create(params: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<AnthropicMessageResponseLike>;
   };
 }
 
@@ -52,7 +53,7 @@ export class AnthropicToolCallingModel implements ToolCallingModel {
     });
   }
 
-  public async complete(request: ToolCallingModelRequest): Promise<ToolCallingResponse> {
+  public async complete(request: ToolCallingModelRequest, options?: ToolCallingModelOptions): Promise<ToolCallingResponse> {
     const client = await this.getClient();
     const systemPrompt = request.systemPrompt?.trim();
 
@@ -62,7 +63,7 @@ export class AnthropicToolCallingModel implements ToolCallingModel {
       ...(systemPrompt ? { system: systemPrompt } : {}),
       messages: toAnthropicMessages(request),
       tools: request.tools,
-    });
+    }, options);
 
     return parseAnthropicResponse(response);
   }

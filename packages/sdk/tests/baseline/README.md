@@ -21,6 +21,7 @@ Scope with vitest's own `-t` or a path, with no `--` (it breaks `-t` filtering).
 | `BAND_API_KEY_USER` | The Band user key every run provisions and reaps its agents with. Required. |
 | `BAND_E2E_SCORECARD_JSON` | Writes the scorecard to this path, plus a `.md` grid beside it. |
 | `BAND_E2E_INCLUDE_PENDING=1` | Fans `perAdapter` scenarios out to adapters marked `pending` too (they are omitted by default). |
+| `BAND_E2E_DEBUG_LOGS=1` | Prints the SDK's own logs from every running agent and each room's observer, each line stamped with wall-clock time and its source. Off by default: without it the SDK's logs are dropped. |
 | `RUN_CODEX_ACP_E2E=1` | Includes `adapters.codexAcpSmoke` in the baseline run (needs a local `codex-acp`); excluded from `vitest.baseline.config.ts` when unset. |
 
 Each adapter also needs its own model key or CLI (see `requires` in `toolkit/adapters.ts`). letta and
@@ -45,7 +46,8 @@ sticky comment on the branch's PR, or in the job summary when there is none.
 | `toolkit/perAdapter.ts` | `perAdapter` (one test per adapter) and `withAdapters` (one shared room). |
 | `toolkit/agents.ts`, `rooms.ts` | Provisioned identities, running agents, rooms and messages; all `await using`. |
 | `toolkit/observeMessages.ts` | The reply wait, and the room's stored history. |
-| `toolkit/observeDelivery.ts` | The delivery wait, a message's current `status()`, and the `history()` of statuses it passed through. |
+| `toolkit/observeDelivery.ts` | The delivery wait, a message's current `status()`, and the `history()` of statuses it passed through. A wait that times out also reads the room back over REST and returns what the platform stored as `stalled`, so a missing update can be told from a missed frame. |
+| `toolkit/debugLogger.ts` | The SDK `Logger` behind `BAND_E2E_DEBUG_LOGS`; `Agents.runAs` and `Rooms.create` pass it on. |
 | `toolkit/droppableTransport.ts` | An agent transport whose live socket a scenario can drop, as a network failure would. |
 | `toolkit/assert*.ts` | Plain assertion functions. |
 | `toolkit/scorecard.ts`, `scorecardReporter.ts` | The scorecard's shape and grid, and the vitest reporter that fills it. |

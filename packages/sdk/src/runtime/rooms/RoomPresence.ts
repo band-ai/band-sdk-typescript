@@ -2,12 +2,13 @@ import type { MetadataMap } from "../../contracts/dtos";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
 import { RuntimeStateError, TransportError } from "../../core/errors";
 import type { BandLink } from "../../platform/BandLink";
-import type {
-  ContactEvent,
-  MessageEvent,
-  ParticipantAddedEvent,
-  ParticipantRemovedEvent,
-  ReconnectedEvent,
+import {
+  messageIdOf,
+  type ContactEvent,
+  type MessageEvent,
+  type ParticipantAddedEvent,
+  type ParticipantRemovedEvent,
+  type ReconnectedEvent,
 } from "../../platform/events";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { RoomRoster } from "@band-ai/band-sdk-core";
@@ -23,10 +24,8 @@ interface RoomPresenceOptions {
 
 type RoomPresenceJoinHandler = (roomId: string, payload: MetadataMap) => Promise<void>;
 type RoomPresenceLeaveHandler = (roomId: string) => Promise<void>;
-type RoomPresenceEventHandler = (
-  roomId: string,
-  event: MessageEvent | ParticipantAddedEvent | ParticipantRemovedEvent | ReconnectedEvent,
-) => Promise<void>;
+type RoomEvent = MessageEvent | ParticipantAddedEvent | ParticipantRemovedEvent | ReconnectedEvent;
+type RoomPresenceEventHandler = (roomId: string, event: RoomEvent) => Promise<void>;
 type RoomPresenceContactHandler = (event: ContactEvent) => Promise<void>;
 
 export class RoomPresence implements AsyncDisposable {
@@ -268,17 +267,29 @@ export class RoomPresence implements AsyncDisposable {
         case "message_created":
         case "participant_added":
         case "participant_removed":
-          if (event.roomId && this.roster.roomMembership(event.roomId) === "admitted") {
-            await this.onRoomEvent?.(event.roomId, event);
-          }
+          await this.forwardToAdmittedRoom(event);
           break;
         case "reconnected":
-          await this.handleReconnected(event);
+          // A room-scoped one (a chat channel rejoined on a live socket) needs only that room's catch-up.
+          await (event.roomId === null ? this.handleReconnected(event) : this.forwardToAdmittedRoom(event));
           break;
         default:
           assertNever(event);
       }
     }
+  }
+
+  /** Hands `event` to its room's handler, or drops it, with a debug line, if that room is not admitted. */
+  private async forwardToAdmittedRoom(event: RoomEvent): Promise<void> {
+    if (event.roomId && this.roster.roomMembership(event.roomId) === "admitted") {
+      await this.onRoomEvent?.(event.roomId, event);
+      return;
+    }
+    this.logger.debug("dropping room event, room not admitted", {
+      roomId: event.roomId,
+      eventType: event.type,
+      messageId: messageIdOf(event),
+    });
   }
 
   private async handleRoomAdded(roomId: string | null, payload: MetadataMap): Promise<void> {

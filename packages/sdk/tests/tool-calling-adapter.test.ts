@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { AgentFailure } from "@band-ai/band-sdk-core";
 
@@ -6,12 +6,14 @@ import { OpenAIAdapter } from "../src/index";
 import type { HistoryProvider, PlatformMessage } from "../src/runtime";
 import type { CustomToolDef } from "../src/runtime/tools/customTools";
 import type { AgentToolsProtocol } from "../src/core";
-import { toFailureEvent } from "../src/contracts/protocols";
+import { FAILURE_EVENT_TYPE, toFailureEvent } from "../src/contracts/protocols";
 import { MEMORY_SECTION, renderSystemPrompt } from "../src/runtime/prompts";
 import { SEND_MESSAGE_TOOL_NAME } from "../src/runtime/tools/schemas";
-import type { ToolCallingModel } from "../src/adapters";
+import type { ToolCallingModel, ToolCallingResponse } from "../src/adapters";
+import { ValidationError } from "../src/core/errors";
+import { FAILURE_CODE_TIMEOUT } from "../src/core/providerFailure";
 import { describeDeliveryContract } from "./deliveryContract";
-import { expectTurnFailed } from "./testUtils";
+import { expectTurnFailed, failureEvents, hangUntilAborted, hangsOnce } from "./testUtils";
 import { createDeferred } from "../src/core/deferred";
 import type {
   ContactRequestsResult,
@@ -809,6 +811,188 @@ describe("ToolCallingAdapter", () => {
     });
 
     expect(tools.messages).toEqual(delivered);
+  });
+
+  describe("turn timeout", () => {
+    const TURN_TIMEOUT_MS = 1_000;
+    // Pins the documented default: a turn no option bounds still ends after five minutes.
+    const DEFAULT_TURN_TIMEOUT_MS = 300_000;
+    const ONE_DAY_MS = 24 * 60 * 60_000;
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** A tool whose handler alone spends the whole turn budget (fake timers must be on). */
+    const spendsBudget: CustomToolDef = {
+      name: "slow",
+      schema: z.object({}),
+      handler: async () => {
+        await vi.advanceTimersByTimeAsync(TURN_TIMEOUT_MS);
+        return "done";
+      },
+    };
+
+    function runTurn(adapter: OpenAIAdapter, tools: FakeTools, message: PlatformMessage = fakeMessage): Promise<void> {
+      return adapter.onMessage(message, tools, fakeHistory, null, null, { isSessionBootstrap: true, roomId: "r1" });
+    }
+
+    function failureCodes(tools: FakeTools): unknown[] {
+      return failureEvents(tools).map((event) => (event.metadata as { failure?: { code?: string } }).failure?.code);
+    }
+
+    it("fails a turn whose model call outlives the budget, aborts the request, and frees the room for the next turn", async () => {
+      vi.useFakeTimers();
+      const { model, hung } = hangsOnce("second answer");
+      const adapter = new OpenAIAdapter({ model, turnTimeoutMs: TURN_TIMEOUT_MS });
+      const tools = new FakeTools();
+
+      const failed = expectTurnFailed(runTurn(adapter, tools));
+      await vi.advanceTimersByTimeAsync(TURN_TIMEOUT_MS);
+      await failed;
+
+      expect(hung.signal?.aborted).toBe(true);
+      expect(failureCodes(tools)).toEqual([FAILURE_CODE_TIMEOUT]);
+      expect(tools.messages).toEqual([]);
+
+      await runTurn(adapter, tools, { ...fakeMessage, id: "m2" });
+      expect(tools.messages).toEqual(["second answer"]);
+    });
+
+    it("gives up on a model that ignores the signal, and runs none of the tools it asks for late", async () => {
+      vi.useFakeTimers();
+      const late = createDeferred<ToolCallingResponse>();
+      const adapter = new OpenAIAdapter({
+        model: { complete: () => late.promise },
+        turnTimeoutMs: TURN_TIMEOUT_MS,
+        enableExecutionReporting: true,
+      });
+      const tools = new FakeTools();
+      const executed: string[] = [];
+      tools.executeToolCall = async (name) => {
+        executed.push(name);
+        return { ok: true };
+      };
+
+      const failed = expectTurnFailed(runTurn(adapter, tools));
+      await vi.advanceTimersByTimeAsync(TURN_TIMEOUT_MS);
+      await failed;
+      late.resolve({ toolCalls: [{ id: "tc1", name: "band_send_message", input: {} }] });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(executed).toEqual([]);
+      expect(tools.events.map((event) => event.messageType)).toEqual([FAILURE_EVENT_TYPE]);
+    });
+
+    it("stops between tool calls once the budget is spent, leaving no tool_call without its tool_result", async () => {
+      vi.useFakeTimers();
+      const afterHandler = vi.fn(() => "done");
+      const neverRuns: CustomToolDef = { name: "after", schema: z.object({}), handler: afterHandler };
+      const model: ToolCallingModel = {
+        complete: async () => ({
+          toolCalls: [
+            { id: "tc1", name: "slow", input: {} },
+            { id: "tc2", name: "after", input: {} },
+          ],
+        }),
+      };
+      const adapter = new OpenAIAdapter({
+        model,
+        customTools: [spendsBudget, neverRuns],
+        turnTimeoutMs: TURN_TIMEOUT_MS,
+        enableExecutionReporting: true,
+      });
+      const tools = new FakeTools();
+
+      await expectTurnFailed(runTurn(adapter, tools));
+
+      expect(afterHandler).not.toHaveBeenCalled();
+      expect(tools.events.map((event) => event.messageType)).toEqual(["tool_call", "tool_result", FAILURE_EVENT_TYPE]);
+      expect(failureCodes(tools)).toEqual([FAILURE_CODE_TIMEOUT]);
+    });
+
+    it("does not start another model call once a tool round has spent the budget", async () => {
+      vi.useFakeTimers();
+      let calls = 0;
+      const model: ToolCallingModel = {
+        complete: async () => {
+          calls += 1;
+          return { toolCalls: [{ id: "tc1", name: "slow", input: {} }] };
+        },
+      };
+      const adapter = new OpenAIAdapter({ model, customTools: [spendsBudget], turnTimeoutMs: TURN_TIMEOUT_MS });
+      const tools = new FakeTools();
+
+      await expectTurnFailed(runTurn(adapter, tools));
+
+      expect(calls).toBe(1);
+      expect(failureCodes(tools)).toEqual([FAILURE_CODE_TIMEOUT]);
+    });
+
+    it("aborts the request that follows a tool round when the budget runs out", async () => {
+      vi.useFakeTimers();
+      const hung = hangUntilAborted();
+      const lookup: CustomToolDef = { name: "lookup", schema: z.object({}), handler: () => "found" };
+      let calls = 0;
+      const model: ToolCallingModel = {
+        complete: async (_request, options) => {
+          calls += 1;
+          return calls === 1 ? { toolCalls: [{ id: "tc1", name: "lookup", input: {} }] } : hung.request(options?.signal);
+        },
+      };
+      const adapter = new OpenAIAdapter({ model, customTools: [lookup], turnTimeoutMs: TURN_TIMEOUT_MS });
+      const tools = new FakeTools();
+
+      const failed = expectTurnFailed(runTurn(adapter, tools));
+      await vi.advanceTimersByTimeAsync(TURN_TIMEOUT_MS);
+      await failed;
+
+      expect(hung.signal?.aborted).toBe(true);
+      expect(failureCodes(tools)).toEqual([FAILURE_CODE_TIMEOUT]);
+    });
+
+    it("leaves no timer behind once a turn finishes, so the process can exit", async () => {
+      vi.useFakeTimers();
+      const adapter = new OpenAIAdapter({ model: { complete: async () => ({ text: "done" }) } });
+
+      await runTurn(adapter, new FakeTools());
+
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("bounds a turn at five minutes when no budget is given", async () => {
+      vi.useFakeTimers();
+      const hung = hangUntilAborted();
+      const adapter = new OpenAIAdapter({ model: { complete: (_request, options) => hung.request(options?.signal) } });
+      const tools = new FakeTools();
+
+      const failed = expectTurnFailed(runTurn(adapter, tools));
+      await vi.advanceTimersByTimeAsync(DEFAULT_TURN_TIMEOUT_MS - 1);
+      expect(tools.events).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      await failed;
+
+      expect(failureCodes(tools)).toEqual([FAILURE_CODE_TIMEOUT]);
+    });
+
+    it("never times out a turn with Infinity", async () => {
+      vi.useFakeTimers();
+      const slow = createDeferred<ToolCallingResponse>();
+      const adapter = new OpenAIAdapter({ model: { complete: () => slow.promise }, turnTimeoutMs: Infinity });
+      const tools = new FakeTools();
+
+      const turn = runTurn(adapter, tools);
+      await vi.advanceTimersByTimeAsync(ONE_DAY_MS);
+      slow.resolve({ text: "eventually" });
+      await turn;
+
+      expect(tools.messages).toEqual(["eventually"]);
+      expect(tools.events).toEqual([]);
+    });
+
+    it("validates turnTimeoutMs at construction", () => {
+      expect(() => new OpenAIAdapter({ model: new FakeModel(), turnTimeoutMs: 0 })).toThrow(ValidationError);
+    });
   });
 
   describeDeliveryContract([{

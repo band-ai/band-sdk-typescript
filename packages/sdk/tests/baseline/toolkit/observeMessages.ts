@@ -72,7 +72,7 @@ function postedAfter(messages: readonly MessageCreatedPayload[], afterId: string
  * The room's stored messages, oldest first, read as the user — including the
  * tool and task events the platform never streams to a user's socket.
  */
-async function history(room: Room, messageType?: MessageType): Promise<CapturedMessage[]> {
+export async function history(room: Pick<Room, "id">, messageType?: MessageType): Promise<CapturedMessage[]> {
   const { env } = await liveRun();
   const messages: CapturedMessage[] = [];
   let cursor: string | undefined;

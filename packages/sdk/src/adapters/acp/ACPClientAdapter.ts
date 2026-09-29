@@ -28,7 +28,8 @@ import { renderSystemPrompt } from "../../runtime/prompts";
 import { systemUpdateParts } from "../shared/conversationPrompt";
 import { asErrorMessage } from "../shared/coercion";
 import { roomContextLines } from "../shared/roomContext";
-import { withTimeout } from "../shared/withTimeout";
+import { assertTurnTimeoutMs } from "../shared/turnTimeout";
+import { assertWithinSetTimeoutBound, MAX_SETTIMEOUT_DELAY_MS, withTimeout } from "../shared/withTimeout";
 import { abandon } from "../shared/abandon";
 import { deliverReply } from "../../core/deliveryFailedError";
 import { FAILURE_CODE_TIMEOUT, agentFailure, reportTurnFailure } from "../../core/providerFailure";
@@ -140,22 +141,10 @@ function framedReplay(lines: readonly string[], liveMessage: string): [string, s
 // subprocess-handshake timeout: this is the same kind of wait, a local agent
 // process acknowledging an administrative call, not doing model inference.
 const SET_SESSION_CONFIG_TIMEOUT_MS = 10_000;
-const MAX_SETTIMEOUT_DELAY_MS = 2_147_483_647;
 const MIN_TCP_PORT = 1;
 const MAX_TCP_PORT = 65_535;
 const CONNECTION_ATTEMPT_SUPERSEDED_ERROR = "ACP connection attempt superseded by stop()";
 const TCP_CONNECTION_ATTEMPT_ABORTED_ERROR = "ACP TCP connection attempt aborted";
-
-// `setTimeout` silently truncates any delay past this to ~1ms, so a config
-// value beyond it must be rejected outright rather than let that surprise
-// through. Shared by every constructor timeout check below; each caller
-// still gates whether the check applies (a value that's currently unused,
-// or Infinity, may skip it) since that condition differs per field.
-function assertWithinSetTimeoutBound(message: string, value: number): void {
-  if (value > MAX_SETTIMEOUT_DELAY_MS) {
-    throw new ValidationError(message)
-  }
-}
 
 export interface ACPModeRequest {
   roomId: string;
@@ -388,18 +377,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     }
 
     this.turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS
-    // `Number.isNaN("3000")` is false and comparison coercions would otherwise
-    // accept a string, then `Number.isFinite("3000")` is false and silently
-    // disable the timeout. Reject non-numbers; `Infinity` remains the opt-out.
-    if (typeof this.turnTimeoutMs !== "number" || Number.isNaN(this.turnTimeoutMs) || this.turnTimeoutMs <= 0) {
-      throw new ValidationError(`turnTimeoutMs must be a positive number or Infinity, got ${options.turnTimeoutMs}`)
-    }
-    if (Number.isFinite(this.turnTimeoutMs)) {
-      assertWithinSetTimeoutBound(
-        `turnTimeoutMs must be Infinity or at most ${MAX_SETTIMEOUT_DELAY_MS}, got ${options.turnTimeoutMs}`,
-        this.turnTimeoutMs,
-      )
-    }
+    assertTurnTimeoutMs(this.turnTimeoutMs)
   }
 
   public async onStarted(

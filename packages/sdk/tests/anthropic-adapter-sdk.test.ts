@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import type { HistoryProvider } from "../src/runtime";
 import { AnthropicAdapter } from "../src/index";
-import { FakeTools, expectTurnFailed, findFailureEvent, makeMessage } from "./testUtils";
+import { FAILURE_CODE_TIMEOUT } from "../src/core/providerFailure";
+import { FakeTools, SHORT_TURN_TIMEOUT_MS, expectTurnFailed, findFailureEvent, hangUntilAborted, makeMessage } from "./testUtils";
 
 class AnthropicTestTools extends FakeTools {
   public readonly executed: Array<{ name: string; input: Record<string, unknown> }> = [];
@@ -166,5 +167,23 @@ describe("AnthropicAdapter", () => {
       provider: "anthropic",
       message: "Anthropic API exploded",
     });
+  });
+
+  it("aborts the provider request when the turn times out", async () => {
+    const hung = hangUntilAborted();
+    const client = {
+      messages: {
+        create: (_params: Record<string, unknown>, options?: { signal?: AbortSignal }) => hung.request(options?.signal),
+      },
+    };
+    const adapter = new AnthropicAdapter({ clientFactory: async () => client, turnTimeoutMs: SHORT_TURN_TIMEOUT_MS });
+    const tools = new AnthropicTestTools();
+
+    await expectTurnFailed(
+      adapter.onMessage(makeMessage("hello"), tools, history, null, null, { isSessionBootstrap: true, roomId: "room-1" }),
+    );
+
+    expect(hung.signal?.aborted).toBe(true);
+    expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({ provider: "anthropic", code: FAILURE_CODE_TIMEOUT });
   });
 });

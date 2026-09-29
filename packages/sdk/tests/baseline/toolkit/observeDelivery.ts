@@ -11,6 +11,7 @@ import { Band } from "@band-ai/rest-client";
 import type { MessageCreatedPayload } from "../../../src/platform/events";
 import { LIVE_EVENT_TIMEOUT_MS } from "../../integration/support/liveHarness";
 import type { AgentIdentity } from "./agents";
+import { history, MESSAGE_TYPE, type CapturedMessage } from "./observeMessages";
 import type { Room, SentMessage } from "./rooms";
 import { waitFor } from "./waitFor";
 
@@ -24,12 +25,42 @@ export const DELIVERY_STATUS = {
   failed: PLATFORM_STATUS.Failed,
 } as const;
 
-export type DeliveryState =
+/** What a stored message shows for a recipient that has no delivery entry for it: the platform never wrote one. */
+export const NO_STORED_STATUS = "none";
+
+/** Characters of a stored message's content a stalled-wait report keeps, enough to tell rounds apart. */
+const STORED_CONTENT_PREFIX_LENGTH = 40;
+
+/** One message as the platform stores it, for the recipient a stalled wait was on. */
+export interface StoredDelivery {
+  id: string;
+  contentPrefix: string;
+  /** The platform's own status for the recipient, unfolded, or `NO_STORED_STATUS`. */
+  status: string;
+  processedAt: string | null;
+  /** The message the wait was on. */
+  awaited: boolean;
+}
+
+/** What a timed-out wait knows beyond the frames it saw: the platform's stored state, read once the wait gave up. */
+export interface StalledWait {
+  waitedMs: number;
+  waitStartedAt: Date;
+  readAt: Date;
+  /** Every text message not sent by the recipient, oldest first; `undefined` when the readback failed. */
+  stored: StoredDelivery[] | undefined;
+}
+
+export type DeliveryState = (
   /** No delivery update seen yet; the platform never pushes `delivered` on its own. */
   | { status: typeof DELIVERY_STATUS.unobserved }
   | { status: typeof DELIVERY_STATUS.processing }
   | { status: typeof DELIVERY_STATUS.processed; processedAt: Date }
-  | { status: typeof DELIVERY_STATUS.failed; error: string; attempts: number };
+  | { status: typeof DELIVERY_STATUS.failed; error: string; attempts: number }
+) & {
+  /** Set only on the state a timed-out wait returns. */
+  stalled?: StalledWait;
+};
 
 export type DeliveryStatus = DeliveryState["status"];
 
@@ -52,26 +83,70 @@ function deliveryState(delivery: RecipientDelivery): DeliveryState {
   }
 }
 
+/** The recipient's entry in the platform-set `delivery_status` of a message's metadata. */
+function recipientDelivery(metadata: Record<string, unknown> | null | undefined, recipientId: string): RecipientDelivery | undefined {
+  return (metadata?.delivery_status as Record<string, RecipientDelivery> | undefined)?.[recipientId];
+}
+
 /** Every delivery state of `messageId` for `recipientId` among the captured updates, in arrival order. */
 function statesOf(updates: readonly MessageCreatedPayload[], messageId: string, recipientId: string): DeliveryState[] {
   return updates
     .filter((update) => update.id === messageId)
-    .map((update) => (update.metadata?.delivery_status as Record<string, RecipientDelivery> | undefined)?.[recipientId])
+    .map((update) => recipientDelivery(update.metadata, recipientId))
     .filter((delivery) => delivery !== undefined)
     .map(deliveryState);
 }
 
-export function observeAgent(agent: Pick<AgentIdentity, "id">, room: Pick<Room, "deliveryUpdates">) {
+/** The recipient's view of every message it did not send: a missing entry is what a message that was never marked looks like. */
+function storedDeliveries(stored: readonly CapturedMessage[], recipientId: string, awaitedId: string): StoredDelivery[] {
+  return stored
+    .filter((message) => message.senderId !== recipientId)
+    .map((message) => {
+      const delivery = recipientDelivery(message.metadata, recipientId);
+      return {
+        id: message.id,
+        contentPrefix: message.content.slice(0, STORED_CONTENT_PREFIX_LENGTH),
+        status: delivery?.status ?? NO_STORED_STATUS,
+        processedAt: delivery?.processed_at ?? null,
+        awaited: message.id === awaitedId,
+      };
+    });
+}
+
+/**
+ * `readMessages` is the live REST fetch of the room's stored text messages, the
+ * only part a unit test replaces.
+ */
+export function observeAgent(
+  agent: Pick<AgentIdentity, "id">,
+  room: Pick<Room, "id" | "deliveryUpdates">,
+  readMessages: (room: Pick<Room, "id">) => Promise<CapturedMessage[]> = (target) => history(target, MESSAGE_TYPE.Text),
+) {
   const states = (message: SentMessage) => statesOf(room.deliveryUpdates.entries, message.id, agent.id);
   /** The state `message` is in now, from the updates already captured; never waits. */
   const current = (message: SentMessage): DeliveryState => states(message).at(-1) ?? { status: DELIVERY_STATUS.unobserved };
 
-  /** The state `message` reached for this agent: `status`, or the last one seen when the wait timed out. */
+  /** Reads the platform's stored state after a wait gave up; a failed read must not mask the timeout. */
+  const stalledWait = async (message: SentMessage, waitedMs: number, waitStartedAt: Date): Promise<StalledWait> => {
+    let stored: StoredDelivery[] | undefined;
+    try {
+      stored = storedDeliveries(await readMessages(room), agent.id, message.id);
+    } catch (error) {
+      console.warn(`baseline: could not read back room ${room.id} after a stalled delivery wait:`, error);
+    }
+    return { waitedMs, waitStartedAt, readAt: new Date(), stored };
+  };
+
+  /**
+   * The state `message` reached for this agent: `status`, or the last one seen
+   * when the wait timed out, carrying the platform's stored state as `stalled`.
+   */
   const untilStatus = async (
     message: SentMessage,
     status: DeliveryStatus,
     timeoutMs = LIVE_EVENT_TIMEOUT_MS,
   ): Promise<DeliveryState> => {
+    const waitStartedAt = new Date();
     const reached = await waitFor(
       room.deliveryUpdates,
       () => {
@@ -80,7 +155,7 @@ export function observeAgent(agent: Pick<AgentIdentity, "id">, room: Pick<Room, 
       },
       timeoutMs,
     );
-    return reached ?? current(message);
+    return reached ?? { ...current(message), stalled: await stalledWait(message, timeoutMs, waitStartedAt) };
   };
 
   return {

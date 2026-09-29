@@ -1118,4 +1118,54 @@ describe("RoomPresence", () => {
 
     subscribeRoomSpy.mockRestore();
   });
+
+  it("forwards a room-scoped reconnect to that room alone, without re-listing rooms", async () => {
+    const transport = new FakeTransport();
+    let listChatsCalls = 0;
+    const link = new BandLink({
+      agentId: "agent-1",
+      apiKey: "key",
+      transport,
+      restApi: new FakeRestApi({
+        listChats: async () => {
+          listChatsCalls += 1;
+          return {
+            data: [
+              { id: "room-1", title: "Room 1" },
+              { id: "room-2", title: "Room 2" },
+            ],
+            metadata: { page: 1, pageSize: 100, totalPages: 1, totalCount: 2 },
+          };
+        },
+      }),
+    });
+    const events: Array<{ roomId: string; type: string }> = [];
+    const logger = makeLogger();
+    await using presence = new RoomPresence({ link, logger });
+    presence.onRoomEvent = async (roomId, event) => {
+      events.push({ roomId, type: event.type });
+    };
+    await presence.start();
+    const listedAtStart = listChatsCalls;
+
+    link.queueEvent({ type: "reconnected", roomId: "room-1", payload: {} });
+    link.queueEvent({ type: "reconnected", roomId: "room-unknown", payload: {} });
+    // The sentinel is a whole-agent reconnect: once it has been handled, the room-scoped ones before it have been too.
+    link.queueEvent({ type: "reconnected", roomId: null, payload: {} });
+    await waitFor(() => events.length >= 3);
+
+    expect(events).toEqual([
+      { roomId: "room-1", type: "reconnected" },
+      { roomId: "room-1", type: "reconnected" },
+      { roomId: "room-2", type: "reconnected" },
+    ]);
+    // Only the whole-agent event re-listed the rooms.
+    expect(listChatsCalls).toBe(listedAtStart + 1);
+    // The unadmitted room's catch-up is dropped visibly, not silently.
+    expect(logger.debug).toHaveBeenCalledWith("dropping room event, room not admitted", {
+      roomId: "room-unknown",
+      eventType: "reconnected",
+      messageId: undefined,
+    });
+  });
 });

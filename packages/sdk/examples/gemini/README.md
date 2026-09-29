@@ -40,3 +40,7 @@ support_agent:
 ```
 
 Character scripts use shared `tom_agent` / `jerry_agent` blocks (see `examples/anthropic/README.md`).
+
+## Turn timeout
+
+`GeminiAdapter` caps a turn at `turnTimeoutMs` (default five minutes; `Infinity` removes the cap). A turn that hits it fails its message and frees the room, but a tool already running is not interrupted.
