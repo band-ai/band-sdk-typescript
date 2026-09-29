@@ -2,12 +2,13 @@ import type { MetadataMap } from "../../contracts/dtos";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
 import { RuntimeStateError, TransportError } from "../../core/errors";
 import type { BandLink } from "../../platform/BandLink";
-import type {
-  ContactEvent,
-  MessageEvent,
-  ParticipantAddedEvent,
-  ParticipantRemovedEvent,
-  ReconnectedEvent,
+import {
+  messageIdOf,
+  type ContactEvent,
+  type MessageEvent,
+  type ParticipantAddedEvent,
+  type ParticipantRemovedEvent,
+  type ReconnectedEvent,
 } from "../../platform/events";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { RoomRoster } from "@band-ai/band-sdk-core";
@@ -270,6 +271,12 @@ export class RoomPresence implements AsyncDisposable {
         case "participant_removed":
           if (event.roomId && this.roster.roomMembership(event.roomId) === "admitted") {
             await this.onRoomEvent?.(event.roomId, event);
+          } else {
+            this.logger.debug("dropping room event, room not admitted", {
+              roomId: event.roomId,
+              eventType: event.type,
+              messageId: messageIdOf(event),
+            });
           }
           break;
         case "reconnected":

@@ -118,5 +118,10 @@ export type PlatformEvent =
   | ContactRemovedEvent
   | ReconnectedEvent;
 
+/** The message a `message_created` event carries; every other event carries none. */
+export function messageIdOf(event: PlatformEvent): string | undefined {
+  return event.type === "message_created" ? event.payload.id : undefined;
+}
+
 /** Socket events owned by BandLink's regular event queue, not every Core EventType. */
 export type SupportedSocketEvent = Exclude<PlatformEvent["type"], "reconnected">;

@@ -13,7 +13,11 @@ import { PhoenixChannelsTransport } from "../../../src/platform/streaming/Phoeni
 import { deleteRoomsBulk } from "../../integration/support/liveHarness";
 import { RecordLog } from "../../testUtils";
 import type { AgentIdentity } from "./agents";
+import { debugLogger } from "./debugLogger";
 import { liveRun, warnTeardown } from "./liveRun";
+
+/** Leading characters of a room id that label its observer's logs, enough to tell rooms apart. */
+const ROOM_LABEL_ID_LENGTH = 8;
 
 /** A message the scenario posted, by id — what delivery waits key on. */
 export interface SentMessage {
@@ -38,7 +42,11 @@ export class Room implements AsyncDisposable {
     const created = await env.userClient.humanApiChats.createMyChatRoom({ chat: {} });
     const room = new Room(
       created.data.id,
-      new PhoenixChannelsTransport({ wsUrl: env.wsUrl ?? DEFAULT_WS_URL, apiKey: env.userApiKey }),
+      new PhoenixChannelsTransport({
+        wsUrl: env.wsUrl ?? DEFAULT_WS_URL,
+        apiKey: env.userApiKey,
+        logger: debugLogger(`observer ${created.data.id.slice(0, ROOM_LABEL_ID_LENGTH)}`),
+      }),
     );
     try {
       await room.observe();

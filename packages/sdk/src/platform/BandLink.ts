@@ -541,6 +541,11 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     payload: Record<string, unknown>,
     roomId: string | null,
   ): void {
+    this.logger.debug("platform event received", {
+      eventType,
+      roomId,
+      messageId: eventType === "message_created" ? payload.id : undefined,
+    });
     try {
       const normalizedPayload = validateEventPayload(eventType, payload);
       this.queueEvent({

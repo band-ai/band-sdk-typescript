@@ -139,15 +139,15 @@ export class ChannelRegistry {
         this.pendingChannels.set(topic, { channel, refs, reject });
         joinPush
           .receive("ok", () => {
-            this.hooks.onJoinSettled(topic, true);
+            this.settleJoin(topic, "ok");
             resolve();
           })
           .receive("error", (error: unknown) => {
-            this.hooks.onJoinSettled(topic, false);
+            this.settleJoin(topic, "error");
             reject(new TransportError(`Failed to join topic ${topic}`, error));
           })
           .receive("timeout", () => {
-            this.hooks.onJoinSettled(topic, false);
+            this.settleJoin(topic, "timeout");
             reject(new TransportError(`Timeout joining topic ${topic}`));
           });
       });
@@ -176,6 +176,12 @@ export class ChannelRegistry {
 
     this.channels.set(topic, { channel, refs });
     this.logger.debug("Joined topic", { topic });
+  }
+
+  /** Runs on every settlement of the join Push, automatic rejoins included. */
+  private settleJoin(topic: string, outcome: "ok" | "error" | "timeout"): void {
+    this.logger.debug("Join settled", { topic, outcome });
+    this.hooks.onJoinSettled(topic, outcome === "ok");
   }
 
   /**
