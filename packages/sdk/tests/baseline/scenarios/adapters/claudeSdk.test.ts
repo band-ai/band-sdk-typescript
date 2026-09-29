@@ -36,6 +36,7 @@ function recordingQuery() {
   const toolsCalled: string[] = [];
   const realQuery = query as ClaudeSDKQuery;
 
+
   return {
     get init() {
       return init;
