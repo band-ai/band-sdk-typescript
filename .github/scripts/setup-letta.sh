@@ -24,12 +24,14 @@ docker run -d --name letta-server \
   "$LETTA_IMAGE"
 
 # Fail loudly if it never comes up, rather than let the tests fail opaquely.
-# --max-time keeps one hung response from wedging the loop.
+# --max-time keeps one hung response from wedging the loop; a container that
+# exited stops the wait at once.
 for _ in $(seq 1 45); do
-  if curl -fsS --max-time 5 "${LETTA_URL}/v1/health/"; then
+  if curl -fsS --max-time 5 "${LETTA_URL}/v1/health/" 2>/dev/null; then
     echo "LETTA_BASE_URL=${LETTA_URL}" >> "$GITHUB_ENV"
     exit 0
   fi
+  [ "$(docker inspect -f '{{.State.Running}}' letta-server)" = true ] || break
   sleep 2
 done
 echo "Letta server did not become healthy on :${LETTA_PORT}" >&2

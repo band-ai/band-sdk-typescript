@@ -116,12 +116,19 @@ jobs:
           path: ~/.omp/logs/
           if-no-files-found: ignore
 
-      - name: Upload the Parlant server log
+      # The teardown below removes the Letta container, and its log with it.
+      - name: Save the Letta server log
+        if: ${{ failure() }}
+        run: docker logs letta-server > "$RUNNER_TEMP/letta-server.log" 2>&1 || true
+
+      - name: Upload the server logs
         if: ${{ failure() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: parlant-server-log
-          path: ${{ runner.temp }}/parlant/server.log
+          name: server-logs
+          path: |
+            ${{ runner.temp }}/letta-server.log
+            ${{ runner.temp }}/parlant/server.log
           if-no-files-found: ignore
 
       - name: Stop the Letta and Parlant servers
