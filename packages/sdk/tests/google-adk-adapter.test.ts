@@ -5,7 +5,6 @@ import { GoogleADKAdapter } from "../src/adapters";
 import { GoogleADKHistoryConverter } from "../src/converters";
 import { MEMORY_SECTION } from "../src/runtime/prompts";
 import { SEND_MESSAGE_TOOL_NAME } from "../src/runtime/tools/schemas";
-import type { AgentToolsProtocol } from "../src/core";
 import { FakeTools, makeMessage, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
 import { createDeferred } from "../src/core/deferred";
