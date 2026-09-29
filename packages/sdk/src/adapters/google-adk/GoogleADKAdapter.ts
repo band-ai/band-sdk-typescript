@@ -7,9 +7,7 @@ import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { MetadataMap, ToolOperationResult } from "../../contracts/dtos";
 import { formatMessageForLlm } from "../../runtime/formatters";
 import { renderSystemPrompt, withMemoryGuidance } from "../../runtime/prompts";
-import { renderSystemPrompt, withMemoryGuidance } from "../../runtime/prompts";
 import { deliverFallbackReply, trackPostedReply } from "../../runtime/tools/postedReply";
-import { postedSendContent } from "../../runtime/tools/schemas";
 import { postedSendContent } from "../../runtime/tools/schemas";
 import type { PlatformMessage } from "../../runtime/types";
 import {

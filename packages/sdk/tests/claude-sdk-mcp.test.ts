@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentToolsProtocol } from "../src/core";
 import { createBandSdkMcpServer } from "../src/mcp/sdk";
 import { connectMcpClient } from "./mcpClient";
+import { describeNestedObjectTool } from "./nestedObjectTool";
 import { FakeRestApi } from "./testUtils";
 
 describe("createBandSdkMcpServer", () => {
@@ -102,6 +103,15 @@ describe("createBandSdkMcpServer", () => {
     } finally {
       await client.close();
     }
+  });
+
+  describeNestedObjectTool(async (tool) => {
+    const bridge = createBandSdkMcpServer({
+      enableMemoryTools: false,
+      getToolsForRoom: () => undefined,
+      additionalTools: [tool.registration],
+    });
+    return connectMcpClient(bridge.serverConfig.instance);
   });
 
   it("builds room-aware system prompt context and caches it", async () => {
