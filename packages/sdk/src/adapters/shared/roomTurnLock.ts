@@ -14,21 +14,17 @@ export function createRoomTurnLock(): RoomTurnLock {
       return run;
     },
     release(roomId) {
-      const tail = tails.get(roomId);
-      if (!tail) {
-        return;
-      }
-      void tail.then(() => {
-        if (tails.get(roomId) === tail) {
-          tails.delete(roomId);
-        }
-      });
+      tails.delete(roomId);
     },
   };
 }
 
 export interface RoomTurnLock {
   run<T>(roomId: string, fn: () => Promise<T>): Promise<T>;
-  /** Drop the room once its in-flight turn settles, without cutting off that turn. */
+  /**
+   * Free the room now, so its next turn starts without waiting on one still in
+   * flight, which may never settle. That turn runs on detached; the adapter must
+   * keep it from writing into the room's new state.
+   */
   release(roomId: string): void;
 }
