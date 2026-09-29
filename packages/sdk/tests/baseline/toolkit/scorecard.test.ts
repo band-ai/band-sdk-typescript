@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ADAPTER } from "./adapters";
 import { CATEGORY, scenarioId } from "./registry";
 import {
+  GENERAL_SCENARIO,
+  NO_ADAPTER,
   SCORECARD_JSON_ENV,
   SCORECARD_STATUS,
   markdownPath,
@@ -72,6 +74,25 @@ describe("toMarkdown", () => {
         "",
         "- `behavior.approvals` / `opencode` — ⏭️ opt-in gate off",
         "- `platform.repliesToMention` / `letta` — N/A needs a server",
+        "",
+      ].join("\n"),
+    );
+    expect(markdown).not.toContain(FAILURE_DETAIL);
+  });
+
+  it("puts (no adapter) in the first column and (general) in the first row, still without failure details", () => {
+    const markdown = toMarkdown([
+      row(pass, ADAPTER.anthropic),
+      row(fail, NO_ADAPTER),
+      { scenario: GENERAL_SCENARIO, adapter: NO_ADAPTER, outcome: fail },
+    ]);
+
+    expect(markdown).toBe(
+      [
+        "| scenario | (no adapter) | anthropic |",
+        "| --- | --- | --- |",
+        "| (general) | ❌ | · |",
+        "| platform.repliesToMention | ❌ | ✅ |",
         "",
       ].join("\n"),
     );

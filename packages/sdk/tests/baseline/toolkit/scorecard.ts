@@ -29,9 +29,21 @@ export type ScorecardOutcome =
 
 export type ScorecardStatus = ScorecardOutcome["status"];
 
+/**
+ * The column for a result with no roster adapter behind it: a test, file or suite that has none in its title.
+ * Starts with `(` so the grid's code-point sort puts it first.
+ */
+export const NO_ADAPTER = "(no adapter)";
+
+/**
+ * The row for a failure no scenario can own, such as an unhandled error or a file outside `scenarios/<category>/`.
+ * Starts with `(` so the grid's code-point sort puts it first.
+ */
+export const GENERAL_SCENARIO = "(general)";
+
 export interface ScorecardRow {
-  scenario: ScenarioId;
-  adapter: AdapterId;
+  scenario: ScenarioId | typeof GENERAL_SCENARIO;
+  adapter: AdapterId | typeof NO_ADAPTER;
   outcome: ScorecardOutcome;
 }
 

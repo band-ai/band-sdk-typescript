@@ -70,6 +70,11 @@ its registered way (manual approvals, a permission resolver, custom tools for ad
 `CAPABILITY.customTools`, memory tools for those that support `CAPABILITY.memory`). `withAdapters(ids, …)` puts the
 given adapters in one room, in the given order.
 
+A plain `describe(SCENARIO, () => it("<behaviour>"))` has no adapter in its title, so the scorecard
+records it in the `(no adapter)` column. A file or suite that errors (an import failure, a hook that
+throws) fails its scenario's cell, or `<category>.<file>` when the scenario is unknown. A failure no scenario owns
+(an unhandled error, a file outside `scenarios/<category>/`) shows as a `(general)` row.
+
 The rules:
 
 - **Never hardcode an adapter list.** Select by capability (`supports: [CAPABILITY.approvals]`)
