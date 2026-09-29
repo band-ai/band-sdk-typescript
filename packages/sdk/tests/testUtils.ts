@@ -22,6 +22,7 @@ import type {
   ReconnectSnapshot,
   StreamingTransport,
   TopicHandlers,
+  TopicRejoinObserver,
 } from "../src/platform/streaming/transport";
 
 interface CapturedToolEvent {
@@ -240,6 +241,7 @@ export class FakeTransport implements StreamingTransport {
   public readonly leaveCalls: string[] = [];
   /** Every currently-registered reconnect observer — a real transport only ever settles once per generation, but exposing the full set (rather than the last-registered one) lets a test assert exactly how many a caller has live at once. */
   public readonly observers = new Set<ReconnectObserver>();
+  public readonly rejoinObservers = new Set<TopicRejoinObserver>();
   public disconnectCount = 0;
   private readonly handlers = new Map<string, TopicHandlers>();
   private connected = false;
@@ -392,6 +394,18 @@ export class FakeTransport implements StreamingTransport {
   public onReconnected(observer: ReconnectObserver): () => void {
     this.observers.add(observer);
     return () => this.observers.delete(observer);
+  }
+
+  public onTopicRejoined(observer: TopicRejoinObserver): () => void {
+    this.rejoinObservers.add(observer);
+    return () => this.rejoinObservers.delete(observer);
+  }
+
+  /** Simulates one channel rejoining on a socket that never dropped. */
+  public triggerRejoin(topic: string): void {
+    for (const observer of [...this.rejoinObservers]) {
+      observer(topic);
+    }
   }
 
   /** Simulates a settled transport-level reconnect for tests driving BandLink's observer(s). */

@@ -121,11 +121,13 @@ type ContactEvent =
 
 `ReconnectedEvent` (`{ type: "reconnected", roomId: null, payload: {} }`) never arrives over the wire — `BandLink` synthesizes it once per automatic WebSocket reconnect, after its internal `SubscriptionManager` has reconciled every room and agent-topic subscription against the transport's post-reconnect snapshot (rejoining what settled cleanly, cleaning up what didn't). It is queued through the same event stream as every other `PlatformEvent`, so ordering relative to real events is preserved.
 
+A single channel can also rejoin on a socket that never dropped (the server closed or crashed just that channel). Nothing sent while it was gone is replayed, so `BandLink` queues a `reconnected` event for it as well: `roomId` is that room's id for a `chat_room:{chat_room_id}` topic, and `null` for `agent_rooms:{agent_id}`, which is handled as a whole-agent reconnect. Rejoins of other topics queue nothing.
+
 Two runtime consumers act on it:
-- `RoomPresence` re-subscribes `agent_rooms`/`agent_contacts`, re-fetches the REST room snapshot, reconciles its roster via `RoomRoster.reconcile()`, and forwards the event to every currently tracked room.
+- `RoomPresence`, for a `roomId: null` event, re-subscribes `agent_rooms`/`agent_contacts`, re-fetches the REST room snapshot, reconciles its roster via `RoomRoster.reconcile()`, and forwards the event to every currently tracked room. A room-scoped event skips all of that and is forwarded to that room only, if it is admitted.
 - `Execution` (via `AgentRuntime`) intercepts it in its serialized event queue and calls `synchronizeWithNext()` again — the same `/messages/next` catch-up sweep used at startup — so messages missed during the disconnect are picked up before normal WebSocket processing resumes. The event itself is never forwarded to `onExecute`/adapters.
 
-A framework adapter or any other direct consumer of `BandLink`'s event stream should treat `"reconnected"` as a no-op unless it specifically needs to react to a resumed connection — it carries no room-specific payload.
+A framework adapter or any other direct consumer of `BandLink`'s event stream should treat `"reconnected"` as a no-op unless it specifically needs to react to a resumed connection — it carries no payload, and `roomId` is set only for a single room's channel rejoin.
 
 ## Contact Event Handling
 

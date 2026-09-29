@@ -5,6 +5,12 @@ export function roomTopics(roomId: string): { chat: string; participants: string
   return { chat: chatRoomTopic(roomId), participants: roomParticipantsTopic(roomId) };
 }
 
+/** The room a `chat_room:` topic belongs to, or `undefined` for any other topic. */
+export function roomIdOfChatTopic(topic: string): string | undefined {
+  const prefix = chatRoomTopic("");
+  return (topic.startsWith(prefix) ? topic.slice(prefix.length) : "") || undefined;
+}
+
 function isRejected(
   result: PromiseSettledResult<unknown>,
 ): result is PromiseRejectedResult {

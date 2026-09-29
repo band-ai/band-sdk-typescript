@@ -12,9 +12,9 @@ export class Session {
   private active = false;
 
   /**
-   * Teardown for whatever reconnect observer this session registered on the
-   * transport — a plain field since a caller just assigns whatever
-   * `onReconnected()` handed back (or `null` if the transport has none).
+   * Teardown for whatever reconnect and rejoin observers this session
+   * registered on the transport — a plain field since a caller just assigns
+   * one function that stops them all (or `null` before any is registered).
    */
   public reconnectObserverTeardown: (() => void) | null = null;
 

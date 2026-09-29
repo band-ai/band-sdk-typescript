@@ -1061,6 +1061,102 @@ describe("PhoenixChannelsTransport", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
+  describe("topic rejoin", () => {
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    async function connectedWith(...topics: string[]) {
+      const transport = new PhoenixChannelsTransport({ wsUrl: "wss://example.test/socket", apiKey: "key-1" });
+      await transport.connect();
+      for (const topic of topics) {
+        await transport.join(topic, {});
+      }
+      const observer = vi.fn();
+      transport.onTopicRejoined(observer);
+      return { transport, observer, socket: phoenixMock.FakeSocket.instances[0] };
+    }
+
+    it("does not notify for a topic's initial join", async () => {
+      const transport = new PhoenixChannelsTransport({ wsUrl: "wss://example.test/socket", apiKey: "key-1" });
+      const observer = vi.fn();
+      transport.onTopicRejoined(observer);
+
+      await transport.connect();
+      await transport.join("room:1", {});
+      await settle();
+
+      expect(observer).not.toHaveBeenCalled();
+    });
+
+    it("notifies once, with the topic, when a joined channel rejoins on a socket that never dropped", async () => {
+      const { observer, socket } = await connectedWith("room:1", "room:2");
+
+      socket?.channels.get("room:1")?.settleRejoin("ok");
+      await settle();
+
+      expect(observer).toHaveBeenCalledTimes(1);
+      expect(observer).toHaveBeenCalledWith("room:1");
+    });
+
+    it("waits for the rejoin that succeeds, not for the attempts that fail", async () => {
+      const { observer, socket } = await connectedWith("room:1");
+      const channel = socket?.channels.get("room:1");
+
+      channel?.settleRejoin("error");
+      channel?.settleRejoin("timeout");
+      await settle();
+      expect(observer).not.toHaveBeenCalled();
+
+      channel?.settleRejoin("ok");
+      await settle();
+      expect(observer).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves a rejoin that a reconnect generation was waiting on to that reconnect", async () => {
+      const { observer, socket } = await connectedWith("room:1");
+
+      socket?.emitOpen();
+      socket?.channels.get("room:1")?.settleRejoin("ok");
+      await settle();
+
+      expect(observer).not.toHaveBeenCalled();
+    });
+
+    it("does not notify for a rejoin while the topic's leave is still in flight", async () => {
+      const { transport, observer, socket } = await connectedWith("room:1");
+      const channel = socket?.channels.get("room:1");
+      if (channel) {
+        channel.leaveOutcome = "pending";
+      }
+
+      const leave = transport.leave("room:1");
+      await Promise.resolve();
+      channel?.settleRejoin("ok");
+      await settle();
+      expect(observer).not.toHaveBeenCalled();
+
+      channel?.settleLeave("ok");
+      await leave;
+    });
+
+    it("stops notifying an observer that unsubscribed, and keeps notifying the rest when one throws", async () => {
+      const { transport, observer, socket } = await connectedWith("room:1");
+      const unsubscribed = vi.fn();
+      transport.onTopicRejoined(unsubscribed)();
+      transport.onTopicRejoined(() => {
+        throw new Error("observer failed");
+      });
+      const last = vi.fn();
+      transport.onTopicRejoined(last);
+
+      socket?.channels.get("room:1")?.settleRejoin("ok");
+      await settle();
+
+      expect(unsubscribed).not.toHaveBeenCalled();
+      expect(observer).toHaveBeenCalledTimes(1);
+      expect(last).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe("reconnect snapshot", () => {
     it("does not invoke the reconnect observer for the initial socket open", async () => {
       const transport = new PhoenixChannelsTransport({

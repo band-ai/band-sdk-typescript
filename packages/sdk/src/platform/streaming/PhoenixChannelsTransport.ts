@@ -22,6 +22,7 @@ import type {
   ReconnectSnapshot,
   StreamingTransport,
   TopicHandlers,
+  TopicRejoinObserver,
 } from "./transport";
 import { agentControlTopic } from "@band-ai/band-sdk-core";
 
@@ -51,6 +52,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private readonly agentId?: string;
   private readonly registry: ChannelRegistry;
   private readonly reconnectObservers = new Set<ReconnectObserver>();
+  private readonly topicRejoinObservers = new Set<TopicRejoinObserver>();
   // Topics joined with `{ exemptFromBuffering: true }`, recorded here so
   // `wrapHandler` can check by name on every delivered event rather than
   // threading the flag through the channel/handler plumbing.
@@ -139,7 +141,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
           deliver();
         }
       },
-      onJoinSettled: (topic, joined) => this.generationTracker.recordSettled(topic, joined),
+      onJoinSettled: (topic, joined) => this.handleJoinSettled(topic, joined),
       onLeft: (topic) => {
         this.generationTracker.removeTopic(topic);
         // A topic explicitly left mid-reconnect must not still deliver an
@@ -305,6 +307,35 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     return () => {
       this.reconnectObservers.delete(observer);
     };
+  }
+
+  public onTopicRejoined(observer: TopicRejoinObserver): () => void {
+    this.topicRejoinObservers.add(observer);
+    return () => {
+      this.topicRejoinObservers.delete(observer);
+    };
+  }
+
+  private handleJoinSettled(topic: string, joined: boolean): void {
+    const inGeneration = this.generationTracker.recordSettled(topic, joined);
+    // A settlement no reconnect generation waited on is a channel rejoining by
+    // itself. An initial join is not registered yet, and a rejoin that failed
+    // is retried by Phoenix, so only a successful rejoin gets here.
+    if (joined && !inGeneration && this.registry.isJoined(topic)) {
+      this.notifyTopicRejoined(topic);
+    }
+  }
+
+  // Synchronous, unlike `notifyReconnectObservers`: an observer's queued catch-up
+  // must land before any event the rejoined channel delivers next.
+  private notifyTopicRejoined(topic: string): void {
+    for (const observer of [...this.topicRejoinObservers]) {
+      try {
+        observer(topic);
+      } catch (error) {
+        this.logger.error("Topic rejoin observer failed", { topic, error });
+      }
+    }
   }
 
   private async handleOpen(): Promise<void> {

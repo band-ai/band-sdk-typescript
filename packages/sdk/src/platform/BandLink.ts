@@ -35,6 +35,7 @@ import {
   validateEventPayload,
 } from "@band-ai/band-sdk-core";
 import { SubscriptionManager } from "./SubscriptionManager";
+import { roomIdOfChatTopic } from "./roomTopics";
 
 export interface BandLinkOptions {
   agentId: string;
@@ -182,17 +183,21 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   }
 
   private async connectSession(epoch: number): Promise<void> {
-    this.session.reconnectObserverTeardown =
-      this.transport.onReconnected?.(async (snapshot) => {
-        await this.subscriptionManager.reconcileReconnect(snapshot);
-        if (this.session.isStale(epoch)) {
-          this.logger.debug(
-            "Reconnect reconciliation settled after session ended, discarding reconnected event",
-          );
-          return;
-        }
-        this.queueEvent({ type: "reconnected", roomId: null, payload: {} });
-      }) ?? null;
+    const stopReconnected = this.transport.onReconnected?.(async (snapshot) => {
+      await this.subscriptionManager.reconcileReconnect(snapshot);
+      if (this.session.isStale(epoch)) {
+        this.logger.debug(
+          "Reconnect reconciliation settled after session ended, discarding reconnected event",
+        );
+        return;
+      }
+      this.queueEvent({ type: "reconnected", roomId: null, payload: {} });
+    });
+    const stopRejoined = this.transport.onTopicRejoined?.((topic) => this.queueRejoinCatchUp(topic, epoch));
+    this.session.reconnectObserverTeardown = () => {
+      stopReconnected?.();
+      stopRejoined?.();
+    };
 
     try {
       await this.transport.connect();
@@ -216,6 +221,23 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
       throw error;
     }
     this.connected = true;
+  }
+
+  /**
+   * A channel that rejoined on a live socket lost whatever was sent while it
+   * was gone. The room's own catch-up runs for a chat topic, the whole agent's
+   * for `agent_rooms`; any other topic has nothing to sweep.
+   */
+  private queueRejoinCatchUp(topic: string, epoch: number): void {
+    if (this.session.isStale(epoch)) {
+      return;
+    }
+    const roomId = topic === agentRoomsTopic(this.agentId) ? null : roomIdOfChatTopic(topic);
+    if (roomId === undefined) {
+      return;
+    }
+    this.logger.debug("rejoin catch-up queued", { topic, roomId });
+    this.queueEvent({ type: "reconnected", roomId, payload: {} });
   }
 
   public async disconnect(): Promise<void> {

@@ -87,20 +87,23 @@ export class ChannelRegistry {
     return this.channels.keys();
   }
 
+  /**
+   * Whether `topic` is joined and not on its way out: `channels` still holds
+   * a topic mid-leave until the leave's Push settles, though its handlers are
+   * already unbound.
+   */
   public isJoined(topic: string): boolean {
-    return this.channels.has(topic);
+    return this.channels.has(topic) && !this.leaveFlights.current(topic);
   }
 
   /**
    * A promise for `topic` if it's already joined or has a join in flight,
    * without starting a new one. A topic mid-leave is never reported as
-   * already joined — `channels` still holds it until the leave's Push
-   * settles, but its handlers are already unbound and the channel is about
-   * to be removed, so treating that window as "joined" would hand the
-   * caller a promise that resolves into a channel already gone.
+   * already joined (see `isJoined`): treating that window as "joined" would
+   * hand the caller a promise that resolves into a channel already gone.
    */
   public existingJoin(topic: string): Promise<void> | undefined {
-    if (this.channels.has(topic) && !this.leaveFlights.current(topic)) {
+    if (this.isJoined(topic)) {
       return Promise.resolve();
     }
     return this.joinFlights.current(topic) ?? undefined;

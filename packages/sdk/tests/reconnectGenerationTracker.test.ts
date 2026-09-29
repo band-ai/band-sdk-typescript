@@ -3,6 +3,17 @@ import { describe, expect, it, vi } from "vitest";
 import { ReconnectGenerationTracker } from "../src/platform/streaming/ReconnectGenerationTracker";
 
 describe("ReconnectGenerationTracker", () => {
+  it("reports whether a settlement was one the current generation waited on", () => {
+    const tracker = new ReconnectGenerationTracker(vi.fn());
+
+    expect(tracker.recordSettled("chat:a", true), "no generation yet").toBe(false);
+
+    tracker.beginGeneration(["chat:a", "chat:b"]);
+    expect(tracker.recordSettled("chat:a", true)).toBe(true);
+    expect(tracker.recordSettled("chat:a", true), "already settled in this generation").toBe(false);
+    expect(tracker.recordSettled("chat:other", true), "never attempted in this generation").toBe(false);
+  });
+
   it("finalizes once every attempted topic in a generation has settled", () => {
     const onSettled = vi.fn();
     const tracker = new ReconnectGenerationTracker(onSettled);

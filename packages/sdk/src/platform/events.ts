@@ -95,7 +95,9 @@ export type ContactRemovedEvent = BaseEvent<"contact_removed", ContactRemovedPay
 /**
  * Synthetic — never a wire event. Queued once per settled transport
  * reconnect generation, after tracker reconciliation, so a room's
- * `Execution` can re-run its `/next` synchronization boundary.
+ * `Execution` can re-run its `/next` synchronization boundary. Also queued,
+ * with `roomId` set to that room, when a single chat channel rejoins on a
+ * socket that never dropped, since what was sent while it was gone is lost.
  */
 export type ReconnectedEvent = BaseEvent<"reconnected", Record<string, never>>;
 

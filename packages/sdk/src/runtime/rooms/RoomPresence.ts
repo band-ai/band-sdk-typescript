@@ -322,8 +322,18 @@ export class RoomPresence implements AsyncDisposable {
    * reconnect to every currently tracked room regardless, so each room's
    * `Execution` can still re-run its `/next` synchronization even when
    * membership reconciliation itself has to wait for the next reconnect.
+   *
+   * A room-scoped event (one chat channel rejoined on a live socket) needs
+   * only that room's catch-up: the agent-level channels never dropped.
    */
   private async handleReconnected(event: ReconnectedEvent): Promise<void> {
+    if (event.roomId !== null) {
+      if (this.roster.roomMembership(event.roomId) === "admitted") {
+        await this.onRoomEvent?.(event.roomId, event);
+      }
+      return;
+    }
+
     // Independent of each other (no shared state), same as the equivalent
     // start-up concurrency in `startBody`.
     const [, , accepted] = await Promise.all([

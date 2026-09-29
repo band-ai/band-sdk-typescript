@@ -29,6 +29,8 @@ export type ReconnectObserver = (
   snapshot: ReconnectSnapshot,
 ) => Promise<void> | void;
 
+export type TopicRejoinObserver = (topic: string) => void;
+
 export interface StreamingTransport {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
@@ -43,4 +45,13 @@ export interface StreamingTransport {
    * source-compatible. Returns an unsubscribe function.
    */
   onReconnected?(observer: ReconnectObserver): () => void;
+  /**
+   * Optional: a transport that can see a single channel rejoin on a socket
+   * that never dropped (the server closed or crashed just that channel)
+   * registers here. Nothing was delivered on the topic while it was gone, so
+   * an observer should catch up. Called synchronously from the join's
+   * settlement, ahead of any event the rejoined channel delivers, so whatever
+   * it queues stays in order with them. Returns an unsubscribe function.
+   */
+  onTopicRejoined?(observer: TopicRejoinObserver): () => void;
 }
