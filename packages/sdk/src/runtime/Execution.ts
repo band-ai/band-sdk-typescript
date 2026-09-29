@@ -353,29 +353,24 @@ export class Execution {
       }
 
       // Already executed — by this scan, an earlier scan, or bootstrap/stale
-      // recovery. Never redo it, but a repeat sighting of the boundary's own
-      // live message still ends this scan early: nothing further in the
-      // backlog needs a REST round trip once we've caught up to live traffic.
-      if (this.syncBoundaries.isExecuted(nextMessage.id)) {
-        if (this.syncBoundaries.isSyncPoint(boundary, nextMessage.id)) {
-          this.logger.debug("Sync scan reached its boundary", { roomId: this.roomId, messageId: nextMessage.id });
-          break;
-        }
-        continue;
+      // recovery — is never redone.
+      if (!this.syncBoundaries.isExecuted(nextMessage.id)) {
+        await this.executeSyncMessage(toMessageEvent(nextMessage), nextMessage.id);
+        // Recorded unconditionally, not only when this happens to be
+        // recognized as the boundary's own live message: `boundary.messageId`
+        // is anchored asynchronously by a live delivery arriving through a
+        // separate path (`enqueue()`), so this scan can execute a message
+        // before that anchor lands. Marking every executed id lets the later
+        // live delivery (or a later scan re-fetching the same id before the
+        // backend's mark-as-processed effect propagates) find it already done
+        // regardless of whether this scan ever recognized it as "the" sync
+        // point in real time.
+        this.syncBoundaries.recordExecuted(nextMessage.id);
       }
 
-      await this.executeSyncMessage(toMessageEvent(nextMessage), nextMessage.id);
-      // Recorded unconditionally, not only when this happens to be
-      // recognized as the boundary's own live message: `boundary.messageId`
-      // is anchored asynchronously by a live delivery arriving through a
-      // separate path (`enqueue()`), so this scan can execute a message
-      // before that anchor lands. Marking every executed id lets the later
-      // live delivery (or a later scan re-fetching the same id before the
-      // backend's mark-as-processed effect propagates) find it already done
-      // regardless of whether this scan ever recognized it as "the" sync
-      // point in real time.
-      this.syncBoundaries.recordExecuted(nextMessage.id);
-
+      // The boundary's own live message ends the scan, whether it ran now or
+      // before: nothing further in the backlog needs a REST round trip once
+      // we've caught up to live traffic.
       if (this.syncBoundaries.isSyncPoint(boundary, nextMessage.id)) {
         this.logger.debug("Sync scan reached its boundary", { roomId: this.roomId, messageId: nextMessage.id });
         break;

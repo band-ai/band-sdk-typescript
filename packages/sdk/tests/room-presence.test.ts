@@ -1140,7 +1140,8 @@ describe("RoomPresence", () => {
       }),
     });
     const events: Array<{ roomId: string; type: string }> = [];
-    await using presence = new RoomPresence({ link });
+    const logger = makeLogger();
+    await using presence = new RoomPresence({ link, logger });
     presence.onRoomEvent = async (roomId, event) => {
       events.push({ roomId, type: event.type });
     };
@@ -1160,5 +1161,11 @@ describe("RoomPresence", () => {
     ]);
     // Only the whole-agent event re-listed the rooms.
     expect(listChatsCalls).toBe(listedAtStart + 1);
+    // The unadmitted room's catch-up is dropped visibly, not silently.
+    expect(logger.debug).toHaveBeenCalledWith("dropping room event, room not admitted", {
+      roomId: "room-unknown",
+      eventType: "reconnected",
+      messageId: undefined,
+    });
   });
 });

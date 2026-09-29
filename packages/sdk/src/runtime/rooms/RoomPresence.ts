@@ -269,15 +269,7 @@ export class RoomPresence implements AsyncDisposable {
         case "message_created":
         case "participant_added":
         case "participant_removed":
-          if (event.roomId && this.roster.roomMembership(event.roomId) === "admitted") {
-            await this.onRoomEvent?.(event.roomId, event);
-          } else {
-            this.logger.debug("dropping room event, room not admitted", {
-              roomId: event.roomId,
-              eventType: event.type,
-              messageId: messageIdOf(event),
-            });
-          }
+          await this.forwardToAdmittedRoom(event);
           break;
         case "reconnected":
           await this.handleReconnected(event);
@@ -286,6 +278,19 @@ export class RoomPresence implements AsyncDisposable {
           assertNever(event);
       }
     }
+  }
+
+  /** Hands `event` to its room's handler, or drops it, with a debug line, if that room is not admitted. */
+  private async forwardToAdmittedRoom(event: Parameters<RoomPresenceEventHandler>[1]): Promise<void> {
+    if (event.roomId && this.roster.roomMembership(event.roomId) === "admitted") {
+      await this.onRoomEvent?.(event.roomId, event);
+      return;
+    }
+    this.logger.debug("dropping room event, room not admitted", {
+      roomId: event.roomId,
+      eventType: event.type,
+      messageId: messageIdOf(event),
+    });
   }
 
   private async handleRoomAdded(roomId: string | null, payload: MetadataMap): Promise<void> {
@@ -328,9 +333,7 @@ export class RoomPresence implements AsyncDisposable {
    */
   private async handleReconnected(event: ReconnectedEvent): Promise<void> {
     if (event.roomId !== null) {
-      if (this.roster.roomMembership(event.roomId) === "admitted") {
-        await this.onRoomEvent?.(event.roomId, event);
-      }
+      await this.forwardToAdmittedRoom(event);
       return;
     }
 

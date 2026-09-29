@@ -12,7 +12,7 @@ import type {
   PlatformChatMessage,
   BandLinkRestApi,
 } from "../client/rest/types";
-import type { PlatformEvent, SupportedSocketEvent } from "./events";
+import { messageIdOf, type PlatformEvent, type SupportedSocketEvent } from "./events";
 import { UnsupportedFeatureError } from "../core/errors";
 import { assertCapability } from "../contracts/capabilities";
 import type { MetadataMap } from "../contracts/dtos";
@@ -566,7 +566,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     this.logger.debug("platform event received", {
       eventType,
       roomId,
-      messageId: eventType === "message_created" ? payload.id : undefined,
+      messageId: messageIdOf({ type: eventType, payload }),
     });
     try {
       const normalizedPayload = validateEventPayload(eventType, payload);

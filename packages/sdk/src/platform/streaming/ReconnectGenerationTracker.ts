@@ -46,7 +46,7 @@ export class ReconnectGenerationTracker {
     return generation;
   }
 
-  /** Whether the current generation was waiting on `topic`; a settlement it was not waiting on is a rejoin of the channel alone. */
+  /** Whether the current generation was waiting on `topic`. */
   public recordSettled(topic: string, joined: boolean): boolean {
     const record = this.generations.get(this.currentGeneration);
     if (!record?.pending.delete(topic)) {
