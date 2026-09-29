@@ -69,11 +69,7 @@ const cellKey = (scenario: string, adapter: string) => `${scenario}\u0000${adapt
 const byCell = (a: ScorecardRow, b: ScorecardRow) =>
   a.scenario.localeCompare(b.scenario) || a.adapter.localeCompare(b.adapter);
 
-const joinFailErrors = (left: string, right: string): string => {
-  if (left === right || left.includes(right)) return left;
-  if (right.includes(left)) return right;
-  return `${left}\n${right}`;
-};
+const joinFailErrors = (left: string, right: string): string => (left === right ? left : `${left}\n${right}`);
 
 /** Unions scorecards, keeping each cell's highest-ranked outcome; equal `fail` ranks concatenate error text. */
 export function merge(...scorecards: ScorecardRow[][]): ScorecardRow[] {
