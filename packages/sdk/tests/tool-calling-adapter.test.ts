@@ -385,7 +385,7 @@ describe("ToolCallingAdapter", () => {
     ]);
   });
 
-  it("remembers the string a non-string or empty send was posted as", async () => {
+  it("remembers the string a non-string send was posted as, and ignores an empty one", async () => {
     const seen: Array<Array<Record<string, unknown>>> = [];
     const model: ToolCallingModel = {
       complete: async (request) => {
@@ -410,7 +410,6 @@ describe("ToolCallingAdapter", () => {
     expect(turnLines(seen.at(-1)!)).toEqual([
       { role: "user", content: "[Jane]: hello" },
       { role: "assistant", content: "42" },
-      { role: "assistant", content: "" },
       { role: "user", content: "[Jane]: next question" },
     ]);
   });
