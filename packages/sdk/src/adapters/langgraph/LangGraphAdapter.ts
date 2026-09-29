@@ -3,7 +3,7 @@ import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
-import { renderSystemPrompt } from "../../runtime/prompts";
+import { renderSystemPrompt, withMemoryGuidance } from "../../runtime/prompts";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { asErrorMessage, asOptionalRecord, asRecord } from "../shared/coercion";
 import { reportProviderTurnFailure } from "../../core/providerFailure";
@@ -108,14 +108,10 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
 
   public async onStarted(agentName: string, agentDescription: string): Promise<void> {
     await super.onStarted(agentName, agentDescription);
-    this.renderedSystemPrompt =
-      this.systemPromptOverride ??
-      renderSystemPrompt({
-        agentName,
-        agentDescription,
-        customSection: this.customSection,
-        capabilities: { memory: this.includeMemoryTools },
-      });
+    this.renderedSystemPrompt = withMemoryGuidance(
+      this.systemPromptOverride ?? renderSystemPrompt({ agentName, agentDescription, customSection: this.customSection }),
+      this.includeMemoryTools,
+    );
   }
 
   public async onMessage(

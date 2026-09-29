@@ -3,7 +3,8 @@
  * the platform: a real ACP subprocess, one session reused across two prompts,
  * and each answer posted through the auto-injected Band MCP tools.
  *
- * Opt-in, for an operator with `codex-acp` installed and signed in.
+ * Opt-in via `RUN_CODEX_ACP_E2E=1` (see baseline README). The baseline vitest
+ * config excludes this file unless that flag is set.
  */
 import { describe, expect, it } from "vitest";
 
@@ -32,10 +33,9 @@ async function ask(adapter: ACPClientAdapter, tools: FakeTools, question: string
 }
 
 describe(SCENARIO, () => {
-  it("reuses one ACP session and answers through the Band MCP tools", async ({ skip }) => {
-    if (process.env[OPT_IN_ENV] !== FLAG_ON) {
-      skip(`set ${OPT_IN_ENV}=${FLAG_ON} to run against a local codex-acp`);
-    }
+  it("reuses one ACP session and answers through the Band MCP tools", async () => {
+    expect(process.env[OPT_IN_ENV], `set ${OPT_IN_ENV}=${FLAG_ON} to run against a local codex-acp`).toBe(FLAG_ON);
+
     const adapter = new ACPClientAdapter({ command: CODEX_ACP_COMMAND, enableMcpTools: true });
     await using _stopped = { [Symbol.asyncDispose]: () => adapter.stop().catch(() => undefined) };
     const tools = new FakeTools();

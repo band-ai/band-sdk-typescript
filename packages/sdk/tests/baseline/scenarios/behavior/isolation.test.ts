@@ -9,24 +9,13 @@
 import { expect } from "vitest";
 
 import type { AgentIdentity } from "../../toolkit/agents";
-import { assertDeliveryStatus } from "../../toolkit/assertDelivery";
-import { DELIVERY_STATUS, observeAgent } from "../../toolkit/observeDelivery";
-import { perAdapter, type PerAdapterOptions } from "../../toolkit/perAdapter";
-import { CAPABILITY, CATEGORY, scenarioId } from "../../toolkit/registry";
+import { perAdapter } from "../../toolkit/perAdapter";
+import { CATEGORY, scenarioId } from "../../toolkit/registry";
 import { Rooms, type Room } from "../../toolkit/rooms";
-import { KEY, LOOKUP_PROMPT, LOOKUP_TOOL, lookupCalls, lookupRequest } from "../samples/lookupTool";
+import { KEY, WITH_LOOKUP, lookupCalls, lookupRequest } from "../samples/lookupTool";
+import { takeTurn } from "../samples/turns";
 
-const WITH_LOOKUP: PerAdapterOptions = {
-  supports: [CAPABILITY.customTools],
-  prompt: LOOKUP_PROMPT,
-  build: (spec, options) => spec.build({ ...options, customTools: [LOOKUP_TOOL] }),
-};
-
-/** Asks `agent` to look up `key` in `room` and waits until that turn is done. */
-async function lookUp(room: Room, agent: AgentIdentity, key: string): Promise<void> {
-  const sent = await Rooms.sendMention(room, agent, lookupRequest(key));
-  assertDeliveryStatus(await observeAgent(agent, room).untilProcessed(sent), DELIVERY_STATUS.processed);
-}
+const lookUp = (room: Room, agent: AgentIdentity, key: string) => takeTurn(room, agent, lookupRequest(key));
 
 const keysOf = async (room: Room, sender: AgentIdentity) => (await lookupCalls(room, sender)).map((call) => call.key);
 
