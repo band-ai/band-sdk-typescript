@@ -23,7 +23,10 @@ Scope with vitest's own `-t` or a path, with no `--` (it breaks `-t` filtering).
 | `BAND_E2E_INCLUDE_PENDING=1` | Also runs adapters marked `pending` (normally N/A), for local use. |
 | `RUN_CODEX_ACP_E2E=1` | Opts in to `adapters.codexAcpSmoke`, which needs a local `codex-acp`. |
 
-Each adapter also needs its own model key or CLI (see `requires` in `toolkit/adapters.ts`).
+Each adapter also needs its own model key or CLI (see `requires` in `toolkit/adapters.ts`). letta and
+parlant need a running server: CI starts them with `.github/scripts/setup-letta.sh` (docker) and
+`setup-parlant.sh`, which pin the image and version. Locally, start one the same way and export
+`LETTA_BASE_URL` / `PARLANT_ENVIRONMENT`.
 
 The toolkit's own unit tests, including the `registry.test.ts` drift guard, run in the default
 `pnpm test` (Tier 1). The scenarios run only through `test:baseline-live` (Tier 2): the default
