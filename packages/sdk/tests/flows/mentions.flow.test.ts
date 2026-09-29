@@ -13,7 +13,7 @@ import { ToolCallingAdapter } from "../../src/adapters/tool-calling";
 import type { FrameworkAdapter } from "../../src/contracts/protocols";
 import { CaptureToolCallingModel } from "../helpers/captureToolCallingModel";
 import { createFakeGoogleAdkSdk } from "../helpers/fakeGoogleAdkSdk";
-import { AGENT_HANDLE, AGENT_ID, BandPlatform, person } from "./support/bandPlatform";
+import { AGENT_HANDLE, AGENT_ID, BandPlatform, person, RecordingRestApi } from "./support/bandPlatform";
 import { FakeCursorAgent } from "./support/fakeCursorAgent";
 
 const USER = "user-1";
@@ -79,12 +79,12 @@ const HARNESSES: Array<{ name: string; harness: () => Harness }> = [
 
 describe("Mentions in a Band room", () => {
   it.each(HARNESSES)("hand $name the participant's handle, not the platform's token", async ({ harness }) => {
+    const rest = new RecordingRestApi([person(USER)]);
     const first = harness();
-    const rest = await (async () => {
-      await using session = await BandPlatform.join(first.adapter, [person(USER)]);
+    {
+      await using session = await BandPlatform.join(first.adapter, [person(USER)], { rest });
       await session.room.outcome(await session.room.say(USER, `@[[${AGENT_ID}]] ${EARLIER}`));
-      return session.platform.rest;
-    })();
+    }
 
     // A fresh agent on the same room is handed the room's history, which holds the first message.
     const restarted = harness();

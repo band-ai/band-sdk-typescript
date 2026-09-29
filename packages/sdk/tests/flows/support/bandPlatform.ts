@@ -11,7 +11,7 @@ import type { ParticipantRecord } from "../../../src/contracts/dtos";
 import type { PaginatedResponse, PlatformChatMessage, RestApi } from "../../../src/client/rest/types";
 import { BandLink } from "../../../src/platform/BandLink";
 import { PlatformRuntime } from "../../../src/runtime/PlatformRuntime";
-import { assertMentioned, CallHolds, FakeRestApi, FakeTransport, RecordLog, type HeldCall } from "../../testUtils";
+import { assertMentioned, CallHolds, FakeRestApi, FakeTransport, RecordLog, wireMention, type HeldCall } from "../../testUtils";
 
 export const AGENT_ID = "agent-1";
 export const AGENT_HANDLE = "owner/agent";
@@ -19,20 +19,6 @@ export const AGENT_HANDLE = "owner/agent";
 // The agent is mentionable but never a room participant, so the participants
 // message a flow sees stays what its roster says.
 const AGENT_PARTICIPANT: ParticipantRecord = { id: AGENT_ID, name: "Agent", type: "Agent", handle: AGENT_HANDLE };
-
-const MENTION_TOKEN = /@\[\[([^\]]+)\]\]/g;
-
-/** A `metadata.mentions` entry as the platform sends it on every surface, captured from a live room. */
-function wireMention(participant: ParticipantRecord) {
-  return {
-    id: participant.id,
-    name: participant.name,
-    handle: participant.handle,
-    type: participant.type.toLowerCase(),
-    kind: "mention",
-    avatar_url: `https://avatars.example.test/${participant.id}`,
-  };
-}
 
 export interface Posted {
   readonly roomId: string;
@@ -221,9 +207,9 @@ export class BandPlatform implements AsyncDisposable {
 
   public async post(roomId: string, senderId: string, content: string): Promise<string> {
     const id = `msg-${randomUUID()}`;
-    const mentions = [...content.matchAll(MENTION_TOKEN)].flatMap(([, mentionId]) =>
-      this.mentionable.filter((participant) => participant.id === mentionId).map(wireMention),
-    );
+    const mentions = this.mentionable
+      .filter((participant) => content.includes(`@[[${participant.id}]]`))
+      .map(({ id, name, type, handle }) => wireMention({ id, name, handle: handle ?? null, type: type.toLowerCase() }));
     const message = {
       id, content, message_type: "text", sender_id: senderId, sender_type: "User", sender_name: senderId,
       metadata: { mentions }, inserted_at: now(), updated_at: now(),

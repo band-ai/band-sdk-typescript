@@ -5,7 +5,7 @@ import { ExecutionContext } from "../src/runtime/ExecutionContext";
 import { BandLink } from "../src/platform/BandLink";
 import type { MentionPayload } from "../src/platform/events";
 import type { StreamingTransport } from "../src/platform/streaming/transport";
-import { FakeRestApi } from "./testUtils";
+import { FakeRestApi, wireMention } from "./testUtils";
 
 class FakeTransport implements StreamingTransport {
   public async connect() {}
@@ -66,7 +66,7 @@ describe("DefaultPreprocessor", () => {
       const event = makeEvent();
       return { ...event, payload: { ...event.payload, id, content, metadata: { mentions } } };
     };
-    const agent = { id: "a1", name: "Memory Secretary", handle: "owner/secretary", type: "agent", kind: "mention" };
+    const agent = wireMention({ id: "a1", name: "Memory Secretary", handle: "owner/secretary", type: "agent" });
 
     it("resolves the current message from its own metadata.mentions, and hands the resolved text to the next turn's history", async () => {
       const context = makeContext();

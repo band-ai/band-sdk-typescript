@@ -4,7 +4,7 @@ import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
 import { ExecutionContext } from "../src/runtime/ExecutionContext";
 import type { RestApi } from "../src/client/rest/types";
 import { DEFAULT_CONTEXT_CACHE_TTL_SECONDS } from "../src/runtime/types";
-import { FakeRestApi, makeMessage } from "./testUtils";
+import { FakeRestApi, makeMessage, wireMention } from "./testUtils";
 
 function makeContext(restOverrides?: Partial<RestApi>, options?: {
   maxContextMessages?: number;
@@ -141,7 +141,7 @@ describe("ExecutionContext coverage", () => {
   });
 
   it("resolves mention tokens in hydrated history from each message's own metadata", async () => {
-    const mention = (id: string, handle: string) => ({ id, name: handle, handle, type: "user", kind: "mention" });
+    const mention = (id: string, handle: string) => wireMention({ id, name: handle, handle, type: "user" });
     const item = (id: string, content: string, mentions: unknown[]) => ({
       id,
       content,
@@ -162,7 +162,6 @@ describe("ExecutionContext coverage", () => {
               item("m1", "@[[p1]] first", [mention("p1", "alice")]),
               item("m2", "@[[p2]] second @[[p1]]", [mention("p2", "bob")]),
             ],
-            metadata: { page: 1, pageSize: 3, totalPages: 1 },
           }),
         },
         capabilities: {},

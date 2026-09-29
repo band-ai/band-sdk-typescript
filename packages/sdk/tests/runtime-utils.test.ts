@@ -11,6 +11,7 @@ import {
   replaceUuidMentions,
 } from "../src/runtime";
 import { resolveMentions, stripLeadingMentions } from "../src/runtime/formatters";
+import { wireMention } from "./testUtils";
 import {
   CHAT_EVENT_TYPES,
   assertChatEventType,
@@ -87,13 +88,6 @@ describe("runtime utilities", () => {
   });
 
   describe("resolveMentions", () => {
-    // The entry shape the platform sends on every surface.
-    const wireMention = (fields: { id: string; name: string; handle: string | null; type: string }) => ({
-      ...fields,
-      kind: "mention",
-      avatar_url: "https://example.test/avatar.png",
-    });
-
     it("replaces a token with the handle the platform sent", () => {
       const metadata = { mentions: [wireMention({ id: "u1", name: "Memory Secretary", handle: "owner/secretary", type: "agent" })] };
       expect(resolveMentions("@[[u1]] remember that I like tea", metadata)).toBe("@owner/secretary remember that I like tea");

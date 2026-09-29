@@ -33,7 +33,7 @@ export function mentionSubjectsFromMetadata(metadata: MetadataMap | null | undef
       continue;
     }
 
-    subjects.push({ id: mention.id, handle: label.trim().split(/\s+/).join("-") });
+    subjects.push({ id: mention.id, handle: label.trim().replace(/\s+/g, "-") });
   }
 
   return subjects;
