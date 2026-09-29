@@ -11,10 +11,10 @@ import { resolveLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { formatHistoryForLlm } from "../../runtime/formatters";
 import { postedSendContent } from "../../runtime/tools/schemas";
+import { deliverFallbackReply, trackPostedReply } from "../../runtime/tools/postedReply";
 import { asErrorMessage } from "../shared/coercion";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
 import { reportProviderTurnFailure } from "../../core/providerFailure";
-import { deliverReply } from "../../core/deliveryFailedError";
 import {
   CustomToolExecutionError,
   CustomToolValidationError,
@@ -108,6 +108,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     const conversation = this.conversationFor(context, history, message);
     conversation.push(this.userTurn(message));
     const toolRounds: ToolRound[] = [];
+    const reply = trackPostedReply(tools);
     let text: string | undefined;
     try {
       const platformSchemas = tools.getToolSchemas(this.toolFormat, {
@@ -182,7 +183,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
                 }
               }
             } else {
-              output = await tools.executeToolCall(call.name, call.input);
+              output = await reply.tools.executeToolCall(call.name, call.input);
             }
           }
           const isError = isFailedToolOutput(output);
@@ -231,9 +232,9 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
       await reportProviderTurnFailure(tools, this.logger, this.provider, "Tool-calling adapter request failed", error, { messageId: message.id });
     }
 
-    if (text) {
-      await deliverReply(tools, text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
-      // Only text that was actually delivered belongs in the next turn.
+    const mention = [{ id: message.senderId, handle: message.senderName ?? message.senderType }];
+    // Only text that was actually delivered belongs in the next turn.
+    if (text && (await deliverFallbackReply(reply, text, mention))) {
       conversation.push({ role: "assistant", content: text });
     }
   }

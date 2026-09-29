@@ -7,8 +7,9 @@ import { renderSystemPrompt } from "../../runtime/prompts";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { asErrorMessage, asOptionalRecord, asRecord } from "../shared/coercion";
 import { reportProviderTurnFailure } from "../../core/providerFailure";
-import { deliverReply } from "../../core/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
+import { takeLast } from "../shared/history";
+import { deliverFallbackReply, trackPostedReply } from "../../runtime/tools/postedReply";
 
 type LangGraphRole = "system" | "user" | "assistant";
 type LangGraphTupleMessage = [LangGraphRole, string];
@@ -127,6 +128,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
     let text: string | null = null;
+    const reply = trackPostedReply(tools);
     try {
       let sdk: LangGraphSdk | undefined;
       let langGraphTools = [...this.additionalTools];
@@ -135,7 +137,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
         langGraphTools = [
           ...buildLangGraphTools({
             sdk,
-            tools,
+            tools: reply.tools,
             includeMemoryTools: this.includeMemoryTools,
             logger: this.logger,
           }),
@@ -188,9 +190,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
       await reportProviderTurnFailure(tools, this.logger, this.provider, "LangGraph adapter request failed", error, { roomId: context.roomId });
     }
 
-    if (text) {
-      await deliverReply(tools, text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
-    }
+    await deliverFallbackReply(reply, text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
   }
 
   public async onCleanup(roomId: string): Promise<void> {
@@ -245,9 +245,10 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     if (options.replayHistory && history.length > 0) {
       // Drop the triggering message before truncating so the limit counts only prior turns;
       // the current message is appended exactly once, last.
-      const historical = history.raw
-        .filter((item) => item.id !== message.id)
-        .slice(-this.maxHistoryMessages);
+      const historical = takeLast(
+        history.raw.filter((item) => item.id !== message.id),
+        this.maxHistoryMessages,
+      );
       for (const item of historical) {
         const role = String(item.sender_type ?? "") === "Agent" ? "assistant" : "user";
         const content = String(item.content ?? "");

@@ -5,14 +5,13 @@ import { resolveLogger } from "../../core/logger";
 import { RuntimeStateError, UnsupportedFeatureError, rethrowIfRecoverableTurnFailure } from "../../core/errors";
 import type { PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import { postedSendContent } from "../../runtime/tools/schemas";
+import { deliverFallbackReply, trackPostedReply } from "../../runtime/tools/postedReply";
 import { asErrorMessage, toWireString } from "../shared/coercion";
 import { selectCompleteExchanges } from "../shared/history";
 import {
   agentFailure,
   reportTurnFailure,
 } from "../../core/providerFailure";
-import { deliverReply } from "../../core/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import type { LettaMessages } from "./types";
 import { LettaHistoryConverter } from "./types";
@@ -392,22 +391,17 @@ export class LettaAdapter extends SimpleAdapter<
       // Refresh tool schemas on every message so dynamic tool additions/removals
       // are picked up mid-session.
       const clientTools = toClientTools(tools.getOpenAIToolSchemas());
-      const { assistantText, postedReply } = await this.executeWithToolLoop(
+      const reply = trackPostedReply(tools);
+      const assistantText = await this.executeWithToolLoop(
         client,
         agentId,
         userContent,
         clientTools,
-        tools,
+        reply.tools,
         signal,
       );
 
-      // A reply posted through band_send_message already answered; the final
-      // text then only narrates it, so posting it too would say it twice.
-      if (postedReply) {
-        return;
-      }
-
-      if (!assistantText) {
+      if (!assistantText && !reply.posted()) {
         return reportTurnFailure(
           tools,
           agentFailure(this.provider, "Letta did not return a response."),
@@ -416,7 +410,7 @@ export class LettaAdapter extends SimpleAdapter<
         );
       }
 
-      await deliverReply(tools, assistantText, [{ id: message.senderId }]);
+      await deliverFallbackReply(reply, assistantText, [{ id: message.senderId }]);
     } catch (error) {
       rethrowIfRecoverableTurnFailure(error);
 
@@ -741,7 +735,7 @@ export class LettaAdapter extends SimpleAdapter<
     clientTools: LettaClientTool[],
     tools: AdapterToolsProtocol,
     signal?: AbortSignal,
-  ): Promise<{ assistantText: string | null; postedReply: boolean }> {
+  ): Promise<string | null> {
     // Wall-clock deadline — includes both Letta API time and local tool execution.
     const deadline = Date.now() + this.responseTimeoutSeconds * 1_000;
 
@@ -758,7 +752,6 @@ export class LettaAdapter extends SimpleAdapter<
 
     let rounds = 0;
     let assistantText: string | null = null;
-    let postedReply = false;
 
     while (
       rounds < this.maxToolRounds &&
@@ -780,10 +773,6 @@ export class LettaAdapter extends SimpleAdapter<
       await this.emitReasoning(response, tools);
 
       const toolResults = await this.executeToolCalls(approvals, tools);
-      postedReply ||= toolResults.tool_returns.some(
-        (toolReturn, index) =>
-          postedSendContent(approvals[index].tool_call.name, toolReturn.tool_return, toolReturn.status !== "success") !== undefined,
-      );
 
       response = await this.timedMessageCreate(
         client,
@@ -803,7 +792,7 @@ export class LettaAdapter extends SimpleAdapter<
     assistantText = extractAssistantText(response.messages) ?? assistantText;
     await this.emitReasoning(response, tools);
 
-    return { assistantText, postedReply };
+    return assistantText;
   }
 
   // -----------------------------------------------------------------------

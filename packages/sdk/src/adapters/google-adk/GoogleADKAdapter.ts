@@ -8,6 +8,7 @@ import type { MetadataMap, ToolOperationResult } from "../../contracts/dtos";
 import { formatMessageForLlm } from "../../runtime/formatters";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { postedSendContent } from "../../runtime/tools/schemas";
+import { deliverFallbackReply, trackPostedReply } from "../../runtime/tools/postedReply";
 import type { PlatformMessage } from "../../runtime/types";
 import {
   customToolToOpenAISchema,
@@ -16,9 +17,9 @@ import {
 } from "../../runtime/tools/customTools";
 import { asOptionalRecord } from "../shared/coercion";
 import { reportProviderTurnFailure } from "../../core/providerFailure";
-import { deliverReply } from "../../core/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { PREVIOUS_CONTEXT_HEADER } from "../shared/conversationPrompt";
+import { takeLast } from "../shared/history";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
 import {
   GoogleADKHistoryConverter,
@@ -283,10 +284,11 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
 
     let finalResponseText = "";
     const posted: string[] = [];
+    const reply = trackPostedReply(tools);
     try {
       const sdk = await this.sdkLoader.get();
       const runner = sdk.createRunner({
-        agent: this.buildAgent(sdk, tools, posted),
+        agent: this.buildAgent(sdk, reply.tools, posted),
         appName: APP_NAME,
       });
       const sessionId = randomUUID();
@@ -319,9 +321,8 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
     }
 
     const stored = this.rememberExchange(context.roomId, roomHistory, message, posted);
-    if (finalResponseText.length > 0) {
-      await deliverReply(tools, finalResponseText, [{ id: message.senderId }]);
-      // Only text that was delivered belongs in the next turn.
+    // Only text that was delivered belongs in the next turn.
+    if (await deliverFallbackReply(reply, finalResponseText, [{ id: message.senderId }])) {
       this.rememberModelLine(context.roomId, stored, finalResponseText);
     }
   }
@@ -514,7 +515,7 @@ function formatHistoryTranscript(
   maxHistoryMessages: number,
   maxTranscriptChars: number,
 ): string {
-  const windowedHistory = history.slice(-maxHistoryMessages);
+  const windowedHistory = takeLast(history, maxHistoryMessages);
   const lines: string[] = [];
 
   for (const message of windowedHistory) {
@@ -557,5 +558,5 @@ function trimRoomHistory(
   maxHistoryMessages: number,
 ): GoogleADKMessages {
   const maxEntries = maxHistoryMessages * 2;
-  return history.length > maxEntries ? history.slice(-maxHistoryMessages) : history;
+  return history.length > maxEntries ? takeLast(history, maxHistoryMessages) : history;
 }

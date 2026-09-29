@@ -9,7 +9,7 @@ import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { mcpToolNames, MCP_SERVER_NAME } from "../../runtime/tools/schemas";
 import { agentFailure, reportProviderTurnFailure, reportTurnFailure, safeSendFailure } from "../../core/providerFailure";
-import { deliverReply } from "../../core/deliveryFailedError";
+import { deliverFallbackReply, trackPostedReply } from "../../runtime/tools/postedReply";
 import { PREVIOUS_CONTEXT_HEADER, buildConversationPrompt } from "../shared/conversationPrompt";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { extractClaudeSessionId } from "../../converters/claude-sdk";
@@ -277,8 +277,10 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
   ): Promise<void> {
     let finalText = "";
     let resultFailure: ClaudeResultFailure | null = null;
+    // The MCP bridge runs Band tools through `roomTools`, so the tracked tools are what it must hold.
+    const reply = trackPostedReply(tools);
     try {
-      const query = await this.startQuery(message, history, participantsMessage, contactsMessage, context, tools);
+      const query = await this.startQuery(message, history, participantsMessage, contactsMessage, context, reply.tools);
       const consumed = await this.consumeQueryEvents(query, tools, context.roomId);
       finalText = consumed.finalText;
       resultFailure = consumed.resultFailure;
@@ -292,20 +294,16 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
       const failure = agentFailure(this.provider, resultFailure.message, resultFailure.code, resultFailure.detail);
       // Preceding assistant text is already decided output; posting it must
       // not flip a non-success result into a successful turn.
-      if (replyText) {
-        try {
-          await deliverReply(tools, replyText, mention);
-        } catch (error) {
-          await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId });
-          throw error;
-        }
+      try {
+        await deliverFallbackReply(reply, replyText, mention);
+      } catch (error) {
+        await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId });
+        throw error;
       }
       await reportTurnFailure(tools, failure, this.logger, { roomId: context.roomId });
     }
 
-    if (replyText) {
-      await deliverReply(tools, replyText, mention);
-    }
+    await deliverFallbackReply(reply, replyText, mention);
   }
 
   private async startQuery(
