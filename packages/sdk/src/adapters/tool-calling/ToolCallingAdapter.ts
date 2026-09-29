@@ -10,6 +10,7 @@ import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { formatHistoryForLlm } from "../../runtime/formatters";
+import { withMemoryGuidance } from "../../runtime/prompts";
 import { postedSendContent } from "../../runtime/tools/schemas";
 import { asErrorMessage } from "../shared/coercion";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
@@ -70,8 +71,11 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     this.model = options.model;
     this.toolFormat = options.toolFormat;
     this.provider = options.provider ?? DEFAULT_PROVIDER;
-    this.systemPrompt = options.systemPrompt;
     this.includeMemoryTools = options.includeMemoryTools ?? false;
+    this.systemPrompt =
+      options.systemPrompt === undefined && !this.includeMemoryTools
+        ? undefined
+        : withMemoryGuidance(options.systemPrompt ?? "", this.includeMemoryTools);
     this.maxToolRounds = options.maxToolRounds ?? 8;
     this.enableExecutionReporting = options.enableExecutionReporting ?? false;
     this.customTools = options.customTools ?? [];

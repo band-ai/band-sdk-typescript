@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { AgentToolsProtocol } from "../src/core";
 import { createBandSdkMcpServer } from "../src/mcp/sdk";
+import { describeNestedObjectTool } from "./nestedObjectTool";
 import { FakeRestApi } from "./testUtils";
 
 describe("createBandSdkMcpServer", () => {
@@ -113,6 +114,12 @@ describe("createBandSdkMcpServer", () => {
       await client.close();
     }
   });
+
+  describeNestedObjectTool((tool) => connectClient(createBandSdkMcpServer({
+    enableMemoryTools: false,
+    getToolsForRoom: () => undefined,
+    additionalTools: [tool.registration],
+  })));
 
   it("builds room-aware system prompt context and caches it", async () => {
     const calls: Array<{ name: string; args: Record<string, unknown> }> = [];

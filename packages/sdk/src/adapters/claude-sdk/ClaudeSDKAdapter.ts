@@ -15,7 +15,7 @@ import { resolveLogger } from "../../core/logger";
 import { UnsupportedFeatureError } from "../../core/errors";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import { mcpToolNames, MCP_SERVER_NAME } from "../../runtime/tools/schemas";
+import { mcpToolNames, MCP_SERVER_NAME, postedSendContent } from "../../runtime/tools/schemas";
 import { agentFailure, reportProviderTurnFailure, reportTurnFailure, safeSendFailure } from "../../core/providerFailure";
 import { deliverReply } from "../../core/deliveryFailedError";
 import { buildConversationPrompt } from "../shared/conversationPrompt";
@@ -97,6 +97,7 @@ interface BandMcpBridge {
 type BandMcpBridgeFactory = (input: {
   enableMemoryTools: boolean;
   getToolsForRoom: (roomId: string) => AdapterToolsProtocol | undefined;
+  onMessageSent: (roomId: string) => void;
   additionalTools?: McpToolRegistration[];
 }) => BandMcpBridge;
 
@@ -140,7 +141,13 @@ const bandMcpBridgeFactory = new LazyAsyncValue<BandMcpBridgeFactory>({
           registration.name,
           registration.description,
           shape,
-          async (args: Record<string, unknown>) => registration.execute(args),
+          async (args: Record<string, unknown>) => {
+            const result = await registration.execute(args)
+            if (postedSendContent(registration.name, args.content, result.isError === true) !== undefined) {
+              input.onMessageSent(String(args.room_id))
+            }
+            return result
+          },
         )
       })
 
@@ -174,6 +181,8 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
   private readonly sessionIds = new Map<string, string>();
   private readonly sessionInitLocks = new Map<string, Promise<void>>();
   private readonly roomTools = new Map<string, AdapterToolsProtocol>();
+  /** Rooms the agent posted to with band_send_message during their current turn. */
+  private readonly roomsSentToThisTurn = new Set<string>();
   private mcpBridge: BandMcpBridge | null = null;
   private systemPrompt = "";
 
@@ -209,6 +218,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
       this.mcpBridge = createBandMcpBridge({
         enableMemoryTools: this.enableMemoryTools,
         getToolsForRoom: (roomId) => this.roomTools.get(roomId),
+        onMessageSent: (roomId) => this.roomsSentToThisTurn.add(roomId),
         additionalTools: this.additionalMcpTools.length > 0 ? this.additionalMcpTools : undefined,
       });
     }
@@ -252,6 +262,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
   ): Promise<void> {
     let finalText = "";
     let resultFailure: ClaudeResultFailure | null = null;
+    this.roomsSentToThisTurn.delete(context.roomId);
     try {
       const query = await this.startQuery(message, history, participantsMessage, contactsMessage, context, tools);
       const consumed = await this.consumeQueryEvents(query, tools, context.roomId);
@@ -262,7 +273,9 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     }
 
     const mention = [{ id: message.senderId, handle: message.senderName ?? message.senderType }];
-    const replyText = finalText.trim();
+    const sentThroughTool = this.roomsSentToThisTurn.delete(context.roomId);
+    // Once the agent answered through band_send_message, its closing text is narration, not a second reply.
+    const replyText = sentThroughTool ? "" : finalText.trim();
     if (resultFailure) {
       const failure = agentFailure(this.provider, resultFailure.message, resultFailure.code, resultFailure.detail);
       // Preceding assistant text is already decided output; posting it must
@@ -392,6 +405,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     this.sessionIds.delete(roomId);
     this.sessionInitLocks.delete(roomId);
     this.roomTools.delete(roomId);
+    this.roomsSentToThisTurn.delete(roomId);
   }
 
   private async reportSessionId(

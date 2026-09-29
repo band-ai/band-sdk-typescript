@@ -6,7 +6,7 @@ import { SimpleAdapter } from "../../core/simpleAdapter";
 import { isFailedToolOutput, type AdapterToolsProtocol } from "../../contracts/protocols";
 import type { MetadataMap, ToolOperationResult } from "../../contracts/dtos";
 import { formatMessageForLlm } from "../../runtime/formatters";
-import { renderSystemPrompt } from "../../runtime/prompts";
+import { renderSystemPrompt, withMemoryGuidance } from "../../runtime/prompts";
 import { postedSendContent } from "../../runtime/tools/schemas";
 import type { PlatformMessage } from "../../runtime/types";
 import {
@@ -227,14 +227,10 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
   public async onStarted(agentName: string, agentDescription: string): Promise<void> {
     await super.onStarted(agentName, agentDescription);
     this.historyConverterInstance.setAgentName(agentName);
-    this.systemPrompt =
-      this.systemPromptOverride
-      ?? renderSystemPrompt({
-        agentName,
-        agentDescription,
-        customSection: this.customSection,
-        capabilities: { memory: this.enableMemoryTools },
-      });
+    this.systemPrompt = withMemoryGuidance(
+      this.systemPromptOverride ?? renderSystemPrompt({ agentName, agentDescription, customSection: this.customSection }),
+      this.enableMemoryTools,
+    );
   }
 
   public async onMessage(
