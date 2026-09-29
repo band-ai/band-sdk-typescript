@@ -451,6 +451,25 @@ describe("AgentTools coverage", () => {
     );
   });
 
+  it("resolves the hyphenated label that history shows for a participant with no handle", async () => {
+    const rest = new CoverageRestApi();
+    rest.listChatParticipants.mockResolvedValue([
+      { id: "agent-1", name: "Memory Secretary", type: "Agent", handle: "" },
+    ]);
+    const tools = new AgentTools({
+      roomId: "room-1",
+      rest: createFacade(rest),
+    });
+
+    await tools.sendMessage("hi", ["@Memory-Secretary"]);
+
+    expect(rest.createChatMessage).toHaveBeenCalledWith(
+      "room-1",
+      { content: "hi", mentions: [expect.objectContaining({ id: "agent-1" })] },
+      undefined,
+    );
+  });
+
   it("validates required mentions and unknown participant mentions", async () => {
     const rest = new CoverageRestApi();
     rest.listChatParticipants.mockResolvedValue([

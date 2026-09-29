@@ -25,7 +25,6 @@ import { resolveLogger, type Logger } from "../../core/logger";
 import { rethrowIfRecoverableTurnFailure, ValidationError } from "../../core/errors";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import { mentionSubjectsFromMetadata, replaceUuidMentions } from "../../runtime/formatters";
 import { systemUpdateParts } from "../shared/conversationPrompt";
 import { asErrorMessage } from "../shared/coercion";
 import { roomContextLines } from "../shared/roomContext";
@@ -481,8 +480,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       const sessionKey = this.sessionKey(generation, sessionId)
       await this.onAcpSessionReady(message, tools, context, sessionId)
       client.beginSession(sessionId)
-      const content = replaceUuidMentions(message.content, mentionSubjectsFromMetadata(message.metadata))
-      const messageWithContext = [...systemUpdateParts(participantsMessage, contactsMessage), content].join("\n\n")
+      const messageWithContext = [...systemUpdateParts(participantsMessage, contactsMessage), message.content].join("\n\n")
       // A restored session is normally already bootstrapped. It still owes
       // a transcript when the prompt that should have carried the replay
       // was never accepted — restore of that empty session must not skip it.

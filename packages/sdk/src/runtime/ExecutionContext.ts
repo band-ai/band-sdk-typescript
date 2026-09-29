@@ -7,7 +7,7 @@ import { resolveLogger, type Logger } from "../core/logger";
 import { parseSessionConfig, type ConversationContext, type PlatformMessage, type SessionConfig } from "./types";
 import { AgentTools } from "./tools/AgentTools";
 import { ParticipantRoster, RetryTracker } from "@band-ai/band-sdk-core";
-import { buildParticipantsMessage, toParticipantRecord, toParticipantRecordFromRest } from "./formatters";
+import { buildParticipantsMessage, resolveMentions, toParticipantRecord, toParticipantRecordFromRest } from "./formatters";
 
 /**
  * Per-turn activity indicator for a room's context.
@@ -299,7 +299,7 @@ export class ExecutionContext {
       messages.push(...items.map((item) => ({
         id: item.id,
         room_id: this.roomId,
-        content: item.content,
+        content: resolveMentions(item.content, item.metadata),
         sender_id: item.sender_id,
         sender_type: item.sender_type,
         sender_name: item.sender_name ?? null,

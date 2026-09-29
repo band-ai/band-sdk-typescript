@@ -407,6 +407,11 @@ export class FakeTransport implements StreamingTransport {
   }
 }
 
+/** A `metadata.mentions` entry as the platform sends it on every surface, captured from a live room. */
+export function wireMention(fields: { id: string; name: string; handle: string | null; type: string }) {
+  return { ...fields, kind: "mention", avatar_url: `https://avatars.example.test/${fields.id}` };
+}
+
 export function makeMessage(content: string, roomId = "room-1", metadata: Record<string, unknown> = {}): PlatformMessage {
   return {
     id: "msg-1",

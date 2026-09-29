@@ -3,8 +3,9 @@ import { describe, expect, it } from "vitest";
 import { DefaultPreprocessor } from "../src/runtime/preprocessing/DefaultPreprocessor";
 import { ExecutionContext } from "../src/runtime/ExecutionContext";
 import { BandLink } from "../src/platform/BandLink";
+import type { MentionPayload } from "../src/platform/events";
 import type { StreamingTransport } from "../src/platform/streaming/transport";
-import { FakeRestApi } from "./testUtils";
+import { FakeRestApi, wireMention } from "./testUtils";
 
 class FakeTransport implements StreamingTransport {
   public async connect() {}
@@ -58,6 +59,32 @@ describe("DefaultPreprocessor", () => {
     expect(input).not.toBeNull();
     expect(input?.message.content).toBe("hello");
     expect(input?.isSessionBootstrap).toBe(true);
+  });
+
+  describe("mention tokens", () => {
+    const mentioning = (id: string, content: string, mentions: MentionPayload[]) => {
+      const event = makeEvent();
+      return { ...event, payload: { ...event.payload, id, content, metadata: { mentions } } };
+    };
+    const agent = wireMention({ id: "a1", name: "Memory Secretary", handle: "owner/secretary", type: "agent" });
+
+    it("resolves the current message from its own metadata.mentions, and hands the resolved text to the next turn's history", async () => {
+      const context = makeContext();
+      const preprocessor = new DefaultPreprocessor();
+
+      const first = await preprocessor.process(context, mentioning("m1", "@[[a1]] remember that I like tea", [agent]), "a1");
+      const second = await preprocessor.process(context, mentioning("m2", "@[[a1]] and coffee", [agent]), "a1");
+
+      expect(first?.message.content).toBe("@owner/secretary remember that I like tea");
+      expect(second?.message.content).toBe("@owner/secretary and coffee");
+      expect(second?.history.raw.map((entry) => entry.content)).toContain("@owner/secretary remember that I like tea");
+    });
+
+    it("leaves a token with no mention entry raw", async () => {
+      const input = await new DefaultPreprocessor().process(makeContext(), mentioning("m1", "@[[unknown-id]] hi", []), "a1");
+
+      expect(input?.message.content).toBe("@[[unknown-id]] hi");
+    });
   });
 
   it("skips self-authored messages", async () => {
