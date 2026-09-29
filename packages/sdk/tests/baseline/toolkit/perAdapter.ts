@@ -104,8 +104,31 @@ export async function runScenario(
   await body(cast);
 }
 
-function defineRun(title: string, chosen: RosterSpec[], body: (cast: Cast) => Promise<void>, options: ScenarioOptions): void {
-  it(title, async () => {
+
+/** Why `chosen` may not run yet, or null when all may. */
+function pendingReason(chosen: RosterSpec[]): string | null {
+  if (includePending()) {
+    return null;
+  }
+  const pending = chosen.filter((spec) => spec.pending);
+  return pending.length > 0 ? pending.map((spec) => `${spec.id}: ${spec.pending}`).join("; ") : null;
+}
+
+function defineRun(
+  title: string,
+  chosen: RosterSpec[],
+  body: (cast: Cast) => Promise<void>,
+  options: ScenarioOptions,
+  { skipWhenPending = false }: { skipWhenPending?: boolean } = {},
+): void {
+  it(title, async ({ skip }) => {
+    if (skipWhenPending) {
+      const pending = pendingReason(chosen);
+      if (pending) {
+        skip(pending);
+      }
+    }
+    
     await runScenario(chosen, body, { prompt: options.prompt ?? DEFAULT_PROMPT, build: options.build });
   });
 }
@@ -136,5 +159,5 @@ export function withAdapters(
 ): void {
   // In the order given: a cast's roles (e.g. who coordinates) follow it.
   const chosen = ids.map((id) => registry.get(id));
-  describe(name, () => defineRun(ids.join(CAST_SEPARATOR), chosen, body, options));
+  describe(name, () => defineRun(ids.join(CAST_SEPARATOR), chosen, body, options, { skipWhenPending: true }));
 }
