@@ -3,7 +3,8 @@
  * the platform: a real ACP subprocess, one session reused across two prompts,
  * and each answer posted through the auto-injected Band MCP tools.
  *
- * Opt-in, for an operator with `codex-acp` installed and signed in.
+ * Opt-in via `RUN_CODEX_ACP_E2E=1` (see baseline README). When the flag is off,
+ * this file registers no tests — nothing is skipped.
  */
 import { describe, expect, it } from "vitest";
 
@@ -31,32 +32,31 @@ async function ask(adapter: ACPClientAdapter, tools: FakeTools, question: string
   });
 }
 
-describe(SCENARIO, () => {
-  it("reuses one ACP session and answers through the Band MCP tools", async ({ skip }) => {
-    if (process.env[OPT_IN_ENV] !== FLAG_ON) {
-      skip(`set ${OPT_IN_ENV}=${FLAG_ON} to run against a local codex-acp`);
-    }
-    const adapter = new ACPClientAdapter({ command: CODEX_ACP_COMMAND, enableMcpTools: true });
-    await using _stopped = { [Symbol.asyncDispose]: () => adapter.stop().catch(() => undefined) };
-    const tools = new FakeTools();
+if (process.env[OPT_IN_ENV] === FLAG_ON) {
+  describe(SCENARIO, () => {
+    it("reuses one ACP session and answers through the Band MCP tools", async () => {
+      const adapter = new ACPClientAdapter({ command: CODEX_ACP_COMMAND, enableMcpTools: true });
+      await using _stopped = { [Symbol.asyncDispose]: () => adapter.stop().catch(() => undefined) };
+      const tools = new FakeTools();
 
-    await adapter.onStarted("ACP Smoke Agent", "Smoke-test agent for codex-acp");
-    for (const [index, { question }] of TURNS.entries()) {
-      await ask(adapter, tools, question, index === 0);
-    }
+      await adapter.onStarted("ACP Smoke Agent", "Smoke-test agent for codex-acp");
+      for (const [index, { question }] of TURNS.entries()) {
+        await ask(adapter, tools, question, index === 0);
+      }
 
-    expect(tools.messages).toEqual(expect.arrayContaining(TURNS.map(({ answer }) => answer)));
-    const sessionIds = tools.events
-      .filter((event) => event.messageType === MESSAGE_TYPE.Task)
-      .map((event) => event.metadata?.[ACP_SESSION_EVENT.sessionIdKey])
-      .filter((id) => typeof id === "string");
-    expect(sessionIds.length).toBeGreaterThanOrEqual(TURNS.length);
-    expect(new Set(sessionIds).size, "one reused ACP session").toBe(1);
-    const sendCalls = tools.events.filter(
-      (event) =>
-        event.messageType === MESSAGE_TYPE.ToolCall &&
-        (event.metadata?.raw_input as { tool?: string } | undefined)?.tool === SEND_MESSAGE_TOOL_NAME,
-    );
-    expect(sendCalls.length).toBeGreaterThanOrEqual(TURNS.length);
+      expect(tools.messages).toEqual(expect.arrayContaining(TURNS.map(({ answer }) => answer)));
+      const sessionIds = tools.events
+        .filter((event) => event.messageType === MESSAGE_TYPE.Task)
+        .map((event) => event.metadata?.[ACP_SESSION_EVENT.sessionIdKey])
+        .filter((id) => typeof id === "string");
+      expect(sessionIds.length).toBeGreaterThanOrEqual(TURNS.length);
+      expect(new Set(sessionIds).size, "one reused ACP session").toBe(1);
+      const sendCalls = tools.events.filter(
+        (event) =>
+          event.messageType === MESSAGE_TYPE.ToolCall &&
+          (event.metadata?.raw_input as { tool?: string } | undefined)?.tool === SEND_MESSAGE_TOOL_NAME,
+      );
+      expect(sendCalls.length).toBeGreaterThanOrEqual(TURNS.length);
+    });
   });
-});
+}

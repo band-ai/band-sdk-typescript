@@ -20,8 +20,8 @@ Scope with vitest's own `-t` or a path, with no `--` (it breaks `-t` filtering).
 | --- | --- |
 | `BAND_API_KEY_USER` | The Band user key every run provisions and reaps its agents with. Required. |
 | `BAND_E2E_SCORECARD_JSON` | Writes the scorecard to this path, plus a `.md` grid beside it. |
-| `BAND_E2E_INCLUDE_PENDING=1` | Also runs adapters marked `pending` (normally N/A), for local use. |
-| `RUN_CODEX_ACP_E2E=1` | Opts in to `adapters.codexAcpSmoke`, which needs a local `codex-acp`. |
+| `BAND_E2E_INCLUDE_PENDING=1` | Fans `perAdapter` scenarios out to adapters marked `pending` too (they are omitted by default). |
+| `RUN_CODEX_ACP_E2E=1` | Registers `adapters.codexAcpSmoke` (needs a local `codex-acp`); off by default, no skipped placeholder. |
 
 Each adapter also needs its own model key or CLI (see `requires` in `toolkit/adapters.ts`).
 
@@ -97,8 +97,17 @@ The rules:
 
 Add its spec to `SPECS` in `toolkit/adapters.ts`, with `id` set to its directory under
 `src/adapters/`; its `ADAPTER` handle and everything else follow from that. The `registry.test.ts`
-drift guard fails until the roster and the folders under `src/adapters/` agree. An adapter CI can't run yet gets a plain-language `pending` reason, and
-the scorecard shows it as N/A with that reason.
+drift guard fails until the roster and the folders under `src/adapters/` agree. An adapter CI can't run yet gets a plain-language `pending` reason and is
+left out of `perAdapter` fan-out until `BAND_E2E_INCLUDE_PENDING=1`.
+
+## Planned scenarios (not in the tree yet)
+
+Add these as real scenarios when the SDK or platform exposes what they need — no placeholder `it()` blocks that only throw or skip.
+
+| Id | Blocked on |
+| --- | --- |
+| `inspection.usage` | Per-turn token usage reported by the SDK (band-sdk-python usage smokes). |
+| `behavior.controlSignals` | User stop/play/interrupt on the platform and handling in the TS runtime (Python `test_next_actionable_semantics`). |
 
 ## Design values
 
