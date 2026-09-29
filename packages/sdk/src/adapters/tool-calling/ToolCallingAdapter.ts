@@ -12,7 +12,6 @@ import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { formatHistoryForLlm } from "../../runtime/formatters";
 import { withMemoryGuidance } from "../../runtime/prompts";
 import { deliverFallbackReply, trackPostedReply } from "../../runtime/tools/postedReply";
-import { postedSendContent } from "../../runtime/tools/schemas";
 import { asErrorMessage } from "../shared/coercion";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
 import { reportProviderTurnFailure } from "../../core/providerFailure";
