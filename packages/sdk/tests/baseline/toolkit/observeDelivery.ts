@@ -83,11 +83,16 @@ function deliveryState(delivery: RecipientDelivery): DeliveryState {
   }
 }
 
+/** The recipient's entry in the platform-set `delivery_status` of a message's metadata. */
+function recipientDelivery(metadata: Record<string, unknown> | null | undefined, recipientId: string): RecipientDelivery | undefined {
+  return (metadata?.delivery_status as Record<string, RecipientDelivery> | undefined)?.[recipientId];
+}
+
 /** Every delivery state of `messageId` for `recipientId` among the captured updates, in arrival order. */
 function statesOf(updates: readonly MessageCreatedPayload[], messageId: string, recipientId: string): DeliveryState[] {
   return updates
     .filter((update) => update.id === messageId)
-    .map((update) => (update.metadata?.delivery_status as Record<string, RecipientDelivery> | undefined)?.[recipientId])
+    .map((update) => recipientDelivery(update.metadata, recipientId))
     .filter((delivery) => delivery !== undefined)
     .map(deliveryState);
 }
@@ -97,7 +102,7 @@ function storedDeliveries(stored: readonly CapturedMessage[], recipientId: strin
   return stored
     .filter((message) => message.senderId !== recipientId)
     .map((message) => {
-      const delivery = (message.metadata.delivery_status as Record<string, RecipientDelivery> | undefined)?.[recipientId];
+      const delivery = recipientDelivery(message.metadata, recipientId);
       return {
         id: message.id,
         contentPrefix: message.content.slice(0, STORED_CONTENT_PREFIX_LENGTH),

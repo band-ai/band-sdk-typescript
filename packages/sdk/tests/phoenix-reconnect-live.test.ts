@@ -25,7 +25,7 @@ function wireMessage(id: string, content: string) {
 
 const TWO_ROOMS = ["room-1", "room-2"] as const;
 
-/** An agent on the real transport, in two rooms; `next` answers each room's `/messages/next`. */
+/** An agent on the real transport, in two rooms; `next` answers each room's `/messages/next`. Disposing it stops the runtime. */
 async function startAgentInTwoRooms(
   peer: FakePhoenixPeer,
   next: (roomId: string) => ReturnType<typeof wireMessage> | null,
@@ -64,15 +64,23 @@ async function startAgentInTwoRooms(
       executed.push(event);
     },
   });
-  await runtime.start();
-  // Both rooms are tracked and each has finished its startup sweep.
-  await vi.waitFor(() => {
-    expect(runtime.presence.roster.trackedRoomIds()).toEqual(expect.arrayContaining([...TWO_ROOMS]));
-    for (const room of TWO_ROOMS) {
-      expect(calls.next.get(room)).toBeGreaterThan(0);
-    }
-  });
-  return { runtime, executed, calls };
+  const stop = async () => {
+    await runtime.stop().catch(() => undefined);
+  };
+  try {
+    await runtime.start();
+    // Both rooms are tracked and each has finished its startup sweep.
+    await vi.waitFor(() => {
+      expect(runtime.presence.roster.trackedRoomIds()).toEqual(expect.arrayContaining([...TWO_ROOMS]));
+      for (const room of TWO_ROOMS) {
+        expect(calls.next.get(room)).toBeGreaterThan(0);
+      }
+    });
+  } catch (error) {
+    await stop();
+    throw error;
+  }
+  return { executed, calls, [Symbol.asyncDispose]: stop };
 }
 
 /**
@@ -448,41 +456,37 @@ describe("Phoenix reconnect (real wire)", () => {
       ]);
 
     it("is caught up by its own room's sweep alone, without the adapter seeing the synthetic event", async () => {
-      const peer = await FakePhoenixPeer.start();
+      await using peer = await FakePhoenixPeer.start();
       let missed: ReturnType<typeof wireMessage> | null = null;
-      const { runtime, executed, calls } = await startAgentInTwoRooms(peer, (roomId) => {
+      await using agent = await startAgentInTwoRooms(peer, (roomId) => {
         const message = roomId === "room-1" ? missed : null;
         missed = null;
         return message;
       });
+      const { executed, calls } = agent;
 
-      try {
-        const listedBefore = calls.listChats;
-        const otherRoomSweepsBefore = calls.next.get("room-2");
-        peer.receivedEvents.length = 0;
+      const listedBefore = calls.listChats;
+      const otherRoomSweepsBefore = calls.next.get("room-2");
+      peer.receivedEvents.length = 0;
 
-        // The message is only in the REST backlog: the channel was not there to receive it.
-        missed = missedMessage();
-        peer.push(CHAT_TOPIC, "phx_error", {});
+      // The message is only in the REST backlog: the channel was not there to receive it.
+      missed = missedMessage();
+      peer.push(CHAT_TOPIC, "phx_error", {});
 
-        await vi.waitFor(() => executedMissed(executed), { timeout: 10_000 });
-        expect(executed.some((event) => event.type === "reconnected")).toBe(false);
-        expect(calls.listChats).toBe(listedBefore);
-        expect(calls.next.get("room-2")).toBe(otherRoomSweepsBefore);
-        expect(peer.receivedEvents).toEqual([{ topic: CHAT_TOPIC, event: "phx_join" }]);
-      } finally {
-        await runtime.stop().catch(() => undefined);
-        await peer.stop();
-      }
+      await vi.waitFor(() => executedMissed(executed), { timeout: 10_000 });
+      expect(executed.some((event) => event.type === "reconnected")).toBe(false);
+      expect(calls.listChats).toBe(listedBefore);
+      expect(calls.next.get("room-2")).toBe(otherRoomSweepsBefore);
+      expect(peer.receivedEvents).toEqual([{ topic: CHAT_TOPIC, event: "phx_join" }]);
     }, 15_000);
 
     it("is caught up only once the rejoin succeeds, not while it is still failing", async () => {
-      const peer = await FakePhoenixPeer.start();
+      await using peer = await FakePhoenixPeer.start();
       const joinsOfRoom = () =>
         peer.receivedEvents.filter((event) => event.topic === CHAT_TOPIC && event.event === "phx_join").length;
       let missed: ReturnType<typeof wireMessage> | null = null;
       let joinsWhenServed: number | undefined;
-      const { runtime, executed } = await startAgentInTwoRooms(peer, (roomId) => {
+      await using agent = await startAgentInTwoRooms(peer, (roomId) => {
         if (roomId !== "room-1" || !missed) {
           return null;
         }
@@ -492,19 +496,14 @@ describe("Phoenix reconnect (real wire)", () => {
         return message;
       });
 
-      try {
-        peer.receivedEvents.length = 0;
-        peer.queueJoinOutcomes(CHAT_TOPIC, ["error", "ok"]);
-        missed = missedMessage();
-        peer.push(CHAT_TOPIC, "phx_error", {});
+      peer.receivedEvents.length = 0;
+      peer.queueJoinOutcomes(CHAT_TOPIC, ["error", "ok"]);
+      missed = missedMessage();
+      peer.push(CHAT_TOPIC, "phx_error", {});
 
-        await vi.waitFor(() => executedMissed(executed), { timeout: 15_000 });
-        // The failed rejoin and the one that succeeded: the sweep ran after the second.
-        expect(joinsWhenServed).toBe(2);
-      } finally {
-        await runtime.stop().catch(() => undefined);
-        await peer.stop();
-      }
+      await vi.waitFor(() => executedMissed(agent.executed), { timeout: 15_000 });
+      // The failed rejoin and the one that succeeded: the sweep ran after the second.
+      expect(joinsWhenServed).toBe(2);
     }, 20_000);
   });
 });

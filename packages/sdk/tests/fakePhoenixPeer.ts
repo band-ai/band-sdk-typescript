@@ -29,7 +29,7 @@ type ServerSocket = InstanceType<typeof NodeWebSocket> & {
  * the real `phoenix` client through join/leave/heartbeat and an actual
  * severed-connection reconnect — not a reimplementation of Phoenix itself.
  */
-export class FakePhoenixPeer {
+export class FakePhoenixPeer implements AsyncDisposable {
   private readonly wss: WebSocketServer;
   private readonly sockets = new Set<ServerSocket>();
   private readonly joinOutcomeQueues = new Map<string, JoinOutcome[]>();
@@ -90,6 +90,10 @@ export class FakePhoenixPeer {
     await new Promise<void>((resolve, reject) => {
       this.wss.close((error) => (error ? reject(error) : resolve()));
     });
+  }
+
+  public async [Symbol.asyncDispose](): Promise<void> {
+    await this.stop();
   }
 
   private handleConnection(socket: ServerSocket): void {

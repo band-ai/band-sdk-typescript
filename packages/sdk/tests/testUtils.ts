@@ -2,6 +2,7 @@ import { ProviderTurnFailedError } from "../src/core/providerFailure";
 import { expect } from "vitest";
 import { ParticipantRoster, type AgentFailure } from "@band-ai/band-sdk-core";
 import type { PlatformMessage } from "../src/runtime";
+import type { ToolCallingModel } from "../src/adapters";
 import type { AgentToolsProtocol } from "../src/core";
 import { DEFAULT_AGENT_TOOLS_CAPABILITIES, FAILURE_EVENT_TYPE, toFailureEvent } from "../src/contracts/protocols";
 import { isBlankEventContent } from "../src/contracts/chatEvents";
@@ -219,7 +220,7 @@ export class FakeTools implements AgentToolsProtocol {
 }
 
 /** The failure events an adapter posted, located the way a client locates one. */
-export function failureEvents(tools: FakeTools): CapturedToolEvent[] {
+export function failureEvents<E extends { messageType?: unknown }>(tools: { readonly events: readonly E[] }): E[] {
   return tools.events.filter((event) => event.messageType === FAILURE_EVENT_TYPE);
 }
 
@@ -594,4 +595,17 @@ export function hangUntilAborted(): { readonly signal: AbortSignal | undefined; 
       });
     },
   };
+}
+
+/** A model whose first call hangs until aborted and whose every later call answers `reply`. */
+export function hangsOnce(reply: string): { readonly model: ToolCallingModel; readonly hung: ReturnType<typeof hangUntilAborted> } {
+  const hung = hangUntilAborted();
+  let calls = 0;
+  const model: ToolCallingModel = {
+    complete: (_request, options) => {
+      calls += 1;
+      return calls === 1 ? hung.request(options?.signal) : Promise.resolve({ text: reply });
+    },
+  };
+  return { model, hung };
 }

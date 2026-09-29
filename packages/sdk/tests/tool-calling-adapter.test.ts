@@ -6,14 +6,14 @@ import { OpenAIAdapter } from "../src/index";
 import type { HistoryProvider, PlatformMessage } from "../src/runtime";
 import type { CustomToolDef } from "../src/runtime/tools/customTools";
 import type { AgentToolsProtocol } from "../src/core";
-import { toFailureEvent } from "../src/contracts/protocols";
+import { FAILURE_EVENT_TYPE, toFailureEvent } from "../src/contracts/protocols";
 import { MEMORY_SECTION, renderSystemPrompt } from "../src/runtime/prompts";
 import { SEND_MESSAGE_TOOL_NAME } from "../src/runtime/tools/schemas";
 import type { ToolCallingModel, ToolCallingResponse } from "../src/adapters";
 import { ValidationError } from "../src/core/errors";
 import { FAILURE_CODE_TIMEOUT } from "../src/core/providerFailure";
 import { describeDeliveryContract } from "./deliveryContract";
-import { expectTurnFailed, hangUntilAborted } from "./testUtils";
+import { expectTurnFailed, failureEvents, hangUntilAborted, hangsOnce } from "./testUtils";
 import { createDeferred } from "../src/core/deferred";
 import type {
   ContactRequestsResult,
@@ -828,21 +828,12 @@ describe("ToolCallingAdapter", () => {
     }
 
     function failureCodes(tools: FakeTools): unknown[] {
-      return tools.events
-        .filter((event) => event.messageType === "error")
-        .map((event) => (event.metadata as { failure?: { code?: string } }).failure?.code);
+      return failureEvents(tools).map((event) => (event.metadata as { failure?: { code?: string } }).failure?.code);
     }
 
     it("fails a turn whose model call outlives the budget, aborts the request, and frees the room for the next turn", async () => {
       vi.useFakeTimers();
-      const hung = hangUntilAborted();
-      let calls = 0;
-      const model: ToolCallingModel = {
-        complete: async (_request, options) => {
-          calls += 1;
-          return calls === 1 ? hung.request(options?.signal) : { text: "second answer" };
-        },
-      };
+      const { model, hung } = hangsOnce("second answer");
       const adapter = new OpenAIAdapter({ model, turnTimeoutMs: TURN_TIMEOUT_MS });
       const tools = new FakeTools();
 
@@ -880,7 +871,7 @@ describe("ToolCallingAdapter", () => {
       await vi.advanceTimersByTimeAsync(0);
 
       expect(executed).toEqual([]);
-      expect(tools.events.map((event) => event.messageType)).toEqual(["error"]);
+      expect(tools.events.map((event) => event.messageType)).toEqual([FAILURE_EVENT_TYPE]);
     });
 
     it("stops between tool calls once the budget is spent, leaving no tool_call without its tool_result", async () => {
@@ -922,8 +913,65 @@ describe("ToolCallingAdapter", () => {
       await expectTurnFailed(runTurn(adapter, tools));
 
       expect(ran).toEqual(["slow"]);
-      expect(tools.events.map((event) => event.messageType)).toEqual(["tool_call", "tool_result", "error"]);
+      expect(tools.events.map((event) => event.messageType)).toEqual(["tool_call", "tool_result", FAILURE_EVENT_TYPE]);
       expect(failureCodes(tools)).toEqual([FAILURE_CODE_TIMEOUT]);
+    });
+
+    it("does not start another model call once a tool round has spent the budget", async () => {
+      vi.useFakeTimers();
+      const spendsBudget: CustomToolDef = {
+        name: "slow",
+        schema: z.object({}),
+        handler: async () => {
+          await vi.advanceTimersByTimeAsync(TURN_TIMEOUT_MS);
+          return "done";
+        },
+      };
+      let calls = 0;
+      const model: ToolCallingModel = {
+        complete: async () => {
+          calls += 1;
+          return { toolCalls: [{ id: "tc1", name: "slow", input: {} }] };
+        },
+      };
+      const adapter = new OpenAIAdapter({ model, customTools: [spendsBudget], turnTimeoutMs: TURN_TIMEOUT_MS });
+      const tools = new FakeTools();
+
+      await expectTurnFailed(runTurn(adapter, tools));
+
+      expect(calls).toBe(1);
+      expect(failureCodes(tools)).toEqual([FAILURE_CODE_TIMEOUT]);
+    });
+
+    it("aborts the request that follows a tool round when the budget runs out", async () => {
+      vi.useFakeTimers();
+      const hung = hangUntilAborted();
+      const lookup: CustomToolDef = { name: "lookup", schema: z.object({}), handler: () => "found" };
+      let calls = 0;
+      const model: ToolCallingModel = {
+        complete: async (_request, options) => {
+          calls += 1;
+          return calls === 1 ? { toolCalls: [{ id: "tc1", name: "lookup", input: {} }] } : hung.request(options?.signal);
+        },
+      };
+      const adapter = new OpenAIAdapter({ model, customTools: [lookup], turnTimeoutMs: TURN_TIMEOUT_MS });
+      const tools = new FakeTools();
+
+      const failed = expectTurnFailed(runTurn(adapter, tools));
+      await vi.advanceTimersByTimeAsync(TURN_TIMEOUT_MS);
+      await failed;
+
+      expect(hung.signal?.aborted).toBe(true);
+      expect(failureCodes(tools)).toEqual([FAILURE_CODE_TIMEOUT]);
+    });
+
+    it("leaves no timer behind once a turn finishes, so the process can exit", async () => {
+      vi.useFakeTimers();
+      const adapter = new OpenAIAdapter({ model: { complete: async () => ({ text: "done" }) } });
+
+      await runTurn(adapter, new FakeTools());
+
+      expect(vi.getTimerCount()).toBe(0);
     });
 
     it("bounds a turn at five minutes when no budget is given", async () => {
