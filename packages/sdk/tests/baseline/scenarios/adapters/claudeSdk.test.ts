@@ -4,7 +4,7 @@
  * connectors, and the Band tools connected and listed from the first turn. A
  * reply the agent sends through band_send_message is its only reply.
  */
-import { query, type McpServerStatus, type SDKAssistantMessage, type SDKSystemMessage } from "@anthropic-ai/claude-agent-sdk";
+import { query, type McpServerStatus, type SDKSystemMessage } from "@anthropic-ai/claude-agent-sdk";
 import { expect } from "vitest";
 
 import {
