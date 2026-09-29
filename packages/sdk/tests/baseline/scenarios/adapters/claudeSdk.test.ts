@@ -23,6 +23,8 @@ import { Rooms } from "../../toolkit/rooms";
 
 const INIT = { type: "system", subtype: "init" } as const satisfies Pick<SDKSystemMessage, "type" | "subtype">;
 const MCP_CONNECTED = "connected" satisfies McpServerStatus["status"];
+/** The path the CLI reports for a plugin bundled with it, which is not host config and loads on the CLI's own flags. */
+const BUILTIN_PLUGIN_PATH = "builtin";
 const REQUEST = "Reply with the single word: pineapple";
 
 /** The real SDK `query`, passing every message through while keeping the last init and the options it was called with. */
@@ -63,7 +65,7 @@ function assertToolIsolation(init: SDKSystemMessage | undefined, allowedTools: s
   expect(mcpServers, "the Band MCP server alone, connected before the first turn").toEqual([
     expect.objectContaining({ name: MCP_SERVER_NAME, status: MCP_CONNECTED }),
   ]);
-  expect(plugins, "no host plugins loaded").toEqual([]);
+  expect(plugins.filter((plugin) => plugin.path !== BUILTIN_PLUGIN_PATH), "no host plugins loaded").toEqual([]);
 }
 
 const tap = recordingQuery();

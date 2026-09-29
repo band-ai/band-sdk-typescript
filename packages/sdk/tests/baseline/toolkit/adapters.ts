@@ -108,9 +108,9 @@ export function buildOpencode({ prompt, workDir }: BuildOptions, config: Opencod
   });
 }
 
-/** Reports every custom-tool call as a `tool_call` event, so a scenario that gives tools can read them back. */
-function reportsTools(tools: BuildOptions["customTools"]) {
-  return { enableExecutionReporting: Boolean(tools?.length) };
+/** Reports every tool call as a `tool_call` event, so a scenario that gives tools or memory can read them back. */
+function reportsTools({ customTools, memory }: Pick<BuildOptions, "customTools" | "memory">) {
+  return { enableExecutionReporting: Boolean(customTools?.length) || Boolean(memory) };
 }
 
 /** A builder for an adapter that cannot run yet; it names why instead of half-building one. */
@@ -125,9 +125,15 @@ const SPECS = {
   anthropic: {
     id: "anthropic",
     requires: [ANTHROPIC_KEY, requires.peerPackage("@anthropic-ai/sdk")],
-    supports: [CAPABILITY.customTools],
-    build: ({ prompt, customTools }) =>
-      new AnthropicAdapter({ anthropicModel: ANTHROPIC_MODEL, systemPrompt: prompt, customTools, ...reportsTools(customTools) }),
+    supports: [CAPABILITY.customTools, CAPABILITY.memory],
+    build: ({ prompt, customTools, memory }) =>
+      new AnthropicAdapter({
+        anthropicModel: ANTHROPIC_MODEL,
+        systemPrompt: prompt,
+        customTools,
+        includeMemoryTools: memory,
+        ...reportsTools({ customTools, memory }),
+      }),
   },
   claudeSdk: {
     id: "claude-sdk",
@@ -170,21 +176,29 @@ const SPECS = {
   gemini: {
     id: "gemini",
     requires: [GOOGLE_KEY, requires.peerPackage("@google/genai")],
-    supports: [CAPABILITY.customTools],
-    build: ({ prompt, customTools }) =>
-      new GeminiAdapter({ geminiModel: GEMINI_MODEL, apiKey: googleApiKey(), systemPrompt: prompt, customTools, ...reportsTools(customTools) }),
+    supports: [CAPABILITY.customTools, CAPABILITY.memory],
+    build: ({ prompt, customTools, memory }) =>
+      new GeminiAdapter({
+        geminiModel: GEMINI_MODEL,
+        apiKey: googleApiKey(),
+        systemPrompt: prompt,
+        customTools,
+        includeMemoryTools: memory,
+        ...reportsTools({ customTools, memory }),
+      }),
   },
   googleAdk: {
     id: "google-adk",
     requires: [GOOGLE_KEY, requires.peerPackage("@google/adk")],
-    supports: [CAPABILITY.customTools],
-    build: ({ prompt, customTools }) =>
+    supports: [CAPABILITY.customTools, CAPABILITY.memory],
+    build: ({ prompt, customTools, memory }) =>
       new GoogleADKAdapter({
         model: GEMINI_MODEL,
         apiKey: googleApiKey(),
         systemPrompt: prompt,
         additionalTools: customTools,
-        ...reportsTools(customTools),
+        enableMemoryTools: memory,
+        ...reportsTools({ customTools, memory }),
       }),
   },
   kiroAcp: {
@@ -218,9 +232,16 @@ const SPECS = {
   openai: {
     id: "openai",
     requires: [requires.envVar(ENV.openaiKey), requires.peerPackage("openai")],
-    supports: [CAPABILITY.customTools],
+    supports: [CAPABILITY.customTools, CAPABILITY.memory],
     pending: "needs an OPENAI_API_KEY provisioned in CI",
-    build: ({ prompt, customTools }) => new OpenAIAdapter({ openAIModel: OPENAI_MODEL, systemPrompt: prompt, customTools, ...reportsTools(customTools) }),
+    build: ({ prompt, customTools, memory }) =>
+      new OpenAIAdapter({
+        openAIModel: OPENAI_MODEL,
+        systemPrompt: prompt,
+        customTools,
+        includeMemoryTools: memory,
+        ...reportsTools({ customTools, memory }),
+      }),
   },
   opencode: {
     id: "opencode",

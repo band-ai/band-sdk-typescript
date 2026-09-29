@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { LangGraphAdapter } from "../src/adapters/langgraph";
+import { MEMORY_SECTION } from "../src/runtime/prompts";
 import { HistoryProvider } from "../src/runtime/types";
 import { FakeTools, makeMessage, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
@@ -144,6 +145,38 @@ describe("LangGraphAdapter", () => {
       "hello",
     ]);
     expect(tools.messages).toEqual(["LangGraph reply"]);
+  });
+
+  describe("memory guidance in a raw system prompt", () => {
+    const RAW_PROMPT = "You are a terse assistant.";
+
+    /** The system message the graph is invoked with, for a raw `systemPrompt`. */
+    async function systemMessageFor(includeMemoryTools: boolean): Promise<string | undefined> {
+      const invokeCalls: Array<{ messages?: Array<[string, string]> }> = [];
+      const graph = {
+        async invoke(input: Record<string, unknown>) {
+          invokeCalls.push(input as { messages?: Array<[string, string]> });
+          return { messages: [["assistant", "ok"]] };
+        },
+      };
+      const adapter = new LangGraphAdapter({ graph, systemPrompt: RAW_PROMPT, includeMemoryTools });
+      await adapter.onStarted("LangGraph Agent", "Graph-backed assistant");
+      await adapter.onMessage(makeMessage("remember this", "room-memory"), new FakeTools(), new HistoryProvider([]), null, null, {
+        isSessionBootstrap: true,
+        roomId: "room-memory",
+      });
+      return invokeCalls[0]?.messages?.find(([role]) => role === "system")?.[1];
+    }
+
+    it("adds the guidance when memory tools are exposed", async () => {
+      const system = await systemMessageFor(true);
+      expect(system).toContain(RAW_PROMPT);
+      expect(system).toContain(MEMORY_SECTION);
+    });
+
+    it("leaves the prompt as given when they are not", async () => {
+      expect(await systemMessageFor(false)).toBe(RAW_PROMPT);
+    });
   });
 
   it("replays history on follow-ups with the triggering message kept exactly once, last", async () => {

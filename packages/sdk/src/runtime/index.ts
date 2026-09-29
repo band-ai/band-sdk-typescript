@@ -77,6 +77,7 @@ export {
   MEMORY_SECTION,
   TEMPLATES,
   renderSystemPrompt,
+  withMemoryGuidance,
   type RenderSystemPromptOptions,
 } from "./prompts";
 
