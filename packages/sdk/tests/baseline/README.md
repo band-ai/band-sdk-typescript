@@ -70,6 +70,11 @@ its registered way (manual approvals, a permission resolver, custom tools for ad
 `CAPABILITY.customTools`, memory tools for those that support `CAPABILITY.memory`). `withAdapters(ids, …)` puts the
 given adapters in one room, in the given order.
 
+A plain `describe(SCENARIO, () => it("<behaviour>"))` has no adapter in its title, so the scorecard
+records it in the `NO_ADAPTER` column. A file or suite that errors (an import failure, a hook that
+throws) fails its scenario's cell, or `scenarioIdFromModulePath` when that id is a registered scenario; otherwise
+the `GENERAL_SCENARIO` row (unhandled errors, or a file outside `scenarios/<category>/`).
+
 The rules:
 
 - **Never hardcode an adapter list.** Select by capability (`supports: [CAPABILITY.approvals]`)
@@ -77,7 +82,7 @@ The rules:
   the scenario is about those particular ones.
 - **No magic strings or numbers.** Each vocabulary is defined once and referenced:
   `DELIVERY_STATUS`, `REPLY_WAIT`, `MESSAGE_TYPE` (the platform's own), `SCORECARD_STATUS`,
-  `ADAPTER`, `CAPABILITY`, `CATEGORY`. Where the SDK or a library already defines a value, use
+  `ADAPTER`, `CAPABILITY`, `CATEGORY`, `NO_ADAPTER`, `GENERAL_SCENARIO`. Where the SDK or a library already defines a value, use
   theirs; where it only defines a type, name the value once with `satisfies` against that type.
 - **Fail loudly, never skip.** A missing key, package or CLI fails the test with its reason. The
   only skips are an adapter's `pending` reason (shown as N/A) and an explicit opt-in flag.

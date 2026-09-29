@@ -1,15 +1,46 @@
-import { describe, expect, it } from "vitest";
-import type { TestResult } from "vitest/node";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { TestModule, TestResult } from "vitest/node";
 
 import { ADAPTER, type AdapterId } from "./adapters";
 import { fakeSpec } from "./fakeSpec";
 import { AdapterRegistry, CAST_SEPARATOR, CATEGORY, scenarioId } from "./registry";
-import { SCORECARD_STATUS } from "./scorecard";
-import { TEST_PARENT, TEST_STATE, scorecardRows, type ReportedTest } from "./scorecardReporter";
+import {
+  GENERAL_SCENARIO,
+  NO_ADAPTER,
+  SCORECARD_JSON_ENV,
+  SCORECARD_STATUS,
+  markdownPath,
+  toMarkdown,
+  type ScorecardOutcome,
+  type ScorecardRow,
+} from "./scorecard";
+import ScorecardReporter, {
+  NO_TEST_DURATION_MS,
+  SOURCE_SEPARATOR,
+  TEST_PARENT,
+  TEST_STATE,
+  errorRows,
+  runRows,
+  scorecardRows,
+  type ReportedModule,
+  type ReportedSuite,
+  type ReportedTest,
+} from "./scorecardReporter";
 
 const REPLIES = scenarioId(CATEGORY.platform, "repliesToMention");
+const REPLIES_FILE = "tests/baseline/scenarios/platform/repliesToMention.test.ts";
+const RECONNECT = scenarioId(CATEGORY.behavior, "reconnect");
+const RECONNECT_FILE = "tests/baseline/scenarios/behavior/reconnect.test.ts";
+const LOOSE_FILE = "tests/baseline/scenarios/loose.test.ts";
+const BEHAVIOUR_TITLE = "keeps going";
 const DURATION_MS = 42;
 const FAILURE = "no reply within 5ms";
+const HOOK_FAILURE = "afterAll blew up";
+const UNHANDLED_FAILURE = "stray rejection";
 const OPT_IN_NOTE = "set RUN_CODEX_ACP_E2E=1";
 const PENDING_REASON = "needs a server";
 const BESPOKE_REASON = "has no Band tools";
@@ -24,18 +55,54 @@ const roster = new AdapterRegistry<AdapterId>([
   fakeSpec(BESPOKE, { bespokeOnly: BESPOKE_REASON }),
 ]);
 
-/** A finished test as vitest reports it, titled the way `perAdapter` titles it. */
+/** A finished test as vitest reports it, titled the way `perAdapter` titles it, in the replies scenario's file. */
 function reported(suite: string, name: string, result: TestResult): ReportedTest {
   return {
     name,
+    fullName: `${suite}${SOURCE_SEPARATOR}${name}`,
+    module: { relativeModuleId: REPLIES_FILE },
     parent: { type: TEST_PARENT.suite, name: suite },
     result: () => result,
     diagnostic: () => ({ duration: DURATION_MS }),
   };
 }
 
+const toErrors = (messages: string[]) => messages.map((message) => ({ message }));
+
+/** A suite as vitest reports it; its errors are the ones its own hooks threw. */
+const reportedSuite = (name: string, errors: string[] = []): ReportedSuite => ({
+  name,
+  fullName: name,
+  errors: () => toErrors(errors),
+});
+
+/** A test file as vitest reports it. */
+function reportedModule(
+  relativeModuleId: string,
+  { errors = [], suites = [], tests = [] }: { errors?: string[]; suites?: ReportedSuite[]; tests?: ReportedTest[] } = {},
+): ReportedModule {
+  return {
+    relativeModuleId,
+    errors: () => toErrors(errors),
+    children: { allTests: () => tests, allSuites: () => suites },
+  };
+}
+
 const passed: TestResult = { state: TEST_STATE.passed, errors: undefined };
+const failed: TestResult = { state: TEST_STATE.failed, errors: toErrors([FAILURE]) };
 const skipped = (note?: string): TestResult => ({ state: TEST_STATE.skipped, errors: undefined, note });
+
+const PASS: ScorecardOutcome = { status: SCORECARD_STATUS.pass, durationMs: DURATION_MS };
+const failWith = (error: string, durationMs = NO_TEST_DURATION_MS): ScorecardOutcome => ({
+  status: SCORECARD_STATUS.fail,
+  error,
+  durationMs,
+});
+const noAdapter = (scenario: ScorecardRow["scenario"], outcome: ScorecardOutcome): ScorecardRow => ({
+  scenario,
+  adapter: NO_ADAPTER,
+  outcome,
+});
 
 describe("scorecardRows", () => {
   it("reads the scenario from the suite and the adapter from the test", () => {
@@ -51,7 +118,6 @@ describe("scorecardRows", () => {
   });
 
   it("records a failure with its error messages", () => {
-    const failed: TestResult = { state: TEST_STATE.failed, errors: [{ message: FAILURE } as never] };
     expect(scorecardRows(reported(REPLIES, ADAPTER.gemini, failed), roster)[0]?.outcome).toEqual({
       status: SCORECARD_STATUS.fail,
       error: FAILURE,
@@ -82,14 +148,152 @@ describe("scorecardRows", () => {
     expect(scorecardRows(reported(REPLIES, PENDING, skipped()), roster), "a filtered-out pending adapter").toEqual([]);
   });
 
-  it.each([
+  describe("a test in a scenario whose title is not an adapter", () => {
+    const rows = (result: TestResult) => scorecardRows(reported(REPLIES, BEHAVIOUR_TITLE, result), roster);
+
+    it("passes in the (no adapter) column", () => {
+      expect(rows(passed)).toEqual([noAdapter(REPLIES, PASS)]);
+    });
+
+    it("fails there, naming the test", () => {
+      expect(rows(failed)).toEqual([noAdapter(REPLIES, failWith(`${BEHAVIOUR_TITLE}: ${FAILURE}`, DURATION_MS))]);
+    });
+
+    it("is skipped with its note, never N/A, and leaves a filtered-out test out", () => {
+      expect(rows(skipped(OPT_IN_NOTE))).toEqual([noAdapter(REPLIES, { status: SCORECARD_STATUS.skip, reason: OPT_IN_NOTE })]);
+      expect(rows(skipped())).toEqual([]);
+    });
+  });
+
+  describe.each([
     {
       name: "a test outside any suite",
-      test: { ...reported(REPLIES, ADAPTER.anthropic, passed), parent: { type: TEST_PARENT.module } },
+      make: (result: TestResult): ReportedTest => ({
+        ...reported(REPLIES, ADAPTER.anthropic, result),
+        fullName: ADAPTER.anthropic,
+        parent: { type: TEST_PARENT.module },
+      }),
     },
-    { name: "a suite that is not a scenario id", test: reported("ToolCallingAdapter", ADAPTER.anthropic, passed) },
-    { name: "a test that is not an adapter id", test: reported(REPLIES, "some other case", passed) },
-  ])("ignores $name", ({ test }) => {
-    expect(scorecardRows(test, roster)).toEqual([]);
+    {
+      name: "a suite that is not a scenario id",
+      make: (result: TestResult) => reported("ToolCallingAdapter", ADAPTER.anthropic, result),
+    },
+  ])("$name", ({ make }) => {
+    it("has nothing to report once it passed", () => {
+      expect(scorecardRows(make(passed), roster)).toEqual([]);
+    });
+
+    it("fails its file's cell once it failed", () => {
+      const test = make(failed);
+      expect(scorecardRows(test, roster)).toEqual([
+        noAdapter(REPLIES, failWith(`${REPLIES_FILE}${SOURCE_SEPARATOR}${test.fullName}: ${FAILURE}`, DURATION_MS)),
+      ]);
+    });
+  });
+
+  it("fails the (general) cell for a failed test in a file outside the scenario layout", () => {
+    const test: ReportedTest = {
+      name: BEHAVIOUR_TITLE,
+      fullName: BEHAVIOUR_TITLE,
+      module: { relativeModuleId: LOOSE_FILE },
+      parent: { type: TEST_PARENT.suite, name: "loose group" },
+      result: () => failed,
+      diagnostic: () => ({ duration: DURATION_MS }),
+    };
+    expect(scorecardRows(test, roster)).toEqual([
+      noAdapter(GENERAL_SCENARIO, failWith(`${LOOSE_FILE}${SOURCE_SEPARATOR}${BEHAVIOUR_TITLE}: ${FAILURE}`, DURATION_MS)),
+    ]);
+  });
+});
+
+describe("errorRows", () => {
+  it.each<{ name: string; file: string; scenario: ScorecardRow["scenario"] }>([
+    { name: "a scenario file", file: RECONNECT_FILE, scenario: RECONNECT },
+    { name: "the same file under the repo root", file: `packages/sdk/${RECONNECT_FILE}`, scenario: RECONNECT },
+    { name: "a file under samples", file: "tests/baseline/scenarios/samples/markers.test.ts", scenario: GENERAL_SCENARIO },
+    { name: "a file directly under scenarios", file: "tests/baseline/scenarios/loose.test.ts", scenario: GENERAL_SCENARIO },
+  ])("fails the cell $name is named after, or (general) outside the layout, when it fails to load", ({ file, scenario }) => {
+    expect(errorRows(reportedModule(file, { errors: [FAILURE] }))).toEqual([noAdapter(scenario, failWith(`${file}: ${FAILURE}`))]);
+  });
+
+  it.each([
+    { name: "a suite named as a scenario id", suite: REPLIES, scenario: REPLIES },
+    { name: "any other suite", suite: "nested group", scenario: RECONNECT },
+  ])("fails the cell $name maps to when its hook errors", ({ suite, scenario }) => {
+    const module = reportedModule(RECONNECT_FILE, { suites: [reportedSuite(suite, [HOOK_FAILURE])] });
+    const error = `${RECONNECT_FILE}${SOURCE_SEPARATOR}${suite}: ${HOOK_FAILURE}`;
+    expect(errorRows(module)).toEqual([noAdapter(scenario, failWith(error))]);
+  });
+
+  it("has nothing to report when neither the file nor its suites errored", () => {
+    expect(errorRows(reportedModule(REPLIES_FILE, { suites: [reportedSuite(REPLIES)] }))).toEqual([]);
+  });
+
+  it("reports both a load error and a suite hook error on the same module", () => {
+    const module = reportedModule(RECONNECT_FILE, {
+      errors: [FAILURE],
+      suites: [reportedSuite("nested group", [HOOK_FAILURE])],
+    });
+    expect(errorRows(module)).toEqual([
+      noAdapter(RECONNECT, failWith(`${RECONNECT_FILE}: ${FAILURE}`)),
+      noAdapter(RECONNECT, failWith(`${RECONNECT_FILE}${SOURCE_SEPARATOR}nested group: ${HOOK_FAILURE}`)),
+    ]);
+  });
+});
+
+describe("runRows", () => {
+  it("keeps one row per cell, the fail winning, with module errors and unhandled errors in the grid", () => {
+    const plain = reportedModule(REPLIES_FILE, {
+      tests: [reported(REPLIES, BEHAVIOUR_TITLE, failed), reported(REPLIES, "checks another thing", passed)],
+    });
+    const broken = reportedModule(RECONNECT_FILE, { errors: [FAILURE] });
+
+    expect(runRows([plain, broken], toErrors([UNHANDLED_FAILURE, FAILURE]), roster)).toEqual([
+      noAdapter(GENERAL_SCENARIO, failWith(`${UNHANDLED_FAILURE}\n${FAILURE}`)),
+      noAdapter(RECONNECT, failWith(`${RECONNECT_FILE}: ${FAILURE}`)),
+      noAdapter(REPLIES, failWith(`${BEHAVIOUR_TITLE}: ${FAILURE}`, DURATION_MS)),
+    ]);
+  });
+
+  it("joins a hook error and a failing adapterless test in the same cell", () => {
+    const module = reportedModule(REPLIES_FILE, {
+      suites: [reportedSuite(REPLIES, [HOOK_FAILURE])],
+      tests: [reported(REPLIES, BEHAVIOUR_TITLE, failed)],
+    });
+    const hook = `${REPLIES_FILE}${SOURCE_SEPARATOR}${REPLIES}: ${HOOK_FAILURE}`;
+    const test = `${BEHAVIOUR_TITLE}: ${FAILURE}`;
+    expect(runRows([module], [], roster)).toEqual([noAdapter(REPLIES, failWith(`${hook}\n${test}`, NO_TEST_DURATION_MS))]);
+  });
+
+  it("joins unhandled errors into an existing (general) cell", () => {
+    const broken = reportedModule(LOOSE_FILE, { errors: [FAILURE] });
+    expect(runRows([broken], toErrors([UNHANDLED_FAILURE]), roster)).toEqual([
+      noAdapter(GENERAL_SCENARIO, failWith(`${LOOSE_FILE}: ${FAILURE}\n${UNHANDLED_FAILURE}`)),
+    ]);
+  });
+});
+
+describe("ScorecardReporter.onTestRunEnd", () => {
+  let dir: string | undefined;
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+    if (dir) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("writes the module's rows and the unhandled errors to the scorecard", () => {
+    dir = mkdtempSync(join(tmpdir(), "scorecard-reporter-"));
+    const path = join(dir, "scorecard.json");
+    // vitest builds a reporter as `new Reporter(options)`, so the environment is the only way in.
+    vi.stubEnv(SCORECARD_JSON_ENV, path);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const module = reportedModule(RECONNECT_FILE, { tests: [reported(RECONNECT, BEHAVIOUR_TITLE, passed)] });
+
+    new ScorecardReporter().onTestRunEnd([module as TestModule], toErrors([UNHANDLED_FAILURE]));
+
+    const expected = [noAdapter(GENERAL_SCENARIO, failWith(UNHANDLED_FAILURE)), noAdapter(RECONNECT, PASS)];
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(expected);
+    expect(readFileSync(markdownPath(path), "utf8")).toBe(toMarkdown(expected));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(path));
   });
 });

@@ -5,6 +5,7 @@
  * are the roster.
  */
 import { existsSync } from "node:fs";
+import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { FrameworkAdapter } from "../../../src/contracts/protocols";
@@ -41,6 +42,13 @@ export type ScenarioId = `${Category}.${string}`;
 /** A scenario id: its category folder, then its name. */
 export function scenarioId(category: Category, name: string): ScenarioId {
   return `${category}.${name}`;
+}
+
+const SCENARIO_FILE_SUFFIX = ".test.ts";
+
+/** `<category>.<stem>` from a path shaped like `…/<category>/<stem>.test.ts`. */
+export function scenarioIdFromModulePath(relativeModuleId: string): string {
+  return `${basename(dirname(relativeModuleId))}.${basename(relativeModuleId, SCENARIO_FILE_SUFFIX)}`;
 }
 
 /** What an adapter can select on. Grows only as scenarios filter on it. */
