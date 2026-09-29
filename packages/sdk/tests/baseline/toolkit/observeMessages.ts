@@ -7,7 +7,9 @@
 import { Band } from "@band-ai/rest-client";
 
 import { FAILURE_EVENT_TYPE } from "../../../src/contracts/protocols";
+import { parseToolCall } from "../../../src/converters/shared";
 import type { MessageCreatedPayload } from "../../../src/platform/events";
+import { MEMORY_TOOL_NAMES } from "../../../src/runtime/tools/schemas";
 import { LIVE_EVENT_TIMEOUT_MS } from "../../integration/support/liveHarness";
 import type { AgentIdentity } from "./agents";
 import { liveRun } from "./liveRun";
@@ -84,6 +86,41 @@ async function history(room: Room, messageType?: MessageType): Promise<CapturedM
   } while (cursor);
   // The platform lists newest first.
   return messages.reverse();
+}
+
+/** The room's stored `messageType` events from `sender`, oldest first. Read only after `untilProcessed`. */
+export async function eventsFrom(room: Room, messageType: MessageType, sender: Pick<AgentIdentity, "id">): Promise<CapturedMessage[]> {
+  return (await history(room, messageType)).filter((event) => event.senderId === sender.id);
+}
+
+/** One stored tool call. `id` is the event's own id, which tells one turn's calls from another's. */
+export interface ToolCallEvent {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+}
+
+export interface ToolCallsOptions {
+  /** Keep the Band memory tools' calls, which the general view leaves out. */
+  includeMemory?: boolean;
+}
+
+/**
+ * Every tool `sender` called in `room`, oldest first. An event that is not a
+ * parseable call is dropped. Read only after `untilProcessed`.
+ */
+export async function toolCalls(
+  room: Room,
+  sender: Pick<AgentIdentity, "id">,
+  { includeMemory = false }: ToolCallsOptions = {},
+): Promise<ToolCallEvent[]> {
+  const events = await eventsFrom(room, MESSAGE_TYPE.ToolCall, sender);
+  return events
+    .flatMap((event) => {
+      const call = parseToolCall(event.content);
+      return call ? [{ id: event.id, name: call.name, args: call.args }] : [];
+    })
+    .filter((call) => includeMemory || !MEMORY_TOOL_NAMES.has(call.name));
 }
 
 export interface ReplyWaitOptions {

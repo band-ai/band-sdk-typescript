@@ -125,6 +125,7 @@ function defineRun(
     if (reason) {
       skip(reason);
     }
+
     await runScenario(chosen, body, { prompt: options.prompt ?? DEFAULT_PROMPT, build: options.build });
   });
 }

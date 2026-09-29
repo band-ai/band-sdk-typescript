@@ -7,6 +7,7 @@ import type { HistoryProvider, PlatformMessage } from "../src/runtime";
 import type { CustomToolDef } from "../src/runtime/tools/customTools";
 import type { AgentToolsProtocol } from "../src/core";
 import { toFailureEvent } from "../src/contracts/protocols";
+import { MEMORY_SECTION, renderSystemPrompt } from "../src/runtime/prompts";
 import { SEND_MESSAGE_TOOL_NAME } from "../src/runtime/tools/schemas";
 import type { ToolCallingModel } from "../src/adapters";
 import { describeDeliveryContract } from "./deliveryContract";
@@ -133,6 +134,7 @@ class FakeTools implements AgentToolsProtocol {
 class FakeModel implements ToolCallingModel {
   private turns = 0;
   public readonly requests: Array<{
+    systemPrompt?: string;
     toolRounds?: Array<{
       toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
       toolResults: Array<{ toolCallId: string; name: string; output: unknown; isError?: boolean }>;
@@ -141,6 +143,7 @@ class FakeModel implements ToolCallingModel {
 
   public async complete(
     request: {
+      systemPrompt?: string;
       toolRounds?: Array<{
         toolCalls: Array<{ id: string; name: string; input: Record<string, unknown> }>;
         toolResults: Array<{ toolCallId: string; name: string; output: unknown; isError?: boolean }>;
@@ -148,6 +151,7 @@ class FakeModel implements ToolCallingModel {
     },
   ): Promise<{ text?: string; toolCalls?: Array<{ id: string; name: string; input: Record<string, unknown> }> }> {
     this.requests.push({
+      systemPrompt: request.systemPrompt,
       toolRounds: request.toolRounds,
     });
     this.turns += 1;
@@ -592,6 +596,52 @@ describe("ToolCallingAdapter", () => {
         }),
       ]),
     );
+  });
+
+  describe("memory guidance in a raw system prompt", () => {
+    const RAW_PROMPT = "You are a terse assistant.";
+
+    /** The system prompt of every model request in a turn that makes one tool round, so two requests. */
+    async function promptsSent(includeMemoryTools: boolean): Promise<Array<string | undefined>> {
+      const model = new FakeModel();
+      const adapter = new OpenAIAdapter({ model, systemPrompt: RAW_PROMPT, includeMemoryTools });
+      await adapter.onMessage(fakeMessage, new FakeTools(), fakeHistory, null, null, { isSessionBootstrap: true, roomId: "r1" });
+      return model.requests.map((request) => request.systemPrompt);
+    }
+
+    it("adds the guidance to the first request and the follow-up round when memory tools are exposed", async () => {
+      const prompts = await promptsSent(true);
+      expect(prompts).toHaveLength(2);
+      for (const prompt of prompts) {
+        expect(prompt).toContain(RAW_PROMPT);
+        expect(prompt).toContain(MEMORY_SECTION);
+      }
+    });
+
+    it("leaves the prompt as given when they are not", async () => {
+      expect(await promptsSent(false)).toEqual([RAW_PROMPT, RAW_PROMPT]);
+    });
+
+    it("sends memory guidance alone when memory tools are on and no system prompt was given", async () => {
+      const model = new FakeModel();
+      const adapter = new OpenAIAdapter({ model, includeMemoryTools: true });
+      await adapter.onMessage(fakeMessage, new FakeTools(), fakeHistory, null, null, { isSessionBootstrap: true, roomId: "r1" });
+
+      for (const prompt of model.requests.map((request) => request.systemPrompt)) {
+        expect(prompt).toContain(MEMORY_SECTION);
+      }
+    });
+
+    it("does not duplicate memory guidance when the prompt already came from renderSystemPrompt", async () => {
+      const model = new FakeModel();
+      const systemPrompt = renderSystemPrompt({ customSection: RAW_PROMPT, capabilities: { memory: true } });
+      const adapter = new OpenAIAdapter({ model, systemPrompt, includeMemoryTools: true });
+      await adapter.onMessage(fakeMessage, new FakeTools(), fakeHistory, null, null, { isSessionBootstrap: true, roomId: "r1" });
+
+      for (const prompt of model.requests.map((request) => request.systemPrompt)) {
+        expect((prompt?.match(/## Memory Tools/g) ?? []).length).toBe(1);
+      }
+    });
   });
 
   it("emits tool_call and tool_result events when execution reporting is enabled", async () => {

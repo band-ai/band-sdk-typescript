@@ -705,7 +705,8 @@
         "renderSystemPrompt",
         "replaceUuidMentions",
         "runWithGracefulShutdown",
-        "sessionConfigSchema"
+        "sessionConfigSchema",
+        "withMemoryGuidance"
       ],
       "declarations": [
         "ALL_TOOL_NAMES",
@@ -775,7 +776,8 @@
         "renderSystemPrompt",
         "replaceUuidMentions",
         "runWithGracefulShutdown",
-        "sessionConfigSchema"
+        "sessionConfigSchema",
+        "withMemoryGuidance"
       ]
     },
     "./testing": {

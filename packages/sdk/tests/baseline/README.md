@@ -20,8 +20,8 @@ Scope with vitest's own `-t` or a path, with no `--` (it breaks `-t` filtering).
 | --- | --- |
 | `BAND_API_KEY_USER` | The Band user key every run provisions and reaps its agents with. Required. |
 | `BAND_E2E_SCORECARD_JSON` | Writes the scorecard to this path, plus a `.md` grid beside it. |
-| `BAND_E2E_INCLUDE_PENDING=1` | Also runs adapters marked `pending` (normally N/A), for local use. |
-| `RUN_CODEX_ACP_E2E=1` | Opts in to `adapters.codexAcpSmoke`, which needs a local `codex-acp`. |
+| `BAND_E2E_INCLUDE_PENDING=1` | Fans `perAdapter` scenarios out to adapters marked `pending` too (they are omitted by default). |
+| `RUN_CODEX_ACP_E2E=1` | Includes `adapters.codexAcpSmoke` in the baseline run (needs a local `codex-acp`); excluded from `vitest.baseline.config.ts` when unset. |
 
 Each adapter also needs its own model key or CLI (see `requires` in `toolkit/adapters.ts`). letta and
 parlant need a running server: CI starts them with `.github/scripts/setup-letta.sh` (docker) and
@@ -50,7 +50,7 @@ sticky comment on the branch's PR, or in the job summary when there is none.
 | `toolkit/assert*.ts` | Plain assertion functions. |
 | `toolkit/scorecard.ts`, `scorecardReporter.ts` | The scorecard's shape and grid, and the vitest reporter that fills it. |
 | `scenarios/<category>/*.test.ts` | Scenarios; the category is the first part of the scenario id. |
-| `scenarios/samples/` | Shared scenario pieces: markers, the MCP roster flow, approval dialects, an opaque lookup tool. |
+| `scenarios/samples/` | Shared scenario pieces: markers, the MCP roster flow, approval dialects, opaque lookup and forecast tools, the exact-tools prompt, the memory and event samples, and `takeTurn` (say it, wait until processed). |
 
 ## Writing a scenario
 
@@ -67,7 +67,7 @@ The id is `<category>.<name>`, built with `scenarioId`, and each test is titled
 `<scenario> > <adapter>`; the scorecard reads both from the title. `perAdapter` takes `supports` / `without` / `exclude` to narrow the
 adapters, `prompt` to steer them, and `build` when a scenario needs an adapter built other than
 its registered way (manual approvals, a permission resolver, custom tools for adapters that support
-`CAPABILITY.customTools`). `withAdapters(ids, …)` puts the
+`CAPABILITY.customTools`, memory tools for those that support `CAPABILITY.memory`). `withAdapters(ids, …)` puts the
 given adapters in one room, in the given order.
 
 The rules:
@@ -101,9 +101,18 @@ The rules:
 Add its spec to `SPECS` in `toolkit/adapters.ts`, with `id` set to its directory under
 `src/adapters/`; its `ADAPTER` handle and everything else follow from that. The `registry.test.ts`
 drift guard fails until the roster and the folders under `src/adapters/` agree. An adapter CI can't run yet gets a plain-language `pending` reason, and
-the scorecard shows it as N/A with that reason. An adapter the generic scenarios don't fit (Parlant
+the scorecard shows it as N/A with that reason (skipped in `perAdapter` fan-outs unless `BAND_E2E_INCLUDE_PENDING=1`; `withAdapters` scenarios that name a pending adapter skip that row with the same reason). An adapter the generic scenarios don't fit (Parlant
 has no Band tools) gets a `bespokeOnly` reason instead: it runs only in the `adapters.*` scenarios that name it, and
 `perAdapter` fan-outs show it as N/A with that reason.
+
+## Planned scenarios (not in the tree yet)
+
+Add these as real scenarios when the SDK or platform exposes what they need — no placeholder `it()` blocks that only throw or skip.
+
+| Id | Blocked on |
+| --- | --- |
+| `inspection.usage` | Per-turn token usage reported by the SDK (band-sdk-python usage smokes). |
+| `behavior.controlSignals` | User stop/play/interrupt on the platform and handling in the TS runtime (Python `test_next_actionable_semantics`). |
 
 ## Design values
 

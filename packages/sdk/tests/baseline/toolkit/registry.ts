@@ -44,7 +44,7 @@ export function scenarioId(category: Category, name: string): ScenarioId {
 }
 
 /** What an adapter can select on. Grows only as scenarios filter on it. */
-export const CAPABILITY = { approvals: "approvals", customTools: "customTools" } as const;
+export const CAPABILITY = { approvals: "approvals", customTools: "customTools", memory: "memory" } as const;
 
 export type Capability = (typeof CAPABILITY)[keyof typeof CAPABILITY];
 
@@ -73,6 +73,8 @@ export interface BuildOptions {
   workDir: string;
   /** Tools a scenario gives the agent; builders that support `CAPABILITY.customTools` report each call as a `tool_call` event. */
   customTools?: CustomToolDef[];
+  /** Builders that support `CAPABILITY.memory` give the agent the Band memory tools and report their calls. */
+  memory?: boolean;
 }
 
 export type AdapterBuilder = (options: BuildOptions) => FrameworkAdapter;

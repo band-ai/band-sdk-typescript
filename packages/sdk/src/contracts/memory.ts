@@ -96,6 +96,15 @@ export const MEMORY_SEGMENT = namedValues(MEMORY_SEGMENTS);
 /** Named store-scope values for code that should avoid raw string literals. */
 export const MEMORY_STORE_SCOPE = namedValues(MEMORY_STORE_SCOPES);
 
+/** Named list-scope values for code that should avoid raw string literals. */
+export const MEMORY_LIST_SCOPE = namedValues(MEMORY_LIST_SCOPES);
+
+/** Named lifecycle-status values for code that should avoid raw string literals. */
+export const MEMORY_STATUS = namedValues(MEMORY_STATUSES);
+
+/** The platform's 422 error code for `scope="organization"` when the agent's owner belongs to no organization. */
+export const ORGANIZATION_SCOPE_REJECTED_CODE = "org_scope_requires_organization";
+
 export function isMemorySystem(value: string): value is MemorySystem {
   return (MEMORY_SYSTEMS as readonly string[]).includes(value);
 }
