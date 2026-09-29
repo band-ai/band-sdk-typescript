@@ -47,7 +47,7 @@ sticky comment on the branch's PR, or in the job summary when there is none.
 | `toolkit/assert*.ts` | Plain assertion functions. |
 | `toolkit/scorecard.ts`, `scorecardReporter.ts` | The scorecard's shape and grid, and the vitest reporter that fills it. |
 | `scenarios/<category>/*.test.ts` | Scenarios; the category is the first part of the scenario id. |
-| `scenarios/samples/` | Shared scenario pieces: markers, the MCP roster flow, approval dialects, an opaque lookup tool. |
+| `scenarios/samples/` | Shared scenario pieces: markers, the MCP roster flow, approval dialects, opaque lookup and forecast tools, the exact-tools prompt, the memory and event samples, and `takeTurn` (say it, wait until processed). |
 
 ## Writing a scenario
 
@@ -64,7 +64,7 @@ The id is `<category>.<name>`, built with `scenarioId`, and each test is titled
 `<scenario> > <adapter>`; the scorecard reads both from the title. `perAdapter` takes `supports` / `without` / `exclude` to narrow the
 adapters, `prompt` to steer them, and `build` when a scenario needs an adapter built other than
 its registered way (manual approvals, a permission resolver, custom tools for adapters that support
-`CAPABILITY.customTools`). `withAdapters(ids, …)` puts the
+`CAPABILITY.customTools`, memory tools for those that support `CAPABILITY.memory`). `withAdapters(ids, …)` puts the
 given adapters in one room, in the given order.
 
 The rules:
