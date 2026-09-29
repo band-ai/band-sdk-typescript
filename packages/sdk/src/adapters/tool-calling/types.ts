@@ -31,10 +31,11 @@ export interface ToolCallingModelRequest {
   toolRounds?: ToolRound[];
 }
 
+export interface ToolCallingModelOptions {
+  /** Aborts when the turn's time budget runs out. Pass it to the provider call, so the abandoned request is released. */
+  signal?: AbortSignal;
+}
+
 export interface ToolCallingModel {
-  /**
-   * `options.signal` aborts when the turn's time budget runs out. Honour it by
-   * passing it to the provider call, so the abandoned request is released.
-   */
-  complete(request: ToolCallingModelRequest, options?: { signal?: AbortSignal }): Promise<ToolCallingResponse>;
+  complete(request: ToolCallingModelRequest, options?: ToolCallingModelOptions): Promise<ToolCallingResponse>;
 }

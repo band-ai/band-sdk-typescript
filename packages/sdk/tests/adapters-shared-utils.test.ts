@@ -12,8 +12,8 @@ import {
   selectCompleteExchanges,
   takeLast,
 } from "../src/adapters/shared/history";
-import { MAX_SETTIMEOUT_DELAY_MS, assertTurnTimeoutMs } from "../src/adapters/shared/turnTimeout";
-import { withTimeout } from "../src/adapters/shared/withTimeout";
+import { assertTurnTimeoutMs } from "../src/adapters/shared/turnTimeout";
+import { MAX_SETTIMEOUT_DELAY_MS, withTimeout } from "../src/adapters/shared/withTimeout";
 import { mapConversationMessages } from "../src/adapters/tool-calling/valueUtils";
 
 describe("adapter shared utilities", () => {

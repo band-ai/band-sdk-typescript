@@ -1,6 +1,7 @@
 import type {
   ToolCall,
   ToolCallingModel,
+  ToolCallingModelOptions,
   ToolCallingModelRequest,
   ToolCallingResponse,
   ToolResult,
@@ -117,7 +118,7 @@ export class GeminiToolCallingModel implements ToolCallingModel {
     });
   }
 
-  public async complete(request: ToolCallingModelRequest, options?: { signal?: AbortSignal }): Promise<ToolCallingResponse> {
+  public async complete(request: ToolCallingModelRequest, options?: ToolCallingModelOptions): Promise<ToolCallingResponse> {
     const client = await this.getClient();
     await this.ensurePartFactories();
 

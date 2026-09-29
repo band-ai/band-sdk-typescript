@@ -174,6 +174,7 @@ export {
 } from "./tool-calling";
 export type {
   ToolCallingModel,
+  ToolCallingModelOptions,
   ToolCallingModelRequest,
   ToolCallingResponse,
   ToolCall,

@@ -1,6 +1,7 @@
 import type {
   ToolCall,
   ToolCallingModel,
+  ToolCallingModelOptions,
   ToolCallingModelRequest,
   ToolCallingResponse,
 } from "../tool-calling";
@@ -52,7 +53,7 @@ export class AnthropicToolCallingModel implements ToolCallingModel {
     });
   }
 
-  public async complete(request: ToolCallingModelRequest, options?: { signal?: AbortSignal }): Promise<ToolCallingResponse> {
+  public async complete(request: ToolCallingModelRequest, options?: ToolCallingModelOptions): Promise<ToolCallingResponse> {
     const client = await this.getClient();
     const systemPrompt = request.systemPrompt?.trim();
 

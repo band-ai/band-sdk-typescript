@@ -6,7 +6,6 @@ import {
   type ToolSchemaProvider,
 } from "../../contracts/protocols";
 import type { ToolModelMessage } from "../../contracts/dtos";
-import { Deadline } from "../../core/deadline";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
@@ -16,6 +15,7 @@ import { deliverFallbackReply, trackPostedReply } from "../../runtime/tools/post
 import { asErrorMessage } from "../shared/coercion";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
 import { assertTurnTimeoutMs } from "../shared/turnTimeout";
+import { TurnBudget } from "./turnBudget";
 import {
   FAILURE_CODE_TIMEOUT,
   agentFailure,
@@ -44,59 +44,6 @@ const DEFAULT_PROVIDER = "tool-calling";
 
 /** Caps a whole turn across its tool rounds, at its next model or tool call; matches the OpenCode adapter's cap. */
 const DEFAULT_TURN_TIMEOUT_MS = 300_000;
-
-class TurnTimedOutError extends Error {
-  public constructor() {
-    super("Tool-calling turn timed out");
-    this.name = "TurnTimedOutError";
-  }
-}
-
-/**
- * One turn's time budget, enforced from inside the turn. Racing the whole turn
- * from outside would free the room's turn lock while its tool loop kept
- * running, overlapping the next turn on the same conversation.
- */
-class TurnBudget implements Disposable {
-  private readonly deadline: Deadline;
-  private readonly controller = new AbortController();
-  private expired = false;
-
-  public constructor(timeoutMs: number) {
-    this.deadline = new Deadline(timeoutMs);
-    // The flag goes up before the abort: a model that rejects the moment it is
-    // aborted must still be classed as a timeout, not as its own abort error.
-    void this.deadline.expired.then(() => {
-      this.expired = true;
-      this.controller.abort();
-    });
-  }
-
-  public get hasExpired(): boolean {
-    return this.expired;
-  }
-
-  public throwIfExpired(): void {
-    if (this.expired) {
-      throw new TurnTimedOutError();
-    }
-  }
-
-  /** Runs `call` with the turn's abort signal, and stops waiting on it at the deadline even if it ignores the signal. */
-  public async run<T>(call: (signal: AbortSignal) => Promise<T>): Promise<T> {
-    this.throwIfExpired();
-    return Promise.race([
-      call(this.controller.signal),
-      this.deadline.expired.then((): never => {
-        throw new TurnTimedOutError();
-      }),
-    ]);
-  }
-
-  public [Symbol.dispose](): void {
-    this.deadline[Symbol.dispose]();
-  }
-}
 
 export interface ToolCallingAdapterOptions {
   model: ToolCallingModel;
