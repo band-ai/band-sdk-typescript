@@ -40,12 +40,17 @@ describe("assertReplyContains", () => {
   });
 
   it("fails naming the wait when no reply came", () => {
-    expect(() => assertReplyContains({ kind: REPLY_WAIT.timeout, waitedMs: 5, failures: [] }, REPLY_WORD)).toThrow("no reply within 5ms");
+    expect(() => assertReplyContains({ kind: REPLY_WAIT.timeout, waitedMs: 5, unmatched: [], failures: [] }, REPLY_WORD)).toThrow("no reply within 5ms");
   });
 
   it("names what the agent reported failing while no reply came", () => {
-    const timedOut = { kind: REPLY_WAIT.timeout, waitedMs: 5, failures: ["ACP turn ended with stop reason: cancelled."] };
+    const timedOut = { kind: REPLY_WAIT.timeout, waitedMs: 5, unmatched: [], failures: ["ACP turn ended with stop reason: cancelled."] };
     expect(() => assertReplied(timedOut)).toThrow("no reply within 5ms; the agent reported: ACP turn ended with stop reason: cancelled.");
+  });
+
+  it("names what the agent posted when none of it matched", () => {
+    const timedOut = { kind: REPLY_WAIT.timeout, waitedMs: 5, unmatched: ["hello", "what now?"], failures: [] };
+    expect(() => assertReplied(timedOut)).toThrow('no reply within 5ms; it posted instead: "hello" | "what now?"');
   });
 });
 
