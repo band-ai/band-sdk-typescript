@@ -385,6 +385,7 @@ export class LettaAdapter extends SimpleAdapter<
 
       const userContent = buildUserMessage({
         content: message.content,
+        senderName: message.senderName,
         participantsMessage,
         contactsMessage,
       });
@@ -1014,12 +1015,18 @@ function stripUuidMentions(content: string): string {
   return content.replace(/@\[\[[^\]]+\]\]/g, "").trim();
 }
 
+/**
+ * The turn's user message: the room's new message, named after its sender the
+ * way the history lines are, so the agent can tell who said it.
+ */
 function buildUserMessage(input: {
   content: string;
+  senderName?: string | null;
   participantsMessage: string | null;
   contactsMessage: string | null;
 }): string {
-  const content = stripUuidMentions(input.content);
+  const text = stripUuidMentions(input.content);
+  const content = input.senderName ? `[${input.senderName}]: ${text}` : text;
   const updates: string[] = [];
   if (input.participantsMessage) {
     updates.push(`${SYSTEM_DELIMITER} ${input.participantsMessage}`);

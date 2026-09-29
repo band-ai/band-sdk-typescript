@@ -907,6 +907,24 @@ describe("LettaAdapter", () => {
     expect(sentContent).toContain("Hello");
   });
 
+  it.each([
+    { senderName: "Alice", content: "@[[user-id]] hello there", expected: "[Alice]: hello there" },
+    { senderName: null, content: "@[[user-id]] hello there", expected: "hello there" },
+  ])("names the live message after its sender when there is one (sender: $senderName)", async ({ senderName, content, expected }) => {
+    const client = new FakeLettaClient();
+    client.responseBatches.push(assistantResponse("Got it"));
+    const adapter = new LettaAdapter({ clientFactory: async () => client });
+    await adapter.onStarted("Agent", "An agent");
+
+    await adapter.onMessage({ ...makeMessage(content, "room-sender"), senderName }, new FakeTools(), [], null, null, {
+      isSessionBootstrap: false,
+      roomId: "room-sender",
+    });
+
+    const sent = client.messageCreateCalls[0].params.messages?.[0] as { content?: string } | undefined;
+    expect(sent?.content).toBe(expected);
+  });
+
   it("returns a structured error and logs warning for malformed tool arguments JSON", async () => {
     const client = new FakeLettaClient();
     client.responseBatches.push(
