@@ -91,9 +91,11 @@ describe("Mentions in a Band room", () => {
     await using session = await BandPlatform.join(restarted.adapter, [person(USER)], { rest });
     await session.room.outcome(await session.room.say(USER, `@[[${AGENT_ID}]] ${CURRENT}`));
 
-    const currentTurn = first.handedOver().join("\n");
-    expect(currentTurn).toContain(`@${AGENT_HANDLE} ${EARLIER}`);
-    expect(currentTurn).not.toContain("@[[");
+    const firstSessionHanded = first.handedOver().join("\n");
+    expect(firstSessionHanded).toContain(`@${AGENT_HANDLE} ${EARLIER}`);
+    expect(firstSessionHanded).not.toContain(CURRENT);
+    expect(firstSessionHanded).not.toContain("@[[");
+
 
     const afterRestart = restarted.handedOver().join("\n");
     expect(afterRestart).toContain(`@${AGENT_HANDLE} ${EARLIER}`);

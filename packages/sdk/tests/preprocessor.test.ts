@@ -76,11 +76,12 @@ describe("DefaultPreprocessor", () => {
       const second = await preprocessor.process(context, mentioning("m2", "@[[a1]] and coffee", [agent]), "a1");
 
       expect(first?.message.content).toBe("@owner/secretary remember that I like tea");
+      expect(second?.message.content).toBe("@owner/secretary and coffee");
       expect(second?.history.raw.map((entry) => entry.content)).toContain("@owner/secretary remember that I like tea");
     });
 
     it("leaves a token with no mention entry raw", async () => {
-      const input = await new DefaultPreprocessor().process(makeContext(), mentioning("m1", "@[[unknown-id]] hi", [agent]), "a1");
+      const input = await new DefaultPreprocessor().process(makeContext(), mentioning("m1", "@[[unknown-id]] hi", []), "a1");
 
       expect(input?.message.content).toBe("@[[unknown-id]] hi");
     });
