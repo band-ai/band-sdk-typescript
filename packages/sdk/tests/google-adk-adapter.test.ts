@@ -9,6 +9,7 @@ import type { AgentToolsProtocol } from "../src/core";
 import { FakeTools, makeMessage, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
 import { createDeferred } from "../src/core/deferred";
+import { createFakeGoogleAdkSdk, type GoogleAdkCapture } from "./helpers/fakeGoogleAdkSdk";
 
 class GoogleAdkTestTools extends FakeTools {
   public readonly executedCalls: Array<{ toolName: string; args: Record<string, unknown> }> = [];
@@ -39,13 +40,6 @@ class GoogleAdkTestTools extends FakeTools {
     return { temperature: "12C", city: args.city };
   }
 }
-
-interface GoogleAdkCapture {
-  createAgentCalls: Array<Record<string, unknown>>;
-  createRunnerCalls: Array<{ appName: string }>;
-  createSessionCalls: Array<{ appName: string; userId: string; sessionId: string }>;
-}
-
 
 class SendMessageTools extends GoogleAdkTestTools {
   public failSend = false;
@@ -84,36 +78,6 @@ function sendToolOf(agent: Record<string, unknown>): (input: unknown) => Promise
     throw new Error("send tool was not registered");
   }
   return tool.execute as (input: unknown) => Promise<unknown>;
-}
-
-function createFakeGoogleAdkSdk(
-  run: (agent: Record<string, unknown>, request: { userId: string; sessionId: string; newMessage: { role: "user"; parts: Array<{ text: string }> } }) => AsyncIterable<unknown>,
-  capture?: GoogleAdkCapture,
-): () => Promise<any> {
-  return async () => ({
-    createModel: (params: { model: string; apiKey: string }) => ({ gemini: params }),
-    createAgent: (params: Record<string, unknown>) => {
-      capture?.createAgentCalls?.push(params);
-      return params;
-    },
-    createFunctionTool: (params: Record<string, unknown>) => params,
-    createRunner: (params: { agent: Record<string, unknown>; appName: string }) => {
-      capture?.createRunnerCalls?.push({ appName: params.appName });
-      return {
-        sessionService: {
-          createSession: async (sessionParams: { appName: string; userId: string; sessionId: string }) => {
-            capture?.createSessionCalls?.push(sessionParams);
-            return { ok: true };
-          },
-        },
-        runAsync: (request: { userId: string; sessionId: string; newMessage: { role: "user"; parts: Array<{ text: string }> } }) => run(params.agent, request),
-      };
-    },
-    isFinalResponse: (event: Record<string, unknown>) => event.final === true,
-    getFunctionCalls: (event: Record<string, unknown>) => Array.isArray(event.functionCalls) ? event.functionCalls : [],
-    getFunctionResponses: (event: Record<string, unknown>) => Array.isArray(event.functionResponses) ? event.functionResponses : [],
-    stringifyContent: (event: Record<string, unknown>) => String(event.text ?? ""),
-  });
 }
 
 describe("GoogleADKAdapter", () => {

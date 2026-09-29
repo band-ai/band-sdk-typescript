@@ -14,6 +14,25 @@ import { PlatformRuntime } from "../../../src/runtime/PlatformRuntime";
 import { assertMentioned, CallHolds, FakeRestApi, FakeTransport, RecordLog, type HeldCall } from "../../testUtils";
 
 export const AGENT_ID = "agent-1";
+export const AGENT_HANDLE = "owner/agent";
+
+// The agent is mentionable but never a room participant, so the participants
+// message a flow sees stays what its roster says.
+const AGENT_PARTICIPANT: ParticipantRecord = { id: AGENT_ID, name: "Agent", type: "Agent", handle: AGENT_HANDLE };
+
+const MENTION_TOKEN = /@\[\[([^\]]+)\]\]/g;
+
+/** A `metadata.mentions` entry as the platform sends it on every surface, captured from a live room. */
+function wireMention(participant: ParticipantRecord) {
+  return {
+    id: participant.id,
+    name: participant.name,
+    handle: participant.handle,
+    type: participant.type.toLowerCase(),
+    kind: "mention",
+    avatar_url: `https://avatars.example.test/${participant.id}`,
+  };
+}
 
 export interface Posted {
   readonly roomId: string;
@@ -165,8 +184,10 @@ export class BandPlatform implements AsyncDisposable {
   public readonly transport = new FakeTransport();
   public readonly rest: RecordingRestApi;
   private readonly runtime: PlatformRuntime;
+  private readonly mentionable: readonly ParticipantRecord[];
 
   private constructor(participants: readonly ParticipantRecord[], rest?: RecordingRestApi) {
+    this.mentionable = [...participants, AGENT_PARTICIPANT];
     this.rest = rest ?? new RecordingRestApi(participants);
     this.runtime = new PlatformRuntime({
       agentId: AGENT_ID,
@@ -200,7 +221,13 @@ export class BandPlatform implements AsyncDisposable {
 
   public async post(roomId: string, senderId: string, content: string): Promise<string> {
     const id = `msg-${randomUUID()}`;
-    const message = { id, content, message_type: "text", sender_id: senderId, sender_type: "User", sender_name: senderId, inserted_at: now(), updated_at: now() };
+    const mentions = [...content.matchAll(MENTION_TOKEN)].flatMap(([, mentionId]) =>
+      this.mentionable.filter((participant) => participant.id === mentionId).map(wireMention),
+    );
+    const message = {
+      id, content, message_type: "text", sender_id: senderId, sender_type: "User", sender_name: senderId,
+      metadata: { mentions }, inserted_at: now(), updated_at: now(),
+    };
     this.rest.remember(roomId, message);
     await this.transport.emit(`chat_room:${roomId}`, "message_created", message);
     return id;
