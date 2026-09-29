@@ -35,7 +35,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4; immutable pin protects the privileged release workflow
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4; immutable pin protects the privileged release workflow
         with:
           fetch-depth: 0
 
@@ -221,7 +221,7 @@ jobs:
 
     steps:
       - name: Checkout verified release source
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4; immutable pin protects the minimal publish job
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4; immutable pin protects the minimal publish job
         with:
           ref: ${{ needs.release.outputs.source_commit }}
           fetch-depth: 1
