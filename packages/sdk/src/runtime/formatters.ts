@@ -7,6 +7,11 @@ function isMetadataMap(value: unknown): value is MetadataMap {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+/** A display name as one `@` token: whitespace becomes `-`, so command parsing reads it whole. */
+export function mentionLabel(name: string): string {
+  return name.trim().replace(/\s+/g, "-");
+}
+
 // Inbound message payloads are normalized by band-sdk-core; any mention label
 // can still be absent independently, so choose the first usable one.
 export function mentionSubjectsFromMetadata(metadata: MetadataMap | null | undefined): Array<Record<string, unknown>> {
@@ -22,8 +27,7 @@ export function mentionSubjectsFromMetadata(metadata: MetadataMap | null | undef
     }
 
     // `handle` (nullable) and `name` (a display name) are what the platform
-    // sends; `username` is a fallback. Spaces in the label become `-` so it
-    // stays one token for command parsing. Non-empty, not just present:
+    // sends; `username` is a fallback. Non-empty, not just present:
     // `ensureHandlePrefix` turns an empty handle into `null`, which would
     // delete the mention outright instead of leaving it unresolved.
     const label = [mention.handle, mention.username, mention.name].find(
@@ -33,7 +37,7 @@ export function mentionSubjectsFromMetadata(metadata: MetadataMap | null | undef
       continue;
     }
 
-    subjects.push({ id: mention.id, handle: label.trim().replace(/\s+/g, "-") });
+    subjects.push({ id: mention.id, handle: mentionLabel(label) });
   }
 
   return subjects;
