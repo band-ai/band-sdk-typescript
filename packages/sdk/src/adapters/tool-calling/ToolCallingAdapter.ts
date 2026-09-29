@@ -42,7 +42,7 @@ import type {
 /** `AgentFailure.provider` for a subclass that does not name itself. */
 const DEFAULT_PROVIDER = "tool-calling";
 
-/** Caps a whole turn, every tool round included; matches the OpenCode adapter's cap. */
+/** Caps a whole turn across its tool rounds, at its next model or tool call; matches the OpenCode adapter's cap. */
 const DEFAULT_TURN_TIMEOUT_MS = 300_000;
 
 class TurnTimedOutError extends Error {
@@ -106,7 +106,10 @@ export interface ToolCallingAdapterOptions {
   systemPrompt?: string;
   includeMemoryTools?: boolean;
   maxToolRounds?: number;
-  /** Caps one whole turn, every tool round included, at this many milliseconds; `Infinity` removes the cap. Defaults to five minutes. */
+  /**
+   * Caps one whole turn across its tool rounds at this many milliseconds; `Infinity` removes the cap. Defaults to
+   * five minutes. The turn ends at its next model call or tool call: a tool already running is not interrupted.
+   */
   turnTimeoutMs?: number;
   enableExecutionReporting?: boolean;
   customTools?: CustomToolDef[];
