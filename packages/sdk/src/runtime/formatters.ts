@@ -9,7 +9,7 @@ function isMetadataMap(value: unknown): value is MetadataMap {
 
 // Inbound message payloads are normalized by band-sdk-core; any mention label
 // can still be absent independently, so choose the first usable one.
-export function mentionSubjectsFromMetadata(metadata: MetadataMap | undefined): Array<Record<string, unknown>> {
+export function mentionSubjectsFromMetadata(metadata: MetadataMap | null | undefined): Array<Record<string, unknown>> {
   const mentions = metadata?.mentions;
   if (!Array.isArray(mentions)) {
     return [];
@@ -21,12 +21,11 @@ export function mentionSubjectsFromMetadata(metadata: MetadataMap | undefined): 
       continue;
     }
 
-    // `handle` first, then `username`: both are single-token identifiers, so
-    // they read as a mention. A display name is the last resort — it can
-    // contain spaces, which makes a poorer `@` token, but still beats a bare
-    // id. A non-empty check, not just presence, matters here: `ensureHandlePrefix`
-    // turns an empty-string handle into `null`, so replaceUuidMentions would
-    // otherwise delete the mention outright instead of leaving it unresolved.
+    // `handle` (nullable) and `name` (a display name) are what the platform
+    // sends; `username` is a fallback. Spaces in the label become `-` so it
+    // stays one token for command parsing. Non-empty, not just present:
+    // `ensureHandlePrefix` turns an empty handle into `null`, which would
+    // delete the mention outright instead of leaving it unresolved.
     const label = [mention.handle, mention.username, mention.name].find(
       (value): value is string => typeof value === "string" && value.trim().length > 0,
     );
@@ -34,7 +33,7 @@ export function mentionSubjectsFromMetadata(metadata: MetadataMap | undefined): 
       continue;
     }
 
-    subjects.push({ id: mention.id, handle: label });
+    subjects.push({ id: mention.id, handle: label.trim().split(/\s+/).join("-") });
   }
 
   return subjects;
@@ -58,6 +57,14 @@ export function replaceUuidMentions(
   }
 
   return next;
+}
+
+/**
+ * Resolves the `@[[id]]` tokens in `content` from that message's own
+ * `metadata.mentions`. A token with no usable label stays raw.
+ */
+export function resolveMentions(content: string, metadata: MetadataMap | null | undefined): string {
+  return replaceUuidMentions(content, mentionSubjectsFromMetadata(metadata));
 }
 
 // A delivered reply starts with the platform's mention block (`@[[uuid]]`,

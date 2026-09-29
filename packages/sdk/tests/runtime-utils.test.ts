@@ -10,7 +10,7 @@ import {
   renderSystemPrompt,
   replaceUuidMentions,
 } from "../src/runtime";
-import { stripLeadingMentions } from "../src/runtime/formatters";
+import { resolveMentions, stripLeadingMentions } from "../src/runtime/formatters";
 import {
   CHAT_EVENT_TYPES,
   assertChatEventType,
@@ -61,10 +61,10 @@ describe("runtime utilities", () => {
       ).toEqual([{ id: "u1", handle: "jsmith" }]);
     });
 
-    it("resolves from name alone when handle and username are absent", () => {
+    it("resolves from name alone when handle and username are absent, as one token", () => {
       expect(
         mentionSubjectsFromMetadata({ mentions: [{ id: "u1", name: "John Smith" }] }),
-      ).toEqual([{ id: "u1", handle: "John Smith" }]);
+      ).toEqual([{ id: "u1", handle: "John-Smith" }]);
     });
 
     it("falls through an empty-string handle to the next field instead of deleting the mention", () => {
@@ -82,6 +82,41 @@ describe("runtime utilities", () => {
     it("ignores metadata that isn't shaped like a mention list", () => {
       for (const metadata of [undefined, {}, { mentions: "u1" }, { mentions: [{}, { id: 7 }] }]) {
         expect(mentionSubjectsFromMetadata(metadata)).toEqual([]);
+      }
+    });
+  });
+
+  describe("resolveMentions", () => {
+    // The entry shape the platform sends on every surface.
+    const wireMention = (fields: { id: string; name: string; handle: string | null; type: string }) => ({
+      ...fields,
+      kind: "mention",
+      avatar_url: "https://example.test/avatar.png",
+    });
+
+    it("replaces a token with the handle the platform sent", () => {
+      const metadata = { mentions: [wireMention({ id: "u1", name: "Memory Secretary", handle: "owner/secretary", type: "agent" })] };
+      expect(resolveMentions("@[[u1]] remember that I like tea", metadata)).toBe("@owner/secretary remember that I like tea");
+    });
+
+    it("falls back to the display name, hyphenated, when the platform sent no handle", () => {
+      const metadata = { mentions: [wireMention({ id: "u1", name: "Memory Secretary", handle: null, type: "agent" })] };
+      expect(resolveMentions("@[[u1]] hi", metadata)).toBe("@Memory-Secretary hi");
+    });
+
+    it("keeps a hyphenated name a single command token", () => {
+      const metadata = { mentions: [wireMention({ id: "u1", name: "Jane  Doe", handle: null, type: "user" })] };
+      expect(stripLeadingMentions(resolveMentions("@[[u1]] approve perm-1", metadata))).toBe("approve perm-1");
+    });
+
+    it("leaves a token with no mention entry raw", () => {
+      const metadata = { mentions: [wireMention({ id: "u1", name: "A", handle: "a", type: "user" })] };
+      expect(resolveMentions("@[[u2]] hi @[[u1]]", metadata)).toBe("@[[u2]] hi @a");
+    });
+
+    it("returns the content unchanged without metadata", () => {
+      for (const metadata of [undefined, null, {}]) {
+        expect(resolveMentions("@[[u1]] hi", metadata)).toBe("@[[u1]] hi");
       }
     });
   });
