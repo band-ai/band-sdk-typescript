@@ -289,6 +289,49 @@ describe("LettaAdapter", () => {
     expect(tools.messages).toEqual(["Done!"]);
   });
 
+  it.each([
+    { finalText: "I've posted my confirmation." },
+    { finalText: null },
+  ])("treats a reply posted through band_send_message as the turn's answer (final text: $finalText)", async ({ finalText }) => {
+    const client = new FakeLettaClient();
+    client.responseBatches.push(
+      approvalResponse("band_send_message", { content: "Confirmed.", mentions: ["@user"] }),
+      finalText ? assistantResponse(finalText) : { messages: [], stop_reason: { stop_reason: "end_turn" } },
+    );
+    const adapter = new LettaAdapter({ clientFactory: async () => client });
+    await adapter.onStarted("Agent", "An agent");
+
+    const tools = new FakeTools();
+    await adapter.onMessage(makeMessage("Remember this", "room-posted"), tools, [], null, null, {
+      isSessionBootstrap: false,
+      roomId: "room-posted",
+    });
+
+    expect(tools.messages, "the final text only narrates the posted reply").toEqual([]);
+    expect(failureEvents(tools)).toEqual([]);
+  });
+
+  it("still delivers the final text when band_send_message failed", async () => {
+    const client = new FakeLettaClient();
+    client.responseBatches.push(
+      approvalResponse("band_send_message", { content: "Confirmed.", mentions: ["@nobody"] }),
+      assistantResponse("Confirmed."),
+    );
+    const adapter = new LettaAdapter({ clientFactory: async () => client });
+    await adapter.onStarted("Agent", "An agent");
+
+    const tools = new FakeTools();
+    tools.executeToolCall = async () => {
+      throw new Error("unknown mention");
+    };
+    await adapter.onMessage(makeMessage("Remember this", "room-unposted"), tools, [], null, null, {
+      isSessionBootstrap: false,
+      roomId: "room-unposted",
+    });
+
+    expect(tools.messages).toEqual(["Confirmed."]);
+  });
+
   it("respects maxToolRounds limit", async () => {
     const client = new FakeLettaClient();
     for (let i = 0; i < 20; i++) {

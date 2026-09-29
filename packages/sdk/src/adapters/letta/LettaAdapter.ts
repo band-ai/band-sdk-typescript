@@ -5,6 +5,7 @@ import { resolveLogger } from "../../core/logger";
 import { RuntimeStateError, UnsupportedFeatureError, rethrowIfRecoverableTurnFailure } from "../../core/errors";
 import type { PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
+import { SEND_MESSAGE_TOOL_NAME } from "../../runtime/tools/schemas";
 import { asErrorMessage, toWireString } from "../shared/coercion";
 import { selectCompleteExchanges } from "../shared/history";
 import {
@@ -391,7 +392,7 @@ export class LettaAdapter extends SimpleAdapter<
       // Refresh tool schemas on every message so dynamic tool additions/removals
       // are picked up mid-session.
       const clientTools = toClientTools(tools.getOpenAIToolSchemas());
-      const assistantText = await this.executeWithToolLoop(
+      const { assistantText, postedReply } = await this.executeWithToolLoop(
         client,
         agentId,
         userContent,
@@ -399,6 +400,12 @@ export class LettaAdapter extends SimpleAdapter<
         tools,
         signal,
       );
+
+      // A reply posted through band_send_message already answered; the final
+      // text then only narrates it, so posting it too would say it twice.
+      if (postedReply) {
+        return;
+      }
 
       if (!assistantText) {
         return reportTurnFailure(
@@ -734,7 +741,7 @@ export class LettaAdapter extends SimpleAdapter<
     clientTools: LettaClientTool[],
     tools: AdapterToolsProtocol,
     signal?: AbortSignal,
-  ): Promise<string | null> {
+  ): Promise<{ assistantText: string | null; postedReply: boolean }> {
     // Wall-clock deadline — includes both Letta API time and local tool execution.
     const deadline = Date.now() + this.responseTimeoutSeconds * 1_000;
 
@@ -751,6 +758,7 @@ export class LettaAdapter extends SimpleAdapter<
 
     let rounds = 0;
     let assistantText: string | null = null;
+    let postedReply = false;
 
     while (
       rounds < this.maxToolRounds &&
@@ -772,6 +780,10 @@ export class LettaAdapter extends SimpleAdapter<
       await this.emitReasoning(response, tools);
 
       const toolResults = await this.executeToolCalls(approvals, tools);
+      postedReply ||= toolResults.tool_returns.some(
+        (toolReturn, index) =>
+          toolReturn.status === "success" && approvals[index].tool_call.name === SEND_MESSAGE_TOOL_NAME,
+      );
 
       response = await this.timedMessageCreate(
         client,
@@ -791,7 +803,7 @@ export class LettaAdapter extends SimpleAdapter<
     assistantText = extractAssistantText(response.messages) ?? assistantText;
     await this.emitReasoning(response, tools);
 
-    return assistantText;
+    return { assistantText, postedReply };
   }
 
   // -----------------------------------------------------------------------
