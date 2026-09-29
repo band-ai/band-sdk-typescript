@@ -10,15 +10,16 @@ import {
 } from "../../core/errors";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import { asErrorMessage, asNonEmptyString, asOptionalRecord } from "../shared/coercion";
+import { asNonEmptyString, asOptionalRecord } from "../shared/coercion";
 import { PREVIOUS_CONTEXT_HEADER, buildConversationPrompt } from "../shared/conversationPrompt";
 import {
   FAILURE_CODE_TIMEOUT,
   agentFailure,
+  reportProviderTurnFailure,
   reportTurnFailure,
 } from "../../core/providerFailure";
-import { deliverReply } from "../../core/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
+import { replyToSender } from "../shared/replyToSender";
 import { withTimeout } from "../shared/withTimeout";
 
 type ParlantRequestOptions = { headers?: Record<string, string> };
@@ -137,7 +138,6 @@ export class ParlantAdapter
   private readonly logger: Logger;
 
   private readonly clientLoader: LazyAsyncValue<ParlantClientLike>;
-  private lastInitFailure = 0;
   private readonly roomSessions = new Map<string, string>();
   private readonly roomCustomers = new Map<string, string>();
   private readonly roomSessionInitPromises = new Map<string, Promise<string>>();
@@ -171,10 +171,7 @@ export class ParlantAdapter
     this.clientLoader = new LazyAsyncValue({
       load: async () => this.createClient(),
       onRejected: (error) => {
-        this.lastInitFailure = Date.now();
-        this.logger.error("Parlant client initialization failed", {
-          error,
-        });
+        this.logger.error("Parlant client initialization failed", { error });
       },
     });
   }
@@ -232,7 +229,7 @@ export class ParlantAdapter
     const senderName = message.senderName ?? message.senderId ?? "User";
 
     try {
-      const client = await this.ensureClient();
+      const client = await this.clientLoader.get();
       const sessionId = await this.getOrCreateSession(
         client,
         context.roomId,
@@ -280,21 +277,14 @@ export class ParlantAdapter
         );
       }
 
-      await deliverReply(tools, reply, [{ id: message.senderId }]);
+      await replyToSender(tools, reply, message.senderId);
     } catch (error) {
       rethrowIfRecoverableTurnFailure(error);
 
-      this.logger.error("Parlant adapter request failed", {
+      await reportProviderTurnFailure(tools, this.logger, this.provider, "Parlant adapter request failed", error, {
         roomId: context.roomId,
         agentId: this.agentId ?? undefined,
-        error,
       });
-      await reportTurnFailure(
-        tools,
-        agentFailure(this.provider, asErrorMessage(error)),
-        this.logger,
-        { roomId: context.roomId, agentId: this.agentId ?? undefined },
-      );
     }
   }
 
@@ -320,7 +310,7 @@ export class ParlantAdapter
   }
 
   private async createOwnedAgent(agentName: string, description: string): Promise<string> {
-    const client = await this.ensureClient();
+    const client = await this.clientLoader.get();
     const agent = await client.agents.create(
       { name: `${OWNED_AGENT_NAME_PREFIX}${agentName}`, description },
       this.requestOptions(),
@@ -491,22 +481,6 @@ export class ParlantAdapter
     }
 
     return { headers };
-  }
-
-  private async ensureClient(): Promise<ParlantClientLike> {
-    if (this.clientLoader.current) {
-      return this.clientLoader.get();
-    }
-
-    const cooldownMs = 2_000;
-    const elapsed = Date.now() - this.lastInitFailure;
-    if (this.lastInitFailure > 0 && elapsed < cooldownMs) {
-      throw new Error(
-        `Parlant client init failed recently (${elapsed}ms ago). Retrying after ${cooldownMs}ms cooldown.`,
-      );
-    }
-
-    return this.clientLoader.get();
   }
 
   private async createClient(): Promise<ParlantClientLike> {

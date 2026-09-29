@@ -10,6 +10,7 @@ import { asErrorMessage, toWireString } from "../shared/coercion";
 import { selectCompleteExchanges } from "../shared/history";
 import {
   agentFailure,
+  reportProviderTurnFailure,
   reportTurnFailure,
 } from "../../core/providerFailure";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
@@ -414,17 +415,9 @@ export class LettaAdapter extends SimpleAdapter<
     } catch (error) {
       rethrowIfRecoverableTurnFailure(error);
 
-      this.logger.error("Letta adapter request failed", {
+      await reportProviderTurnFailure(tools, this.logger, this.provider, "Letta adapter request failed", error, {
         roomId: context.roomId,
-        error,
       });
-
-      await reportTurnFailure(
-        tools,
-        agentFailure(this.provider, asErrorMessage(error)),
-        this.logger,
-        { roomId: context.roomId },
-      );
     }
   }
 

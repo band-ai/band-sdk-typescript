@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { ParlantAdapter } from "../src/adapters/parlant/ParlantAdapter";
+import { ParlantAdapter, type ParlantAdapterOptions } from "../src/adapters/parlant/ParlantAdapter";
+import { PREVIOUS_CONTEXT_HEADER } from "../src/adapters/shared/conversationPrompt";
 import { ValidationError } from "../src/core/errors";
 import { HistoryProvider } from "../src/runtime/types";
 import { FakeTools, failureEvents, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
@@ -83,12 +84,15 @@ class FakeParlantClient {
   public eventPollBatches: Array<Array<Record<string, unknown>>> = [];
 }
 
+const AGENT_NAME = "Parlant Bridge";
+const AGENT_DESCRIPTION = "Bridge to parlant";
+
 const NO_HISTORY = new HistoryProvider([]);
 
 const roomHistory = () =>
   new HistoryProvider([
     { sender_name: "Alice", message_type: "text", content: "Earlier question" },
-    { sender_name: "Parlant Bridge", message_type: "text", content: "Earlier answer" },
+    { sender_name: AGENT_NAME, message_type: "text", content: "Earlier answer" },
   ]);
 
 const replyWith = (client: FakeParlantClient, ...replies: string[]) => {
@@ -97,29 +101,45 @@ const replyWith = (client: FakeParlantClient, ...replies: string[]) => {
   );
 };
 
+const fakeLogger = () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() });
+
+/** An adapter on a borrowed agent; `options` override any of that (`agentId: undefined` makes it own one). */
+const newAdapter = (client: FakeParlantClient, options: Partial<ParlantAdapterOptions> = {}) =>
+  new ParlantAdapter({
+    environment: "https://parlant.example",
+    agentId: "agent-1",
+    clientFactory: async () => client,
+    responseTimeoutSeconds: 1,
+    ...options,
+  });
+
+const startedAdapter = async (client: FakeParlantClient, options?: Partial<ParlantAdapterOptions>) => {
+  const adapter = newAdapter(client, options);
+  await adapter.onStarted(AGENT_NAME, AGENT_DESCRIPTION);
+  return adapter;
+};
+
+interface TurnOptions {
+  content?: string;
+  tools?: FakeTools;
+  history?: HistoryProvider;
+  bootstrap?: boolean;
+}
+
+const turn = (
+  adapter: ParlantAdapter,
+  roomId: string,
+  { content = "Hi", tools = new FakeTools(), history = NO_HISTORY, bootstrap = false }: TurnOptions = {},
+) => adapter.onMessage(makeMessage(content, roomId), tools, history, null, null, { isSessionBootstrap: bootstrap, roomId });
+
 describe("ParlantAdapter", () => {
   it("creates a session and forwards ai-agent response", async () => {
     const client = new FakeParlantClient();
     replyWith(client, "Parlant says hello");
-
-    const adapter = new ParlantAdapter({
-      environment: "https://parlant.example",
-      agentId: "agent-1",
-      clientFactory: async () => client,
-      responseTimeoutSeconds: 1,
-    });
-
-    await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
+    const adapter = await startedAdapter(client);
 
     const tools = new FakeTools();
-    await adapter.onMessage(
-      makeMessage("Hi", "room-1"),
-      tools,
-      NO_HISTORY,
-      null,
-      null,
-      { isSessionBootstrap: false, roomId: "room-1" },
-    );
+    await turn(adapter, "room-1", { tools });
 
     expect(client.customerCreateCount).toBe(1);
     expect(client.sessionCreateCalls).toHaveLength(1);
@@ -134,19 +154,7 @@ describe("ParlantAdapter", () => {
     turn: async (tools) => {
       const client = new FakeParlantClient();
       replyWith(client, "Parlant says hello");
-
-      const adapter = new ParlantAdapter({
-        environment: "https://parlant.example",
-        agentId: "agent-1",
-        clientFactory: async () => client,
-        responseTimeoutSeconds: 1,
-      });
-      await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
-
-      await adapter.onMessage(makeMessage("Hi", "room-1"), tools, NO_HISTORY, null, null, {
-        isSessionBootstrap: false,
-        roomId: "room-1",
-      });
+      await turn(await startedAdapter(client), "room-1", { tools });
     },
   }]);
 
@@ -154,27 +162,10 @@ describe("ParlantAdapter", () => {
     const client = new FakeParlantClient();
     client.eventPollBatches.push([]);
     client.eventPollBatches.push([]);
-
-    const adapter = new ParlantAdapter({
-      environment: "https://parlant.example",
-      agentId: "agent-1",
-      clientFactory: async () => client,
-      responseTimeoutSeconds: 1,
-    });
-
-    await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
+    const adapter = await startedAdapter(client);
 
     const tools = new FakeTools();
-    await expectTurnFailed(
-      adapter.onMessage(
-        makeMessage("Hi", "room-timeout"),
-        tools,
-        NO_HISTORY,
-        null,
-        null,
-        { isSessionBootstrap: false, roomId: "room-timeout" },
-      ),
-    );
+    await expectTurnFailed(turn(adapter, "room-timeout", { tools }));
 
     expect(tools.messages).toEqual([]);
     const failureEvent = findFailureEvent(tools);
@@ -193,22 +184,12 @@ describe("ParlantAdapter", () => {
   it("creates one customer and session for concurrent first messages in one room", async () => {
     const client = new FakeParlantClient();
     replyWith(client, "First concurrent response", "Second concurrent response");
-
-    const adapter = new ParlantAdapter({
-      environment: "https://parlant.example",
-      agentId: "agent-1",
-      clientFactory: async () => client,
-      responseTimeoutSeconds: 1,
-    });
-    await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
+    const adapter = await startedAdapter(client);
 
     const tools = new FakeTools();
     await Promise.all(
       ["Current question A", "Current question B"].map((content) =>
-        adapter.onMessage(makeMessage(content, "room-race"), tools, roomHistory(), null, null, {
-          isSessionBootstrap: true,
-          roomId: "room-race",
-        }),
+        turn(adapter, "room-race", { content, tools, history: roomHistory(), bootstrap: true }),
       ),
     );
 
@@ -222,35 +203,11 @@ describe("ParlantAdapter", () => {
     client.sessions.listEvents = async () => {
       throw new Error("poll failed");
     };
-
-    const logger = {
-      debug: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    };
-
-    const adapter = new ParlantAdapter({
-      environment: "https://parlant.example",
-      agentId: "agent-1",
-      clientFactory: async () => client,
-      responseTimeoutSeconds: 1,
-      logger,
-    });
-
-    await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
+    const logger = fakeLogger();
+    const adapter = await startedAdapter(client, { logger });
 
     const tools = new FakeTools();
-    await expectTurnFailed(
-      adapter.onMessage(
-        makeMessage("Hi", "room-error"),
-        tools,
-        NO_HISTORY,
-        null,
-        null,
-        { isSessionBootstrap: false, roomId: "room-error" },
-      ),
-    );
+    await expectTurnFailed(turn(adapter, "room-error", { tools }));
 
     expect(tools.events).toHaveLength(1);
     expect(tools.events[0]?.messageType).toBe("error");
@@ -270,35 +227,16 @@ describe("ParlantAdapter", () => {
   });
 
   it("reports, then fails the turn, on a client initialization failure", async () => {
-    const logger = {
-      debug: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    };
-    const adapter = new ParlantAdapter({
-      environment: "https://parlant.example",
-      agentId: "agent-1",
+    const logger = fakeLogger();
+    const adapter = await startedAdapter(new FakeParlantClient(), {
       clientFactory: async () => {
         throw new Error("parlant init failed");
       },
       logger,
-      responseTimeoutSeconds: 1,
     });
 
-    await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
-
     const tools = new FakeTools();
-    await expectTurnFailed(
-      adapter.onMessage(
-        makeMessage("Hi", "room-init"),
-        tools,
-        NO_HISTORY,
-        null,
-        null,
-        { isSessionBootstrap: false, roomId: "room-init" },
-      ),
-    );
+    await expectTurnFailed(turn(adapter, "room-init", { tools }));
 
     expect(logger.error).toHaveBeenCalledWith(
       "Parlant client initialization failed",
@@ -318,30 +256,10 @@ describe("ParlantAdapter", () => {
   it("stamps band_room_id metadata and a \"Band Room \" title on session creation", async () => {
     const client = new FakeParlantClient();
     replyWith(client, "hello");
+    await turn(await startedAdapter(client), "room-band-meta");
 
-    const { sessionCreateCalls } = client;
-
-    const adapter = new ParlantAdapter({
-      environment: "https://parlant.example",
-      agentId: "agent-1",
-      clientFactory: async () => client,
-      responseTimeoutSeconds: 1,
-    });
-
-    await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
-
-    const tools = new FakeTools();
-    await adapter.onMessage(
-      makeMessage("Hi", "room-band-meta"),
-      tools,
-      NO_HISTORY,
-      null,
-      null,
-      { isSessionBootstrap: false, roomId: "room-band-meta" },
-    );
-
-    expect(sessionCreateCalls).toHaveLength(1);
-    const created = sessionCreateCalls[0]!;
+    expect(client.sessionCreateCalls).toHaveLength(1);
+    const created = client.sessionCreateCalls[0]!;
     expect(created.title?.startsWith("Band Room ")).toBe(true);
     const sessionMetadata = created.metadata as Record<string, unknown>;
     expect(sessionMetadata.band_room_id).toBe("room-band-meta");
@@ -351,25 +269,7 @@ describe("ParlantAdapter", () => {
   it("forwards the customer message event with band_source and band_room_id metadata (not thenvoi_room_id)", async () => {
     const client = new FakeParlantClient();
     replyWith(client, "hello");
-
-    const adapter = new ParlantAdapter({
-      environment: "https://parlant.example",
-      agentId: "agent-1",
-      clientFactory: async () => client,
-      responseTimeoutSeconds: 1,
-    });
-
-    await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
-
-    const tools = new FakeTools();
-    await adapter.onMessage(
-      makeMessage("Hi", "room-band-source"),
-      tools,
-      NO_HISTORY,
-      null,
-      null,
-      { isSessionBootstrap: false, roomId: "room-band-source" },
-    );
+    await turn(await startedAdapter(client), "room-band-source");
 
     const customerEvent = client.eventCreateCalls.find(
       (call) => call.params.source === "customer",
@@ -385,21 +285,11 @@ describe("ParlantAdapter", () => {
   it("creates its own agent from the rendered prompt and never posts a system event", async () => {
     const client = new FakeParlantClient();
     replyWith(client, "hello");
-
-    const adapter = new ParlantAdapter({
-      environment: "https://parlant.example",
-      customSection: "End every reply with ZEBRA.",
-      clientFactory: async () => client,
-      responseTimeoutSeconds: 1,
-    });
-    await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
-    await adapter.onMessage(makeMessage("Hi", "room-owned"), new FakeTools(), NO_HISTORY, null, null, {
-      isSessionBootstrap: true,
-      roomId: "room-owned",
-    });
+    const adapter = await startedAdapter(client, { agentId: undefined, customSection: "End every reply with ZEBRA." });
+    await turn(adapter, "room-owned", { bootstrap: true });
 
     expect(client.agentCreateCalls).toHaveLength(1);
-    expect(client.agentCreateCalls[0]!.name).toBe("band-Parlant Bridge");
+    expect(client.agentCreateCalls[0]!.name).toBe(`band-${AGENT_NAME}`);
     expect(client.agentCreateCalls[0]!.description).toContain("End every reply with ZEBRA.");
     expect(client.sessionCreateCalls[0]!.agentId).toBe("agent-owned-1");
     expect(client.eventCreateCalls.map((call) => call.params.source)).toEqual(["customer"]);
@@ -408,18 +298,7 @@ describe("ParlantAdapter", () => {
   it("uses a borrowed agent as-is", async () => {
     const client = new FakeParlantClient();
     replyWith(client, "hello");
-
-    const adapter = new ParlantAdapter({
-      environment: "https://parlant.example",
-      agentId: "agent-1",
-      clientFactory: async () => client,
-      responseTimeoutSeconds: 1,
-    });
-    await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
-    await adapter.onMessage(makeMessage("Hi", "room-borrowed"), new FakeTools(), NO_HISTORY, null, null, {
-      isSessionBootstrap: true,
-      roomId: "room-borrowed",
-    });
+    await turn(await startedAdapter(client), "room-borrowed", { bootstrap: true });
 
     expect(client.agentCreateCalls).toEqual([]);
     expect(client.sessionCreateCalls[0]!.agentId).toBe("agent-1");
@@ -437,30 +316,17 @@ describe("ParlantAdapter", () => {
   it("folds bootstrap history into the first turn as one customer event", async () => {
     const client = new FakeParlantClient();
     replyWith(client, "First response", "Second response");
-
-    const adapter = new ParlantAdapter({
-      environment: "https://parlant.example",
-      agentId: "agent-1",
-      clientFactory: async () => client,
-      responseTimeoutSeconds: 1,
-    });
-    await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
+    const adapter = await startedAdapter(client);
 
     const tools = new FakeTools();
-    await adapter.onMessage(makeMessage("Current question", "room-bootstrap"), tools, roomHistory(), null, null, {
-      isSessionBootstrap: true,
-      roomId: "room-bootstrap",
-    });
-    await adapter.onMessage(makeMessage("Follow up", "room-bootstrap"), tools, roomHistory(), null, null, {
-      isSessionBootstrap: false,
-      roomId: "room-bootstrap",
-    });
+    await turn(adapter, "room-bootstrap", { content: "Current question", tools, history: roomHistory(), bootstrap: true });
+    await turn(adapter, "room-bootstrap", { content: "Follow up", tools, history: roomHistory() });
 
     expect(client.eventCreateCalls.map((call) => call.params.source)).toEqual(["customer", "customer"]);
     const [first, second] = client.eventCreateCalls.map((call) => call.params.message as string);
-    expect(first).toContain("[Previous conversation context]");
+    expect(first).toContain(PREVIOUS_CONTEXT_HEADER);
     expect(first).toContain("[Alice]: Earlier question");
-    expect(first).toContain("[Parlant Bridge]: Earlier answer");
+    expect(first).toContain(`[${AGENT_NAME}]: Earlier answer`);
     expect(first!.endsWith("Current question")).toBe(true);
     expect(second).toBe("Follow up");
     expect(tools.messages).toEqual(["First response", "Second response"]);
@@ -472,17 +338,8 @@ describe("ParlantAdapter", () => {
   ])("deletes the room's session and customer on cleanup, and only its own agent on stop (agentId: $agentId)", async ({ agentId, ownAgent }) => {
     const client = new FakeParlantClient();
     replyWith(client, "hello");
-    const adapter = new ParlantAdapter({
-      environment: "https://parlant.example",
-      agentId,
-      clientFactory: async () => client,
-      responseTimeoutSeconds: 1,
-    });
-    await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
-    await adapter.onMessage(makeMessage("Hi", "room-cleanup"), new FakeTools(), NO_HISTORY, null, null, {
-      isSessionBootstrap: true,
-      roomId: "room-cleanup",
-    });
+    const adapter = await startedAdapter(client, { agentId });
+    await turn(adapter, "room-cleanup", { bootstrap: true });
 
     await adapter.onCleanup("room-cleanup");
     await adapter.onRuntimeStop();
@@ -498,9 +355,9 @@ describe("ParlantAdapter", () => {
       await new Promise<void>((resolve) => (finishCreate = resolve));
       return create(params);
     };
-    const adapter = new ParlantAdapter({ environment: "https://parlant.example", clientFactory: async () => client });
+    const adapter = newAdapter(client, { agentId: undefined });
 
-    const starting = adapter.onStarted("Parlant Bridge", "Bridge to parlant");
+    const starting = adapter.onStarted(AGENT_NAME, AGENT_DESCRIPTION);
     await vi.waitFor(() => expect(finishCreate).toBeDefined());
     const stopping = adapter.onRuntimeStop();
     finishCreate();
@@ -515,19 +372,9 @@ describe("ParlantAdapter", () => {
     client.sessions.delete = async () => {
       throw new Error("server gone");
     };
-    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-    const adapter = new ParlantAdapter({
-      environment: "https://parlant.example",
-      agentId: "agent-1",
-      clientFactory: async () => client,
-      responseTimeoutSeconds: 1,
-      logger,
-    });
-    await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
-    await adapter.onMessage(makeMessage("Hi", "room-gone"), new FakeTools(), NO_HISTORY, null, null, {
-      isSessionBootstrap: true,
-      roomId: "room-gone",
-    });
+    const logger = fakeLogger();
+    const adapter = await startedAdapter(client, { logger });
+    await turn(adapter, "room-gone", { bootstrap: true });
 
     await expect(adapter.onCleanup("room-gone")).resolves.toBeUndefined();
     expect(logger.warn).toHaveBeenCalledWith("Failed to delete the Parlant session", expect.objectContaining({ id: "session-1" }));
@@ -550,25 +397,7 @@ describe("ParlantAdapter", () => {
       return originalCustomerCreate(params);
     };
 
-    const adapter = new ParlantAdapter({
-      environment: "https://parlant.example",
-      agentId: "agent-1",
-      clientFactory: async () => client,
-      responseTimeoutSeconds: 1,
-    });
-
-    await adapter.onStarted("Parlant Bridge", "Bridge to parlant");
-
-
-    const tools = new FakeTools();
-    await adapter.onMessage(
-      makeMessage("Hi", "room-plain"),
-      tools,
-      roomHistory(),
-      null,
-      null,
-      { isSessionBootstrap: true, roomId: "room-plain" },
-    );
+    await turn(await startedAdapter(client), "room-plain", { history: roomHistory(), bootstrap: true });
 
     const strings: string[] = [];
     const keys: string[] = [];

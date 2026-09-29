@@ -18,13 +18,18 @@ export interface PostedReplyTracker<T extends TrackableTools = TrackableTools> {
   posted(): boolean;
 }
 
-export function trackPostedReply<T extends TrackableTools>(tools: T): PostedReplyTracker<T> {
+/** `onPost` sees the content of each send that landed, for an adapter that keeps its own record of the turn. */
+export function trackPostedReply<T extends TrackableTools>(tools: T, onPost?: (content: string) => void): PostedReplyTracker<T> {
   let posted = false;
   return {
     tools: overrideTools(tools, {
       executeToolCall: async (name: string, args: Record<string, unknown>) => {
         const result = await tools.executeToolCall(name, args);
-        posted ||= postedSendContent(name, args.content, isFailedToolOutput(result)) !== undefined;
+        const content = postedSendContent(name, args.content, isFailedToolOutput(result));
+        if (content !== undefined) {
+          posted = true;
+          onPost?.(content);
+        }
         return result;
       },
     } as Partial<T>),
