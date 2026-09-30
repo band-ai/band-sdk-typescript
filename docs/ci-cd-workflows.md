@@ -137,7 +137,9 @@ no write permission.
 
 ### PR Title — `pr-title.yml`
 
-Validates the PR title against Conventional Commits (`Validate PR Title`).
+Validates the PR title against Conventional Commits (`Validate PR Title`),
+accepting only the `types:` and `scopes:` listed in the workflow. It is the one
+place those lists live, so change them there.
 Skipped for bot actors (dependabot, release-please). It is **not** a required
 check; the squash-merge subject is what Release Please reads, so a wrong title
 misfiles a changelog entry rather than breaking a build.
