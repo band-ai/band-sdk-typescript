@@ -28,6 +28,7 @@ import { renderSystemPrompt } from "../../runtime/prompts";
 import { systemUpdateParts } from "../shared/conversationPrompt";
 import { asErrorMessage } from "../shared/coercion";
 import { roomContextLines } from "../shared/roomContext";
+import { createRoomTurnLock } from "../shared/roomTurnLock";
 import { assertTurnTimeoutMs } from "../shared/turnTimeout";
 import { assertWithinSetTimeoutBound, MAX_SETTIMEOUT_DELAY_MS, withTimeout } from "../shared/withTimeout";
 import { abandon } from "../shared/abandon";
@@ -298,7 +299,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private readonly abandonedSessions = new Set<string>()
   private readonly pendingPermissions = new Map<string /* sessionKey */, Set<AbortController>>()
   private readonly sessionsInFlight = new Map<string /* roomId */, Promise<string>>()
-  private readonly roomTurnLocks = new Map<string /* roomId */, Promise<unknown>>()
+  private readonly roomTurns = createRoomTurnLock()
   // Bumped each time a room starts a *new* establishment (never on a
   // coalesced reuse) and whenever a room is torn down. An establishment
   // captures its own value at the start; if the room has moved on by the
@@ -425,7 +426,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     // `history` is this turn's own snapshot, closed over here. A later
     // `onMessage` for the same room must not be able to replace it while
     // this turn is still establishing a session.
-    await this.withRoomTurnLock(context.roomId, () => this.runTurn(message, tools, participantsMessage, contactsMessage, context, history))
+    await this.roomTurns.run(context.roomId, () => this.runTurn(message, tools, participantsMessage, contactsMessage, context, history))
   }
 
   private async runTurn(
@@ -641,26 +642,13 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     })
   }
 
-  // A per-room async mutex: `fn` for a given `roomId` never overlaps another
-  // call for that same room, while different rooms stay fully concurrent.
-  // The tracked tail (`this.roomTurnLocks`) always settles — via the
-  // trailing `.catch` — so one turn's failure can't wedge every later turn
-  // for the room; the real result/rejection is still `run`, returned to this
-  // call's own caller.
-  private async withRoomTurnLock<T>(roomId: string, fn: () => Promise<T>): Promise<T> {
-    const previous = this.roomTurnLocks.get(roomId) ?? Promise.resolve()
-    const run = previous.then(fn, fn)
-    this.roomTurnLocks.set(roomId, run.catch(() => undefined))
-    return run
-  }
-
   public async onCleanup(roomId: string): Promise<void> {
     const owner = this.unlinkRoom(roomId)
     this.roomTools.delete(roomId)
     this.roomsOwedReplay.delete(roomId)
     this.replaySource.delete(roomId)
     this.sessionsInFlight.delete(roomId)
-    this.roomTurnLocks.delete(roomId)
+    this.roomTurns.release(roomId)
     // Invalidates any establishment for this room still in flight — it may
     // finish later (nothing cancels the real RPC), but must not link or
     // activate on behalf of a room that has already moved on.
@@ -702,7 +690,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.sessionToRoom.clear()
     this.roomTools.clear()
     this.sessionsInFlight.clear()
-    this.roomTurnLocks.clear()
+    this.roomTurns.clear()
     // Same reasoning as `onCleanup`, for every room at once: a still-pending
     // establishment from before `stop()` must not link into state this call
     // is in the middle of tearing down.
