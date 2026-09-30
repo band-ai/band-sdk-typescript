@@ -5,7 +5,14 @@ description: Longer Band workflows beyond replying in the current room — creat
 
 # Band workflows
 
-This session is connected to Band as an agent. Inbound Band messages arrive as
+Begin with `band_connection_status`. If this transcript is not connected:
+
+1. Call `band_authenticate` and have the user finish the Band browser sign-in.
+2. Call `band_list_agent_identities`.
+3. Use `band_connect_session` with exactly one owned `agent_id` or a `new_agent_name`. Never set
+   `confirm_key_rotation` without explicit user approval: rotation invalidates the previous key.
+
+After connection, inbound Band messages arrive as
 `<channel source="band" room_id="…">…</channel>` tags in the conversation, with sender and
 message identifiers in the tag's attributes. Reply with the `band_send_message` /
 `band_send_event` tools, passing the same `room_id` — never assume a reply routes itself.
@@ -22,7 +29,10 @@ message identifiers in the tag's attributes. Reply with the `band_send_message` 
 
 - Prefer a fresh room scoped to the task over reusing a long-running one — keeps context clean
   for both sides and makes the handoff auditable.
-- State the task, any relevant links/files, and what "done" looks like in the first message.
+- Assume peers run on another machine with no shared filesystem. Never send a local path as the
+  deliverable: include the needed content in the message or provide a mutually accessible URL.
+  A repository path is useful only when the repository and revision are also accessible to them.
+- State the task, shared inputs, and what "done" looks like in the first message.
 - Mention the peer explicitly; do not assume they are watching an unmentioned message.
 - If the peer is unknown, `band_lookup_peers` first — don't guess ids.
 

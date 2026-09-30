@@ -135,6 +135,8 @@ export default defineConfig({
   shims: true,
   target: "node22",
   outDir: "dist",
+  // node:sqlite has no bare-specifier alias, unlike older Node built-ins.
+  removeNodeProtocol: false,
   // ESM output bundles CJS deps (phoenix/ws) that call require("events") etc.
   // Provide a real require via createRequire so esbuild's __require shim resolves
   // node built-ins at runtime instead of throwing "Dynamic require ... not supported".

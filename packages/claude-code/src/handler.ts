@@ -2,7 +2,20 @@ import type { PlatformEvent } from "@band-ai/sdk";
 import type { Logger } from "@band-ai/sdk/core";
 
 import type { AckTracker } from "./ack.js";
-import { sanitizeMeta, shouldForwardMessage, type SelfIdentity } from "./gating.js";
+
+import type {
+  CommandAuthorizationRequest,
+  CommandAuthorizationResult,
+  PrivilegedCommandAuthorizer,
+} from "./commandAuthorization.js";
+import { parsePrivilegedCommand } from "./commandAuthorization.js";
+import {
+  isDirectRoomWithOwner,
+  isSelfMentioned,
+  sanitizeMeta,
+  shouldForwardMessage,
+  type SelfIdentity,
+} from "./gating.js";
 import type { LastSenderTracker, RoomParticipant } from "./mentions.js";
 
 export interface MessageHandlerDeps {
@@ -10,6 +23,14 @@ export interface MessageHandlerDeps {
   ownerId: string | null;
   allowedSenderIds: ReadonlySet<string>;
   listParticipants: (roomId: string) => Promise<RoomParticipant[]>;
+  commandAuthorizer: Pick<PrivilegedCommandAuthorizer, "authorize">;
+  sendMessage: (
+    roomId: string,
+    message: {
+      content: string;
+      mentions: Array<{ id: string; handle?: string; name?: string }>;
+    },
+  ) => Promise<unknown>;
   ackTracker: AckTracker;
   lastSenderTracker: LastSenderTracker;
   notify: (content: string, meta: Record<string, string>) => Promise<void>;
@@ -25,7 +46,18 @@ export interface MessageHandlerDeps {
  * tracking below all apply identically regardless of how the event arrived.
  */
 export function createMessageHandler(deps: MessageHandlerDeps) {
-  const { self, ownerId, allowedSenderIds, listParticipants, ackTracker, lastSenderTracker, notify, logger } = deps;
+  const {
+    self,
+    ownerId,
+    allowedSenderIds,
+    listParticipants,
+    ackTracker,
+    lastSenderTracker,
+    commandAuthorizer,
+    sendMessage,
+    notify,
+    logger,
+  } = deps;
 
   return async (context: { roomId: string }, event: PlatformEvent): Promise<void> => {
     if (event.type !== "message_created") return;
@@ -44,10 +76,9 @@ export function createMessageHandler(deps: MessageHandlerDeps) {
 
     // Best-effort: an empty roster only disables the 1:1-room mention
     // shortcut, it never widens who the sender gate allows.
-    let roomParticipantIds: string[] = [];
+    let participants: RoomParticipant[] = [];
     try {
-      const participants = await listParticipants(context.roomId);
-      roomParticipantIds = participants.map((p) => p.id);
+      participants = await listParticipants(context.roomId);
     } catch (error) {
       logger.warn("could not list participants", {
         room_id: context.roomId,
@@ -55,14 +86,51 @@ export function createMessageHandler(deps: MessageHandlerDeps) {
       });
     }
 
-    const forward = shouldForwardMessage({
-      text: payload.content,
-      senderId: payload.sender_id,
-      self,
-      ownerId,
-      allowedSenderIds,
-      roomParticipantIds,
-    });
+    const roomParticipantIds = participants.map((participant) => participant.id);
+    const command = parsePrivilegedCommand(payload.content);
+    let forward: boolean;
+    if (command === null) {
+      forward = shouldForwardMessage({
+        text: payload.content,
+        senderId: payload.sender_id,
+        self,
+        ownerId,
+        allowedSenderIds,
+        roomParticipantIds,
+      });
+    } else {
+      const addressed =
+        isSelfMentioned(payload.content, self) ||
+        (
+          payload.sender_id === ownerId &&
+          isDirectRoomWithOwner(roomParticipantIds, self.id, ownerId)
+        );
+      if (!addressed) {
+        await ackTracker.markGatedOut(context.roomId, payload.id);
+        return;
+      }
+
+      const request: CommandAuthorizationRequest = {
+        senderId: payload.sender_id,
+        senderName: payload.sender_name ?? "",
+        command,
+        content: payload.content,
+      };
+      const authorization = await commandAuthorizer.authorize(request);
+      forward = authorization.allowed;
+      if (!forward) {
+        await ackTracker.markGatedOut(context.roomId, payload.id);
+        await sendCommandDenial(
+          context.roomId,
+          request,
+          authorization,
+          participants,
+          sendMessage,
+          logger,
+        );
+        return;
+      }
+    }
 
     if (!forward) {
       await ackTracker.markGatedOut(context.roomId, payload.id);
@@ -95,4 +163,38 @@ export function createMessageHandler(deps: MessageHandlerDeps) {
       });
     }
   };
+}
+
+async function sendCommandDenial(
+  roomId: string,
+  request: CommandAuthorizationRequest,
+  authorization: CommandAuthorizationResult,
+  participants: readonly RoomParticipant[],
+  sendMessage: MessageHandlerDeps["sendMessage"],
+  logger: Logger,
+): Promise<void> {
+  const participant = participants.find((candidate) => candidate.id === request.senderId);
+  const handle = participant?.handle?.trim().replace(/^@+/, "");
+  const name = participant?.name || request.senderName || undefined;
+  const mentionLabel = handle || name || request.senderId;
+  const note = authorization.note === null ? "" : ` ${authorization.note}`;
+  const mention = {
+    id: request.senderId,
+    ...(handle ? { handle } : {}),
+    ...(name ? { name } : {}),
+  };
+
+  try {
+    await sendMessage(roomId, {
+      content: `@${mentionLabel} ${request.command} was denied by the local Claude Code session.${note}`,
+      mentions: [mention],
+    });
+  } catch (error) {
+    logger.warn("could not send privileged-command denial to Band", {
+      room_id: roomId,
+      sender_id: request.senderId,
+      command: request.command,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }

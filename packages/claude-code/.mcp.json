@@ -4,11 +4,11 @@
       "command": "node",
       "args": ["${CLAUDE_PLUGIN_ROOT}/dist/server.js"],
       "env": {
-        "BAND_AGENT_ID": "${user_config.agent_id}",
-        "BAND_API_KEY": "${user_config.api_key}",
+        "BAND_PLATFORM_URL": "${user_config.platform_url}",
         "BAND_WS_URL": "${user_config.ws_url}",
-        "BAND_REST_URL": "${user_config.rest_url}",
-        "BAND_ALLOWED_SENDERS": "${user_config.allowed_senders}"
+        "BAND_ALLOWED_SENDERS": "${user_config.allowed_senders}",
+        "BAND_ENABLE_CONTACTS": "${user_config.enable_contacts}",
+        "BAND_ENABLE_MEMORY": "${user_config.enable_memory}"
       }
     }
   }

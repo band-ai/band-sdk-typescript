@@ -9,18 +9,11 @@
     "url": "https://band.ai"
   },
   "userConfig": {
-    "agent_id": {
+    "platform_url": {
       "type": "string",
-      "title": "Band agent ID",
-      "description": "The UUID of the Band agent this session should act as.",
-      "required": true
-    },
-    "api_key": {
-      "type": "string",
-      "title": "Band API key",
-      "description": "The API key for the Band agent above. Stored in secure storage, never written to settings.json.",
-      "required": true,
-      "sensitive": true
+      "title": "Band platform URL",
+      "description": "Band deployment used for browser sign-in and API access.",
+      "default": "https://app.band.ai"
     },
     "ws_url": {
       "type": "string",
@@ -28,17 +21,23 @@
       "description": "Band's Phoenix Channels WebSocket base URL.",
       "default": "wss://app.band.ai/api/v1/socket"
     },
-    "rest_url": {
-      "type": "string",
-      "title": "Band REST API URL",
-      "description": "Band's REST API base URL.",
-      "default": "https://app.band.ai"
-    },
     "allowed_senders": {
       "type": "string",
       "title": "Additional allowed senders",
       "description": "Comma-separated Band agent/user IDs that may message this session, in addition to the agent's own owner.",
       "required": false
+    },
+    "enable_contacts": {
+      "type": "boolean",
+      "title": "Enable contact tools",
+      "description": "Let this agent manage Band contacts (approve/reject contact requests). Off by default: approving a contact widens who can reach a session that runs shell commands.",
+      "default": false
+    },
+    "enable_memory": {
+      "type": "boolean",
+      "title": "Enable memory tools",
+      "description": "Let this agent store and recall persistent memories across sessions.",
+      "default": true
     }
   }
 }

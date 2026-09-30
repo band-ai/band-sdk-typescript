@@ -1,6 +1,12 @@
 import type { Readable, Writable } from "node:stream";
 
-import type { ServerCapabilities } from "@modelcontextprotocol/sdk/types.js";
+import type {
+  ClientCapabilities,
+  ElicitRequestFormParams,
+  ElicitRequestURLParams,
+  ElicitResult,
+  ServerCapabilities,
+} from "@modelcontextprotocol/sdk/types.js";
 
 import type { AdapterToolsProtocol } from "../contracts/protocols";
 import type {
@@ -24,6 +30,7 @@ export interface BandMcpStdioServerOptions {
   stdout?: Writable;
   capabilities?: ServerCapabilities;
   instructions?: string;
+  onInitialized?: () => void;
 }
 
 export class BandMcpStdioServer {
@@ -52,6 +59,10 @@ export class BandMcpStdioServer {
     return this.registrations.map((r) => r.name);
   }
 
+  public get clientCapabilities(): ClientCapabilities | undefined {
+    return this.mcpServer?.server.getClientCapabilities();
+  }
+
   public async start(): Promise<void> {
     if (this.transport) {
       return;
@@ -71,6 +82,10 @@ export class BandMcpStdioServer {
         instructions: this.options.instructions,
       },
     );
+    if (this.options.onInitialized !== undefined) {
+      mcpServer.server.oninitialized = this.options.onInitialized;
+    }
+
 
     registerTools(mcpServer, z, this.registrations);
 
@@ -79,6 +94,24 @@ export class BandMcpStdioServer {
 
     this.mcpServer = mcpServer;
     this.transport = transport;
+  }
+
+  public async elicitInput(
+    params: ElicitRequestFormParams | ElicitRequestURLParams,
+  ): Promise<ElicitResult> {
+    if (!this.mcpServer) {
+      throw new Error("BandMcpStdioServer.elicitInput called before start()");
+    }
+    return this.mcpServer.server.elicitInput(params);
+  }
+
+  public createElicitationCompletionNotifier(elicitationId: string): () => Promise<void> {
+    if (!this.mcpServer) {
+      throw new Error(
+        "BandMcpStdioServer.createElicitationCompletionNotifier called before start()",
+      );
+    }
+    return this.mcpServer.server.createElicitationCompletionNotifier(elicitationId);
   }
 
   public async stop(): Promise<void> {

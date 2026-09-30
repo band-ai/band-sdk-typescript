@@ -69,6 +69,23 @@ describe("BandMcpStdioServer capabilities/instructions", () => {
     const [, options] = mcpServerCtor.mock.calls[0]!;
     expect(options).toMatchObject({ capabilities: undefined, instructions: undefined });
   });
+
+  it("invokes the configured callback after MCP initialization", async () => {
+    const onInitialized = vi.fn();
+    const server = new BandMcpStdioServer({
+      tools: new FakeTools(),
+      onInitialized,
+    });
+
+    await server.start();
+    const instance = mcpServerCtor.mock.instances[0] as unknown as {
+      server: { oninitialized?: () => void };
+    };
+    instance.server.oninitialized?.();
+
+    expect(onInitialized).toHaveBeenCalledOnce();
+    await server.stop();
+  });
 });
 
 describe("BandMcpStdioServer.notify", () => {

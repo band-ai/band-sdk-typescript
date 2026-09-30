@@ -50,6 +50,10 @@ function buildDeps(overrides: Partial<MessageHandlerDeps> = {}): MessageHandlerD
     ownerId: OWNER_ID,
     allowedSenderIds: new Set(),
     listParticipants: async () => [SELF, { id: OWNER_ID, name: "Nir", handle: "nir" }],
+    commandAuthorizer: {
+      authorize: vi.fn(async () => ({ allowed: true, note: null, source: "owner" as const })),
+    },
+    sendMessage: vi.fn().mockResolvedValue(undefined),
     ackTracker: new AckTracker(fakeAckLink(), noopLogger),
     lastSenderTracker: new LastSenderTracker(),
     notify: vi.fn().mockResolvedValue(undefined),

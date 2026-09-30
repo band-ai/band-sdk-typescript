@@ -22,6 +22,11 @@
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
     },
+    "./auth": {
+      "types": "./dist/auth.d.ts",
+      "import": "./dist/auth.js",
+      "require": "./dist/auth.cjs"
+    },
     "./adapters": {
       "types": "./dist/adapters.d.ts",
       "import": "./dist/adapters.js",
@@ -100,6 +105,7 @@
     "@band-ai/band-sdk-core": "2.7.0",
     "@band-ai/rest-client": "0.0.146",
     "js-yaml": "^5.4.2",
+    "openid-client": "^6.8.8",
     "phoenix": "^1.8.14",
     "ws": "^8.21.3",
     "zod": "^4.6.5"

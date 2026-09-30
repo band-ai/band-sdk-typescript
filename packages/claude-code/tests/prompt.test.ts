@@ -56,6 +56,13 @@ describe("buildInstructions", () => {
     expect(instructions).toMatch(/[Nn]ever paste secrets/);
   });
 
+  it("covers the remote-filesystem boundary", () => {
+    const instructions = buildInstructions();
+    expect(instructions).toMatch(/peers may be remote/);
+    expect(instructions).toMatch(/cannot read local paths/);
+    expect(instructions).toMatch(/content in the message or a shared URL/);
+  });
+
   it("points to the band skill", () => {
     expect(buildInstructions()).toMatch(/band skill/);
   });
