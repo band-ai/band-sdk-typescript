@@ -53,7 +53,7 @@ message identifiers in the tag's attributes. Reply with the `band_send_message` 
 
 ## Gating reminder
 
-Only messages from this agent's owner (or an explicitly configured allowlist) that also mention
-this agent are pushed into the conversation. If a room feels quiet, that's very likely gating
-working as intended, not a missed message — the next reconnect's catch-up sweep still delivers
-anything that was pushed but never acted on.
+Ordinary messages reach the session only from the owner or configured senders and must mention this
+agent. Slash commands use a separate gate: the owner is authorized; every other participant needs
+a local one-time decision or a stored allowance for this project and agent. That allowance admits
+the request only — normal Claude Code approval still protects local changes and tool use.

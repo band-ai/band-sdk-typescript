@@ -113,7 +113,7 @@ file as shown in the [local source walkthrough](./DEVELOPMENT.md#test-directly-f
 | Setting | Required | Default | What it does |
 |---|---|---|---|
 | `platform_url` | no | `https://app.band.ai` | Band deployment used for browser sign-in and REST API access |
-| `allowed_senders` | no | empty | Comma-separated Band user or agent IDs allowed to message this session, in addition to the agent's owner |
+| `allowed_senders` | no | empty | Comma-separated Band user or agent IDs allowed to send ordinary messages, in addition to the agent's owner. This does not authorize slash commands |
 | `enable_contacts` | no | `false` | Adds the contact tools (list, add, remove, answer contact requests) |
 | `enable_memory` | no | `true` | Adds the memory tools (store, list, get, supersede, archive) |
 | `ws_url` | no | `wss://app.band.ai/api/v1/socket` | Band WebSocket URL. Change only for a non-default Band deployment |
@@ -220,12 +220,19 @@ Pro and Max accounts without an organization skip all of this.
   in the room the message came from.
 - **Replies go through a tool.** Claude's plain-text output stays in your terminal. Only
   `band_send_message` posts to Band.
-- **Who can reach the session.** Only the agent's owner and the IDs in `allowed_senders`, and only
-  messages that @mention the agent (direct rooms with the owner excepted). Everything else is
-  dropped before it reaches Claude.
-- **Messages are not treated as your instructions.** Claude treats a Band message as a request
-  from someone else and checks with you in the terminal before destructive, irreversible, or
-  credential-related actions it asks for.
+- **Who can reach the session.** Ordinary messages pass only from the agent's owner or IDs in
+  `allowed_senders`, and only when they @mention the agent (direct owner rooms excepted).
+- **Slash commands are privileged.** The owner passes the command-authorization gate automatically.
+  Every other participant's `/command` request is blocked before Claude sees it and opens a local
+  terminal dialog. You can run it once, always allow that participant for that command, always
+  allow them for every slash command, deny once, or deny them for a number of minutes. Persistent
+  allowances and timed denials are scoped to the Band account, canonical project path, and agent
+  identity. `allowed_senders` does not bypass this command gate.
+- **Denials return to Band.** A denied command gets an @mentioned denial response. The local dialog
+  accepts an optional explanation; a timed denial reuses that note on attempts during the denial.
+- **Band messages do not carry terminal authority.** Slash authorization only admits a request.
+  The plugin does not grant tool permission or bypass Claude Code's normal terminal approvals;
+  local file or system changes remain protected there.
 - **Online only while the session is open.** The agent disconnects when you quit Claude Code.
   Messages that arrived while it was offline are picked up on the next start.
 - **Identity per active session.** Concurrent Claude sessions should select different Band agent

@@ -75,9 +75,12 @@ corepack pnpm -r lint && corepack pnpm -r typecheck && corepack pnpm -r test && 
 - **The server `instructions` must stay under 2,048 characters** for every settings combination.
   Claude Code truncates longer instructions without an error, and a unit test enforces the budget.
   Longer guidance belongs in the `band` skill.
-- **Nothing reaches Claude from a sender outside the gate.** Only the agent's owner and
-  `BAND_ALLOWED_SENDERS`, and only messages that @mention the agent (direct rooms with the owner
-  excepted).
+- **Ordinary messages never reach Claude from a sender outside the gate.** Only the owner and
+  `BAND_ALLOWED_SENDERS`, and only messages that @mention the agent (direct owner rooms excepted).
+- **Slash commands have a separate fail-closed gate.** The owner is authorized; another mentioned
+  participant opens a local MCP form elicitation. Persistent command/all-command allowances and
+  timed denials are keyed by Band account, canonical project, agent identity, and participant ID.
+  The command is not pushed as a channel event until that gate allows it.
 - **Mark a message processed only after Claude replies in its room.** Claude Code drops channel
   events silently when the session did not enable the channel, so acknowledging on push loses
   messages.

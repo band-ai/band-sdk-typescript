@@ -24,7 +24,7 @@
     "allowed_senders": {
       "type": "string",
       "title": "Additional allowed senders",
-      "description": "Comma-separated Band agent/user IDs that may message this session, in addition to the agent's own owner.",
+      "description": "Comma-separated Band agent/user IDs allowed to send ordinary messages, in addition to the agent's owner. Slash commands use a separate local approval and per-project command allowlist.",
       "required": false
     },
     "enable_contacts": {
