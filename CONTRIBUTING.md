@@ -93,7 +93,10 @@ This is a pnpm workspace with two published packages:
 
    Write commit messages following
    [Conventional Commits](https://www.conventionalcommits.org/) — Release Please
-   reads them to decide the next version and build the changelog:
+   reads them to decide the next version and build the changelog. Use only the
+   types and scopes listed in
+   [`.github/workflows/pr-title.yml`](.github/workflows/pr-title.yml); the scope
+   is optional, so leave it out rather than invent one:
 
    ```bash
    git commit -m "feat(sdk): add event streaming support"
