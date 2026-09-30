@@ -198,7 +198,6 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
   private readonly historyConverterInstance: GoogleADKHistoryConverter;
   private readonly sdkLoader: LazyAsyncValue<GoogleAdkSdkLike>;
   private readonly roomHistory = new Map<string, GoogleADKMessages>();
-  private readonly roomSessions = new Map<string, string>();
   private readonly roomTurns = createRoomTurnLock();
   private systemPrompt = "";
 
@@ -287,7 +286,6 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
         appName: APP_NAME,
       });
       const sessionId = randomUUID();
-      this.roomSessions.set(context.roomId, sessionId);
       await runner.sessionService.createSession({
         appName: APP_NAME,
         userId: context.roomId,
@@ -324,7 +322,6 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
 
   public async onCleanup(roomId: string): Promise<void> {
     this.roomHistory.delete(roomId);
-    this.roomSessions.delete(roomId);
     this.roomTurns.release(roomId);
   }
 
