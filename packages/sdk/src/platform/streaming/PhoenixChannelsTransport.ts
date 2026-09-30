@@ -190,6 +190,8 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     }
 
     await this.connectFlight.run(() => {
+      // A stalled close never reaches recordSocketClose to clear this.
+      this.suppressNextCloseReason = false;
       this.socket.open();
       return this.waitForConnection();
     });

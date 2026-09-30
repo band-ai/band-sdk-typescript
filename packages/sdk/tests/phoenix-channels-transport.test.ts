@@ -167,6 +167,8 @@ const phoenixMock = vi.hoisted(() => {
     public readonly joinOutcomes = new Map<string, Outcome>();
     public disconnectCount = 0;
     public connectCount = 0;
+    // A close handshake that stalls: phoenix's close callback never fires.
+    public closeStalls = false;
     // Bumped by disconnect(), so an open queued before it never fires, as a
     // real socket closed mid-handshake never opens.
     private connectGeneration = 0;
@@ -217,7 +219,9 @@ const phoenixMock = vi.hoisted(() => {
     public disconnect(): void {
       this.disconnectCount += 1;
       this.connectGeneration += 1;
-      this.closeHandler?.();
+      if (!this.closeStalls) {
+        this.closeHandler?.();
+      }
     }
 
     public emitClose(event?: { code?: number; reason?: string }): void {
@@ -844,6 +848,29 @@ describe("PhoenixChannelsTransport", () => {
       retryable: true,
       closeCode: 1006,
       closeReason: null,
+    });
+  });
+
+  it("records the next drop's reason after a stop whose close never arrived", async () => {
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+      agentId: "agent-1",
+    });
+    const socket = phoenixMock.FakeSocket.instances[0]!;
+
+    const connecting = transport.connect();
+    socket.closeStalls = true;
+    socket.emitError({ status: 403 });
+    await expect(connecting).rejects.toBeInstanceOf(TransportError);
+    socket.closeStalls = false;
+
+    await transport.connect();
+    socket.emitClose({ code: 1006, reason: "" });
+
+    expect(transport.getDisconnectReason()).toMatchObject({
+      code: "websocket.closed",
+      closeCode: 1006,
     });
   });
 
