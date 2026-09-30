@@ -229,4 +229,96 @@ describe("createMessageHandler", () => {
       expect.objectContaining({ room_id: "room-1" }),
     );
   });
+
+  it("requires local authorization before forwarding a non-owner slash command", async () => {
+    const ackLink = fakeAckLink();
+    const authorize = vi.fn().mockResolvedValue({
+      allowed: false,
+      note: "Deployment is frozen.",
+      source: "deny_once",
+    });
+    const deps = buildDeps({
+      listParticipants: async () => [
+        SELF,
+        { id: "ally", name: "Ally", handle: "ally-handle" },
+      ],
+      commandAuthorizer: { authorize },
+      ackTracker: new AckTracker(ackLink, noopLogger),
+    });
+    const handler = createMessageHandler(deps);
+
+    await handler(
+      { roomId: "room-1" },
+      messageEvent({
+        senderId: "ally",
+        senderName: "Ally",
+        content: "@band-bot /deploy staging",
+      }),
+    );
+
+    expect(authorize).toHaveBeenCalledWith({
+      senderId: "ally",
+      senderName: "Ally",
+      command: "/deploy",
+      content: "@band-bot /deploy staging",
+    });
+    expect(deps.notify).not.toHaveBeenCalled();
+    expect(ackLink.markProcessed).toHaveBeenCalledWith("room-1", "msg-1");
+    expect(deps.sendMessage).toHaveBeenCalledWith("room-1", {
+      content: "@ally-handle /deploy was denied by the local Claude Code session. Deployment is frozen.",
+      mentions: [{ id: "ally", handle: "ally-handle", name: "Ally" }],
+    });
+  });
+
+  it("can authorize a slash command from outside the ordinary sender allowlist", async () => {
+    const authorize = vi.fn().mockResolvedValue({
+      allowed: true,
+      note: null,
+      source: "run_once",
+    });
+    const deps = buildDeps({ commandAuthorizer: { authorize } });
+    const handler = createMessageHandler(deps);
+
+    await handler(
+      { roomId: "room-1" },
+      messageEvent({
+        senderId: "requester",
+        senderName: "Requester",
+        content: "@band-bot /review",
+      }),
+    );
+
+    expect(authorize).toHaveBeenCalledOnce();
+    expect(deps.notify).toHaveBeenCalledWith(
+      "@band-bot /review",
+      expect.objectContaining({ sender_id: "requester" }),
+    );
+  });
+
+  it("drops an unmentioned non-owner slash command without opening an authorization prompt", async () => {
+    const ackLink = fakeAckLink();
+    const authorize = vi.fn();
+    const deps = buildDeps({
+      commandAuthorizer: { authorize },
+      ackTracker: new AckTracker(ackLink, noopLogger),
+      listParticipants: async () => [
+        SELF,
+        { id: "requester", name: "Requester", handle: "requester" },
+      ],
+    });
+    const handler = createMessageHandler(deps);
+
+    await handler(
+      { roomId: "room-1" },
+      messageEvent({
+        senderId: "requester",
+        senderName: "Requester",
+        content: "/review",
+      }),
+    );
+
+    expect(authorize).not.toHaveBeenCalled();
+    expect(deps.notify).not.toHaveBeenCalled();
+    expect(ackLink.markProcessed).toHaveBeenCalledWith("room-1", "msg-1");
+  });
 });

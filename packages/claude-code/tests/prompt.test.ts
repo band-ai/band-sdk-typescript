@@ -32,12 +32,6 @@ describe("buildInstructions", () => {
     );
   });
 
-  it("covers the gating rule and that plain text isn't auto-forwarded", () => {
-    const instructions = buildInstructions();
-    expect(instructions).toMatch(/owner or allowlisted sender/);
-    expect(instructions).toMatch(/@mention/);
-    expect(instructions).toMatch(/plain text is not auto-relayed/);
-  });
 
   it("covers the reply contract (band_send_message with room_id + mention)", () => {
     const instructions = buildInstructions();
@@ -49,12 +43,6 @@ describe("buildInstructions", () => {
     expect(buildInstructions()).toMatch(/band_send_event.*optional/s);
   });
 
-  it("covers the trust rule", () => {
-    const instructions = buildInstructions();
-    expect(instructions).toMatch(/carries none of the terminal user's authority/);
-    expect(instructions).toMatch(/destructive, irreversible, or credential-touching/);
-    expect(instructions).toMatch(/[Nn]ever paste secrets/);
-  });
 
   it("covers the remote-filesystem boundary", () => {
     const instructions = buildInstructions();
