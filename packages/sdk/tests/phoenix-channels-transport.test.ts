@@ -166,6 +166,10 @@ const phoenixMock = vi.hoisted(() => {
     public readonly channels = new FakeChannelList();
     public readonly joinOutcomes = new Map<string, Outcome>();
     public disconnectCount = 0;
+    public connectCount = 0;
+    // Bumped by disconnect(), so an open queued before it never fires, as a
+    // real socket closed mid-handshake never opens.
+    private connectGeneration = 0;
     private openHandler: (() => void) | null = null;
     private closeHandler:
       | ((event?: { code?: number; reason?: string }) => void)
@@ -200,8 +204,12 @@ const phoenixMock = vi.hoisted(() => {
     }
 
     public connect(): void {
+      this.connectCount += 1;
+      const generation = this.connectGeneration;
       queueMicrotask(() => {
-        this.openHandler?.();
+        if (generation === this.connectGeneration) {
+          this.openHandler?.();
+        }
       });
     }
 
@@ -212,6 +220,7 @@ const phoenixMock = vi.hoisted(() => {
 
     public disconnect(): void {
       this.disconnectCount += 1;
+      this.connectGeneration += 1;
       this.closeHandler?.();
     }
 
@@ -708,7 +717,7 @@ describe("PhoenixChannelsTransport", () => {
     expect(socket?.channels.has("agent_control:agent-1")).toBe(false);
   });
 
-  it("records agent_control supersede as terminal and disables reconnect", async () => {
+  it("records agent_control supersede as terminal", async () => {
     const onTerminalDisconnect = vi.fn();
     const transport = new PhoenixChannelsTransport({
       wsUrl: "wss://example.test/socket",
@@ -747,7 +756,6 @@ describe("PhoenixChannelsTransport", () => {
     });
     expect(onTerminalDisconnect).toHaveBeenCalledWith(reason);
     expect(socket?.disconnectCount).toBeGreaterThan(0);
-    expect(socket?.reconnectAfterMs?.(1)).toBe(Number.POSITIVE_INFINITY);
     await expect(transport.connect()).rejects.toBeInstanceOf(
       WebSocketDisconnectError,
     );
@@ -776,7 +784,6 @@ describe("PhoenixChannelsTransport", () => {
       targetSocketId: null,
       correlationId: null,
     });
-    expect(socket?.reconnectAfterMs?.(1)).toBe(Number.POSITIVE_INFINITY);
     await expect(transport.runForever(new AbortController().signal)).rejects.toBeInstanceOf(
       WebSocketDisconnectError,
     );
@@ -911,10 +918,100 @@ describe("PhoenixChannelsTransport", () => {
       WebSocketDisconnectError,
     );
     expect(socket?.disconnectCount).toBeGreaterThan(0);
-    expect(socket?.reconnectAfterMs?.(1)).toBe(Number.POSITIVE_INFINITY);
     await expect(transport.connect()).rejects.toBeInstanceOf(
       WebSocketDisconnectError,
     );
+  });
+
+  describe("once stopped, refuses phoenix's own reconnects", () => {
+    type FakeSocket = InstanceType<typeof phoenixMock.FakeSocket>;
+    const CONTROL_TOPIC = "agent_control:agent-1";
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    it.each<{
+      name: string;
+      agentId?: string;
+      terminal: boolean;
+      stop: (transport: PhoenixChannelsTransport, socket: FakeSocket) => Promise<void>;
+    }>([
+      {
+        name: "disconnect()",
+        agentId: "agent-1",
+        terminal: false,
+        stop: async (transport) => {
+          await transport.connect();
+          await transport.disconnect();
+        },
+      },
+      {
+        name: "a failed agent_control join",
+        agentId: "agent-1",
+        terminal: false,
+        stop: async (transport, socket) => {
+          socket.joinOutcomes.set(CONTROL_TOPIC, "error");
+          await expect(transport.connect()).rejects.toThrow();
+          socket.joinOutcomes.delete(CONTROL_TOPIC);
+        },
+      },
+      {
+        name: "a drop with no channels left",
+        terminal: false,
+        stop: async (transport, socket) => {
+          await transport.connect();
+          socket.emitClose({ code: 1006, reason: "" });
+        },
+      },
+      {
+        name: "a supersede",
+        agentId: "agent-1",
+        terminal: true,
+        stop: async (transport, socket) => {
+          await transport.connect();
+          await flush();
+          socket.channels.get(CONTROL_TOPIC)?.emit("supersede", {
+            reason: "session.already_connected",
+            message: "superseded",
+            retryable: false,
+            correlation_id: null,
+          });
+        },
+      },
+      {
+        name: "a non-retryable upgrade failure",
+        agentId: "agent-1",
+        terminal: true,
+        stop: async (transport, socket) => {
+          const connecting = transport.connect();
+          socket.emitError({
+            status: 409,
+            body: { error: { code: "connection_conflict", message: "conflict", request_id: null } },
+          });
+          await expect(connecting).rejects.toBeInstanceOf(WebSocketDisconnectError);
+        },
+      },
+    ])("after $name", async ({ agentId, terminal, stop }) => {
+      const transport = new PhoenixChannelsTransport({
+        wsUrl: "wss://example.test/socket",
+        apiKey: "key-1",
+        agentId,
+      });
+      const socket = phoenixMock.FakeSocket.instances[0]!;
+      await stop(transport, socket);
+
+      // The call phoenix's reconnect timer makes.
+      const connectsBefore = socket.connectCount;
+      socket.connect();
+      await flush();
+      expect(socket.connectCount).toBe(connectsBefore);
+      expect(transport.isConnected()).toBe(false);
+
+      if (terminal) {
+        await expect(transport.connect()).rejects.toBeInstanceOf(WebSocketDisconnectError);
+      } else {
+        await transport.connect();
+        expect(transport.isConnected()).toBe(true);
+      }
+    });
   });
 
   it("keeps retryable upgrade failures non-terminal", async () => {

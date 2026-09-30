@@ -6,6 +6,7 @@ import { SubscriptionManager } from "../src/platform/SubscriptionManager";
 import { BandLink } from "../src/platform/BandLink";
 import { AgentRuntime } from "../src/runtime/rooms/AgentRuntime";
 import type { PlatformEvent } from "../src/platform/events";
+import type { Logger } from "../src/core/logger";
 import { FakePhoenixPeer } from "./fakePhoenixPeer";
 import { FakeRestApi } from "./testUtils";
 
@@ -505,5 +506,84 @@ describe("Phoenix reconnect (real wire)", () => {
       // The failed rejoin and the one that succeeded: the sweep ran after the second.
       expect(joinsWhenServed).toBe(2);
     }, 20_000);
+  });
+
+  describe("intentional disconnects stay disconnected", () => {
+    const HEARTBEAT_INTERVAL_MS = 100;
+    // Phoenix gives up waiting on a stalled close after ~1.5s, then a heartbeat
+    // timeout schedules its reconnect; this leaves room for both.
+    const SUPPRESSED_RECONNECT_TIMEOUT_MS = 5_000;
+
+    /** A real transport whose debug log records every reconnect the gate refuses. */
+    function transportOn(peer: FakePhoenixPeer, agentId?: string) {
+      const suppressedReconnects: unknown[] = [];
+      const logger: Logger = {
+        debug: (message, context) => {
+          if (message.startsWith("Suppressed phoenix reconnect")) {
+            suppressedReconnects.push(context);
+          }
+        },
+        info: () => undefined,
+        warn: () => undefined,
+        error: () => undefined,
+      };
+      const transport = new PhoenixChannelsTransport({
+        wsUrl: peer.url,
+        apiKey: "test-key",
+        agentId,
+        logger,
+        heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
+        reconnectAfterMs: () => 10,
+      });
+      return { transport, suppressedReconnects };
+    }
+
+    async function expectNoReconnect(
+      peer: FakePhoenixPeer,
+      transport: PhoenixChannelsTransport,
+      suppressedReconnects: unknown[],
+    ): Promise<void> {
+      await vi.waitFor(() => expect(suppressedReconnects.length).toBeGreaterThan(0), {
+        timeout: SUPPRESSED_RECONNECT_TIMEOUT_MS,
+      });
+      expect(peer.connectionCount).toBe(1);
+      expect(transport.isConnected()).toBe(false);
+    }
+
+    it("never reconnects after a supersede whose close handshake stalls", async () => {
+      await using peer = await FakePhoenixPeer.start();
+      const { transport, suppressedReconnects } = transportOn(peer, "agent-1");
+      try {
+        await transport.connect();
+
+        peer.stallReads();
+        peer.push("agent_control:agent-1", "supersede", {
+          reason: "session.already_connected",
+          message: "superseded",
+          retryable: false,
+          correlation_id: null,
+        });
+
+        await expectNoReconnect(peer, transport, suppressedReconnects);
+        expect(transport.getDisconnectReason()?.code).toBe("session.already_connected");
+      } finally {
+        await transport.disconnect().catch(() => undefined);
+      }
+    }, 10_000);
+
+    it("never reconnects after disconnect() when its close handshake stalls", async () => {
+      await using peer = await FakePhoenixPeer.start();
+      const { transport, suppressedReconnects } = transportOn(peer);
+      try {
+        await transport.connect();
+
+        peer.stallReads();
+        await transport.disconnect();
+
+        await expectNoReconnect(peer, transport, suppressedReconnects);
+      } finally {
+        await transport.disconnect().catch(() => undefined);
+      }
+    }, 10_000);
   });
 });

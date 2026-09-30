@@ -1,4 +1,4 @@
-import { Socket, type Channel } from "phoenix";
+import { Socket, type Channel, type SocketOptions } from "phoenix";
 import { TransportError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { combineTeardownErrors } from "../../core/teardown";
@@ -77,6 +77,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   ) => void;
   private onHandlerError?: (error: unknown) => void;
   private connected = false;
+  // Whether the transport wants a connection; phoenix may only (re)connect
+  // while this holds (see `GatedSocket`).
+  private socketWanted = false;
   private readonly connectFlight = new SingleFlight<void>();
   private connectResolve: (() => void) | null = null;
   private connectReject: ((error: Error) => void) | null = null;
@@ -103,7 +106,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       ((tries: number) =>
         [1_000, 2_000, 5_000, 10_000, 30_000][tries - 1] ?? 30_000);
 
-    this.socket = new Socket(wsUrl, {
+    this.socket = new GatedSocket(wsUrl, {
       params: {
         ...(options.agentId ? { agent_id: options.agentId } : {}),
         ...(options.conflictPolicy
@@ -111,15 +114,10 @@ export class PhoenixChannelsTransport implements StreamingTransport {
           : {}),
       },
       heartbeatIntervalMs: options.heartbeatIntervalMs,
-      reconnectAfterMs: (tries: number) => {
-        if (this.terminalDisconnectError) {
-          return Number.POSITIVE_INFINITY;
-        }
-        return reconnectAfterMs(tries);
-      },
+      reconnectAfterMs,
       transport:
         options.websocketFactory ?? resolveWebSocketFactory(options.apiKey),
-    });
+    }, () => this.allowSocketConnect());
 
     this.registry = new ChannelRegistry(this.socket, this.epoch, this.logger, {
       wrapHandler: (topic, event, handler) => (payload) => {
@@ -198,6 +196,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     }
 
     await this.connectFlight.run(() => {
+      this.socketWanted = true;
       this.socket.connect();
       return this.waitForConnection();
     });
@@ -207,8 +206,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     this.epoch.bump();
     const failures = await this.registry.leaveAll();
 
-    this.socket.disconnect();
-    this.connected = false;
+    this.stopSocket();
     this.registry.forceTeardown();
 
     this.hasOpenedOnce = false;
@@ -354,8 +352,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     try {
       await this.subscribeAgentControl();
     } catch (error) {
-      this.connected = false;
-      this.socket.disconnect();
+      this.stopSocket();
       this.connectReject?.(
         error instanceof Error ? error : new TransportError(String(error)),
       );
@@ -420,7 +417,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
 
     this.suppressNextCloseReason = options.suppressCloseReason ?? false;
     this.stoppingReconnect = true;
-    this.socket.disconnect();
+    this.stopSocket();
     this.stoppingReconnect = false;
   }
 
@@ -482,7 +479,27 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       waiter.reject(error);
     }
     this.runForeverWaiters.clear();
+    this.stopSocket();
+  }
+
+  /**
+   * Closes the socket and keeps it closed until `connect()` asks again.
+   * Phoenix's close callback may never fire after a stalled close, so this
+   * owns `connected`.
+   */
+  private stopSocket(): void {
+    this.socketWanted = false;
+    this.connected = false;
     this.socket.disconnect();
+  }
+
+  private allowSocketConnect(): boolean {
+    if (!this.socketWanted) {
+      this.logger.debug("Suppressed phoenix reconnect; transport is disconnected", {
+        terminal: this.terminalDisconnectError !== null,
+      });
+    }
+    return this.socketWanted;
   }
 
   private async waitForConnection(timeoutMs = 10_000): Promise<void> {
@@ -536,6 +553,27 @@ function unwrapErrorEvent(event: unknown): unknown {
 
 function isErrorEvent(event: unknown): event is { error: unknown } {
   return typeof event === "object" && event !== null && "error" in event;
+}
+
+/**
+ * A phoenix Socket that only (re)connects while its owner wants a connection.
+ * Every reconnect phoenix starts itself (reconnect timer, heartbeat timeout)
+ * goes through `connect()`, and `disconnect()` alone doesn't stop them all.
+ */
+class GatedSocket extends Socket {
+  public constructor(
+    url: string,
+    options: SocketOptions,
+    private readonly mayConnect: () => boolean,
+  ) {
+    super(url, options);
+  }
+
+  public override connect(): void {
+    if (this.mayConnect()) {
+      super.connect();
+    }
+  }
 }
 
 function getSocketChannelCount(socket: Socket): number | "unknown" {
