@@ -514,7 +514,7 @@ describe("Phoenix reconnect (real wire)", () => {
     // timeout schedules its reconnect; this leaves room for both.
     const SUPPRESSED_RECONNECT_TIMEOUT_MS = 5_000;
 
-    /** A real transport, plus a check that waits for the gate to refuse phoenix's reconnect. */
+    /** A real transport, plus a check that waits for the gate to refuse phoenix's reconnect; disposing it disconnects. */
     function transportOn(peer: FakePhoenixPeer, agentId?: string) {
       const logger = { ...new NoopLogger(), debug: vi.fn() };
       const transport = new PhoenixChannelsTransport({
@@ -536,43 +536,39 @@ describe("Phoenix reconnect (real wire)", () => {
         expect(peer.connectionCount).toBe(1);
         expect(transport.isConnected()).toBe(false);
       };
-      return { transport, expectNoReconnect };
+      return {
+        transport,
+        expectNoReconnect,
+        [Symbol.asyncDispose]: () => transport.disconnect().catch(() => undefined),
+      };
     }
 
     it("never reconnects after a supersede whose close handshake stalls", async () => {
       await using peer = await FakePhoenixPeer.start();
-      const { transport, expectNoReconnect } = transportOn(peer, "agent-1");
-      try {
-        await transport.connect();
+      await using agent = transportOn(peer, "agent-1");
+      await agent.transport.connect();
 
-        peer.stallReads();
-        peer.push(agentControlTopic("agent-1"), "supersede", {
-          reason: "session.already_connected",
-          message: "superseded",
-          retryable: false,
-          correlation_id: null,
-        });
+      peer.stallReads();
+      peer.push(agentControlTopic("agent-1"), "supersede", {
+        reason: "session.already_connected",
+        message: "superseded",
+        retryable: false,
+        correlation_id: null,
+      });
 
-        await expectNoReconnect();
-        expect(transport.getDisconnectReason()?.code).toBe("session.already_connected");
-      } finally {
-        await transport.disconnect().catch(() => undefined);
-      }
+      await agent.expectNoReconnect();
+      expect(agent.transport.getDisconnectReason()?.code).toBe("session.already_connected");
     }, 10_000);
 
     it("never reconnects after disconnect() when its close handshake stalls", async () => {
       await using peer = await FakePhoenixPeer.start();
-      const { transport, expectNoReconnect } = transportOn(peer);
-      try {
-        await transport.connect();
+      await using agent = transportOn(peer);
+      await agent.transport.connect();
 
-        peer.stallReads();
-        await transport.disconnect();
+      peer.stallReads();
+      await agent.transport.disconnect();
 
-        await expectNoReconnect();
-      } finally {
-        await transport.disconnect().catch(() => undefined);
-      }
+      await agent.expectNoReconnect();
     }, 10_000);
   });
 });
