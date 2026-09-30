@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { agentControlTopic } from "@band-ai/band-sdk-core";
 
 import { GenericAdapter } from "../src/adapters/GenericAdapter";
 import { TransportError } from "../src/core/errors";
@@ -162,7 +163,6 @@ const phoenixMock = vi.hoisted(() => {
 
     public readonly url: string;
     public readonly params: Record<string, unknown>;
-    public readonly reconnectAfterMs?: (tries: number) => number;
     public readonly channels = new FakeChannelList();
     public readonly joinOutcomes = new Map<string, Outcome>();
     public disconnectCount = 0;
@@ -178,14 +178,10 @@ const phoenixMock = vi.hoisted(() => {
 
     public constructor(
       url: string,
-      options: {
-        params: Record<string, unknown>;
-        reconnectAfterMs?: (tries: number) => number;
-      },
+      options: { params: Record<string, unknown> },
     ) {
       this.url = url;
       this.params = options.params;
-      this.reconnectAfterMs = options.reconnectAfterMs;
       FakeSocket.instances.push(this);
     }
 
@@ -259,6 +255,8 @@ vi.mock("phoenix", () => ({
 }));
 
 import { PhoenixChannelsTransport } from "../src/platform/streaming/PhoenixChannelsTransport";
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("PhoenixChannelsTransport", () => {
   beforeEach(() => {
@@ -847,7 +845,6 @@ describe("PhoenixChannelsTransport", () => {
       closeCode: 1006,
       closeReason: null,
     });
-    expect(socket?.reconnectAfterMs?.(1)).toBe(1000);
   });
 
   it.each([
@@ -925,8 +922,7 @@ describe("PhoenixChannelsTransport", () => {
 
   describe("once stopped, refuses phoenix's own reconnects", () => {
     type FakeSocket = InstanceType<typeof phoenixMock.FakeSocket>;
-    const CONTROL_TOPIC = "agent_control:agent-1";
-    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const CONTROL_TOPIC = agentControlTopic("agent-1");
 
     it.each<{
       name: string;
@@ -1039,7 +1035,8 @@ describe("PhoenixChannelsTransport", () => {
       WebSocketDisconnectError,
     );
     expect(socket?.disconnectCount).toBeGreaterThan(0);
-    expect(socket?.reconnectAfterMs?.(1)).toBe(1000);
+    await transport.connect();
+    expect(transport.isConnected()).toBe(true);
   });
 
   it("rejects empty 403 upgrade errors without inventing a platform reason", async () => {
@@ -1159,8 +1156,6 @@ describe("PhoenixChannelsTransport", () => {
   });
 
   describe("topic rejoin", () => {
-    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
-
     async function connectedWith(...topics: string[]) {
       const transport = new PhoenixChannelsTransport({ wsUrl: "wss://example.test/socket", apiKey: "key-1" });
       await transport.connect();
@@ -1179,7 +1174,7 @@ describe("PhoenixChannelsTransport", () => {
 
       await transport.connect();
       await transport.join("room:1", {});
-      await settle();
+      await flush();
 
       expect(observer).not.toHaveBeenCalled();
     });
@@ -1188,7 +1183,7 @@ describe("PhoenixChannelsTransport", () => {
       const { observer, socket } = await connectedWith("room:1", "room:2");
 
       socket?.channels.get("room:1")?.settleRejoin("ok");
-      await settle();
+      await flush();
 
       expect(observer).toHaveBeenCalledTimes(1);
       expect(observer).toHaveBeenCalledWith("room:1");
@@ -1200,11 +1195,11 @@ describe("PhoenixChannelsTransport", () => {
 
       channel?.settleRejoin("error");
       channel?.settleRejoin("timeout");
-      await settle();
+      await flush();
       expect(observer).not.toHaveBeenCalled();
 
       channel?.settleRejoin("ok");
-      await settle();
+      await flush();
       expect(observer).toHaveBeenCalledTimes(1);
     });
 
@@ -1213,7 +1208,7 @@ describe("PhoenixChannelsTransport", () => {
 
       socket?.emitOpen();
       socket?.channels.get("room:1")?.settleRejoin("ok");
-      await settle();
+      await flush();
 
       expect(observer).not.toHaveBeenCalled();
     });
@@ -1228,7 +1223,7 @@ describe("PhoenixChannelsTransport", () => {
       const leave = transport.leave("room:1");
       await Promise.resolve();
       channel?.settleRejoin("ok");
-      await settle();
+      await flush();
       expect(observer).not.toHaveBeenCalled();
 
       channel?.settleLeave("ok");
@@ -1246,7 +1241,7 @@ describe("PhoenixChannelsTransport", () => {
       transport.onTopicRejoined(last);
 
       socket?.channels.get("room:1")?.settleRejoin("ok");
-      await settle();
+      await flush();
 
       expect(unsubscribed).not.toHaveBeenCalled();
       expect(observer).toHaveBeenCalledTimes(1);
