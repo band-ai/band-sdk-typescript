@@ -588,6 +588,28 @@ describe("ACPClientAdapter", () => {
     await t3
   })
 
+  it("frees every room on stop(), so a turn still in flight can't block the room after a restart", async () => {
+    const prompt = vi.fn(async () => ({ stopReason: "end_turn" }))
+    prompt.mockImplementationOnce(() => new Promise(() => undefined))
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      connectionFactory: async () => buildMockConnection({
+        loadSession: vi.fn(),
+        newSession: async () => ({ sessionId: "session-1" }),
+        prompt,
+      }),
+    })
+
+    // The first turn hangs on its prompt, and nothing in stop() settles it.
+    send(adapter).catch(() => undefined)
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1))
+    await adapter.stop()
+
+    // `send` restarts the adapter; the room's next turn must run, not queue behind the first.
+    await send(adapter)
+  })
+
   it("never seeds a replay when the session restores successfully, even though replay history is available", async () => {
     const loadSession = vi.fn(async () => ({}))
     const newSession = vi.fn()

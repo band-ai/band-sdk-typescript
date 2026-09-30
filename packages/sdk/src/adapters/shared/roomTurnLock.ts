@@ -16,6 +16,9 @@ export function createRoomTurnLock(): RoomTurnLock {
     release(roomId) {
       tails.delete(roomId);
     },
+    clear() {
+      tails.clear();
+    },
   };
 }
 
@@ -27,4 +30,6 @@ export interface RoomTurnLock {
    * keep it from writing into the room's new state.
    */
   release(roomId: string): void;
+  /** `release` for every room at once, for adapter shutdown. */
+  clear(): void;
 }
