@@ -155,15 +155,18 @@ export default defineConfig({
     "js-yaml",
   ],
   esbuildPlugins: [stubOptionalPeers(sdkOptionalPeers)],
-  // tsup clean:true wipes dist/ on every build/watch rebuild; copy the wasm the
-  // inlined band-sdk-core glue expects beside the emitted JS (build and dev).
+  // tsup clean:true wipes dist/ on every build/watch rebuild. Restore the
+  // wasm beside the bundle and materialize the SDK-owned skill in the plugin.
   async onSuccess() {
     try {
-      const { copyWasm } = await import("./scripts/copy-wasm.mjs");
+      const [{ copyWasm }, { copyBandSkill }] = await Promise.all([
+        import("./scripts/copy-wasm.mjs"),
+        import("./scripts/copy-band-skill.mjs"),
+      ]);
       copyWasm();
+      copyBandSkill();
     } catch (error) {
-      // clean:true already wiped any prior wasm; do not leave JS-only dist for watch.
-      console.error("[copy-wasm] failed to restore band_sdk_core_bg.wasm after build:", error);
+      console.error("[plugin-assets] failed to restore generated assets after build:", error);
       process.exit(1);
     }
   },

@@ -15,6 +15,9 @@ channels the plugin still works as a normal set of Band tools.
 This is a standalone plugin. It signs the human in to Band, then binds the exact Claude transcript
 to one Band agent identity. Running it beside another Band integration creates a separate connection.
 
+The bundled `band` skill is generated from `@band-ai/sdk/skills/band/SKILL.md`. The SDK package is
+the canonical, host-neutral source, so Codex and other Agent Skills hosts can consume the same file.
+
 ## Requirements
 
 - A Claude plan that includes Claude Code, and, to receive messages, one where channels are
@@ -41,8 +44,10 @@ to one Band agent identity. Running it beside another Band integration creates a
 
 ## Install from the Band marketplace
 
-This is the recommended installation. Add the hosted marketplace, then install the plugin at user
-scope so it is available in every project:
+The production catalog is [`band-ai/band-agent-plugins`](https://github.com/band-ai/band-agent-plugins).
+It declares `band@band-ai` and installs the published, self-contained
+`@band-ai/claude-code-plugin` package. Add that catalog once, then install the plugin at user scope
+so it is available in every project:
 
 ```bash
 claude plugin marketplace add band-ai/band-agent-plugins
@@ -59,13 +64,14 @@ Or from inside Claude Code:
 If the install summary says `Run /reload-plugins to activate.`, run `/reload-plugins` or restart
 Claude Code.
 
-## Install from a Git checkout
+## Install a local checkout or remote Git branch
 
-Claude Code does not run this repository's build during plugin installation, and `dist/` is not
-committed. Clone the revision you want, install dependencies, and build both the SDK and plugin:
+Claude Code does not build a plugin during installation, and this repository does not commit
+`dist/`. Build the checkout first, whether it is your local working tree or a remote branch:
 
 ```bash
-git clone https://github.com/band-ai/band-sdk-typescript.git
+# Clone a remote branch; use your existing checkout directory for local source.
+git clone --branch BRANCH --single-branch https://github.com/band-ai/band-sdk-typescript.git
 cd band-sdk-typescript
 corepack pnpm install
 corepack pnpm --filter @band-ai/sdk build
@@ -73,7 +79,7 @@ corepack pnpm --filter @band-ai/claude-code-plugin build
 claude plugin validate ./packages/claude-code
 ```
 
-Load that checkout for one Claude session:
+Load the built checkout for one Claude session:
 
 ```bash
 claude \
@@ -81,8 +87,9 @@ claude \
   --dangerously-load-development-channels plugin:band@inline
 ```
 
-The inline plugin ID is `band@inline`. For a persistent install of a particular Git revision,
-follow [Install a built Git checkout through a local marketplace](./DEVELOPMENT.md#install-a-built-git-checkout-through-a-local-marketplace).
+The inline plugin ID is `band@inline`. For a persistent install of a built branch or revision,
+package it through a local marketplace; the complete workflow is
+[Install a built Git checkout through a local marketplace](./DEVELOPMENT.md#install-a-built-git-checkout-through-a-local-marketplace).
 
 ## Load local source for development
 
@@ -132,11 +139,16 @@ able to reach a session that can run shell commands.
 3. Claude calls `band_connect_session`. The agent API key is stored in the operating system's
    credential store; it is never written to the plugin database or Claude settings.
 
-The binding includes the Band account, canonical project path, and Claude Code session ID. Resuming
-that exact transcript restores the same identity. Different active Claude sessions should use
-different Band agent identities; attempting to share one produces an identity lease conflict.
-Create recognizable identities for projects or long-lived sessions, then reuse them when those
-transcripts resume.
+The binding includes the Band account, canonical project path, and Claude Code session ID. To give
+a project a stable Band identity, create or select one recognizable agent the first time you open
+its transcript, then use Claude Code's resume flow for later work. That exact transcript restores
+the same identity and its locally stored API key.
+
+To start over, create a new Claude transcript instead of resuming the old one, then select a
+different existing identity or create a new recognizable one. A transcript cannot be rebound to a
+different identity, and signing out deliberately keeps its binding so it can resume later.
+Different active Claude sessions should use different Band agent identities; attempting to share
+one produces an identity lease conflict.
 
 Band currently exposes no API for deleting an agent. An identity created by the plugin therefore
 remains in the Band account after the Claude session ends. Avoid creating a throwaway identity on

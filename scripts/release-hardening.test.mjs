@@ -549,6 +549,7 @@ test("release workflow asserts package contents after README copy and before pac
   assert.match(sdkContents.body, /node scripts\/assert-package-contents\.mjs/);
   assert.match(sdkContents.body, /packages\/sdk/);
   assert.match(sdkContents.body, /README\.md/);
+  assert.match(sdkContents.body, /skills\/band\/SKILL\.md/);
   assert.match(openclawContents.body, /node scripts\/assert-package-contents\.mjs/);
   assert.match(openclawContents.body, /packages\/openclaw/);
   assert.match(openclawContents.body, /dist\/band_sdk_core_bg\.wasm/);

@@ -23,7 +23,7 @@ For end-user installation, see [README.md](./README.md).
 packages/claude-code/
 ├── .claude-plugin/plugin.json   # plugin manifest and userConfig
 ├── .mcp.json                    # starts dist/server.js, maps userConfig to BAND_* env vars
-├── skills/band/                 # copied in from the repo-root skills/band/ at build time
+├── skills/band/                 # generated from @band-ai/sdk/skills/band during build
 ├── src/                         # MCP server: channel push, gating, ack lifecycle, tools, prompt
 ├── scripts/                     # wasm copy, plugin.json version sync
 ├── tests/                       # vitest, including a stdio smoke test against dist/
@@ -31,8 +31,9 @@ packages/claude-code/
 ```
 
 The published package must be self-contained. Claude Code copies a plugin into its cache and
-cannot resolve anything outside it, so `dist/` carries every runtime dependency and the
-`band_sdk_core_bg.wasm` file. The package has no runtime `dependencies`.
+cannot resolve anything outside it, so the build bundles every runtime dependency, restores
+`band_sdk_core_bg.wasm`, and copies the SDK-owned Band skill. The package has no runtime
+`dependencies`.
 
 ## Identity lifecycle while testing
 
@@ -204,10 +205,10 @@ organization without managed settings.
 
 ## Create and host a marketplace
 
-A Claude Code marketplace is a catalog, not the plugin artifact. The Band entry points to the
+A Claude Code marketplace is a catalog, not the plugin artifact. The production catalog lives in
+[`band-ai/band-agent-plugins`](https://github.com/band-ai/band-agent-plugins) and points to the
 published `@band-ai/claude-code-plugin` npm package because that package contains the built
-`dist/` directory. This repository already includes the production-shaped catalog at
-`.claude-plugin/marketplace.json`.
+`dist/` directory.
 
 To create a dedicated marketplace repository:
 
