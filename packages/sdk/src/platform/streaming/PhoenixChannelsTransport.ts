@@ -1,4 +1,4 @@
-import { Socket, type Channel } from "phoenix";
+import { Socket, type Channel, type SocketOptions } from "phoenix";
 import { TransportError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { combineTeardownErrors } from "../../core/teardown";
@@ -48,7 +48,7 @@ interface PendingRunForever {
 }
 
 export class PhoenixChannelsTransport implements StreamingTransport {
-  private readonly socket: Socket;
+  private readonly socket: GatedSocket;
   private readonly agentId?: string;
   private readonly registry: ChannelRegistry;
   private readonly reconnectObservers = new Set<ReconnectObserver>();
@@ -83,7 +83,6 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private lastDisconnectReason: WebSocketDisconnectReason | null = null;
   private terminalDisconnectError: WebSocketDisconnectError | null = null;
   private runForeverWaiters = new Set<PendingRunForever>();
-  private stoppingReconnect = false;
   private suppressNextCloseReason = false;
 
   public constructor(options: PhoenixChannelsTransportOptions) {
@@ -98,12 +97,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       wsUrl = wsUrl.slice(0, -"/websocket".length);
     }
 
-    const reconnectAfterMs =
-      options.reconnectAfterMs ??
-      ((tries: number) =>
-        [1_000, 2_000, 5_000, 10_000, 30_000][tries - 1] ?? 30_000);
-
-    this.socket = new Socket(wsUrl, {
+    this.socket = new GatedSocket(wsUrl, {
       params: {
         ...(options.agentId ? { agent_id: options.agentId } : {}),
         ...(options.conflictPolicy
@@ -111,15 +105,13 @@ export class PhoenixChannelsTransport implements StreamingTransport {
           : {}),
       },
       heartbeatIntervalMs: options.heartbeatIntervalMs,
-      reconnectAfterMs: (tries: number) => {
-        if (this.terminalDisconnectError) {
-          return Number.POSITIVE_INFINITY;
-        }
-        return reconnectAfterMs(tries);
-      },
+      reconnectAfterMs:
+        options.reconnectAfterMs ??
+        ((tries: number) =>
+          [1_000, 2_000, 5_000, 10_000, 30_000][tries - 1] ?? 30_000),
       transport:
         options.websocketFactory ?? resolveWebSocketFactory(options.apiKey),
-    });
+    }, this.logger);
 
     this.registry = new ChannelRegistry(this.socket, this.epoch, this.logger, {
       wrapHandler: (topic, event, handler) => (payload) => {
@@ -198,7 +190,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     }
 
     await this.connectFlight.run(() => {
-      this.socket.connect();
+      // A stalled close never reaches recordSocketClose to clear this.
+      this.suppressNextCloseReason = false;
+      this.socket.open();
       return this.waitForConnection();
     });
   }
@@ -207,8 +201,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     this.epoch.bump();
     const failures = await this.registry.leaveAll();
 
-    this.socket.disconnect();
-    this.connected = false;
+    this.stopSocket();
     this.registry.forceTeardown();
 
     this.hasOpenedOnce = false;
@@ -354,8 +347,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     try {
       await this.subscribeAgentControl();
     } catch (error) {
-      this.connected = false;
-      this.socket.disconnect();
+      this.stopSocket();
       this.connectReject?.(
         error instanceof Error ? error : new TransportError(String(error)),
       );
@@ -414,14 +406,12 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private stopReconnectIfNoChannels(
     options: { suppressCloseReason?: boolean } = {},
   ): void {
-    if (this.stoppingReconnect || getSocketChannelCount(this.socket) !== 0) {
+    if (!this.socket.isOpen || getSocketChannelCount(this.socket) !== 0) {
       return;
     }
 
     this.suppressNextCloseReason = options.suppressCloseReason ?? false;
-    this.stoppingReconnect = true;
-    this.socket.disconnect();
-    this.stoppingReconnect = false;
+    this.stopSocket();
   }
 
   private async subscribeAgentControl(): Promise<void> {
@@ -482,7 +472,16 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       waiter.reject(error);
     }
     this.runForeverWaiters.clear();
-    this.socket.disconnect();
+    this.stopSocket();
+  }
+
+  /**
+   * The single stop path. Clears `connected` itself because phoenix's close
+   * callback may never fire after a stalled close.
+   */
+  private stopSocket(): void {
+    this.connected = false;
+    this.socket.close();
   }
 
   private async waitForConnection(timeoutMs = 10_000): Promise<void> {
@@ -536,6 +535,47 @@ function unwrapErrorEvent(event: unknown): unknown {
 
 function isErrorEvent(event: unknown): event is { error: unknown } {
   return typeof event === "object" && event !== null && "error" in event;
+}
+
+/**
+ * A phoenix Socket that stays closed from `close()` until the next `open()`.
+ * Every reconnect phoenix starts itself (reconnect timer, heartbeat timeout)
+ * goes through `connect()`, and `disconnect()` alone doesn't stop them all.
+ */
+class GatedSocket extends Socket {
+  private opened = false;
+
+  // Not `logger`: phoenix calls its own `this.logger` as a function.
+  public constructor(
+    url: string,
+    options: SocketOptions,
+    private readonly transportLogger: Logger,
+  ) {
+    super(url, options);
+  }
+
+  /** Whether the owner opened the socket, not whether the wire is up. */
+  public get isOpen(): boolean {
+    return this.opened;
+  }
+
+  public open(): void {
+    this.opened = true;
+    super.connect();
+  }
+
+  public close(): void {
+    this.opened = false;
+    super.disconnect();
+  }
+
+  public override connect(): void {
+    if (this.opened) {
+      super.connect();
+    } else {
+      this.transportLogger.debug("Suppressed phoenix reconnect; socket is closed");
+    }
+  }
 }
 
 function getSocketChannelCount(socket: Socket): number | "unknown" {
