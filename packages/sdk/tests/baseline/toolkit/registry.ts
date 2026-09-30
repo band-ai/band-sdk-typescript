@@ -83,6 +83,8 @@ export interface BuildOptions {
   customTools?: CustomToolDef[];
   /** Builders that support `CAPABILITY.memory` give the agent the Band memory tools and report their calls. */
   memory?: boolean;
+  /** Builders that support `CAPABILITY.customTools` report every tool call, the Band tools' too, as a `tool_call` event. */
+  reportToolCalls?: boolean;
 }
 
 export type AdapterBuilder = (options: BuildOptions) => FrameworkAdapter;
