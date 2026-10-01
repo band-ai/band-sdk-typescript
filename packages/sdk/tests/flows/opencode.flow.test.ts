@@ -7,11 +7,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
-import { OpencodeAdapter, type OpencodeAdapterConfig } from "../../src/adapters/opencode";
+import { HttpOpencodeClient, OpencodeAdapter, type OpencodeAdapterConfig, type OpencodeClientLike } from "../../src/adapters/opencode";
 import { OPENCODE_DECISION_MESSAGES as SAYS, formatQuestionPrompt } from "../../src/adapters/opencode/messages";
 import { createDeferred } from "../../src/core/deferred";
 import { FAILURE_EVENT_TYPE } from "../../src/contracts/protocols";
+import { createBandMcpBackend } from "../../src/mcp/backends";
+import type { BandMcpServer } from "../../src/mcp/server";
 import type { CustomToolDef } from "../../src/runtime/tools/customTools";
+import { CallHolds } from "../testUtils";
 import { BandPlatform, person, type RecordingRestApi } from "./support/bandPlatform";
 import { FakeOpencodeServer, type OpencodeTurn } from "./support/fakeOpencodeServer";
 
@@ -30,6 +33,8 @@ interface RoomOptions {
   customTools?: CustomToolDef[];
   rest?: RecordingRestApi;
   server?: FakeOpencodeServer;
+  clientFactory?: (config: Required<OpencodeAdapterConfig>) => OpencodeClientLike;
+  mcpBackendFactory?: typeof createBandMcpBackend;
 }
 
 /** An OpenCode agent on the platform, in room-1, backed by its own local OpenCode server. */
@@ -39,10 +44,13 @@ async function opencodeRoom(config: OpencodeAdapterConfig = {}, options: RoomOpt
     config: { baseUrl: server.url, approvalMode: "manual", ...config },
     decisionAuthorizedSenders: options.decisionAuthorizedSenders,
     customTools: options.customTools,
+    clientFactory: options.clientFactory,
+    mcpBackendFactory: options.mcpBackendFactory,
   });
   const joined = await BandPlatform.join(adapter, PEOPLE, { rest: options.rest });
   const { platform, room } = joined;
   return {
+    adapter,
     server,
     platform,
     room,
@@ -66,6 +74,20 @@ async function seedRoom(server: FakeOpencodeServer, content?: string): Promise<R
   await first.start((turn) => turn.answer("First answer."), content);
   await first.room.nextMessage((posted) => posted.content === "First answer.");
   return first.platform.rest;
+}
+
+/** The real Band MCP backend, kept from starting until `held` is released; `listening` resolves with where it then listens. */
+function heldBackend() {
+  const holds = new CallHolds<[]>();
+  const held = holds.hold(() => true);
+  const listening = createDeferred<string>();
+  const factory: typeof createBandMcpBackend = async (options) => {
+    await holds.pass();
+    const backend = await createBandMcpBackend(options);
+    listening.resolve((backend.server as BandMcpServer).url!);
+    return backend;
+  };
+  return { factory, held, listening: listening.promise };
 }
 
 describe("OpenCode in a Band room", () => {
@@ -418,10 +440,11 @@ describe("OpenCode in a Band room", () => {
     await room.nextMessage((posted) => posted.content === "Survived the reconnect.");
   });
 
-  it("serves two rooms from one OpenCode server, and deregisters its tools only when the last room goes", async () => {
+  it("serves two rooms from one OpenCode server, deregisters its tools only when the last room goes, and registers them again for the next", async () => {
     await using session = await opencodeRoom();
     const { room, server, platform } = session;
     const other = await platform.room("room-2");
+    const later = await platform.room("room-4");
     const answer = (text: string) => (turn: OpencodeTurn) => turn.answer(text);
     await session.start(answer("Room one."));
     await room.nextMessage((posted) => posted.content === "Room one.");
@@ -440,6 +463,67 @@ describe("OpenCode in a Band room", () => {
     await other.remove();
     await server.until(() => server.requestsTo("POST", /\/mcp\/band\/disconnect$/).length === 1);
     expect(server.requestsTo("POST", /^\/session$/)).toHaveLength(2);
+
+    server.onPrompt(answer("Room four."));
+    await later.say(OWNER, "Hello after everyone left");
+    await later.nextMessage((posted) => posted.content === "Room four.");
+    expect(server.requestsTo("POST", /^\/mcp$/)).toHaveLength(2);
+  });
+
+  it("stops an MCP backend that finishes starting after the adapter stopped", async () => {
+    const backend = heldBackend();
+    await using session = await opencodeRoom({}, { mcpBackendFactory: backend.factory });
+    const message = await session.room.say(OWNER, "Please run the tests");
+    await backend.held.sending;
+
+    const stopped = session.adapter.onRuntimeStop();
+    backend.held.release();
+    const url = await backend.listening;
+    await stopped;
+
+    expect(await session.room.outcome(message)).toBe("failed");
+    await expect(fetch(new URL("/healthz", url))).rejects.toThrow();
+  });
+
+  it("starts a second room's first turn only once OpenCode has Band's tools", async () => {
+    const backend = heldBackend();
+    await using session = await opencodeRoom({}, { mcpBackendFactory: backend.factory });
+    const { room, server, platform } = session;
+    const other = await platform.room("room-2");
+    server.onPrompt((turn) => turn.answer("Answered."));
+    server.onPrompt((turn) => turn.answer("Answered."));
+
+    await room.say(OWNER, "Hello from room one");
+    await backend.held.sending;
+    await other.processing(await other.say(OWNER, "Hello from room two"));
+    backend.held.release();
+    await room.nextMessage((posted) => posted.content === "Answered.");
+    await other.nextMessage((posted) => posted.content === "Answered.");
+
+    const setup = server.requests.entries.filter((request) => request.method === "POST" && /^\/(mcp|session)$/.test(request.path));
+    expect(setup.map((request) => request.path)).toEqual(["/mcp", "/session", "/session"]);
+  });
+
+  it("keeps answering when the OpenCode client or Band's tools fail to start", async () => {
+    let clientFails = true;
+    const clientFactory = (config: Required<OpencodeAdapterConfig>) => {
+      if (clientFails) {
+        clientFails = false;
+        throw new Error("OpenCode is unavailable");
+      }
+      return new HttpOpencodeClient({ baseUrl: config.baseUrl });
+    };
+    const mcpBackendFactory = async () => {
+      throw new Error("No port to listen on");
+    };
+    await using session = await opencodeRoom({}, { clientFactory, mcpBackendFactory });
+    const { room, server } = session;
+
+    expect(await room.outcome(await room.say(OWNER, "First try"))).toBe("failed");
+    await session.start((turn) => turn.answer("Answered without Band's tools."));
+    await room.nextMessage((posted) => posted.content === "Answered without Band's tools.");
+    expect(server.requestsTo("POST", /^\/mcp$/)).toEqual([]);
+    await expect(session.adapter.onRuntimeStop()).resolves.toBeUndefined();
   });
 
   it("mentions the requester on an ask raised after the turn's answer went out", async () => {

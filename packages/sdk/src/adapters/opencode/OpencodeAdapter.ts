@@ -260,8 +260,10 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   private readonly rooms = new Map<string, RoomState>();
   private readonly roomBySession = new Map<string, string>();
   private client: OpencodeClientLike | null = null;
+  // Held from the moment each start begins, so concurrent turns share one start and shutdown owns one still pending.
+  private clientReady: Promise<OpencodeClientLike> | null = null;
   private eventTask: Promise<void> | null = null;
-  private mcpBackend: BandMcpBackend | null = null;
+  private mcpBackend: Promise<BandMcpBackend> | null = null;
   private systemPrompt = "";
 
   public constructor(options: OpencodeAdapterOptions = {}) {
@@ -433,15 +435,16 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     return created;
   }
 
-  private async ensureClientStarted(): Promise<OpencodeClientLike> {
-    if (this.client) {
-      return this.client;
-    }
+  private ensureClientStarted(): Promise<OpencodeClientLike> {
+    return this.clientReady ??= this.startClient();
+  }
+
+  // Not async: a throwing clientFactory throws before anything is cached, so the next turn retries.
+  private startClient(): Promise<OpencodeClientLike> {
     const client = this.clientFactory(this.config);
     this.client = client;
     this.eventTask = this.runEventLoop();
-    await this.registerMcpBackend(client);
-    return client;
+    return this.registerMcpBackend(client).then(() => client);
   }
 
   // Replies and rejects only run for a live room's asks, and a live room keeps the client up.
@@ -452,15 +455,14 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     return this.client;
   }
 
-  private async startMcpBackend(): Promise<BandMcpBackend> {
-    const backend = await this.mcpBackendFactory({
+  private startMcpBackend(): Promise<BandMcpBackend> {
+    this.mcpBackend = this.mcpBackendFactory({
       kind: "http",
       enableMemoryTools: this.config.enableMemoryTools,
       getToolsForRoom: (roomId) => this.rooms.get(roomId)?.tools ?? undefined,
       additionalTools: this.customTools.length > 0 ? buildCustomMcpRegistrations(this.customTools) : undefined,
     });
-    this.mcpBackend = backend;
-    return backend;
+    return this.mcpBackend;
   }
 
   private async registerMcpBackend(client: OpencodeClientLike): Promise<void> {
@@ -486,6 +488,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     const backend = this.mcpBackend;
     const eventTask = this.eventTask;
     this.client = null;
+    this.clientReady = null;
     this.mcpBackend = null;
     this.eventTask = null;
 
@@ -495,9 +498,9 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       } catch {}
     }
 
-    if (backend) {
-      await backend.stop();
-    }
+    // A backend still starting is stopped once it listens; one that failed to start was already logged.
+    const started = await backend?.catch(() => null);
+    await started?.stop();
 
     if (client) {
       await client.close();

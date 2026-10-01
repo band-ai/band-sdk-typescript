@@ -54,6 +54,8 @@ interface HistoryEntry {
 export class RecordingRestApi extends FakeRestApi {
   public readonly posted = new RecordLog<Posted>();
   public readonly settled = new RecordLog<Settled>();
+  /** Ids of messages the runtime has started handing to the agent. */
+  public readonly processing = new RecordLog<string>();
   private readonly history: HistoryEntry[] = [];
   public readonly messageHolds = new CallHolds<[roomId: string, content: string]>();
 
@@ -84,6 +86,11 @@ export class RecordingRestApi extends FakeRestApi {
 
   public remember(roomId: string, item: PlatformChatMessage): void {
     this.history.push({ roomId, item });
+  }
+
+  public override async markMessageProcessing(_roomId: string, messageId: string) {
+    this.processing.record(messageId);
+    return {};
   }
 
   public override async markMessageProcessed(_roomId: string, messageId: string) {
@@ -148,6 +155,11 @@ export class BandRoom {
   /** Resolves with how the runtime settled `messageId`. */
   public async outcome(messageId: string): Promise<Outcome> {
     return (await this.platform.rest.settled.next((settled) => settled.messageId === messageId)).outcome;
+  }
+
+  /** Resolves once the runtime starts handing `messageId` to the agent. */
+  public async processing(messageId: string): Promise<void> {
+    await this.platform.rest.processing.next((id) => id === messageId);
   }
 
   /** Keeps the agent's next matching chat message in flight; with `error`, the platform then refuses it. */
