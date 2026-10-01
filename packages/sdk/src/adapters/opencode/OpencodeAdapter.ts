@@ -263,7 +263,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   // Held from the moment each start begins, so concurrent turns share one start and shutdown owns one still pending.
   private clientReady: Promise<OpencodeClientLike> | null = null;
   private eventTask: Promise<void> | null = null;
-  private mcpBackend: Promise<BandMcpBackend> | null = null;
+  private mcpBackend: Promise<BandMcpBackend | null> | null = null;
   private systemPrompt = "";
 
   public constructor(options: OpencodeAdapterOptions = {}) {
@@ -455,12 +455,16 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     return this.client;
   }
 
-  private startMcpBackend(): Promise<BandMcpBackend> {
+  // A failed start settles to null here, so every reader of the held promise can await it as is.
+  private startMcpBackend(): Promise<BandMcpBackend | null> {
     this.mcpBackend = this.mcpBackendFactory({
       kind: "http",
       enableMemoryTools: this.config.enableMemoryTools,
       getToolsForRoom: (roomId) => this.rooms.get(roomId)?.tools ?? undefined,
       additionalTools: this.customTools.length > 0 ? buildCustomMcpRegistrations(this.customTools) : undefined,
+    }).catch((error: unknown) => {
+      this.logger.warn("Failed to start OpenCode MCP backend", { error });
+      return null;
     });
     return this.mcpBackend;
   }
@@ -468,6 +472,9 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   private async registerMcpBackend(client: OpencodeClientLike): Promise<void> {
     try {
       const backend = await this.startMcpBackend();
+      if (!backend) {
+        return;
+      }
       const server = backend.server as { url?: string | null };
       if (!server.url) {
         this.logger.warn("OpenCode MCP backend has no URL.");
@@ -498,9 +505,8 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       } catch {}
     }
 
-    // A backend still starting is stopped once it listens; one that failed to start was already logged.
-    const started = await backend?.catch(() => null);
-    await started?.stop();
+    // A backend still starting is stopped once it listens.
+    await (await backend)?.stop();
 
     if (client) {
       await client.close();

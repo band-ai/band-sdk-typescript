@@ -7,13 +7,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
-import { HttpOpencodeClient, OpencodeAdapter, type OpencodeAdapterConfig, type OpencodeClientLike } from "../../src/adapters/opencode";
+import { HttpOpencodeClient, OpencodeAdapter, type OpencodeAdapterConfig } from "../../src/adapters/opencode";
 import { OPENCODE_DECISION_MESSAGES as SAYS, formatQuestionPrompt } from "../../src/adapters/opencode/messages";
 import { createDeferred } from "../../src/core/deferred";
 import { FAILURE_EVENT_TYPE } from "../../src/contracts/protocols";
 import { createBandMcpBackend } from "../../src/mcp/backends";
 import type { BandMcpServer } from "../../src/mcp/server";
-import type { CustomToolDef } from "../../src/runtime/tools/customTools";
 import { CallHolds } from "../testUtils";
 import { BandPlatform, person, type RecordingRestApi } from "./support/bandPlatform";
 import { FakeOpencodeServer, type OpencodeTurn } from "./support/fakeOpencodeServer";
@@ -28,26 +27,16 @@ const SHORT_DEADLINE_MS = 30_000;
 
 const approvalPrompt = (requestId: string) => SAYS.approvalRequested({ requestId, permission: "bash", patterns: ["npm test"] });
 
-interface RoomOptions {
-  decisionAuthorizedSenders?: readonly string[];
-  customTools?: CustomToolDef[];
+type RoomOptions = Omit<NonNullable<ConstructorParameters<typeof OpencodeAdapter>[0]>, "config"> & {
   rest?: RecordingRestApi;
   server?: FakeOpencodeServer;
-  clientFactory?: (config: Required<OpencodeAdapterConfig>) => OpencodeClientLike;
-  mcpBackendFactory?: typeof createBandMcpBackend;
-}
+};
 
 /** An OpenCode agent on the platform, in room-1, backed by its own local OpenCode server. */
-async function opencodeRoom(config: OpencodeAdapterConfig = {}, options: RoomOptions = {}) {
-  const server = options.server ?? await FakeOpencodeServer.start();
-  const adapter = new OpencodeAdapter({
-    config: { baseUrl: server.url, approvalMode: "manual", ...config },
-    decisionAuthorizedSenders: options.decisionAuthorizedSenders,
-    customTools: options.customTools,
-    clientFactory: options.clientFactory,
-    mcpBackendFactory: options.mcpBackendFactory,
-  });
-  const joined = await BandPlatform.join(adapter, PEOPLE, { rest: options.rest });
+async function opencodeRoom(config: OpencodeAdapterConfig = {}, { rest, server: given, ...adapterOptions }: RoomOptions = {}) {
+  const server = given ?? await FakeOpencodeServer.start();
+  const adapter = new OpencodeAdapter({ config: { baseUrl: server.url, approvalMode: "manual", ...config }, ...adapterOptions });
+  const joined = await BandPlatform.join(adapter, PEOPLE, { rest });
   const { platform, room } = joined;
   return {
     adapter,
@@ -61,7 +50,7 @@ async function opencodeRoom(config: OpencodeAdapterConfig = {}, options: RoomOpt
     },
     async [Symbol.asyncDispose]() {
       await joined[Symbol.asyncDispose]();
-      if (!options.server) {
+      if (!given) {
         await server[Symbol.asyncDispose]();
       }
     },
@@ -500,7 +489,7 @@ describe("OpenCode in a Band room", () => {
     await room.nextMessage((posted) => posted.content === "Answered.");
     await other.nextMessage((posted) => posted.content === "Answered.");
 
-    const setup = server.requests.entries.filter((request) => request.method === "POST" && /^\/(mcp|session)$/.test(request.path));
+    const setup = server.requestsTo("POST", /^\/(mcp|session)$/);
     expect(setup.map((request) => request.path)).toEqual(["/mcp", "/session", "/session"]);
   });
 

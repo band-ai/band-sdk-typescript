@@ -9,11 +9,11 @@ import { OPENCODE_DECISION_MESSAGES } from "../../../../src/adapters/opencode/me
 import { ASK_KIND, REPLY_WORDS, type ReplyWord } from "../../../../src/adapters/opencode/replies";
 import { LIVE_EVENT_TIMEOUT_MS } from "../../../integration/support/liveHarness";
 import { ADAPTER, buildOpencode, type AdapterId } from "../../toolkit/adapters";
-import type { AgentIdentity } from "../../toolkit/agents";
 import { assertReplied } from "../../toolkit/assertMessages";
 import { observeRoom, type CapturedMessage } from "../../toolkit/observeMessages";
+import type { ScenarioCell } from "../../toolkit/perAdapter";
 import type { BuildOptions } from "../../toolkit/registry";
-import { Rooms, type Room } from "../../toolkit/rooms";
+import { Rooms } from "../../toolkit/rooms";
 
 export const OUTCOME = { approve: "approve", reject: "reject", timeout: "timeout" } as const;
 
@@ -78,11 +78,8 @@ export function dialectFor(id: AdapterId): ApprovalDialect {
   return dialect;
 }
 
-/** The agent asked for approval, in the room it was asked in. */
-export interface InRoom {
-  agent: AgentIdentity;
-  room: Room;
-}
+/** An agent in one of its rooms. */
+export type InRoom = Pick<ScenarioCell, "agent" | "room">;
 
 /** An approval prompt the agent posted, and the request id it carries. */
 export interface ApprovalRequest {
