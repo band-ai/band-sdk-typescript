@@ -12,8 +12,9 @@ import {
   type ACPClientAdapterOptions,
 } from "../src/adapters/acp";
 import { BandACPClient } from "../src/adapters/acp/client";
+import { DeliveryFailedError } from "../src/core/deliveryFailedError";
 import { BandMcpServer } from "../src/mcp/server";
-import { CallHolds, FakeTools, expectTurnFailed, findFailureEvent, makeLoggerSpy, makeMessage, roomWorkspacePath, tmpRoot } from "./testUtils";
+import { CallHolds, FakeTools, SHORT_TURN_TIMEOUT_MS, expectTurnFailed, findFailureEvent, makeLoggerSpy, makeMessage, roomWorkspacePath, tmpRoot } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
 
 function requireAcpClient(client: BandACPClient | null): BandACPClient {
@@ -743,7 +744,7 @@ describe("ACPClientAdapter", () => {
       calls += 1
       promptTexts.push(params.prompt?.[0]?.text ?? "")
       if (calls === 1) {
-        throw new Error("prompt rejected")
+        throw { code: -32603, message: "prompt rejected" }
       }
       return { stopReason: "end_turn" }
     })
@@ -775,7 +776,9 @@ describe("ACPClientAdapter", () => {
       null,
       { isSessionBootstrap: false, roomId: "room-1" },
     )
-    expect(newSession).toHaveBeenCalledTimes(1)
+    // The rejected session is dropped, and its replacement still owes the replay.
+    expect(newSession).toHaveBeenCalledTimes(2)
+    expect(promptTexts[1]).toContain("[System Context]")
     expect(promptTexts[1]).toContain("[Conversation History]")
     expect(promptTexts[1]).toContain("[Alice]: please refactor the auth module")
   })
@@ -967,7 +970,7 @@ describe("ACPClientAdapter", () => {
     expect(promptTexts[1] ?? "").not.toContain("[Conversation History]")
   })
 
-  it("still replays after a rejected seeding prompt when the replacement session is restored on a new connection", async () => {
+  it("still replays after a rejected seeding prompt, on a fresh session instead of restoring the rejected one", async () => {
     let closeFirst: () => void = () => undefined
     let connections = 0
     let loads = 0
@@ -1038,7 +1041,8 @@ describe("ACPClientAdapter", () => {
       null,
       { isSessionBootstrap: false, roomId: "room-1" },
     )
-    expect(loads).toBeGreaterThan(1)
+    expect(loads).toBe(1)
+    expect(created).toBe(2)
     expect(promptTexts[1] ?? "").toContain("[Conversation History]")
     expect(promptTexts[1] ?? "").toContain("[Alice]: please refactor the auth module")
   })
@@ -1746,6 +1750,58 @@ describe("ACPClientAdapter", () => {
     }
   })
 
+  it("revokes a retired process's Band access, and gives its replacement a new token", async () => {
+    const backends: Array<{ url: string; token: string }> = []
+    const prompt = vi.fn(async () => ({ stopReason: "end_turn" }))
+    prompt.mockImplementationOnce(() => new Promise(() => undefined))
+    const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
+      command: ["acp-agent"],
+      turnTimeoutMs: SHORT_TURN_TIMEOUT_MS,
+      connectionFactory: async () => buildMockConnection({
+        agentCapabilities: { mcpCapabilities: { http: true } },
+        loadSession: vi.fn(),
+        newSession: vi.fn(async (params?: { mcpServers: Array<{ url: string; headers: Array<{ value: string }> }> }) => {
+          const server = params!.mcpServers[0]!
+          backends.push({ url: server.url, token: server.headers[0]!.value })
+          return { sessionId: "session-1" }
+        }),
+        prompt,
+      }),
+    })
+    const turn = (): Promise<void> => adapter.onMessage(
+      makeMessage("hello", "room-1"),
+      new FakeTools(),
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: false, roomId: "room-1" },
+    )
+    const participants = async ({ url, token }: { url: string; token: string }) => {
+      const transport = new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { authorization: token } } })
+      const client = new McpClient({ name: "agent", version: "1.0.0" })
+      await client.connect(transport)
+      try {
+        return await client.callTool({ name: "band_get_participants", arguments: { room_id: "room-1" } })
+      } finally {
+        await transport.close()
+      }
+    }
+
+    try {
+      await adapter.onStarted("Agent", "desc")
+      await expectTurnFailed(turn())
+      await turn()
+
+      const [retired, current] = backends
+      expect(current!.token).not.toEqual(retired!.token)
+      await expect(participants(retired!)).rejects.toThrow()
+      expect((await participants(current!)).isError).toBeFalsy()
+    } finally {
+      await adapter.stop()
+    }
+  })
+
   it("does not let a stale, failed session establishment evict a newer one still in flight for the same room", async () => {
     // Regression guard: `getOrCreateSession`'s in-flight guard used to clear
     // whatever promise was stored for a room, not specifically the one that
@@ -2402,7 +2458,8 @@ describe("ACPClientAdapter", () => {
       const onMessage = send(adapter, new FakeTools())
       await requested
       await adapter.onCleanup("room-1")
-      await onMessage
+      // Leaving stops the room's process, which ends its turn as failed.
+      await expectTurnFailed(onMessage)
 
       expect(getPermissionResult()).toEqual(CANCELLED)
       expect(signals[0]?.reason).toBe("room-closed")
@@ -2427,7 +2484,7 @@ describe("ACPClientAdapter", () => {
       const onMessage = send(adapter, new FakeTools())
       await requested
       await adapter.stop()
-      await onMessage
+      await expectTurnFailed(onMessage)
 
       expect(getPermissionResult()).toEqual(CANCELLED)
       expect(signals[0]?.reason).toBe("adapter-stopped")
@@ -2583,7 +2640,7 @@ describe("ACPClientAdapter", () => {
       await started
       await adapter.onCleanup("room-1")
       releaseSendEvent()
-      await onMessage
+      await expectTurnFailed(onMessage)
 
       expect(getPermissionResult()).toEqual(CANCELLED)
     })
@@ -2627,7 +2684,7 @@ describe("ACPClientAdapter", () => {
       await requested
       await adapter.onCleanup("room-1")
       answer("allow")
-      await onMessage
+      await expectTurnFailed(onMessage)
       await flush()
 
       expect(getPermissionResult()).toEqual(CANCELLED)
@@ -2846,7 +2903,8 @@ describe("ACPClientAdapter", () => {
 
       await send(harness.adapter, roomA, "room-a")
       await send(harness.adapter, roomB, "room-b")
-      await send(harness.adapter, roomA, "room-a")
+      // The drop closes room A's connection under its prompt.
+      await expectTurnFailed(send(harness.adapter, roomA, "room-a"))
       await flush()
 
       injectDuringModeSetup = async () => {
@@ -3165,12 +3223,14 @@ describe("ACPClientAdapter", () => {
     function buildFailureHarness(input: {
       turnTimeoutMs?: number;
       prompt: ReturnType<typeof vi.fn>;
-      cancel?: ReturnType<typeof vi.fn>;
       newSession?: ReturnType<typeof vi.fn>;
+      loadSession?: ReturnType<typeof vi.fn>;
+      stopProcess?: () => Promise<void>;
     }) {
-      let clientHandle: BandACPClient | null = null
-      const cancel = input.cancel ?? vi.fn(async () => undefined)
-      const loadSession = vi.fn(async () => ({}))
+      // One client per spawned process, in spawn order.
+      const clients: BandACPClient[] = []
+      const stopProcess = vi.fn(input.stopProcess ?? (async () => undefined))
+      const loadSession = input.loadSession ?? vi.fn(async () => ({}))
       const newSession = input.newSession ?? vi.fn(async () => ({ sessionId: "session-1" }))
 
       const adapter = new ACPClientAdapter({
@@ -3179,7 +3239,7 @@ describe("ACPClientAdapter", () => {
         enableMcpTools: false,
         turnTimeoutMs: input.turnTimeoutMs,
         connectionFactory: async (client) => {
-          clientHandle = client as unknown as BandACPClient
+          clients.push(client as unknown as BandACPClient)
           const controller = new AbortController()
           return {
             connection: {
@@ -3193,17 +3253,17 @@ describe("ACPClientAdapter", () => {
               loadSession,
               resumeSession: vi.fn(),
               newSession,
-              cancel,
               prompt: input.prompt,
             } as never,
             stop: async () => {
               controller.abort()
+              await stopProcess()
             },
           }
         },
       })
 
-      return { adapter, cancel, loadSession, newSession, getClient: () => requireAcpClient(clientHandle) }
+      return { adapter, clients, stopProcess, loadSession, newSession, getClient: () => requireAcpClient(clients.at(-1) ?? null) }
     }
 
     describeDeliveryContract([{
@@ -3333,11 +3393,11 @@ describe("ACPClientAdapter", () => {
       expect(tools.messages).toEqual(["final answer"])
     })
 
-    it("on a turn timeout: cancels the outstanding prompt, flushes output streamed so far, and evicts the session so the room's next turn establishes a fresh session instead of restoring or reusing it", async () => {
+    it("on a turn timeout: flushes output streamed so far, stops the room's process, and runs the next turn on a fresh process and session", async () => {
       vi.useFakeTimers()
       try {
         const prompt = vi.fn()
-        const { adapter, cancel, loadSession, newSession, getClient } = buildFailureHarness({
+        const { adapter, clients, stopProcess, loadSession, newSession, getClient } = buildFailureHarness({
           turnTimeoutMs: 1_000,
           prompt,
         })
@@ -3380,14 +3440,11 @@ describe("ACPClientAdapter", () => {
           provider: "acp",
           code: "timeout",
         })
-        // The abandoned turn is actually told to stop, not just given up on
-        // locally.
-        expect(cancel).toHaveBeenCalledWith({ sessionId: "session-1" })
+        // The process that stopped answering is stopped, not left running.
+        expect(stopProcess).toHaveBeenCalledTimes(1)
 
-        // The timed-out session is evicted AND barred from restore: the
-        // room's next turn establishes a genuinely fresh session via
-        // `newSession` instead of `loadSession`-restoring the one the
-        // abandoned turn may still be writing to.
+        // No prompt was ever accepted on session-1, so the next turn opens a
+        // fresh session on a fresh process instead of restoring it.
         const nextTools = new FakeTools()
         await adapter.onMessage(
           makeMessage("follow up", "room-timeout"),
@@ -3397,6 +3454,7 @@ describe("ACPClientAdapter", () => {
           null,
           { isSessionBootstrap: false, roomId: "room-timeout" },
         )
+        expect(clients).toHaveLength(2)
         expect(loadSession).not.toHaveBeenCalled()
         expect(newSession).toHaveBeenCalledTimes(2)
       } finally {
@@ -3404,14 +3462,14 @@ describe("ACPClientAdapter", () => {
       }
     })
 
-    it("a stray notification from a timed-out turn's session cannot contaminate the next turn's reply, since the next turn is a genuinely fresh session", async () => {
+    it("a stray notification from a timed-out turn's process cannot contaminate the next turn's reply, since the next turn runs on a fresh process", async () => {
       vi.useFakeTimers()
       try {
         const prompt = vi.fn()
         const newSession = vi.fn()
           .mockResolvedValueOnce({ sessionId: "session-1" })
           .mockResolvedValueOnce({ sessionId: "session-2" })
-        const { adapter, loadSession, getClient } = buildFailureHarness({
+        const { adapter, clients, loadSession } = buildFailureHarness({
           turnTimeoutMs: 1_000,
           prompt,
           newSession,
@@ -3433,15 +3491,15 @@ describe("ACPClientAdapter", () => {
         await vi.advanceTimersByTimeAsync(1_000)
         await expectTurnFailed(turn)
 
-        // The next turn establishes session-2 (a fresh id, not a restore of
-        // session-1) and streams its own real content; a straggler from the
-        // abandoned session-1 turn arrives for the OLD id in between.
+        // The next turn runs session-2 on a new process and streams its own
+        // content; the old process, still dying, sends a straggler for the
+        // timed-out session in between.
         prompt.mockImplementationOnce(async (params: { sessionId: string }) => {
-          await getClient().sessionUpdate({
+          await clients[0]!.sessionUpdate({
             sessionId: "session-1",
             update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "STALE-FROM-ABANDONED-TURN " } },
           })
-          await getClient().sessionUpdate({
+          await clients[1]!.sessionUpdate({
             sessionId: params.sessionId,
             update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "real-turn-2-answer" } },
           })
@@ -3465,15 +3523,134 @@ describe("ACPClientAdapter", () => {
       }
     })
 
-    it("does not wedge the room forever waiting on a turn-timeout cancel() that never resolves", async () => {
+    describe("when a turn fails", () => {
+      type PromptParams = { sessionId: string; prompt: Array<{ text: string }> }
+      const REPLAY = [{ id: "earlier-1", line: "[Alice]: please refactor the auth module" }]
+
+      function ask(adapter: ACPClientAdapter, content: string, tools = new FakeTools()): Promise<void> {
+        return adapter.onMessage(
+          { ...makeMessage(content, "room-1"), id: content },
+          tools,
+          { roomToSession: {}, replayMessages: REPLAY },
+          null,
+          null,
+          { isSessionBootstrap: false, roomId: "room-1" },
+        )
+      }
+
+      function lastPrompt(prompt: ReturnType<typeof vi.fn>): PromptParams {
+        return (prompt.mock.calls.at(-1) as [PromptParams])[0]
+      }
+
+      function lastPromptText(prompt: ReturnType<typeof vi.fn>): string {
+        return lastPrompt(prompt).prompt[0]!.text
+      }
+
+      async function timeOut(adapter: ACPClientAdapter, prompt: ReturnType<typeof vi.fn>): Promise<void> {
+        prompt.mockImplementationOnce(() => new Promise(() => undefined))
+        const turn = ask(adapter, "hangs")
+        turn.catch(() => undefined)
+        await vi.advanceTimersByTimeAsync(1_000)
+        await expectTurnFailed(turn)
+      }
+
+      it("restores a session that had answered on a fresh process after a timeout", async () => {
+        vi.useFakeTimers()
+        try {
+          const prompt = vi.fn(async () => ({ stopReason: "end_turn" }))
+          const { adapter, clients, stopProcess, loadSession, newSession } = buildFailureHarness({ turnTimeoutMs: 1_000, prompt })
+          await adapter.onStarted("Agent", "desc")
+          await ask(adapter, "first")
+
+          await timeOut(adapter, prompt)
+          await ask(adapter, "after")
+
+          expect(stopProcess).toHaveBeenCalledTimes(1)
+          expect(clients).toHaveLength(2)
+          expect(newSession).toHaveBeenCalledTimes(1)
+          expect(loadSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-1" }))
+          expect(lastPromptText(prompt)).not.toContain("[System Context]")
+          expect(lastPromptText(prompt)).not.toContain("[Conversation History]")
+        } finally {
+          vi.useRealTimers()
+        }
+      })
+
+      it("replays the room's history into a fresh session when the new process cannot restore it", async () => {
+        vi.useFakeTimers()
+        try {
+          const prompt = vi.fn(async () => ({ stopReason: "end_turn" }))
+          const newSession = vi.fn()
+            .mockResolvedValueOnce({ sessionId: "session-1" })
+            .mockResolvedValueOnce({ sessionId: "session-2" })
+          const loadSession = vi.fn(async () => {
+            throw new Error("agent forgot this session")
+          })
+          const { adapter, clients } = buildFailureHarness({ turnTimeoutMs: 1_000, prompt, newSession, loadSession })
+          await adapter.onStarted("Agent", "desc")
+          await ask(adapter, "first")
+
+          await timeOut(adapter, prompt)
+          await ask(adapter, "after")
+
+          expect(clients).toHaveLength(2)
+          expect(loadSession).toHaveBeenCalledTimes(1)
+          expect(lastPrompt(prompt).sessionId).toBe("session-2")
+          expect(lastPromptText(prompt)).toContain("[Conversation History]")
+          expect(lastPromptText(prompt)).toContain("[Alice]: please refactor the auth module")
+        } finally {
+          vi.useRealTimers()
+        }
+      })
+
+      it("keeps the process after the agent's own error response, and seeds a new session when none had answered", async () => {
+        const prompt = vi.fn(async () => ({ stopReason: "end_turn" }))
+        prompt.mockRejectedValueOnce({ code: -32000, message: "rate limited" })
+        const { adapter, clients, stopProcess, newSession } = buildFailureHarness({ prompt })
+        await adapter.onStarted("Agent", "desc")
+
+        const tools = new FakeTools()
+        await expectTurnFailed(ask(adapter, "first", tools))
+        await ask(adapter, "again")
+
+        expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({ code: "-32000", message: "rate limited" })
+        expect(stopProcess).not.toHaveBeenCalled()
+        expect(clients).toHaveLength(1)
+        expect(newSession).toHaveBeenCalledTimes(2)
+        expect(lastPromptText(prompt)).toContain("[System Context]")
+      })
+
+      it("keeps the process and session when only posting the reply failed", async () => {
+        const prompt = vi.fn()
+        const { adapter, clients, stopProcess, newSession, getClient } = buildFailureHarness({ prompt })
+        prompt.mockImplementation(async (params: PromptParams) => {
+          await getClient().sessionUpdate({
+            sessionId: params.sessionId,
+            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "answer" } },
+          })
+          return { stopReason: "end_turn" }
+        })
+        await adapter.onStarted("Agent", "desc")
+
+        await expect(ask(adapter, "first", new FakeTools({ failOn: ["sendMessage"] }))).rejects.toBeInstanceOf(DeliveryFailedError)
+        const next = new FakeTools()
+        await ask(adapter, "again", next)
+
+        expect(stopProcess).not.toHaveBeenCalled()
+        expect(clients).toHaveLength(1)
+        expect(newSession).toHaveBeenCalledTimes(1)
+        expect(next.messages).toEqual(["answer"])
+      })
+    })
+
+    it("does not wedge the room forever on a timed-out process that never finishes stopping", async () => {
       vi.useFakeTimers()
       try {
         const prompt = vi.fn()
-        const cancel = vi.fn(() => new Promise(() => undefined))
         const { adapter } = buildFailureHarness({
           turnTimeoutMs: 1_000,
           prompt,
-          cancel,
+          stopProcess: () => new Promise(() => undefined),
         })
         prompt.mockImplementationOnce(() => new Promise(() => undefined))
         prompt.mockImplementation(async () => ({ stopReason: "end_turn" }))
@@ -3493,11 +3670,11 @@ describe("ACPClientAdapter", () => {
         await vi.advanceTimersByTimeAsync(1_000)
 
         // The timed-out turn itself still fails promptly -- it does not wait
-        // on `cancel()`, which this test deliberately never resolves.
+        // for the process to stop, which this test deliberately never does.
         await expectTurnFailed(turn)
 
         // Nor does the room stay wedged: a follow-up turn on the same room
-        // completes normally instead of hanging behind the unresolved cancel.
+        // completes normally instead of hanging behind the unfinished stop.
         const nextTools = new FakeTools()
         await adapter.onMessage(
           makeMessage("follow up", "room-wedge"),
@@ -3546,11 +3723,11 @@ describe("ACPClientAdapter", () => {
       })).toThrow(/turnTimeoutMs must be a positive number or Infinity/)
     })
 
-    it("still evicts and cancels when flushing the timed-out partial fails to deliver", async () => {
+    it("still stops the timed-out process when flushing its partial output fails to deliver", async () => {
       vi.useFakeTimers()
       try {
         const prompt = vi.fn()
-        const { adapter, cancel, loadSession, newSession, getClient } = buildFailureHarness({
+        const { adapter, stopProcess, loadSession, newSession, getClient } = buildFailureHarness({
           turnTimeoutMs: 1_000,
           prompt,
         })
@@ -3577,7 +3754,7 @@ describe("ACPClientAdapter", () => {
         turn.catch(() => undefined)
         await vi.advanceTimersByTimeAsync(1_000)
         await expect(turn).rejects.toBeTruthy()
-        expect(cancel).toHaveBeenCalledWith({ sessionId: "session-1" })
+        expect(stopProcess).toHaveBeenCalledTimes(1)
 
         const nextTools = new FakeTools()
         await adapter.onMessage(
@@ -3904,21 +4081,24 @@ describe("ACPClientAdapter", () => {
       }))
       const prompt = vi.fn(async () => ({ stopReason: "end_turn" }))
 
-      const cancel = vi.fn(async () => undefined)
+      let spawns = 0
       const adapter = new ACPClientAdapter({
         cwd: tmpRoot(),
         command: ["acp-agent"],
         enableMcpTools: false,
-        connectionFactory: async () => buildMockConnection({
-          loadSession,
-          newSession,
-          prompt,
-          extraRpcSpies: { setSessionMode, setSessionConfigOption, cancel },
-        }),
+        connectionFactory: async () => {
+          spawns += 1
+          return buildMockConnection({
+            loadSession,
+            newSession,
+            prompt,
+            extraRpcSpies: { setSessionMode, setSessionConfigOption },
+          })
+        },
         ...input.adapterOptions,
       } as never)
 
-      return { adapter, setSessionMode, setSessionConfigOption, loadSession, newSession, cancel }
+      return { adapter, setSessionMode, setSessionConfigOption, loadSession, newSession, spawns: () => spawns }
     }
 
     // Shaped like the "model" config option real Claude/Codex ACP agents
@@ -4061,7 +4241,7 @@ describe("ACPClientAdapter", () => {
       expect(setSessionConfigOption).toHaveBeenCalledWith({ sessionId: "session-1", configId: "model", value: "auto" })
     })
 
-    it("reports a structured configuration failure when Copilot rejects effort after model=auto", async () => {
+    it("reports a structured configuration failure when Copilot rejects effort after model=auto, keeping the process but not the half-configured session", async () => {
       const catalog = [
         modelConfigOption({
           options: [
@@ -4081,8 +4261,10 @@ describe("ACPClientAdapter", () => {
           ],
         },
       ]
-      const resolveSessionConfig = vi.fn(async () => ({ model: "auto", reasoning_effort: "high" }))
-      const { adapter, setSessionConfigOption } = buildHarness({
+      const resolveSessionConfig = vi.fn()
+        .mockResolvedValueOnce({ model: "auto", reasoning_effort: "high" })
+        .mockResolvedValue(undefined)
+      const { adapter, setSessionConfigOption, newSession, spawns } = buildHarness({
         adapterOptions: { resolveSessionConfig },
         newSessionConfigOptions: catalog,
       })
@@ -4113,6 +4295,12 @@ describe("ACPClientAdapter", () => {
         optionId: "reasoning_effort",
         selectedValue: "high",
       })
+
+      // The agent answered, so its process is kept; the session it left
+      // half-configured is replaced.
+      await send(adapter)
+      expect(spawns()).toBe(1)
+      expect(newSession).toHaveBeenCalledTimes(2)
     })
 
     it("applies Copilot effort first then model=auto when the returned catalog drops effort", async () => {
@@ -4206,13 +4394,13 @@ describe("ACPClientAdapter", () => {
       })
     })
 
-    it("retires a connection after config apply times out so the next turn starts fresh", async () => {
+    it("retires a connection after config apply times out so the next turn starts on a fresh process and session", async () => {
       vi.useFakeTimers()
       try {
         let setSessionConfigOptionCalled: () => void = () => undefined
         const called = new Promise<void>((resolve) => { setSessionConfigOptionCalled = resolve })
         const resolveSessionConfig = vi.fn(async () => ({ model: "sonnet" }))
-        const { adapter, setSessionConfigOption, cancel, newSession } = buildHarness({
+        const { adapter, setSessionConfigOption, newSession, spawns } = buildHarness({
           adapterOptions: { resolveSessionConfig },
           newSessionConfigOptions: [modelConfigOption()],
         })
@@ -4235,7 +4423,6 @@ describe("ACPClientAdapter", () => {
         await called
         await vi.advanceTimersByTimeAsync(10_000)
         await expectTurnFailed(turn)
-        expect(cancel).toHaveBeenCalledWith({ sessionId: "session-1" })
         expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({
           provider: "acp",
           code: FAILURE_CODE_SESSION_CONFIG,
@@ -4246,6 +4433,7 @@ describe("ACPClientAdapter", () => {
           selectedValue: "sonnet",
         })
         await send(adapter)
+        expect(spawns()).toBe(2)
         expect(newSession).toHaveBeenCalledTimes(2)
       } finally {
         vi.useRealTimers()

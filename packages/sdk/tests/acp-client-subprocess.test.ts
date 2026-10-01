@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { ACPClientAdapter } from "../src/adapters/acp";
+import { ACPClientAdapter, type ACPClientAdapterOptions } from "../src/adapters/acp";
 import { createSubprocessConnection } from "../src/adapters/acp/ACPRoomAgent";
 import { BandACPClient } from "../src/adapters/acp/client";
 import { runAcpTurn } from "./helpers/acpTurn";
@@ -17,18 +17,22 @@ const STDERR_FLOOD_BYTES = 256 * 1024
 // Reports its pid on stderr once SIGTERM is ignored, then never exits on its own.
 const IGNORES_STOP_AGENT = `process.on("SIGTERM", () => {}); setInterval(() => {}, 1000); console.error(process.pid)`
 const PID_FILE = "fake-acp-agent.pid"
+const HANG = "never-answer"
+// Long enough for a real process to answer an ordinary prompt.
+const TURN_TIMEOUT_MS = 500
 
 // These agents never ask for permission.
 function unusedClient(): BandACPClient {
   return new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
 }
 
-function fakeAgentAdapter(root: string): ACPClientAdapter {
+function fakeAgentAdapter(root: string, options: Partial<ACPClientAdapterOptions> = {}): ACPClientAdapter {
   return new ACPClientAdapter({
     cwd: root,
     command: [process.execPath, fakeAcpAgentPath],
-    env: { FAKE_ACP_PID_FILE: PID_FILE },
     enableMcpTools: false,
+    ...options,
+    env: { FAKE_ACP_PID_FILE: PID_FILE, ...options.env },
   })
 }
 
@@ -168,6 +172,22 @@ describe("ACPClientAdapter over a real subprocess", () => {
 
       expect(second.pid).not.toBe(first.pid)
       expect(second.cwd).toBe(first.cwd)
+    } finally {
+      await adapter.stop()
+    }
+  })
+
+  it("stops only a timed-out room's process, and starts that room a new one on its next turn", async () => {
+    const adapter = fakeAgentAdapter(tmpRoot(), { env: { FAKE_ACP_HANG_ON: HANG }, turnTimeoutMs: TURN_TIMEOUT_MS })
+    try {
+      const roomA = await report(adapter, "room-a")
+      const roomB = await report(adapter, "room-b")
+
+      await expectTurnFailed(runAcpTurn(adapter, { roomId: "room-a", content: HANG }))
+
+      await vi.waitFor(() => expect(isAlive(roomA.pid)).toBe(false))
+      expect((await report(adapter, "room-b")).pid).toBe(roomB.pid)
+      expect((await report(adapter, "room-a")).pid).not.toBe(roomA.pid)
     } finally {
       await adapter.stop()
     }

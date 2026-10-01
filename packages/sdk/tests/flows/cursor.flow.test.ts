@@ -11,7 +11,7 @@ import { createDeferred } from "../../src/core/deferred";
 import { DEFAULT_CURSOR_DECISION_TIMEOUT_MS } from "../../src/adapters/cursor-acp/CursorRoomAgent";
 import { CURSOR_COMMAND, CURSOR_DECISION_MESSAGES as SAYS } from "../../src/adapters/cursor-acp/messages";
 import { BandPlatform, person, type BandRoom, type Posted } from "./support/bandPlatform";
-import { FakeCursorAgent, type CursorTurn } from "./support/fakeCursorAgent";
+import { DEFAULT_CURSOR_ROOM, FakeCursorAgent, type CursorTurn } from "./support/fakeCursorAgent";
 import { tmpRoot } from "../testUtils";
 
 const OWNER = "owner";
@@ -376,8 +376,11 @@ describe("Cursor in a Band room", () => {
     expect(await room.outcome(crashed)).toBe("failed");
     expect(room.events("error").map((event) => event.metadata?.failure)).toEqual([expect.objectContaining({ detail: { details: "model crashed" } })]);
 
+    // The crash came back as Cursor's own error response, so its process is
+    // kept; the session that never answered is replaced.
     const { result, message } = await session.start(async (turn) => turn.sessionId);
-    expect(await result).toBe("cursor-session-1");
+    expect(await result).toBe("cursor-session-2");
+    expect(agent.room(DEFAULT_CURSOR_ROOM).launches).toBe(1);
     expect(await room.outcome(message)).toBe("processed");
   });
 
