@@ -1,5 +1,5 @@
 import { ACPClientAdapter } from "../acp";
-import { CursorRoomAgent, DEFAULT_CURSOR_ACP_COMMAND, type CursorACPAdapterOptions } from "./CursorRoomAgent";
+import { CursorRoomAgent, DEFAULT_CURSOR_ACP_COMMAND, type CursorACPAdapterOptions, type CursorDecisionSettings } from "./CursorRoomAgent";
 
 /**
  * Runs Cursor's ACP agent, one process per room. Approvals, questions and
@@ -7,7 +7,7 @@ import { CursorRoomAgent, DEFAULT_CURSOR_ACP_COMMAND, type CursorACPAdapterOptio
  */
 export class CursorACPAdapter extends ACPClientAdapter {
   protected readonly provider = "cursor-acp";
-  private readonly settings: CursorACPAdapterOptions;
+  private readonly settings: CursorDecisionSettings;
 
   public constructor(options: CursorACPAdapterOptions = {}) {
     validateOptions(options);
@@ -21,7 +21,7 @@ export class CursorACPAdapter extends ACPClientAdapter {
   }
 
   protected override createRoom(roomId: string, workspace: string): CursorRoomAgent {
-    return new CursorRoomAgent({ ...this.roomOptions, roomId, cwd: workspace, provider: this.provider }, this.settings);
+    return new CursorRoomAgent(this.roomAgentOptions(roomId, workspace), this.settings);
   }
 }
 

@@ -43,6 +43,12 @@ export interface CursorACPAdapterOptions extends Omit<ACPClientStdioOptions, "co
   decisionAuthorizedSenders?: readonly string[];
 }
 
+/** The Cursor options a room's engine reads; the rest reach it through its ACP options. */
+export type CursorDecisionSettings = Pick<
+  CursorACPAdapterOptions,
+  "approvalMode" | "questionMode" | "planMode" | "decisionTimeoutMs" | "maxPendingDecisions" | "decisionAuthorizedSenders"
+>;
+
 // Why a decision ended without an answer. `timeout` is shared with the ACP base class, whose own permission timeout aborts with it.
 const END_REASON = {
   timeout: "timeout" satisfies ACPPermissionAbandonReason,
@@ -191,8 +197,7 @@ export class CursorRoomAgent extends ACPRoomAgent {
   private activeTurn: CursorTurn | null = null;
   private turnTail: Promise<void> = Promise.resolve();
 
-  // `options` is the room's ACP engine config; `settings` the adapter's Cursor options.
-  public constructor(options: ACPRoomAgentOptions, settings: CursorACPAdapterOptions) {
+  public constructor(options: ACPRoomAgentOptions, settings: CursorDecisionSettings) {
     const extensions = new CursorExtensions();
     super({
       ...options,
@@ -206,7 +211,7 @@ export class CursorRoomAgent extends ACPRoomAgent {
     this.planMode = settings.planMode ?? "manual";
     this.decisionTimeoutMs = settings.decisionTimeoutMs ?? DEFAULT_CURSOR_DECISION_TIMEOUT_MS;
     this.authorizedSenders = senderAllowlist(settings.decisionAuthorizedSenders);
-    this.decisionLogger = resolveLogger(settings.logger);
+    this.decisionLogger = resolveLogger(options.logger);
     this.decisions = new DecisionRegistry({
       maxPending: settings.maxPendingDecisions ?? DEFAULT_CURSOR_MAX_PENDING_DECISIONS,
       logger: this.decisionLogger,

@@ -15,7 +15,7 @@ import {
  */
 export class ACPClientAdapter extends RoomScopedAdapter<ACPClientSessionState, AdapterToolsProtocol, ACPRoomAgent> {
   protected readonly provider: string = "acp"
-  protected readonly roomOptions: Omit<ACPRoomAgentOptions, "cwd" | "roomId" | "provider">
+  private readonly roomOptions: Omit<ACPRoomAgentOptions, "cwd" | "roomId" | "provider">
 
   public constructor(options: ACPClientAdapterOptions) {
     const { cwd, workspaceForRoom, ...roomOptions } = options
@@ -24,6 +24,11 @@ export class ACPClientAdapter extends RoomScopedAdapter<ACPClientSessionState, A
   }
 
   protected createRoom(roomId: string, workspace: string): ACPRoomAgent {
-    return new ACPRoomAgent({ ...this.roomOptions, roomId, cwd: workspace, provider: this.provider })
+    return new ACPRoomAgent(this.roomAgentOptions(roomId, workspace))
+  }
+
+  /** The adapter's options bound to one room, for any ACP engine subclass. */
+  protected roomAgentOptions(roomId: string, workspace: string): ACPRoomAgentOptions {
+    return { ...this.roomOptions, roomId, cwd: workspace, provider: this.provider }
   }
 }

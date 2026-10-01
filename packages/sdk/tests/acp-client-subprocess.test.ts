@@ -7,7 +7,8 @@ import { describe, expect, it, vi } from "vitest";
 import { ACPClientAdapter } from "../src/adapters/acp";
 import { createSubprocessConnection } from "../src/adapters/acp/ACPRoomAgent";
 import { BandACPClient } from "../src/adapters/acp/client";
-import { FakeTools, expectTurnFailed, findFailureEvent, makeLoggerSpy, makeMessage, roomWorkspacePath, tmpRoot } from "./testUtils";
+import { runAcpTurn } from "./helpers/acpTurn";
+import { FakeTools, expectTurnFailed, findFailureEvent, makeLoggerSpy, roomWorkspacePath, tmpRoot } from "./testUtils";
 
 const fakeAcpAgentPath = fileURLToPath(new URL("./fixtures/fakeAcpAgent.mjs", import.meta.url))
 const MISSING_BINARY = "/nonexistent-band-agent"
@@ -20,17 +21,6 @@ const PID_FILE = "fake-acp-agent.pid"
 // These agents never ask for permission.
 function unusedClient(): BandACPClient {
   return new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
-}
-
-function turn(adapter: ACPClientAdapter, tools: FakeTools, roomId = "room-1"): Promise<void> {
-  return adapter.onMessage(
-    makeMessage("hi", roomId),
-    tools,
-    { roomToSession: {} },
-    null,
-    null,
-    { isSessionBootstrap: true, roomId },
-  )
 }
 
 function fakeAgentAdapter(root: string): ACPClientAdapter {
@@ -51,7 +41,7 @@ interface AgentReport {
 /** Runs one turn in `roomId` and returns what the fake agent said about itself. */
 async function report(adapter: ACPClientAdapter, roomId: string): Promise<AgentReport> {
   const tools = new FakeTools()
-  await turn(adapter, tools, roomId)
+  await runAcpTurn(adapter, { roomId, tools })
   const [, pid, cwd, session] = /^pid=(\d+) cwd=(.+) session=(.+)$/.exec(tools.messages.join(""))!
   return { pid: Number(pid), cwd: cwd!, session: session! }
 }
@@ -106,7 +96,7 @@ describe("ACPClientAdapter over a real subprocess", () => {
 
       for (let attempt = 0; attempt < 2; attempt++) {
         const tools = new FakeTools()
-        await expectTurnFailed(turn(adapter, tools))
+        await expectTurnFailed(runAcpTurn(adapter, { tools }))
         expect(findFailureEvent(tools)?.content).toContain(`spawn ${MISSING_BINARY} ENOENT`)
       }
     } finally {
@@ -124,9 +114,8 @@ describe("ACPClientAdapter over a real subprocess", () => {
       logger,
     })
     try {
-      await adapter.onStarted("Agent", "desc")
       const tools = new FakeTools()
-      await turn(adapter, tools)
+      await runAcpTurn(adapter, { tools })
 
       expect(tools.messages.join("")).toMatch(/^pid=\d+/)
       expect(logger.debug).toHaveBeenCalledWith("acp_client.subprocess_stderr", { line: expect.stringMatching(/^x+$/) })
@@ -139,7 +128,6 @@ describe("ACPClientAdapter over a real subprocess", () => {
     const root = tmpRoot()
     const adapter = fakeAgentAdapter(root)
     try {
-      await adapter.onStarted("Agent", "desc")
       const roomA = await report(adapter, "room-a")
       const roomB = await report(adapter, "room-b")
 
@@ -154,7 +142,6 @@ describe("ACPClientAdapter over a real subprocess", () => {
   it("stops only the leaving room's process, and every process on stop", async () => {
     const adapter = fakeAgentAdapter(tmpRoot())
     try {
-      await adapter.onStarted("Agent", "desc")
       const roomA = await report(adapter, "room-a")
       const roomB = await report(adapter, "room-b")
       const roomC = await report(adapter, "room-c")
@@ -173,7 +160,6 @@ describe("ACPClientAdapter over a real subprocess", () => {
   it("starts a new process on the next turn after the room's process exits", async () => {
     const adapter = fakeAgentAdapter(tmpRoot())
     try {
-      await adapter.onStarted("Agent", "desc")
       const first = await report(adapter, "room-1")
       process.kill(first.pid)
       await vi.waitFor(() => expect(isAlive(first.pid)).toBe(false))
@@ -190,9 +176,7 @@ describe("ACPClientAdapter over a real subprocess", () => {
   it("leaves no process behind when stopped while a room's process is starting", async () => {
     const root = tmpRoot()
     const adapter = fakeAgentAdapter(root)
-    await adapter.onStarted("Agent", "desc")
-    const tools = new FakeTools()
-    const starting = turn(adapter, tools).catch(() => undefined)
+    const starting = runAcpTurn(adapter).catch(() => undefined)
     const pidFile = path.join(roomWorkspacePath(root, "room-1"), PID_FILE)
     await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true))
 
