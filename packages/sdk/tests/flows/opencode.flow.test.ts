@@ -79,6 +79,16 @@ function heldBackend() {
   return { factory, held, listening: listening.promise };
 }
 
+/** The real HTTP client; `shut` resolves once the adapter has closed it. */
+class ObservedClient extends HttpOpencodeClient {
+  public readonly shut = createDeferred<void>();
+
+  public override async close(): Promise<void> {
+    await super.close();
+    this.shut.resolve();
+  }
+}
+
 describe("OpenCode in a Band room", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -461,17 +471,22 @@ describe("OpenCode in a Band room", () => {
 
   it("stops an MCP backend that finishes starting after the adapter stopped", async () => {
     const backend = heldBackend();
-    await using session = await opencodeRoom({}, { mcpBackendFactory: backend.factory });
+    let client!: ObservedClient;
+    const clientFactory = (config: Required<OpencodeAdapterConfig>) => (client = new ObservedClient({ baseUrl: config.baseUrl }));
+    await using session = await opencodeRoom({}, { mcpBackendFactory: backend.factory, clientFactory });
     const message = await session.room.say(OWNER, "Please run the tests");
     await backend.held.sending;
 
     const stopped = session.adapter.onRuntimeStop();
+    // Shutdown closes the client without waiting for the backend's start.
+    await client.shut.promise;
     backend.held.release();
     const url = await backend.listening;
     await stopped;
 
     expect(await session.room.outcome(message)).toBe("failed");
     await expect(fetch(new URL("/healthz", url))).rejects.toThrow();
+    expect(session.server.requestsTo("POST", /^\/mcp$/), "OpenCode is not left pointing at the stopped backend").toEqual([]);
   });
 
   it("starts a second room's first turn only once OpenCode has Band's tools", async () => {
@@ -479,15 +494,19 @@ describe("OpenCode in a Band room", () => {
     await using session = await opencodeRoom({}, { mcpBackendFactory: backend.factory });
     const { room, server, platform } = session;
     const other = await platform.room("room-2");
-    server.onPrompt((turn) => turn.answer("Answered."));
-    server.onPrompt((turn) => turn.answer("Answered."));
+    const answer = "Answered.";
+    const answered = (posted: { content: string }) => posted.content === answer;
+    // One prompt per room.
+    const reply = (turn: OpencodeTurn) => turn.answer(answer);
+    server.onPrompt(reply);
+    server.onPrompt(reply);
 
     await room.say(OWNER, "Hello from room one");
     await backend.held.sending;
     await other.processing(await other.say(OWNER, "Hello from room two"));
     backend.held.release();
-    await room.nextMessage((posted) => posted.content === "Answered.");
-    await other.nextMessage((posted) => posted.content === "Answered.");
+    await room.nextMessage(answered);
+    await other.nextMessage(answered);
 
     const setup = server.requestsTo("POST", /^\/(mcp|session)$/);
     expect(setup.map((request) => request.path)).toEqual(["/mcp", "/session", "/session"]);
@@ -512,7 +531,7 @@ describe("OpenCode in a Band room", () => {
     await session.start((turn) => turn.answer("Answered without Band's tools."));
     await room.nextMessage((posted) => posted.content === "Answered without Band's tools.");
     expect(server.requestsTo("POST", /^\/mcp$/)).toEqual([]);
-    await expect(session.adapter.onRuntimeStop()).resolves.toBeUndefined();
+    await session.adapter.onRuntimeStop();
   });
 
   it("mentions the requester on an ask raised after the turn's answer went out", async () => {

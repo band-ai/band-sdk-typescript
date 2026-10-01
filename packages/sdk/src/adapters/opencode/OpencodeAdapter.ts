@@ -503,14 +503,12 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       try {
         await client.deregisterMcpServer(this.config.mcpServerName);
       } catch {}
+      // Closed before a still-starting backend settles, so that start can't register or prompt through it.
+      await client.close();
     }
 
     // A backend still starting is stopped once it listens.
     await (await backend)?.stop();
-
-    if (client) {
-      await client.close();
-    }
 
     if (eventTask) {
       await Promise.resolve(eventTask).catch(() => undefined);
