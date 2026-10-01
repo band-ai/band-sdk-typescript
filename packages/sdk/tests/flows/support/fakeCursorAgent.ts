@@ -4,6 +4,8 @@
  * over in-memory streams, so every request crosses the wire the way it does
  * with `cursor-agent`. Each prompt runs the next scripted turn.
  */
+import path from "node:path";
+
 import { AgentSideConnection, ClientSideConnection, ndJsonStream, type Agent } from "@agentclientprotocol/sdk";
 import type * as schema from "@agentclientprotocol/sdk";
 
@@ -49,29 +51,74 @@ function pipe() {
   return { readable, writable, hangUp };
 }
 
+/** Room a test addresses when it does not name one. */
+export const DEFAULT_CURSOR_ROOM = "room-1";
+
+/**
+ * The Cursor processes the adapter starts, one per room. A room is told apart
+ * by the workspace its process is launched in, which ends in the room id.
+ */
 export class FakeCursorAgent {
   public readonly received = new RecordLog<Received>();
   /** The environment each Cursor process was launched with. */
   public readonly launchEnvs: Array<Record<string, string> | undefined> = [];
+  private readonly rooms = new Map<string, FakeCursorRoom>();
+
+  /** Hands the adapter a real ACP connection to that room's Cursor process. */
+  public readonly connectionFactory: ACPClientConnectionFactory = async (client, { env, cwd }) => {
+    this.launchEnvs.push(env);
+    return this.room(path.basename(cwd ?? DEFAULT_CURSOR_ROOM)).connect(client);
+  };
+
+  public room(roomId: string): FakeCursorRoom {
+    let room = this.rooms.get(roomId);
+    if (!room) {
+      room = new FakeCursorRoom(this.received);
+      this.rooms.set(roomId, room);
+    }
+    return room;
+  }
+
+  /** Queues the script the next prompt in the default room runs. */
+  public nextTurn<R>(script: (turn: CursorTurn) => Promise<R>): Promise<R> {
+    return this.room(DEFAULT_CURSOR_ROOM).nextTurn(script);
+  }
+
+  public receivedOf(method: string): unknown[] {
+    return this.received.entries.filter((request) => request.method === method).map((request) => request.params);
+  }
+}
+
+/** One room's Cursor processes, one at a time: scripted turns, and the live connection. */
+export class FakeCursorRoom {
+  /** Processes started for this room. */
+  public launches = 0;
+  /** Whether the latest process has been stopped. */
+  public stopped = false;
   private readonly turns: QueuedTurn[] = [];
   private sessions = 0;
   private peer: AgentSideConnection | null = null;
 
-  /** Hands the adapter a real ACP connection to this peer. */
-  public readonly connectionFactory: ACPClientConnectionFactory = async (client, { env }) => {
-    this.launchEnvs.push(env);
+  public constructor(private readonly received: RecordLog<Received>) {}
+
+  public connect(client: schema.Client): ReturnType<ACPClientConnectionFactory> {
+    this.launches++;
+    this.stopped = false;
+    // A new process numbers its sessions from the start again.
+    this.sessions = 0;
     const toAgent = pipe();
     const toClient = pipe();
     this.peer = new AgentSideConnection(() => this.agent(), ndJsonStream(toClient.writable, toAgent.readable));
     const connection = new ClientSideConnection(() => client, ndJsonStream(toAgent.writable, toClient.readable));
-    return {
+    return Promise.resolve({
       connection,
       stop: async () => {
+        this.stopped = true;
         toAgent.hangUp();
         toClient.hangUp();
       },
-    };
-  };
+    });
+  }
 
   /** Queues the script the next prompt runs; resolves with what it returned. */
   public nextTurn<R>(script: (turn: CursorTurn) => Promise<R>): Promise<R> {
@@ -80,14 +127,9 @@ export class FakeCursorAgent {
     return result.promise as Promise<R>;
   }
 
-  public receivedOf(method: string): unknown[] {
-    return this.received.entries.filter((request) => request.method === method).map((request) => request.params);
-  }
-
   private record(method: string, params: unknown): void {
     this.received.record({ method, params });
   }
-
   private agent(): Agent {
     return {
       initialize: async (params) => {

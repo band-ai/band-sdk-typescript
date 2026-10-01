@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ACPClientAdapter } from "../src/adapters/acp";
 import { OmpACPAdapter, DEFAULT_OMP_ACP_COMMAND } from "../src/adapters/omp-acp";
-import { FakeTools, findFailureEvent, makeMessage } from "./testUtils";
+import { FakeTools, findFailureEvent, makeMessage, tmpRoot } from "./testUtils";
+import { runAcpTurn } from "./helpers/acpTurn";
 
 function mockConnection(options: {
   initialize?: () => Promise<{ protocolVersion: number; agentCapabilities: Record<string, never> }>;
@@ -22,36 +23,26 @@ function mockConnection(options: {
   };
 }
 
-// The private fields a thin `OmpACPAdapter` wrapper must forward unchanged to
-// `ACPClientAdapter` — asserting real behavior of the wrapper (does it forward
-// faithfully) without re-testing `ACPClientAdapter`'s own protocol handling.
+// The options a thin `OmpACPAdapter` wrapper must forward unchanged to every
+// room's engine — asserting the wrapper forwards faithfully without re-testing
+// `ACPClientAdapter`'s own protocol handling.
 interface ExposedOptions {
-  cwd: string;
-  env?: Record<string, string>;
-  clientCapabilities?: unknown;
-  resolvePermission?: unknown;
-  resolveSessionMode?: unknown;
-  resolveSessionModel?: unknown;
-  mcpServers: unknown[];
-  enableMcpTools: boolean;
-  enableMemoryTools: boolean;
-  additionalMcpTools: unknown[];
-  authMethod?: string | null;
-  permissionTimeoutMs: number;
-  turnTimeoutMs: number;
+  roomOptions: Record<string, unknown>;
 }
 
 describe("OmpACPAdapter", () => {
   it("defaults the command to omp acp", async () => {
     let command: string[] | null = null;
     const adapter = new OmpACPAdapter({
+      cwd: tmpRoot(),
+      enableMcpTools: false,
       connectionFactory: async (_client, options) => {
         command = options.command;
         return mockConnection();
       },
     });
 
-    await adapter.onStarted("Agent", "desc");
+    await runAcpTurn(adapter);
     expect(command).toEqual(["omp", "acp"]);
     expect(DEFAULT_OMP_ACP_COMMAND).toEqual(["omp", "acp"]);
     await adapter.stop();
@@ -60,6 +51,8 @@ describe("OmpACPAdapter", () => {
   it("forwards an explicit command verbatim instead of merging it with the default", async () => {
     let command: string[] | null = null;
     const adapter = new OmpACPAdapter({
+      cwd: tmpRoot(),
+      enableMcpTools: false,
       command: ["omp", "acp", "--model", "google/gemini-2.5-flash"],
       connectionFactory: async (_client, options) => {
         command = options.command;
@@ -67,7 +60,7 @@ describe("OmpACPAdapter", () => {
       },
     });
 
-    await adapter.onStarted("Agent", "desc");
+    await runAcpTurn(adapter);
     expect(command).toEqual(["omp", "acp", "--model", "google/gemini-2.5-flash"]);
     await adapter.stop();
   });
@@ -81,7 +74,6 @@ describe("OmpACPAdapter", () => {
     const additionalMcpTools = [{ name: "extra-tool" }] as never[];
 
     const adapter = new OmpACPAdapter({
-      cwd: "/work",
       env: { GEMINI_API_KEY: "secret" },
       clientCapabilities,
       resolvePermission,
@@ -96,17 +88,16 @@ describe("OmpACPAdapter", () => {
       turnTimeoutMs: 999_999,
     });
 
-    const exposed = adapter as unknown as ExposedOptions;
-    expect(exposed.cwd).toBe("/work");
+    const exposed = (adapter as unknown as ExposedOptions).roomOptions;
     expect(exposed.env).toEqual({ GEMINI_API_KEY: "secret" });
     expect(exposed.clientCapabilities).toBe(clientCapabilities);
     expect(exposed.resolvePermission).toBe(resolvePermission);
     expect(exposed.resolveSessionMode).toBe(resolveSessionMode);
     expect(exposed.resolveSessionModel).toBe(resolveSessionModel);
-    expect(exposed.mcpServers).toEqual(mcpServers);
+    expect(exposed.mcpServers).toBe(mcpServers);
     expect(exposed.enableMcpTools).toBe(false);
     expect(exposed.enableMemoryTools).toBe(true);
-    expect(exposed.additionalMcpTools).toEqual(additionalMcpTools);
+    expect(exposed.additionalMcpTools).toBe(additionalMcpTools);
     expect(exposed.authMethod).toBe("test-auth-method");
     expect(exposed.permissionTimeoutMs).toBe(12_345);
     expect(exposed.turnTimeoutMs).toBe(999_999);
@@ -115,16 +106,19 @@ describe("OmpACPAdapter", () => {
   it("leaves clientCapabilities undefined when omitted, never defaulting to fs/terminal support", async () => {
     const initialize = vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} }));
     const adapter = new OmpACPAdapter({
+      cwd: tmpRoot(),
+      enableMcpTools: false,
       connectionFactory: async () => mockConnection({ initialize }),
     });
 
-    await adapter.onStarted("Agent", "desc");
+    await runAcpTurn(adapter);
     expect(initialize).toHaveBeenCalledWith(expect.objectContaining({ clientCapabilities: {} }));
     await adapter.stop();
   });
 
   it("reports failures as omp-acp", async () => {
     const adapter = new OmpACPAdapter({
+      cwd: tmpRoot(),
       enableMcpTools: false,
       connectionFactory: async () =>
         mockConnection({
@@ -155,6 +149,6 @@ describe("OmpACPAdapter", () => {
   });
 
   it("is an instance of ACPClientAdapter", () => {
-    expect(new OmpACPAdapter() instanceof ACPClientAdapter).toBe(true);
+    expect(new OmpACPAdapter({ cwd: tmpRoot() }) instanceof ACPClientAdapter).toBe(true);
   });
 });

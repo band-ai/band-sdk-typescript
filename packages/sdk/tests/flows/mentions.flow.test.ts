@@ -15,6 +15,7 @@ import { CaptureToolCallingModel } from "../helpers/captureToolCallingModel";
 import { createFakeGoogleAdkSdk } from "../helpers/fakeGoogleAdkSdk";
 import { AGENT_HANDLE, AGENT_ID, BandPlatform, person, RecordingRestApi } from "./support/bandPlatform";
 import { FakeCursorAgent } from "./support/fakeCursorAgent";
+import { tmpRoot } from "../testUtils";
 
 const USER = "user-1";
 const EARLIER = "what do you remember about me";
@@ -68,7 +69,7 @@ const HARNESSES: Array<{ name: string; harness: () => Harness }> = [
     name: "acp",
     harness: () => {
       const agent = new FakeCursorAgent();
-      const adapter = new CursorACPAdapter({ enableMcpTools: false, connectionFactory: agent.connectionFactory });
+      const adapter = new CursorACPAdapter({ cwd: tmpRoot(), enableMcpTools: false, connectionFactory: agent.connectionFactory });
       return {
         adapter,
         handedOver: () => agent.receivedOf("session/prompt").flatMap((params) => (params as { prompt: Array<{ text?: string }> }).prompt.map((block) => block.text ?? "")),

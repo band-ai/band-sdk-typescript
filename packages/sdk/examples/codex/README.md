@@ -6,7 +6,6 @@ Run a Band agent backed by the Codex app-server via `CodexAdapter`.
 
 1. **Codex CLI** — install and authenticate (`codex login`; uses `CODEX_API_KEY` / OAuth as configured by Codex)
 2. **Band agent** — `codex_agent` (or `tom_agent` / `jerry_agent` for character scripts) in `agent_config.yaml`
-3. Optional: `CODEX_CWD` — disposable working directory for Codex (see repo `.env.test`)
 
 ## Examples
 
@@ -41,5 +40,7 @@ jerry_agent:
   agent_id: "your-jerry-agent-id"
   api_key: "your-api-key"
 ```
+
+Each room gets its own Codex app-server in `<cwd>/.band-workspaces/<roomId>`; pass `cwd` to choose the root (default `process.cwd()`).
 
 Band credentials use `loadAgentConfig(...)` only. Codex provider auth is handled by the Codex CLI / environment, not YAML.

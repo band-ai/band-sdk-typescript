@@ -3,6 +3,7 @@ import type { CodexClientLike } from "../../src/adapters/codex/appServerClient";
 
 export interface CodexExampleOptions {
   model?: string;
+  /** Root of each room's workspace, `<cwd>/.band-workspaces/<roomId>`. */
   cwd?: string;
   customSection?: string;
   approvalPolicy?: CodexAdapterConfig["approvalPolicy"];

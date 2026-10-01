@@ -51,8 +51,12 @@ export function scenarioIdFromModulePath(relativeModuleId: string): string {
   return `${basename(dirname(relativeModuleId))}.${basename(relativeModuleId, SCENARIO_FILE_SUFFIX)}`;
 }
 
-/** What an adapter can select on. Grows only as scenarios filter on it. */
-export const CAPABILITY = { approvals: "approvals", customTools: "customTools", memory: "memory" } as const;
+/**
+ * What an adapter can select on. Grows only as scenarios filter on it.
+ * `roomWorkspaces`: runs a coding agent in each room's own workspace, and as
+ * built here it edits files there without asking.
+ */
+export const CAPABILITY = { approvals: "approvals", customTools: "customTools", memory: "memory", roomWorkspaces: "roomWorkspaces" } as const;
 
 export type Capability = (typeof CAPABILITY)[keyof typeof CAPABILITY];
 

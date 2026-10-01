@@ -63,11 +63,6 @@ export interface ACPClientConnectionHandle {
   stop(): Promise<void>;
 }
 
-export interface ACPClientTcpEndpoint {
-  host: string;
-  port: number;
-}
-
 export type ACPClientConnectionFactory = (
   client: Client,
   options: {

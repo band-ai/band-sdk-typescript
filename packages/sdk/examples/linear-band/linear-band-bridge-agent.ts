@@ -62,6 +62,7 @@ function createLinearBandBridgeAgentWithStore(
 
   const autoSubscribe = options?.autoSubscribeExistingRooms ?? false;
 
+  // One Codex app-server per Linear room, with no cap: size the host for the rooms you expect.
   const adapter = new CodexAdapter({
     config: {
       model: options?.codexModel ?? process.env.CODEX_MODEL ?? "gpt-5.3-codex",

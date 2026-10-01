@@ -1,5 +1,5 @@
 import type { ACPClientConnectionFactory } from "../../src/adapters/acp/types";
-import type { ACPClientAdapter } from "../../src/adapters/acp/ACPClientAdapter";
+import type { ACPClientAdapter } from "../../src/adapters/acp";
 import { createAcpPromptCaptureHarness } from "./acpPromptCapture";
 import { FakeTools, makeMessage } from "../testUtils";
 

@@ -5,6 +5,7 @@ import {
   createOmpACPAgent,
 } from "../examples/omp-acp/01_basic_agent";
 import { firstAcpSystemPrompt } from "./helpers/exampleAcpTurn";
+import { tmpRoot } from "./testUtils";
 
 describe("omp-acp examples", () => {
   it("factory returns an agent that has not auto-started", () => {
@@ -17,6 +18,7 @@ describe("omp-acp examples", () => {
         customSection: "Jerry the mouse evades Tom.",
         command: ["omp-acp-stub"],
         connectionFactory,
+        cwd: tmpRoot(),
       }),
     );
 

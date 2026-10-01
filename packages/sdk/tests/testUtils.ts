@@ -1,5 +1,10 @@
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
 import { ProviderTurnFailedError } from "../src/core/providerFailure";
-import { expect, vi, type Mock } from "vitest";
+import { expect, onTestFinished, vi, type Mock } from "vitest";
+import { DEFAULT_WORKSPACE_DIRECTORY } from "../src/adapters/shared/roomWorkspace";
 import { ParticipantRoster, type AgentFailure } from "@band-ai/band-sdk-core";
 import type { PlatformMessage } from "../src/runtime";
 import type { ToolCallingModel } from "../src/adapters";
@@ -578,6 +583,21 @@ export async function expectTurnFailed(turn: Promise<unknown>): Promise<void> {
 /** A `Logger` whose every level is a spy. */
 export function makeLoggerSpy(): Record<keyof Logger, Mock> {
   return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+}
+
+/**
+ * A fresh directory for an adapter's `cwd`, removed when the current test
+ * finishes, so per-room workspaces never land inside the repo.
+ */
+export function tmpRoot(): string {
+  const root = mkdtempSync(path.join(tmpdir(), "band-test-"));
+  onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+  return root;
+}
+
+/** The real path of a room's default workspace under `root` (macOS maps tmp under `/private`). */
+export function roomWorkspacePath(root: string, roomId: string): string {
+  return path.join(realpathSync(root), DEFAULT_WORKSPACE_DIRECTORY, roomId);
 }
 
 /** A turn budget short enough for a test on real timers to outlive. */
