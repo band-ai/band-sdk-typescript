@@ -33,6 +33,7 @@ import { createRoomTurnLock } from "../shared/roomTurnLock";
 import { assertTurnTimeoutMs } from "../shared/turnTimeout";
 import { assertWithinSetTimeoutBound, MAX_SETTIMEOUT_DELAY_MS, withTimeout } from "../shared/withTimeout";
 import { abandon } from "../shared/abandon";
+import { combineTeardownErrors, isolateTeardown } from "../../core/teardown";
 import { deliverReply } from "../../core/deliveryFailedError";
 import { FAILURE_CODE_TIMEOUT, agentFailure, reportTurnFailure } from "../../core/providerFailure";
 import {
@@ -242,7 +243,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
   // The value's `generation` is the connection generation the session was
   // last established/restored against. `client` is the exact BandACPClient
   // instance that session was established against — never reread from
-  // `this.client` at cleanup time, because a reconnect can already have
+  // `this.live` at cleanup time, because a reconnect can already have
   // replaced it. `null` only for a room rehydrated from persisted history.
   private readonly roomToSession = new Map<string, { sessionId: string; generation: number; client: BandACPClient | null }>()
   private readonly sessionToRoom = new Map<string, string>()
@@ -282,13 +283,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
   private readonly logger: Logger
   private readonly customSection?: string
 
-  // The current connection's own Band MCP backend, stopped with its process.
-  private backend: BandMcpBackend | null = null
-  private client: BandACPClient | null = null
-  private connectionHandle: ACPClientConnectionHandle | null = null
+  private live: LiveConnection | null = null
   private pendingConnectionStop: (() => Promise<void>) | null = null
-  private connection: ClientSideConnection | null = null
-  private connectionState: InitializeResponse | null = null
   private started = false
   private systemPrompt = ""
   private spawnPromise: Promise<LiveConnection> | null = null
@@ -392,7 +388,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
       generation = live.generation
       client = live.client
 
-      sessionId = await this.getOrCreateSession(context.roomId, connection, generation, client)
+      sessionId = await this.getOrCreateSession(context.roomId, live)
       const sessionKey = this.sessionKey(generation, sessionId)
       await this.onAcpSessionReady(message, tools, context, sessionId)
       client.beginSession(sessionId)
@@ -577,7 +573,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
     this.connectionGeneration++
     this.started = false
     this.spawnPromise = null
-    this.connectionState = null
+    const live = this.live
+    this.live = null
     this.activeSessions.clear()
     this.bootstrappedSessions.clear()
     this.roomsOwedReplay.clear()
@@ -595,22 +592,13 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
     }
     this.cancelAllPendingPermissions("adapter-stopped")
 
-    this.client = null
-    this.connection = null
-
     if (this.pendingConnectionStop) {
       const stopPending = this.pendingConnectionStop
       this.pendingConnectionStop = null
       await stopPending()
     }
 
-    this.backend = null
-
-    if (this.connectionHandle) {
-      const handle = this.connectionHandle
-      this.connectionHandle = null
-      await handle.stop()
-    }
+    await live?.handle.stop()
   }
 
   private rehydrate(history: ACPClientSessionState): void {
@@ -721,8 +709,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
   }
 
   private async ensureConnection(): Promise<LiveConnection> {
-    if (this.connection && this.client && !this.connection.signal.aborted) {
-      return { connection: this.connection, client: this.client, generation: this.connectionGeneration }
+    if (this.live && !this.live.connection.signal.aborted) {
+      return this.live
     }
 
     if (!this.started) {
@@ -802,15 +790,18 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
 
       this.connectionGeneration++
       owner.generation = this.connectionGeneration
-      this.client = client
-      this.connection = connection
-      this.connectionHandle = stoppingBackendFirst(handle, backend)
-      this.connectionState = initializeResult
-      this.backend = backend
-      const installedGeneration = this.connectionGeneration
+      const live: LiveConnection = {
+        connection,
+        client,
+        generation: this.connectionGeneration,
+        handle: stoppingBackendFirst(handle, backend),
+        initializeResult,
+        backend,
+      }
+      this.live = live
       // A process that exits on its own must lose Band access too.
-      void connection.closed.finally(() => this.retireConnection(connection, installedGeneration))
-      return { connection, client, generation: installedGeneration }
+      void connection.closed.finally(() => this.retireConnection(connection, live.generation))
+      return live
     } catch (error) {
       // Installing is the `try`'s last, infallible step, so a throw here means
       // this attempt still owns its process and backend.
@@ -827,12 +818,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
     }
   }
 
-  private async getOrCreateSession(
-    roomId: string,
-    connection: ClientSideConnection,
-    connectionGeneration: number,
-    client: BandACPClient,
-  ): Promise<string> {
+  private async getOrCreateSession(roomId: string, live: LiveConnection): Promise<string> {
+    const connectionGeneration = live.generation
     const owner = this.roomToSession.get(roomId)
     const existingSessionId = owner?.sessionId
 
@@ -853,7 +840,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
     // to the room's *current* generation, and stays pinned to it even if
     // `onCleanup`/`stop` bump the counter while it's still in flight.
     const generation = this.nextRoomGeneration(roomId)
-    const establishing = this.establishSession(roomId, existingSessionId, connection, generation, connectionGeneration, client)
+    const establishing = this.establishSession(roomId, existingSessionId, live, generation)
     // Compare-and-delete: if this room was torn down and re-entered while
     // `establishing` was still pending, a newer promise is already stored at
     // `roomId` by the time this one settles. Deleting unconditionally would
@@ -876,16 +863,15 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
   private async establishSession(
     roomId: string,
     existingSessionId: string | undefined,
-    connection: ClientSideConnection,
+    live: LiveConnection,
     generation: number,
-    connectionGeneration: number,
-    client: BandACPClient,
   ): Promise<string> {
-    const mcpServers = this.buildSessionMcpServers()
+    const { connection, client, generation: connectionGeneration } = live
+    const mcpServers = this.buildSessionMcpServers(live.backend)
     const cwd = this.cwd
 
     if (existingSessionId) {
-      const restored = await this.tryRestoreSession(connection, existingSessionId, cwd, mcpServers)
+      const restored = await this.tryRestoreSession(live, existingSessionId, cwd, mcpServers)
       if (restored.ok) {
         // Linked and marked active before the best-effort mode switch below
         // is awaited: `configureSessionMode` makes a real RPC call, and a
@@ -988,24 +974,18 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
   // process and Band MCP backend without waiting: the process may be hung.
   // The room's next turn spawns a fresh one.
   private retireConnection(connection: ClientSideConnection, generation: number): void {
-    if (this.connection !== connection || this.connectionGeneration !== generation) {
+    const live = this.live
+    if (!live || live.connection !== connection || this.connectionGeneration !== generation) {
       return
     }
 
-    const handle = this.connectionHandle
     this.connectionGeneration++
-    this.connection = null
-    this.connectionHandle = null
-    this.connectionState = null
-    this.client = null
-    this.backend = null
+    this.live = null
     this.pruneConnectionGeneration(generation)
-    if (handle) {
-      abandon(
-        () => handle.stop(),
-        (error) => this.safeWarn("acp_client.retired_connection_stop_failed", { error: asErrorMessage(error) }),
-      )
-    }
+    abandon(
+      () => live.handle.stop(),
+      (error) => this.safeWarn("acp_client.retired_connection_stop_failed", { error: asErrorMessage(error) }),
+    )
   }
 
   // The single gate an establishment must pass before it's allowed to claim
@@ -1215,7 +1195,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
   }
 
   private async tryRestoreSession(
-    connection: ClientSideConnection,
+    { connection, initializeResult }: LiveConnection,
     sessionId: string,
     cwd: string,
     mcpServers: McpServer[],
@@ -1223,7 +1203,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
     | { ok: true; modes?: SessionModeState | null; configOptions?: Array<SessionConfigOption> | null }
     | { ok: false }
   > {
-    const capabilities = this.connectionState?.agentCapabilities
+    const capabilities = initializeResult.agentCapabilities
     const params = { cwd, mcpServers, sessionId }
 
     // `loadSession`/`resumeSession` share both their params and
@@ -1260,9 +1240,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
     }
   }
 
-  private buildSessionMcpServers(): McpServer[] {
+  private buildSessionMcpServers(backend: BandMcpBackend | null): McpServer[] {
     const mcpServers = [...this.mcpServers]
-    const backend = this.backend
     if (!backend) {
       return mcpServers
     }
@@ -1635,12 +1614,17 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
 
 class AcpTurnTimeoutError extends Error {}
 
-// Captured together at install, so a turn keeps the connection, client, and
-// generation it started on even if the connection is retired under it.
+// Captured together at install, so a turn keeps the connection, client,
+// generation, and Band backend it started on even if the connection is
+// retired under it.
 interface LiveConnection {
   connection: ClientSideConnection;
   client: BandACPClient;
   generation: number;
+  // Stops the backend before the process (see `stoppingBackendFirst`).
+  handle: ACPClientConnectionHandle;
+  initializeResult: InitializeResponse;
+  backend: BandMcpBackend | null;
 }
 
 function mcpTransport(initializeResult: InitializeResponse): "http" | "sse" {
@@ -1677,10 +1661,11 @@ function stoppingBackendFirst(handle: ACPClientConnectionHandle, backend: BandMc
   return {
     connection: handle.connection,
     stop: async () => {
-      try {
-        await backend.stop()
-      } finally {
-        await handle.stop()
+      const errors: unknown[] = []
+      await isolateTeardown(errors, () => backend.stop())
+      await isolateTeardown(errors, () => handle.stop())
+      if (errors.length > 0) {
+        throw combineTeardownErrors(errors, "ACP connection stop failed")
       }
     },
   }

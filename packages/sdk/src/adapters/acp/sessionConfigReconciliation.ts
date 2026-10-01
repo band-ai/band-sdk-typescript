@@ -17,8 +17,6 @@ export const FAILURE_CODE_SESSION_CONFIG = "session_config";
 /** Reason when a successful setter omits an array `configOptions` catalog. */
 export const MISSING_CONFIG_OPTIONS_REASON = "missing_config_options";
 
-class AcpSessionConfigTimeoutError extends Error {}
-
 export interface ACPConfigSelection {
   configId: string;
   value: string | undefined;
@@ -148,7 +146,7 @@ export async function applySessionConfigSelections(
       const response = await withTimeout(
         input.setOption({ sessionId: input.sessionId, configId, value: selectedValue }),
         input.timeoutMs,
-        () => new AcpSessionConfigTimeoutError(timeoutMessage),
+        timeoutMessage,
       );
       if (!Array.isArray(response?.configOptions)) {
         throw new AcpSessionConfigError({

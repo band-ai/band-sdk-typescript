@@ -831,7 +831,7 @@ describe("ACPClientAdapter", () => {
         loadSession,
         newSession,
         prompt,
-        extraRpcSpies: { setSessionConfigOption, cancel: vi.fn(async () => undefined) },
+        extraRpcSpies: { setSessionConfigOption },
       }),
     })
     await adapter.onStarted("Agent", "desc")
@@ -881,7 +881,6 @@ describe("ACPClientAdapter", () => {
         }),
         newSession: timedOutNewSession,
         prompt: timedOutPrompt,
-        extraRpcSpies: { cancel: vi.fn(async () => undefined) },
       }),
     })
     await timedOut.onStarted("Agent", "desc")
@@ -3802,7 +3801,6 @@ describe("ACPClientAdapter", () => {
                 loadSession: vi.fn(async () => ({})),
                 resumeSession: vi.fn(),
                 newSession,
-                cancel: vi.fn(async () => undefined),
                 prompt: vi.fn(async () => {
                   stalePromptStarted.resolve()
                   return new Promise(() => undefined)
@@ -3823,7 +3821,6 @@ describe("ACPClientAdapter", () => {
               loadSession: vi.fn(async () => ({})),
               resumeSession: vi.fn(),
               newSession,
-              cancel: vi.fn(async () => undefined),
               prompt: vi.fn(async (params: { sessionId: string }) => {
                 replPromptStarted.resolve()
                 await client2!.sessionUpdate({
@@ -3926,7 +3923,6 @@ describe("ACPClientAdapter", () => {
                 loadSession: vi.fn(async () => ({})),
                 resumeSession: vi.fn(),
                 newSession,
-                cancel: vi.fn(async () => undefined),
                 prompt: vi.fn(async () => {
                   stalePromptStarted.resolve()
                   return new Promise(() => undefined)
@@ -3946,7 +3942,6 @@ describe("ACPClientAdapter", () => {
               loadSession: vi.fn(async () => ({})),
               resumeSession: vi.fn(),
               newSession,
-              cancel: vi.fn(async () => undefined),
               prompt: vi.fn(async () => {
                 replPromptStarted.resolve()
                 await releaseReplacement.promise
@@ -4017,7 +4012,6 @@ describe("ACPClientAdapter", () => {
               loadSession: vi.fn(async () => ({})),
               resumeSession: vi.fn(),
               newSession: vi.fn(async () => ({ sessionId: "session-1" })),
-              cancel: vi.fn(async () => undefined),
               prompt: vi.fn(async (params: { sessionId: string }) => {
                 await clientHandle!.sessionUpdate({
                   sessionId: params.sessionId,
