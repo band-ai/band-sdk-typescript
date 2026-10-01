@@ -25,6 +25,7 @@ import {
   dialectFor,
   requestGatedWrite,
   untilRequested,
+  untilShown,
   type Decision,
   type InRoom,
 } from "../samples/approvals";
@@ -41,7 +42,7 @@ const dialect = dialectFor(ADAPTER.opencode);
 async function listsParticipants(agent: AgentIdentity, room: Room): Promise<void> {
   const marker = uniqueMarker("roster");
   await takeTurn(room, agent, `Use your ${PARTICIPANTS_TOOL} tool to list who is in this room, then reply with ${marker} followed by their names.`);
-  assertReplied(await observeRoom(room).untilReplyMatching(agent, (message) => message.content.includes(marker)));
+  await untilShown({ agent, room }, marker);
   const called = (await toolCalls(room, agent)).map((call) => call.name);
   // OpenCode names an MCP tool after its server, so the Band tool's name is a suffix.
   expect(called.some((name) => name.endsWith(PARTICIPANTS_TOOL)), `the calls that fired: ${called.join(", ") || "none"}`).toBe(true);
