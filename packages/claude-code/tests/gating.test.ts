@@ -3,8 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   isDirectRoomWithOwner,
   isSelfMentioned,
-  isSenderAllowed,
-  parseAllowedSenders,
   sanitizeMeta,
   shouldForwardMessage,
 } from "../src/gating";
@@ -12,33 +10,6 @@ import {
 const SELF_ID = "3d5bd75e-1111-4c22-9e2b-8f1a2b3c4d5e";
 const SELF = { id: SELF_ID, name: "Band Bot", handle: "band-bot" };
 const OWNER_ID = "b4e1a2c3-2222-4c22-9e2b-8f1a2b3c4d5e";
-
-describe("parseAllowedSenders", () => {
-  it("splits a comma-separated list and trims whitespace", () => {
-    expect(parseAllowedSenders(" alice , bob ,charlie")).toEqual(new Set(["alice", "bob", "charlie"]));
-  });
-
-  it("returns an empty set for undefined, null, or blank input", () => {
-    expect(parseAllowedSenders(undefined)).toEqual(new Set());
-    expect(parseAllowedSenders(null)).toEqual(new Set());
-    expect(parseAllowedSenders("")).toEqual(new Set());
-    expect(parseAllowedSenders("  ,, ")).toEqual(new Set());
-  });
-});
-
-describe("isSenderAllowed", () => {
-  it("allows the owner", () => {
-    expect(isSenderAllowed(OWNER_ID, OWNER_ID, new Set())).toBe(true);
-  });
-
-  it("allows an id in the allowlist", () => {
-    expect(isSenderAllowed("ally", OWNER_ID, new Set(["ally"]))).toBe(true);
-  });
-
-  it("rejects everyone else", () => {
-    expect(isSenderAllowed("stranger", OWNER_ID, new Set(["ally"]))).toBe(false);
-  });
-});
 
 describe("isSelfMentioned", () => {
   it("matches the id-mention token", () => {
@@ -88,7 +59,6 @@ describe("shouldForwardMessage", () => {
   const base = {
     self: SELF,
     ownerId: OWNER_ID,
-    allowedSenderIds: new Set<string>(),
     roomParticipantIds: [SELF.id, OWNER_ID, "someone-else"],
   };
 
@@ -104,21 +74,21 @@ describe("shouldForwardMessage", () => {
     ).toBe(false);
   });
 
-  it("drops a mentioning message from a sender outside the allowlist", () => {
+  it("forwards a mentioning message from any room participant", () => {
     expect(
-      shouldForwardMessage({ ...base, text: "@band-bot help", senderId: "stranger" }),
-    ).toBe(false);
+      shouldForwardMessage({ ...base, text: "@band-bot help", senderId: "someone-else" }),
+    ).toBe(true);
   });
 
-  it("forwards an allowlisted sender's mentioning message", () => {
+  it("drops a non-owner message with no mention in a 1:1 room", () => {
     expect(
       shouldForwardMessage({
         ...base,
-        allowedSenderIds: new Set(["ally"]),
-        text: "@band-bot help",
-        senderId: "ally",
+        roomParticipantIds: [SELF.id, "someone-else"],
+        text: "just chatting",
+        senderId: "someone-else",
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("forwards an owner message with no mention in a 1:1 room", () => {

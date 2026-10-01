@@ -10,10 +10,9 @@ export interface AckLink {
  * "processing" happens on push (whether or not Claude Code has channels
  * enabled to render it); marking "processed" happens only once Claude
  * actually replies in that room, via `markRepliedIn`. A message that never
- * gets a reply stays `processing` forever from this session's point of
- * view — correct, since the next reconnect's catch-up sweep hands it to a
- * session that can act on it, instead of silently losing it via a premature
- * `processed`.
+ * gets a reply stays `processing`, and the runtime hands it back on every
+ * start; the handler keeps it out of a transcript that already received it
+ * and re-tracks it here with `trackPending`, so a later reply still acks it.
  */
 export class AckTracker {
   private readonly pendingByRoom = new Map<string, Set<string>>();
@@ -34,6 +33,11 @@ export class AckTracker {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+    this.trackPending(roomId, messageId);
+  }
+
+  /** An already-`processing` message awaits a reply in `roomId`; no REST call. */
+  public trackPending(roomId: string, messageId: string): void {
     this.pendingFor(roomId).add(messageId);
   }
 

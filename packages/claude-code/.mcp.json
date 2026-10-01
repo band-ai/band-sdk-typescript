@@ -6,7 +6,6 @@
       "env": {
         "BAND_PLATFORM_URL": "${user_config.platform_url}",
         "BAND_WS_URL": "${user_config.ws_url}",
-        "BAND_ALLOWED_SENDERS": "${user_config.allowed_senders}",
         "BAND_ENABLE_CONTACTS": "${user_config.enable_contacts}",
         "BAND_ENABLE_MEMORY": "${user_config.enable_memory}"
       }

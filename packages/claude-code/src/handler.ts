@@ -21,7 +21,6 @@ import type { LastSenderTracker, RoomParticipant } from "./mentions.js";
 export interface MessageHandlerDeps {
   self: SelfIdentity;
   ownerId: string | null;
-  allowedSenderIds: ReadonlySet<string>;
   listParticipants: (roomId: string) => Promise<RoomParticipant[]>;
   commandAuthorizer: Pick<PrivilegedCommandAuthorizer, "authorize">;
   sendMessage: (
@@ -34,6 +33,11 @@ export interface MessageHandlerDeps {
   ackTracker: AckTracker;
   lastSenderTracker: LastSenderTracker;
   notify: (content: string, meta: Record<string, string>) => Promise<void>;
+  /** Messages already pushed into this Claude transcript, which a resume must not replay. */
+  deliveries: {
+    wasDelivered(messageId: string): boolean;
+    recordDelivered(messageId: string): void;
+  };
   logger: Logger;
 }
 
@@ -49,13 +53,13 @@ export function createMessageHandler(deps: MessageHandlerDeps) {
   const {
     self,
     ownerId,
-    allowedSenderIds,
     listParticipants,
     ackTracker,
     lastSenderTracker,
     commandAuthorizer,
     sendMessage,
     notify,
+    deliveries,
     logger,
   } = deps;
 
@@ -66,7 +70,7 @@ export function createMessageHandler(deps: MessageHandlerDeps) {
     if (payload.sender_id === self.id) return;
     if (payload.message_type !== "text") return;
 
-    // Fail closed: an unknown owner means nothing passes the sender gate.
+    // Fail closed: slash-command authorization and the DM shortcut need the owner.
     if (!ownerId) {
       logger.warn("dropping message: agent has no owner on record", {
         room_id: context.roomId,
@@ -74,8 +78,18 @@ export function createMessageHandler(deps: MessageHandlerDeps) {
       return;
     }
 
-    // Best-effort: an empty roster only disables the 1:1-room mention
-    // shortcut, it never widens who the sender gate allows.
+    const sender = { senderId: payload.sender_id, senderName: payload.sender_name ?? "" };
+
+    // The runtime replays every unanswered (`processing`) message on start.
+    // This transcript already holds this one, and any command in it was
+    // already authorized, so only re-arm the reply ack.
+    if (deliveries.wasDelivered(payload.id)) {
+      ackTracker.trackPending(context.roomId, payload.id);
+      lastSenderTracker.track(context.roomId, sender);
+      return;
+    }
+
+    // Best-effort: an empty roster only disables the 1:1-room mention shortcut.
     let participants: RoomParticipant[] = [];
     try {
       participants = await listParticipants(context.roomId);
@@ -95,7 +109,6 @@ export function createMessageHandler(deps: MessageHandlerDeps) {
         senderId: payload.sender_id,
         self,
         ownerId,
-        allowedSenderIds,
         roomParticipantIds,
       });
     } else {
@@ -141,10 +154,7 @@ export function createMessageHandler(deps: MessageHandlerDeps) {
     // would otherwise leave the message stuck at `sent`, which the backlog
     // catch-up sweep does not distinguish from "never seen".
     await ackTracker.markPushed(context.roomId, payload.id);
-    lastSenderTracker.track(context.roomId, {
-      senderId: payload.sender_id,
-      senderName: payload.sender_name ?? "",
-    });
+    lastSenderTracker.track(context.roomId, sender);
 
     try {
       await notify(
@@ -156,6 +166,7 @@ export function createMessageHandler(deps: MessageHandlerDeps) {
           message_id: payload.id,
         }),
       );
+      deliveries.recordDelivered(payload.id);
     } catch (error) {
       logger.error("failed to push notifications/claude/channel", {
         room_id: context.roomId,

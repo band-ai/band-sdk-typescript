@@ -43,6 +43,28 @@ describe("PluginStateStore", () => {
     state.close();
   });
 
+  it("remembers deliveries per transcript across reopen, so a new transcript still receives the message", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "band-claude-delivery-"));
+    roots.push(root);
+    const scope = humanScope("https://app.band.ai", "user-1");
+    const delivery = {
+      scope,
+      agentId: AGENT_ID,
+      sessionId: FIRST.sessionId,
+      messageId: "msg-1",
+    };
+
+    const first = new PluginStateStore(root);
+    first.recordDelivered(delivery);
+    first.close();
+
+    const reopened = new PluginStateStore(root);
+    expect(reopened.wasDelivered(delivery)).toBe(true);
+    expect(reopened.wasDelivered({ ...delivery, sessionId: SECOND.sessionId })).toBe(false);
+    expect(reopened.wasDelivered({ ...delivery, messageId: "msg-2" })).toBe(false);
+    reopened.close();
+  });
+
   it("excludes a live identity from another session and permits takeover after lease expiry", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "band-claude-lease-"));
     roots.push(root);

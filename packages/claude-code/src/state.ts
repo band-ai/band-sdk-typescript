@@ -43,6 +43,13 @@ export interface CommandAuthorizationProfile {
   agentId: string;
 }
 
+export interface MessageDelivery {
+  scope: string;
+  agentId: string;
+  sessionId: string;
+  messageId: string;
+}
+
 export type StoredCommandAccess =
   | { kind: "allow_all" }
   | { kind: "allow_command" }
@@ -142,6 +149,14 @@ export class PluginStateStore {
         expires_at_ms INTEGER NOT NULL,
         note TEXT,
         PRIMARY KEY (scope, project_root, agent_id, sender_id)
+      );
+      CREATE TABLE IF NOT EXISTS delivered_messages (
+        scope TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        delivered_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (scope, agent_id, session_id, message_id)
       );
     `);
   }
@@ -325,6 +340,34 @@ export class PluginStateStore {
       senderId,
       expiresAtMs,
       note,
+    );
+  }
+
+  /** Whether `messageId` was already pushed into this exact Claude transcript. */
+  public wasDelivered(delivery: MessageDelivery): boolean {
+    const row = this.db.prepare(
+      `SELECT 1 FROM delivered_messages
+       WHERE scope = ? AND agent_id = ? AND session_id = ? AND message_id = ?`,
+    ).get(
+      delivery.scope,
+      AGENT_ID_SCHEMA.parse(delivery.agentId),
+      delivery.sessionId,
+      delivery.messageId,
+    );
+    return row !== undefined;
+  }
+
+  public recordDelivered(delivery: MessageDelivery): void {
+    this.db.prepare(
+      `INSERT OR IGNORE INTO delivered_messages (
+         scope, agent_id, session_id, message_id, delivered_at_ms
+       ) VALUES (?, ?, ?, ?, ?)`,
+    ).run(
+      delivery.scope,
+      AGENT_ID_SCHEMA.parse(delivery.agentId),
+      delivery.sessionId,
+      delivery.messageId,
+      this.now(),
     );
   }
 

@@ -1,36 +1,15 @@
 /**
- * Sender gate + mention gate + meta sanitization for inbound Band messages.
+ * Mention gate + meta sanitization for inbound Band messages.
  *
- * An ungated channel is a prompt-injection vector: anyone who can reach the
- * agent's Band room can put text in front of Claude. Both gates below must
- * pass before a message is forwarded as a `notifications/claude/channel`
- * push — see the module doc on `shouldForwardMessage`.
+ * Band's contacts and room membership decide who can reach the agent; this
+ * gate only decides which room messages are addressed to it. See the module
+ * doc on `shouldForwardMessage`.
  */
 
 export interface SelfIdentity {
   id: string;
   name: string;
   handle?: string | null;
-}
-
-/** Parse the plugin's `allowed_senders` userConfig value: a comma-separated id list. */
-export function parseAllowedSenders(raw: string | undefined | null): Set<string> {
-  if (!raw) return new Set();
-  return new Set(
-    raw
-      .split(",")
-      .map((id) => id.trim())
-      .filter((id) => id.length > 0),
-  );
-}
-
-/** Sender gate: the agent's owner, or an id in the configured allowlist. */
-export function isSenderAllowed(
-  senderId: string,
-  ownerId: string,
-  allowedSenderIds: ReadonlySet<string>,
-): boolean {
-  return senderId === ownerId || allowedSenderIds.has(senderId);
 }
 
 /** Escape a string for safe inclusion in a RegExp. */
@@ -100,25 +79,19 @@ export interface ShouldForwardParams {
   senderId: string;
   self: SelfIdentity;
   ownerId: string;
-  allowedSenderIds: ReadonlySet<string>;
   /** Every participant id currently in the room, including this agent and the sender. */
   roomParticipantIds: readonly string[];
 }
 
 /**
- * Both gates must pass: the sender must be the owner (or allowlisted), AND
- * the message must @-mention this agent — except a 1:1 room with only the
- * owner and this agent, which is always treated as mentioned (no reason to
- * force `@agent` in a DM).
+ * Forward a message that @-mentions this agent, or any owner message in a
+ * 1:1 room with only the owner and this agent (no reason to force `@agent`
+ * in a DM).
  */
 export function shouldForwardMessage(params: ShouldForwardParams): boolean {
-  const { text, senderId, self, ownerId, allowedSenderIds, roomParticipantIds } = params;
+  const { text, senderId, self, ownerId, roomParticipantIds } = params;
 
-  if (!isSenderAllowed(senderId, ownerId, allowedSenderIds)) {
-    return false;
-  }
-
-  if (isDirectRoomWithOwner(roomParticipantIds, self.id, ownerId)) {
+  if (senderId === ownerId && isDirectRoomWithOwner(roomParticipantIds, self.id, ownerId)) {
     return true;
   }
 

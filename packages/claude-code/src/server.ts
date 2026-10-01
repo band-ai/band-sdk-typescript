@@ -15,7 +15,6 @@ import {
   BandConnectionController,
   type ActiveBandRuntime,
 } from "./connection.js";
-import { parseAllowedSenders } from "./gating.js";
 import { createMessageHandler } from "./handler.js";
 import { LastSenderTracker, wrapToolsForMentionFallback } from "./mentions.js";
 import { buildInstructions } from "./prompt.js";
@@ -107,7 +106,6 @@ async function main(): Promise<void> {
       const onExecute = createMessageHandler({
         self: { id: selfAgentId, name: me.name, handle: me.handle },
         ownerId,
-        allowedSenderIds: parseAllowedSenders(process.env.BAND_ALLOWED_SENDERS),
         listParticipants: (roomId) => link.rest.listChatParticipants(roomId),
         commandAuthorizer,
         sendMessage: (roomId, message) => link.rest.createChatMessage(roomId, message),
@@ -115,6 +113,22 @@ async function main(): Promise<void> {
         lastSenderTracker,
         notify: (content, meta) =>
           server.notify("notifications/claude/channel", { content, meta }),
+        deliveries: {
+          wasDelivered: (messageId) =>
+            state.wasDelivered({
+              scope: input.scope,
+              agentId: selfAgentId,
+              sessionId: context.sessionId,
+              messageId,
+            }),
+          recordDelivered: (messageId) =>
+            state.recordDelivered({
+              scope: input.scope,
+              agentId: selfAgentId,
+              sessionId: context.sessionId,
+              messageId,
+            }),
+        },
         logger: stderrLogger,
       });
       const runtime = new AgentRuntime({

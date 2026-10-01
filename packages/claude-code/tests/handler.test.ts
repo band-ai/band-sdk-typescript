@@ -44,11 +44,20 @@ function fakeAckLink(): AckLink & { markProcessing: ReturnType<typeof vi.fn>; ma
   };
 }
 
+function inMemoryDeliveries(): MessageHandlerDeps["deliveries"] {
+  const delivered = new Set<string>();
+  return {
+    wasDelivered: (messageId) => delivered.has(messageId),
+    recordDelivered: (messageId) => {
+      delivered.add(messageId);
+    },
+  };
+}
+
 function buildDeps(overrides: Partial<MessageHandlerDeps> = {}): MessageHandlerDeps {
   return {
     self: SELF,
     ownerId: OWNER_ID,
-    allowedSenderIds: new Set(),
     listParticipants: async () => [SELF, { id: OWNER_ID, name: "Nir", handle: "nir" }],
     commandAuthorizer: {
       authorize: vi.fn(async () => ({ allowed: true, note: null, source: "owner" as const })),
@@ -57,6 +66,7 @@ function buildDeps(overrides: Partial<MessageHandlerDeps> = {}): MessageHandlerD
     ackTracker: new AckTracker(fakeAckLink(), noopLogger),
     lastSenderTracker: new LastSenderTracker(),
     notify: vi.fn().mockResolvedValue(undefined),
+    deliveries: inMemoryDeliveries(),
     logger: noopLogger,
     ...overrides,
   };
@@ -173,26 +183,53 @@ describe("createMessageHandler", () => {
     expect(ackLink.markProcessed).not.toHaveBeenCalled();
   });
 
-  it("drops a message from a sender outside the allowlist, even a mentioning one", async () => {
-    const ackLink = fakeAckLink();
-    const deps = buildDeps({ ackTracker: new AckTracker(ackLink, noopLogger) });
+  it("forwards a mentioning message from a non-owner participant", async () => {
+    const deps = buildDeps();
     const handler = createMessageHandler(deps);
 
-    await handler({ roomId: "room-1" }, messageEvent({ senderId: "stranger", senderName: "Stranger" }));
+    await handler({ roomId: "room-1" }, messageEvent({ senderId: "peer-agent", senderName: "Peer" }));
 
-    expect(deps.notify).not.toHaveBeenCalled();
+    expect(deps.notify).toHaveBeenCalled();
+  });
+
+  it("does not replay a message into a resumed transcript, but a later reply still marks it processed", async () => {
+    const deliveries = inMemoryDeliveries();
+    const request = { id: "msg-1", content: "@band-bot /review", senderId: "peer-agent", senderName: "Peer" };
+    const firstRun = buildDeps({ deliveries });
+    await createMessageHandler(firstRun)({ roomId: "room-1" }, messageEvent(request));
+    expect(firstRun.notify).toHaveBeenCalledTimes(1);
+
+    // Restart: fresh in-memory ack state; the runtime replays the still-`processing` message.
+    const ackLink = fakeAckLink();
+    const authorize = vi.fn(async () => ({ allowed: true, note: null, source: "run_once" as const }));
+    const resumed = buildDeps({
+      deliveries,
+      ackTracker: new AckTracker(ackLink, noopLogger),
+      commandAuthorizer: { authorize },
+    });
+    const handler = createMessageHandler(resumed);
+    await handler({ roomId: "room-1" }, messageEvent(request));
+
+    expect(resumed.notify).not.toHaveBeenCalled();
+    expect(ackLink.markProcessing).not.toHaveBeenCalled();
+    expect(authorize).not.toHaveBeenCalled();
+
+    await resumed.ackTracker.markRepliedIn("room-1");
     expect(ackLink.markProcessed).toHaveBeenCalledWith("room-1", "msg-1");
   });
 
-  it("forwards an allowlisted sender's mentioning message", async () => {
-    const deps = buildDeps({
-      allowedSenderIds: new Set(["ally"]),
+  it("records a delivery only after the push succeeds, so a failed push is retried on the next start", async () => {
+    const deliveries = inMemoryDeliveries();
+    const failing = buildDeps({
+      deliveries,
+      notify: vi.fn().mockRejectedValue(new Error("stdio closed")),
     });
-    const handler = createMessageHandler(deps);
+    await createMessageHandler(failing)({ roomId: "room-1" }, messageEvent({ id: "msg-1" }));
 
-    await handler({ roomId: "room-1" }, messageEvent({ senderId: "ally", senderName: "Ally" }));
+    const retry = buildDeps({ deliveries });
+    await createMessageHandler(retry)({ roomId: "room-1" }, messageEvent({ id: "msg-1" }));
 
-    expect(deps.notify).toHaveBeenCalled();
+    expect(retry.notify).toHaveBeenCalledTimes(1);
   });
 
   it("does not distinguish a reconnect catch-up event from a live one: both push identically", async () => {

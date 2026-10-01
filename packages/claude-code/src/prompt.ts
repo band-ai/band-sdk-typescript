@@ -13,7 +13,7 @@ const TARGET_CHAR_BUDGET = 1500;
 
 const BASE_CONTRACT = `# Band channel
 
-Ordinary messages reach you only from the owner or configured senders and must @mention this agent. Slash commands are privileged: the owner passes; others need a local decision or a stored allowance scoped to this project and agent.
+Room messages reach you only when they @mention this agent (owner direct rooms excepted). Slash commands are privileged: the owner passes; others need a local decision or a stored allowance scoped to this project and agent.
 
 Inbound format:
 

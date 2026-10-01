@@ -21,12 +21,6 @@
       "description": "Band's Phoenix Channels WebSocket base URL.",
       "default": "wss://app.band.ai/api/v1/socket"
     },
-    "allowed_senders": {
-      "type": "string",
-      "title": "Additional allowed senders",
-      "description": "Comma-separated Band agent/user IDs allowed to send ordinary messages, in addition to the agent's owner. Slash commands use a separate local approval and per-project command allowlist.",
-      "required": false
-    },
     "enable_contacts": {
       "type": "boolean",
       "title": "Enable contact tools",

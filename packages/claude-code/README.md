@@ -120,7 +120,6 @@ file as shown in the [local source walkthrough](./DEVELOPMENT.md#test-directly-f
 | Setting | Required | Default | What it does |
 |---|---|---|---|
 | `platform_url` | no | `https://app.band.ai` | Band deployment used for browser sign-in and REST API access |
-| `allowed_senders` | no | empty | Comma-separated Band user or agent IDs allowed to send ordinary messages, in addition to the agent's owner. This does not authorize slash commands |
 | `enable_contacts` | no | `false` | Adds the contact tools (list, add, remove, answer contact requests) |
 | `enable_memory` | no | `true` | Adds the memory tools (store, list, get, supersede, archive) |
 | `ws_url` | no | `wss://app.band.ai/api/v1/socket` | Band WebSocket URL. Change only for a non-default Band deployment |
@@ -232,14 +231,14 @@ Pro and Max accounts without an organization skip all of this.
   in the room the message came from.
 - **Replies go through a tool.** Claude's plain-text output stays in your terminal. Only
   `band_send_message` posts to Band.
-- **Who can reach the session.** Ordinary messages pass only from the agent's owner or IDs in
-  `allowed_senders`, and only when they @mention the agent (direct owner rooms excepted).
+- **Who can reach the session.** Band contacts and room membership decide who can message the agent.
+  In a room, a message reaches Claude only when it @mentions the agent (direct owner rooms excepted).
 - **Slash commands are privileged.** The owner passes the command-authorization gate automatically.
   Every other participant's `/command` request is blocked before Claude sees it and opens a local
   terminal dialog. You can run it once, always allow that participant for that command, always
   allow them for every slash command, deny once, or deny them for a number of minutes. Persistent
   allowances and timed denials are scoped to the Band account, canonical project path, and agent
-  identity. `allowed_senders` does not bypass this command gate.
+  identity.
 - **The local permission form selects one complete policy.** It shows only the participant,
   command, and policy choice first. A denial opens a second form for an optional note (and
   duration for a timed denial); cancelling that second form denies only the current request.
@@ -251,7 +250,9 @@ Pro and Max accounts without an organization skip all of this.
   The plugin does not grant tool permission or bypass Claude Code's normal terminal approvals;
   local file or system changes remain protected there.
 - **Online only while the session is open.** The agent disconnects when you quit Claude Code.
-  Messages that arrived while it was offline are picked up on the next start.
+  Messages that arrived while it was offline are picked up on the next start. A resumed transcript
+  never receives a message twice; a message Claude read but has not answered in its room stays
+  "processing" in Band until Claude replies there.
 - **Identity per active session.** Concurrent Claude sessions should select different Band agent
   identities. Closing a session releases its lease; resuming the same transcript restores its
   previous identity.
@@ -280,7 +281,7 @@ claude plugin uninstall band@band-ai
 | Startup says `Channels are not enabled for your org`, or the debug log says `channels not enabled by org policy` | Team, Enterprise, or managed Console organization without channels. An Owner must enable them (see [Team and Enterprise organizations](#team-and-enterprise-organizations)), then restart Claude Code. Tools keep working meanwhile |
 | In Band, your message stays at "processing" and nothing reaches Claude | The plugin received it, and Claude Code dropped it. Almost always channels being off for the organization, or a session started without a channel flag. Fix either, restart, and send the message again |
 | Startup says the plugin isn't on the approved list | Use `--dangerously-load-development-channels plugin:band@band-ai`, or ask your admin to add Band to `allowedChannelPlugins` |
-| Tools work but messages never arrive | Check, in order: channels are enabled for your organization (Team and Enterprise), the session was started with one of the channel flags, the sender is the agent's owner or listed in `allowed_senders`, and the message @mentions the agent |
+| Tools work but messages never arrive | Check, in order: channels are enabled for your organization (Team and Enterprise), the session was started with one of the channel flags, and the message @mentions the agent |
 | `node: command not found` in the debug log | Install Node.js 22.14 or later and make sure it is on the `PATH` Claude Code starts with |
 
 ## Development
