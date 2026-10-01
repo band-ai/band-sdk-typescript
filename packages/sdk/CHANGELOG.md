@@ -1,6 +1,37 @@
 # Changelog
 
 
+## [0.5.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.4.7...sdk-v0.5.0) (2026-09-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **adapters:** a tool-calling turn that runs longer than five minutes now fails with a timeout. Set turnTimeoutMs: Infinity to keep turns unbounded.
+* **adapters:** ParlantClientLike has new required members (agents.create, agents.delete, sessions.delete, customers.delete). The Parlant adapter's historyConverter option is removed, along with ParlantHistoryConverter, ParlantMessage and ParlantMessages. A borrowed agentId given together with customSection or systemPrompt now throws.
+
+### Features
+
+* **adapters:** bound tool-calling turns and resync after channel rejoin ([#272](https://github.com/band-ai/band-sdk-typescript/issues/272)) ([67fdbd7](https://github.com/band-ai/band-sdk-typescript/commit/67fdbd7ab41ec88cccf9fd140fad37e2607c630e))
+* **sdk:** adapter-centric live E2E baseline, with the SDK fixes it found (INT-1570) ([#255](https://github.com/band-ai/band-sdk-typescript/issues/255)) ([72b5a0c](https://github.com/band-ai/band-sdk-typescript/commit/72b5a0cf989e6af67f9ab09d99165f69fbb52338))
+
+
+### Bug Fixes
+
+* **adapters:** free a reset room immediately, so a hung turn can't block its next session ([#263](https://github.com/band-ai/band-sdk-typescript/issues/263)) ([1cb3c99](https://github.com/band-ai/band-sdk-typescript/commit/1cb3c9924dc35344fc64a4f1bd82cff552387357))
+* **adapters:** isolate claude-sdk agents from the host's Claude Code sessions and settings ([a0739bf](https://github.com/band-ai/band-sdk-typescript/commit/a0739bf12727b54ea23ce0626f94fb0963b1e208))
+* **adapters:** isolate claude-sdk agents from the host's Claude Code sessions and settings ([#262](https://github.com/band-ai/band-sdk-typescript/issues/262)) ([1e3e4a4](https://github.com/band-ai/band-sdk-typescript/commit/1e3e4a485cfbea8e4aa40c33cb9011c9d965ea50))
+* **adapters:** keep the host's claude.ai connectors out of claude-sdk agents ([01322f4](https://github.com/band-ai/band-sdk-typescript/commit/01322f4031da9d56948aad0bfc59e529b6a50d57))
+* **adapters:** Parlant on Parlant 3.3, plus Letta/Parlant baseline coverage (INT-1574) ([#268](https://github.com/band-ai/band-sdk-typescript/issues/268)) ([e386690](https://github.com/band-ai/band-sdk-typescript/commit/e386690b17dc323aac012db2a6a3e380f5ff580d))
+* **adapters:** post a claude-sdk reply once when the agent already sent it ([1939a10](https://github.com/band-ai/band-sdk-typescript/commit/1939a103b4da56e995c67f64055b0364fcb55b09))
+* **adapters:** post a claude-sdk reply once when the agent already sent it (INT-1585) ([6e09043](https://github.com/band-ai/band-sdk-typescript/commit/6e09043b92640a7a614a97b46800f279e81481ee))
+* **adapters:** remember what the agent posted, so later turns don't re-answer (INT-1575) ([#260](https://github.com/band-ai/band-sdk-typescript/issues/260)) ([ca5c983](https://github.com/band-ai/band-sdk-typescript/commit/ca5c983e1292ae82997cb89c30fdc641c404dcfd))
+* **mcp:** validate nested object properties in Band tool schemas ([5d880e5](https://github.com/band-ai/band-sdk-typescript/commit/5d880e54ba875bf2274ae1179ae7b96f44839fa4))
+* **mcp:** validate nested object properties in Band tool schemas ([c53834d](https://github.com/band-ai/band-sdk-typescript/commit/c53834d28218ad6ed45432d565d00a342e6a33ef))
+* **runtime:** resolve mention tokens for every adapter and port memory guidance (INT-1381) ([#271](https://github.com/band-ai/band-sdk-typescript/issues/271)) ([4312e21](https://github.com/band-ai/band-sdk-typescript/commit/4312e218e17b9c4b2e00ef4c542cc6a7c80b3005))
+* **sdk:** require the Agent SDK version that has crossSessionInbound ([d924010](https://github.com/band-ai/band-sdk-typescript/commit/d92401057a6c6701d274bcf5dcc0e1c42530b505))
+* **tests:** baseline scorecard drops failing tests without an adapter (INT-1581) ([#273](https://github.com/band-ai/band-sdk-typescript/issues/273)) ([840c113](https://github.com/band-ai/band-sdk-typescript/commit/840c1130d6c75e9f793e6c5e4e80e3859a4f9424))
+* **websocket:** never reconnect after an intentional disconnect (INT-1579) ([#278](https://github.com/band-ai/band-sdk-typescript/issues/278)) ([c50cf49](https://github.com/band-ai/band-sdk-typescript/commit/c50cf4929fc97d80ab4cf1b40f2ba8790be45f0e))
+
 ## [0.4.7](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.4.6...sdk-v0.4.7) (2026-09-27)
 
 
