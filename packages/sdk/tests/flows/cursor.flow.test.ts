@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CursorACPAdapter, type CursorACPAdapterOptions } from "../../src/adapters/cursor-acp";
 import { createDeferred } from "../../src/core/deferred";
-import { DEFAULT_CURSOR_DECISION_TIMEOUT_MS } from "../../src/adapters/cursor-acp/CursorACPAdapter";
+import { DEFAULT_CURSOR_DECISION_TIMEOUT_MS } from "../../src/adapters/cursor-acp/CursorRoomAgent";
 import { CURSOR_COMMAND, CURSOR_DECISION_MESSAGES as SAYS } from "../../src/adapters/cursor-acp/messages";
 import { BandPlatform, person, type BandRoom, type Posted } from "./support/bandPlatform";
 import { FakeCursorAgent, type CursorTurn } from "./support/fakeCursorAgent";

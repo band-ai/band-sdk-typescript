@@ -1,5 +1,5 @@
 export {
-  ACPClientAdapter,
+  ACPRoomAgent as ACPClientAdapter,
   createTcpConnection,
   type ACPClientAdapterOptions,
   type ACPClientAdapterBaseOptions,
@@ -7,7 +7,7 @@ export {
   type ACPClientTcpOptions,
   type ACPConfigRequest,
   type ACPConfigSelections,
-} from "./ACPClientAdapter";
+} from "./ACPRoomAgent";
 
 export {
   ACPServer,

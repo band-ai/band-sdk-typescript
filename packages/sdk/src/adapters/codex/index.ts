@@ -2,14 +2,14 @@ export {
   CODEX_REASONING_EFFORTS,
   CODEX_REASONING_SUMMARIES,
   CODEX_WEB_SEARCH_MODES,
-  CodexAdapter,
+  CodexRoomAgent as CodexAdapter,
   type CodexAdapterConfig,
   type CodexApprovalPolicy,
   type CodexSandboxMode,
   type CodexReasoningEffort,
   type CodexReasoningSummary,
   type CodexWebSearchMode,
-} from "./CodexAdapter";
+} from "./CodexRoomAgent";
 export {
   CodexAppServerStdioClient,
   CodexJsonRpcError,

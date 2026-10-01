@@ -90,10 +90,10 @@ const INVALID: unique symbol = Symbol("invalid decision command");
 const CANCELLED = { outcome: { outcome: "cancelled" } };
 
 class CursorExtensions implements ACPClientExtensionHandler {
-  private adapter: CursorACPAdapter | null = null;
+  private adapter: CursorRoomAgent | null = null;
   private readonly todosBySession = new Map<string, Map<string, CursorTodo>>();
 
-  public bind(adapter: CursorACPAdapter): void {
+  public bind(adapter: CursorRoomAgent): void {
     this.adapter = adapter;
   }
 
@@ -178,7 +178,7 @@ class CursorExtensions implements ACPClientExtensionHandler {
   }
 }
 
-export class CursorACPAdapter extends ACPClientAdapter {
+export class CursorRoomAgent extends ACPClientAdapter {
   protected readonly provider = "cursor-acp";
   private readonly approvalMode: CursorApprovalMode;
   private readonly questionMode: CursorQuestionMode;

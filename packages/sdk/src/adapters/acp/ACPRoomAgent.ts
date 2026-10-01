@@ -244,7 +244,7 @@ export interface ACPClientTcpOptions extends ACPClientAdapterBaseOptions {
 
 export type ACPClientAdapterOptions = ACPClientStdioOptions | ACPClientTcpOptions;
 
-export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, AdapterToolsProtocol> {
+export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterToolsProtocol> {
   protected readonly provider: string = "acp";
   private readonly command: string[]
   private readonly cwd: string

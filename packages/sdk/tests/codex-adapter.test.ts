@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
-import { CodexAdapter } from "../src/adapters/codex/CodexAdapter";
+import { CodexAdapter } from "../src/adapters/codex";
 import {
   CodexJsonRpcError,
   type CodexClientLike,

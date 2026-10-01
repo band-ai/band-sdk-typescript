@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 
 import { ACPClientAdapter } from "../src/adapters/acp";
-import { createSubprocessConnection } from "../src/adapters/acp/ACPClientAdapter";
+import { createSubprocessConnection } from "../src/adapters/acp/ACPRoomAgent";
 import { BandACPClient } from "../src/adapters/acp/client";
 import { FakeTools, expectTurnFailed, findFailureEvent, makeLoggerSpy, makeMessage } from "./testUtils";
 

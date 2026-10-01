@@ -144,7 +144,7 @@ class CodexTurnTimeoutError extends Error {
   }
 }
 
-export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProtocol> {
+export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsProtocol> {
   protected readonly provider = "codex";
 
   private readonly baseConfig: CodexAdapterConfig;
