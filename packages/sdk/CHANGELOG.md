@@ -1,7 +1,7 @@
 # Changelog
 
 
-## [0.5.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.4.7...sdk-v0.5.0) (2026-09-30)
+## [0.5.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.4.7...sdk-v0.5.0) (2026-10-01)
 
 
 ### ⚠ BREAKING CHANGES
