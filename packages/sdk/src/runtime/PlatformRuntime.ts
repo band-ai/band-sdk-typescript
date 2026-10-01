@@ -1,5 +1,5 @@
 import type { FrameworkAdapter, Preprocessor } from "../contracts/protocols";
-import type { ContactEvent, PlatformEvent } from "../platform/events";
+import { messageIdOf, type ContactEvent, type PlatformEvent } from "../platform/events";
 import { BandLink, type BandLinkOptions } from "../platform/BandLink";
 import { AgentRuntime } from "./rooms/AgentRuntime";
 import {
@@ -450,6 +450,11 @@ export class PlatformRuntime implements AsyncDisposable {
   ): Promise<void> {
     const input = await this.preprocessor.process(context, event, this._agentId);
     if (!input) {
+      this.logger.debug("preprocessor returned no input", {
+        roomId: context.roomId,
+        eventType: event.type,
+        messageId: messageIdOf(event),
+      });
       return;
     }
 
@@ -463,6 +468,8 @@ export class PlatformRuntime implements AsyncDisposable {
       await this.link.markProcessing(roomId, messageId, messageMarkOptions);
     }
 
+    this.logger.debug("turn starting", { roomId, messageId });
+    const startedAt = Date.now();
     let succeeded = true;
     let caughtError: unknown;
     try {
@@ -471,6 +478,7 @@ export class PlatformRuntime implements AsyncDisposable {
       succeeded = false;
       caughtError = error;
     }
+    this.logger.debug("turn finished", { roomId, messageId, succeeded, durationMs: Date.now() - startedAt });
 
     if (messageId && !isSynthetic) {
       const decision = evaluateAdapterResult(roomId, messageId, succeeded);

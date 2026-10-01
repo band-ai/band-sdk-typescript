@@ -3,7 +3,8 @@ import { Agent, ParlantAdapter, loadAgentConfig, isDirectExecution } from "../..
 export function createParlantAgent(
   options: {
     environment: string;
-    agentId: string;
+    /** An existing Parlant agent; omit it to let the adapter create one. */
+    agentId?: string;
     apiKey?: string;
   },
   overrides?: { agentId?: string; apiKey?: string; wsUrl?: string; restUrl?: string },
@@ -28,11 +29,10 @@ export function createParlantAgent(
 
 if (isDirectExecution(import.meta.url)) {
   const environment = process.env.PARLANT_ENVIRONMENT;
-  const parlantAgentId = process.env.PARLANT_AGENT_ID;
 
-  if (!environment || !parlantAgentId) {
+  if (!environment) {
     throw new Error(
-      "Set PARLANT_ENVIRONMENT and PARLANT_AGENT_ID to run this example.",
+      "Set PARLANT_ENVIRONMENT (and optionally PARLANT_AGENT_ID) to run this example.",
     );
   }
 
@@ -40,7 +40,7 @@ if (isDirectExecution(import.meta.url)) {
   void createParlantAgent(
     {
       environment,
-      agentId: parlantAgentId,
+      agentId: process.env.PARLANT_AGENT_ID || undefined,
       apiKey: process.env.PARLANT_API_KEY,
     },
     config,

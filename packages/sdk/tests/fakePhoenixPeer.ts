@@ -13,7 +13,7 @@ interface PendingJoin {
 /**
  * The shared `ws` shim only types the WHATWG-compatible client shape; a
  * server-side connection also needs the Node-specific event-emitter surface
- * (`.on`, `.terminate`), same local-augmentation approach as
+ * (`.on`, `.terminate`, `.pause`), same local-augmentation approach as
  * `nodeWebSocketFactory.ts`.
  */
 type ServerSocket = InstanceType<typeof NodeWebSocket> & {
@@ -21,6 +21,7 @@ type ServerSocket = InstanceType<typeof NodeWebSocket> & {
   on(event: "message", listener: (data: Buffer) => void): ServerSocket;
   send(data: string): void;
   terminate(): void;
+  pause(): void;
 };
 
 /**
@@ -29,12 +30,13 @@ type ServerSocket = InstanceType<typeof NodeWebSocket> & {
  * the real `phoenix` client through join/leave/heartbeat and an actual
  * severed-connection reconnect — not a reimplementation of Phoenix itself.
  */
-export class FakePhoenixPeer {
+export class FakePhoenixPeer implements AsyncDisposable {
   private readonly wss: WebSocketServer;
   private readonly sockets = new Set<ServerSocket>();
   private readonly joinOutcomeQueues = new Map<string, JoinOutcome[]>();
   private readonly pendingJoins = new Map<string, PendingJoin>();
   public readonly receivedEvents: Array<{ topic: string; event: string }> = [];
+  public connectionCount = 0;
 
   private constructor(wss: WebSocketServer) {
     this.wss = wss;
@@ -69,6 +71,17 @@ export class FakePhoenixPeer {
     this.pendingJoins.clear();
   }
 
+  /**
+   * Stops reading from every open connection, so a client's close frame is
+   * never answered and its close handshake stalls — a slow or lossy link.
+   * `WebSocket#pause()` rather than the raw socket's: `ws` never resumes it.
+   */
+  public stallReads(): void {
+    for (const socket of this.sockets) {
+      socket.pause();
+    }
+  }
+
   public settleJoin(topic: string, outcome: Exclude<JoinOutcome, "pending">): void {
     const pending = this.pendingJoins.get(topic);
     if (!pending) {
@@ -92,7 +105,12 @@ export class FakePhoenixPeer {
     });
   }
 
+  public async [Symbol.asyncDispose](): Promise<void> {
+    await this.stop();
+  }
+
   private handleConnection(socket: ServerSocket): void {
+    this.connectionCount += 1;
     this.sockets.add(socket);
     socket.on("close", () => this.sockets.delete(socket));
     socket.on("message", (data) => {

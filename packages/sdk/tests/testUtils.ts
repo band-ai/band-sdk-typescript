@@ -2,6 +2,7 @@ import { ProviderTurnFailedError } from "../src/core/providerFailure";
 import { expect } from "vitest";
 import { ParticipantRoster, type AgentFailure } from "@band-ai/band-sdk-core";
 import type { PlatformMessage } from "../src/runtime";
+import type { ToolCallingModel } from "../src/adapters";
 import type { AgentToolsProtocol } from "../src/core";
 import { DEFAULT_AGENT_TOOLS_CAPABILITIES, FAILURE_EVENT_TYPE, toFailureEvent } from "../src/contracts/protocols";
 import { isBlankEventContent } from "../src/contracts/chatEvents";
@@ -22,6 +23,7 @@ import type {
   ReconnectSnapshot,
   StreamingTransport,
   TopicHandlers,
+  TopicRejoinObserver,
 } from "../src/platform/streaming/transport";
 
 interface CapturedToolEvent {
@@ -218,7 +220,7 @@ export class FakeTools implements AgentToolsProtocol {
 }
 
 /** The failure events an adapter posted, located the way a client locates one. */
-export function failureEvents(tools: FakeTools): CapturedToolEvent[] {
+export function failureEvents<E extends { messageType?: unknown }>(tools: { readonly events: readonly E[] }): E[] {
   return tools.events.filter((event) => event.messageType === FAILURE_EVENT_TYPE);
 }
 
@@ -240,6 +242,7 @@ export class FakeTransport implements StreamingTransport {
   public readonly leaveCalls: string[] = [];
   /** Every currently-registered reconnect observer — a real transport only ever settles once per generation, but exposing the full set (rather than the last-registered one) lets a test assert exactly how many a caller has live at once. */
   public readonly observers = new Set<ReconnectObserver>();
+  public readonly rejoinObservers = new Set<TopicRejoinObserver>();
   public disconnectCount = 0;
   private readonly handlers = new Map<string, TopicHandlers>();
   private connected = false;
@@ -394,6 +397,18 @@ export class FakeTransport implements StreamingTransport {
     return () => this.observers.delete(observer);
   }
 
+  public onTopicRejoined(observer: TopicRejoinObserver): () => void {
+    this.rejoinObservers.add(observer);
+    return () => this.rejoinObservers.delete(observer);
+  }
+
+  /** Simulates one channel rejoining on a socket that never dropped. */
+  public triggerRejoin(topic: string): void {
+    for (const observer of [...this.rejoinObservers]) {
+      observer(topic);
+    }
+  }
+
   /** Simulates a settled transport-level reconnect for tests driving BandLink's observer(s). */
   public async triggerReconnect(
     snapshot: Omit<ReconnectSnapshot, "attemptedTopics"> &
@@ -405,6 +420,11 @@ export class FakeTransport implements StreamingTransport {
     };
     await Promise.all([...this.observers].map((observer) => observer(full)));
   }
+}
+
+/** A `metadata.mentions` entry as the platform sends it on every surface, captured from a live room. */
+export function wireMention(fields: { id: string; name: string; handle: string | null; type: string }) {
+  return { ...fields, kind: "mention", avatar_url: `https://avatars.example.test/${fields.id}` };
 }
 
 export function makeMessage(content: string, roomId = "room-1", metadata: Record<string, unknown> = {}): PlatformMessage {
@@ -553,4 +573,39 @@ export class FakeRestApi implements RestApi {
  */
 export async function expectTurnFailed(turn: Promise<unknown>): Promise<void> {
   await expect(turn).rejects.toBeInstanceOf(ProviderTurnFailedError);
+}
+
+/** A turn budget short enough for a test on real timers to outlive. */
+export const SHORT_TURN_TIMEOUT_MS = 20;
+
+/**
+ * A provider request that never answers: it stays pending until its signal
+ * aborts, then rejects at once. `signal` is the one it was made with.
+ */
+export function hangUntilAborted(): { readonly signal: AbortSignal | undefined; request(signal?: AbortSignal): Promise<never> } {
+  let seen: AbortSignal | undefined;
+  return {
+    get signal() {
+      return seen;
+    },
+    request(signal) {
+      seen = signal;
+      return new Promise<never>((_, reject) => {
+        signal?.addEventListener("abort", () => reject(new Error("request aborted")), { once: true });
+      });
+    },
+  };
+}
+
+/** A model whose first call hangs until aborted and whose every later call answers `reply`. */
+export function hangsOnce(reply: string): { readonly model: ToolCallingModel; readonly hung: ReturnType<typeof hangUntilAborted> } {
+  const hung = hangUntilAborted();
+  let calls = 0;
+  const model: ToolCallingModel = {
+    complete: (_request, options) => {
+      calls += 1;
+      return calls === 1 ? hung.request(options?.signal) : Promise.resolve({ text: reply });
+    },
+  };
+  return { model, hung };
 }

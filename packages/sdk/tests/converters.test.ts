@@ -6,7 +6,6 @@ describe("converter exports", () => {
   it("exposes supported converter families via the converters subpath", () => {
     expect(converters).toHaveProperty("A2AHistoryConverter");
     expect(converters).toHaveProperty("GatewayHistoryConverter");
-    expect(converters).toHaveProperty("ParlantHistoryConverter");
     expect(converters).toHaveProperty("ClaudeSDKHistoryConverter");
     expect(converters).toHaveProperty("CodexHistoryConverter");
     expect(converters).toHaveProperty("GoogleADKHistoryConverter");

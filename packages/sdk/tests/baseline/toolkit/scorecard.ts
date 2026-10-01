@@ -29,9 +29,17 @@ export type ScorecardOutcome =
 
 export type ScorecardStatus = ScorecardOutcome["status"];
 
+/**
+ * Reserved labels, both starting with `(` so the grid's code-point sort puts them first: the column for a result with
+ * no roster adapter behind it, and the row for a failure no scenario can own (an unhandled error, a file outside
+ * `scenarios/<category>/`).
+ */
+export const NO_ADAPTER = "(no adapter)";
+export const GENERAL_SCENARIO = "(general)";
+
 export interface ScorecardRow {
-  scenario: ScenarioId;
-  adapter: AdapterId;
+  scenario: ScenarioId | typeof GENERAL_SCENARIO;
+  adapter: AdapterId | typeof NO_ADAPTER;
   outcome: ScorecardOutcome;
 }
 
@@ -61,7 +69,9 @@ const cellKey = (scenario: string, adapter: string) => `${scenario}\u0000${adapt
 const byCell = (a: ScorecardRow, b: ScorecardRow) =>
   a.scenario.localeCompare(b.scenario) || a.adapter.localeCompare(b.adapter);
 
-/** Unions scorecards, keeping each cell's highest-ranked outcome. */
+const joinFailErrors = (left: string, right: string): string => (left === right ? left : `${left}\n${right}`);
+
+/** Unions scorecards, keeping each cell's highest-ranked outcome; equal `fail` ranks concatenate error text. */
 export function merge(...scorecards: ScorecardRow[][]): ScorecardRow[] {
   const best = new Map<string, ScorecardRow>();
   for (const row of scorecards.flat()) {
@@ -69,6 +79,20 @@ export function merge(...scorecards: ScorecardRow[][]): ScorecardRow[] {
     const current = best.get(key);
     if (!current || RANK[row.outcome.status] > RANK[current.outcome.status]) {
       best.set(key, row);
+      continue;
+    }
+    if (
+      RANK[row.outcome.status] === RANK[current.outcome.status] &&
+      row.outcome.status === SCORECARD_STATUS.fail &&
+      current.outcome.status === SCORECARD_STATUS.fail
+    ) {
+      best.set(key, {
+        ...current,
+        outcome: {
+          ...current.outcome,
+          error: joinFailErrors(current.outcome.error, row.outcome.error),
+        },
+      });
     }
   }
   return [...best.values()].sort(byCell);

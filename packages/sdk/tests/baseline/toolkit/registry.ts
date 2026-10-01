@@ -5,6 +5,7 @@
  * are the roster.
  */
 import { existsSync } from "node:fs";
+import { basename, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { FrameworkAdapter } from "../../../src/contracts/protocols";
@@ -43,8 +44,15 @@ export function scenarioId(category: Category, name: string): ScenarioId {
   return `${category}.${name}`;
 }
 
+const SCENARIO_FILE_SUFFIX = ".test.ts";
+
+/** `<category>.<stem>` from a path shaped like `…/<category>/<stem>.test.ts`. */
+export function scenarioIdFromModulePath(relativeModuleId: string): string {
+  return `${basename(dirname(relativeModuleId))}.${basename(relativeModuleId, SCENARIO_FILE_SUFFIX)}`;
+}
+
 /** What an adapter can select on. Grows only as scenarios filter on it. */
-export const CAPABILITY = { approvals: "approvals", customTools: "customTools" } as const;
+export const CAPABILITY = { approvals: "approvals", customTools: "customTools", memory: "memory" } as const;
 
 export type Capability = (typeof CAPABILITY)[keyof typeof CAPABILITY];
 
@@ -73,6 +81,10 @@ export interface BuildOptions {
   workDir: string;
   /** Tools a scenario gives the agent; builders that support `CAPABILITY.customTools` report each call as a `tool_call` event. */
   customTools?: CustomToolDef[];
+  /** Builders that support `CAPABILITY.memory` give the agent the Band memory tools and report their calls. */
+  memory?: boolean;
+  /** Builders that support `CAPABILITY.customTools` report every tool call, the Band tools' too, as a `tool_call` event. */
+  reportToolCalls?: boolean;
 }
 
 export type AdapterBuilder = (options: BuildOptions) => FrameworkAdapter;
@@ -88,6 +100,12 @@ export interface AdapterSpec<Id extends string = string> {
    * `specs()` leaves pending adapters out unless asked.
    */
   pending?: string;
+  /**
+   * Why the adapter runs only in scenarios that name it (`withAdapters`),
+   * never a fan-out. `specs()` leaves it out unless asked; a fan-out that
+   * asks shows it as N/A with this reason.
+   */
+  bespokeOnly?: string;
 }
 
 export interface SpecFilter<Id extends string = string> {
@@ -98,6 +116,7 @@ export interface SpecFilter<Id extends string = string> {
   /** Keep adapters that support NONE of these. */
   without?: readonly Capability[];
   includePending?: boolean;
+  includeBespokeOnly?: boolean;
 }
 
 /** The value that turns an opt-in environment flag on, e.g. `BAND_E2E_INCLUDE_PENDING=1`. */
@@ -139,13 +158,14 @@ export class AdapterRegistry<Id extends string = string> {
 
   /** The registered specs narrowed by `filter`, in stable id order. */
   public specs(filter: SpecFilter<Id> = {}): AdapterSpec<Id>[] {
-    const { include, exclude, supports = [], without = [], includePending = false } = filter;
+    const { include, exclude, supports = [], without = [], includePending = false, includeBespokeOnly = false } = filter;
     return this.ids()
       .map((id) => this.get(id))
       .filter(
         (spec) =>
           (include === undefined || include.includes(spec.id)) &&
           !exclude?.includes(spec.id) &&
+          (includeBespokeOnly || spec.bespokeOnly === undefined) &&
           (includePending || spec.pending === undefined) &&
           supports.every((capability) => spec.supports.includes(capability)) &&
           !without.some((capability) => spec.supports.includes(capability)),

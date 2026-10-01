@@ -1,7 +1,7 @@
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { ParticipantRoster, type AgentFailure, type ParticipantFields } from "@band-ai/band-sdk-core";
-import { toParticipantRecord, toParticipantRecordFromRest } from "../formatters";
+import { mentionLabel, toParticipantRecord, toParticipantRecordFromRest } from "../formatters";
 import type { AgentToolsRestApi } from "../../client/rest/types";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
 import { assertCapability } from "../../contracts/capabilities";
@@ -643,6 +643,8 @@ export class AgentTools implements AgentToolsProtocol {
       const name = participant.name;
       if (typeof name === "string" && name.trim().length > 0) {
         participantsByName.set(name.trim().toLowerCase(), ref);
+        // The label inbound history shows for a participant with no handle.
+        participantsByName.set(mentionLabel(name).toLowerCase(), ref);
       }
     }
 
@@ -659,7 +661,7 @@ export class AgentTools implements AgentToolsProtocol {
         return found;
       }
 
-      const byName = participantsByName.get(mention.trim().toLowerCase());
+      const byName = participantsByName.get(normalized) ?? participantsByName.get(mention.trim().toLowerCase());
       if (byName) {
         return byName;
       }

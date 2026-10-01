@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ADAPTER } from "./adapters";
 import { CATEGORY, scenarioId } from "./registry";
 import {
+  GENERAL_SCENARIO,
+  NO_ADAPTER,
   SCORECARD_JSON_ENV,
   SCORECARD_STATUS,
   markdownPath,
@@ -20,11 +22,11 @@ import {
 const REPLIES = scenarioId(CATEGORY.platform, "repliesToMention");
 const APPROVALS = scenarioId(CATEGORY.behavior, "approvals");
 
-const row = (outcome: ScorecardOutcome, adapter: ScorecardRow["adapter"] = ADAPTER.anthropic): ScorecardRow => ({
-  scenario: REPLIES,
-  adapter,
-  outcome,
-});
+const row = (
+  outcome: ScorecardOutcome,
+  adapter: ScorecardRow["adapter"] = ADAPTER.anthropic,
+  scenario: ScorecardRow["scenario"] = REPLIES,
+): ScorecardRow => ({ scenario, adapter, outcome });
 
 /** A failure's detail, which the markdown must never show. */
 const FAILURE_DETAIL = "boom";
@@ -42,6 +44,13 @@ describe("merge", () => {
     { name: "fail beats pass", cards: [[pass], [fail]], winner: fail },
   ])("$name", ({ cards, winner }) => {
     expect(merge(...cards.map((outcomes) => outcomes.map((outcome) => row(outcome))))).toEqual([row(winner)]);
+  });
+
+  it("joins two equal fail outcomes in one cell", () => {
+    const first: ScorecardOutcome = { ...fail, error: "first" };
+    expect(merge([row(first)], [row({ ...fail, error: "second" })])).toEqual([
+      row({ ...fail, error: "first\nsecond" }),
+    ]);
   });
 
   it("keeps every distinct cell, in stable order", () => {
@@ -76,6 +85,18 @@ describe("toMarkdown", () => {
       ].join("\n"),
     );
     expect(markdown).not.toContain(FAILURE_DETAIL);
+  });
+
+  it("puts (no adapter) in the first column and (general) in the first row", () => {
+    expect(toMarkdown([row(pass, ADAPTER.anthropic), row(fail, NO_ADAPTER), row(fail, NO_ADAPTER, GENERAL_SCENARIO)])).toBe(
+      [
+        "| scenario | (no adapter) | anthropic |",
+        "| --- | --- | --- |",
+        "| (general) | ❌ | · |",
+        "| platform.repliesToMention | ❌ | ✅ |",
+        "",
+      ].join("\n"),
+    );
   });
 });
 

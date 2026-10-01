@@ -2,7 +2,7 @@ import { RecoverableTurnError, RuntimeStateError } from "../core/errors";
 import type { Logger } from "../core/logger";
 import { resolveLogger } from "../core/logger";
 import type { BandLink } from "../platform/BandLink";
-import type { PlatformEvent } from "../platform/events";
+import { messageIdOf, type PlatformEvent } from "../platform/events";
 import type { PlatformMessage } from "./types";
 import type { ExecutionContext } from "./ExecutionContext";
 import type { ExecutionLifecycleState } from "./lifecycle";
@@ -145,6 +145,11 @@ export class Execution {
     } else {
       this.eventQueue.push(queued);
     }
+    this.logger.debug("event queued for room", {
+      roomId: this.roomId,
+      eventType: event.type,
+      messageId: messageIdOf(event),
+    });
   }
 
   public async bootstrapMessage(message: PlatformMessage): Promise<void> {
@@ -273,6 +278,10 @@ export class Execution {
       }
 
       if (event.type === "message_created" && this.syncBoundaries.isExecuted(event.payload.id)) {
+        this.logger.debug("skipping live message already executed", {
+          roomId: this.roomId,
+          messageId: event.payload.id,
+        });
         this.notifyIfIdle();
         continue;
       }
@@ -322,6 +331,10 @@ export class Execution {
   private async synchronizeWithNext(boundary: SyncBoundary): Promise<void> {
     while (this.isActive()) {
       const nextMessage = await this.link.getNextMessage(this.roomId);
+      this.logger.debug("Sync scan read /messages/next", {
+        roomId: this.roomId,
+        messageId: nextMessage?.id ?? null,
+      });
       if (!nextMessage) {
         break;
       }
@@ -340,29 +353,26 @@ export class Execution {
       }
 
       // Already executed — by this scan, an earlier scan, or bootstrap/stale
-      // recovery. Never redo it, but a repeat sighting of the boundary's own
-      // live message still ends this scan early: nothing further in the
-      // backlog needs a REST round trip once we've caught up to live traffic.
-      if (this.syncBoundaries.isExecuted(nextMessage.id)) {
-        if (this.syncBoundaries.isSyncPoint(boundary, nextMessage.id)) {
-          break;
-        }
-        continue;
+      // recovery — is never redone.
+      if (!this.syncBoundaries.isExecuted(nextMessage.id)) {
+        await this.executeSyncMessage(toMessageEvent(nextMessage), nextMessage.id);
+        // Recorded unconditionally, not only when this happens to be
+        // recognized as the boundary's own live message: `boundary.messageId`
+        // is anchored asynchronously by a live delivery arriving through a
+        // separate path (`enqueue()`), so this scan can execute a message
+        // before that anchor lands. Marking every executed id lets the later
+        // live delivery (or a later scan re-fetching the same id before the
+        // backend's mark-as-processed effect propagates) find it already done
+        // regardless of whether this scan ever recognized it as "the" sync
+        // point in real time.
+        this.syncBoundaries.recordExecuted(nextMessage.id);
       }
 
-      await this.executeSyncMessage(toMessageEvent(nextMessage), nextMessage.id);
-      // Recorded unconditionally, not only when this happens to be
-      // recognized as the boundary's own live message: `boundary.messageId`
-      // is anchored asynchronously by a live delivery arriving through a
-      // separate path (`enqueue()`), so this scan can execute a message
-      // before that anchor lands. Marking every executed id lets the later
-      // live delivery (or a later scan re-fetching the same id before the
-      // backend's mark-as-processed effect propagates) find it already done
-      // regardless of whether this scan ever recognized it as "the" sync
-      // point in real time.
-      this.syncBoundaries.recordExecuted(nextMessage.id);
-
+      // The boundary's own live message ends the scan, whether it ran now or
+      // before: nothing further in the backlog needs a REST round trip once
+      // we've caught up to live traffic.
       if (this.syncBoundaries.isSyncPoint(boundary, nextMessage.id)) {
+        this.logger.debug("Sync scan reached its boundary", { roomId: this.roomId, messageId: nextMessage.id });
         break;
       }
     }

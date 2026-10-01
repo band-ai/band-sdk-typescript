@@ -60,13 +60,19 @@ const MEMORY_COMMON_PATTERNS = [
   ...COMMON_MEMORY_PATTERNS.map(renderMemoryPattern),
 ].join("\n");
 
-const MEMORY_SCOPE_GUIDANCE = `Use \`scope="${MEMORY_STORE_SCOPE.agent}"\` for information private to this agent that is not about an
-identified subject. Omitting \`scope\` and \`subject_id\` on store defaults to agent scope on the platform.
-Prefer \`scope="${MEMORY_STORE_SCOPE.subject}"\` whenever the memory is about a specific person or agent, so it
+const MEMORY_SCOPE_GUIDANCE = `Prefer \`scope="${MEMORY_STORE_SCOPE.subject}"\` whenever the memory is about a specific person or agent, so it
 stays attached to that subject rather than leaking org-wide. Storing with \`scope="${MEMORY_STORE_SCOPE.subject}"\` requires a
-real \`subject_id\` UUID, so resolve it first via \`band_lookup_peers\` or the participant list.
-Reserve \`scope="${MEMORY_STORE_SCOPE.organization}"\` for knowledge that is genuinely shared across the whole organization and
-is not about any one subject.`;
+real \`subject_id\` UUID: for someone in the current room (e.g. the user you are talking to), call
+\`band_get_participants\` and use their \`id\`; for someone not in the room, use \`band_lookup_peers\`.
+A handle or name is never a valid \`subject_id\` — always look up the UUID \`id\` field.
+A memory the sender frames about themselves in the first person ("me", "my", "I") has that sender
+as its subject, so resolve the sender's \`id\` — not your own.
+Default to \`scope="${MEMORY_STORE_SCOPE.agent}"\` for anything private to you that is not about one
+subject and is not meant to be shared org-wide — this always works, whether or not you belong to an
+organization.
+Reserve \`scope="${MEMORY_STORE_SCOPE.organization}"\` for knowledge that is genuinely shared across the whole organization
+and is not about any one subject (e.g. cross-room memories not tied to one subject). This requires
+you to belong to an organization; it fails otherwise.`;
 
 function quoteChoices(values: readonly string[]): string {
   return values.map((value) => `\`"${value}"\``).join(" | ");

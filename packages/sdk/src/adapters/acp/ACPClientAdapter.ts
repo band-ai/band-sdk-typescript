@@ -25,11 +25,12 @@ import { resolveLogger, type Logger } from "../../core/logger";
 import { rethrowIfRecoverableTurnFailure, ValidationError } from "../../core/errors";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import { mentionSubjectsFromMetadata, replaceUuidMentions } from "../../runtime/formatters";
 import { systemUpdateParts } from "../shared/conversationPrompt";
 import { asErrorMessage } from "../shared/coercion";
 import { roomContextLines } from "../shared/roomContext";
-import { withTimeout } from "../shared/withTimeout";
+import { createRoomTurnLock } from "../shared/roomTurnLock";
+import { assertTurnTimeoutMs } from "../shared/turnTimeout";
+import { assertWithinSetTimeoutBound, MAX_SETTIMEOUT_DELAY_MS, withTimeout } from "../shared/withTimeout";
 import { abandon } from "../shared/abandon";
 import { deliverReply } from "../../core/deliveryFailedError";
 import { FAILURE_CODE_TIMEOUT, agentFailure, reportTurnFailure } from "../../core/providerFailure";
@@ -141,22 +142,10 @@ function framedReplay(lines: readonly string[], liveMessage: string): [string, s
 // subprocess-handshake timeout: this is the same kind of wait, a local agent
 // process acknowledging an administrative call, not doing model inference.
 const SET_SESSION_CONFIG_TIMEOUT_MS = 10_000;
-const MAX_SETTIMEOUT_DELAY_MS = 2_147_483_647;
 const MIN_TCP_PORT = 1;
 const MAX_TCP_PORT = 65_535;
 const CONNECTION_ATTEMPT_SUPERSEDED_ERROR = "ACP connection attempt superseded by stop()";
 const TCP_CONNECTION_ATTEMPT_ABORTED_ERROR = "ACP TCP connection attempt aborted";
-
-// `setTimeout` silently truncates any delay past this to ~1ms, so a config
-// value beyond it must be rejected outright rather than let that surprise
-// through. Shared by every constructor timeout check below; each caller
-// still gates whether the check applies (a value that's currently unused,
-// or Infinity, may skip it) since that condition differs per field.
-function assertWithinSetTimeoutBound(message: string, value: number): void {
-  if (value > MAX_SETTIMEOUT_DELAY_MS) {
-    throw new ValidationError(message)
-  }
-}
 
 export interface ACPModeRequest {
   roomId: string;
@@ -310,7 +299,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private readonly abandonedSessions = new Set<string>()
   private readonly pendingPermissions = new Map<string /* sessionKey */, Set<AbortController>>()
   private readonly sessionsInFlight = new Map<string /* roomId */, Promise<string>>()
-  private readonly roomTurnLocks = new Map<string /* roomId */, Promise<unknown>>()
+  private readonly roomTurns = createRoomTurnLock()
   // Bumped each time a room starts a *new* establishment (never on a
   // coalesced reuse) and whenever a room is torn down. An establishment
   // captures its own value at the start; if the room has moved on by the
@@ -389,18 +378,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     }
 
     this.turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS
-    // `Number.isNaN("3000")` is false and comparison coercions would otherwise
-    // accept a string, then `Number.isFinite("3000")` is false and silently
-    // disable the timeout. Reject non-numbers; `Infinity` remains the opt-out.
-    if (typeof this.turnTimeoutMs !== "number" || Number.isNaN(this.turnTimeoutMs) || this.turnTimeoutMs <= 0) {
-      throw new ValidationError(`turnTimeoutMs must be a positive number or Infinity, got ${options.turnTimeoutMs}`)
-    }
-    if (Number.isFinite(this.turnTimeoutMs)) {
-      assertWithinSetTimeoutBound(
-        `turnTimeoutMs must be Infinity or at most ${MAX_SETTIMEOUT_DELAY_MS}, got ${options.turnTimeoutMs}`,
-        this.turnTimeoutMs,
-      )
-    }
+    assertTurnTimeoutMs(this.turnTimeoutMs)
   }
 
   public async onStarted(
@@ -448,7 +426,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     // `history` is this turn's own snapshot, closed over here. A later
     // `onMessage` for the same room must not be able to replace it while
     // this turn is still establishing a session.
-    await this.withRoomTurnLock(context.roomId, () => this.runTurn(message, tools, participantsMessage, contactsMessage, context, history))
+    await this.roomTurns.run(context.roomId, () => this.runTurn(message, tools, participantsMessage, contactsMessage, context, history))
   }
 
   private async runTurn(
@@ -481,8 +459,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       const sessionKey = this.sessionKey(generation, sessionId)
       await this.onAcpSessionReady(message, tools, context, sessionId)
       client.beginSession(sessionId)
-      const content = replaceUuidMentions(message.content, mentionSubjectsFromMetadata(message.metadata))
-      const messageWithContext = [...systemUpdateParts(participantsMessage, contactsMessage), content].join("\n\n")
+      const messageWithContext = [...systemUpdateParts(participantsMessage, contactsMessage), message.content].join("\n\n")
       // A restored session is normally already bootstrapped. It still owes
       // a transcript when the prompt that should have carried the replay
       // was never accepted — restore of that empty session must not skip it.
@@ -665,26 +642,13 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     })
   }
 
-  // A per-room async mutex: `fn` for a given `roomId` never overlaps another
-  // call for that same room, while different rooms stay fully concurrent.
-  // The tracked tail (`this.roomTurnLocks`) always settles — via the
-  // trailing `.catch` — so one turn's failure can't wedge every later turn
-  // for the room; the real result/rejection is still `run`, returned to this
-  // call's own caller.
-  private async withRoomTurnLock<T>(roomId: string, fn: () => Promise<T>): Promise<T> {
-    const previous = this.roomTurnLocks.get(roomId) ?? Promise.resolve()
-    const run = previous.then(fn, fn)
-    this.roomTurnLocks.set(roomId, run.catch(() => undefined))
-    return run
-  }
-
   public async onCleanup(roomId: string): Promise<void> {
     const owner = this.unlinkRoom(roomId)
     this.roomTools.delete(roomId)
     this.roomsOwedReplay.delete(roomId)
     this.replaySource.delete(roomId)
     this.sessionsInFlight.delete(roomId)
-    this.roomTurnLocks.delete(roomId)
+    this.roomTurns.release(roomId)
     // Invalidates any establishment for this room still in flight — it may
     // finish later (nothing cancels the real RPC), but must not link or
     // activate on behalf of a room that has already moved on.
@@ -726,7 +690,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     this.sessionToRoom.clear()
     this.roomTools.clear()
     this.sessionsInFlight.clear()
-    this.roomTurnLocks.clear()
+    this.roomTurns.clear()
     // Same reasoning as `onCleanup`, for every room at once: a still-pending
     // establishment from before `stop()` must not link into state this call
     // is in the middle of tearing down.

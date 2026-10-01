@@ -3,10 +3,12 @@ import { z } from "zod";
 
 import { GoogleADKAdapter } from "../src/adapters";
 import { GoogleADKHistoryConverter } from "../src/converters";
+import { MEMORY_SECTION } from "../src/runtime/prompts";
 import { SEND_MESSAGE_TOOL_NAME } from "../src/runtime/tools/schemas";
-import type { AgentToolsProtocol } from "../src/core";
 import { FakeTools, makeMessage, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
+import { createDeferred } from "../src/core/deferred";
+import { createFakeGoogleAdkSdk, type GoogleAdkCapture } from "./helpers/fakeGoogleAdkSdk";
 
 class GoogleAdkTestTools extends FakeTools {
   public readonly executedCalls: Array<{ toolName: string; args: Record<string, unknown> }> = [];
@@ -38,13 +40,6 @@ class GoogleAdkTestTools extends FakeTools {
   }
 }
 
-interface GoogleAdkCapture {
-  createAgentCalls: Array<Record<string, unknown>>;
-  createRunnerCalls: Array<{ appName: string }>;
-  createSessionCalls: Array<{ appName: string; userId: string; sessionId: string }>;
-}
-
-
 class SendMessageTools extends GoogleAdkTestTools {
   public failSend = false;
   public failDeliveredText: string | null = null;
@@ -60,11 +55,11 @@ class SendMessageTools extends GoogleAdkTestTools {
     }];
   }
 
-  public override async sendMessage(content: string): Promise<Record<string, unknown>> {
+  public override async sendMessage(...[content, mentions]: Parameters<FakeTools["sendMessage"]>): Promise<Record<string, unknown>> {
     if (this.failDeliveredText !== null && content === this.failDeliveredText) {
       throw new Error("send failed");
     }
-    return super.sendMessage(content);
+    return super.sendMessage(content, mentions);
   }
 
   public override async executeToolCall(toolName: string, args: Record<string, unknown>): Promise<unknown> {
@@ -82,36 +77,6 @@ function sendToolOf(agent: Record<string, unknown>): (input: unknown) => Promise
     throw new Error("send tool was not registered");
   }
   return tool.execute as (input: unknown) => Promise<unknown>;
-}
-
-function createFakeGoogleAdkSdk(
-  run: (agent: Record<string, unknown>, request: { userId: string; sessionId: string; newMessage: { role: "user"; parts: Array<{ text: string }> } }) => AsyncIterable<unknown>,
-  capture?: GoogleAdkCapture,
-): () => Promise<any> {
-  return async () => ({
-    createModel: (params: { model: string; apiKey: string }) => ({ gemini: params }),
-    createAgent: (params: Record<string, unknown>) => {
-      capture?.createAgentCalls?.push(params);
-      return params;
-    },
-    createFunctionTool: (params: Record<string, unknown>) => params,
-    createRunner: (params: { agent: Record<string, unknown>; appName: string }) => {
-      capture?.createRunnerCalls?.push({ appName: params.appName });
-      return {
-        sessionService: {
-          createSession: async (sessionParams: { appName: string; userId: string; sessionId: string }) => {
-            capture?.createSessionCalls?.push(sessionParams);
-            return { ok: true };
-          },
-        },
-        runAsync: (request: { userId: string; sessionId: string; newMessage: { role: "user"; parts: Array<{ text: string }> } }) => run(params.agent, request),
-      };
-    },
-    isFinalResponse: (event: Record<string, unknown>) => event.final === true,
-    getFunctionCalls: (event: Record<string, unknown>) => Array.isArray(event.functionCalls) ? event.functionCalls : [],
-    getFunctionResponses: (event: Record<string, unknown>) => Array.isArray(event.functionResponses) ? event.functionResponses : [],
-    stringifyContent: (event: Record<string, unknown>) => String(event.text ?? ""),
-  });
 }
 
 describe("GoogleADKAdapter", () => {
@@ -221,6 +186,24 @@ describe("GoogleADKAdapter", () => {
     expect(seenPrompts[1]).toContain("[User]: Reply with: pineapple\npineapple");
   });
 
+  it.each([
+    { failSend: false, delivered: [] },
+    { failSend: true, delivered: ["I posted it."] },
+  ])("treats a send-tool post as the reply, its final text as a fallback (send failed: $failSend)", async ({ failSend, delivered }) => {
+    const adapter = new GoogleADKAdapter({
+      sdkFactory: createFakeGoogleAdkSdk(async function* (agent) {
+        await sendToolOf(agent)({ content: "pineapple" });
+        yield { final: true, text: "I posted it." };
+      }),
+    });
+    const tools = new SendMessageTools();
+    tools.failSend = failSend;
+
+    await adapter.onMessage(makeMessage("Reply with: pineapple"), tools, [], null, null, { isSessionBootstrap: true, roomId: "room-1" });
+
+    expect(tools.messages).toEqual(delivered);
+  });
+
   it("does not remember a send that failed", async () => {
     const seenPrompts: string[] = [];
     const tools = new SendMessageTools();
@@ -278,6 +261,37 @@ describe("GoogleADKAdapter", () => {
 
     expect(seenPrompts[1]).toContain("[User]: please finish");
     expect(seenPrompts[1]).not.toContain("all done");
+  });
+
+  it("runs a new session's turn while a parked turn from before cleanup is still in flight, and drops that transcript", async () => {
+    const parked = createDeferred();
+    const firstStarted = createDeferred();
+    const seenPrompts: string[] = [];
+    const adapter = new GoogleADKAdapter({
+      sdkFactory: createFakeGoogleAdkSdk(async function* (_agent, request) {
+        seenPrompts.push(request.newMessage.parts[0]?.text ?? "");
+        if (seenPrompts.length === 1) {
+          firstStarted.resolve();
+          await parked.promise;
+          yield { final: true, text: "pineapple" };
+          return;
+        }
+        yield { final: true, text: "mango" };
+      }),
+    });
+    const tools = new SendMessageTools();
+    const first = adapter.onMessage(makeMessage("stale question"), tools, [], null, null, { isSessionBootstrap: true, roomId: "room-1" });
+    await firstStarted.promise;
+    await adapter.onCleanup("room-1");
+
+    await adapter.onMessage(makeMessage("next question"), tools, [], null, null, { isSessionBootstrap: true, roomId: "room-1" });
+    parked.resolve();
+    await first;
+    await adapter.onMessage(makeMessage("last question"), tools, [], null, null, { isSessionBootstrap: false, roomId: "room-1" });
+
+    expect(seenPrompts.at(-1)).toContain("[User]: next question\nmango");
+    expect(seenPrompts.at(-1)).not.toContain("stale question");
+    expect(seenPrompts.at(-1)).not.toContain("pineapple");
   });
 
   it("remembers the string a non-string send argument was posted as", async () => {
@@ -448,6 +462,42 @@ describe("GoogleADKAdapter", () => {
     expect(capture.createRunnerCalls).toEqual([{ appName: "band" }]);
     expect(capture.createSessionCalls).toHaveLength(1);
     expect(capture.createSessionCalls[0]?.appName).toBe("band");
+  });
+
+  describe("memory guidance in a raw system prompt", () => {
+    const RAW_PROMPT = "You are a terse assistant.";
+
+    /** The instruction the ADK agent is created with, for a raw `systemPrompt`. */
+    async function instructionFor(enableMemoryTools: boolean): Promise<unknown> {
+      const capture: GoogleAdkCapture = { createAgentCalls: [], createRunnerCalls: [], createSessionCalls: [] };
+      const adapter = new GoogleADKAdapter({
+        systemPrompt: RAW_PROMPT,
+        enableMemoryTools,
+        sdkFactory: createFakeGoogleAdkSdk(async function* () {
+          yield { final: true, text: "done" };
+        }, capture),
+      });
+      await adapter.onStarted("Memory Agent", "Remembers things");
+      await adapter.onMessage(
+        makeMessage("remember this", "room-memory"),
+        new GoogleAdkTestTools(),
+        new GoogleADKHistoryConverter().convert([]),
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-memory" },
+      );
+      return capture.createAgentCalls[0]?.instruction;
+    }
+
+    it("adds the guidance when memory tools are exposed", async () => {
+      const instruction = await instructionFor(true);
+      expect(instruction).toContain(RAW_PROMPT);
+      expect(instruction).toContain(MEMORY_SECTION);
+    });
+
+    it("leaves the prompt as given when they are not", async () => {
+      expect(await instructionFor(false)).toBe(RAW_PROMPT);
+    });
   });
 
   it("names the default agent \"band_agent\" when agentName is unset", async () => {

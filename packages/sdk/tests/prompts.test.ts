@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { renderSystemPrompt, BASE_INSTRUCTIONS, TEMPLATES } from "../src/runtime/prompts";
+import { renderSystemPrompt, withMemoryGuidance, BASE_INSTRUCTIONS, TEMPLATES } from "../src/runtime/prompts";
 
 describe("renderSystemPrompt", () => {
   it("renders default prompt with agent name and description", () => {
@@ -90,8 +90,8 @@ describe("renderSystemPrompt", () => {
     expect(result).toContain("## Memory Tools");
     expect(result).toContain("band_store_memory");
     expect(result).toContain('scope="agent"');
-    expect(result).toContain("private to this agent");
-    expect(result).toContain("defaults to agent scope");
+    expect(result).toContain("private to you");
+    expect(result).toContain('Default to `scope="agent"`');
     expect(result).toContain('scope="organization"');
     expect(result).toContain("real `subject_id` UUID");
   });
@@ -105,7 +105,7 @@ describe("renderSystemPrompt", () => {
     expect(result).not.toContain("## Memory Tools");
   });
 
-  it("excludes memory guidance when base instructions are disabled", () => {
+  it("includes memory guidance when base instructions are disabled but memory is on", () => {
     const result = renderSystemPrompt({
       agentName: "Bot",
       agentDescription: "helper",
@@ -113,7 +113,33 @@ describe("renderSystemPrompt", () => {
       includeBaseInstructions: false,
     });
 
+    expect(result).toContain("You are Bot, helper.");
+    expect(result).not.toContain("band_send_message");
+    expect(result).toContain("## Memory Tools");
+  });
+
+  it("excludes memory guidance when base instructions are disabled and memory is off", () => {
+    const result = renderSystemPrompt({
+      agentName: "Bot",
+      agentDescription: "helper",
+      includeBaseInstructions: false,
+    });
+
     expect(result).not.toContain("## Memory Tools");
+  });
+});
+
+describe("withMemoryGuidance", () => {
+  it("does not append memory guidance twice when the prompt already includes it", () => {
+    const once = renderSystemPrompt({ capabilities: { memory: true } });
+    expect(withMemoryGuidance(once, true)).toBe(once);
+    expect((withMemoryGuidance(once, true).match(/## Memory Tools/g) ?? []).length).toBe(1);
+  });
+
+  it("returns only the memory section for an empty prompt", () => {
+    const result = withMemoryGuidance("", true);
+    expect(result).toContain("## Memory Tools");
+    expect(result).not.toMatch(/^\s*\n\n/);
   });
 });
 

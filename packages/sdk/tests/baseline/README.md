@@ -20,10 +20,14 @@ Scope with vitest's own `-t` or a path, with no `--` (it breaks `-t` filtering).
 | --- | --- |
 | `BAND_API_KEY_USER` | The Band user key every run provisions and reaps its agents with. Required. |
 | `BAND_E2E_SCORECARD_JSON` | Writes the scorecard to this path, plus a `.md` grid beside it. |
-| `BAND_E2E_INCLUDE_PENDING=1` | Also runs adapters marked `pending` (normally N/A), for local use. |
-| `RUN_CODEX_ACP_E2E=1` | Opts in to `adapters.codexAcpSmoke`, which needs a local `codex-acp`. |
+| `BAND_E2E_INCLUDE_PENDING=1` | Fans `perAdapter` scenarios out to adapters marked `pending` too (they are omitted by default). |
+| `BAND_E2E_DEBUG_LOGS=1` | Prints the SDK's own logs from every running agent and each room's observer, each line stamped with wall-clock time and its source. Off by default: without it the SDK's logs are dropped. |
+| `RUN_CODEX_ACP_E2E=1` | Includes `adapters.codexAcpSmoke` in the baseline run (needs a local `codex-acp`); excluded from `vitest.baseline.config.ts` when unset. |
 
-Each adapter also needs its own model key or CLI (see `requires` in `toolkit/adapters.ts`).
+Each adapter also needs its own model key or CLI (see `requires` in `toolkit/adapters.ts`). letta and
+parlant need a running server: CI starts them with `.github/scripts/setup-letta.sh` (docker) and
+`setup-parlant.sh`, which pin the image and version. Locally, start one the same way and export
+`LETTA_BASE_URL` / `PARLANT_ENVIRONMENT`.
 
 The toolkit's own unit tests, including the `registry.test.ts` drift guard, run in the default
 `pnpm test` (Tier 1). The scenarios run only through `test:baseline-live` (Tier 2): the default
@@ -42,12 +46,13 @@ sticky comment on the branch's PR, or in the job summary when there is none.
 | `toolkit/perAdapter.ts` | `perAdapter` (one test per adapter) and `withAdapters` (one shared room). |
 | `toolkit/agents.ts`, `rooms.ts` | Provisioned identities, running agents, rooms and messages; all `await using`. |
 | `toolkit/observeMessages.ts` | The reply wait, and the room's stored history. |
-| `toolkit/observeDelivery.ts` | The delivery wait, a message's current `status()`, and the `history()` of statuses it passed through. |
+| `toolkit/observeDelivery.ts` | The delivery wait, a message's current `status()`, and the `history()` of statuses it passed through. A wait that times out also reads the room back over REST and returns what the platform stored as `stalled`, so a missing update can be told from a missed frame. |
+| `toolkit/debugLogger.ts` | The SDK `Logger` behind `BAND_E2E_DEBUG_LOGS`; `Agents.runAs` and `Rooms.create` pass it on. |
 | `toolkit/droppableTransport.ts` | An agent transport whose live socket a scenario can drop, as a network failure would. |
 | `toolkit/assert*.ts` | Plain assertion functions. |
 | `toolkit/scorecard.ts`, `scorecardReporter.ts` | The scorecard's shape and grid, and the vitest reporter that fills it. |
 | `scenarios/<category>/*.test.ts` | Scenarios; the category is the first part of the scenario id. |
-| `scenarios/samples/` | Shared scenario pieces: markers, the MCP roster flow, approval dialects, an opaque lookup tool. |
+| `scenarios/samples/` | Shared scenario pieces: markers, the MCP roster flow, approval dialects, opaque lookup and forecast tools, the exact-tools prompt, the memory and event samples, and `takeTurn` (say it, wait until processed). |
 
 ## Writing a scenario
 
@@ -64,8 +69,13 @@ The id is `<category>.<name>`, built with `scenarioId`, and each test is titled
 `<scenario> > <adapter>`; the scorecard reads both from the title. `perAdapter` takes `supports` / `without` / `exclude` to narrow the
 adapters, `prompt` to steer them, and `build` when a scenario needs an adapter built other than
 its registered way (manual approvals, a permission resolver, custom tools for adapters that support
-`CAPABILITY.customTools`). `withAdapters(ids, …)` puts the
+`CAPABILITY.customTools`, memory tools for those that support `CAPABILITY.memory`). `withAdapters(ids, …)` puts the
 given adapters in one room, in the given order.
+
+A plain `describe(SCENARIO, () => it("<behaviour>"))` has no adapter in its title, so the scorecard
+records it in the `NO_ADAPTER` column. A file or suite that errors (an import failure, a hook that
+throws) fails its scenario's cell, or `scenarioIdFromModulePath` when that id is a registered scenario; otherwise
+the `GENERAL_SCENARIO` row (unhandled errors, or a file outside `scenarios/<category>/`).
 
 The rules:
 
@@ -74,7 +84,7 @@ The rules:
   the scenario is about those particular ones.
 - **No magic strings or numbers.** Each vocabulary is defined once and referenced:
   `DELIVERY_STATUS`, `REPLY_WAIT`, `MESSAGE_TYPE` (the platform's own), `SCORECARD_STATUS`,
-  `ADAPTER`, `CAPABILITY`, `CATEGORY`. Where the SDK or a library already defines a value, use
+  `ADAPTER`, `CAPABILITY`, `CATEGORY`, `NO_ADAPTER`, `GENERAL_SCENARIO`. Where the SDK or a library already defines a value, use
   theirs; where it only defines a type, name the value once with `satisfies` against that type.
 - **Fail loudly, never skip.** A missing key, package or CLI fails the test with its reason. The
   only skips are an adapter's `pending` reason (shown as N/A) and an explicit opt-in flag.
@@ -97,8 +107,19 @@ The rules:
 
 Add its spec to `SPECS` in `toolkit/adapters.ts`, with `id` set to its directory under
 `src/adapters/`; its `ADAPTER` handle and everything else follow from that. The `registry.test.ts`
-drift guard fails until the roster and the folders under `src/adapters/` agree. An adapter CI can't run yet gets a plain-language `pending` reason, and
-the scorecard shows it as N/A with that reason.
+drift guard fails until the roster and the folders under `src/adapters/` agree. An adapter CI can't run yet gets a plain-language `pending` reason and is
+left out of `perAdapter` fan-out until `BAND_E2E_INCLUDE_PENDING=1`. `withAdapters` scenarios that name only a pending adapter still record N/A via a vitest skip on that row.
+An adapter the generic scenarios don't fit (Parlant has no Band tools) gets a `bespokeOnly` reason instead: it runs only in the `adapters.*` scenarios that name it, and
+`perAdapter` fan-outs show it as N/A with that reason.
+
+## Planned scenarios (not in the tree yet)
+
+Add these as real scenarios when the SDK or platform exposes what they need — no placeholder `it()` blocks that only throw or skip.
+
+| Id | Blocked on |
+| --- | --- |
+| `inspection.usage` | Per-turn token usage reported by the SDK (band-sdk-python usage smokes). |
+| `behavior.controlSignals` | User stop/play/interrupt on the platform and handling in the TS runtime (Python `test_next_actionable_semantics`). |
 
 ## Design values
 

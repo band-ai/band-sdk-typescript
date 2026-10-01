@@ -46,16 +46,18 @@ export class ReconnectGenerationTracker {
     return generation;
   }
 
-  public recordSettled(topic: string, joined: boolean): void {
+  /** Whether the current generation was waiting on `topic`. */
+  public recordSettled(topic: string, joined: boolean): boolean {
     const record = this.generations.get(this.currentGeneration);
     if (!record?.pending.delete(topic)) {
-      return;
+      return false;
     }
 
     if (joined) {
       record.joined.add(topic);
     }
     this.maybeFinalize(this.currentGeneration);
+    return true;
   }
 
   public removeTopic(topic: string): void {

@@ -104,38 +104,48 @@ export async function runScenario(
   await body(cast);
 }
 
-/** Why `chosen` may not run yet, or null when all may. */
-function pendingReason(chosen: RosterSpec[]): string | null {
-  if (includePending()) {
-    return null;
-  }
-  const pending = chosen.filter((spec) => spec.pending);
-  return pending.length > 0 ? pending.map((spec) => `${spec.id}: ${spec.pending}`).join("; ") : null;
+/** Why `chosen` may not run here, or null when all may. A bespoke-only adapter sits out only fan-outs. */
+function skipReason(chosen: RosterSpec[], fanOut: boolean): string | null {
+  const reasons = chosen.flatMap((spec) => {
+    const reason = (fanOut && spec.bespokeOnly) || (!includePending() && spec.pending);
+    return reason ? [`${spec.id}: ${reason}`] : [];
+  });
+  return reasons.length > 0 ? reasons.join("; ") : null;
 }
 
-function defineRun(title: string, chosen: RosterSpec[], body: (cast: Cast) => Promise<void>, options: ScenarioOptions): void {
+function defineRun(
+  title: string,
+  chosen: RosterSpec[],
+  body: (cast: Cast) => Promise<void>,
+  options: ScenarioOptions,
+  fanOut: boolean,
+): void {
   it(title, async ({ skip }) => {
-    const pending = pendingReason(chosen);
-    if (pending) {
-      skip(pending);
+    const reason = skipReason(chosen, fanOut);
+    if (reason) {
+      skip(reason);
     }
+
     await runScenario(chosen, body, { prompt: options.prompt ?? DEFAULT_PROMPT, build: options.build });
   });
 }
 
-/** Runs `body` once per registered adapter, narrowed by `options`. Pending adapters show as skipped. */
+/** Runs `body` once per registered adapter, narrowed by `options`. Pending and bespoke-only adapters show as skipped. */
 export function perAdapter(name: ScenarioId, body: (cell: ScenarioCell) => Promise<void>, options: PerAdapterOptions = {}): void {
   const { prompt, build, ...filter } = options;
-  const chosen = specs({ ...filter, includePending: true });
+  const chosen = specs({ ...filter, includePending: true, includeBespokeOnly: true });
   if (chosen.length === 0) {
     throw new Error(`${name} selects no adapters; a scenario over nothing would pass vacuously`);
   }
   describe(name, () => {
     for (const spec of chosen) {
-      defineRun(spec.id, [spec], ({ agents: [agent], room, cells: [cell] }) => body({ agent: agent!, room, cell: cell! }), {
-        prompt,
-        build,
-      });
+      defineRun(
+        spec.id,
+        [spec],
+        ({ agents: [agent], room, cells: [cell] }) => body({ agent: agent!, room, cell: cell! }),
+        { prompt, build },
+        true,
+      );
     }
   });
 }
@@ -149,5 +159,5 @@ export function withAdapters(
 ): void {
   // In the order given: a cast's roles (e.g. who coordinates) follow it.
   const chosen = ids.map((id) => registry.get(id));
-  describe(name, () => defineRun(ids.join(CAST_SEPARATOR), chosen, body, options));
+  describe(name, () => defineRun(ids.join(CAST_SEPARATOR), chosen, body, options, false));
 }

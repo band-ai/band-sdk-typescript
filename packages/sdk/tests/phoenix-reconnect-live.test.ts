@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { chatRoomTopic, roomParticipantsTopic } from "@band-ai/band-sdk-core";
+import { agentControlTopic, chatRoomTopic, roomParticipantsTopic } from "@band-ai/band-sdk-core";
 
 import { PhoenixChannelsTransport } from "../src/platform/streaming/PhoenixChannelsTransport";
 import { SubscriptionManager } from "../src/platform/SubscriptionManager";
 import { BandLink } from "../src/platform/BandLink";
 import { AgentRuntime } from "../src/runtime/rooms/AgentRuntime";
 import type { PlatformEvent } from "../src/platform/events";
+import { NoopLogger } from "../src/core/logger";
 import { FakePhoenixPeer } from "./fakePhoenixPeer";
 import { FakeRestApi } from "./testUtils";
 
@@ -21,6 +22,66 @@ function wireMessage(id: string, content: string) {
     inserted_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
+}
+
+const TWO_ROOMS = ["room-1", "room-2"] as const;
+
+/** An agent on the real transport, in two rooms; `next` answers each room's `/messages/next`. Disposing it stops the runtime. */
+async function startAgentInTwoRooms(
+  peer: FakePhoenixPeer,
+  next: (roomId: string) => ReturnType<typeof wireMessage> | null,
+) {
+  const transport = new PhoenixChannelsTransport({
+    wsUrl: peer.url,
+    apiKey: "test-key",
+    agentId: "agent-1",
+    reconnectAfterMs: () => 10,
+  });
+  const calls = { listChats: 0, next: new Map<string, number>() };
+  const link = new BandLink({
+    agentId: "agent-1",
+    apiKey: "test-key",
+    transport,
+    restApi: new FakeRestApi({
+      listChats: async () => {
+        calls.listChats += 1;
+        return {
+          data: TWO_ROOMS.map((id) => ({ id, title: id })),
+          metadata: { page: 1, pageSize: 100, totalPages: 1, totalCount: TWO_ROOMS.length },
+        };
+      },
+      getNextMessage: async ({ chatId }) => {
+        calls.next.set(chatId, (calls.next.get(chatId) ?? 0) + 1);
+        return next(chatId);
+      },
+    }),
+  });
+  const executed: PlatformEvent[] = [];
+  const runtime = new AgentRuntime({
+    link,
+    agentId: "agent-1",
+    agentConfig: { autoSubscribeExistingRooms: true },
+    onExecute: async (_context, event) => {
+      executed.push(event);
+    },
+  });
+  const stop = async () => {
+    await runtime.stop().catch(() => undefined);
+  };
+  try {
+    await runtime.start();
+    // Both rooms are tracked and each has finished its startup sweep.
+    await vi.waitFor(() => {
+      expect(runtime.presence.roster.trackedRoomIds()).toEqual(expect.arrayContaining([...TWO_ROOMS]));
+      for (const room of TWO_ROOMS) {
+        expect(calls.next.get(room)).toBeGreaterThan(0);
+      }
+    });
+  } catch (error) {
+    await stop();
+    throw error;
+  }
+  return { executed, calls, [Symbol.asyncDispose]: stop };
 }
 
 /**
@@ -386,4 +447,128 @@ describe("Phoenix reconnect (real wire)", () => {
       await peer.stop();
     }
   }, 10_000);
+
+  describe("a channel that rejoins on a socket that never dropped", () => {
+    const CHAT_TOPIC = chatRoomTopic("room-1");
+    const missedMessage = () => wireMessage("missed-message", "sent while the channel was gone");
+    const executedMissed = (executed: PlatformEvent[]) =>
+      expect(executed).toEqual([
+        expect.objectContaining({ type: "message_created", payload: expect.objectContaining({ id: "missed-message" }) }),
+      ]);
+
+    it("is caught up by its own room's sweep alone, without the adapter seeing the synthetic event", async () => {
+      await using peer = await FakePhoenixPeer.start();
+      let missed: ReturnType<typeof wireMessage> | null = null;
+      await using agent = await startAgentInTwoRooms(peer, (roomId) => {
+        const message = roomId === "room-1" ? missed : null;
+        missed = null;
+        return message;
+      });
+      const { executed, calls } = agent;
+
+      const listedBefore = calls.listChats;
+      const otherRoomSweepsBefore = calls.next.get("room-2");
+      peer.receivedEvents.length = 0;
+
+      // The message is only in the REST backlog: the channel was not there to receive it.
+      missed = missedMessage();
+      peer.push(CHAT_TOPIC, "phx_error", {});
+
+      await vi.waitFor(() => executedMissed(executed), { timeout: 10_000 });
+      expect(executed.some((event) => event.type === "reconnected")).toBe(false);
+      expect(calls.listChats).toBe(listedBefore);
+      expect(calls.next.get("room-2")).toBe(otherRoomSweepsBefore);
+      expect(peer.receivedEvents).toEqual([{ topic: CHAT_TOPIC, event: "phx_join" }]);
+    }, 15_000);
+
+    it("is caught up only once the rejoin succeeds, not while it is still failing", async () => {
+      await using peer = await FakePhoenixPeer.start();
+      const joinsOfRoom = () =>
+        peer.receivedEvents.filter((event) => event.topic === CHAT_TOPIC && event.event === "phx_join").length;
+      let missed: ReturnType<typeof wireMessage> | null = null;
+      let joinsWhenServed: number | undefined;
+      await using agent = await startAgentInTwoRooms(peer, (roomId) => {
+        if (roomId !== "room-1" || !missed) {
+          return null;
+        }
+        joinsWhenServed = joinsOfRoom();
+        const message = missed;
+        missed = null;
+        return message;
+      });
+
+      peer.receivedEvents.length = 0;
+      peer.queueJoinOutcomes(CHAT_TOPIC, ["error", "ok"]);
+      missed = missedMessage();
+      peer.push(CHAT_TOPIC, "phx_error", {});
+
+      await vi.waitFor(() => executedMissed(agent.executed), { timeout: 15_000 });
+      // The failed rejoin and the one that succeeded: the sweep ran after the second.
+      expect(joinsWhenServed).toBe(2);
+    }, 20_000);
+  });
+
+  describe("intentional disconnects stay disconnected", () => {
+    const HEARTBEAT_INTERVAL_MS = 100;
+    // Phoenix gives up waiting on a stalled close after ~1.5s, then a heartbeat
+    // timeout schedules its reconnect; this leaves room for both.
+    const SUPPRESSED_RECONNECT_TIMEOUT_MS = 5_000;
+
+    /** A real transport, plus a check that waits for the gate to refuse phoenix's reconnect; disposing it disconnects. */
+    function transportOn(peer: FakePhoenixPeer, agentId?: string) {
+      const logger = { ...new NoopLogger(), debug: vi.fn() };
+      const transport = new PhoenixChannelsTransport({
+        wsUrl: peer.url,
+        apiKey: "test-key",
+        agentId,
+        logger,
+        heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
+        reconnectAfterMs: () => 10,
+      });
+      const expectNoReconnect = async (): Promise<void> => {
+        await vi.waitFor(
+          () =>
+            expect(logger.debug.mock.calls.map(([message]) => message)).toContainEqual(
+              expect.stringContaining("Suppressed phoenix reconnect"),
+            ),
+          { timeout: SUPPRESSED_RECONNECT_TIMEOUT_MS },
+        );
+        expect(peer.connectionCount).toBe(1);
+        expect(transport.isConnected()).toBe(false);
+      };
+      return {
+        transport,
+        expectNoReconnect,
+        [Symbol.asyncDispose]: () => transport.disconnect().catch(() => undefined),
+      };
+    }
+
+    it("never reconnects after a supersede whose close handshake stalls", async () => {
+      await using peer = await FakePhoenixPeer.start();
+      await using agent = transportOn(peer, "agent-1");
+      await agent.transport.connect();
+
+      peer.stallReads();
+      peer.push(agentControlTopic("agent-1"), "supersede", {
+        reason: "session.already_connected",
+        message: "superseded",
+        retryable: false,
+        correlation_id: null,
+      });
+
+      await agent.expectNoReconnect();
+      expect(agent.transport.getDisconnectReason()?.code).toBe("session.already_connected");
+    }, 10_000);
+
+    it("never reconnects after disconnect() when its close handshake stalls", async () => {
+      await using peer = await FakePhoenixPeer.start();
+      await using agent = transportOn(peer);
+      await agent.transport.connect();
+
+      peer.stallReads();
+      await agent.transport.disconnect();
+
+      await agent.expectNoReconnect();
+    }, 10_000);
+  });
 });

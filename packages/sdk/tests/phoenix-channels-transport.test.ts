@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { agentControlTopic } from "@band-ai/band-sdk-core";
 
 import { GenericAdapter } from "../src/adapters/GenericAdapter";
 import { TransportError } from "../src/core/errors";
@@ -162,10 +163,15 @@ const phoenixMock = vi.hoisted(() => {
 
     public readonly url: string;
     public readonly params: Record<string, unknown>;
-    public readonly reconnectAfterMs?: (tries: number) => number;
     public readonly channels = new FakeChannelList();
     public readonly joinOutcomes = new Map<string, Outcome>();
     public disconnectCount = 0;
+    public connectCount = 0;
+    // A close handshake that stalls: phoenix's close callback never fires.
+    public closeStalls = false;
+    // Bumped by disconnect(), so an open queued before it never fires, as a
+    // real socket closed mid-handshake never opens.
+    private connectGeneration = 0;
     private openHandler: (() => void) | null = null;
     private closeHandler:
       | ((event?: { code?: number; reason?: string }) => void)
@@ -174,14 +180,10 @@ const phoenixMock = vi.hoisted(() => {
 
     public constructor(
       url: string,
-      options: {
-        params: Record<string, unknown>;
-        reconnectAfterMs?: (tries: number) => number;
-      },
+      options: { params: Record<string, unknown> },
     ) {
       this.url = url;
       this.params = options.params;
-      this.reconnectAfterMs = options.reconnectAfterMs;
       FakeSocket.instances.push(this);
     }
 
@@ -200,8 +202,12 @@ const phoenixMock = vi.hoisted(() => {
     }
 
     public connect(): void {
+      this.connectCount += 1;
+      const generation = this.connectGeneration;
       queueMicrotask(() => {
-        this.openHandler?.();
+        if (generation === this.connectGeneration) {
+          this.openHandler?.();
+        }
       });
     }
 
@@ -212,7 +218,10 @@ const phoenixMock = vi.hoisted(() => {
 
     public disconnect(): void {
       this.disconnectCount += 1;
-      this.closeHandler?.();
+      this.connectGeneration += 1;
+      if (!this.closeStalls) {
+        this.closeHandler?.();
+      }
     }
 
     public emitClose(event?: { code?: number; reason?: string }): void {
@@ -250,6 +259,8 @@ vi.mock("phoenix", () => ({
 }));
 
 import { PhoenixChannelsTransport } from "../src/platform/streaming/PhoenixChannelsTransport";
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("PhoenixChannelsTransport", () => {
   beforeEach(() => {
@@ -708,7 +719,7 @@ describe("PhoenixChannelsTransport", () => {
     expect(socket?.channels.has("agent_control:agent-1")).toBe(false);
   });
 
-  it("records agent_control supersede as terminal and disables reconnect", async () => {
+  it("records agent_control supersede as terminal", async () => {
     const onTerminalDisconnect = vi.fn();
     const transport = new PhoenixChannelsTransport({
       wsUrl: "wss://example.test/socket",
@@ -747,7 +758,6 @@ describe("PhoenixChannelsTransport", () => {
     });
     expect(onTerminalDisconnect).toHaveBeenCalledWith(reason);
     expect(socket?.disconnectCount).toBeGreaterThan(0);
-    expect(socket?.reconnectAfterMs?.(1)).toBe(Number.POSITIVE_INFINITY);
     await expect(transport.connect()).rejects.toBeInstanceOf(
       WebSocketDisconnectError,
     );
@@ -776,7 +786,6 @@ describe("PhoenixChannelsTransport", () => {
       targetSocketId: null,
       correlationId: null,
     });
-    expect(socket?.reconnectAfterMs?.(1)).toBe(Number.POSITIVE_INFINITY);
     await expect(transport.runForever(new AbortController().signal)).rejects.toBeInstanceOf(
       WebSocketDisconnectError,
     );
@@ -840,7 +849,29 @@ describe("PhoenixChannelsTransport", () => {
       closeCode: 1006,
       closeReason: null,
     });
-    expect(socket?.reconnectAfterMs?.(1)).toBe(1000);
+  });
+
+  it("records the next drop's reason after a stop whose close never arrived", async () => {
+    const transport = new PhoenixChannelsTransport({
+      wsUrl: "wss://example.test/socket",
+      apiKey: "key-1",
+      agentId: "agent-1",
+    });
+    const socket = phoenixMock.FakeSocket.instances[0]!;
+
+    const connecting = transport.connect();
+    socket.closeStalls = true;
+    socket.emitError({ status: 403 });
+    await expect(connecting).rejects.toBeInstanceOf(TransportError);
+    socket.closeStalls = false;
+
+    await transport.connect();
+    socket.emitClose({ code: 1006, reason: "" });
+
+    expect(transport.getDisconnectReason()).toMatchObject({
+      code: "websocket.closed",
+      closeCode: 1006,
+    });
   });
 
   it.each([
@@ -911,10 +942,99 @@ describe("PhoenixChannelsTransport", () => {
       WebSocketDisconnectError,
     );
     expect(socket?.disconnectCount).toBeGreaterThan(0);
-    expect(socket?.reconnectAfterMs?.(1)).toBe(Number.POSITIVE_INFINITY);
     await expect(transport.connect()).rejects.toBeInstanceOf(
       WebSocketDisconnectError,
     );
+  });
+
+  describe("once stopped, refuses phoenix's own reconnects", () => {
+    type FakeSocket = InstanceType<typeof phoenixMock.FakeSocket>;
+    const CONTROL_TOPIC = agentControlTopic("agent-1");
+
+    it.each<{
+      name: string;
+      agentId?: string;
+      terminal: boolean;
+      stop: (transport: PhoenixChannelsTransport, socket: FakeSocket) => Promise<void>;
+    }>([
+      {
+        name: "disconnect()",
+        agentId: "agent-1",
+        terminal: false,
+        stop: async (transport) => {
+          await transport.connect();
+          await transport.disconnect();
+        },
+      },
+      {
+        name: "a failed agent_control join",
+        agentId: "agent-1",
+        terminal: false,
+        stop: async (transport, socket) => {
+          socket.joinOutcomes.set(CONTROL_TOPIC, "error");
+          await expect(transport.connect()).rejects.toThrow();
+          socket.joinOutcomes.delete(CONTROL_TOPIC);
+        },
+      },
+      {
+        name: "a drop with no channels left",
+        terminal: false,
+        stop: async (transport, socket) => {
+          await transport.connect();
+          socket.emitClose({ code: 1006, reason: "" });
+        },
+      },
+      {
+        name: "a supersede",
+        agentId: "agent-1",
+        terminal: true,
+        stop: async (transport, socket) => {
+          await transport.connect();
+          await flush();
+          socket.channels.get(CONTROL_TOPIC)?.emit("supersede", {
+            reason: "session.already_connected",
+            message: "superseded",
+            retryable: false,
+            correlation_id: null,
+          });
+        },
+      },
+      {
+        name: "a non-retryable upgrade failure",
+        agentId: "agent-1",
+        terminal: true,
+        stop: async (transport, socket) => {
+          const connecting = transport.connect();
+          socket.emitError({
+            status: 409,
+            body: { error: { code: "connection_conflict", message: "conflict", request_id: null } },
+          });
+          await expect(connecting).rejects.toBeInstanceOf(WebSocketDisconnectError);
+        },
+      },
+    ])("after $name", async ({ agentId, terminal, stop }) => {
+      const transport = new PhoenixChannelsTransport({
+        wsUrl: "wss://example.test/socket",
+        apiKey: "key-1",
+        agentId,
+      });
+      const socket = phoenixMock.FakeSocket.instances[0]!;
+      await stop(transport, socket);
+
+      // The call phoenix's reconnect timer makes.
+      const connectsBefore = socket.connectCount;
+      socket.connect();
+      await flush();
+      expect(socket.connectCount).toBe(connectsBefore);
+      expect(transport.isConnected()).toBe(false);
+
+      if (terminal) {
+        await expect(transport.connect()).rejects.toBeInstanceOf(WebSocketDisconnectError);
+      } else {
+        await transport.connect();
+        expect(transport.isConnected()).toBe(true);
+      }
+    });
   });
 
   it("keeps retryable upgrade failures non-terminal", async () => {
@@ -942,7 +1062,8 @@ describe("PhoenixChannelsTransport", () => {
       WebSocketDisconnectError,
     );
     expect(socket?.disconnectCount).toBeGreaterThan(0);
-    expect(socket?.reconnectAfterMs?.(1)).toBe(1000);
+    await transport.connect();
+    expect(transport.isConnected()).toBe(true);
   });
 
   it("rejects empty 403 upgrade errors without inventing a platform reason", async () => {
@@ -1059,6 +1180,100 @@ describe("PhoenixChannelsTransport", () => {
 
     releaseExecution?.();
     await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+
+  describe("topic rejoin", () => {
+    async function connectedWith(...topics: string[]) {
+      const transport = new PhoenixChannelsTransport({ wsUrl: "wss://example.test/socket", apiKey: "key-1" });
+      await transport.connect();
+      for (const topic of topics) {
+        await transport.join(topic, {});
+      }
+      const observer = vi.fn();
+      transport.onTopicRejoined(observer);
+      return { transport, observer, socket: phoenixMock.FakeSocket.instances[0] };
+    }
+
+    it("does not notify for a topic's initial join", async () => {
+      const transport = new PhoenixChannelsTransport({ wsUrl: "wss://example.test/socket", apiKey: "key-1" });
+      const observer = vi.fn();
+      transport.onTopicRejoined(observer);
+
+      await transport.connect();
+      await transport.join("room:1", {});
+      await flush();
+
+      expect(observer).not.toHaveBeenCalled();
+    });
+
+    it("notifies once, with the topic, when a joined channel rejoins on a socket that never dropped", async () => {
+      const { observer, socket } = await connectedWith("room:1", "room:2");
+
+      socket?.channels.get("room:1")?.settleRejoin("ok");
+      await flush();
+
+      expect(observer).toHaveBeenCalledTimes(1);
+      expect(observer).toHaveBeenCalledWith("room:1");
+    });
+
+    it("waits for the rejoin that succeeds, not for the attempts that fail", async () => {
+      const { observer, socket } = await connectedWith("room:1");
+      const channel = socket?.channels.get("room:1");
+
+      channel?.settleRejoin("error");
+      channel?.settleRejoin("timeout");
+      await flush();
+      expect(observer).not.toHaveBeenCalled();
+
+      channel?.settleRejoin("ok");
+      await flush();
+      expect(observer).toHaveBeenCalledTimes(1);
+    });
+
+    it("leaves a rejoin that a reconnect generation was waiting on to that reconnect", async () => {
+      const { observer, socket } = await connectedWith("room:1");
+
+      socket?.emitOpen();
+      socket?.channels.get("room:1")?.settleRejoin("ok");
+      await flush();
+
+      expect(observer).not.toHaveBeenCalled();
+    });
+
+    it("does not notify for a rejoin while the topic's leave is still in flight", async () => {
+      const { transport, observer, socket } = await connectedWith("room:1");
+      const channel = socket?.channels.get("room:1");
+      if (channel) {
+        channel.leaveOutcome = "pending";
+      }
+
+      const leave = transport.leave("room:1");
+      await Promise.resolve();
+      channel?.settleRejoin("ok");
+      await flush();
+      expect(observer).not.toHaveBeenCalled();
+
+      channel?.settleLeave("ok");
+      await leave;
+    });
+
+    it("stops notifying an observer that unsubscribed, and keeps notifying the rest when one throws", async () => {
+      const { transport, observer, socket } = await connectedWith("room:1");
+      const unsubscribed = vi.fn();
+      transport.onTopicRejoined(unsubscribed)();
+      transport.onTopicRejoined(() => {
+        throw new Error("observer failed");
+      });
+      const last = vi.fn();
+      transport.onTopicRejoined(last);
+
+      socket?.channels.get("room:1")?.settleRejoin("ok");
+      await flush();
+
+      expect(unsubscribed).not.toHaveBeenCalled();
+      expect(observer).toHaveBeenCalledTimes(1);
+      expect(last).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("reconnect snapshot", () => {

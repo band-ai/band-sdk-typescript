@@ -48,3 +48,7 @@ jerry_agent:
   agent_id: "your-jerry-agent-id"
   api_key: "your-api-key"
 ```
+
+## Turn timeout
+
+`OpenAIAdapter` caps a turn at `turnTimeoutMs` (default five minutes; `Infinity` removes the cap). A turn that hits it fails its message and frees the room, but a tool already running is not interrupted.

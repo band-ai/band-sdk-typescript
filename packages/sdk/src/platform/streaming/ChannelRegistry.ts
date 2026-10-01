@@ -87,20 +87,23 @@ export class ChannelRegistry {
     return this.channels.keys();
   }
 
+  /**
+   * Whether `topic` is joined and not on its way out: `channels` still holds
+   * a topic mid-leave until the leave's Push settles, though its handlers are
+   * already unbound.
+   */
   public isJoined(topic: string): boolean {
-    return this.channels.has(topic);
+    return this.channels.has(topic) && !this.leaveFlights.current(topic);
   }
 
   /**
    * A promise for `topic` if it's already joined or has a join in flight,
    * without starting a new one. A topic mid-leave is never reported as
-   * already joined — `channels` still holds it until the leave's Push
-   * settles, but its handlers are already unbound and the channel is about
-   * to be removed, so treating that window as "joined" would hand the
-   * caller a promise that resolves into a channel already gone.
+   * already joined (see `isJoined`): treating that window as "joined" would
+   * hand the caller a promise that resolves into a channel already gone.
    */
   public existingJoin(topic: string): Promise<void> | undefined {
-    if (this.channels.has(topic) && !this.leaveFlights.current(topic)) {
+    if (this.isJoined(topic)) {
       return Promise.resolve();
     }
     return this.joinFlights.current(topic) ?? undefined;
@@ -139,15 +142,15 @@ export class ChannelRegistry {
         this.pendingChannels.set(topic, { channel, refs, reject });
         joinPush
           .receive("ok", () => {
-            this.hooks.onJoinSettled(topic, true);
+            this.settleJoin(topic, "ok");
             resolve();
           })
           .receive("error", (error: unknown) => {
-            this.hooks.onJoinSettled(topic, false);
+            this.settleJoin(topic, "error");
             reject(new TransportError(`Failed to join topic ${topic}`, error));
           })
           .receive("timeout", () => {
-            this.hooks.onJoinSettled(topic, false);
+            this.settleJoin(topic, "timeout");
             reject(new TransportError(`Timeout joining topic ${topic}`));
           });
       });
@@ -176,6 +179,12 @@ export class ChannelRegistry {
 
     this.channels.set(topic, { channel, refs });
     this.logger.debug("Joined topic", { topic });
+  }
+
+  /** Runs on every settlement of the join Push, automatic rejoins included. */
+  private settleJoin(topic: string, outcome: "ok" | "error" | "timeout"): void {
+    this.logger.debug("Join settled", { topic, outcome });
+    this.hooks.onJoinSettled(topic, outcome === "ok");
   }
 
   /**

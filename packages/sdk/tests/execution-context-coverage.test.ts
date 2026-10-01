@@ -4,7 +4,7 @@ import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
 import { ExecutionContext } from "../src/runtime/ExecutionContext";
 import type { RestApi } from "../src/client/rest/types";
 import { DEFAULT_CONTEXT_CACHE_TTL_SECONDS } from "../src/runtime/types";
-import { FakeRestApi, makeMessage } from "./testUtils";
+import { FakeRestApi, makeMessage, wireMention } from "./testUtils";
 
 function makeContext(restOverrides?: Partial<RestApi>, options?: {
   maxContextMessages?: number;
@@ -138,6 +138,40 @@ describe("ExecutionContext coverage", () => {
     expect(hydrated.messages).toHaveLength(1);
     expect(hydrated.messages[0]?.content).toBe("hello");
     expect(history).toEqual([]);
+  });
+
+  it("resolves mention tokens in hydrated history from each message's own metadata", async () => {
+    const mention = (id: string, handle: string) => wireMention({ id, name: handle, handle, type: "user" });
+    const item = (id: string, content: string, mentions: unknown[]) => ({
+      id,
+      content,
+      sender_id: "u1",
+      sender_type: "User",
+      inserted_at: "2026-03-01T00:00:00.000Z",
+      message_type: "text",
+      metadata: { mentions },
+    });
+    const ctx = new ExecutionContext({
+      roomId: "room-1",
+      link: {
+        rest: {
+          ...(new FakeRestApi() as RestApi),
+          listChatParticipants: async () => [],
+          getChatContext: async () => ({
+            data: [
+              item("m1", "@[[p1]] first", [mention("p1", "alice")]),
+              item("m2", "@[[p2]] second @[[p1]]", [mention("p2", "bob")]),
+            ],
+          }),
+        },
+        capabilities: {},
+      },
+      maxContextMessages: 3,
+    });
+
+    const history = await ctx.getHydratedHistory();
+
+    expect(history.map((entry) => entry.content)).toEqual(["@alice first", "@bob second @[[p1]]"]);
   });
 
   it("updates the cached context when new messages and participants arrive and trims history", async () => {

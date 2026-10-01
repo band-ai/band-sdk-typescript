@@ -3,11 +3,11 @@ import { randomUUID } from "node:crypto";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import { SimpleAdapter } from "../../core/simpleAdapter";
-import { isFailedToolOutput, type AdapterToolsProtocol } from "../../contracts/protocols";
+import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { MetadataMap, ToolOperationResult } from "../../contracts/dtos";
 import { formatMessageForLlm } from "../../runtime/formatters";
-import { renderSystemPrompt } from "../../runtime/prompts";
-import { postedSendContent } from "../../runtime/tools/schemas";
+import { renderSystemPrompt, withMemoryGuidance } from "../../runtime/prompts";
+import { deliverFallbackReply, trackPostedReply } from "../../runtime/tools/postedReply";
 import type { PlatformMessage } from "../../runtime/types";
 import {
   customToolToOpenAISchema,
@@ -16,8 +16,9 @@ import {
 } from "../../runtime/tools/customTools";
 import { asOptionalRecord } from "../shared/coercion";
 import { reportProviderTurnFailure } from "../../core/providerFailure";
-import { deliverReply } from "../../core/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
+import { PREVIOUS_CONTEXT_HEADER } from "../shared/conversationPrompt";
+import { takeLast } from "../shared/history";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
 import {
   GoogleADKHistoryConverter,
@@ -197,7 +198,6 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
   private readonly historyConverterInstance: GoogleADKHistoryConverter;
   private readonly sdkLoader: LazyAsyncValue<GoogleAdkSdkLike>;
   private readonly roomHistory = new Map<string, GoogleADKMessages>();
-  private readonly roomSessions = new Map<string, string>();
   private readonly roomTurns = createRoomTurnLock();
   private systemPrompt = "";
 
@@ -227,14 +227,10 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
   public async onStarted(agentName: string, agentDescription: string): Promise<void> {
     await super.onStarted(agentName, agentDescription);
     this.historyConverterInstance.setAgentName(agentName);
-    this.systemPrompt =
-      this.systemPromptOverride
-      ?? renderSystemPrompt({
-        agentName,
-        agentDescription,
-        customSection: this.customSection,
-        capabilities: { memory: this.enableMemoryTools },
-      });
+    this.systemPrompt = withMemoryGuidance(
+      this.systemPromptOverride ?? renderSystemPrompt({ agentName, agentDescription, customSection: this.customSection }),
+      this.enableMemoryTools,
+    );
   }
 
   public async onMessage(
@@ -282,14 +278,14 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
 
     let finalResponseText = "";
     const posted: string[] = [];
+    const reply = trackPostedReply(tools, (content) => posted.push(content));
     try {
       const sdk = await this.sdkLoader.get();
       const runner = sdk.createRunner({
-        agent: this.buildAgent(sdk, tools, posted),
+        agent: this.buildAgent(sdk, reply.tools),
         appName: APP_NAME,
       });
       const sessionId = randomUUID();
-      this.roomSessions.set(context.roomId, sessionId);
       await runner.sessionService.createSession({
         appName: APP_NAME,
         userId: context.roomId,
@@ -318,16 +314,14 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
     }
 
     const stored = this.rememberExchange(context.roomId, roomHistory, message, posted);
-    if (finalResponseText.length > 0) {
-      await deliverReply(tools, finalResponseText, [{ id: message.senderId }]);
-      // Only text that was delivered belongs in the next turn.
+    // Only text that was delivered belongs in the next turn.
+    if (await deliverFallbackReply(reply, finalResponseText, [{ id: message.senderId }])) {
       this.rememberModelLine(context.roomId, stored, finalResponseText);
     }
   }
 
   public async onCleanup(roomId: string): Promise<void> {
     this.roomHistory.delete(roomId);
-    this.roomSessions.delete(roomId);
     this.roomTurns.release(roomId);
   }
 
@@ -368,26 +362,24 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
   private buildAgent(
     sdk: GoogleAdkSdkLike,
     tools: AdapterToolsProtocol,
-    posted: string[],
   ): unknown {
     return sdk.createAgent({
       name: this.agentName || "band_agent",
       model: this.apiKey ? sdk.createModel({ model: this.model, apiKey: this.apiKey }) : this.model,
       instruction: this.systemPrompt,
-      tools: this.buildTools(sdk, tools, posted),
+      tools: this.buildTools(sdk, tools),
     });
   }
 
   private buildTools(
     sdk: GoogleAdkSdkLike,
     tools: AdapterToolsProtocol,
-    posted: string[],
   ): unknown[] {
     const toolSchemas = tools.getOpenAIToolSchemas({
       includeMemory: this.enableMemoryTools,
     });
     const adkTools = toolSchemas
-      .map((schema) => this.buildPlatformTool(sdk, tools, schema, posted))
+      .map((schema) => this.buildPlatformTool(sdk, tools, schema))
       .filter((tool): tool is unknown => tool !== null);
 
     for (const customTool of this.customTools) {
@@ -401,7 +393,6 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
     sdk: GoogleAdkSdkLike,
     tools: AdapterToolsProtocol,
     schema: Record<string, unknown>,
-    posted: string[],
   ): unknown {
     const functionDef = asOptionalRecord(schema.function) ?? {};
     const name = functionDef?.name;
@@ -415,13 +406,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
       parameters: asOptionalRecord(stripAdditionalProperties(functionDef.parameters)) ?? undefined,
       execute: async (input) => {
         const args = asToolArgs(input);
-        const result = await tools.executeToolCall(name, args);
-        // The handler posts String(content). Remember that string only when the send succeeded.
-        const sent = postedSendContent(name, args.content, isFailedToolOutput(result));
-        if (sent !== undefined) {
-          posted.push(sent);
-        }
-        return stringifyToolResult(result);
+        return stringifyToolResult(await tools.executeToolCall(name, args));
       },
     });
   }
@@ -449,7 +434,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
     const parts: string[] = [];
     const transcript = formatHistoryTranscript(roomHistory, this.maxHistoryMessages, this.maxTranscriptChars);
     if (transcript.length > 0) {
-      parts.push("[Previous conversation context]");
+      parts.push(PREVIOUS_CONTEXT_HEADER);
       parts.push(transcript);
       parts.push("[End of previous context]");
     }
@@ -513,7 +498,7 @@ function formatHistoryTranscript(
   maxHistoryMessages: number,
   maxTranscriptChars: number,
 ): string {
-  const windowedHistory = history.slice(-maxHistoryMessages);
+  const windowedHistory = takeLast(history, maxHistoryMessages);
   const lines: string[] = [];
 
   for (const message of windowedHistory) {
@@ -556,5 +541,5 @@ function trimRoomHistory(
   maxHistoryMessages: number,
 ): GoogleADKMessages {
   const maxEntries = maxHistoryMessages * 2;
-  return history.length > maxEntries ? history.slice(-maxHistoryMessages) : history;
+  return history.length > maxEntries ? takeLast(history, maxHistoryMessages) : history;
 }

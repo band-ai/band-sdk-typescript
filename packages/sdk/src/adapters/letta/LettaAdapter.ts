@@ -1,17 +1,18 @@
 import { SimpleAdapter } from "../../core/simpleAdapter";
-import type { AdapterToolsProtocol } from "../../contracts/protocols";
+import { isFailedToolOutput, type AdapterToolsProtocol } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import { RuntimeStateError, UnsupportedFeatureError, rethrowIfRecoverableTurnFailure } from "../../core/errors";
 import type { PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
+import { deliverFallbackReply, trackPostedReply } from "../../runtime/tools/postedReply";
 import { asErrorMessage, toWireString } from "../shared/coercion";
 import { selectCompleteExchanges } from "../shared/history";
 import {
   agentFailure,
+  reportProviderTurnFailure,
   reportTurnFailure,
 } from "../../core/providerFailure";
-import { deliverReply } from "../../core/deliveryFailedError";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import type { LettaMessages } from "./types";
 import { LettaHistoryConverter } from "./types";
@@ -384,6 +385,7 @@ export class LettaAdapter extends SimpleAdapter<
 
       const userContent = buildUserMessage({
         content: message.content,
+        senderName: message.senderName,
         participantsMessage,
         contactsMessage,
       });
@@ -391,16 +393,17 @@ export class LettaAdapter extends SimpleAdapter<
       // Refresh tool schemas on every message so dynamic tool additions/removals
       // are picked up mid-session.
       const clientTools = toClientTools(tools.getOpenAIToolSchemas());
+      const reply = trackPostedReply(tools);
       const assistantText = await this.executeWithToolLoop(
         client,
         agentId,
         userContent,
         clientTools,
-        tools,
+        reply.tools,
         signal,
       );
 
-      if (!assistantText) {
+      if (!assistantText && !reply.posted()) {
         return reportTurnFailure(
           tools,
           agentFailure(this.provider, "Letta did not return a response."),
@@ -409,21 +412,13 @@ export class LettaAdapter extends SimpleAdapter<
         );
       }
 
-      await deliverReply(tools, assistantText, [{ id: message.senderId }]);
+      await deliverFallbackReply(reply, assistantText, [{ id: message.senderId }]);
     } catch (error) {
       rethrowIfRecoverableTurnFailure(error);
 
-      this.logger.error("Letta adapter request failed", {
+      await reportProviderTurnFailure(tools, this.logger, this.provider, "Letta adapter request failed", error, {
         roomId: context.roomId,
-        error,
       });
-
-      await reportTurnFailure(
-        tools,
-        agentFailure(this.provider, asErrorMessage(error)),
-        this.logger,
-        { roomId: context.roomId },
-      );
     }
   }
 
@@ -807,8 +802,9 @@ export class LettaAdapter extends SimpleAdapter<
       try {
         const args = safeParseToolArgs(argsJson, this.logger);
         const result = await tools.executeToolCall(name, args);
+        // Band tools report most failures as a returned error, not a throw.
         return {
-          status: "success" as const,
+          status: isFailedToolOutput(result) ? ("error" as const) : ("success" as const),
           tool_call_id,
           tool_return: toWireString(result),
         };
@@ -1019,12 +1015,18 @@ function stripUuidMentions(content: string): string {
   return content.replace(/@\[\[[^\]]+\]\]/g, "").trim();
 }
 
+/**
+ * The turn's user message: the room's new message, named after its sender the
+ * way the history lines are, so the agent can tell who said it.
+ */
 function buildUserMessage(input: {
   content: string;
+  senderName?: string | null;
   participantsMessage: string | null;
   contactsMessage: string | null;
 }): string {
-  const content = stripUuidMentions(input.content);
+  const text = stripUuidMentions(input.content);
+  const content = input.senderName ? `[${input.senderName}]: ${text}` : text;
   const updates: string[] = [];
   if (input.participantsMessage) {
     updates.push(`${SYSTEM_DELIMITER} ${input.participantsMessage}`);

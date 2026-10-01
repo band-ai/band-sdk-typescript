@@ -4,6 +4,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 import { BandMcpServer } from "../src/mcp/server";
+import { describeNestedObjectTool, type NestedObjectTool } from "./nestedObjectTool";
 import { FakeTools } from "./testUtils";
 
 describe("BandMcpServer", () => {
@@ -15,6 +16,17 @@ describe("BandMcpServer", () => {
     }));
     servers.length = 0;
   });
+
+  async function connectNestedTool(tool: NestedObjectTool): Promise<Client> {
+    const server = new BandMcpServer({ tools: new FakeTools(), additionalTools: [tool.registration] });
+    servers.push(server);
+    await server.start();
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(new URL(server.url!)));
+    return client;
+  }
+
+  describeNestedObjectTool(connectNestedTool);
 
   it("handles multiple MCP requests on the same client session", async () => {
     const server = new BandMcpServer({

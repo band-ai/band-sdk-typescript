@@ -1,3 +1,6 @@
+import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -8,9 +11,11 @@ import {
 } from "../src/adapters/claude-sdk/ClaudeSDKAdapter";
 import { HistoryProvider } from "../src/runtime/types";
 import { DeliveryFailedError } from "../src/core/deliveryFailedError";
-import { FakeTools, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
+import { RestFacade } from "../src/client/rest/RestFacade";
+import { AgentTools } from "../src/runtime/tools/AgentTools";
+import { FakeRestApi, FakeTools, findFailureEvent, makeMessage, makeRoster, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
-import { MCP_SERVER_NAME } from "../src/runtime/tools/schemas";
+import { MCP_SERVER_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/runtime/tools/schemas";
 
 function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
   return (async function* generator(): AsyncGenerator<T, void> {
@@ -22,11 +27,11 @@ function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
 
 describe("ClaudeSDKAdapter", () => {
   it("uses the stable query API and resumes by session id", async () => {
-    const calls: Array<{ prompt: string; options?: Record<string, unknown> }> = [];
+    const calls: ClaudeSDKQueryParams[] = [];
     let turn = 0;
 
     const queryFn: ClaudeSDKQuery = ({ prompt, options }) => {
-      calls.push({ prompt, options: options as Record<string, unknown> });
+      calls.push({ prompt, options });
       turn += 1;
 
       if (turn === 1) {
@@ -188,9 +193,9 @@ describe("ClaudeSDKAdapter", () => {
   });
 
   it("rehydrates session id from bootstrap task metadata without prompting it", async () => {
-    const calls: Array<{ prompt: string; options?: Record<string, unknown> }> = [];
+    const calls: ClaudeSDKQueryParams[] = [];
     const queryFn: ClaudeSDKQuery = ({ prompt, options }) => {
-      calls.push({ prompt, options: options as Record<string, unknown> });
+      calls.push({ prompt, options });
       return streamFrom([
         {
           type: "assistant",
@@ -231,9 +236,9 @@ describe("ClaudeSDKAdapter", () => {
   });
 
   it("prompts only text history on bootstrap and keeps session resume off the prompt", async () => {
-    const calls: Array<{ prompt: string; options?: Record<string, unknown> }> = [];
+    const calls: ClaudeSDKQueryParams[] = [];
     const queryFn: ClaudeSDKQuery = ({ prompt, options }) => {
-      calls.push({ prompt, options: options as Record<string, unknown> });
+      calls.push({ prompt, options });
       return streamFrom([
         {
           type: "assistant",
@@ -287,9 +292,9 @@ describe("ClaudeSDKAdapter", () => {
   });
 
   it("rehydrates legacy Claude session markers from bootstrap task metadata", async () => {
-    const calls: Array<{ options?: Record<string, unknown> }> = [];
+    const calls: Array<Pick<ClaudeSDKQueryParams, "options">> = [];
     const queryFn: ClaudeSDKQuery = ({ options }) => {
-      calls.push({ options: options as Record<string, unknown> });
+      calls.push({ options });
       return streamFrom([
         {
           type: "assistant",
@@ -404,7 +409,7 @@ describe("ClaudeSDKAdapter", () => {
         {
           type: "result",
           subtype: "error_max_turns",
-          result: "hit the turn cap",
+          errors: ["hit the turn cap"],
           session_id: "session-fail",
         } as never,
       ]) as never;
@@ -445,7 +450,7 @@ describe("ClaudeSDKAdapter", () => {
         {
           type: "result",
           subtype: "error_during_execution",
-          summary: "tool crashed",
+          errors: ["tool crashed"],
           session_id: "session-partial",
         } as never,
       ]) as never;
@@ -486,7 +491,7 @@ describe("ClaudeSDKAdapter", () => {
         {
           type: "result",
           subtype: "error_during_execution",
-          summary: "tool crashed",
+          errors: ["tool crashed"],
           session_id: "session-partial-delivery",
         } as never,
       ]) as never;
@@ -573,6 +578,84 @@ describe("ClaudeSDKAdapter", () => {
 
     expect(tools.messages).toEqual(["all good"]);
     expect(tools.events.filter((event) => event.messageType === "error")).toEqual([]);
+  });
+
+  describe("a reply the agent already posted with band_send_message", () => {
+    const ROOM_ID = "room-send";
+    const SENDER = makeMessage("hello", ROOM_ID);
+
+    /** Real Band tools over a fake REST API, recording every message that reaches the room. */
+    function recordingRoomTools(): { tools: AgentTools; posted: string[] } {
+      const posted: string[] = [];
+      const api = new FakeRestApi({
+        createChatMessage: async (_roomId, message) => {
+          posted.push(message.content);
+          return {};
+        },
+      });
+      const roster = makeRoster([{ id: SENDER.senderId, handle: "@user", name: "User", type: "User" }]);
+      return { tools: new AgentTools({ roomId: ROOM_ID, rest: new RestFacade({ api }), roster }), posted };
+    }
+
+    /** Calls band_send_message on the Band MCP server the adapter started the query with, as Claude Code would. */
+    async function sendThroughBandTool(options: ClaudeSDKQueryParams["options"], content: string): Promise<void> {
+      const server = options?.mcpServers?.[MCP_SERVER_NAME] as McpSdkServerConfigWithInstance;
+      const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+      await server.instance.connect(serverTransport);
+      const client = new Client({ name: "claude-code-stand-in", version: "1.0.0" });
+      await client.connect(clientTransport);
+      await using _closed = { [Symbol.asyncDispose]: () => client.close() };
+      const result = await client.callTool({
+        name: SEND_MESSAGE_TOOL_NAME,
+        arguments: { room_id: ROOM_ID, content, mentions: ["@user"] },
+      });
+      expect(result.isError, "band_send_message failed").toBeUndefined();
+    }
+
+    /** One turn whose query posts `sent` through the Band tool first when given, then ends with `closing`. */
+    async function runTurn(input: { sent?: string; closing: Array<Record<string, unknown>> }): Promise<{ posted: string[]; turn: Promise<void> }> {
+      const queryFn: ClaudeSDKQuery = async function* ({ options }) {
+        if (input.sent !== undefined) {
+          await sendThroughBandTool(options, input.sent);
+        }
+        yield* input.closing as never[];
+      };
+      const adapter = new ClaudeSDKAdapter({ queryFn });
+      await adapter.onStarted("Parity Agent", "Parity test agent");
+      const { tools, posted } = recordingRoomTools();
+      const turn = adapter.onMessage(SENDER, tools, new HistoryProvider([]), null, null, {
+        isSessionBootstrap: false,
+        roomId: ROOM_ID,
+      });
+      return { posted, turn };
+    }
+
+    const assistantText = (text: string) => ({ type: "assistant", message: { content: [{ type: "text", text }] } });
+    const success = (text: string) => ({ type: "result", subtype: "success", result: text });
+
+    it("does not post the closing text again", async () => {
+      const { posted, turn } = await runTurn({ sent: "pineapple", closing: [assistantText("Done!"), success("Done!")] });
+      await turn;
+
+      expect(posted).toEqual(["pineapple"]);
+    });
+
+    it("still posts the final text when the agent never sent one", async () => {
+      const { posted, turn } = await runTurn({ closing: [assistantText("pineapple"), success("pineapple")] });
+      await turn;
+
+      expect(posted).toEqual(["pineapple"]);
+    });
+
+    it("keeps preceding text off the room on a failed result too, and still reports the failure", async () => {
+      const { posted, turn } = await runTurn({
+        sent: "pineapple",
+        closing: [assistantText("Done!"), { type: "result", subtype: "error_max_turns", summary: "hit the turn cap" }],
+      });
+      await expectTurnFailed(turn);
+
+      expect(posted).toEqual(["pineapple"]);
+    });
   });
 
   describeDeliveryContract([{

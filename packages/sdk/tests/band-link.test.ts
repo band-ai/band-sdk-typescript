@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { chatRoomTopic, roomParticipantsTopic } from "@band-ai/band-sdk-core";
+import { agentRoomsTopic, chatRoomTopic, roomParticipantsTopic } from "@band-ai/band-sdk-core";
 
 import { BandLink } from "../src/platform/BandLink";
 import type { PlatformEvent } from "../src/platform/events";
@@ -580,5 +580,58 @@ describe("BandLink event waiting", () => {
       { page: 1, pageSize: 2 },
       { page: 2, pageSize: 2 },
     ]);
+  });
+});
+
+describe("BandLink rejoin catch-up", () => {
+  async function connectedLink(transport = new FakeTransport()) {
+    const link = new BandLink({ agentId: "agent-1", apiKey: "key", restApi: new FakeRestApi(), transport });
+    await link.connect();
+    return { link, transport };
+  }
+
+  it("queues a room-scoped reconnected event for a rejoined chat channel and an agent-wide one for agent_rooms", async () => {
+    const { link, transport } = await connectedLink();
+
+    transport.triggerRejoin(chatRoomTopic("room-1"));
+    transport.triggerRejoin(agentRoomsTopic("agent-1"));
+
+    await expect(link.nextEvent()).resolves.toEqual({ type: "reconnected", roomId: "room-1", payload: {} });
+    await expect(link.nextEvent()).resolves.toEqual({ type: "reconnected", roomId: null, payload: {} });
+  });
+
+  it.each([roomParticipantsTopic("room-1"), "agent_contacts:agent-1", "agent_control:agent-1", agentRoomsTopic("another-agent"), chatRoomTopic("")])(
+    "queues nothing for a rejoined %s",
+    async (topic) => {
+      const { link, transport } = await connectedLink();
+
+      transport.triggerRejoin(topic);
+      transport.triggerRejoin(chatRoomTopic("room-1"));
+
+      await expect(link.nextEvent()).resolves.toEqual({ type: "reconnected", roomId: "room-1", payload: {} });
+    },
+  );
+
+  it("ignores a rejoin that lands after the session ended", async () => {
+    const { link, transport } = await connectedLink();
+    const queued = vi.spyOn(link, "queueEvent");
+    vi.spyOn(transport, "disconnect").mockImplementation(async () => {
+      transport.triggerRejoin(chatRoomTopic("room-1"));
+    });
+
+    await link.disconnect();
+
+    expect(queued).not.toHaveBeenCalled();
+  });
+
+  it("registers its observers with the session and removes them on disconnect", async () => {
+    const { link, transport } = await connectedLink();
+    expect(transport.observers.size).toBe(1);
+    expect(transport.rejoinObservers.size).toBe(1);
+
+    await link.disconnect();
+
+    expect(transport.observers.size).toBe(0);
+    expect(transport.rejoinObservers.size).toBe(0);
   });
 });

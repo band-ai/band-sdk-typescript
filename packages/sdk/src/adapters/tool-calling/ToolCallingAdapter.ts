@@ -10,11 +10,18 @@ import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { formatHistoryForLlm } from "../../runtime/formatters";
-import { postedSendContent } from "../../runtime/tools/schemas";
+import { withMemoryGuidance } from "../../runtime/prompts";
+import { deliverFallbackReply, trackPostedReply } from "../../runtime/tools/postedReply";
 import { asErrorMessage } from "../shared/coercion";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
-import { reportProviderTurnFailure } from "../../core/providerFailure";
-import { deliverReply } from "../../core/deliveryFailedError";
+import { assertTurnTimeoutMs } from "../shared/turnTimeout";
+import { TurnBudget } from "./turnBudget";
+import {
+  FAILURE_CODE_TIMEOUT,
+  agentFailure,
+  reportProviderTurnFailure,
+  reportTurnFailure,
+} from "../../core/providerFailure";
 import {
   CustomToolExecutionError,
   CustomToolValidationError,
@@ -35,6 +42,9 @@ import type {
 /** `AgentFailure.provider` for a subclass that does not name itself. */
 const DEFAULT_PROVIDER = "tool-calling";
 
+/** Caps a whole turn across its tool rounds, at its next model or tool call; matches the OpenCode adapter's cap. */
+const DEFAULT_TURN_TIMEOUT_MS = 300_000;
+
 export interface ToolCallingAdapterOptions {
   model: ToolCallingModel;
   toolFormat: "openai" | "anthropic";
@@ -43,6 +53,11 @@ export interface ToolCallingAdapterOptions {
   systemPrompt?: string;
   includeMemoryTools?: boolean;
   maxToolRounds?: number;
+  /**
+   * Caps one whole turn across its tool rounds at this many milliseconds; `Infinity` removes the cap. Defaults to
+   * five minutes. The turn ends at its next model call or tool call: a tool already running is not interrupted.
+   */
+  turnTimeoutMs?: number;
   enableExecutionReporting?: boolean;
   customTools?: CustomToolDef[];
   logger?: Logger;
@@ -57,6 +72,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
   private readonly systemPrompt?: string;
   private readonly includeMemoryTools: boolean;
   private readonly maxToolRounds: number;
+  private readonly turnTimeoutMs: number;
   private readonly enableExecutionReporting: boolean;
   private readonly customTools: CustomToolDef[];
   private readonly customToolIndex: Map<string, CustomToolDef>;
@@ -70,9 +86,14 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     this.model = options.model;
     this.toolFormat = options.toolFormat;
     this.provider = options.provider ?? DEFAULT_PROVIDER;
-    this.systemPrompt = options.systemPrompt;
     this.includeMemoryTools = options.includeMemoryTools ?? false;
+    this.systemPrompt =
+      options.systemPrompt === undefined && !this.includeMemoryTools
+        ? undefined
+        : withMemoryGuidance(options.systemPrompt ?? "", this.includeMemoryTools);
     this.maxToolRounds = options.maxToolRounds ?? 8;
+    this.turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS;
+    assertTurnTimeoutMs(this.turnTimeoutMs);
     this.enableExecutionReporting = options.enableExecutionReporting ?? false;
     this.customTools = options.customTools ?? [];
     this.customToolIndex = buildCustomToolIndex(this.customTools);
@@ -97,6 +118,11 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     ));
   }
 
+  /** Every model call of a turn goes through here, so the turn's abort signal always reaches the provider. */
+  private complete(turn: TurnBudget, request: ToolCallingModelRequest): Promise<ToolCallingResponse> {
+    return turn.run((signal) => this.model.complete(request, { signal }));
+  }
+
   private async handleTurn(
     message: PlatformMessage,
     tools: ToolCallingTools,
@@ -105,9 +131,12 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
+    using turn = new TurnBudget(this.turnTimeoutMs);
     const conversation = this.conversationFor(context, history, message);
     conversation.push(this.userTurn(message));
     const toolRounds: ToolRound[] = [];
+    // A later provider failure throws out of this turn. Remember a post as it lands, or the next turn answers it again.
+    const reply = trackPostedReply(tools, (content) => conversation.push({ role: "assistant", content }));
     let text: string | undefined;
     try {
       const platformSchemas = tools.getToolSchemas(this.toolFormat, {
@@ -119,7 +148,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
       // Notices are for this turn only. The durable conversation keeps what was said in the room.
       const messages = [...conversation, ...this.turnNotices(participantsMessage, contactsMessage)];
 
-      let response = await this.model.complete({
+      let response = await this.complete(turn, {
         systemPrompt: this.systemPrompt,
         messages,
         tools: schemas,
@@ -138,6 +167,8 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
 
         const roundToolResults: ToolResult[] = [];
         for (const call of roundToolCalls) {
+          // Before the call is reported, so no tool_call is left without its tool_result.
+          turn.throwIfExpired();
           if (this.enableExecutionReporting) {
             await this.reportExecutionEvent(
               tools,
@@ -182,7 +213,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
                 }
               }
             } else {
-              output = await tools.executeToolCall(call.name, call.input);
+              output = await reply.tools.executeToolCall(call.name, call.input);
             }
           }
           const isError = isFailedToolOutput(output);
@@ -192,11 +223,6 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
             output,
             isError,
           });
-          // A later provider failure throws out of this turn. Remember a post now, or the next turn answers it again.
-          const posted = postedSendContent(call.name, call.input.content, isError);
-          if (posted !== undefined) {
-            conversation.push({ role: "assistant", content: posted });
-          }
 
           if (this.enableExecutionReporting) {
             await this.reportExecutionEvent(
@@ -213,7 +239,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
 
         toolRounds.push({ toolCalls: roundToolCalls, toolResults: roundToolResults });
 
-        response = await this.model.complete({
+        response = await this.complete(turn, {
           systemPrompt: this.systemPrompt,
           messages,
           tools: schemas,
@@ -228,12 +254,17 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
         });
       }
     } catch (error) {
-      await reportProviderTurnFailure(tools, this.logger, this.provider, "Tool-calling adapter request failed", error, { messageId: message.id });
+      if (turn.hasExpired) {
+        const timedOut = agentFailure(this.provider, `${this.provider} turn timed out.`, FAILURE_CODE_TIMEOUT);
+        await reportTurnFailure(tools, timedOut, this.logger, { messageId: message.id });
+      } else {
+        await reportProviderTurnFailure(tools, this.logger, this.provider, "Tool-calling adapter request failed", error, { messageId: message.id });
+      }
     }
 
-    if (text) {
-      await deliverReply(tools, text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
-      // Only text that was actually delivered belongs in the next turn.
+    const mention = [{ id: message.senderId, handle: message.senderName ?? message.senderType }];
+    // Only text that was actually delivered belongs in the next turn.
+    if (await deliverFallbackReply(reply, text, mention)) {
       conversation.push({ role: "assistant", content: text });
     }
   }

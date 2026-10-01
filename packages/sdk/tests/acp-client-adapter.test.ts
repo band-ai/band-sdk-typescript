@@ -588,6 +588,28 @@ describe("ACPClientAdapter", () => {
     await t3
   })
 
+  it("frees every room on stop(), so a turn still in flight can't block the room after a restart", async () => {
+    const prompt = vi.fn(async () => ({ stopReason: "end_turn" }))
+    prompt.mockImplementationOnce(() => new Promise(() => undefined))
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      enableMcpTools: false,
+      connectionFactory: async () => buildMockConnection({
+        loadSession: vi.fn(),
+        newSession: async () => ({ sessionId: "session-1" }),
+        prompt,
+      }),
+    })
+
+    // The first turn hangs on its prompt, and nothing in stop() settles it.
+    send(adapter).catch(() => undefined)
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1))
+    await adapter.stop()
+
+    // `send` restarts the adapter; the room's next turn must run, not queue behind the first.
+    await send(adapter)
+  })
+
   it("never seeds a replay when the session restores successfully, even though replay history is available", async () => {
     const loadSession = vi.fn(async () => ({}))
     const newSession = vi.fn()
@@ -1534,56 +1556,6 @@ describe("ACPClientAdapter", () => {
     expect(tools.events).toEqual(expect.arrayContaining([
       expect.objectContaining({ messageType: "task", content: "ACP client session" }),
     ]))
-  })
-
-  it("resolves a mention token to a handle before prompting the agent", async () => {
-    const promptTexts: string[] = []
-    const prompt = vi.fn(async (params: { sessionId: string; prompt: Array<{ text?: string }> }) => {
-      promptTexts.push(params.prompt[0]?.text ?? "")
-      return { stopReason: "end_turn" }
-    })
-
-    const adapter = new ACPClientAdapter({
-      command: ["acp-agent"],
-      connectionFactory: async () => {
-        const controller = new AbortController()
-        return {
-          connection: {
-            signal: controller.signal,
-            closed: new Promise<void>(() => undefined),
-            initialize: vi.fn(async () => ({
-              protocolVersion: 1,
-              agentCapabilities: { mcpCapabilities: { http: true } },
-            })),
-            authenticate: vi.fn(async () => ({})),
-            loadSession: vi.fn(),
-            resumeSession: vi.fn(),
-            newSession: vi.fn(async () => ({ sessionId: "session-mentions" })),
-            prompt,
-          } as never,
-          stop: async () => {
-            controller.abort()
-          },
-        }
-      },
-    })
-
-    await adapter.onStarted("Mention Agent", "ACP mention test")
-
-    const REVIEWER_ID = "65044b09-fd04-4a34-a94f-51fe413bd2cb"
-    await adapter.onMessage(
-      makeMessage(`@[[${REVIEWER_ID}]] are you there?`, "room-mentions", {
-        mentions: [{ id: REVIEWER_ID, username: "reviewer-bot" }],
-      }),
-      new FakeTools(),
-      { roomToSession: {} },
-      null,
-      null,
-      { isSessionBootstrap: true, roomId: "room-mentions" },
-    )
-
-    expect(promptTexts[0]).toContain("@reviewer-bot are you there?")
-    expect(promptTexts[0]).not.toContain("@[[")
   })
 
   it("carries a room-context update to the agent, on a warm turn as well as a bootstrap one", async () => {

@@ -289,6 +289,30 @@ describe("LettaAdapter", () => {
     expect(tools.messages).toEqual(["Done!"]);
   });
 
+  it.each([
+    { sendResult: { ok: true }, finalText: "I've posted my confirmation.", delivered: [] },
+    { sendResult: { ok: true }, finalText: null, delivered: [] },
+    { sendResult: { ok: false, message: "unknown mention" }, finalText: "Confirmed.", delivered: ["Confirmed."] },
+  ])("treats a band_send_message post as the reply, its final text as a fallback (send: $sendResult, final text: $finalText)", async ({ sendResult, finalText, delivered }) => {
+    const client = new FakeLettaClient();
+    client.responseBatches.push(
+      approvalResponse("band_send_message", { content: "Confirmed.", mentions: ["@user"] }),
+      finalText ? assistantResponse(finalText) : { messages: [], stop_reason: { stop_reason: "end_turn" } },
+    );
+    const adapter = new LettaAdapter({ clientFactory: async () => client });
+    await adapter.onStarted("Agent", "An agent");
+
+    const tools = new FakeTools();
+    tools.executeToolCall = async () => sendResult;
+    await adapter.onMessage(makeMessage("Remember this", "room-posted"), tools, [], null, null, {
+      isSessionBootstrap: false,
+      roomId: "room-posted",
+    });
+
+    expect(tools.messages).toEqual(delivered);
+    expect(failureEvents(tools)).toEqual([]);
+  });
+
   it("respects maxToolRounds limit", async () => {
     const client = new FakeLettaClient();
     for (let i = 0; i < 20; i++) {
@@ -881,6 +905,24 @@ describe("LettaAdapter", () => {
     expect(sentContent).toContain("[System Update]: Alice joined the room");
     expect(sentContent).toContain("[System Update]: Bob is online");
     expect(sentContent).toContain("Hello");
+  });
+
+  it.each([
+    { senderName: "Alice", content: "@[[user-id]] hello there", expected: "[Alice]: hello there" },
+    { senderName: null, content: "@[[user-id]] hello there", expected: "hello there" },
+  ])("names the live message after its sender when there is one (sender: $senderName)", async ({ senderName, content, expected }) => {
+    const client = new FakeLettaClient();
+    client.responseBatches.push(assistantResponse("Got it"));
+    const adapter = new LettaAdapter({ clientFactory: async () => client });
+    await adapter.onStarted("Agent", "An agent");
+
+    await adapter.onMessage({ ...makeMessage(content, "room-sender"), senderName }, new FakeTools(), [], null, null, {
+      isSessionBootstrap: false,
+      roomId: "room-sender",
+    });
+
+    const sent = client.messageCreateCalls[0].params.messages?.[0] as { content?: string } | undefined;
+    expect(sent?.content).toBe(expected);
   });
 
   it("returns a structured error and logs warning for malformed tool arguments JSON", async () => {
