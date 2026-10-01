@@ -3,6 +3,7 @@ import { createInterface, type Interface as ReadLineInterface } from "node:readl
 
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
+import { stopChildProcess } from "../shared/stopChildProcess";
 import { withTimeout } from "../shared/withTimeout";
 import type {
   DynamicToolCallResponse,
@@ -232,23 +233,7 @@ export class CodexAppServerStdioClient implements CodexClientLike {
       return;
     }
 
-    proc.stdin.end();
-
-    await new Promise<void>((resolve) => {
-      const termTimer = setTimeout(() => {
-        proc.kill("SIGTERM");
-      }, 500);
-      const killTimer = setTimeout(() => {
-        proc.kill("SIGKILL");
-        resolve();
-      }, 1_500);
-
-      proc.once("close", () => {
-        clearTimeout(termTimer);
-        clearTimeout(killTimer);
-        resolve();
-      });
-    });
+    await stopChildProcess(proc);
   }
 
   private async sendJson(payload: JsonRpcPayload): Promise<void> {

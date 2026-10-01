@@ -637,8 +637,8 @@ export class CodexAdapter extends SimpleAdapter<HistoryProvider, AgentToolsProto
   }
 
   // Runtime stop still awaits process exit. Failure/timeout paths must not:
-  // production `close()` only SIGTERMs after 500ms and never SIGKILLs, so a
-  // wedged child would hold the failure report and retry hostage.
+  // production `close()` waits up to 1.5s before SIGKILL, so a wedged child
+  // would hold the failure report and retry hostage.
   private async resetClient(expectedClient?: CodexClientLike): Promise<void> {
     const client = this.takeClientForReset(expectedClient);
     if (!client) {

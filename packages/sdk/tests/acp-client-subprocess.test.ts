@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { ACPClientAdapter } from "../src/adapters/acp";
 import { createSubprocessConnection } from "../src/adapters/acp/ACPClientAdapter";
@@ -11,6 +11,8 @@ const fakeAcpAgentPath = fileURLToPath(new URL("./fixtures/fakeAcpAgent.mjs", im
 const MISSING_BINARY = "/nonexistent-band-agent"
 // Well past the OS pipe buffer (64 KiB on Linux and macOS).
 const STDERR_FLOOD_BYTES = 256 * 1024
+// Reports its pid on stderr once SIGTERM is ignored, then never exits on its own.
+const IGNORES_STOP_AGENT = `process.on("SIGTERM", () => {}); setInterval(() => {}, 1000); console.error(process.pid)`
 
 // These agents never ask for permission.
 function unusedClient(): BandACPClient {
@@ -41,6 +43,22 @@ describe("createSubprocessConnection", () => {
     await handle.connection.closed
 
     await expect(handle.stop()).resolves.toBeUndefined()
+  })
+
+  it("kills an agent that ignores both stdin closing and SIGTERM", async () => {
+    const logger = makeLoggerSpy()
+    const handle = await createSubprocessConnection(unusedClient(), {
+      command: [process.execPath, "-e", IGNORES_STOP_AGENT],
+      logger,
+    })
+    const pid = await vi.waitFor(() => {
+      const [, { line }] = logger.debug.mock.calls.find(([event]) => event === "acp_client.subprocess_stderr")!
+      return Number(line)
+    })
+
+    await handle.stop()
+
+    await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow())
   })
 })
 

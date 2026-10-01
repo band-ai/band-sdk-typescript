@@ -62,6 +62,7 @@ import {
   type ACPPermissionEndReason,
   type ACPPermissionRequest,
 } from "./types";
+import { stopChildProcess } from "../shared/stopChildProcess";
 import { acpModule } from "./loader";
 
 interface ConnectionRetirement {
@@ -1912,36 +1913,7 @@ export async function createSubprocessConnection(
 
   return {
     connection,
-    stop: async () => {
-      await new Promise<void>((resolve) => {
-        if (child.exitCode !== null || child.signalCode !== null) {
-          resolve()
-          return
-        }
-
-        let settled = false
-        const finish = (): void => {
-          if (settled) {
-            return
-          }
-          settled = true
-          child.off("exit", finish)
-          child.off("close", finish)
-          resolve()
-        }
-
-        child.once("exit", finish)
-        child.once("close", finish)
-
-        if (!child.killed) {
-          child.kill()
-        }
-
-        if (child.exitCode !== null || child.signalCode !== null) {
-          finish()
-        }
-      })
-    },
+    stop: () => stopChildProcess(child),
   }
 }
 
