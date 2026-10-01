@@ -1,20 +1,16 @@
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { ACPClientAdapter } from "../src/adapters/acp";
 import { createSubprocessConnection } from "../src/adapters/acp/ACPClientAdapter";
 import { BandACPClient } from "../src/adapters/acp/client";
-import { FakeTools, expectTurnFailed, findFailureEvent, makeMessage } from "./testUtils";
+import { FakeTools, expectTurnFailed, findFailureEvent, makeLoggerSpy, makeMessage } from "./testUtils";
 
 const fakeAcpAgentPath = fileURLToPath(new URL("./fixtures/fakeAcpAgent.mjs", import.meta.url))
 const MISSING_BINARY = "/nonexistent-band-agent"
 // Well past the OS pipe buffer (64 KiB on Linux and macOS).
 const STDERR_FLOOD_BYTES = 256 * 1024
-
-function makeLoggerSpy() {
-  return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
-}
 
 // These agents never ask for permission.
 function unusedClient(): BandACPClient {

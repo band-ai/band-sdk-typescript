@@ -48,9 +48,7 @@ import { isBlankEventContent } from "../../contracts/chatEvents";
 import type { PlatformMessage } from "../../runtime/types";
 import type { McpToolRegistration } from "../../mcp/registrations";
 import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
-import { generateAuthToken } from "../../mcp/auth";
-import { BandMcpServer } from "../../mcp/server";
-import { BandMcpSseServer } from "../../mcp/sse";
+import { createBandMcpBackend, type BandMcpBackend } from "../../mcp/backends";
 import {
   BandACPClient,
 } from "./client";
@@ -65,20 +63,6 @@ import {
   type ACPPermissionRequest,
 } from "./types";
 import { acpModule } from "./loader";
-
-type InjectedMcpBackend =
-  | {
-    kind: "http";
-    server: BandMcpServer;
-    authToken: string;
-    stop(): Promise<void>;
-  }
-  | {
-    kind: "sse";
-    server: BandMcpSseServer;
-    authToken: string;
-    stop(): Promise<void>;
-  }
 
 interface ConnectionRetirement {
   promise: Promise<never>;
@@ -318,8 +302,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private readonly logger: Logger
   private readonly customSection?: string
 
-  private backend: InjectedMcpBackend | null = null
-  private backendPromise: Promise<InjectedMcpBackend> | null = null
+  private backend: BandMcpBackend | null = null
+  private backendPromise: Promise<BandMcpBackend> | null = null
   private client: BandACPClient | null = null
   private connectionHandle: ACPClientConnectionHandle | null = null
   private pendingConnectionStop: (() => Promise<void>) | null = null
@@ -1480,7 +1464,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     return mcpServers
   }
 
-  private async getOrCreateBackend(): Promise<InjectedMcpBackend> {
+  private async getOrCreateBackend(): Promise<BandMcpBackend> {
     if (this.backend) {
       return this.backend
     }
@@ -1491,9 +1475,13 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     return this.backendPromise
   }
 
-  private async createBackend(): Promise<InjectedMcpBackend> {
-    const backend = this.buildBackend()
-    await backend.server.start()
+  private async createBackend(): Promise<BandMcpBackend> {
+    const backend = await createBandMcpBackend({
+      kind: this.mcpTransport(),
+      enableMemoryTools: this.enableMemoryTools,
+      getToolsForRoom: (roomId) => this.roomTools.get(roomId),
+      additionalTools: this.additionalMcpTools,
+    })
     // A turn still in flight can finish creating its backend after `stop()`;
     // installing it then would leave its listener open with no owner.
     if (!this.started) {
@@ -1504,34 +1492,19 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     return backend
   }
 
-  private buildBackend(): InjectedMcpBackend {
+  private mcpTransport(): "http" | "sse" {
     const mcpCapabilities = this.connectionState?.agentCapabilities?.mcpCapabilities
-    const transport = mcpCapabilities?.http ? "http" : (mcpCapabilities?.sse ? "sse" : null)
-
-    if (transport === null) {
-      throw new Error(
-        "ACP agent does not advertise MCP transport support: its initialize response has "
-        + "mcpCapabilities.http and .sse both false or missing, so Band tools cannot be "
-        + "exposed to it over MCP.",
-      )
+    if (mcpCapabilities?.http) {
+      return "http"
     }
-
-    const authToken = generateAuthToken()
-    const serverOptions = {
-      tools: (roomId: string) => this.roomTools.get(roomId),
-      enableMemoryTools: this.enableMemoryTools,
-      enableContactTools: true,
-      additionalTools: this.additionalMcpTools,
-      authToken,
+    if (mcpCapabilities?.sse) {
+      return "sse"
     }
-
-    if (transport === "sse") {
-      const server = new BandMcpSseServer(serverOptions)
-      return { kind: "sse", server, authToken, stop: () => server.stop() }
-    }
-
-    const server = new BandMcpServer(serverOptions)
-    return { kind: "http", server, authToken, stop: () => server.stop() }
+    throw new Error(
+      "ACP agent does not advertise MCP transport support: its initialize response has "
+      + "mcpCapabilities.http and .sse both false or missing, so Band tools cannot be "
+      + "exposed to it over MCP.",
+    )
   }
 
   private buildSystemContext(roomId: string, message: PlatformMessage): string {

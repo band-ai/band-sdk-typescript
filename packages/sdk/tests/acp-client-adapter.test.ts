@@ -12,12 +12,8 @@ import {
 } from "../src/adapters/acp";
 import { BandACPClient } from "../src/adapters/acp/client";
 import { BandMcpServer } from "../src/mcp/server";
-import { FakeTools, expectTurnFailed, findFailureEvent, makeMessage } from "./testUtils";
+import { CallHolds, FakeTools, expectTurnFailed, findFailureEvent, makeLoggerSpy, makeMessage } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
-
-function makeLoggerSpy() {
-  return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
-}
 
 function requireAcpClient(client: BandACPClient | null): BandACPClient {
   if (!client) {
@@ -4863,14 +4859,12 @@ describe("ACP client transports", () => {
 describe("ACPClientAdapter MCP backend lifecycle", () => {
   it("stops a backend that finishes starting after stop()", async () => {
     // Holds the real `start` open until `stop()` has fully returned.
-    let releaseStart: () => void = () => undefined
-    const startGate = new Promise<void>((resolve) => {
-      releaseStart = resolve
-    })
+    const startHolds = new CallHolds<[]>()
+    const heldStart = startHolds.hold(() => true)
     let boundPort: number | null = null
     const realStart = BandMcpServer.prototype.start
     const startSpy = vi.spyOn(BandMcpServer.prototype, "start").mockImplementation(async function (this: BandMcpServer) {
-      await startGate
+      await startHolds.pass()
       await realStart.call(this)
       boundPort = this.port
     })
@@ -4885,19 +4879,11 @@ describe("ACPClientAdapter MCP backend lifecycle", () => {
       }),
     })
     try {
-      await adapter.onStarted("Agent", "desc")
-      const turn = adapter.onMessage(
-        makeMessage("hi"),
-        new FakeTools(),
-        { roomToSession: {} },
-        null,
-        null,
-        { isSessionBootstrap: true, roomId: "room-1" },
-      ).catch(() => undefined)
-      await vi.waitFor(() => expect(startSpy).toHaveBeenCalled())
+      const turn = send(adapter).catch(() => undefined)
+      await heldStart.sending
 
       await adapter.stop()
-      releaseStart()
+      heldStart.release()
       await turn
 
       expect(boundPort).toEqual(expect.any(Number))
