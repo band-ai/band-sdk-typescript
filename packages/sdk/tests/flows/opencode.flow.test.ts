@@ -489,6 +489,26 @@ describe("OpenCode in a Band room", () => {
     expect(session.server.requestsTo("POST", /^\/mcp$/), "OpenCode is not left pointing at the stopped backend").toEqual([]);
   });
 
+  it("stops the MCP backend even when the OpenCode client fails to close", async () => {
+    class FailingClose extends HttpOpencodeClient {
+      public override async close(): Promise<void> {
+        await super.close();
+        throw new Error("close failed");
+      }
+    }
+    const backend = heldBackend();
+    const clientFactory = (config: Required<OpencodeAdapterConfig>) => new FailingClose({ baseUrl: config.baseUrl });
+    await using session = await opencodeRoom({}, { mcpBackendFactory: backend.factory, clientFactory });
+    await session.start((turn) => turn.answer("Answered."));
+    await backend.held.sending;
+    backend.held.release();
+    const url = await backend.listening;
+    await session.room.nextMessage((posted) => posted.content === "Answered.");
+
+    await expect(session.adapter.onRuntimeStop()).rejects.toThrow("close failed");
+    await expect(fetch(new URL("/healthz", url))).rejects.toThrow();
+  });
+
   it("starts a second room's first turn only once OpenCode has Band's tools", async () => {
     const backend = heldBackend();
     await using session = await opencodeRoom({}, { mcpBackendFactory: backend.factory });

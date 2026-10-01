@@ -499,20 +499,27 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     this.mcpBackend = null;
     this.eventTask = null;
 
-    if (client) {
-      try {
-        await client.deregisterMcpServer(this.config.mcpServerName);
-      } catch {}
-      // Closed before a still-starting backend settles, so that start can't register or prompt through it.
-      await client.close();
+    try {
+      await this.closeClient(client);
+    } finally {
+      // A backend still starting is stopped once it listens.
+      await (await backend)?.stop();
     }
-
-    // A backend still starting is stopped once it listens.
-    await (await backend)?.stop();
 
     if (eventTask) {
       await Promise.resolve(eventTask).catch(() => undefined);
     }
+  }
+
+  // Closed before a still-starting backend settles, so that start can't register or prompt through it.
+  private async closeClient(client: OpencodeClientLike | null): Promise<void> {
+    if (!client) {
+      return;
+    }
+    try {
+      await client.deregisterMcpServer(this.config.mcpServerName);
+    } catch {}
+    await client.close();
   }
 
   private async runEventLoop(): Promise<void> {
