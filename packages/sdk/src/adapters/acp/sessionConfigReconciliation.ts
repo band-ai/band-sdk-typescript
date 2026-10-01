@@ -17,8 +17,6 @@ export const FAILURE_CODE_SESSION_CONFIG = "session_config";
 /** Reason when a successful setter omits an array `configOptions` catalog. */
 export const MISSING_CONFIG_OPTIONS_REASON = "missing_config_options";
 
-class AcpSessionConfigTimeoutError extends Error {}
-
 export interface ACPConfigSelection {
   configId: string;
   value: string | undefined;
@@ -45,7 +43,6 @@ export class AcpSessionConfigError extends Error {
   public readonly selectedValue: string | undefined;
   public readonly acpCode: number | undefined;
   public readonly detail: unknown;
-  public readonly timedOut: boolean;
 
   public constructor(input: {
     provider: string;
@@ -56,7 +53,6 @@ export class AcpSessionConfigError extends Error {
     acpCode?: number;
     detail?: unknown;
     cause?: unknown;
-    timedOut?: boolean;
   }) {
     super(input.message, input.cause !== undefined ? { cause: input.cause } : undefined);
     this.name = "AcpSessionConfigError";
@@ -66,7 +62,6 @@ export class AcpSessionConfigError extends Error {
     this.selectedValue = input.selectedValue;
     this.acpCode = input.acpCode;
     this.detail = input.detail;
-    this.timedOut = input.timedOut ?? false;
   }
 
   public toAgentFailure(): AgentFailure {
@@ -151,7 +146,7 @@ export async function applySessionConfigSelections(
       const response = await withTimeout(
         input.setOption({ sessionId: input.sessionId, configId, value: selectedValue }),
         input.timeoutMs,
-        () => new AcpSessionConfigTimeoutError(timeoutMessage),
+        timeoutMessage,
       );
       if (!Array.isArray(response?.configOptions)) {
         throw new AcpSessionConfigError({
@@ -178,7 +173,6 @@ export async function applySessionConfigSelections(
         detail: acpError?.data,
         message: acpError?.message ?? asErrorMessage(error),
         cause: error,
-        timedOut: error instanceof AcpSessionConfigTimeoutError,
       });
     }
   }
