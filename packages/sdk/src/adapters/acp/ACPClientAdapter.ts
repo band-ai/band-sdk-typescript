@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { createConnection } from "node:net";
+import { createInterface } from "node:readline";
 import { Duplex, Readable, Writable } from "node:stream";
 
 import type {
@@ -708,6 +710,9 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       await stopPending()
     }
 
+    // A backend still starting installs itself when it lands; let it, so the
+    // stop below covers it instead of leaking its listener.
+    await this.backendPromise?.catch(() => undefined)
     if (this.backend) {
       const backend = this.backend
       this.backend = null
@@ -898,6 +903,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
             command: this.command,
             cwd: this.cwd,
             env: this.env,
+            logger: this.logger,
           }))
       const connection = handle.connection
       if (attempt.signal.aborted) {
@@ -1915,9 +1921,11 @@ export async function createSubprocessConnection(
     command: string[];
     cwd?: string;
     env?: Record<string, string>;
+    logger?: Logger;
   },
 ): Promise<ACPClientConnectionHandle> {
   const acp = await acpModule.get()
+  const logger = resolveLogger(options.logger)
   const child = spawn(options.command[0], options.command.slice(1), {
     cwd: options.cwd,
     env: {
@@ -1927,9 +1935,13 @@ export async function createSubprocessConnection(
     stdio: ["pipe", "pipe", "pipe"],
   })
 
-  if (!child.stdin || !child.stdout) {
-    throw new Error("ACP subprocess did not expose stdio pipes")
-  }
+  // `once` rejects on the child's `error` event, so a missing binary fails this
+  // connection instead of surfacing as an uncaught ENOENT.
+  await once(child, "spawn")
+  child.on("error", (error) => logger.warn("acp_client.subprocess_error", { error: error.message }))
+  // An unread stderr pipe fills up and blocks the agent.
+  createInterface({ input: child.stderr, crlfDelay: Number.POSITIVE_INFINITY })
+    .on("line", (line) => logger.debug("acp_client.subprocess_stderr", { line }))
 
   const stream = acp.ndJsonStream(
     Writable.toWeb(child.stdin),
