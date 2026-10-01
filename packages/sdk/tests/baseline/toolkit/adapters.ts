@@ -71,6 +71,9 @@ export function buildClaudeSdk({ prompt, workDir }: BuildOptions, options: Claud
 /** OMP on the pinned Google model. */
 const OMP_COMMAND = [...DEFAULT_OMP_ACP_COMMAND, "--model", `google/${GEMINI_MODEL}`];
 
+/** OMP's state directory under the cell's working directory, where it also keeps its session transcripts. */
+export const OMP_STATE_DIR = ".omp-state";
+
 /** OMP on the pinned Google model with an isolated state directory, `options` layered over the defaults. */
 export function buildOmp({ prompt, workDir }: BuildOptions, options: OmpACPAdapterOptions = {}): OmpACPAdapter {
   return new OmpACPAdapter({
@@ -78,7 +81,7 @@ export function buildOmp({ prompt, workDir }: BuildOptions, options: OmpACPAdapt
     cwd: workDir,
     customSection: prompt,
     // OMP reads only GEMINI_API_KEY.
-    env: { PI_CODING_AGENT_DIR: stateDir(workDir, ".omp-state"), [ENV.geminiKey]: googleApiKey() ?? "" },
+    env: { PI_CODING_AGENT_DIR: stateDir(workDir, OMP_STATE_DIR), [ENV.geminiKey]: googleApiKey() ?? "" },
     ...options,
   });
 }
