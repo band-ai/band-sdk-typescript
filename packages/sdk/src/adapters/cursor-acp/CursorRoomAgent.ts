@@ -39,6 +39,7 @@ export interface CursorACPAdapterOptions extends Omit<ACPClientStdioOptions, "co
   questionMode?: CursorQuestionMode;
   planMode?: CursorPlanMode;
   decisionTimeoutMs?: number;
+  /** Unanswered decisions each room may hold; the oldest is ended to make room for a new one. */
   maxPendingDecisions?: number;
   decisionAuthorizedSenders?: readonly string[];
 }
@@ -110,10 +111,6 @@ class CursorExtensions implements ACPClientExtensionHandler {
     return this.adapter?.resolveCursorPermission(request, signal);
   }
 
-  public extensionSessionId(): string | null {
-    return this.adapter?.extensionSessionId() ?? null;
-  }
-
   public async extMethod(
     method: string,
     params: Record<string, unknown>,
@@ -127,7 +124,7 @@ class CursorExtensions implements ACPClientExtensionHandler {
     params: Record<string, unknown>,
     context: ACPClientExtensionContext,
   ): Promise<readonly CollectedChunk[] | void> {
-    const sessionId = context.sessionId ?? this.extensionSessionId();
+    const sessionId = context.sessionId;
     if (!sessionId) {
       return;
     }
@@ -192,10 +189,10 @@ export class CursorRoomAgent extends ACPRoomAgent {
   private readonly authorizedSenders: ReadonlySet<string> | null;
   private readonly decisionLogger: Logger;
   private readonly extensions: CursorExtensions;
-  private readonly turns = new Map<string, CursorTurn>();
+  // This room's running turn. One at a time: another prompt meanwhile is told the turn is in progress.
+  private turn: CursorTurn | null = null;
+  // Per engine, so `maxPendingDecisions` caps each room on its own.
   private readonly decisions: DecisionRegistry<PendingDecision>;
-  private activeTurn: CursorTurn | null = null;
-  private turnTail: Promise<void> = Promise.resolve();
 
   public constructor(options: ACPRoomAgentOptions, settings: CursorDecisionSettings) {
     const extensions = new CursorExtensions();
@@ -229,58 +226,35 @@ export class CursorRoomAgent extends ACPRoomAgent {
     if (await this.handleControl(message, tools, context.roomId)) {
       return;
     }
-    if (this.turns.has(context.roomId)) {
+    if (this.turn) {
       await replyToSender(tools, CURSOR_DECISION_MESSAGES.turnInProgress(), message.senderId);
       return;
     }
     const released = createDeferred<void>();
     const turn: CursorTurn = { messageId: message.id, roomId: context.roomId, tools, requesterId: message.senderId, releaseRoom: released.resolve };
-    // Removing a room waits on its message, so one queued behind another room's turn must not hold it.
-    const queued = this.turns.size > 0;
-    this.turns.set(context.roomId, turn);
-    const run = this.withCursorTurnLock(async () => {
-      if (this.turns.get(turn.roomId) === turn) {
-        await super.onMessage(message, tools, history, participantsMessage, contactsMessage, context);
-      }
-    }).finally(() => this.forgetTurn(turn));
-    if (queued) {
-      turn.releaseRoom();
-    }
+    this.turn = turn;
+    const run = super.onMessage(message, tools, history, participantsMessage, contactsMessage, context)
+      .finally(() => this.forgetTurn(turn));
     await runUntilReleased(run, released.promise, (error) => {
       this.decisionLogger.warn("cursor_acp.released_turn_failed", { roomId: turn.roomId, error: String(error) });
     });
   }
 
-  // Only `turn` itself goes: its room may already hold a newer turn.
+  // Only `turn` itself goes: the room may already hold a newer turn.
   private forgetTurn(turn: CursorTurn): void {
-    if (this.turns.get(turn.roomId) === turn) {
-      this.turns.delete(turn.roomId);
-    }
-    if (this.activeTurn === turn) {
-      this.activeTurn = null;
-    }
-  }
-
-  protected override async onAcpTurnStarted(
-    message: PlatformMessage,
-    tools: AdapterToolsProtocol,
-    context: { isSessionBootstrap: boolean; roomId: string },
-  ): Promise<void> {
-    const turn = this.turns.get(context.roomId);
-    if (turn?.messageId === message.id) {
-      this.activeTurn = turn;
+    if (this.turn === turn) {
+      this.turn = null;
     }
   }
 
   protected override async onAcpSessionReady(
     message: PlatformMessage,
     _tools: AdapterToolsProtocol,
-    context: { isSessionBootstrap: boolean; roomId: string },
+    _context: { isSessionBootstrap: boolean; roomId: string },
     sessionId: string,
   ): Promise<void> {
-    const turn = this.turns.get(context.roomId);
-    if (turn?.messageId === message.id) {
-      turn.sessionId = sessionId;
+    if (this.turn?.messageId === message.id) {
+      this.turn.sessionId = sessionId;
     }
   }
 
@@ -290,7 +264,7 @@ export class CursorRoomAgent extends ACPRoomAgent {
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
     // Forgotten now, so a late Cursor ask finds no turn to attach to.
-    const turn = this.turns.get(context.roomId);
+    const turn = this.turn;
     if (turn?.messageId === message.id) {
       this.forgetTurn(turn);
       this.cancelRoom(context.roomId, END_REASON.turnFinished);
@@ -298,7 +272,7 @@ export class CursorRoomAgent extends ACPRoomAgent {
   }
 
   public override async onCleanup(roomId: string): Promise<void> {
-    const turn = this.turns.get(roomId);
+    const turn = this.turn;
     this.cancelRoom(roomId, END_REASON.roomCleanup);
     if (turn) {
       this.forgetTurn(turn);
@@ -311,8 +285,7 @@ export class CursorRoomAgent extends ACPRoomAgent {
 
   public override async stop(): Promise<void> {
     this.endUnanswered(this.decisions.cancelAll(), END_REASON.stopped);
-    this.turns.clear();
-    this.activeTurn = null;
+    this.turn = null;
     this.extensions.clearSessions();
     await super.stop();
   }
@@ -322,9 +295,10 @@ export class CursorRoomAgent extends ACPRoomAgent {
     params: Record<string, unknown>,
     sessionId: string | null,
   ): Promise<Record<string, unknown>> {
-    const roomId = sessionId ? this.roomIdForSession(sessionId) : this.activeTurn?.roomId;
-    const turn = roomId ? this.turns.get(roomId) : undefined;
-    if (!turn || (sessionId && turn.sessionId !== sessionId)) {
+    const turn = this.turn;
+    // Only the running prompt's own session may ask. A late ask from a finished
+    // prompt can arrive while the next turn is still being established.
+    if (!turn || !sessionId || turn.sessionId !== sessionId) {
       return CANCELLED;
     }
     if (method === "cursor/ask_question") {
@@ -343,17 +317,14 @@ export class CursorRoomAgent extends ACPRoomAgent {
     if (this.approvalMode === "autoDecline") {
       return undefined;
     }
-    const turn = this.turns.get(request.roomId);
+    // `routePermissionRequest` already admits only this room's active session.
+    const turn = this.turn;
     if (!turn) {
       return undefined;
     }
     const options = request.options.map((option) => option.optionId);
     const token = await this.waitForDecision(turn, { kind: DECISION_KIND.permission, choices: new Map([[PERMISSION_CHOICE, options]]), multiSelect: new Set() }, CURSOR_DECISION_MESSAGES.permissionPrompt, signal);
     return typeof token === "string" && options.includes(token) ? token : undefined;
-  }
-
-  public extensionSessionId(): string | null {
-    return this.activeTurn?.sessionId ?? null;
   }
 
   private async resolveQuestion(turn: CursorTurn, params: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -494,12 +465,6 @@ export class CursorRoomAgent extends ACPRoomAgent {
 
   private cancelRoom(roomId: string, reason: EndReason): void {
     this.endUnanswered(this.decisions.cancelRoom(roomId), reason);
-  }
-
-  private async withCursorTurnLock<T>(run: () => Promise<T>): Promise<T> {
-    const queued = this.turnTail.then(run, run);
-    this.turnTail = queued.then(() => undefined, () => undefined);
-    return queued;
   }
 }
 

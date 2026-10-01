@@ -324,6 +324,88 @@ describe("Cursor in a Band room", () => {
     expect(agent.receivedOf("session/new")).toHaveLength(1);
   });
 
+  it("cancels an ask from a finished prompt while the room's next turn is still being established", async () => {
+    await using session = await cursorRoom();
+    const { room, agent } = session;
+    const mode = { questions: [{ id: "mode", options: [{ id: "plan" }] }] };
+    let finished: CursorTurn | undefined;
+    void agent.nextTurn(async (turn) => {
+      finished = turn;
+      throw new Error("model crashed");
+    });
+    expect(await room.outcome(await room.say(OWNER, "Please update the notes"))).toBe("failed");
+
+    // The crash dropped that session, so the next turn waits on a new one.
+    const release = agent.room(DEFAULT_CURSOR_ROOM).holdSessions();
+    const next = agent.nextTurn(async (turn) => turn.sessionId);
+    const message = await room.say(OWNER, "Try again");
+    await vi.waitFor(() => expect(agent.receivedOf("session/new")).toHaveLength(2));
+
+    expect(await finished!.ask({ sessionId: undefined, ...mode })).toEqual(CANCELLED);
+    expect(await finished!.ask(mode)).toEqual(CANCELLED);
+    release();
+    expect(await next).toBe("cursor-session-2");
+    expect(await room.outcome(message)).toBe("processed");
+    expect(room.messages.filter(isPrompt)).toEqual([]);
+  });
+
+  it("drops an ask from a retired Cursor process, even one naming the room's current session", async () => {
+    await using session = await cursorRoom({ turnTimeoutMs: 200 });
+    const { room, agent } = session;
+    const cursor = agent.room(DEFAULT_CURSOR_ROOM);
+    cursor.lingersOnStop = true;
+    let retired: CursorTurn | undefined;
+    void agent.nextTurn(async (turn) => {
+      retired = turn;
+      await new Promise(() => undefined);
+    });
+    expect(await room.outcome(await room.say(OWNER, "Please update the notes"))).toBe("failed");
+
+    const lateAsk = createDeferred<Record<string, unknown>>();
+    const { result, message } = await session.start(async (turn) => {
+      lateAsk.resolve(await retired!.ask({ questions: [{ id: "mode", options: [{ id: "plan" }] }] }));
+      return turn.sessionId;
+    });
+
+    // The new process numbers its sessions from 1 again, so the stale ask names the live session.
+    expect(await result).toBe(retired!.sessionId);
+    expect(cursor.launches).toBe(2);
+    expect(await lateAsk.promise).toEqual({});
+    expect(await room.outcome(message)).toBe("processed");
+    expect(room.messages.filter(isPrompt)).toEqual([]);
+  });
+
+  it("keeps sessionless asks and to-dos in their own room when two rooms' processes use the same session id", async () => {
+    await using session = await cursorRoom();
+    const { room, platform, agent } = session;
+    const otherRoom = await platform.room("room-2");
+    const ask = { sessionId: undefined, questions: [{ id: "mode", options: [{ id: "plan" }, { id: "edit" }] }] };
+    const todo = (content: string) => ({ sessionId: undefined, todos: [{ id: "todo", content, status: "pending" }] });
+    const run = (content: string) => async (turn: CursorTurn) => {
+      await turn.notify("cursor/update_todos", todo(content));
+      return [turn.sessionId, await turn.ask(ask)];
+    };
+
+    const { result: first, message, tokens: [firstToken] } = await session.start(run("room-1 notes"), 1);
+    const second = agent.room("room-2").nextTurn(run("room-2 summary"));
+    const otherMessage = await otherRoom.say(OWNER, "And summarise room-2");
+    const [secondToken] = await promptTokens(otherRoom, 1);
+
+    expect(await room.exchange(OWNER, `${CURSOR_COMMAND} answer ${secondToken} mode=edit`)).toEqual([SAYS.notPending(secondToken!)]);
+    expect(await otherRoom.exchange(OWNER, `${CURSOR_COMMAND} answer ${secondToken} mode=edit`)).toEqual([SAYS.resolved("question", secondToken!)]);
+    expect(await room.exchange(OWNER, `${CURSOR_COMMAND} answer ${firstToken} mode=plan`)).toEqual([SAYS.resolved("question", firstToken!)]);
+    expect(await first).toEqual(["cursor-session-1", answered({ mode: ["plan"] })]);
+    expect(await second).toEqual(["cursor-session-1", answered({ mode: ["edit"] })]);
+
+    expect(await room.outcome(message)).toBe("processed");
+    expect(await otherRoom.outcome(otherMessage)).toBe("processed");
+    // Each turn posts its to-dos once Cursor finishes it.
+    const todos = (target: BandRoom) => target.events("task").map((event) => event.content);
+    await room.until(() => todos(room).includes("- [ ] room-1 notes") && todos(otherRoom).includes("- [ ] room-2 summary"));
+    expect(todos(room)).not.toContain("- [ ] room-2 summary");
+    expect(todos(otherRoom)).not.toContain("- [ ] room-1 notes");
+  });
+
   it("runs a second room's request while the first room's decision is pending, and keeps each room's decisions to itself", async () => {
     await using session = await cursorRoom();
     const { room, platform, agent } = session;

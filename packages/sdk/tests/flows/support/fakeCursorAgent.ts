@@ -95,8 +95,11 @@ export class FakeCursorRoom {
   public launches = 0;
   /** Whether the latest process has been stopped. */
   public stopped = false;
+  /** A process that ignores being stopped keeps talking over its connection. */
+  public lingersOnStop = false;
   private readonly turns: QueuedTurn[] = [];
   private sessions = 0;
+  private sessionGate: Promise<void> | null = null;
   private peer: AgentSideConnection | null = null;
 
   public constructor(private readonly received: RecordLog<Received>) {}
@@ -114,10 +117,22 @@ export class FakeCursorRoom {
       connection,
       stop: async () => {
         this.stopped = true;
-        toAgent.hangUp();
-        toClient.hangUp();
+        if (!this.lingersOnStop) {
+          toAgent.hangUp();
+          toClient.hangUp();
+        }
       },
     });
+  }
+
+  /** Holds every new session until the returned release is called: the room's next turn stays mid-establishment. */
+  public holdSessions(): () => void {
+    const gate = createDeferred<void>();
+    this.sessionGate = gate.promise;
+    return () => {
+      this.sessionGate = null;
+      gate.resolve();
+    };
   }
 
   /** Queues the script the next prompt runs; resolves with what it returned. */
@@ -142,6 +157,7 @@ export class FakeCursorRoom {
       },
       newSession: async (params) => {
         this.record("session/new", params);
+        await this.sessionGate;
         return { sessionId: `cursor-session-${++this.sessions}` };
       },
       prompt: async (params) => {
