@@ -16,22 +16,33 @@ import type {
 
 export class BandACPClient implements Client {
   private readonly sessionChunks = new Map<string, CollectedChunk[]>()
+  private readonly roomId: string
   private readonly permissionHandler: ACPPermissionHandler
   private readonly extensionHandler: ACPClientExtensionHandler | undefined
   // Token, not session id: a timed-out prompt's `finally` must not delete
   // a later prompt that reused the same id.
   private nextPromptToken = 0
   private readonly promptsInFlight = new Map<number, string>()
+  // Set once the engine has moved on from this client's process: whatever a
+  // lingering process still sends must not reach the room.
+  private retired = false
 
   // The handler is connection-scoped and required at construction, so it is
   // already in place before the agent process is spawned: there is no window
-  // in which a `session/request_permission` has nowhere to go.
+  // in which a `session/request_permission` has nowhere to go. `roomId` is the
+  // one room this client's process serves.
   public constructor(
+    roomId: string,
     permissionHandler: ACPPermissionHandler,
     extensionHandler?: ACPClientExtensionHandler,
   ) {
+    this.roomId = roomId
     this.permissionHandler = permissionHandler
     this.extensionHandler = extensionHandler
+  }
+
+  public retire(): void {
+    this.retired = true
   }
 
   public beginSession(sessionId: string): void {
@@ -122,10 +133,13 @@ export class BandACPClient implements Client {
     method: string,
     params: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
+    if (this.retired) {
+      return {}
+    }
     const result = await this.extensionHandler?.extMethod?.(
       method,
       params,
-      { sessionId: sessionIdFrom(params) },
+      { roomId: this.roomId, sessionId: this.attributableSession(sessionIdFrom(params)) },
     )
     return result ?? {}
   }
@@ -134,21 +148,24 @@ export class BandACPClient implements Client {
     method: string,
     params: Record<string, unknown>,
   ): Promise<void> {
-    // Resolved before the handler await. Reading a handler-owned session id
-    // after that await lets another room's session-ready overwrite it.
+    if (this.retired) {
+      return
+    }
+    // Resolved before the handler await, while the prompt it belongs to is
+    // still the one in flight.
     const sessionId = this.attributableSession(sessionIdFrom(params))
     const chunks = await this.extensionHandler?.extNotification?.(
       method,
       params,
-      { sessionId },
+      { roomId: this.roomId, sessionId },
     )
-    const targetSessionId = sessionId ?? this.extensionHandler?.extensionSessionId?.() ?? null
-    if (!targetSessionId || !chunks) {
+    // Chunks with no session to land in are dropped.
+    if (!sessionId || !chunks) {
       return
     }
 
     for (const chunk of chunks) {
-      this.appendChunk(targetSessionId, chunk)
+      this.appendChunk(sessionId, chunk)
     }
   }
 

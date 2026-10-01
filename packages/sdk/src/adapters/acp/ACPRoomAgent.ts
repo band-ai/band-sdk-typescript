@@ -381,7 +381,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
     let sessionId: string | undefined
     let generation = 0
     let releasePrompt: (() => void) | undefined
-    await this.onAcpTurnStarted(message, tools, context)
     try {
       const live = await this.ensureConnection()
       connection = live.connection
@@ -526,12 +525,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
     }
   }
 
-  protected async onAcpTurnStarted(
-    _message: PlatformMessage,
-    _tools: AdapterToolsProtocol,
-    _context: { isSessionBootstrap: boolean; roomId: string },
-  ): Promise<void> {}
-
   protected async onAcpTurnFinished(
     _message: PlatformMessage,
     _tools: AdapterToolsProtocol,
@@ -591,6 +584,8 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
       this.nextRoomGeneration(roomId)
     }
     this.cancelAllPendingPermissions("adapter-stopped")
+
+    live?.client.retire()
 
     if (this.pendingConnectionStop) {
       const stopPending = this.pendingConnectionStop
@@ -704,10 +699,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
     return lines.length > 0 ? lines : null
   }
 
-  protected roomIdForSession(sessionId: string): string | undefined {
-    return [...this.roomToSession.entries()].find(([, owner]) => owner.sessionId === sessionId)?.[0]
-  }
-
   private async ensureConnection(): Promise<LiveConnection> {
     if (this.live && !this.live.connection.signal.aborted) {
       return this.live
@@ -752,6 +743,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
       // serve even exists — no session can out-race its own route.
       const owner = { generation: -1 }
       const client = new BandACPClient(
+        this.roomId,
         (params) => this.routePermissionRequest(params, owner.generation),
         this.extensionHandler,
       )
@@ -981,6 +973,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
 
     this.connectionGeneration++
     this.live = null
+    live.client.retire()
     this.pruneConnectionGeneration(generation)
     abandon(
       () => live.handle.stop(),

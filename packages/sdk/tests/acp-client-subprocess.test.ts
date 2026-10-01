@@ -23,7 +23,7 @@ const TURN_TIMEOUT_MS = 500
 
 // These agents never ask for permission.
 function unusedClient(): BandACPClient {
-  return new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+  return new BandACPClient("room-1", async () => ({ outcome: { outcome: "cancelled" } }))
 }
 
 function fakeAgentAdapter(root: string, options: Partial<ACPClientAdapterOptions> = {}): ACPClientAdapter {

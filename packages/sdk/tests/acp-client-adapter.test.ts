@@ -1141,6 +1141,7 @@ describe("ACPClientAdapter", () => {
 
   it("releasing one prompt does not drop a later prompt that reused the session id", async () => {
     const client = new BandACPClient(
+      "room-1",
       async () => ({ outcome: { outcome: "cancelled" } }),
       {
         async extNotification() {
@@ -1346,7 +1347,7 @@ describe("ACPClientAdapter", () => {
   })
 
   it("a non-streamed chunk closes every open streamed run, not just the one sharing its chunkType", async () => {
-    const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+    const client = new BandACPClient("room-1", async () => ({ outcome: { outcome: "cancelled" } }))
     client.beginSession("session-x")
 
     // Both a text run and a thought run are open when the tool call lands —
@@ -1385,6 +1386,7 @@ describe("ACPClientAdapter", () => {
 
   it("does not merge a streamed text chunk with an adjacent extension chunk sharing the same chunkType", async () => {
     const client = new BandACPClient(
+      "room-1",
       async () => ({ outcome: { outcome: "cancelled" } }),
       {
         extNotification: async () => [{
@@ -1411,6 +1413,7 @@ describe("ACPClientAdapter", () => {
 
   it("does not merge an extension chunk with a streamed text chunk that follows it", async () => {
     const client = new BandACPClient(
+      "room-1",
       async () => ({ outcome: { outcome: "cancelled" } }),
       {
         extNotification: async () => [{
@@ -1437,7 +1440,7 @@ describe("ACPClientAdapter", () => {
 
   it("routes extension chunks to their owning session without merging them into a streamed run", async () => {
     const extension = vi.fn(async (_method: string, _params: Record<string, unknown>, context: { sessionId: string | null }) => {
-      expect(context).toEqual({ sessionId: "session-x" })
+      expect(context).toEqual({ roomId: "room-1", sessionId: "session-x" })
       return [{
         chunkType: "plan" as const,
         content: "- [x] Read the file\n- [ ] Write the fix",
@@ -1446,6 +1449,7 @@ describe("ACPClientAdapter", () => {
       }]
     })
     const client = new BandACPClient(
+      "room-1",
       async () => ({ outcome: { outcome: "cancelled" } }),
       { extNotification: extension },
     )
@@ -1469,7 +1473,7 @@ describe("ACPClientAdapter", () => {
   })
 
   it("keeps vendor extensions inert unless an extension handler is configured", async () => {
-    const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+    const client = new BandACPClient("room-1", async () => ({ outcome: { outcome: "cancelled" } }))
 
     await client.extNotification("vendor/update_todos", { sessionId: "session-x", todos: [{ content: "ignored" }] })
 
@@ -1478,10 +1482,11 @@ describe("ACPClientAdapter", () => {
 
   it("routes extension methods with their session context and preserves the no-op fallback", async () => {
     const method = vi.fn(async (_name: string, _params: Record<string, unknown>, context: { sessionId: string | null }) => {
-      expect(context).toEqual({ sessionId: "session-x" })
+      expect(context).toEqual({ roomId: "room-1", sessionId: "session-x" })
       return { outcome: { type: "handled" } }
     })
     const client = new BandACPClient(
+      "room-1",
       async () => ({ outcome: { outcome: "cancelled" } }),
       { extMethod: method },
     )
@@ -1489,12 +1494,74 @@ describe("ACPClientAdapter", () => {
     await expect(client.extMethod("vendor/decision", { session_id: "session-x" })).resolves.toEqual({
       outcome: { type: "handled" },
     })
-    await expect(new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+    await expect(new BandACPClient("room-1", async () => ({ outcome: { outcome: "cancelled" } }))
       .extMethod("vendor/decision", {})).resolves.toEqual({})
   })
 
+  describe("extension call attribution", () => {
+    const PLAN = { chunkType: "plan" as const, content: "- [ ] step", metadata: {}, streamed: false }
+
+    function attributingClient() {
+      const contexts: unknown[] = []
+      const client = new BandACPClient("room-1", async () => ({ outcome: { outcome: "cancelled" } }), {
+        extMethod: async (_method, _params, context) => {
+          contexts.push(context)
+          return { handled: true }
+        },
+        extNotification: async (_method, _params, context) => {
+          contexts.push(context)
+          return [PLAN]
+        },
+      })
+      return { client, contexts }
+    }
+
+    it("gives a sessionless call the one prompt in flight, and its room", async () => {
+      const { client, contexts } = attributingClient()
+      client.beginSession("s-a")
+      const prompt = client.enterPromptSession("s-a")
+
+      await client.extMethod("vendor/ask", {})
+      await client.extNotification("vendor/todos", {})
+      prompt.release()
+
+      expect(contexts).toEqual([{ roomId: "room-1", sessionId: "s-a" }, { roomId: "room-1", sessionId: "s-a" }])
+      expect(client.getCollectedChunks("s-a").map((chunk) => chunk.content)).toEqual([PLAN.content])
+    })
+
+    it.each([
+      { case: "no prompt is in flight", inFlight: [] },
+      { case: "two prompts are in flight", inFlight: ["s-a", "s-b"] },
+    ])("attributes a sessionless call to no session when $case, and drops its chunks", async ({ inFlight }) => {
+      const { client, contexts } = attributingClient()
+      client.beginSession("s-a")
+      client.beginSession("s-b")
+      for (const sessionId of inFlight) {
+        client.enterPromptSession(sessionId)
+      }
+
+      await client.extMethod("vendor/ask", {})
+      await client.extNotification("vendor/todos", {})
+
+      expect(contexts).toEqual([{ roomId: "room-1", sessionId: null }, { roomId: "room-1", sessionId: null }])
+      expect(client.getCollectedChunks()).toEqual([])
+    })
+
+    it("forwards nothing once retired", async () => {
+      const { client, contexts } = attributingClient()
+      client.beginSession("s-a")
+      client.retire()
+
+      await expect(client.extMethod("vendor/ask", { sessionId: "s-a" })).resolves.toEqual({})
+      await client.extNotification("vendor/todos", { sessionId: "s-a" })
+
+      expect(contexts).toEqual([])
+      expect(client.getCollectedChunks("s-a")).toEqual([])
+    })
+  })
+
   it("BandACPClient.getCollectedChunks() with no sessionId coalesces each session independently, not across sessions", async () => {
-    const client = new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
+    const client = new BandACPClient("room-1", async () => ({ outcome: { outcome: "cancelled" } }))
     client.beginSession("session-a")
     client.beginSession("session-b")
 

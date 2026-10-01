@@ -11,7 +11,7 @@ import type * as schema from "@agentclientprotocol/sdk";
 
 import type { ACPClientConnectionFactory } from "../../../src/adapters/acp/types";
 import { createDeferred, type Deferred } from "../../../src/core/deferred";
-import { RecordLog } from "../../testUtils";
+import { CallHolds, RecordLog, type HeldCall } from "../../testUtils";
 
 export interface Received {
   readonly method: string;
@@ -95,8 +95,11 @@ export class FakeCursorRoom {
   public launches = 0;
   /** Whether the latest process has been stopped. */
   public stopped = false;
+  /** A process that ignores being stopped keeps talking over its connection. */
+  public lingersOnStop = false;
   private readonly turns: QueuedTurn[] = [];
   private sessions = 0;
+  private readonly sessionHolds = new CallHolds<[]>();
   private peer: AgentSideConnection | null = null;
 
   public constructor(private readonly received: RecordLog<Received>) {}
@@ -114,10 +117,17 @@ export class FakeCursorRoom {
       connection,
       stop: async () => {
         this.stopped = true;
-        toAgent.hangUp();
-        toClient.hangUp();
+        if (!this.lingersOnStop) {
+          toAgent.hangUp();
+          toClient.hangUp();
+        }
       },
     });
+  }
+
+  /** Holds the next new session until released: the room's next turn stays mid-establishment. */
+  public holdSession(): HeldCall<[]> {
+    return this.sessionHolds.hold(() => true);
   }
 
   /** Queues the script the next prompt runs; resolves with what it returned. */
@@ -142,6 +152,7 @@ export class FakeCursorRoom {
       },
       newSession: async (params) => {
         this.record("session/new", params);
+        await this.sessionHolds.pass();
         return { sessionId: `cursor-session-${++this.sessions}` };
       },
       prompt: async (params) => {
