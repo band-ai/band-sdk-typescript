@@ -164,7 +164,9 @@ withAdapters(
       expect(gate.deniedGuardedFile, "the delete was routed through session/request_permission").toBe(true);
       expect(await readFile(guardedFile, TEXT), "the denied delete left the file intact").toBe(GUARDED_FILE_CONTENTS);
     } catch (error) {
-      console.warn("ompAcp.permissionGate: OMP's tool calls", await ompToolLog(cell!.workDir));
+      // A transcript still being appended to after a stalled turn must not mask the real failure.
+      const toolLog = await ompToolLog(cell!.workDir).catch((logError: unknown) => `unreadable: ${String(logError)}`);
+      console.warn("ompAcp.permissionGate: OMP's tool calls", toolLog);
       throw error;
     }
   },
