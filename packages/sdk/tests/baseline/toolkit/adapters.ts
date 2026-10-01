@@ -176,7 +176,7 @@ const SPECS = {
       // A hosted Copilot token, or the BYOK provider CI configures.
       requires.anyEnvVar("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "COPILOT_PROVIDER_BASE_URL"),
     ],
-    supports: [],
+    supports: [CAPABILITY.roomWorkspaces],
     build: ({ prompt, workDir }) =>
       new CopilotACPAdapter({
         cwd: workDir,
@@ -244,7 +244,7 @@ const SPECS = {
   ompAcp: {
     id: "omp-acp",
     requires: [ACP_SDK, requires.cli(DEFAULT_OMP_ACP_COMMAND[0]), GOOGLE_KEY],
-    supports: [],
+    supports: [CAPABILITY.roomWorkspaces],
     build: (options) => buildOmp(options),
   },
   openai: {
