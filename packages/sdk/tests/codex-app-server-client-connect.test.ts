@@ -23,6 +23,8 @@ interface FakeProc extends EventEmitter {
     setEncoding: ReturnType<typeof vi.fn>;
   };
   kill: ReturnType<typeof vi.fn>;
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
 }
 
 function makeProc(): FakeProc {
@@ -38,6 +40,8 @@ function makeProc(): FakeProc {
   proc.stderr = new EventEmitter() as FakeProc["stderr"];
   proc.stderr.setEncoding = vi.fn();
   proc.kill = vi.fn();
+  proc.exitCode = null;
+  proc.signalCode = null;
   return proc;
 }
 

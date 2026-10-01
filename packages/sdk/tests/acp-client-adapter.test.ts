@@ -11,12 +11,9 @@ import {
   type ACPClientAdapterOptions,
 } from "../src/adapters/acp";
 import { BandACPClient } from "../src/adapters/acp/client";
-import { FakeTools, expectTurnFailed, findFailureEvent, makeMessage } from "./testUtils";
+import { BandMcpServer } from "../src/mcp/server";
+import { CallHolds, FakeTools, expectTurnFailed, findFailureEvent, makeLoggerSpy, makeMessage } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
-
-function makeLoggerSpy() {
-  return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
-}
 
 function requireAcpClient(client: BandACPClient | null): BandACPClient {
   if (!client) {
@@ -4855,6 +4852,45 @@ describe("ACP client transports", () => {
     } finally {
       await adapter.stop()
       await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+})
+
+describe("ACPClientAdapter MCP backend lifecycle", () => {
+  it("stops a backend that finishes starting after stop()", async () => {
+    // Holds the real `start` open until `stop()` has fully returned.
+    const startHolds = new CallHolds<[]>()
+    const heldStart = startHolds.hold(() => true)
+    let boundPort: number | null = null
+    const realStart = BandMcpServer.prototype.start
+    const startSpy = vi.spyOn(BandMcpServer.prototype, "start").mockImplementation(async function (this: BandMcpServer) {
+      await startHolds.pass()
+      await realStart.call(this)
+      boundPort = this.port
+    })
+
+    const adapter = new ACPClientAdapter({
+      command: ["acp-agent"],
+      connectionFactory: async () => buildMockConnection({
+        agentCapabilities: { mcpCapabilities: { http: true } },
+        loadSession: vi.fn(async () => ({})),
+        newSession: vi.fn(async () => ({ sessionId: "session-1" })),
+        prompt: vi.fn(async () => ({ stopReason: "end_turn" })),
+      }),
+    })
+    try {
+      const turn = send(adapter).catch(() => undefined)
+      await heldStart.sending
+
+      await adapter.stop()
+      heldStart.release()
+      await turn
+
+      expect(boundPort).toEqual(expect.any(Number))
+      await expect(fetch(`http://127.0.0.1:${boundPort}/healthz`)).rejects.toThrow()
+    } finally {
+      startSpy.mockRestore()
+      await adapter.stop()
     }
   })
 })

@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { createConnection } from "node:net";
+import { createInterface } from "node:readline";
 import { Duplex, Readable, Writable } from "node:stream";
 
 import type {
@@ -46,9 +48,7 @@ import { isBlankEventContent } from "../../contracts/chatEvents";
 import type { PlatformMessage } from "../../runtime/types";
 import type { McpToolRegistration } from "../../mcp/registrations";
 import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
-import { generateAuthToken } from "../../mcp/auth";
-import { BandMcpServer } from "../../mcp/server";
-import { BandMcpSseServer } from "../../mcp/sse";
+import { createBandMcpBackend, type BandMcpBackend } from "../../mcp/backends";
 import {
   BandACPClient,
 } from "./client";
@@ -62,21 +62,8 @@ import {
   type ACPPermissionEndReason,
   type ACPPermissionRequest,
 } from "./types";
+import { stopChildProcess } from "../shared/stopChildProcess";
 import { acpModule } from "./loader";
-
-type InjectedMcpBackend =
-  | {
-    kind: "http";
-    server: BandMcpServer;
-    authToken: string;
-    stop(): Promise<void>;
-  }
-  | {
-    kind: "sse";
-    server: BandMcpSseServer;
-    authToken: string;
-    stop(): Promise<void>;
-  }
 
 interface ConnectionRetirement {
   promise: Promise<never>;
@@ -146,6 +133,7 @@ const MIN_TCP_PORT = 1;
 const MAX_TCP_PORT = 65_535;
 const CONNECTION_ATTEMPT_SUPERSEDED_ERROR = "ACP connection attempt superseded by stop()";
 const TCP_CONNECTION_ATTEMPT_ABORTED_ERROR = "ACP TCP connection attempt aborted";
+const BACKEND_AFTER_STOP_ERROR = "ACP adapter stopped while its MCP backend was starting";
 
 export interface ACPModeRequest {
   roomId: string;
@@ -315,8 +303,8 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   private readonly logger: Logger
   private readonly customSection?: string
 
-  private backend: InjectedMcpBackend | null = null
-  private backendPromise: Promise<InjectedMcpBackend> | null = null
+  private backend: BandMcpBackend | null = null
+  private backendPromise: Promise<BandMcpBackend> | null = null
   private client: BandACPClient | null = null
   private connectionHandle: ACPClientConnectionHandle | null = null
   private pendingConnectionStop: (() => Promise<void>) | null = null
@@ -898,6 +886,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
             command: this.command,
             cwd: this.cwd,
             env: this.env,
+            logger: this.logger,
           }))
       const connection = handle.connection
       if (attempt.signal.aborted) {
@@ -1476,7 +1465,7 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     return mcpServers
   }
 
-  private async getOrCreateBackend(): Promise<InjectedMcpBackend> {
+  private async getOrCreateBackend(): Promise<BandMcpBackend> {
     if (this.backend) {
       return this.backend
     }
@@ -1487,58 +1476,36 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     return this.backendPromise
   }
 
-  private async createBackend(): Promise<InjectedMcpBackend> {
-    const mcpCapabilities = this.connectionState?.agentCapabilities?.mcpCapabilities
-    const transport = mcpCapabilities?.http ? "http" : (mcpCapabilities?.sse ? "sse" : null)
-
-    if (transport === null) {
-      throw new Error(
-        "ACP agent does not advertise MCP transport support: its initialize response has "
-        + "mcpCapabilities.http and .sse both false or missing, so Band tools cannot be "
-        + "exposed to it over MCP.",
-      )
-    }
-
-    const authToken = generateAuthToken()
-
-    if (transport === "sse") {
-      const server = new BandMcpSseServer({
-        tools: (roomId) => this.roomTools.get(roomId),
-        enableMemoryTools: this.enableMemoryTools,
-        enableContactTools: true,
-        additionalTools: this.additionalMcpTools,
-        authToken,
-      })
-      await server.start()
-      this.backend = {
-        kind: "sse",
-        server,
-        authToken,
-        stop: async () => {
-          await server.stop()
-        },
-      }
-      return this.backend
-    }
-
-    const server = new BandMcpServer({
-      tools: (roomId) => this.roomTools.get(roomId),
+  private async createBackend(): Promise<BandMcpBackend> {
+    const backend = await createBandMcpBackend({
+      kind: this.mcpTransport(),
       enableMemoryTools: this.enableMemoryTools,
-      enableContactTools: true,
+      getToolsForRoom: (roomId) => this.roomTools.get(roomId),
       additionalTools: this.additionalMcpTools,
-      authToken,
     })
-    await server.start()
-    this.backend = {
-      kind: "http",
-      server,
-      authToken,
-      stop: async () => {
-        await server.stop()
-      },
+    // A turn still in flight can finish creating its backend after `stop()`;
+    // installing it then would leave its listener open with no owner.
+    if (!this.started) {
+      await backend.stop()
+      throw new Error(BACKEND_AFTER_STOP_ERROR)
     }
+    this.backend = backend
+    return backend
+  }
 
-    return this.backend
+  private mcpTransport(): "http" | "sse" {
+    const mcpCapabilities = this.connectionState?.agentCapabilities?.mcpCapabilities
+    if (mcpCapabilities?.http) {
+      return "http"
+    }
+    if (mcpCapabilities?.sse) {
+      return "sse"
+    }
+    throw new Error(
+      "ACP agent does not advertise MCP transport support: its initialize response has "
+      + "mcpCapabilities.http and .sse both false or missing, so Band tools cannot be "
+      + "exposed to it over MCP.",
+    )
   }
 
   private buildSystemContext(roomId: string, message: PlatformMessage): string {
@@ -1915,9 +1882,11 @@ export async function createSubprocessConnection(
     command: string[];
     cwd?: string;
     env?: Record<string, string>;
+    logger?: Logger;
   },
 ): Promise<ACPClientConnectionHandle> {
   const acp = await acpModule.get()
+  const logger = resolveLogger(options.logger)
   const child = spawn(options.command[0], options.command.slice(1), {
     cwd: options.cwd,
     env: {
@@ -1927,9 +1896,13 @@ export async function createSubprocessConnection(
     stdio: ["pipe", "pipe", "pipe"],
   })
 
-  if (!child.stdin || !child.stdout) {
-    throw new Error("ACP subprocess did not expose stdio pipes")
-  }
+  // `once` rejects on the child's `error` event, so a missing binary fails this
+  // connection instead of surfacing as an uncaught ENOENT.
+  await once(child, "spawn")
+  child.on("error", (error) => logger.warn("acp_client.subprocess_error", { error: error.message }))
+  // An unread stderr pipe fills up and blocks the agent.
+  createInterface({ input: child.stderr, crlfDelay: Number.POSITIVE_INFINITY })
+    .on("line", (line) => logger.debug("acp_client.subprocess_stderr", { line }))
 
   const stream = acp.ndJsonStream(
     Writable.toWeb(child.stdin),
@@ -1940,36 +1913,7 @@ export async function createSubprocessConnection(
 
   return {
     connection,
-    stop: async () => {
-      await new Promise<void>((resolve) => {
-        if (child.exitCode !== null || child.signalCode !== null) {
-          resolve()
-          return
-        }
-
-        let settled = false
-        const finish = (): void => {
-          if (settled) {
-            return
-          }
-          settled = true
-          child.off("exit", finish)
-          child.off("close", finish)
-          resolve()
-        }
-
-        child.once("exit", finish)
-        child.once("close", finish)
-
-        if (!child.killed) {
-          child.kill()
-        }
-
-        if (child.exitCode !== null || child.signalCode !== null) {
-          finish()
-        }
-      })
-    },
+    stop: () => stopChildProcess(child),
   }
 }
 

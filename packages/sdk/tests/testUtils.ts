@@ -1,9 +1,9 @@
 import { ProviderTurnFailedError } from "../src/core/providerFailure";
-import { expect } from "vitest";
+import { expect, vi, type Mock } from "vitest";
 import { ParticipantRoster, type AgentFailure } from "@band-ai/band-sdk-core";
 import type { PlatformMessage } from "../src/runtime";
 import type { ToolCallingModel } from "../src/adapters";
-import type { AgentToolsProtocol } from "../src/core";
+import type { AgentToolsProtocol, Logger } from "../src/core";
 import { DEFAULT_AGENT_TOOLS_CAPABILITIES, FAILURE_EVENT_TYPE, toFailureEvent } from "../src/contracts/protocols";
 import { isBlankEventContent } from "../src/contracts/chatEvents";
 import { createDeferred, type Deferred } from "../src/core/deferred";
@@ -573,6 +573,11 @@ export class FakeRestApi implements RestApi {
  */
 export async function expectTurnFailed(turn: Promise<unknown>): Promise<void> {
   await expect(turn).rejects.toBeInstanceOf(ProviderTurnFailedError);
+}
+
+/** A `Logger` whose every level is a spy. */
+export function makeLoggerSpy(): Record<keyof Logger, Mock> {
+  return { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 }
 
 /** A turn budget short enough for a test on real timers to outlive. */
