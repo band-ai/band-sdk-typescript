@@ -7,13 +7,13 @@ import { resolveLogger, type Logger } from "../../core/logger";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { PlatformMessage } from "../../runtime/types";
 import type { ACPClientSessionState } from "../../converters/acp-client";
-import {
-  ACPClientAdapter,
-  type ACPClientExtensionContext,
-  type ACPClientExtensionHandler,
-  type ACPClientStdioOptions,
-  type ACPPermissionRequest,
+import type {
+  ACPClientExtensionContext,
+  ACPClientExtensionHandler,
+  ACPClientStdioOptions,
+  ACPPermissionRequest,
 } from "../acp";
+import { ACPRoomAgent, type ACPRoomAgentOptions } from "../acp/ACPRoomAgent";
 import type { ACPPermissionAbandonReason, ACPPermissionEndReason, CollectedChunk } from "../acp/types";
 import { abandon } from "../shared/abandon";
 import { DecisionRegistry, senderAllowlist, TIMED_OUT, type DecisionEntry } from "../shared/decisions";
@@ -178,8 +178,7 @@ class CursorExtensions implements ACPClientExtensionHandler {
   }
 }
 
-export class CursorRoomAgent extends ACPClientAdapter {
-  protected readonly provider = "cursor-acp";
+export class CursorRoomAgent extends ACPRoomAgent {
   private readonly approvalMode: CursorApprovalMode;
   private readonly questionMode: CursorQuestionMode;
   private readonly planMode: CursorPlanMode;
@@ -192,28 +191,24 @@ export class CursorRoomAgent extends ACPClientAdapter {
   private activeTurn: CursorTurn | null = null;
   private turnTail: Promise<void> = Promise.resolve();
 
-  public constructor(options: CursorACPAdapterOptions = {}) {
+  // `options` is the room's ACP engine config; `settings` the adapter's Cursor options.
+  public constructor(options: ACPRoomAgentOptions, settings: CursorACPAdapterOptions) {
     const extensions = new CursorExtensions();
-    validateOptions(options);
-    const env = cursorEnv(options);
     super({
       ...options,
-      env,
-      command: options.command ?? [...DEFAULT_CURSOR_ACP_COMMAND],
-      authMethod: "cursor_login",
       extensionHandler: extensions,
       resolvePermission: (request, signal) => extensions.resolvePermission(request, signal),
     });
     extensions.bind(this);
     this.extensions = extensions;
-    this.approvalMode = options.approvalMode ?? "manual";
-    this.questionMode = options.questionMode ?? "manual";
-    this.planMode = options.planMode ?? "manual";
-    this.decisionTimeoutMs = options.decisionTimeoutMs ?? DEFAULT_CURSOR_DECISION_TIMEOUT_MS;
-    this.authorizedSenders = senderAllowlist(options.decisionAuthorizedSenders);
-    this.decisionLogger = resolveLogger(options.logger);
+    this.approvalMode = settings.approvalMode ?? "manual";
+    this.questionMode = settings.questionMode ?? "manual";
+    this.planMode = settings.planMode ?? "manual";
+    this.decisionTimeoutMs = settings.decisionTimeoutMs ?? DEFAULT_CURSOR_DECISION_TIMEOUT_MS;
+    this.authorizedSenders = senderAllowlist(settings.decisionAuthorizedSenders);
+    this.decisionLogger = resolveLogger(settings.logger);
     this.decisions = new DecisionRegistry({
-      maxPending: options.maxPendingDecisions ?? DEFAULT_CURSOR_MAX_PENDING_DECISIONS,
+      maxPending: settings.maxPendingDecisions ?? DEFAULT_CURSOR_MAX_PENDING_DECISIONS,
       logger: this.decisionLogger,
     });
   }
@@ -507,20 +502,6 @@ interface CursorTodo {
   id: string;
   content: string;
   status: string;
-}
-
-function cursorEnv(options: CursorACPAdapterOptions): Record<string, string> | undefined {
-  const env = { ...options.env };
-  if (options.apiKey) env.CURSOR_API_KEY ??= options.apiKey;
-  if (options.authToken) env.CURSOR_AUTH_TOKEN ??= options.authToken;
-  return Object.keys(env).length > 0 ? env : undefined;
-}
-
-function validateOptions(options: CursorACPAdapterOptions): void {
-  if (options.apiKey && options.authToken) throw new Error("set either apiKey or authToken, not both");
-  if (Array.isArray(options.command) && options.command.length === 0) throw new Error("Cursor ACP command must not be empty");
-  if (options.decisionTimeoutMs !== undefined && (!Number.isFinite(options.decisionTimeoutMs) || options.decisionTimeoutMs <= 0)) throw new Error("decisionTimeoutMs must be a positive finite number");
-  if (options.maxPendingDecisions !== undefined && (!Number.isInteger(options.maxPendingDecisions) || options.maxPendingDecisions <= 0)) throw new Error("maxPendingDecisions must be a positive integer");
 }
 
 function allowOption(options: readonly PermissionOption[]): PermissionOption | undefined {

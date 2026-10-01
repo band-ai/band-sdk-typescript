@@ -6,7 +6,7 @@ import {
   type CopilotACPAdapterOptions,
 } from "../../src/index";
 
-/** Copilot ACP adapter options (see README for common fields: `cwd`, `customSection`). */
+/** Copilot ACP adapter options (see README for common fields: `cwd`, the root of each room's workspace, and `customSection`). */
 export type CopilotACPExampleOptions = CopilotACPAdapterOptions;
 
 export function buildCopilotACPExampleAdapter(

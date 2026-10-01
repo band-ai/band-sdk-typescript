@@ -1,12 +1,10 @@
-export {
-  ACPRoomAgent as ACPClientAdapter,
-  createTcpConnection,
-  type ACPClientAdapterOptions,
-  type ACPClientAdapterBaseOptions,
-  type ACPClientStdioOptions,
-  type ACPClientTcpOptions,
-  type ACPConfigRequest,
-  type ACPConfigSelections,
+export { ACPClientAdapter } from "./ACPClientAdapter";
+export type {
+  ACPClientAdapterOptions,
+  ACPClientAdapterBaseOptions,
+  ACPClientStdioOptions,
+  ACPConfigRequest,
+  ACPConfigSelections,
 } from "./ACPRoomAgent";
 
 export {
@@ -23,7 +21,6 @@ export type {
   ACPPermissionAbandonReason,
   ACPPermissionEndReason,
   ACPPermissionRequest,
-  ACPClientTcpEndpoint,
   ACPClientExtensionContext,
   ACPClientExtensionHandler,
 } from "./types";

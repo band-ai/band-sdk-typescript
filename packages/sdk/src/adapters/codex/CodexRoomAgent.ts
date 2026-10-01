@@ -10,6 +10,7 @@ import {
 } from "../../contracts/protocols";
 import type { MentionInput } from "../../contracts/dtos";
 import type { Logger } from "../../core/logger";
+import type { WorkspaceForRoom } from "../shared/roomWorkspace";
 import { resolveLogger } from "../../core/logger";
 import { rethrowIfRecoverableTurnFailure } from "../../core/errors";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
@@ -76,7 +77,10 @@ export type CodexReasoningEffort = (typeof CODEX_REASONING_EFFORTS)[number];
 
 export interface CodexAdapterConfig {
   model?: string;
+  /** Root for each room's workspace, `<cwd>/.band-workspaces/<roomId>`. Defaults to `process.cwd()`. */
   cwd?: string;
+  /** Replaces the per-room workspace layout; must return an absolute path. Cannot be combined with `cwd`. */
+  workspaceForRoom?: WorkspaceForRoom;
   approvalPolicy?: CodexApprovalPolicy;
   sandboxMode?: CodexSandboxMode;
   reasoningEffort?: CodexReasoningEffort;
@@ -106,11 +110,10 @@ export interface CodexAdapterConfig {
   codexEnv?: Record<string, string>;
 }
 
-interface CodexFactory {
-  (): Promise<CodexClientLike>;
-}
+/** Called once per room; must return a client dedicated to that room, running in `cwd`. */
+export type CodexFactory = (context: { roomId: string; cwd: string }) => Promise<CodexClientLike>;
 
-interface CodexAdapterOptions {
+export interface CodexAdapterOptions {
   config?: CodexAdapterConfig;
   customTools?: CustomToolDef[];
   includeMemoryTools?: boolean;
@@ -144,8 +147,16 @@ class CodexTurnTimeoutError extends Error {
   }
 }
 
+/** One room's Codex engine: the adapter's options, bound to that room's workspace. */
+export interface CodexRoomAgentOptions extends CodexAdapterOptions {
+  roomId: string;
+  config: CodexAdapterConfig & { cwd: string };
+}
+
 export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsProtocol> {
   protected readonly provider = "codex";
+  private readonly roomId: string;
+  private readonly cwd: string;
 
   private readonly baseConfig: CodexAdapterConfig;
   private readonly roomConfigOverrides = new Map<string, Partial<CodexAdapterConfig>>();
@@ -163,8 +174,10 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
   private readonly needsHistoryInjection = new Set<string>();
   private systemPrompt: string | null = null;
 
-  public constructor(options?: CodexAdapterOptions) {
+  public constructor(options: CodexRoomAgentOptions) {
     super();
+    this.roomId = options.roomId;
+    this.cwd = options.config.cwd;
     this.baseConfig = {
       approvalPolicy: "never",
       sandboxMode: "workspace-write",
@@ -179,20 +192,19 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
       clientTitle: "Band Codex Adapter",
       clientVersion: "0.1.0",
       turnTimeoutMs: 180_000,
-      ...options?.config,
+      ...options.config,
     };
-    this.customTools = options?.customTools ?? [];
+    this.customTools = options.customTools ?? [];
     this.customToolIndex = buildCustomToolIndex(this.customTools);
-    this.includeMemoryTools = options?.includeMemoryTools ?? false;
-    this.factoryOverride = options?.factory;
-    this.logger = resolveLogger(options?.logger);
-    this.debugEnabled = options?.config?.debug ?? false;
+    this.includeMemoryTools = options.includeMemoryTools ?? false;
+    this.factoryOverride = options.factory;
+    this.logger = resolveLogger(options.logger);
+    this.debugEnabled = options.config.debug ?? false;
   }
 
   public override async onStarted(agentName: string, agentDescription: string): Promise<void> {
     await super.onStarted(agentName, agentDescription);
     this.ensureSystemPrompt();
-    await this.ensureClient();
   }
 
   public async onMessage(
@@ -588,7 +600,8 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
 
     this.clientPromise = (async (): Promise<CodexClientLike> => {
       try {
-        const client = await (this.factoryOverride ?? loadCodexFactory(this.baseConfig, this.logger))();
+        const factory = this.factoryOverride ?? loadCodexFactory(this.baseConfig, this.logger);
+        const client = await factory({ roomId: this.roomId, cwd: this.cwd });
         await client.connect();
         await client.initialize({
           clientInfo: {
@@ -1500,14 +1513,14 @@ function loadCodexFactory(
   config: CodexAdapterConfig,
   logger: Logger,
 ): CodexFactory {
-  return async () => {
+  return async ({ cwd }) => {
     if (config.codexCommand && config.codexCommand.length === 0) {
       throw new Error("Codex app-server command is empty");
     }
 
     return new CodexAppServerStdioClient({
       command: config.codexCommand,
-      cwd: config.cwd,
+      cwd,
       env: config.codexEnv,
       logger,
     });

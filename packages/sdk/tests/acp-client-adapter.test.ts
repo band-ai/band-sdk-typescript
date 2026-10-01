@@ -1,18 +1,19 @@
-import { once } from "node:events";
-import { createServer } from "node:net";
+import { realpathSync } from "node:fs";
+import path from "node:path";
 
 import type { Client } from "@agentclientprotocol/sdk";
+import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { describe, expect, it, vi } from "vitest";
 
 import {
   ACPClientAdapter,
   FAILURE_CODE_SESSION_CONFIG,
-  createTcpConnection,
   type ACPClientAdapterOptions,
 } from "../src/adapters/acp";
 import { BandACPClient } from "../src/adapters/acp/client";
 import { BandMcpServer } from "../src/mcp/server";
-import { CallHolds, FakeTools, expectTurnFailed, findFailureEvent, makeLoggerSpy, makeMessage } from "./testUtils";
+import { CallHolds, FakeTools, expectTurnFailed, findFailureEvent, makeLoggerSpy, makeMessage, roomWorkspacePath, tmpRoot } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
 
 function requireAcpClient(client: BandACPClient | null): BandACPClient {
@@ -171,7 +172,9 @@ describe("ACPClientAdapter", () => {
       }
     })
 
+    const root = tmpRoot()
     const adapter = new ACPClientAdapter({
+      cwd: root,
       command: ["acp-agent"],
       authMethod: "api_key",
       connectionFactory: async (client) => {
@@ -215,7 +218,7 @@ describe("ACPClientAdapter", () => {
     expect(authenticate).toHaveBeenCalledWith({ methodId: "api_key" })
     expect(loadSession).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: "session-restored",
-      cwd: process.cwd(),
+      cwd: roomWorkspacePath(root, "room-restored"),
       mcpServers: expect.arrayContaining([
         expect.objectContaining({
           type: "http",
@@ -270,34 +273,30 @@ describe("ACPClientAdapter", () => {
     expect(promptTexts[2]).not.toContain("[System Context]")
   })
 
-  it("resolves a per-room cwd via workspaceForRoom for both restored and freshly created sessions", async () => {
+  it("runs restored and fresh sessions in the folder workspaceForRoom names for each room", async () => {
     const loadSessionCalls: Array<{ cwd?: string }> = []
     const newSessionCalls: Array<{ cwd?: string }> = []
-    const loadSession = vi.fn(async (params?: { cwd?: string }) => {
-      loadSessionCalls.push(params ?? {})
-      return {}
-    })
-    const newSession = vi.fn(async (params?: { cwd?: string }) => {
-      newSessionCalls.push(params ?? {})
-      return { sessionId: "session-fresh" }
-    })
-    const prompt = vi.fn(async () => ({ stopReason: "end_turn" }))
-
-    const workspaces: Record<string, string> = {
-      "room-restore": "/workspaces/room-restore",
-      "room-fresh": "/workspaces/room-fresh",
-    }
+    const factoryCwds: Array<string | undefined> = []
+    const root = tmpRoot()
     const adapter = new ACPClientAdapter({
       command: ["acp-agent"],
       enableMcpTools: false,
-      cwd: "/adapter/default/cwd",
-      workspaceForRoom: (roomId) => workspaces[roomId] ?? "/adapter/default/cwd",
-      connectionFactory: async () => buildMockConnection({
-        agentCapabilities: { loadSession: true },
-        loadSession,
-        newSession,
-        prompt,
-      }),
+      workspaceForRoom: (roomId) => path.join(root, "custom", roomId),
+      connectionFactory: async (_client, options) => {
+        factoryCwds.push(options.cwd)
+        return buildMockConnection({
+          agentCapabilities: { loadSession: true },
+          loadSession: vi.fn(async (params?: { cwd?: string }) => {
+            loadSessionCalls.push(params ?? {})
+            return {}
+          }),
+          newSession: vi.fn(async (params?: { cwd?: string }) => {
+            newSessionCalls.push(params ?? {})
+            return { sessionId: "session-fresh" }
+          }),
+          prompt: vi.fn(async () => ({ stopReason: "end_turn" })),
+        })
+      },
     })
 
     await adapter.onStarted("Agent", "desc")
@@ -318,33 +317,48 @@ describe("ACPClientAdapter", () => {
       { isSessionBootstrap: true, roomId: "room-fresh" },
     )
 
-    expect(loadSessionCalls[0]?.cwd).toBe("/workspaces/room-restore")
-    expect(newSessionCalls[0]?.cwd).toBe("/workspaces/room-fresh")
+    const restoreDir = path.join(realpathSync(root), "custom", "room-restore")
+    const freshDir = path.join(realpathSync(root), "custom", "room-fresh")
+    expect(loadSessionCalls[0]?.cwd).toBe(restoreDir)
+    expect(newSessionCalls[0]?.cwd).toBe(freshDir)
+    expect(factoryCwds).toEqual([restoreDir, freshDir])
+    await adapter.stop()
   })
 
-  it("falls back to the adapter-wide cwd for every room when workspaceForRoom is unset", async () => {
+  it("puts each room in its own folder under cwd when workspaceForRoom is unset", async () => {
     const newSessionCalls: Array<{ cwd?: string }> = []
-    const newSession = vi.fn(async (params?: { cwd?: string }) => {
-      newSessionCalls.push(params ?? {})
-      return { sessionId: "session-fresh" }
-    })
-    const prompt = vi.fn(async () => ({ stopReason: "end_turn" }))
-
+    const root = tmpRoot()
     const adapter = new ACPClientAdapter({
       command: ["acp-agent"],
       enableMcpTools: false,
-      cwd: "/adapter/default/cwd",
+      cwd: root,
       connectionFactory: async () => buildMockConnection({
         loadSession: vi.fn(),
-        newSession,
-        prompt,
+        newSession: vi.fn(async (params?: { cwd?: string }) => {
+          newSessionCalls.push(params ?? {})
+          return { sessionId: "session-fresh" }
+        }),
+        prompt: vi.fn(async () => ({ stopReason: "end_turn" })),
       }),
     })
 
     await adapter.onStarted("Agent", "desc")
     await adapter.onMessage(makeMessage("start", "room-a"), new FakeTools(), { roomToSession: {} }, null, null, { isSessionBootstrap: true, roomId: "room-a" })
+    await adapter.onMessage(makeMessage("start", "room-b"), new FakeTools(), { roomToSession: {} }, null, null, { isSessionBootstrap: true, roomId: "room-b" })
 
-    expect(newSessionCalls[0]?.cwd).toBe("/adapter/default/cwd")
+    expect(newSessionCalls.map((call) => call.cwd)).toEqual([
+      roomWorkspacePath(root, "room-a"),
+      roomWorkspacePath(root, "room-b"),
+    ])
+    await adapter.stop()
+  })
+
+  it("rejects cwd together with workspaceForRoom when built", () => {
+    expect(() => new ACPClientAdapter({
+      command: ["acp-agent"],
+      cwd: tmpRoot(),
+      workspaceForRoom: (roomId) => `/workspaces/${roomId}`,
+    })).toThrow("either cwd or workspaceForRoom")
   })
 
   it("seeds a replacement session's first prompt with replayed room history after a resume miss, excluding the trigger message", async () => {
@@ -361,6 +375,7 @@ describe("ACPClientAdapter", () => {
     const logger = makeLoggerSpy()
 
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       enableMcpTools: false,
       logger,
@@ -456,6 +471,7 @@ describe("ACPClientAdapter", () => {
     })
 
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       enableMcpTools: false,
       connectionFactory: async () => buildMockConnection({
@@ -526,23 +542,30 @@ describe("ACPClientAdapter", () => {
     expect(promptTexts[2]).toContain("T2's own preserved context")
   })
 
-  it("marks a session with a still-in-flight prompt abandoned on cleanup, so a later turn never restores it", async () => {
+  it("brings a room that left mid-prompt back on a new process that restores its session", async () => {
     const loadSession = vi.fn(async () => ({}))
     const newSession = vi.fn(async () => ({ sessionId: "session-fresh" }))
     const pendingPrompts: Array<(stopReason: string) => void> = []
     const prompt = vi.fn(() => new Promise<{ stopReason: string }>((resolve) => {
       pendingPrompts.push((stopReason) => resolve({ stopReason }))
     }))
+    const stops: number[] = []
+    let connections = 0
 
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       enableMcpTools: false,
-      connectionFactory: async () => buildMockConnection({
-        agentCapabilities: { loadSession: true },
-        loadSession,
-        newSession,
-        prompt,
-      }),
+      connectionFactory: async () => {
+        const connection = ++connections
+        const handle = buildMockConnection({
+          agentCapabilities: { loadSession: true },
+          loadSession,
+          newSession,
+          prompt,
+        })
+        return { ...handle, stop: async () => { stops.push(connection); await handle.stop() } }
+      },
     })
     await adapter.onStarted("Agent", "desc")
 
@@ -576,10 +599,12 @@ describe("ACPClientAdapter", () => {
     pendingPrompts[1]("end_turn")
     await t4
 
-    // The restore attempt never happened — the session was abandoned
-    // instead, so T4 got a genuinely fresh session.
-    expect(loadSession).not.toHaveBeenCalled()
-    expect(newSession).toHaveBeenCalledTimes(2)
+    // T3's process was stopped, so T4 runs on its own and can safely
+    // restore the session: nothing else writes into its new client.
+    expect(stops).toEqual([1])
+    expect(connections).toBe(2)
+    expect(loadSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session-fresh" }))
+    expect(newSession).toHaveBeenCalledTimes(1)
 
     pendingPrompts[0]("end_turn")
     await t3
@@ -589,6 +614,7 @@ describe("ACPClientAdapter", () => {
     const prompt = vi.fn(async () => ({ stopReason: "end_turn" }))
     prompt.mockImplementationOnce(() => new Promise(() => undefined))
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       enableMcpTools: false,
       connectionFactory: async () => buildMockConnection({
@@ -617,6 +643,7 @@ describe("ACPClientAdapter", () => {
     })
 
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       enableMcpTools: false,
       connectionFactory: async () => buildMockConnection({
@@ -676,6 +703,7 @@ describe("ACPClientAdapter", () => {
       })
       const promptTexts: string[] = []
       const adapter = new ACPClientAdapter({
+        cwd: tmpRoot(),
         command: ["acp-agent"],
         enableMcpTools: false,
         connectionFactory: async () => buildMockConnection({
@@ -727,6 +755,7 @@ describe("ACPClientAdapter", () => {
       ],
     }
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       enableMcpTools: false,
       connectionFactory: async () => buildMockConnection({
@@ -790,6 +819,7 @@ describe("ACPClientAdapter", () => {
       return { stopReason: "end_turn" }
     })
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       enableMcpTools: false,
       resolveSessionConfig: async () => ({ model: "sonnet" }),
@@ -837,6 +867,7 @@ describe("ACPClientAdapter", () => {
       return { stopReason: "end_turn" }
     })
     const timedOut = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       enableMcpTools: false,
       turnTimeoutMs: 30,
@@ -886,6 +917,7 @@ describe("ACPClientAdapter", () => {
     })
     const promptTexts: string[] = []
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       enableMcpTools: false,
       connectionFactory: async () => buildMockConnection({
@@ -953,6 +985,7 @@ describe("ACPClientAdapter", () => {
       { id: "earlier-1", line: "[Alice]: please refactor the auth module" },
     ]
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       enableMcpTools: false,
       connectionFactory: async () => {
@@ -1018,6 +1051,7 @@ describe("ACPClientAdapter", () => {
       replayMessages: [{ id: "earlier-1", line: "[Alice]: please refactor the auth module" }],
     }
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       enableMcpTools: false,
       connectionFactory: async () => buildMockConnection({
@@ -1066,6 +1100,7 @@ describe("ACPClientAdapter", () => {
       replayMessages: [{ id: "msg-2", line: "[User]: try again" }],
     }
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       enableMcpTools: false,
       connectionFactory: async () => buildMockConnection({
@@ -1173,6 +1208,7 @@ describe("ACPClientAdapter", () => {
     })
 
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       enableMcpTools: false,
       connectionFactory: async (client) => {
@@ -1265,6 +1301,7 @@ describe("ACPClientAdapter", () => {
     })
 
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       enableMcpTools: false,
       connectionFactory: async (client) => {
@@ -1509,6 +1546,7 @@ describe("ACPClientAdapter", () => {
     })
 
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       connectionFactory: async (client) => {
         clientHandle = client as typeof clientHandle
@@ -1563,6 +1601,7 @@ describe("ACPClientAdapter", () => {
     })
 
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       connectionFactory: async () => {
         const controller = new AbortController()
@@ -1622,6 +1661,7 @@ describe("ACPClientAdapter", () => {
     }))
 
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       connectionFactory: async () => {
         const controller = new AbortController()
@@ -1657,72 +1697,53 @@ describe("ACPClientAdapter", () => {
     expect(newSession).not.toHaveBeenCalled()
   })
 
-  it("creates the MCP backend at most once when two rooms bootstrap concurrently", async () => {
-    const initialize = vi.fn(async () => ({
-      protocolVersion: 1,
-      agentCapabilities: {
-        mcpCapabilities: { http: true },
-      },
-    }))
-    let sessionCounter = 0
-    const newSessionCalls: Array<{ mcpServers: Array<{ url: string; headers: Array<{ value: string }> }> }> = []
-    const newSession = vi.fn(async (params: typeof newSessionCalls[number]) => {
-      newSessionCalls.push(params)
-      return { sessionId: `session-concurrent-${sessionCounter++}` }
-    })
-    const prompt = vi.fn(async () => ({ stopReason: "end_turn" }))
-
+  it("gives each room its own MCP backend and token, which serve only that room's tools", async () => {
+    const backends = new Map<string, { url: string; token: string }>()
+    const root = tmpRoot()
     const adapter = new ACPClientAdapter({
+      cwd: root,
       command: ["acp-agent"],
-      connectionFactory: async () => {
-        const controller = new AbortController()
-        return {
-          connection: {
-            signal: controller.signal,
-            closed: new Promise<void>(() => undefined),
-            initialize,
-            authenticate: vi.fn(async () => ({})),
-            loadSession: vi.fn(),
-            resumeSession: vi.fn(),
-            newSession,
-            prompt,
-          } as never,
-          stop: async () => {
-            controller.abort()
-          },
-        }
-      },
+      connectionFactory: async () => buildMockConnection({
+        agentCapabilities: { mcpCapabilities: { http: true } },
+        loadSession: vi.fn(),
+        newSession: vi.fn(async (params?: { cwd: string; mcpServers: Array<{ url: string; headers: Array<{ value: string }> }> }) => {
+          const server = params!.mcpServers[0]!
+          backends.set(params!.cwd, { url: server.url, token: server.headers[0]!.value })
+          return { sessionId: "session-1" }
+        }),
+        prompt: vi.fn(async () => ({ stopReason: "end_turn" })),
+      }),
     })
 
-    await adapter.onStarted("Concurrent Agent", "ACP concurrency test")
+    await adapter.onStarted("Agent", "desc")
+    await Promise.all(["room-a", "room-b"].map((roomId) => adapter.onMessage(
+      makeMessage("hello", roomId),
+      new FakeTools(),
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId },
+    )))
 
-    await Promise.all([
-      adapter.onMessage(
-        makeMessage("hello from room A", "room-concurrent-a"),
-        new FakeTools(),
-        { roomToSession: {} },
-        null,
-        null,
-        { isSessionBootstrap: true, roomId: "room-concurrent-a" },
-      ),
-      adapter.onMessage(
-        makeMessage("hello from room B", "room-concurrent-b"),
-        new FakeTools(),
-        { roomToSession: {} },
-        null,
-        null,
-        { isSessionBootstrap: true, roomId: "room-concurrent-b" },
-      ),
-    ])
+    const roomA = backends.get(roomWorkspacePath(root, "room-a"))!
+    const roomB = backends.get(roomWorkspacePath(root, "room-b"))!
+    expect(roomA.url).not.toEqual(roomB.url)
+    expect(roomA.token).not.toEqual(roomB.token)
 
-    expect(newSession).toHaveBeenCalledTimes(2)
-    const [firstServer, secondServer] = newSessionCalls.map(({ mcpServers }) => mcpServers[0])
-
-    // Both rooms must have been handed the same backend URL and bearer token —
-    // a second, independently-created backend would mean the loopback-port race
-    // in getOrCreateBackend() regressed.
-    expect(firstServer?.url).toEqual(secondServer?.url)
-    expect(firstServer?.headers[0]?.value).toEqual(secondServer?.headers[0]?.value)
+    const transport = new StreamableHTTPClientTransport(new URL(roomA.url), {
+      requestInit: { headers: { authorization: roomA.token } },
+    })
+    const client = new McpClient({ name: "room-a-agent", version: "1.0.0" })
+    await client.connect(transport)
+    try {
+      const own = await client.callTool({ name: "band_get_participants", arguments: { room_id: "room-a" } })
+      const foreign = await client.callTool({ name: "band_get_participants", arguments: { room_id: "room-b" } })
+      expect(own.isError).toBeFalsy()
+      expect(foreign).toMatchObject({ isError: true, content: [{ text: "No tool context found for room_id room-b" }] })
+    } finally {
+      await transport.close()
+      await adapter.stop()
+    }
   })
 
   it("does not let a stale, failed session establishment evict a newer one still in flight for the same room", async () => {
@@ -1749,6 +1770,7 @@ describe("ACPClientAdapter", () => {
       .mockImplementation(async () => ({ sessionId: "session-should-not-happen" }))
 
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       enableMcpTools: false,
       connectionFactory: async () => {
@@ -1835,6 +1857,7 @@ describe("ACPClientAdapter", () => {
     })
 
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       enableMcpTools: false,
       connectionFactory: async (client) => {
@@ -1898,6 +1921,7 @@ describe("ACPClientAdapter", () => {
     const newSession = vi.fn(() => new Promise<never>(() => undefined))
 
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       enableMcpTools: false,
       connectionFactory: async () => ({
@@ -1947,6 +1971,7 @@ describe("ACPClientAdapter", () => {
     })
 
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       enableMcpTools: false,
       connectionFactory: async () => {
@@ -2000,8 +2025,9 @@ describe("ACPClientAdapter", () => {
     expect(promptedSessionIds).toEqual(["session-fresh", "session-fresh"])
   })
 
-  it("throws instead of activating a session for a room whose new session id already belongs to another room (ACR-003)", async () => {
+  it("lets two rooms' processes issue the same session id, each room keeping its own (ACR-003)", async () => {
     const newSession = vi.fn(async () => ({ sessionId: "session-shared" }))
+    let connections = 0
     const promptedSessionIds: string[] = []
     const prompt = vi.fn(async (params: { sessionId: string }) => {
       promptedSessionIds.push(params.sessionId)
@@ -2009,9 +2035,11 @@ describe("ACPClientAdapter", () => {
     })
 
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       enableMcpTools: false,
       connectionFactory: async () => {
+        connections++
         const controller = new AbortController()
         return {
           connection: {
@@ -2040,26 +2068,27 @@ describe("ACPClientAdapter", () => {
       { isSessionBootstrap: true, roomId: "room-a" },
     )
 
-    await expect(
-      adapter.onMessage(
-        makeMessage("hi from room B", "room-b"),
-        new FakeTools(),
-        { roomToSession: {} },
-        null,
-        null,
-        { isSessionBootstrap: true, roomId: "room-b" },
-      ),
-    ).rejects.toThrow(/already routed elsewhere/)
+    await adapter.onMessage(
+      makeMessage("hi from room B", "room-b"),
+      new FakeTools(),
+      { roomToSession: {} },
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-b" },
+    )
 
-    // Room B's establishment threw before ever prompting — room A's session
-    // was never used on room B's behalf.
-    expect(promptedSessionIds).toEqual(["session-shared"])
+    // Each id lives in its own room's process, so neither prompt ran on the
+    // other room's session.
+    expect(connections).toBe(2)
+    expect(promptedSessionIds).toEqual(["session-shared", "session-shared"])
+    await adapter.stop()
   })
 
   it("selects only a mode advertised by the connected ACP harness", async () => {
     const setSessionMode = vi.fn(async () => ({}))
     const resolveSessionMode = vi.fn(async () => "plan")
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       enableMcpTools: false,
       resolveSessionMode,
@@ -2165,12 +2194,8 @@ describe("ACPClientAdapter", () => {
       const onPrompt = input.onPrompt ?? (async ({ sessionId, ask }) => {
         permissionResult = await ask(sessionId)
       })
-      const prompt = vi.fn(async (params: { sessionId: string }) => {
-        await onPrompt({ sessionId: params.sessionId, ask: connections[connections.length - 1].ask })
-        return { stopReason: "end_turn" }
-      })
-
       const adapter = new ACPClientAdapter({
+        cwd: tmpRoot(),
         command: ["acp-agent"],
         // No real MCP backend needed for any permission scenario below —
         // disabling it keeps every case from spinning up a real HTTP server
@@ -2186,15 +2211,18 @@ describe("ACPClientAdapter", () => {
             markClosed()
           }
 
-          connections.push({
-            close,
-            ask: (sessionId, toolCallId = "call-1") => (client as unknown as {
-              requestPermission: (params: Record<string, unknown>) => Promise<unknown>;
-            }).requestPermission({
-              sessionId,
-              toolCall: { toolCallId, title: "Edit file" },
-              options: ASK_OPTIONS,
-            }),
+          // Each room's process asks over its own connection, as a real agent does.
+          const ask: Ask = (sessionId, toolCallId = "call-1") => (client as unknown as {
+            requestPermission: (params: Record<string, unknown>) => Promise<unknown>;
+          }).requestPermission({
+            sessionId,
+            toolCall: { toolCallId, title: "Edit file" },
+            options: ASK_OPTIONS,
+          })
+          connections.push({ close, ask })
+          const prompt = vi.fn(async (params: { sessionId: string }) => {
+            await onPrompt({ sessionId: params.sessionId, ask })
+            return { stopReason: "end_turn" }
           })
 
           return {
@@ -2496,6 +2524,7 @@ describe("ACPClientAdapter", () => {
 
     it.each([0, -1, NaN])("(k) constructing with an invalid permissionTimeoutMs (%s) throws", (invalid) => {
       expect(() => new ACPClientAdapter({
+        cwd: tmpRoot(),
         command: ["acp-agent"],
         resolvePermission: async () => "allow",
         permissionTimeoutMs: invalid,
@@ -2697,7 +2726,7 @@ describe("ACPClientAdapter", () => {
       expect(await harness.ask("session-1")).toEqual(CANCELLED)
     })
 
-    it("(t) gives each room its own tools and roomId, on one shared connection", async () => {
+    it("(t) gives each room its own tools and roomId, on its own connection", async () => {
       const seen: Array<{ roomId: string; sessionId: string }> = []
       const harness = buildHarness({
         sessionIds: ["session-a", "session-b"],
@@ -2714,7 +2743,7 @@ describe("ACPClientAdapter", () => {
       await send(harness.adapter, roomA, "room-a")
       await send(harness.adapter, roomB, "room-b")
 
-      expect(harness.connections).toHaveLength(1)
+      expect(harness.connections).toHaveLength(2)
       expect(seen).toEqual([
         { roomId: "room-a", sessionId: "session-a" },
         { roomId: "room-b", sessionId: "session-b" },
@@ -2723,7 +2752,7 @@ describe("ACPClientAdapter", () => {
       expect(roomB.events.filter(isPermissionEvent)).toHaveLength(1)
     })
 
-    it("(u) refuses to route one restored session id to a second room", async () => {
+    it("(u) restores only its own room's session from history that lists other rooms", async () => {
       const logger = makeLoggerSpy()
       const harness = buildHarness({
         canRestore: true,
@@ -2732,17 +2761,15 @@ describe("ACPClientAdapter", () => {
 
       const tools = new FakeTools()
       await send(harness.adapter, tools, "room-1", {
-        "room-1": "shared-session",
-        "room-2": "shared-session",
+        "room-1": "room-1-session",
+        "room-2": "room-2-session",
       })
 
-      expect(logger.warn).toHaveBeenCalledWith(
-        "refusing to route one ACP session to a second room",
-        expect.objectContaining({ sessionId: "shared-session", roomId: "room-2", routedRoomId: "room-1" }),
-      )
-      // The room that got there first keeps the route; nothing is re-pointed.
-      expect(await harness.ask("shared-session")).toEqual({ outcome: { outcome: "selected", optionId: "allow" } })
-      expect(tools.events.filter(isPermissionEvent)).toHaveLength(2)
+      expect(harness.loadSession).toHaveBeenCalledTimes(1)
+      expect(harness.loadSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "room-1-session" }))
+      // Room 2's session belongs to room 2's own process, so this one cannot route it.
+      expect(await harness.ask("room-2-session")).toEqual(CANCELLED)
+      expect(await harness.ask("room-1-session")).toEqual({ outcome: { outcome: "selected", optionId: "allow" } })
     })
 
     it("(v) establishes one session when a room's first two turns run concurrently", async () => {
@@ -2897,6 +2924,7 @@ describe("ACPClientAdapter", () => {
       })
 
       const adapter = new ACPClientAdapter({
+        cwd: tmpRoot(),
         command: ["acp-agent"],
         enableMcpTools: false,
         connectionFactory: async (client: Client) => {
@@ -3145,6 +3173,7 @@ describe("ACPClientAdapter", () => {
       const newSession = input.newSession ?? vi.fn(async () => ({ sessionId: "session-1" }))
 
       const adapter = new ACPClientAdapter({
+        cwd: tmpRoot(),
         command: ["acp-agent"],
         enableMcpTools: false,
         turnTimeoutMs: input.turnTimeoutMs,
@@ -3486,6 +3515,7 @@ describe("ACPClientAdapter", () => {
 
     it.each([0, -1, NaN])("constructing with an invalid turnTimeoutMs (%s) throws", (invalid) => {
       expect(() => new ACPClientAdapter({
+        cwd: tmpRoot(),
         command: ["acp-agent"],
         turnTimeoutMs: invalid,
       })).toThrow(/turnTimeoutMs must be a positive number or Infinity/)
@@ -3493,6 +3523,7 @@ describe("ACPClientAdapter", () => {
 
     it("constructing with a turnTimeoutMs beyond setTimeout's max delay throws", () => {
       expect(() => new ACPClientAdapter({
+        cwd: tmpRoot(),
         command: ["acp-agent"],
         turnTimeoutMs: 2_147_483_648,
       })).toThrow(/turnTimeoutMs must be Infinity or at most 2147483647/)
@@ -3500,6 +3531,7 @@ describe("ACPClientAdapter", () => {
 
     it("accepts Infinity as an explicit, unbounded turnTimeoutMs", () => {
       expect(() => new ACPClientAdapter({
+        cwd: tmpRoot(),
         command: ["acp-agent"],
         turnTimeoutMs: Infinity,
       })).not.toThrow()
@@ -3507,6 +3539,7 @@ describe("ACPClientAdapter", () => {
 
     it("constructing with a non-number turnTimeoutMs throws instead of silently disabling the timeout", () => {
       expect(() => new ACPClientAdapter({
+        cwd: tmpRoot(),
         command: ["acp-agent"],
         turnTimeoutMs: "3000" as unknown as number,
       })).toThrow(/turnTimeoutMs must be a positive number or Infinity/)
@@ -3574,6 +3607,7 @@ describe("ACPClientAdapter", () => {
       const newSession = vi.fn(async () => ({ sessionId: "session-persist" }))
 
       const adapter = new ACPClientAdapter({
+        cwd: tmpRoot(),
         command: ["acp-agent"],
         enableMcpTools: false,
         turnTimeoutMs: 250,
@@ -3693,6 +3727,7 @@ describe("ACPClientAdapter", () => {
       }
 
       const adapter = new ACPClientAdapter({
+        cwd: tmpRoot(),
         command: ["acp-agent"],
         enableMcpTools: false,
         resolvePermission: async (request) => {
@@ -3789,6 +3824,7 @@ describe("ACPClientAdapter", () => {
       const promptStarted = (() => { let resolve!: () => void; const promise = new Promise<void>((r) => { resolve = r }); return { promise, resolve } })()
       const promptGate = (() => { let resolve!: () => void; const promise = new Promise<void>((r) => { resolve = r }); return { promise, resolve } })()
       const adapter = new ACPClientAdapter({
+        cwd: tmpRoot(),
         command: ["acp-agent"],
         enableMcpTools: false,
         connectionFactory: async (client) => {
@@ -3869,6 +3905,7 @@ describe("ACPClientAdapter", () => {
 
       const cancel = vi.fn(async () => undefined)
       const adapter = new ACPClientAdapter({
+        cwd: tmpRoot(),
         command: ["acp-agent"],
         enableMcpTools: false,
         connectionFactory: async () => buildMockConnection({
@@ -4214,18 +4251,20 @@ describe("ACPClientAdapter", () => {
       }
     })
 
-    it("releases an in-flight turn in another room when a config timeout retires their shared connection", async () => {
+    it("keeps another room's turn running when a config timeout retires one room's connection (INT-1388)", async () => {
       vi.useFakeTimers()
       try {
         let promptStarted: () => void = () => undefined
         const promptStartedPromise = new Promise<void>((resolve) => { promptStarted = resolve })
+        let finishRoomB: () => void = () => undefined
+        const roomBFinished = new Promise<{ stopReason: string }>((resolve) => { finishRoomB = () => resolve({ stopReason: "end_turn" }) })
         let configApplyStarted: () => void = () => undefined
         const configApplyStartedPromise = new Promise<void>((resolve) => { configApplyStarted = resolve })
         let nextSession = 0
         const prompt = vi.fn(async (params: { sessionId: string }) => {
           if (params.sessionId === "session-b") {
             promptStarted()
-            return new Promise<never>(() => undefined)
+            return roomBFinished
           }
           return { stopReason: "end_turn" }
         })
@@ -4234,6 +4273,7 @@ describe("ACPClientAdapter", () => {
           return new Promise<never>(() => undefined)
         })
         const adapter = new ACPClientAdapter({
+          cwd: tmpRoot(),
           command: ["acp-agent"],
           enableMcpTools: false,
           resolveSessionConfig: async ({ roomId }: { roomId: string }) => roomId === "room-a" ? { model: "sonnet" } : undefined,
@@ -4267,19 +4307,20 @@ describe("ACPClientAdapter", () => {
         await vi.advanceTimersByTimeAsync(10_000)
 
         await expectTurnFailed(roomA)
-        await expectTurnFailed(roomB)
+        finishRoomB()
+        await expect(roomB).resolves.toBeUndefined()
       } finally {
         vi.useRealTimers()
       }
     })
 
-    it("does not retain an abandoned session when cleanup wins a config timeout race", async () => {
+    it("brings a room that left during a config timeout back on a fresh session", async () => {
       vi.useFakeTimers()
       try {
         let setSessionConfigOptionCalled: () => void = () => undefined
         const called = new Promise<void>((resolve) => { setSessionConfigOptionCalled = resolve })
         const resolveSessionConfig = vi.fn(async () => ({ model: "sonnet" }))
-        const { adapter, setSessionConfigOption } = buildHarness({
+        const { adapter, setSessionConfigOption, newSession } = buildHarness({
           adapterOptions: { resolveSessionConfig },
           newSessionConfigOptions: [modelConfigOption()],
         })
@@ -4304,7 +4345,8 @@ describe("ACPClientAdapter", () => {
         await vi.advanceTimersByTimeAsync(10_000)
         await expectTurnFailed(turn)
 
-        expect((adapter as unknown as { abandonedSessions: Set<string> }).abandonedSessions).toEqual(new Set())
+        await send(adapter)
+        expect(newSession).toHaveBeenCalledTimes(2)
       } finally {
         vi.useRealTimers()
       }
@@ -4544,6 +4586,7 @@ describe("ACPClientAdapter", () => {
         configOptions: [modelConfigOption()],
       }))
       const adapter = new ACPClientAdapter({
+        cwd: tmpRoot(),
         command: ["acp-agent"],
         enableMcpTools: false,
         resolveSessionModel: () => new Promise<string | undefined>(() => undefined),
@@ -4698,161 +4741,10 @@ describe("ACPClientAdapter", () => {
   })
 });
 
-describe("ACP client transports", () => {
-  it("rejects incomplete, conflicting, and invalid transport configuration", () => {
-    expect(() => new ACPClientAdapter({} as never)).toThrow("requires a command or TCP host and port")
-    expect(() => new ACPClientAdapter({ host: "127.0.0.1" } as never)).toThrow("requires both host and port")
-    expect(() => new ACPClientAdapter({ command: ["agent"], host: "127.0.0.1", port: 3000 } as never)).toThrow("cannot use command")
-    expect(() => new ACPClientAdapter({ host: "", port: 3000 } as never)).toThrow("host must be a non-empty string")
-    expect(() => new ACPClientAdapter({ host: "127.0.0.1", port: 0 } as never)).toThrow("port must be an integer")
-  })
-
-  it("keeps injected connection factories compatible with TCP selection", async () => {
-    let received: { command: string[]; cwd?: string; env?: Record<string, string> } | null = null
-    const adapter = new ACPClientAdapter({
-      host: "127.0.0.1",
-      port: 3000,
-      connectionFactory: async (_client, options) => {
-        received = options
-        return buildMockConnection({
-          loadSession: async () => ({}),
-          newSession: async () => ({ sessionId: "session-1" }),
-          prompt: async () => ({ stopReason: "end_turn" }),
-        })
-      },
-    })
-
-    await adapter.onStarted("Agent", "desc")
-    expect(received).toEqual({ command: [], cwd: process.cwd(), env: undefined })
-    await adapter.stop()
-  })
-
-  it("connects to an ACP NDJSON TCP server and closes only its client socket", async () => {
-    let socketClosed = false
-    const server = createServer((socket) => {
-      socket.on("close", () => {
-        socketClosed = true
-      })
-      let pending = ""
-      socket.on("data", (chunk: Buffer) => {
-        pending += chunk.toString("utf8")
-        const lines = pending.split("\n")
-        pending = lines.pop() ?? ""
-        for (const line of lines) {
-          if (!line) continue
-          const request = JSON.parse(line) as { id: number }
-          socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: 1, agentCapabilities: {} } })}\n`)
-        }
-      })
-    })
-    server.listen(0, "127.0.0.1")
-    await once(server, "listening")
-    const address = server.address()
-    if (!address || typeof address === "string") throw new Error("TCP test server did not expose a port")
-
-    try {
-      const handle = await createTcpConnection({} as never, { host: "127.0.0.1", port: address.port })
-      await handle.connection.initialize({ protocolVersion: 1, clientCapabilities: {} })
-      await handle.stop()
-      await new Promise((resolve) => setTimeout(resolve, 10))
-      expect(socketClosed).toBe(true)
-      expect(server.listening).toBe(true)
-    } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()))
-    }
-  })
-
-  it("cleans up a TCP socket when ACP initialization fails", async () => {
-    let socketClosed = false
-    const server = createServer((socket) => {
-      socket.on("close", () => {
-        socketClosed = true
-      })
-      socket.once("data", (chunk: Buffer) => {
-        const request = JSON.parse(chunk.toString("utf8")) as { id: number }
-        socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code: -32000, message: "rejected" } })}\n`)
-      })
-    })
-    server.listen(0, "127.0.0.1")
-    await once(server, "listening")
-    const address = server.address()
-    if (!address || typeof address === "string") throw new Error("TCP test server did not expose a port")
-
-    try {
-      const adapter = new ACPClientAdapter({ host: "127.0.0.1", port: address.port })
-      await expect(adapter.onStarted("Agent", "desc")).rejects.toThrow("rejected")
-      await new Promise((resolve) => setTimeout(resolve, 10))
-      expect(socketClosed).toBe(true)
-      expect(server.listening).toBe(true)
-    } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()))
-    }
-  })
-
-  it("cancels a connected TCP startup when the adapter stops before initialization", async () => {
-    let socketClosed = false
-    let waitForSocketClose: Promise<void> | null = null
-    const server = createServer((socket) => {
-      socket.on("data", () => undefined)
-      waitForSocketClose = new Promise((resolve) => {
-        socket.once("close", () => {
-          socketClosed = true
-          resolve()
-        })
-      })
-    })
-    server.listen(0, "127.0.0.1")
-    await once(server, "listening")
-    const address = server.address()
-    if (!address || typeof address === "string") throw new Error("TCP test server did not expose a port")
-
-    try {
-      const adapter = new ACPClientAdapter({ host: "127.0.0.1", port: address.port })
-      const starting = adapter.onStarted("Agent", "desc")
-      await once(server, "connection")
-      await adapter.stop()
-      // Which message wins is a race: `raceAgainstConnectionClose`'s own
-      // rejection needs an extra microtask hop through `connection.closed`,
-      // so Node's `Duplex.toWeb` read rejection (a plain AbortError once
-      // `socket.destroy()` cancels the in-flight `initialize` read) usually
-      // settles first.
-      await expect(starting).rejects.toThrow(/ACP (TCP connection attempt aborted|connection closed)|operation was aborted/)
-      await waitForSocketClose
-      expect(socketClosed).toBe(true)
-    } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()))
-    }
-  })
-
-  it("does not open TCP after stop races lazy ACP loading", async () => {
-    let connected = false
-    const server = createServer((socket) => {
-      connected = true
-      socket.on("data", () => undefined)
-    })
-    server.listen(0, "127.0.0.1")
-    await once(server, "listening")
-    const address = server.address()
-    if (!address || typeof address === "string") throw new Error("TCP test server did not expose a port")
-
-    const adapter = new ACPClientAdapter({ host: "127.0.0.1", port: address.port })
-    const starting = adapter.onStarted("Agent", "desc")
-    const settled = starting.then(
-      () => "resolved",
-      (error: unknown) => error instanceof Error ? error.message : String(error),
-    )
-
-    try {
-      await adapter.stop()
-      await expect(Promise.race([
-        settled,
-        new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 100)),
-      ])).resolves.toContain("superseded by stop")
-      expect(connected).toBe(false)
-    } finally {
-      await adapter.stop()
-      await new Promise<void>((resolve) => server.close(() => resolve()))
-    }
+describe("ACPClientAdapter configuration", () => {
+  it("rejects a missing or blank command when built", () => {
+    expect(() => new ACPClientAdapter({ cwd: tmpRoot(),} as never)).toThrow("requires a command")
+    expect(() => new ACPClientAdapter({ cwd: tmpRoot(), command: [" "] })).toThrow("requires a command")
   })
 })
 
@@ -4870,6 +4762,7 @@ describe("ACPClientAdapter MCP backend lifecycle", () => {
     })
 
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: ["acp-agent"],
       connectionFactory: async () => buildMockConnection({
         agentCapabilities: { mcpCapabilities: { http: true } },

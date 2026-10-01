@@ -2,12 +2,13 @@
  * OMP over ACP: an MCP roster change on one reused ACP session, and a
  * permission-gated delete that the client's resolver denies.
  */
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { PermissionOptionKind, RequestPermissionRequest, ToolKind } from "@agentclientprotocol/sdk";
 import { expect } from "vitest";
 
+import { DEFAULT_WORKSPACE_DIRECTORY } from "../../../../src/adapters/shared/roomWorkspace";
 import { ACP_SESSION_EVENT } from "../../../../src/converters/acp-client";
 import { ADAPTER, buildOmp } from "../../toolkit/adapters";
 import { assertDeliveryStatus } from "../../toolkit/assertDelivery";
@@ -109,7 +110,10 @@ withAdapters(
   [ADAPTER.ompAcp],
   scenarioId(CATEGORY.adapters, "ompAcp.permissionGate"),
   async ({ agents: [omp], room, cells: [cell] }) => {
-    const guardedFile = join(cell!.workDir, GUARDED_FILE_NAME);
+    // OMP runs in this room's workspace, which it creates only on the room's first message.
+    const workspace = join(cell!.workDir, DEFAULT_WORKSPACE_DIRECTORY, room.id);
+    await mkdir(workspace, { recursive: true });
+    const guardedFile = join(workspace, GUARDED_FILE_NAME);
     await writeFile(guardedFile, GUARDED_FILE_CONTENTS);
     const done = uniqueMarker("PERM");
 

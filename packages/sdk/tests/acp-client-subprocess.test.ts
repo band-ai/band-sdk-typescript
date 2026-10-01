@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it, vi } from "vitest";
@@ -5,7 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ACPClientAdapter } from "../src/adapters/acp";
 import { createSubprocessConnection } from "../src/adapters/acp/ACPRoomAgent";
 import { BandACPClient } from "../src/adapters/acp/client";
-import { FakeTools, expectTurnFailed, findFailureEvent, makeLoggerSpy, makeMessage } from "./testUtils";
+import { FakeTools, expectTurnFailed, findFailureEvent, makeLoggerSpy, makeMessage, roomWorkspacePath, tmpRoot } from "./testUtils";
 
 const fakeAcpAgentPath = fileURLToPath(new URL("./fixtures/fakeAcpAgent.mjs", import.meta.url))
 const MISSING_BINARY = "/nonexistent-band-agent"
@@ -13,21 +15,54 @@ const MISSING_BINARY = "/nonexistent-band-agent"
 const STDERR_FLOOD_BYTES = 256 * 1024
 // Reports its pid on stderr once SIGTERM is ignored, then never exits on its own.
 const IGNORES_STOP_AGENT = `process.on("SIGTERM", () => {}); setInterval(() => {}, 1000); console.error(process.pid)`
+const PID_FILE = "fake-acp-agent.pid"
 
 // These agents never ask for permission.
 function unusedClient(): BandACPClient {
   return new BandACPClient(async () => ({ outcome: { outcome: "cancelled" } }))
 }
 
-function turn(adapter: ACPClientAdapter, tools: FakeTools): Promise<void> {
+function turn(adapter: ACPClientAdapter, tools: FakeTools, roomId = "room-1"): Promise<void> {
   return adapter.onMessage(
-    makeMessage("hi"),
+    makeMessage("hi", roomId),
     tools,
     { roomToSession: {} },
     null,
     null,
-    { isSessionBootstrap: true, roomId: "room-1" },
+    { isSessionBootstrap: true, roomId },
   )
+}
+
+function fakeAgentAdapter(root: string): ACPClientAdapter {
+  return new ACPClientAdapter({
+    cwd: root,
+    command: [process.execPath, fakeAcpAgentPath],
+    env: { FAKE_ACP_PID_FILE: PID_FILE },
+    enableMcpTools: false,
+  })
+}
+
+interface AgentReport {
+  pid: number;
+  cwd: string;
+  session: string;
+}
+
+/** Runs one turn in `roomId` and returns what the fake agent said about itself. */
+async function report(adapter: ACPClientAdapter, roomId: string): Promise<AgentReport> {
+  const tools = new FakeTools()
+  await turn(adapter, tools, roomId)
+  const [, pid, cwd, session] = /^pid=(\d+) cwd=(.+) session=(.+)$/.exec(tools.messages.join(""))!
+  return { pid: Number(pid), cwd: cwd!, session: session! }
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
 }
 
 describe("createSubprocessConnection", () => {
@@ -64,9 +99,10 @@ describe("createSubprocessConnection", () => {
 
 describe("ACPClientAdapter over a real subprocess", () => {
   it("reports a missing agent binary in the room and retries it on the next turn", async () => {
-    const adapter = new ACPClientAdapter({ command: [MISSING_BINARY], enableMcpTools: false })
+    const adapter = new ACPClientAdapter({ cwd: tmpRoot(), command: [MISSING_BINARY], enableMcpTools: false })
     try {
-      await expect(adapter.onStarted("Agent", "desc")).rejects.toThrow(/ENOENT/)
+      // Spawning waits for the room's first turn, so starting cannot fail on the binary.
+      await adapter.onStarted("Agent", "desc")
 
       for (let attempt = 0; attempt < 2; attempt++) {
         const tools = new FakeTools()
@@ -81,6 +117,7 @@ describe("ACPClientAdapter over a real subprocess", () => {
   it("keeps answering while the agent floods stderr, logging each line", async () => {
     const logger = makeLoggerSpy()
     const adapter = new ACPClientAdapter({
+      cwd: tmpRoot(),
       command: [process.execPath, fakeAcpAgentPath],
       env: { FAKE_ACP_STDERR_BYTES: String(STDERR_FLOOD_BYTES) },
       enableMcpTools: false,
@@ -91,10 +128,78 @@ describe("ACPClientAdapter over a real subprocess", () => {
       const tools = new FakeTools()
       await turn(adapter, tools)
 
-      expect(tools.messages.join("")).toContain("ok")
+      expect(tools.messages.join("")).toMatch(/^pid=\d+/)
       expect(logger.debug).toHaveBeenCalledWith("acp_client.subprocess_stderr", { line: expect.stringMatching(/^x+$/) })
     } finally {
       await adapter.stop()
     }
+  })
+
+  it("runs each room in its own process, started and sessioned in that room's workspace", async () => {
+    const root = tmpRoot()
+    const adapter = fakeAgentAdapter(root)
+    try {
+      await adapter.onStarted("Agent", "desc")
+      const roomA = await report(adapter, "room-a")
+      const roomB = await report(adapter, "room-b")
+
+      expect(roomA.pid).not.toBe(roomB.pid)
+      expect(roomA).toMatchObject({ cwd: roomWorkspacePath(root, "room-a"), session: roomWorkspacePath(root, "room-a") })
+      expect(roomB).toMatchObject({ cwd: roomWorkspacePath(root, "room-b"), session: roomWorkspacePath(root, "room-b") })
+    } finally {
+      await adapter.stop()
+    }
+  })
+
+  it("stops only the leaving room's process, and every process on stop", async () => {
+    const adapter = fakeAgentAdapter(tmpRoot())
+    try {
+      await adapter.onStarted("Agent", "desc")
+      const roomA = await report(adapter, "room-a")
+      const roomB = await report(adapter, "room-b")
+      const roomC = await report(adapter, "room-c")
+
+      await adapter.onCleanup("room-a")
+      await vi.waitFor(() => expect(isAlive(roomA.pid)).toBe(false))
+      expect(isAlive(roomB.pid)).toBe(true)
+
+      await adapter.stop()
+      expect([roomB.pid, roomC.pid].filter(isAlive)).toEqual([])
+    } finally {
+      await adapter.stop()
+    }
+  })
+
+  it("starts a new process on the next turn after the room's process exits", async () => {
+    const adapter = fakeAgentAdapter(tmpRoot())
+    try {
+      await adapter.onStarted("Agent", "desc")
+      const first = await report(adapter, "room-1")
+      process.kill(first.pid)
+      await vi.waitFor(() => expect(isAlive(first.pid)).toBe(false))
+
+      const second = await report(adapter, "room-1")
+
+      expect(second.pid).not.toBe(first.pid)
+      expect(second.cwd).toBe(first.cwd)
+    } finally {
+      await adapter.stop()
+    }
+  })
+
+  it("leaves no process behind when stopped while a room's process is starting", async () => {
+    const root = tmpRoot()
+    const adapter = fakeAgentAdapter(root)
+    await adapter.onStarted("Agent", "desc")
+    const tools = new FakeTools()
+    const starting = turn(adapter, tools).catch(() => undefined)
+    const pidFile = path.join(roomWorkspacePath(root, "room-1"), PID_FILE)
+    await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true))
+
+    await adapter.stop()
+    await starting
+
+    const pid = Number(readFileSync(pidFile, "utf8"))
+    await vi.waitFor(() => expect(isAlive(pid)).toBe(false))
   })
 })

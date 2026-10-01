@@ -6,7 +6,7 @@ import {
   type KiroACPAdapterOptions,
 } from "../../src/index";
 
-/** Kiro ACP adapter options (see README for common fields: `cwd`, `customSection`). */
+/** Kiro ACP adapter options (see README for common fields: `cwd`, the root of each room's workspace, and `customSection`). */
 export type KiroACPExampleOptions = KiroACPAdapterOptions;
 
 export function buildKiroACPExampleAdapter(

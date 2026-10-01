@@ -6,7 +6,6 @@ export {
   type ACPClientAdapterOptions,
   type ACPClientAdapterBaseOptions,
   type ACPClientStdioOptions,
-  type ACPClientTcpOptions,
   type ACPConfigRequest,
   type ACPConfigSelections,
   AcpSessionConfigError,
@@ -29,7 +28,6 @@ export {
   DEFAULT_COPILOT_ACP_COMMAND,
   type CopilotACPAdapterOptions,
   type CopilotACPStdioOptions,
-  type CopilotACPTcpOptions,
 } from "./copilot-acp";
 export {
   CursorACPAdapter,

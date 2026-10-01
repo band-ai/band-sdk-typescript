@@ -6,7 +6,8 @@ import {
   KIRO_METADATA_METHOD,
   KiroACPAdapter,
 } from "../src/adapters/kiro-acp";
-import { FakeTools, makeMessage } from "./testUtils";
+import { FakeTools, makeMessage, roomWorkspacePath, tmpRoot } from "./testUtils";
+import { runAcpTurn } from "./helpers/acpTurn";
 
 interface KiroClient {
   extMethod(method: string, params: Record<string, unknown>): Promise<Record<string, unknown> | null>;
@@ -45,6 +46,7 @@ describe("KiroACPAdapter", () => {
   it("uses the default stdio command", async () => {
     let command: string[] | null = null
     const adapter = new KiroACPAdapter({
+      cwd: tmpRoot(),
       enableMcpTools: false,
       connectionFactory: async (_client, options) => {
         command = options.command
@@ -52,7 +54,7 @@ describe("KiroACPAdapter", () => {
       },
     })
 
-    await adapter.onStarted("Agent", "desc")
+    await runAcpTurn(adapter)
     expect(command).toEqual([...DEFAULT_KIRO_ACP_COMMAND])
     await adapter.stop()
   })
@@ -60,6 +62,7 @@ describe("KiroACPAdapter", () => {
   it("accepts a stdio command override", async () => {
     let command: string[] | null = null
     const adapter = new KiroACPAdapter({
+      cwd: tmpRoot(),
       enableMcpTools: false,
       command: ["kiro-cli-preview", "acp"],
       connectionFactory: async (_client, options) => {
@@ -68,16 +71,17 @@ describe("KiroACPAdapter", () => {
       },
     })
 
-    await adapter.onStarted("Agent", "desc")
+    await runAcpTurn(adapter)
     expect(command).toEqual(["kiro-cli-preview", "acp"])
     await adapter.stop()
   })
 
-  it("passes base ACPClientAdapter options (e.g. cwd) through to the underlying session", async () => {
+  it("runs the room's session in that room's workspace under the adapter's cwd", async () => {
     let newSessionParams: Record<string, unknown> | null = null
+    const root = tmpRoot()
     const adapter = new KiroACPAdapter({
       enableMcpTools: false,
-      cwd: "/workspace/kiro",
+      cwd: root,
       connectionFactory: async () => mockConnection(async () => ({ stopReason: "end_turn" }), {
         newSession: async (params) => {
           newSessionParams = params ?? {}
@@ -89,12 +93,13 @@ describe("KiroACPAdapter", () => {
     await adapter.onStarted("Agent", "desc")
     await adapter.onMessage(makeMessage("hi"), new FakeTools(), { roomToSession: {} }, null, null, { isSessionBootstrap: false, roomId: "room-1" })
 
-    expect(newSessionParams).toMatchObject({ cwd: "/workspace/kiro" })
+    expect(newSessionParams).toMatchObject({ cwd: roomWorkspacePath(root, "room-1") })
     await adapter.stop()
   })
 
   it("reports failures as kiro-acp", async () => {
     const adapter = new KiroACPAdapter({
+      cwd: tmpRoot(),
       enableMcpTools: false,
       connectionFactory: async () => mockConnection(async () => {
         throw new Error("Kiro failed")
@@ -121,6 +126,7 @@ describe("KiroACPAdapter", () => {
     const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
     let response: Record<string, unknown> | null = null
     const adapter = new KiroACPAdapter({
+      cwd: tmpRoot(),
       enableMcpTools: false,
       logger,
       connectionFactory: async (captured) => {
@@ -143,6 +149,7 @@ describe("KiroACPAdapter", () => {
   it("surfaces _kiro.dev/metadata as a context-window usage event when the payload carries recognizable usage fields", async () => {
     let client: KiroClient | undefined
     const adapter = new KiroACPAdapter({
+      cwd: tmpRoot(),
       enableMcpTools: false,
       connectionFactory: async (captured) => {
         client = captured as KiroClient
@@ -166,6 +173,7 @@ describe("KiroACPAdapter", () => {
   it("is a no-op for _kiro.dev/metadata payloads with no recognizable usage fields, and for unrelated extension methods", async () => {
     let client: KiroClient | undefined
     const adapter = new KiroACPAdapter({
+      cwd: tmpRoot(),
       enableMcpTools: false,
       connectionFactory: async (captured) => {
         client = captured as KiroClient
@@ -191,6 +199,7 @@ describe("KiroACPAdapter", () => {
     let client: KiroClient | undefined
     const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
     const adapter = new KiroACPAdapter({
+      cwd: tmpRoot(),
       enableMcpTools: false,
       logger,
       connectionFactory: async (captured) => {
@@ -244,6 +253,7 @@ describe("KiroACPAdapter", () => {
       return { stopReason: "end_turn" }
     })
     const adapter = new KiroACPAdapter({
+      cwd: tmpRoot(),
       enableMcpTools: false,
       turnTimeoutMs: 30,
       connectionFactory: async (captured) => {
@@ -283,31 +293,26 @@ describe("KiroACPAdapter", () => {
     await adapter.stop()
   })
 
-  it("drops a sessionless metadata notification when two prompts are in flight", async () => {
-    let client: KiroClient | undefined
-    let created = 0
+  it("attributes a sessionless metadata notification to the room whose process sent it", async () => {
+    const clients = new Map<string, KiroClient>()
     let markA: () => void = () => undefined
     let markB: () => void = () => undefined
     let releaseBoth: () => void = () => undefined
     const aIn = new Promise<void>((resolve) => { markA = resolve })
     const bIn = new Promise<void>((resolve) => { markB = resolve })
     const release = new Promise<void>((resolve) => { releaseBoth = resolve })
-    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
-    const prompt = vi.fn(async (params: { sessionId: string }) => {
-      if (params.sessionId === "kiro-1") {
-        markA()
-      } else {
-        markB()
-      }
-      await release
-      return { stopReason: "end_turn" }
-    })
+    const root = tmpRoot()
     const adapter = new KiroACPAdapter({
+      cwd: root,
       enableMcpTools: false,
-      logger,
-      connectionFactory: async (captured) => {
-        client = captured as KiroClient
-        return mockConnection(prompt, { newSession: async () => ({ sessionId: `kiro-${++created}` }) })
+      connectionFactory: async (captured, options) => {
+        const roomId = options.cwd === roomWorkspacePath(root, "room-a") ? "room-a" : "room-b"
+        clients.set(roomId, captured as KiroClient)
+        return mockConnection(async () => {
+          ;(roomId === "room-a" ? markA : markB)()
+          await release
+          return { stopReason: "end_turn" }
+        })
       },
     })
     const toolsA = new FakeTools()
@@ -317,16 +322,12 @@ describe("KiroACPAdapter", () => {
     const turnB = adapter.onMessage(makeMessage("hello B", "room-b"), toolsB, { roomToSession: {} }, null, null, { isSessionBootstrap: true, roomId: "room-b" })
     await aIn
     await bIn
-    await client!.extNotification(KIRO_METADATA_METHOD, { contextWindowUsed: 10, contextWindowSize: 100 })
+    await clients.get("room-a")!.extNotification(KIRO_METADATA_METHOD, { contextWindowUsed: 10, contextWindowSize: 100 })
     releaseBoth()
     await Promise.all([turnA, turnB])
     const usage = "[Kiro context window] 10/100 tokens (10%)"
-    expect(toolsA.events.some((event) => event.content === usage)).toBe(false)
+    expect(toolsA.events.some((event) => event.content === usage)).toBe(true)
     expect(toolsB.events.some((event) => event.content === usage)).toBe(false)
-    expect(logger.warn).toHaveBeenCalledWith("kiro_acp.metadata_unattributed", {
-      method: KIRO_METADATA_METHOD,
-      keys: ["contextWindowUsed", "contextWindowSize"],
-    })
     await adapter.stop()
   })
 
@@ -350,6 +351,7 @@ describe("KiroACPAdapter", () => {
       return { stopReason: "end_turn" }
     })
     const adapter = new KiroACPAdapter({
+      cwd: tmpRoot(),
       enableMcpTools: false,
       turnTimeoutMs: 30,
       connectionFactory: async (captured) => {
@@ -411,6 +413,7 @@ describe("KiroACPAdapter", () => {
       const sessionId = "kiro-restart-session"
 
       const adapter1 = new KiroACPAdapter({
+        cwd: tmpRoot(),
         enableMcpTools: false,
         connectionFactory: async () => mockConnection(
           async () => ({ stopReason: "end_turn" }),
@@ -436,6 +439,7 @@ describe("KiroACPAdapter", () => {
       })
       const newSession = vi.fn(async () => ({ sessionId: "should-not-be-created" }))
       const adapter2 = new KiroACPAdapter({
+        cwd: tmpRoot(),
         enableMcpTools: false,
         connectionFactory: async () => mockConnection(
           async () => ({ stopReason: "end_turn" }),
@@ -463,6 +467,7 @@ describe("KiroACPAdapter", () => {
       const staleSessionId = "kiro-stale-session"
 
       const adapter1 = new KiroACPAdapter({
+        cwd: tmpRoot(),
         enableMcpTools: false,
         connectionFactory: async () => mockConnection(
           async () => ({ stopReason: "end_turn" }),
@@ -493,6 +498,7 @@ describe("KiroACPAdapter", () => {
         return { stopReason: "end_turn" }
       })
       const adapter2 = new KiroACPAdapter({
+        cwd: tmpRoot(),
         enableMcpTools: false,
         connectionFactory: async () => mockConnection(prompt, {
           loadSession,

@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 import { ACPClientAdapter } from "../../../../src/adapters/acp";
 import { ACP_SESSION_EVENT } from "../../../../src/converters/acp-client";
 import { SEND_MESSAGE_TOOL_NAME } from "../../../../src/runtime/tools/schemas";
-import { FakeTools, makeMessage } from "../../../testUtils";
+import { FakeTools, makeMessage, tmpRoot } from "../../../testUtils";
 import { MESSAGE_TYPE } from "../../toolkit/observeMessages";
 import { CATEGORY, FLAG_ON, scenarioId } from "../../toolkit/registry";
 
@@ -36,7 +36,7 @@ describe(SCENARIO, () => {
   it("reuses one ACP session and answers through the Band MCP tools", async () => {
     expect(process.env[OPT_IN_ENV], `set ${OPT_IN_ENV}=${FLAG_ON} to run against a local codex-acp`).toBe(FLAG_ON);
 
-    const adapter = new ACPClientAdapter({ command: CODEX_ACP_COMMAND, enableMcpTools: true });
+    const adapter = new ACPClientAdapter({ cwd: tmpRoot(), command: CODEX_ACP_COMMAND, enableMcpTools: true });
     await using _stopped = { [Symbol.asyncDispose]: () => adapter.stop().catch(() => undefined) };
     const tools = new FakeTools();
 

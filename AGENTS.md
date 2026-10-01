@@ -241,7 +241,7 @@ Two-layer pattern (mirrors A2A Gateway):
 | Platform Bridge | `BandACPServerAdapter` | `ACPClientAdapter` |
 
 - **Server**: Editor → ACP → `ACPServer` → `BandACPServerAdapter` → Band REST/WS → peers
-- **Client**: Band room message → `ACPClientAdapter` → spawned subprocess (Codex, Claude Code, etc.)
+- **Client**: Band room message → `ACPClientAdapter` → that room's `ACPRoomAgent` → its own spawned subprocess (Codex, Claude Code, etc.), run in `<cwd>/.band-workspaces/<roomId>`
 
 ### Key files (under `packages/sdk/src/adapters/acp/`)
 
@@ -249,7 +249,10 @@ Two-layer pattern (mirrors A2A Gateway):
 |------|---------|
 | `ACPServer.ts` | JSON-RPC handler exposing the ACP Agent surface |
 | `BandACPServerAdapter.ts` | REST client + room/session mapping |
-| `ACPClientAdapter.ts` | Spawns external ACP agent subprocess |
+| `ACPClientAdapter.ts` | Public adapter: routes each room to its own `ACPRoomAgent` |
+| `ACPRoomAgent.ts` | One room's ACP subprocess, session, and Band MCP server |
+| `../shared/roomScopedAdapter.ts` | Per-room engine lifecycle shared with Cursor and Codex |
+| `../shared/roomWorkspace.ts` | Per-room workspace layout and claims |
 
 ### Optional Dependency
 

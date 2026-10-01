@@ -1,9 +1,8 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { createConnection } from "node:net";
 import { createInterface } from "node:readline";
-import { Duplex, Readable, Writable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 
 import type {
   Client,
@@ -21,7 +20,7 @@ import type {
   SessionModeState,
 } from "@agentclientprotocol/sdk";
 
-import { ACP_SESSION_EVENT, ACPClientHistoryConverter, type ACPClientSessionState } from "../../converters/acp-client";
+import { ACP_SESSION_EVENT, type ACPClientSessionState } from "../../converters/acp-client";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { rethrowIfRecoverableTurnFailure, ValidationError } from "../../core/errors";
@@ -57,13 +56,13 @@ import {
   type ACPClientConnectionFactory,
   type ACPClientExtensionHandler,
   type ACPClientConnectionHandle,
-  type ACPClientTcpEndpoint,
   type ACPPermissionAbandonReason,
   type ACPPermissionEndReason,
   type ACPPermissionRequest,
 } from "./types";
 import { stopChildProcess } from "../shared/stopChildProcess";
 import { acpModule } from "./loader";
+import type { WorkspaceForRoom } from "../shared/roomWorkspace";
 
 interface ConnectionRetirement {
   promise: Promise<never>;
@@ -129,10 +128,7 @@ function framedReplay(lines: readonly string[], liveMessage: string): [string, s
 // subprocess-handshake timeout: this is the same kind of wait, a local agent
 // process acknowledging an administrative call, not doing model inference.
 const SET_SESSION_CONFIG_TIMEOUT_MS = 10_000;
-const MIN_TCP_PORT = 1;
-const MAX_TCP_PORT = 65_535;
 const CONNECTION_ATTEMPT_SUPERSEDED_ERROR = "ACP connection attempt superseded by stop()";
-const TCP_CONNECTION_ATTEMPT_ABORTED_ERROR = "ACP TCP connection attempt aborted";
 const BACKEND_AFTER_STOP_ERROR = "ACP adapter stopped while its MCP backend was starting";
 
 export interface ACPModeRequest {
@@ -168,18 +164,15 @@ export interface ACPClientAdapterBaseOptions {
   enableMcpTools?: boolean;
   additionalMcpTools?: McpToolRegistration[];
   clientCapabilities?: ClientCapabilities;
+  // Called once per agent connection, with that room's workspace as `cwd`.
+  // Must start a process dedicated to that room: sharing one across rooms
+  // undoes the isolation this adapter exists for.
   connectionFactory?: ACPClientConnectionFactory;
   extensionHandler?: ACPClientExtensionHandler;
-  // Per-room working directory for session establishment, overriding `cwd`
-  // for that one room's session. ACP's `cwd` is normatively a per-session
-  // filesystem context (MUST be honored regardless of where the agent
-  // subprocess itself was spawned), so this needs no separate
-  // subprocess/connection per room — every room's session already lives on
-  // the one shared connection. Omit to keep every room on the adapter-wide
-  // `cwd`, unchanged from today. Any directory allocation/claim/release the
-  // resolved path needs is this callback's own responsibility, not the
-  // adapter's.
-  workspaceForRoom?: (roomId: string) => string;
+  // Each room's agent runs in its own folder, `<cwd>/.band-workspaces/<roomId>`.
+  // Replaces that layout; must return an absolute path, which the adapter
+  // creates and gives to that one room. Cannot be combined with `cwd`.
+  workspaceForRoom?: WorkspaceForRoom;
   // Omitted ⇒ every permission request auto-resolves via
   // `choosePermissionOption`, unchanged from today. Set ⇒ each request is
   // handed to this callback instead; its resolved id is used verbatim
@@ -232,20 +225,22 @@ export interface ACPClientAdapterBaseOptions {
 
 export interface ACPClientStdioOptions extends ACPClientAdapterBaseOptions {
   command: string | string[];
-  host?: never;
-  port?: never;
 }
 
-export interface ACPClientTcpOptions extends ACPClientAdapterBaseOptions {
-  command?: never;
-  host: string;
-  port: number;
-}
+export type ACPClientAdapterOptions = ACPClientStdioOptions;
 
-export type ACPClientAdapterOptions = ACPClientStdioOptions | ACPClientTcpOptions;
+/** What one room's engine is built from: the adapter's options, bound to that room. */
+export interface ACPRoomAgentOptions extends Omit<ACPClientStdioOptions, "command" | "cwd" | "workspaceForRoom"> {
+  command: string[];
+  /** The room's claimed workspace; the agent process and every session run here. */
+  cwd: string;
+  roomId: string;
+  provider: string;
+}
 
 export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterToolsProtocol> {
-  protected readonly provider: string = "acp";
+  protected readonly provider: string
+  private readonly roomId: string
   private readonly command: string[]
   private readonly cwd: string
   private readonly env?: Record<string, string>
@@ -257,8 +252,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
   private readonly clientCapabilities?: ClientCapabilities
   private readonly connectionFactory?: ACPClientConnectionFactory
   private readonly extensionHandler?: ACPClientExtensionHandler
-  private readonly tcpEndpoint: ACPClientTcpEndpoint | null
-  private readonly workspaceForRoom?: (roomId: string) => string
 
   // The value's `generation` is the connection generation the session was
   // last established/restored against. `client` is the exact BandACPClient
@@ -319,18 +312,12 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
   // cannot alias a same-id session on a newer connection.
   private connectionGeneration = 0
 
-  public constructor(options: ACPClientAdapterOptions) {
-    super({
-      historyConverter: new ACPClientHistoryConverter(),
-    })
-
-    const command = options.command === undefined
-      ? []
-      : Array.isArray(options.command) ? [...options.command] : [options.command]
-    const tcpEndpoint = validateTransport(command, options.host, options.port)
-    this.command = command
-
-    this.cwd = options.cwd ?? process.cwd()
+  public constructor(options: ACPRoomAgentOptions) {
+    super()
+    this.provider = options.provider
+    this.roomId = options.roomId
+    this.command = options.command
+    this.cwd = options.cwd
     this.env = options.env
     this.mcpServers = [...(options.mcpServers ?? [])]
     this.authMethod = options.authMethod
@@ -340,8 +327,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
     this.clientCapabilities = options.clientCapabilities
     this.connectionFactory = options.connectionFactory
     this.extensionHandler = options.extensionHandler
-    this.tcpEndpoint = tcpEndpoint
-    this.workspaceForRoom = options.workspaceForRoom
 
     this.resolvePermission = options.resolvePermission
     this.resolveSessionMode = options.resolveSessionMode
@@ -350,23 +335,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
     this.logger = resolveLogger(options.logger)
     this.customSection = options.customSection
     this.permissionTimeoutMs = options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
-    // Only meaningful when `resolvePermission`, `resolveSessionMode`, or
-    // `resolveSessionModel` is actually set — the auto-allow/harness-default
-    // paths never read it, so an irrelevant/default value here shouldn't
-    // reject an otherwise-valid config for a caller not using manual mode at
-    // all.
-    if ((this.resolvePermission || this.resolveSessionMode || this.resolveSessionModel || this.resolveSessionConfig) && (!Number.isFinite(this.permissionTimeoutMs) || this.permissionTimeoutMs <= 0)) {
-      throw new ValidationError(`permissionTimeoutMs must be a positive finite number, got ${options.permissionTimeoutMs}`)
-    }
-    if (this.resolvePermission || this.resolveSessionMode || this.resolveSessionModel || this.resolveSessionConfig) {
-      assertWithinSetTimeoutBound(
-        `permissionTimeoutMs must be at most ${MAX_SETTIMEOUT_DELAY_MS}, got ${options.permissionTimeoutMs}`,
-        this.permissionTimeoutMs,
-      )
-    }
-
     this.turnTimeoutMs = options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS
-    assertTurnTimeoutMs(this.turnTimeoutMs)
   }
 
   public async onStarted(
@@ -385,7 +354,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
       includeBaseInstructions: false,
       customSection: this.customSection,
     })
-    await this.ensureConnection()
   }
 
   public async onMessage(
@@ -710,10 +678,9 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
   }
 
   private rehydrate(history: ACPClientSessionState): void {
-    for (const [roomId, sessionId] of Object.entries(history.roomToSession)) {
-      if (!this.roomToSession.has(roomId)) {
-        this.linkSession(roomId, sessionId, this.connectionGeneration, null)
-      }
+    const sessionId = history.roomToSession[this.roomId]
+    if (sessionId && !this.roomToSession.has(this.roomId)) {
+      this.linkSession(this.roomId, sessionId, this.connectionGeneration, null)
     }
   }
 
@@ -804,10 +771,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
     return `${generation}:${sessionId}`
   }
 
-  private resolveRoomCwd(roomId: string): string {
-    return this.workspaceForRoom?.(roomId) ?? this.cwd
-  }
-
   // Excludes the current turn's own message. A non-bootstrap history
   // already includes it (`ExecutionContext.recordMessage` runs before the
   // history handed to the adapter is read); a bootstrap history does not.
@@ -880,14 +843,12 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
           cwd: this.cwd,
           env: this.env,
         })
-        : this.tcpEndpoint
-          ? createTcpConnection(client, this.tcpEndpoint, attempt.signal)
-          : createSubprocessConnection(client, {
-            command: this.command,
-            cwd: this.cwd,
-            env: this.env,
-            logger: this.logger,
-          }))
+        : createSubprocessConnection(client, {
+          command: this.command,
+          cwd: this.cwd,
+          env: this.env,
+          logger: this.logger,
+        }))
       const connection = handle.connection
       if (attempt.signal.aborted) {
         await handle.stop()
@@ -999,7 +960,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
     client: BandACPClient,
   ): Promise<string> {
     const mcpServers = await this.buildSessionMcpServers()
-    const cwd = this.resolveRoomCwd(roomId)
+    const cwd = this.cwd
 
     // A session a timed-out turn abandoned must never be restored: the
     // agent may still be writing to it (see `abandonTimedOutTurn`), so
@@ -1842,38 +1803,33 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
 
 class AcpTurnTimeoutError extends Error {}
 
-function validateTransport(
-  command: string[],
-  host: string | undefined,
-  port: number | undefined,
-): ACPClientTcpEndpoint | null {
-  const hasHost = host !== undefined
-  const hasPort = port !== undefined
-
-  if (hasHost !== hasPort) {
-    throw new ValidationError("ACPClientAdapter requires both host and port for a TCP connection")
-  }
-
-  if (hasHost && hasPort) {
-    if (command.length > 0) {
-      throw new ValidationError("ACPClientAdapter cannot use command with a TCP connection")
-    }
-    if (typeof host !== "string" || host.trim().length === 0) {
-      throw new ValidationError("ACPClientAdapter TCP host must be a non-empty string")
-    }
-    if (!Number.isInteger(port) || port < MIN_TCP_PORT || port > MAX_TCP_PORT) {
-      throw new ValidationError(
-        `ACPClientAdapter TCP port must be an integer between ${MIN_TCP_PORT} and ${MAX_TCP_PORT}`,
-      )
-    }
-    return { host, port }
-  }
-
+/**
+ * Rejects options no room could run with, so a bad config fails when the
+ * adapter is built rather than on some room's first turn. Returns the command
+ * as an argv array.
+ */
+export function validateACPClientOptions(options: ACPClientAdapterOptions): string[] {
+  const command = Array.isArray(options.command) ? [...options.command] : [options.command]
   if (command.length === 0 || typeof command[0] !== "string" || command[0].trim().length === 0) {
-    throw new ValidationError("ACPClientAdapter requires a command or TCP host and port")
+    throw new ValidationError("ACPClientAdapter requires a command")
   }
 
-  return null
+  // Only read by `resolvePermission`, `resolveSessionMode`,
+  // `resolveSessionModel` and `resolveSessionConfig`, so a caller using none
+  // of them is never rejected over it.
+  if (options.resolvePermission || options.resolveSessionMode || options.resolveSessionModel || options.resolveSessionConfig) {
+    const permissionTimeoutMs = options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
+    if (!Number.isFinite(permissionTimeoutMs) || permissionTimeoutMs <= 0) {
+      throw new ValidationError(`permissionTimeoutMs must be a positive finite number, got ${options.permissionTimeoutMs}`)
+    }
+    assertWithinSetTimeoutBound(
+      `permissionTimeoutMs must be at most ${MAX_SETTIMEOUT_DELAY_MS}, got ${options.permissionTimeoutMs}`,
+      permissionTimeoutMs,
+    )
+  }
+
+  assertTurnTimeoutMs(options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS)
+  return command
 }
 
 export async function createSubprocessConnection(
@@ -1914,59 +1870,6 @@ export async function createSubprocessConnection(
   return {
     connection,
     stop: () => stopChildProcess(child),
-  }
-}
-
-export async function createTcpConnection(
-  client: Client,
-  endpoint: ACPClientTcpEndpoint,
-  signal?: AbortSignal,
-): Promise<ACPClientConnectionHandle> {
-  const acp = await acpModule.get()
-  if (signal?.aborted) {
-    throw new Error(TCP_CONNECTION_ATTEMPT_ABORTED_ERROR)
-  }
-  const socket = await new Promise<Duplex>((resolve, reject) => {
-    const candidate = createConnection(endpoint)
-    const cleanup = (): void => {
-      candidate.off("error", fail)
-      candidate.off("connect", connect)
-      signal?.removeEventListener("abort", abort)
-    }
-    const fail = (error: Error): void => {
-      cleanup()
-      reject(error)
-    }
-    const connect = (): void => {
-      cleanup()
-      resolve(candidate)
-    }
-    const abort = (): void => {
-      candidate.destroy()
-      fail(new Error(TCP_CONNECTION_ATTEMPT_ABORTED_ERROR))
-    }
-    candidate.once("error", fail)
-    candidate.once("connect", connect)
-    signal?.addEventListener("abort", abort, { once: true })
-  })
-  const webSocket = Duplex.toWeb(socket)
-  const stream = acp.ndJsonStream(
-    webSocket.writable as WritableStream<Uint8Array>,
-    webSocket.readable as ReadableStream<Uint8Array>,
-  )
-  const connection = new acp.ClientSideConnection(() => client, stream)
-  let stopped = false
-
-  return {
-    connection,
-    stop: async () => {
-      if (stopped) {
-        return
-      }
-      stopped = true
-      socket.destroy()
-      await connection.closed
-    },
   }
 }
 

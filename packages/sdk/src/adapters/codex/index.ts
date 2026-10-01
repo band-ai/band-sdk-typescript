@@ -1,8 +1,8 @@
+export { CodexAdapter } from "./CodexAdapter";
 export {
   CODEX_REASONING_EFFORTS,
   CODEX_REASONING_SUMMARIES,
   CODEX_WEB_SEARCH_MODES,
-  CodexRoomAgent as CodexAdapter,
   type CodexAdapterConfig,
   type CodexApprovalPolicy,
   type CodexSandboxMode,

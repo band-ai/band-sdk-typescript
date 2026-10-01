@@ -5,6 +5,7 @@ import {
   createCopilotACPAgent,
 } from "../examples/copilot-acp/01_basic_agent";
 import { firstAcpSystemPrompt } from "./helpers/exampleAcpTurn";
+import { tmpRoot } from "./testUtils";
 
 describe("copilot-acp examples", () => {
   it("factory returns an agent that has not auto-started", () => {
@@ -17,6 +18,7 @@ describe("copilot-acp examples", () => {
         customSection: "Tom the cat chases Jerry.",
         command: ["copilot-acp-stub"],
         connectionFactory,
+        cwd: tmpRoot(),
       }),
     );
 

@@ -59,9 +59,19 @@ import { CopilotACPAdapter } from "@band-ai/sdk";
 const adapter = new CopilotACPAdapter({ cwd: process.cwd() });
 ```
 
-It launches `copilot --acp --stdio`. For an already-running listener, use `{ host, port }`; the SDK only owns its client socket, never that listener. The default injected Band MCP server is loopback-only, so a remote/containerized Copilot server needs `enableMcpTools: false` and caller-provided reachable `mcpServers`.
+It launches `copilot --acp --stdio` once per room (see [One process per room](#coding-agents-one-process-per-room)). The default injected Band MCP server is loopback-only, so a containerized Copilot needs `enableMcpTools: false` and caller-provided reachable `mcpServers`.
 
-Copilot CLI authentication and BYOK remain CLI configuration. Supply auth/BYOK environment variables through `env` only for stdio; a TCP listener already owns its environment. ACP is public preview, and Copilot tool filtering and reasoning effort are server launch-time settings rather than per-session adapter options.
+Copilot CLI authentication and BYOK remain CLI configuration; supply their environment variables through `env`. ACP is public preview, and Copilot tool filtering and reasoning effort are server launch-time settings rather than per-session adapter options.
+
+### Coding agents: one process per room
+
+The coding-agent adapters (`CopilotACPAdapter`, `CursorACPAdapter`, `KiroACPAdapter`, `OmpACPAdapter`, `ACPClientAdapter`, and `CodexAdapter`) give every room its own agent process, working directory, and Band MCP server. Rooms share nothing, so one room's crash, timeout, or files cannot reach another, and a room's MCP token only reaches that room's tools.
+
+- **Lazy start.** Nothing is spawned when the agent starts. A room's process starts on its first message, so a missing binary or bad credentials are reported in that room. The process stops when the room is left, and every process stops when the agent stops.
+- **Workspaces.** Each room runs in `<cwd>/.band-workspaces/<roomId>`, where `cwd` defaults to `process.cwd()`. To pick folders yourself, pass `workspaceForRoom: (roomId) => absolutePath` instead of `cwd`; setting both throws. Folders are created on first use and kept after the room leaves. One adapter never gives one folder (symlinks resolved) to two live rooms, but two adapters with the same root share each room's folder.
+- **Not a sandbox.** A workspace is the process's working directory, not an OS boundary. With Codex's `sandboxMode: "workspace-write"`, the writable workspace is now the room's folder rather than one shared `cwd`.
+- **Factories.** `connectionFactory` (ACP) and `factory` (Codex, called with `{ roomId, cwd }`) run once per room process and must return a new process or client each time.
+- **Upgrading.** TCP transports (`host`/`port`) were removed. Sessions created in the old shared `cwd` usually fail to restore once, so each existing room replays its history into a fresh session.
 
 ### Generic
 
@@ -372,7 +382,7 @@ Working examples live in `examples/`. Each folder is self-contained.
 | `examples/claude-sdk/` | Claude Agent SDK | MCP tools, room-scoped resume |
 | `examples/codex/` | Codex | Thread mapping, local commands |
 | `examples/omp-acp/` | OMP | ACP stdio, permission-gated writes |
-| `examples/copilot-acp/` | GitHub Copilot CLI | ACP stdio or existing TCP listener |
+| `examples/copilot-acp/` | GitHub Copilot CLI | ACP stdio, one process per room |
 | `examples/langgraph/` | LangGraph | Graph-based agent |
 | `examples/custom-adapter/` | SimpleAdapter | Custom adapter protocol |
 | `examples/parlant/` | Parlant | Guideline-based behavior |

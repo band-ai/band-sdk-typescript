@@ -1,5 +1,5 @@
+export { CursorACPAdapter } from "./CursorACPAdapter";
 export {
-  CursorRoomAgent as CursorACPAdapter,
   DEFAULT_CURSOR_ACP_COMMAND,
   type CursorACPAdapterOptions,
   type CursorApprovalMode,

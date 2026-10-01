@@ -12,6 +12,7 @@ import { DEFAULT_CURSOR_DECISION_TIMEOUT_MS } from "../../src/adapters/cursor-ac
 import { CURSOR_COMMAND, CURSOR_DECISION_MESSAGES as SAYS } from "../../src/adapters/cursor-acp/messages";
 import { BandPlatform, person, type BandRoom, type Posted } from "./support/bandPlatform";
 import { FakeCursorAgent, type CursorTurn } from "./support/fakeCursorAgent";
+import { tmpRoot } from "../testUtils";
 
 const OWNER = "owner";
 const TEAMMATE = "teammate";
@@ -49,6 +50,7 @@ const FILES_AND_MODE = {
 async function cursorRoom(options: Partial<CursorACPAdapterOptions> = {}) {
   const agent = new FakeCursorAgent();
   const adapter = new CursorACPAdapter({
+    cwd: tmpRoot(),
     enableMcpTools: false,
     decisionAuthorizedSenders: [OWNER, TEAMMATE],
     connectionFactory: agent.connectionFactory,
@@ -131,15 +133,16 @@ describe("Cursor in a Band room", () => {
     expect(await result).toEqual(answered({ files: ["readme", "config"], mode: ["edit"] }));
   });
 
-  it("asks the room to approve plans, including one left open when the agent leaves the room", async () => {
+  it("asks the room to approve plans, and stops Cursor with a plan still open when the agent leaves the room", async () => {
     await using session = await cursorRoom({ planMode: "manual" });
     const { room, agent } = session;
     const openPlan = { title: "Refactor plan", overview: "Split the module" };
-    const { result, tokens: [untitled] } = await session.start(async (turn) => [
-      await turn.plan({ overview: "No title" }),
-      await turn.plan(openPlan),
-      await turn.plan(openPlan),
-    ], 1);
+    const outcomes: unknown[] = [];
+    const { tokens: [untitled] } = await session.start(async (turn) => {
+      outcomes.push(await turn.plan({ overview: "No title" }));
+      outcomes.push(await turn.plan(openPlan));
+      outcomes.push(await turn.plan(openPlan));
+    }, 1);
 
     expect(room.messages.find(isPrompt)?.content).toBe(SAYS.planPrompt("Cursor plan", untitled!));
     expect(await room.exchange(OWNER, `${CURSOR_COMMAND} answer ${untitled} x=y`)).toEqual([SAYS.invalidCommand("plan", untitled!)]);
@@ -150,15 +153,17 @@ describe("Cursor in a Band room", () => {
 
     await room.remove();
 
-    expect(await result).toEqual([{ outcome: { outcome: "rejected" } }, { outcome: { outcome: "accepted" } }, CANCELLED]);
+    // Leaving stops the room's Cursor process, open plan and all.
+    await vi.waitFor(() => expect(agent.room("room-1").stopped).toBe(true));
+    expect(outcomes).toEqual([{ outcome: { outcome: "rejected" } }, { outcome: { outcome: "accepted" } }]);
     expect(agent.receivedOf("session/prompt")).toHaveLength(1);
   });
 
   it("shares a busy room: lists mixed pending asks, evicts the oldest, and keeps each room's asks to itself", async () => {
     await using session = await cursorRoom({ maxPendingDecisions: 2, planMode: "manual" });
-    const { room, platform } = session;
+    const { room, platform, agent } = session;
     const otherRoom = await platform.room("room-2");
-    const { result } = await session.start(async (turn) => Promise.all([
+    await session.start(async (turn) => Promise.all([
       turn.requestPermission(WRITE_FILE),
       turn.ask({ questions: [{ id: "mode", options: [{ id: "plan" }] }] }),
       turn.plan({ title: "Plan" }),
@@ -179,7 +184,7 @@ describe("Cursor in a Band room", () => {
     expect(await room.exchange(OWNER, `${CURSOR_COMMAND} select ${tokenOf(evicted!)} allow`)).toEqual([SAYS.notPending(tokenOf(evicted!)!)]);
 
     await room.remove();
-    expect(await result).toEqual([CANCELLED, CANCELLED, CANCELLED]);
+    await vi.waitFor(() => expect(agent.room("room-1").stopped).toBe(true));
   });
 
   it("times each ask out at its own deadline, tells the requester once, and survives a notice the platform refuses", async () => {
@@ -286,12 +291,13 @@ describe("Cursor in a Band room", () => {
 
   it("lets nobody resolve decisions when the allowlist is empty", async () => {
     await using session = await cursorRoom({ decisionAuthorizedSenders: [] });
-    const { room } = session;
-    const { result, tokens: [token] } = await session.start((turn) => turn.ask({ questions: [{ id: "mode", options: [{ id: "plan" }] }] }), 1);
+    const { room, agent } = session;
+    const { tokens: [token] } = await session.start((turn) => turn.ask({ questions: [{ id: "mode", options: [{ id: "plan" }] }] }), 1);
 
     expect(await room.exchange(INTRUDER, `${CURSOR_COMMAND} answer ${token} mode=plan`)).toContain(SAYS.notAuthorized());
+    expect(await room.exchange(OWNER, `${CURSOR_COMMAND} answer ${token} mode=plan`)).toContain(SAYS.notAuthorized());
     await room.remove();
-    expect(await result).toEqual(CANCELLED);
+    await vi.waitFor(() => expect(agent.room("room-1").stopped).toBe(true));
   });
 
   it("cancels asks that arrive for a turn that is no longer there, and ignores a malformed one", async () => {
@@ -318,43 +324,46 @@ describe("Cursor in a Band room", () => {
     expect(agent.receivedOf("session/new")).toHaveLength(1);
   });
 
-  it("keeps a second room waiting for Cursor from answering the first room's decision", async () => {
-    await using session = await cursorRoom();
-    const { room, platform } = session;
-    const otherRoom = await platform.room("room-2");
-    const { result: first, tokens: [token] } = await session.start((turn) => turn.ask({ questions: [{ id: "mode", options: [{ id: "plan" }] }] }), 1);
-    const second = session.agent.nextTurn(async (turn) => turn.sessionId);
-    // Room-2's request waits for Cursor, so room-2's attempt at room-1's token is only read once room-1's turn is over.
-    const queued = await otherRoom.say(OWNER, "And summarise room-2");
-    const crossRoomAnswer = otherRoom.exchange(OWNER, `${CURSOR_COMMAND} answer ${token} mode=plan`);
-
-    expect(await room.exchange(OWNER, `${CURSOR_COMMAND} answer ${token} mode=plan`)).toEqual([SAYS.resolved("question", token!)]);
-
-    expect(await first).toEqual(answered({ mode: ["plan"] }));
-    expect(await second).toBe("cursor-session-2");
-    expect(await otherRoom.outcome(queued)).toBe("processed");
-    expect(await crossRoomAnswer).toEqual([SAYS.notPending(token!)]);
-  });
-
-  it("lets a room waiting for Cursor be removed without stalling the room Cursor is asking", async () => {
+  it("runs a second room's request while the first room's decision is pending, and keeps each room's decisions to itself", async () => {
     await using session = await cursorRoom();
     const { room, platform, agent } = session;
     const otherRoom = await platform.room("room-2");
-    const { result, tokens: [token] } = await session.start((turn) => turn.ask({ questions: [{ id: "mode", options: [{ id: "plan" }] }] }), 1);
+    const { result: first, tokens: [token] } = await session.start((turn) => turn.ask({ questions: [{ id: "mode", options: [{ id: "plan" }] }] }), 1);
+    const second = agent.room("room-2").nextTurn(async (turn) => turn.sessionId);
+
+    // Room-2 has its own Cursor process, so its request runs now, not after room-1's turn.
     const queued = await otherRoom.say(OWNER, "And summarise room-2");
+    expect(await second).toBe("cursor-session-1");
+    expect(await otherRoom.outcome(queued)).toBe("processed");
+    expect(await otherRoom.exchange(OWNER, `${CURSOR_COMMAND} answer ${token} mode=plan`)).toEqual([SAYS.notPending(token!)]);
+
+    expect(await room.exchange(OWNER, `${CURSOR_COMMAND} answer ${token} mode=plan`)).toEqual([SAYS.resolved("question", token!)]);
+    expect(await first).toEqual(answered({ mode: ["plan"] }));
+  });
+
+  it("lets a room waiting on its own decision be removed without stalling the other room, and rejoin on a fresh process", async () => {
+    await using session = await cursorRoom();
+    const { room, platform, agent } = session;
+    const otherRoom = await platform.room("room-2");
+    const ask = { questions: [{ id: "mode", options: [{ id: "plan" }] }] };
+    const { result, tokens: [token] } = await session.start((turn) => turn.ask(ask), 1);
+    void agent.room("room-2").nextTurn((turn) => turn.ask(ask));
+    const queued = await otherRoom.say(OWNER, "And summarise room-2");
+    await promptTokens(otherRoom, 1);
     expect(await otherRoom.outcome(queued)).toBe("processed");
     expect(await otherRoom.exchange(OWNER, "Anything yet?")).toEqual([SAYS.turnInProgress()]);
 
     await otherRoom.remove();
+    await vi.waitFor(() => expect(agent.room("room-2").stopped).toBe(true));
     expect(await room.exchange(OWNER, `${CURSOR_COMMAND} answer ${token} mode=plan`)).toEqual([SAYS.resolved("question", token!)]);
-
     expect(await result).toEqual(answered({ mode: ["plan"] }));
+
     const rejoined = await platform.room("room-2");
-    const next = agent.nextTurn(async (turn) => turn.sessionId);
+    const next = agent.room("room-2").nextTurn(async (turn) => turn.sessionId);
     const message = await rejoined.say(OWNER, "Summarise room-2 again");
-    expect(await next).toBe("cursor-session-2");
+    expect(await next).toBe("cursor-session-1");
+    expect(agent.room("room-2").launches).toBe(2);
     expect(await rejoined.outcome(message)).toBe("processed");
-    expect(agent.receivedOf("session/prompt")).toHaveLength(2);
   });
 
   it("settles a request whose Cursor turn crashes, and serves the room's next one", async () => {
@@ -417,7 +426,7 @@ describe("Cursor in a Band room", () => {
     { invalid: "an unbounded decision timeout", options: { decisionTimeoutMs: Infinity }, error: "decisionTimeoutMs must be a positive finite number" },
     { invalid: "a fractional pending limit", options: { maxPendingDecisions: 1.5 }, error: "maxPendingDecisions must be a positive integer" },
   ])("refuses to start with $invalid", ({ options, error }) => {
-    expect(() => new CursorACPAdapter({ enableMcpTools: false, ...options })).toThrow(error);
+    expect(() => new CursorACPAdapter({ cwd: tmpRoot(), enableMcpTools: false, ...options })).toThrow(error);
   });
 
   it.each([

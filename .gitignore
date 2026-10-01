@@ -7,6 +7,8 @@ coverage
 .venv-*
 .tmp-bin
 .tmp-harness-reports
+# Per-room agent workspaces (ACP and Codex adapters)
+.band-workspaces/
 .desloppify
 # Local Claude Code settings/state (machine-specific, not shared)
 .claude/settings.local.json

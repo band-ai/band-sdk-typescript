@@ -9,7 +9,7 @@ import {
 } from "../src/adapters/codex/appServerClient";
 import type { InitializeParams } from "../src/adapters/codex/appServerProtocol";
 import { HistoryProvider } from "../src/runtime/types";
-import { FakeTools, failureEvents, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
+import { FakeTools, failureEvents, findFailureEvent, makeMessage, expectTurnFailed, roomWorkspacePath, tmpRoot } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
 
 class FakeCodexClient implements CodexClientLike {
@@ -168,7 +168,7 @@ describe("CodexAdapter", () => {
     // `/model list` is the one local command that reaches Codex, and local
     // commands run before onMessage's failure catch — so a bare rejection here
     // escaped to failRuntime and stopped every room.
-    const adapter = new CodexAdapter({
+    const adapter = new CodexAdapter({ config: { cwd: tmpRoot() },
       factory: async () => new FakeCodexClient({
         requestHandler: (method, params) => {
           if (method === "model/list") {
@@ -214,7 +214,7 @@ describe("CodexAdapter", () => {
         ],
       });
 
-      const adapter = new CodexAdapter({ factory: async () => fakeClient });
+      const adapter = new CodexAdapter({ config: { cwd: tmpRoot() }, factory: async () => fakeClient });
       await adapter.onMessage(
         makeMessage("question"),
         tools,
@@ -230,7 +230,7 @@ describe("CodexAdapter", () => {
       // Local commands are answered before the Codex client is ever reached,
       // and outside onMessage's failure catch — so this path had its own way
       // of escaping, and its own way of taking the runtime down.
-      const adapter = new CodexAdapter({ factory: async () => new FakeCodexClient() });
+      const adapter = new CodexAdapter({ config: { cwd: tmpRoot() }, factory: async () => new FakeCodexClient() });
       await adapter.onMessage(
         makeMessage("/help"),
         tools,
@@ -316,10 +316,11 @@ describe("CodexAdapter", () => {
       ],
     });
 
+    const root = tmpRoot();
     const adapter = new CodexAdapter({
       config: {
         model: "gpt-5.3-codex",
-        cwd: "/tmp/workdir",
+        cwd: root,
         approvalPolicy: "never",
         sandboxMode: "workspace-write",
         reasoningEffort: "medium",
@@ -356,7 +357,7 @@ describe("CodexAdapter", () => {
     expect(threadStart).toBeDefined();
     expect(threadStart?.params).toMatchObject({
       model: "gpt-5.3-codex",
-      cwd: "/tmp/workdir",
+      cwd: roomWorkspacePath(root, "room-1"),
       approvalPolicy: "never",
       sandbox: "workspace-write",
       developerInstructions: expect.stringContaining("Coordinate room work and use tools."),
@@ -443,7 +444,7 @@ describe("CodexAdapter", () => {
       },
     });
 
-    const adapter = new CodexAdapter({
+    const adapter = new CodexAdapter({ config: { cwd: tmpRoot() },
       factory: async () => fakeClient,
     });
 
@@ -512,7 +513,7 @@ describe("CodexAdapter", () => {
       ],
     });
 
-    const adapter = new CodexAdapter({
+    const adapter = new CodexAdapter({ config: { cwd: tmpRoot() },
       factory: async () => fakeClient,
     });
 
@@ -583,7 +584,7 @@ describe("CodexAdapter", () => {
     });
 
     const adapter = new CodexAdapter({
-      config: {
+      config: { cwd: tmpRoot(),
         emitThoughtEvents: true,
       },
       factory: async () => fakeClient,
@@ -621,7 +622,7 @@ describe("CodexAdapter", () => {
     });
 
     const adapter = new CodexAdapter({
-      config: {
+      config: { cwd: tmpRoot(),
         customSection: "Linear policy: always post_thought before complete_session.",
       },
       factory: async () => fakeClient,
@@ -649,7 +650,7 @@ describe("CodexAdapter", () => {
   it("handles local slash commands without starting a turn", async () => {
     const fakeClient = new FakeCodexClient();
     const adapter = new CodexAdapter({
-      config: {
+      config: { cwd: tmpRoot(),
         model: "gpt-5.3-codex",
       },
       factory: async () => fakeClient,
@@ -703,7 +704,7 @@ describe("CodexAdapter", () => {
       warn: vi.fn(),
       error: vi.fn(),
     };
-    const adapter = new CodexAdapter({
+    const adapter = new CodexAdapter({ config: { cwd: tmpRoot() },
       factory: async () => {
         throw new Error("codex init failed");
       },
@@ -746,7 +747,7 @@ describe("CodexAdapter", () => {
         return defaultRequestHandler(method, params);
       },
     });
-    const adapter = new CodexAdapter({ factory: async () => fakeClient });
+    const adapter = new CodexAdapter({ config: { cwd: tmpRoot() }, factory: async () => fakeClient });
     await adapter.onStarted("Codex Agent", "Codex parity adapter");
 
     await expectTurnFailed(adapter.onMessage(
@@ -773,7 +774,7 @@ describe("CodexAdapter", () => {
     const tools = new ToolSchemaFakeTools();
     let factoryCalls = 0;
     const clients: FakeCodexClient[] = [];
-    const adapter = new CodexAdapter({
+    const adapter = new CodexAdapter({ config: { cwd: tmpRoot() },
       factory: async () => {
         factoryCalls += 1;
         const client = new FakeCodexClient({
@@ -824,7 +825,7 @@ describe("CodexAdapter", () => {
     const tools = new ToolSchemaFakeTools();
     let factoryCalls = 0;
     const clients: FakeCodexClient[] = [];
-    const adapter = new CodexAdapter({
+    const adapter = new CodexAdapter({ config: { cwd: tmpRoot() },
       factory: async () => {
         factoryCalls += 1;
         const clientNumber = factoryCalls;
@@ -877,87 +878,117 @@ describe("CodexAdapter", () => {
     });
   });
 
-  it("does not let a stale thread initialization close a replacement client", async () => {
-    let releaseMapping!: () => void;
-    const mappingRelease = new Promise<void>((resolve) => {
-      releaseMapping = resolve;
+  describe("per-room clients", () => {
+    function answeringClient(text: string): FakeCodexClient {
+      return new FakeCodexClient({
+        events: [
+          { kind: "notification", method: "item/completed", params: { item: { type: "agentMessage", id: "msg-1", text } } },
+          { kind: "notification", method: "turn/completed", params: { turn: { id: "turn-1", status: "completed", error: null } } },
+        ],
+      });
+    }
+
+    function turnIn(adapter: CodexAdapter, roomId: string, tools = new ToolSchemaFakeTools()): Promise<void> {
+      return adapter.onMessage(makeMessage(`hello from ${roomId}`, roomId), tools, new HistoryProvider([]), null, null, {
+        isSessionBootstrap: true,
+        roomId,
+      });
+    }
+
+    it("starts no Codex client until a room's first message", async () => {
+      const factory = vi.fn(async () => answeringClient("hi"));
+      const adapter = new CodexAdapter({ config: { cwd: tmpRoot() }, factory });
+
+      await adapter.onStarted("Codex Agent", "Codex parity adapter");
+
+      expect(factory).not.toHaveBeenCalled();
     });
-    let mappingStarted!: () => void;
-    const mappingStart = new Promise<void>((resolve) => {
-      mappingStarted = resolve;
-    });
-    const roomBTools = new ToolSchemaFakeTools();
-    const sendEvent = roomBTools.sendEvent.bind(roomBTools);
-    vi.spyOn(roomBTools, "sendEvent").mockImplementation(async (...args) => {
-      if (args[1] === "task") {
-        mappingStarted();
-        await mappingRelease;
+
+    it("gives each room its own client, started and threaded in that room's workspace", async () => {
+      const root = tmpRoot();
+      const clients = new Map<string, FakeCodexClient>();
+      const factory = vi.fn(async ({ roomId }: { roomId: string; cwd: string }) => {
+        const client = answeringClient(`answer for ${roomId}`);
+        clients.set(roomId, client);
+        return client;
+      });
+      const adapter = new CodexAdapter({ config: { cwd: root }, factory });
+
+      await adapter.onStarted("Codex Agent", "Codex parity adapter");
+      await turnIn(adapter, "room-a");
+      await turnIn(adapter, "room-b");
+
+      expect(factory.mock.calls.map(([context]) => context)).toEqual([
+        { roomId: "room-a", cwd: roomWorkspacePath(root, "room-a") },
+        { roomId: "room-b", cwd: roomWorkspacePath(root, "room-b") },
+      ]);
+      for (const roomId of ["room-a", "room-b"]) {
+        const threadStart = clients.get(roomId)?.requestCalls.find((call) => call.method === "thread/start");
+        expect(threadStart?.params.cwd).toBe(roomWorkspacePath(root, roomId));
       }
-      return await sendEvent(...args);
     });
 
-    let threadStarts = 0;
-    const firstClient = new FakeCodexClient({
-      requestHandler: (method, params) => {
-        if (method === "thread/start") {
-          threadStarts += 1;
-          return { thread: { id: `first-thread-${threadStarts}` }, model: "gpt-5.3-codex", params };
-        }
-        if (method === "turn/start") {
-          throw new Error("app-server transport closed");
-        }
-        return defaultRequestHandler(method, params);
-      },
+    it("keeps each concurrent room's events to that room", async () => {
+      const adapter = new CodexAdapter({
+        config: { cwd: tmpRoot() },
+        factory: async ({ roomId }) => answeringClient(`answer for ${roomId}`),
+      });
+      const toolsA = new ToolSchemaFakeTools();
+      const toolsB = new ToolSchemaFakeTools();
+
+      await adapter.onStarted("Codex Agent", "Codex parity adapter");
+      await Promise.all([turnIn(adapter, "room-a", toolsA), turnIn(adapter, "room-b", toolsB)]);
+
+      expect(toolsA.messages).toEqual(["answer for room-a"]);
+      expect(toolsB.messages).toEqual(["answer for room-b"]);
     });
-    const replacementClient = new FakeCodexClient({
-      events: [{
-        kind: "notification",
-        method: "turn/completed",
-        params: { turn: { id: "turn-1", status: "completed", error: null } },
-      }],
+
+    it("closes only the leaving room's client", async () => {
+      const clients = new Map<string, FakeCodexClient>();
+      const adapter = new CodexAdapter({
+        config: { cwd: tmpRoot() },
+        factory: async ({ roomId }) => {
+          const client = answeringClient("hi");
+          clients.set(roomId, client);
+          return client;
+        },
+      });
+
+      await adapter.onStarted("Codex Agent", "Codex parity adapter");
+      await turnIn(adapter, "room-a");
+      await turnIn(adapter, "room-b");
+      await adapter.onCleanup("room-a");
+      await vi.waitFor(() => expect(clients.get("room-a")?.closeCalls).toBe(1));
+
+      expect(clients.get("room-b")?.closeCalls).toBe(0);
+      await adapter.stop();
+      expect(clients.get("room-b")?.closeCalls).toBe(1);
     });
-    let factoryCalls = 0;
-    const adapter = new CodexAdapter({
-      factory: async () => {
-        factoryCalls += 1;
-        return factoryCalls === 1 ? firstClient : replacementClient;
-      },
+
+    it("keeps another room's client when one room's transport fails", async () => {
+      const failing = new FakeCodexClient({
+        requestHandler: (method, params) => {
+          if (method === "turn/start") {
+            throw new Error("app-server transport closed");
+          }
+          return defaultRequestHandler(method, params);
+        },
+      });
+      const healthy = answeringClient("still here");
+      const adapter = new CodexAdapter({
+        config: { cwd: tmpRoot() },
+        factory: async ({ roomId }) => roomId === "room-a" ? failing : healthy,
+      });
+      const toolsB = new ToolSchemaFakeTools();
+
+      await adapter.onStarted("Codex Agent", "Codex parity adapter");
+      await expectTurnFailed(turnIn(adapter, "room-a"));
+      await turnIn(adapter, "room-b", toolsB);
+
+      expect(failing.closeCalls).toBe(1);
+      expect(healthy.closeCalls).toBe(0);
+      expect(toolsB.messages).toEqual(["still here"]);
     });
-    await adapter.onStarted("Codex Agent", "Codex parity adapter");
-
-    const staleTurn = adapter.onMessage(
-      makeMessage("room B"),
-      roomBTools,
-      new HistoryProvider([]),
-      null,
-      null,
-      { isSessionBootstrap: false, roomId: "room-b" },
-    );
-    await mappingStart;
-
-    await expectTurnFailed(adapter.onMessage(
-      makeMessage("room A"),
-      new ToolSchemaFakeTools(),
-      new HistoryProvider([]),
-      null,
-      null,
-      { isSessionBootstrap: false, roomId: "room-a" },
-    ));
-    await adapter.onMessage(
-      makeMessage("room C"),
-      new ToolSchemaFakeTools(),
-      new HistoryProvider([]),
-      null,
-      null,
-      { isSessionBootstrap: false, roomId: "room-c" },
-    );
-
-    releaseMapping();
-    await expectTurnFailed(staleTurn);
-
-    expect(factoryCalls).toBe(2);
-    expect(firstClient.closeCalls).toBe(1);
-    expect(replacementClient.closeCalls).toBe(0);
   });
 
   it("keeps a client whose thread/start rejected with an ordinary Codex JSON-RPC error, since the transport itself is still healthy", async () => {
@@ -978,7 +1009,7 @@ describe("CodexAdapter", () => {
         return defaultRequestHandler(method, params);
       },
     });
-    const adapter = new CodexAdapter({
+    const adapter = new CodexAdapter({ config: { cwd: tmpRoot() },
       factory: async () => {
         factoryCalls += 1;
         return fakeClient;
@@ -1026,7 +1057,7 @@ describe("CodexAdapter", () => {
         },
       ],
     });
-    const adapter = new CodexAdapter({ factory: async () => fakeClient });
+    const adapter = new CodexAdapter({ config: { cwd: tmpRoot() }, factory: async () => fakeClient });
     await adapter.onStarted("Codex Agent", "Codex parity adapter");
 
     await adapter.onMessage(
@@ -1066,7 +1097,7 @@ describe("CodexAdapter", () => {
         },
       ],
     });
-    const adapter = new CodexAdapter({ factory: async () => fakeClient });
+    const adapter = new CodexAdapter({ config: { cwd: tmpRoot() }, factory: async () => fakeClient });
     await adapter.onStarted("Codex Agent", "Codex parity adapter");
 
     await adapter.onMessage(
@@ -1099,7 +1130,7 @@ describe("CodexAdapter", () => {
         },
       ],
     });
-    const adapter = new CodexAdapter({ factory: async () => fakeClient });
+    const adapter = new CodexAdapter({ config: { cwd: tmpRoot() }, factory: async () => fakeClient });
     await adapter.onStarted("Codex Agent", "Codex parity adapter");
 
     await expectTurnFailed(adapter.onMessage(
@@ -1136,7 +1167,7 @@ describe("CodexAdapter", () => {
           },
         ],
       });
-      const adapter = new CodexAdapter({ factory: async () => fakeClient, config: { turnTimeoutMs: 1_000 } });
+      const adapter = new CodexAdapter({ factory: async () => fakeClient, config: { cwd: tmpRoot(), turnTimeoutMs: 1_000 } });
       await adapter.onStarted("Codex Agent", "Codex parity adapter");
 
       const turn = adapter.onMessage(
@@ -1168,7 +1199,7 @@ describe("CodexAdapter", () => {
     try {
     const tools = new ToolSchemaFakeTools();
     const fakeClient = new FakeCodexClient({ hangWhenEmpty: true });
-    const adapter = new CodexAdapter({ factory: async () => fakeClient, config: { turnTimeoutMs: 1_000 } });
+    const adapter = new CodexAdapter({ factory: async () => fakeClient, config: { cwd: tmpRoot(), turnTimeoutMs: 1_000 } });
     await adapter.onStarted("Codex Agent", "Codex parity adapter");
 
     const turn = adapter.onMessage(
@@ -1284,7 +1315,7 @@ describe("CodexAdapter", () => {
           factoryCalls += 1;
           return factoryCalls === 1 ? abandonedClient : replacementClient;
         },
-        config: { turnTimeoutMs: 1_000 },
+        config: { cwd: tmpRoot(), turnTimeoutMs: 1_000 },
       });
       await adapter.onStarted("Codex Agent", "Codex parity adapter");
 
@@ -1364,7 +1395,7 @@ describe("CodexAdapter", () => {
     }
     const tools = new ToolSchemaFakeTools();
     const fakeClient = new TransportDeathClient();
-    const adapter = new CodexAdapter({ factory: async () => fakeClient });
+    const adapter = new CodexAdapter({ config: { cwd: tmpRoot() }, factory: async () => fakeClient });
     await adapter.onStarted("Codex Agent", "Codex parity adapter");
 
     const turn = adapter.onMessage(
@@ -1415,7 +1446,7 @@ describe("CodexAdapter", () => {
           factoryCalls += 1;
           return factoryCalls === 1 ? abandonedClient : replacementClient;
         },
-        config: { turnTimeoutMs: 1_000 },
+        config: { cwd: tmpRoot(), turnTimeoutMs: 1_000 },
       });
       await adapter.onStarted("Codex Agent", "Codex parity adapter");
 
@@ -1455,7 +1486,7 @@ describe("CodexAdapter", () => {
         { kind: "notification", method: "transport/closed", params: {} },
       ],
     });
-    const adapter = new CodexAdapter({ factory: async () => fakeClient });
+    const adapter = new CodexAdapter({ config: { cwd: tmpRoot() }, factory: async () => fakeClient });
     await adapter.onStarted("Codex Agent", "Codex parity adapter");
 
     await expectTurnFailed(adapter.onMessage(
@@ -1509,7 +1540,7 @@ describe("CodexAdapter", () => {
       ],
     });
 
-    const adapter = new CodexAdapter({
+    const adapter = new CodexAdapter({ config: { cwd: tmpRoot() },
       factory: async () => fakeClient,
     });
 
@@ -1565,7 +1596,7 @@ describe("CodexAdapter", () => {
     });
 
     const adapter = new CodexAdapter({
-      config: {
+      config: { cwd: tmpRoot(),
         enableExecutionReporting: true,
       },
       customTools: [
@@ -1627,16 +1658,19 @@ describe("CodexAdapter", () => {
   });
 
   it("sends the default band clientInfo name and title on initialize", async () => {
-    const fakeClient = new FakeCodexClient();
+    const fakeClient = new FakeCodexClient({
+      events: [{ kind: "notification", method: "turn/completed", params: { turn: { id: "turn-1", status: "completed", error: null } } }],
+    });
     const adapter = new CodexAdapter({
       config: {
         model: "gpt-5.3-codex",
-        cwd: "/tmp/workdir",
+        cwd: tmpRoot(),
       },
       factory: async () => fakeClient,
     });
 
     await adapter.onStarted("Codex Agent", "Codex parity adapter");
+    await adapter.onMessage(makeMessage("hi"), new ToolSchemaFakeTools(), new HistoryProvider([]), null, null, { isSessionBootstrap: true, roomId: "room-1" });
 
     const initializeCall = fakeClient.requestCalls.find((call) => call.method === "initialize");
     expect(initializeCall).toBeDefined();
@@ -1646,11 +1680,13 @@ describe("CodexAdapter", () => {
   });
 
   it("lets the caller override clientInfo name and title via config", async () => {
-    const fakeClient = new FakeCodexClient();
+    const fakeClient = new FakeCodexClient({
+      events: [{ kind: "notification", method: "turn/completed", params: { turn: { id: "turn-1", status: "completed", error: null } } }],
+    });
     const adapter = new CodexAdapter({
       config: {
         model: "gpt-5.3-codex",
-        cwd: "/tmp/workdir",
+        cwd: tmpRoot(),
         clientName: "custom_codex_adapter",
         clientTitle: "Custom Codex Adapter",
       },
@@ -1658,6 +1694,7 @@ describe("CodexAdapter", () => {
     });
 
     await adapter.onStarted("Codex Agent", "Codex parity adapter");
+    await adapter.onMessage(makeMessage("hi"), new ToolSchemaFakeTools(), new HistoryProvider([]), null, null, { isSessionBootstrap: true, roomId: "room-1" });
 
     const initializeCall = fakeClient.requestCalls.find((call) => call.method === "initialize");
     expect(initializeCall).toBeDefined();
@@ -1681,7 +1718,7 @@ describe("CodexAdapter", () => {
       includeMemoryTools: true,
       config: {
         model: "gpt-5.3-codex",
-        cwd: "/tmp/workdir",
+        cwd: tmpRoot(),
         approvalPolicy: "never",
         sandboxMode: "workspace-write",
         systemPrompt: rawPrompt,

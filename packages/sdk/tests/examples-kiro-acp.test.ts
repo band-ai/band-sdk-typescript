@@ -5,6 +5,7 @@ import {
   createKiroACPAgent,
 } from "../examples/kiro-acp/01_basic_agent";
 import { firstAcpSystemPrompt } from "./helpers/exampleAcpTurn";
+import { tmpRoot } from "./testUtils";
 
 describe("kiro-acp examples", () => {
   it("factory returns an agent that has not auto-started", () => {
@@ -17,6 +18,7 @@ describe("kiro-acp examples", () => {
         customSection: "Answer only in haiku.",
         command: ["kiro-acp-stub"],
         connectionFactory,
+        cwd: tmpRoot(),
       }),
     );
 
