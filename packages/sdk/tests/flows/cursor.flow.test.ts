@@ -425,6 +425,7 @@ describe("Cursor in a Band room", () => {
     { invalid: "a zero decision timeout", options: { decisionTimeoutMs: 0 }, error: "decisionTimeoutMs must be a positive finite number" },
     { invalid: "an unbounded decision timeout", options: { decisionTimeoutMs: Infinity }, error: "decisionTimeoutMs must be a positive finite number" },
     { invalid: "a fractional pending limit", options: { maxPendingDecisions: 1.5 }, error: "maxPendingDecisions must be a positive integer" },
+    { invalid: "a zero permission timeout", options: { permissionTimeoutMs: 0 }, error: "permissionTimeoutMs must be a positive finite number" },
   ])("refuses to start with $invalid", ({ options, error }) => {
     expect(() => new CursorACPAdapter({ cwd: tmpRoot(), enableMcpTools: false, ...options })).toThrow(error);
   });

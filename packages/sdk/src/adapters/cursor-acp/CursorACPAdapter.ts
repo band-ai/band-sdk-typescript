@@ -1,4 +1,5 @@
 import { ACPClientAdapter } from "../acp";
+import { assertPermissionTimeoutMs } from "../acp/ACPRoomAgent";
 import { CursorRoomAgent, DEFAULT_CURSOR_ACP_COMMAND, type CursorACPAdapterOptions, type CursorDecisionSettings } from "./CursorRoomAgent";
 
 /**
@@ -37,4 +38,6 @@ function validateOptions(options: CursorACPAdapterOptions): void {
   if (Array.isArray(options.command) && options.command.length === 0) throw new Error("Cursor ACP command must not be empty");
   if (options.decisionTimeoutMs !== undefined && (!Number.isFinite(options.decisionTimeoutMs) || options.decisionTimeoutMs <= 0)) throw new Error("decisionTimeoutMs must be a positive finite number");
   if (options.maxPendingDecisions !== undefined && (!Number.isInteger(options.maxPendingDecisions) || options.maxPendingDecisions <= 0)) throw new Error("maxPendingDecisions must be a positive integer");
+  // Every Cursor room resolves permissions, but per room, so the ACP check cannot see it.
+  assertPermissionTimeoutMs(options.permissionTimeoutMs);
 }

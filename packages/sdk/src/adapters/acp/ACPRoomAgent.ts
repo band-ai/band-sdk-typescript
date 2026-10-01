@@ -1818,18 +1818,20 @@ export function validateACPClientOptions(options: ACPClientAdapterOptions): stri
   // `resolveSessionModel` and `resolveSessionConfig`, so a caller using none
   // of them is never rejected over it.
   if (options.resolvePermission || options.resolveSessionMode || options.resolveSessionModel || options.resolveSessionConfig) {
-    const permissionTimeoutMs = options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
-    if (!Number.isFinite(permissionTimeoutMs) || permissionTimeoutMs <= 0) {
-      throw new ValidationError(`permissionTimeoutMs must be a positive finite number, got ${options.permissionTimeoutMs}`)
-    }
-    assertWithinSetTimeoutBound(
-      `permissionTimeoutMs must be at most ${MAX_SETTIMEOUT_DELAY_MS}, got ${options.permissionTimeoutMs}`,
-      permissionTimeoutMs,
-    )
+    assertPermissionTimeoutMs(options.permissionTimeoutMs)
   }
 
   assertTurnTimeoutMs(options.turnTimeoutMs ?? DEFAULT_TURN_TIMEOUT_MS)
   return command
+}
+
+/** For a subclass that supplies its own per-room `resolvePermission`, which the adapter options never show. */
+export function assertPermissionTimeoutMs(value: number | undefined): void {
+  const permissionTimeoutMs = value ?? DEFAULT_PERMISSION_TIMEOUT_MS
+  if (!Number.isFinite(permissionTimeoutMs) || permissionTimeoutMs <= 0) {
+    throw new ValidationError(`permissionTimeoutMs must be a positive finite number, got ${value}`)
+  }
+  assertWithinSetTimeoutBound(`permissionTimeoutMs must be at most ${MAX_SETTIMEOUT_DELAY_MS}, got ${value}`, permissionTimeoutMs)
 }
 
 export async function createSubprocessConnection(

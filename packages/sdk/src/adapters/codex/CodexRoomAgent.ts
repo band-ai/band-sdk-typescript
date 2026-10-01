@@ -140,6 +140,8 @@ const SILENT_REPORTING_TOOLS = new Set([
   SEND_EVENT_TOOL_NAME,
 ]);
 
+const ROOM_STOPPED_ERROR = "Codex room engine is stopped";
+
 class CodexTurnTimeoutError extends Error {
   public constructor() {
     super("Turn timed out");
@@ -169,6 +171,9 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
   private client: CodexClientLike | null = null;
   private clientPromise: Promise<CodexClientLike> | null = null;
   private lastInitFailure = 0;
+  // Set once the room retires, so a turn still in flight cannot start, or
+  // keep, an app-server nobody will stop.
+  private stopped = false;
   private readonly roomThreadIds = new Map<string, string>();
   private readonly roomThreadInitPromises = new Map<string, Promise<string>>();
   private readonly needsHistoryInjection = new Set<string>();
@@ -548,6 +553,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
   }
 
   public async onRuntimeStop(): Promise<void> {
+    this.stopped = true;
     await this.resetClient();
   }
 
@@ -582,6 +588,9 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
   }
 
   private async ensureClient(): Promise<CodexClientLike> {
+    if (this.stopped) {
+      throw new Error(ROOM_STOPPED_ERROR);
+    }
     if (this.client) {
       return this.client;
     }
@@ -613,6 +622,11 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
             experimentalApi: this.baseConfig.experimentalApi ?? true,
           },
         });
+        // Stopped mid-start: the reset already ran, so close this one here.
+        if (this.stopped) {
+          await client.close();
+          throw new Error(ROOM_STOPPED_ERROR);
+        }
         this.client = client;
         return client;
       } catch (error) {

@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { PlatformMessageLike } from "../src/contracts/protocols";
 import { createDeferred } from "../src/core/deferred";
@@ -9,6 +9,7 @@ import { RoomScopedAdapter, type RoomScopedAdapterOptions } from "../src/adapter
 import { FakeTools, expectTurnFailed, findFailureEvent, makeMessage, roomWorkspacePath, tmpRoot } from "./testUtils";
 
 interface RoomHooks {
+  create?(roomId: string): void;
   start?(room: RecordingRoom): Promise<void>;
   stop?(room: RecordingRoom): Promise<void>;
 }
@@ -54,6 +55,7 @@ class RecordingRouter extends RoomScopedAdapter<unknown, FakeTools, RecordingRoo
   }
 
   protected createRoom(roomId: string, workspace: string): RecordingRoom {
+    this.hooks.create?.(roomId);
     const room = new RecordingRoom(roomId, workspace, this.hooks);
     this.created.push(room);
     return room;
@@ -147,6 +149,36 @@ describe("RoomScopedAdapter", () => {
 
     expect(findFailureEvent(tools)?.content).toContain("already in use by room room-a");
     expect(router.created.map((room) => room.roomId)).toEqual(["room-a", "room-c"]);
+  });
+
+  it("frees a leaving room's workspace for the next room that maps to it", async () => {
+    const root = tmpRoot();
+    const router = await startedRouter({ workspaceForRoom: () => path.join(root, "shared") });
+    await send(router, "room-a");
+
+    await router.onCleanup("room-a");
+
+    // The claim is released once room-a's engine has finished closing.
+    await vi.waitFor(() => send(router, "room-b"));
+    expect(router.roomsFor("room-b")[0]!.workspace).toBe(router.roomsFor("room-a")[0]!.workspace);
+  });
+
+  it("frees the workspace of a room whose engine could not be built", async () => {
+    const root = tmpRoot();
+    const router = await startedRouter({ workspaceForRoom: () => path.join(root, "shared") }, {
+      create: (roomId) => {
+        if (roomId === "room-a") {
+          throw new Error("bad room config");
+        }
+      },
+    });
+
+    const tools = new FakeTools();
+    await expectTurnFailed(send(router, "room-a", "hi", tools));
+    await send(router, "room-b");
+
+    expect(findFailureEvent(tools)?.content).toContain("bad room config");
+    expect(router.created.map((room) => room.roomId)).toEqual(["room-b"]);
   });
 
   it("drops a room whose engine failed to start, so its next message tries again", async () => {

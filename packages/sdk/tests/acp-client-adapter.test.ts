@@ -2760,9 +2760,10 @@ describe("ACPClientAdapter", () => {
       })
 
       const tools = new FakeTools()
+      // Room 2 listed first, so picking any entry but this room's own fails.
       await send(harness.adapter, tools, "room-1", {
-        "room-1": "room-1-session",
         "room-2": "room-2-session",
+        "room-1": "room-1-session",
       })
 
       expect(harness.loadSession).toHaveBeenCalledTimes(1)

@@ -1,3 +1,6 @@
+import { realpathSync } from "node:fs";
+import path from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
@@ -928,6 +931,25 @@ describe("CodexAdapter", () => {
       }
     });
 
+    it("starts each room's client in the folder workspaceForRoom names", async () => {
+      const root = tmpRoot();
+      const factory = vi.fn(async () => answeringClient("hi"));
+      const adapter = new CodexAdapter({
+        config: { workspaceForRoom: (roomId) => path.join(root, "custom", roomId) },
+        factory,
+      });
+
+      await adapter.onStarted("Codex Agent", "Codex parity adapter");
+      await turnIn(adapter, "room-a");
+
+      expect(factory).toHaveBeenCalledWith({ roomId: "room-a", cwd: path.join(realpathSync(root), "custom", "room-a") });
+    });
+
+    it("rejects cwd together with workspaceForRoom when built", () => {
+      expect(() => new CodexAdapter({ config: { cwd: tmpRoot(), workspaceForRoom: () => tmpRoot() } }))
+        .toThrow("either cwd or workspaceForRoom");
+    });
+
     it("keeps each concurrent room's events to that room", async () => {
       const adapter = new CodexAdapter({
         config: { cwd: tmpRoot() },
@@ -963,6 +985,33 @@ describe("CodexAdapter", () => {
       expect(clients.get("room-b")?.closeCalls).toBe(0);
       await adapter.stop();
       expect(clients.get("room-b")?.closeCalls).toBe(1);
+    });
+
+    it("closes a client that finishes starting after its room left", async () => {
+      let finishInitialize!: () => void;
+      const initializing = new Promise<void>((resolve) => { finishInitialize = resolve; });
+      const client = new FakeCodexClient({
+        events: [
+          { kind: "notification", method: "turn/completed", params: { turn: { id: "turn-1", status: "completed", error: null } } },
+        ],
+        requestHandler: async (method, params) => {
+          if (method === "initialize") {
+            await initializing;
+          }
+          return defaultRequestHandler(method, params);
+        },
+      });
+      const adapter = new CodexAdapter({ config: { cwd: tmpRoot() }, factory: async () => client });
+
+      await adapter.onStarted("Codex Agent", "Codex parity adapter");
+      const turn = turnIn(adapter, "room-a");
+      await vi.waitFor(() => expect(client.requestCalls.map((call) => call.method)).toContain("initialize"));
+      await adapter.onCleanup("room-a");
+      finishInitialize();
+
+      await expectTurnFailed(turn);
+      await adapter.stop();
+      expect(client.closeCalls).toBe(1);
     });
 
     it("keeps another room's client when one room's transport fails", async () => {
