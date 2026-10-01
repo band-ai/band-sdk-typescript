@@ -1749,34 +1749,49 @@ describe("ACPClientAdapter", () => {
     }
   })
 
-  it("revokes a retired process's Band access, and gives its replacement a new token", async () => {
-    const backends: Array<{ url: string; token: string }> = []
-    const prompt = vi.fn(async () => ({ stopReason: "end_turn" }))
-    prompt.mockImplementationOnce(() => new Promise(() => undefined))
-    const adapter = new ACPClientAdapter({
-      cwd: tmpRoot(),
-      command: ["acp-agent"],
-      turnTimeoutMs: SHORT_TURN_TIMEOUT_MS,
-      connectionFactory: async () => buildMockConnection({
-        agentCapabilities: { mcpCapabilities: { http: true } },
-        loadSession: vi.fn(),
-        newSession: vi.fn(async (params?: { mcpServers: Array<{ url: string; headers: Array<{ value: string }> }> }) => {
-          const server = params!.mcpServers[0]!
-          backends.push({ url: server.url, token: server.headers[0]!.value })
-          return { sessionId: "session-1" }
-        }),
-        prompt,
-      }),
-    })
-    const turn = (): Promise<void> => adapter.onMessage(
-      makeMessage("hello", "room-1"),
-      new FakeTools(),
-      { roomToSession: {} },
-      null,
-      null,
-      { isSessionBootstrap: false, roomId: "room-1" },
-    )
-    const participants = async ({ url, token }: { url: string; token: string }) => {
+  describe("Band access per process", () => {
+    type BandAccess = { url: string; token: string }
+
+    // A real MCP backend per process; `exit` ends the newest one on its own.
+    function buildAccessHarness(prompt: () => Promise<{ stopReason: string }>) {
+      const backends: BandAccess[] = []
+      // Whether each process's Band access was already revoked when it was told to stop.
+      const accessWhenStopped: Array<"open" | "revoked"> = []
+      let exit: () => Promise<void> = async () => undefined
+      const adapter = new ACPClientAdapter({
+        cwd: tmpRoot(),
+        command: ["acp-agent"],
+        turnTimeoutMs: SHORT_TURN_TIMEOUT_MS,
+        connectionFactory: async () => {
+          const handle = buildMockConnection({
+            agentCapabilities: { mcpCapabilities: { http: true } },
+            loadSession: vi.fn(),
+            newSession: vi.fn(async (params?: { mcpServers: Array<{ url: string; headers: Array<{ value: string }> }> }) => {
+              const server = params!.mcpServers[0]!
+              backends.push({ url: server.url, token: server.headers[0]!.value })
+              return { sessionId: "session-1" }
+            }),
+            prompt,
+          })
+          // Each process opens one session, so its backend lands at this index.
+          const own = backends.length
+          let markClosed: () => void = () => undefined
+          const closed = new Promise<void>((resolve) => { markClosed = resolve })
+          const stop = async (): Promise<void> => {
+            accessWhenStopped.push(await bandAccess(backends[own]!))
+            await handle.stop()
+          }
+          exit = async () => {
+            await handle.stop()
+            markClosed()
+          }
+          return { connection: { ...(handle.connection as object), closed } as never, stop }
+        },
+      })
+      return { adapter, backends, accessWhenStopped, exit: () => exit() }
+    }
+
+    async function participants({ url, token }: BandAccess) {
       const transport = new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { authorization: token } } })
       const client = new McpClient({ name: "agent", version: "1.0.0" })
       await client.connect(transport)
@@ -1787,18 +1802,57 @@ describe("ACPClientAdapter", () => {
       }
     }
 
-    try {
-      await adapter.onStarted("Agent", "desc")
-      await expectTurnFailed(turn())
-      await turn()
-
-      const [retired, current] = backends
-      expect(current!.token).not.toEqual(retired!.token)
-      await expect(participants(retired!)).rejects.toThrow()
-      expect((await participants(current!)).isError).toBeFalsy()
-    } finally {
-      await adapter.stop()
+    function bandAccess(access: BandAccess): Promise<"open" | "revoked"> {
+      return participants(access).then(() => "open", () => "revoked")
     }
+
+    function turn(adapter: ACPClientAdapter): Promise<void> {
+      return adapter.onMessage(
+        makeMessage("hello", "room-1"),
+        new FakeTools(),
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: false, roomId: "room-1" },
+      )
+    }
+
+    it("revokes a retired process's Band access before stopping it, and gives its replacement a new token", async () => {
+      const prompt = vi.fn(async () => ({ stopReason: "end_turn" }))
+      prompt.mockImplementationOnce(() => new Promise(() => undefined))
+      const { adapter, backends, accessWhenStopped } = buildAccessHarness(prompt)
+
+      try {
+        await adapter.onStarted("Agent", "desc")
+        await expectTurnFailed(turn(adapter))
+        await turn(adapter)
+
+        const [retired, current] = backends
+        expect(current!.token).not.toEqual(retired!.token)
+        await expect(participants(retired!)).rejects.toThrow()
+        expect((await participants(current!)).isError).toBeFalsy()
+        await expect.poll(() => accessWhenStopped).toEqual(["revoked"])
+      } finally {
+        await adapter.stop()
+      }
+    })
+
+    it("revokes the Band access of a process that exits on its own", async () => {
+      const { adapter, backends, exit } = buildAccessHarness(vi.fn(async () => ({ stopReason: "end_turn" })))
+
+      try {
+        await adapter.onStarted("Agent", "desc")
+        await turn(adapter)
+        const [exited] = backends
+        await exit()
+
+        await expect.poll(() => bandAccess(exited!)).toBe("revoked")
+        await turn(adapter)
+        expect(backends[1]!.token).not.toEqual(exited!.token)
+      } finally {
+        await adapter.stop()
+      }
+    })
   })
 
   it("does not let a stale, failed session establishment evict a newer one still in flight for the same room", async () => {
@@ -4295,6 +4349,32 @@ describe("ACPClientAdapter", () => {
       await send(adapter)
       expect(spawns()).toBe(1)
       expect(newSession).toHaveBeenCalledTimes(2)
+    })
+
+    it("does not restore a session again after configuring its restore failed", async () => {
+      const resolveSessionConfig = vi.fn()
+        .mockResolvedValueOnce({ model: "sonnet" })
+        .mockResolvedValue(undefined)
+      const { adapter, setSessionConfigOption, loadSession, newSession } = buildHarness({
+        adapterOptions: { resolveSessionConfig },
+        loadSessionConfigOptions: [modelConfigOption()],
+      })
+      setSessionConfigOption.mockRejectedValueOnce({ code: -32602, message: "Invalid params" })
+      const turn = (isSessionBootstrap: boolean): Promise<void> => adapter.onMessage(
+        makeMessage("hi", "room-1"),
+        new FakeTools(),
+        { roomToSession: { "room-1": "session-old" } },
+        null,
+        null,
+        { isSessionBootstrap, roomId: "room-1" },
+      )
+
+      await adapter.onStarted("Agent", "desc")
+      await expectTurnFailed(turn(true))
+      await turn(false)
+
+      expect(loadSession).toHaveBeenCalledTimes(1)
+      expect(newSession).toHaveBeenCalledTimes(1)
     })
 
     it("applies Copilot effort first then model=auto when the returned catalog drops effort", async () => {
