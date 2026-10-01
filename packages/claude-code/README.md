@@ -240,6 +240,11 @@ Pro and Max accounts without an organization skip all of this.
   allow them for every slash command, deny once, or deny them for a number of minutes. Persistent
   allowances and timed denials are scoped to the Band account, canonical project path, and agent
   identity. `allowed_senders` does not bypass this command gate.
+- **The local permission form selects one complete policy.** It shows only the participant,
+  command, and policy choice first. A denial opens a second form for an optional note (and
+  duration for a timed denial); cancelling that second form denies only the current request.
+  Claude Code's MCP **Accept** button submits the selected policy, including a denial; **Decline**
+  cancels it and denies the current request. Neither button grants terminal tool permission.
 - **Denials return to Band.** A denied command gets an @mentioned denial response. The local dialog
   accepts an optional explanation; a timed denial reuses that note on attempts during the denial.
 - **Band messages do not carry terminal authority.** Slash authorization only admits a request.

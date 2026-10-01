@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { ElicitResult } from "@modelcontextprotocol/sdk/types.js";
+import type { ElicitRequestFormParams, ElicitResult } from "@modelcontextprotocol/sdk/types.js";
 
 import {
   parsePrivilegedCommand,
@@ -37,11 +37,13 @@ async function createHarness(
     content: { decision: "deny_once" },
   },
   now = 10_000,
+  details: ElicitResult = { action: "accept", content: {} },
 ) {
   const root = await mkdtemp(path.join(tmpdir(), "band-command-auth-"));
   roots.push(root);
   const state = new PluginStateStore(root, () => now);
-  const elicitInput = vi.fn().mockResolvedValue(response);
+  const elicitInput = vi.fn().mockImplementation(async (params: ElicitRequestFormParams) =>
+    "decision" in params.requestedSchema.properties ? response : details);
   const host: CommandAuthorizationHost = {
     supportsFormElicitation: () => true,
     elicitInput,
@@ -103,11 +105,13 @@ describe("PrivilegedCommandAuthorizer", () => {
       mode: "form",
       requestedSchema: {
         properties: {
-          decision: { default: "deny_once" },
-          note: expect.objectContaining({ title: "Optional denial note" }),
+          decision: { default: "deny_once", enum: [
+            "deny_once", "run_once", "allow_command", "allow_all", "deny_timed",
+          ] },
         },
       },
     });
+    expect(Object.keys(elicitInput.mock.calls[0]?.[0].requestedSchema.properties)).toEqual(["decision"]);
     state.close();
   });
 
@@ -146,11 +150,10 @@ describe("PrivilegedCommandAuthorizer", () => {
   it("persists a timed denial and reuses its optional note", async () => {
     const { state, elicitInput, authorizer } = await createHarness({
       action: "accept",
-      content: {
-        decision: "deny_timed",
-        deny_minutes: 30,
-        note: "Deployment is frozen.",
-      },
+      content: { decision: "deny_timed" },
+    }, 10_000, {
+      action: "accept",
+      content: { deny_minutes: 30, note: "Deployment is frozen." },
     });
 
     await expect(authorizer.authorize(request)).resolves.toEqual({
@@ -163,7 +166,49 @@ describe("PrivilegedCommandAuthorizer", () => {
       note: "Deployment is frozen.",
       source: "deny_timed",
     });
+    expect(elicitInput).toHaveBeenCalledTimes(2);
+    expect(elicitInput.mock.calls[1]?.[0].requestedSchema.properties).toHaveProperty("deny_minutes");
+    state.close();
+  });
 
+  it("requests a denial note only after choosing deny once", async () => {
+    const { state, elicitInput, authorizer } = await createHarness({
+      action: "accept",
+      content: { decision: "deny_once" },
+    }, 10_000, { action: "accept", content: { note: "Not today." } });
+
+    await expect(authorizer.authorize(request)).resolves.toEqual({
+      allowed: false,
+      note: "Not today.",
+      source: "deny_once",
+    });
+    expect(Object.keys(elicitInput.mock.calls[1]?.[0].requestedSchema.properties)).toEqual(["note"]);
+    state.close();
+  });
+
+  it("does not persist a timed policy when its details are cancelled", async () => {
+    const { state, elicitInput, authorizer } = await createHarness({
+      action: "accept",
+      content: { decision: "deny_timed" },
+    }, 10_000, { action: "decline" });
+
+    await expect(authorizer.authorize(request)).resolves.toMatchObject({
+      allowed: false,
+      source: "deny_once",
+    });
+    await authorizer.authorize(request);
+    expect(elicitInput).toHaveBeenCalledTimes(4);
+    state.close();
+  });
+
+  it("denies without prompting for details when the policy form is declined", async () => {
+    const { state, elicitInput, authorizer } = await createHarness({ action: "decline" });
+
+    await expect(authorizer.authorize(request)).resolves.toEqual({
+      allowed: false,
+      note: null,
+      source: "deny_once",
+    });
     expect(elicitInput).toHaveBeenCalledTimes(1);
     state.close();
   });

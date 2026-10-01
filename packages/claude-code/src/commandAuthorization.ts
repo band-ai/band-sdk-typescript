@@ -16,10 +16,10 @@ const MAX_NOTE_LENGTH = 500;
 const MAX_PREVIEW_LENGTH = 500;
 
 const DECISIONS = [
+  "deny_once",
   "run_once",
   "allow_command",
   "allow_all",
-  "deny_once",
   "deny_timed",
 ] as const;
 
@@ -128,7 +128,6 @@ export class PrivilegedCommandAuthorizer {
     }
 
     const decision = parseDecision(response.content?.decision);
-    const note = parseNote(response.content?.note);
     switch (decision) {
       case "run_once":
         return { allowed: true, note: null, source: "run_once" };
@@ -142,8 +141,27 @@ export class PrivilegedCommandAuthorizer {
       case "allow_all":
         this.options.state.allowAllCommands(this.options.profile, request.senderId);
         return { allowed: true, note: null, source: "allow_all" };
+      case "deny_once":
       case "deny_timed": {
-        const minutes = parseDenyMinutes(response.content?.deny_minutes);
+        let details: ElicitResult;
+        try {
+          details = await this.options.host.elicitInput(buildDenialDetailsPrompt(decision));
+        } catch (error) {
+          this.options.logger.warn("denying privileged Band command: denial details prompt failed", {
+            command: request.command,
+            sender_id: request.senderId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return { allowed: false, note: null, source: "deny_once" };
+        }
+        if (details.action !== "accept") {
+          return { allowed: false, note: null, source: "deny_once" };
+        }
+        const note = parseNote(details.content?.note);
+        if (decision === "deny_once") {
+          return { allowed: false, note, source: "deny_once" };
+        }
+        const minutes = parseDenyMinutes(details.content?.deny_minutes);
         const now = this.options.now?.() ?? Date.now();
         this.options.state.denyCommandsUntil(
           this.options.profile,
@@ -153,8 +171,6 @@ export class PrivilegedCommandAuthorizer {
         );
         return { allowed: false, note, source: "deny_timed" };
       }
-      case "deny_once":
-        return { allowed: false, note, source: "deny_once" };
     }
   }
 }
@@ -168,39 +184,56 @@ function buildAuthorizationPrompt(
     mode: "form",
     message:
       `Band participant ${senderName} (${request.senderId}) requested privileged command ` +
-      `${request.command}. The command is blocked unless you authorize it.\n\nRequest: ${preview}`,
+      `${request.command}. The command is blocked unless you authorize it.\n\nRequest: ${preview}\n\n` +
+      "Choose one permission policy below. In this MCP dialog, Accept submits your selection; " +
+      "Decline cancels and denies this request.",
     requestedSchema: {
       type: "object",
       properties: {
         decision: {
           type: "string",
-          title: "Authorization",
+          title: `For ${senderName} running ${request.command}`,
           enum: [...DECISIONS],
           enumNames: [
-            "Run once",
-            `Always allow this participant to run ${request.command}`,
-            "Always allow this participant to run any slash command",
-            "Deny once",
+            "Deny this request once",
+            "Allow this request once",
+            `Allow this participant to run ${request.command} always`,
+            "Allow this participant to run any slash command always",
             "Deny this participant for a period",
           ],
           default: "deny_once",
         },
-        deny_minutes: {
-          type: "integer",
-          title: "Timed denial (minutes)",
-          description: `Used only for a timed denial; defaults to ${DEFAULT_DENY_MINUTES} minutes.`,
-          minimum: 1,
-          maximum: MAX_DENY_MINUTES,
-          default: DEFAULT_DENY_MINUTES,
-        },
+      },
+      required: ["decision"],
+    },
+  };
+}
+
+function buildDenialDetailsPrompt(decision: "deny_once" | "deny_timed"): ElicitRequestFormParams {
+  return {
+    mode: "form",
+    message: decision === "deny_timed"
+      ? "Set the duration and optional note for this participant's timed denial. Decline cancels the timed policy and denies only this request."
+      : "Optionally explain this denial to the requester. Decline denies without a note.",
+    requestedSchema: {
+      type: "object",
+      properties: {
+        ...(decision === "deny_timed" ? {
+          deny_minutes: {
+            type: "integer" as const,
+            title: "Denial duration (minutes)",
+            minimum: 1,
+            maximum: MAX_DENY_MINUTES,
+            default: DEFAULT_DENY_MINUTES,
+          },
+        } : {}),
         note: {
           type: "string",
           title: "Optional denial note",
-          description: "Sent to the requester in Band with an @mention when this decision denies the command.",
+          description: "Sent to the requester in Band with an @mention.",
           maxLength: MAX_NOTE_LENGTH,
         },
       },
-      required: ["decision"],
     },
   };
 }
