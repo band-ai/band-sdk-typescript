@@ -10,7 +10,7 @@ import { expect } from "vitest";
 
 import { DEFAULT_WORKSPACE_DIRECTORY } from "../../../../src/adapters/shared/roomWorkspace";
 import { ACP_SESSION_EVENT } from "../../../../src/converters/acp-client";
-import { ADAPTER, buildOmp } from "../../toolkit/adapters";
+import { ADAPTER, buildOmp, OMP_STATE_DIR } from "../../toolkit/adapters";
 import { assertDeliveryStatus } from "../../toolkit/assertDelivery";
 import { DELIVERY_STATUS, observeAgent } from "../../toolkit/observeDelivery";
 import { MESSAGE_TYPE, observeRoom, type CapturedMessage } from "../../toolkit/observeMessages";
@@ -70,34 +70,41 @@ withAdapters([ADAPTER.ompAcp], scenarioId(CATEGORY.adapters, "ompAcp.mcpSession"
   ).toBe(true);
 });
 
-/**
- * Every tool call and result in OMP's own session transcripts, which the room
- * never sees: OMP's `write` and non-destructive `edit` run without asking.
- */
+/** The fields read from one line of an OMP session transcript. */
+type OmpTranscriptLine = {
+  message?: {
+    role?: string;
+    toolName?: string;
+    isError?: boolean;
+    content?: { type?: string; name?: string; arguments?: unknown; text?: string }[];
+  };
+};
+
+const TOOL_RESULT_PREVIEW_LENGTH = 300;
+
+/** The tool calls and results in one transcript line. */
+function toolEntries({ message }: OmpTranscriptLine): string[] {
+  const parts = Array.isArray(message?.content) ? message.content : [];
+  const calls = parts.filter((part) => part.type === "toolCall").map((part) => `call ${part.name} ${JSON.stringify(part.arguments)}`);
+  if (message?.role !== "toolResult") return calls;
+  const text = parts.map((part) => part.text ?? "").join(" ").slice(0, TOOL_RESULT_PREVIEW_LENGTH);
+  return [...calls, `result ${message.toolName} ${message.isError ? "error" : "ok"}: ${text}`];
+}
+
+/** OMP's own transcript of tool calls, including those it runs without asking, which the room never sees. */
 async function ompToolLog(workDir: string): Promise<string[]> {
-  const sessions = join(workDir, ".omp-state", "sessions");
+  const sessions = join(workDir, OMP_STATE_DIR, "sessions");
   const files = (await readdir(sessions, { recursive: true }).catch(() => [])).filter((file) => file.endsWith(".jsonl"));
-  const log: string[] = [];
-  for (const file of files) {
-    for (const line of (await readFile(join(sessions, file), TEXT)).split("\n").filter(Boolean)) {
-      const message = (JSON.parse(line) as { message?: { role?: string; toolName?: string; isError?: boolean; content?: unknown } }).message;
-      const parts = Array.isArray(message?.content) ? (message.content as { type?: string; name?: string; arguments?: unknown; text?: string }[]) : [];
-      for (const part of parts) {
-        if (part.type === "toolCall") log.push(`call ${part.name} ${JSON.stringify(part.arguments)}`);
-      }
-      if (message?.role === "toolResult") {
-        log.push(`result ${message.toolName} ${message.isError ? "error" : "ok"}: ${parts.map((part) => part.text ?? "").join(" ").slice(0, 300)}`);
-      }
-    }
-  }
-  return log;
+  const transcripts = await Promise.all(files.map((file) => readFile(join(sessions, file), TEXT)));
+  return transcripts
+    .flatMap((transcript) => transcript.split("\n").filter(Boolean))
+    .flatMap((line) => toolEntries(JSON.parse(line) as OmpTranscriptLine));
 }
 
 /**
  * Denies gated tool calls and any call that names the guarded file, allows the
  * rest, and remembers whether the guarded file was asked about. OMP sets `kind`
- * only on `bash`, so a kind-less request can still be a delete (`edit` with a
- * delete patch).
+ * only on `bash`, so a delete can arrive kind-less.
  */
 function permissionGate() {
   let deniedGuardedFile = false;
@@ -118,7 +125,8 @@ function permissionGate() {
       const targetsGuardedFile =
         (request.toolCall.locations ?? []).some((location) => location.path.endsWith(GUARDED_FILE_NAME)) ||
         JSON.stringify(request.toolCall.rawInput ?? "").includes(GUARDED_FILE_NAME);
-      if (!targetsGuardedFile && !(kind && GATED_TOOL_KINDS.has(kind))) {
+      const gated = targetsGuardedFile || (!!kind && GATED_TOOL_KINDS.has(kind));
+      if (!gated) {
         return optionOf(request, [OPTION.allowOnce, OPTION.allowAlways]) ?? request.options[0]?.optionId;
       }
       deniedGuardedFile ||= targetsGuardedFile;
