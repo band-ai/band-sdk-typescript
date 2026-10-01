@@ -336,14 +336,14 @@ describe("Cursor in a Band room", () => {
     expect(await room.outcome(await room.say(OWNER, "Please update the notes"))).toBe("failed");
 
     // The crash dropped that session, so the next turn waits on a new one.
-    const release = agent.room(DEFAULT_CURSOR_ROOM).holdSessions();
+    const held = agent.room(DEFAULT_CURSOR_ROOM).holdSession();
     const next = agent.nextTurn(async (turn) => turn.sessionId);
     const message = await room.say(OWNER, "Try again");
-    await vi.waitFor(() => expect(agent.receivedOf("session/new")).toHaveLength(2));
+    await held.sending;
 
     expect(await finished!.ask({ sessionId: undefined, ...mode })).toEqual(CANCELLED);
     expect(await finished!.ask(mode)).toEqual(CANCELLED);
-    release();
+    held.release();
     expect(await next).toBe("cursor-session-2");
     expect(await room.outcome(message)).toBe("processed");
     expect(room.messages.filter(isPrompt)).toEqual([]);

@@ -11,7 +11,7 @@ import type * as schema from "@agentclientprotocol/sdk";
 
 import type { ACPClientConnectionFactory } from "../../../src/adapters/acp/types";
 import { createDeferred, type Deferred } from "../../../src/core/deferred";
-import { RecordLog } from "../../testUtils";
+import { CallHolds, RecordLog, type HeldCall } from "../../testUtils";
 
 export interface Received {
   readonly method: string;
@@ -99,7 +99,7 @@ export class FakeCursorRoom {
   public lingersOnStop = false;
   private readonly turns: QueuedTurn[] = [];
   private sessions = 0;
-  private sessionGate: Promise<void> | null = null;
+  private readonly sessionHolds = new CallHolds<[]>();
   private peer: AgentSideConnection | null = null;
 
   public constructor(private readonly received: RecordLog<Received>) {}
@@ -125,14 +125,9 @@ export class FakeCursorRoom {
     });
   }
 
-  /** Holds every new session until the returned release is called: the room's next turn stays mid-establishment. */
-  public holdSessions(): () => void {
-    const gate = createDeferred<void>();
-    this.sessionGate = gate.promise;
-    return () => {
-      this.sessionGate = null;
-      gate.resolve();
-    };
+  /** Holds the next new session until released: the room's next turn stays mid-establishment. */
+  public holdSession(): HeldCall<[]> {
+    return this.sessionHolds.hold(() => true);
   }
 
   /** Queues the script the next prompt runs; resolves with what it returned. */
@@ -157,7 +152,7 @@ export class FakeCursorRoom {
       },
       newSession: async (params) => {
         this.record("session/new", params);
-        await this.sessionGate;
+        await this.sessionHolds.pass();
         return { sessionId: `cursor-session-${++this.sessions}` };
       },
       prompt: async (params) => {

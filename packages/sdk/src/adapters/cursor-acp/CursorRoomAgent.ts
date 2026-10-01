@@ -240,7 +240,7 @@ export class CursorRoomAgent extends ACPRoomAgent {
     });
   }
 
-  // Only `turn` itself goes: the room may already hold a newer turn.
+  // Only `turn` itself goes: a newer turn may already be running.
   private forgetTurn(turn: CursorTurn): void {
     if (this.turn === turn) {
       this.turn = null;
@@ -264,9 +264,8 @@ export class CursorRoomAgent extends ACPRoomAgent {
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
     // Forgotten now, so a late Cursor ask finds no turn to attach to.
-    const turn = this.turn;
-    if (turn?.messageId === message.id) {
-      this.forgetTurn(turn);
+    if (this.turn?.messageId === message.id) {
+      this.turn = null;
       this.cancelRoom(context.roomId, END_REASON.turnFinished);
     }
   }
@@ -274,9 +273,7 @@ export class CursorRoomAgent extends ACPRoomAgent {
   public override async onCleanup(roomId: string): Promise<void> {
     const turn = this.turn;
     this.cancelRoom(roomId, END_REASON.roomCleanup);
-    if (turn) {
-      this.forgetTurn(turn);
-    }
+    this.turn = null;
     await super.onCleanup(roomId);
     if (turn?.sessionId) {
       this.extensions.forgetSession(turn.sessionId);
