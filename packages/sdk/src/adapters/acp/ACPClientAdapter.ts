@@ -148,6 +148,7 @@ const MIN_TCP_PORT = 1;
 const MAX_TCP_PORT = 65_535;
 const CONNECTION_ATTEMPT_SUPERSEDED_ERROR = "ACP connection attempt superseded by stop()";
 const TCP_CONNECTION_ATTEMPT_ABORTED_ERROR = "ACP TCP connection attempt aborted";
+const BACKEND_AFTER_STOP_ERROR = "ACP adapter stopped while its MCP backend was starting";
 
 export interface ACPModeRequest {
   roomId: string;
@@ -710,9 +711,6 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
       await stopPending()
     }
 
-    // A backend still starting installs itself when it lands; let it, so the
-    // stop below covers it instead of leaking its listener.
-    await this.backendPromise?.catch(() => undefined)
     if (this.backend) {
       const backend = this.backend
       this.backend = null
@@ -1494,6 +1492,19 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
   }
 
   private async createBackend(): Promise<InjectedMcpBackend> {
+    const backend = this.buildBackend()
+    await backend.server.start()
+    // A turn still in flight can finish creating its backend after `stop()`;
+    // installing it then would leave its listener open with no owner.
+    if (!this.started) {
+      await backend.stop()
+      throw new Error(BACKEND_AFTER_STOP_ERROR)
+    }
+    this.backend = backend
+    return backend
+  }
+
+  private buildBackend(): InjectedMcpBackend {
     const mcpCapabilities = this.connectionState?.agentCapabilities?.mcpCapabilities
     const transport = mcpCapabilities?.http ? "http" : (mcpCapabilities?.sse ? "sse" : null)
 
@@ -1506,45 +1517,21 @@ export class ACPClientAdapter extends SimpleAdapter<ACPClientSessionState, Adapt
     }
 
     const authToken = generateAuthToken()
-
-    if (transport === "sse") {
-      const server = new BandMcpSseServer({
-        tools: (roomId) => this.roomTools.get(roomId),
-        enableMemoryTools: this.enableMemoryTools,
-        enableContactTools: true,
-        additionalTools: this.additionalMcpTools,
-        authToken,
-      })
-      await server.start()
-      this.backend = {
-        kind: "sse",
-        server,
-        authToken,
-        stop: async () => {
-          await server.stop()
-        },
-      }
-      return this.backend
-    }
-
-    const server = new BandMcpServer({
-      tools: (roomId) => this.roomTools.get(roomId),
+    const serverOptions = {
+      tools: (roomId: string) => this.roomTools.get(roomId),
       enableMemoryTools: this.enableMemoryTools,
       enableContactTools: true,
       additionalTools: this.additionalMcpTools,
       authToken,
-    })
-    await server.start()
-    this.backend = {
-      kind: "http",
-      server,
-      authToken,
-      stop: async () => {
-        await server.stop()
-      },
     }
 
-    return this.backend
+    if (transport === "sse") {
+      const server = new BandMcpSseServer(serverOptions)
+      return { kind: "sse", server, authToken, stop: () => server.stop() }
+    }
+
+    const server = new BandMcpServer(serverOptions)
+    return { kind: "http", server, authToken, stop: () => server.stop() }
   }
 
   private buildSystemContext(roomId: string, message: PlatformMessage): string {

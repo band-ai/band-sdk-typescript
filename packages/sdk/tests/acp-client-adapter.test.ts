@@ -4862,7 +4862,7 @@ describe("ACP client transports", () => {
 
 describe("ACPClientAdapter MCP backend lifecycle", () => {
   it("stops a backend that finishes starting after stop()", async () => {
-    // Holds the real `start` open so `stop()` provably lands mid-creation.
+    // Holds the real `start` open until `stop()` has fully returned.
     let releaseStart: () => void = () => undefined
     const startGate = new Promise<void>((resolve) => {
       releaseStart = resolve
@@ -4896,9 +4896,8 @@ describe("ACPClientAdapter MCP backend lifecycle", () => {
       ).catch(() => undefined)
       await vi.waitFor(() => expect(startSpy).toHaveBeenCalled())
 
-      const stopped = adapter.stop()
+      await adapter.stop()
       releaseStart()
-      await stopped
       await turn
 
       expect(boundPort).toEqual(expect.any(Number))
