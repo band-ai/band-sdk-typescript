@@ -468,7 +468,13 @@ export class PlatformRuntime implements AsyncDisposable {
       await this.link.markProcessing(roomId, messageId, messageMarkOptions);
     }
 
-    this.logger.debug("turn starting", { roomId, messageId });
+    // History ids, not content: enough to tell what a cold-boot turn could recall.
+    this.logger.debug("turn starting", {
+      roomId,
+      messageId,
+      isSessionBootstrap: input.isSessionBootstrap,
+      historyMessageIds: input.history.raw.map((entry) => entry.id),
+    });
     const startedAt = Date.now();
     let succeeded = true;
     let caughtError: unknown;
