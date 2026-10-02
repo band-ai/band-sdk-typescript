@@ -104,7 +104,9 @@ jobs:
           COPILOT_PROVIDER_TYPE: anthropic
           COPILOT_PROVIDER_BASE_URL: https://api.anthropic.com
           COPILOT_PROVIDER_API_KEY: ${{ secrets.E2E_ANTHROPIC_API_KEY }}
-          COPILOT_MODEL: claude-haiku-4-5
+          # Haiku sometimes answers an MCP tool request with text claiming success instead of
+          # calling the tool (1 in 11 in run 36973721501), which fails the cells for the model's sake.
+          COPILOT_MODEL: claude-sonnet-5-5
         run: |
           # FILTER carries vitest arguments, so it is word-split on purpose.
           # shellcheck disable=SC2086
