@@ -108,7 +108,7 @@ export function buildLetta({ prompt }: BuildOptions, options: LettaAdapterOption
 const OPENCODE_PROVIDER = "anthropic";
 
 /** OpenCode on Anthropic, `config` layered over the defaults. */
-export function buildOpencode({ prompt, workDir }: BuildOptions, config: OpencodeAdapterConfig = {}): OpencodeAdapter {
+export function buildOpencode({ prompt, workDir, reportToolCalls }: BuildOptions, config: OpencodeAdapterConfig = {}): OpencodeAdapter {
   // Project config: OpenCode reaches Anthropic with our own key, and asks before any bash.
   writeFileSync(
     join(workDir, "opencode.json"),
@@ -119,7 +119,14 @@ export function buildOpencode({ prompt, workDir }: BuildOptions, config: Opencod
     }),
   );
   return new OpencodeAdapter({
-    config: { directory: workDir, providerId: OPENCODE_PROVIDER, modelId: ANTHROPIC_MODEL, customSection: prompt, ...config },
+    config: {
+      directory: workDir,
+      providerId: OPENCODE_PROVIDER,
+      modelId: ANTHROPIC_MODEL,
+      customSection: prompt,
+      ...reportsTools({ reportToolCalls }),
+      ...config,
+    },
   });
 }
 

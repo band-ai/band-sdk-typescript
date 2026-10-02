@@ -10,7 +10,11 @@ import type { AddressInfo } from "node:net";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
+import { MCP_SERVER_NAME } from "../../../src/runtime/tools/schemas";
 import { CallHolds, RecordLog, type HeldCall } from "../../testUtils";
+
+/** Where the adapter registers its Band tools server, and where it deregisters it. */
+const MCP_ROUTE = { register: "/mcp", deregister: `/mcp/${MCP_SERVER_NAME}/disconnect` } as const;
 
 export interface Request {
   readonly method: string;
@@ -176,8 +180,27 @@ export class FakeOpencodeServer implements AsyncDisposable {
     return this.requestsTo("POST", /^\/question\/.*\/(reply|reject)$/).map((request) => [askId(request), request.body.answers ?? "rejected"]);
   }
 
+  /** Each registration of the Band tools server OpenCode received. */
+  public mcpRegistrations(): Request[] {
+    return this.postsTo(MCP_ROUTE.register);
+  }
+
+  /** Each deregistration of the Band tools server OpenCode received. */
+  public mcpDeregistrations(): Request[] {
+    return this.postsTo(MCP_ROUTE.deregister);
+  }
+
+  /** Keeps the next deregistration of the Band tools server unanswered until released. */
+  public holdMcpDeregistration(): HeldCall<[route: string]> {
+    return this.hold(`POST ${MCP_ROUTE.deregister}`);
+  }
+
   public until(predicate: () => boolean): Promise<void> {
     return this.requests.until(predicate);
+  }
+
+  private postsTo(path: string): Request[] {
+    return this.requests.entries.filter((request) => request.method === "POST" && request.path === path);
   }
 
   /** Resolves with the next request to `method path` that arrives after this call. */
@@ -188,7 +211,7 @@ export class FakeOpencodeServer implements AsyncDisposable {
   /** An MCP client for the tools server the adapter registered, with the headers it registered. */
   public mcpClient(): Promise<Client> {
     this.mcp ??= (async () => {
-      const [registration] = this.requestsTo("POST", /^\/mcp$/).slice(-1);
+      const [registration] = this.mcpRegistrations().slice(-1);
       const config = registration!.body.config as { url: string; headers?: Record<string, string> };
       const client = new Client({ name: "fake-opencode", version: "0.0.0" });
       await client.connect(new StreamableHTTPClientTransport(new URL(config.url), { requestInit: { headers: config.headers } }));

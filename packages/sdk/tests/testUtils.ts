@@ -94,6 +94,11 @@ interface Hold<A extends unknown[]> {
   released: Deferred;
 }
 
+/** Fails unless the Band MCP server that listened at `origin` has stopped: its health check no longer connects. */
+export async function expectMcpServerStopped(origin: string): Promise<void> {
+  await expect(fetch(new URL("/healthz", origin))).rejects.toThrow();
+}
+
 /** One-shot holds on a fake's calls; each hold parks the first call it matches. */
 export class CallHolds<A extends unknown[]> {
   private readonly holds: Hold<A>[] = [];
