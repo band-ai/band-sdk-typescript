@@ -4,12 +4,16 @@
  * connection. Each flow asserts what the room saw, what Cursor was told, and
  * how the platform settled each message.
  */
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CursorACPAdapter, type CursorACPAdapterOptions } from "../../src/adapters/cursor-acp";
 import { createDeferred } from "../../src/core/deferred";
 import { DEFAULT_CURSOR_DECISION_TIMEOUT_MS } from "../../src/adapters/cursor-acp/CursorRoomAgent";
 import { CURSOR_COMMAND, CURSOR_DECISION_MESSAGES as SAYS } from "../../src/adapters/cursor-acp/messages";
+import { allowBandMcpTools, BAND_MCP_PERMISSION, CURSOR_PROJECT_CONFIG } from "../../src/adapters/cursor-acp/permissions";
+import { DEFAULT_WORKSPACE_DIRECTORY } from "../../src/adapters/shared/roomWorkspace";
 import { BandPlatform, person, type BandRoom, type Posted } from "./support/bandPlatform";
 import { DEFAULT_CURSOR_ROOM, FakeCursorAgent, type CursorTurn } from "./support/fakeCursorAgent";
 import { tmpRoot } from "../testUtils";
@@ -516,14 +520,63 @@ describe("Cursor in a Band room", () => {
   });
 
   it.each([
-    { credential: "an API key", options: { apiKey: "key-1" }, env: { CURSOR_API_KEY: "key-1" } },
-    { credential: "an auth token", options: { authToken: "token-1" }, env: { CURSOR_AUTH_TOKEN: "token-1" } },
-    { credential: "nothing", options: {}, env: undefined },
-  ])("launches Cursor with $credential in its environment", async ({ options, env }) => {
-    await using session = await cursorRoom(options);
+    { workspace: "a fresh workspace", existing: undefined, expected: { permissions: { allow: [BAND_MCP_PERMISSION], deny: [] } } },
+    {
+      workspace: "a workspace with its own Cursor rules",
+      existing: { model: "auto", permissions: { allow: ["Shell(ls)"], deny: ["Shell(rm)"] } },
+      expected: { model: "auto", permissions: { allow: ["Shell(ls)", BAND_MCP_PERMISSION], deny: ["Shell(rm)"] } },
+    },
+    {
+      workspace: "a workspace whose config lacks the deny list Cursor requires",
+      existing: { permissions: { allow: [BAND_MCP_PERMISSION] } },
+      expected: { permissions: { allow: [BAND_MCP_PERMISSION], deny: [] } },
+    },
+  ])("lets Cursor call Band's own tools without asking the room, in $workspace", async ({ existing, expected }) => {
+    const root = tmpRoot();
+    const config = join(root, DEFAULT_WORKSPACE_DIRECTORY, DEFAULT_CURSOR_ROOM, CURSOR_PROJECT_CONFIG);
+    if (existing) {
+      await mkdir(dirname(config), { recursive: true });
+      await writeFile(config, JSON.stringify(existing));
+    }
+    await using session = await cursorRoom({ cwd: root });
     const { result } = await session.start(async (turn) => turn.sessionId);
+    await result;
 
-    expect(await result).toBe("cursor-session-1");
-    expect(session.agent.launchEnvs).toEqual([env]);
+    expect(JSON.parse(await readFile(config, "utf8"))).toEqual(expected);
+  });
+
+  it.each([
+    { invalid: "is not JSON", text: "{ allow: ", error: /is not valid JSON/ },
+    { invalid: "has a non-list allow", text: JSON.stringify({ permissions: { allow: "Shell(ls)" } }), error: /permissions\.allow must be a list of strings/ },
+  ])("leaves a Cursor config that $invalid untouched, naming the problem", async ({ text, error }) => {
+    const workspace = tmpRoot();
+    const config = join(workspace, CURSOR_PROJECT_CONFIG);
+    await mkdir(dirname(config), { recursive: true });
+    await writeFile(config, text);
+
+    await expect(allowBandMcpTools(workspace)).rejects.toThrow(error);
+    expect(await readFile(config, "utf8")).toBe(text);
+  });
+
+  // A credential authenticates the CLI itself; ACP `cursor_login` is the interactive login and hangs headless.
+  it.each([
+    { credential: "an API key", options: { apiKey: "key-1" }, inherited: {}, env: { CURSOR_API_KEY: "key-1" }, logins: [] },
+    { credential: "an auth token", options: { authToken: "token-1" }, inherited: {}, env: { CURSOR_AUTH_TOKEN: "token-1" }, logins: [] },
+    { credential: "an inherited API key", options: {}, inherited: { CURSOR_API_KEY: "key-2" }, env: undefined, logins: [] },
+    { credential: "nothing", options: {}, inherited: {}, env: undefined, logins: [{ methodId: "cursor_login" }] },
+  ])("launches Cursor with $credential, logging in through ACP only without one", async ({ options, inherited, env, logins }) => {
+    vi.stubEnv("CURSOR_API_KEY", "");
+    vi.stubEnv("CURSOR_AUTH_TOKEN", "");
+    for (const [name, value] of Object.entries(inherited)) vi.stubEnv(name, value);
+    try {
+      await using session = await cursorRoom(options);
+      const { result } = await session.start(async (turn) => turn.sessionId);
+
+      expect(await result).toBe("cursor-session-1");
+      expect(session.agent.launchEnvs).toEqual([env]);
+      expect(session.agent.receivedOf("authenticate")).toEqual(logins);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

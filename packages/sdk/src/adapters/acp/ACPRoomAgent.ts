@@ -116,7 +116,14 @@ function framedReplay(lines: readonly string[], liveMessage: string): [string, s
 // subprocess-handshake timeout: this is the same kind of wait, a local agent
 // process acknowledging an administrative call, not doing model inference.
 const SET_SESSION_CONFIG_TIMEOUT_MS = 10_000;
+// Bounds `initialize` and `authenticate`, which share that unbounded wait.
+// Cursor's `agent acp` answers neither error nor stderr to an `authenticate`
+// it has no valid credential for: it just never responds. Longer than the
+// config bound because authenticating makes a network round trip.
+const HANDSHAKE_TIMEOUT_MS = 30_000;
 const CONNECTION_ATTEMPT_SUPERSEDED_ERROR = "ACP connection attempt superseded by stop()";
+// How much of a dying agent's stderr its exit warning carries.
+const STDERR_TAIL_LINES = 20;
 
 export interface ACPModeRequest {
   roomId: string;
@@ -764,15 +771,21 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
         await handle.stop()
         throw new Error(CONNECTION_ATTEMPT_SUPERSEDED_ERROR)
       }
-      const initializeResult = await this.raceAgainstConnectionClose(connection, connection.initialize({
-        protocolVersion: acp.PROTOCOL_VERSION,
-        clientCapabilities: this.clientCapabilities ?? {},
-      }))
+      const initializeResult = await this.raceAgainstConnectionClose(connection, withTimeout(
+        connection.initialize({
+          protocolVersion: acp.PROTOCOL_VERSION,
+          clientCapabilities: this.clientCapabilities ?? {},
+        }),
+        HANDSHAKE_TIMEOUT_MS,
+        `ACP initialize did not respond within ${HANDSHAKE_TIMEOUT_MS}ms`,
+      ))
 
       if (this.authMethod) {
-        await this.raceAgainstConnectionClose(connection, connection.authenticate({
-          methodId: this.authMethod,
-        }))
+        await this.raceAgainstConnectionClose(connection, withTimeout(
+          connection.authenticate({ methodId: this.authMethod }),
+          HANDSHAKE_TIMEOUT_MS,
+          `ACP authenticate (${this.authMethod}) did not respond within ${HANDSHAKE_TIMEOUT_MS}ms: check the agent's credentials`,
+        ))
       }
 
       backend = this.enableMcpTools ? await this.createBackend(initializeResult) : null
@@ -1721,8 +1734,18 @@ export async function createSubprocessConnection(
   await once(child, "spawn")
   child.on("error", (error) => logger.warn("acp_client.subprocess_error", { error: error.message }))
   // An unread stderr pipe fills up and blocks the agent.
+  const stderrTail: string[] = []
   createInterface({ input: child.stderr, crlfDelay: Number.POSITIVE_INFINITY })
-    .on("line", (line) => logger.debug("acp_client.subprocess_stderr", { line }))
+    .on("line", (line) => {
+      logger.debug("acp_client.subprocess_stderr", { line })
+      stderrTail.push(line)
+      if (stderrTail.length > STDERR_TAIL_LINES) stderrTail.shift()
+    })
+  // Only an agent dying on its own warns: one asked to stop may exit non-zero on stdin EOF.
+  let stopping = false
+  child.on("exit", (code) => {
+    if (code && !stopping) logger.warn("acp_client.subprocess_exited", { code, stderr: stderrTail.join("\n") })
+  })
 
   const stream = acp.ndJsonStream(
     Writable.toWeb(child.stdin),
@@ -1733,7 +1756,10 @@ export async function createSubprocessConnection(
 
   return {
     connection,
-    stop: () => stopChildProcess(child),
+    stop: () => {
+      stopping = true
+      return stopChildProcess(child)
+    },
   }
 }
 

@@ -89,6 +89,29 @@ describe("createSubprocessConnection", () => {
 
     await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow())
   })
+
+  it("warns with its exit code and last stderr lines when the agent dies on its own", async () => {
+    const logger = makeLoggerSpy()
+    const handle = await createSubprocessConnection(unusedClient(), {
+      command: [process.execPath, "-e", `console.error("bad config"); process.exit(3)`],
+      logger,
+    })
+    await handle.connection.closed
+
+    await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledWith("acp_client.subprocess_exited", { code: 3, stderr: "bad config" }))
+  })
+
+  it("does not warn when an agent asked to stop exits non-zero", async () => {
+    const logger = makeLoggerSpy()
+    const handle = await createSubprocessConnection(unusedClient(), {
+      command: [process.execPath, "-e", `process.stdin.on("end", () => process.exit(1)); process.stdin.resume()`],
+      logger,
+    })
+
+    await handle.stop()
+
+    expect(logger.warn).not.toHaveBeenCalledWith("acp_client.subprocess_exited", expect.anything())
+  })
 })
 
 describe("ACPClientAdapter over a real subprocess", () => {

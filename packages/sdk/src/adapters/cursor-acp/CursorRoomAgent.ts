@@ -21,6 +21,7 @@ import { replyToSender } from "../shared/replyToSender";
 import { runUntilReleased } from "../shared/runUntilReleased";
 import { commandWords } from "../../runtime/formatters";
 import { CURSOR_COMMAND, CURSOR_DECISION_MESSAGES, CURSOR_VERB, DECISION_KIND, type DecisionKind } from "./messages";
+import { allowBandMcpTools } from "./permissions";
 
 export const DEFAULT_CURSOR_ACP_COMMAND = ["agent", "acp"] as const;
 export const DEFAULT_CURSOR_DECISION_TIMEOUT_MS = 300_000;
@@ -193,6 +194,7 @@ export class CursorRoomAgent extends ACPRoomAgent {
   private turn: CursorTurn | null = null;
   // Per engine, so `maxPendingDecisions` caps each room on its own.
   private readonly decisions: DecisionRegistry<PendingDecision>;
+  private readonly workspace: string;
 
   public constructor(options: ACPRoomAgentOptions, settings: CursorDecisionSettings) {
     const extensions = new CursorExtensions();
@@ -203,6 +205,7 @@ export class CursorRoomAgent extends ACPRoomAgent {
     });
     extensions.bind(this);
     this.extensions = extensions;
+    this.workspace = options.cwd;
     this.approvalMode = settings.approvalMode ?? "manual";
     this.questionMode = settings.questionMode ?? "manual";
     this.planMode = settings.planMode ?? "manual";
@@ -213,6 +216,12 @@ export class CursorRoomAgent extends ACPRoomAgent {
       maxPending: settings.maxPendingDecisions ?? DEFAULT_CURSOR_MAX_PENDING_DECISIONS,
       logger: this.decisionLogger,
     });
+  }
+
+  // Before Cursor starts in this workspace, so its first Band tool call is already allowed.
+  public override async onStarted(agentName: string, agentDescription: string): Promise<void> {
+    await allowBandMcpTools(this.workspace);
+    await super.onStarted(agentName, agentDescription);
   }
 
   public override async onMessage(
