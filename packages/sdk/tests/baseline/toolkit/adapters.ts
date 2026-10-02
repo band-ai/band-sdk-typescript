@@ -31,7 +31,6 @@ import {
   type OmpACPAdapterOptions,
   type OpencodeAdapterConfig,
 } from "../../../src/adapters";
-import { LIVE_EVENT_TIMEOUT_MS } from "../../integration/support/liveHarness";
 import { AdapterRegistry, CAPABILITY, requires, type AdapterSpec, type BuildOptions } from "./registry";
 
 const ANTHROPIC_MODEL = "claude-haiku-4-5";
@@ -136,11 +135,11 @@ function reportsTools({ customTools, memory, reportToolCalls }: Pick<BuildOption
 }
 
 /**
- * A tool-calling adapter's turn cap in a baseline run, half the delivery wait: a hung provider call
- * then fails its own message, and the next message's normal turn still finishes in the other half.
- * Long enough that a tool-heavy turn never trips it.
+ * A tool-calling adapter's turn cap in a baseline run: a hung provider call then fails its own message,
+ * and the next message's normal turn still finishes inside the same delivery wait. Long enough that a
+ * tool-heavy turn never trips it.
  */
-const TOOL_CALLING_TURN_TIMEOUT = { turnTimeoutMs: LIVE_EVENT_TIMEOUT_MS / 2 };
+const TOOL_CALLING_TURN_TIMEOUT = { turnTimeoutMs: 90_000 };
 
 /** A builder for an adapter that cannot run yet; it names why instead of half-building one. */
 function unbuildable(reason: string): () => never {

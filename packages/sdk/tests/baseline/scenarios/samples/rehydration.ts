@@ -21,8 +21,10 @@ export const SESSION_BACKED_ADAPTERS: readonly AdapterId[] = [
   ADAPTER.ompAcp,
 ];
 
-export const REHYDRATION_EXTENDED_WAIT_MS = LIVE_EVENT_TIMEOUT_MS + 300_000;
-export const REHYDRATION_COLD_BOOT_WAIT_MS = LIVE_EVENT_TIMEOUT_MS + 180_000;
+// Headroom over one live wait for an agent's cold boot and history rehydration; the slowest passing
+// rehydration scenario took about 47s end to end.
+export const REHYDRATION_EXTENDED_WAIT_MS = LIVE_EVENT_TIMEOUT_MS + 90_000;
+export const REHYDRATION_COLD_BOOT_WAIT_MS = LIVE_EVENT_TIMEOUT_MS + 60_000;
 
 /** Per-test ceiling: several default live barriers plus one extended boot/recall wait (baseline default is `LIVE_EVENT_TIMEOUT_MS * 3`). */
 export const REHYDRATION_SCENARIO_TIMEOUT_MS = REHYDRATION_EXTENDED_WAIT_MS + LIVE_EVENT_TIMEOUT_MS * 4;

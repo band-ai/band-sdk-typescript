@@ -11,7 +11,6 @@ import type { FrameworkAdapter } from "../../../../src/contracts/protocols";
 import type { OpencodeApprovalMode } from "../../../../src/adapters/opencode/OpencodeAdapter";
 import { OPENCODE_DECISION_MESSAGES } from "../../../../src/adapters/opencode/messages";
 import { ASK_KIND, REPLY_WORDS, type ReplyWord } from "../../../../src/adapters/opencode/replies";
-import { LIVE_EVENT_TIMEOUT_MS } from "../../../integration/support/liveHarness";
 import { ADAPTER, buildOpencode, type AdapterId } from "../../toolkit/adapters";
 import { assertReplied } from "../../toolkit/assertMessages";
 import { observeRoom, type CapturedMessage } from "../../toolkit/observeMessages";
@@ -22,8 +21,8 @@ import { readText } from "./files";
 
 export const OUTCOME = { approve: "approve", reject: "reject", timeout: "timeout" } as const;
 
-/** An approval wait that outlasts the request and the closing-reply barriers. */
-export const PATIENT_WAIT_MS = LIVE_EVENT_TIMEOUT_MS * 2;
+/** An approval wait that outlasts the request and the closing-reply barriers. Behaviour under test, so not tied to the wait budget. */
+export const PATIENT_WAIT_MS = 360_000;
 
 export type Outcome = (typeof OUTCOME)[keyof typeof OUTCOME];
 

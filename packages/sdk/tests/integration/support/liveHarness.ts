@@ -167,4 +167,8 @@ export async function reapProvisioned(
   ]);
 }
 
-export const LIVE_EVENT_TIMEOUT_MS = 180_000;
+/**
+ * One live wait. The slowest passing baseline scenario took about 65s end to end (nightlies, 2026-09/10);
+ * a wait must also outlast one capped hung turn plus a normal one (see the baseline's tool-calling turn cap).
+ */
+export const LIVE_EVENT_TIMEOUT_MS = 120_000;
