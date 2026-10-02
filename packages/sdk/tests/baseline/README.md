@@ -33,9 +33,11 @@ The toolkit's own unit tests, including the `registry.test.ts` drift guard, run 
 `pnpm test` (Tier 1). The scenarios run only through `test:baseline-live` (Tier 2): the default
 config excludes `scenarios/**`.
 
-CI runs the whole suite nightly in `.github/workflows/e2e.yml`'s `baseline` job. A manual
-`workflow_dispatch` takes a `filter` (the same vitest arguments) and posts the scorecard as one
-sticky comment on the branch's PR, or in the job summary when there is none.
+CI runs the whole suite nightly in `.github/workflows/e2e.yml`'s `baseline` job, and its `report`
+job posts the result as a comment on the tested commit that @mentions the integrations team (the
+roster lives in band-sdk-python's `.github/integrations-team.txt`), so each member gets an email.
+A manual `workflow_dispatch` takes a `filter` (the same vitest arguments) and reports only to its
+dispatcher: one sticky comment on the branch's PR, or a commit comment when there is none.
 
 ## Layout
 
