@@ -4,12 +4,16 @@
  * connection. Each flow asserts what the room saw, what Cursor was told, and
  * how the platform settled each message.
  */
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CursorACPAdapter, type CursorACPAdapterOptions } from "../../src/adapters/cursor-acp";
 import { createDeferred } from "../../src/core/deferred";
 import { DEFAULT_CURSOR_DECISION_TIMEOUT_MS } from "../../src/adapters/cursor-acp/CursorRoomAgent";
 import { CURSOR_COMMAND, CURSOR_DECISION_MESSAGES as SAYS } from "../../src/adapters/cursor-acp/messages";
+import { BAND_MCP_PERMISSION, CURSOR_PROJECT_CONFIG } from "../../src/adapters/cursor-acp/permissions";
+import { DEFAULT_WORKSPACE_DIRECTORY } from "../../src/adapters/shared/roomWorkspace";
 import { BandPlatform, person, type BandRoom, type Posted } from "./support/bandPlatform";
 import { DEFAULT_CURSOR_ROOM, FakeCursorAgent, type CursorTurn } from "./support/fakeCursorAgent";
 import { tmpRoot } from "../testUtils";
@@ -513,6 +517,27 @@ describe("Cursor in a Band room", () => {
     { invalid: "a zero permission timeout", options: { permissionTimeoutMs: 0 }, error: "permissionTimeoutMs must be a positive finite number" },
   ])("refuses to start with $invalid", ({ options, error }) => {
     expect(() => new CursorACPAdapter({ cwd: tmpRoot(), enableMcpTools: false, ...options })).toThrow(error);
+  });
+
+  it.each([
+    { workspace: "a fresh workspace", existing: undefined, expected: { permissions: { allow: [BAND_MCP_PERMISSION] } } },
+    {
+      workspace: "a workspace with its own Cursor rules",
+      existing: { model: "auto", permissions: { allow: ["Shell(ls)"], deny: ["Shell(rm)"] } },
+      expected: { model: "auto", permissions: { allow: ["Shell(ls)", BAND_MCP_PERMISSION], deny: ["Shell(rm)"] } },
+    },
+  ])("lets Cursor call Band's own tools without asking the room, in $workspace", async ({ existing, expected }) => {
+    const root = tmpRoot();
+    const config = join(root, DEFAULT_WORKSPACE_DIRECTORY, DEFAULT_CURSOR_ROOM, CURSOR_PROJECT_CONFIG);
+    if (existing) {
+      await mkdir(dirname(config), { recursive: true });
+      await writeFile(config, JSON.stringify(existing));
+    }
+    await using session = await cursorRoom({ cwd: root });
+    const { result } = await session.start(async (turn) => turn.sessionId);
+    await result;
+
+    expect(JSON.parse(await readFile(config, "utf8"))).toEqual(expected);
   });
 
   // A credential authenticates the CLI itself; ACP `cursor_login` is the interactive login and hangs headless.
