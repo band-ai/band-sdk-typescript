@@ -63,6 +63,9 @@ import {
   type DecisionAction,
 } from "./replies";
 
+/** How long a dropped event stream waits before reconnecting, doubling per failure up to the cap. */
+const EVENT_STREAM_RETRY_MS = { initial: 1_000, max: 30_000 } as const;
+
 const OPENCODE_SYSTEM_NOTE = [
   "Responses are relayed back into the Band room by the adapter.",
   "Use the band_ prefixed tools (for example band_send_message) for Band platform actions when available.",
@@ -523,11 +526,11 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
 
   // Bound to one client: a closed client's stream ends without throwing, and must not move on to its successor.
   private async runEventLoop(client: OpencodeClientLike): Promise<void> {
-    let retryDelayMs = 1000;
+    let retryDelayMs: number = EVENT_STREAM_RETRY_MS.initial;
     while (this.client === client) {
       try {
         for await (const event of client.iterEvents()) {
-          retryDelayMs = 1000;
+          retryDelayMs = EVENT_STREAM_RETRY_MS.initial;
           await this.handleEvent(event);
         }
       } catch (error) {
@@ -536,7 +539,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
         }
         this.logger.warn("OpenCode event stream failed", { error, retryDelayMs });
         await new Deadline(retryDelayMs).expired;
-        retryDelayMs = Math.min(retryDelayMs * 2, 30_000);
+        retryDelayMs = Math.min(retryDelayMs * 2, EVENT_STREAM_RETRY_MS.max);
       }
     }
   }

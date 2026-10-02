@@ -14,7 +14,7 @@ import {
 import { BandACPClient } from "../src/adapters/acp/client";
 import { DeliveryFailedError } from "../src/core/deliveryFailedError";
 import { BandMcpServer } from "../src/mcp/server";
-import { CallHolds, FakeTools, SHORT_TURN_TIMEOUT_MS, expectTurnFailed, findFailureEvent, makeLoggerSpy, makeMessage, roomWorkspacePath, tmpRoot } from "./testUtils";
+import { CallHolds, FakeTools, SHORT_TURN_TIMEOUT_MS, expectMcpServerStopped, expectTurnFailed, findFailureEvent, makeLoggerSpy, makeMessage, roomWorkspacePath, tmpRoot } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
 
 function requireAcpClient(client: BandACPClient | null): BandACPClient {
@@ -5110,7 +5110,7 @@ describe("ACPClientAdapter MCP backend lifecycle", () => {
       await turn
 
       expect(boundPort).toEqual(expect.any(Number))
-      await expect(fetch(`http://127.0.0.1:${boundPort}/healthz`)).rejects.toThrow()
+      await expectMcpServerStopped(`http://127.0.0.1:${boundPort}`)
     } finally {
       startSpy.mockRestore()
       await adapter.stop()

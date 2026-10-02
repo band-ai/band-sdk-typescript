@@ -4,8 +4,6 @@
  * rejected shell command in parallel, keeps each room's conversation to that
  * room, and after leaving every room starts again with its tools in a new one.
  */
-import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { expect } from "vitest";
@@ -23,6 +21,7 @@ import {
   PATIENT_WAIT_MS,
   decide,
   dialectFor,
+  expectGatedWrite,
   requestGatedWrite,
   untilRequested,
   untilShown,
@@ -34,7 +33,6 @@ import { takeTurn } from "../samples/turns";
 
 const PROMPT = "Keep responses short. Use your tools when asked.";
 const PARTICIPANTS_TOOL = "band_get_participants" satisfies keyof typeof TOOL_MODELS;
-const TEXT = "utf8";
 
 const dialect = dialectFor(ADAPTER.opencode);
 
@@ -88,8 +86,7 @@ withAdapters(
     const approved = gatedWrite(first, OUTCOME.approve);
     const rejected = gatedWrite(second, OUTCOME.reject);
     await Promise.all([approved, rejected].map(runsGatedWrite));
-    expect((await readFile(approved.target, TEXT)).trim(), "the approved command ran").toBe(approved.marker);
-    expect(existsSync(rejected.target), "the rejected command did not run").toBe(false);
+    await Promise.all([approved, rejected].map(({ decision, marker, target }) => expectGatedWrite(decision, marker, target)));
 
     await Promise.all([recallsItsOwnCommand(approved, rejected), recallsItsOwnCommand(rejected, approved)]);
 

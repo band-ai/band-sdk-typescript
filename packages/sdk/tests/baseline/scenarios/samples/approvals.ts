@@ -3,6 +3,10 @@
  * confirms: its approval dialect. Every adapter registered with the
  * `approvals` capability has one here.
  */
+import { existsSync } from "node:fs";
+
+import { expect } from "vitest";
+
 import type { FrameworkAdapter } from "../../../../src/contracts/protocols";
 import type { OpencodeApprovalMode } from "../../../../src/adapters/opencode/OpencodeAdapter";
 import { OPENCODE_DECISION_MESSAGES } from "../../../../src/adapters/opencode/messages";
@@ -14,6 +18,7 @@ import { observeRoom, type CapturedMessage } from "../../toolkit/observeMessages
 import type { ScenarioCell } from "../../toolkit/perAdapter";
 import type { BuildOptions } from "../../toolkit/registry";
 import { Rooms } from "../../toolkit/rooms";
+import { readText } from "./files";
 
 export const OUTCOME = { approve: "approve", reject: "reject", timeout: "timeout" } as const;
 
@@ -94,6 +99,15 @@ export async function requestGatedWrite({ agent, room }: InRoom, marker: string,
     agent,
     `Use your shell tool to run exactly \`printf %s ${marker} > ${target}\`. You must execute it with the tool, not answer from memory.`,
   );
+}
+
+/** Fails unless the gated write ran exactly when it was approved: its marker in `target`, or no `target` at all. */
+export async function expectGatedWrite(outcome: Outcome, marker: string, target: string): Promise<void> {
+  if (outcome === OUTCOME.approve) {
+    expect((await readText(target)).trim(), "the approved command ran").toBe(marker);
+  } else {
+    expect(existsSync(target), `${outcome} still ran the gated command`).toBe(false);
+  }
 }
 
 export async function untilRequested({ agent, room }: InRoom, dialect: ApprovalDialect): Promise<ApprovalRequest> {

@@ -52,7 +52,7 @@ sticky comment on the branch's PR, or in the job summary when there is none.
 | `toolkit/assert*.ts` | Plain assertion functions. |
 | `toolkit/scorecard.ts`, `scorecardReporter.ts` | The scorecard's shape and grid, and the vitest reporter that fills it. |
 | `scenarios/<category>/*.test.ts` | Scenarios; the category is the first part of the scenario id. |
-| `scenarios/samples/` | Shared scenario pieces: markers, the MCP roster flow, approval dialects, opaque lookup and forecast tools, the exact-tools prompt, the memory and event samples, and `takeTurn` (say it, wait until processed). |
+| `scenarios/samples/` | Shared scenario pieces: markers, the MCP roster flow, approval dialects, opaque lookup and forecast tools, the exact-tools prompt, the memory and event samples, `readText` for files an agent wrote, and `takeTurn` (say it, wait until processed). |
 
 ## Writing a scenario
 

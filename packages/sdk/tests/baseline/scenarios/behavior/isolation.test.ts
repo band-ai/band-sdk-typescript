@@ -9,7 +9,6 @@
  * turn's tool calls are saved.
  */
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { expect } from "vitest";
@@ -21,11 +20,10 @@ import { observeRoom } from "../../toolkit/observeMessages";
 import { perAdapter } from "../../toolkit/perAdapter";
 import { CAPABILITY, CATEGORY, scenarioId } from "../../toolkit/registry";
 import { Rooms, type Room } from "../../toolkit/rooms";
+import { readText } from "../samples/files";
 import { KEY, WITH_LOOKUP, lookupCalls, lookupRequest } from "../samples/lookupTool";
 import { uniqueMarker } from "../samples/markers";
 import { takeTurn } from "../samples/turns";
-
-const TEXT = "utf8";
 
 const lookUp = (room: Room, agent: AgentIdentity, key: string) => takeTurn(room, agent, lookupRequest(key));
 
@@ -98,7 +96,7 @@ perAdapter(
       `Create a file named ${fileName} in your current working directory containing exactly ${contents}, then reply with exactly ${written}.`,
     );
     assertReplied(await observeRoom(room).untilReplyMatching(agent, (message) => message.content.includes(written)));
-    expect(await readFile(join(workspace(room), fileName), TEXT), "the file landed in the first room's workspace").toContain(contents);
+    expect(await readText(join(workspace(room), fileName)), "the file landed in the first room's workspace").toContain(contents);
 
     await Rooms.sendMention(
       second,

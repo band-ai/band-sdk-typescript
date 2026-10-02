@@ -7,8 +7,6 @@
  * The agent's closing reply after the decision is the barrier before the file
  * check: the trigger's processed status does not mean the command has settled.
  */
-import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { expect } from "vitest";
@@ -23,6 +21,7 @@ import {
   PATIENT_WAIT_MS,
   decide,
   dialectFor,
+  expectGatedWrite,
   requestGatedWrite,
   untilClosed,
   untilRequested,
@@ -33,7 +32,6 @@ import {
 const SHELL_PROMPT = "Keep responses short. Use your shell tool when asked.";
 /** The file the gated command writes its marker to, in the agent's working directory. */
 const TARGET_FILE = "approval.txt";
-const TEXT = "utf8";
 // Short enough to expire promptly, long enough that the request is captured first.
 const EXPIRING_WAIT_MS = 10_000;
 
@@ -56,11 +54,7 @@ async function approvalFlow(outcome: Outcome, scenario: ScenarioCell): Promise<v
     await decide(scenario, dialect, outcome, asked);
   }
 
-  if (outcome === OUTCOME.approve) {
-    expect((await readFile(target, TEXT)).trim()).toBe(marker);
-  } else {
-    expect(existsSync(target), `${outcome} still ran the gated command`).toBe(false);
-  }
+  await expectGatedWrite(outcome, marker, target);
 }
 
 for (const outcome of Object.values(OUTCOME)) {

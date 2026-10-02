@@ -13,7 +13,7 @@ import { createDeferred } from "../../src/core/deferred";
 import { FAILURE_EVENT_TYPE } from "../../src/contracts/protocols";
 import { createBandMcpBackend } from "../../src/mcp/backends";
 import type { BandMcpServer } from "../../src/mcp/server";
-import { CallHolds } from "../testUtils";
+import { CallHolds, expectMcpServerStopped } from "../testUtils";
 import { BandPlatform, person, type RecordingRestApi } from "./support/bandPlatform";
 import { FakeOpencodeServer, type OpencodeTurn } from "./support/fakeOpencodeServer";
 
@@ -79,21 +79,28 @@ function heldBackend() {
   return { factory, held, listening: listening.promise };
 }
 
-/** The real HTTP client; `shut` resolves once the adapter has closed it. */
+/** The real HTTP client; `shut` resolves once the adapter has closed it, and `closeError`, if given, then fails the close. */
 class ObservedClient extends HttpOpencodeClient {
   public readonly shut = createDeferred<void>();
+
+  public constructor(baseUrl: string, private readonly closeError?: Error) {
+    super({ baseUrl });
+  }
 
   public override async close(): Promise<void> {
     await super.close();
     this.shut.resolve();
+    if (this.closeError) {
+      throw this.closeError;
+    }
   }
 }
 
 /** A client factory that builds `ObservedClient`s and keeps each one, in the order the adapter asked for them. */
-function observedClients() {
+function observedClients(closeError?: Error) {
   const clients: ObservedClient[] = [];
   const clientFactory = (config: Required<OpencodeAdapterConfig>) => {
-    const client = new ObservedClient({ baseUrl: config.baseUrl });
+    const client = new ObservedClient(config.baseUrl, closeError);
     clients.push(client);
     return client;
   };
@@ -139,7 +146,7 @@ describe("OpenCode in a Band room", () => {
     const [prompt] = server.requestsTo("POST", /\/prompt_async$/);
     expect(prompt!.body).toMatchObject({ model: { providerID: "anthropic", modelID: "claude-test" }, parts: [{ type: "text", text: expect.stringContaining("[owner]: Please run the tests") }] });
     expect(server.requestsTo("POST", /^\/session$/)[0]!.body).toEqual({ title: "Band: Agent / room-1" });
-    const [registration] = server.requestsTo("POST", /^\/mcp$/);
+    const [registration] = server.mcpRegistrations();
     expect(registration!.body).toMatchObject({ name: "band", config: { type: "remote", headers: { Authorization: expect.stringMatching(/^Bearer /) } } });
   });
 
@@ -468,16 +475,16 @@ describe("OpenCode in a Band room", () => {
     await other.say(OWNER, "Still there?");
     server.onPrompt(answer("Still here."));
     await other.nextMessage((posted) => posted.content === "Still here.");
-    expect(server.requestsTo("POST", /\/mcp\/band\/disconnect$/)).toEqual([]);
+    expect(server.mcpDeregistrations()).toEqual([]);
 
     await other.remove();
-    await server.until(() => server.requestsTo("POST", /\/mcp\/band\/disconnect$/).length === 1);
+    await server.until(() => server.mcpDeregistrations().length === 1);
     expect(server.requestsTo("POST", /^\/session$/)).toHaveLength(2);
 
     server.onPrompt(answer("Room four."));
     await later.say(OWNER, "Hello after everyone left");
     await later.nextMessage((posted) => posted.content === "Room four.");
-    expect(server.requestsTo("POST", /^\/mcp$/)).toHaveLength(2);
+    expect(server.mcpRegistrations()).toHaveLength(2);
   });
 
   it("stops an MCP backend that finishes starting after the adapter stopped", async () => {
@@ -495,19 +502,13 @@ describe("OpenCode in a Band room", () => {
     await stopped;
 
     expect(await session.room.outcome(message)).toBe("failed");
-    await expect(fetch(new URL("/healthz", url))).rejects.toThrow();
-    expect(session.server.requestsTo("POST", /^\/mcp$/), "OpenCode is not left pointing at the stopped backend").toEqual([]);
+    await expectMcpServerStopped(url);
+    expect(session.server.mcpRegistrations(), "OpenCode is not left pointing at the stopped backend").toEqual([]);
   });
 
   it("stops the MCP backend even when the OpenCode client fails to close", async () => {
-    class FailingClose extends HttpOpencodeClient {
-      public override async close(): Promise<void> {
-        await super.close();
-        throw new Error("close failed");
-      }
-    }
     const backend = heldBackend();
-    const clientFactory = (config: Required<OpencodeAdapterConfig>) => new FailingClose({ baseUrl: config.baseUrl });
+    const { clientFactory } = observedClients(new Error("close failed"));
     await using session = await opencodeRoom({}, { mcpBackendFactory: backend.factory, clientFactory });
     await session.start((turn) => turn.answer("Answered."));
     await backend.held.sending;
@@ -516,7 +517,7 @@ describe("OpenCode in a Band room", () => {
     await session.room.nextMessage((posted) => posted.content === "Answered.");
 
     await expect(session.adapter.onRuntimeStop()).rejects.toThrow("close failed");
-    await expect(fetch(new URL("/healthz", url))).rejects.toThrow();
+    await expectMcpServerStopped(url);
   });
 
   it("starts a second room's first turn only once OpenCode has Band's tools", async () => {
@@ -560,7 +561,7 @@ describe("OpenCode in a Band room", () => {
     expect(await room.outcome(await room.say(OWNER, "First try"))).toBe("failed");
     await session.start((turn) => turn.answer("Answered without Band's tools."));
     await room.nextMessage((posted) => posted.content === "Answered without Band's tools.");
-    expect(server.requestsTo("POST", /^\/mcp$/)).toEqual([]);
+    expect(server.mcpRegistrations()).toEqual([]);
     await session.adapter.onRuntimeStop();
   });
 
@@ -572,7 +573,7 @@ describe("OpenCode in a Band room", () => {
     await room.nextMessage((posted) => posted.content === "First answer.");
 
     // Shutdown deregisters the tools before it closes the client, so holding that keeps the old stream open.
-    const deregister = server.hold("POST /mcp/band/disconnect");
+    const deregister = server.holdMcpDeregistration();
     const stopped = session.adapter.onRuntimeStop();
     await deregister.sending;
     await session.start((turn) => turn.answer("Second answer."));
@@ -887,7 +888,7 @@ describe("OpenCode in a Band room", () => {
     expect(await room.outcome(message)).toBe("processed");
 
     await room.remove();
-    await server.until(() => server.requestsTo("POST", /\/mcp\/band\/disconnect$/).length === 1);
+    await server.until(() => server.mcpDeregistrations().length === 1);
 
     expect(server.permissionReplies()).toEqual([]);
     expect(room.messages.filter((posted) => posted.content === approvalPrompt(permission))).toHaveLength(1);

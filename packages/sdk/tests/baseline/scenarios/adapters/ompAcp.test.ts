@@ -2,7 +2,7 @@
  * OMP over ACP: an MCP roster change on one reused ACP session, and a
  * permission-gated delete that the client's resolver denies.
  */
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { PermissionOptionKind, RequestPermissionRequest, ToolKind } from "@agentclientprotocol/sdk";
@@ -17,6 +17,7 @@ import { MESSAGE_TYPE, observeRoom, type CapturedMessage } from "../../toolkit/o
 import { withAdapters } from "../../toolkit/perAdapter";
 import { CATEGORY, scenarioId } from "../../toolkit/registry";
 import { Rooms } from "../../toolkit/rooms";
+import { readText } from "../samples/files";
 import { addsHelperThroughMcp } from "../samples/mcpRoster";
 
 /** ACP's permission option kinds, named once. */
@@ -42,7 +43,6 @@ const TOOL_EVENT = { callId: "tool_call_id", rawInput: "raw_input" } as const;
 
 const GUARDED_FILE_NAME = "guarded.txt";
 const GUARDED_FILE_CONTENTS = "do not touch\n";
-const TEXT = "utf8";
 
 const sessionIds = (events: CapturedMessage[]) =>
   events.filter((event) => event.content === ACP_SESSION_EVENT.content).map((event) => event.metadata[ACP_SESSION_EVENT.sessionIdKey]);
@@ -95,7 +95,7 @@ function toolEntries({ message }: OmpTranscriptLine): string[] {
 async function ompToolLog(workDir: string): Promise<string[]> {
   const sessions = join(workDir, OMP_STATE_DIR, "sessions");
   const files = (await readdir(sessions, { recursive: true }).catch(() => [])).filter((file) => file.endsWith(".jsonl"));
-  const transcripts = await Promise.all(files.map((file) => readFile(join(sessions, file), TEXT)));
+  const transcripts = await Promise.all(files.map((file) => readText(join(sessions, file))));
   return transcripts
     .flatMap((transcript) => transcript.split("\n").filter(Boolean))
     .flatMap((line) => toolEntries(JSON.parse(line) as OmpTranscriptLine));
@@ -162,7 +162,7 @@ withAdapters(
       assertDeliveryStatus(delivery, DELIVERY_STATUS.processed);
       expect(gate.mismatch).toBeNull();
       expect(gate.deniedGuardedFile, "the delete was routed through session/request_permission").toBe(true);
-      expect(await readFile(guardedFile, TEXT), "the denied delete left the file intact").toBe(GUARDED_FILE_CONTENTS);
+      expect(await readText(guardedFile), "the denied delete left the file intact").toBe(GUARDED_FILE_CONTENTS);
     } catch (error) {
       // A transcript still being appended to after a stalled turn must not mask the real failure.
       const toolLog = await ompToolLog(cell!.workDir).catch((logError: unknown) => `unreadable: ${String(logError)}`);
