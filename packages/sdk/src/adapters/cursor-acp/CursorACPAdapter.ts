@@ -12,11 +12,14 @@ export class CursorACPAdapter extends ACPClientAdapter {
 
   public constructor(options: CursorACPAdapterOptions = {}) {
     validateOptions(options);
+    const env = cursorEnv(options);
     super({
       ...options,
-      env: cursorEnv(options),
+      env,
       command: options.command ?? [...DEFAULT_CURSOR_ACP_COMMAND],
-      authMethod: "cursor_login",
+      // A key or token already authenticates the CLI; ACP `cursor_login` is the interactive
+      // login, which never answers on a headless runner (https://cursor.com/docs/cli/acp).
+      authMethod: hasCredential(env) ? null : CURSOR_LOGIN,
     });
     this.settings = options;
   }
@@ -24,6 +27,15 @@ export class CursorACPAdapter extends ACPClientAdapter {
   protected override createRoom(roomId: string, workspace: string): CursorRoomAgent {
     return new CursorRoomAgent(this.roomAgentOptions(roomId, workspace), this.settings);
   }
+}
+
+const CURSOR_LOGIN = "cursor_login";
+const CREDENTIAL_ENV = ["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"] as const;
+
+/** Whether the agent process, which inherits `process.env`, starts with a credential. */
+function hasCredential(env: Record<string, string> | undefined): boolean {
+  const effective = { ...process.env, ...env };
+  return CREDENTIAL_ENV.some((name) => Boolean(effective[name]));
 }
 
 function cursorEnv(options: CursorACPAdapterOptions): Record<string, string> | undefined {

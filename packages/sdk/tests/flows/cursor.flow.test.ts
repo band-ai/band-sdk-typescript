@@ -515,15 +515,25 @@ describe("Cursor in a Band room", () => {
     expect(() => new CursorACPAdapter({ cwd: tmpRoot(), enableMcpTools: false, ...options })).toThrow(error);
   });
 
+  // A credential authenticates the CLI itself; ACP `cursor_login` is the interactive login and hangs headless.
   it.each([
-    { credential: "an API key", options: { apiKey: "key-1" }, env: { CURSOR_API_KEY: "key-1" } },
-    { credential: "an auth token", options: { authToken: "token-1" }, env: { CURSOR_AUTH_TOKEN: "token-1" } },
-    { credential: "nothing", options: {}, env: undefined },
-  ])("launches Cursor with $credential in its environment", async ({ options, env }) => {
-    await using session = await cursorRoom(options);
-    const { result } = await session.start(async (turn) => turn.sessionId);
+    { credential: "an API key", options: { apiKey: "key-1" }, inherited: {}, env: { CURSOR_API_KEY: "key-1" }, logins: [] },
+    { credential: "an auth token", options: { authToken: "token-1" }, inherited: {}, env: { CURSOR_AUTH_TOKEN: "token-1" }, logins: [] },
+    { credential: "an inherited API key", options: {}, inherited: { CURSOR_API_KEY: "key-2" }, env: undefined, logins: [] },
+    { credential: "nothing", options: {}, inherited: {}, env: undefined, logins: [{ methodId: "cursor_login" }] },
+  ])("launches Cursor with $credential, logging in through ACP only without one", async ({ options, inherited, env, logins }) => {
+    vi.stubEnv("CURSOR_API_KEY", "");
+    vi.stubEnv("CURSOR_AUTH_TOKEN", "");
+    for (const [name, value] of Object.entries(inherited)) vi.stubEnv(name, value);
+    try {
+      await using session = await cursorRoom(options);
+      const { result } = await session.start(async (turn) => turn.sessionId);
 
-    expect(await result).toBe("cursor-session-1");
-    expect(session.agent.launchEnvs).toEqual([env]);
+      expect(await result).toBe("cursor-session-1");
+      expect(session.agent.launchEnvs).toEqual([env]);
+      expect(session.agent.receivedOf("authenticate")).toEqual(logins);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
