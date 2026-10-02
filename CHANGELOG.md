@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* protect Claude Code channel slash commands with owner authorization, per-project participant allowlists, local approval prompts, timed denials, and optional @mentioned denial notes
+* package the host-neutral Band agent skill with `@band-ai/sdk` and generate the Claude Code plugin copy from that canonical source
+
 ## [0.1.2](https://github.com/thenvoi/thenvoi-sdk-typescript/compare/sdk-v0.1.1...sdk-v0.1.2) (2026-03-25)
 
 

@@ -40,6 +40,22 @@ pnpm add @a2a-js/sdk                     # A2A bridge/gateway
 
 Requires Node.js 22+.
 
+### Shared Band agent skill
+
+The SDK package includes a host-neutral Agent Skills file at
+`node_modules/@band-ai/sdk/skills/band/SKILL.md`. It covers room creation, delegation, contacts,
+memory, mentions, and the trust boundary without assuming Claude Code's channel format.
+
+For example, expose the packaged skill to Codex in the current repository:
+
+```bash
+mkdir -p .agents/skills/band
+cp node_modules/@band-ai/sdk/skills/band/SKILL.md .agents/skills/band/SKILL.md
+```
+
+The Claude Code plugin copies this same SDK-owned file into its plugin package during build; there
+is no second skill source to keep synchronized.
+
 ## Adapters
 
 Each adapter wraps a different LLM framework. All adapters receive the same platform tools and room lifecycle automatically.

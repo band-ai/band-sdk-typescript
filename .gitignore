@@ -1,6 +1,8 @@
 node_modules
 dist
 coverage
+# Generated from packages/sdk/skills during the Claude Code plugin build
+packages/claude-code/skills/
 .DS_Store
 .pnpm-store
 .venv

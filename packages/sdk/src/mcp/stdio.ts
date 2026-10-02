@@ -1,5 +1,13 @@
 import type { Readable, Writable } from "node:stream";
 
+import type {
+  ClientCapabilities,
+  ElicitRequestFormParams,
+  ElicitRequestURLParams,
+  ElicitResult,
+  ServerCapabilities,
+} from "@modelcontextprotocol/sdk/types.js";
+
 import type { AdapterToolsProtocol } from "../contracts/protocols";
 import type {
   BuildRegistrationsOptions,
@@ -20,6 +28,9 @@ export interface BandMcpStdioServerOptions {
   additionalTools?: McpToolRegistration[];
   stdin?: Readable;
   stdout?: Writable;
+  capabilities?: ServerCapabilities;
+  instructions?: string;
+  onInitialized?: () => void;
 }
 
 export class BandMcpStdioServer {
@@ -48,6 +59,10 @@ export class BandMcpStdioServer {
     return this.registrations.map((r) => r.name);
   }
 
+  public get clientCapabilities(): ClientCapabilities | undefined {
+    return this.mcpServer?.server.getClientCapabilities();
+  }
+
   public async start(): Promise<void> {
     if (this.transport) {
       return;
@@ -57,10 +72,20 @@ export class BandMcpStdioServer {
     const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
     const { z } = await import("zod");
 
-    const mcpServer = new McpServer({
-      name: this.options.name ?? MCP_SERVER_NAME,
-      version: "1.0.0",
-    });
+    const mcpServer = new McpServer(
+      {
+        name: this.options.name ?? MCP_SERVER_NAME,
+        version: "1.0.0",
+      },
+      {
+        capabilities: this.options.capabilities,
+        instructions: this.options.instructions,
+      },
+    );
+    if (this.options.onInitialized !== undefined) {
+      mcpServer.server.oninitialized = this.options.onInitialized;
+    }
+
 
     registerTools(mcpServer, z, this.registrations);
 
@@ -71,10 +96,39 @@ export class BandMcpStdioServer {
     this.transport = transport;
   }
 
+  public async elicitInput(
+    params: ElicitRequestFormParams | ElicitRequestURLParams,
+  ): Promise<ElicitResult> {
+    if (!this.mcpServer) {
+      throw new Error("BandMcpStdioServer.elicitInput called before start()");
+    }
+    return this.mcpServer.server.elicitInput(params);
+  }
+
+  public createElicitationCompletionNotifier(elicitationId: string): () => Promise<void> {
+    if (!this.mcpServer) {
+      throw new Error(
+        "BandMcpStdioServer.createElicitationCompletionNotifier called before start()",
+      );
+    }
+    return this.mcpServer.server.createElicitationCompletionNotifier(elicitationId);
+  }
+
   public async stop(): Promise<void> {
     await this.transport?.close();
     this.transport = null;
     this.mcpServer = null;
+  }
+
+  /**
+   * Push a server-initiated notification (e.g. `notifications/claude/channel`)
+   * to the connected client. Requires `start()` to have already run.
+   */
+  public async notify(method: string, params?: Record<string, unknown>): Promise<void> {
+    if (!this.mcpServer) {
+      throw new Error("BandMcpStdioServer.notify called before start()");
+    }
+    await this.mcpServer.server.notification({ method, params });
   }
 }
 

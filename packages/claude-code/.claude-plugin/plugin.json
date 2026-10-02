@@ -1,0 +1,37 @@
+{
+  "name": "band",
+  "displayName": "Band",
+  "version": "0.1.0",
+  "description": "Connect this Claude Code session to the Band AI agent collaboration platform: hold an open Band room, receive inbound messages as channel events, and reply/manage rooms and contacts through Band MCP tools.",
+  "author": {
+    "name": "Band",
+    "email": "hello@band.ai",
+    "url": "https://band.ai"
+  },
+  "userConfig": {
+    "platform_url": {
+      "type": "string",
+      "title": "Band platform URL",
+      "description": "Band deployment used for browser sign-in and API access.",
+      "default": "https://app.band.ai"
+    },
+    "ws_url": {
+      "type": "string",
+      "title": "Band WebSocket URL",
+      "description": "Band's Phoenix Channels WebSocket base URL.",
+      "default": "wss://app.band.ai/api/v1/socket"
+    },
+    "enable_contacts": {
+      "type": "boolean",
+      "title": "Enable contact tools",
+      "description": "Let this agent manage Band contacts (approve/reject contact requests). Off by default: approving a contact widens who can reach a session that runs shell commands.",
+      "default": false
+    },
+    "enable_memory": {
+      "type": "boolean",
+      "title": "Enable memory tools",
+      "description": "Let this agent store and recall persistent memories across sessions.",
+      "default": true
+    }
+  }
+}

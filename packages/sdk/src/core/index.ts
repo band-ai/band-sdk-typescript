@@ -10,6 +10,7 @@ export {
   FAILURE_EVENT_TYPE,
   FAILURE_METADATA_KEY,
   toFailureEvent,
+  isToolExecutorError,
 } from "../contracts/protocols";
 export type {
   FrameworkAdapter,
@@ -24,6 +25,7 @@ export type {
   ContactTools,
   MemoryTools,
   ToolExecutor,
+  ToolExecutorError,
   AdapterToolsProtocol,
   AgentToolsProtocol,
 } from "../contracts/protocols";
