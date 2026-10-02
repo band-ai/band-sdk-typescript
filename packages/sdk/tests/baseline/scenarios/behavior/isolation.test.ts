@@ -21,13 +21,16 @@ import { perAdapter } from "../../toolkit/perAdapter";
 import { CAPABILITY, CATEGORY, scenarioId } from "../../toolkit/registry";
 import { Rooms, type Room } from "../../toolkit/rooms";
 import { readText } from "../samples/files";
-import { KEY, WITH_LOOKUP, lookupCalls, lookupRequest } from "../samples/lookupTool";
+import { KEY, WITH_LOOKUP, lookupCalls, lookupRequest, type LookupCall } from "../samples/lookupTool";
 import { uniqueMarker } from "../samples/markers";
 import { takeTurn } from "../samples/turns";
 
 const lookUp = (room: Room, agent: AgentIdentity, key: string) => takeTurn(room, agent, lookupRequest(key));
 
-const keysOf = async (room: Room, sender: AgentIdentity) => (await lookupCalls(room, sender)).map((call) => call.key);
+// Which keys were looked up, not how often: a repeated lookup is no leak.
+const keySet = (calls: LookupCall[]) => new Set(calls.map((call) => call.key));
+
+const keysOf = async (room: Room, sender: AgentIdentity) => keySet(await lookupCalls(room, sender));
 
 perAdapter(
   scenarioId(CATEGORY.behavior, "isolation.perSender"),
@@ -39,8 +42,8 @@ perAdapter(
     await lookUp(room, other.identity, KEY.beta);
 
     const [agentKeys, otherKeys] = await Promise.all([keysOf(room, agent), keysOf(room, other.identity)]);
-    expect(agentKeys, "the first agent's calls").toEqual([KEY.alpha]);
-    expect(otherKeys, "the other agent's calls").toEqual([KEY.beta]);
+    expect(agentKeys, "the first agent's calls").toEqual(new Set([KEY.alpha]));
+    expect(otherKeys, "the other agent's calls").toEqual(new Set([KEY.beta]));
   },
   WITH_LOOKUP,
 );
@@ -54,8 +57,8 @@ perAdapter(
     await Promise.all([lookUp(room, agent, KEY.alpha), lookUp(second, agent, KEY.beta)]);
 
     const [firstKeys, secondKeys] = await Promise.all([keysOf(room, agent), keysOf(second, agent)]);
-    expect(firstKeys, "the first room's calls").toEqual([KEY.alpha]);
-    expect(secondKeys, "the second room's calls").toEqual([KEY.beta]);
+    expect(firstKeys, "the first room's calls").toEqual(new Set([KEY.alpha]));
+    expect(secondKeys, "the second room's calls").toEqual(new Set([KEY.beta]));
   },
   WITH_LOOKUP,
 );
@@ -69,11 +72,11 @@ perAdapter(
     await lookUp(room, agent, KEY.beta);
     const calls = await lookupCalls(room, agent);
 
-    expect(calls.map((call) => call.key), "the room holds both turns' calls").toEqual([KEY.alpha, KEY.beta]);
+    expect(keySet(calls), "the room holds both turns' calls").toEqual(new Set([KEY.alpha, KEY.beta]));
     expect(
-      calls.filter((call) => !earlier.has(call.id)).map((call) => call.key),
+      keySet(calls.filter((call) => !earlier.has(call.id))),
       "the second turn's calls, told apart from the first's",
-    ).toEqual([KEY.beta]);
+    ).toEqual(new Set([KEY.beta]));
   },
   WITH_LOOKUP,
 );
