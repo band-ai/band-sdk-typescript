@@ -15,7 +15,16 @@ export function buildZodShape(
   return shape;
 }
 
+// The description is how a model learns what a parameter means; dropping it publishes bare names and types.
 function jsonSchemaToZod(
+  z: typeof import("zod").z,
+  schema: Record<string, unknown>,
+): ZodType {
+  const validator = typedValidator(z, schema);
+  return typeof schema.description === "string" ? validator.describe(schema.description) : validator;
+}
+
+function typedValidator(
   z: typeof import("zod").z,
   schema: Record<string, unknown>,
 ): ZodType {
