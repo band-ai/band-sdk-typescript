@@ -554,6 +554,38 @@ describe("OpenCode in a Band room", () => {
     await session.adapter.onRuntimeStop();
   });
 
+  it("keeps a shut-down client's event loop off the client started while it shuts down", async () => {
+    const clients: ObservedClient[] = [];
+    const clientFactory = (config: Required<OpencodeAdapterConfig>) => {
+      const client = new ObservedClient({ baseUrl: config.baseUrl });
+      clients.push(client);
+      return client;
+    };
+    await using session = await opencodeRoom({}, { clientFactory });
+    const { room, server } = session;
+    await session.start((turn) => turn.answer("First answer."));
+    await room.nextMessage((posted) => posted.content === "First answer.");
+
+    // Shutdown deregisters the tools before it closes the client, so holding that keeps the old stream open.
+    const deregister = server.hold("POST /mcp/band/disconnect");
+    const stopped = session.adapter.onRuntimeStop();
+    await deregister.sending;
+    await session.start((turn) => turn.answer("Second answer."));
+    await room.nextMessage((posted) => posted.content === "Second answer.");
+    deregister.release();
+    await clients[0]!.shut.promise;
+    await stopped;
+
+    const permission = "per_once";
+    await session.start((turn) => {
+      turn.askPermission({ id: permission });
+    });
+    await room.nextMessage((posted) => posted.content === approvalPrompt(permission));
+    expect(await room.exchange(OWNER, `approve ${permission}`)).toEqual([SAYS.approvalHandled(permission, "once")]);
+    expect(room.messages.filter((posted) => posted.content === approvalPrompt(permission)), "the ask was prompted once").toHaveLength(1);
+    expect(clients).toHaveLength(2);
+  });
+
   it("mentions the requester on an ask raised after the turn's answer went out", async () => {
     await using session = await opencodeRoom();
     const { room, server } = session;

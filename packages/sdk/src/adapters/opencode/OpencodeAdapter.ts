@@ -443,7 +443,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   private startClient(): Promise<OpencodeClientLike> {
     const client = this.clientFactory(this.config);
     this.client = client;
-    this.eventTask = this.runEventLoop();
+    this.eventTask = this.runEventLoop(client);
     return this.registerMcpBackend(client).then(() => client);
   }
 
@@ -522,17 +522,17 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     await client.close();
   }
 
-  private async runEventLoop(): Promise<void> {
+  // Bound to one client: a closed client's stream ends without throwing, and must not move on to its successor.
+  private async runEventLoop(client: OpencodeClientLike): Promise<void> {
     let retryDelayMs = 1000;
-    while (this.client) {
-      const activeClient = this.client;
+    while (this.client === client) {
       try {
-        for await (const event of activeClient.iterEvents()) {
+        for await (const event of client.iterEvents()) {
           retryDelayMs = 1000;
           await this.handleEvent(event);
         }
       } catch (error) {
-        if (this.client !== activeClient) {
+        if (this.client !== client) {
           return;
         }
         this.logger.warn("OpenCode event stream failed", { error, retryDelayMs });
