@@ -260,9 +260,9 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   private readonly rooms = new Map<string, RoomState>();
   private readonly roomBySession = new Map<string, string>();
   private client: OpencodeClientLike | null = null;
+  private eventTask: Promise<void> | null = null;
   // Held from the moment each start begins, so concurrent turns share one start and shutdown owns one still pending.
   private clientReady: Promise<OpencodeClientLike> | null = null;
-  private eventTask: Promise<void> | null = null;
   private mcpBackend: Promise<BandMcpBackend | null> | null = null;
   private systemPrompt = "";
 
@@ -499,10 +499,10 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     this.mcpBackend = null;
     this.eventTask = null;
 
+    // The client closes first, so a backend still starting can't register through it; that backend is stopped once it listens.
     try {
       await this.closeClient(client);
     } finally {
-      // A backend still starting is stopped once it listens.
       await (await backend)?.stop();
     }
 
@@ -511,7 +511,6 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     }
   }
 
-  // Closed before a still-starting backend settles, so that start can't register or prompt through it.
   private async closeClient(client: OpencodeClientLike | null): Promise<void> {
     if (!client) {
       return;

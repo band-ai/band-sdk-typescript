@@ -89,6 +89,17 @@ class ObservedClient extends HttpOpencodeClient {
   }
 }
 
+/** A client factory that builds `ObservedClient`s and keeps each one, in the order the adapter asked for them. */
+function observedClients() {
+  const clients: ObservedClient[] = [];
+  const clientFactory = (config: Required<OpencodeAdapterConfig>) => {
+    const client = new ObservedClient({ baseUrl: config.baseUrl });
+    clients.push(client);
+    return client;
+  };
+  return { clients, clientFactory };
+}
+
 describe("OpenCode in a Band room", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -471,15 +482,14 @@ describe("OpenCode in a Band room", () => {
 
   it("stops an MCP backend that finishes starting after the adapter stopped", async () => {
     const backend = heldBackend();
-    let client!: ObservedClient;
-    const clientFactory = (config: Required<OpencodeAdapterConfig>) => (client = new ObservedClient({ baseUrl: config.baseUrl }));
+    const { clients, clientFactory } = observedClients();
     await using session = await opencodeRoom({}, { mcpBackendFactory: backend.factory, clientFactory });
     const message = await session.room.say(OWNER, "Please run the tests");
     await backend.held.sending;
 
     const stopped = session.adapter.onRuntimeStop();
     // Shutdown closes the client without waiting for the backend's start.
-    await client.shut.promise;
+    await clients[0]!.shut.promise;
     backend.held.release();
     const url = await backend.listening;
     await stopped;
@@ -555,12 +565,7 @@ describe("OpenCode in a Band room", () => {
   });
 
   it("keeps a shut-down client's event loop off the client started while it shuts down", async () => {
-    const clients: ObservedClient[] = [];
-    const clientFactory = (config: Required<OpencodeAdapterConfig>) => {
-      const client = new ObservedClient({ baseUrl: config.baseUrl });
-      clients.push(client);
-      return client;
-    };
+    const { clients, clientFactory } = observedClients();
     await using session = await opencodeRoom({}, { clientFactory });
     const { room, server } = session;
     await session.start((turn) => turn.answer("First answer."));
