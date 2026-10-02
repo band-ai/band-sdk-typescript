@@ -8,6 +8,8 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { onTestFinished } from "vitest";
+
 import { Agent, type AgentCreateOptions } from "../../../src/agent/Agent";
 import type { FrameworkAdapter } from "../../../src/contracts/protocols";
 import { BandLink, type BandLinkOptions } from "../../../src/platform/BandLink";
@@ -51,7 +53,15 @@ export class AgentIdentity implements AsyncDisposable {
     return handle;
   }
 
-  public async [Symbol.asyncDispose](): Promise<void> {
+  private reaped: Promise<void> | undefined;
+
+  /** Reaps once, however many scopes release it. */
+  public [Symbol.asyncDispose](): Promise<void> {
+    this.reaped ??= this.reap();
+    return this.reaped;
+  }
+
+  private async reap(): Promise<void> {
     const { env } = await liveRun();
     await reapProvisioned(env.userClient, env.restUrl, env.userApiKey, [this], [], `reap ${this.name}`).catch(
       warnTeardown(`reap agent ${this.name}`),
@@ -75,10 +85,16 @@ export class RunningAgent implements AsyncDisposable {
   }
 }
 
+/** Numbers each identity in the run, so no two cells can ever ask for the same name. */
+let provisioned = 0;
+
 async function provision(testName: string, label: string): Promise<AgentIdentity> {
   const { env, runId } = await liveRun();
-  const agent = await provisionAgent(env.userClient, runId, testName, label);
-  return new AgentIdentity(agent.id, agent.name as ProvisionedName, agent.apiKey, env.restUrl);
+  const agent = await provisionAgent(env.userClient, runId, testName, `${label}-${++provisioned}`);
+  const identity = new AgentIdentity(agent.id, agent.name as ProvisionedName, agent.apiKey, env.restUrl);
+  // Vitest abandons a timed-out test mid-await, so its `await using` never reaps; this hook still runs.
+  onTestFinished(() => identity[Symbol.asyncDispose]());
+  return identity;
 }
 
 async function runAs(
