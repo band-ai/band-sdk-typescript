@@ -7,11 +7,13 @@ const TOOL_NAME = "file_ticket";
 
 const TICKET_SCHEMA = {
   type: "object",
+  description: "The ticket to file.",
   properties: {
-    title: { type: "string" },
+    title: { type: "string", description: "A one-line summary." },
     labels: {
       type: "array",
-      items: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
+      description: "Labels to apply.",
+      items: { type: "object", properties: { name: { type: "string", description: "The label's name." } }, required: ["name"] },
     },
   },
   required: ["title"],
@@ -32,7 +34,7 @@ export class NestedObjectTool {
   };
 }
 
-/** The nested-object contract every MCP backend must keep: listed, validated, and loose. */
+/** The nested-object contract every MCP backend must keep: listed with its descriptions, validated, and loose. */
 export function describeNestedObjectTool(connect: (tool: NestedObjectTool) => Promise<Client>): void {
   describe("an additional tool with a nested object argument", () => {
     async function withClient(check: (client: Client, tool: NestedObjectTool) => Promise<void>): Promise<void> {
@@ -45,7 +47,7 @@ export function describeNestedObjectTool(connect: (tool: NestedObjectTool) => Pr
       }
     }
 
-    it("lists the object's own properties", () => withClient(async (client) => {
+    it("lists the object's own properties and their descriptions", () => withClient(async (client) => {
       const { tools } = await client.listTools();
       const listed = tools.find((entry) => entry.name === TOOL_NAME);
       expect(listed?.inputSchema.properties?.ticket).toMatchObject(TICKET_SCHEMA);
