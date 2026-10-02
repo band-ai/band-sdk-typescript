@@ -136,7 +136,8 @@ export class AdapterCell implements AsyncDisposable {
 
   /** A cell for `spec`, built by `build` when a scenario needs other than the registered builder. */
   public static async create(spec: RosterSpec, prompt: string, build: AdapterBuilder = spec.build): Promise<AdapterCell> {
-    return new AdapterCell(spec, prompt, await realpath(await mkdtemp(join(tmpdir(), `band-baseline-${spec.id}-`))), build);
+    const workDir = await realpath(await mkdtemp(join(tmpdir(), `band-baseline-${spec.id}-`)));
+    return releasedWithTest(new AdapterCell(spec, prompt, workDir, build));
   }
 
   /** A fresh adapter instance: no in-memory state carries over from an earlier build. */
@@ -179,7 +180,9 @@ export class AgentLink implements AsyncDisposable {
 
 async function connect(identity: AgentIdentity): Promise<AgentLink> {
   const { env } = await liveRun();
-  const link = new AgentLink(new BandLink({ agentId: identity.id, apiKey: identity.apiKey, wsUrl: env.wsUrl, restApi: identity.rest }));
+  const link = releasedWithTest(
+    new AgentLink(new BandLink({ agentId: identity.id, apiKey: identity.apiKey, wsUrl: env.wsUrl, restApi: identity.rest })),
+  );
   try {
     await link.link.connect();
   } catch (error) {

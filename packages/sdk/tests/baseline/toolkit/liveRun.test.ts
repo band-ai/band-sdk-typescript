@@ -13,6 +13,20 @@ class Counted implements AsyncDisposable {
 describe("releasedWithTest", () => {
   const abandoned = new Counted();
   const scoped = new Counted();
+  const late = new Counted();
+  // Collection runs outside any test, as an abandoned test's body does once vitest has moved on.
+  const lateRegistration = (() => {
+    try {
+      releasedWithTest(late);
+    } catch (error) {
+      return error;
+    }
+  })();
+
+  it("releases at once a resource acquired after its test ended", () => {
+    expect(lateRegistration).toBeInstanceOf(Error);
+    expect(late.releases).toBe(1);
+  });
 
   it("leaves a resource its test never released held until that test ends", () => {
     releasedWithTest(abandoned);

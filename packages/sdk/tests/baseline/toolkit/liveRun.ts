@@ -42,6 +42,12 @@ export function releasedWithTest<T extends AsyncDisposable>(resource: T): T {
   const release = resource[Symbol.asyncDispose].bind(resource);
   let released: PromiseLike<void> | undefined;
   Object.defineProperty(resource, Symbol.asyncDispose, { value: () => (released ??= release()) });
-  onTestFinished(() => resource[Symbol.asyncDispose]());
+  try {
+    onTestFinished(() => resource[Symbol.asyncDispose]());
+  } catch (error) {
+    // Its test already ended, so no hook will ever release it.
+    void resource[Symbol.asyncDispose]();
+    throw error;
+  }
   return resource;
 }
