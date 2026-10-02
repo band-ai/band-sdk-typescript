@@ -2,7 +2,7 @@
  * Agent CRUD: provision a disposable Band identity, run an adapter as it, and
  * a minimal adapter cell for scenarios that own the lifecycle (e.g. stop and
  * re-run one identity to prove platform rehydration). Every handle is released
- * by `await using`; release never throws.
+ * by `await using` or when its test ends; release never throws.
  */
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -14,7 +14,7 @@ import { BandLink, type BandLinkOptions } from "../../../src/platform/BandLink";
 import { withTimeout } from "../../../src/adapters/shared/withTimeout";
 import { agentRest, NAME_PREFIX, provisionAgent, reapProvisioned } from "../../integration/support/liveHarness";
 import { debugLogger } from "./debugLogger";
-import { liveRun, warnTeardown } from "./liveRun";
+import { liveRun, releasedWithTest, warnTeardown } from "./liveRun";
 import type { RosterSpec } from "./adapters";
 import type { AdapterBuilder } from "./registry";
 
@@ -75,10 +75,13 @@ export class RunningAgent implements AsyncDisposable {
   }
 }
 
+/** Numbers each identity in the run, so no two cells can ever ask for the same name. */
+let provisioned = 0;
+
 async function provision(testName: string, label: string): Promise<AgentIdentity> {
   const { env, runId } = await liveRun();
-  const agent = await provisionAgent(env.userClient, runId, testName, label);
-  return new AgentIdentity(agent.id, agent.name as ProvisionedName, agent.apiKey, env.restUrl);
+  const agent = await provisionAgent(env.userClient, runId, testName, `${label}-${++provisioned}`);
+  return releasedWithTest(new AgentIdentity(agent.id, agent.name as ProvisionedName, agent.apiKey, env.restUrl));
 }
 
 async function runAs(
@@ -97,7 +100,7 @@ async function runAs(
     agentConfig: { autoSubscribeExistingRooms: true },
     ...options,
   });
-  const running = new RunningAgent(identity, agent);
+  const running = releasedWithTest(new RunningAgent(identity, agent));
   try {
     await agent.start();
   } catch (error) {
@@ -133,7 +136,8 @@ export class AdapterCell implements AsyncDisposable {
 
   /** A cell for `spec`, built by `build` when a scenario needs other than the registered builder. */
   public static async create(spec: RosterSpec, prompt: string, build: AdapterBuilder = spec.build): Promise<AdapterCell> {
-    return new AdapterCell(spec, prompt, await realpath(await mkdtemp(join(tmpdir(), `band-baseline-${spec.id}-`))), build);
+    const workDir = await realpath(await mkdtemp(join(tmpdir(), `band-baseline-${spec.id}-`)));
+    return releasedWithTest(new AdapterCell(spec, prompt, workDir, build));
   }
 
   /** A fresh adapter instance: no in-memory state carries over from an earlier build. */
@@ -176,7 +180,9 @@ export class AgentLink implements AsyncDisposable {
 
 async function connect(identity: AgentIdentity): Promise<AgentLink> {
   const { env } = await liveRun();
-  const link = new AgentLink(new BandLink({ agentId: identity.id, apiKey: identity.apiKey, wsUrl: env.wsUrl, restApi: identity.rest }));
+  const link = releasedWithTest(
+    new AgentLink(new BandLink({ agentId: identity.id, apiKey: identity.apiKey, wsUrl: env.wsUrl, restApi: identity.rest })),
+  );
   try {
     await link.link.connect();
   } catch (error) {
