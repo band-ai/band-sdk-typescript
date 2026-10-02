@@ -122,6 +122,8 @@ const SET_SESSION_CONFIG_TIMEOUT_MS = 10_000;
 // config bound because authenticating makes a network round trip.
 const HANDSHAKE_TIMEOUT_MS = 30_000;
 const CONNECTION_ATTEMPT_SUPERSEDED_ERROR = "ACP connection attempt superseded by stop()";
+// How much of a dying agent's stderr its exit warning carries.
+const STDERR_TAIL_LINES = 20;
 
 export interface ACPModeRequest {
   roomId: string;
@@ -1732,8 +1734,17 @@ export async function createSubprocessConnection(
   await once(child, "spawn")
   child.on("error", (error) => logger.warn("acp_client.subprocess_error", { error: error.message }))
   // An unread stderr pipe fills up and blocks the agent.
+  const stderrTail: string[] = []
   createInterface({ input: child.stderr, crlfDelay: Number.POSITIVE_INFINITY })
-    .on("line", (line) => logger.debug("acp_client.subprocess_stderr", { line }))
+    .on("line", (line) => {
+      logger.debug("acp_client.subprocess_stderr", { line })
+      stderrTail.push(line)
+      if (stderrTail.length > STDERR_TAIL_LINES) stderrTail.shift()
+    })
+  // A failing exit code is the agent dying on its own; `stop()` ends it by signal instead.
+  child.on("exit", (code) => {
+    if (code) logger.warn("acp_client.subprocess_exited", { code, stderr: stderrTail.join("\n") })
+  })
 
   const stream = acp.ndJsonStream(
     Writable.toWeb(child.stdin),
