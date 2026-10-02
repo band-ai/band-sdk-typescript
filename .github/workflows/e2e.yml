@@ -23,14 +23,11 @@ jobs:
   # The live baseline (tests/baseline): every scenario fanned out across the
   # adapter registry in one job; vitest isolates the files. A scheduled run is
   # the full suite and the canonical scorecard; a manual run may be scoped by
-  # `filter` and reports to the dispatcher on their PR.
+  # `filter`. The `report` job below tells people the outcome.
   baseline:
     name: baseline (live)
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    permissions:
-      contents: read
-      pull-requests: write # the scorecard comment on a manual run's PR
     concurrency:
       # Never cancel in progress: a killed run skips its teardown, orphaning
       # the agents and rooms it provisioned on the real platform.
@@ -154,8 +151,41 @@ jobs:
         if: ${{ !cancelled() && hashFiles('scorecard/scorecard.md') != '' }}
         run: cat "$SCORECARD_MD" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Scorecard to the dispatcher's PR
-        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && hashFiles('scorecard/scorecard.md') != '' }}
+  # Reports every finished run, red or green, as a comment that @mentions its
+  # audience; GitHub emails each one. The nightly cc's the integrations roster,
+  # a manual run only its dispatcher. A separate job so the write permissions
+  # never reach the job that runs third-party CLIs with live secrets.
+  report:
+    name: report baseline
+    needs: baseline
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # commit comments 403 under `read` (github/docs#12723)
+      pull-requests: write # the sticky scorecard comment on a manual run's PR
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SCORECARD_MD: scorecard/scorecard.md
+      PASSED: ${{ needs.baseline.result == 'success' }}
+      FILTER: ${{ inputs.filter }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # Absent when the baseline died before the scorecard; the report says so.
+      - name: Download the scorecard
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: baseline-scorecard
+          path: scorecard
+
+      - name: Read integrations mentions list
+        id: mentions
+        if: ${{ github.event_name == 'schedule' }}
+        run: bash .github/scripts/read-integrations-mentions.sh
+
+      - name: Post the baseline report
         env:
-          GH_TOKEN: ${{ github.token }}
+          RECIPIENTS: ${{ github.event_name == 'schedule' && steps.mentions.outputs.mentions || format('@{0}', github.triggering_actor) }}
         run: node .github/scripts/post-baseline-scorecard.mjs
