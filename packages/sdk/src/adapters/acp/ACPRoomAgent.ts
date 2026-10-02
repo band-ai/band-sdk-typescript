@@ -116,6 +116,11 @@ function framedReplay(lines: readonly string[], liveMessage: string): [string, s
 // subprocess-handshake timeout: this is the same kind of wait, a local agent
 // process acknowledging an administrative call, not doing model inference.
 const SET_SESSION_CONFIG_TIMEOUT_MS = 10_000;
+// Bounds `initialize` and `authenticate`, which share that unbounded wait.
+// Cursor's `agent acp` answers neither error nor stderr to an `authenticate`
+// it has no valid credential for: it just never responds. Longer than the
+// config bound because authenticating makes a network round trip.
+const HANDSHAKE_TIMEOUT_MS = 30_000;
 const CONNECTION_ATTEMPT_SUPERSEDED_ERROR = "ACP connection attempt superseded by stop()";
 
 export interface ACPModeRequest {
@@ -764,15 +769,21 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
         await handle.stop()
         throw new Error(CONNECTION_ATTEMPT_SUPERSEDED_ERROR)
       }
-      const initializeResult = await this.raceAgainstConnectionClose(connection, connection.initialize({
-        protocolVersion: acp.PROTOCOL_VERSION,
-        clientCapabilities: this.clientCapabilities ?? {},
-      }))
+      const initializeResult = await this.raceAgainstConnectionClose(connection, withTimeout(
+        connection.initialize({
+          protocolVersion: acp.PROTOCOL_VERSION,
+          clientCapabilities: this.clientCapabilities ?? {},
+        }),
+        HANDSHAKE_TIMEOUT_MS,
+        `ACP initialize did not respond within ${HANDSHAKE_TIMEOUT_MS}ms`,
+      ))
 
       if (this.authMethod) {
-        await this.raceAgainstConnectionClose(connection, connection.authenticate({
-          methodId: this.authMethod,
-        }))
+        await this.raceAgainstConnectionClose(connection, withTimeout(
+          connection.authenticate({ methodId: this.authMethod }),
+          HANDSHAKE_TIMEOUT_MS,
+          `ACP authenticate (${this.authMethod}) did not respond within ${HANDSHAKE_TIMEOUT_MS}ms: check the agent's credentials`,
+        ))
       }
 
       backend = this.enableMcpTools ? await this.createBackend(initializeResult) : null

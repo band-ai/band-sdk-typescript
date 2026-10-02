@@ -1767,6 +1767,45 @@ describe("ACPClientAdapter", () => {
     expect(newSession).not.toHaveBeenCalled()
   })
 
+  // Cursor's `agent acp` never answers `authenticate` without a valid credential.
+  it("fails a turn whose agent never answers authenticate, and stops the agent", async () => {
+    vi.useFakeTimers()
+    try {
+      const authenticate = vi.fn(() => new Promise<never>(() => undefined))
+      const stop = vi.fn(async () => undefined)
+      const adapter = new ACPClientAdapter({
+        cwd: tmpRoot(),
+        command: ["acp-agent"],
+        authMethod: "cursor_login",
+        connectionFactory: async () => ({
+          connection: {
+            signal: new AbortController().signal,
+            closed: new Promise<void>(() => undefined),
+            initialize: vi.fn(async () => ({ protocolVersion: 1, agentCapabilities: {} })),
+            authenticate,
+          } as never,
+          stop,
+        }),
+      })
+      await adapter.onStarted("Agent", "desc")
+
+      const turn = expect(adapter.onMessage(
+        makeMessage("hi", "room-1"),
+        new FakeTools(),
+        { roomToSession: {} },
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-1" },
+      )).rejects.toThrow("ACP authenticate (cursor_login) did not respond within 30000ms")
+      await vi.waitFor(() => expect(authenticate).toHaveBeenCalled())
+      await vi.advanceTimersByTimeAsync(30_000)
+      await turn
+      expect(stop).toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("gives each room its own MCP backend and token, pinned to that room's tools", async () => {
     const backends = new Map<string, { url: string; token: string }>()
     const tools = { "room-a": new FakeTools(), "room-b": new FakeTools() }
