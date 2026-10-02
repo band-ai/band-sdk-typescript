@@ -1741,9 +1741,10 @@ export async function createSubprocessConnection(
       stderrTail.push(line)
       if (stderrTail.length > STDERR_TAIL_LINES) stderrTail.shift()
     })
-  // A failing exit code is the agent dying on its own; `stop()` ends it by signal instead.
+  // Only an agent dying on its own warns: one asked to stop may exit non-zero on stdin EOF.
+  let stopping = false
   child.on("exit", (code) => {
-    if (code) logger.warn("acp_client.subprocess_exited", { code, stderr: stderrTail.join("\n") })
+    if (code && !stopping) logger.warn("acp_client.subprocess_exited", { code, stderr: stderrTail.join("\n") })
   })
 
   const stream = acp.ndJsonStream(
@@ -1755,7 +1756,10 @@ export async function createSubprocessConnection(
 
   return {
     connection,
-    stop: () => stopChildProcess(child),
+    stop: () => {
+      stopping = true
+      return stopChildProcess(child)
+    },
   }
 }
 

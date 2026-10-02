@@ -9,9 +9,8 @@ export const CURSOR_PROJECT_CONFIG = join(".cursor", "cli.json");
 /** Cursor's permission token for every tool on Band's own MCP server. */
 export const BAND_MCP_PERMISSION = `Mcp(${MCP_SERVER_NAME}:*)`;
 
-// Cursor requires both lists (https://cursor.com/docs/cli/reference/configuration).
 interface CursorProjectConfig {
-  permissions?: { allow?: string[]; deny?: string[]; [key: string]: unknown };
+  permissions?: { allow?: unknown; deny?: unknown; [key: string]: unknown };
   [key: string]: unknown;
 }
 
@@ -23,13 +22,16 @@ interface CursorProjectConfig {
 export async function allowBandMcpTools(workspace: string): Promise<void> {
   const path = join(workspace, CURSOR_PROJECT_CONFIG);
   const config = await readConfig(path);
-  const { allow = [], deny = [] } = config.permissions ?? {};
-  if (allow.includes(BAND_MCP_PERMISSION)) {
+  const allow = permissionList(config, "allow", path);
+  const deny = permissionList(config, "deny", path);
+  // Cursor exits if either list is missing (https://cursor.com/docs/cli/reference/configuration).
+  if (allow?.includes(BAND_MCP_PERMISSION) && deny) {
     return;
   }
   await mkdir(dirname(path), { recursive: true });
-  const updated = { ...config, permissions: { ...config.permissions, allow: [...allow, BAND_MCP_PERMISSION], deny } };
-  await writeFile(path, `${JSON.stringify(updated, null, 2)}\n`);
+  const allowed = allow?.includes(BAND_MCP_PERMISSION) ? allow : [...(allow ?? []), BAND_MCP_PERMISSION];
+  const permissions = { ...config.permissions, allow: allowed, deny: deny ?? [] };
+  await writeFile(path, `${JSON.stringify({ ...config, permissions }, null, 2)}\n`);
 }
 
 async function readConfig(path: string): Promise<CursorProjectConfig> {
@@ -41,5 +43,18 @@ async function readConfig(path: string): Promise<CursorProjectConfig> {
     throw error;
   }
   // A config we cannot read is the owner's to fix; overwriting it would lose their rules.
-  return JSON.parse(text) as CursorProjectConfig;
+  try {
+    return JSON.parse(text) as CursorProjectConfig;
+  } catch (error) {
+    throw new Error(`Cursor config ${path} is not valid JSON: ${(error as Error).message}`);
+  }
+}
+
+function permissionList(config: CursorProjectConfig, key: "allow" | "deny", path: string): string[] | undefined {
+  const list = config.permissions?.[key];
+  if (list === undefined) return undefined;
+  if (!Array.isArray(list) || !list.every((entry) => typeof entry === "string")) {
+    throw new Error(`Cursor config ${path}: permissions.${key} must be a list of strings`);
+  }
+  return list;
 }

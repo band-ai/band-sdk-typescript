@@ -12,7 +12,7 @@ import { CursorACPAdapter, type CursorACPAdapterOptions } from "../../src/adapte
 import { createDeferred } from "../../src/core/deferred";
 import { DEFAULT_CURSOR_DECISION_TIMEOUT_MS } from "../../src/adapters/cursor-acp/CursorRoomAgent";
 import { CURSOR_COMMAND, CURSOR_DECISION_MESSAGES as SAYS } from "../../src/adapters/cursor-acp/messages";
-import { BAND_MCP_PERMISSION, CURSOR_PROJECT_CONFIG } from "../../src/adapters/cursor-acp/permissions";
+import { allowBandMcpTools, BAND_MCP_PERMISSION, CURSOR_PROJECT_CONFIG } from "../../src/adapters/cursor-acp/permissions";
 import { DEFAULT_WORKSPACE_DIRECTORY } from "../../src/adapters/shared/roomWorkspace";
 import { BandPlatform, person, type BandRoom, type Posted } from "./support/bandPlatform";
 import { DEFAULT_CURSOR_ROOM, FakeCursorAgent, type CursorTurn } from "./support/fakeCursorAgent";
@@ -526,6 +526,11 @@ describe("Cursor in a Band room", () => {
       existing: { model: "auto", permissions: { allow: ["Shell(ls)"], deny: ["Shell(rm)"] } },
       expected: { model: "auto", permissions: { allow: ["Shell(ls)", BAND_MCP_PERMISSION], deny: ["Shell(rm)"] } },
     },
+    {
+      workspace: "a workspace whose config lacks the deny list Cursor requires",
+      existing: { permissions: { allow: [BAND_MCP_PERMISSION] } },
+      expected: { permissions: { allow: [BAND_MCP_PERMISSION], deny: [] } },
+    },
   ])("lets Cursor call Band's own tools without asking the room, in $workspace", async ({ existing, expected }) => {
     const root = tmpRoot();
     const config = join(root, DEFAULT_WORKSPACE_DIRECTORY, DEFAULT_CURSOR_ROOM, CURSOR_PROJECT_CONFIG);
@@ -538,6 +543,19 @@ describe("Cursor in a Band room", () => {
     await result;
 
     expect(JSON.parse(await readFile(config, "utf8"))).toEqual(expected);
+  });
+
+  it.each([
+    { invalid: "is not JSON", text: "{ allow: ", error: /is not valid JSON/ },
+    { invalid: "has a non-list allow", text: JSON.stringify({ permissions: { allow: "Shell(ls)" } }), error: /permissions\.allow must be a list of strings/ },
+  ])("leaves a Cursor config that $invalid untouched, naming the problem", async ({ text, error }) => {
+    const workspace = tmpRoot();
+    const config = join(workspace, CURSOR_PROJECT_CONFIG);
+    await mkdir(dirname(config), { recursive: true });
+    await writeFile(config, text);
+
+    await expect(allowBandMcpTools(workspace)).rejects.toThrow(error);
+    expect(await readFile(config, "utf8")).toBe(text);
   });
 
   // A credential authenticates the CLI itself; ACP `cursor_login` is the interactive login and hangs headless.
