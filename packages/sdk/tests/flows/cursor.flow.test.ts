@@ -520,7 +520,7 @@ describe("Cursor in a Band room", () => {
   });
 
   it.each([
-    { workspace: "a fresh workspace", existing: undefined, expected: { permissions: { allow: [BAND_MCP_PERMISSION] } } },
+    { workspace: "a fresh workspace", existing: undefined, expected: { permissions: { allow: [BAND_MCP_PERMISSION], deny: [] } } },
     {
       workspace: "a workspace with its own Cursor rules",
       existing: { model: "auto", permissions: { allow: ["Shell(ls)"], deny: ["Shell(rm)"] } },

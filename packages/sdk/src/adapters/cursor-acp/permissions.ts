@@ -9,8 +9,9 @@ export const CURSOR_PROJECT_CONFIG = join(".cursor", "cli.json");
 /** Cursor's permission token for every tool on Band's own MCP server. */
 export const BAND_MCP_PERMISSION = `Mcp(${MCP_SERVER_NAME}:*)`;
 
+// Cursor requires both lists (https://cursor.com/docs/cli/reference/configuration).
 interface CursorProjectConfig {
-  permissions?: { allow?: string[]; [key: string]: unknown };
+  permissions?: { allow?: string[]; deny?: string[]; [key: string]: unknown };
   [key: string]: unknown;
 }
 
@@ -22,12 +23,12 @@ interface CursorProjectConfig {
 export async function allowBandMcpTools(workspace: string): Promise<void> {
   const path = join(workspace, CURSOR_PROJECT_CONFIG);
   const config = await readConfig(path);
-  const allow = config.permissions?.allow ?? [];
+  const { allow = [], deny = [] } = config.permissions ?? {};
   if (allow.includes(BAND_MCP_PERMISSION)) {
     return;
   }
   await mkdir(dirname(path), { recursive: true });
-  const updated = { ...config, permissions: { ...config.permissions, allow: [...allow, BAND_MCP_PERMISSION] } };
+  const updated = { ...config, permissions: { ...config.permissions, allow: [...allow, BAND_MCP_PERMISSION], deny } };
   await writeFile(path, `${JSON.stringify(updated, null, 2)}\n`);
 }
 
