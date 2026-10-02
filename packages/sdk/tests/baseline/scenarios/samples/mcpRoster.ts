@@ -8,7 +8,7 @@ import { expect } from "vitest";
 
 import type { AgentIdentity } from "../../toolkit/agents";
 import { assertReplied } from "../../toolkit/assertMessages";
-import { eventsFrom, MESSAGE_TYPE, observeRoom } from "../../toolkit/observeMessages";
+import { history, MESSAGE_TYPE, observeRoom } from "../../toolkit/observeMessages";
 import type { Cast } from "../../toolkit/perAdapter";
 import { type Room, Rooms } from "../../toolkit/rooms";
 import { uniqueMarker } from "./markers";
@@ -47,10 +47,11 @@ export async function addsHelperThroughMcp({ agents: [agent], room, cells: [cell
   return { helperName: helper.name };
 }
 
+const TOOL_EVENT_TYPES: ReadonlySet<string> = new Set([MESSAGE_TYPE.ToolCall, MESSAGE_TYPE.ToolResult]);
+
+/** The agent's calls and results in order, raw: ACP tool events don't parse as `toolCalls` does. */
 async function agentToolEvents(room: Room, agent: AgentIdentity): Promise<string[]> {
-  const events = [
-    ...(await eventsFrom(room, MESSAGE_TYPE.ToolCall, agent)),
-    ...(await eventsFrom(room, MESSAGE_TYPE.ToolResult, agent)),
-  ];
-  return events.map((event) => `${event.messageType}: ${event.content} ${JSON.stringify(event.metadata)}`);
+  return (await history(room))
+    .filter((event) => event.senderId === agent.id && TOOL_EVENT_TYPES.has(event.messageType))
+    .map((event) => `${event.messageType}: ${event.content} ${JSON.stringify(event.metadata)}`);
 }
