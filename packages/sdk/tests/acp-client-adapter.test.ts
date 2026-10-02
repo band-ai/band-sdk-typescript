@@ -1767,8 +1767,13 @@ describe("ACPClientAdapter", () => {
     expect(newSession).not.toHaveBeenCalled()
   })
 
-  it("gives each room its own MCP backend and token, which serve only that room's tools", async () => {
+  it("gives each room its own MCP backend and token, pinned to that room's tools", async () => {
     const backends = new Map<string, { url: string; token: string }>()
+    const tools = { "room-a": new FakeTools(), "room-b": new FakeTools() }
+    const calls = {
+      "room-a": vi.spyOn(tools["room-a"], "executeToolCall"),
+      "room-b": vi.spyOn(tools["room-b"], "executeToolCall"),
+    }
     const root = tmpRoot()
     const adapter = new ACPClientAdapter({
       cwd: root,
@@ -1786,9 +1791,9 @@ describe("ACPClientAdapter", () => {
     })
 
     await adapter.onStarted("Agent", "desc")
-    await Promise.all(["room-a", "room-b"].map((roomId) => adapter.onMessage(
+    await Promise.all((["room-a", "room-b"] as const).map((roomId) => adapter.onMessage(
       makeMessage("hello", roomId),
-      new FakeTools(),
+      tools[roomId],
       { roomToSession: {} },
       null,
       null,
@@ -1806,10 +1811,15 @@ describe("ACPClientAdapter", () => {
     const client = new McpClient({ name: "room-a-agent", version: "1.0.0" })
     await client.connect(transport)
     try {
-      const own = await client.callTool({ name: "band_get_participants", arguments: { room_id: "room-a" } })
-      const foreign = await client.callTool({ name: "band_get_participants", arguments: { room_id: "room-b" } })
-      expect(own.isError).toBeFalsy()
-      expect(foreign).toMatchObject({ isError: true, content: [{ text: "No tool context found for room_id room-b" }] })
+      // The model never names the room: no tool takes a room_id.
+      const { tools: listed } = await client.listTools()
+      expect(listed.length).toBeGreaterThan(0)
+      expect(listed.filter((tool) => "room_id" in (tool.inputSchema.properties ?? {}))).toEqual([])
+
+      const result = await client.callTool({ name: "band_get_participants", arguments: {} })
+      expect(result.isError).toBeFalsy()
+      expect(calls["room-a"]).toHaveBeenCalledWith("band_get_participants", {})
+      expect(calls["room-b"]).not.toHaveBeenCalled()
     } finally {
       await transport.close()
       await adapter.stop()
@@ -1863,7 +1873,7 @@ describe("ACPClientAdapter", () => {
       const client = new McpClient({ name: "agent", version: "1.0.0" })
       await client.connect(transport)
       try {
-        return await client.callTool({ name: "band_get_participants", arguments: { room_id: "room-1" } })
+        return await client.callTool({ name: "band_get_participants", arguments: {} })
       } finally {
         await transport.close()
       }

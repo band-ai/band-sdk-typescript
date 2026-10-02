@@ -1273,13 +1273,16 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
   }
 
   // One backend, and so one token, per connection: retiring the connection
-  // revokes exactly the Band access its process was given.
+  // revokes exactly the Band access its process was given. Pinned to this
+  // agent's room, so the model never names the room and a call can't reach
+  // another room's tools.
   private createBackend(initializeResult: InitializeResponse): Promise<BandMcpBackend> {
     return createBandMcpBackend({
       kind: mcpTransport(initializeResult),
       enableMemoryTools: this.enableMemoryTools,
-      getToolsForRoom: (roomId) => this.roomTools.get(roomId),
+      getToolsForRoom: () => this.roomTools.get(this.roomId),
       additionalTools: this.additionalMcpTools,
+      multiRoom: false,
     })
   }
 
@@ -1293,8 +1296,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
       "Use the Band tools for any visible room action. Plain text output is not posted back to the room.",
       "",
       ...roomContextLines(roomId, message),
-      "",
-      "All Band MCP tool calls must include room_id.",
     ].join("\n")
   }
 
