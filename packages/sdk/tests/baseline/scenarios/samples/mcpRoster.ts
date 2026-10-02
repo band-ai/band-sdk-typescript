@@ -6,10 +6,11 @@
  */
 import { expect } from "vitest";
 
+import type { AgentIdentity } from "../../toolkit/agents";
 import { assertReplied } from "../../toolkit/assertMessages";
-import { observeRoom } from "../../toolkit/observeMessages";
+import { history, MESSAGE_TYPE, observeRoom } from "../../toolkit/observeMessages";
 import type { Cast } from "../../toolkit/perAdapter";
-import { Rooms } from "../../toolkit/rooms";
+import { type Room, Rooms } from "../../toolkit/rooms";
 import { uniqueMarker } from "./markers";
 
 export interface RosterChange {
@@ -37,6 +38,20 @@ export async function addsHelperThroughMcp({ agents: [agent], room, cells: [cell
     [first, mcp, second].every((marker) => message.content.includes(marker)),
   );
   assertReplied(reply);
-  expect(await Rooms.participantIds(room), "the helper joined through band_add_participant").toContain(helper.id);
+  const participants = await Rooms.participantIds(room);
+  // The reply alone can't tell a failed add from a skipped one; the agent's tool events can.
+  const toolEvents = participants.includes(helper.id) ? [] : await agentToolEvents(room, agent!);
+  expect(participants, `the helper joined through band_add_participant; the agent's tool events: ${toolEvents.join(" | ")}`).toContain(
+    helper.id,
+  );
   return { helperName: helper.name };
+}
+
+const TOOL_EVENT_TYPES: ReadonlySet<string> = new Set([MESSAGE_TYPE.ToolCall, MESSAGE_TYPE.ToolResult]);
+
+/** The agent's calls and results in order, raw: ACP tool events don't parse as `toolCalls` does. */
+async function agentToolEvents(room: Room, agent: AgentIdentity): Promise<string[]> {
+  return (await history(room))
+    .filter((event) => event.senderId === agent.id && TOOL_EVENT_TYPES.has(event.messageType))
+    .map((event) => `${event.messageType}: ${event.content} ${JSON.stringify(event.metadata)}`);
 }
