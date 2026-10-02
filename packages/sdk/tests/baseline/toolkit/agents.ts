@@ -2,13 +2,11 @@
  * Agent CRUD: provision a disposable Band identity, run an adapter as it, and
  * a minimal adapter cell for scenarios that own the lifecycle (e.g. stop and
  * re-run one identity to prove platform rehydration). Every handle is released
- * by `await using`; release never throws.
+ * by `await using` or when its test ends; release never throws.
  */
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-import { onTestFinished } from "vitest";
 
 import { Agent, type AgentCreateOptions } from "../../../src/agent/Agent";
 import type { FrameworkAdapter } from "../../../src/contracts/protocols";
@@ -16,7 +14,7 @@ import { BandLink, type BandLinkOptions } from "../../../src/platform/BandLink";
 import { withTimeout } from "../../../src/adapters/shared/withTimeout";
 import { agentRest, NAME_PREFIX, provisionAgent, reapProvisioned } from "../../integration/support/liveHarness";
 import { debugLogger } from "./debugLogger";
-import { liveRun, warnTeardown } from "./liveRun";
+import { liveRun, releasedWithTest, warnTeardown } from "./liveRun";
 import type { RosterSpec } from "./adapters";
 import type { AdapterBuilder } from "./registry";
 
@@ -53,15 +51,7 @@ export class AgentIdentity implements AsyncDisposable {
     return handle;
   }
 
-  private reaped: Promise<void> | undefined;
-
-  /** Reaps once, however many scopes release it. */
-  public [Symbol.asyncDispose](): Promise<void> {
-    this.reaped ??= this.reap();
-    return this.reaped;
-  }
-
-  private async reap(): Promise<void> {
+  public async [Symbol.asyncDispose](): Promise<void> {
     const { env } = await liveRun();
     await reapProvisioned(env.userClient, env.restUrl, env.userApiKey, [this], [], `reap ${this.name}`).catch(
       warnTeardown(`reap agent ${this.name}`),
@@ -91,10 +81,7 @@ let provisioned = 0;
 async function provision(testName: string, label: string): Promise<AgentIdentity> {
   const { env, runId } = await liveRun();
   const agent = await provisionAgent(env.userClient, runId, testName, `${label}-${++provisioned}`);
-  const identity = new AgentIdentity(agent.id, agent.name as ProvisionedName, agent.apiKey, env.restUrl);
-  // Vitest abandons a timed-out test mid-await, so its `await using` never reaps; this hook still runs.
-  onTestFinished(() => identity[Symbol.asyncDispose]());
-  return identity;
+  return releasedWithTest(new AgentIdentity(agent.id, agent.name as ProvisionedName, agent.apiKey, env.restUrl));
 }
 
 async function runAs(
@@ -113,7 +100,7 @@ async function runAs(
     agentConfig: { autoSubscribeExistingRooms: true },
     ...options,
   });
-  const running = new RunningAgent(identity, agent);
+  const running = releasedWithTest(new RunningAgent(identity, agent));
   try {
     await agent.start();
   } catch (error) {
