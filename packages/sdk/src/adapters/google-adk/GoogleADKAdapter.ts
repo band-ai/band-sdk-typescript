@@ -42,6 +42,20 @@ interface GoogleAdkFunctionResponseLike {
   response?: unknown;
 }
 
+/** Gemini's normal finish reason; ADK reports it as an `errorCode` whenever the final content is empty. */
+const NORMAL_FINISH = "STOP";
+
+/**
+ * ADK yields a failed or blocked model call as an event carrying `errorCode`, never a throw;
+ * left unchecked, the turn would end silently and be marked processed.
+ */
+function throwIfModelError(event: unknown): void {
+  const { errorCode, errorMessage } = (event ?? {}) as { errorCode?: unknown; errorMessage?: unknown };
+  if (errorCode && errorCode !== NORMAL_FINISH) {
+    throw new Error(errorMessage ? `${String(errorCode)}: ${String(errorMessage)}` : String(errorCode));
+  }
+}
+
 interface GoogleAdkRunnerLike {
   sessionService: {
     createSession(params: {
@@ -300,6 +314,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
           parts: [{ text: prompt }],
         },
       })) {
+        throwIfModelError(event);
         if (this.enableExecutionReporting) {
           await this.reportExecutionEvent(sdk, event, tools);
         }

@@ -582,6 +582,60 @@ describe("GoogleADKAdapter", () => {
     ]);
   });
 
+  it("reports a model error ADK yields as an event, instead of finishing the turn silently", async () => {
+    const tools = new GoogleAdkTestTools();
+
+    const adapter = new GoogleADKAdapter({
+      sdkFactory: createFakeGoogleAdkSdk(async function* () {
+        yield { errorCode: "429", errorMessage: "Resource exhausted" };
+      }),
+    });
+
+    await adapter.onStarted("Weather Agent", "Answers weather questions");
+    await expectTurnFailed(
+      adapter.onMessage(
+        makeMessage("What's the weather?"),
+        tools,
+        [],
+        null,
+        null,
+        { isSessionBootstrap: true, roomId: "room-1" },
+      ),
+    );
+
+    expect(tools.messages).toEqual([]);
+    expect(tools.events).toEqual([
+      {
+        content: "429: Resource exhausted",
+        messageType: "error",
+        metadata: {
+          failure: { provider: "google-adk", code: null, message: "429: Resource exhausted", detail: null },
+        },
+      },
+    ]);
+  });
+
+  it("treats an empty normal finish as the end of the turn, not a model error", async () => {
+    const tools = new GoogleAdkTestTools();
+    const adapter = new GoogleADKAdapter({
+      sdkFactory: createFakeGoogleAdkSdk(async function* () {
+        yield { errorCode: "STOP" };
+      }),
+    });
+
+    await adapter.onStarted("Weather Agent", "Answers weather questions");
+    await adapter.onMessage(
+      makeMessage("What's the weather?"),
+      tools,
+      [],
+      null,
+      null,
+      { isSessionBootstrap: true, roomId: "room-1" },
+    );
+
+    expect(tools.events).toEqual([]);
+  });
+
   it("reports a failure in the previously-uncaught sdk/runner/session setup path, then fails the turn", async () => {
     const tools = new GoogleAdkTestTools();
 
