@@ -164,6 +164,20 @@ class OpencodeTurn {
   }
 }
 
+/**
+ * One OpenCode client and everything started with it, held from the moment
+ * the start begins: turns share its `ready`, and shutdown tears down exactly
+ * this set, even mid-start.
+ */
+interface Connection {
+  readonly client: OpencodeClientLike;
+  /** Settles to null when the backend failed to start. */
+  readonly backend: Promise<BandMcpBackend | null>;
+  /** Resolves once Band's tools are registered, or failed to be. */
+  readonly ready: Promise<OpencodeClientLike>;
+  readonly events: Promise<void>;
+}
+
 interface RoomState {
   roomId: string;
   sessionId: string | null;
@@ -262,11 +276,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   private readonly authorizedSenders: ReadonlySet<string> | null;
   private readonly rooms = new Map<string, RoomState>();
   private readonly roomBySession = new Map<string, string>();
-  private client: OpencodeClientLike | null = null;
-  private eventTask: Promise<void> | null = null;
-  // Held from the moment each start begins, so concurrent turns share one start and shutdown owns one still pending.
-  private clientReady: Promise<OpencodeClientLike> | null = null;
-  private mcpBackend: Promise<BandMcpBackend | null> | null = null;
+  private connection: Connection | null = null;
   private systemPrompt = "";
 
   public constructor(options: OpencodeAdapterOptions = {}) {
@@ -439,28 +449,31 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   }
 
   private ensureClientStarted(): Promise<OpencodeClientLike> {
-    return this.clientReady ??= this.startClient();
+    return (this.connection ??= this.connect()).ready;
   }
 
-  // Not async: a throwing clientFactory throws before anything is cached, so the next turn retries.
-  private startClient(): Promise<OpencodeClientLike> {
+  // Not async: a throwing clientFactory throws before anything is held, so the next turn retries.
+  private connect(): Connection {
     const client = this.clientFactory(this.config);
-    this.client = client;
-    this.eventTask = this.runEventLoop(client);
-    return this.registerMcpBackend(client).then(() => client);
+    const backend = this.startMcpBackend();
+    return {
+      client,
+      backend,
+      ready: this.registerMcpBackend(client, backend).then(() => client),
+      events: this.runEventLoop(client),
+    };
   }
 
   // Replies and rejects only run for a live room's asks, and a live room keeps the client up.
   private requireClient(): OpencodeClientLike {
-    if (!this.client) {
+    if (!this.connection) {
       throw new Error("OpenCode client is not initialized.");
     }
-    return this.client;
+    return this.connection.client;
   }
 
-  // A failed start settles to null here, so every reader of the held promise can await it as is.
   private startMcpBackend(): Promise<BandMcpBackend | null> {
-    this.mcpBackend = this.mcpBackendFactory({
+    return this.mcpBackendFactory({
       kind: "http",
       enableMemoryTools: this.config.enableMemoryTools,
       getToolsForRoom: (roomId) => this.rooms.get(roomId)?.tools ?? undefined,
@@ -469,24 +482,23 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
       this.logger.warn("Failed to start OpenCode MCP backend", { error });
       return null;
     });
-    return this.mcpBackend;
   }
 
-  private async registerMcpBackend(client: OpencodeClientLike): Promise<void> {
+  private async registerMcpBackend(client: OpencodeClientLike, backend: Promise<BandMcpBackend | null>): Promise<void> {
+    const started = await backend;
+    if (!started) {
+      return;
+    }
+    const { url } = started.server as { url?: string | null };
+    if (!url) {
+      this.logger.warn("OpenCode MCP backend has no URL.");
+      return;
+    }
     try {
-      const backend = await this.startMcpBackend();
-      if (!backend) {
-        return;
-      }
-      const server = backend.server as { url?: string | null };
-      if (!server.url) {
-        this.logger.warn("OpenCode MCP backend has no URL.");
-        return;
-      }
       await client.registerMcpServer({
         name: this.config.mcpServerName,
-        url: server.url,
-        headers: backend.authToken ? { Authorization: `Bearer ${backend.authToken}` } : undefined,
+        url,
+        headers: started.authToken ? { Authorization: `Bearer ${started.authToken}` } : undefined,
       });
     } catch (error) {
       this.logger.warn("Failed to register OpenCode MCP backend", { error });
@@ -494,30 +506,21 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   }
 
   private async shutdownClient(): Promise<void> {
-    const client = this.client;
-    const backend = this.mcpBackend;
-    const eventTask = this.eventTask;
-    this.client = null;
-    this.clientReady = null;
-    this.mcpBackend = null;
-    this.eventTask = null;
-
-    // The client closes first, so a backend still starting can't register through it; that backend is stopped once it listens.
-    try {
-      await this.closeClient(client);
-    } finally {
-      await (await backend)?.stop();
-    }
-
-    if (eventTask) {
-      await Promise.resolve(eventTask).catch(() => undefined);
-    }
-  }
-
-  private async closeClient(client: OpencodeClientLike | null): Promise<void> {
-    if (!client) {
+    const connection = this.connection;
+    this.connection = null;
+    if (!connection) {
       return;
     }
+    // The client closes first, so a backend still starting can't register through it; that backend is stopped once it listens.
+    try {
+      await this.closeClient(connection.client);
+    } finally {
+      await (await connection.backend)?.stop();
+    }
+    await connection.events;
+  }
+
+  private async closeClient(client: OpencodeClientLike): Promise<void> {
     try {
       await client.deregisterMcpServer(this.config.mcpServerName);
     } catch {}
@@ -525,23 +528,24 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   }
 
   // Bound to one client: a closed client's stream ends without throwing, and must not move on to its successor.
+  // Its first pass needs no check, since it starts before `connect` returns the connection that owns it.
   private async runEventLoop(client: OpencodeClientLike): Promise<void> {
     let retryDelayMs: number = EVENT_STREAM_RETRY_MS.initial;
-    while (this.client === client) {
+    do {
       try {
         for await (const event of client.iterEvents()) {
           retryDelayMs = EVENT_STREAM_RETRY_MS.initial;
           await this.handleEvent(event);
         }
       } catch (error) {
-        if (this.client !== client) {
+        if (this.connection?.client !== client) {
           return;
         }
         this.logger.warn("OpenCode event stream failed", { error, retryDelayMs });
         await new Deadline(retryDelayMs).expired;
         retryDelayMs = Math.min(retryDelayMs * 2, EVENT_STREAM_RETRY_MS.max);
       }
-    }
+    } while (this.connection?.client === client);
   }
 
   private async handleEvent(event: Record<string, unknown>): Promise<void> {
@@ -1026,7 +1030,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   // room to open a fresh session next time, since the abort above is
   // fire-and-forget and this session may still be settling server-side.
   private abortAndAbandonSession(roomState: RoomState): void {
-    const client = this.client;
+    const client = this.connection?.client;
     const abandonedSessionId = roomState.sessionId;
     if (!client || !abandonedSessionId) {
       return;
