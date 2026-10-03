@@ -496,6 +496,53 @@ describe("AgentTools coverage", () => {
     await expect(tools.sendMessage("hello", ["@ghost"])).rejects.toBeInstanceOf(ValidationError);
   });
 
+  describe("when the cached roster is stale", () => {
+    const jane = { id: "user-1", name: "Jane Example", type: "User", handle: "@jane" };
+    const bob = { id: "user-2", name: "Bob Example", type: "User", handle: "@bob" };
+
+    async function toolsWithCachedRoster(rest: CoverageRestApi): Promise<AgentTools> {
+      rest.listChatParticipants.mockResolvedValue([jane]);
+      const tools = new AgentTools({ roomId: "room-1", rest: createFacade(rest) });
+      await tools.sendMessage("first", ["@jane"]);
+      rest.listChatParticipants.mockClear();
+      return tools;
+    }
+
+    it("refreshes once and sends to a participant missing from the cache", async () => {
+      const rest = new CoverageRestApi();
+      const tools = await toolsWithCachedRoster(rest);
+      rest.listChatParticipants.mockResolvedValue([jane, bob]);
+
+      await tools.sendMessage("hi", ["@bob"]);
+
+      expect(rest.listChatParticipants).toHaveBeenCalledTimes(1);
+      expect(rest.createChatMessage).toHaveBeenLastCalledWith(
+        "room-1",
+        { content: "hi", mentions: [{ id: "user-2", handle: "@bob" }] },
+        undefined,
+      );
+    });
+
+    it("still rejects a mention missing after the refresh", async () => {
+      const rest = new CoverageRestApi();
+      const tools = await toolsWithCachedRoster(rest);
+
+      await expect(tools.sendMessage("hi", ["@ghost"])).rejects.toThrow(
+        "Mention '@ghost' not found in participants",
+      );
+      expect(rest.listChatParticipants).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not call REST when every mention resolves from the cache", async () => {
+      const rest = new CoverageRestApi();
+      const tools = await toolsWithCachedRoster(rest);
+
+      await tools.sendMessage("hi", ["@jane"]);
+
+      expect(rest.listChatParticipants).not.toHaveBeenCalled();
+    });
+  });
+
   it("covers contact methods for both selector styles", async () => {
     const rest = new CoverageRestApi();
     const tools = new AgentTools({

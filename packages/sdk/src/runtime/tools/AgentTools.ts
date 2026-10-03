@@ -147,15 +147,7 @@ export class AgentTools implements AgentToolsProtocol {
     content: string,
     mentions: MentionInput = [],
   ): Promise<ToolOperationResult> {
-    let participants: ParticipantFields[] | undefined;
-    if (mentions.length > 0 && typeof mentions[0] === "string") {
-      participants = this.roster.list();
-      if (participants.length === 0) {
-        participants = await this.syncParticipants();
-      }
-    }
-
-    const resolvedMentions = this.resolveMentions(mentions, participants);
+    const resolvedMentions = await this.resolveMentionsAgainstRoster(mentions);
 
     // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
     // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
@@ -609,6 +601,27 @@ export class AgentTools implements AgentToolsProtocol {
     }
 
     return this.rest.archiveMemory(normalizedMemoryId, DEFAULT_REQUEST_OPTIONS);
+  }
+
+  // The cached roster can lag behind the room (a missed or in-flight
+  // participant_added), so a miss refreshes it once before failing.
+  private async resolveMentionsAgainstRoster(mentions: MentionInput): Promise<MentionReference[]> {
+    if (mentions.length === 0 || typeof mentions[0] !== "string") {
+      return this.resolveMentions(mentions, undefined);
+    }
+
+    const cached = this.roster.list();
+    if (cached.length > 0) {
+      try {
+        return this.resolveMentions(mentions, cached);
+      } catch (error) {
+        if (!(error instanceof ValidationError)) {
+          throw error;
+        }
+      }
+    }
+
+    return this.resolveMentions(mentions, await this.syncParticipants());
   }
 
   private resolveMentions(
