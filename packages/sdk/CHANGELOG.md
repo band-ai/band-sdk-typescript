@@ -1,6 +1,40 @@
 # Changelog
 
 
+## [0.6.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.5.0...sdk-v0.6.0) (2026-10-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* **adapters:** ACP TCP transports are removed (host/port, ACPClientTcpOptions, CopilotACPTcpOptions). cwd is now the root of each room's workspace, <cwd>/.band-workspaces/<roomId>; workspaceForRoom must return an absolute path, is created and claimed, and cannot be combined with cwd. connectionFactory is called once per room process with that room's workspace. CodexFactory is now ({ roomId, cwd }) => Promise<CodexClientLike> and is called once per room. Agent processes start on a room's first message, not in onStarted. The protected ACP/Cursor hooks moved to unexported per-room engines, so overriding them on the public class has no effect.
+
+### Features
+
+* **adapters:** run one agent process and workspace per room ([#282](https://github.com/band-ai/band-sdk-typescript/issues/282)) ([02e194f](https://github.com/band-ai/band-sdk-typescript/commit/02e194f89f537247271092e374c3d8ac56f06aba))
+* **sdk:** add capabilities, instructions and notify to BandMcpStdioServer (INT-1654) ([#299](https://github.com/band-ai/band-sdk-typescript/issues/299)) ([f457a02](https://github.com/band-ai/band-sdk-typescript/commit/f457a02dacda10f67b1af98a0002e268979d5724))
+
+
+### Bug Fixes
+
+* **adapters:** a failed ACP turn retires only its room's process and Band access ([#284](https://github.com/band-ai/band-sdk-typescript/issues/284)) ([33f2465](https://github.com/band-ai/band-sdk-typescript/commit/33f2465d02d6a1fa5bc2e2bc176f557bccc245f8))
+* **adapters:** attribute Cursor extension calls to their room, drop the cross-room lock ([#285](https://github.com/band-ai/band-sdk-typescript/issues/285)) ([752b6e6](https://github.com/band-ai/band-sdk-typescript/commit/752b6e6081f3ee6f2c3ea72162acb668b48ac41e))
+* **adapters:** make cursor-acp work headless in CI (INT-1628) ([#298](https://github.com/band-ai/band-sdk-typescript/issues/298)) ([5a54484](https://github.com/band-ai/band-sdk-typescript/commit/5a54484db4a2a9e0950f2a815f743f7609a418b7))
+* **adapters:** own OpenCode's client and MCP backend from the moment they start ([#288](https://github.com/band-ai/band-sdk-typescript/issues/288)) ([f8104f2](https://github.com/band-ai/band-sdk-typescript/commit/f8104f2d58328d18b5e1ad18c433f128a4e7381e))
+* **adapters:** pin each ACP room's Band MCP backend to its room (INT-1637) ([#297](https://github.com/band-ai/band-sdk-typescript/issues/297)) ([57e51fe](https://github.com/band-ai/band-sdk-typescript/commit/57e51fea5513a86458a79d34fcd327fa9ecd04bc))
+* **adapters:** report a missing ACP agent binary in the room instead of crashing ([#281](https://github.com/band-ai/band-sdk-typescript/issues/281)) ([8794987](https://github.com/band-ai/band-sdk-typescript/commit/879498780046be2b476facf4f26328fd7b5bc2ef))
+* **adapters:** report Google ADK model error events as failed turns (INT-1633) ([#294](https://github.com/band-ai/band-sdk-typescript/issues/294)) ([31d8ac2](https://github.com/band-ai/band-sdk-typescript/commit/31d8ac226d4fa506d9a79bd203f8e52b31ff15d5))
+* **ci:** report the nightly live baseline to the integrations team (INT-1626) ([#289](https://github.com/band-ai/band-sdk-typescript/issues/289)) ([755226d](https://github.com/band-ai/band-sdk-typescript/commit/755226d384f640b7b0756c813040e132a94a5736))
+* **ci:** run the Copilot baseline lane on a model that calls its tools (INT-1634) ([#296](https://github.com/band-ai/band-sdk-typescript/issues/296)) ([b4d0731](https://github.com/band-ai/band-sdk-typescript/commit/b4d0731908298fc99063c50e5530ad38268d64f4))
+* **mcp:** publish Band tool parameter descriptions over MCP (INT-1632) ([#293](https://github.com/band-ai/band-sdk-typescript/issues/293)) ([24e9762](https://github.com/band-ai/band-sdk-typescript/commit/24e9762e3e1c3e384a9f953cf0aad66f0930283d))
+* **runtime:** refresh a stale roster once before rejecting a send mention (INT-1656) ([#300](https://github.com/band-ai/band-sdk-typescript/issues/300)) ([917f65c](https://github.com/band-ai/band-sdk-typescript/commit/917f65c563dd309853c03e8646821b2ca0ae8604))
+* **tests:** baseline assertions test exactly their behaviour (INT-1630) ([#290](https://github.com/band-ai/band-sdk-typescript/issues/290)) ([90adab3](https://github.com/band-ai/band-sdk-typescript/commit/90adab3f623179e13f11ade7355326c0653f00f4))
+* **tests:** reap a timed-out cell's agents and never reuse a provisioned name (INT-1629) ([#291](https://github.com/band-ai/band-sdk-typescript/issues/291)) ([00ff83e](https://github.com/band-ai/band-sdk-typescript/commit/00ff83e5216a715fc2315096ee0f82c058ee8ee7))
+
+
+### Performance Improvements
+
+* **tests:** size live-baseline wait budgets from measured durations (INT-1631) ([#292](https://github.com/band-ai/band-sdk-typescript/issues/292)) ([32794eb](https://github.com/band-ai/band-sdk-typescript/commit/32794eb2bb0794ee244e9daafb587c07a6b2dd34))
+
 ## [0.5.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.4.7...sdk-v0.5.0) (2026-09-30)
 
 
