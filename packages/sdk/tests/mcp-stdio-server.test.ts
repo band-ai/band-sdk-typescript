@@ -1,5 +1,7 @@
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
-import { PassThrough, Writable } from "node:stream";
+import { PassThrough } from "node:stream";
+import { fileURLToPath } from "node:url";
 
 import { describe, expect, test } from "vitest";
 
@@ -8,196 +10,177 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { STDIO_DEFAULT_MAX_BUFFER_SIZE } from "@modelcontextprotocol/sdk/shared/stdio.js";
 import type { Notification } from "@modelcontextprotocol/sdk/types.js";
 
-import { BandMcpStdioServer, type BandMcpStdioServerOptions } from "../src/mcp/stdio";
+import { BandMcpStdioServer } from "../src/mcp/stdio";
+import {
+  BACKPRESSURED,
+  PAYLOAD_BYTES_ENV,
+  PUSH_CAPABILITY,
+  PUSH_INSTRUCTIONS,
+  PUSH_METHOD,
+} from "./fixtures/stdioPushServer";
 import { FakeTools } from "./testUtils";
 
-const METHOD = "notifications/x";
-const PARAMS = { content: "hi", meta: { room_id: "r1" } };
-const NOTIFICATION = { jsonrpc: "2.0", method: METHOD, params: PARAMS };
-const EXPERIMENTAL = { "test/ext": {} };
-const INSTRUCTIONS = "Reply through the tools.";
+const PUSH_SERVER = fileURLToPath(new URL("./fixtures/stdioPushServer.ts", import.meta.url));
 const NOT_RUNNING = "not running";
+// Larger than an OS pipe buffer, so one push fills it.
+const PIPE_FILLING_PUSH_BYTES = 256 * 1024;
 
-interface ReceivedNotification {
-  notification: Notification;
-  afterHandshake: boolean;
+function newClient(): Client {
+  return new Client({ name: "test-client", version: "1.0.0" });
 }
 
-/** A server and an MCP client joined by an in-process stdio pipe the test can break. */
-class StdioPipe {
-  public readonly client = new Client({ name: "test-client", version: "1.0.0" });
-  private readonly stdin = new PassThrough();
-  private readonly toClient = new PassThrough();
-  private outputBroken = false;
-  private readonly stdout = new Writable({
-    write: (chunk, _encoding, callback) => {
-      if (this.outputBroken) {
-        setImmediate(() => callback(Object.assign(new Error("write EPIPE"), { code: "EPIPE" })));
-        return;
-      }
-      this.toClient.write(chunk, callback);
-    },
-  });
-  private server: BandMcpStdioServer | null = null;
+/** The plugin process as Claude Code runs it: a child on real stdio pipes. */
+class PluginProcess {
+  public readonly client = newClient();
+  private readonly child: ChildProcessWithoutNullStreams;
+  private stderr = "";
 
-  public createServer(options: Partial<BandMcpStdioServerOptions> = {}): BandMcpStdioServer {
-    this.server = new BandMcpStdioServer({
-      tools: new FakeTools(),
-      stdin: this.stdin,
-      stdout: this.stdout,
-      ...options,
+  public constructor(payloadBytes = 0) {
+    this.child = spawn(process.execPath, ["--import", "tsx", PUSH_SERVER], {
+      env: { ...process.env, [PAYLOAD_BYTES_ENV]: String(payloadBytes) },
     });
-    return this.server;
-  }
-
-  public async startServer(options?: Partial<BandMcpStdioServerOptions>): Promise<BandMcpStdioServer> {
-    const server = this.createServer(options);
-    await server.start();
-    return server;
+    this.child.stderr.on("data", (chunk: Buffer) => {
+      this.stderr += chunk.toString();
+    });
   }
 
   // The SDK's stdio transport takes any stream pair, so it also serves as the client end.
-  public async connectClient(): Promise<Client> {
-    await this.client.connect(new StdioServerTransport(this.toClient, this.stdin));
+  public async connect(): Promise<Client> {
+    await this.client.connect(new StdioServerTransport(this.child.stdout, this.child.stdin));
     return this.client;
   }
 
-  public nextNotification(): Promise<ReceivedNotification> {
+  /** Registered after connect, as a real client does once it has read the capabilities. */
+  public firstPush(): Promise<Notification> {
     return new Promise((resolve) => {
-      this.client.fallbackNotificationHandler = async (notification) =>
-        resolve({ notification, afterHandshake: this.client.getServerCapabilities() !== undefined });
+      this.client.fallbackNotificationHandler = async (notification) => resolve(notification);
     });
   }
 
-  public async listedToolNames(): Promise<string[]> {
-    const { tools } = await this.client.listTools();
-    return tools.map((tool) => tool.name);
+  /** The client stops reading; resolves once the plugin reports a push stuck on the full pipe. */
+  public async stopReadingUntilBackpressured(): Promise<void> {
+    this.child.stdout.pause();
+    while (!this.stderr.includes(BACKPRESSURED)) {
+      await once(this.child.stderr, "data");
+    }
   }
 
-  public async endInput(): Promise<void> {
-    this.stdin.end();
-    await once(this.stdin, "end");
+  /** Both pipe ends close, as when the client process exits. */
+  public async clientExits(): Promise<{ exitCode: number | null; stderr: string }> {
+    const exited = once(this.child, "exit");
+    this.child.stdin.destroy();
+    this.child.stdout.destroy();
+    const [exitCode] = (await exited) as [number | null];
+    return { exitCode, stderr: this.stderr };
   }
 
-  public async closeOutput(): Promise<void> {
-    this.stdout.destroy();
-    await once(this.stdout, "close");
-  }
-
-  /** Every later write fails with EPIPE, the way a pipe whose reader exited does. */
-  public breakOutput(): Promise<void> {
-    this.outputBroken = true;
-    return new Promise((resolve) => this.stdout.once("close", resolve));
-  }
-
-  /** A line past the SDK's read-buffer limit makes the transport close itself. */
-  public sendOversizedLine(): void {
-    this.stdin.write(Buffer.alloc(STDIO_DEFAULT_MAX_BUFFER_SIZE + 1, "a"));
-  }
-
-  public async close(): Promise<void> {
-    await Promise.all([this.client.close(), this.server?.stop()]);
+  public kill(): void {
+    this.child.kill();
   }
 }
 
-const it = test.extend<{ pipe: StdioPipe }>({
-  pipe: async ({}, use) => {
-    const pipe = new StdioPipe();
-    await use(pipe);
-    await pipe.close();
+const it = test.extend<{ startPlugin: (payloadBytes?: number) => PluginProcess }>({
+  startPlugin: async ({}, use) => {
+    const started: PluginProcess[] = [];
+    await use((payloadBytes) => {
+      const plugin = new PluginProcess(payloadBytes);
+      started.push(plugin);
+      return plugin;
+    });
+    for (const plugin of started) {
+      plugin.kill();
+    }
   },
 });
 
-describe("BandMcpStdioServer", () => {
-  it("advertises the configured capabilities and instructions alongside the tools", async ({ pipe }) => {
-    const server = await pipe.startServer({ capabilities: { experimental: EXPERIMENTAL }, instructions: INSTRUCTIONS });
-    const client = await pipe.connectClient();
+describe("BandMcpStdioServer as a plugin process", () => {
+  it("delivers a push made before the client connected, after the handshake", async ({ startPlugin }) => {
+    const plugin = startPlugin();
+    const client = await plugin.connect();
+    const push = await plugin.firstPush();
 
-    expect(client.getServerCapabilities()).toMatchObject({ experimental: EXPERIMENTAL, tools: {} });
-    expect(client.getInstructions()).toBe(INSTRUCTIONS);
-    expect(await pipe.listedToolNames()).toEqual(server.toolNames);
+    expect(push).toMatchObject({ method: PUSH_METHOD, params: { seq: 0 } });
+    expect(client.getServerCapabilities()).toMatchObject({ experimental: { [PUSH_CAPABILITY]: {} }, tools: {} });
+    expect(client.getInstructions()).toBe(PUSH_INSTRUCTIONS);
+    const { tools } = await client.listTools();
+    expect(tools).not.toHaveLength(0);
   });
 
-  it("keeps the default handshake and tools without the new options", async ({ pipe }) => {
-    const server = await pipe.startServer();
-    const client = await pipe.connectClient();
+  it("exits cleanly when the client goes away while it is pushing", async ({ startPlugin }) => {
+    const plugin = startPlugin();
+    await plugin.connect();
+    await plugin.firstPush();
+
+    const { exitCode, stderr } = await plugin.clientExits();
+
+    expect(stderr).not.toContain("EPIPE");
+    expect(exitCode).toBe(0);
+  });
+
+  it("exits cleanly when the client goes away with a push stuck on a full pipe", async ({ startPlugin }) => {
+    const plugin = startPlugin(PIPE_FILLING_PUSH_BYTES);
+    await plugin.connect();
+    await plugin.firstPush();
+    await plugin.stopReadingUntilBackpressured();
+
+    const { exitCode, stderr } = await plugin.clientExits();
+
+    expect(stderr).not.toContain("EPIPE");
+    expect(exitCode).toBe(0);
+  });
+});
+
+describe("BandMcpStdioServer lifecycle", () => {
+  function inProcessServer() {
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const server = new BandMcpStdioServer({ tools: new FakeTools(), stdin, stdout });
+    const connectClient = async () => {
+      const client = newClient();
+      await client.connect(new StdioServerTransport(stdout, stdin));
+      return client;
+    };
+    return { server, stdin, connectClient };
+  }
+
+  test("keeps the default handshake and tools without the new options", async () => {
+    const { server, connectClient } = inProcessServer();
+    await server.start();
+    const client = await connectClient();
 
     expect(client.getInstructions()).toBeUndefined();
     expect(client.getServerCapabilities()?.experimental).toBeUndefined();
-    expect(server.toolNames).not.toHaveLength(0);
-    expect(await pipe.listedToolNames()).toEqual(server.toolNames);
+    const { tools } = await client.listTools();
+    expect(tools.map((tool) => tool.name)).toEqual(server.toolNames);
+    await Promise.all([client.close(), server.stop()]);
   });
 
-  it("delivers a custom notification to the client", async ({ pipe }) => {
-    const server = await pipe.startServer();
-    await pipe.connectClient();
-    const received = pipe.nextNotification();
+  test("settles a pending notify when the server stops", async () => {
+    const { server } = inProcessServer();
+    await server.start();
 
-    await server.notify(METHOD, PARAMS);
-
-    expect((await received).notification).toEqual(NOTIFICATION);
-  });
-
-  it("holds a notification until the client has initialized", async ({ pipe }) => {
-    const server = await pipe.startServer();
-    const received = pipe.nextNotification();
-
-    const sent = server.notify(METHOD, PARAMS);
-    await pipe.connectClient();
-    await sent;
-
-    expect(await received).toEqual({ notification: NOTIFICATION, afterHandshake: true });
-  });
-
-  it("settles a pending notify when the server stops", async ({ pipe }) => {
-    const server = await pipe.startServer();
-
-    const sent = server.notify(METHOD, PARAMS);
+    const sent = server.notify(PUSH_METHOD);
     await server.stop();
 
     await expect(sent).rejects.toThrow(NOT_RUNNING);
   });
 
-  it.for(["endInput", "closeOutput"] as const)(
-    "stops when the client goes away (%s)",
-    async (loseClient, { pipe }) => {
-      const server = await pipe.startServer();
-      await pipe.connectClient();
+  test("stops when the transport closes itself on an oversized line", async () => {
+    const { server, stdin } = inProcessServer();
+    await server.start();
+    const sent = server.notify(PUSH_METHOD);
 
-      await pipe[loseClient]();
-
-      await expect(server.notify(METHOD, PARAMS)).rejects.toThrow(NOT_RUNNING);
-    },
-  );
-
-  it("stops when the transport closes itself", async ({ pipe }) => {
-    const server = await pipe.startServer();
-    const sent = server.notify(METHOD, PARAMS);
-
-    pipe.sendOversizedLine();
+    stdin.write(Buffer.alloc(STDIO_DEFAULT_MAX_BUFFER_SIZE + 1, "a"));
 
     await expect(sent).rejects.toThrow(NOT_RUNNING);
   });
 
-  // An unhandled EPIPE after the stop would fail this run.
-  it("survives a queued write failing after the client has gone", async ({ pipe }) => {
-    const server = await pipe.startServer();
-    await pipe.connectClient();
-    const outputFailed = pipe.breakOutput();
-
-    const sent = server.notify(METHOD, PARAMS);
-    await pipe.endInput();
-    await Promise.allSettled([sent, outputFailed]);
-
-    await expect(server.notify(METHOD)).rejects.toThrow(NOT_RUNNING);
-  });
-
-  it("rejects notify before start and after stop", async ({ pipe }) => {
-    const server = pipe.createServer();
-    await expect(server.notify(METHOD)).rejects.toThrow(NOT_RUNNING);
+  test("rejects notify before start and after stop", async () => {
+    const { server } = inProcessServer();
+    await expect(server.notify(PUSH_METHOD)).rejects.toThrow(NOT_RUNNING);
 
     await server.start();
     await server.stop();
-    await expect(server.notify(METHOD)).rejects.toThrow(NOT_RUNNING);
+    await expect(server.notify(PUSH_METHOD)).rejects.toThrow(NOT_RUNNING);
   });
 });
