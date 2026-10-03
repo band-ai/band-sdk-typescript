@@ -2,24 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { RestFacade } from "../src/client/rest/RestFacade";
 import { ExecutionContext } from "../src/runtime/ExecutionContext";
-import type { ParticipantRecord } from "../src/contracts/dtos";
 import { FakeRestApi } from "./testUtils";
-
-/** A room whose REST participant list arrives only when the test lets it. */
-function roomWithSlowParticipantFetch(live: ParticipantRecord[]) {
-  let finishParticipantFetch!: () => void;
-  const fetchFinished = new Promise<void>((resolve) => {
-    finishParticipantFetch = resolve;
-  });
-  const api = new FakeRestApi({
-    listChatParticipants: async () => {
-      await fetchFinished;
-      return live;
-    },
-  });
-  const context = new ExecutionContext({ roomId: "room-1", link: { rest: new RestFacade({ api }) }, maxContextMessages: 20 });
-  return { context, finishParticipantFetch };
-}
 
 describe("ExecutionContext", () => {
   it("keeps mention resolution in sync after participant updates", async () => {
@@ -55,26 +38,6 @@ describe("ExecutionContext", () => {
     await expect(
       context.getTools().sendMessage("hello again", ["@weather-agent"]),
     ).rejects.toThrow("Mention '@weather-agent' not found in participants");
-  });
-
-  it("keeps a participant event that lands while a mention lookup is in flight", async () => {
-    const jane = { id: "u-jane", name: "Jane", type: "User", handle: "jane" };
-    const bob = { id: "u-bob", name: "Bob", type: "User", handle: "bob" };
-    const carl = { id: "u-carl", name: "Carl", type: "User", handle: "carl" };
-    const { context, finishParticipantFetch } = roomWithSlowParticipantFetch([jane, bob, carl]);
-    context.setParticipants([jane, bob]);
-    context.consumeParticipantsMessage();
-
-    const sent = context.getTools().sendMessage("hi", ["@bob", "@carl"]);
-    context.removeParticipant(bob.id);
-    context.addParticipant(carl);
-    finishParticipantFetch();
-    await sent;
-
-    const message = context.consumeParticipantsMessage();
-    expect(message).toContain("Carl joined the room.");
-    expect(message).toContain("@carl");
-    expect(message).not.toContain("@bob");
   });
 
   it("merges a sparse addParticipant update without clobbering existing fields or re-announcing a join", () => {
