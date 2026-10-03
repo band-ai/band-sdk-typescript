@@ -603,47 +603,53 @@ export class AgentTools implements AgentToolsProtocol {
     return this.rest.archiveMemory(normalizedMemoryId, DEFAULT_REQUEST_OPTIONS);
   }
 
-  // The cached roster can lag behind the room (a missed or in-flight
-  // participant_added), so a miss refreshes it once before failing.
   private async resolveMentionsAgainstRoster(mentions: MentionInput): Promise<MentionReference[]> {
     if (mentions.length === 0 || typeof mentions[0] !== "string") {
-      return this.resolveMentions(mentions, undefined);
-    }
-
-    const cached = this.roster.list();
-    if (cached.length > 0) {
-      try {
-        return this.resolveMentions(mentions, cached);
-      } catch (error) {
-        if (!(error instanceof ValidationError)) {
-          throw error;
-        }
-      }
-    }
-
-    return this.resolveMentions(mentions, await this.syncParticipants());
-  }
-
-  private resolveMentions(
-    mentions: MentionInput,
-    participants: ParticipantFields[] | undefined,
-  ): MentionReference[] {
-    if (mentions.length === 0) {
-      return [];
-    }
-
-    if (typeof mentions[0] !== "string") {
       return mentions.filter(
         (entry): entry is MentionReference => typeof entry === "object" && entry !== null && "id" in entry,
       );
     }
 
-    const stringMentions = mentions.filter((entry): entry is string => typeof entry === "string");
+    const names = mentions.filter((entry): entry is string => typeof entry === "string");
+    const cached = this.roster.list();
+    if (cached.length === 0) {
+      return this.resolveMentions(names, await this.syncParticipants());
+    }
 
+    try {
+      return this.resolveMentions(names, cached);
+    } catch (error) {
+      if (!(error instanceof ValidationError)) {
+        throw error;
+      }
+    }
+    return this.resolveMentionsAgainstFetched(names);
+  }
+
+  // The cached roster can lag behind the room (a missed participant_added).
+  // Replacing it with the fetched list would undo participant events applied
+  // during the fetch, so only the mentioned participants are added to it.
+  private async resolveMentionsAgainstFetched(names: string[]): Promise<MentionReference[]> {
+    this.logger.debug("mention not in cached roster, fetching participants", { roomId: this.roomId });
+    const fetched = await this.fetchParticipants();
+    const resolved = this.resolveMentions(names, fetched);
+    const mentionedIds = new Set(resolved.map((mention) => mention.id));
+    for (const participant of fetched) {
+      if (mentionedIds.has(participant.id)) {
+        this.roster.add(participant);
+      }
+    }
+    return resolved;
+  }
+
+  private resolveMentions(
+    names: string[],
+    participants: ParticipantFields[],
+  ): MentionReference[] {
     const participantsByHandle = new Map<string, MentionReference>();
     const participantsById = new Map<string, MentionReference>();
     const participantsByName = new Map<string, MentionReference>();
-    for (const participant of participants ?? []) {
+    for (const participant of participants) {
       const ref: MentionReference = {
         id: String(participant.id),
         handle: typeof participant.handle === "string" ? participant.handle : undefined,
@@ -661,7 +667,7 @@ export class AgentTools implements AgentToolsProtocol {
       }
     }
 
-    return stringMentions.map((mention) => {
+    return names.map((mention) => {
       // Try by ID first (UUID strings), then by handle, then by display name.
       const byId = participantsById.get(mention);
       if (byId) {

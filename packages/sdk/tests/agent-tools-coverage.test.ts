@@ -12,6 +12,8 @@ import {
 } from "../src/contracts/memory";
 import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
+import type { ParticipantRecord } from "../src/contracts/dtos";
+import { makeRoster } from "./testUtils";
 
 class CoverageRestApi {
   public readonly createChatMessage = vi.fn(async () => ({ ok: true }));
@@ -499,43 +501,51 @@ describe("AgentTools coverage", () => {
   describe("when the cached roster is stale", () => {
     const jane = { id: "user-1", name: "Jane Example", type: "User", handle: "@jane" };
     const bob = { id: "user-2", name: "Bob Example", type: "User", handle: "@bob" };
+    const janeRef = { id: jane.id, handle: jane.handle };
+    const bobRef = { id: bob.id, handle: bob.handle };
 
-    async function toolsWithCachedRoster(rest: CoverageRestApi): Promise<AgentTools> {
-      rest.listChatParticipants.mockResolvedValue([jane]);
-      const tools = new AgentTools({ roomId: "room-1", rest: createFacade(rest) });
-      await tools.sendMessage("first", ["@jane"]);
-      rest.listChatParticipants.mockClear();
-      return tools;
+    function toolsCaching(rest: CoverageRestApi, cached: ParticipantRecord[]): AgentTools {
+      return new AgentTools({ roomId: "room-1", rest: createFacade(rest), roster: makeRoster(cached) });
     }
 
-    it("refreshes once and sends to a participant missing from the cache", async () => {
+    it("resolves a participant missing from the cache with one fetch and remembers them", async () => {
       const rest = new CoverageRestApi();
-      const tools = await toolsWithCachedRoster(rest);
       rest.listChatParticipants.mockResolvedValue([jane, bob]);
+      const tools = toolsCaching(rest, [jane]);
 
-      await tools.sendMessage("hi", ["@bob"]);
+      await tools.sendMessage("hi", ["@jane", "@bob"]);
+      await tools.sendMessage("again", ["@bob"]);
 
       expect(rest.listChatParticipants).toHaveBeenCalledTimes(1);
-      expect(rest.createChatMessage).toHaveBeenLastCalledWith(
+      expect(rest.createChatMessage).toHaveBeenNthCalledWith(
+        1,
         "room-1",
-        { content: "hi", mentions: [{ id: "user-2", handle: "@bob" }] },
+        { content: "hi", mentions: [janeRef, bobRef] },
+        undefined,
+      );
+      expect(rest.createChatMessage).toHaveBeenNthCalledWith(
+        2,
+        "room-1",
+        { content: "again", mentions: [bobRef] },
         undefined,
       );
     });
 
-    it("still rejects a mention missing after the refresh", async () => {
+    it("rejects a mention still missing after the fetch without sending", async () => {
       const rest = new CoverageRestApi();
-      const tools = await toolsWithCachedRoster(rest);
+      rest.listChatParticipants.mockResolvedValue([jane]);
+      const tools = toolsCaching(rest, [jane]);
 
       await expect(tools.sendMessage("hi", ["@ghost"])).rejects.toThrow(
         "Mention '@ghost' not found in participants",
       );
       expect(rest.listChatParticipants).toHaveBeenCalledTimes(1);
+      expect(rest.createChatMessage).not.toHaveBeenCalled();
     });
 
     it("does not call REST when every mention resolves from the cache", async () => {
       const rest = new CoverageRestApi();
-      const tools = await toolsWithCachedRoster(rest);
+      const tools = toolsCaching(rest, [jane]);
 
       await tools.sendMessage("hi", ["@jane"]);
 

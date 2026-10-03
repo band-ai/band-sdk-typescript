@@ -40,6 +40,43 @@ describe("ExecutionContext", () => {
     ).rejects.toThrow("Mention '@weather-agent' not found in participants");
   });
 
+  it("keeps a participant event that lands while a mention lookup is in flight", async () => {
+    const jane = { id: "u-jane", name: "Jane", type: "User", handle: "jane" };
+    const bob = { id: "u-bob", name: "Bob", type: "User", handle: "bob" };
+    const carl = { id: "u-carl", name: "Carl", type: "User", handle: "carl" };
+    let releaseSnapshot!: () => void;
+    const snapshotTaken = new Promise<void>((resolve) => {
+      releaseSnapshot = resolve;
+    });
+    const context = new ExecutionContext({
+      roomId: "room-1",
+      link: {
+        rest: new RestFacade({
+          api: new FakeRestApi({
+            listChatParticipants: async () => {
+              await snapshotTaken;
+              return [jane, bob, carl];
+            },
+          }),
+        }),
+      },
+      maxContextMessages: 20,
+    });
+    context.addParticipant(jane);
+    context.addParticipant(bob);
+    context.consumeParticipantsMessage();
+
+    const sent = context.getTools().sendMessage("hi", ["@carl"]);
+    context.removeParticipant(bob.id);
+    releaseSnapshot();
+    await sent;
+
+    const message = context.consumeParticipantsMessage();
+    expect(message).toContain("Bob left the room.");
+    expect(message).toContain("@carl");
+    expect(message).not.toContain("@bob");
+  });
+
   it("merges a sparse addParticipant update without clobbering existing fields or re-announcing a join", () => {
     const context = new ExecutionContext({
       roomId: "room-1",
