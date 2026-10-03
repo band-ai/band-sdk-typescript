@@ -18,6 +18,8 @@ export interface BandMcpStdioServerOptions {
   enableMemoryTools?: boolean;
   enableContactTools?: boolean;
   additionalTools?: McpToolRegistration[];
+  capabilities?: import("@modelcontextprotocol/sdk/types.js").ServerCapabilities;
+  instructions?: string;
   stdin?: Readable;
   stdout?: Writable;
 }
@@ -25,8 +27,7 @@ export interface BandMcpStdioServerOptions {
 export class BandMcpStdioServer {
   private readonly options: BandMcpStdioServerOptions;
   private readonly registrations: McpToolRegistration[];
-  private mcpServer: InstanceType<typeof import("@modelcontextprotocol/sdk/server/mcp.js").McpServer> | null = null;
-  private transport: import("@modelcontextprotocol/sdk/server/stdio.js").StdioServerTransport | null = null;
+  private session: StdioSession | null = null;
 
   public constructor(options: BandMcpStdioServerOptions) {
     this.options = options;
@@ -49,7 +50,7 @@ export class BandMcpStdioServer {
   }
 
   public async start(): Promise<void> {
-    if (this.transport) {
+    if (this.session) {
       return;
     }
 
@@ -57,25 +58,101 @@ export class BandMcpStdioServer {
     const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
     const { z } = await import("zod");
 
-    const mcpServer = new McpServer({
-      name: this.options.name ?? MCP_SERVER_NAME,
-      version: "1.0.0",
-    });
+    const mcpServer = new McpServer(
+      { name: this.options.name ?? MCP_SERVER_NAME, version: "1.0.0" },
+      { capabilities: this.options.capabilities, instructions: this.options.instructions },
+    );
 
     registerTools(mcpServer, z, this.registrations);
 
-    const transport = new StdioServerTransport(this.options.stdin, this.options.stdout);
-    await mcpServer.connect(transport);
+    const stdin = this.options.stdin ?? process.stdin;
+    const stdout = this.options.stdout ?? process.stdout;
+    const session = openSession(mcpServer, stdin, stdout, () => {
+      if (this.session === session) {
+        void this.stop();
+      }
+    });
+    this.session = session;
+    await mcpServer.connect(new StdioServerTransport(stdin, stdout));
+  }
 
-    this.mcpServer = mcpServer;
-    this.transport = transport;
+  /** Sends once the client has initialized; rejects if the server stops first. */
+  public async notify(method: string, params?: Record<string, unknown>): Promise<void> {
+    const session = this.session;
+    if (!session) {
+      throw notRunning();
+    }
+    await Promise.race([
+      session.initialized.then(() => session.mcpServer.server.notification({ method, params })),
+      session.stopped,
+    ]);
   }
 
   public async stop(): Promise<void> {
-    await this.transport?.close();
-    this.transport = null;
-    this.mcpServer = null;
+    const session = this.session;
+    this.session = null;
+    await session?.close();
   }
+}
+
+type McpServerInstance = InstanceType<typeof import("@modelcontextprotocol/sdk/server/mcp.js").McpServer>;
+
+interface StdioSession {
+  mcpServer: McpServerInstance;
+  // MCP allows no server-initiated messages before the client's `notifications/initialized`.
+  initialized: Promise<void>;
+  // Settles pending sends: the stdio transport never fails a write to a dead pipe.
+  stopped: Promise<never>;
+  close(): Promise<void>;
+}
+
+function notRunning(): Error {
+  return new Error("BandMcpStdioServer is not running");
+}
+
+// The SDK's stdio transport ignores stdin end and stdout errors, so the session
+// watches them itself; otherwise a send after the client exits crashes on EPIPE or hangs.
+function openSession(
+  mcpServer: McpServerInstance,
+  stdin: Readable,
+  stdout: Writable,
+  onClientGone: () => void,
+): StdioSession {
+  const initialized = new Promise<void>((resolve) => {
+    mcpServer.server.oninitialized = resolve;
+  });
+  // The transport also closes itself, e.g. on an oversized line.
+  mcpServer.server.onclose = onClientGone;
+  let rejectStopped!: (error: Error) => void;
+  const stopped = new Promise<never>((_resolve, reject) => {
+    rejectStopped = reject;
+  });
+  stopped.catch(() => undefined);
+
+  const clientGoneEvents: Array<[Readable | Writable, string]> = [
+    [stdin, "end"],
+    [stdin, "close"],
+    [stdout, "close"],
+  ];
+  for (const [stream, event] of clientGoneEvents) {
+    stream.on(event, onClientGone);
+  }
+  // Never removed: a write queued before a stop can still fail with EPIPE
+  // afterwards, and an unhandled stream error would crash the process.
+  stdout.on("error", onClientGone);
+
+  return {
+    mcpServer,
+    initialized,
+    stopped,
+    async close() {
+      for (const [stream, event] of clientGoneEvents) {
+        stream.off(event, onClientGone);
+      }
+      rejectStopped(notRunning());
+      await mcpServer.close();
+    },
+  };
 }
 
 function registerTools(

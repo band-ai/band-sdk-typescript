@@ -127,11 +127,11 @@ describe("P-TOOL-03: MCP server-name defaults resolve to MCP_SERVER_NAME", () =>
   });
 
   it("the stdio server defaults to MCP_SERVER_NAME and honors an explicit override", async () => {
-    interface StdioInternals { mcpServer: { server: { _serverInfo: { name: string } } } }
+    interface StdioInternals { session: { mcpServer: { server: { _serverInfo: { name: string } } } } }
     const readName = (s: BandMcpStdioServer): string => {
-      // Test-only introspection of the private mcpServer to read the SDK-stored serverInfo.
+      // Test-only introspection of the private session's mcpServer to read the SDK-stored serverInfo.
       const internals = s as unknown as StdioInternals;
-      return internals.mcpServer.server._serverInfo.name;
+      return internals.session.mcpServer.server._serverInfo.name;
     };
 
     const def = new BandMcpStdioServer({
