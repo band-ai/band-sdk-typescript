@@ -18,6 +18,8 @@ export interface BandMcpStdioServerOptions {
   enableMemoryTools?: boolean;
   enableContactTools?: boolean;
   additionalTools?: McpToolRegistration[];
+  capabilities?: import("@modelcontextprotocol/sdk/types.js").ServerCapabilities;
+  instructions?: string;
   stdin?: Readable;
   stdout?: Writable;
 }
@@ -57,10 +59,10 @@ export class BandMcpStdioServer {
     const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
     const { z } = await import("zod");
 
-    const mcpServer = new McpServer({
-      name: this.options.name ?? MCP_SERVER_NAME,
-      version: "1.0.0",
-    });
+    const mcpServer = new McpServer(
+      { name: this.options.name ?? MCP_SERVER_NAME, version: "1.0.0" },
+      { capabilities: this.options.capabilities, instructions: this.options.instructions },
+    );
 
     registerTools(mcpServer, z, this.registrations);
 
@@ -69,6 +71,13 @@ export class BandMcpStdioServer {
 
     this.mcpServer = mcpServer;
     this.transport = transport;
+  }
+
+  public async notify(method: string, params?: Record<string, unknown>): Promise<void> {
+    if (!this.mcpServer) {
+      throw new Error("BandMcpStdioServer is not started");
+    }
+    await this.mcpServer.server.notification({ method, params });
   }
 
   public async stop(): Promise<void> {
