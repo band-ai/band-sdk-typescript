@@ -129,18 +129,26 @@ function openSession(
   });
   stopped.catch(() => undefined);
 
-  stdin.on("end", onClientGone).on("close", onClientGone);
-  stdout.on("error", onClientGone).on("close", onClientGone);
+  const clientGoneEvents: Array<[Readable | Writable, string]> = [
+    [stdin, "end"],
+    [stdin, "close"],
+    [stdout, "close"],
+  ];
+  for (const [stream, event] of clientGoneEvents) {
+    stream.on(event, onClientGone);
+  }
+  // Never removed: a write queued before a stop can still fail with EPIPE
+  // afterwards, and an unhandled stream error would crash the process.
+  stdout.on("error", onClientGone);
 
   return {
     mcpServer,
     initialized,
     stopped,
     async close() {
-      // The stdout 'error' listener stays: a write queued before the stop can still fail
-      // with EPIPE afterwards, and an unhandled stream error would crash the process.
-      stdin.off("end", onClientGone).off("close", onClientGone);
-      stdout.off("close", onClientGone);
+      for (const [stream, event] of clientGoneEvents) {
+        stream.off(event, onClientGone);
+      }
       rejectStopped(notRunning());
       await mcpServer.close();
     },
