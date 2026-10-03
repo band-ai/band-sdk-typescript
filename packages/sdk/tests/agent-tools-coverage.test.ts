@@ -12,6 +12,7 @@ import {
 } from "../src/contracts/memory";
 import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
+import { makeRoster } from "./testUtils";
 
 class CoverageRestApi {
   public readonly createChatMessage = vi.fn(async () => ({ ok: true }));
@@ -494,6 +495,54 @@ describe("AgentTools coverage", () => {
     });
 
     await expect(tools.sendMessage("hello", ["@ghost"])).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  describe("when the cached roster is stale", () => {
+    const jane = { id: "user-1", name: "Jane Example", type: "User", handle: "@jane" };
+    const bob = { id: "user-2", name: "Bob Example", type: "User", handle: "@bob" };
+    const janeRef = { id: jane.id, handle: jane.handle };
+    const bobRef = { id: bob.id, handle: bob.handle };
+
+    /** The agent's cached roster next to what the platform reports now. */
+    type Participant = typeof jane;
+
+    function room({ cached, live }: { cached: Participant[]; live: Participant[] }) {
+      const rest = new CoverageRestApi();
+      rest.listChatParticipants.mockResolvedValue(live);
+      const tools = new AgentTools({ roomId: "room-1", rest: createFacade(rest), roster: makeRoster(cached) });
+      // CoverageRestApi's mock is typed without parameters; the message is its second argument.
+      const sendCalls = rest.createChatMessage.mock.calls as unknown as Array<[string, unknown]>;
+      const sent = () => sendCalls.map(([, message]) => message);
+      return { tools, sent, participantFetches: () => rest.listChatParticipants.mock.calls.length };
+    }
+
+    it("resolves a participant missing from the cache with one fetch", async () => {
+      const { tools, sent, participantFetches } = room({ cached: [jane], live: [jane, bob] });
+
+      await tools.sendMessage("hi", ["@jane", "@bob"]);
+
+      expect(sent()).toEqual([{ content: "hi", mentions: [janeRef, bobRef] }]);
+      expect(participantFetches()).toBe(1);
+    });
+
+    it("rejects a mention still missing after the fetch without sending", async () => {
+      const { tools, sent, participantFetches } = room({ cached: [jane], live: [jane] });
+
+      await expect(tools.sendMessage("hi", ["@ghost"])).rejects.toThrow(
+        "Mention '@ghost' not found in participants",
+      );
+      expect(sent()).toEqual([]);
+      expect(participantFetches()).toBe(1);
+    });
+
+    it("does not fetch when every mention resolves from the cache", async () => {
+      const { tools, sent, participantFetches } = room({ cached: [jane], live: [jane, bob] });
+
+      await tools.sendMessage("hi", ["@jane"]);
+
+      expect(sent()).toEqual([{ content: "hi", mentions: [janeRef] }]);
+      expect(participantFetches()).toBe(0);
+    });
   });
 
   it("covers contact methods for both selector styles", async () => {

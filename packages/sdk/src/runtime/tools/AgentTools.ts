@@ -147,15 +147,7 @@ export class AgentTools implements AgentToolsProtocol {
     content: string,
     mentions: MentionInput = [],
   ): Promise<ToolOperationResult> {
-    let participants: ParticipantFields[] | undefined;
-    if (mentions.length > 0 && typeof mentions[0] === "string") {
-      participants = this.roster.list();
-      if (participants.length === 0) {
-        participants = await this.syncParticipants();
-      }
-    }
-
-    const resolvedMentions = this.resolveMentions(mentions, participants);
+    const resolvedMentions = await this.resolveMentionsAgainstRoster(mentions);
 
     // No options 3rd arg: forwarding DEFAULT_REQUEST_OPTIONS here would override
     // FernRestAdapter's own MESSAGE_SEND_MAX_RETRIES cap.
@@ -611,26 +603,45 @@ export class AgentTools implements AgentToolsProtocol {
     return this.rest.archiveMemory(normalizedMemoryId, DEFAULT_REQUEST_OPTIONS);
   }
 
-  private resolveMentions(
-    mentions: MentionInput,
-    participants: ParticipantFields[] | undefined,
-  ): MentionReference[] {
-    if (mentions.length === 0) {
-      return [];
-    }
-
-    if (typeof mentions[0] !== "string") {
+  private async resolveMentionsAgainstRoster(mentions: MentionInput): Promise<MentionReference[]> {
+    if (mentions.length === 0 || typeof mentions[0] !== "string") {
       return mentions.filter(
         (entry): entry is MentionReference => typeof entry === "object" && entry !== null && "id" in entry,
       );
     }
 
-    const stringMentions = mentions.filter((entry): entry is string => typeof entry === "string");
+    const names = mentions.filter((entry): entry is string => typeof entry === "string");
+    const cached = this.roster.list();
+    if (cached.length === 0) {
+      return this.resolveMentions(names, await this.syncParticipants());
+    }
 
+    try {
+      return this.resolveMentions(names, cached);
+    } catch (error) {
+      if (!(error instanceof ValidationError)) {
+        throw error;
+      }
+    }
+    return this.resolveMentionsAgainstFetched(names);
+  }
+
+  // The cached roster can lag behind the room (a missed participant_added). The
+  // fetched list is used only for this send: writing it back could undo
+  // participant events applied while the fetch was in flight.
+  private async resolveMentionsAgainstFetched(names: string[]): Promise<MentionReference[]> {
+    this.logger.debug("mention not in cached roster, fetching participants", { roomId: this.roomId });
+    return this.resolveMentions(names, await this.fetchParticipants());
+  }
+
+  private resolveMentions(
+    names: string[],
+    participants: ParticipantFields[],
+  ): MentionReference[] {
     const participantsByHandle = new Map<string, MentionReference>();
     const participantsById = new Map<string, MentionReference>();
     const participantsByName = new Map<string, MentionReference>();
-    for (const participant of participants ?? []) {
+    for (const participant of participants) {
       const ref: MentionReference = {
         id: String(participant.id),
         handle: typeof participant.handle === "string" ? participant.handle : undefined,
@@ -648,7 +659,7 @@ export class AgentTools implements AgentToolsProtocol {
       }
     }
 
-    return stringMentions.map((mention) => {
+    return names.map((mention) => {
       // Try by ID first (UUID strings), then by handle, then by display name.
       const byId = participantsById.get(mention);
       if (byId) {
