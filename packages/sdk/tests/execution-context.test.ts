@@ -66,13 +66,14 @@ describe("ExecutionContext", () => {
     context.addParticipant(bob);
     context.consumeParticipantsMessage();
 
-    const sent = context.getTools().sendMessage("hi", ["@carl"]);
+    const sent = context.getTools().sendMessage("hi", ["@bob", "@carl"]);
     context.removeParticipant(bob.id);
+    context.addParticipant(carl);
     releaseSnapshot();
     await sent;
 
     const message = context.consumeParticipantsMessage();
-    expect(message).toContain("Bob left the room.");
+    expect(message).toContain("Carl joined the room.");
     expect(message).toContain("@carl");
     expect(message).not.toContain("@bob");
   });

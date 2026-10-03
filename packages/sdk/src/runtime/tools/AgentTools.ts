@@ -626,20 +626,12 @@ export class AgentTools implements AgentToolsProtocol {
     return this.resolveMentionsAgainstFetched(names);
   }
 
-  // The cached roster can lag behind the room (a missed participant_added).
-  // Replacing it with the fetched list would undo participant events applied
-  // during the fetch, so only the mentioned participants are added to it.
+  // The cached roster can lag behind the room (a missed participant_added). The
+  // fetched list is used only for this send: writing it back could undo
+  // participant events applied while the fetch was in flight.
   private async resolveMentionsAgainstFetched(names: string[]): Promise<MentionReference[]> {
     this.logger.debug("mention not in cached roster, fetching participants", { roomId: this.roomId });
-    const fetched = await this.fetchParticipants();
-    const resolved = this.resolveMentions(names, fetched);
-    const mentionedIds = new Set(resolved.map((mention) => mention.id));
-    for (const participant of fetched) {
-      if (mentionedIds.has(participant.id)) {
-        this.roster.add(participant);
-      }
-    }
-    return resolved;
+    return this.resolveMentions(names, await this.fetchParticipants());
   }
 
   private resolveMentions(

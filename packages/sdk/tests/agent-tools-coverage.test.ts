@@ -508,25 +508,17 @@ describe("AgentTools coverage", () => {
       return new AgentTools({ roomId: "room-1", rest: createFacade(rest), roster: makeRoster(cached) });
     }
 
-    it("resolves a participant missing from the cache with one fetch and remembers them", async () => {
+    it("resolves a participant missing from the cache with one fetch", async () => {
       const rest = new CoverageRestApi();
       rest.listChatParticipants.mockResolvedValue([jane, bob]);
       const tools = toolsCaching(rest, [jane]);
 
       await tools.sendMessage("hi", ["@jane", "@bob"]);
-      await tools.sendMessage("again", ["@bob"]);
 
       expect(rest.listChatParticipants).toHaveBeenCalledTimes(1);
-      expect(rest.createChatMessage).toHaveBeenNthCalledWith(
-        1,
+      expect(rest.createChatMessage).toHaveBeenCalledWith(
         "room-1",
         { content: "hi", mentions: [janeRef, bobRef] },
-        undefined,
-      );
-      expect(rest.createChatMessage).toHaveBeenNthCalledWith(
-        2,
-        "room-1",
-        { content: "again", mentions: [bobRef] },
         undefined,
       );
     });
