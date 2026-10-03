@@ -63,30 +63,27 @@ describe("BandMcpStdioServer", () => {
     return { server, stdin, stdout };
   }
 
-  async function connect(stdin: PassThrough, stdout: PassThrough): Promise<Client> {
+  async function startConnected(options: Partial<BandMcpStdioServerOptions> = {}) {
+    const { server, stdin, stdout } = createServer(options);
+    await server.start();
     const client = new Client({ name: "test-client", version: "1.0.0" });
     await client.connect(new StreamClientTransport(stdout, stdin));
     cleanups.push(() => client.close());
-    return client;
+    return { server, client };
   }
 
   it("advertises the configured capabilities and instructions", async () => {
-    const { server, stdin, stdout } = createServer({
+    const { client } = await startConnected({
       capabilities: { experimental: { "test/ext": {} } },
       instructions: "Reply through the tools.",
     });
-    await server.start();
-
-    const client = await connect(stdin, stdout);
 
     expect(client.getServerCapabilities()?.experimental).toEqual({ "test/ext": {} });
     expect(client.getInstructions()).toBe("Reply through the tools.");
   });
 
   it("delivers a custom notification to the client", async () => {
-    const { server, stdin, stdout } = createServer();
-    await server.start();
-    const client = await connect(stdin, stdout);
+    const { server, client } = await startConnected();
     const received = new Promise<Notification>((resolve) => {
       client.fallbackNotificationHandler = async (notification) => resolve(notification);
     });
@@ -107,10 +104,7 @@ describe("BandMcpStdioServer", () => {
   });
 
   it("keeps the default handshake and tools without the new options", async () => {
-    const { server, stdin, stdout } = createServer();
-    await server.start();
-
-    const client = await connect(stdin, stdout);
+    const { server, client } = await startConnected();
 
     expect(client.getInstructions()).toBeUndefined();
     expect(client.getServerCapabilities()?.experimental).toBeUndefined();
