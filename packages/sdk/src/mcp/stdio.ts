@@ -67,10 +67,13 @@ export class BandMcpStdioServer {
 
     const stdin = this.options.stdin ?? process.stdin;
     const stdout = this.options.stdout ?? process.stdout;
-    const session = openSession(mcpServer, stdin, stdout, () => void this.stop());
-    await mcpServer.connect(new StdioServerTransport(stdin, stdout));
-
+    const session = openSession(mcpServer, stdin, stdout, () => {
+      if (this.session === session) {
+        void this.stop();
+      }
+    });
     this.session = session;
+    await mcpServer.connect(new StdioServerTransport(stdin, stdout));
   }
 
   /** Sends once the client has initialized; rejects if the server stops first. */
@@ -118,6 +121,8 @@ function openSession(
   const initialized = new Promise<void>((resolve) => {
     mcpServer.server.oninitialized = resolve;
   });
+  // The transport also closes itself, e.g. on an oversized line.
+  mcpServer.server.onclose = onClientGone;
   let rejectStopped!: (error: Error) => void;
   const stopped = new Promise<never>((_resolve, reject) => {
     rejectStopped = reject;
@@ -132,8 +137,10 @@ function openSession(
     initialized,
     stopped,
     async close() {
+      // The stdout 'error' listener stays: a write queued before the stop can still fail
+      // with EPIPE afterwards, and an unhandled stream error would crash the process.
       stdin.off("end", onClientGone).off("close", onClientGone);
-      stdout.off("error", onClientGone).off("close", onClientGone);
+      stdout.off("close", onClientGone);
       rejectStopped(notRunning());
       await mcpServer.close();
     },

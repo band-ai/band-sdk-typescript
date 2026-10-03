@@ -1,10 +1,11 @@
 import { once } from "node:events";
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { STDIO_DEFAULT_MAX_BUFFER_SIZE } from "@modelcontextprotocol/sdk/shared/stdio.js";
 import type { Notification } from "@modelcontextprotocol/sdk/types.js";
 
 import { BandMcpStdioServer, type BandMcpStdioServerOptions } from "../src/mcp/stdio";
@@ -119,6 +120,43 @@ describe("BandMcpStdioServer", () => {
     await loseClient(started);
 
     await expect(started.server.notify(METHOD, PARAMS)).rejects.toThrow("not running");
+  });
+
+  it("stops when the transport closes itself", async () => {
+    const { server, stdin } = createServer();
+    await server.start();
+    const sent = server.notify(METHOD, PARAMS);
+
+    // A line past the SDK's read-buffer limit makes the transport close itself.
+    stdin.write(Buffer.alloc(STDIO_DEFAULT_MAX_BUFFER_SIZE + 1, "a"));
+
+    await expect(sent).rejects.toThrow("not running");
+  });
+
+  it("survives a queued write failing after the client has gone", async () => {
+    const toClient = new PassThrough();
+    let pipeBroken = false;
+    const stdout = new Writable({
+      write(chunk, _encoding, callback) {
+        if (pipeBroken) {
+          setImmediate(() => callback(Object.assign(new Error("write EPIPE"), { code: "EPIPE" })));
+          return;
+        }
+        toClient.write(chunk, callback);
+      },
+    });
+    const started = createServer({ stdout });
+    await started.server.start();
+    await connect({ ...started, stdout: toClient });
+
+    pipeBroken = true;
+    const sent = started.server.notify(METHOD, PARAMS);
+    started.stdin.end();
+    await Promise.allSettled([sent]);
+
+    // The deferred EPIPE lands after the stop; an unhandled one would fail this run.
+    await new Promise((resolve) => stdout.once("close", resolve));
+    await expect(started.server.notify(METHOD)).rejects.toThrow("not running");
   });
 
   it("rejects notify before start and after stop", async () => {
