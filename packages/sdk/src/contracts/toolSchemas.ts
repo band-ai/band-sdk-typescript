@@ -42,8 +42,8 @@ export const TOOL_MODELS = {
     description:
       "Send a message to the chat room. " +
       "Use this to respond to users or other agents. Messages require at least one @mention " +
-      "in the mentions array. Use this tool to answer; when the latest message needs no answer from you, " +
-      `call ${NO_REPLY_TOOL_NAME} instead. When delegating, send the full task context in this message instead of assuming hidden state.`,
+      "in the mentions array. When the latest message needs no answer from you, " +
+      `call ${NO_REPLY_TOOL_NAME} instead of sending one. When delegating, send the full task context in this message instead of assuming hidden state.`,
     properties: {
       content: {
         type: "string",

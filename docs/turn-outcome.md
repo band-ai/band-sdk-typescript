@@ -82,6 +82,11 @@ Tool-loop adapters relay the model's final text when it never answered
 through a tool. Use `relayReply(tools, text, mentions)`: it posts `text`
 unless the turn already replied or declined, and returns whether it posted.
 
+The base prompt still tells the model that plain text is never delivered, as
+the Python SDK's does. The relay is a fallback, not a channel to steer toward:
+without that line, models more often send their closing narration as a second
+`band_send_message`.
+
 ## Turns that outlive `onMessage`
 
 An adapter that releases a turn's request while the turn waits on the room

@@ -5,7 +5,8 @@ const ENVIRONMENT_SECTION = `
 
 Multi-participant chat. Messages show sender: [Name]: content.
 Messages prefixed with [System]: are platform updates (participant changes, contact updates, etc.) — not messages from users.
-Reply with \`${SEND_MESSAGE_TOOL_NAME}(content, mentions)\`. When a message needs no answer from you, end the turn with \`${NO_REPLY_TOOL_NAME}\` instead.
+Use \`${SEND_MESSAGE_TOOL_NAME}(content, mentions)\` to respond — a \`${SEND_MESSAGE_TOOL_NAME}\` call is the only way anything you say reaches the room. Any text you produce outside such a call is never delivered, and that includes a final answer you compose after using other tools. So deliver your answer by calling \`${SEND_MESSAGE_TOOL_NAME}\`.
+When the latest message needs no answer from you (it was addressed to someone else, it is an FYI or an acknowledgement, or another participant already answered it), call \`${NO_REPLY_TOOL_NAME}\` instead to end the turn deliberately. End every turn with one of the two.
 Mentions use handles: @<username> for users, @<username>/<agent-name> for agents.`;
 
 const MULTI_AGENT_RULES_SECTION = `## CRITICAL: Delegate When You Cannot Help Directly
@@ -66,10 +67,6 @@ const EXAMPLES_SECTION = `## Examples
 -> band_lookup_peers()
 -> band_send_event("No stock agent available. Must inform user.", message_type="thought")
 -> band_send_message("I don't have access to stock prices, and there's no specialized agent available to help with that.", mentions=["@john"])
-
-### Message that needs no answer from you
-[John Doe]: @jane FYI, the deploy finished.
--> ${NO_REPLY_TOOL_NAME}(reason="FYI addressed to Jane")
 
 ### Follow-up question in same conversation
 [John Doe]: What about London?
