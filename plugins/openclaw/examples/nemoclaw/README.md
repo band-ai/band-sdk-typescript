@@ -104,7 +104,7 @@ is ready.
 
 ## 4. Apply the Band egress policy
 
-From `packages/openclaw/examples/nemoclaw`, apply the checked-in preset (`presets/band.yaml` is the single source of truth):
+From `plugins/openclaw/examples/nemoclaw`, apply the checked-in preset (`presets/band.yaml` is the single source of truth):
 
 **Host**
 

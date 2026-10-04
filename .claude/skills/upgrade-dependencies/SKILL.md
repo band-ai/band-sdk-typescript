@@ -6,8 +6,8 @@ description: Upgrade this repo's npm dependencies end to end — apply all safe 
 # Upgrade Dependencies
 
 This repo (`band-sdk-typescript`) is a pnpm workspace with packages under
-`packages/*` (currently `packages/sdk` → `@band-ai/sdk` and
-`packages/openclaw` → `@band-ai/openclaw-channel-band`). This skill drives a
+`packages/*` and `plugins/*` (currently `packages/sdk` → `@band-ai/sdk` and
+`plugins/openclaw` → `@band-ai/openclaw-channel-band`). This skill drives a
 full dependency-upgrade pass, per package, ending in PRs you can review and
 merge — not a silent auto-merge. Nothing gets pushed or filed until the plan
 below says so.

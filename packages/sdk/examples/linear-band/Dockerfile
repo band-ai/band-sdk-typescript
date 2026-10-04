@@ -15,7 +15,7 @@ WORKDIR /app
 # ── dependency layer (cached until manifests change) ──────────────
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY packages/sdk/package.json packages/sdk/
-COPY packages/openclaw/package.json packages/openclaw/
+COPY plugins/openclaw/package.json plugins/openclaw/
 
 RUN pnpm install --frozen-lockfile
 

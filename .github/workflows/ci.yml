@@ -65,7 +65,7 @@ jobs:
               - '.release-please-manifest.json'
               - '.release-hold'
             openclaw:
-              - 'packages/openclaw/**'
+              - 'plugins/openclaw/**'
               - 'packages/sdk/**'
               - '.github/**'
               - 'scripts/**'
@@ -240,7 +240,7 @@ jobs:
           "
 
       - name: Verify OpenClaw build artifacts
-        working-directory: packages/openclaw
+        working-directory: plugins/openclaw
         run: |
           node -e "
           const fs = require('fs');

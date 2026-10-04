@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -7,9 +7,12 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { namedWorkflowSteps } from "./workflow-test-utils.mjs";
+import { assertPackageContents } from "./assert-package-contents.mjs";
+import { RELEASE_PACKAGES, releasePackage, tarballName } from "./release-packages.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const releaseOutputsScript = join(root, "scripts/assert-release-outputs.mjs");
+const releaseStateScript = join(root, "scripts/resolve-release-state.mjs");
+const packScript = join(root, "scripts/pack-release.mjs");
 const readyScript = join(root, "scripts/assert-release-ready.mjs");
 const intentScript = join(root, "scripts/assert-release-intent.mjs");
 const publishScript = join(root, "scripts/publish-if-needed.mjs");
@@ -30,29 +33,30 @@ function runCommand(command, args, cwd, env = {}) {
   });
 }
 
-async function writeReleaseState(directory, { sdk, openclaw, hold = false }) {
-  await mkdir(join(directory, "packages/sdk"), { recursive: true });
-  await mkdir(join(directory, "packages/openclaw"), { recursive: true });
-  await writeFile(
-    join(directory, ".release-please-manifest.json"),
-    `${JSON.stringify({ "packages/sdk": sdk, "packages/openclaw": openclaw }, null, 2)}\n`,
-  );
-  await writeFile(
-    join(directory, "packages/sdk/package.json"),
-    `${JSON.stringify({ name: "@band-ai/sdk", version: sdk }, null, 2)}\n`,
-  );
-  await writeFile(
-    join(directory, "packages/openclaw/package.json"),
-    `${JSON.stringify({ name: "@band-ai/openclaw-channel-band", version: openclaw }, null, 2)}\n`,
-  );
-  await writeFile(
-    join(directory, "packages/openclaw/openclaw.plugin.json"),
-    `${JSON.stringify({ version: openclaw }, null, 2)}\n`,
-  );
+const sdkPath = releasePackage("sdk").path;
+const openclawPath = releasePackage("openclaw").path;
+
+// Lays out every listed package at `versions[key]`; `paths` relocates one, as a
+// commit from before a package move would have it.
+async function writeReleaseState(directory, { versions, paths = {}, hold = false }) {
+  const manifest = {};
+  const config = { packages: {} };
+  for (const pkg of RELEASE_PACKAGES) {
+    const path = paths[pkg.key] ?? pkg.path;
+    const version = versions[pkg.key];
+    manifest[path] = version;
+    config.packages[path] = { "package-name": pkg.name };
+    await mkdir(join(directory, path), { recursive: true });
+    for (const file of pkg.versionFiles) {
+      await writeFile(join(directory, path, file), `${JSON.stringify({ name: pkg.name, version }, null, 2)}\n`);
+    }
+  }
+  await writeFile(join(directory, ".release-please-manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  await writeFile(join(directory, "release-please-config.json"), `${JSON.stringify(config, null, 2)}\n`);
   if (hold) await writeFile(join(directory, ".release-hold"), "release held\n");
 }
 
-async function withReleaseHistory(callback) {
+async function withReleaseHistory(callback, { paths } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "release-intent-"));
   try {
     assert.equal(runCommand("git", ["init", "-q"], directory).status, 0);
@@ -65,7 +69,7 @@ async function withReleaseHistory(callback) {
       runCommand("git", ["config", "user.name", "Release Test"], directory).status,
       0,
     );
-    await writeReleaseState(directory, { sdk: "0.1.7", openclaw: "0.1.10" });
+    await writeReleaseState(directory, { versions: { sdk: "0.1.7", openclaw: "0.1.10" }, paths });
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "initial"], directory).status, 0);
     await callback(directory);
@@ -83,39 +87,94 @@ async function withReleaseRoot(callback) {
   }
 }
 
-for (const scenario of [
-  ["no releases", "false", "", "false", ""],
-  ["SDK only", "true", "0.1.8", "false", ""],
-  ["OpenClaw only", "false", "", "true", "0.1.11"],
-  ["both packages independently", "true", "0.1.8", "true", "7.4.2"],
+/** Release Please's action outputs for the packages it created, keyed by package path. */
+function releasePleaseOutputs(created) {
+  return Object.fromEntries(Object.entries(created).flatMap(([key, version]) => [
+    [`${releasePackage(key).path}--release_created`, "true"],
+    [`${releasePackage(key).path}--version`, version],
+  ]));
+}
+
+/** Run the release-state script and return its `packages` output, or the failed run. */
+async function resolveReleaseState(directory, env) {
+  const outputFile = join(directory, "github-output");
+  await writeFile(outputFile, "");
+  const result = run(releaseStateScript, directory, { GITHUB_OUTPUT: outputFile, ...env });
+  if (result.status !== 0) return { result };
+  const line = (await readFile(outputFile, "utf8")).match(/^packages=(.*)$/m)?.[1];
+  return { result, packages: JSON.parse(line) };
+}
+
+for (const [scenario, created] of [
+  ["no releases", {}],
+  ["SDK only", { sdk: "0.1.8" }],
+  ["OpenClaw only", { openclaw: "0.1.11" }],
+  ["both packages independently", { sdk: "0.1.8", openclaw: "7.4.2" }],
 ]) {
-  test(`release outputs accept ${scenario[0]}`, async () => {
+  test(`release state selects ${scenario} in list order`, async () => {
     await withReleaseRoot(async (directory) => {
-      const result = run(releaseOutputsScript, directory, {
-        SDK_RELEASE_CREATED: scenario[1], SDK_RELEASE_VERSION: scenario[2],
-        OPENCLAW_RELEASE_CREATED: scenario[3], OPENCLAW_RELEASE_VERSION: scenario[4],
+      const { result, packages } = await resolveReleaseState(directory, {
+        RELEASE_PLEASE_OUTPUTS: JSON.stringify(releasePleaseOutputs(created)),
       });
       assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(
+        packages.map(({ key, version }) => [key, version]),
+        RELEASE_PACKAGES.filter((pkg) => pkg.key in created).map((pkg) => [pkg.key, created[pkg.key]]),
+      );
     });
   });
 }
 
-for (const scenario of [
-  ["malformed SDK created flag", "yes", "0.1.8", "false", ""],
-  ["SDK missing version", "true", "", "false", ""],
-  ["OpenClaw unstable version", "false", "", "true", "1.0.0-rc.1"],
-  ["version without a created release", "false", "0.1.8", "false", ""],
+test("release state names the tarball npm pack writes for each selected package", async () => {
+  await withReleaseRoot(async (directory) => {
+    const { packages } = await resolveReleaseState(directory, {
+      RELEASE_PLEASE_OUTPUTS: JSON.stringify(releasePleaseOutputs({ sdk: "0.1.8", openclaw: "0.1.11" })),
+    });
+    assert.deepEqual(packages.map((pkg) => pkg.tarball), [
+      "band-ai-sdk-0.1.8.tgz",
+      "band-ai-openclaw-channel-band-0.1.11.tgz",
+    ]);
+  });
+});
+
+for (const [scenario, outputs] of [
+  ["a malformed created flag", { [`${openclawPath}--release_created`]: "yes", [`${openclawPath}--version`]: "0.1.11" }],
+  ["a created release without a version", { [`${openclawPath}--release_created`]: "true" }],
+  ["an unstable version", releasePleaseOutputs({ openclaw: "1.0.0-rc.1" })],
+  ["a version without a created release", { [`${openclawPath}--version`]: "0.1.11" }],
 ]) {
-  test(`release outputs reject ${scenario[0]}`, async () => {
+  test(`release state rejects ${scenario}`, async () => {
     await withReleaseRoot(async (directory) => {
-      const result = run(releaseOutputsScript, directory, {
-        SDK_RELEASE_CREATED: scenario[1], SDK_RELEASE_VERSION: scenario[2],
-        OPENCLAW_RELEASE_CREATED: scenario[3], OPENCLAW_RELEASE_VERSION: scenario[4],
-      });
+      const { result } = await resolveReleaseState(directory, { RELEASE_PLEASE_OUTPUTS: JSON.stringify(outputs) });
       assert.notEqual(result.status, 0);
     });
   });
 }
+
+test("release state fails closed without Release Please outputs on an automatic run", async () => {
+  await withReleaseRoot(async (directory) => {
+    const { result } = await resolveReleaseState(directory, { RELEASE_PLEASE_OUTPUTS: "" });
+    assert.notEqual(result.status, 0);
+  });
+});
+
+test("release state selects only the recovered package at its checked-out version", async () => {
+  await withReleaseRoot(async (directory) => {
+    await writeReleaseState(directory, { versions: { sdk: "0.1.8", openclaw: "0.1.11" } });
+    const { result, packages } = await resolveReleaseState(directory, { RECOVERY_PACKAGE: "openclaw" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(packages.map(({ key, path, version }) => [key, path, version]), [["openclaw", openclawPath, "0.1.11"]]);
+  });
+});
+
+test("release state rejects an unknown recovery package", async () => {
+  await withReleaseRoot(async (directory) => {
+    await writeReleaseState(directory, { versions: { sdk: "0.1.8", openclaw: "0.1.11" } });
+    const { result } = await resolveReleaseState(directory, { RECOVERY_PACKAGE: "nope" });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /release package must be one of "sdk", "openclaw"/);
+  });
+});
 
 test("release-ready guard passes without a hold and fails with one", async () => {
   const directory = await mkdtemp(join(tmpdir(), "release-ready-"));
@@ -166,8 +225,7 @@ test("release intent accepts an ordinary commit with unchanged package versions"
 test("release intent rejects a version transition while release hold exists", async () => {
   await withReleaseHistory(async (directory) => {
     await writeReleaseState(directory, {
-      sdk: "0.1.8",
-      openclaw: "0.1.11",
+      versions: { sdk: "0.1.8", openclaw: "0.1.11" },
       hold: true,
     });
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
@@ -180,7 +238,7 @@ test("release intent rejects a version transition while release hold exists", as
 
 test("release intent accepts an atomic SDK-only version transition", async () => {
   await withReleaseHistory(async (directory) => {
-    await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.10" });
+    await writeReleaseState(directory, { versions: { sdk: "0.1.8", openclaw: "0.1.10" } });
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "partial release"], directory).status, 0);
     const result = run(intentScript, directory, { RELEASE_BASE_COMMIT: "HEAD^" });
@@ -190,7 +248,7 @@ test("release intent accepts an atomic SDK-only version transition", async () =>
 
 test("release intent accepts an atomic OpenClaw-only version transition", async () => {
   await withReleaseHistory(async (directory) => {
-    await writeReleaseState(directory, { sdk: "0.1.7", openclaw: "0.1.11" });
+    await writeReleaseState(directory, { versions: { sdk: "0.1.7", openclaw: "0.1.11" } });
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "openclaw release"], directory).status, 0);
     const result = run(intentScript, directory, { RELEASE_BASE_COMMIT: "HEAD^" });
@@ -200,9 +258,9 @@ test("release intent accepts an atomic OpenClaw-only version transition", async 
 
 test("release intent rejects an SDK manifest/package mismatch", async () => {
   await withReleaseHistory(async (directory) => {
-    await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.10" });
+    await writeReleaseState(directory, { versions: { sdk: "0.1.8", openclaw: "0.1.10" } });
     const manifest = JSON.parse(await readFile(join(directory, ".release-please-manifest.json"), "utf8"));
-    manifest["packages/sdk"] = "0.1.9";
+    manifest[sdkPath] = "0.1.9";
     await writeFile(join(directory, ".release-please-manifest.json"), `${JSON.stringify(manifest)}\n`);
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "mismatch"], directory).status, 0);
@@ -212,8 +270,8 @@ test("release intent rejects an SDK manifest/package mismatch", async () => {
 
 test("release intent rejects an OpenClaw manifest/package/plugin mismatch", async () => {
   await withReleaseHistory(async (directory) => {
-    await writeReleaseState(directory, { sdk: "0.1.7", openclaw: "0.1.11" });
-    await writeFile(join(directory, "packages/openclaw/openclaw.plugin.json"), '{"version":"0.1.12"}\n');
+    await writeReleaseState(directory, { versions: { sdk: "0.1.7", openclaw: "0.1.11" } });
+    await writeFile(join(directory, openclawPath, "openclaw.plugin.json"), '{"version":"0.1.12"}\n');
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "mismatch"], directory).status, 0);
     assert.notEqual(run(intentScript, directory, { RELEASE_BASE_COMMIT: "HEAD^" }).status, 0);
@@ -239,7 +297,7 @@ test("release intent rejects the zero-commit baseline sentinel", async () => {
 
 test("recovery does not require a baseline, guarding against hoisting the baseline check above it", async () => {
   await withReleaseHistory(async (directory) => {
-    await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.10" });
+    await writeReleaseState(directory, { versions: { sdk: "0.1.8", openclaw: "0.1.10" } });
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "release"], directory).status, 0);
     assert.equal(runCommand("git", ["tag", "sdk-v0.1.8"], directory).status, 0);
@@ -255,7 +313,7 @@ test("recovery does not require a baseline, guarding against hoisting the baseli
 for (const [selector, tag] of [["sdk", "sdk-v0.1.8"], ["openclaw", "openclaw-channel-band-v0.1.11"]]) {
 test(`release intent accepts ${selector} recovery only from its exact tag`, async () => {
   await withReleaseHistory(async (directory) => {
-    await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.11" });
+    await writeReleaseState(directory, { versions: { sdk: "0.1.8", openclaw: "0.1.11" } });
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "release"], directory).status, 0);
     assert.equal(runCommand("git", ["tag", tag], directory).status, 0);
@@ -267,15 +325,15 @@ test(`release intent accepts ${selector} recovery only from its exact tag`, asyn
 
 test("SDK recovery rejects an SDK manifest/package mismatch", async () => {
   await withReleaseHistory(async (directory) => {
-    await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.10" });
+    await writeReleaseState(directory, { versions: { sdk: "0.1.8", openclaw: "0.1.10" } });
     const manifest = JSON.parse(await readFile(join(directory, ".release-please-manifest.json"), "utf8"));
-    manifest["packages/sdk"] = "0.1.9";
+    manifest[sdkPath] = "0.1.9";
     await writeFile(join(directory, ".release-please-manifest.json"), `${JSON.stringify(manifest)}\n`);
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "mismatch"], directory).status, 0);
     const result = run(intentScript, directory, { RECOVERY_PACKAGE: "sdk" });
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /sdk current manifest and package versions must match exactly/i);
+    assert.match(result.stderr, /sdk version fields must match/i);
   });
 });
 
@@ -292,8 +350,8 @@ for (const selector of ["sdk", "openclaw"]) {
 
 test("SDK recovery ignores an inconsistent unselected OpenClaw tuple", async () => {
   await withReleaseHistory(async (directory) => {
-    await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.11" });
-    await writeFile(join(directory, "packages/openclaw/openclaw.plugin.json"), '{"version":"9.9.9"}\n');
+    await writeReleaseState(directory, { versions: { sdk: "0.1.8", openclaw: "0.1.11" } });
+    await writeFile(join(directory, openclawPath, "openclaw.plugin.json"), '{"version":"9.9.9"}\n');
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "release"], directory).status, 0);
     assert.equal(runCommand("git", ["tag", "sdk-v0.1.8"], directory).status, 0);
@@ -304,9 +362,9 @@ test("SDK recovery ignores an inconsistent unselected OpenClaw tuple", async () 
 
 test("OpenClaw recovery ignores an inconsistent unselected SDK tuple", async () => {
   await withReleaseHistory(async (directory) => {
-    await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.11" });
+    await writeReleaseState(directory, { versions: { sdk: "0.1.8", openclaw: "0.1.11" } });
     const manifest = JSON.parse(await readFile(join(directory, ".release-please-manifest.json"), "utf8"));
-    manifest["packages/sdk"] = "9.9.9";
+    manifest[sdkPath] = "9.9.9";
     await writeFile(join(directory, ".release-please-manifest.json"), `${JSON.stringify(manifest)}\n`);
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "release"], directory).status, 0);
@@ -318,7 +376,7 @@ test("OpenClaw recovery ignores an inconsistent unselected SDK tuple", async () 
 
 test("release intent rejects recovery when the selected package tag identifies other bytes", async () => {
   await withReleaseHistory(async (directory) => {
-    await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.10" });
+    await writeReleaseState(directory, { versions: { sdk: "0.1.8", openclaw: "0.1.10" } });
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "release"], directory).status, 0);
     assert.equal(runCommand("git", ["tag", "sdk-v0.1.8"], directory).status, 0);
@@ -336,7 +394,7 @@ test("release intent rejects recovery when the selected package tag identifies o
 
 test("release intent rejects OpenClaw recovery when its tag identifies other bytes", async () => {
   await withReleaseHistory(async (directory) => {
-    await writeReleaseState(directory, { sdk: "0.1.7", openclaw: "0.1.11" });
+    await writeReleaseState(directory, { versions: { sdk: "0.1.7", openclaw: "0.1.11" } });
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "release"], directory).status, 0);
     assert.equal(runCommand("git", ["tag", "openclaw-channel-band-v0.1.11"], directory).status, 0);
@@ -355,7 +413,7 @@ test("release intent rejects OpenClaw recovery when its tag identifies other byt
 test("release intent uses the PR base across a multi-commit release topology", async () => {
   await withReleaseHistory(async (directory) => {
     const baseline = runCommand("git", ["rev-parse", "HEAD"], directory).stdout.trim();
-    await writeReleaseState(directory, { sdk: "0.1.8", openclaw: "0.1.11" });
+    await writeReleaseState(directory, { versions: { sdk: "0.1.8", openclaw: "0.1.11" } });
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "release versions"], directory).status, 0);
     await writeFile(join(directory, ".release-hold"), "release held\n");
@@ -366,6 +424,36 @@ test("release intent uses the PR base across a multi-commit release topology", a
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /release hold/i);
   });
+});
+
+const formerOpenclawPath = "former/openclaw";
+
+/** Commit the listed layout over a baseline that kept OpenClaw at `formerOpenclawPath`. */
+async function commitOpenclawMove(directory, versions) {
+  await rm(join(directory, formerOpenclawPath), { recursive: true });
+  await writeReleaseState(directory, { versions });
+  assert.equal(runCommand("git", ["add", "-A"], directory).status, 0);
+  assert.equal(runCommand("git", ["commit", "-qm", "move openclaw"], directory).status, 0);
+}
+
+test("release intent follows a moved package to its baseline path by package name", async () => {
+  await withReleaseHistory(async (directory) => {
+    await commitOpenclawMove(directory, { sdk: "0.1.7", openclaw: "0.1.10" });
+    const result = run(intentScript, directory, { RELEASE_BASE_COMMIT: "HEAD^" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /No release version transition detected/);
+  }, { paths: { openclaw: formerOpenclawPath } });
+});
+
+test("release intent still requires an atomic transition for a moved package", async () => {
+  await withReleaseHistory(async (directory) => {
+    await commitOpenclawMove(directory, { sdk: "0.1.7", openclaw: "0.1.11" });
+    await writeFile(join(directory, openclawPath, "openclaw.plugin.json"), '{"version":"0.1.10"}\n');
+    assert.equal(runCommand("git", ["commit", "-qam", "stale plugin version"], directory).status, 0);
+    const result = run(intentScript, directory, { RELEASE_BASE_COMMIT: "HEAD~2" });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /transition must be atomic/);
+  }, { paths: { openclaw: formerOpenclawPath } });
 });
 
 // `withFakeNpm` puts a `#!/bin/sh` stub on PATH (joined with ":") to stand in for
@@ -481,103 +569,120 @@ test("release workflow enters PR-only mode before release-please when held", asy
   );
 });
 
-test("release workflow validates independent outputs before package work and readiness before each publish", async () => {
+test("release workflow resolves release state before package work and checks readiness before packing and each publish", async () => {
   const workflow = await readFile(join(root, ".github/workflows/release.yml"), "utf8");
   const steps = namedWorkflowSteps(workflow);
   const step = (name) => steps.find((candidate) => candidate.name === name);
   const releasePlease = step("Release Please");
   const releaseState = step("Resolve release state");
-  const outputValidation = step("Verify independent release outputs");
   const installPnpm = step("Install pnpm");
-  const sdkPack = step("Pack SDK (@band-ai)");
-  const openclawPack = step("Pack OpenClaw (@band-ai)");
-  const sdkPublish = step("Publish SDK to npm (@band-ai)");
-  const openclawPublish = step("Publish OpenClaw to npm (@band-ai)");
+  const pack = step("Pack released packages (@band-ai)");
+  const publish = step("Publish to npm (@band-ai)");
 
   assert.ok(releasePlease);
   assert.ok(releaseState);
-  assert.ok(outputValidation);
   assert.ok(installPnpm);
-  assert.ok(sdkPack);
-  assert.ok(openclawPack);
-  assert.ok(sdkPublish);
-  assert.ok(openclawPublish);
+  assert.ok(pack);
+  assert.ok(publish);
   assert.ok(releasePlease.index < releaseState.index);
-  assert.ok(releaseState.index < outputValidation.index);
-  assert.ok(outputValidation.index < installPnpm.index);
-  assert.ok(installPnpm.index < sdkPack.index);
-  assert.ok(sdkPack.index < openclawPack.index);
-  assert.ok(installPnpm.index < sdkPublish.index);
-  assert.ok(sdkPublish.index < openclawPublish.index);
-  assert.match(outputValidation.body, /node scripts\/assert-release-outputs\.mjs/);
-  assert.match(outputValidation.body, /steps\.release_state\.outputs\.sdk_created/);
-  assert.doesNotMatch(outputValidation.body, /^        if:/m);
-  assert.match(sdkPack.body, /node scripts\/assert-release-ready\.mjs/);
-  assert.match(openclawPack.body, /node scripts\/assert-release-ready\.mjs/);
-  assert.match(sdkPublish.body, /node scripts\/assert-release-ready\.mjs/);
-  assert.match(openclawPublish.body, /node scripts\/assert-release-ready\.mjs/);
-  assert.match(sdkPublish.body, /node scripts\/publish-if-needed\.mjs/);
-  assert.match(openclawPublish.body, /node scripts\/publish-if-needed\.mjs/);
-  assert.match(sdkPublish.body, /git fetch origin main:refs\/remotes\/origin\/main/);
-  assert.match(openclawPublish.body, /git fetch origin main:refs\/remotes\/origin\/main/);
-  assert.match(sdkPublish.body, /RELEASE_HOLD_REF: refs\/remotes\/origin\/main/);
-  assert.match(openclawPublish.body, /RELEASE_HOLD_REF: refs\/remotes\/origin\/main/);
+  assert.ok(releaseState.index < installPnpm.index);
+  assert.ok(installPnpm.index < pack.index);
+  assert.ok(pack.index < publish.index);
+  assert.match(releaseState.body, /node scripts\/resolve-release-state\.mjs/);
+  assert.match(releaseState.body, /RELEASE_PLEASE_OUTPUTS: \$\{\{ toJSON\(steps\.release\.outputs\) \}\}/);
+  assert.doesNotMatch(releaseState.body, /^        if:/m);
+  assert.match(pack.body, /node scripts\/assert-release-ready\.mjs\n\s+node scripts\/pack-release\.mjs/);
+  assert.match(publish.body, /git fetch origin main:refs\/remotes\/origin\/main\n\s+node scripts\/assert-release-ready\.mjs\n\s+node scripts\/publish-if-needed\.mjs/);
+  assert.match(publish.body, /RELEASE_HOLD_REF: refs\/remotes\/origin\/main/);
 });
 
-test("release workflow asserts package contents after README copy and before packing", async () => {
+test("release workflow publishes each released package in its own job, one at a time in list order", async () => {
+  const workflow = await readFile(join(root, ".github/workflows/release.yml"), "utf8");
+  const publishJob = workflow.slice(workflow.indexOf("\n  publish:"));
+
+  assert.match(workflow, /packages: \$\{\{ steps\.release_state\.outputs\.packages \}\}/);
+  assert.match(publishJob, /^    if: needs\.release\.outputs\.packages != '\[\]'$/m);
+  assert.match(publishJob, /max-parallel: 1\n/);
+  assert.match(publishJob, /package: \$\{\{ fromJSON\(needs\.release\.outputs\.packages\) \}\}/);
+  assert.doesNotMatch(publishJob, /fail-fast: false/);
+});
+
+test("release workflow copies the SDK README before checking and packing the packlists", async () => {
   const workflow = await readFile(join(root, ".github/workflows/release.yml"), "utf8");
   const steps = namedWorkflowSteps(workflow);
   const step = (name) => steps.find((candidate) => candidate.name === name);
   const readmeCopy = step("Copy README into SDK package");
-  const sdkContents = step("Assert SDK package contents");
-  const openclawContents = step("Assert OpenClaw package contents");
-  const sdkPack = step("Pack SDK (@band-ai)");
-  const openclawPack = step("Pack OpenClaw (@band-ai)");
+  const pack = step("Pack released packages (@band-ai)");
 
   assert.ok(readmeCopy, "Copy README step must exist");
-  assert.ok(sdkContents, "Assert SDK package contents step must exist");
-  assert.ok(openclawContents, "Assert OpenClaw package contents step must exist");
-  assert.ok(sdkPack);
-  assert.ok(openclawPack);
+  assert.ok(pack);
+  assert.ok(readmeCopy.index < pack.index);
+  assert.match(readmeCopy.body, /if: contains\(fromJSON\(steps\.release_state\.outputs\.packages\)\.\*\.key, 'sdk'\)/);
+  // The packlist check is what fails a release that would ship without these.
+  assert.ok(releasePackage("sdk").contents.required.includes("README.md"));
+  assert.ok(releasePackage("openclaw").contents.required.includes("dist/band_sdk_core_bg.wasm"));
+});
 
-  // Content assertions run after README copy and before packing
-  assert.ok(readmeCopy.index < sdkContents.index);
-  assert.ok(sdkContents.index < sdkPack.index);
-  assert.ok(openclawContents.index < openclawPack.index);
+test("pack-release writes each listed package's tarball under the name the publish job expects", async () => {
+  await withReleaseRoot(async (directory) => {
+    for (const pkg of RELEASE_PACKAGES) {
+      await mkdir(join(directory, pkg.key), { recursive: true });
+      await writeFile(join(directory, pkg.key, "package.json"), JSON.stringify({ name: pkg.name, version: "1.2.3" }));
+    }
+    const selected = RELEASE_PACKAGES.map((pkg) => ({ path: pkg.key, contents: { minFiles: 1, required: ["package.json"] } }));
 
-  // Both invoke the shared script with a file-count floor
-  assert.match(sdkContents.body, /node scripts\/assert-package-contents\.mjs/);
-  assert.match(sdkContents.body, /packages\/sdk/);
-  assert.match(sdkContents.body, /README\.md/);
-  assert.match(openclawContents.body, /node scripts\/assert-package-contents\.mjs/);
-  assert.match(openclawContents.body, /packages\/openclaw/);
-  assert.match(openclawContents.body, /dist\/band_sdk_core_bg\.wasm/);
+    const result = runCommand(process.execPath, [packScript, "release-artifacts"], directory, {
+      SELECTED_PACKAGES: JSON.stringify(selected),
+      npm_config_cache: join(directory, ".npm-cache"),
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    for (const pkg of RELEASE_PACKAGES) {
+      const tarball = join(directory, "release-artifacts", tarballName(pkg, "1.2.3"));
+      assert.ok(existsSync(tarball), `npm pack must write ${tarball} for ${pkg.name}`);
+    }
+  });
+});
+
+test("pack-release checks each packlist before packing and stops at the first bad one", async () => {
+  await withReleaseRoot(async (directory) => {
+    const writePackage = async (name, files) => {
+      await mkdir(join(directory, name, "dist"), { recursive: true });
+      await writeFile(join(directory, name, "dist/index.js"), "export {};\n");
+      await writeFile(join(directory, name, "package.json"), JSON.stringify({ name, version: "1.2.3", files }));
+    };
+    await writePackage("good", ["dist"]);
+    await writePackage("bad", []);
+    const contents = { minFiles: 2, required: ["dist/index.js", "package.json"] };
+
+    const result = runCommand(process.execPath, [packScript, "release-artifacts"], directory, {
+      SELECTED_PACKAGES: JSON.stringify([{ path: "good", contents }, { path: "bad", contents }]),
+      npm_config_cache: join(directory, ".npm-cache"),
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Missing required entries in bad packlist: dist\/index\.js/);
+    assert.ok(existsSync(join(directory, "release-artifacts/good-1.2.3.tgz")));
+    assert.ok(!existsSync(join(directory, "release-artifacts/bad-1.2.3.tgz")));
+  });
 });
 
 test("openclaw build copies wasm via tsup onSuccess and CI packaging requires it", () => {
-  const openclawPkg = JSON.parse(readFileSync(join(root, "packages/openclaw/package.json"), "utf8"));
+  const openclawPkg = JSON.parse(readFileSync(join(root, openclawPath, "package.json"), "utf8"));
   // copy-wasm must not be a separate package pin — resolve through @band-ai/sdk.
   assert.equal(openclawPkg.devDependencies?.["@band-ai/band-sdk-core"], undefined);
   assert.match(openclawPkg.scripts.build, /tsup/);
   assert.doesNotMatch(openclawPkg.scripts.build, /copy-wasm/);
   assert.match(openclawPkg.scripts.build, /sync-plugin-version/);
 
-  const tsupConfig = readFileSync(join(root, "packages/openclaw/tsup.config.ts"), "utf8");
+  const tsupConfig = readFileSync(join(root, openclawPath, "tsup.config.ts"), "utf8");
   // Exit must sit inside the catch body: no closing brace between catch { and process.exit(1).
   assert.match(
     tsupConfig,
-    /async onSuccess\(\) \{[\s\S]*?try \{[\s\S]*?import\("\.\/scripts\/copy-wasm\.mjs"\)[\s\S]*?copyWasm\(\)[\s\S]*?\} catch[^{]*\{[^}]*process\.exit\(1\)/,
+    /async onSuccess\(\) \{[\s\S]*?try \{[\s\S]*?import\("\.\.\/\.\.\/scripts\/copy-wasm\.mjs"\)[\s\S]*?copyWasm\(process\.cwd\(\)\)[\s\S]*?\} catch[^{]*\{[^}]*process\.exit\(1\)/,
   );
 
-  const copyWasm = readFileSync(join(root, "packages/openclaw/scripts/copy-wasm.mjs"), "utf8");
-  assert.match(copyWasm, /requireFromOpenclaw\.resolve\("@band-ai\/sdk"\)/);
-  assert.match(copyWasm, /export const CORE_WASM_FILENAME/);
-  assert.match(copyWasm, /assertNonEmptyWasm\(sourcePath, "source wasm"\)/);
-  assert.match(copyWasm, /assertNonEmptyWasm\(wasmDestinationPath, "copied wasm"\)/);
-  assert.match(copyWasm, /requireFromSdk\.resolve\("@band-ai\/band-sdk-core"\)/);
-  assert.match(copyWasm, /realpathSync/);
-
-  const stageLink = readFileSync(join(root, "packages/openclaw/scripts/stage-link.mjs"), "utf8");
+  const stageLink = readFileSync(join(root, openclawPath, "scripts/stage-link.mjs"), "utf8");
   assert.match(stageLink, /CORE_WASM_FILENAME/);
   assert.match(
     stageLink,
@@ -589,20 +694,19 @@ test("openclaw build copies wasm via tsup onSuccess and CI packaging requires it
     ci,
     /const required = \[[^\]]*['"]dist\/band_sdk_core_bg\.wasm['"]/,
   );
-  const syncVersion = readFileSync(join(root, "packages/openclaw/scripts/sync-plugin-version.js"), "utf8");
+  // The plugin stamps the core version from the same lookup copy-wasm uses.
+  const syncVersion = readFileSync(join(root, openclawPath, "scripts/sync-plugin-version.js"), "utf8");
   assert.match(syncVersion, /bandSdkCoreVersion/);
-  assert.match(syncVersion, /@band-ai\/band-sdk-core/);
+  assert.match(syncVersion, /resolveCoreEntry\(/);
 
-  const pluginJson = JSON.parse(readFileSync(join(root, "packages/openclaw/openclaw.plugin.json"), "utf8"));
+  const pluginJson = JSON.parse(readFileSync(join(root, openclawPath, "openclaw.plugin.json"), "utf8"));
   assert.equal(typeof pluginJson.bandSdkCoreVersion, "string");
   assert.match(pluginJson.bandSdkCoreVersion, /^\d+\.\d+\.\d+/);
 });
 
 test("assert-package-contents rejects missing entries, low file counts, and excluded-but-existing files", async () => {
-  const script = join(root, "scripts/assert-package-contents.mjs");
-  const directory = await mkdtemp(join(tmpdir(), "pkg-contents-"));
-  try {
-    // Setup: a minimal package with dist included and an extra file NOT in "files"
+  await withReleaseRoot(async (directory) => {
+    // A minimal package with dist included and an extra file NOT in "files"
     await mkdir(join(directory, "dist"), { recursive: true });
     await writeFile(join(directory, "dist/index.js"), "export {};\n");
     // extra.json exists on disk but is NOT listed in "files" — npm won't pack it
@@ -613,36 +717,23 @@ test("assert-package-contents rejects missing entries, low file counts, and excl
       files: ["dist"],
     }));
 
-    // Should pass: dist/index.js is packed, package.json is always packed, floor=1
-    const passResult = spawnSync(process.execPath, [script, directory, "1", "dist/index.js", "package.json"], {
-      encoding: "utf8",
-    });
-    assert.equal(passResult.status, 0, `Expected pass but got: ${passResult.stderr}`);
+    // dist/index.js is packed and package.json is always packed
+    assertPackageContents(directory, { minFiles: 1, required: ["dist/index.js", "package.json"] });
 
-    // RED regression: extra.json exists on disk but is excluded from "files" —
-    // the guard must reject it as missing from the packlist
-    const failExcluded = spawnSync(process.execPath, [script, directory, "1", "extra.json"], {
-      encoding: "utf8",
-    });
-    assert.notEqual(failExcluded.status, 0, "Guard must reject a file that exists but is excluded from npm packlist");
-    assert.match(failExcluded.stderr, /missing required/i);
-
-    // Should fail when a required entry doesn't exist at all
-    const failMissing = spawnSync(process.execPath, [script, directory, "1", "README.md"], {
-      encoding: "utf8",
-    });
-    assert.notEqual(failMissing.status, 0);
-    assert.match(failMissing.stderr, /missing required/i);
-
-    // Should fail when file count is below the floor
-    const failFloor = spawnSync(process.execPath, [script, directory, "999", "dist/index.js"], {
-      encoding: "utf8",
-    });
-    assert.notEqual(failFloor.status, 0);
-    assert.match(failFloor.stderr, /floor not met/i);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
+    // extra.json exists on disk but is excluded from "files"
+    assert.throws(
+      () => assertPackageContents(directory, { minFiles: 1, required: ["extra.json"] }),
+      /missing required/i,
+    );
+    assert.throws(
+      () => assertPackageContents(directory, { minFiles: 1, required: ["README.md"] }),
+      /missing required/i,
+    );
+    assert.throws(
+      () => assertPackageContents(directory, { minFiles: 999, required: ["dist/index.js"] }),
+      /floor not met/i,
+    );
+  });
 });
 
 test("release workflow pins every action to a full commit SHA", async () => {
@@ -673,22 +764,19 @@ test("release workflow restricts authority and pins the npm publish toolchain", 
     workflow,
     /description: Run automatic Release Please, or recover one package from its exact tagged release commit/,
   );
-  assert.match(workflow, /options: \[automatic, sdk, openclaw\]/);
+  assert.deepEqual(
+    workflow.match(/options: \[([^\]]*)\]/)?.[1].split(", "),
+    ["automatic", ...RELEASE_PACKAGES.map((pkg) => pkg.key)],
+    "recover-package must offer automatic and exactly the listed release packages",
+  );
   assert.match(workflow, /default: automatic/);
   assert.match(
     workflow,
-    /if: inputs\['recover-package'\] == 'automatic' \|\| inputs\['recover-package'\] == ''/,
+    /RECOVERY_PACKAGE: \$\{\{ inputs\['recover-package'\] != 'automatic' && inputs\['recover-package'\] \|\| '' \}\}/,
   );
-  assert.match(workflow, /automatic\|''\)/);
-  assert.match(
-    workflow,
-    /if: inputs\['recover-package'\] == 'sdk' \|\| inputs\['recover-package'\] == 'openclaw'/,
-  );
-  assert.match(
-    workflow,
-    /REQUIRE_RELEASE_TAG: \$\{\{ inputs\['recover-package'\] == 'sdk' \|\| inputs\['recover-package'\] == 'openclaw' \}\}/,
-  );
-  assert.match(workflow, /recover-package must be automatic, sdk, or openclaw/);
+  assert.match(workflow, /- name: Checkout recovery source\n {8}if: env\.RECOVERY_PACKAGE != ''\n/);
+  assert.match(workflow, /- name: Release Please\n {8}if: env\.RECOVERY_PACKAGE == ''\n/);
+  assert.match(workflow, /REQUIRE_RELEASE_TAG: \$\{\{ env\.RECOVERY_PACKAGE != '' \}\}/);
   assert.match(workflow, /release-commit:/);
   assert.match(workflow, /release-commit must be an exact lowercase 40-character commit SHA/);
   assert.match(workflow, /git merge-base --is-ancestor/);
@@ -715,7 +803,7 @@ test("release workflow restricts authority and pins the npm publish toolchain", 
   assert.match(publisher, /"--ignore-scripts"/);
   assert.equal(
     (workflow.match(/node scripts\/publish-if-needed\.mjs/g) ?? []).length,
-    2,
+    1,
   );
   assert.doesNotMatch(
     workflow.slice(workflow.indexOf("- name: Resolve release state")),
@@ -744,19 +832,19 @@ test("release workflow resolves the intent baseline explicitly instead of relyin
   assert.doesNotMatch(releaseIntent.body, /github\.event\.before/);
 });
 
-test("release workflow keeps the artifact download path in sync with the publish tarball prefixes", async () => {
+test("release workflow packs, uploads, downloads and publishes from one artifact directory", async () => {
   const workflow = await readFile(join(root, ".github/workflows/release.yml"), "utf8");
   const steps = namedWorkflowSteps(workflow);
   const step = (name) => steps.find((candidate) => candidate.name === name);
   const upload = step("Upload release bundle");
   const download = step("Download verified release bundle");
-  const sdkPublish = step("Publish SDK to npm (@band-ai)");
-  const openclawPublish = step("Publish OpenClaw to npm (@band-ai)");
+  const pack = step("Pack released packages (@band-ai)");
+  const publish = step("Publish to npm (@band-ai)");
 
   assert.ok(upload);
   assert.ok(download);
-  assert.ok(sdkPublish);
-  assert.ok(openclawPublish);
+  assert.ok(pack);
+  assert.ok(publish);
 
   const uploadName = upload.body.match(/^\s+name: (.+)$/m)?.[1];
   const downloadName = download.body.match(/^\s+name: (.+)$/m)?.[1];
@@ -781,25 +869,19 @@ test("release workflow keeps the artifact download path in sync with the publish
     "needs.release.outputs.source_commit must be declared as steps.source.outputs.commit, so upload and download name the same artifact",
   );
 
-  const sdkTarball = sdkPublish.body.match(/PUBLISH_TARBALL: (\S+)/)?.[1];
-  const openclawTarball = openclawPublish.body.match(/PUBLISH_TARBALL: (\S+)/)?.[1];
-  assert.ok(sdkTarball, "SDK publish step must declare PUBLISH_TARBALL");
-  assert.ok(openclawTarball, "OpenClaw publish step must declare PUBLISH_TARBALL");
-
-  const prefix = (tarball) => tarball.slice(0, tarball.lastIndexOf("/"));
-  const sdkPrefix = prefix(sdkTarball);
-  const openclawPrefix = prefix(openclawTarball);
+  const tarball = publish.body.match(/PUBLISH_TARBALL: (.+)$/m)?.[1];
+  assert.equal(tarball, "release-artifacts/${{ matrix.package.tarball }}");
+  const tarballDir = tarball.slice(0, tarball.lastIndexOf("/"));
+  assert.match(pack.body, new RegExp(`node scripts/pack-release\\.mjs ${tarballDir}\\n`));
   assert.equal(
-    openclawPrefix,
-    sdkPrefix,
-    "both publish steps must expect their tarball under the same directory prefix",
+    upload.body.match(/^\s+path: \|\n\s+(\S+)\/$/m)?.[1],
+    tarballDir,
+    "upload step must bundle the directory pack-release writes to",
   );
-
-  const downloadPath = download.body.match(/^\s+path: (.+)$/m)?.[1];
   assert.equal(
-    downloadPath,
-    sdkPrefix,
-    "download step must extract into the exact directory prefix the publish steps read from",
+    download.body.match(/^\s+path: (.+)$/m)?.[1],
+    tarballDir,
+    "download step must extract into the exact directory the publish step reads from",
   );
 
   // 1-day retention is a deliberate choice (docs/ci-cd-workflows.md), but it
@@ -881,10 +963,30 @@ test("releases and new dependency updates target main, not the dev compatibility
   assert.doesNotMatch(dependabot, /thenvoi\/integrations-team/);
 });
 
+test("the release package list agrees with the Release Please config, manifest and package names", async () => {
+  const config = JSON.parse(await readFile(join(root, "release-please-config.json"), "utf8"));
+  const manifest = JSON.parse(await readFile(join(root, ".release-please-manifest.json"), "utf8"));
+  const paths = RELEASE_PACKAGES.map((pkg) => pkg.path);
+
+  assert.deepEqual(Object.keys(config.packages).sort(), [...paths].sort());
+  assert.deepEqual(Object.keys(manifest).sort(), [...paths].sort());
+  for (const pkg of RELEASE_PACKAGES) {
+    const options = config.packages[pkg.path];
+    assert.equal(options["package-name"], pkg.name);
+    assert.deepEqual(
+      ["package.json", ...(options["extra-files"] ?? []).map((file) => file.path)],
+      pkg.versionFiles,
+      `${pkg.name} versionFiles must be exactly the files Release Please bumps`,
+    );
+    const packageJson = JSON.parse(await readFile(join(root, pkg.path, "package.json"), "utf8"));
+    assert.equal(packageJson.name, pkg.name);
+  }
+});
+
 test("published packages point at the repository that signs their provenance", async () => {
   // npm validates repository.url against the provenance statement, so a stale
   // URL (e.g. the pre-rename thenvoi remote) fails publish with a 422.
-  for (const pkg of ["packages/sdk", "packages/openclaw"]) {
+  for (const { path: pkg } of RELEASE_PACKAGES) {
     const manifest = JSON.parse(
       await readFile(join(root, pkg, "package.json"), "utf8"),
     );

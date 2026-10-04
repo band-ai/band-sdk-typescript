@@ -91,7 +91,7 @@ describe("C6 stale-live-text guard", () => {
     expect(acp).not.toContain("Authenticate with THENVOI_API_KEY.");
 
     const setup = readFileSync(
-      join(REPO_ROOT, "packages/openclaw/tests/e2e/setup.ts"),
+      join(REPO_ROOT, "plugins/openclaw/tests/e2e/setup.ts"),
       "utf8",
     );
     expect(setup).toContain("real Band environment");
