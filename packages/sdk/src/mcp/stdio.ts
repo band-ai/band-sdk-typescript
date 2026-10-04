@@ -82,12 +82,12 @@ export class BandMcpStdioServer {
     if (!session) {
       throw notRunning();
     }
-    await untilStopped(session, session.initialized.then(() => session.mcpServer.server.notification({ method, params })));
+    await session.untilStopped(session.initialized.then(() => session.mcpServer.server.notification({ method, params })));
   }
 
   /** Resolves once the client has initialized; rejects if the server stops first. Read it after `await start()`. */
   public get initialized(): Promise<void> {
-    return this.session ? untilStopped(this.session, this.session.initialized) : Promise.reject(notRunning());
+    return this.session ? this.session.untilStopped(this.session.initialized) : Promise.reject(notRunning());
   }
 
   /** Resolves once the server is not running: after stop(), or once the client went away. Read it after `await start()`. */
@@ -108,22 +108,14 @@ interface StdioSession {
   mcpServer: McpServerInstance;
   // MCP allows no server-initiated messages before the client's `notifications/initialized`.
   initialized: Promise<void>;
-  // Settles pending sends: the stdio transport never fails a write to a dead pipe.
   stopped: Promise<void>;
+  // Settles pending sends: the stdio transport never fails a write to a dead pipe.
+  untilStopped<T>(work: Promise<T>): Promise<T>;
   close(): Promise<void>;
 }
 
 function notRunning(): Error {
   return new Error("BandMcpStdioServer is not running");
-}
-
-function untilStopped<T>(session: StdioSession, work: Promise<T>): Promise<T> {
-  return Promise.race([
-    work,
-    session.stopped.then((): never => {
-      throw notRunning();
-    }),
-  ]);
 }
 
 // The SDK's stdio transport ignores stdin end and stdout errors, so the session
@@ -143,6 +135,8 @@ function openSession(
   const stopped = new Promise<void>((resolve) => {
     resolveStopped = resolve;
   });
+  // Each wait leaves the set once settled, so a long session holds nothing per send.
+  const pendingRejects = new Set<(error: Error) => void>();
 
   const clientGoneEvents: Array<[Readable | Writable, string]> = [
     [stdin, "end"],
@@ -160,11 +154,21 @@ function openSession(
     mcpServer,
     initialized,
     stopped,
+    untilStopped(work) {
+      return new Promise((resolve, reject) => {
+        pendingRejects.add(reject);
+        void work.then(resolve, reject).finally(() => pendingRejects.delete(reject));
+      });
+    },
     async close() {
       for (const [stream, event] of clientGoneEvents) {
         stream.off(event, onClientGone);
       }
+      // First, so a caller racing `stopped` sees the client leave before the failures that causes.
       resolveStopped();
+      for (const reject of pendingRejects) {
+        reject(notRunning());
+      }
       await mcpServer.close();
     },
   };
