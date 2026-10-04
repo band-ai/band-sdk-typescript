@@ -6,7 +6,9 @@
 import { describe, expect, it } from "vitest";
 
 import type { FrameworkAdapter, FrameworkAdapterInput } from "../../src/contracts/protocols";
+import { BandLink } from "../../src/platform/BandLink";
 import { PlatformRuntime } from "../../src/runtime";
+import { AgentRuntime } from "../../src/runtime/rooms/AgentRuntime";
 import { RecordLog } from "../testUtils";
 import { AGENT_API_KEY, AGENT_ID, BandPlatform, person } from "./support/bandPlatform";
 
@@ -62,5 +64,30 @@ describe("stopping while the agent's rooms are still joining", () => {
     await _next.start(next);
     expect(await room.outcome(waiting)).toBe("processed");
     expect(first.handled.entries).toEqual([inFlight]);
+  });
+
+  it("stops cleanly when the stop lands in the same tick as the start", async () => {
+    const platform = BandPlatform.host([person(USER)]);
+    const room = await platform.room("room-1");
+    const releaseLaterRoom = (await platform.room("room-2")).holdJoin();
+    const handled = new RecordLog<string>();
+    const runtime = new AgentRuntime({
+      link: new BandLink({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, ...platform.link }),
+      agentId: AGENT_ID,
+      agentConfig: { autoSubscribeExistingRooms: true },
+      onExecute: async (_context, event) => {
+        handled.record(event.type);
+      },
+    });
+
+    const starting = runtime.start();
+    const stopping = runtime.stop(STOP_AT_TURN_IN_FLIGHT_MS);
+    // Reaches a room the stop has already closed.
+    await room.say(USER, `${MENTION} hi`);
+    releaseLaterRoom();
+
+    await Promise.all([starting, stopping]);
+    expect(runtime.state.status).toBe("stopped");
+    expect(handled.entries).toEqual([]);
   });
 });

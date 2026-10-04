@@ -1,5 +1,6 @@
 import type { BandLink } from "../../platform/BandLink";
 import type { ContactEvent, PlatformEvent } from "../../platform/events";
+import { RuntimeStateError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
 import type { MetadataMap, ParticipantRecord } from "../../contracts/dtos";
 import { Execution } from "../Execution";
@@ -124,7 +125,7 @@ export class AgentRuntime {
         }
         case "message_created":
         case "reconnected":
-          await this.getOrCreateExecution(roomId).enqueue(event);
+          await this.enqueueUnlessStopping(roomId, event);
           return;
         default:
           assertNever(event);
@@ -215,7 +216,6 @@ export class AgentRuntime {
     if (pendingStart) {
       // Rooms the start has joined stop taking turns now, not after the joins still to come.
       this.stopMidStart = { timeoutMs };
-      this.presence.abortEventLoop();
       for (const execution of this.executions.values()) {
         this.stopExecutionMidStart(execution);
       }
@@ -366,6 +366,19 @@ export class AgentRuntime {
     }
 
     return graceful;
+  }
+
+  private async enqueueUnlessStopping(roomId: string, event: PlatformEvent): Promise<void> {
+    try {
+      await this.getOrCreateExecution(roomId).enqueue(event);
+    } catch (error) {
+      const stopping = this.stopMidStart !== null || this.lifecycle.is("stopping");
+      if (!(error instanceof RuntimeStateError) || !stopping) {
+        throw error;
+      }
+      // The stop closed the room first; the message stays on the platform for the next start.
+      this.logger.debug("Dropped a room event for a room the stop already closed", { roomId, eventType: event.type });
+    }
   }
 
   private stopExecutionMidStart(execution: Execution): void {
