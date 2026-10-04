@@ -23,17 +23,17 @@
     "openclaw.plugin.json"
   ],
   "scripts": {
-    "build": "pnpm --filter @band-ai/sdk build && tsup && node scripts/sync-plugin-version.js",
+    "build": "tsup && node scripts/sync-plugin-version.js",
     "dev": "tsup --watch",
-    "typecheck": "pnpm --filter @band-ai/sdk build && tsc --noEmit",
+    "typecheck": "tsc --noEmit",
     "lint": "eslint src/",
-    "test": "pnpm --filter @band-ai/sdk build && vitest run",
+    "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "pnpm --filter @band-ai/sdk build && vitest run --coverage",
-    "test:e2e": "pnpm --filter @band-ai/sdk build && node --env-file=.env node_modules/vitest/vitest.mjs run --config vitest.config.e2e.ts",
+    "test:coverage": "pnpm --dir ../.. build:sdk && vitest run --coverage",
+    "test:e2e": "pnpm --dir ../.. build:sdk && node --env-file=.env node_modules/vitest/vitest.mjs run --config vitest.config.e2e.ts",
     "clean": "rm -rf dist .local-link",
     "stage:link": "node scripts/stage-link.mjs",
-    "link:local": "pnpm build && node scripts/stage-link.mjs"
+    "link:local": "pnpm --filter @band-ai/openclaw-channel-band... build && node scripts/stage-link.mjs"
   },
   "devDependencies": {
     "@band-ai/sdk": "workspace:*",

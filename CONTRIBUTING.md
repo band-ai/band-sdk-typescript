@@ -58,8 +58,17 @@ This is a pnpm workspace with three published packages:
 
    ```bash
    pnpm -r lint
-   pnpm -r typecheck
-   pnpm -r test
+   pnpm typecheck
+   pnpm test
+   ```
+
+   The root test and typecheck commands build the SDK once before checking
+   the workspace. Plugin scripts operate on that build rather than rebuilding
+   shared output in parallel. For a plugin-only build, include its dependencies:
+
+   ```bash
+   pnpm --filter @band-ai/claude-code-plugin... build
+   pnpm --filter @band-ai/openclaw-channel-band... build
    ```
 
    If you touched anything under `.github/`, `scripts/`, or the release

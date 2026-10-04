@@ -1,6 +1,6 @@
 import { defineConfig } from "tsup";
 
-import { inlinedSdkBundleOptions } from "../../scripts/copy-wasm.mjs";
+import { inlinedSdkBundleOptions } from "../../scripts/inlined-sdk-bundle.mjs";
 
 export default defineConfig({
   entry: ["src/server.ts"],

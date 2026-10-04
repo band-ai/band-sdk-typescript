@@ -17,11 +17,11 @@
     "README.md"
   ],
   "scripts": {
-    "build": "pnpm --filter @band-ai/sdk build && tsup",
-    "typecheck": "pnpm --filter @band-ai/sdk build && tsc --noEmit",
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
     "lint": "eslint src/ tests/",
-    "test": "pnpm --filter @band-ai/sdk build && vitest run",
-    "test:live": "pnpm build && vitest run --config vitest.live.config.ts",
+    "test": "vitest run",
+    "test:live": "pnpm --filter @band-ai/claude-code-plugin... build && vitest run --config vitest.live.config.ts",
     "clean": "rm -rf dist"
   },
   "devDependencies": {

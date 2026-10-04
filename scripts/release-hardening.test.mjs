@@ -719,13 +719,13 @@ test("plugin builds copy wasm via the shared tsup onSuccess and CI packaging req
 
   for (const pluginPath of [openclawPath, releasePackage("claude-code").path]) {
     const tsupConfig = readFileSync(join(root, pluginPath, "tsup.config.ts"), "utf8");
-    assert.match(tsupConfig, /import \{ inlinedSdkBundleOptions \} from "\.\.\/\.\.\/scripts\/copy-wasm\.mjs"/);
+    assert.match(tsupConfig, /import \{ inlinedSdkBundleOptions \} from "\.\.\/\.\.\/scripts\/inlined-sdk-bundle\.mjs"/);
     assert.match(tsupConfig, /\.\.\.inlinedSdkBundleOptions/);
   }
-  const copyWasmScript = readFileSync(join(root, "scripts/copy-wasm.mjs"), "utf8");
+  const bundleScript = readFileSync(join(root, "scripts/inlined-sdk-bundle.mjs"), "utf8");
   // Exit must sit inside the catch body: before the line that closes it.
   assert.match(
-    copyWasmScript,
+    bundleScript,
     /async onSuccess\(\) \{.*?try \{.*?copyWasm\(process\.cwd\(\)\).*?\} catch \(error\) \{(?:(?!\n {4}\}).)*process\.exit\(1\)/s,
   );
 

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { Plugin } from "esbuild";
 import { defineConfig } from "tsup";
 
-import { inlinedSdkBundleOptions } from "../../scripts/copy-wasm.mjs";
+import { inlinedSdkBundleOptions } from "../../scripts/inlined-sdk-bundle.mjs";
 
 /**
  * Resolve the SDK package.json from the workspace.

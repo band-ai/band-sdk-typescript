@@ -336,7 +336,7 @@ Rules:
 
 - Every transition goes through `LifecycleTracker.transition()`, which validates it against
   `isLegalRuntimeTransition` / `isLegalExecutionTransition`. Both read a `Record` keyed by the full
-  status union, so adding a state without adding its row fails `pnpm -r typecheck`.
+  status union, so adding a state without adding its row fails `pnpm typecheck`.
 - `stopped` and `failed` are re-startable for the three runtime owners; `Execution` is terminal.
 - `start()` while a `stop()` is in flight rejects with `RuntimeStateError`.
 - `stop()` while a `start()` is in flight **supersedes** that start for `Agent` and
@@ -388,7 +388,7 @@ Run from the repo root or `packages/sdk/`:
 pnpm install
 
 # Run unit tests (all packages from root, sdk only from packages/sdk)
-pnpm -r test
+pnpm test
 pnpm --filter @band-ai/sdk test
 
 # Run a single test file
@@ -398,7 +398,7 @@ pnpm --filter @band-ai/sdk exec vitest run path/to/file.test.ts
 pnpm --filter @band-ai/sdk run coverage
 
 # Type-check (no emit)
-pnpm -r typecheck
+pnpm typecheck
 
 # Lint
 pnpm -r lint
@@ -537,8 +537,8 @@ Each example is a standalone TypeScript script runnable with `tsx`. Folders incl
 
 ```bash
 pnpm -r lint
-pnpm -r typecheck
-pnpm -r test
+pnpm typecheck
+pnpm test
 ```
 
 ## Commit & PR Titles
