@@ -41,8 +41,9 @@ function recoveredRelease(key) {
   return [{ pkg, version }];
 }
 
-try {
-  const recoveryKey = process.env.RECOVERY_PACKAGE || "";
+/** The releases this run publishes, each at a stable semantic version. */
+function selectReleases() {
+  const recoveryKey = process.env.RECOVERY_PACKAGE;
   const releases = recoveryKey
     ? recoveredRelease(recoveryKey)
     : automaticReleases(JSON.parse(process.env.RELEASE_PLEASE_OUTPUTS ?? ""));
@@ -51,7 +52,11 @@ try {
       throw new Error(`${pkg.name} release version must be a stable semantic version, got "${version}"`);
     }
   }
-  const packages = releases.map(({ pkg, version }) => ({ ...pkg, version, tarball: tarballName(pkg, version) }));
+  return releases;
+}
+
+try {
+  const packages = selectReleases().map(({ pkg, version }) => ({ ...pkg, version, tarball: tarballName(pkg, version) }));
   appendFileSync(process.env.GITHUB_OUTPUT, `packages=${JSON.stringify(packages)}\n`);
   console.log(`Releasing: ${packages.map((pkg) => `${pkg.name}@${pkg.version}`).join(", ") || "nothing"}`);
 } catch (error) {

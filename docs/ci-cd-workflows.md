@@ -36,9 +36,10 @@ to this repository's independent multi-package release:
 | `plugins/openclaw` | `@band-ai/openclaw-channel-band` |
 
 `scripts/release-packages.mjs` is the one list of released packages (path,
-npm name, tag, version files, packlist floor) that every release script and
+npm name, version files, packlist floor) that every release script and
 `release.yml` step reads. A new package needs an entry there plus its
-`release-please-config.json` and `.release-please-manifest.json` entries.
+`release-please-config.json` and `.release-please-manifest.json` entries and a
+`recover-package` option in `release.yml`.
 
 ## Branch Protection (GitHub Rulesets)
 
@@ -192,7 +193,7 @@ write`; it never installs dependencies or runs project build code.
    revision is reachable from
    `main`, checks out the commit, requires the selected package's release tag to
    resolve to exactly those bytes, validates only that package's current
-   manifest/package/plugin metadata, and selects only it for recovery.
+   manifest version and version files, and selects only it for recovery.
    With no OIDC permission, this job installs dependencies, builds all packages,
    checks each selected package's npm packlist against its listed floor and
    entries and packs it (`scripts/pack-release.mjs`), and uploads the bundle with a 1-day

@@ -149,7 +149,7 @@ jobs:
       - name: Pack released packages (@band-ai)
         if: steps.release_state.outputs.packages != '[]'
         env:
-          RELEASE_PACKAGES: ${{ steps.release_state.outputs.packages }}
+          SELECTED_PACKAGES: ${{ steps.release_state.outputs.packages }}
         run: |
           node scripts/assert-release-ready.mjs
           node scripts/pack-release.mjs release-artifacts
@@ -210,9 +210,4 @@ jobs:
           git fetch origin main:refs/remotes/origin/main
           node scripts/assert-release-ready.mjs
           node scripts/publish-if-needed.mjs
-
-      - name: Publish release summary
-        env:
-          PUBLISH_PACKAGE_NAME: ${{ matrix.package.name }}
-          PUBLISH_PACKAGE_VERSION: ${{ matrix.package.version }}
-        run: echo "- **${PUBLISH_PACKAGE_NAME}** v${PUBLISH_PACKAGE_VERSION}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **${PUBLISH_PACKAGE_NAME}** v${PUBLISH_PACKAGE_VERSION}" >> "$GITHUB_STEP_SUMMARY"

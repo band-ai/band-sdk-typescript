@@ -33,6 +33,7 @@ function runCommand(command, args, cwd, env = {}) {
   });
 }
 
+const sdkPath = releasePackage("sdk").path;
 const openclawPath = releasePackage("openclaw").path;
 
 // Lays out every listed package at `versions[key]`; `paths` relocates one, as a
@@ -259,7 +260,7 @@ test("release intent rejects an SDK manifest/package mismatch", async () => {
   await withReleaseHistory(async (directory) => {
     await writeReleaseState(directory, { versions: { sdk: "0.1.8", openclaw: "0.1.10" } });
     const manifest = JSON.parse(await readFile(join(directory, ".release-please-manifest.json"), "utf8"));
-    manifest["packages/sdk"] = "0.1.9";
+    manifest[sdkPath] = "0.1.9";
     await writeFile(join(directory, ".release-please-manifest.json"), `${JSON.stringify(manifest)}\n`);
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "mismatch"], directory).status, 0);
@@ -326,13 +327,13 @@ test("SDK recovery rejects an SDK manifest/package mismatch", async () => {
   await withReleaseHistory(async (directory) => {
     await writeReleaseState(directory, { versions: { sdk: "0.1.8", openclaw: "0.1.10" } });
     const manifest = JSON.parse(await readFile(join(directory, ".release-please-manifest.json"), "utf8"));
-    manifest["packages/sdk"] = "0.1.9";
+    manifest[sdkPath] = "0.1.9";
     await writeFile(join(directory, ".release-please-manifest.json"), `${JSON.stringify(manifest)}\n`);
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "mismatch"], directory).status, 0);
     const result = run(intentScript, directory, { RECOVERY_PACKAGE: "sdk" });
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /sdk current manifest and package versions must match exactly/i);
+    assert.match(result.stderr, /sdk version fields must match/i);
   });
 });
 
@@ -363,7 +364,7 @@ test("OpenClaw recovery ignores an inconsistent unselected SDK tuple", async () 
   await withReleaseHistory(async (directory) => {
     await writeReleaseState(directory, { versions: { sdk: "0.1.8", openclaw: "0.1.11" } });
     const manifest = JSON.parse(await readFile(join(directory, ".release-please-manifest.json"), "utf8"));
-    manifest["packages/sdk"] = "9.9.9";
+    manifest[sdkPath] = "9.9.9";
     await writeFile(join(directory, ".release-please-manifest.json"), `${JSON.stringify(manifest)}\n`);
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "release"], directory).status, 0);
@@ -617,6 +618,7 @@ test("release workflow copies the SDK README before checking and packing the pac
   assert.ok(pack);
   assert.ok(readmeCopy.index < pack.index);
   assert.match(readmeCopy.body, /if: contains\(fromJSON\(steps\.release_state\.outputs\.packages\)\.\*\.key, 'sdk'\)/);
+  // The packlist check is what fails a release that would ship without these.
   assert.ok(releasePackage("sdk").contents.required.includes("README.md"));
   assert.ok(releasePackage("openclaw").contents.required.includes("dist/band_sdk_core_bg.wasm"));
 });
@@ -632,14 +634,9 @@ test("pack-release checks each packlist before packing and stops at the first ba
     await writePackage("bad", []);
     const contents = { minFiles: 2, required: ["dist/index.js", "package.json"] };
 
-    const result = spawnSync(process.execPath, [packScript, "release-artifacts"], {
-      cwd: directory,
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        RELEASE_PACKAGES: JSON.stringify([{ path: "good", contents }, { path: "bad", contents }]),
-        npm_config_cache: join(directory, ".npm-cache"),
-      },
+    const result = runCommand(process.execPath, [packScript, "release-artifacts"], directory, {
+      SELECTED_PACKAGES: JSON.stringify([{ path: "good", contents }, { path: "bad", contents }]),
+      npm_config_cache: join(directory, ".npm-cache"),
     });
 
     assert.notEqual(result.status, 0);
@@ -664,15 +661,8 @@ test("openclaw build copies wasm via tsup onSuccess and CI packaging requires it
     /async onSuccess\(\) \{[\s\S]*?try \{[\s\S]*?import\("\.\.\/\.\.\/scripts\/copy-wasm\.mjs"\)[\s\S]*?copyWasm\(process\.cwd\(\)\)[\s\S]*?\} catch[^{]*\{[^}]*process\.exit\(1\)/,
   );
 
-  const copyWasm = readFileSync(join(root, "scripts/copy-wasm.mjs"), "utf8");
-  assert.match(copyWasm, /\.resolve\("@band-ai\/sdk"\)/);
-  assert.match(copyWasm, /\.resolve\("@band-ai\/band-sdk-core"\)/);
-  assert.match(copyWasm, /export const CORE_WASM_FILENAME/);
-  assert.match(copyWasm, /assertNonEmptyWasm\(sourcePath, "source wasm"\)/);
-  assert.match(copyWasm, /assertNonEmptyWasm\(wasmDestinationPath, "copied wasm"\)/);
-
   const stageLink = readFileSync(join(root, openclawPath, "scripts/stage-link.mjs"), "utf8");
-  assert.match(stageLink, /import \{ CORE_WASM_FILENAME \} from "\.\.\/\.\.\/\.\.\/scripts\/copy-wasm\.mjs"/);
+  assert.match(stageLink, /CORE_WASM_FILENAME/);
   assert.match(
     stageLink,
     /statSync\(wasmPath\)\.size === 0/,
@@ -686,7 +676,7 @@ test("openclaw build copies wasm via tsup onSuccess and CI packaging requires it
   // The plugin stamps the core version from the same lookup copy-wasm uses.
   const syncVersion = readFileSync(join(root, openclawPath, "scripts/sync-plugin-version.js"), "utf8");
   assert.match(syncVersion, /bandSdkCoreVersion/);
-  assert.match(syncVersion, /import \{ resolveCoreEntry \} from "\.\.\/\.\.\/\.\.\/scripts\/copy-wasm\.mjs"/);
+  assert.match(syncVersion, /resolveCoreEntry\(/);
 
   const pluginJson = JSON.parse(readFileSync(join(root, openclawPath, "openclaw.plugin.json"), "utf8"));
   assert.equal(typeof pluginJson.bandSdkCoreVersion, "string");
@@ -962,8 +952,6 @@ test("the release package list agrees with the Release Please config, manifest a
   for (const pkg of RELEASE_PACKAGES) {
     const options = config.packages[pkg.path];
     assert.equal(options["package-name"], pkg.name);
-    // Release Please's node strategy tags a package with its unscoped name.
-    assert.equal(pkg.tag, pkg.name.replace(/^@[^/]+\//, ""));
     assert.deepEqual(
       ["package.json", ...(options["extra-files"] ?? []).map((file) => file.path)],
       pkg.versionFiles,

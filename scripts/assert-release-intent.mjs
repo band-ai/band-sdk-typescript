@@ -55,15 +55,17 @@ function resolveCommit(revision) {
   return result.stdout.trim();
 }
 
+function assertMatchingStableVersion(label, versions) {
+  if (!versions.every((value) => value === versions[0])) throw new Error(`${label} version fields must match`);
+  if (!STABLE_SEMANTIC_VERSION.test(versions[0])) throw new Error(`${label} version must be stable semantic version`);
+}
+
 function assertAtomic(label, current, baseline) {
   const changed = current.map((value, index) => value !== baseline[index]);
   if (changed.some(Boolean) && !changed.every(Boolean)) {
     throw new Error(`${label} manifest and package version transition must be atomic`);
   }
-  if (changed.some(Boolean)) {
-    if (!current.every((value) => value === current[0])) throw new Error(`${label} version fields must match`);
-    if (!STABLE_SEMANTIC_VERSION.test(current[0])) throw new Error(`${label} version must be stable semantic version`);
-  }
+  if (changed.some(Boolean)) assertMatchingStableVersion(label, current);
   return changed.some(Boolean);
 }
 
@@ -76,34 +78,38 @@ async function assertNoHold() {
   }
 }
 
+async function verifyRecoveryIntent(pkg, manifest) {
+  await assertNoHold();
+  const versions = versionTuple(pkg, pkg.path, manifest, readJson);
+  assertMatchingStableVersion(pkg.key, versions);
+  if (process.env.REQUIRE_RELEASE_TAG === "true") {
+    const tag = releaseTag(pkg, versions[0]);
+    if (resolveCommit(tag) !== resolveCommit("HEAD")) throw new Error(`release tag ${tag} does not identify the checked-out release commit`);
+  }
+  console.log(`Exact ${pkg.key} recovery intent verified.`);
+}
+
+async function verifyReleaseTransitions(manifest) {
+  const baseline = resolveBaseline();
+  const parentManifest = readBaselineJson(baseline, ".release-please-manifest.json");
+  const parentConfig = readBaselineJson(baseline, "release-please-config.json");
+  const readParentJson = (path) => readBaselineJson(baseline, path);
+  const changed = RELEASE_PACKAGES.map((pkg) => assertAtomic(
+    pkg.name,
+    versionTuple(pkg, pkg.path, manifest, readJson),
+    versionTuple(pkg, baselinePath(parentConfig, pkg), parentManifest, readParentJson),
+  )).some(Boolean);
+  if (changed) await assertNoHold();
+  console.log(changed ? "Independent package release intent verified." : "No release version transition detected; release intent passed.");
+}
+
 try {
   const manifest = readJson(".release-please-manifest.json");
-  const recoveryKey = process.env.RECOVERY_PACKAGE || "";
-
+  const recoveryKey = process.env.RECOVERY_PACKAGE;
   if (recoveryKey) {
-    const pkg = releasePackage(recoveryKey);
-    await assertNoHold();
-    const versions = versionTuple(pkg, pkg.path, manifest, readJson);
-    if (!versions.every((value) => value === versions[0]) || !STABLE_SEMANTIC_VERSION.test(versions[0])) {
-      throw new Error(`${pkg.key} current manifest and package versions must match exactly`);
-    }
-    if (process.env.REQUIRE_RELEASE_TAG === "true") {
-      const tag = releaseTag(pkg, versions[0]);
-      if (resolveCommit(tag) !== resolveCommit("HEAD")) throw new Error(`release tag ${tag} does not identify the checked-out release commit`);
-    }
-    console.log(`Exact ${pkg.key} recovery intent verified.`);
+    await verifyRecoveryIntent(releasePackage(recoveryKey), manifest);
   } else {
-    const baseline = resolveBaseline();
-    const parentManifest = readBaselineJson(baseline, ".release-please-manifest.json");
-    const parentConfig = readBaselineJson(baseline, "release-please-config.json");
-    const readParentJson = (path) => readBaselineJson(baseline, path);
-    const changed = RELEASE_PACKAGES.map((pkg) => assertAtomic(
-      pkg.name,
-      versionTuple(pkg, pkg.path, manifest, readJson),
-      versionTuple(pkg, baselinePath(parentConfig, pkg), parentManifest, readParentJson),
-    )).some(Boolean);
-    if (changed) await assertNoHold();
-    console.log(changed ? "Independent package release intent verified." : "No release version transition detected; release intent passed.");
+    await verifyReleaseTransitions(manifest);
   }
 } catch (error) {
   console.error(`Release intent rejected: ${error instanceof Error ? error.message : String(error)}`);

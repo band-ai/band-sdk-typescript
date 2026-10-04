@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 
 export const CORE_WASM_FILENAME = "band_sdk_core_bg.wasm";
 
-export function assertNonEmptyWasm(path, label) {
+function assertNonEmptyWasm(path, label) {
   const size = statSync(path).size;
   if (size === 0) {
     throw new Error(`[copy-wasm] ${label} is empty: ${path}`);

@@ -458,7 +458,10 @@ describe("P-C5-3: release workflow has no package mutation", () => {
     const yml = readFileSync(join(REPO_ROOT, ".github/workflows/release.yml"), "utf-8");
     expect(yml).not.toMatch(/sed[^\n]*packages\/sdk\/package\.json/);
     expect(yml).not.toContain("@thenvoi/sdk");
-    expect(yml).toMatch(/npm pack --pack-destination/);
+    // release.yml packs through pack-release.mjs, which runs a plain npm pack per package.
+    expect(yml).toMatch(/node scripts\/pack-release\.mjs/);
+    const packer = readFileSync(join(REPO_ROOT, "scripts/pack-release.mjs"), "utf-8");
+    expect(packer).toMatch(/\["pack", "--pack-destination"/);
   });
 });
 
