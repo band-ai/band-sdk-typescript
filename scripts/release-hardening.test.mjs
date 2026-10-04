@@ -37,6 +37,8 @@ const sdkPath = releasePackage("sdk").path;
 const openclawPath = releasePackage("openclaw").path;
 
 const UNRELEASED_VERSION = "0.0.0";
+/** The versions every release-history fixture starts from. */
+const BASELINE_VERSIONS = { sdk: "0.1.7", openclaw: "0.1.10" };
 
 // Lays out every listed package at `versions[key]`, or unreleased when a test
 // doesn't name it; `paths` relocates one, as a commit from before a package move
@@ -72,7 +74,7 @@ async function withReleaseHistory(callback, { paths, omit } = {}) {
       runCommand("git", ["config", "user.name", "Release Test"], directory).status,
       0,
     );
-    await writeReleaseState(directory, { versions: { sdk: "0.1.7", openclaw: "0.1.10" }, paths, omit });
+    await writeReleaseState(directory, { versions: BASELINE_VERSIONS, paths, omit });
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "initial"], directory).status, 0);
     await callback(directory);
@@ -441,7 +443,7 @@ async function commitOpenclawMove(directory, versions) {
 
 test("release intent follows a moved package to its baseline path by package name", async () => {
   await withReleaseHistory(async (directory) => {
-    await commitOpenclawMove(directory, { sdk: "0.1.7", openclaw: "0.1.10" });
+    await commitOpenclawMove(directory, BASELINE_VERSIONS);
     const result = run(intentScript, directory, { RELEASE_BASE_COMMIT: "HEAD^" });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /No release version transition detected/);
@@ -463,7 +465,7 @@ const addedPackage = RELEASE_PACKAGES.at(-1);
 
 /** Commit the listed layout over a baseline that didn't list `addedPackage` yet. */
 async function commitAddedPackage(directory, { hold = false } = {}) {
-  await writeReleaseState(directory, { versions: { sdk: "0.1.7", openclaw: "0.1.10" }, hold });
+  await writeReleaseState(directory, { versions: BASELINE_VERSIONS, hold });
   assert.equal(runCommand("git", ["add", "-A"], directory).status, 0);
   assert.equal(runCommand("git", ["commit", "-qm", "add package"], directory).status, 0);
 }
@@ -1072,6 +1074,9 @@ test("CI exposes one always-reporting aggregate status covering every job", asyn
   );
 });
 
+/** What CI must run for every released package. */
+const CI_PACKAGE_SCRIPTS = ["typecheck", "lint", "test"];
+
 test("CI uses exact nonempty package filters and selects every package for control paths", async () => {
   const workflow = await readFile(join(root, ".github/workflows/ci.yml"), "utf8");
 
@@ -1084,9 +1089,17 @@ test("CI uses exact nonempty package filters and selects every package for contr
     assert.match(command[1], /^pnpm --fail-if-no-match --filter /);
   }
   for (const pkg of RELEASE_PACKAGES) {
-    assert.ok(workflow.includes(`pnpm --fail-if-no-match --filter ${pkg.name} `), `CI must build or test ${pkg.name}`);
+    for (const script of CI_PACKAGE_SCRIPTS) {
+      assert.ok(workflow.includes(`pnpm --fail-if-no-match --filter ${pkg.name} ${script}`), `CI must ${script} ${pkg.name}`);
+    }
   }
 
+  const sharedFilter = workflow.match(/^ {12}shared: &shared\n((?: {14}- .+\n)+)/m)?.[1] ?? "";
+  assert.equal(
+    (workflow.match(/^ {14}- \*shared$/gm) ?? []).length,
+    RELEASE_PACKAGES.length,
+    "every package filter must select the shared control paths",
+  );
   for (const requiredPath of [
     ".github/**",
     "scripts/**",
@@ -1097,9 +1110,7 @@ test("CI uses exact nonempty package filters and selects every package for contr
     ".release-please-manifest.json",
     ".release-hold",
   ]) {
-    const escaped = requiredPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const occurrences = workflow.match(new RegExp(`['\"]${escaped}['\"]`, "g")) ?? [];
-    assert.equal(occurrences.length, RELEASE_PACKAGES.length, `${requiredPath} must select every package`);
+    assert.ok(sharedFilter.includes(`'${requiredPath}'`), `${requiredPath} must be a shared control path`);
   }
 });
 

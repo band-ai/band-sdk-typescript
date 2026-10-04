@@ -39,6 +39,8 @@ jobs:
       sdk: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.sdk }}
       openclaw: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.openclaw }}
       claude-code: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.claude-code }}
+      # Any package selected: gates the jobs and steps every package shares.
+      any: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.changes != '[]' }}
     steps:
       # Only feeds paths-filter below, which itself only runs on pull_request —
       # skip the checkout too on push so a trunk run doesn't pay for a step with
@@ -51,46 +53,35 @@ jobs:
         id: filter
         if: github.event_name == 'pull_request'
         with:
+          # `shared` lists the control paths that select every package.
           filters: |
+            shared: &shared
+              - '.github/**'
+              - 'scripts/**'
+              - 'package.json'
+              - 'pnpm-workspace.yaml'
+              - 'pnpm-lock.yaml'
+              - 'release-please-config.json'
+              - '.release-please-manifest.json'
+              - '.release-hold'
             sdk:
               - 'packages/sdk/**'
               # The C5 drift proofs assert against these committed fixtures, so
               # a PR that only edits one still has to run the SDK suite.
               - 'docs/migrations/**'
-              - '.github/**'
-              - 'scripts/**'
-              - 'package.json'
-              - 'pnpm-workspace.yaml'
-              - 'pnpm-lock.yaml'
-              - 'release-please-config.json'
-              - '.release-please-manifest.json'
-              - '.release-hold'
+              - *shared
             openclaw:
               - 'plugins/openclaw/**'
               - 'packages/sdk/**'
-              - '.github/**'
-              - 'scripts/**'
-              - 'package.json'
-              - 'pnpm-workspace.yaml'
-              - 'pnpm-lock.yaml'
-              - 'release-please-config.json'
-              - '.release-please-manifest.json'
-              - '.release-hold'
+              - *shared
             claude-code:
               - 'plugins/claude-code/**'
               - 'packages/sdk/**'
-              - '.github/**'
-              - 'scripts/**'
-              - 'package.json'
-              - 'pnpm-workspace.yaml'
-              - 'pnpm-lock.yaml'
-              - 'release-please-config.json'
-              - '.release-please-manifest.json'
-              - '.release-hold'
+              - *shared
 
   lint:
     needs: changes
-    if: needs.changes.outputs.sdk == 'true' || needs.changes.outputs.openclaw == 'true' || needs.changes.outputs.claude-code == 'true'
+    if: needs.changes.outputs.any == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -109,7 +100,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build SDK
-        if: needs.changes.outputs.sdk == 'true' || needs.changes.outputs.openclaw == 'true' || needs.changes.outputs.claude-code == 'true'
+        if: needs.changes.outputs.any == 'true'
         run: pnpm --fail-if-no-match --filter @band-ai/sdk build
 
       - name: Build OpenClaw
@@ -142,7 +133,7 @@ jobs:
 
   test:
     needs: changes
-    if: needs.changes.outputs.sdk == 'true' || needs.changes.outputs.openclaw == 'true' || needs.changes.outputs.claude-code == 'true'
+    if: needs.changes.outputs.any == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -173,7 +164,7 @@ jobs:
           RELEASE_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
 
       - name: Build SDK
-        if: needs.changes.outputs.sdk == 'true' || needs.changes.outputs.openclaw == 'true' || needs.changes.outputs.claude-code == 'true'
+        if: needs.changes.outputs.any == 'true'
         run: pnpm --fail-if-no-match --filter @band-ai/sdk build
 
       - name: Build OpenClaw

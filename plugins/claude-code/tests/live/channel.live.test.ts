@@ -7,7 +7,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { describe, expect, it } from "vitest";
 
-import { EXIT_FAILED, EXIT_OK } from "../../src/channel";
+import { CHANNEL_CAPABILITY, EXIT_FAILED, EXIT_OK } from "../../src/channel";
 import { Agents, type AgentIdentity } from "../../../../packages/sdk/tests/baseline/toolkit/agents";
 import { DELIVERY_STATUS, observeAgent } from "../../../../packages/sdk/tests/baseline/toolkit/observeDelivery";
 import { observeRoom, REPLY_WAIT } from "../../../../packages/sdk/tests/baseline/toolkit/observeMessages";
@@ -15,7 +15,7 @@ import { Rooms, type Room } from "../../../../packages/sdk/tests/baseline/toolki
 import { PluginProcess } from "./support/pluginProcess";
 
 const CONFLICT_CODE = "connection_conflict";
-// Measured 2026-10-04: a refusal came 1.4 s after a crash, and a relaunch 2 s later served (INT-1673).
+// The platform can briefly hold a crashed session's agent (INT-1673); relaunches stop well past that.
 const CRASH_RELEASE_WINDOW_MS = 30_000;
 const RELAUNCH_DELAY_MS = 2_000;
 
@@ -36,7 +36,6 @@ async function relaunchUntilServing(identity: AgentIdentity, room: Room): Promis
     const plugin = await PluginProcess.start(identity);
     try {
       await expectServing(plugin, room, identity, `after a crash, attempt ${attempt}`);
-      console.log(`claude-code live: served ${Date.now() - crashedAt} ms after a crash, on attempt ${attempt}`);
       return plugin;
     } catch (error) {
       const refused = (await plugin.exited).stderr.includes(CONFLICT_CODE);
@@ -59,7 +58,7 @@ describe("the Claude Code plugin on the live platform", () => {
     const { identity, room } = await agentInRoom("session");
     const plugin = await PluginProcess.start(identity);
 
-    expect(plugin.client.getServerCapabilities()?.experimental).toEqual({ "claude/channel": {} });
+    expect(plugin.client.getServerCapabilities()?.experimental).toEqual({ [CHANNEL_CAPABILITY]: {} });
     const { tools } = await plugin.client.listTools();
     expect(tools.find((tool) => tool.name === "band_send_message")?.inputSchema.required).toContain("room_id");
 

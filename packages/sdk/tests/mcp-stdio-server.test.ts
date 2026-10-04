@@ -8,7 +8,7 @@ import { describe, expect, test } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { STDIO_DEFAULT_MAX_BUFFER_SIZE } from "@modelcontextprotocol/sdk/shared/stdio.js";
-import type { Notification } from "@modelcontextprotocol/sdk/types.js";
+import { LATEST_PROTOCOL_VERSION, type Notification } from "@modelcontextprotocol/sdk/types.js";
 
 import { BandMcpStdioServer } from "../src/mcp/stdio";
 import {
@@ -155,7 +155,7 @@ describe("BandMcpStdioServer lifecycle", () => {
       await client.connect(new StdioServerTransport(stdout, stdin));
       return client;
     };
-    return { server, stdin, connectClient };
+    return { server, stdin, stdout, connectClient };
   }
 
   test("keeps the default handshake and tools without the new options", async () => {
@@ -186,21 +186,23 @@ describe("BandMcpStdioServer lifecycle", () => {
     expect(stopped).toBe(true);
   });
 
-  test("resolves initialized once the client finishes its handshake", async () => {
-    const { server, connectClient } = inProcessServer();
+  test("resolves initialized on the client's initialized notification, not its initialize request", async () => {
+    const { server, stdin, stdout } = inProcessServer();
     await server.start();
     let initialized = false;
     void server.initialized.then(() => {
       initialized = true;
     });
+    const send = (message: Record<string, unknown>) => stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
 
-    await Promise.resolve();
+    const initializeResult = once(stdout, "data");
+    send({ id: 1, method: "initialize", params: { protocolVersion: LATEST_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "test-client", version: "1.0.0" } } });
+    await initializeResult;
     expect(initialized).toBe(false);
 
-    const client = await connectClient();
+    send({ method: "notifications/initialized" });
     await server.initialized;
-    expect(initialized).toBe(true);
-    await Promise.all([client.close(), server.stop()]);
+    await server.stop();
   });
 
   test("rejects initialized when the server stops before the client initializes", async () => {

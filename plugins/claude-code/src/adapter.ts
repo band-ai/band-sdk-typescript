@@ -1,10 +1,10 @@
-import type { AdapterToolsProtocol, FrameworkAdapter, FrameworkAdapterInput } from "@band-ai/sdk/core";
+import { deliverReply, type AdapterToolsProtocol, type FrameworkAdapter, type FrameworkAdapterInput } from "@band-ai/sdk/core";
 import { commandWords } from "@band-ai/sdk/runtime";
 
-/** The Claude Code notification that injects a channel event into the session. */
-export const CHANNEL_METHOD = "notifications/claude/channel";
-
 export const COMMAND_REFUSAL = "Only this agent's owner can run slash commands.";
+
+/** The `sender_role` a push carries; the instructions name the same values. */
+export const SENDER_ROLE = { owner: "owner", participant: "participant" } as const;
 
 const TEXT_MESSAGE_TYPE = "text";
 const COMMAND_PREFIX = "/";
@@ -37,7 +37,7 @@ export class ChannelAdapter implements FrameworkAdapter {
 
     const isOwner = message.senderId === this.options.ownerUuid;
     if (!isOwner && isSlashCommand(message.content)) {
-      await tools.sendMessage(COMMAND_REFUSAL, [message.senderId]);
+      await deliverReply(tools, COMMAND_REFUSAL, [message.senderId]);
       return;
     }
 
@@ -64,7 +64,7 @@ function channelMeta(message: FrameworkAdapterInput["message"], isOwner: boolean
     message_id: message.id,
     sender_id: message.senderId,
     ...(message.senderName ? { sender_name: message.senderName } : {}),
-    sender_role: isOwner ? "owner" : "participant",
+    sender_role: isOwner ? SENDER_ROLE.owner : SENDER_ROLE.participant,
     sender_type: message.senderType,
   };
 }

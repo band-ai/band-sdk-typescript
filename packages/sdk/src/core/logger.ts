@@ -120,6 +120,14 @@ export class ConsoleLogger implements Logger {
 
 /** Writes every level to stderr, for a process whose stdout is a protocol stream, such as an MCP stdio server. */
 export class StderrLogger implements Logger {
+  public constructor() {
+    // Such a process outlives its host's end of the pipe, and a write to a closed pipe with no
+    // error listener crashes it mid-teardown.
+    if (!process.stderr.listeners("error").includes(noop)) {
+      process.stderr.on("error", noop);
+    }
+  }
+
   public debug(message: string, context?: Record<string, unknown>): void {
     writeStderr(`[debug] ${message}`, context);
   }

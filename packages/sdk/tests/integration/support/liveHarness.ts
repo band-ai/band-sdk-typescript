@@ -5,6 +5,8 @@
  * (mirrors tests/support's role for unit-test fakes).
  */
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { BandClient } from "@band-ai/rest-client";
 
@@ -172,3 +174,18 @@ export async function reapProvisioned(
  * a wait must also outlast one capped hung turn plus a normal one (see the baseline's tool-calling turn cap).
  */
 export const LIVE_EVENT_TIMEOUT_MS = 120_000;
+
+/**
+ * One live test: it chains setup and several waits, each bounded by LIVE_EVENT_TIMEOUT_MS, and outlasts
+ * them all, so a stalled wait fails naming what it waited for, not as a bare timeout.
+ */
+export const LIVE_TEST_TIMEOUT_MS = LIVE_EVENT_TIMEOUT_MS * 3;
+
+const LOCAL_ENV_FILE = fileURLToPath(new URL("../../../../../.env.test", import.meta.url));
+
+/** Local runs read credentials from the repo's .env.test; variables already set (CI secrets) win. */
+export function loadLocalEnvFile(): void {
+  if (existsSync(LOCAL_ENV_FILE)) {
+    process.loadEnvFile(LOCAL_ENV_FILE);
+  }
+}

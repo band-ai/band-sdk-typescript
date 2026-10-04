@@ -16,6 +16,7 @@ import { PlatformRuntime } from "../../../src/runtime/PlatformRuntime";
 import { assertMentioned, CallHolds, FakeRestApi, FakeTransport, RecordLog, wireMention, type HeldCall } from "../../testUtils";
 
 export const AGENT_ID = "agent-1";
+export const AGENT_API_KEY = "flow-test-key";
 export const AGENT_HANDLE = "owner/agent";
 
 // The agent is mentionable but never a room participant, so the participants
@@ -37,6 +38,8 @@ export type Outcome = "processed" | "failed";
 export interface PostOptions {
   readonly senderType?: "User" | "Agent";
   readonly messageType?: string;
+  /** The display name the platform sends; the sender id by default. */
+  readonly senderName?: string | null;
 }
 
 /** The agent's identity as `getAgentMe` reports it. */
@@ -76,6 +79,7 @@ export class RecordingRestApi extends FakeRestApi {
   private readonly backlog: HistoryEntry[] = [];
   private readonly rooms = new Set<string>();
   public readonly messageHolds = new CallHolds<[roomId: string, content: string]>();
+  public readonly processingHolds = new CallHolds<[messageId: string]>();
 
   public constructor(private readonly participants: readonly ParticipantRecord[], identity: AgentIdentityOptions = {}) {
     super({}, { id: AGENT_ID, name: "Agent", description: "Flow test agent", ...identity });
@@ -100,8 +104,8 @@ export class RecordingRestApi extends FakeRestApi {
     this.rooms.delete(roomId);
   }
 
-  /** Leaves a message waiting for an agent that is not connected yet. */
-  public leave(roomId: string, item: PlatformChatMessage): void {
+  /** Adds a message to the backlog an agent that is not connected yet finds once it connects. */
+  public addBacklog(roomId: string, item: PlatformChatMessage): void {
     this.remember(roomId, item);
     this.backlog.push({ roomId, item });
   }
@@ -133,6 +137,7 @@ export class RecordingRestApi extends FakeRestApi {
 
   public override async markMessageProcessing(_roomId: string, messageId: string) {
     this.processing.record(messageId);
+    await this.processingHolds.pass(messageId);
     return {};
   }
 
@@ -174,9 +179,9 @@ export class BandRoom {
     return this.platform.post(this.id, senderId, content, options);
   }
 
-  /** Leaves `content` from `senderId` for the agent to find once it connects; resolves with its message id. */
-  public leave(senderId: string, content: string, options?: PostOptions): string {
-    return this.platform.leave(this.id, senderId, content, options);
+  /** Posts `content` from `senderId` for the agent to find once it connects; returns its message id. */
+  public postBeforeConnect(senderId: string, content: string, options?: PostOptions): string {
+    return this.platform.postBeforeConnect(this.id, senderId, content, options);
   }
 
   /** Posts `content` from `senderId`, waits for the runtime to settle it, and returns what the agent told that sender meanwhile. */
@@ -219,6 +224,11 @@ export class BandRoom {
     return this.platform.rest.messageHolds.hold((roomId, content) => roomId === this.id && matches(content), options);
   }
 
+  /** Keeps the runtime's processing mark for `messageId` in flight until released. */
+  public holdProcessing(messageId: string): HeldCall<[messageId: string]> {
+    return this.platform.rest.processingHolds.hold((id) => id === messageId);
+  }
+
   public until(predicate: () => boolean): Promise<void> {
     return this.platform.rest.posted.until(predicate);
   }
@@ -252,8 +262,8 @@ export class BandPlatform implements AsyncDisposable {
     const platform = new BandPlatform(participants, rest);
     platform.runtime = new PlatformRuntime({
       agentId: AGENT_ID,
-      apiKey: "flow-test-key",
-      link: new BandLink({ agentId: AGENT_ID, apiKey: "flow-test-key", transport: platform.transport, restApi: platform.rest }),
+      apiKey: AGENT_API_KEY,
+      link: new BandLink({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, transport: platform.transport, restApi: platform.rest }),
     });
     await platform.runtime.start(adapter);
     return platform;
@@ -290,9 +300,9 @@ export class BandPlatform implements AsyncDisposable {
     return message.id;
   }
 
-  public leave(roomId: string, senderId: string, content: string, options?: PostOptions): string {
+  public postBeforeConnect(roomId: string, senderId: string, content: string, options?: PostOptions): string {
     const message = this.message(senderId, content, options);
-    this.rest.leave(roomId, message);
+    this.rest.addBacklog(roomId, message);
     return message.id;
   }
 
@@ -302,7 +312,7 @@ export class BandPlatform implements AsyncDisposable {
       .map(({ id, name, type, handle }) => wireMention({ id, name, handle: handle ?? null, type: type.toLowerCase() }));
     return {
       id: `msg-${randomUUID()}`, content, message_type: options.messageType ?? "text", sender_id: senderId,
-      sender_type: options.senderType ?? "User", sender_name: senderId, metadata: { mentions }, inserted_at: now(), updated_at: now(),
+      sender_type: options.senderType ?? "User", sender_name: options.senderName === undefined ? senderId : options.senderName, metadata: { mentions }, inserted_at: now(), updated_at: now(),
     };
   }
 

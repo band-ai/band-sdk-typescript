@@ -69,7 +69,7 @@ If the channel doesn't register, Claude Code still starts, the startup notice sa
 | The agent's own messages, and events such as thoughts | Not pushed |
 | Every pushed or refused message | Marked processed on Band once it reaches Claude Code, whether or not Claude replies |
 | A second Claude Code session on the same agent | Refused with `connection_conflict`. The first session keeps the agent |
-| Claude Code exits | The plugin disconnects and exits, so the next session can connect |
+| Claude Code exits | The plugin disconnects and exits, so the next session can connect. Messages it hadn't pushed yet wait for that session |
 
 Each pushed message carries `room_id`, `message_id`, `sender_id`, `sender_name`, `sender_role` (`owner` or `participant`) and `sender_type` (`User` or `Agent`). Claude replies with `band_send_message` in the message's own room, mentioning whoever it addresses.
 

@@ -1,6 +1,13 @@
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { fileURLToPath } from "node:url";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ConsoleLogger, NoopLogger, resolveLogger, StderrLogger, type Logger } from "../src/core/logger";
+import { TEARDOWN_DONE } from "./fixtures/stderrLoggerChild";
+
+const STDERR_LOGGER_CHILD = fileURLToPath(new URL("./fixtures/stderrLoggerChild.ts", import.meta.url));
 
 describe("ConsoleLogger", () => {
   afterEach(() => {
@@ -74,6 +81,23 @@ describe("StderrLogger", () => {
     expect(stdout).not.toHaveBeenCalled();
     const lines = stderr.mock.calls.map(([chunk]) => String(chunk));
     expect(lines).toEqual(["[debug] d {\"apiKey\":\"[REDACTED]\"}\n", "[info] i\n", "[warn] w\n", "[error] e\n"]);
+  });
+
+  it("keeps a process alive through teardown after its host closed stderr", async () => {
+    const child = spawn(process.execPath, ["--import", "tsx", STDERR_LOGGER_CHILD]);
+    let stdout = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    const exited = once(child, "exit");
+
+    // The host exits: both of its pipe ends close.
+    child.stderr.destroy();
+    child.stdin.end();
+
+    const [exitCode] = (await exited) as [number | null];
+    expect(stdout).toContain(TEARDOWN_DONE);
+    expect(exitCode).toBe(0);
   });
 });
 

@@ -5,11 +5,20 @@ import { BandMcpStdioServer } from "@band-ai/sdk/mcp";
 import { PlatformRuntime } from "@band-ai/sdk/runtime";
 import type { Readable, Writable } from "node:stream";
 
-import { CHANNEL_METHOD, ChannelAdapter } from "./adapter";
+import { ChannelAdapter, type ChannelPush } from "./adapter";
 import { CHANNEL_INSTRUCTIONS } from "./prompt";
+
+/** The experimental capability that makes Claude Code register the server as a channel. */
+export const CHANNEL_CAPABILITY = "claude/channel";
+/** The Claude Code notification that injects a channel event into the session. */
+export const CHANNEL_METHOD = "notifications/claude/channel";
 
 export const EXIT_OK = 0;
 export const EXIT_FAILED = 1;
+
+// Turns still running when the session ends are abandoned, not drained: their pushes never settle.
+const ABANDON_IN_FLIGHT_TURNS_MS = 0;
+const NEVER: Promise<never> = new Promise(() => {});
 
 export interface RunChannelOptions {
   readonly credentials: AgentCredentials;
@@ -35,29 +44,39 @@ export async function runChannel({ credentials, link, stdin, stdout, logger }: R
   await runtime.initialize();
   const { ownerUuid } = await runtime.link.rest.getAgentMe();
 
-  const adapter = new ChannelAdapter({ ownerUuid, push: (push) => server.notify(CHANNEL_METHOD, push) });
+  const adapter = new ChannelAdapter({ ownerUuid, push: (push) => pushUnlessEnded(server, push) });
   const server: BandMcpStdioServer = new BandMcpStdioServer({
     tools: (roomId) => adapter.toolsFor(roomId),
-    capabilities: { experimental: { "claude/channel": {} } },
+    capabilities: { experimental: { [CHANNEL_CAPABILITY]: {} } },
     instructions: CHANNEL_INSTRUCTIONS,
     stdin,
     stdout,
   });
 
   await server.start();
-  try {
+  const serve = async (): Promise<number> => {
     // Messages waiting on the platform are pushed only once Claude Code can receive them.
     await server.initialized;
     await runtime.start(adapter);
-    return await Promise.race([
-      server.stopped.then(() => EXIT_OK),
-      runtime.runForever().then(() => EXIT_OK),
-    ]);
+    await runtime.runForever();
+    return EXIT_OK;
+  };
+  try {
+    // Claude Code leaving settles first, whichever phase it interrupts.
+    return await Promise.race([server.stopped.then(() => EXIT_OK), serve()]);
   } catch (error) {
     logger.error("Band channel stopped", { error });
     return EXIT_FAILED;
   } finally {
     // stop() rethrows the error a superseded runtime failed with, which is already logged.
-    await Promise.allSettled([runtime.stop(), server.stop()]);
+    await Promise.allSettled([runtime.stop(ABANDON_IN_FLIGHT_TURNS_MS), server.stop()]);
   }
+}
+
+/**
+ * Pushes an event into the session. The server rejects only once the session has ended;
+ * that push then never settles, so the runtime leaves its message unmarked for the next session.
+ */
+function pushUnlessEnded(server: BandMcpStdioServer, push: ChannelPush): Promise<void> {
+  return server.notify(CHANNEL_METHOD, push).catch(() => NEVER);
 }
