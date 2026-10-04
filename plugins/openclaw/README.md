@@ -21,7 +21,7 @@ channel account, and restarts the gateway in one go. Replace the
 key, then run it:
 
 ```bash
-bash packages/openclaw/scripts/install-band.sh
+bash plugins/openclaw/scripts/install-band.sh
 ```
 
 It prints the new agent's ID and a one-time agent API key — save the key, it is
@@ -186,7 +186,7 @@ package directory directly. Use the staging helper, which copies only
 
 ```bash
 pnpm link:local   # build + stage .local-link/
-openclaw plugins install --link packages/openclaw/.local-link --force
+openclaw plugins install --link plugins/openclaw/.local-link --force
 ```
 
 ## License

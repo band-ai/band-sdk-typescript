@@ -9,6 +9,7 @@ on:
         description: Run automatic Release Please, or recover one package from its exact tagged release commit
         required: true
         type: choice
+        # automatic, then each `key` in scripts/release-packages.mjs.
         options: [automatic, sdk, openclaw]
         default: automatic
       release-commit:
@@ -26,12 +27,12 @@ jobs:
   release:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    env:
+      # The package a manual dispatch recovers; empty for an automatic release.
+      RECOVERY_PACKAGE: ${{ inputs['recover-package'] != 'automatic' && inputs['recover-package'] || '' }}
     outputs:
       source_commit: ${{ steps.source.outputs.commit }}
-      sdk_created: ${{ steps.release_state.outputs.sdk_created }}
-      sdk_version: ${{ steps.release_state.outputs.sdk_version }}
-      openclaw_created: ${{ steps.release_state.outputs.openclaw_created }}
-      openclaw_version: ${{ steps.release_state.outputs.openclaw_version }}
+      packages: ${{ steps.release_state.outputs.packages }}
 
     steps:
       - name: Checkout repository
@@ -40,7 +41,7 @@ jobs:
           fetch-depth: 0
 
       - name: Checkout recovery source
-        if: inputs['recover-package'] == 'sdk' || inputs['recover-package'] == 'openclaw'
+        if: env.RECOVERY_PACKAGE != ''
         env:
           RELEASE_COMMIT: ${{ inputs['release-commit'] }}
         shell: bash
@@ -94,17 +95,16 @@ jobs:
       - name: Verify release intent
         env:
           RELEASE_BASE_COMMIT: ${{ steps.release_baseline.outputs.commit }}
-          RECOVERY_PACKAGE: ${{ (inputs['recover-package'] == 'sdk' || inputs['recover-package'] == 'openclaw') && inputs['recover-package'] || '' }}
-          REQUIRE_RELEASE_TAG: ${{ inputs['recover-package'] == 'sdk' || inputs['recover-package'] == 'openclaw' }}
+          REQUIRE_RELEASE_TAG: ${{ env.RECOVERY_PACKAGE != '' }}
         run: node scripts/assert-release-intent.mjs
 
       - name: Release Please
-        if: inputs['recover-package'] == 'automatic' || inputs['recover-package'] == ''
+        if: env.RECOVERY_PACKAGE == ''
         # Commit-pinned so a mutable release tag can't silently change the
         # workflow that publishes to npm; Dependabot updates this SHA with each
-        # v4 release. Staying on v4 is deliberate — the per-package output names
-        # this job reads (`packages/sdk--release_created`) are v4's.
-        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v4; immutable pin protects tag and release creation
+        # release. The release state below reads its per-package outputs, keyed
+        # by package path (`packages/sdk--release_created`).
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0; immutable pin protects tag and release creation
         id: release
         with:
           token: ${{ steps.app_token_generator.outputs.token }}
@@ -113,95 +113,49 @@ jobs:
           target-branch: main
           skip-github-release: ${{ steps.release_mode.outputs.skip_github_release }}
 
-      # Note: releases_created (plural) is broken in release-please v4 —
-      # it returns true even when no release occurred.  Gate on individual
-      # package outputs instead.
       - name: Resolve release state
         id: release_state
         env:
-          RECOVER_PACKAGE: ${{ inputs['recover-package'] }}
-          SDK_RELEASE_CREATED: ${{ steps.release.outputs['packages/sdk--release_created'] }}
-          SDK_RELEASE_VERSION: ${{ steps.release.outputs['packages/sdk--version'] }}
-          OPENCLAW_RELEASE_CREATED: ${{ steps.release.outputs['packages/openclaw--release_created'] }}
-          OPENCLAW_RELEASE_VERSION: ${{ steps.release.outputs['packages/openclaw--version'] }}
-        shell: bash
-        run: |
-          case "$RECOVER_PACKAGE" in
-            sdk)
-              sdk_version=$(node -p "require('./packages/sdk/package.json').version")
-              printf 'sdk_created=true\nsdk_version=%s\nopenclaw_created=false\nopenclaw_version=\n' "$sdk_version" >> "$GITHUB_OUTPUT" ;;
-            openclaw)
-              openclaw_version=$(node -p "require('./packages/openclaw/package.json').version")
-              printf 'sdk_created=false\nsdk_version=\nopenclaw_created=true\nopenclaw_version=%s\n' "$openclaw_version" >> "$GITHUB_OUTPUT" ;;
-            automatic|'')
-              printf 'sdk_created=%s\nsdk_version=%s\n' "$SDK_RELEASE_CREATED" "$SDK_RELEASE_VERSION" >> "$GITHUB_OUTPUT"
-              printf 'openclaw_created=%s\nopenclaw_version=%s\n' "$OPENCLAW_RELEASE_CREATED" "$OPENCLAW_RELEASE_VERSION" >> "$GITHUB_OUTPUT" ;;
-            *) echo "recover-package must be automatic, sdk, or openclaw" >&2; exit 1 ;;
-          esac
-
-      - name: Verify independent release outputs
-        env:
-          SDK_RELEASE_CREATED: ${{ steps.release_state.outputs.sdk_created }}
-          SDK_RELEASE_VERSION: ${{ steps.release_state.outputs.sdk_version }}
-          OPENCLAW_RELEASE_CREATED: ${{ steps.release_state.outputs.openclaw_created }}
-          OPENCLAW_RELEASE_VERSION: ${{ steps.release_state.outputs.openclaw_version }}
-        run: node scripts/assert-release-outputs.mjs
+          RELEASE_PLEASE_OUTPUTS: ${{ toJSON(steps.release.outputs) }}
+        run: node scripts/resolve-release-state.mjs
 
       - name: Record release source
         id: source
         run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Install pnpm
-        if: steps.release_state.outputs.sdk_created == 'true' || steps.release_state.outputs.openclaw_created == 'true'
+        if: steps.release_state.outputs.packages != '[]'
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v4; immutable pin protects the publish toolchain
 
       - name: Setup Node
-        if: steps.release_state.outputs.sdk_created == 'true' || steps.release_state.outputs.openclaw_created == 'true'
+        if: steps.release_state.outputs.packages != '[]'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v4; immutable pin protects package construction
         with:
           node-version: 22
           cache: pnpm
 
       - name: Install dependencies
-        if: steps.release_state.outputs.sdk_created == 'true' || steps.release_state.outputs.openclaw_created == 'true'
+        if: steps.release_state.outputs.packages != '[]'
         run: pnpm install --frozen-lockfile
 
       - name: Build all packages
-        if: steps.release_state.outputs.sdk_created == 'true' || steps.release_state.outputs.openclaw_created == 'true'
+        if: steps.release_state.outputs.packages != '[]'
         run: pnpm build
 
       - name: Copy README into SDK package
-        if: steps.release_state.outputs.sdk_created == 'true'
+        if: contains(fromJSON(steps.release_state.outputs.packages).*.key, 'sdk')
         run: cp README.md packages/sdk/README.md
 
-      - name: Assert SDK package contents
-        if: steps.release_state.outputs.sdk_created == 'true'
-        run: node scripts/assert-package-contents.mjs packages/sdk 75 dist/index.js dist/index.d.ts README.md package.json
-
-      - name: Assert OpenClaw package contents
-        if: steps.release_state.outputs.openclaw_created == 'true'
-        run: node scripts/assert-package-contents.mjs packages/openclaw 55 dist/index.js dist/index.d.ts dist/band_sdk_core_bg.wasm openclaw.plugin.json package.json
-
-      - name: Pack SDK (@band-ai)
-        if: steps.release_state.outputs.sdk_created == 'true'
+      - name: Pack released packages (@band-ai)
+        if: steps.release_state.outputs.packages != '[]'
+        env:
+          RELEASE_PACKAGES: ${{ steps.release_state.outputs.packages }}
         run: |
           node scripts/assert-release-ready.mjs
-          mkdir -p release-artifacts
-          cd packages/sdk
-          npm pack --pack-destination ../../release-artifacts
-
-      - name: Pack OpenClaw (@band-ai)
-        if: steps.release_state.outputs.openclaw_created == 'true'
-        run: |
-          node scripts/assert-release-ready.mjs
-          mkdir -p release-artifacts
-          cd packages/openclaw
-          # name is already @band-ai/openclaw-channel-band and the SDK is bundled
-          # (types inlined), so the package is self-contained — nothing to rewrite.
-          npm pack --pack-destination ../../release-artifacts
+          node scripts/pack-release.mjs release-artifacts
 
       - name: Upload release bundle
-        if: steps.release_state.outputs.sdk_created == 'true' || steps.release_state.outputs.openclaw_created == 'true'
+        if: steps.release_state.outputs.packages != '[]'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4; immutable pin protects the handoff to the OIDC job
         with:
           name: release-bundle-${{ steps.source.outputs.commit }}
@@ -211,13 +165,19 @@ jobs:
           retention-days: 1
 
   publish:
+    name: publish ${{ matrix.package.name }}
     needs: release
-    if: needs.release.outputs.sdk_created == 'true' || needs.release.outputs.openclaw_created == 'true'
+    if: needs.release.outputs.packages != '[]'
     runs-on: ubuntu-latest
     environment: release
     permissions:
       contents: read
       id-token: write
+    strategy:
+      # One package at a time in list order; a failure cancels the rest.
+      max-parallel: 1
+      matrix:
+        package: ${{ fromJSON(needs.release.outputs.packages) }}
 
     steps:
       - name: Checkout verified release source
@@ -240,24 +200,11 @@ jobs:
           name: release-bundle-${{ needs.release.outputs.source_commit }}
           path: release-artifacts
 
-      - name: Publish SDK to npm (@band-ai)
-        if: needs.release.outputs.sdk_created == 'true'
+      - name: Publish to npm (@band-ai)
         env:
-          PUBLISH_PACKAGE_NAME: '@band-ai/sdk'
-          PUBLISH_PACKAGE_VERSION: ${{ needs.release.outputs.sdk_version }}
-          PUBLISH_TARBALL: release-artifacts/band-ai-sdk-${{ needs.release.outputs.sdk_version }}.tgz
-          RELEASE_HOLD_REF: refs/remotes/origin/main
-        run: |
-          git fetch origin main:refs/remotes/origin/main
-          node scripts/assert-release-ready.mjs
-          node scripts/publish-if-needed.mjs
-
-      - name: Publish OpenClaw to npm (@band-ai)
-        if: needs.release.outputs.openclaw_created == 'true'
-        env:
-          PUBLISH_PACKAGE_NAME: '@band-ai/openclaw-channel-band'
-          PUBLISH_PACKAGE_VERSION: ${{ needs.release.outputs.openclaw_version }}
-          PUBLISH_TARBALL: release-artifacts/band-ai-openclaw-channel-band-${{ needs.release.outputs.openclaw_version }}.tgz
+          PUBLISH_PACKAGE_NAME: ${{ matrix.package.name }}
+          PUBLISH_PACKAGE_VERSION: ${{ matrix.package.version }}
+          PUBLISH_TARBALL: release-artifacts/${{ matrix.package.tarball }}
           RELEASE_HOLD_REF: refs/remotes/origin/main
         run: |
           git fetch origin main:refs/remotes/origin/main
@@ -265,13 +212,7 @@ jobs:
           node scripts/publish-if-needed.mjs
 
       - name: Publish release summary
-        run: |
-          echo "## Release Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Packages released:" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ needs.release.outputs.sdk_created }}" == "true" ]; then
-            echo "- **@band-ai/sdk** v${{ needs.release.outputs.sdk_version }}" >> $GITHUB_STEP_SUMMARY
-          fi
-          if [ "${{ needs.release.outputs.openclaw_created }}" == "true" ]; then
-            echo "- **@band-ai/openclaw-channel-band** v${{ needs.release.outputs.openclaw_version }}" >> $GITHUB_STEP_SUMMARY
-          fi
+        env:
+          PUBLISH_PACKAGE_NAME: ${{ matrix.package.name }}
+          PUBLISH_PACKAGE_VERSION: ${{ matrix.package.version }}
+        run: echo "- **${PUBLISH_PACKAGE_NAME}** v${PUBLISH_PACKAGE_VERSION}" >> "$GITHUB_STEP_SUMMARY"

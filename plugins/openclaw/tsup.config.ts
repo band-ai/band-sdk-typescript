@@ -11,8 +11,8 @@ function loadSdkPackageJson(): Record<string, unknown> {
   try {
     return JSON.parse(readFileSync("node_modules/@band-ai/sdk/package.json", "utf-8"));
   } catch {
-    // Fallback: read directly from the workspace sibling
-    return JSON.parse(readFileSync("../sdk/package.json", "utf-8"));
+    // Fallback: read directly from the workspace SDK package
+    return JSON.parse(readFileSync("../../packages/sdk/package.json", "utf-8"));
   }
 }
 
@@ -29,12 +29,12 @@ const sdkOptionalPeers = Object.keys(sdkPeerMeta).filter((dep) => sdkPeerMeta[de
 function discoverNamedImports(peers: string[]): Map<string, Set<string>> {
   const result = new Map<string, Set<string>>();
 
-  // Try workspace-linked path first, then sibling path
+  // Try workspace-linked path first, then the workspace SDK package
   let sdkDistDir = "node_modules/@band-ai/sdk/dist";
   try {
     readdirSync(sdkDistDir);
   } catch {
-    sdkDistDir = "../sdk/dist";
+    sdkDistDir = "../../packages/sdk/dist";
   }
 
   const importPattern =
@@ -154,8 +154,8 @@ export default defineConfig({
   // inlined band-sdk-core glue expects beside the emitted JS (build and dev).
   async onSuccess() {
     try {
-      const { copyWasm } = await import("./scripts/copy-wasm.mjs");
-      copyWasm();
+      const { copyWasm } = await import("../../scripts/copy-wasm.mjs");
+      copyWasm(process.cwd());
     } catch (error) {
       // clean:true already wiped any prior wasm; do not leave JS-only dist for watch.
       console.error("[copy-wasm] failed to restore band_sdk_core_bg.wasm after build:", error);

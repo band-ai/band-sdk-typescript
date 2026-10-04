@@ -8,11 +8,13 @@ import {
   CORE_WASM_FILENAME,
   copyWasm,
   resolveCoreWasmPath,
-} from "../../scripts/copy-wasm.mjs";
+} from "../../../../scripts/copy-wasm.mjs";
+
+const packageRoot = join(__dirname, "../..");
 
 describe("copy-wasm", () => {
   it("copies the SDK-resolved band-sdk-core wasm into the destination dir", async () => {
-    const source = resolveCoreWasmPath();
+    const source = resolveCoreWasmPath(packageRoot);
     expect(source.replace(/\\/g, "/")).toContain("@band-ai/band-sdk-core");
     expect(source.replace(/\\/g, "/")).toMatch(new RegExp(`${CORE_WASM_FILENAME}$`));
     const sourceBytes = readFileSync(source);
@@ -21,7 +23,7 @@ describe("copy-wasm", () => {
     const destDir = await mkdtemp(join(tmpdir(), "openclaw-copy-wasm-"));
     writeFileSync(join(destDir, CORE_WASM_FILENAME), "stale");
 
-    const dest = copyWasm(destDir);
+    const dest = copyWasm(packageRoot, destDir);
     expect(dest).toBe(join(destDir, CORE_WASM_FILENAME));
     expect(readFileSync(dest).equals(sourceBytes)).toBe(true);
   });
@@ -30,6 +32,6 @@ describe("copy-wasm", () => {
     const destDir = await mkdtemp(join(tmpdir(), "openclaw-copy-wasm-empty-"));
     const empty = join(destDir, "empty.wasm");
     writeFileSync(empty, "");
-    expect(() => copyWasm(destDir, empty)).toThrow(/empty/);
+    expect(() => copyWasm(packageRoot, destDir, empty)).toThrow(/empty/);
   });
 });

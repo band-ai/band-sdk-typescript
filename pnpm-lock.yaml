@@ -35,39 +35,6 @@ importers:
 
   .: {}
 
-  packages/openclaw:
-    devDependencies:
-      '@band-ai/sdk':
-        specifier: workspace:*
-        version: link:../sdk
-      '@types/node':
-        specifier: ^26.5.1
-        version: 26.6.1
-      '@typescript-eslint/eslint-plugin':
-        specifier: ^8.70.0
-        version: 8.70.0(@typescript-eslint/parser@8.70.0(eslint@10.10.0(jiti@2.7.0))(typescript@5.9.3))(eslint@10.10.0(jiti@2.7.0))(typescript@5.9.3)
-      '@vitest/coverage-v8':
-        specifier: ^5.0.0
-        version: 5.0.1(vitest@5.0.1)
-      eslint:
-        specifier: ^10.10.0
-        version: 10.10.0(jiti@2.7.0)
-      openclaw:
-        specifier: 2026.9.4
-        version: 2026.9.4(@cfworker/json-schema@4.1.1)(@opentelemetry/api@1.9.0)(encoding@0.1.13)
-      tsup:
-        specifier: ^8.5.1
-        version: 8.5.1(jiti@2.7.0)(postcss@8.5.28)(tsx@4.23.13)(typescript@5.9.3)(yaml@2.9.0)
-      typescript:
-        specifier: ^5.8.2
-        version: 5.9.3
-      typescript-eslint:
-        specifier: ^8.70.0
-        version: 8.70.0(eslint@10.10.0(jiti@2.7.0))(typescript@5.9.3)
-      vitest:
-        specifier: ^5.0.0
-        version: 5.0.1(@opentelemetry/api@1.9.0)(@types/node@26.6.1)(@vitest/coverage-v8@5.0.1)(vite@7.3.2(@types/node@26.6.1)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.0))
-
   packages/sdk:
     dependencies:
       '@a2a-js/sdk':
@@ -172,6 +139,39 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^5.0.1
+        version: 5.0.1(@opentelemetry/api@1.9.0)(@types/node@26.6.1)(@vitest/coverage-v8@5.0.1)(vite@7.3.2(@types/node@26.6.1)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.0))
+
+  plugins/openclaw:
+    devDependencies:
+      '@band-ai/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
+      '@types/node':
+        specifier: ^26.5.1
+        version: 26.6.1
+      '@typescript-eslint/eslint-plugin':
+        specifier: ^8.70.0
+        version: 8.70.0(@typescript-eslint/parser@8.70.0(eslint@10.10.0(jiti@2.7.0))(typescript@5.9.3))(eslint@10.10.0(jiti@2.7.0))(typescript@5.9.3)
+      '@vitest/coverage-v8':
+        specifier: ^5.0.0
+        version: 5.0.1(vitest@5.0.1)
+      eslint:
+        specifier: ^10.10.0
+        version: 10.10.0(jiti@2.7.0)
+      openclaw:
+        specifier: 2026.9.4
+        version: 2026.9.4(@cfworker/json-schema@4.1.1)(@opentelemetry/api@1.9.0)(encoding@0.1.13)
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.28)(tsx@4.23.13)(typescript@5.9.3)(yaml@2.9.0)
+      typescript:
+        specifier: ^5.8.2
+        version: 5.9.3
+      typescript-eslint:
+        specifier: ^8.70.0
+        version: 8.70.0(eslint@10.10.0(jiti@2.7.0))(typescript@5.9.3)
+      vitest:
+        specifier: ^5.0.0
         version: 5.0.1(@opentelemetry/api@1.9.0)(@types/node@26.6.1)(@vitest/coverage-v8@5.0.1)(vite@7.3.2(@types/node@26.6.1)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.0))
 
 packages:

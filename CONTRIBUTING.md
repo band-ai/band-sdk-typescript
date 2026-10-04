@@ -24,7 +24,7 @@ This is a pnpm workspace with two published packages:
 | Path | Workspace name (use in `--filter`) | Published as |
 |---|---|---|
 | `packages/sdk` | `@band-ai/sdk` | `@band-ai/sdk` |
-| `packages/openclaw` | `@band-ai/openclaw-channel-band` | `@band-ai/openclaw-channel-band` |
+| `plugins/openclaw` | `@band-ai/openclaw-channel-band` | `@band-ai/openclaw-channel-band` |
 
 > Both packages publish under their workspace name; no publish-time package
 > rename is applied. Use the workspace name for `pnpm --filter`.
@@ -174,8 +174,8 @@ Delete the hold in the reviewed release PR only when the migration is ready.
 If an npm publish fails, don't just re-run the failed `publish` job: the
 uploaded artifact is retained for only 1 day, so a re-run after that window
 fails at the download step with nothing to recover. Instead, manually run the
-Release workflow from `main`, select exactly one `recover-package` (`sdk` or
-`openclaw`), and set `release-commit` to the exact 40-character SHA carrying
+Release workflow from `main`, select exactly one `recover-package` (a `key` in
+`scripts/release-packages.mjs`: `sdk` or `openclaw`), and set `release-commit` to the exact 40-character SHA carrying
 that package's release tag. Recovery verifies the commit is reachable from
 `main`, checks out those exact bytes, confirms only the selected package's
 current metadata and tag, skips an exact version already present on npm, and

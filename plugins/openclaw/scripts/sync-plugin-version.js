@@ -8,20 +8,15 @@
  * resolve graph copy-wasm uses, so NemoClaw repairs can pack a matching wasm.
  */
 import { readFileSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolveCoreEntry } from "../../../scripts/copy-wasm.mjs";
 
 const pkg = JSON.parse(readFileSync("package.json", "utf8"));
 const pluginPath = "openclaw.plugin.json";
 const distPluginPath = "dist/openclaw.plugin.json";
 
-const requireFromHere = createRequire(fileURLToPath(import.meta.url));
-const sdkEntry = requireFromHere.resolve("@band-ai/sdk");
-const requireFromSdk = createRequire(sdkEntry);
-const coreEntry = requireFromSdk.resolve("@band-ai/band-sdk-core");
 const coreVersion = JSON.parse(
-  readFileSync(join(dirname(coreEntry), "package.json"), "utf8"),
+  readFileSync(join(dirname(resolveCoreEntry(process.cwd())), "package.json"), "utf8"),
 ).version;
 
 // Sync source plugin.json

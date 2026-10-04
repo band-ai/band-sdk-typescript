@@ -33,7 +33,12 @@ to this repository's independent multi-package release:
 | Path | Published as |
 |---|---|
 | `packages/sdk` | `@band-ai/sdk` |
-| `packages/openclaw` | `@band-ai/openclaw-channel-band` |
+| `plugins/openclaw` | `@band-ai/openclaw-channel-band` |
+
+`scripts/release-packages.mjs` is the one list of released packages (path,
+npm name, tag, version files, packlist floor) that every release script and
+`release.yml` step reads. A new package needs an entry there plus its
+`release-please-config.json` and `.release-please-manifest.json` entries.
 
 ## Branch Protection (GitHub Rulesets)
 
@@ -167,17 +172,20 @@ write`; it never installs dependencies or runs project build code.
    rename or a half-finished migration.
 2. **Verify release intent** (`scripts/assert-release-intent.mjs`) — ordinary
    commits pass without a version transition. A release-version transition is
-   rejected while held. SDK manifest/package metadata transitions atomically and
-   independently from OpenClaw manifest/package/plugin metadata. CI runs the same
+   rejected while held. Each listed package's manifest version and version files
+   transition atomically and independently of the others. The baseline side
+   finds each package by its Release Please `package-name`, so a package that
+   moved paths is compared with its old location. CI runs the same
    check so a held or inconsistent package release cannot merge once `ci-status`
    is required.
 3. **Release Please** opens/updates the release PR, or — when a release PR merges
    — tags the release and updates the changelogs and versions.
-4. **Verify independent release outputs** (`scripts/assert-release-outputs.mjs`)
-   — each created flag is parsed fail-closed and each selected version must be a
-   stable semantic version. Zero, one, or both packages may be selected.
-5. **Resolve release state and build artifacts** — normal runs use Release Please's
-   package outputs. Manual ordinary runs select `recover-package: automatic`;
+4. **Resolve release state** (`scripts/resolve-release-state.mjs`) — writes the
+   packages this run releases, in list order, to the `packages` output. Normal
+   runs read Release Please's per-package outputs: each created flag is parsed
+   fail-closed and each selected version must be a stable semantic version. Any
+   subset of the listed packages may be selected.
+5. **Build artifacts** — Manual ordinary runs select `recover-package: automatic`;
    push events provide an empty selector and behave identically. A manual run
    from `main` with one package-specific `recover-package` selection also
    requires the exact 40-character `release-commit`. The workflow verifies that
@@ -185,13 +193,15 @@ write`; it never installs dependencies or runs project build code.
    `main`, checks out the commit, requires the selected package's release tag to
    resolve to exactly those bytes, validates only that package's current
    manifest/package/plugin metadata, and selects only it for recovery.
-   With no OIDC permission, this job installs dependencies, builds both packages,
-   packs the selected package tarballs, and uploads the bundle with a 1-day
+   With no OIDC permission, this job installs dependencies, builds all packages,
+   checks each selected package's npm packlist against its listed floor and
+   entries and packs it (`scripts/pack-release.mjs`), and uploads the bundle with a 1-day
    retention. Re-running the `publish` job after that window fails at the
    download step, since the artifact is gone; the supported recovery is a
    `recover-package` dispatch, which re-packs from the tagged release commit
    instead of reusing the expired artifact.
-6. **Publish** — a separate environment-gated job receives OIDC permission,
+6. **Publish** — a separate environment-gated job, run once per selected package
+   (one at a time, in list order), receives OIDC permission,
    downloads the prebuilt bundle, and runs no dependency install or project
    build. Its exact Node 24.18.1 runtime bundles npm 11.16.0, so the job does not
    install executable tooling after receiving OIDC authority. Tarball publication
@@ -205,12 +215,12 @@ write`; it never installs dependencies or runs project build code.
    confirmed 404 publishes, and an inconclusive lookup fails closed.
 7. **Summary** — reports the versions published.
 
-> **Why `releases_created` is never used:** the plural output is broken in
-> release-please v4 — it reports `true` even when no release occurred. Every gate
-> in this workflow reads the per-package outputs
-> (`packages/sdk--release_created`) instead. This is also why the action stays
-> pinned to v4 rather than following the Python SDK to v5: the per-package output
-> names this workflow depends on are v4's.
+> **Per-package outputs are keyed by path.** Release state reads
+> `<path>--release_created` and `<path>--version` for each listed `path`
+> (`packages/sdk--release_created`), never the plural `releases_created`. Release
+> Please continues a moved package's versions from its manifest entry and
+> component name, not its old path, so a move only updates the list, the config
+> and the manifest key.
 
 All actions in `release.yml` are pinned to full commit SHAs so a mutable release
 tag cannot silently change the workflow that holds npm publishing rights.
@@ -259,7 +269,7 @@ Deliberately not addressed yet, recorded so they aren't rediscovered:
   its own workflow step — but it is weaker, and this is that trade-off on the
   record.
 - **This pipeline is stable-releases-only, by choice.** `assert-release-intent.mjs`
-  and `assert-release-outputs.mjs` both require `^\d+\.\d+\.\d+$`, so a
+  and `resolve-release-state.mjs` both require `^\d+\.\d+\.\d+$`, so a
   prerelease version is rejected by the guards, not merely unsupported by
   convention. Adding a prerelease channel is more than loosening that regex:
   `publish-if-needed.mjs` publishes with no `--tag`, so every publish already

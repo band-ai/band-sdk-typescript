@@ -1,17 +1,17 @@
-// Stage a clean, link-installable plugin dir at packages/openclaw/.local-link
+// Stage a clean, link-installable plugin dir at plugins/openclaw/.local-link
 //
 // `openclaw plugins install --link` runs a safety scan that rejects symlinked
 // node_modules pointing outside the install root — which is exactly what pnpm
-// puts in packages/openclaw/node_modules. So we can't link the package dir
+// puts in plugins/openclaw/node_modules. So we can't link the package dir
 // directly. Instead we stage a dir with only { dist, openclaw.plugin.json,
 // package.json (deps stripped — the SDK is bundled into dist) } and no
 // node_modules, which passes the scan.
 //
 // Usage: build first (so dist/ exists), then run this; then:
-//   openclaw plugins install --link packages/openclaw/.local-link
+//   openclaw plugins install --link plugins/openclaw/.local-link
 
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { CORE_WASM_FILENAME } from "./copy-wasm.mjs";
+import { CORE_WASM_FILENAME } from "../../../scripts/copy-wasm.mjs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -58,4 +58,4 @@ const clean = {
 writeFileSync(join(stage, "package.json"), JSON.stringify(clean, null, 2) + "\n");
 
 console.log(`[stage-link] staged ${stage}`);
-console.log("[stage-link] now run: openclaw plugins install --link packages/openclaw/.local-link");
+console.log("[stage-link] now run: openclaw plugins install --link plugins/openclaw/.local-link");
