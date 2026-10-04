@@ -269,6 +269,12 @@ Deliberately not addressed yet, recorded so they aren't rediscovered:
   cover. Not a silent gap — the baseline is resolved and named explicitly in
   its own workflow step — but it is weaker, and this is that trade-off on the
   record.
+- **Recovery runs the release scripts of the commit it recovers.** A recovery
+  dispatch checks out `release-commit` before resolving, packing and publishing,
+  so it only works for release commits that contain `scripts/release-packages.mjs`
+  and the `plugins/openclaw` layout (INT-1663). Every release tagged before that
+  (through `sdk-v0.5.0` and `openclaw-channel-band-v0.3.2`) was already on npm
+  when it landed.
 - **This pipeline is stable-releases-only, by choice.** `assert-release-intent.mjs`
   and `resolve-release-state.mjs` both require `^\d+\.\d+\.\d+$`, so a
   prerelease version is rejected by the guards, not merely unsupported by

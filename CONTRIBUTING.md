@@ -179,7 +179,8 @@ Release workflow from `main`, select exactly one `recover-package` (a `key` in
 that package's release tag. Recovery verifies the commit is reachable from
 `main`, checks out those exact bytes, confirms only the selected package's
 current metadata and tag, skips an exact version already present on npm, and
-publishes only that package.
+publishes only that package. Recovery runs the release scripts of that commit,
+so it only works for releases tagged after `scripts/release-packages.mjs` landed.
 
 For an ordinary manual Release Please run, leave `recover-package` set to
 `automatic` and leave `release-commit` empty. Push-triggered runs supply an empty
