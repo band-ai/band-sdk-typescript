@@ -60,6 +60,7 @@ jobs:
               - 'scripts/**'
               - 'package.json'
               - 'pnpm-workspace.yaml'
+              - '.npmrc'
               - 'pnpm-lock.yaml'
               - 'release-please-config.json'
               - '.release-please-manifest.json'

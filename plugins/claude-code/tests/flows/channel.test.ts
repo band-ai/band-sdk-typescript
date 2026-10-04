@@ -181,6 +181,21 @@ describe("when Claude Code exits", () => {
     expect(await session.leave()).toBe(EXIT_OK);
   });
 
+  it("leaves a backlog message for the next session when its read returns after exit", async ({ band }) => {
+    const waiting = band.room.postBeforeConnect(USER, `${MENTION} waiting`);
+    const held = band.platform.rest.nextMessageHolds.hold((roomId) => roomId === ROOM);
+    const leaving = await ClaudeCodeSession.connect(band.platform.link);
+    await held.sending;
+
+    expect(await leaving.leave()).toBe(EXIT_OK);
+    held.release();
+
+    await using next = await ClaudeCodeSession.connect(band.platform.link);
+    expect((await next.pushOf(waiting)).meta.message_id).toBe(waiting);
+    expect(await band.room.outcome(waiting)).toBe("processed");
+    expect(band.platform.rest.processing.entries).toEqual([waiting]);
+  });
+
   it("stops at the turn in flight and leaves the rest of the backlog for the next session", async ({ band }) => {
     const first = band.room.postBeforeConnect(USER, `${MENTION} one`);
     const inFlight = band.room.postBeforeConnect(USER, `${MENTION} two`);

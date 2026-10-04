@@ -225,6 +225,25 @@ describe("BandMcpStdioServer lifecycle", () => {
     await expect(sent).rejects.toThrow(NOT_RUNNING);
   });
 
+  test("restarting on the same pipe releases old sessions and tolerates late write errors", async () => {
+    const { server, stdout } = inProcessServer();
+    await server.start();
+    await server.stop();
+    const retainedListeners = stdout.listenerCount("error");
+
+    for (let restart = 0; restart < 3; restart++) {
+      await server.start();
+      const initialized = expect(server.initialized).rejects.toThrow(NOT_RUNNING);
+      const sent = expect(server.notify(PUSH_METHOD)).rejects.toThrow(NOT_RUNNING);
+      await server.stop();
+      await Promise.all([initialized, sent]);
+    }
+
+    expect(stdout.listenerCount("error")).toBe(retainedListeners);
+    // A write queued before teardown can fail after the session's listeners are released.
+    expect(() => stdout.emit("error", Object.assign(new Error("broken pipe"), { code: "EPIPE" }))).not.toThrow();
+  });
+
   test("stops when the transport closes itself on an oversized line", async () => {
     const { server, stdin } = inProcessServer();
     await server.start();

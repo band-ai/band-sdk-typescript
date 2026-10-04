@@ -332,6 +332,10 @@ export class Execution {
   private async synchronizeWithNext(boundary: SyncBoundary): Promise<void> {
     while (this.isActive()) {
       const nextMessage = await this.link.getNextMessage(this.roomId);
+      // A forced stop can close the execution while the backlog read is in flight.
+      if (!this.isActive()) {
+        break;
+      }
       this.logger.debug("Sync scan read /messages/next", {
         roomId: this.roomId,
         messageId: nextMessage?.id ?? null,

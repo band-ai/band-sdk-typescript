@@ -80,6 +80,7 @@ export class RecordingRestApi extends FakeRestApi {
   private readonly rooms = new Set<string>();
   public readonly messageHolds = new CallHolds<[roomId: string, content: string]>();
   public readonly processingHolds = new CallHolds<[messageId: string]>();
+  public readonly nextMessageHolds = new CallHolds<[roomId: string]>();
 
   public constructor(private readonly participants: readonly ParticipantRecord[], identity: AgentIdentityOptions = {}) {
     super({}, { id: AGENT_ID, name: "Agent", description: "Flow test agent", ...identity });
@@ -93,6 +94,7 @@ export class RecordingRestApi extends FakeRestApi {
   /** The oldest backlog message in the room not yet settled, as `/messages/next` serves it. */
   public override async getNextMessage(request: { chatId: string }): Promise<PlatformChatMessage | null> {
     const pending = this.backlog.find((entry) => entry.roomId === request.chatId && !this.isSettled(entry.item.id));
+    await this.nextMessageHolds.pass(request.chatId);
     return pending?.item ?? null;
   }
 

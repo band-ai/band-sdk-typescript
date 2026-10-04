@@ -118,6 +118,8 @@ function notRunning(): Error {
   return new Error("BandMcpStdioServer is not running");
 }
 
+function ignoreLateWriteError(): void {}
+
 // The SDK's stdio transport ignores stdin end and stdout errors, so the session
 // watches them itself; otherwise a send after the client exits crashes on EPIPE or hangs.
 function openSession(
@@ -146,8 +148,10 @@ function openSession(
   for (const [stream, event] of clientGoneEvents) {
     stream.on(event, onClientGone);
   }
-  // Never removed: a write queued before a stop can still fail with EPIPE
-  // afterwards, and an unhandled stream error would crash the process.
+  // Keep one handler without session state for writes that fail after teardown.
+  if (!stdout.listeners("error").includes(ignoreLateWriteError)) {
+    stdout.on("error", ignoreLateWriteError);
+  }
   stdout.on("error", onClientGone);
 
   return {
@@ -164,6 +168,7 @@ function openSession(
       for (const [stream, event] of clientGoneEvents) {
         stream.off(event, onClientGone);
       }
+      stdout.off("error", onClientGone);
       // First, so a caller racing `stopped` sees the client leave before the failures that causes.
       resolveStopped();
       for (const reject of pendingRejects) {
