@@ -9,17 +9,11 @@ const NEVER_RELEASED_EXIT_CODE = 3;
 // Well past a client's handshake and tool listing, well inside a test's timeout.
 const HOLD_LIMIT_MS = 15_000;
 
-async function main(): Promise<void> {
-  const resource = setTimeout(() => process.exit(NEVER_RELEASED_EXIT_CODE), HOLD_LIMIT_MS);
-  const server = new BandMcpStdioServer({ tools: new FakeAgentTools() });
-  await server.start();
+const resource = setTimeout(() => process.exit(NEVER_RELEASED_EXIT_CODE), HOLD_LIMIT_MS);
+const server = new BandMcpStdioServer({ tools: new FakeAgentTools() });
+await server.start();
 
-  await server.stopped;
-  clearTimeout(resource);
-  // Exit as the plugin does, rather than waiting for its stdio handles to close.
-  process.exit(0);
-}
-
-if (process.argv[1] === import.meta.filename) {
-  await main();
-}
+await server.stopped;
+clearTimeout(resource);
+// Exit as the plugin does, rather than waiting for its stdio handles to close.
+process.exit(0);
