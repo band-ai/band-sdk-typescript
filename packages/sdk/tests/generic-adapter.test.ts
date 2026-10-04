@@ -6,7 +6,7 @@ import { FakeTools, failureEvents, findFailureEvent, makeMessage, expectTurnFail
 import { describeDeliveryContract } from "./deliveryContract";
 import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
 import { relayReply, type TurnTools } from "../src/core/turn";
-import { CLOSING_TEXT, TOOL_REPLY, describeTurnOutcomeContract, turnInput, type TurnScript } from "./turnOutcomeContract";
+import { CLOSING_TEXT, TOOL_REPLY, describeTurnOutcomeContract, turnInput, type TurnScript, NO_REPLY_ARGS, ACT_TOOL, ACT_ARGS } from "./turnOutcomeContract";
 
 describe("GenericAdapter", () => {
   describeTurnOutcomeContract([{
@@ -378,7 +378,7 @@ const SENDER = [{ id: "user-1" }];
 /** A handler that does what one contract row's model would, closing with a relay of its text. */
 const scriptedHandler: Record<TurnScript, (tools: TurnTools) => Promise<void>> = {
   decline: async (tools) => {
-    await tools.executeToolCall(NO_REPLY_TOOL_NAME, { reason: "FYI only" });
+    await tools.executeToolCall(NO_REPLY_TOOL_NAME, NO_REPLY_ARGS);
     await relayReply(tools, CLOSING_TEXT, SENDER);
   },
   toolReply: async (tools) => {
@@ -386,7 +386,7 @@ const scriptedHandler: Record<TurnScript, (tools: TurnTools) => Promise<void>> =
     await relayReply(tools, CLOSING_TEXT, SENDER);
   },
   act: async (tools) => {
-    await tools.executeToolCall("band_add_participant", { name: "Helper" });
+    await tools.executeToolCall(ACT_TOOL, ACT_ARGS);
   },
   finalText: async (tools) => {
     await relayReply(tools, CLOSING_TEXT, SENDER);

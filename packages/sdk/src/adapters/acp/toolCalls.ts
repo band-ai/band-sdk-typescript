@@ -1,7 +1,8 @@
 import type { BandToolName } from "@band-ai/band-sdk-core";
 
-import { BAND_TOOL_EFFECTS, resolveBandToolName } from "../../contracts/toolSchemas";
+import { mcpToolSpelling, resolveBandToolName } from "../../contracts/toolSchemas";
 import type { Turn } from "../../core/turn";
+import { asOptionalRecord } from "../shared/coercion";
 import type { CollectedChunk } from "./types";
 
 // The status an ACP tool call reports once it succeeded.
@@ -20,15 +21,14 @@ const MCP_INVOCATION_KEYS = [
  * runtimes use only as a display string.
  */
 export function acpToolCallName(chunk: CollectedChunk): string {
-  const rawInput = chunk.metadata.raw_input;
-  if (rawInput && typeof rawInput === "object" && !Array.isArray(rawInput)) {
-    const input = rawInput as Record<string, unknown>;
+  const input = asOptionalRecord(chunk.metadata.raw_input);
+  if (input) {
     const inputKeys = Object.keys(input);
     for (const keys of MCP_INVOCATION_KEYS) {
       const [server, tool] = [input[keys[0]], input[keys[1]]];
       const matches = inputKeys.length === keys.length && keys.every((key) => Object.hasOwn(input, key));
       if (matches && typeof server === "string" && typeof tool === "string") {
-        return `${server}-${tool}`;
+        return mcpToolSpelling(server, tool);
       }
     }
   }
@@ -58,12 +58,12 @@ export function recordBandToolCalls(chunks: readonly CollectedChunk[], turn: Tur
         calls.set(id, tool);
       }
       if (chunk.metadata.status === COMPLETED) {
-        turn.record(BAND_TOOL_EFFECTS[tool]);
+        turn.recordTool(tool);
       }
     } else if (chunk.chunkType === "tool_result" && id && chunk.metadata.status === COMPLETED) {
       const tool = calls.get(id);
       if (tool) {
-        turn.record(BAND_TOOL_EFFECTS[tool]);
+        turn.recordTool(tool);
       }
     }
   }

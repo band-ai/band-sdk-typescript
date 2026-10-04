@@ -134,11 +134,11 @@ export function buildCustomToolIndex(tools: CustomToolDef[]): Map<string, Custom
   return index;
 }
 
-/** Runs `def`, recording its effect on `turn` when it succeeds; `undefined` where no turn is in scope. */
+/** Runs `def`, recording its effect on `turn` when it succeeds; omit `turn` where none is in scope. */
 export async function executeCustomTool(
   def: CustomToolDef,
   arguments_: Record<string, unknown>,
-  turn: Turn | undefined,
+  turn?: Turn,
 ): Promise<unknown> {
   const toolName = getCustomToolName(def);
   const result = def.schema.safeParse(arguments_);

@@ -15,6 +15,7 @@ import { PassThrough } from "node:stream";
 
 import {
   TOOL_MODELS,
+  TOOL_METHODS,
   ALL_TOOL_NAMES,
   CHAT_TOOL_NAMES,
   MEMORY_TOOL_NAMES,
@@ -254,29 +255,11 @@ describe("P-TOOL-04: every canonical name reaches a handler; every legacy name i
     expect(sortedKeys(VALID_ARGS)).toEqual(Object.keys(TOOL_MODELS).sort());
   });
 
-  type ToolMethod =
-    | "sendMessage" | "sendEvent" | "addParticipant" | "removeParticipant"
-    | "getParticipants" | "lookupPeers" | "createChatroom" | "listContacts"
-    | "addContact" | "removeContact" | "listContactRequests" | "respondContactRequest"
-    | "listMemories" | "storeMemory" | "getMemory" | "supersedeMemory" | "archiveMemory";
-  // Authoritative canonical-name -> handler-method routing; null for a tool no method backs.
-  const ROUTING: Record<string, ToolMethod | null> = {
-    band_send_message: "sendMessage", band_send_event: "sendEvent", band_no_reply: null,
-    band_add_participant: "addParticipant", band_remove_participant: "removeParticipant",
-    band_get_participants: "getParticipants", band_lookup_peers: "lookupPeers",
-    band_create_chatroom: "createChatroom", band_list_contacts: "listContacts",
-    band_add_contact: "addContact", band_remove_contact: "removeContact",
-    band_list_contact_requests: "listContactRequests", band_respond_contact_request: "respondContactRequest",
-    band_list_memories: "listMemories", band_store_memory: "storeMemory",
-    band_get_memory: "getMemory", band_supersede_memory: "supersedeMemory",
-    band_archive_memory: "archiveMemory",
-  };
-
   it("routes every canonical name to its own handler; every legacy name is ToolNotFound", async () => {
-    // Coverage is exact — a missing/extra routing row reds here.
-    expect(sortedKeys(ROUTING)).toEqual(Object.keys(TOOL_MODELS).sort());
+    // TOOL_METHODS is the routing the turn ledger records on, so it is checked against real dispatch.
+    expect(sortedKeys(TOOL_METHODS)).toEqual(Object.keys(TOOL_MODELS).sort());
 
-    for (const [band, method] of Object.entries(ROUTING)) {
+    for (const [band, method] of Object.entries(TOOL_METHODS)) {
       const tools = makeTools();
       const spy = method && vi.spyOn(tools, method);
       const res = await tools.executeToolCall(band, VALID_ARGS[band]);

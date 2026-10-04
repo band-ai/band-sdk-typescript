@@ -48,6 +48,7 @@ import {
 } from "./client";
 import { OPENCODE_DECISION_MESSAGES, formatQuestionPrompt } from "./messages";
 import {
+  declinedAnswers,
   REJECTED_PERMISSION_FEEDBACK,
   REPLY_WORDS,
   routeReply,
@@ -260,7 +261,7 @@ function buildCustomMcpRegistrations(customTools: CustomToolDef[]): McpToolRegis
       execute: async (args) => {
         try {
           // Built once and shared by every room, so no turn is in scope.
-          return successResult(await executeCustomTool(customTool, args, undefined));
+          return successResult(await executeCustomTool(customTool, args));
         } catch (error) {
           return errorResult(error instanceof Error ? error.message : String(error));
         }
@@ -355,15 +356,14 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
       return;
     }
 
-    roomState.tools = tools;
     try {
       const client = await this.ensureClientStarted();
       const { sessionId, created, needsHistoryReplay } = await this.ensureSession(roomState, client, history);
       if (this.config.enableTaskEvents && (roomState.persistedSessionId !== sessionId || context.isSessionBootstrap)) {
-        await this.emitSessionTaskEvent(roomState, sessionId, created ? "created" : "resumed");
+        await this.emitSessionTaskEvent(roomState, tools, sessionId, created ? "created" : "resumed");
       }
 
-      await this.startTurn(roomState, client, sessionId, message, participantsMessage, contactsMessage, history, needsHistoryReplay, context.roomId);
+      await this.startTurn(roomState, tools, client, sessionId, message, participantsMessage, contactsMessage, history, needsHistoryReplay, context.roomId);
     } catch (error) {
       rethrowIfRecoverableTurnFailure(error);
 
@@ -380,6 +380,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
 
   private async startTurn(
     roomState: RoomState,
+    tools: TurnTools,
     client: OpencodeClientLike,
     sessionId: string,
     message: PlatformMessage,
@@ -389,8 +390,11 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
     needsHistoryReplay: boolean,
     roomId: string,
   ): Promise<void> {
-    const turn = new OpencodeTurn(roomState.tools);
+    // Bound together, with no await between: the room's MCP calls resolve to
+    // these tools, so they must be the tools of the turn `roomState.turn` holds.
+    const turn = new OpencodeTurn(tools);
     roomState.turn = turn;
+    roomState.tools = tools;
     roomState.requesterMentions = [{ id: message.senderId }];
     try {
       await client.promptAsync(sessionId, {
@@ -742,12 +746,12 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
     const { requestId, questions } = pending;
     const rejectAsk = (client: OpencodeClientLike) => client.rejectQuestion(requestId);
     if (questions.length === 0) {
-      // Nothing to answer, so nobody would: reject it rather than leave OpenCode blocked on it.
-      this.logger.warn("opencode_adapter.empty_question_rejected", { roomId: roomState.roomId, requestId });
-      this.rejectInBackground(roomState, () => rejectAsk(this.requireClient()));
+      // Nothing to answer, so nobody would: decline it rather than leave OpenCode blocked on it.
+      this.logger.warn("opencode_adapter.empty_question_declined", { roomId: roomState.roomId, requestId });
+      this.rejectInBackground(roomState, () => this.requireClient().replyQuestion(requestId, { answers: declinedAnswers(questions) }));
       return;
     }
-    const reject: ReplySender<PendingQuestion> = (entry) => this.sendQuestionReject(roomState, entry);
+    const reject: ReplySender<PendingQuestion> = (entry) => this.sendQuestionDecline(roomState, entry);
     await this.openAsk(roomState, roomState.decisions.questions, roomState.decisions.registerQuestion(pending), {
       autoReply: this.config.questionMode === "auto_reject" ? reject : null,
       timeoutMs: this.config.questionWaitTimeoutMs,
@@ -855,7 +859,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
           (entry) => this.sendPermissionReply(roomState, entry, action.reply));
       case REPLY_ACTION.rejectQuestion:
         return claimAndSend(questions, action.id, OPENCODE_DECISION_MESSAGES.questionRejected(action.id),
-          (entry) => this.sendQuestionReject(roomState, entry));
+          (entry) => this.sendQuestionDecline(roomState, entry));
       case REPLY_ACTION.answerQuestion:
         return claimAndSend(questions, action.id, OPENCODE_DECISION_MESSAGES.questionAnswered(action.id),
           (entry) => this.sendQuestionReply(roomState, entry, action.answers));
@@ -884,9 +888,8 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
       (client) => client.replyQuestion(entry.token, { answers }));
   }
 
-  private async sendQuestionReject(roomState: RoomState, entry: DecisionEntry<PendingQuestion>): Promise<void> {
-    await this.sendClaimedReply(roomState, roomState.decisions.questions, entry,
-      (client) => client.rejectQuestion(entry.token));
+  private async sendQuestionDecline(roomState: RoomState, entry: DecisionEntry<PendingQuestion>): Promise<void> {
+    await this.sendQuestionReply(roomState, entry, declinedAnswers(entry.payload.questions));
   }
 
   // The caller has claimed the ask. A failure while its turn is still current
@@ -1022,9 +1025,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
         return;
       }
       await this.flushTurnText(roomState, turn);
-      if (turn.tools.turn.detached) {
-        await reportUnsettledTurn(turn.tools, this.logger);
-      }
+      await reportUnsettledTurn(turn.tools, this.logger, { roomId: roomState.roomId });
     } finally {
       this.clearTurnState(roomState, turn);
     }
@@ -1122,9 +1123,9 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
     roomState.turn = null;
   }
 
-  private async emitSessionTaskEvent(roomState: RoomState, sessionId: string, status: "created" | "resumed"): Promise<void> {
+  private async emitSessionTaskEvent(roomState: RoomState, tools: TurnTools, sessionId: string, status: "created" | "resumed"): Promise<void> {
     const createdAt = new Date().toISOString();
-    await roomState.tools.sendEvent(
+    await tools.sendEvent(
       `OpenCode session ${status}: \`${sessionId}\``,
       "task",
       {

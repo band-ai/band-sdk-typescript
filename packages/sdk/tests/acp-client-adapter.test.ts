@@ -2,7 +2,6 @@ import { realpathSync } from "node:fs";
 import path from "node:path";
 
 import type { Client, SessionNotification } from "@agentclientprotocol/sdk";
-import { missingReplyMessage } from "@band-ai/band-sdk-core";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { describe, expect, it, vi } from "vitest";
@@ -16,9 +15,9 @@ import { BandACPClient } from "../src/adapters/acp/client";
 import { MCP_SERVER_NAME, NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
 import { DeliveryFailedError } from "../src/core/deliveryFailedError";
 import { BandMcpServer } from "../src/mcp/server";
-import { CallHolds, FakeTools, SHORT_TURN_TIMEOUT_MS, expectMcpServerStopped, expectTurnFailed, failureEvents, findFailureEvent, makeLoggerSpy, makeMessage, roomWorkspacePath, tmpRoot } from "./testUtils";
+import { CallHolds, FakeTools, SHORT_TURN_TIMEOUT_MS, expectMcpServerStopped, expectTurnFailed, failureEvents, findFailureEvent, makeLoggerSpy, makeMessage, roomWorkspacePath, tmpRoot, MISSING_REPLY, reportedFailures } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
-import { CLOSING_TEXT, TOOL_REPLY, describeTurnOutcomeContract, turnInput, type TurnScript } from "./turnOutcomeContract";
+import { CLOSING_TEXT, TOOL_REPLY, describeTurnOutcomeContract, turnInput, type TurnScript, NO_REPLY_ARGS, TOOL_REPLY_ARGS, ACT_TOOL, ACT_ARGS } from "./turnOutcomeContract";
 
 function requireAcpClient(client: BandACPClient | null): BandACPClient {
   if (!client) {
@@ -1263,7 +1262,7 @@ describe("ACPClientAdapter", () => {
       }),
       expect.objectContaining({
         content: "cleanup finished",
-        metadata: expect.objectContaining({ tool_call_id: "call-1", status: "completed" }),
+        metadata: { tool_call_id: "call-1" },
       }),
     ])
 
@@ -5206,14 +5205,14 @@ async function judgedTurn(adapter: ACPClientAdapter, tools: FakeTools): Promise<
 
 const CONTRACT_TURNS: Record<TurnScript, (agent: AgentTurn) => Promise<void>> = {
   decline: async (agent) => {
-    await agent.callBand(NO_REPLY_TOOL_NAME, { reason: "FYI only" })
+    await agent.callBand(NO_REPLY_TOOL_NAME, NO_REPLY_ARGS)
     await agent.say(CLOSING_TEXT)
   },
   toolReply: async (agent) => {
-    await agent.callBand(SEND_MESSAGE_TOOL_NAME, { content: TOOL_REPLY, mentions: ["@user"] })
+    await agent.callBand(SEND_MESSAGE_TOOL_NAME, TOOL_REPLY_ARGS)
     await agent.say(CLOSING_TEXT)
   },
-  act: (agent) => agent.callBand("band_add_participant", { name: "Helper" }),
+  act: (agent) => agent.callBand(ACT_TOOL, ACT_ARGS),
   finalText: (agent) => agent.say(CLOSING_TEXT),
   nothing: async () => undefined,
 }
@@ -5237,7 +5236,7 @@ describe("ACPClientAdapter turn outcome", () => {
   })
 
   it("routes each turn's Band MCP calls to that turn's own tools", async () => {
-    const adapter = scriptedAgent((agent) => agent.callBand(SEND_MESSAGE_TOOL_NAME, { content: TOOL_REPLY, mentions: ["@user"] }))
+    const adapter = scriptedAgent((agent) => agent.callBand(SEND_MESSAGE_TOOL_NAME, TOOL_REPLY_ARGS))
     const turns = [new FakeTools(), new FakeTools()]
     const calls = turns.map((tools) => vi.spyOn(tools, "executeToolCall"))
 
@@ -5265,7 +5264,7 @@ describe("ACPClientAdapter turn outcome", () => {
       status: "completed",
     })), tools))
 
-    expect(failureEvents(tools).map((event) => event.content)).toEqual([missingReplyMessage()])
+    expect(reportedFailures(tools.events)).toEqual([MISSING_REPLY])
   })
 
   describe("with Band tools served by another process (enableMcpTools: false)", () => {
@@ -5311,8 +5310,28 @@ describe("ACPClientAdapter turn outcome", () => {
         status: "failed",
       }), external), tools))
 
-      expect(failureEvents(tools).map((event) => event.content)).toEqual([missingReplyMessage()])
+      expect(reportedFailures(tools.events)).toEqual([MISSING_REPLY])
       expect(tools.messages).toEqual([])
+    })
+
+    it("relays the closing text when a failed Band reply carried a content-only progress update", async () => {
+      const tools = new FakeTools()
+      await judgedTurn(scriptedAgent(async (agent) => {
+        await agent.update({
+          sessionUpdate: "tool_call",
+          toolCallId: "call-1",
+          title: "Send a message",
+          status: "in_progress",
+          rawInput: { server: MCP_SERVER_NAME, tool: SEND_MESSAGE_TOOL_NAME, arguments: { content: TOOL_REPLY, mentions: ["@user"] } },
+        })
+        // A status-less update leaves the call's status as it was.
+        await agent.update({ sessionUpdate: "tool_call_update", toolCallId: "call-1", content: [{ type: "content", content: { type: "text", text: "sending..." } }] })
+        await agent.update({ sessionUpdate: "tool_call_update", toolCallId: "call-1", status: "failed" })
+        await agent.say(CLOSING_TEXT)
+      }, external), tools)
+
+      expect(tools.messages).toEqual([CLOSING_TEXT])
+      expect(failureEvents(tools)).toEqual([])
     })
   })
 })

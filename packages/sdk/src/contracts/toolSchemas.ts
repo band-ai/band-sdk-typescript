@@ -448,6 +448,11 @@ export const MCP_TOOL_PREFIX = "mcp__band__";
 /** The single Band MCP server name; owns every server-name default and integration. */
 export const MCP_SERVER_NAME = "band";
 
+/** How an out-of-process runtime spells an MCP tool: `<server>-<tool>`. */
+export function mcpToolSpelling(server: string, tool: string): string {
+  return `${server}-${tool}`;
+}
+
 /** band-mcp's send-message name before it adopted `band_send_message`; older servers still report it. */
 export const LEGACY_SEND_MESSAGE_TOOL_NAME = "create_agent_chat_message";
 
@@ -465,21 +470,12 @@ export function isBandToolName(name: string): name is BandToolName {
  * `other-band_send_message` is not ours.
  */
 export function resolveBandToolName(name: string): BandToolName | undefined {
-  const prefix = `${MCP_SERVER_NAME}-`;
+  const prefix = mcpToolSpelling(MCP_SERVER_NAME, "");
   const unprefixed = name.startsWith(prefix) ? name.slice(prefix.length) : name;
   if (unprefixed === LEGACY_SEND_MESSAGE_TOOL_NAME) {
     return SEND_MESSAGE_TOOL_NAME;
   }
   return isBandToolName(unprefixed) ? unprefixed : undefined;
-}
-
-/** The text a successful `band_send_message` posted, or undefined when this call did not. */
-export function postedSendContent(toolName: string, content: unknown, failed: boolean): string | undefined {
-  if (toolName !== SEND_MESSAGE_TOOL_NAME || failed) {
-    return undefined;
-  }
-  const text = String(content ?? "").trim();
-  return text.length > 0 ? text : undefined;
 }
 
 export function mcpToolNames(names: Set<string>): string[] {

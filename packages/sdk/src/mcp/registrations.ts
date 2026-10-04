@@ -1,4 +1,5 @@
 import type { AdapterToolsProtocol } from "../contracts/protocols";
+import { forwardTools } from "../core/overrideTools";
 import {
   isToolExecutorError,
   toLegacyToolExecutorErrorMessage,
@@ -214,11 +215,5 @@ export function resolveSingleRoomTools(
     }
     return tools;
   };
-  return new Proxy({} as AdapterToolsProtocol, {
-    get(_target, key) {
-      const tools = current();
-      const value: unknown = Reflect.get(tools, key, tools);
-      return typeof value === "function" ? (value.bind(tools) as unknown) : value;
-    },
-  });
+  return forwardTools(current);
 }

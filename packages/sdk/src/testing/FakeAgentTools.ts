@@ -91,16 +91,19 @@ export class FakeAgentTools
     mentions?: MentionInput,
   ): Promise<ToolOperationResult> {
     this.maybeFail("sendMessage");
-    this.messagesSent.push({ content, mentions });
-    const id = `msg-${this.messageCounter++}`;
-    return { id, status: "sent" };
+    return this.post(content, mentions);
   }
 
+  /** Posts like `sendMessage`; tracked tools never count it as the turn's reply. */
   public async sendNotice(
     content: string,
     mentions?: MentionInput,
   ): Promise<ToolOperationResult> {
     this.maybeFail("sendNotice");
+    return this.post(content, mentions);
+  }
+
+  private post(content: string, mentions?: MentionInput): ToolOperationResult {
     this.messagesSent.push({ content, mentions });
     const id = `msg-${this.messageCounter++}`;
     return { id, status: "sent" };

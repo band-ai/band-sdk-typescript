@@ -15,10 +15,8 @@ import {
   ALL_TOOL_NAMES,
   NO_REPLY_TOOL_NAME,
   SEND_MESSAGE_TOOL_NAME,
-  TOOL_METHODS,
   TOOL_MODELS,
   resolveBandToolName,
-  type ToolName,
 } from "../src/contracts/toolSchemas";
 import { deliverReply } from "../src/core/deliveryFailedError";
 import { agentFailure } from "../src/core/providerFailure";
@@ -61,40 +59,6 @@ describe("band_no_reply and the tool table", () => {
     expect(reason!.required).toBe(false);
     expect(model.required).toEqual([]);
   });
-
-  // One valid call per tool, so its handler runs.
-  const VALID_ARGS: Record<ToolName, Record<string, unknown>> = {
-    band_send_message: { content: "hi", mentions: JANE },
-    band_send_event: { content: "t", message_type: "thought" },
-    band_no_reply: {},
-    band_add_participant: { name: "Weather Agent" },
-    band_remove_participant: { name: "Weather Agent" },
-    band_lookup_peers: {},
-    band_get_participants: {},
-    band_create_chatroom: {},
-    band_list_contacts: {},
-    band_add_contact: { handle: "@jane" },
-    band_remove_contact: { handle: "@jane" },
-    band_list_contact_requests: {},
-    band_respond_contact_request: { action: "approve", request_id: "r1" },
-    band_list_memories: {},
-    band_store_memory: { content: "c", system: "long_term", type: "semantic", segment: "agent", thought: "why" },
-    band_get_memory: { memory_id: "m1" },
-    band_supersede_memory: { memory_id: "m1" },
-    band_archive_memory: { memory_id: "m1" },
-  };
-
-  it.each(Object.entries(TOOL_METHODS).filter(([, method]) => method !== null))(
-    "%s dispatches to the %s method it records on",
-    async (toolName, method) => {
-      const tools = new AgentTools({ roomId: "room-1", rest: new FakeRestApi() });
-      const spy = vi.spyOn(tools, method!).mockResolvedValue({ ok: true } as never);
-
-      await tools.executeToolCall(toolName, VALID_ARGS[toolName as ToolName]);
-
-      expect(spy).toHaveBeenCalledTimes(1);
-    },
-  );
 
   it("answers band_no_reply without posting anything", async () => {
     const createChatMessage = vi.fn(async () => ({}));
@@ -244,7 +208,8 @@ describe("single-room MCP tools", () => {
   it("reach the turn in flight, not the turn the connection started with", async () => {
     let current = trackTurn(new FakeTools());
     const first = current;
-    const [send] = buildSingleContextRegistrations(resolveSingleRoomTools(() => current))
+    const tools = resolveSingleRoomTools(() => current);
+    const [send] = buildSingleContextRegistrations(tools)
       .filter((registration) => registration.name === SEND_MESSAGE_TOOL_NAME);
     current = trackTurn(new FakeTools());
 
@@ -252,6 +217,9 @@ describe("single-room MCP tools", () => {
 
     expect(current.turn.replied).toBe(true);
     expect(first.turn.replied).toBe(false);
+    // A consumer that checks or spreads the tools sees the turn's, not an empty forwarder.
+    expect("turn" in tools).toBe(true);
+    expect(Object.keys(tools)).toContain("turn");
   });
 });
 
@@ -332,9 +300,19 @@ describe("turn-outcome registry", () => {
   // A flow test drives the room end to end instead, scripting every row through a `Record<TurnScript, …>`.
   const RUNS_CONTRACT = /describeTurnOutcomeContract\(|Record<TurnScript,/;
 
-  it("runs the contract in every registered test file", () => {
-    for (const file of new Set(Object.values(TURN_OUTCOME_ADAPTERS))) {
-      expect(readFileSync(join(__dirname, file), "utf8"), file).toMatch(RUNS_CONTRACT);
+  it("runs the contract for every registered adapter: in a file that names it, or its parent's if it only configures that parent", () => {
+    for (const [name, adapter] of simpleAdapters) {
+      const file = TURN_OUTCOME_ADAPTERS[name];
+      if (!file) {
+        continue;
+      }
+      const source = readFileSync(join(__dirname, file), "utf8");
+      expect(source, file).toMatch(RUNS_CONTRACT);
+      if (!source.includes(name)) {
+        const parent = Object.getPrototypeOf(adapter) as AdapterClass;
+        expect(TURN_OUTCOME_ADAPTERS[parent.name], `${name} shares its parent's file`).toBe(file);
+        expect(Object.hasOwn(adapter.prototype, "onMessage"), `${name} handles turns itself, so needs its own contract run`).toBe(false);
+      }
     }
   });
 

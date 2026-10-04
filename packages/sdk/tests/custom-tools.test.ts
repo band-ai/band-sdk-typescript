@@ -214,31 +214,31 @@ describe("buildCustomToolIndex", () => {
 describe("executeCustomTool", () => {
   it("executes async function", async () => {
     const def: CustomToolDef = { schema: WeatherSchema, handler: asyncWeather, name: "weather" };
-    const result = await executeCustomTool(def, { city: "NYC" }, undefined);
+    const result = await executeCustomTool(def, { city: "NYC" });
     expect(result).toBe("Weather in NYC: Sunny, 72F");
   });
 
   it("executes sync function", async () => {
     const def: CustomToolDef = { schema: CalculatorSchema, handler: syncCalculator, name: "calculator" };
-    const result = await executeCustomTool(def, { operation: "add", left: 5, right: 3 }, undefined);
+    const result = await executeCustomTool(def, { operation: "add", left: 5, right: 3 });
     expect(result).toBe("8");
   });
 
   it("validates input and throws formatted error", async () => {
     const def: CustomToolDef = { schema: CalculatorSchema, handler: syncCalculator, name: "calculator" };
-    await expect(executeCustomTool(def, { operation: "add" }, undefined)).rejects.toThrow(
+    await expect(executeCustomTool(def, { operation: "add" })).rejects.toThrow(
       "Invalid arguments for calculator",
     );
   });
 
   it("includes field names in validation error", async () => {
     const def: CustomToolDef = { schema: WeatherSchema, handler: asyncWeather, name: "weather" };
-    await expect(executeCustomTool(def, {}, undefined)).rejects.toThrow("city");
+    await expect(executeCustomTool(def, {})).rejects.toThrow("city");
   });
 
   it("propagates handler errors", async () => {
     const def: CustomToolDef = { schema: WeatherSchema, handler: failingTool, name: "weather" };
-    await expect(executeCustomTool(def, { city: "NYC" }, undefined)).rejects.toThrow("API unavailable");
+    await expect(executeCustomTool(def, { city: "NYC" })).rejects.toThrow("API unavailable");
   });
 
   it("passes validated object to handler", async () => {
@@ -249,7 +249,7 @@ describe("executeCustomTool", () => {
       name: "calculator",
     };
 
-    await executeCustomTool(def, { operation: "add", left: 1, right: 2 }, undefined);
+    await executeCustomTool(def, { operation: "add", left: 1, right: 2 });
 
     expect(received).toHaveLength(1);
     expect(received[0]).toEqual({ operation: "add", left: 1, right: 2 });
@@ -263,7 +263,7 @@ describe("executeCustomTool", () => {
       name: "search",
     };
 
-    await executeCustomTool(def, { query: "test" }, undefined);
+    await executeCustomTool(def, { query: "test" });
     expect(received[0]!.max_results).toBe(10);
   });
 

@@ -16,9 +16,9 @@ import { allowBandMcpTools, BAND_MCP_PERMISSION, CURSOR_PROJECT_CONFIG } from ".
 import { DEFAULT_WORKSPACE_DIRECTORY } from "../../src/adapters/shared/roomWorkspace";
 import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../../src/contracts/toolSchemas";
 import { ACP_SESSION_EVENT } from "../../src/converters/acp-client";
-import { BandPlatform, MISSING_REPLY, person, type BandRoom, type Outcome, type Posted, type ReportedFailure } from "./support/bandPlatform";
+import { BandPlatform, person, type BandRoom, type Outcome, type Posted } from "./support/bandPlatform";
 import { DEFAULT_CURSOR_ROOM, FakeCursorAgent, type CursorTurn } from "./support/fakeCursorAgent";
-import { makeLoggerSpy, tmpRoot } from "../testUtils";
+import { makeLoggerSpy, MISSING_REPLY, tmpRoot, type ReportedFailure } from "../testUtils";
 import { CLOSING_TEXT, TOOL_REPLY, type TurnScript } from "../turnOutcomeContract";
 
 const OWNER = "owner";
@@ -605,7 +605,8 @@ describe("Cursor in a Band room", () => {
     expect(room.outcomes(message)).toEqual(["processed"]);
   });
 
-  it("reports no missing reply for a handed-back turn cancelled by the agent leaving the room", async () => {
+  // The cancel closes the ACP connection under the turn, whose own failure report completes it first.
+  it("reports a handed-back turn cancelled by the agent leaving the room once, by its own failure, not a missing reply", async () => {
     const logger = makeLoggerSpy();
     await using session = await cursorRoom({ logger });
     const { room } = session;
@@ -615,6 +616,7 @@ describe("Cursor in a Band room", () => {
     await room.remove();
     // Logged once the cancelled turn has fully unwound, past the point it would report.
     await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledWith("cursor_acp.released_turn_failed", expect.anything()));
+    expect(room.failures).toHaveLength(1);
     expect(room.failures).not.toContainEqual(MISSING_REPLY);
   });
 

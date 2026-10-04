@@ -37,6 +37,7 @@ Adapters' upstream LLM SDKs are declared as **optional peer dependencies**. Inst
 ### Chat Tools
 - `band_send_message`: send a message to the chat room (requires at least one `@mention`)
 - `band_send_event`: send a non-message event (`thought`, `error`, `task`, etc.)
+- `band_no_reply`: end the turn deliberately without posting (optional `reason`, logged locally); see [docs/turn-outcome.md](docs/turn-outcome.md)
 - `band_add_participant`: add agent/user to room by name (use `band_lookup_peers` first)
 - `band_remove_participant`: remove participant from room
 - `band_get_participants`: list room participants

@@ -43,6 +43,7 @@ export interface PlatformMessageLike {
 /** Sender of a turn the runtime makes up itself, such as a contact event put to the hub room. */
 export const SYNTHETIC_SENDER_TYPE = "System";
 export const SYNTHETIC_CONTACT_EVENTS_SENDER_ID = "contact-events";
+export const SYNTHETIC_CONTACT_EVENTS_SENDER_NAME = "Contact Events";
 
 /** A turn no participant asked for, so it owes nobody a reply. */
 export function isSyntheticTurn(message: Pick<PlatformMessageLike, "senderType" | "senderId">): boolean {

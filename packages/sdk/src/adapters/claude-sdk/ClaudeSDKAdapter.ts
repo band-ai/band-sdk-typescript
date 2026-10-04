@@ -141,7 +141,7 @@ const bandMcpBridgeFactory = new LazyAsyncValue<BandMcpBridgeFactory>({
           registration.name,
           registration.description,
           shape,
-          async (args: Record<string, unknown>) => registration.execute(args),
+          registration.execute,
         )
       })
 

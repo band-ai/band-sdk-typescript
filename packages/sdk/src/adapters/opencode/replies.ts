@@ -22,6 +22,18 @@ export type ReplyWord = keyof typeof REPLY_WORDS;
 export const REJECTED_PERMISSION_FEEDBACK =
   "This request was declined. Do not retry it or try another way to do the same thing; reply to the user instead.";
 
+/**
+ * Given as the answer to each question a room declines. OpenCode's question
+ * reject can't carry feedback and ends the turn, so a decline is sent as an
+ * answer, which hands the decision back to the model like a permission reject.
+ */
+export const DECLINED_QUESTION_ANSWER =
+  "Declined. Do not ask again or try another way to get this answer; reply to the user instead.";
+
+export function declinedAnswers(questions: readonly unknown[]): string[][] {
+  return questions.map(() => [DECLINED_QUESTION_ANSWER]);
+}
+
 export const ASK_KIND = { permission: "permission", question: "question" } as const;
 
 export type DecisionKind = (typeof ASK_KIND)[keyof typeof ASK_KIND];

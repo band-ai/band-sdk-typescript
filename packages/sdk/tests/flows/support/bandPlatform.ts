@@ -6,15 +6,13 @@
  */
 import { randomUUID } from "node:crypto";
 
-import { missingReplyMessage } from "@band-ai/band-sdk-core";
 
-import { FAILURE_EVENT_TYPE, FAILURE_METADATA_KEY, type FrameworkAdapter } from "../../../src/contracts/protocols";
+import type { FrameworkAdapter } from "../../../src/contracts/protocols";
 import type { ParticipantRecord } from "../../../src/contracts/dtos";
 import type { PaginatedResponse, PlatformChatMessage, RestApi } from "../../../src/client/rest/types";
 import { BandLink } from "../../../src/platform/BandLink";
-import { TURN_FAILURE_PROVIDER } from "../../../src/core/turn";
 import { PlatformRuntime } from "../../../src/runtime/PlatformRuntime";
-import { assertMentioned, CallHolds, FakeRestApi, FakeTransport, RecordLog, wireMention, type HeldCall } from "../../testUtils";
+import { assertMentioned, CallHolds, FakeRestApi, FakeTransport, RecordLog, reportedFailures, wireMention, type HeldCall, type ReportedFailure } from "../../testUtils";
 
 export const AGENT_ID = "agent-1";
 export const AGENT_HANDLE = "owner/agent";
@@ -35,13 +33,6 @@ export interface Posted {
 export type Outcome = "processed" | "failed";
 
 /** A failure the agent reported in a room: what it says, and whom it blames. */
-export interface ReportedFailure {
-  readonly content: string;
-  readonly provider: unknown;
-}
-
-/** The report of a turn that ended without a reply: band-sdk-core's text, blamed on the runtime's verdict. */
-export const MISSING_REPLY: ReportedFailure = { content: missingReplyMessage(), provider: TURN_FAILURE_PROVIDER };
 
 interface Settled {
   readonly messageId: string;
@@ -161,10 +152,7 @@ export class BandRoom {
 
   /** Every failure the agent reported here, in order; a plain error-typed notice carries no failure and is left out. */
   public get failures(): ReportedFailure[] {
-    return this.events(FAILURE_EVENT_TYPE).flatMap((event) => {
-      const failure = event.metadata?.[FAILURE_METADATA_KEY] as { provider?: unknown } | undefined;
-      return failure ? [{ content: event.content, provider: failure.provider }] : [];
-    });
+    return reportedFailures(this.posted);
   }
 
   /** Resolves once the agent has posted a message here that `matches`, and returns it. */

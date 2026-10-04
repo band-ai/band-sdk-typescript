@@ -96,6 +96,12 @@ the turn's real end the adapter calls `reportUnsettledTurn(tools, logger)`,
 which posts the missing-reply failure when the verdict is `missing_reply`.
 A turn cancelled by room cleanup is not reported.
 
+OpenCode ends a turn on a bare approval or question reject, before the model
+can answer. So the adapter sends every decided reject (a room's reject, an
+auto-decline, an expired ask) with feedback: a permission reject carries a
+message, and a declined question is answered with a decline. Either hands the
+decision back to the model, whose answer then completes the turn.
+
 ## Band tools in another process (ACP)
 
 An ACP agent started with `enableMcpTools: false` reaches Band through an MCP

@@ -3,14 +3,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ProviderTurnFailedError } from "../src/core/providerFailure";
-import { Turn } from "../src/core/turn";
+import { Turn, TURN_FAILURE_PROVIDER } from "../src/core/turn";
 import { expect, onTestFinished, vi, type Mock } from "vitest";
 import { DEFAULT_WORKSPACE_DIRECTORY } from "../src/adapters/shared/roomWorkspace";
-import { ParticipantRoster, type AgentFailure } from "@band-ai/band-sdk-core";
+import { missingReplyMessage, ParticipantRoster, type AgentFailure } from "@band-ai/band-sdk-core";
 import type { PlatformMessage } from "../src/runtime";
 import type { ToolCallingModel } from "../src/adapters";
 import type { AgentToolsProtocol, Logger } from "../src/core";
-import { DEFAULT_AGENT_TOOLS_CAPABILITIES, FAILURE_EVENT_TYPE, toFailureEvent } from "../src/contracts/protocols";
+import { DEFAULT_AGENT_TOOLS_CAPABILITIES, FAILURE_EVENT_TYPE, FAILURE_METADATA_KEY, toFailureEvent } from "../src/contracts/protocols";
 import { isBlankEventContent } from "../src/contracts/chatEvents";
 import { createDeferred, type Deferred } from "../src/core/deferred";
 import type {
@@ -150,9 +150,7 @@ export class FakeTools implements AgentToolsProtocol {
     mentions?: string[] | Array<{ id: string; handle?: string }>,
   ): Promise<Record<string, unknown>> {
     this.maybeFail("sendMessage");
-    assertMentioned(mentions);
-    this.messages.push(content);
-    return { ok: true };
+    return this.post(content, mentions);
   }
 
   public async sendNotice(
@@ -160,6 +158,10 @@ export class FakeTools implements AgentToolsProtocol {
     mentions?: string[] | Array<{ id: string; handle?: string }>,
   ): Promise<Record<string, unknown>> {
     this.maybeFail("sendNotice");
+    return this.post(content, mentions);
+  }
+
+  private post(content: string, mentions?: string[] | Array<{ id: string; handle?: string }>): Record<string, unknown> {
     assertMentioned(mentions);
     this.messages.push(content);
     return { ok: true };
@@ -244,6 +246,27 @@ export class FakeTools implements AgentToolsProtocol {
 /** The failure events an adapter posted, located the way a client locates one. */
 export function failureEvents<E extends { messageType?: unknown }>(tools: { readonly events: readonly E[] }): E[] {
   return tools.events.filter((event) => event.messageType === FAILURE_EVENT_TYPE);
+}
+
+/** A failure a turn reported, as the room sees it: its text and the provider it blames. */
+export interface ReportedFailure {
+  readonly content: string;
+  readonly provider: unknown;
+}
+
+/** The report of a turn that ended without a reply: band-sdk-core's text, blamed on the runtime's verdict. */
+export const MISSING_REPLY: ReportedFailure = { content: missingReplyMessage(), provider: TURN_FAILURE_PROVIDER };
+
+/** The failures among `events`, in order; an error-typed event that carries no failure is left out. */
+export function reportedFailures(
+  events: readonly { readonly messageType?: unknown; readonly content: string; readonly metadata?: Record<string, unknown> }[],
+): ReportedFailure[] {
+  return events.flatMap((event) => {
+    const failure = event.messageType === FAILURE_EVENT_TYPE
+      ? event.metadata?.[FAILURE_METADATA_KEY] as { provider?: unknown } | undefined
+      : undefined;
+    return failure ? [{ content: event.content, provider: failure.provider }] : [];
+  });
 }
 
 export function findFailureEvent(tools: FakeTools): CapturedToolEvent | undefined {

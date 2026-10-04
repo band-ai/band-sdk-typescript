@@ -1,14 +1,15 @@
-import { missingReplyMessage, TurnLedger, type AgentFailure, type TurnEffect, type TurnVerdict } from "@band-ai/band-sdk-core";
+import {
+  missingReplyMessage,
+  TurnLedger,
+  type AgentFailure,
+  type BandToolName,
+  type TurnEffect,
+  type TurnVerdict,
+} from "@band-ai/band-sdk-core";
 
 import type { MentionInput } from "../contracts/dtos";
 import { isFailedToolOutput, type AdapterToolsProtocol, type MessagingTools } from "../contracts/protocols";
-import {
-  BAND_TOOL_EFFECTS,
-  isBandToolName,
-  postedSendContent,
-  SEND_MESSAGE_TOOL_NAME,
-  TOOL_METHODS,
-} from "../contracts/toolSchemas";
+import { BAND_TOOL_EFFECTS, isBandToolName, SEND_MESSAGE_TOOL_NAME, TOOL_METHODS } from "../contracts/toolSchemas";
 import { deliverReply } from "./deliveryFailedError";
 import type { Logger } from "./logger";
 import { overrideTools } from "./overrideTools";
@@ -23,10 +24,27 @@ export const TURN_FAILURE_PROVIDER = "band-runtime";
  */
 export class Turn {
   private readonly ledger = new TurnLedger();
+  private readonly sent: string[] = [];
   private isDetached = false;
 
   public record(effect: TurnEffect): void {
     this.ledger.record(effect);
+  }
+
+  /** Records a Band tool call that landed, by the tool's effect. */
+  public recordTool(name: BandToolName): void {
+    this.record(BAND_TOOL_EFFECTS[name]);
+  }
+
+  /** Records a `band_send_message` that posted `content`. */
+  public recordSend(content: string): void {
+    this.sent.push(content);
+    this.recordTool(SEND_MESSAGE_TOOL_NAME);
+  }
+
+  /** What this turn's sends posted to the room, in order. */
+  public get posted(): readonly string[] {
+    return this.sent;
   }
 
   /** Marks the turn handled by the adapter itself, such as a busy or control reply. */
@@ -64,10 +82,19 @@ export type TurnTools<T = AdapterToolsProtocol> = T & { readonly turn: Turn };
 
 type ToolMethod = (...args: unknown[]) => Promise<unknown>;
 
-/** A call that landed: not a failed result, and for a send, not a blank one. */
-function landed(toolName: string, content: unknown, result: unknown): boolean {
-  const failed = isFailedToolOutput(result);
-  return toolName === SEND_MESSAGE_TOOL_NAME ? postedSendContent(toolName, content, failed) !== undefined : !failed;
+/** Records a Band tool call on `turn` if it landed: not a failed result, and for a send, not a blank one. */
+function recordLanded(turn: Turn, toolName: BandToolName, content: unknown, result: unknown): void {
+  if (isFailedToolOutput(result)) {
+    return;
+  }
+  if (toolName !== SEND_MESSAGE_TOOL_NAME) {
+    turn.recordTool(toolName);
+    return;
+  }
+  const text = String(content ?? "").trim();
+  if (text.length > 0) {
+    turn.recordSend(text);
+  }
 }
 
 /**
@@ -87,17 +114,15 @@ export function trackTurn<T extends AdapterToolsProtocol>(tools: T): TurnTools<T
     }
     overrides[methodName] = async (...args: unknown[]) => {
       const result = await method(...args);
-      if (landed(toolName, args[0], result)) {
-        turn.record(BAND_TOOL_EFFECTS[toolName]);
-      }
+      recordLanded(turn, toolName, args[0], result);
       return result;
     };
   }
 
   overrides.executeToolCall = async (toolName: string, args: Record<string, unknown>) => {
     const result = await tools.executeToolCall(toolName, args);
-    if (isBandToolName(toolName) && landed(toolName, args.content, result)) {
-      turn.record(BAND_TOOL_EFFECTS[toolName]);
+    if (isBandToolName(toolName)) {
+      recordLanded(turn, toolName, args.content, result);
     }
     return result;
   };
@@ -132,12 +157,16 @@ export function missingReplyFailure(): AgentFailure {
 
 /**
  * Judges a detached turn at its real end, reporting a missing reply. Its
- * delivery was already acked, so this only tells the room.
+ * delivery was already acked, so this only tells the room. A turn that isn't
+ * detached is left alone: `SimpleAdapter.onEvent` judges it, and a report here
+ * would mark it reported first.
  */
-export async function reportUnsettledTurn(tools: TurnTools<MessagingTools>, logger: Logger): Promise<boolean> {
-  if (tools.turn.verdict() !== "missing_reply") {
-    return false;
+export async function reportUnsettledTurn(
+  tools: TurnTools<MessagingTools>,
+  logger: Logger,
+  logContext: Record<string, unknown>,
+): Promise<void> {
+  if (tools.turn.detached && tools.turn.verdict() === "missing_reply") {
+    await safeSendFailure(tools, missingReplyFailure(), logger, logContext);
   }
-  await safeSendFailure(tools, missingReplyFailure(), logger);
-  return true;
 }

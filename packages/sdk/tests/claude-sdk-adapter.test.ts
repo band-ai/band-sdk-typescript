@@ -18,7 +18,7 @@ import { describeDeliveryContract } from "./deliveryContract";
 import { MCP_SERVER_NAME, NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
 import type { AdapterToolsProtocol, FrameworkAdapterInput } from "../src/contracts/protocols";
 import { createDeferred } from "../src/core/deferred";
-import { CLOSING_TEXT, TOOL_REPLY, describeTurnOutcomeContract, turnInput, type TurnScript } from "./turnOutcomeContract";
+import { CLOSING_TEXT, describeTurnOutcomeContract, turnInput, type TurnScript, NO_REPLY_ARGS, TOOL_REPLY_ARGS, ACT_TOOL, ACT_ARGS } from "./turnOutcomeContract";
 
 function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
   return (async function* generator(): AsyncGenerator<T, void> {
@@ -646,15 +646,15 @@ describe("ClaudeSDKAdapter", () => {
     async function* contractTurn(script: TurnScript, options: ClaudeSDKQueryParams["options"]): AsyncGenerator<never> {
       switch (script) {
         case "decline":
-          await callBandTool(options, NO_REPLY_TOOL_NAME, { reason: "FYI only" });
+          await callBandTool(options, NO_REPLY_TOOL_NAME, NO_REPLY_ARGS);
           yield* closing(CLOSING_TEXT);
           return;
         case "toolReply":
-          await callBandTool(options, SEND_MESSAGE_TOOL_NAME, { content: TOOL_REPLY, mentions: ["@user"] });
+          await callBandTool(options, SEND_MESSAGE_TOOL_NAME, TOOL_REPLY_ARGS);
           yield* closing(CLOSING_TEXT);
           return;
         case "act":
-          await callBandTool(options, "band_add_participant", { name: "Helper" });
+          await callBandTool(options, ACT_TOOL, ACT_ARGS);
           yield success("") as never;
           return;
         case "finalText":

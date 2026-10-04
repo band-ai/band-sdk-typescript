@@ -1,13 +1,12 @@
-import { missingReplyMessage } from "@band-ai/band-sdk-core";
 import { describe, expect, it, vi } from "vitest";
 
 import { LangGraphAdapter, type LangGraphAdapterOptions, type LangGraphGraph } from "../src/adapters/langgraph";
 import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
 import { MEMORY_SECTION } from "../src/runtime/prompts";
 import { HistoryProvider } from "../src/runtime/types";
-import { FakeTools, failureEvents, makeMessage, expectTurnFailed } from "./testUtils";
+import { FakeTools, makeMessage, expectTurnFailed, MISSING_REPLY, reportedFailures } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
-import { CLOSING_TEXT, TOOL_REPLY, describeTurnOutcomeContract, bandToolSchemas, turnInput, type TurnScript } from "./turnOutcomeContract";
+import { CLOSING_TEXT, describeTurnOutcomeContract, bandToolSchemas, turnInput, type TurnScript, NO_REPLY_ARGS, TOOL_REPLY_ARGS, ACT_TOOL, ACT_ARGS } from "./turnOutcomeContract";
 
 const langGraphMocks = vi.hoisted(() => ({
   createReactAgent: vi.fn(),
@@ -57,15 +56,15 @@ type BandToolCall = (name: string, args: Record<string, unknown>) => Promise<unk
 /** What the model does in one contract turn, through the Band tools the adapter built; returns its closing text. */
 const CONTRACT_TURNS: Record<TurnScript, (call: BandToolCall) => Promise<string | null>> = {
   decline: async (call) => {
-    await call(NO_REPLY_TOOL_NAME, { reason: "FYI only" });
+    await call(NO_REPLY_TOOL_NAME, NO_REPLY_ARGS);
     return CLOSING_TEXT;
   },
   toolReply: async (call) => {
-    await call(SEND_MESSAGE_TOOL_NAME, { content: TOOL_REPLY, mentions: ["@user"] });
+    await call(SEND_MESSAGE_TOOL_NAME, TOOL_REPLY_ARGS);
     return CLOSING_TEXT;
   },
   act: async (call) => {
-    await call("band_add_participant", { name: "Helper" });
+    await call(ACT_TOOL, ACT_ARGS);
     return null;
   },
   finalText: async () => CLOSING_TEXT,
@@ -92,7 +91,7 @@ function scriptReactAgent(script: TurnScript): void {
   }));
 }
 
-/** The real Band tool schemas, so the adapter builds every tool a contract turn calls. */
+/** A graph that answers nothing, so only the Band tools it is given decide whether it owes a reply. */
 const SILENT_GRAPH: LangGraphGraph = {
   async invoke() {
     return { messages: [] };
@@ -122,7 +121,7 @@ describe("LangGraphAdapter", () => {
 
     if (judged) {
       await expectTurnFailed(turn);
-      expect(failureEvents(tools).map((event) => event.content)).toEqual([missingReplyMessage()]);
+      expect(reportedFailures(tools.events)).toEqual([MISSING_REPLY]);
     } else {
       await turn;
       expect(tools.events).toEqual([]);

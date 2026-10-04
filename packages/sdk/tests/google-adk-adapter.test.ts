@@ -7,8 +7,9 @@ import { MEMORY_SECTION } from "../src/runtime/prompts";
 import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
 import { FakeTools, makeMessage, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
-import { CLOSING_TEXT, TOOL_REPLY, describeTurnOutcomeContract, bandToolSchemas, turnInput, type TurnScript } from "./turnOutcomeContract";
+import { CLOSING_TEXT, describeTurnOutcomeContract, bandToolSchemas, turnInput, type TurnScript, describeCustomToolEffect, NO_REPLY_ARGS, TOOL_REPLY_ARGS, ACT_TOOL, ACT_ARGS } from "./turnOutcomeContract";
 import { createDeferred } from "../src/core/deferred";
+import { trackTurn } from "../src/core/turn";
 import { createFakeGoogleAdkSdk, type GoogleAdkCapture } from "./helpers/fakeGoogleAdkSdk";
 
 class GoogleAdkTestTools extends FakeTools {
@@ -88,15 +89,15 @@ function sendToolOf(agent: Record<string, unknown>): (input: unknown) => Promise
 async function* contractTurn(script: TurnScript, agent: Record<string, unknown>): AsyncGenerator<unknown> {
   switch (script) {
     case "decline":
-      await toolOf(agent, NO_REPLY_TOOL_NAME)({ reason: "FYI only" });
+      await toolOf(agent, NO_REPLY_TOOL_NAME)(NO_REPLY_ARGS);
       yield { final: true, text: CLOSING_TEXT };
       return;
     case "toolReply":
-      await sendToolOf(agent)({ content: TOOL_REPLY, mentions: ["@user"] });
+      await sendToolOf(agent)(TOOL_REPLY_ARGS);
       yield { final: true, text: CLOSING_TEXT };
       return;
     case "act":
-      await toolOf(agent, "band_add_participant")({ name: "Helper" });
+      await toolOf(agent, ACT_TOOL)(ACT_ARGS);
       yield { final: true, text: "" };
       return;
     case "finalText":
@@ -107,8 +108,18 @@ async function* contractTurn(script: TurnScript, agent: Record<string, unknown>)
   }
 }
 
-/** The real Band tool schemas, so the adapter registers every tool a contract turn calls. */
 describe("GoogleADKAdapter", () => {
+  describeCustomToolEffect("GoogleADKAdapter", async (tool, tools) => {
+    const adapter = new GoogleADKAdapter({
+      additionalTools: [tool],
+      sdkFactory: createFakeGoogleAdkSdk(async function* (agent) {
+        await toolOf(agent, tool.name)({});
+        yield { final: true, text: "" };
+      }),
+    });
+    await adapter.onEvent(turnInput(tools));
+  });
+
   describeTurnOutcomeContract([{
     adapter: "GoogleADKAdapter",
     turn: async (script, tools) => {
@@ -221,8 +232,8 @@ describe("GoogleADKAdapter", () => {
     });
     const tools = new SendMessageTools();
 
-    await adapter.onMessage(makeMessage("Reply with: pineapple"), tools, [], null, null, { isSessionBootstrap: true, roomId: "room-1" });
-    await adapter.onMessage(makeMessage("Reply with: mango"), tools, [], null, null, { isSessionBootstrap: false, roomId: "room-1" });
+    await adapter.onMessage(makeMessage("Reply with: pineapple"), trackTurn(tools), [], null, null, { isSessionBootstrap: true, roomId: "room-1" });
+    await adapter.onMessage(makeMessage("Reply with: mango"), trackTurn(tools), [], null, null, { isSessionBootstrap: false, roomId: "room-1" });
 
     expect(seenPrompts[1]).toContain("[User]: Reply with: pineapple\npineapple");
   });
@@ -262,8 +273,8 @@ describe("GoogleADKAdapter", () => {
     });
     const tools = new SendMessageTools();
 
-    await expect(adapter.onMessage(makeMessage("Reply with: pineapple"), tools, [], null, null, { isSessionBootstrap: true, roomId: "room-1" })).rejects.toThrow();
-    await adapter.onMessage(makeMessage("Reply with: mango"), tools, [], null, null, { isSessionBootstrap: false, roomId: "room-1" });
+    await expect(adapter.onMessage(makeMessage("Reply with: pineapple"), trackTurn(tools), [], null, null, { isSessionBootstrap: true, roomId: "room-1" })).rejects.toThrow();
+    await adapter.onMessage(makeMessage("Reply with: mango"), trackTurn(tools), [], null, null, { isSessionBootstrap: false, roomId: "room-1" });
 
     expect(seenPrompts[1]).toContain("[User]: Reply with: pineapple\npineapple");
   });
@@ -330,8 +341,8 @@ describe("GoogleADKAdapter", () => {
     });
     const tools = new SendMessageTools();
 
-    await adapter.onMessage(makeMessage("send a number"), tools, [], null, null, { isSessionBootstrap: true, roomId: "room-1" });
-    await adapter.onMessage(makeMessage("next question"), tools, [], null, null, { isSessionBootstrap: false, roomId: "room-1" });
+    await adapter.onMessage(makeMessage("send a number"), trackTurn(tools), [], null, null, { isSessionBootstrap: true, roomId: "room-1" });
+    await adapter.onMessage(makeMessage("next question"), trackTurn(tools), [], null, null, { isSessionBootstrap: false, roomId: "room-1" });
 
     expect(seenPrompts[1]).toContain("[User]: send a number\n42");
   });

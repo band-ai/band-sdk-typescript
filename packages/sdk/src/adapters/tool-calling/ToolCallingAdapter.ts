@@ -11,7 +11,6 @@ import { resolveLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { formatHistoryForLlm } from "../../runtime/formatters";
 import { withMemoryGuidance } from "../../runtime/prompts";
-import { postedSendContent } from "../../contracts/toolSchemas";
 import { relayReply, type TurnTools } from "../../core/turn";
 import { asErrorMessage } from "../shared/coercion";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
@@ -213,11 +212,6 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
               }
             } else {
               output = await tools.executeToolCall(call.name, call.input);
-              // A later provider failure throws out of this turn. Remember a post as it lands, or the next turn answers it again.
-              const posted = postedSendContent(call.name, call.input.content, isFailedToolOutput(output));
-              if (posted !== undefined) {
-                conversation.push({ role: "assistant", content: posted });
-              }
             }
           }
           const isError = isFailedToolOutput(output);
@@ -264,6 +258,9 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
       } else {
         await reportProviderTurnFailure(tools, this.logger, this.provider, "Tool-calling adapter request failed", error, { messageId: message.id });
       }
+    } finally {
+      // What the turn posted belongs in the next turn even when it failed, or the next turn answers it again.
+      conversation.push(...tools.turn.posted.map((content) => ({ role: "assistant" as const, content })));
     }
 
     const mention = [{ id: message.senderId, handle: message.senderName ?? message.senderType }];

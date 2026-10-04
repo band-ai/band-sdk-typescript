@@ -1,4 +1,3 @@
-import { missingReplyMessage } from "@band-ai/band-sdk-core";
 import { describe, expect, it, vi } from "vitest";
 
 import { LettaAdapter } from "../src/adapters/letta/LettaAdapter";
@@ -9,9 +8,10 @@ import type {
   LettaMessageCreateParams,
 } from "../src/adapters/letta/LettaAdapter";
 import { LettaHistoryConverter } from "../src/adapters/letta/types";
-import { FakeTools, failureEvents, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
+import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
+import { FakeTools, failureEvents, findFailureEvent, makeMessage, expectTurnFailed, MISSING_REPLY, reportedFailures } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
-import { CLOSING_TEXT, TOOL_REPLY, describeTurnOutcomeContract, turnInput, type TurnScript } from "./turnOutcomeContract";
+import { CLOSING_TEXT, describeTurnOutcomeContract, turnInput, type TurnScript, NO_REPLY_ARGS, TOOL_REPLY_ARGS, ACT_TOOL, ACT_ARGS } from "./turnOutcomeContract";
 
 // ---------------------------------------------------------------------------
 // Fake Letta client
@@ -110,9 +110,9 @@ const END_TURN: LettaResponse = { messages: [], stop_reason: { stop_reason: "end
 
 /** Letta's responses for one contract turn; each tool call is a client-side approval the adapter runs. */
 const CONTRACT_RESPONSES: Record<TurnScript, LettaResponse[]> = {
-  decline: [approvalResponse("band_no_reply", { reason: "FYI only" }), assistantResponse(CLOSING_TEXT)],
-  toolReply: [approvalResponse("band_send_message", { content: TOOL_REPLY, mentions: ["@user"] }), assistantResponse(CLOSING_TEXT)],
-  act: [approvalResponse("band_add_participant", { name: "Helper" }), END_TURN],
+  decline: [approvalResponse(NO_REPLY_TOOL_NAME, NO_REPLY_ARGS), assistantResponse(CLOSING_TEXT)],
+  toolReply: [approvalResponse(SEND_MESSAGE_TOOL_NAME, TOOL_REPLY_ARGS), assistantResponse(CLOSING_TEXT)],
+  act: [approvalResponse(ACT_TOOL, ACT_ARGS), END_TURN],
   finalText: [assistantResponse(CLOSING_TEXT)],
   nothing: [END_TURN],
 };
@@ -332,7 +332,7 @@ describe("LettaAdapter", () => {
     const tools = new FakeTools();
     await expectTurnFailed(adapter.onEvent(turnInput(tools, makeMessage("Loop", "room-limit"))));
 
-    expect(failureEvents(tools).map((event) => event.content)).toEqual([missingReplyMessage()]);
+    expect(reportedFailures(tools.events)).toEqual([MISSING_REPLY]);
     const toolCalls = client.messageCreateCalls.filter((c) =>
       c.params.messages?.some((m) => "type" in m && m.type === "tool_return"),
     );

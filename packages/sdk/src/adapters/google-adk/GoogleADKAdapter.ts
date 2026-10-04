@@ -3,8 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import { SimpleAdapter } from "../../core/simpleAdapter";
-import { isFailedToolOutput, type AdapterToolsProtocol } from "../../contracts/protocols";
-import { postedSendContent } from "../../contracts/toolSchemas";
+import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { relayReply, type TurnTools } from "../../core/turn";
 import type { MetadataMap, ToolOperationResult } from "../../contracts/dtos";
 import { formatMessageForLlm } from "../../runtime/formatters";
@@ -292,12 +291,10 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
     );
 
     let finalResponseText = "";
-    // A later failure throws out of this turn. Remember a post as it lands, or the next turn answers it again.
-    const posted: string[] = [];
     try {
       const sdk = await this.sdkLoader.get();
       const runner = sdk.createRunner({
-        agent: this.buildAgent(sdk, tools, posted),
+        agent: this.buildAgent(sdk, tools),
         appName: APP_NAME,
       });
       const sessionId = randomUUID();
@@ -324,12 +321,13 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
         }
       }
     } catch (error) {
-      this.rememberExchange(context.roomId, roomHistory, message, posted);
+      // The sends that landed before the failure belong in the next turn, or it answers them again.
+      this.rememberExchange(context.roomId, roomHistory, message, tools.turn.posted);
       await reportProviderTurnFailure(tools, this.logger, this.provider, "Google ADK adapter request failed", error, { roomId: context.roomId });
       return;
     }
 
-    const stored = this.rememberExchange(context.roomId, roomHistory, message, posted);
+    const stored = this.rememberExchange(context.roomId, roomHistory, message, tools.turn.posted);
     // Only text that was delivered belongs in the next turn.
     if (await relayReply(tools, finalResponseText, [{ id: message.senderId }])) {
       this.rememberModelLine(context.roomId, stored, finalResponseText);
@@ -378,26 +376,24 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
   private buildAgent(
     sdk: GoogleAdkSdkLike,
     tools: TurnTools,
-    posted: string[],
   ): unknown {
     return sdk.createAgent({
       name: this.agentName || "band_agent",
       model: this.apiKey ? sdk.createModel({ model: this.model, apiKey: this.apiKey }) : this.model,
       instruction: this.systemPrompt,
-      tools: this.buildTools(sdk, tools, posted),
+      tools: this.buildTools(sdk, tools),
     });
   }
 
   private buildTools(
     sdk: GoogleAdkSdkLike,
     tools: TurnTools,
-    posted: string[],
   ): unknown[] {
     const toolSchemas = tools.getOpenAIToolSchemas({
       includeMemory: this.enableMemoryTools,
     });
     const adkTools = toolSchemas
-      .map((schema) => this.buildPlatformTool(sdk, tools, schema, posted))
+      .map((schema) => this.buildPlatformTool(sdk, tools, schema))
       .filter((tool): tool is unknown => tool !== null);
 
     for (const customTool of this.customTools) {
@@ -411,7 +407,6 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
     sdk: GoogleAdkSdkLike,
     tools: AdapterToolsProtocol,
     schema: Record<string, unknown>,
-    posted: string[],
   ): unknown {
     const functionDef = asOptionalRecord(schema.function) ?? {};
     const name = functionDef?.name;
@@ -424,13 +419,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
       description: typeof functionDef.description === "string" ? functionDef.description : "",
       parameters: asOptionalRecord(stripAdditionalProperties(functionDef.parameters)) ?? undefined,
       execute: async (input) => {
-        const args = asToolArgs(input);
-        const result = await tools.executeToolCall(name, args);
-        const content = postedSendContent(name, args.content, isFailedToolOutput(result));
-        if (content !== undefined) {
-          posted.push(content);
-        }
-        return stringifyToolResult(result);
+        return stringifyToolResult(await tools.executeToolCall(name, asToolArgs(input)));
       },
     });
   }

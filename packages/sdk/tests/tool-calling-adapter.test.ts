@@ -13,10 +13,10 @@ import type { ToolCallingModel, ToolCallingResponse } from "../src/adapters";
 import { ValidationError } from "../src/core/errors";
 import { FAILURE_CODE_TIMEOUT } from "../src/core/providerFailure";
 import { describeDeliveryContract } from "./deliveryContract";
-import { CLOSING_TEXT, TOOL_REPLY, describeTurnOutcomeContract, turnInput, type TurnScript } from "./turnOutcomeContract";
+import { CLOSING_TEXT, describeTurnOutcomeContract, turnInput, type TurnScript, describeCustomToolEffect, NO_REPLY_ARGS, TOOL_REPLY_ARGS, ACT_TOOL, ACT_ARGS } from "./turnOutcomeContract";
 import { expectTurnFailed, failureEvents, hangUntilAborted, hangsOnce } from "./testUtils";
 import { createDeferred } from "../src/core/deferred";
-import { Turn } from "../src/core/turn";
+import { trackTurn, Turn } from "../src/core/turn";
 import type {
   ContactRequestsResult,
   ContactRecord,
@@ -291,9 +291,9 @@ describe("ToolCallingAdapter", () => {
     const tools = new FakeTools();
     const room = { isSessionBootstrap: false, roomId: "r1" };
 
-    await adapter.onMessage(pineapple, tools, inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "r1" });
-    await adapter.onMessage(mango, tools, inboundOnly(pineapple), null, null, room);
-    await adapter.onMessage(kiwi, tools, inboundOnly(pineapple, mango), null, null, room);
+    await adapter.onMessage(pineapple, trackTurn(tools), inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "r1" });
+    await adapter.onMessage(mango, trackTurn(tools), inboundOnly(pineapple), null, null, room);
+    await adapter.onMessage(kiwi, trackTurn(tools), inboundOnly(pineapple, mango), null, null, room);
 
     expect(turnLines(seen[2]!)).toEqual([
       { role: "user", content: "[Jane]: Reply with: pineapple" },
@@ -335,8 +335,8 @@ describe("ToolCallingAdapter", () => {
     };
     const next = { ...fakeMessage, id: "m2", content: "Reply with: mango" };
 
-    await adapter.onMessage(fakeMessage, tools, inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "r1" });
-    await adapter.onMessage(next, tools, inboundOnly(fakeMessage), null, null, { isSessionBootstrap: false, roomId: "r1" });
+    await adapter.onMessage(fakeMessage, trackTurn(tools), inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "r1" });
+    await adapter.onMessage(next, trackTurn(tools), inboundOnly(fakeMessage), null, null, { isSessionBootstrap: false, roomId: "r1" });
 
     expect(turnLines(seen.at(-1)!)).toEqual([
       { role: "user", content: "[Jane]: hello" },
@@ -362,8 +362,8 @@ describe("ToolCallingAdapter", () => {
     const adapter = new OpenAIAdapter({ model });
     const next = { ...fakeMessage, id: "m2", content: "Reply with: mango" };
 
-    await expect(adapter.onMessage(fakeMessage, new FakeTools(), inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "r1" })).rejects.toThrow();
-    await adapter.onMessage(next, new FakeTools(), inboundOnly(fakeMessage), null, null, { isSessionBootstrap: false, roomId: "r1" });
+    await expect(adapter.onMessage(fakeMessage, trackTurn(new FakeTools()), inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "r1" })).rejects.toThrow();
+    await adapter.onMessage(next, trackTurn(new FakeTools()), inboundOnly(fakeMessage), null, null, { isSessionBootstrap: false, roomId: "r1" });
 
     expect(turnLines(seen.at(-1)!)).toEqual([
       { role: "user", content: "[Jane]: hello" },
@@ -418,8 +418,8 @@ describe("ToolCallingAdapter", () => {
     const adapter = new OpenAIAdapter({ model });
     const next = { ...fakeMessage, id: "m2", content: "next question" };
 
-    await adapter.onMessage(fakeMessage, new FakeTools(), inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "r1" });
-    await adapter.onMessage(next, new FakeTools(), inboundOnly(fakeMessage), null, null, { isSessionBootstrap: false, roomId: "r1" });
+    await adapter.onMessage(fakeMessage, trackTurn(new FakeTools()), inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "r1" });
+    await adapter.onMessage(next, trackTurn(new FakeTools()), inboundOnly(fakeMessage), null, null, { isSessionBootstrap: false, roomId: "r1" });
 
     expect(turnLines(seen.at(-1)!)).toEqual([
       { role: "user", content: "[Jane]: hello" },
@@ -994,15 +994,22 @@ describe("ToolCallingAdapter", () => {
     adapter: "ToolCallingAdapter (shared by every ToolCalling-based adapter)",
     turn: (script, tools) => new OpenAIAdapter({ model: scriptedModel(script) }).onEvent(turnInput(tools)),
   }]);
+
+  describeCustomToolEffect("ToolCallingAdapter", (tool, tools) => {
+    const responses: ToolCallingResponse[] = [{ toolCalls: [{ id: "call-1", name: tool.name, input: {} }] }, {}];
+    let round = 0;
+    const model: ToolCallingModel = { complete: async () => responses[round++] ?? {} };
+    return new OpenAIAdapter({ model, customTools: [tool] }).onEvent(turnInput(tools));
+  });
 });
 
 /** A model that runs one contract turn's rounds, then has nothing more to say. */
 function scriptedModel(script: TurnScript): ToolCallingModel {
   const call = (name: string, input: Record<string, unknown>) => ({ toolCalls: [{ id: "call-1", name, input }] });
   const rounds: Record<TurnScript, ToolCallingResponse[]> = {
-    decline: [call(NO_REPLY_TOOL_NAME, { reason: "FYI only" }), { text: CLOSING_TEXT }],
-    toolReply: [call(SEND_MESSAGE_TOOL_NAME, { content: TOOL_REPLY, mentions: ["@user"] }), { text: CLOSING_TEXT }],
-    act: [call("band_add_participant", { name: "Helper" }), {}],
+    decline: [call(NO_REPLY_TOOL_NAME, NO_REPLY_ARGS), { text: CLOSING_TEXT }],
+    toolReply: [call(SEND_MESSAGE_TOOL_NAME, TOOL_REPLY_ARGS), { text: CLOSING_TEXT }],
+    act: [call(ACT_TOOL, ACT_ARGS), {}],
     finalText: [{ text: CLOSING_TEXT }],
     nothing: [{}],
   };

@@ -1,4 +1,3 @@
-import { missingReplyMessage } from "@band-ai/band-sdk-core";
 import { describe, expect, it, vi } from "vitest";
 
 import { GenericAdapter, type GenericAdapterHandler } from "../src/adapters/GenericAdapter";
@@ -7,15 +6,16 @@ import { TransportError, ValidationError } from "../src/core/errors";
 import { PlatformRuntime } from "../src/runtime/PlatformRuntime";
 import { ExecutionContext } from "../src/runtime/ExecutionContext";
 import { HUB_ROOM_SYSTEM_PROMPT } from "../src/runtime/ContactEventHandler";
-import { FAILURE_EVENT_TYPE, type FrameworkAdapter, type FrameworkAdapterInput } from "../src/contracts/protocols";
+import type { FrameworkAdapter, FrameworkAdapterInput } from "../src/contracts/protocols";
 import type { MetadataMap } from "../src/contracts/dtos";
 import { NO_REPLY_TOOL_NAME, SEND_EVENT_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
 import { agentFailure } from "../src/core/providerFailure";
 import { SimpleAdapter } from "../src/core/simpleAdapter";
-import { relayReply, TURN_FAILURE_PROVIDER } from "../src/core/turn";
+import { relayReply } from "../src/core/turn";
 import type { StreamingTransport } from "../src/platform/streaming/transport";
 import { BandLink } from "../src/platform/BandLink";
-import { FakeRestApi, FakeTransport, makeMessage } from "./testUtils";
+import { FakeRestApi, FakeTransport, makeMessage, MISSING_REPLY, reportedFailures, type ReportedFailure } from "./testUtils";
+import { NO_REPLY_ARGS } from "./turnOutcomeContract";
 import { createDeferred } from "../src/core/deferred";
 
 describe("PlatformRuntime", () => {
@@ -1058,7 +1058,7 @@ describe("PlatformRuntime turn outcome", () => {
   interface PostedEvent { content: string; messageType: string; metadata?: MetadataMap }
 
   /** Runs one room message through the real runtime, link and AgentTools; returns its mark and the events it posted. */
-  async function runTurn(adapter: FrameworkAdapter): Promise<{ mark: string; failures: PostedEvent[] }> {
+  async function runTurn(adapter: FrameworkAdapter): Promise<{ mark: string; failures: ReportedFailure[] }> {
     const transport = new FakeTransport();
     const marks: string[] = [];
     const events: PostedEvent[] = [];
@@ -1089,7 +1089,7 @@ describe("PlatformRuntime turn outcome", () => {
     await transport.emit("agent_rooms:a1", "room_added", { id: "room-1", status: "active", type: "direct", title: "Room", task_id: null, inserted_at: now, updated_at: now });
     await transport.emit("chat_room:room-1", "message_created", { ...MESSAGE_FROM_JANE, inserted_at: now, updated_at: now });
     await vi.waitFor(() => expect(marks).toHaveLength(1));
-    return { mark: marks[0]!, failures: events.filter((event) => event.messageType === FAILURE_EVENT_TYPE) };
+    return { mark: marks[0]!, failures: reportedFailures(events) };
   }
 
   const call = (name: string, args: Record<string, unknown> = {}): GenericAdapterHandler =>
@@ -1106,11 +1106,11 @@ describe("PlatformRuntime turn outcome", () => {
     { row: "send_event only", handler: call(SEND_EVENT_TOOL_NAME, { content: "Thinking", message_type: "thought" }), mark: "failed" },
     { row: "act", handler: call("band_create_chatroom"), mark: "processed" },
     { row: "reply", handler: reply, mark: "processed" },
-    { row: "decline", handler: call(NO_REPLY_TOOL_NAME, { reason: "FYI only" }), mark: "processed" },
+    { row: "decline", handler: call(NO_REPLY_TOOL_NAME, NO_REPLY_ARGS), mark: "processed" },
     { row: "reply then observe", handler: async (args) => { await reply(args); await observe(args); }, mark: "processed" },
     { row: "relay", handler: async ({ tools }) => { await relayReply(tools, "Closing text", JANE); }, mark: "processed" },
     { row: "settled", handler: async ({ tools }) => { tools.turn.settle(); }, mark: "processed" },
-    // The nightly case: a send the platform rejects, then only a thought.
+    // A rejected send records nothing, and a thought never answers.
     {
       row: "a failed send, then a thought",
       handler: async (args) => {
@@ -1125,11 +1125,7 @@ describe("PlatformRuntime turn outcome", () => {
     const outcome = await runTurn(new GenericAdapter(handler));
 
     expect(outcome.mark).toBe(mark);
-    const expected = mark === "failed" ? [{ content: missingReplyMessage(), provider: TURN_FAILURE_PROVIDER }] : [];
-    expect(outcome.failures.map((event) => ({
-      content: event.content,
-      provider: (event.metadata?.failure as { provider?: string } | undefined)?.provider,
-    }))).toEqual(expected);
+    expect(outcome.failures).toEqual(mark === "failed" ? [MISSING_REPLY] : []);
   });
 
   it("reported: a turn that posted its own failure is complete, and posts no second one", async () => {
@@ -1138,7 +1134,7 @@ describe("PlatformRuntime turn outcome", () => {
     }));
 
     expect(outcome.mark).toBe("processed");
-    expect(outcome.failures.map((event) => event.content)).toEqual(["The provider is down."]);
+    expect(outcome.failures).toEqual([{ content: "The provider is down.", provider: "custom" }]);
   });
 
   it("never judges an exempt adapter's turn", async () => {
@@ -1188,7 +1184,7 @@ describe("PlatformRuntime turn outcome", () => {
     await seen.promise;
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(events.filter((event) => event.messageType === FAILURE_EVENT_TYPE)).toEqual([]);
+    expect(reportedFailures(events)).toEqual([]);
   });
 });
 

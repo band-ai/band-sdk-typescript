@@ -284,9 +284,7 @@ export class CursorRoomAgent extends ACPRoomAgent {
       this.turn = null;
       this.cancelRoom(context.roomId, END_REASON.turnFinished);
     }
-    if (tools.turn.detached) {
-      await reportUnsettledTurn(tools, this.decisionLogger);
-    }
+    await reportUnsettledTurn(tools, this.decisionLogger, { roomId: context.roomId });
   }
 
   public override async onCleanup(roomId: string): Promise<void> {

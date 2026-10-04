@@ -17,7 +17,7 @@ import { BASE_INSTRUCTIONS } from "../src/runtime/prompts";
 import { HistoryProvider } from "../src/runtime/types";
 import { FakeTools, failureEvents, findFailureEvent, makeMessage, expectTurnFailed, roomWorkspacePath, tmpRoot } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
-import { CLOSING_TEXT, TOOL_REPLY, describeTurnOutcomeContract, turnInput, type TurnScript } from "./turnOutcomeContract";
+import { CLOSING_TEXT, describeTurnOutcomeContract, turnInput, type TurnScript, describeCustomToolEffect, NO_REPLY_ARGS, TOOL_REPLY_ARGS, ACT_TOOL, ACT_ARGS } from "./turnOutcomeContract";
 
 class FakeCodexClient implements CodexClientLike {
   public readonly requestCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
@@ -256,6 +256,12 @@ describe("CodexAdapter", () => {
       await new CodexAdapter({ config: { cwd: tmpRoot() }, factory: async () => client }).onEvent(turnInput(tools));
     },
   }]);
+
+  describeCustomToolEffect("CodexAdapter", async (tool, tools) => {
+    const [call, completed] = [scriptedToolCall(tool.name, {}), TURN_COMPLETED];
+    const client = new FakeCodexClient({ events: [call, completed] });
+    await new CodexAdapter({ config: { cwd: tmpRoot() }, customTools: [tool], factory: async () => client }).onEvent(turnInput(tools));
+  });
 
   it("settles a local command's turn without counting its notice as the reply", async () => {
     const adapter = new CodexAdapter({ config: { cwd: tmpRoot() }, factory: async () => new FakeCodexClient() });
@@ -1819,27 +1825,35 @@ describe("CodexAdapter", () => {
 });
 
 /** The app-server events of one contract turn: the model's tool calls and closing message, then completion. */
-function scriptedTurnEvents(script: TurnScript): CodexRpcEvent[] {
-  const call = (tool: string, arguments_: Record<string, unknown>): CodexRpcEvent => ({
+/** The app-server request in which the model calls `tool`. */
+function scriptedToolCall(tool: string, arguments_: Record<string, unknown>): CodexRpcEvent {
+  return {
     kind: "request",
     id: 1,
     method: "item/tool/call",
     params: { threadId: "thread-1", turnId: "turn-1", callId: "call-1", tool, arguments: arguments_ },
-  });
+  };
+}
+
+const TURN_COMPLETED: CodexRpcEvent = {
+  kind: "notification",
+  method: "turn/completed",
+  params: { turn: { id: "turn-1", status: "completed", error: null } },
+};
+
+function scriptedTurnEvents(script: TurnScript): CodexRpcEvent[] {
+  const call = scriptedToolCall;
   const say = (text: string): CodexRpcEvent => ({
     kind: "notification",
     method: "item/completed",
     params: { item: { type: "agentMessage", id: "msg-1", text } },
   });
   const steps: Record<TurnScript, CodexRpcEvent[]> = {
-    decline: [call(NO_REPLY_TOOL_NAME, { reason: "FYI only" }), say(CLOSING_TEXT)],
-    toolReply: [call(SEND_MESSAGE_TOOL_NAME, { content: TOOL_REPLY, mentions: ["@user"] }), say(CLOSING_TEXT)],
-    act: [call("band_add_participant", { name: "Helper" })],
+    decline: [call(NO_REPLY_TOOL_NAME, NO_REPLY_ARGS), say(CLOSING_TEXT)],
+    toolReply: [call(SEND_MESSAGE_TOOL_NAME, TOOL_REPLY_ARGS), say(CLOSING_TEXT)],
+    act: [call(ACT_TOOL, ACT_ARGS)],
     finalText: [say(CLOSING_TEXT)],
     nothing: [],
   };
-  return [
-    ...steps[script],
-    { kind: "notification", method: "turn/completed", params: { turn: { id: "turn-1", status: "completed", error: null } } },
-  ];
+  return [...steps[script], TURN_COMPLETED];
 }

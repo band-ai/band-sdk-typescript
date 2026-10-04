@@ -11,12 +11,12 @@ import { HttpOpencodeClient, OpencodeAdapter, type OpencodeAdapterConfig } from 
 import { OPENCODE_DECISION_MESSAGES as SAYS, formatQuestionPrompt } from "../../src/adapters/opencode/messages";
 import { createDeferred } from "../../src/core/deferred";
 import { FAILURE_EVENT_TYPE } from "../../src/contracts/protocols";
-import { REJECTED_PERMISSION_FEEDBACK } from "../../src/adapters/opencode/replies";
+import { DECLINED_QUESTION_ANSWER, REJECTED_PERMISSION_FEEDBACK } from "../../src/adapters/opencode/replies";
 import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../../src/contracts/toolSchemas";
 import { createBandMcpBackend } from "../../src/mcp/backends";
 import type { BandMcpServer } from "../../src/mcp/server";
-import { CallHolds, expectMcpServerStopped } from "../testUtils";
-import { BandPlatform, MISSING_REPLY, person, type Outcome, type RecordingRestApi, type ReportedFailure } from "./support/bandPlatform";
+import { CallHolds, expectMcpServerStopped, MISSING_REPLY, type ReportedFailure } from "../testUtils";
+import { BandPlatform, person, type Outcome, type RecordingRestApi } from "./support/bandPlatform";
 import { FakeOpencodeServer, type OpencodeTurn } from "./support/fakeOpencodeServer";
 import { CLOSING_TEXT, TOOL_REPLY, type TurnScript } from "../turnOutcomeContract";
 
@@ -50,6 +50,8 @@ const TURN_SCRIPTS: Record<TurnScript, (turn: OpencodeTurn) => Promise<void> | v
 };
 
 const DECLINED_ANSWER = "Understood, I won't run it.";
+// What a one-question ask is answered with when the room declines it.
+const DECLINED = [[DECLINED_QUESTION_ANSWER]];
 
 const approvalPrompt = (requestId: string) => SAYS.approvalRequested({ requestId, permission: "bash", patterns: ["npm test"] });
 
@@ -223,7 +225,7 @@ describe("OpenCode in a Band room", () => {
 
     await room.nextMessage((posted) => posted.content === "Done.");
     expect(server.permissionReplies()).toEqual([[second, "once"], [first, "always"]]);
-    expect(server.questionReplies()).toEqual([[question, "rejected"]]);
+    expect(server.questionReplies()).toEqual([[question, DECLINED]]);
     expect(await room.exchange(OWNER, `approve ${first}`)).toEqual([SAYS.noLongerPending("permission", first)]);
   });
 
@@ -290,7 +292,7 @@ describe("OpenCode in a Band room", () => {
     await server.until(() => server.permissionReplies().length === 1);
 
     expect(server.permissionReplies()).toEqual([[permission, expected]]);
-    expect(server.questionReplies()).toEqual([[question, "rejected"]]);
+    expect(server.questionReplies()).toEqual([[question, DECLINED]]);
     await room.until(() => room.events("error").length === 2);
     expect(room.events("error").map((event) => event.content)).toEqual([
       SAYS.questionTimedOut(question),
@@ -313,7 +315,7 @@ describe("OpenCode in a Band room", () => {
 
     await room.nextMessage((posted) => posted.content === "Done.");
     expect(server.permissionReplies()).toEqual([["per_auto", "once"]]);
-    expect(new Map(server.questionReplies())).toEqual(new Map<string, unknown>([["que_empty", "rejected"], ["que_ask", [["yes"]]]]));
+    expect(new Map(server.questionReplies())).toEqual(new Map<string, unknown>([["que_empty", []], ["que_ask", [["yes"]]]]));
     expect(room.messages).not.toContainEqual(expect.objectContaining({ content: approvalPrompt("per_auto") }));
   });
 
@@ -328,7 +330,7 @@ describe("OpenCode in a Band room", () => {
 
     await room.nextMessage((posted) => posted.content === "Done.");
     expect(server.permissionReplies()).toEqual([["per_auto", "reject"]]);
-    expect(new Map(server.questionReplies())).toEqual(new Map<string, unknown>([["que_empty", "rejected"], ["que_ask", "rejected"]]));
+    expect(new Map(server.questionReplies())).toEqual(new Map<string, unknown>([["que_empty", []], ["que_ask", DECLINED]]));
     expect(room.messages.map((posted) => posted.content)).toEqual(["Done."]);
   });
 
@@ -743,7 +745,7 @@ describe("OpenCode in a Band room", () => {
       turn.idle();
     });
     await room.nextMessage((posted) => posted.content === formatQuestionPrompt([{ question: "Proceed?" }], question));
-    const expiryReplies = [server.hold("POST /permission/per_:id/reply"), server.hold("POST /question/que_:id/reject")];
+    const expiryReplies = [server.hold("POST /permission/per_:id/reply"), server.hold("POST /question/que_:id/reply")];
 
     await vi.advanceTimersByTimeAsync(DEADLINE_MS);
     await Promise.all(expiryReplies.map((reply) => reply.sending));
@@ -760,7 +762,7 @@ describe("OpenCode in a Band room", () => {
     await room.until(() => room.events("error").length === 2);
 
     expect(server.permissionReplies()).toEqual([[permission, "reject"]]);
-    expect(server.questionReplies()).toEqual([[question, "rejected"]]);
+    expect(server.questionReplies()).toEqual([[question, DECLINED]]);
     expect(room.messages.filter((posted) => posted.content === approvalPrompt(permission))).toHaveLength(1);
   });
 
@@ -951,6 +953,36 @@ describe("OpenCode in a Band room", () => {
 
       expect(await room.outcome(message)).toBe("processed");
       expect(server.permissionFeedback()).toEqual([[permission, REJECTED_PERMISSION_FEEDBACK]]);
+      expect(room.failures).toEqual([]);
+    });
+
+    // OpenCode ends the turn on a question reject, which carries no feedback; a decline is an answer instead.
+    const answersWhenHandedBack = (question: string) => async (turn: OpencodeTurn) => {
+      const reply = await turn.askQuestion([{ question: "Proceed?" }], question).reply;
+      if (reply === "rejected") {
+        turn.idle();
+      } else {
+        turn.answer(DECLINED_ANSWER);
+      }
+    };
+
+    it.each([
+      { decision: "the room's reject", questionMode: "manual" },
+      { decision: "auto_reject", questionMode: "auto_reject" },
+    ] as const)("hands a question $decision declines back to the model, whose answer completes the turn", async ({ questionMode }) => {
+      await using session = await opencodeRoom({ questionMode });
+      const { room, server } = session;
+      const question = "que_declined";
+      const message = await session.start(answersWhenHandedBack(question));
+      if (questionMode === "manual") {
+        await room.nextMessage((posted) => posted.content === formatQuestionPrompt([{ question: "Proceed?" }], question));
+        await room.exchange(OWNER, `reject ${question}`);
+      }
+
+      await room.until(() => room.messages.some((posted) => posted.content === DECLINED_ANSWER));
+
+      expect(await room.outcome(message)).toBe("processed");
+      expect(server.questionReplies()).toEqual([[question, DECLINED]]);
       expect(room.failures).toEqual([]);
     });
 
