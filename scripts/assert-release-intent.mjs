@@ -41,12 +41,13 @@ function versionTuple(pkg, path, manifest, readPackageJson) {
   return [manifest[path], ...pkg.versionFiles.map((file) => readPackageJson(`${path}/${file}`).version)];
 }
 
-/** Where `pkg` lived at the baseline: Release Please tracks a package by name, so it may have moved. */
+/**
+ * Where `pkg` lived at the baseline, or undefined for a package added since:
+ * Release Please tracks a package by name, so it may have moved.
+ */
 function baselinePath(baselineConfig, pkg) {
-  const entry = Object.entries(baselineConfig.packages)
-    .find(([, options]) => options["package-name"] === pkg.name);
-  if (!entry) throw new Error(`${pkg.name} is not a Release Please package at the release baseline`);
-  return entry[0];
+  return Object.entries(baselineConfig.packages)
+    .find(([, options]) => options["package-name"] === pkg.name)?.[0];
 }
 
 function resolveCommit(revision) {
@@ -94,11 +95,16 @@ async function verifyReleaseTransitions(manifest) {
   const parentManifest = readBaselineJson(baseline, ".release-please-manifest.json");
   const parentConfig = readBaselineJson(baseline, "release-please-config.json");
   const readParentJson = (path) => readBaselineJson(baseline, path);
-  const changed = RELEASE_PACKAGES.map((pkg) => assertAtomic(
-    pkg.name,
-    versionTuple(pkg, pkg.path, manifest, readJson),
-    versionTuple(pkg, baselinePath(parentConfig, pkg), parentManifest, readParentJson),
-  )).some(Boolean);
+  const changed = RELEASE_PACKAGES.map((pkg) => {
+    const current = versionTuple(pkg, pkg.path, manifest, readJson);
+    const path = baselinePath(parentConfig, pkg);
+    if (!path) {
+      // A new package is a version transition from nothing.
+      assertMatchingStableVersion(pkg.name, current);
+      return true;
+    }
+    return assertAtomic(pkg.name, current, versionTuple(pkg, path, parentManifest, readParentJson));
+  }).some(Boolean);
   if (changed) await assertNoHold();
   console.log(changed ? "Independent package release intent verified." : "No release version transition detected; release intent passed.");
 }

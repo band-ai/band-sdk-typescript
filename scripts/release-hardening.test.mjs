@@ -36,18 +36,21 @@ function runCommand(command, args, cwd, env = {}) {
 const sdkPath = releasePackage("sdk").path;
 const openclawPath = releasePackage("openclaw").path;
 
-// Lays out every listed package at `versions[key]`; `paths` relocates one, as a
-// commit from before a package move would have it.
-async function writeReleaseState(directory, { versions, paths = {}, hold = false }) {
+const UNRELEASED_VERSION = "0.0.0";
+
+// Lays out every listed package at `versions[key]`, or unreleased when a test
+// doesn't name it; `paths` relocates one, as a commit from before a package move
+// would have it, and `omit` leaves out one added since.
+async function writeReleaseState(directory, { versions, paths = {}, omit = [], hold = false }) {
   const manifest = {};
   const config = { packages: {} };
-  for (const pkg of RELEASE_PACKAGES) {
+  for (const pkg of RELEASE_PACKAGES.filter((candidate) => !omit.includes(candidate.key))) {
     const path = paths[pkg.key] ?? pkg.path;
-    const version = versions[pkg.key];
+    const version = versions[pkg.key] ?? UNRELEASED_VERSION;
     manifest[path] = version;
     config.packages[path] = { "package-name": pkg.name };
-    await mkdir(join(directory, path), { recursive: true });
     for (const file of pkg.versionFiles) {
+      await mkdir(dirname(join(directory, path, file)), { recursive: true });
       await writeFile(join(directory, path, file), `${JSON.stringify({ name: pkg.name, version }, null, 2)}\n`);
     }
   }
@@ -56,7 +59,7 @@ async function writeReleaseState(directory, { versions, paths = {}, hold = false
   if (hold) await writeFile(join(directory, ".release-hold"), "release held\n");
 }
 
-async function withReleaseHistory(callback, { paths } = {}) {
+async function withReleaseHistory(callback, { paths, omit } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "release-intent-"));
   try {
     assert.equal(runCommand("git", ["init", "-q"], directory).status, 0);
@@ -69,7 +72,7 @@ async function withReleaseHistory(callback, { paths } = {}) {
       runCommand("git", ["config", "user.name", "Release Test"], directory).status,
       0,
     );
-    await writeReleaseState(directory, { versions: { sdk: "0.1.7", openclaw: "0.1.10" }, paths });
+    await writeReleaseState(directory, { versions: { sdk: "0.1.7", openclaw: "0.1.10" }, paths, omit });
     assert.equal(runCommand("git", ["add", "."], directory).status, 0);
     assert.equal(runCommand("git", ["commit", "-qm", "initial"], directory).status, 0);
     await callback(directory);
@@ -456,6 +459,43 @@ test("release intent still requires an atomic transition for a moved package", a
   }, { paths: { openclaw: formerOpenclawPath } });
 });
 
+const addedPackage = RELEASE_PACKAGES.at(-1);
+
+/** Commit the listed layout over a baseline that didn't list `addedPackage` yet. */
+async function commitAddedPackage(directory, { hold = false } = {}) {
+  await writeReleaseState(directory, { versions: { sdk: "0.1.7", openclaw: "0.1.10" }, hold });
+  assert.equal(runCommand("git", ["add", "-A"], directory).status, 0);
+  assert.equal(runCommand("git", ["commit", "-qm", "add package"], directory).status, 0);
+}
+
+test("release intent accepts a package added since the baseline at matching stable versions", async () => {
+  await withReleaseHistory(async (directory) => {
+    await commitAddedPackage(directory);
+    const result = run(intentScript, directory, { RELEASE_BASE_COMMIT: "HEAD^" });
+    assert.equal(result.status, 0, result.stderr);
+  }, { omit: [addedPackage.key] });
+});
+
+test("release intent rejects a package added since the baseline with mismatched versions", async () => {
+  await withReleaseHistory(async (directory) => {
+    await commitAddedPackage(directory);
+    await writeFile(join(directory, addedPackage.path, addedPackage.versionFiles.at(-1)), '{"version":"0.0.1"}\n');
+    assert.equal(runCommand("git", ["commit", "-qam", "mismatch"], directory).status, 0);
+    const result = run(intentScript, directory, { RELEASE_BASE_COMMIT: "HEAD~2" });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /version fields must match/);
+  }, { omit: [addedPackage.key] });
+});
+
+test("release intent rejects a package added since the baseline while release hold exists", async () => {
+  await withReleaseHistory(async (directory) => {
+    await commitAddedPackage(directory, { hold: true });
+    const result = run(intentScript, directory, { RELEASE_BASE_COMMIT: "HEAD^" });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /release hold/i);
+  }, { omit: [addedPackage.key] });
+});
+
 // `withFakeNpm` puts a `#!/bin/sh` stub on PATH (joined with ":") to stand in for
 // npm, and `publish-if-needed.mjs` spawns a bare `npm` with no shell. Both are
 // POSIX-only, and the publish job they model only ever runs on ubuntu-latest.
@@ -689,11 +729,10 @@ test("openclaw build copies wasm via tsup onSuccess and CI packaging requires it
     /statSync\(wasmPath\)\.size === 0/,
   );
 
+  // CI checks every listed package's packlist, OpenClaw's wasm included.
   const ci = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
-  assert.match(
-    ci,
-    /const required = \[[^\]]*['"]dist\/band_sdk_core_bg\.wasm['"]/,
-  );
+  assert.match(ci, /for \(const pkg of RELEASE_PACKAGES\) assertPackageContents\(pkg\.path, pkg\.contents\)/);
+  assert.ok(releasePackage("openclaw").contents.required.includes("dist/band_sdk_core_bg.wasm"));
   // The plugin stamps the core version from the same lookup copy-wasm uses.
   const syncVersion = readFileSync(join(root, openclawPath, "scripts/sync-plugin-version.js"), "utf8");
   assert.match(syncVersion, /bandSdkCoreVersion/);
@@ -1033,22 +1072,20 @@ test("CI exposes one always-reporting aggregate status covering every job", asyn
   );
 });
 
-test("CI uses exact nonempty package filters and selects both packages for control paths", async () => {
+test("CI uses exact nonempty package filters and selects every package for control paths", async () => {
   const workflow = await readFile(join(root, ".github/workflows/ci.yml"), "utf8");
 
   assert.doesNotMatch(workflow, /@thenvoi\/openclaw-channel-thenvoi/);
   const filteredCommands = [
     ...workflow.matchAll(/run: (pnpm [^\n]*--filter [^\n]+)/g),
   ];
-  assert.equal(filteredCommands.length, 10);
+  assert.equal(filteredCommands.length, (workflow.match(/--filter /g) ?? []).length, "every filter must be a run command");
   for (const command of filteredCommands) {
     assert.match(command[1], /^pnpm --fail-if-no-match --filter /);
   }
-  assert.match(workflow, /pnpm --fail-if-no-match --filter @band-ai\/sdk/);
-  assert.match(
-    workflow,
-    /pnpm --fail-if-no-match --filter @band-ai\/openclaw-channel-band/,
-  );
+  for (const pkg of RELEASE_PACKAGES) {
+    assert.ok(workflow.includes(`pnpm --fail-if-no-match --filter ${pkg.name} `), `CI must build or test ${pkg.name}`);
+  }
 
   for (const requiredPath of [
     ".github/**",
@@ -1062,7 +1099,7 @@ test("CI uses exact nonempty package filters and selects both packages for contr
   ]) {
     const escaped = requiredPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const occurrences = workflow.match(new RegExp(`['\"]${escaped}['\"]`, "g")) ?? [];
-    assert.equal(occurrences.length, 2, `${requiredPath} must select both packages`);
+    assert.equal(occurrences.length, RELEASE_PACKAGES.length, `${requiredPath} must select every package`);
   }
 });
 

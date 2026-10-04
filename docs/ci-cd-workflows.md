@@ -26,7 +26,7 @@ back-merge to reconcile after a release.
 > `main`. Existing `dev` PR migration is outside this rollout; no release is ever
 > cut from `dev`.
 
-This repo is a **pnpm monorepo** publishing two packages. Its branch topology
+This repo is a **pnpm monorepo** publishing three packages. Its branch topology
 mirrors `band-ai/band-sdk-python`, while its release workflow remains tailored
 to this repository's independent multi-package release:
 
@@ -34,6 +34,7 @@ to this repository's independent multi-package release:
 |---|---|
 | `packages/sdk` | `@band-ai/sdk` |
 | `plugins/openclaw` | `@band-ai/openclaw-channel-band` |
+| `plugins/claude-code` | `@band-ai/claude-code-plugin` |
 
 `scripts/release-packages.mjs` is the one list of released packages (path,
 npm name, version files, packlist floor) that every release script and
@@ -131,14 +132,17 @@ no write permission.
 - `changes` — `dorny/paths-filter` deciding which packages a PR touches. Any
   change to shared control paths (`.github/**`, `scripts/**`, `package.json`,
   `pnpm-workspace.yaml`, `pnpm-lock.yaml`, the release-please config/manifest,
-  `.release-hold`) selects **both** packages.
+  `.release-hold`) selects **every** package.
 - `lint` — build, typecheck, and ESLint for each selected package.
 - `test` — checks release intent before Release Please can consume a version
   transition, then builds and runs Vitest for each selected package plus the
   release-hardening suite (`pnpm test:release-hardening`).
-- `packaging` — builds everything and verifies the published surface: the SDK's
-  ESM and CJS entrypoints both import with non-empty exports, and OpenClaw's
-  `dist` artifacts exist, are non-empty, and declare the expected exports.
+- `packaging` — builds everything and verifies the published surface: every
+  listed package's packlist meets its `contents` entry in
+  `scripts/release-packages.mjs`, the SDK's ESM and CJS entrypoints both import
+  with non-empty exports, OpenClaw's `dist` artifacts are non-empty and declare
+  the expected exports, and `claude plugin validate --strict` accepts the Claude
+  Code plugin.
 - `ci-status` — the aggregate gate described above.
 
 ### PR Title — `pr-title.yml`
@@ -245,7 +249,7 @@ with a well-meaning workflow edit and impossible to notice until a release.
 Deliberately not addressed yet, recorded so they aren't rediscovered:
 
 - **No tag protection ruleset.** Anyone with write access can create or move an
-  `sdk-v*` / `openclaw-channel-band-v*` tag. The Python SDK restricts its
+  `sdk-v*` / `openclaw-channel-band-v*` / `claude-code-plugin-v*` tag. The Python SDK restricts its
   `band-sdk-v*` namespace to the release App. Until administrators add equivalent
   protection, recovery is a trusted-maintainer operation: the approver must
   compare `release-commit` with the original release run before authorizing the

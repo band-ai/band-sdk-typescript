@@ -38,6 +38,7 @@ jobs:
     outputs:
       sdk: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.sdk }}
       openclaw: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.openclaw }}
+      claude-code: ${{ github.event_name == 'push' && 'true' || steps.filter.outputs.claude-code }}
     steps:
       # Only feeds paths-filter below, which itself only runs on pull_request —
       # skip the checkout too on push so a trunk run doesn't pay for a step with
@@ -75,10 +76,21 @@ jobs:
               - 'release-please-config.json'
               - '.release-please-manifest.json'
               - '.release-hold'
+            claude-code:
+              - 'plugins/claude-code/**'
+              - 'packages/sdk/**'
+              - '.github/**'
+              - 'scripts/**'
+              - 'package.json'
+              - 'pnpm-workspace.yaml'
+              - 'pnpm-lock.yaml'
+              - 'release-please-config.json'
+              - '.release-please-manifest.json'
+              - '.release-hold'
 
   lint:
     needs: changes
-    if: needs.changes.outputs.sdk == 'true' || needs.changes.outputs.openclaw == 'true'
+    if: needs.changes.outputs.sdk == 'true' || needs.changes.outputs.openclaw == 'true' || needs.changes.outputs.claude-code == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -97,7 +109,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build SDK
-        if: needs.changes.outputs.sdk == 'true' || needs.changes.outputs.openclaw == 'true'
+        if: needs.changes.outputs.sdk == 'true' || needs.changes.outputs.openclaw == 'true' || needs.changes.outputs.claude-code == 'true'
         run: pnpm --fail-if-no-match --filter @band-ai/sdk build
 
       - name: Build OpenClaw
@@ -120,9 +132,17 @@ jobs:
         if: needs.changes.outputs.openclaw == 'true'
         run: pnpm --fail-if-no-match --filter @band-ai/openclaw-channel-band lint
 
+      - name: Typecheck Claude Code plugin
+        if: needs.changes.outputs.claude-code == 'true'
+        run: pnpm --fail-if-no-match --filter @band-ai/claude-code-plugin typecheck
+
+      - name: Lint Claude Code plugin
+        if: needs.changes.outputs.claude-code == 'true'
+        run: pnpm --fail-if-no-match --filter @band-ai/claude-code-plugin lint
+
   test:
     needs: changes
-    if: needs.changes.outputs.sdk == 'true' || needs.changes.outputs.openclaw == 'true'
+    if: needs.changes.outputs.sdk == 'true' || needs.changes.outputs.openclaw == 'true' || needs.changes.outputs.claude-code == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -153,7 +173,7 @@ jobs:
           RELEASE_BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
 
       - name: Build SDK
-        if: needs.changes.outputs.sdk == 'true' || needs.changes.outputs.openclaw == 'true'
+        if: needs.changes.outputs.sdk == 'true' || needs.changes.outputs.openclaw == 'true' || needs.changes.outputs.claude-code == 'true'
         run: pnpm --fail-if-no-match --filter @band-ai/sdk build
 
       - name: Build OpenClaw
@@ -174,6 +194,10 @@ jobs:
       - name: Test OpenClaw
         if: needs.changes.outputs.openclaw == 'true'
         run: pnpm --fail-if-no-match --filter @band-ai/openclaw-channel-band test
+
+      - name: Test Claude Code plugin
+        if: needs.changes.outputs.claude-code == 'true'
+        run: pnpm --fail-if-no-match --filter @band-ai/claude-code-plugin test
 
       - name: Test release hardening
         run: pnpm test:release-hardening
@@ -239,18 +263,28 @@ jobs:
           }
           "
 
+      # The release workflow copies it in before packing, and the SDK packlist requires it.
+      - name: Copy README into SDK package
+        run: cp README.md packages/sdk/README.md
+
+      - name: Verify release packlists
+        run: |
+          node --input-type=module -e "
+          import { RELEASE_PACKAGES } from './scripts/release-packages.mjs';
+          import { assertPackageContents } from './scripts/assert-package-contents.mjs';
+          for (const pkg of RELEASE_PACKAGES) assertPackageContents(pkg.path, pkg.contents);
+          "
+
       - name: Verify OpenClaw build artifacts
         working-directory: plugins/openclaw
         run: |
           node -e "
           const fs = require('fs');
-          // Verify dist files exist
-          const required = ['dist/index.js', 'dist/index.d.ts', 'dist/openclaw.plugin.json', 'dist/band_sdk_core_bg.wasm'];
-          for (const f of required) {
-            if (!fs.existsSync(f)) throw new Error('Missing: ' + f);
-            const stat = fs.statSync(f);
-            if (stat.size === 0) throw new Error('Empty file: ' + f);
-            console.log(f + ': ' + (stat.size / 1024).toFixed(1) + ' KB');
+          // The packlist check covers what ships; these are OpenClaw's own extra guarantees.
+          if (!fs.existsSync('dist/openclaw.plugin.json')) throw new Error('Missing: dist/openclaw.plugin.json');
+          for (const name of fs.readdirSync('dist')) {
+            const stat = fs.statSync('dist/' + name);
+            if (stat.isFile() && stat.size === 0) throw new Error('Empty file: dist/' + name);
           }
           // Verify .d.ts has expected exports
           const dts = fs.readFileSync('dist/index.d.ts', 'utf8');
@@ -260,6 +294,12 @@ jobs:
           }
           console.log('OpenClaw: ' + expectedExports.length + ' key exports verified in .d.ts');
           "
+
+      - name: Install Claude Code
+        run: npm install --global @anthropic-ai/claude-code@2.1.289
+
+      - name: Validate the Claude Code plugin
+        run: claude plugin validate --strict plugins/claude-code
 
   # The single status branch protection should require.
   #

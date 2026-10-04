@@ -112,6 +112,16 @@ jobs:
           # shellcheck disable=SC2086
           pnpm run test:baseline-live $FILTER
 
+      # The Claude Code plugin against the live platform, with an MCP client in
+      # Claude Code's place; no LLM. Runs even when the baseline failed.
+      - name: Run the Claude Code plugin live lane
+        if: ${{ !cancelled() }}
+        env:
+          BAND_API_KEY_USER: ${{ secrets.E2E_BAND_API_KEY_USER }}
+          BAND_REST_URL: ${{ secrets.E2E_BAND_REST_URL }}
+          BAND_WS_URL: ${{ secrets.E2E_BAND_WS_URL }}
+        run: pnpm --fail-if-no-match --filter @band-ai/claude-code-plugin test:live
+
       - name: Upload the scorecard
         if: ${{ !cancelled() && hashFiles('scorecard/scorecard.json') != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

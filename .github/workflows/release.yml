@@ -10,7 +10,7 @@ on:
         required: true
         type: choice
         # automatic, then each `key` in scripts/release-packages.mjs.
-        options: [automatic, sdk, openclaw]
+        options: [automatic, sdk, openclaw, claude-code]
         default: automatic
       release-commit:
         description: Exact 40-character commit SHA to recover (required when recovery is enabled)
