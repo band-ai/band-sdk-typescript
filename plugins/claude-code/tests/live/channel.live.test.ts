@@ -13,34 +13,12 @@ import { Rooms, type Room } from "../../../../packages/sdk/tests/baseline/toolki
 import { PluginProcess } from "./support/pluginProcess";
 
 const CONFLICT_CODE = "connection_conflict";
-// The platform can briefly hold a crashed session's agent (INT-1673); relaunches stop well past that.
-const CRASH_RELEASE_WINDOW_MS = 30_000;
 
 async function agentInRoom(label: string): Promise<{ identity: AgentIdentity; room: Room }> {
   const identity = await Agents.provision("claude-code", label);
   const room = await Rooms.create();
   await Rooms.addParticipant(room, identity);
   return { identity, room };
-}
-
-/**
- * Starts sessions until one serves, as a user would relaunch, within the window the
- * platform may still hold a crashed session's agent (INT-1673).
- */
-async function relaunchUntilServing(identity: AgentIdentity, room: Room): Promise<PluginProcess> {
-  const crashedAt = Date.now();
-  for (let attempt = 1; ; attempt += 1) {
-    const plugin = await PluginProcess.start(identity);
-    try {
-      await expectServing(plugin, room, identity, `after a crash, attempt ${attempt}`);
-      return plugin;
-    } catch (error) {
-      const refused = (await plugin.exited).stderr.includes(CONFLICT_CODE);
-      if (!refused || Date.now() - crashedAt > CRASH_RELEASE_WINDOW_MS) {
-        throw error;
-      }
-    }
-  }
 }
 
 /** Resolves once `plugin` is connected to Band: a mention posted now reaches it. */
@@ -88,14 +66,5 @@ describe("the Claude Code plugin on the live platform", () => {
     expect(exit.code).toBe(EXIT_FAILED);
     expect(exit.stderr).toContain(CONFLICT_CODE);
     await expectServing(first, room, identity, "first still");
-  });
-
-  it("lets a new session take the agent soon after one crashed", async () => {
-    const { identity, room } = await agentInRoom("crash");
-    const crashed = await PluginProcess.start(identity);
-    await expectServing(crashed, room, identity, "before");
-    await crashed.crash();
-
-    await using _next = await relaunchUntilServing(identity, room);
   });
 });

@@ -50,8 +50,9 @@ export class ChannelClient {
     };
   }
 
+  /** Completes Claude Code's handshake; rejects if the plugin exits first. */
   public connect(): Promise<void> {
-    return this.client.connect(new ClientEnd(this.fromPlugin, this.toPlugin, this.outgoing));
+    return this.unlessExited(this.client.connect(new ClientEnd(this.fromPlugin, this.toPlugin, this.outgoing)), "the handshake");
   }
 
   /**
@@ -64,16 +65,20 @@ export class ChannelClient {
 
   /** Resolves with the push for `messageId` once Claude Code has it; rejects if the plugin exits first. */
   public pushOf(messageId: string): Promise<ChannelPush> {
-    return Promise.race([
-      this.pushes.next((push) => push.meta.message_id === messageId),
-      this.exited.then((exit): never => {
-        throw new Error(`plugin exited (${JSON.stringify(exit)}) before the push of ${messageId}`);
-      }),
-    ]);
+    return this.unlessExited(this.pushes.next((push) => push.meta.message_id === messageId), `the push of ${messageId}`);
   }
 
   /** Claude Code exits: its end of the pipe closes. */
   public leave(): void {
     this.toPlugin.end();
+  }
+
+  private unlessExited<T>(work: Promise<T>, awaited: string): Promise<T> {
+    return Promise.race([
+      work,
+      this.exited.then((exit): never => {
+        throw new Error(`plugin exited (${JSON.stringify(exit)}) before ${awaited}`);
+      }),
+    ]);
   }
 }

@@ -62,6 +62,10 @@ export class ClaudeCodeSession implements AsyncDisposable {
     return this.channel.client.getServerCapabilities();
   }
 
+  public get instructions(): string | undefined {
+    return this.channel.client.getInstructions();
+  }
+
   public async toolNames(): Promise<string[]> {
     return (await this.channel.client.listTools()).tools.map((tool) => tool.name);
   }
