@@ -55,7 +55,7 @@ The managed-settings file:
 - `allowedChannelPlugins` replaces Anthropic's list, so also list any official channel plugins you still use.
 - Both keys are ignored in user and project settings.
 - Development channels load only in interactive sessions. Under `claude -p` they are ignored.
-- To try a local build, start `claude --plugin-dir plugins/claude-code --dangerously-load-development-channels plugin:band@inline`.
+- To try a local build, start `claude --plugin-dir plugins/claude-code --dangerously-load-development-channels plugin:band@inline`. The startup notice may say `plugin not installed` for it; messages still arrive.
 
 If the channel doesn't register, Claude Code still starts, the startup notice says why, and the Band tools still work. Messages are still marked processed on Band, but they never reach the session.
 
