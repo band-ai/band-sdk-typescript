@@ -253,6 +253,8 @@ export class FakeTransport implements StreamingTransport {
   /** Every currently-registered reconnect observer — a real transport only ever settles once per generation, but exposing the full set (rather than the last-registered one) lets a test assert exactly how many a caller has live at once. */
   public readonly observers = new Set<ReconnectObserver>();
   public readonly rejoinObservers = new Set<TopicRejoinObserver>();
+  /** Every topic bound, in order; await it to act once a subscription is in place. */
+  public readonly bound = new RecordLog<string>();
   public disconnectCount = 0;
   private readonly handlers = new Map<string, TopicHandlers>();
   private connected = false;
@@ -314,6 +316,7 @@ export class FakeTransport implements StreamingTransport {
       throw new Error(`join failed: ${topic}`);
     }
     this.handlers.set(topic, handlers);
+    this.bound.record(topic);
   }
 
   public async leave(topic: string): Promise<void> {

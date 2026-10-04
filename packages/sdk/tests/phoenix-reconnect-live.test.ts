@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { agentControlTopic, chatRoomTopic, roomParticipantsTopic } from "@band-ai/band-sdk-core";
+import { chatRoomTopic, roomParticipantsTopic } from "@band-ai/band-sdk-core";
 
 import { PhoenixChannelsTransport } from "../src/platform/streaming/PhoenixChannelsTransport";
 import { SubscriptionManager } from "../src/platform/SubscriptionManager";
@@ -549,12 +549,7 @@ describe("Phoenix reconnect (real wire)", () => {
       await agent.transport.connect();
 
       peer.stallReads();
-      peer.push(agentControlTopic("agent-1"), "supersede", {
-        reason: "session.already_connected",
-        message: "superseded",
-        retryable: false,
-        correlation_id: null,
-      });
+      await peer.supersede("agent-1");
 
       await agent.expectNoReconnect();
       expect(agent.transport.getDisconnectReason()?.code).toBe("session.already_connected");

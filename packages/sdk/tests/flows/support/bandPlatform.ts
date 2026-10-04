@@ -6,6 +6,8 @@
  */
 import { randomUUID } from "node:crypto";
 
+import { agentRoomsTopic, chatRoomTopic } from "@band-ai/band-sdk-core";
+
 import type { FrameworkAdapter } from "../../../src/contracts/protocols";
 import type { ParticipantRecord } from "../../../src/contracts/dtos";
 import type { PaginatedResponse, PlatformChatMessage, RestApi } from "../../../src/client/rest/types";
@@ -31,6 +33,17 @@ export interface Posted {
 
 export type Outcome = "processed" | "failed";
 
+/** How a posted message looks on the wire; a plain user text message by default. */
+export interface PostOptions {
+  readonly senderType?: "User" | "Agent";
+  readonly messageType?: string;
+}
+
+/** The agent's identity as `getAgentMe` reports it. */
+export interface AgentIdentityOptions {
+  readonly ownerUuid?: string | null;
+}
+
 interface Settled {
   readonly messageId: string;
   readonly outcome: Outcome;
@@ -50,17 +63,47 @@ interface HistoryEntry {
   readonly item: PlatformChatMessage;
 }
 
-/** The platform's REST surface as the agent sees it: it records every post, keeps each room's history, and settles each message's outcome. */
+/**
+ * The platform's REST surface as the agent sees it: it records every post, keeps each room's history,
+ * lists the agent's rooms, serves the backlog left before the agent connected, and settles each message's outcome.
+ */
 export class RecordingRestApi extends FakeRestApi {
   public readonly posted = new RecordLog<Posted>();
   public readonly settled = new RecordLog<Settled>();
   /** Ids of messages the runtime has started handing to the agent. */
   public readonly processing = new RecordLog<string>();
   private readonly history: HistoryEntry[] = [];
+  private readonly backlog: HistoryEntry[] = [];
+  private readonly rooms = new Set<string>();
   public readonly messageHolds = new CallHolds<[roomId: string, content: string]>();
 
-  public constructor(private readonly participants: readonly ParticipantRecord[]) {
-    super({}, { id: AGENT_ID, name: "Agent", description: "Flow test agent" });
+  public constructor(private readonly participants: readonly ParticipantRecord[], identity: AgentIdentityOptions = {}) {
+    super({}, { id: AGENT_ID, name: "Agent", description: "Flow test agent", ...identity });
+  }
+
+  /** Every room on one page. */
+  public override async listChats(): Promise<PaginatedResponse> {
+    return { data: [...this.rooms].map((roomId) => roomPayload(roomId, "active")), metadata: { page: 1, totalPages: 1 } };
+  }
+
+  /** The oldest backlog message in the room not yet settled, as `/messages/next` serves it. */
+  public override async getNextMessage(request: { chatId: string }): Promise<PlatformChatMessage | null> {
+    const pending = this.backlog.find((entry) => entry.roomId === request.chatId && !this.isSettled(entry.item.id));
+    return pending?.item ?? null;
+  }
+
+  public addRoom(roomId: string): void {
+    this.rooms.add(roomId);
+  }
+
+  public removeRoom(roomId: string): void {
+    this.rooms.delete(roomId);
+  }
+
+  /** Leaves a message waiting for an agent that is not connected yet. */
+  public leave(roomId: string, item: PlatformChatMessage): void {
+    this.remember(roomId, item);
+    this.backlog.push({ roomId, item });
   }
 
   public override async createChatMessage(roomId: string, message: MessageBody) {
@@ -101,6 +144,10 @@ export class RecordingRestApi extends FakeRestApi {
     return this.settle(messageId, "failed");
   }
 
+  private isSettled(messageId: string): boolean {
+    return this.settled.entries.some((settled) => settled.messageId === messageId);
+  }
+
   private settle(messageId: string, outcome: Outcome) {
     this.settled.record({ messageId, outcome });
     return {};
@@ -123,8 +170,13 @@ export class BandRoom {
   ) {}
 
   /** Posts `content` from `senderId`; resolves with its message id once the platform has queued it. */
-  public async say(senderId: string, content: string): Promise<string> {
-    return this.platform.post(this.id, senderId, content);
+  public async say(senderId: string, content: string, options?: PostOptions): Promise<string> {
+    return this.platform.post(this.id, senderId, content, options);
+  }
+
+  /** Leaves `content` from `senderId` for the agent to find once it connects; resolves with its message id. */
+  public leave(senderId: string, content: string, options?: PostOptions): string {
+    return this.platform.leave(this.id, senderId, content, options);
   }
 
   /** Posts `content` from `senderId`, waits for the runtime to settle it, and returns what the agent told that sender meanwhile. */
@@ -173,7 +225,8 @@ export class BandRoom {
 
   /** The platform removes the agent from the room. */
   public async remove(): Promise<void> {
-    await this.platform.transport.emit(`agent_rooms:${AGENT_ID}`, "room_removed", roomPayload(this.id, "inactive"));
+    this.platform.rest.removeRoom(this.id);
+    await this.platform.transport.emit(agentRoomsTopic(AGENT_ID), "room_removed", roomPayload(this.id, "inactive"));
   }
 }
 
@@ -181,22 +234,27 @@ export class BandRoom {
 export class BandPlatform implements AsyncDisposable {
   public readonly transport = new FakeTransport();
   public readonly rest: RecordingRestApi;
-  private readonly runtime: PlatformRuntime;
+  private runtime?: PlatformRuntime;
   private readonly mentionable: readonly ParticipantRecord[];
 
   private constructor(participants: readonly ParticipantRecord[], rest?: RecordingRestApi) {
     this.mentionable = [...participants, AGENT_PARTICIPANT];
     this.rest = rest ?? new RecordingRestApi(participants);
-    this.runtime = new PlatformRuntime({
-      agentId: AGENT_ID,
-      apiKey: "flow-test-key",
-      link: new BandLink({ agentId: AGENT_ID, apiKey: "flow-test-key", transport: this.transport, restApi: this.rest }),
-    });
+  }
+
+  /** The platform alone, for a host that builds its own runtime on `transport` and `rest`. */
+  public static host(participants: readonly ParticipantRecord[], identity?: AgentIdentityOptions): BandPlatform {
+    return new BandPlatform(participants, new RecordingRestApi(participants, identity));
   }
 
   /** Starts the agent; pass an earlier platform's `rest` to restart it against the same rooms and history. */
   public static async start(adapter: FrameworkAdapter, participants: readonly ParticipantRecord[], rest?: RecordingRestApi): Promise<BandPlatform> {
     const platform = new BandPlatform(participants, rest);
+    platform.runtime = new PlatformRuntime({
+      agentId: AGENT_ID,
+      apiKey: "flow-test-key",
+      link: new BandLink({ agentId: AGENT_ID, apiKey: "flow-test-key", transport: platform.transport, restApi: platform.rest }),
+    });
     await platform.runtime.start(adapter);
     return platform;
   }
@@ -212,30 +270,51 @@ export class BandPlatform implements AsyncDisposable {
     return { platform, room, [Symbol.asyncDispose]: () => platform[Symbol.asyncDispose]() };
   }
 
+  /** Adds the agent to a room: a connected agent hears it, one not yet connected finds it in its room list. */
   public async room(roomId: string): Promise<BandRoom> {
-    await this.transport.emit(`agent_rooms:${AGENT_ID}`, "room_added", roomPayload(roomId, "active"));
+    this.rest.addRoom(roomId);
+    const topic = agentRoomsTopic(AGENT_ID);
+    if (this.transport.hasTopic(topic)) {
+      await this.transport.emit(topic, "room_added", roomPayload(roomId, "active"));
+    }
     return new BandRoom(roomId, this);
   }
 
-  public async post(roomId: string, senderId: string, content: string): Promise<string> {
-    const id = `msg-${randomUUID()}`;
+  /** Delivers a message live, once the agent is subscribed to the room. */
+  public async post(roomId: string, senderId: string, content: string, options?: PostOptions): Promise<string> {
+    const message = this.message(senderId, content, options);
+    this.rest.remember(roomId, message);
+    const topic = chatRoomTopic(roomId);
+    await this.transport.bound.until(() => this.transport.hasTopic(topic));
+    await this.transport.emit(topic, "message_created", message);
+    return message.id;
+  }
+
+  public leave(roomId: string, senderId: string, content: string, options?: PostOptions): string {
+    const message = this.message(senderId, content, options);
+    this.rest.leave(roomId, message);
+    return message.id;
+  }
+
+  private message(senderId: string, content: string, options: PostOptions = {}) {
     const mentions = this.mentionable
       .filter((participant) => content.includes(`@[[${participant.id}]]`))
       .map(({ id, name, type, handle }) => wireMention({ id, name, handle: handle ?? null, type: type.toLowerCase() }));
-    const message = {
-      id, content, message_type: "text", sender_id: senderId, sender_type: "User", sender_name: senderId,
-      metadata: { mentions }, inserted_at: now(), updated_at: now(),
+    return {
+      id: `msg-${randomUUID()}`, content, message_type: options.messageType ?? "text", sender_id: senderId,
+      sender_type: options.senderType ?? "User", sender_name: senderId, metadata: { mentions }, inserted_at: now(), updated_at: now(),
     };
-    this.rest.remember(roomId, message);
-    await this.transport.emit(`chat_room:${roomId}`, "message_created", message);
-    return id;
   }
 
   public async [Symbol.asyncDispose](): Promise<void> {
-    await this.runtime.stop();
+    await this.runtime?.stop();
   }
 }
 
 export function person(id: string): ParticipantRecord {
   return { id, name: id, type: "User", handle: id };
+}
+
+export function agent(id: string): ParticipantRecord {
+  return { id, name: id, type: "Agent", handle: id };
 }

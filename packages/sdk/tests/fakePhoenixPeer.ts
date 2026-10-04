@@ -1,4 +1,5 @@
 import type { AddressInfo } from "node:net";
+import { agentControlTopic } from "@band-ai/band-sdk-core";
 import { WebSocket as NodeWebSocket, WebSocketServer } from "ws";
 
 type JoinOutcome = "ok" | "error" | "pending";
@@ -96,6 +97,20 @@ export class FakePhoenixPeer implements AsyncDisposable {
     for (const socket of this.sockets) {
       socket.send(JSON.stringify(message));
     }
+  }
+
+  /** Once the agent has joined its control channel, hands the agent to another connection, as the platform does for a second socket by default. */
+  public async supersede(agentId: string): Promise<void> {
+    const topic = agentControlTopic(agentId);
+    while (!this.receivedEvents.some((received) => received.topic === topic && received.event === "phx_join")) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    this.push(topic, "supersede", {
+      reason: "session.already_connected",
+      message: "superseded",
+      retryable: false,
+      correlation_id: null,
+    });
   }
 
   public async stop(): Promise<void> {
