@@ -709,7 +709,7 @@ test("pack-release checks each packlist before packing and stops at the first ba
   });
 });
 
-test("openclaw build copies wasm via tsup onSuccess and CI packaging requires it", () => {
+test("plugin builds copy wasm via the shared tsup onSuccess and CI packaging requires it", () => {
   const openclawPkg = JSON.parse(readFileSync(join(root, openclawPath, "package.json"), "utf8"));
   // copy-wasm must not be a separate package pin — resolve through @band-ai/sdk.
   assert.equal(openclawPkg.devDependencies?.["@band-ai/band-sdk-core"], undefined);
@@ -717,11 +717,16 @@ test("openclaw build copies wasm via tsup onSuccess and CI packaging requires it
   assert.doesNotMatch(openclawPkg.scripts.build, /copy-wasm/);
   assert.match(openclawPkg.scripts.build, /sync-plugin-version/);
 
-  const tsupConfig = readFileSync(join(root, openclawPath, "tsup.config.ts"), "utf8");
-  // Exit must sit inside the catch body: no closing brace between catch { and process.exit(1).
+  for (const pluginPath of [openclawPath, releasePackage("claude-code").path]) {
+    const tsupConfig = readFileSync(join(root, pluginPath, "tsup.config.ts"), "utf8");
+    assert.match(tsupConfig, /import \{ inlinedSdkBundleOptions \} from "\.\.\/\.\.\/scripts\/copy-wasm\.mjs"/);
+    assert.match(tsupConfig, /\.\.\.inlinedSdkBundleOptions/);
+  }
+  const copyWasmScript = readFileSync(join(root, "scripts/copy-wasm.mjs"), "utf8");
+  // Exit must sit inside the catch body: before the line that closes it.
   assert.match(
-    tsupConfig,
-    /async onSuccess\(\) \{[\s\S]*?try \{[\s\S]*?import\("\.\.\/\.\.\/scripts\/copy-wasm\.mjs"\)[\s\S]*?copyWasm\(process\.cwd\(\)\)[\s\S]*?\} catch[^{]*\{[^}]*process\.exit\(1\)/,
+    copyWasmScript,
+    /async onSuccess\(\) \{.*?try \{.*?copyWasm\(process\.cwd\(\)\).*?\} catch \(error\) \{(?:(?!\n {4}\}).)*process\.exit\(1\)/s,
   );
 
   const stageLink = readFileSync(join(root, openclawPath, "scripts/stage-link.mjs"), "utf8");

@@ -3,6 +3,8 @@ import { join } from "node:path";
 import type { Plugin } from "esbuild";
 import { defineConfig } from "tsup";
 
+import { inlinedSdkBundleOptions } from "../../scripts/copy-wasm.mjs";
+
 /**
  * Resolve the SDK package.json from the workspace.
  * In a pnpm workspace, the SDK is linked via node_modules/@band-ai/sdk.
@@ -133,15 +135,9 @@ export default defineConfig({
   dts: { resolve: ["@band-ai/sdk", "@band-ai/rest-client", "zod"] },
   sourcemap: true,
   clean: true,
-  shims: true,
   target: "node22",
   outDir: "dist",
-  // ESM output bundles CJS deps (phoenix/ws) that call require("events") etc.
-  // Provide a real require via createRequire so esbuild's __require shim resolves
-  // node built-ins at runtime instead of throwing "Dynamic require ... not supported".
-  banner: {
-    js: "import { createRequire as __createRequire } from 'module'; const require = __createRequire(import.meta.url);",
-  },
+  ...inlinedSdkBundleOptions,
   // Keep openclaw (and its plugin-sdk subpaths) external — host provides it
   external: ["openclaw", /^openclaw\//],
   // Bundle the SDK and its dependencies into the plugin
@@ -149,17 +145,5 @@ export default defineConfig({
   esbuildPlugins: [stubOptionalPeers(sdkOptionalPeers)],
   define: {
     __OPENCLAW_PKG_VERSION__: JSON.stringify(openclawPkg.version),
-  },
-  // tsup clean:true wipes dist/ on every build/watch rebuild; copy the wasm the
-  // inlined band-sdk-core glue expects beside the emitted JS (build and dev).
-  async onSuccess() {
-    try {
-      const { copyWasm } = await import("../../scripts/copy-wasm.mjs");
-      copyWasm(process.cwd());
-    } catch (error) {
-      // clean:true already wiped any prior wasm; do not leave JS-only dist for watch.
-      console.error("[copy-wasm] failed to restore band_sdk_core_bg.wasm after build:", error);
-      process.exit(1);
-    }
   },
 });
