@@ -1,7 +1,7 @@
 import { deliverReply, type AdapterToolsProtocol, type FrameworkAdapter, type FrameworkAdapterInput } from "@band-ai/sdk/core";
 import { commandWords } from "@band-ai/sdk/runtime";
 
-export const COMMAND_REFUSAL = "Only this agent's owner can run slash commands.";
+export const COMMAND_REFUSAL = "Only this agent's owner can send it slash commands.";
 
 /** The `sender_role` a push carries; the instructions name the same values. */
 export const SENDER_ROLE = { owner: "owner", participant: "participant" } as const;
@@ -36,6 +36,7 @@ export class ChannelAdapter implements FrameworkAdapter {
     }
 
     const isOwner = message.senderId === this.options.ownerUuid;
+    // Claude Code never runs channel input as a command, but Claude can still act on one, e.g. by invoking a skill.
     if (!isOwner && isSlashCommand(message.content)) {
       await deliverReply(tools, COMMAND_REFUSAL, [message.senderId]);
       return;
