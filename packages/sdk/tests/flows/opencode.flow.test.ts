@@ -11,6 +11,7 @@ import { HttpOpencodeClient, OpencodeAdapter, type OpencodeAdapterConfig } from 
 import { OPENCODE_DECISION_MESSAGES as SAYS, formatQuestionPrompt } from "../../src/adapters/opencode/messages";
 import { createDeferred } from "../../src/core/deferred";
 import { FAILURE_EVENT_TYPE } from "../../src/contracts/protocols";
+import { REJECTED_PERMISSION_FEEDBACK } from "../../src/adapters/opencode/replies";
 import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../../src/contracts/toolSchemas";
 import { createBandMcpBackend } from "../../src/mcp/backends";
 import type { BandMcpServer } from "../../src/mcp/server";
@@ -47,6 +48,8 @@ const TURN_SCRIPTS: Record<TurnScript, (turn: OpencodeTurn) => Promise<void> | v
   finalText: (turn) => turn.answer(CLOSING_TEXT),
   nothing: (turn) => turn.idle(),
 };
+
+const DECLINED_ANSWER = "Understood, I won't run it.";
 
 const approvalPrompt = (requestId: string) => SAYS.approvalRequested({ requestId, permission: "bash", patterns: ["npm test"] });
 
@@ -772,6 +775,7 @@ describe("OpenCode in a Band room", () => {
     expect(await room.outcome(message)).toBe("failed");
     await server.until(() => server.permissionReplies().length === 1);
     expect(server.permissionReplies()).toEqual([["per_unseen", "reject"]]);
+    expect(server.permissionFeedback(), "a reject that only unblocks OpenCode ends its loop").toEqual([["per_unseen", undefined]]);
     expect(room.events(FAILURE_EVENT_TYPE)).toEqual([]);
 
     const next = await session.start((turn) => turn.answer("Fresh start."), "Try again");
@@ -836,6 +840,7 @@ describe("OpenCode in a Band room", () => {
     await room.nextMessage((posted) => posted.content === "Went ahead without it.");
     expect(await room.outcome(message)).toBe("processed");
     expect(server.permissionReplies()).toEqual([["per_slow", "reject"]]);
+    expect(server.permissionFeedback()).toEqual([["per_slow", REJECTED_PERMISSION_FEEDBACK]]);
     expect(room.events("error").map((event) => event.content)).toEqual([SAYS.approvalTimedOut("per_slow", "reject")]);
   });
 
@@ -919,6 +924,36 @@ describe("OpenCode in a Band room", () => {
   });
 
   describe("turn outcome", () => {
+    // OpenCode's loop on a reject: a bare reject ends it, one with feedback hands the decision back to the model.
+    const answersOnFeedback = (permission: string) => async (turn: OpencodeTurn) => {
+      const reply = await turn.askPermission({ id: permission }).reply;
+      if (typeof reply.message === "string") {
+        turn.answer(DECLINED_ANSWER);
+      } else {
+        turn.idle();
+      }
+    };
+
+    it.each([
+      { decision: "the room's reject", approvalMode: "manual" },
+      { decision: "auto_decline", approvalMode: "auto_decline" },
+    ] as const)("hands $decision back to the model, whose answer completes the turn", async ({ approvalMode }) => {
+      await using session = await opencodeRoom({ approvalMode });
+      const { room, server } = session;
+      const permission = "per_declined";
+      const message = await session.start(answersOnFeedback(permission));
+      if (approvalMode === "manual") {
+        await room.nextMessage((posted) => posted.content === approvalPrompt(permission));
+        await room.exchange(OWNER, `reject ${permission}`);
+      }
+
+      await room.until(() => room.messages.some((posted) => posted.content === DECLINED_ANSWER));
+
+      expect(await room.outcome(message)).toBe("processed");
+      expect(server.permissionFeedback()).toEqual([[permission, REJECTED_PERMISSION_FEEDBACK]]);
+      expect(room.failures).toEqual([]);
+    });
+
     it.each<{ script: TurnScript; posted: string[]; failures: ReportedFailure[]; outcome: Outcome }>([
       { script: "decline", posted: [], failures: [], outcome: "processed" },
       { script: "toolReply", posted: [TOOL_REPLY], failures: [], outcome: "processed" },

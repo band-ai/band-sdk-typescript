@@ -175,6 +175,11 @@ export class FakeOpencodeServer implements AsyncDisposable {
     return this.requestsTo("POST", /^\/permission\//).map((request) => [askId(request), request.body.reply]);
   }
 
+  /** The feedback each permission reply carried, as `[request id, message]`. */
+  public permissionFeedback(): Array<[string, unknown]> {
+    return this.requestsTo("POST", /^\/permission\//).map((request) => [askId(request), request.body.message]);
+  }
+
   /** Each question reply OpenCode received, as `[request id, answers or "rejected"]`. */
   public questionReplies(): Array<[string, unknown]> {
     return this.requestsTo("POST", /^\/question\/.*\/(reply|reject)$/).map((request) => [askId(request), request.body.answers ?? "rejected"]);

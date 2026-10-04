@@ -48,6 +48,7 @@ import {
 } from "./client";
 import { OPENCODE_DECISION_MESSAGES, formatQuestionPrompt } from "./messages";
 import {
+  REJECTED_PERMISSION_FEEDBACK,
   REPLY_WORDS,
   routeReply,
   toPendingPermission,
@@ -867,7 +868,10 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
     reply: OpencodeApprovalReply,
   ): Promise<void> {
     await this.sendClaimedReply(roomState, roomState.decisions.permissions, entry, (client) =>
-      client.replyPermission(entry.payload.sessionId, entry.token, { response: reply }),
+      client.replyPermission(entry.payload.sessionId, entry.token, {
+        response: reply,
+        ...(reply === REPLY_WORDS.reject ? { message: REJECTED_PERMISSION_FEEDBACK } : {}),
+      }),
     );
   }
 

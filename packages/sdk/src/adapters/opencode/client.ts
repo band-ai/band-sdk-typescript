@@ -16,7 +16,7 @@ export interface OpencodeClientLike {
   replyPermission(
     sessionId: string,
     permissionId: string,
-    input: { response: string },
+    input: { response: string; message?: string },
   ): Promise<void>;
   replyQuestion(
     requestId: string,
@@ -170,13 +170,14 @@ abstract class SdkOpencodeClientBase implements OpencodeClientLike {
   public async replyPermission(
     _sessionId: string,
     permissionId: string,
-    input: { response: string },
+    input: { response: string; message?: string },
   ): Promise<void> {
     const runtime = await this.getRuntime();
     await expectVoid(runtime.client.permission.reply({
       ...this.scope(),
       requestID: permissionId,
       reply: input.response,
+      ...(input.message ? { message: input.message } : {}),
     }));
   }
 

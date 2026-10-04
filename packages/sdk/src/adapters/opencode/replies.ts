@@ -15,6 +15,13 @@ export const REPLY_WORDS = {
 
 export type ReplyWord = keyof typeof REPLY_WORDS;
 
+/**
+ * Sent with every decided reject. OpenCode ends the turn on a bare reject, but
+ * hands a reject with a message back to the model, which can then answer.
+ */
+export const REJECTED_PERMISSION_FEEDBACK =
+  "This request was declined. Do not retry it or try another way to do the same thing; reply to the user instead.";
+
 export const ASK_KIND = { permission: "permission", question: "question" } as const;
 
 export type DecisionKind = (typeof ASK_KIND)[keyof typeof ASK_KIND];
