@@ -1,16 +1,19 @@
 /**
  * The built plugin against the live platform, with an MCP client in Claude
  * Code's place and no LLM: what Band delivers is pushed, what the client calls
- * posts back, and the agent is held by one session at a time.
+ * posts back, each agent is held by one session at a time, and each session
+ * connects as the agent it selects.
  */
 import { describe, expect, it } from "vitest";
 
 import { CHANNEL_CAPABILITY, EXIT_FAILED, EXIT_OK } from "../../src/channel";
 import { Agents, type AgentIdentity } from "../../../../packages/sdk/tests/baseline/toolkit/agents";
+import { liveRun } from "../../../../packages/sdk/tests/baseline/toolkit/liveRun";
 import { DELIVERY_STATUS, observeAgent } from "../../../../packages/sdk/tests/baseline/toolkit/observeDelivery";
 import { observeRoom, REPLY_WAIT } from "../../../../packages/sdk/tests/baseline/toolkit/observeMessages";
 import { Rooms, type Room } from "../../../../packages/sdk/tests/baseline/toolkit/rooms";
-import { PluginProcess } from "./support/pluginProcess";
+import { ClaudeCodeDirs } from "../support/claudeCodeDirs";
+import { agentsCommand, PluginProcess } from "./support/pluginProcess";
 
 const CONFLICT_CODE = "connection_conflict";
 
@@ -66,5 +69,29 @@ describe("the Claude Code plugin on the live platform", () => {
     expect(exit.code).toBe(EXIT_FAILED);
     expect(exit.stderr).toContain(CONFLICT_CODE);
     await expectServing(first, room, identity, "first still");
+  });
+
+  it("connects each session as the agent it selects, and tells a refused one that every agent is taken", async () => {
+    using dirs = new ClaudeCodeDirs();
+    const { env } = await liveRun();
+    const { identity: main, room } = await agentInRoom("main");
+    const docs = await Agents.provision("claude-code", "docs");
+    await Rooms.addParticipant(room, docs);
+    const added = await agentsCommand(...dirs.cliContext, "add", docs.id, docs.apiKey, "docs", ...(env.wsUrl ? ["--ws-url", env.wsUrl] : []));
+    expect(added).toContain(`Saved "docs" (@${await docs.handle()})`);
+
+    await using first = await PluginProcess.start(main, dirs.env("session-1"));
+    await using second = await PluginProcess.start(main, dirs.env("session-2", "docs"));
+    await expectServing(first, room, main, "main");
+    await expectServing(second, room, docs, "docs");
+
+    const third = await PluginProcess.start(main, dirs.env("session-3", "docs"));
+    const exit = await third.exited;
+
+    expect(exit.code).toBe(EXIT_FAILED);
+    expect(exit.stderr).toContain('Band agent "docs" is already connected from another session');
+    const status = await agentsCommand(...dirs.cliContext, "status", "session-3");
+    expect(status).toContain('This session: refused. Band agent "docs" is already connected from another session');
+    expect(status).toContain("No agent is free");
   });
 });

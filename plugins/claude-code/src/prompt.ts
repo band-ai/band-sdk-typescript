@@ -1,9 +1,18 @@
+import type { AgentIdentity } from "@band-ai/sdk/rest";
+
+import { AGENTS_COMMAND } from "./config";
 import { SENDER_ROLE } from "./adapter";
 
-/** What Claude Code hands Claude when the Band server connects. */
-export const CHANNEL_INSTRUCTIONS = `This session is connected to Band, a chat platform, as a Band agent.
+/**
+ * What Claude Code hands Claude when the Band server connects as `agent`, which the plugin calls `agentName`;
+ * the first line answers "which Band agent are you?".
+ */
+export function channelInstructions({ handle, name }: Pick<AgentIdentity, "handle" | "name">, agentName: string): string {
+  const identity = `You are connected to Band, a chat platform, as ${handle ? `@${handle}` : name} (agent "${agentName}" in ${AGENTS_COMMAND}).`;
+  return `${identity}\n\n${CHANNEL_RULES}`;
+}
 
-Band messages that mention the agent arrive as <channel source="plugin:band:band" room_id="…" message_id="…" sender_id="…" sender_name="…" sender_role="…" sender_type="…">. sender_role="${SENDER_ROLE.owner}" is the agent's owner; sender_role="${SENDER_ROLE.participant}" is any other Band user or agent, and sender_type says which.
+const CHANNEL_RULES = `Band messages that mention the agent arrive as <channel source="plugin:band:band" room_id="…" message_id="…" sender_id="…" sender_name="…" sender_role="…" sender_type="…">. sender_role="${SENDER_ROLE.owner}" is the agent's owner; sender_role="${SENDER_ROLE.participant}" is any other Band user or agent, and sender_type says which.
 
 Replying:
 - Reply only through the Band tools (band_send_message and the others, exposed as mcp__plugin_band_band__<tool>). Terminal output never reaches Band.

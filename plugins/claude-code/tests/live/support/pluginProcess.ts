@@ -1,12 +1,14 @@
 /**
  * The built plugin as Claude Code runs it: the server `.mcp.json` declares, as a
- * child on real stdio pipes, and an MCP client standing in for Claude Code.
+ * child on real stdio pipes, and an MCP client standing in for Claude Code; and
+ * the `/band:agents` command, as the skill runs it.
  */
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import type { ChannelPush } from "../../../src/adapter";
 import { ChannelClient } from "../../support/channelClient";
@@ -14,6 +16,7 @@ import type { AgentIdentity } from "../../../../../packages/sdk/tests/baseline/t
 import { liveRun, releasedWithTest } from "../../../../../packages/sdk/tests/baseline/toolkit/liveRun";
 
 const PLUGIN_ROOT = fileURLToPath(new URL("../../..", import.meta.url)).replace(/\/$/, "");
+const AGENTS_CLI = join(PLUGIN_ROOT, "dist", "agents.js");
 
 interface McpServerConfig {
   readonly command: string;
@@ -45,9 +48,9 @@ export class PluginProcess implements AsyncDisposable {
   private readonly channel: ChannelClient;
   private stderr = "";
 
-  private constructor(identity: AgentIdentity, wsUrl: string | undefined) {
+  private constructor(identity: AgentIdentity, wsUrl: string | undefined, sessionEnv: Readonly<Record<string, string>>) {
     const server = declaredServer({ agent_id: identity.id, api_key: identity.apiKey, ws_url: wsUrl ?? "" });
-    this.child = spawn(server.command, server.args, { env: { PATH: process.env.PATH, ...server.env } });
+    this.child = spawn(server.command, server.args, { env: { PATH: process.env.PATH, ...server.env, ...sessionEnv } });
     this.child.stderr.on("data", (chunk: Buffer) => {
       this.stderr += chunk.toString();
     });
@@ -55,10 +58,13 @@ export class PluginProcess implements AsyncDisposable {
     this.channel = new ChannelClient(this.child.stdout, this.child.stdin, this.exited, "live-test");
   }
 
-  /** Starts the plugin as `identity` and completes Claude Code's handshake with it. */
-  public static async start(identity: AgentIdentity): Promise<PluginProcess> {
+  /**
+   * Starts the plugin configured as `identity` and completes Claude Code's handshake with it;
+   * `sessionEnv` is what else the session gives the server, such as the agent `BAND_AGENT` selects.
+   */
+  public static async start(identity: AgentIdentity, sessionEnv: Readonly<Record<string, string>> = {}): Promise<PluginProcess> {
     const { env } = await liveRun();
-    const plugin = releasedWithTest(new PluginProcess(identity, env.wsUrl));
+    const plugin = releasedWithTest(new PluginProcess(identity, env.wsUrl, sessionEnv));
     await plugin.channel.connect();
     return plugin;
   }
@@ -82,4 +88,10 @@ export class PluginProcess implements AsyncDisposable {
     this.child.kill("SIGKILL");
     await this.exited;
   }
+}
+
+/** Runs the built `/band:agents` command; resolves with what it printed, rejecting when it fails. */
+export async function agentsCommand(...args: string[]): Promise<string> {
+  const { stdout } = await promisify(execFile)(process.execPath, [AGENTS_CLI, ...args]);
+  return stdout;
 }

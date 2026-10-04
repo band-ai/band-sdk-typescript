@@ -9,12 +9,20 @@ import { NoopLogger, StderrLogger } from "@band-ai/sdk/core";
 
 import type { ChannelPush } from "../../../src/adapter";
 import { runChannel, type RunChannelOptions } from "../../../src/channel";
+import { DEFAULT_AGENT_NAME } from "../../../src/config";
 import { AGENT_API_KEY, AGENT_ID } from "../../../../../packages/sdk/tests/flows/support/bandPlatform";
 import { ChannelClient } from "../../support/channelClient";
 
 export interface ToolReply {
   readonly text: string;
   readonly isError: boolean;
+}
+
+/** How the plugin is set up for the session: the flow test agent, as the default, with no status kept, unless overridden. */
+export interface SessionOptions {
+  readonly credentials?: Partial<RunChannelOptions["credentials"]>;
+  readonly agentName?: string;
+  readonly status?: RunChannelOptions["status"];
 }
 
 export class ClaudeCodeSession implements AsyncDisposable {
@@ -24,10 +32,12 @@ export class ClaudeCodeSession implements AsyncDisposable {
   private readonly toPlugin = new PassThrough();
 
   /** Starts the plugin against a platform; Claude Code connects with `connect()`. */
-  public constructor(link: RunChannelOptions["link"], credentials?: Partial<RunChannelOptions["credentials"]>) {
+  public constructor(link: RunChannelOptions["link"], { credentials, agentName = DEFAULT_AGENT_NAME, status }: SessionOptions = {}) {
     const fromPlugin = new PassThrough();
     this.exited = runChannel({
+      agentName,
       credentials: { agentId: AGENT_ID, apiKey: AGENT_API_KEY, ...credentials },
+      status,
       link,
       stdin: this.toPlugin,
       stdout: fromPlugin,
@@ -36,11 +46,8 @@ export class ClaudeCodeSession implements AsyncDisposable {
     this.channel = new ChannelClient(fromPlugin, this.toPlugin, this.exited, "test");
   }
 
-  public static async connect(
-    link: RunChannelOptions["link"],
-    credentials?: Partial<RunChannelOptions["credentials"]>,
-  ): Promise<ClaudeCodeSession> {
-    const session = new ClaudeCodeSession(link, credentials);
+  public static async connect(link: RunChannelOptions["link"], options?: SessionOptions): Promise<ClaudeCodeSession> {
+    const session = new ClaudeCodeSession(link, options);
     await session.connect();
     return session;
   }

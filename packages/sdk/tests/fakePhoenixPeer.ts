@@ -7,6 +7,14 @@ import { RecordLog } from "./testUtils";
 type JoinOutcome = "ok" | "error" | "pending";
 type PhoenixMessage = [string | null, string | null, string, string, unknown];
 
+export interface FakePhoenixPeerOptions {
+  /** As the platform does, refuse with 409 a connection asking `on_conflict=reject` while its agent already has one. */
+  readonly rejectConflicts?: boolean;
+}
+
+const CONFLICT_STATUS = 409;
+const CONFLICT_BODY = JSON.stringify({ error: { code: "connection_conflict", message: "Connection already exists for this agent." } });
+
 interface PendingJoin {
   socket: ServerSocket;
   joinRef: string | null;
@@ -35,7 +43,8 @@ type ServerSocket = InstanceType<typeof NodeWebSocket> & {
  */
 export class FakePhoenixPeer implements AsyncDisposable {
   private readonly wss: WebSocketServer;
-  private readonly sockets = new Set<ServerSocket>();
+  /** Each open connection, with the agent it is for. */
+  private readonly sockets = new Map<ServerSocket, string | null>();
   private readonly joinOutcomeQueues = new Map<string, JoinOutcome[]>();
   private readonly pendingJoins = new Map<string, PendingJoin>();
   public readonly receivedEvents: Array<{ topic: string; event: string }> = [];
@@ -44,15 +53,21 @@ export class FakePhoenixPeer implements AsyncDisposable {
   /** The request URL of every connection, in order, with its query parameters. */
   public readonly connectionUrls: string[] = [];
 
-  private constructor(wss: WebSocketServer) {
-    this.wss = wss;
+  private constructor({ rejectConflicts = false }: FakePhoenixPeerOptions) {
+    this.wss = new WebSocketServer({
+      port: 0,
+      verifyClient: ({ req }, done) =>
+        rejectConflicts && this.conflicts(req.url ?? "")
+          ? done(false, CONFLICT_STATUS, CONFLICT_BODY, { "Content-Type": "application/json" })
+          : done(true),
+    });
     this.wss.on("connection", (socket, request) => this.handleConnection(socket as ServerSocket, request.url ?? ""));
   }
 
-  public static async start(): Promise<FakePhoenixPeer> {
-    const wss = new WebSocketServer({ port: 0 });
-    await new Promise<void>((resolve) => wss.once("listening", resolve));
-    return new FakePhoenixPeer(wss);
+  public static async start(options: FakePhoenixPeerOptions = {}): Promise<FakePhoenixPeer> {
+    const peer = new FakePhoenixPeer(options);
+    await new Promise<void>((resolve) => peer.wss.once("listening", resolve));
+    return peer;
   }
 
   public get url(): string {
@@ -70,7 +85,7 @@ export class FakePhoenixPeer implements AsyncDisposable {
 
   /** Forcibly drops every open connection, simulating a network failure. */
   public severAllConnections(): void {
-    for (const socket of this.sockets) {
+    for (const socket of this.sockets.keys()) {
       socket.terminate();
     }
     this.sockets.clear();
@@ -83,7 +98,7 @@ export class FakePhoenixPeer implements AsyncDisposable {
    * `WebSocket#pause()` rather than the raw socket's: `ws` never resumes it.
    */
   public stallReads(): void {
-    for (const socket of this.sockets) {
+    for (const socket of this.sockets.keys()) {
       socket.pause();
     }
   }
@@ -99,7 +114,7 @@ export class FakePhoenixPeer implements AsyncDisposable {
 
   public push(topic: string, event: string, payload: unknown): void {
     const message: PhoenixMessage = [null, null, topic, event, payload];
-    for (const socket of this.sockets) {
+    for (const socket of this.sockets.keys()) {
       socket.send(JSON.stringify(message));
     }
   }
@@ -131,9 +146,14 @@ export class FakePhoenixPeer implements AsyncDisposable {
     await this.stop();
   }
 
+  private conflicts(url: string): boolean {
+    const params = connectionParams(url);
+    return params.get("on_conflict") === "reject" && [...this.sockets.values()].includes(params.get("agent_id"));
+  }
+
   private handleConnection(socket: ServerSocket, url: string): void {
     this.connectionUrls.push(url);
-    this.sockets.add(socket);
+    this.sockets.set(socket, connectionParams(url).get("agent_id"));
     socket.on("close", () => this.sockets.delete(socket));
     socket.on("message", (data) => {
       this.handleMessage(socket, data.toString());
@@ -173,6 +193,10 @@ export class FakePhoenixPeer implements AsyncDisposable {
     const message: PhoenixMessage = [joinRef, ref, topic, "phx_reply", { status, response }];
     socket.send(JSON.stringify(message));
   }
+}
+
+function connectionParams(url: string): URLSearchParams {
+  return new URL(url, "ws://peer").searchParams;
 }
 
 function responseFor(outcome: Exclude<JoinOutcome, "pending">): unknown {

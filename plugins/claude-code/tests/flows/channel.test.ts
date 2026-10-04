@@ -7,7 +7,6 @@ import { describe, expect, test } from "vitest";
 
 import { COMMAND_REFUSAL } from "../../src/adapter";
 import { CHANNEL_CAPABILITY, EXIT_OK } from "../../src/channel";
-import { CHANNEL_INSTRUCTIONS } from "../../src/prompt";
 import { agent, AGENT_HANDLE, AGENT_ID, BandPlatform, person, type BandRoom } from "../../../../packages/sdk/tests/flows/support/bandPlatform";
 import { ClaudeCodeSession } from "./support/claudeCode";
 
@@ -165,7 +164,20 @@ describe("Claude's Band tools", () => {
 describe("Claude Code's handshake", () => {
   it("advertises the server as a Claude Code channel, with the rules for its messages", async ({ session }) => {
     expect(session.capabilities?.experimental).toEqual({ [CHANNEL_CAPABILITY]: {} });
-    expect(session.instructions).toBe(CHANNEL_INSTRUCTIONS);
+    expect(session.instructions).toContain("Reply only through the Band tools");
+  });
+
+  it("tells Claude which Band agent it is", async ({ session }) => {
+    expect(session.instructions?.split("\n")[0]).toBe(
+      `You are connected to Band, a chat platform, as @${AGENT_HANDLE} (agent "default" in /band:agents).`,
+    );
+  });
+
+  it("names the agent by its Band name when it has no handle", async () => {
+    const platform = BandPlatform.host(PEOPLE, { ownerUuid: OWNER, handle: null });
+    await using session = await ClaudeCodeSession.connect(platform.link, { agentName: "docs" });
+
+    expect(session.instructions?.split("\n")[0]).toBe('You are connected to Band, a chat platform, as Agent (agent "docs" in /band:agents).');
   });
 });
 

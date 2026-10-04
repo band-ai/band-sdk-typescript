@@ -40,6 +40,7 @@ export type {
 
 export {
   loadAgentConfig,
+  loadAgentConfigs,
   loadAgentConfigFromEnv,
   type AgentConfigResult,
   type AgentCredentials,

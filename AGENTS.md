@@ -20,7 +20,7 @@ The SDK ships from `@band-ai/sdk` with multiple ESM/CJS subpath entries.
 |--------|----------|
 | `@band-ai/sdk` | `Agent`, adapters, config loaders, runtime, core types |
 | `@band-ai/sdk/adapters` | Adapter classes and helper types (e.g., `CodexAppServerStdioClient`, `ToolCallingModel`) |
-| `@band-ai/sdk/config` | `loadAgentConfig`, `loadAgentConfigFromEnv` (also re-exported from root) |
+| `@band-ai/sdk/config` | `loadAgentConfig`, `loadAgentConfigs`, `loadAgentConfigFromEnv` (also re-exported from root) |
 | `@band-ai/sdk/core` | `SimpleAdapter`, `Logger`, error classes, base protocols |
 | `@band-ai/sdk/converters` | History converters per framework |
 | `@band-ai/sdk/runtime` | Runtime internals (room presence, execution context, agent tools) |

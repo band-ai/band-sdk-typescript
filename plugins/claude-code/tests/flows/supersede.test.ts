@@ -19,7 +19,7 @@ describe("when another client takes the agent", () => {
     const platform = BandPlatform.host([person(USER)]);
     const room = await platform.room(ROOM);
     const waiting = room.postBeforeConnect(USER, MESSAGE);
-    await using session = await ClaudeCodeSession.connect({ restApi: platform.rest }, { wsUrl: peer.url });
+    await using session = await ClaudeCodeSession.connect({ restApi: platform.rest }, { credentials: { wsUrl: peer.url } });
     await session.pushOf(waiting);
 
     expect(peer.connectionUrls.map((url) => new URL(url, peer.url).searchParams.get("on_conflict"))).toEqual(["reject"]);
@@ -30,7 +30,7 @@ describe("when another client takes the agent", () => {
     const platform = BandPlatform.host([person(USER)]);
     const room = await platform.room(ROOM);
     const waiting = room.postBeforeConnect(USER, MESSAGE);
-    await using session = await ClaudeCodeSession.connect({ restApi: platform.rest }, { wsUrl: peer.url });
+    await using session = await ClaudeCodeSession.connect({ restApi: platform.rest }, { credentials: { wsUrl: peer.url } });
     await session.pushOf(waiting);
     expect(await room.outcome(waiting)).toBe("processed");
 
