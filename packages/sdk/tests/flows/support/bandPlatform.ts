@@ -233,6 +233,11 @@ export class BandRoom {
     return this.platform.rest.posted.until(predicate);
   }
 
+  /** Keeps the agent's join of this room in flight until the returned function releases it. */
+  public holdJoin(): () => void {
+    return this.platform.transport.gateJoin(chatRoomTopic(this.id));
+  }
+
   /** Resolves once the agent has begun leaving the room: it unsubscribes before tearing the room down. */
   public async left(): Promise<void> {
     await this.platform.transport.left.next((topic) => topic === chatRoomTopic(this.id));
@@ -249,12 +254,15 @@ export class BandRoom {
 export class BandPlatform implements AsyncDisposable {
   public readonly transport = new FakeTransport();
   public readonly rest: RecordingRestApi;
+  /** What a runtime connects to this platform through. */
+  public readonly link: { readonly transport: FakeTransport; readonly restApi: RecordingRestApi };
   private runtime?: PlatformRuntime;
   private readonly mentionable: readonly ParticipantRecord[];
 
   private constructor(participants: readonly ParticipantRecord[], rest?: RecordingRestApi) {
     this.mentionable = [...participants, AGENT_PARTICIPANT];
     this.rest = rest ?? new RecordingRestApi(participants);
+    this.link = { transport: this.transport, restApi: this.rest };
   }
 
   /** The platform alone, for a host that builds its own runtime on `transport` and `rest`. */
@@ -268,7 +276,7 @@ export class BandPlatform implements AsyncDisposable {
     platform.runtime = new PlatformRuntime({
       agentId: AGENT_ID,
       apiKey: AGENT_API_KEY,
-      link: new BandLink({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, transport: platform.transport, restApi: platform.rest }),
+      link: new BandLink({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, ...platform.link }),
     });
     await platform.runtime.start(adapter);
     return platform;

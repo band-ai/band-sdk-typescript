@@ -57,6 +57,8 @@ export class AgentRuntime {
   private readonly lifecycle: LifecycleTracker<RuntimeLifecycleState>;
   private readonly startGate = new SingleFlight<void>();
   private readonly stopGate = new SingleFlight<boolean>();
+  /** Set while a stop waits on a start, so rooms joined meanwhile stop on its terms too. */
+  private stopMidStart: { readonly timeoutMs?: number } | null = null;
 
   public constructor(options: AgentRuntimeOptions) {
     this.link = options.link;
@@ -211,11 +213,19 @@ export class AgentRuntime {
     // transition below observable in the caller's own tick.
     const pendingStart = this.lifecycle.is("starting") ? this.startGate.pending : null;
     if (pendingStart) {
+      // Rooms the start has joined stop taking turns now, not after the joins still to come.
+      this.stopMidStart = { timeoutMs };
+      this.presence.abortEventLoop();
+      for (const execution of this.executions.values()) {
+        this.stopExecutionMidStart(execution);
+      }
       try {
         await pendingStart;
       } catch (error) {
         // The start's own caller sees this rejection; teardown continues here.
         this.logger.debug("AgentRuntime stop is proceeding after the in-flight start failed", { error });
+      } finally {
+        this.stopMidStart = null;
       }
     }
 
@@ -358,6 +368,11 @@ export class AgentRuntime {
     return graceful;
   }
 
+  private stopExecutionMidStart(execution: Execution): void {
+    // performStop() stops it again and collects the outcome.
+    void execution.stop(this.stopMidStart?.timeoutMs).catch(() => undefined);
+  }
+
   private getOrCreateExecution(roomId: string): Execution {
     const existing = this.executions.get(roomId);
     if (existing) {
@@ -375,6 +390,9 @@ export class AgentRuntime {
       logger: this.logger,
     });
     this.executions.set(roomId, execution);
+    if (this.stopMidStart) {
+      this.stopExecutionMidStart(execution);
+    }
     const watcher = execution.waitUntilStopped()
       .catch(async (error: unknown) => {
         await this.failRuntime(error, {

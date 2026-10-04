@@ -217,7 +217,8 @@ export class Execution {
     // stop() is single-flight, so the only remaining state here is "running".
     this.lifecycle.transition({ status: "stopping" }, "stop");
 
-    const graceful = await this.waitForIdle(timeoutMs);
+    // A zero budget closes the queue now, so the loop starts no turn after this call.
+    const graceful = timeoutMs === 0 ? this.isIdle() : await this.waitForIdle(timeoutMs);
 
     if (this.lifecycle.is("failed")) {
       throw this.lifecycle.state.error;

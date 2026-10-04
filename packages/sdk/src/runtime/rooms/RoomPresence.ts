@@ -164,6 +164,8 @@ export class RoomPresence implements AsyncDisposable {
     if (this.eventTask) {
       throw new RuntimeStateError("RoomPresence is already started");
     }
+    // Created up front so a stop landing mid-start keeps the loop from ever starting.
+    this.eventController = new AbortController();
 
     if (!this.link.isConnected()) {
       await this.link.connect();
@@ -182,7 +184,6 @@ export class RoomPresence implements AsyncDisposable {
 
     await contactsReady;
 
-    this.eventController = new AbortController();
     this.eventTask = this.consumeEvents(this.eventController.signal);
   }
 
