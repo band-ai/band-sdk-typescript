@@ -5,7 +5,7 @@ import { BandMcpStdioServer } from "@band-ai/sdk/mcp";
 import { PlatformRuntime } from "@band-ai/sdk/runtime";
 import type { Readable, Writable } from "node:stream";
 
-import { ChannelAdapter, type ChannelPush } from "./adapter";
+import { ChannelAdapter } from "./adapter";
 import { CHANNEL_INSTRUCTIONS } from "./prompt";
 
 /** The experimental capability that makes Claude Code register the server as a channel. */
@@ -16,9 +16,9 @@ export const CHANNEL_METHOD = "notifications/claude/channel";
 export const EXIT_OK = 0;
 export const EXIT_FAILED = 1;
 
-// Turns still running when the session ends are abandoned, not drained: their pushes never settle.
-const ABANDON_IN_FLIGHT_TURNS_MS = 0;
-const NEVER: Promise<never> = new Promise(() => {});
+// Once the session ends, the runtime stops at the turn in flight rather than draining the backlog
+// into a server that can't push it; what it didn't start waits on the platform for the next session.
+const STOP_WITHOUT_DRAINING_MS = 0;
 
 export interface RunChannelOptions {
   readonly credentials: AgentCredentials;
@@ -44,7 +44,7 @@ export async function runChannel({ credentials, link, stdin, stdout, logger }: R
   await runtime.initialize();
   const { ownerUuid } = await runtime.link.rest.getAgentMe();
 
-  const adapter = new ChannelAdapter({ ownerUuid, push: (push) => pushUnlessEnded(server, push) });
+  const adapter = new ChannelAdapter({ ownerUuid, push: (push) => server.notify(CHANNEL_METHOD, push) });
   const server: BandMcpStdioServer = new BandMcpStdioServer({
     tools: (roomId) => adapter.toolsFor(roomId),
     capabilities: { experimental: { [CHANNEL_CAPABILITY]: {} } },
@@ -69,14 +69,6 @@ export async function runChannel({ credentials, link, stdin, stdout, logger }: R
     return EXIT_FAILED;
   } finally {
     // stop() rethrows the error a superseded runtime failed with, which is already logged.
-    await Promise.allSettled([runtime.stop(ABANDON_IN_FLIGHT_TURNS_MS), server.stop()]);
+    await Promise.allSettled([runtime.stop(STOP_WITHOUT_DRAINING_MS), server.stop()]);
   }
-}
-
-/**
- * Pushes an event into the session. The server rejects only once the session has ended;
- * that push then never settles, so the runtime leaves its message unmarked for the next session.
- */
-function pushUnlessEnded(server: BandMcpStdioServer, push: ChannelPush): Promise<void> {
-  return server.notify(CHANNEL_METHOD, push).catch(() => NEVER);
 }

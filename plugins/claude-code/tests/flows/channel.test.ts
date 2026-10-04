@@ -20,7 +20,7 @@ const ROOM = "room-1";
 const LATER_ROOM = "room-2";
 const PLATFORM_DOWN = new Error("platform unavailable");
 const MENTION = `@[[${AGENT_ID}]]`;
-// Longer than the plugin takes to start a runtime it was not told to hold back.
+// Longer than the in-memory plugin takes to act on what it was just handed.
 const SETTLE_MS = 100;
 
 interface Fixture {
@@ -180,10 +180,11 @@ describe("when Claude Code exits", () => {
     expect(await session.leave()).toBe(EXIT_OK);
   });
 
-  it("leaves the backlog it didn't push for the next session", async ({ band }) => {
+  it("stops at the turn in flight and leaves the rest of the backlog for the next session", async ({ band }) => {
     const first = band.room.postBeforeConnect(USER, `${MENTION} one`);
-    const second = band.room.postBeforeConnect(USER, `${MENTION} two`);
-    const held = band.room.holdProcessing(second);
+    const inFlight = band.room.postBeforeConnect(USER, `${MENTION} two`);
+    const waiting = band.room.postBeforeConnect(USER, `${MENTION} three`);
+    const held = band.room.holdProcessing(inFlight);
     const link = { transport: band.platform.transport, restApi: band.platform.rest };
     const leaving = await ClaudeCodeSession.connect(link);
     await leaving.pushOf(first);
@@ -191,9 +192,27 @@ describe("when Claude Code exits", () => {
 
     expect(await leaving.leave()).toBe(EXIT_OK);
     held.release();
+    expect(await band.room.outcome(inFlight)).toBe("failed");
 
     await using next = await ClaudeCodeSession.connect(link);
-    expect((await next.pushOf(second)).meta.message_id).toBe(second);
-    expect(await band.room.outcome(second)).toBe("processed");
+    expect((await next.pushOf(waiting)).meta.message_id).toBe(waiting);
+    expect(await band.room.outcome(waiting)).toBe("processed");
+  });
+
+  it("exits when it leaves while a room it was removed from still has a turn in flight", async ({ band }) => {
+    const session = await ClaudeCodeSession.connect({ transport: band.platform.transport, restApi: band.platform.rest });
+    const id = await band.room.say(USER, `${MENTION} hi`);
+    const held = band.room.holdProcessing(id);
+    await held.sending;
+    await band.room.remove();
+    // The removal now waits on the held turn; let Claude Code's exit reach the plugin before the turn pushes.
+    await sleep(SETTLE_MS);
+    const exited = session.leave();
+    await sleep(SETTLE_MS);
+
+    held.release();
+
+    expect(await exited).toBe(EXIT_OK);
+    expect(band.platform.transport.isConnected()).toBe(false);
   });
 });
