@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { namedWorkflowSteps } from "./workflow-test-utils.mjs";
 import { assertPackageContents } from "./assert-package-contents.mjs";
-import { RELEASE_PACKAGES, releasePackage } from "./release-packages.mjs";
+import { RELEASE_PACKAGES, releasePackage, tarballName } from "./release-packages.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const releaseStateScript = join(root, "scripts/resolve-release-state.mjs");
@@ -621,6 +621,27 @@ test("release workflow copies the SDK README before checking and packing the pac
   // The packlist check is what fails a release that would ship without these.
   assert.ok(releasePackage("sdk").contents.required.includes("README.md"));
   assert.ok(releasePackage("openclaw").contents.required.includes("dist/band_sdk_core_bg.wasm"));
+});
+
+test("pack-release writes each listed package's tarball under the name the publish job expects", async () => {
+  await withReleaseRoot(async (directory) => {
+    for (const pkg of RELEASE_PACKAGES) {
+      await mkdir(join(directory, pkg.key), { recursive: true });
+      await writeFile(join(directory, pkg.key, "package.json"), JSON.stringify({ name: pkg.name, version: "1.2.3" }));
+    }
+    const selected = RELEASE_PACKAGES.map((pkg) => ({ path: pkg.key, contents: { minFiles: 1, required: ["package.json"] } }));
+
+    const result = runCommand(process.execPath, [packScript, "release-artifacts"], directory, {
+      SELECTED_PACKAGES: JSON.stringify(selected),
+      npm_config_cache: join(directory, ".npm-cache"),
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    for (const pkg of RELEASE_PACKAGES) {
+      const tarball = join(directory, "release-artifacts", tarballName(pkg, "1.2.3"));
+      assert.ok(existsSync(tarball), `npm pack must write ${tarball} for ${pkg.name}`);
+    }
+  });
 });
 
 test("pack-release checks each packlist before packing and stops at the first bad one", async () => {
