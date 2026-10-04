@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "band": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/server.js"],
+      "env": {
+        "BAND_CHANNEL_AGENT_ID": "${user_config.agent_id}",
+        "BAND_CHANNEL_API_KEY": "${user_config.api_key}",
+        "BAND_CHANNEL_WS_URL": "${user_config.ws_url}",
+        "BAND_CHANNEL_REST_URL": ""
+      }
+    }
+  }
+}

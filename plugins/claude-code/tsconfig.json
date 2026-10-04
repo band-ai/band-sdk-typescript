@@ -1,0 +1,9 @@
+{
+  // The tests drive the SDK's own flow harness, so they compile as the SDK does, with its ambient declarations.
+  "extends": "../../packages/sdk/tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["src", "tests", "../../packages/sdk/src/**/*.d.ts"],
+  "exclude": []
+}

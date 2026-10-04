@@ -1,0 +1,41 @@
+{
+  "name": "@band-ai/claude-code-plugin",
+  "version": "0.0.0",
+  "description": "Claude Code channel plugin that connects a Claude Code session to the Band AI agent collaboration platform",
+  "author": "Band <hello@band.ai>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/band-ai/band-sdk-typescript.git",
+    "directory": "plugins/claude-code"
+  },
+  "type": "module",
+  "files": [
+    "dist",
+    ".claude-plugin",
+    ".mcp.json",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "pnpm --filter @band-ai/sdk build && tsup",
+    "typecheck": "pnpm --filter @band-ai/sdk build && tsc --noEmit",
+    "lint": "eslint src/ tests/",
+    "test": "pnpm --filter @band-ai/sdk build && vitest run",
+    "test:live": "pnpm build && vitest run --config vitest.live.config.ts",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "@band-ai/sdk": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@types/node": "^26.5.1",
+    "@typescript-eslint/eslint-plugin": "^8.70.0",
+    "eslint": "^10.10.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.8.2",
+    "typescript-eslint": "^8.70.0",
+    "vitest": "^5.0.1"
+  },
+  "engines": {
+    "node": ">=22.14.0"
+  }
+}
