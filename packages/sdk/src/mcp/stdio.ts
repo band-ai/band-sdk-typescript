@@ -10,7 +10,7 @@ import {
   buildSingleContextRegistrations,
 } from "./registrations";
 import { buildZodShape } from "./zod";
-import { MCP_SERVER_NAME } from "../runtime/tools/schemas";
+import { MCP_SERVER_NAME } from "../contracts/toolSchemas";
 
 export interface BandMcpStdioServerOptions {
   tools: AdapterToolsProtocol | ((roomId: string) => AdapterToolsProtocol | undefined);

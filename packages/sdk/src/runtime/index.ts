@@ -54,7 +54,7 @@ export {
   BASE_TOOL_NAMES,
   mcpToolNames,
   getToolDescription,
-} from "./tools/schemas";
+} from "../contracts/toolSchemas";
 export {
   CHAT_EVENT_TYPES,
   CHAT_MESSAGE_TYPES,

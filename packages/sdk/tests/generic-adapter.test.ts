@@ -4,9 +4,20 @@ import { GenericAdapter } from "../src/adapters/GenericAdapter";
 import { HistoryProvider } from "../src/runtime/types";
 import { FakeTools, failureEvents, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
-import type { AdapterToolsProtocol } from "../src/contracts/protocols";
+import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
+import { relayReply, type TurnTools } from "../src/core/turn";
+import { CLOSING_TEXT, TOOL_REPLY, describeTurnOutcomeContract, turnInput, type TurnScript } from "./turnOutcomeContract";
 
 describe("GenericAdapter", () => {
+  describeTurnOutcomeContract([{
+    adapter: "GenericAdapter",
+    turn: async (script, tools) => {
+      const adapter = new GenericAdapter((args) => scriptedHandler[script](args.tools));
+      await adapter.onStarted("Agent", "An agent");
+      await adapter.onEvent(turnInput(tools));
+    },
+  }]);
+
   describeDeliveryContract([{
     path: "the handler's own sendMessage reply",
     turn: async (tools) => {
@@ -70,7 +81,7 @@ describe("GenericAdapter", () => {
         events.push({ content, messageType });
         return { ok: true };
       },
-    }) as unknown as AdapterToolsProtocol;
+    }) as unknown as TurnTools;
 
     let observedResult: unknown;
     const adapter = new GenericAdapter(async ({ tools: handlerTools }) => {
@@ -116,7 +127,7 @@ describe("GenericAdapter", () => {
       }
     }
 
-    const tools = new FakeAgentTools() as unknown as AdapterToolsProtocol;
+    const tools = new FakeAgentTools() as unknown as TurnTools;
 
     let observedResult: unknown;
     let observedEventResult: unknown;
@@ -164,7 +175,7 @@ describe("GenericAdapter", () => {
     }
     class DerivedTools extends BaseAgentTools {}
 
-    const tools = new DerivedTools() as unknown as AdapterToolsProtocol;
+    const tools = new DerivedTools() as unknown as TurnTools;
     const observed: unknown[] = [];
     const adapter = new GenericAdapter(async ({ tools: handlerTools }) => {
       observed.push(await handlerTools.sendEvent("note", "task"));
@@ -209,7 +220,7 @@ describe("GenericAdapter", () => {
     }
     class DerivedTools extends BaseAgentTools {}
 
-    const tools = new DerivedTools() as unknown as AdapterToolsProtocol;
+    const tools = new DerivedTools() as unknown as TurnTools;
     const observed: unknown[] = [];
     const adapter = new GenericAdapter(async ({ tools: handlerTools }) => {
       observed.push(await handlerTools.sendEvent("note", "task"));
@@ -258,7 +269,7 @@ describe("GenericAdapter", () => {
     }
     class DerivedTools extends BaseAgentTools {}
 
-    const tools = new DerivedTools() as unknown as AdapterToolsProtocol & { label: string };
+    const tools = new DerivedTools() as unknown as TurnTools & { label: string };
     let observedLabel: unknown;
     const adapter = new GenericAdapter(async ({ tools: handlerTools }) => {
       observedLabel = (handlerTools as unknown as { label: string }).label;
@@ -285,7 +296,7 @@ describe("GenericAdapter", () => {
     const tools = Object.freeze({
       sendMessage: async () => ({ ok: true }) as const,
       sendEvent: async () => ({ ok: true }) as const,
-    }) as unknown as AdapterToolsProtocol;
+    }) as unknown as TurnTools;
 
     let observedKeys: string[] = [];
     let observedSpreadKeys: string[] = [];
@@ -311,7 +322,7 @@ describe("GenericAdapter", () => {
   it("throws instead of silently losing a write to a new property on the tools proxy", async () => {
     const tools = Object.freeze({
       sendMessage: async () => ({ ok: true }) as const,
-    }) as unknown as AdapterToolsProtocol;
+    }) as unknown as TurnTools;
 
     let threw = false;
     let readBack: unknown;
@@ -361,3 +372,25 @@ describe("GenericAdapter", () => {
     expect(tools.events).toEqual([]);
   });
 });
+
+const SENDER = [{ id: "user-1" }];
+
+/** A handler that does what one contract row's model would, closing with a relay of its text. */
+const scriptedHandler: Record<TurnScript, (tools: TurnTools) => Promise<void>> = {
+  decline: async (tools) => {
+    await tools.executeToolCall(NO_REPLY_TOOL_NAME, { reason: "FYI only" });
+    await relayReply(tools, CLOSING_TEXT, SENDER);
+  },
+  toolReply: async (tools) => {
+    await tools.executeToolCall(SEND_MESSAGE_TOOL_NAME, { content: TOOL_REPLY, mentions: SENDER });
+    await relayReply(tools, CLOSING_TEXT, SENDER);
+  },
+  act: async (tools) => {
+    await tools.executeToolCall("band_add_participant", { name: "Helper" });
+  },
+  finalText: async (tools) => {
+    await relayReply(tools, CLOSING_TEXT, SENDER);
+  },
+  nothing: async () => {},
+};
+

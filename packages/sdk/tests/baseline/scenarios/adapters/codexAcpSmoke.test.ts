@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 
 import { ACPClientAdapter } from "../../../../src/adapters/acp";
 import { ACP_SESSION_EVENT } from "../../../../src/converters/acp-client";
-import { SEND_MESSAGE_TOOL_NAME } from "../../../../src/runtime/tools/schemas";
+import { SEND_MESSAGE_TOOL_NAME } from "../../../../src/contracts/toolSchemas";
 import { FakeTools, makeMessage, tmpRoot } from "../../../testUtils";
 import { MESSAGE_TYPE } from "../../toolkit/observeMessages";
 import { CATEGORY, FLAG_ON, scenarioId } from "../../toolkit/registry";

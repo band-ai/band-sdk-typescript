@@ -4,7 +4,7 @@ import { isAuthorizedSender } from "@band-ai/band-sdk-core";
 
 import { createDeferred, type Deferred } from "../../core/deferred";
 import { resolveLogger, type Logger } from "../../core/logger";
-import type { AdapterToolsProtocol } from "../../contracts/protocols";
+import { reportUnsettledTurn, type TurnTools } from "../../core/turn";
 import type { PlatformMessage } from "../../runtime/types";
 import type { ACPClientSessionState } from "../../converters/acp-client";
 import type {
@@ -69,7 +69,7 @@ interface CursorTurn {
   messageId: string;
   roomId: string;
   sessionId?: string;
-  tools: AdapterToolsProtocol;
+  tools: TurnTools;
   requesterId: string;
   // Hands the room's message queue back to the platform, so a reply to this turn's decision can reach the adapter.
   releaseRoom: () => void;
@@ -87,7 +87,7 @@ type DecisionAnswer = string | Record<string, unknown> | undefined;
 
 interface PendingDecision extends DecisionSpec {
   roomId: string;
-  tools: AdapterToolsProtocol;
+  tools: TurnTools;
   requesterId: string;
   answer: Deferred<DecisionAnswer>;
 }
@@ -226,21 +226,28 @@ export class CursorRoomAgent extends ACPRoomAgent {
 
   public override async onMessage(
     message: PlatformMessage,
-    tools: AdapterToolsProtocol,
+    tools: TurnTools,
     history: ACPClientSessionState,
     participantsMessage: string | null,
     contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
     if (await this.handleControl(message, tools, context.roomId)) {
+      tools.turn.settle();
       return;
     }
     if (this.turn) {
       await replyToSender(tools, CURSOR_DECISION_MESSAGES.turnInProgress(), message.senderId);
+      tools.turn.settle();
       return;
     }
     const released = createDeferred<void>();
-    const turn: CursorTurn = { messageId: message.id, roomId: context.roomId, tools, requesterId: message.senderId, releaseRoom: released.resolve };
+    // A released turn outlives this request, so it is judged when it really ends.
+    const releaseRoom = () => {
+      tools.turn.detach();
+      released.resolve();
+    };
+    const turn: CursorTurn = { messageId: message.id, roomId: context.roomId, tools, requesterId: message.senderId, releaseRoom };
     this.turn = turn;
     const run = super.onMessage(message, tools, history, participantsMessage, contactsMessage, context)
       .finally(() => this.forgetTurn(turn));
@@ -258,7 +265,7 @@ export class CursorRoomAgent extends ACPRoomAgent {
 
   protected override async onAcpSessionReady(
     message: PlatformMessage,
-    _tools: AdapterToolsProtocol,
+    _tools: TurnTools,
     _context: { isSessionBootstrap: boolean; roomId: string },
     sessionId: string,
   ): Promise<void> {
@@ -269,13 +276,16 @@ export class CursorRoomAgent extends ACPRoomAgent {
 
   protected override async onAcpTurnFinished(
     message: PlatformMessage,
-    _tools: AdapterToolsProtocol,
+    tools: TurnTools,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
     // Forgotten now, so a late Cursor ask finds no turn to attach to.
     if (this.turn?.messageId === message.id) {
       this.turn = null;
       this.cancelRoom(context.roomId, END_REASON.turnFinished);
+    }
+    if (tools.turn.detached) {
+      await reportUnsettledTurn(tools, this.decisionLogger);
     }
   }
 
@@ -436,7 +446,7 @@ export class CursorRoomAgent extends ACPRoomAgent {
     }
   }
 
-  private async handleControl(message: PlatformMessage, tools: AdapterToolsProtocol, roomId: string): Promise<boolean> {
+  private async handleControl(message: PlatformMessage, tools: TurnTools, roomId: string): Promise<boolean> {
     const words = commandWords(message.content);
     if (words[0]?.toLowerCase() !== CURSOR_COMMAND) {
       return false;

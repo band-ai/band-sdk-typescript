@@ -202,7 +202,7 @@ describe("createLinearTools", () => {
     const result = await executeCustomTool(tool, {
       session_id: "sess-1",
       body: "Analyzing the issue",
-    });
+    }, undefined);
 
     expect(result).toEqual({ ok: true });
     expect(client.createAgentActivity).toHaveBeenCalledWith({
@@ -219,7 +219,7 @@ describe("createLinearTools", () => {
     const result = await executeCustomTool(tool, {
       session_id: "sess-1",
       body: "Searching codebase",
-    });
+    }, undefined);
 
     expect(result).toEqual({ ok: true });
     expect(client.createAgentActivity).toHaveBeenCalledWith({
@@ -237,7 +237,7 @@ describe("createLinearTools", () => {
       session_id: "sess-1",
       body: "Thinking...",
       ephemeral: true,
-    });
+    }, undefined);
 
     expect(result).toEqual({ ok: true });
     expect(client.createAgentActivity).toHaveBeenCalledWith({
@@ -256,7 +256,7 @@ describe("createLinearTools", () => {
       session_id: "sess-1",
       body: "Searching...",
       ephemeral: true,
-    });
+    }, undefined);
 
     expect(result).toEqual({ ok: true });
     expect(client.createAgentActivity).toHaveBeenCalledWith({
@@ -275,7 +275,7 @@ describe("createLinearTools", () => {
       session_id: "sess-1",
       body: "Something broke",
       ephemeral: true,
-    });
+    }, undefined);
 
     expect(client.createAgentActivity).toHaveBeenCalledWith({
       agentSessionId: "sess-1",
@@ -291,7 +291,7 @@ describe("createLinearTools", () => {
     const result = await executeCustomTool(tool, {
       session_id: "sess-1",
       body: "Which approach do you prefer?",
-    });
+    }, undefined);
 
     expect(result).toEqual({ ok: true });
     expect(client.createAgentActivity).toHaveBeenCalledWith({
@@ -312,7 +312,7 @@ describe("createLinearTools", () => {
         { label: "org/frontend-app", value: "org/frontend-app" },
         { label: "org/backend-api", value: "org/backend-api" },
       ],
-    });
+    }, undefined);
 
     expect(result).toEqual({ ok: true });
     expect(client.createAgentActivity).toHaveBeenCalledWith({
@@ -343,7 +343,7 @@ describe("createLinearTools", () => {
         { label: "Repo A", value: "repo-a" },
         { label: "Repo B", value: "repo-b" },
       ],
-    });
+    }, undefined);
 
     expect(result).toEqual({ ok: true });
     expect(client.createAgentActivity).toHaveBeenCalledWith({
@@ -380,7 +380,7 @@ describe("createLinearTools", () => {
         session_id: "sess-1",
         body: "Pick one",
         options: [],
-      }),
+      }, undefined),
     ).rejects.toThrow("Invalid arguments");
   });
 
@@ -392,7 +392,7 @@ describe("createLinearTools", () => {
     await executeCustomTool(tool, {
       session_id: "sess-1",
       body: "What do you think?",
-    });
+    }, undefined);
 
     expect(client.createAgentActivity).toHaveBeenCalledWith({
       agentSessionId: "sess-1",
@@ -410,7 +410,7 @@ describe("createLinearTools", () => {
       body: "Please link your GitHub account to continue.",
       url: "https://github.com/login/oauth/authorize?client_id=abc",
       provider: "GitHub",
-    });
+    }, undefined);
 
     expect(result).toEqual({ ok: true });
     expect(client.createAgentActivity).toHaveBeenCalledWith({
@@ -436,7 +436,7 @@ describe("createLinearTools", () => {
       session_id: "sess-1",
       body: "Please authenticate.",
       url: "https://example.com/auth",
-    });
+    }, undefined);
 
     expect(client.createAgentActivity).toHaveBeenCalledWith({
       agentSessionId: "sess-1",
@@ -458,7 +458,7 @@ describe("createLinearTools", () => {
         session_id: "sess-1",
         body: "Please authenticate.",
         url: "not-a-url",
-      }),
+      }, undefined),
     ).rejects.toThrow("Invalid arguments");
   });
 
@@ -471,7 +471,7 @@ describe("createLinearTools", () => {
         session_id: "sess-1",
         body: "Please authenticate.",
         url: "ftp://example.com/auth",
-      }),
+      }, undefined),
     ).rejects.toThrow("Invalid arguments");
 
     await expect(
@@ -479,7 +479,7 @@ describe("createLinearTools", () => {
         session_id: "sess-1",
         body: "Please authenticate.",
         url: "http://example.com/auth",
-      }),
+      }, undefined),
     ).rejects.toThrow("Invalid arguments");
   });
 
@@ -492,7 +492,7 @@ describe("createLinearTools", () => {
       session_id: "sess-1",
       body: "Please authenticate locally.",
       url: "http://localhost:3000/auth/callback",
-    });
+    }, undefined);
 
     expect(result).toEqual({ ok: true });
   });
@@ -506,7 +506,7 @@ describe("createLinearTools", () => {
       session_id: "sess-1",
       body: "Please authenticate locally.",
       url: "http://[::1]:3000/auth/callback",
-    });
+    }, undefined);
 
     expect(result).toEqual({ ok: true });
   });
@@ -521,7 +521,7 @@ describe("createLinearTools", () => {
         body: "Please authenticate.",
         url: "https://example.com/auth",
         provider: "A".repeat(101),
-      }),
+      }, undefined),
     ).rejects.toThrow("Invalid arguments");
   });
 
@@ -534,7 +534,7 @@ describe("createLinearTools", () => {
         session_id: "sess-1",
         body: "Pick one",
         options: [{ label: "Only", value: "only" }],
-      }),
+      }, undefined),
     ).rejects.toThrow("Invalid arguments");
   });
 
@@ -548,7 +548,7 @@ describe("createLinearTools", () => {
         body: "Please authenticate.",
         url: "https://example.com/auth",
         provider: "",
-      }),
+      }, undefined),
     ).rejects.toThrow("Invalid arguments");
   });
 
@@ -578,7 +578,7 @@ describe("createLinearTools", () => {
     const result = await executeCustomTool(tool, {
       session_id: "sess-1",
       body: "Final answer",
-    });
+    }, undefined);
 
     expect(result).toEqual({ ok: true });
     expect(client.createAgentActivity).toHaveBeenCalledWith({
@@ -600,7 +600,7 @@ describe("createLinearTools", () => {
     await executeCustomTool(tool, {
       session_id: "sess-1",
       body: "Final answer",
-    });
+    }, undefined);
 
     expect(client.createAgentActivity).toHaveBeenCalledWith({
       agentSessionId: "sess-1",
@@ -619,7 +619,7 @@ describe("createLinearTools", () => {
         { title: "Step 1", status: "completed" },
         { title: "Step 2", status: "in_progress" },
       ],
-    });
+    }, undefined);
 
     expect(result).toEqual({ ok: true });
     expect(client.createAgentActivity).not.toHaveBeenCalled();
@@ -638,7 +638,7 @@ describe("createLinearTools", () => {
     const tool = tools.find((entry) => entry.name === "linear_post_thought")!;
 
     await expect(
-      executeCustomTool(tool, { session_id: 123 as unknown as string }),
+      executeCustomTool(tool, { session_id: 123 as unknown as string }, undefined),
     ).rejects.toThrow("Invalid arguments");
   });
 
@@ -650,7 +650,7 @@ describe("createLinearTools", () => {
       executeCustomTool(tool, {
         session_id: "sess-1",
         steps: [{ title: "Step 1", status: "invalid_status" }],
-      }),
+      }, undefined),
     ).rejects.toThrow("Invalid arguments");
   });
 
@@ -664,7 +664,7 @@ describe("createLinearTools", () => {
       title: "Updated title",
       priority: 2,
       assignee_id: null,
-    });
+    }, undefined);
 
     expect(result).toEqual({ ok: true });
     expect(client.updateIssue).toHaveBeenCalledWith(
@@ -684,7 +684,7 @@ describe("createLinearTools", () => {
 
     const result = await executeCustomTool(tool, {
       issue_id: TEST_ISSUE_ID,
-    });
+    }, undefined);
 
     expect(result).toEqual({
       issue: expect.objectContaining({
@@ -723,10 +723,10 @@ describe("createLinearTools", () => {
 
     await expect(executeCustomTool(tool, {
       issueId: TEST_ISSUE_ID,
-    })).rejects.toThrow("requires issue_id");
+    }, undefined)).rejects.toThrow("requires issue_id");
     await expect(executeCustomTool(tool, {
       id: OTHER_TEST_ISSUE_ID,
-    })).rejects.toThrow("requires issue_id");
+    }, undefined)).rejects.toThrow("requires issue_id");
     expect(client.issue).not.toHaveBeenCalled();
   });
 
@@ -739,7 +739,7 @@ describe("createLinearTools", () => {
       issue_id: TEST_ISSUE_ID,
       issueId: OTHER_TEST_ISSUE_ID,
       id: OTHER_TEST_ISSUE_ID,
-    });
+    }, undefined);
 
     expect(client.issue).toHaveBeenCalledWith(TEST_ISSUE_ID);
   });
@@ -752,7 +752,7 @@ describe("createLinearTools", () => {
     const result = await executeCustomTool(tool, {
       issue_id: TEST_ISSUE_ID,
       limit: 10,
-    });
+    }, undefined);
 
     expect(result).toEqual({
       comments: [
@@ -772,7 +772,7 @@ describe("createLinearTools", () => {
 
     const result = await executeCustomTool(tool, {
       issue_id: TEST_ISSUE_ID,
-    });
+    }, undefined);
 
     expect(result).toEqual({
       team_id: "team-1",
@@ -795,7 +795,7 @@ describe("createLinearTools", () => {
     const result = await executeCustomTool(tool, {
       issue_id: TEST_ISSUE_ID,
       body: "Implemented and verified.",
-    });
+    }, undefined);
 
     expect(result).toEqual({ ok: true });
     expect(client.createComment).toHaveBeenCalledWith({
@@ -811,7 +811,7 @@ describe("createLinearTools", () => {
 
     const result = await executeCustomTool(tool, {
       issue_id: TEST_ISSUE_ID,
-    });
+    }, undefined);
 
     expect(result).toEqual({
       ok: true,
@@ -834,7 +834,7 @@ describe("createLinearTools", () => {
     await executeCustomTool(tool, {
       issue_id: TEST_ISSUE_ID,
       external_link: "https://example.com/session",
-    });
+    }, undefined);
 
     expect(client.agentSessionCreateOnIssue).toHaveBeenCalledWith({
       issueId: TEST_ISSUE_ID,
@@ -849,7 +849,7 @@ describe("createLinearTools", () => {
 
     const result = await executeCustomTool(tool, {
       comment_id: TEST_COMMENT_ID,
-    });
+    }, undefined);
 
     expect(result).toEqual({
       ok: true,
@@ -870,7 +870,7 @@ describe("createLinearTools", () => {
     const tool = tools.find((entry) => entry.name === "linear_create_session_on_comment")!;
 
     await expect(
-      executeCustomTool(tool, { comment_id: "not-a-uuid" }),
+      executeCustomTool(tool, { comment_id: "not-a-uuid" }, undefined),
     ).rejects.toThrow();
   });
 
@@ -884,7 +884,7 @@ describe("createLinearTools", () => {
       title: "New issue from Band",
       description: "Created during collaboration",
       priority: 2,
-    });
+    }, undefined);
 
     expect(result).toEqual({
       ok: true,
@@ -913,7 +913,7 @@ describe("createLinearTools", () => {
       title: "Bug report",
       state_id: TEST_STATE_ID,
       label_ids: [TEST_LABEL_ID_1, TEST_LABEL_ID_2],
-    });
+    }, undefined);
 
     expect(client.createIssue).toHaveBeenCalledWith({
       teamId: TEST_TEAM_ID,
@@ -932,7 +932,7 @@ describe("createLinearTools", () => {
     await executeCustomTool(tool, {
       issue_id: TEST_ISSUE_ID,
       room_id: "room-abc",
-    });
+    }, undefined);
 
     const record = await store.getBySessionId("new-session-1");
     expect(record).not.toBeNull();
@@ -948,7 +948,7 @@ describe("createLinearTools", () => {
     const tool = tools.find((entry) => entry.name === "linear_create_session_on_issue")!;
 
     await expect(
-      executeCustomTool(tool, { issue_id: TEST_ISSUE_ID, room_id: "" }),
+      executeCustomTool(tool, { issue_id: TEST_ISSUE_ID, room_id: "" }, undefined),
     ).rejects.toThrow();
   });
 
@@ -960,7 +960,7 @@ describe("createLinearTools", () => {
 
     await executeCustomTool(tool, {
       issue_id: TEST_ISSUE_ID,
-    });
+    }, undefined);
 
     const record = await store.getBySessionId("new-session-1");
     expect(record).toBeNull();
@@ -977,7 +977,7 @@ describe("createLinearTools", () => {
     const result = await executeCustomTool(tool, {
       issue_id: TEST_ISSUE_ID,
       room_id: "room-abc",
-    });
+    }, undefined);
 
     expect(result).toEqual({
       ok: true,
@@ -1003,7 +1003,7 @@ describe("createLinearTools", () => {
     await executeCustomTool(tool, {
       comment_id: TEST_COMMENT_ID,
       room_id: "room-xyz",
-    });
+    }, undefined);
 
     const record = await store.getBySessionId("new-session-2");
     expect(record).not.toBeNull();
@@ -1027,7 +1027,7 @@ describe("createLinearTools", () => {
     const result = await executeCustomTool(tool, {
       comment_id: TEST_COMMENT_ID,
       room_id: "room-xyz",
-    });
+    }, undefined);
 
     expect(result).toEqual({
       ok: true,
@@ -1050,7 +1050,7 @@ describe("createLinearTools", () => {
     const tool = tools.find((entry) => entry.name === "linear_create_issue")!;
 
     await expect(
-      executeCustomTool(tool, { team_id: TEST_TEAM_ID, title: "" }),
+      executeCustomTool(tool, { team_id: TEST_TEAM_ID, title: "" }, undefined),
     ).rejects.toThrow();
   });
 
@@ -1063,7 +1063,7 @@ describe("createLinearTools", () => {
     const tool = tools.find((entry) => entry.name === "linear_create_session_on_issue")!;
 
     await expect(
-      executeCustomTool(tool, { issue_id: TEST_ISSUE_ID }),
+      executeCustomTool(tool, { issue_id: TEST_ISSUE_ID }, undefined),
     ).rejects.toThrow(/session without an ID/);
   });
 
@@ -1076,7 +1076,7 @@ describe("createLinearTools", () => {
     const tool = tools.find((entry) => entry.name === "linear_create_issue")!;
 
     await expect(
-      executeCustomTool(tool, { team_id: TEST_TEAM_ID, title: "Test" }),
+      executeCustomTool(tool, { team_id: TEST_TEAM_ID, title: "Test" }, undefined),
     ).rejects.toThrow(/issue without an ID/);
   });
 
@@ -1086,7 +1086,7 @@ describe("createLinearTools", () => {
     const tool = tools.find((entry) => entry.name === "linear_create_session_on_issue")!;
 
     await expect(
-      executeCustomTool(tool, { issue_id: "not-a-uuid" }),
+      executeCustomTool(tool, { issue_id: "not-a-uuid" }, undefined),
     ).rejects.toThrow();
   });
 
@@ -1096,7 +1096,7 @@ describe("createLinearTools", () => {
     const tool = tools.find((entry) => entry.name === "linear_create_issue")!;
 
     await expect(
-      executeCustomTool(tool, { team_id: "not-a-uuid", title: "Test" }),
+      executeCustomTool(tool, { team_id: "not-a-uuid", title: "Test" }, undefined),
     ).rejects.toThrow();
   });
 
@@ -1126,7 +1126,7 @@ describe("createLinearTools", () => {
         { hostname: "github.com", repositoryFullName: "org/frontend-app" },
         { hostname: "github.com", repositoryFullName: "org/backend-api" },
       ],
-    });
+    }, undefined);
 
     expect(result).toEqual({
       suggestions: [
@@ -1154,7 +1154,7 @@ describe("createLinearTools", () => {
         session_id: "sess-1",
         issue_id: "SOF-1",
         repositories: [{ hostname: "github.com", repositoryFullName: "org/repo" }],
-      }),
+      }, undefined),
     ).rejects.toThrow("requires the exact Linear UUID from the session context");
   });
 
@@ -1168,7 +1168,7 @@ describe("createLinearTools", () => {
         session_id: "sess-1",
         issue_id: TEST_ISSUE_ID,
         repositories: [],
-      }),
+      }, undefined),
     ).rejects.toThrow("Invalid arguments");
   });
 
@@ -1182,7 +1182,7 @@ describe("createLinearTools", () => {
       session_id: "sess-1",
       issue_id: TEST_ISSUE_ID,
       repositories: [{ hostname: "github.com", repositoryFullName: "org/repo" }],
-    });
+    }, undefined);
 
     expect(result).toEqual({ suggestions: [] });
   });
@@ -1197,7 +1197,7 @@ describe("createLinearTools", () => {
       session_id: "sess-1",
       issue_id: TEST_ISSUE_ID,
       repositories: [{ hostname: "github.com", repositoryFullName: "org/repo" }],
-    });
+    }, undefined);
 
     expect(result).toEqual({ suggestions: [] });
   });
@@ -1218,7 +1218,7 @@ describe("createLinearTools", () => {
       session_id: "sess-1",
       issue_id: TEST_ISSUE_ID,
       repositories: [{ hostname: "github.com", repositoryFullName: "org/repo" }],
-    });
+    }, undefined);
 
     expect(result).toEqual({
       suggestions: [
@@ -1242,7 +1242,7 @@ describe("createLinearTools", () => {
         session_id: "sess-1",
         issue_id: TEST_ISSUE_ID,
         repositories: [{ hostname: "github.com", repositoryFullName: "org/repo" }],
-      }),
+      }, undefined),
     ).rejects.toThrow("Linear API unavailable");
   });
 
@@ -1263,7 +1263,7 @@ describe("createLinearTools", () => {
       session_id: "sess-1",
       issue_id: TEST_ISSUE_ID,
       repositories: [{ hostname: "github.com", repositoryFullName: "org/repo" }],
-    });
+    }, undefined);
 
     expect(result).toEqual({
       suggestions: [

@@ -11,9 +11,13 @@ import {
   type CodexRpcEvent,
 } from "../src/adapters/codex/appServerClient";
 import type { InitializeParams } from "../src/adapters/codex/appServerProtocol";
+import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
+import { trackTurn } from "../src/core/turn";
+import { BASE_INSTRUCTIONS } from "../src/runtime/prompts";
 import { HistoryProvider } from "../src/runtime/types";
 import { FakeTools, failureEvents, findFailureEvent, makeMessage, expectTurnFailed, roomWorkspacePath, tmpRoot } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
+import { CLOSING_TEXT, TOOL_REPLY, describeTurnOutcomeContract, turnInput, type TurnScript } from "./turnOutcomeContract";
 
 class FakeCodexClient implements CodexClientLike {
   public readonly requestCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
@@ -244,6 +248,30 @@ describe("CodexAdapter", () => {
       );
     },
   }]);
+
+  describeTurnOutcomeContract([{
+    adapter: "CodexAdapter",
+    turn: async (script, tools) => {
+      const client = new FakeCodexClient({ events: scriptedTurnEvents(script) });
+      await new CodexAdapter({ config: { cwd: tmpRoot() }, factory: async () => client }).onEvent(turnInput(tools));
+    },
+  }]);
+
+  it("settles a local command's turn without counting its notice as the reply", async () => {
+    const adapter = new CodexAdapter({ config: { cwd: tmpRoot() }, factory: async () => new FakeCodexClient() });
+    // The tracking `onEvent` wraps a turn's tools in, so the turn can be read after.
+    const tools = trackTurn(new FakeTools());
+
+    await adapter.onMessage(makeMessage("/help"), tools, new HistoryProvider([]), null, null, {
+      isSessionBootstrap: false,
+      roomId: "room-1",
+    });
+
+    expect(tools.messages).toEqual([expect.stringContaining("Codex commands")]);
+    expect(tools.turn.verdict()).toBe("complete");
+    // A notice counted as the reply would suppress the relay of a model's real answer.
+    expect(tools.turn.replied).toBe(false);
+  });
 
   it("registers platform and custom tools and executes them through the app-server", async () => {
     const tools = new ToolSchemaFakeTools();
@@ -647,7 +675,7 @@ describe("CodexAdapter", () => {
       : "";
 
     expect(developerInstructions).toContain("Linear policy: always post_thought before complete_session.");
-    expect(developerInstructions).toContain("Use `band_send_message(content, mentions)` to respond.");
+    expect(developerInstructions).toContain(BASE_INSTRUCTIONS.trim());
   });
 
   it("handles local slash commands without starting a turn", async () => {
@@ -1789,3 +1817,29 @@ describe("CodexAdapter", () => {
     expect(instructions).toContain("## Memory Tools");
   });
 });
+
+/** The app-server events of one contract turn: the model's tool calls and closing message, then completion. */
+function scriptedTurnEvents(script: TurnScript): CodexRpcEvent[] {
+  const call = (tool: string, arguments_: Record<string, unknown>): CodexRpcEvent => ({
+    kind: "request",
+    id: 1,
+    method: "item/tool/call",
+    params: { threadId: "thread-1", turnId: "turn-1", callId: "call-1", tool, arguments: arguments_ },
+  });
+  const say = (text: string): CodexRpcEvent => ({
+    kind: "notification",
+    method: "item/completed",
+    params: { item: { type: "agentMessage", id: "msg-1", text } },
+  });
+  const steps: Record<TurnScript, CodexRpcEvent[]> = {
+    decline: [call(NO_REPLY_TOOL_NAME, { reason: "FYI only" }), say(CLOSING_TEXT)],
+    toolReply: [call(SEND_MESSAGE_TOOL_NAME, { content: TOOL_REPLY, mentions: ["@user"] }), say(CLOSING_TEXT)],
+    act: [call("band_add_participant", { name: "Helper" })],
+    finalText: [say(CLOSING_TEXT)],
+    nothing: [],
+  };
+  return [
+    ...steps[script],
+    { kind: "notification", method: "turn/completed", params: { turn: { id: "turn-1", status: "completed", error: null } } },
+  ];
+}

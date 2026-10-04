@@ -8,6 +8,7 @@ import type {
 } from "../contracts/protocols";
 import { DEFAULT_AGENT_TOOLS_CAPABILITIES, sendFailureViaEvent } from "../contracts/protocols";
 import { isBlankEventContent } from "../contracts/chatEvents";
+import { Turn } from "../core/turn";
 import type {
   AddContactArgs,
   ContactRecord,
@@ -70,6 +71,8 @@ export class FakeAgentTools
   public participantsAdded: CapturedParticipant[] = [];
   public participantsRemoved: string[] = [];
   public toolCalls: CapturedToolCall[] = [];
+  /** A turn outside `SimpleAdapter.onEvent`, which gives each turn its own; nothing records here. */
+  public readonly turn = new Turn();
 
   private messageCounter = 0;
   private eventCounter = 0;
@@ -88,6 +91,16 @@ export class FakeAgentTools
     mentions?: MentionInput,
   ): Promise<ToolOperationResult> {
     this.maybeFail("sendMessage");
+    this.messagesSent.push({ content, mentions });
+    const id = `msg-${this.messageCounter++}`;
+    return { id, status: "sent" };
+  }
+
+  public async sendNotice(
+    content: string,
+    mentions?: MentionInput,
+  ): Promise<ToolOperationResult> {
+    this.maybeFail("sendNotice");
     this.messagesSent.push({ content, mentions });
     const id = `msg-${this.messageCounter++}`;
     return { id, status: "sent" };

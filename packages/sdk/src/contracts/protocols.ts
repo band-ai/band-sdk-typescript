@@ -40,6 +40,15 @@ export interface PlatformMessageLike {
   createdAt: Date;
 }
 
+/** Sender of a turn the runtime makes up itself, such as a contact event put to the hub room. */
+export const SYNTHETIC_SENDER_TYPE = "System";
+export const SYNTHETIC_CONTACT_EVENTS_SENDER_ID = "contact-events";
+
+/** A turn no participant asked for, so it owes nobody a reply. */
+export function isSyntheticTurn(message: Pick<PlatformMessageLike, "senderType" | "senderId">): boolean {
+  return message.senderType === SYNTHETIC_SENDER_TYPE && message.senderId === SYNTHETIC_CONTACT_EVENTS_SENDER_ID;
+}
+
 export interface HistoryLike {
   readonly raw: MetadataMap[];
   convert<T>(converter: HistoryConverter<T>): T;
@@ -48,6 +57,14 @@ export interface HistoryLike {
 
 export interface MessagingTools {
   sendMessage(
+    content: string,
+    mentions?: MentionInput,
+  ): Promise<ToolOperationResult>;
+  /**
+   * Posts text the adapter writes itself (a prompt, a busy or status note)
+   * exactly like `sendMessage`, but never counts as the turn's reply.
+   */
+  sendNotice(
     content: string,
     mentions?: MentionInput,
   ): Promise<ToolOperationResult>;
@@ -267,6 +284,8 @@ export interface AdapterToolsProtocol
 }
 
 export type AgentToolsProtocol = AdapterToolsProtocol;
+
+export type AdapterToolMethodName = Exclude<keyof AdapterToolsProtocol, "capabilities">;
 
 export interface AgentToolsCapabilities {
   peers: boolean;

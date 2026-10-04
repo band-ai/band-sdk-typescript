@@ -1,7 +1,7 @@
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 import {
   ClaudeSDKAdapter,
@@ -15,7 +15,10 @@ import { RestFacade } from "../src/client/rest/RestFacade";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 import { FakeRestApi, FakeTools, findFailureEvent, makeMessage, makeRoster, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
-import { MCP_SERVER_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/runtime/tools/schemas";
+import { MCP_SERVER_NAME, NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
+import type { AdapterToolsProtocol, FrameworkAdapterInput } from "../src/contracts/protocols";
+import { createDeferred } from "../src/core/deferred";
+import { CLOSING_TEXT, TOOL_REPLY, describeTurnOutcomeContract, turnInput, type TurnScript } from "./turnOutcomeContract";
 
 function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
   return (async function* generator(): AsyncGenerator<T, void> {
@@ -580,7 +583,7 @@ describe("ClaudeSDKAdapter", () => {
     expect(tools.events.filter((event) => event.messageType === "error")).toEqual([]);
   });
 
-  describe("a reply the agent already posted with band_send_message", () => {
+  describe("a turn's Band tool calls through the MCP bridge", () => {
     const ROOM_ID = "room-send";
     const SENDER = makeMessage("hello", ROOM_ID);
 
@@ -597,64 +600,124 @@ describe("ClaudeSDKAdapter", () => {
       return { tools: new AgentTools({ roomId: ROOM_ID, rest: new RestFacade({ api }), roster }), posted };
     }
 
-    /** Calls band_send_message on the Band MCP server the adapter started the query with, as Claude Code would. */
-    async function sendThroughBandTool(options: ClaudeSDKQueryParams["options"], content: string): Promise<void> {
-      const server = options?.mcpServers?.[MCP_SERVER_NAME] as McpSdkServerConfigWithInstance;
-      const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
-      await server.instance.connect(serverTransport);
-      const client = new Client({ name: "claude-code-stand-in", version: "1.0.0" });
-      await client.connect(clientTransport);
-      await using _closed = { [Symbol.asyncDispose]: () => client.close() };
-      const result = await client.callTool({
-        name: SEND_MESSAGE_TOOL_NAME,
-        arguments: { room_id: ROOM_ID, content, mentions: ["@user"] },
-      });
-      expect(result.isError, "band_send_message failed").toBeUndefined();
-    }
-
-    /** One turn whose query posts `sent` through the Band tool first when given, then ends with `closing`. */
-    async function runTurn(input: { sent?: string; closing: Array<Record<string, unknown>> }): Promise<{ posted: string[]; turn: Promise<void> }> {
-      const queryFn: ClaudeSDKQuery = async function* ({ options }) {
-        if (input.sent !== undefined) {
-          await sendThroughBandTool(options, input.sent);
-        }
-        yield* input.closing as never[];
-      };
-      const adapter = new ClaudeSDKAdapter({ queryFn });
-      await adapter.onStarted("Parity Agent", "Parity test agent");
-      const { tools, posted } = recordingRoomTools();
-      const turn = adapter.onMessage(SENDER, tools, new HistoryProvider([]), null, null, {
+    function roomTurn(tools: AdapterToolsProtocol): FrameworkAdapterInput {
+      return {
+        message: SENDER,
+        tools,
+        history: new HistoryProvider([]),
+        participantsMessage: null,
+        contactsMessage: null,
         isSessionBootstrap: false,
         roomId: ROOM_ID,
-      });
-      return { posted, turn };
+      };
+    }
+
+    const connections = new Map<McpSdkServerConfigWithInstance["instance"], Promise<Client>>();
+
+    /** Claude Code's one connection to an adapter's Band MCP server, opened on first use and closed with the test. */
+    function connectionTo(server: McpSdkServerConfigWithInstance): Promise<Client> {
+      const open = connections.get(server.instance) ?? (async () => {
+        const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
+        await server.instance.connect(serverTransport);
+        const client = new Client({ name: "claude-code-stand-in", version: "1.0.0" });
+        await client.connect(clientTransport);
+        onTestFinished(async () => {
+          connections.delete(server.instance);
+          await client.close();
+        });
+        return client;
+      })();
+      connections.set(server.instance, open);
+      return open;
+    }
+
+    /** Calls a Band tool on the MCP server the adapter started the query with, as Claude Code would. */
+    async function callBandTool(options: ClaudeSDKQueryParams["options"], name: string, args: Record<string, unknown> = {}): Promise<void> {
+      const client = await connectionTo(options?.mcpServers?.[MCP_SERVER_NAME] as McpSdkServerConfigWithInstance);
+      const result = await client.callTool({ name, arguments: { room_id: ROOM_ID, ...args } });
+      expect(result.isError, `${name} failed`).toBeUndefined();
     }
 
     const assistantText = (text: string) => ({ type: "assistant", message: { content: [{ type: "text", text }] } });
     const success = (text: string) => ({ type: "result", subtype: "success", result: text });
+    const closing = (text: string) => [assistantText(text), success(text)] as never[];
 
-    it("does not post the closing text again", async () => {
-      const { posted, turn } = await runTurn({ sent: "pineapple", closing: [assistantText("Done!"), success("Done!")] });
-      await turn;
+    /** What Claude does in one contract turn, its tool calls landing through the MCP bridge. */
+    async function* contractTurn(script: TurnScript, options: ClaudeSDKQueryParams["options"]): AsyncGenerator<never> {
+      switch (script) {
+        case "decline":
+          await callBandTool(options, NO_REPLY_TOOL_NAME, { reason: "FYI only" });
+          yield* closing(CLOSING_TEXT);
+          return;
+        case "toolReply":
+          await callBandTool(options, SEND_MESSAGE_TOOL_NAME, { content: TOOL_REPLY, mentions: ["@user"] });
+          yield* closing(CLOSING_TEXT);
+          return;
+        case "act":
+          await callBandTool(options, "band_add_participant", { name: "Helper" });
+          yield success("") as never;
+          return;
+        case "finalText":
+          yield* closing(CLOSING_TEXT);
+          return;
+        case "nothing":
+          yield success("") as never;
+          return;
+      }
+    }
 
-      expect(posted).toEqual(["pineapple"]);
-    });
+    describeTurnOutcomeContract([{
+      adapter: "ClaudeSDKAdapter",
+      turn: async (script, tools) => {
+        const adapter = new ClaudeSDKAdapter({ queryFn: ({ options }) => contractTurn(script, options) });
+        await adapter.onStarted("Parity Agent", "Parity test agent");
+        await adapter.onEvent(turnInput(tools, SENDER));
+      },
+    }]);
 
-    it("still posts the final text when the agent never sent one", async () => {
-      const { posted, turn } = await runTurn({ closing: [assistantText("pineapple"), success("pineapple")] });
-      await turn;
-
-      expect(posted).toEqual(["pineapple"]);
-    });
-
-    it("keeps preceding text off the room on a failed result too, and still reports the failure", async () => {
-      const { posted, turn } = await runTurn({
-        sent: "pineapple",
-        closing: [assistantText("Done!"), { type: "result", subtype: "error_max_turns", summary: "hit the turn cap" }],
+    it("keeps preceding text off the room on a failed result after a tool reply, and still reports the failure", async () => {
+      const { tools, posted } = recordingRoomTools();
+      const adapter = new ClaudeSDKAdapter({
+        queryFn: async function* ({ options }) {
+          await callBandTool(options, SEND_MESSAGE_TOOL_NAME, { content: "pineapple", mentions: ["@user"] });
+          yield* [assistantText("Done!"), { type: "result", subtype: "error_max_turns", summary: "hit the turn cap" }] as never[];
+        },
       });
-      await expectTurnFailed(turn);
+      await adapter.onStarted("Parity Agent", "Parity test agent");
+
+      await expectTurnFailed(adapter.onEvent(roomTurn(tools)));
 
       expect(posted).toEqual(["pineapple"]);
+    });
+
+    it("records each of two concurrent same-room turns' replies on that turn", async () => {
+      const firstStarted = createDeferred();
+      const releaseFirst = createDeferred();
+      let queries = 0;
+      const adapter = new ClaudeSDKAdapter({
+        // The first turn's reply is held until the second turn is queued, so it lands while both are in flight.
+        queryFn: async function* ({ options }) {
+          const isFirst = ++queries === 1;
+          if (isFirst) {
+            firstStarted.resolve();
+            await releaseFirst.promise;
+          }
+          await callBandTool(options, SEND_MESSAGE_TOOL_NAME, { content: isFirst ? "first reply" : "second reply", mentions: ["@user"] });
+          yield* closing(CLOSING_TEXT);
+        },
+      });
+      await adapter.onStarted("Parity Agent", "Parity test agent");
+      const first = recordingRoomTools();
+      const second = recordingRoomTools();
+
+      const firstTurn = adapter.onEvent(roomTurn(first.tools));
+      await firstStarted.promise;
+      const secondTurn = adapter.onEvent(roomTurn(second.tools));
+      releaseFirst.resolve();
+      await Promise.all([firstTurn, secondTurn]);
+
+      expect(first.posted).toEqual(["first reply"]);
+      expect(second.posted).toEqual(["second reply"]);
     });
   });
 

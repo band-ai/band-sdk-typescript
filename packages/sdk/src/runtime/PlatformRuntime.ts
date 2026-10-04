@@ -1,4 +1,4 @@
-import type { FrameworkAdapter, Preprocessor } from "../contracts/protocols";
+import { isSyntheticTurn, type FrameworkAdapter, type Preprocessor } from "../contracts/protocols";
 import { messageIdOf, type ContactEvent, type PlatformEvent } from "../platform/events";
 import { BandLink, type BandLinkOptions } from "../platform/BandLink";
 import { AgentRuntime } from "./rooms/AgentRuntime";
@@ -10,7 +10,6 @@ import {
   type SessionConfig,
 } from "./types";
 import type { PlatformMessage } from "./types";
-import { SYNTHETIC_SENDER_TYPE, SYNTHETIC_CONTACT_EVENTS_SENDER_ID } from "./types";
 import type { ParticipantRecord, MetadataMap } from "../contracts/dtos";
 import { RuntimeStateError, ValidationError } from "../core/errors";
 import { DefaultPreprocessor } from "./preprocessing/DefaultPreprocessor";
@@ -460,8 +459,7 @@ export class PlatformRuntime implements AsyncDisposable {
 
     const messageId = String(input.message.id ?? "");
     const roomId = input.roomId;
-    const isSynthetic = input.message.senderType === SYNTHETIC_SENDER_TYPE
-      && input.message.senderId === SYNTHETIC_CONTACT_EVENTS_SENDER_ID;
+    const isSynthetic = isSyntheticTurn(input.message);
     const messageMarkOptions = { bestEffort: true } as const;
 
     if (messageId && !isSynthetic) {

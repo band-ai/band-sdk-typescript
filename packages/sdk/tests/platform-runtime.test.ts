@@ -1,15 +1,22 @@
+import { missingReplyMessage } from "@band-ai/band-sdk-core";
 import { describe, expect, it, vi } from "vitest";
 
-import { GenericAdapter } from "../src/adapters/GenericAdapter";
+import { GenericAdapter, type GenericAdapterHandler } from "../src/adapters/GenericAdapter";
 import { FernRestAdapter, RestFacade } from "../src/client/rest/RestFacade";
 import { TransportError, ValidationError } from "../src/core/errors";
 import { PlatformRuntime } from "../src/runtime/PlatformRuntime";
 import { ExecutionContext } from "../src/runtime/ExecutionContext";
 import { HUB_ROOM_SYSTEM_PROMPT } from "../src/runtime/ContactEventHandler";
-import type { FrameworkAdapter, FrameworkAdapterInput } from "../src/contracts/protocols";
+import { FAILURE_EVENT_TYPE, type FrameworkAdapter, type FrameworkAdapterInput } from "../src/contracts/protocols";
+import type { MetadataMap } from "../src/contracts/dtos";
+import { NO_REPLY_TOOL_NAME, SEND_EVENT_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
+import { agentFailure } from "../src/core/providerFailure";
+import { SimpleAdapter } from "../src/core/simpleAdapter";
+import { relayReply, TURN_FAILURE_PROVIDER } from "../src/core/turn";
 import type { StreamingTransport } from "../src/platform/streaming/transport";
 import { BandLink } from "../src/platform/BandLink";
 import { FakeRestApi, FakeTransport, makeMessage } from "./testUtils";
+import { createDeferred } from "../src/core/deferred";
 
 describe("PlatformRuntime", () => {
   it("initializes and dispatches message to adapter", async () => {
@@ -42,9 +49,10 @@ describe("PlatformRuntime", () => {
     const seenPromise = new Promise<void>((resolve) => {
       resolveSeen = resolve;
     });
-    const adapter = new GenericAdapter(async ({ message }) => {
+    const adapter = new GenericAdapter(async ({ message, tools }) => {
       lifecycle.push("adapter");
       seenMessage = message.content;
+      tools.turn.settle();
       resolveSeen?.();
     });
 
@@ -112,11 +120,12 @@ describe("PlatformRuntime", () => {
     );
 
     let calls = 0;
-    const adapter = new GenericAdapter(async () => {
+    const adapter = new GenericAdapter(async ({ tools }) => {
       calls += 1;
       if (calls === 1) {
         throw new Error("provider exploded");
       }
+      tools.turn.settle();
     });
 
     await using runtime = new PlatformRuntime({
@@ -1034,3 +1043,152 @@ describe("PlatformRuntime", () => {
     expect(linkLogger.error).toHaveBeenCalledWith("test", undefined);
   });
 });
+
+describe("PlatformRuntime turn outcome", () => {
+  const JANE = [{ id: "u1" }];
+  const MESSAGE_FROM_JANE = {
+    id: "m1",
+    content: "hello",
+    message_type: "text",
+    sender_id: "u1",
+    sender_type: "User",
+    sender_name: "Jane",
+  };
+
+  interface PostedEvent { content: string; messageType: string; metadata?: MetadataMap }
+
+  /** Runs one room message through the real runtime, link and AgentTools; returns its mark and the events it posted. */
+  async function runTurn(adapter: FrameworkAdapter): Promise<{ mark: string; failures: PostedEvent[] }> {
+    const transport = new FakeTransport();
+    const marks: string[] = [];
+    const events: PostedEvent[] = [];
+    const rest = new FakeRestApi(
+      {
+        markMessageProcessed: async () => {
+          marks.push("processed");
+          return {};
+        },
+        markMessageFailed: async () => {
+          marks.push("failed");
+          return {};
+        },
+        createChatEvent: async (_chatId, event) => {
+          events.push(event as PostedEvent);
+          return {};
+        },
+      },
+      { id: "a1", name: "Agent", description: "Agent description" },
+    );
+    await using runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      link: new BandLink({ agentId: "a1", apiKey: "k", transport, restApi: rest }),
+    });
+    await runtime.start(adapter);
+    const now = new Date().toISOString();
+    await transport.emit("agent_rooms:a1", "room_added", { id: "room-1", status: "active", type: "direct", title: "Room", task_id: null, inserted_at: now, updated_at: now });
+    await transport.emit("chat_room:room-1", "message_created", { ...MESSAGE_FROM_JANE, inserted_at: now, updated_at: now });
+    await vi.waitFor(() => expect(marks).toHaveLength(1));
+    return { mark: marks[0]!, failures: events.filter((event) => event.messageType === FAILURE_EVENT_TYPE) };
+  }
+
+  const call = (name: string, args: Record<string, unknown> = {}): GenericAdapterHandler =>
+    async ({ tools }) => {
+      await tools.executeToolCall(name, args);
+    };
+  const reply = call(SEND_MESSAGE_TOOL_NAME, { content: "Hi Jane", mentions: JANE });
+  const observe = call("band_get_participants");
+
+  // band-sdk-core's verdict fixture rows, each step a real call through AgentTools.
+  it.each<{ row: string; handler: GenericAdapterHandler; mark: "processed" | "failed" }>([
+    { row: "nothing", handler: async () => {}, mark: "failed" },
+    { row: "observe only", handler: observe, mark: "failed" },
+    { row: "send_event only", handler: call(SEND_EVENT_TOOL_NAME, { content: "Thinking", message_type: "thought" }), mark: "failed" },
+    { row: "act", handler: call("band_create_chatroom"), mark: "processed" },
+    { row: "reply", handler: reply, mark: "processed" },
+    { row: "decline", handler: call(NO_REPLY_TOOL_NAME, { reason: "FYI only" }), mark: "processed" },
+    { row: "reply then observe", handler: async (args) => { await reply(args); await observe(args); }, mark: "processed" },
+    { row: "relay", handler: async ({ tools }) => { await relayReply(tools, "Closing text", JANE); }, mark: "processed" },
+    { row: "settled", handler: async ({ tools }) => { tools.turn.settle(); }, mark: "processed" },
+    // The nightly case: a send the platform rejects, then only a thought.
+    {
+      row: "a failed send, then a thought",
+      handler: async (args) => {
+        await call(SEND_MESSAGE_TOOL_NAME, { content: "Hi", mentions: ["@nobody"] })(args);
+        await call(SEND_EVENT_TOOL_NAME, { content: "Sent it", message_type: "thought" })(args);
+      },
+      mark: "failed",
+    },
+    { row: "a blank send", handler: call(SEND_MESSAGE_TOOL_NAME, { content: "  ", mentions: JANE }), mark: "failed" },
+    { row: "a direct tools.sendMessage", handler: async ({ tools }) => { await tools.sendMessage("Hi Jane", JANE); }, mark: "processed" },
+  ])("$row: $mark", async ({ handler, mark }) => {
+    const outcome = await runTurn(new GenericAdapter(handler));
+
+    expect(outcome.mark).toBe(mark);
+    const expected = mark === "failed" ? [{ content: missingReplyMessage(), provider: TURN_FAILURE_PROVIDER }] : [];
+    expect(outcome.failures.map((event) => ({
+      content: event.content,
+      provider: (event.metadata?.failure as { provider?: string } | undefined)?.provider,
+    }))).toEqual(expected);
+  });
+
+  it("reported: a turn that posted its own failure is complete, and posts no second one", async () => {
+    const outcome = await runTurn(new GenericAdapter(async ({ tools }) => {
+      await tools.sendFailure(agentFailure("custom", "The provider is down."));
+    }));
+
+    expect(outcome.mark).toBe("processed");
+    expect(outcome.failures.map((event) => event.content)).toEqual(["The provider is down."]);
+  });
+
+  it("never judges an exempt adapter's turn", async () => {
+    class Silent extends SimpleAdapter<unknown> {
+      protected readonly provider = "silent";
+      protected override get judgesTurns(): boolean {
+        return false;
+      }
+      public async onMessage(): Promise<void> {}
+    }
+
+    const outcome = await runTurn(new Silent());
+
+    expect(outcome).toEqual({ mark: "processed", failures: [] });
+  });
+
+  it("never judges a synthetic contact-events turn", async () => {
+    const transport = new FakeTransport();
+    const events: PostedEvent[] = [];
+    const restApi = new FakeRestApi({
+      createChat: async () => ({ id: "hub-room-1" }),
+      createChatEvent: async (_chatId, event) => {
+        events.push(event as PostedEvent);
+        return {};
+      },
+    });
+    const seen = createDeferred<void>();
+    const adapter = new GenericAdapter(async () => {
+      seen.resolve();
+    });
+    await using runtime = new PlatformRuntime({
+      agentId: "a1",
+      apiKey: "k",
+      link: new BandLink({ agentId: "a1", apiKey: "k", transport, restApi }),
+      contactConfig: { strategy: "hub_room", hubTaskId: "task-1" },
+    });
+    await runtime.start(adapter);
+
+    await transport.emit("agent_contacts:a1", "contact_request_received", {
+      id: "req-1",
+      from_handle: "alice",
+      from_name: "Alice",
+      message: "Hello!",
+      status: "pending",
+      inserted_at: new Date().toISOString(),
+    });
+    await seen.promise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(events.filter((event) => event.messageType === FAILURE_EVENT_TYPE)).toEqual([]);
+  });
+});
+

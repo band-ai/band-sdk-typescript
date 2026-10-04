@@ -9,7 +9,7 @@ import {
   MEMORY_TOOL_NAMES,
   TOOL_MODELS,
   getToolDescription,
-} from "../runtime/tools/schemas";
+} from "../contracts/toolSchemas";
 
 export interface McpToolRegistration {
   name: string;
@@ -199,16 +199,26 @@ function serializeValue(value: unknown): string {
 }
 
 /**
- * Resolves the single tools instance for single-room mode. Calls `getToolsForRoom("")`
- * as the sentinel — callers in single-room mode must return their tools instance
- * regardless of the room ID argument.
+ * The tools for single-room mode, resolved through `getToolsForRoom("")` on
+ * every access rather than once: each turn brings its own tools, and a call
+ * must reach the turn in flight. Callers in single-room mode must return
+ * their current tools regardless of the room ID argument.
  */
 export function resolveSingleRoomTools(
   getToolsForRoom: (roomId: string) => AdapterToolsProtocol | undefined,
 ): AdapterToolsProtocol {
-  const tools = getToolsForRoom("");
-  if (!tools) {
-    throw new Error("Single-room mode requires getToolsForRoom(\"\") to return a tools instance");
-  }
-  return tools;
+  const current = (): AdapterToolsProtocol => {
+    const tools = getToolsForRoom("");
+    if (!tools) {
+      throw new Error("Single-room mode requires getToolsForRoom(\"\") to return a tools instance");
+    }
+    return tools;
+  };
+  return new Proxy({} as AdapterToolsProtocol, {
+    get(_target, key) {
+      const tools = current();
+      const value: unknown = Reflect.get(tools, key, tools);
+      return typeof value === "function" ? (value.bind(tools) as unknown) : value;
+    },
+  });
 }

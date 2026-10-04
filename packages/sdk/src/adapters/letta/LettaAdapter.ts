@@ -5,14 +5,10 @@ import { resolveLogger } from "../../core/logger";
 import { RuntimeStateError, UnsupportedFeatureError, rethrowIfRecoverableTurnFailure } from "../../core/errors";
 import type { PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import { deliverFallbackReply, trackPostedReply } from "../../runtime/tools/postedReply";
+import { relayReply, type TurnTools } from "../../core/turn";
 import { asErrorMessage, toWireString } from "../shared/coercion";
 import { selectCompleteExchanges } from "../shared/history";
-import {
-  agentFailure,
-  reportProviderTurnFailure,
-  reportTurnFailure,
-} from "../../core/providerFailure";
+import { reportProviderTurnFailure } from "../../core/providerFailure";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import type { LettaMessages } from "./types";
 import { LettaHistoryConverter } from "./types";
@@ -249,7 +245,7 @@ const MAX_HISTORY_CHARS = 32_000;
 
 export class LettaAdapter extends SimpleAdapter<
   LettaMessages,
-  AdapterToolsProtocol
+  TurnTools
 > {
   protected readonly provider = "letta";
 
@@ -348,7 +344,7 @@ export class LettaAdapter extends SimpleAdapter<
 
   public async onMessage(
     message: PlatformMessage,
-    tools: AdapterToolsProtocol,
+    tools: TurnTools,
     history: LettaMessages,
     participantsMessage: string | null,
     contactsMessage: string | null,
@@ -393,26 +389,16 @@ export class LettaAdapter extends SimpleAdapter<
       // Refresh tool schemas on every message so dynamic tool additions/removals
       // are picked up mid-session.
       const clientTools = toClientTools(tools.getOpenAIToolSchemas());
-      const reply = trackPostedReply(tools);
       const assistantText = await this.executeWithToolLoop(
         client,
         agentId,
         userContent,
         clientTools,
-        reply.tools,
+        tools,
         signal,
       );
 
-      if (!assistantText && !reply.posted()) {
-        return reportTurnFailure(
-          tools,
-          agentFailure(this.provider, "Letta did not return a response."),
-          this.logger,
-          { roomId: context.roomId },
-        );
-      }
-
-      await deliverFallbackReply(reply, assistantText, [{ id: message.senderId }]);
+      await relayReply(tools, assistantText, [{ id: message.senderId }]);
     } catch (error) {
       rethrowIfRecoverableTurnFailure(error);
 

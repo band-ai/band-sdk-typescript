@@ -4,7 +4,7 @@
  */
 import { expect } from "vitest";
 
-import { SEND_MESSAGE_TOOL_NAME } from "../../../../src/runtime/tools/schemas";
+import { SEND_MESSAGE_TOOL_NAME } from "../../../../src/contracts/toolSchemas";
 import { assertDeliveryStatus } from "../../toolkit/assertDelivery";
 import { assertReplied, assertReplyContains } from "../../toolkit/assertMessages";
 import { DELIVERY_STATUS, observeAgent } from "../../toolkit/observeDelivery";

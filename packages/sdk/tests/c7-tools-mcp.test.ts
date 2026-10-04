@@ -1,7 +1,7 @@
 /**
  * C7 platform tool + MCP rename proofs (P-TOOL-01 .. P-TOOL-08).
  *
- * The canonical registry advertises exactly 17 `band_*` tools; MCP qualifies
+ * The canonical registry advertises exactly 18 `band_*` tools; MCP qualifies
  * them as `mcp__band__band_*`; one exported `MCP_SERVER_NAME = "band"` owns
  * server-name defaults. Names change only. Legacy `thenvoi_*` /
  * `mcp__thenvoi__*` are neither advertised nor accepted; a raw legacy name
@@ -23,7 +23,7 @@ import {
   MCP_TOOL_PREFIX,
   MCP_SERVER_NAME,
   mcpToolNames,
-} from "../src/runtime/tools/schemas";
+} from "../src/contracts/toolSchemas";
 import { buildSingleContextRegistrations } from "../src/mcp/registrations";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 import { RestFacade } from "../src/client/rest/RestFacade";
@@ -51,29 +51,29 @@ const OPS = [
 const sortedKeys = (o: Record<string, unknown>): string[] => Object.keys(o).sort();
 const sorted = (s: Iterable<string>): string[] => [...s].sort();
 
-describe("P-TOOL-01: canonical registry is exactly 17 band_* tools", () => {
+describe("P-TOOL-01: canonical registry is exactly 18 band_* tools", () => {
   const keys = Object.keys(TOOL_MODELS);
 
-  it("has exactly 17 unique band_* keys and no legacy name", () => {
-    expect(keys).toHaveLength(17);
-    expect(new Set(keys).size).toBe(17);
+  it("has exactly 18 unique band_* keys and no legacy name", () => {
+    expect(keys).toHaveLength(18);
+    expect(new Set(keys).size).toBe(18);
     for (const k of keys) expect(k, `${k} must be band_*`).toMatch(/^band_/);
     for (const k of keys) expect(k).not.toMatch(/thenvoi/i);
-    expect(ALL_TOOL_NAMES.size).toBe(17);
+    expect(ALL_TOOL_NAMES.size).toBe(18);
     expect(sorted(ALL_TOOL_NAMES)).toEqual(keys.sort());
   });
 
-  it("keeps group memberships and counts (chat 7 / contact 5 / memory 5)", () => {
+  it("keeps group memberships and counts (chat 8 / contact 5 / memory 5)", () => {
     expect(MEMORY_TOOL_NAMES.size).toBe(5);
     expect(CONTACT_TOOL_NAMES.size).toBe(5);
-    expect(CHAT_TOOL_NAMES.size).toBe(7);
+    expect(CHAT_TOOL_NAMES.size).toBe(8);
     for (const set of [MEMORY_TOOL_NAMES, CONTACT_TOOL_NAMES, CHAT_TOOL_NAMES, BASE_TOOL_NAMES]) {
       for (const name of set) {
         expect(name).toMatch(/^band_/);
         expect(ALL_TOOL_NAMES.has(name), `${name} is a valid tool key`).toBe(true);
       }
     }
-    expect(CHAT_TOOL_NAMES.size + CONTACT_TOOL_NAMES.size + MEMORY_TOOL_NAMES.size).toBe(17);
+    expect(CHAT_TOOL_NAMES.size + CONTACT_TOOL_NAMES.size + MEMORY_TOOL_NAMES.size).toBe(18);
     for (const m of MEMORY_TOOL_NAMES) expect(CHAT_TOOL_NAMES.has(m)).toBe(false);
     for (const c of CONTACT_TOOL_NAMES) expect(CHAT_TOOL_NAMES.has(c)).toBe(false);
   });
@@ -108,7 +108,7 @@ describe("P-TOOL-02: MCP registrations are the exact enabled canonical set", () 
     expect(sorted(chatOnly)).toEqual(sorted(CHAT_TOOL_NAMES));
     // Missing-registration red-check: the exact-equality above fails if any
     // enabled tool is dropped or an extra appears.
-    expect(chatOnly.length).toBe(7);
+    expect(chatOnly.length).toBe(8);
   });
 });
 
@@ -213,6 +213,7 @@ describe("P-TOOL-04: every canonical name reaches a handler; every legacy name i
   const VALID_ARGS: Record<string, Record<string, unknown>> = {
     band_send_message: { content: "hi", mentions: ["@jane"] },
     band_send_event: { content: "t", message_type: CHAT_EVENT_TYPES[0] },
+    band_no_reply: { reason: "FYI only" },
     band_add_participant: { name: "Weather Agent" },
     band_remove_participant: { name: "Weather Agent" },
     band_get_participants: {},
@@ -249,7 +250,7 @@ describe("P-TOOL-04: every canonical name reaches a handler; every legacy name i
   const isNotFound = (r: unknown): boolean =>
     isToolExecutorError(r) && r.errorType === "ToolNotFoundError";
 
-  it("the fixture covers exactly the 17 TOOL_MODELS rows (row-deletion red-check)", () => {
+  it("the fixture covers exactly the 18 TOOL_MODELS rows (row-deletion red-check)", () => {
     expect(sortedKeys(VALID_ARGS)).toEqual(Object.keys(TOOL_MODELS).sort());
   });
 
@@ -258,9 +259,9 @@ describe("P-TOOL-04: every canonical name reaches a handler; every legacy name i
     | "getParticipants" | "lookupPeers" | "createChatroom" | "listContacts"
     | "addContact" | "removeContact" | "listContactRequests" | "respondContactRequest"
     | "listMemories" | "storeMemory" | "getMemory" | "supersedeMemory" | "archiveMemory";
-  // Authoritative canonical-name -> handler-method routing.
-  const ROUTING: Record<string, ToolMethod> = {
-    band_send_message: "sendMessage", band_send_event: "sendEvent",
+  // Authoritative canonical-name -> handler-method routing; null for a tool no method backs.
+  const ROUTING: Record<string, ToolMethod | null> = {
+    band_send_message: "sendMessage", band_send_event: "sendEvent", band_no_reply: null,
     band_add_participant: "addParticipant", band_remove_participant: "removeParticipant",
     band_get_participants: "getParticipants", band_lookup_peers: "lookupPeers",
     band_create_chatroom: "createChatroom", band_list_contacts: "listContacts",
@@ -277,11 +278,13 @@ describe("P-TOOL-04: every canonical name reaches a handler; every legacy name i
 
     for (const [band, method] of Object.entries(ROUTING)) {
       const tools = makeTools();
-      const spy = vi.spyOn(tools, method);
+      const spy = method && vi.spyOn(tools, method);
       const res = await tools.executeToolCall(band, VALID_ARGS[band]);
       expect(isNotFound(res), `canonical ${band} must reach a handler`).toBe(false);
       // Correct routing: exactly the mapped method runs (a mis-wired handler reds).
-      expect(spy, `${band} must route to ${method}()`).toHaveBeenCalledTimes(1);
+      if (spy) {
+        expect(spy, `${band} must route to ${method}()`).toHaveBeenCalledTimes(1);
+      }
 
       const legacy = band.replace(/^band_/, "thenvoi_");
       const res2 = await tools.executeToolCall(legacy, VALID_ARGS[band]);

@@ -7,7 +7,7 @@
 export function overrideTools<T extends object>(tools: T, overrides: Partial<T>): T {
   return new Proxy({} as T, {
     has(_target, key) {
-      return Reflect.has(tools, key);
+      return Object.hasOwn(overrides, key) || Reflect.has(tools, key);
     },
     get(_target, key) {
       if (Object.hasOwn(overrides, key)) {
@@ -30,10 +30,12 @@ export function overrideTools<T extends object>(tools: T, overrides: Partial<T>)
     // required, not a choice: the target has no own properties of its own, so
     // the Proxy invariants forbid reporting any key as non-configurable.
     ownKeys() {
-      return Reflect.ownKeys(tools);
+      return [...new Set([...Reflect.ownKeys(tools), ...Reflect.ownKeys(overrides)])];
     },
     getOwnPropertyDescriptor(_target, key) {
-      const descriptor = Reflect.getOwnPropertyDescriptor(tools, key);
+      const descriptor = Object.hasOwn(overrides, key)
+        ? Reflect.getOwnPropertyDescriptor(overrides, key)
+        : Reflect.getOwnPropertyDescriptor(tools, key);
       return descriptor && { ...descriptor, configurable: true };
     },
   });

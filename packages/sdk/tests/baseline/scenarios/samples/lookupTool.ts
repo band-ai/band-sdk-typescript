@@ -6,7 +6,7 @@
  */
 import { z } from "zod";
 
-import { SEND_MESSAGE_TOOL_NAME } from "../../../../src/runtime/tools/schemas";
+import { SEND_MESSAGE_TOOL_NAME } from "../../../../src/contracts/toolSchemas";
 import type { CustomToolDef } from "../../../../src/runtime/tools/customTools";
 import type { AgentIdentity } from "../../toolkit/agents";
 import { toolCalls } from "../../toolkit/observeMessages";

@@ -1,6 +1,6 @@
 import { SimpleAdapter } from "../core/simpleAdapter";
 import { rethrowIfRecoverableTurnFailure } from "../core/errors";
-import type { AdapterToolsProtocol } from "../contracts/protocols";
+import type { TurnTools } from "../core/turn";
 import type { HistoryProvider, PlatformMessage } from "../runtime/types";
 import { asErrorMessage } from "./shared/coercion";
 import { deliverReply } from "../core/deliveryFailedError";
@@ -8,15 +8,20 @@ import { overrideTools } from "../core/overrideTools";
 import { agentFailure, reportTurnFailure } from "../core/providerFailure";
 
 /** Route handler `sendMessage` through `deliverReply`. */
-function toolsWithDeliverySafeSendMessage(tools: AdapterToolsProtocol): AdapterToolsProtocol {
+function toolsWithDeliverySafeSendMessage(tools: TurnTools): TurnTools {
   return overrideTools(tools, {
     sendMessage: (content, mentions) => deliverReply(tools, content, mentions ?? []),
   });
 }
 
+/**
+ * Handles one turn. A send through `tools.sendMessage` is the turn's reply; a
+ * handler that answers nothing on purpose calls `tools.turn.settle()`, or
+ * the turn is reported as a missing reply.
+ */
 export type GenericAdapterHandler = (args: {
   message: PlatformMessage;
-  tools: AdapterToolsProtocol;
+  tools: TurnTools;
   history: HistoryProvider;
   participantsMessage: string | null;
   contactsMessage: string | null;
@@ -38,7 +43,7 @@ export class GenericAdapter extends SimpleAdapter<HistoryProvider> {
 
   public async onMessage(
     message: PlatformMessage,
-    tools: AdapterToolsProtocol,
+    tools: TurnTools,
     history: HistoryProvider,
     participantsMessage: string | null,
     contactsMessage: string | null,

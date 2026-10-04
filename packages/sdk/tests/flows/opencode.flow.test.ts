@@ -11,11 +11,13 @@ import { HttpOpencodeClient, OpencodeAdapter, type OpencodeAdapterConfig } from 
 import { OPENCODE_DECISION_MESSAGES as SAYS, formatQuestionPrompt } from "../../src/adapters/opencode/messages";
 import { createDeferred } from "../../src/core/deferred";
 import { FAILURE_EVENT_TYPE } from "../../src/contracts/protocols";
+import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../../src/contracts/toolSchemas";
 import { createBandMcpBackend } from "../../src/mcp/backends";
 import type { BandMcpServer } from "../../src/mcp/server";
 import { CallHolds, expectMcpServerStopped } from "../testUtils";
-import { BandPlatform, person, type RecordingRestApi } from "./support/bandPlatform";
+import { BandPlatform, MISSING_REPLY, person, type Outcome, type RecordingRestApi, type ReportedFailure } from "./support/bandPlatform";
 import { FakeOpencodeServer, type OpencodeTurn } from "./support/fakeOpencodeServer";
+import { CLOSING_TEXT, TOOL_REPLY, type TurnScript } from "../turnOutcomeContract";
 
 const OWNER = "owner";
 const APPROVER = "approver";
@@ -24,6 +26,27 @@ const PEOPLE = [OWNER, APPROVER, INTRUDER].map(person);
 
 const DEADLINE_MS = 60_000;
 const SHORT_DEADLINE_MS = 30_000;
+
+// OpenCode's Band tools are room-scoped: every call names its room.
+const ROOM = { room_id: "room-1" };
+
+/** What OpenCode's model does in one turn-outcome row; its Band calls go through the adapter's real MCP backend. */
+const TURN_SCRIPTS: Record<TurnScript, (turn: OpencodeTurn) => Promise<void> | void> = {
+  decline: async (turn) => {
+    await turn.callTool(NO_REPLY_TOOL_NAME, { ...ROOM, reason: "FYI only" });
+    turn.answer(CLOSING_TEXT);
+  },
+  toolReply: async (turn) => {
+    await turn.callTool(SEND_MESSAGE_TOOL_NAME, { ...ROOM, content: TOOL_REPLY, mentions: ["@owner"] });
+    turn.answer(CLOSING_TEXT);
+  },
+  act: async (turn) => {
+    await turn.callTool("band_add_participant", { ...ROOM, name: APPROVER });
+    turn.idle();
+  },
+  finalText: (turn) => turn.answer(CLOSING_TEXT),
+  nothing: (turn) => turn.idle(),
+};
 
 const approvalPrompt = (requestId: string) => SAYS.approvalRequested({ requestId, permission: "bash", patterns: ["npm test"] });
 
@@ -891,6 +914,86 @@ describe("OpenCode in a Band room", () => {
     await server.until(() => server.mcpDeregistrations().length === 1);
 
     expect(server.permissionReplies()).toEqual([]);
+    expect(room.failures, "a cancelled turn is not a missing reply").toEqual([]);
     expect(room.messages.filter((posted) => posted.content === approvalPrompt(permission))).toHaveLength(1);
+  });
+
+  describe("turn outcome", () => {
+    it.each<{ script: TurnScript; posted: string[]; failures: ReportedFailure[]; outcome: Outcome }>([
+      { script: "decline", posted: [], failures: [], outcome: "processed" },
+      { script: "toolReply", posted: [TOOL_REPLY], failures: [], outcome: "processed" },
+      { script: "act", posted: [], failures: [], outcome: "processed" },
+      { script: "finalText", posted: [CLOSING_TEXT], failures: [], outcome: "processed" },
+      // No filler stands in for the missing answer.
+      { script: "nothing", posted: [], failures: [MISSING_REPLY], outcome: "failed" },
+    ])("settles a `$script` turn as $outcome, relaying OpenCode's text only when no Band tool answered", async ({ script, posted, failures, outcome }) => {
+      await using session = await opencodeRoom();
+      const { room } = session;
+      const message = await session.start(TURN_SCRIPTS[script]);
+
+      expect(await room.outcome(message)).toBe(outcome);
+      expect(room.messages.map((entry) => entry.content)).toEqual(posted);
+      expect(room.failures).toEqual(failures);
+    });
+
+    it("reports a silent turn when its text is not relayed", async () => {
+      await using session = await opencodeRoom({ fallbackSendAgentText: false });
+      const { room } = session;
+      const message = await session.start((turn) => turn.answer("Plain text nobody sees."));
+
+      expect(await room.outcome(message)).toBe("failed");
+      expect(room.messages).toEqual([]);
+      expect(room.failures).toEqual([MISSING_REPLY]);
+    });
+
+    it.each([
+      { ending: "answers after the decision", finish: TURN_SCRIPTS.finalText, posted: [CLOSING_TEXT], failures: [] },
+      { ending: "ends with nothing", finish: TURN_SCRIPTS.nothing, posted: [], failures: [MISSING_REPLY] },
+    ])("judges a turn handed back to the room for an approval when it really ends: one that $ending", async ({ finish, posted, failures }) => {
+      await using session = await opencodeRoom();
+      const { room } = session;
+      const permission = "per_detached";
+      const ended = createDeferred<void>();
+      const message = await session.start(async (turn) => {
+        await turn.askPermission({ id: permission }).reply;
+        await finish(turn);
+        ended.resolve();
+      });
+      expect(await room.outcome(message)).toBe("processed");
+
+      expect(await room.exchange(OWNER, `approve ${permission}`)).toEqual([SAYS.approvalHandled(permission, "once")]);
+      await ended.promise;
+      await room.until(() => room.messages.length === 2 + posted.length && room.failures.length === failures.length);
+
+      // The approval prompt was only a notice, so the answer after it is still relayed.
+      expect(room.messages.map((entry) => entry.content)).toEqual([approvalPrompt(permission), SAYS.approvalHandled(permission, "once"), ...posted]);
+      expect(room.failures).toEqual(failures);
+      expect(room.outcomes(message), "the request was already handed back").toEqual(["processed"]);
+    });
+
+    it("settles busy and control messages during a handed-back turn, and keeps that turn's own reply on it", async () => {
+      await using session = await opencodeRoom();
+      const { room } = session;
+      const permission = "per_busy_reply";
+      const ended = createDeferred<void>();
+      const message = await session.start(async (turn) => {
+        await turn.askPermission({ id: permission }).reply;
+        await TURN_SCRIPTS.toolReply(turn);
+        ended.resolve();
+      });
+      await room.nextMessage((posted) => posted.content === approvalPrompt(permission));
+
+      for (const content of ["Is it done yet?", `approve ${permission}`]) {
+        expect(await room.outcome(await room.say(OWNER, content)), content).toBe("processed");
+      }
+      await ended.promise;
+      await room.nextMessage((posted) => posted.content === TOOL_REPLY);
+      await room.until(() => room.outcomes(message).length > 0);
+
+      // OpenCode's tool reply counted on its own turn: the closing text is not relayed, and nothing is reported.
+      expect(room.messages.map((entry) => entry.content)).not.toContain(CLOSING_TEXT);
+      expect(room.failures).toEqual([]);
+      expect(room.outcomes(message)).toEqual(["processed"]);
+    });
   });
 });

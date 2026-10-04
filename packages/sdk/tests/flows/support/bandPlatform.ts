@@ -6,10 +6,13 @@
  */
 import { randomUUID } from "node:crypto";
 
-import type { FrameworkAdapter } from "../../../src/contracts/protocols";
+import { missingReplyMessage } from "@band-ai/band-sdk-core";
+
+import { FAILURE_EVENT_TYPE, FAILURE_METADATA_KEY, type FrameworkAdapter } from "../../../src/contracts/protocols";
 import type { ParticipantRecord } from "../../../src/contracts/dtos";
 import type { PaginatedResponse, PlatformChatMessage, RestApi } from "../../../src/client/rest/types";
 import { BandLink } from "../../../src/platform/BandLink";
+import { TURN_FAILURE_PROVIDER } from "../../../src/core/turn";
 import { PlatformRuntime } from "../../../src/runtime/PlatformRuntime";
 import { assertMentioned, CallHolds, FakeRestApi, FakeTransport, RecordLog, wireMention, type HeldCall } from "../../testUtils";
 
@@ -30,6 +33,15 @@ export interface Posted {
 }
 
 export type Outcome = "processed" | "failed";
+
+/** A failure the agent reported in a room: what it says, and whom it blames. */
+export interface ReportedFailure {
+  readonly content: string;
+  readonly provider: unknown;
+}
+
+/** The report of a turn that ended without a reply: band-sdk-core's text, blamed on the runtime's verdict. */
+export const MISSING_REPLY: ReportedFailure = { content: missingReplyMessage(), provider: TURN_FAILURE_PROVIDER };
 
 interface Settled {
   readonly messageId: string;
@@ -147,6 +159,14 @@ export class BandRoom {
     return this.posted.filter((posted) => posted.messageType === messageType);
   }
 
+  /** Every failure the agent reported here, in order; a plain error-typed notice carries no failure and is left out. */
+  public get failures(): ReportedFailure[] {
+    return this.events(FAILURE_EVENT_TYPE).flatMap((event) => {
+      const failure = event.metadata?.[FAILURE_METADATA_KEY] as { provider?: unknown } | undefined;
+      return failure ? [{ content: event.content, provider: failure.provider }] : [];
+    });
+  }
+
   /** Resolves once the agent has posted a message here that `matches`, and returns it. */
   public nextMessage(matches: (posted: Posted) => boolean): Promise<Posted> {
     return this.platform.rest.posted.next((posted) => posted.roomId === this.id && posted.messageType === "text" && matches(posted));
@@ -155,6 +175,11 @@ export class BandRoom {
   /** Resolves with how the runtime settled `messageId`. */
   public async outcome(messageId: string): Promise<Outcome> {
     return (await this.platform.rest.settled.next((settled) => settled.messageId === messageId)).outcome;
+  }
+
+  /** Every outcome the runtime has settled `messageId` with so far. */
+  public outcomes(messageId: string): Outcome[] {
+    return this.platform.rest.settled.entries.filter((settled) => settled.messageId === messageId).map((settled) => settled.outcome);
   }
 
   /** Resolves once the runtime starts handing `messageId` to the agent. */

@@ -20,7 +20,7 @@ export interface DeliveryCase {
 /** Tools that answer every reply the way a room the agent has lost would. */
 export function deliveryFailureTools(): FakeTools {
   return new FakeTools({
-    failOn: ["sendMessage"],
+    failOn: ["sendMessage", "sendNotice"],
     errorFactory: () => new Error(DELIVERY_ERROR),
   });
 }

@@ -15,9 +15,10 @@ import { resolveLogger } from "../../core/logger";
 import { UnsupportedFeatureError } from "../../core/errors";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import { mcpToolNames, MCP_SERVER_NAME, postedSendContent } from "../../runtime/tools/schemas";
+import { mcpToolNames, MCP_SERVER_NAME } from "../../contracts/toolSchemas";
 import { agentFailure, reportProviderTurnFailure, reportTurnFailure, safeSendFailure } from "../../core/providerFailure";
-import { deliverReply } from "../../core/deliveryFailedError";
+import { relayReply, type TurnTools } from "../../core/turn";
+import { createRoomTurnLock } from "../shared/roomTurnLock";
 import { buildConversationPrompt } from "../shared/conversationPrompt";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { extractClaudeSessionId } from "../../converters/claude-sdk";
@@ -97,7 +98,6 @@ interface BandMcpBridge {
 type BandMcpBridgeFactory = (input: {
   enableMemoryTools: boolean;
   getToolsForRoom: (roomId: string) => AdapterToolsProtocol | undefined;
-  onMessageSent: (roomId: string) => void;
   additionalTools?: McpToolRegistration[];
 }) => BandMcpBridge;
 
@@ -141,13 +141,7 @@ const bandMcpBridgeFactory = new LazyAsyncValue<BandMcpBridgeFactory>({
           registration.name,
           registration.description,
           shape,
-          async (args: Record<string, unknown>) => {
-            const result = await registration.execute(args)
-            if (postedSendContent(registration.name, args.content, result.isError === true) !== undefined) {
-              input.onMessageSent(String(args.room_id))
-            }
-            return result
-          },
+          async (args: Record<string, unknown>) => registration.execute(args),
         )
       })
 
@@ -162,7 +156,7 @@ const bandMcpBridgeFactory = new LazyAsyncValue<BandMcpBridgeFactory>({
   },
 })
 
-export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterToolsProtocol> {
+export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> {
   protected readonly provider = "claude-sdk";
 
   private readonly model: string;
@@ -179,10 +173,9 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
   private readonly queryFnOverride?: ClaudeSDKQuery;
   private readonly logger: Logger;
   private readonly sessionIds = new Map<string, string>();
-  private readonly sessionInitLocks = new Map<string, Promise<void>>();
-  private readonly roomTools = new Map<string, AdapterToolsProtocol>();
-  /** Rooms the agent posted to with band_send_message during their current turn. */
-  private readonly roomsSentToThisTurn = new Set<string>();
+  // One turn per room: its MCP calls resolve the room's tools, so a second turn would take over the first's.
+  private readonly roomTurns = createRoomTurnLock();
+  private readonly roomTools = new Map<string, TurnTools>();
   private mcpBridge: BandMcpBridge | null = null;
   private systemPrompt = "";
 
@@ -218,7 +211,6 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
       this.mcpBridge = createBandMcpBridge({
         enableMemoryTools: this.enableMemoryTools,
         getToolsForRoom: (roomId) => this.roomTools.get(roomId),
-        onMessageSent: (roomId) => this.roomsSentToThisTurn.add(roomId),
         additionalTools: this.additionalMcpTools.length > 0 ? this.additionalMcpTools : undefined,
       });
     }
@@ -226,35 +218,19 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
 
   public async onMessage(
     message: PlatformMessage,
-    tools: AdapterToolsProtocol,
+    tools: TurnTools,
     history: HistoryProvider,
     participantsMessage: string | null,
     contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
-    // Serialize per-room to prevent concurrent bootstrap from creating duplicate sessions.
-    const existing = this.sessionInitLocks.get(context.roomId);
-    if (existing) {
-      await existing;
-    }
-
-    let unlock!: () => void;
-    const lock = new Promise<void>((resolve) => { unlock = resolve; });
-    this.sessionInitLocks.set(context.roomId, lock);
-
-    try {
-      await this.doMessage(message, tools, history, participantsMessage, contactsMessage, context);
-    } finally {
-      unlock();
-      if (this.sessionInitLocks.get(context.roomId) === lock) {
-        this.sessionInitLocks.delete(context.roomId);
-      }
-    }
+    await this.roomTurns.run(context.roomId, () =>
+      this.doMessage(message, tools, history, participantsMessage, contactsMessage, context));
   }
 
   private async doMessage(
     message: PlatformMessage,
-    tools: AdapterToolsProtocol,
+    tools: TurnTools,
     history: HistoryProvider,
     participantsMessage: string | null,
     contactsMessage: string | null,
@@ -262,7 +238,6 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
   ): Promise<void> {
     let finalText = "";
     let resultFailure: ClaudeResultFailure | null = null;
-    this.roomsSentToThisTurn.delete(context.roomId);
     try {
       const query = await this.startQuery(message, history, participantsMessage, contactsMessage, context, tools);
       const consumed = await this.consumeQueryEvents(query, tools, context.roomId);
@@ -273,27 +248,21 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     }
 
     const mention = [{ id: message.senderId, handle: message.senderName ?? message.senderType }];
-    const sentThroughTool = this.roomsSentToThisTurn.delete(context.roomId);
-    // Once the agent answered through band_send_message, its closing text is narration, not a second reply.
-    const replyText = sentThroughTool ? "" : finalText.trim();
+    const replyText = finalText.trim();
     if (resultFailure) {
       const failure = agentFailure(this.provider, resultFailure.message, resultFailure.code, resultFailure.detail);
       // Preceding assistant text is already decided output; posting it must
       // not flip a non-success result into a successful turn.
-      if (replyText) {
-        try {
-          await deliverReply(tools, replyText, mention);
-        } catch (error) {
-          await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId });
-          throw error;
-        }
+      try {
+        await relayReply(tools, replyText, mention);
+      } catch (error) {
+        await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId });
+        throw error;
       }
       await reportTurnFailure(tools, failure, this.logger, { roomId: context.roomId });
     }
 
-    if (replyText) {
-      await deliverReply(tools, replyText, mention);
-    }
+    await relayReply(tools, replyText, mention);
   }
 
   private async startQuery(
@@ -302,7 +271,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
     participantsMessage: string | null,
     contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
-    tools: AdapterToolsProtocol,
+    tools: TurnTools,
   ): Promise<AsyncIterable<SDKMessage>> {
     const queryFn = this.queryFnOverride ?? (await loadClaudeQuery());
 
@@ -403,9 +372,8 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
 
   public async onCleanup(roomId: string): Promise<void> {
     this.sessionIds.delete(roomId);
-    this.sessionInitLocks.delete(roomId);
+    this.roomTurns.release(roomId);
     this.roomTools.delete(roomId);
-    this.roomsSentToThisTurn.delete(roomId);
   }
 
   private async reportSessionId(

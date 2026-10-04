@@ -8,7 +8,7 @@ import {
   buildSingleContextRegistrations,
 } from "./registrations";
 import { buildZodShape } from "./zod";
-import { MCP_SERVER_NAME } from "../runtime/tools/schemas";
+import { MCP_SERVER_NAME } from "../contracts/toolSchemas";
 import { isAuthorizedRequest } from "./auth";
 
 export interface BandMcpServerOptions {

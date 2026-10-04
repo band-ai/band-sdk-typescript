@@ -1,10 +1,21 @@
+import type { TurnEffect } from "@band-ai/band-sdk-core";
 import { z } from "zod";
+
+import type { Turn } from "../../core/turn";
+
+const DEFAULT_CUSTOM_TOOL_EFFECT: TurnEffect = "observe";
 
 export interface CustomToolDef {
   schema: z.ZodObject;
   handler: (args: Record<string, unknown>) => unknown;
   name: string;
   description?: string;
+  /**
+   * What a successful call contributes to its turn (default `"observe"`, which
+   * never completes one). Declare `"act"` for a tool with a real side effect,
+   * or `"reply"` for one that posts the turn's answer itself.
+   */
+  effect?: TurnEffect;
 }
 
 export class CustomToolDefinitionError extends Error {
@@ -123,9 +134,11 @@ export function buildCustomToolIndex(tools: CustomToolDef[]): Map<string, Custom
   return index;
 }
 
+/** Runs `def`, recording its effect on `turn` when it succeeds; `undefined` where no turn is in scope. */
 export async function executeCustomTool(
   def: CustomToolDef,
   arguments_: Record<string, unknown>,
+  turn: Turn | undefined,
 ): Promise<unknown> {
   const toolName = getCustomToolName(def);
   const result = def.schema.safeParse(arguments_);
@@ -136,10 +149,8 @@ export async function executeCustomTool(
   }
 
   try {
-    const output = def.handler(result.data);
-    if (output instanceof Promise) {
-      return await output;
-    }
+    const output: unknown = await def.handler(result.data);
+    turn?.record(def.effect ?? DEFAULT_CUSTOM_TOOL_EFFECT);
     return output;
   } catch (error) {
     if (error instanceof CustomToolValidationError || error instanceof CustomToolExecutionError) {

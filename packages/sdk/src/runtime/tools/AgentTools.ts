@@ -32,6 +32,7 @@ import type {
   ToolSchemaRecord,
 } from "../../contracts/dtos";
 import {
+  type AdapterToolMethodName,
   type AdapterToolsProtocol,
   createToolExecutorError,
   DEFAULT_AGENT_TOOLS_CAPABILITIES,
@@ -45,9 +46,11 @@ import {
 import {
   CHAT_TOOL_NAMES,
   MEMORY_TOOL_NAMES,
+  NO_REPLY_RESULT,
+  NO_REPLY_TOOL_NAME,
   getToolDescription,
   TOOL_MODELS
-} from "./schemas";
+} from "../../contracts/toolSchemas";
 import {
   expectedList,
   memoryTypeForSystemError,
@@ -77,8 +80,6 @@ interface AgentToolsOptions {
 
 type ToolHandler = (arguments_: MetadataMap) => Promise<unknown>;
 
-type AdapterToolMethodName = Exclude<keyof AdapterToolsProtocol, "capabilities">;
-
 /**
  * Every adapter-facing method, mapped to the capability gating it (`null` =
  * always bound). The `Record` is the point: a method added to
@@ -88,6 +89,7 @@ type AdapterToolMethodName = Exclude<keyof AdapterToolsProtocol, "capabilities">
  */
 const ADAPTER_TOOL_METHODS: Record<AdapterToolMethodName, keyof AgentToolsCapabilities | null> = {
   sendMessage: null,
+  sendNotice: null,
   sendEvent: null,
   sendFailure: null,
   addParticipant: null,
@@ -158,6 +160,13 @@ export class AgentTools implements AgentToolsProtocol {
         mentions: resolvedMentions,
       },
     );
+  }
+
+  public async sendNotice(
+    content: string,
+    mentions: MentionInput = [],
+  ): Promise<ToolOperationResult> {
+    return this.sendMessage(content, mentions);
   }
 
   public async sendEvent(
@@ -753,6 +762,10 @@ export class AgentTools implements AgentToolsProtocol {
           String(arguments_.message_type ?? "task"),
           this.normalizeOptionalMetadata(arguments_.metadata),
         ),
+      [NO_REPLY_TOOL_NAME]: async (arguments_) => {
+        this.logger.debug("turn declined without a reply", { roomId: this.roomId, reason: arguments_.reason });
+        return NO_REPLY_RESULT;
+      },
       band_add_participant: async (arguments_) =>
         this.addParticipant(String(arguments_.name ?? ""), String(arguments_.role ?? "member")),
       band_remove_participant: async (arguments_) =>

@@ -8,13 +8,15 @@ import type { CustomToolDef } from "../src/runtime/tools/customTools";
 import type { AgentToolsProtocol } from "../src/core";
 import { FAILURE_EVENT_TYPE, toFailureEvent } from "../src/contracts/protocols";
 import { MEMORY_SECTION, renderSystemPrompt } from "../src/runtime/prompts";
-import { SEND_MESSAGE_TOOL_NAME } from "../src/runtime/tools/schemas";
+import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
 import type { ToolCallingModel, ToolCallingResponse } from "../src/adapters";
 import { ValidationError } from "../src/core/errors";
 import { FAILURE_CODE_TIMEOUT } from "../src/core/providerFailure";
 import { describeDeliveryContract } from "./deliveryContract";
+import { CLOSING_TEXT, TOOL_REPLY, describeTurnOutcomeContract, turnInput, type TurnScript } from "./turnOutcomeContract";
 import { expectTurnFailed, failureEvents, hangUntilAborted, hangsOnce } from "./testUtils";
 import { createDeferred } from "../src/core/deferred";
+import { Turn } from "../src/core/turn";
 import type {
   ContactRequestsResult,
   ContactRecord,
@@ -29,10 +31,15 @@ class FakeTools implements AgentToolsProtocol {
   public readonly capabilities = { peers: false, contacts: false, memory: false };
   public readonly events: Array<Record<string, unknown>> = [];
   public readonly messages: string[] = [];
+  public readonly turn = new Turn();
 
   public async sendMessage(content: string): Promise<Record<string, unknown>> {
     this.messages.push(content);
     return { ok: true };
+  }
+
+  public async sendNotice(content: string): Promise<Record<string, unknown>> {
+    return this.sendMessage(content);
   }
 
   public async sendEvent(content: string, messageType: string, metadata?: MetadataMap): Promise<Record<string, unknown>> {
@@ -790,29 +797,6 @@ describe("ToolCallingAdapter", () => {
     );
   });
 
-  it.each([
-    { sendResult: { ok: true }, delivered: [] },
-    { sendResult: { ok: false, message: "unknown mention" }, delivered: ["Posted it."] },
-  ])("treats a band_send_message post as the reply, its final text as a fallback (send: $sendResult)", async ({ sendResult, delivered }) => {
-    let turns = 0;
-    const model: ToolCallingModel = {
-      complete: async () => {
-        turns += 1;
-        return turns === 1
-          ? { toolCalls: [{ id: "tc1", name: "band_send_message", input: { content: "Hello!", mentions: ["@user"] } }] }
-          : { text: "Posted it." };
-      },
-    };
-    const tools = new FakeTools();
-    tools.executeToolCall = async () => sendResult;
-    await new OpenAIAdapter({ model }).onMessage(fakeMessage, tools, fakeHistory, null, null, {
-      isSessionBootstrap: true,
-      roomId: "r1",
-    });
-
-    expect(tools.messages).toEqual(delivered);
-  });
-
   describe("turn timeout", () => {
     const TURN_TIMEOUT_MS = 1_000;
     // Pins the documented default: a turn no option bounds still ends after five minutes.
@@ -1005,4 +989,24 @@ describe("ToolCallingAdapter", () => {
       });
     },
   }]);
+
+  describeTurnOutcomeContract([{
+    adapter: "ToolCallingAdapter (shared by every ToolCalling-based adapter)",
+    turn: (script, tools) => new OpenAIAdapter({ model: scriptedModel(script) }).onEvent(turnInput(tools)),
+  }]);
 });
+
+/** A model that runs one contract turn's rounds, then has nothing more to say. */
+function scriptedModel(script: TurnScript): ToolCallingModel {
+  const call = (name: string, input: Record<string, unknown>) => ({ toolCalls: [{ id: "call-1", name, input }] });
+  const rounds: Record<TurnScript, ToolCallingResponse[]> = {
+    decline: [call(NO_REPLY_TOOL_NAME, { reason: "FYI only" }), { text: CLOSING_TEXT }],
+    toolReply: [call(SEND_MESSAGE_TOOL_NAME, { content: TOOL_REPLY, mentions: ["@user"] }), { text: CLOSING_TEXT }],
+    act: [call("band_add_participant", { name: "Helper" }), {}],
+    finalText: [{ text: CLOSING_TEXT }],
+    nothing: [{}],
+  };
+  const responses = rounds[script];
+  let round = 0;
+  return { complete: async () => responses[round++] ?? {} };
+}

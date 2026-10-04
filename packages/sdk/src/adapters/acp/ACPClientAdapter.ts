@@ -1,5 +1,5 @@
 import { ACPClientHistoryConverter, type ACPClientSessionState } from "../../converters/acp-client";
-import type { AdapterToolsProtocol } from "../../contracts/protocols";
+import type { TurnTools } from "../../core/turn";
 import { RoomScopedAdapter } from "../shared/roomScopedAdapter";
 import {
   ACPRoomAgent,
@@ -13,7 +13,7 @@ import {
  * runs in that room's own workspace and has its own Band MCP backend, so rooms
  * share no filesystem, failure or credentials.
  */
-export class ACPClientAdapter extends RoomScopedAdapter<ACPClientSessionState, AdapterToolsProtocol, ACPRoomAgent> {
+export class ACPClientAdapter extends RoomScopedAdapter<ACPClientSessionState, TurnTools, ACPRoomAgent> {
   protected readonly provider: string = "acp"
   private readonly roomOptions: Omit<ACPRoomAgentOptions, "cwd" | "roomId" | "provider">
 

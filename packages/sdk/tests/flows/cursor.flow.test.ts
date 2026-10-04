@@ -14,9 +14,12 @@ import { DEFAULT_CURSOR_DECISION_TIMEOUT_MS } from "../../src/adapters/cursor-ac
 import { CURSOR_COMMAND, CURSOR_DECISION_MESSAGES as SAYS } from "../../src/adapters/cursor-acp/messages";
 import { allowBandMcpTools, BAND_MCP_PERMISSION, CURSOR_PROJECT_CONFIG } from "../../src/adapters/cursor-acp/permissions";
 import { DEFAULT_WORKSPACE_DIRECTORY } from "../../src/adapters/shared/roomWorkspace";
-import { BandPlatform, person, type BandRoom, type Posted } from "./support/bandPlatform";
+import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../../src/contracts/toolSchemas";
+import { ACP_SESSION_EVENT } from "../../src/converters/acp-client";
+import { BandPlatform, MISSING_REPLY, person, type BandRoom, type Outcome, type Posted, type ReportedFailure } from "./support/bandPlatform";
 import { DEFAULT_CURSOR_ROOM, FakeCursorAgent, type CursorTurn } from "./support/fakeCursorAgent";
-import { tmpRoot } from "../testUtils";
+import { makeLoggerSpy, tmpRoot } from "../testUtils";
+import { CLOSING_TEXT, TOOL_REPLY, type TurnScript } from "../turnOutcomeContract";
 
 const OWNER = "owner";
 const TEAMMATE = "teammate";
@@ -50,6 +53,34 @@ const FILES_AND_MODE = {
   ],
 };
 
+// What a scripted turn says once its work is done: a turn that ends silent is reported, and these flows are about the work.
+const DONE = "Done.";
+function answering<R>(script: (turn: CursorTurn) => Promise<R>): (turn: CursorTurn) => Promise<R> {
+  return async (turn) => {
+    const result = await script(turn);
+    await turn.say(DONE);
+    return result;
+  };
+}
+
+const MODE = { questions: [{ id: "mode", options: [{ id: "plan" }] }] };
+
+// Each turn-outcome script as Cursor runs it. Its Band tools run on an MCP
+// server of its own, so a tool reply posts nothing in the room through Band.
+const TURN_SCRIPTS: Record<TurnScript, (turn: CursorTurn) => Promise<void>> = {
+  decline: async (turn) => {
+    await turn.callTool(NO_REPLY_TOOL_NAME, { reason: "Nothing to add." });
+    await turn.say(CLOSING_TEXT);
+  },
+  toolReply: async (turn) => {
+    await turn.callTool(SEND_MESSAGE_TOOL_NAME, { content: TOOL_REPLY, mentions: [OWNER] });
+    await turn.say(CLOSING_TEXT);
+  },
+  act: (turn) => turn.callTool("band_add_participant", { name: TEAMMATE }),
+  finalText: (turn) => turn.say(CLOSING_TEXT),
+  nothing: async () => undefined,
+};
+
 /** One Cursor agent on the platform, in room-1, which OWNER, TEAMMATE and INTRUDER share. */
 async function cursorRoom(options: Partial<CursorACPAdapterOptions> = {}) {
   const agent = new FakeCursorAgent();
@@ -70,6 +101,17 @@ async function cursorRoom(options: Partial<CursorACPAdapterOptions> = {}) {
       const result = agent.nextTurn(script);
       const message = await room.say(OWNER, "Please update the notes");
       return { result, message, tokens: await promptTokens(room, prompts) };
+    },
+    /**
+     * Waits for the room's `turns`th turn to end, then runs an answered one.
+     * A room's turns run one at a time, so everything the earlier turn posted
+     * at its very end is in by the time this returns.
+     */
+    async afterTurn(turns = 1) {
+      await room.until(() => room.events("task").filter((event) => event.content === ACP_SESSION_EVENT.content).length >= turns);
+      const next = agent.nextTurn(answering(async () => undefined));
+      expect(await room.outcome(await room.say(OWNER, "Anything else?"))).toBe("processed");
+      await next;
     },
   };
 }
@@ -274,11 +316,11 @@ describe("Cursor in a Band room", () => {
     },
   ] as const)("$policy without asking the room", async ({ options, expected }) => {
     await using session = await cursorRoom(options);
-    const { result, message } = await session.start(async (turn) => [
+    const { result, message } = await session.start(answering(async (turn) => [
       await turn.requestPermission({ ...WRITE_FILE, options: [{ optionId: "allow-always", name: "Always", kind: "allow_always" }] }),
       await turn.ask({ questions: [{ id: "mode", options: [{ id: "plan" }, { id: "edit" }] }] }),
       await turn.plan({ title: "Plan" }),
-    ]);
+    ]));
 
     expect(await result).toEqual(expected);
     expect(await session.room.outcome(message)).toBe("processed");
@@ -308,13 +350,13 @@ describe("Cursor in a Band room", () => {
     await using session = await cursorRoom();
     const { room, agent } = session;
     let lateTurn: CursorTurn | undefined;
-    const { result, message } = await session.start(async (turn) => {
+    const { result, message } = await session.start(answering(async (turn) => {
       lateTurn = turn;
       return [
         await turn.ask({ questions: [{ id: "broken" }, { id: "empty", options: [] }, { options: [{ id: "x" }] }, "not a question"] }),
         await turn.ask({ questions: "not a list" }),
       ];
-    });
+    }));
     expect(await result).toEqual([CANCELLED, CANCELLED]);
     expect(await room.outcome(message)).toBe("processed");
 
@@ -341,7 +383,7 @@ describe("Cursor in a Band room", () => {
 
     // The crash dropped that session, so the next turn waits on a new one.
     const held = agent.room(DEFAULT_CURSOR_ROOM).holdSession();
-    const next = agent.nextTurn(async (turn) => turn.sessionId);
+    const next = agent.nextTurn(answering(async (turn) => turn.sessionId));
     const message = await room.say(OWNER, "Try again");
     await held.sending;
 
@@ -366,10 +408,10 @@ describe("Cursor in a Band room", () => {
     expect(await room.outcome(await room.say(OWNER, "Please update the notes"))).toBe("failed");
 
     const lateAsk = createDeferred<Record<string, unknown>>();
-    const { result, message } = await session.start(async (turn) => {
+    const { result, message } = await session.start(answering(async (turn) => {
       lateAsk.resolve(await retired!.ask({ questions: [{ id: "mode", options: [{ id: "plan" }] }] }));
       return turn.sessionId;
-    });
+    }));
 
     // The new process numbers its sessions from 1 again, so the stale ask names the live session.
     expect(await result).toBe(retired!.sessionId);
@@ -415,7 +457,7 @@ describe("Cursor in a Band room", () => {
     const { room, platform, agent } = session;
     const otherRoom = await platform.room("room-2");
     const { result: first, tokens: [token] } = await session.start((turn) => turn.ask({ questions: [{ id: "mode", options: [{ id: "plan" }] }] }), 1);
-    const second = agent.room("room-2").nextTurn(async (turn) => turn.sessionId);
+    const second = agent.room("room-2").nextTurn(answering(async (turn) => turn.sessionId));
 
     // Room-2 has its own Cursor process, so its request runs now, not after room-1's turn.
     const queued = await otherRoom.say(OWNER, "And summarise room-2");
@@ -445,7 +487,7 @@ describe("Cursor in a Band room", () => {
     expect(await result).toEqual(answered({ mode: ["plan"] }));
 
     const rejoined = await platform.room("room-2");
-    const next = agent.room("room-2").nextTurn(async (turn) => turn.sessionId);
+    const next = agent.room("room-2").nextTurn(answering(async (turn) => turn.sessionId));
     const message = await rejoined.say(OWNER, "Summarise room-2 again");
     expect(await next).toBe("cursor-session-1");
     expect(agent.room("room-2").launches).toBe(2);
@@ -464,7 +506,7 @@ describe("Cursor in a Band room", () => {
 
     // The crash came back as Cursor's own error response, so its process is
     // kept; the session that never answered is replaced.
-    const { result, message } = await session.start(async (turn) => turn.sessionId);
+    const { result, message } = await session.start(answering(async (turn) => turn.sessionId));
     expect(await result).toBe("cursor-session-2");
     expect(agent.room(DEFAULT_CURSOR_ROOM).launches).toBe(1);
     expect(await room.outcome(message)).toBe("processed");
@@ -473,7 +515,7 @@ describe("Cursor in a Band room", () => {
   it("renders Cursor's todo, task and image updates as room events, tolerating partial payloads", async () => {
     await using session = await cursorRoom();
     const { room } = session;
-    const { result, message } = await session.start(async (turn) => {
+    const { result, message } = await session.start(answering(async (turn) => {
       await turn.notify("cursor/update_todos", { merge: true, todos: [{ id: "review", content: "Review the change", status: "in_progress" }] });
       await turn.notify("cursor/update_todos", {
         merge: true,
@@ -490,7 +532,7 @@ describe("Cursor in a Band room", () => {
       await turn.notify("cursor/generate_image", {});
       await turn.notify("cursor/unknown", { anything: true });
       return [await turn.extMethod("cursor/unknown", {}), await turn.ask({ ...FILES_AND_MODE, questions: [] })];
-    });
+    }));
 
     expect(await result).toEqual([{}, CANCELLED]);
     expect(await room.outcome(message)).toBe("processed");
@@ -506,6 +548,74 @@ describe("Cursor in a Band room", () => {
       "[Cursor generated image] Logo",
       "ACP client session",
     ]);
+  });
+
+  it.each<{ script: TurnScript; relayed: string[]; failures: ReportedFailure[]; outcome: Outcome }>([
+    { script: "decline", relayed: [], failures: [], outcome: "processed" },
+    { script: "toolReply", relayed: [], failures: [], outcome: "processed" },
+    { script: "act", relayed: [], failures: [], outcome: "processed" },
+    { script: "finalText", relayed: [CLOSING_TEXT], failures: [], outcome: "processed" },
+    { script: "nothing", relayed: [], failures: [MISSING_REPLY], outcome: "failed" },
+  ])("settles a `$script` turn as $outcome, relaying Cursor's text only when no Band tool answered", async ({ script, relayed, failures, outcome }) => {
+    await using session = await cursorRoom();
+    const { room } = session;
+    const { message } = await session.start(TURN_SCRIPTS[script]);
+
+    expect(await room.outcome(message)).toBe(outcome);
+    expect(room.messages.map((posted) => posted.content)).toEqual(relayed);
+    expect(room.failures).toEqual(failures);
+  });
+
+  it.each([
+    { ending: "answers after the decision", script: TURN_SCRIPTS.finalText, relayed: [CLOSING_TEXT], failures: [] },
+    { ending: "ends with nothing", script: TURN_SCRIPTS.nothing, relayed: [], failures: [MISSING_REPLY] },
+  ])("judges a turn handed back to the room for a decision when it really ends: one that $ending", async ({ script, relayed, failures }) => {
+    await using session = await cursorRoom();
+    const { room } = session;
+    const { message, tokens: [token] } = await session.start(async (turn) => {
+      await turn.ask(MODE);
+      await script(turn);
+    }, 1);
+    expect(await room.outcome(message)).toBe("processed");
+    expect(await room.exchange(OWNER, `${CURSOR_COMMAND} answer ${token} mode=plan`)).toEqual([SAYS.resolved("question", token!)]);
+    await session.afterTurn();
+
+    // The decision prompt was only a notice, so the answer after it is still relayed.
+    expect(room.messages.map((posted) => posted.content)).toEqual([SAYS.questionPrompt(token!), SAYS.resolved("question", token!), ...relayed, DONE]);
+    expect(room.failures).toEqual(failures);
+    expect(room.outcomes(message), "the request was already handed back").toEqual(["processed"]);
+  });
+
+  it("settles busy and control messages during a handed-back turn, and keeps that turn's own reply on it", async () => {
+    await using session = await cursorRoom();
+    const { room } = session;
+    const { message, tokens: [token] } = await session.start(async (turn) => {
+      await turn.ask(MODE);
+      await TURN_SCRIPTS.toolReply(turn);
+    }, 1);
+
+    for (const content of ["Is it done yet?", CURSOR_COMMAND, `${CURSOR_COMMAND} answer ${token} mode=plan`]) {
+      expect(await room.outcome(await room.say(OWNER, content)), content).toBe("processed");
+    }
+    await session.afterTurn();
+
+    // Cursor's tool reply counted on its own turn: the closing text is not relayed, and nothing is reported.
+    expect(room.messages.map((posted) => posted.content)).not.toContain(CLOSING_TEXT);
+    expect(room.failures).toEqual([]);
+    expect(room.outcomes(message)).toEqual(["processed"]);
+  });
+
+  it("reports no missing reply for a handed-back turn cancelled by the agent leaving the room", async () => {
+    const logger = makeLoggerSpy();
+    await using session = await cursorRoom({ logger });
+    const { room } = session;
+    const { message } = await session.start((turn) => turn.ask(MODE), 1);
+    expect(await room.outcome(message)).toBe("processed");
+
+    await room.remove();
+    // Logged once the cancelled turn has fully unwound, past the point it would report.
+    await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledWith("cursor_acp.released_turn_failed", expect.anything()));
+    expect(room.failures).not.toContainEqual(MISSING_REPLY);
   });
 
   it.each([

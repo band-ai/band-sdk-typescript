@@ -3,7 +3,7 @@
  * that drive it to emit exactly those.
  */
 import type { ChatEventType } from "../../../../src/contracts/chatEvents";
-import { SEND_EVENT_TOOL_NAME } from "../../../../src/runtime/tools/schemas";
+import { SEND_EVENT_TOOL_NAME } from "../../../../src/contracts/toolSchemas";
 import { MESSAGE_TYPE } from "../../toolkit/observeMessages";
 
 /** The event types a request can drive; `tool_call` and `tool_result` are the adapter's own reports. */

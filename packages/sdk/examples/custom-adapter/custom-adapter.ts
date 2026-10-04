@@ -1,14 +1,22 @@
 import { Agent, SimpleAdapter, type HistoryProvider, type PlatformMessage, loadAgentConfig, isDirectExecution } from "../../src/index";
-import type { AdapterToolsProtocol } from "../../src/core";
+import type { TurnTools } from "../../src/core";
 
 class EchoAdapter extends SimpleAdapter<HistoryProvider> {
   protected readonly provider = "echo";
 
   public async onMessage(
     message: PlatformMessage,
-    tools: AdapterToolsProtocol,
+    tools: TurnTools,
   ): Promise<void> {
-    await tools.sendMessage(`Custom adapter received: ${message.content}`);
+    const sender = [{ id: message.senderId }];
+    // Text the adapter writes itself is a notice, not the turn's reply, so the turn is settled on purpose.
+    if (message.content.trim() === "/ping") {
+      await tools.sendNotice("pong", sender);
+      tools.turn.settle();
+      return;
+    }
+    // A send is the turn's reply. A turn that neither replies nor settles is reported as a missing reply.
+    await tools.sendMessage(`Custom adapter received: ${message.content}`, sender);
   }
 }
 

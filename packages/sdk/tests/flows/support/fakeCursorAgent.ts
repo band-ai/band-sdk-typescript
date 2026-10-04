@@ -10,6 +10,7 @@ import { AgentSideConnection, ClientSideConnection, ndJsonStream, type Agent } f
 import type * as schema from "@agentclientprotocol/sdk";
 
 import type { ACPClientConnectionFactory } from "../../../src/adapters/acp/types";
+import { MCP_SERVER_NAME } from "../../../src/contracts/toolSchemas";
 import { createDeferred, type Deferred } from "../../../src/core/deferred";
 import { CallHolds, RecordLog, type HeldCall } from "../../testUtils";
 
@@ -27,6 +28,12 @@ export interface CursorTurn {
   requestPermission(params: Omit<schema.RequestPermissionRequest, "sessionId">): Promise<schema.RequestPermissionResponse>;
   notify(method: string, params: Record<string, unknown>): Promise<void>;
   say(text: string): Promise<void>;
+  /**
+   * Reports a Band tool Cursor ran, and finished, on an MCP server of its own:
+   * Band learns of the call only from this stream. The call is named in its
+   * first frame.
+   */
+  callTool(toolName: string, args?: Record<string, unknown>): Promise<void>;
 }
 
 type Script = (turn: CursorTurn) => Promise<unknown>;
@@ -99,6 +106,7 @@ export class FakeCursorRoom {
   public lingersOnStop = false;
   private readonly turns: QueuedTurn[] = [];
   private sessions = 0;
+  private toolCalls = 0;
   private readonly sessionHolds = new CallHolds<[]>();
   private peer: AgentSideConnection | null = null;
 
@@ -179,6 +187,16 @@ export class FakeCursorRoom {
       requestPermission: (params) => peer.requestPermission({ sessionId, ...params }),
       notify: (method, params) => peer.extNotification(method, { sessionId, ...params }),
       say: (text) => peer.sessionUpdate({ sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } }),
+      callTool: (toolName, args = {}) => peer.sessionUpdate({
+        sessionId,
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: `call-${++this.toolCalls}`,
+          title: `${MCP_SERVER_NAME}: ${toolName}`,
+          status: "completed",
+          rawInput: { providerIdentifier: MCP_SERVER_NAME, toolName, args },
+        },
+      }),
     };
   }
 }

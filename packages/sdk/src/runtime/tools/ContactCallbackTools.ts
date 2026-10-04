@@ -34,6 +34,7 @@ import {
 import { UnsupportedFeatureError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { toParticipantRecordFromRest } from "../formatters";
+import { NO_REPLY_RESULT, NO_REPLY_TOOL_NAME } from "../../contracts/toolSchemas";
 import { ContactToolsImpl } from "./ContactToolsImpl";
 
 type ContactCallbackRestApi =
@@ -113,6 +114,13 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
         ...(normalizedMentions ? { mentions: normalizedMentions } : {}),
       },
     );
+  }
+
+  public async sendNotice(
+    content: string,
+    mentions?: MentionInput,
+  ): Promise<ToolOperationResult> {
+    return this.sendMessage(content, mentions);
   }
 
   public async sendEvent(
@@ -289,6 +297,8 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
           String(toolArgs.message_type ?? "task"),
           toolArgs.metadata as MetadataMap | undefined,
         );
+      case NO_REPLY_TOOL_NAME:
+        return NO_REPLY_RESULT;
       case "band_get_participants":
         return this.getParticipants();
       case "band_create_chatroom":

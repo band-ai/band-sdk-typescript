@@ -4,9 +4,10 @@ import { z } from "zod";
 import { GoogleADKAdapter } from "../src/adapters";
 import { GoogleADKHistoryConverter } from "../src/converters";
 import { MEMORY_SECTION } from "../src/runtime/prompts";
-import { SEND_MESSAGE_TOOL_NAME } from "../src/runtime/tools/schemas";
+import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
 import { FakeTools, makeMessage, expectTurnFailed } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
+import { CLOSING_TEXT, TOOL_REPLY, describeTurnOutcomeContract, bandToolSchemas, turnInput, type TurnScript } from "./turnOutcomeContract";
 import { createDeferred } from "../src/core/deferred";
 import { createFakeGoogleAdkSdk, type GoogleAdkCapture } from "./helpers/fakeGoogleAdkSdk";
 
@@ -71,15 +72,55 @@ class SendMessageTools extends GoogleAdkTestTools {
   }
 }
 
-function sendToolOf(agent: Record<string, unknown>): (input: unknown) => Promise<unknown> {
-  const tool = (agent.tools as Array<Record<string, unknown>>).find((candidate) => candidate.name === SEND_MESSAGE_TOOL_NAME);
+function toolOf(agent: Record<string, unknown>, name: string): (input: unknown) => Promise<unknown> {
+  const tool = (agent.tools as Array<Record<string, unknown>>).find((candidate) => candidate.name === name);
   if (!tool || typeof tool.execute !== "function") {
-    throw new Error("send tool was not registered");
+    throw new Error(`${name} was not registered`);
   }
   return tool.execute as (input: unknown) => Promise<unknown>;
 }
 
+function sendToolOf(agent: Record<string, unknown>): (input: unknown) => Promise<unknown> {
+  return toolOf(agent, SEND_MESSAGE_TOOL_NAME);
+}
+
+/** What the model does in one contract turn through the agent's Band tools; yields the runner's events. */
+async function* contractTurn(script: TurnScript, agent: Record<string, unknown>): AsyncGenerator<unknown> {
+  switch (script) {
+    case "decline":
+      await toolOf(agent, NO_REPLY_TOOL_NAME)({ reason: "FYI only" });
+      yield { final: true, text: CLOSING_TEXT };
+      return;
+    case "toolReply":
+      await sendToolOf(agent)({ content: TOOL_REPLY, mentions: ["@user"] });
+      yield { final: true, text: CLOSING_TEXT };
+      return;
+    case "act":
+      await toolOf(agent, "band_add_participant")({ name: "Helper" });
+      yield { final: true, text: "" };
+      return;
+    case "finalText":
+      yield { final: true, text: CLOSING_TEXT };
+      return;
+    case "nothing":
+      return;
+  }
+}
+
+/** The real Band tool schemas, so the adapter registers every tool a contract turn calls. */
 describe("GoogleADKAdapter", () => {
+  describeTurnOutcomeContract([{
+    adapter: "GoogleADKAdapter",
+    turn: async (script, tools) => {
+      tools.getOpenAIToolSchemas = bandToolSchemas;
+      const adapter = new GoogleADKAdapter({
+        sdkFactory: createFakeGoogleAdkSdk((agent) => contractTurn(script, agent)),
+      });
+      await adapter.onStarted("Weather Agent", "Answers weather questions");
+      await adapter.onEvent(turnInput(tools));
+    },
+  }]);
+
   describeDeliveryContract([{
     path: "final assistant text",
     turn: async (tools) => {
@@ -184,24 +225,6 @@ describe("GoogleADKAdapter", () => {
     await adapter.onMessage(makeMessage("Reply with: mango"), tools, [], null, null, { isSessionBootstrap: false, roomId: "room-1" });
 
     expect(seenPrompts[1]).toContain("[User]: Reply with: pineapple\npineapple");
-  });
-
-  it.each([
-    { failSend: false, delivered: [] },
-    { failSend: true, delivered: ["I posted it."] },
-  ])("treats a send-tool post as the reply, its final text as a fallback (send failed: $failSend)", async ({ failSend, delivered }) => {
-    const adapter = new GoogleADKAdapter({
-      sdkFactory: createFakeGoogleAdkSdk(async function* (agent) {
-        await sendToolOf(agent)({ content: "pineapple" });
-        yield { final: true, text: "I posted it." };
-      }),
-    });
-    const tools = new SendMessageTools();
-    tools.failSend = failSend;
-
-    await adapter.onMessage(makeMessage("Reply with: pineapple"), tools, [], null, null, { isSessionBootstrap: true, roomId: "room-1" });
-
-    expect(tools.messages).toEqual(delivered);
   });
 
   it("does not remember a send that failed", async () => {

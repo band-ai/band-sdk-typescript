@@ -121,6 +121,11 @@ export class ParlantAdapter
 {
   protected readonly provider = "parlant";
 
+  // Parlant decides whether to answer; a silent turn is its choice, not a missing reply.
+  protected override get judgesTurns(): boolean {
+    return false;
+  }
+
   private readonly environment: string;
   private readonly baseUrl?: string;
   /** Created in `onStarted` and deleted on stop, or borrowed from `options.agentId` and left alone. */

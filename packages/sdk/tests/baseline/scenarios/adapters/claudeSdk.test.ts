@@ -12,7 +12,7 @@ import {
   type ClaudeSDKQuery,
   type ClaudeSDKQueryParams,
 } from "../../../../src/adapters/claude-sdk/ClaudeSDKAdapter";
-import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, SEND_MESSAGE_TOOL_NAME } from "../../../../src/runtime/tools/schemas";
+import { MCP_SERVER_NAME, MCP_TOOL_PREFIX, SEND_MESSAGE_TOOL_NAME } from "../../../../src/contracts/toolSchemas";
 import { ADAPTER, buildClaudeSdk } from "../../toolkit/adapters";
 import { assertDeliveryStatus } from "../../toolkit/assertDelivery";
 import { assertReplied, assertReplyContains } from "../../toolkit/assertMessages";

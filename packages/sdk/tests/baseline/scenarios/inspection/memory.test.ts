@@ -19,7 +19,7 @@ import {
   MEMORY_TYPE,
   ORGANIZATION_SCOPE_REJECTED_CODE,
 } from "../../../../src/contracts/memory";
-import { MEMORY_TOOL_NAMES } from "../../../../src/runtime/tools/schemas";
+import { MEMORY_TOOL_NAMES } from "../../../../src/contracts/toolSchemas";
 import { Agents } from "../../toolkit/agents";
 import { assertToolFired } from "../../toolkit/assertMessages";
 import { liveRun } from "../../toolkit/liveRun";

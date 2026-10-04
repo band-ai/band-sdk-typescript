@@ -50,6 +50,11 @@ export class A2AGatewayAdapter
 {
   protected readonly provider = PROVIDER;
 
+  // A room message only feeds an external A2A client's task; the gateway owes the room no reply.
+  protected override get judgesTurns(): boolean {
+    return false;
+  }
+
   private readonly bandRest: A2AGatewayAdapterOptions["bandRest"];
   private readonly gatewayUrl: string;
   private readonly host: string;

@@ -3,11 +3,12 @@ import { randomUUID } from "node:crypto";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import { SimpleAdapter } from "../../core/simpleAdapter";
-import type { AdapterToolsProtocol } from "../../contracts/protocols";
+import { isFailedToolOutput, type AdapterToolsProtocol } from "../../contracts/protocols";
+import { postedSendContent } from "../../contracts/toolSchemas";
+import { relayReply, type TurnTools } from "../../core/turn";
 import type { MetadataMap, ToolOperationResult } from "../../contracts/dtos";
 import { formatMessageForLlm } from "../../runtime/formatters";
 import { renderSystemPrompt, withMemoryGuidance } from "../../runtime/prompts";
-import { deliverFallbackReply, trackPostedReply } from "../../runtime/tools/postedReply";
 import type { PlatformMessage } from "../../runtime/types";
 import {
   customToolToOpenAISchema,
@@ -196,7 +197,7 @@ async function loadGoogleAdkSdk(): Promise<GoogleAdkSdkLike> {
   };
 }
 
-export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterToolsProtocol> {
+export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools> {
   protected readonly provider = "google-adk";
 
   private readonly model: string;
@@ -249,7 +250,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
 
   public async onMessage(
     message: PlatformMessage,
-    tools: AdapterToolsProtocol,
+    tools: TurnTools,
     history: GoogleADKMessages,
     participantsMessage: string | null,
     contactsMessage: string | null,
@@ -267,7 +268,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
 
   private async handleTurn(
     message: PlatformMessage,
-    tools: AdapterToolsProtocol,
+    tools: TurnTools,
     history: GoogleADKMessages,
     participantsMessage: string | null,
     contactsMessage: string | null,
@@ -291,12 +292,12 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
     );
 
     let finalResponseText = "";
+    // A later failure throws out of this turn. Remember a post as it lands, or the next turn answers it again.
     const posted: string[] = [];
-    const reply = trackPostedReply(tools, (content) => posted.push(content));
     try {
       const sdk = await this.sdkLoader.get();
       const runner = sdk.createRunner({
-        agent: this.buildAgent(sdk, reply.tools),
+        agent: this.buildAgent(sdk, tools, posted),
         appName: APP_NAME,
       });
       const sessionId = randomUUID();
@@ -330,7 +331,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
 
     const stored = this.rememberExchange(context.roomId, roomHistory, message, posted);
     // Only text that was delivered belongs in the next turn.
-    if (await deliverFallbackReply(reply, finalResponseText, [{ id: message.senderId }])) {
+    if (await relayReply(tools, finalResponseText, [{ id: message.senderId }])) {
       this.rememberModelLine(context.roomId, stored, finalResponseText);
     }
   }
@@ -376,29 +377,31 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
 
   private buildAgent(
     sdk: GoogleAdkSdkLike,
-    tools: AdapterToolsProtocol,
+    tools: TurnTools,
+    posted: string[],
   ): unknown {
     return sdk.createAgent({
       name: this.agentName || "band_agent",
       model: this.apiKey ? sdk.createModel({ model: this.model, apiKey: this.apiKey }) : this.model,
       instruction: this.systemPrompt,
-      tools: this.buildTools(sdk, tools),
+      tools: this.buildTools(sdk, tools, posted),
     });
   }
 
   private buildTools(
     sdk: GoogleAdkSdkLike,
-    tools: AdapterToolsProtocol,
+    tools: TurnTools,
+    posted: string[],
   ): unknown[] {
     const toolSchemas = tools.getOpenAIToolSchemas({
       includeMemory: this.enableMemoryTools,
     });
     const adkTools = toolSchemas
-      .map((schema) => this.buildPlatformTool(sdk, tools, schema))
+      .map((schema) => this.buildPlatformTool(sdk, tools, schema, posted))
       .filter((tool): tool is unknown => tool !== null);
 
     for (const customTool of this.customTools) {
-      adkTools.push(this.buildCustomTool(sdk, customTool));
+      adkTools.push(this.buildCustomTool(sdk, customTool, tools));
     }
 
     return adkTools;
@@ -408,6 +411,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
     sdk: GoogleAdkSdkLike,
     tools: AdapterToolsProtocol,
     schema: Record<string, unknown>,
+    posted: string[],
   ): unknown {
     const functionDef = asOptionalRecord(schema.function) ?? {};
     const name = functionDef?.name;
@@ -421,7 +425,12 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
       parameters: asOptionalRecord(stripAdditionalProperties(functionDef.parameters)) ?? undefined,
       execute: async (input) => {
         const args = asToolArgs(input);
-        return stringifyToolResult(await tools.executeToolCall(name, args));
+        const result = await tools.executeToolCall(name, args);
+        const content = postedSendContent(name, args.content, isFailedToolOutput(result));
+        if (content !== undefined) {
+          posted.push(content);
+        }
+        return stringifyToolResult(result);
       },
     });
   }
@@ -429,6 +438,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
   private buildCustomTool(
     sdk: GoogleAdkSdkLike,
     customTool: CustomToolDef,
+    tools: TurnTools,
   ): unknown {
     const schema = customToolToOpenAISchema(customTool);
     const functionDef = asOptionalRecord(schema.function) ?? {};
@@ -436,7 +446,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
       name: String(functionDef.name ?? customTool.name),
       description: typeof functionDef.description === "string" ? functionDef.description : "",
       parameters: asOptionalRecord(stripAdditionalProperties(functionDef.parameters)) ?? undefined,
-      execute: async (input) => stringifyToolResult(await executeCustomTool(customTool, asToolArgs(input))),
+      execute: async (input) => stringifyToolResult(await executeCustomTool(customTool, asToolArgs(input), tools.turn)),
     });
   }
 

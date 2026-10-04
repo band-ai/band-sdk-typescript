@@ -1,7 +1,6 @@
 import { AgentFailure, isAuthorizedSender } from "@band-ai/band-sdk-core";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { MentionInput } from "../../contracts/dtos";
-import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import { rethrowIfRecoverableTurnFailure, type RecoverableTurnError } from "../../core/errors";
@@ -21,17 +20,15 @@ import {
 } from "../../mcp/backends";
 import type { McpToolRegistration } from "../../mcp/registrations";
 import { errorResult, successResult } from "../../mcp/registrations";
-import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
+import { MCP_SERVER_NAME } from "../../contracts/toolSchemas";
 import { abandon } from "../shared/abandon";
 import { senderAllowlist, type DecisionEntry, type DecisionRegistry, type Registration } from "../shared/decisions";
 import { replyToSender } from "../shared/replyToSender";
 import { roomContextLines } from "../shared/roomContext";
 import { runUntilReleased } from "../shared/runUntilReleased";
 import { asErrorMessage, asNestedMessage, asOptionalRecord, asString, toDisplayText, truncate } from "../shared/coercion";
-import {
-  DeliveryFailedError,
-  deliverReply,
-} from "../../core/deliveryFailedError";
+import { DeliveryFailedError } from "../../core/deliveryFailedError";
+import { relayReply, reportUnsettledTurn, type TurnTools } from "../../core/turn";
 import {
   FAILURE_CODE_TIMEOUT,
   ProviderTurnFailedError,
@@ -128,6 +125,8 @@ interface AskLifecycle<T> {
 
 /** One turn's state. A turn is still current while `room.turn` is this object. */
 class OpencodeTurn {
+  public constructor(public readonly tools: TurnTools) {}
+
   public readonly textParts = new Map<string, string>();
   public readonly assistantMessageIds = new Set<string>();
   public readonly assistantPartTypes = new Map<string, string>();
@@ -154,7 +153,9 @@ class OpencodeTurn {
     this.outcome.resolve(outcome);
   }
 
+  /** Releases the turn's request while it waits on the room; it is judged when it really ends. */
   public background(): void {
+    this.tools.turn.detach();
     this.backgrounded.resolve();
   }
 
@@ -181,7 +182,8 @@ interface Connection {
 interface RoomState {
   roomId: string;
   sessionId: string | null;
-  tools: AdapterToolsProtocol;
+  // The tools of the room's latest started turn; MCP calls resolve them, so a busy or control message must not replace them.
+  tools: TurnTools;
   turn: OpencodeTurn | null;
   // The latest turn's requester; every room message mentions them, since the platform drops one that mentions nobody.
   requesterMentions: MentionInput;
@@ -256,7 +258,8 @@ function buildCustomMcpRegistrations(customTools: CustomToolDef[]): McpToolRegis
       },
       execute: async (args) => {
         try {
-          return successResult(await executeCustomTool(customTool, args));
+          // Built once and shared by every room, so no turn is in scope.
+          return successResult(await executeCustomTool(customTool, args, undefined));
         } catch (error) {
           return errorResult(error instanceof Error ? error.message : String(error));
         }
@@ -265,7 +268,7 @@ function buildCustomMcpRegistrations(customTools: CustomToolDef[]): McpToolRegis
   });
 }
 
-export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, AdapterToolsProtocol> {
+export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnTools> {
   protected readonly provider = "opencode";
 
   private readonly config: Required<OpencodeAdapterConfig>;
@@ -321,7 +324,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
 
   public async onMessage(
     message: PlatformMessage,
-    tools: AdapterToolsProtocol,
+    tools: TurnTools,
     history: OpencodeSessionState,
     participantsMessage: string | null,
     contactsMessage: string | null,
@@ -330,7 +333,8 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     const roomState = this.roomStateFor(context.roomId, tools);
 
     try {
-      if (await this.handleControlMessage(roomState, message)) {
+      if (await this.handleControlMessage(roomState, message, tools)) {
+        tools.turn.settle();
         return;
       }
     } catch (error) {
@@ -346,9 +350,11 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
 
     if (roomState.turn) {
       await tools.sendEvent(OPENCODE_DECISION_MESSAGES.turnInProgress(), "error");
+      tools.turn.settle();
       return;
     }
 
+    roomState.tools = tools;
     try {
       const client = await this.ensureClientStarted();
       const { sessionId, created, needsHistoryReplay } = await this.ensureSession(roomState, client, history);
@@ -364,10 +370,9 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
         error,
         roomId: context.roomId,
       });
-      // Reports and throws, like every other adapter this PR converted:
-      // returning here would mark this message processed even though the
-      // turn — startup, session establishment, or the prompt itself — never
-      // actually completed, dropping PlatformRuntime's retry along with it.
+      // Reports and throws, like every other adapter: returning here would
+      // mark this message processed even though the turn — startup, session
+      // establishment, or the prompt itself — never actually completed.
       return reportTurnFailure(tools, this.toAgentFailure(error), this.logger, { roomId: context.roomId });
     }
   }
@@ -383,7 +388,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     needsHistoryReplay: boolean,
     roomId: string,
   ): Promise<void> {
-    const turn = new OpencodeTurn();
+    const turn = new OpencodeTurn(roomState.tools);
     roomState.turn = turn;
     roomState.requesterMentions = [{ id: message.senderId }];
     try {
@@ -427,10 +432,9 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     }
   }
 
-  private roomStateFor(roomId: string, tools: AdapterToolsProtocol): RoomState {
+  private roomStateFor(roomId: string, tools: TurnTools): RoomState {
     const existing = this.rooms.get(roomId);
     if (existing) {
-      existing.tools = tools;
       return existing;
     }
 
@@ -795,7 +799,8 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   ): Promise<void> {
     const turn = roomState.turn;
     try {
-      await roomState.tools.sendMessage(prompt, roomState.requesterMentions);
+      // A notice: the turn's answer after the decision must still be relayed.
+      await roomState.tools.sendNotice(prompt, roomState.requesterMentions);
     } catch (error) {
       // A reply that claimed the ask meanwhile owns it, and so does whatever replaced or removed it.
       if (roomState.turn !== turn || !registry.withdraw(entry)) {
@@ -814,28 +819,29 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     }
   }
 
-  private async handleControlMessage(roomState: RoomState, message: PlatformMessage): Promise<boolean> {
+  // Replies through the control message's own `tools`, never the turn it decides.
+  private async handleControlMessage(roomState: RoomState, message: PlatformMessage, tools: TurnTools): Promise<boolean> {
     const action = routeReply(message.content, roomState.decisions);
     switch (action.kind) {
       case REPLY_ACTION.pass:
         return false;
       case REPLY_ACTION.notice:
-        await replyToSender(roomState.tools, action.text, message.senderId);
+        await replyToSender(tools, action.text, message.senderId);
         return true;
       default:
-        await this.applyDecisionReply(roomState, action, message.senderId);
+        await this.applyDecisionReply(roomState, action, message.senderId, tools);
         return true;
     }
   }
 
-  private async applyDecisionReply(roomState: RoomState, action: DecisionAction, senderId: string): Promise<void> {
+  private async applyDecisionReply(roomState: RoomState, action: DecisionAction, senderId: string, tools: TurnTools): Promise<void> {
     if (!isAuthorizedSender(this.authorizedSenders, senderId)) {
-      await replyToSender(roomState.tools, OPENCODE_DECISION_MESSAGES.notAuthorized(), senderId);
+      await replyToSender(tools, OPENCODE_DECISION_MESSAGES.notAuthorized(), senderId);
       return;
     }
     const handled = await this.resolveDecision(roomState, action);
     if (handled) {
-      await replyToSender(roomState.tools, handled, senderId);
+      await replyToSender(tools, handled, senderId);
     }
   }
 
@@ -1011,7 +1017,10 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
         await this.handleSessionError(roomState, turn, turn.sessionError);
         return;
       }
-      await this.deliverFallbackText(roomState, turn);
+      await this.flushTurnText(roomState, turn);
+      if (turn.tools.turn.detached) {
+        await reportUnsettledTurn(turn.tools, this.logger);
+      }
     } finally {
       this.clearTurnState(roomState, turn);
     }
@@ -1063,10 +1072,8 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   private async handleSessionError(roomState: RoomState, turn: OpencodeTurn, message: string): Promise<void> {
     // OpenCode's session.error is a terminal provider failure exactly like
     // turnTimeoutMs expiring: flush whatever text the turn produced first
-    // (same as a clean completion would), then fail the turn so
-    // PlatformRuntime retries it — independent of fallbackSendAgentText and
-    // regardless of any partial text, unlike deliverFallbackText's own
-    // best-effort, non-throwing sendFailure for this same message.
+    // (same as a clean completion would), then fail the turn, regardless of
+    // any partial text.
     await this.flushTurnText(roomState, turn);
     const failure = agentFailure(this.provider, message);
     await this.reportTerminalFailure(roomState, failure);
@@ -1075,9 +1082,9 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
   private async reportTerminalFailure(roomState: RoomState, failure: AgentFailure): Promise<never> {
     // Best-effort: failing to report the failure must not leave the room's turn wait released forever.
     await safeSendFailure(roomState.tools, failure, this.logger, { roomId: roomState.roomId });
-    // Thrown, not returned: PlatformRuntime marks a message failed — and
-    // retries it — only when onMessage throws. Matches every other terminal
-    // provider failure in this adapter (see ProviderTurnFailedError).
+    // Thrown, not returned: PlatformRuntime marks a message failed only when
+    // onMessage throws. Matches every other terminal provider failure in this
+    // adapter (see ProviderTurnFailedError).
     throw new ProviderTurnFailedError(failure);
   }
 
@@ -1088,8 +1095,8 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     rejectInteraction?: () => Promise<unknown>,
   ): void {
     // The aborted provider turn can still emit an idle/error event after one
-    // of its interactions failed. A retry must own a new session so that late
-    // events remain attributable to the abandoned turn.
+    // of its interactions failed. The room's next turn must own a new session
+    // so that late events remain attributable to the abandoned turn.
     this.abortAndAbandonSession(roomState);
     if (rejectInteraction) {
       this.rejectInBackground(roomState, rejectInteraction);
@@ -1125,41 +1132,17 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, Adapter
     roomState.persistedSessionId = sessionId;
   }
 
-  /**
-   * "blocked" and "empty" are both a no-op today, but `deliverFallbackText`
-   * needs to tell them apart: only "empty" means the shared guard already
-   * passed, so it's safe to go on and send its own fallback message.
-   */
-  private async flushTurnText(roomState: RoomState, turn: OpencodeTurn): Promise<"sent" | "empty" | "blocked"> {
+  private async flushTurnText(roomState: RoomState, turn: OpencodeTurn): Promise<void> {
     if (!this.config.fallbackSendAgentText) {
-      return "blocked";
+      return;
     }
 
     const text = [...turn.textParts.values()]
       .map((value) => value.trim())
       .filter((value) => value.length > 0)
-      .join("\n")
-      .trim();
+      .join("\n");
 
-    if (text.length === 0) {
-      return "empty";
-    }
-
-    await deliverReply(roomState.tools, text, roomState.requesterMentions);
-    return "sent";
-  }
-
-  private async deliverFallbackText(roomState: RoomState, turn: OpencodeTurn): Promise<void> {
-    const outcome = await this.flushTurnText(roomState, turn);
-    if (outcome !== "empty") {
-      return;
-    }
-
-    await deliverReply(
-      roomState.tools,
-      "OpenCode completed the turn without a text reply.",
-      roomState.requesterMentions,
-    );
+    await relayReply(turn.tools, text, roomState.requesterMentions);
   }
 
   private async reportToolCall(

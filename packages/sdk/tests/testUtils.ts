@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ProviderTurnFailedError } from "../src/core/providerFailure";
+import { Turn } from "../src/core/turn";
 import { expect, onTestFinished, vi, type Mock } from "vitest";
 import { DEFAULT_WORKSPACE_DIRECTORY } from "../src/adapters/shared/roomWorkspace";
 import { ParticipantRoster, type AgentFailure } from "@band-ai/band-sdk-core";
@@ -132,6 +133,7 @@ export class FakeTools implements AgentToolsProtocol {
   public readonly capabilities = { ...DEFAULT_AGENT_TOOLS_CAPABILITIES };
   public readonly messages: string[] = [];
   public readonly events: CapturedToolEvent[] = [];
+  public readonly turn = new Turn();
   public rest?: Pick<RestApi, "getAgentMe" | "listChats">;
   private readonly failOn: Set<FakeToolMethod>;
   private readonly errorFactory: (method: FakeToolMethod) => Error;
@@ -148,6 +150,16 @@ export class FakeTools implements AgentToolsProtocol {
     mentions?: string[] | Array<{ id: string; handle?: string }>,
   ): Promise<Record<string, unknown>> {
     this.maybeFail("sendMessage");
+    assertMentioned(mentions);
+    this.messages.push(content);
+    return { ok: true };
+  }
+
+  public async sendNotice(
+    content: string,
+    mentions?: string[] | Array<{ id: string; handle?: string }>,
+  ): Promise<Record<string, unknown>> {
+    this.maybeFail("sendNotice");
     assertMentioned(mentions);
     this.messages.push(content);
     return { ok: true };
