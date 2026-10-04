@@ -70,6 +70,7 @@ export {
   formatMessageForLlm,
   formatHistoryForLlm,
   buildParticipantsMessage,
+  commandWords,
 } from "./formatters";
 
 export {
