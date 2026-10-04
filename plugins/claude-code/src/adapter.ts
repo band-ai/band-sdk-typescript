@@ -10,10 +10,10 @@ const TEXT_MESSAGE_TYPE = "text";
 const COMMAND_PREFIX = "/";
 
 /** A channel event; Claude Code drops meta keys that aren't letters, digits and underscores. */
-export interface ChannelPush {
+export type ChannelPush = {
   readonly content: string;
   readonly meta: Record<string, string>;
-}
+};
 
 export interface ChannelAdapterOptions {
   /** The agent's owner; with none, every slash command is refused. */

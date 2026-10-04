@@ -35,7 +35,7 @@ export async function runChannel({ credentials, link, stdin, stdout, logger }: R
   await runtime.initialize();
   const { ownerUuid } = await runtime.link.rest.getAgentMe();
 
-  const adapter = new ChannelAdapter({ ownerUuid, push: (push) => server.notify(CHANNEL_METHOD, { ...push }) });
+  const adapter = new ChannelAdapter({ ownerUuid, push: (push) => server.notify(CHANNEL_METHOD, push) });
   const server: BandMcpStdioServer = new BandMcpStdioServer({
     tools: (roomId) => adapter.toolsFor(roomId),
     capabilities: { experimental: { "claude/channel": {} } },
