@@ -21,6 +21,7 @@ import {
 import { FakeTools } from "./testUtils";
 
 const PUSH_SERVER = fileURLToPath(new URL("./fixtures/stdioPushServer.ts", import.meta.url));
+const HOST = fileURLToPath(new URL("./fixtures/stdioHost.ts", import.meta.url));
 const NOT_RUNNING = "not running";
 // Larger than an OS pipe buffer, so one push fills it.
 const PIPE_FILLING_PUSH_BYTES = 256 * 1024;
@@ -35,8 +36,8 @@ class PluginProcess {
   private readonly child: ChildProcessWithoutNullStreams;
   private stderr = "";
 
-  public constructor(payloadBytes = 0) {
-    this.child = spawn(process.execPath, ["--import", "tsx", PUSH_SERVER], {
+  public constructor(script: string, payloadBytes = 0) {
+    this.child = spawn(process.execPath, ["--import", "tsx", script], {
       env: { ...process.env, [PAYLOAD_BYTES_ENV]: String(payloadBytes) },
     });
     this.child.stderr.on("data", (chunk: Buffer) => {
@@ -45,8 +46,18 @@ class PluginProcess {
   }
 
   // The SDK's stdio transport takes any stream pair, so it also serves as the client end.
+  // It ignores the pipes closing, so a plugin that dies first must fail the handshake here.
   public async connect(): Promise<Client> {
-    await this.client.connect(new StdioServerTransport(this.child.stdout, this.child.stdin));
+    let onExit!: (exitCode: number | null) => void;
+    const exited = new Promise<never>((_resolve, reject) => {
+      onExit = (exitCode) => reject(new Error(`exited ${exitCode} before the handshake: ${this.stderr}`));
+      this.child.once("exit", onExit);
+    });
+    try {
+      await Promise.race([this.client.connect(new StdioServerTransport(this.child.stdout, this.child.stdin)), exited]);
+    } finally {
+      this.child.off("exit", onExit);
+    }
     return this.client;
   }
 
@@ -79,11 +90,11 @@ class PluginProcess {
   }
 }
 
-const it = test.extend<{ startPlugin: (payloadBytes?: number) => PluginProcess }>({
+const it = test.extend<{ startPlugin: (script: string, payloadBytes?: number) => PluginProcess }>({
   startPlugin: async ({}, use) => {
     const started: PluginProcess[] = [];
-    await use((payloadBytes) => {
-      const plugin = new PluginProcess(payloadBytes);
+    await use((script, payloadBytes) => {
+      const plugin = new PluginProcess(script, payloadBytes);
       started.push(plugin);
       return plugin;
     });
@@ -95,7 +106,7 @@ const it = test.extend<{ startPlugin: (payloadBytes?: number) => PluginProcess }
 
 describe("BandMcpStdioServer as a plugin process", () => {
   it("delivers a push made before the client connected, after the handshake", async ({ startPlugin }) => {
-    const plugin = startPlugin();
+    const plugin = startPlugin(PUSH_SERVER);
     const client = await plugin.connect();
     const push = await plugin.firstPush();
 
@@ -107,7 +118,7 @@ describe("BandMcpStdioServer as a plugin process", () => {
   });
 
   it("exits cleanly when the client goes away while it is pushing", async ({ startPlugin }) => {
-    const plugin = startPlugin();
+    const plugin = startPlugin(PUSH_SERVER);
     await plugin.connect();
     await plugin.firstPush();
 
@@ -118,7 +129,7 @@ describe("BandMcpStdioServer as a plugin process", () => {
   });
 
   it("exits cleanly when the client goes away with a push stuck on a full pipe", async ({ startPlugin }) => {
-    const plugin = startPlugin(PIPE_FILLING_PUSH_BYTES);
+    const plugin = startPlugin(PUSH_SERVER, PIPE_FILLING_PUSH_BYTES);
     await plugin.connect();
     await plugin.firstPush();
     await plugin.stopReadingUntilBackpressured();
@@ -126,6 +137,17 @@ describe("BandMcpStdioServer as a plugin process", () => {
     const { exitCode, stderr } = await plugin.clientExits();
 
     expect(stderr).not.toContain("EPIPE");
+    expect(exitCode).toBe(0);
+  });
+
+  it("lets its host shut down once the client goes away", async ({ startPlugin }) => {
+    const plugin = startPlugin(HOST);
+    const client = await plugin.connect();
+    const { tools } = await client.listTools();
+    expect(tools).not.toHaveLength(0);
+
+    const { exitCode } = await plugin.clientExits();
+
     expect(exitCode).toBe(0);
   });
 });
@@ -153,6 +175,16 @@ describe("BandMcpStdioServer lifecycle", () => {
     const { tools } = await client.listTools();
     expect(tools.map((tool) => tool.name)).toEqual(server.toolNames);
     await Promise.all([client.close(), server.stop()]);
+  });
+
+  test("resolves stopped when stopped by the host", async () => {
+    const { server } = inProcessServer();
+    await server.start();
+    const stopped = server.stopped;
+
+    await server.stop();
+
+    await expect(stopped).resolves.toBeUndefined();
   });
 
   test("settles a pending notify when the server stops", async () => {

@@ -84,8 +84,15 @@ export class BandMcpStdioServer {
     }
     await Promise.race([
       session.initialized.then(() => session.mcpServer.server.notification({ method, params })),
-      session.stopped,
+      session.stopped.then(() => {
+        throw notRunning();
+      }),
     ]);
+  }
+
+  /** Resolves once the server is not running: after stop(), or once the client went away. Read it after start(). */
+  public get stopped(): Promise<void> {
+    return this.session?.stopped ?? Promise.resolve();
   }
 
   public async stop(): Promise<void> {
@@ -102,7 +109,7 @@ interface StdioSession {
   // MCP allows no server-initiated messages before the client's `notifications/initialized`.
   initialized: Promise<void>;
   // Settles pending sends: the stdio transport never fails a write to a dead pipe.
-  stopped: Promise<never>;
+  stopped: Promise<void>;
   close(): Promise<void>;
 }
 
@@ -123,11 +130,10 @@ function openSession(
   });
   // The transport also closes itself, e.g. on an oversized line.
   mcpServer.server.onclose = onClientGone;
-  let rejectStopped!: (error: Error) => void;
-  const stopped = new Promise<never>((_resolve, reject) => {
-    rejectStopped = reject;
+  let resolveStopped!: () => void;
+  const stopped = new Promise<void>((resolve) => {
+    resolveStopped = resolve;
   });
-  stopped.catch(() => undefined);
 
   const clientGoneEvents: Array<[Readable | Writable, string]> = [
     [stdin, "end"],
@@ -149,7 +155,7 @@ function openSession(
       for (const [stream, event] of clientGoneEvents) {
         stream.off(event, onClientGone);
       }
-      rejectStopped(notRunning());
+      resolveStopped();
       await mcpServer.close();
     },
   };
