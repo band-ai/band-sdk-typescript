@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
@@ -119,5 +120,23 @@ function isAlive(pid: number): boolean {
   } catch (error) {
     // EPERM: alive, under another user.
     return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/** This process's parent, its parent, and so on: Claude Code runs a command through a shell of its own. */
+export function ancestorPids(): Set<number> {
+  const pids = new Set<number>();
+  for (let pid = process.ppid; pid > 1 && !pids.has(pid); pid = parentPid(pid)) {
+    pids.add(pid);
+  }
+  return pids;
+}
+
+/** 0, ending the walk, where `ps` can't tell (Windows has none). */
+function parentPid(pid: number): number {
+  try {
+    return Number(execFileSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" }).trim());
+  } catch {
+    return 0;
   }
 }

@@ -18,7 +18,7 @@ import {
   writeSavedAgents,
   type SavedAgent,
 } from "./config";
-import { liveSessions, type SessionStatus } from "./sessions";
+import { ancestorPids, liveSessions, type SessionStatus } from "./sessions";
 
 /** A session in these states holds its agent. */
 const HOLDING_STATES: ReadonlySet<SessionStatus["state"]> = new Set(["connecting", "connected"]);
@@ -70,9 +70,10 @@ function required(arg: string | undefined): string {
   return arg;
 }
 
-function status({ dataDir }: Context, sessionId: string): string {
+function status({ dataDir }: Context, currentSessionId: string): string {
   const saved = readSavedAgents(dataDir);
   const sessions = liveSessions(dataDir);
+  const sessionId = thisSessionId(sessions, currentSessionId);
   const names = [DEFAULT_AGENT_NAME, ...Object.keys(saved)];
   const holders = new Map<string, { sessionId: string; status: SessionStatus }>();
   for (const [id, session] of sessions) {
@@ -90,7 +91,20 @@ function status({ dataDir }: Context, sessionId: string): string {
     return [name, shown(name), use];
   });
   const free = names.filter((name) => !holders.has(name));
-  return [thisSession(sessions.get(sessionId), shown, free), "", "Agents:", ...table(rows)].join("\n");
+  return [thisSession(sessionId ? sessions.get(sessionId) : undefined, shown, free), "", "Agents:", ...table(rows)].join("\n");
+}
+
+/**
+ * The status this session's server keeps. `/clear` and `/resume` give the session a new ID but keep its server,
+ * which recorded the ID it started with, so the status of the Claude Code process running this command stands in.
+ */
+function thisSessionId(sessions: ReadonlyMap<string, SessionStatus>, sessionId: string): string | undefined {
+  if (sessions.has(sessionId)) {
+    return sessionId;
+  }
+  const ancestors = ancestorPids();
+  const ours = [...sessions].filter(([, session]) => ancestors.has(session.pid));
+  return ours.length === 1 ? ours[0][0] : undefined;
 }
 
 function thisSession(mine: SessionStatus | undefined, shown: (name: string) => string, free: readonly string[]): string {

@@ -158,6 +158,16 @@ describe("status", () => {
     );
   });
 
+  it("still knows this session once /clear gave it a new ID, by its Claude Code process", async ({ dirs }) => {
+    save(dirs, DOCS);
+    SessionStatusFile.open(dirs.env("session-1", "docs"), "docs")!.record({ handle: DOCS.handle, state: "connected" });
+
+    const output = await dirs.agents("status", "session-after-clear");
+
+    expect(output).toContain('This session: connected as "docs" (@alex/docs).');
+    expect(output).toContain("docs     @alex/docs  ← this session");
+  });
+
   it("says when no Band server runs in this session", async ({ dirs }) => {
     expect(await dirs.agents("status", "session-1")).toBe(["This session: no Band server is running in it.", "", "Agents:", "  default    free"].join("\n"));
   });
