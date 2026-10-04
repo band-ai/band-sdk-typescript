@@ -169,7 +169,7 @@ The plugin registers the following `band_*` management tools:
 This package lives in a pnpm workspace. Common scripts:
 
 ```bash
-pnpm build          # build the SDK dep + bundle to dist/
+pnpm --filter @band-ai/openclaw-channel-band... build  # build the SDK dep + bundle to dist/
 pnpm dev            # rebuild on change (tsup --watch)
 pnpm test           # run unit tests (vitest)
 pnpm typecheck      # type-check without emitting

@@ -7,7 +7,7 @@ declare module "ws" {
     public close(callback: (error?: Error) => void): void;
     public on(
       event: "connection",
-      listener: (socket: InstanceType<typeof WebSocket>) => void,
+      listener: (socket: InstanceType<typeof WebSocket>, request: import("node:http").IncomingMessage) => void,
     ): void;
     public once(event: "listening", listener: () => void): void;
   }

@@ -82,12 +82,12 @@ export class BandMcpStdioServer {
     if (!session) {
       throw notRunning();
     }
-    await Promise.race([
-      session.initialized.then(() => session.mcpServer.server.notification({ method, params })),
-      session.stopped.then(() => {
-        throw notRunning();
-      }),
-    ]);
+    await session.untilStopped(session.initialized.then(() => session.mcpServer.server.notification({ method, params })));
+  }
+
+  /** Resolves once the client has initialized; rejects if the server stops first. Read it after `await start()`. */
+  public get initialized(): Promise<void> {
+    return this.session ? this.session.untilStopped(this.session.initialized) : Promise.reject(notRunning());
   }
 
   /** Resolves once the server is not running: after stop(), or once the client went away. Read it after `await start()`. */
@@ -108,14 +108,17 @@ interface StdioSession {
   mcpServer: McpServerInstance;
   // MCP allows no server-initiated messages before the client's `notifications/initialized`.
   initialized: Promise<void>;
-  // Settles pending sends: the stdio transport never fails a write to a dead pipe.
   stopped: Promise<void>;
+  // Settles pending sends: the stdio transport never fails a write to a dead pipe.
+  untilStopped<T>(work: Promise<T>): Promise<T>;
   close(): Promise<void>;
 }
 
 function notRunning(): Error {
   return new Error("BandMcpStdioServer is not running");
 }
+
+function ignoreLateWriteError(): void {}
 
 // The SDK's stdio transport ignores stdin end and stdout errors, so the session
 // watches them itself; otherwise a send after the client exits crashes on EPIPE or hangs.
@@ -134,6 +137,8 @@ function openSession(
   const stopped = new Promise<void>((resolve) => {
     resolveStopped = resolve;
   });
+  // Each wait leaves the set once settled, so a long session holds nothing per send.
+  const pendingRejects = new Set<(error: Error) => void>();
 
   const clientGoneEvents: Array<[Readable | Writable, string]> = [
     [stdin, "end"],
@@ -143,19 +148,32 @@ function openSession(
   for (const [stream, event] of clientGoneEvents) {
     stream.on(event, onClientGone);
   }
-  // Never removed: a write queued before a stop can still fail with EPIPE
-  // afterwards, and an unhandled stream error would crash the process.
+  // Keep one handler without session state for writes that fail after teardown.
+  if (!stdout.listeners("error").includes(ignoreLateWriteError)) {
+    stdout.on("error", ignoreLateWriteError);
+  }
   stdout.on("error", onClientGone);
 
   return {
     mcpServer,
     initialized,
     stopped,
+    untilStopped(work) {
+      return new Promise((resolve, reject) => {
+        pendingRejects.add(reject);
+        void work.then(resolve, reject).finally(() => pendingRejects.delete(reject));
+      });
+    },
     async close() {
       for (const [stream, event] of clientGoneEvents) {
         stream.off(event, onClientGone);
       }
+      stdout.off("error", onClientGone);
+      // First, so a caller racing `stopped` sees the client leave before the failures that causes.
       resolveStopped();
+      for (const reject of pendingRejects) {
+        reject(notRunning());
+      }
       await mcpServer.close();
     },
   };

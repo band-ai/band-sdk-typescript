@@ -1,5 +1,6 @@
 import type { BandLink } from "../../platform/BandLink";
 import type { ContactEvent, PlatformEvent } from "../../platform/events";
+import { RuntimeStateError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
 import type { MetadataMap, ParticipantRecord } from "../../contracts/dtos";
 import { Execution } from "../Execution";
@@ -57,6 +58,8 @@ export class AgentRuntime {
   private readonly lifecycle: LifecycleTracker<RuntimeLifecycleState>;
   private readonly startGate = new SingleFlight<void>();
   private readonly stopGate = new SingleFlight<boolean>();
+  /** Set while a stop waits on a start, so rooms joined meanwhile stop on its terms too. */
+  private stopMidStart: { readonly timeoutMs?: number } | null = null;
 
   public constructor(options: AgentRuntimeOptions) {
     this.link = options.link;
@@ -122,7 +125,7 @@ export class AgentRuntime {
         }
         case "message_created":
         case "reconnected":
-          await this.getOrCreateExecution(roomId).enqueue(event);
+          await this.enqueueUnlessStopping(roomId, event);
           return;
         default:
           assertNever(event);
@@ -211,11 +214,18 @@ export class AgentRuntime {
     // transition below observable in the caller's own tick.
     const pendingStart = this.lifecycle.is("starting") ? this.startGate.pending : null;
     if (pendingStart) {
+      // Rooms the start has joined stop taking turns now, not after the joins still to come.
+      this.stopMidStart = { timeoutMs };
+      for (const execution of this.executions.values()) {
+        this.stopExecutionMidStart(execution);
+      }
       try {
         await pendingStart;
       } catch (error) {
         // The start's own caller sees this rejection; teardown continues here.
         this.logger.debug("AgentRuntime stop is proceeding after the in-flight start failed", { error });
+      } finally {
+        this.stopMidStart = null;
       }
     }
 
@@ -358,6 +368,24 @@ export class AgentRuntime {
     return graceful;
   }
 
+  private async enqueueUnlessStopping(roomId: string, event: PlatformEvent): Promise<void> {
+    try {
+      await this.getOrCreateExecution(roomId).enqueue(event);
+    } catch (error) {
+      const stopping = this.stopMidStart !== null || this.lifecycle.is("stopping");
+      if (!(error instanceof RuntimeStateError) || !stopping) {
+        throw error;
+      }
+      // The stop closed the room first; the message stays on the platform for the next start.
+      this.logger.debug("Dropped a room event for a room the stop already closed", { roomId, eventType: event.type });
+    }
+  }
+
+  private stopExecutionMidStart(execution: Execution): void {
+    // performStop() stops it again and collects the outcome.
+    void execution.stop(this.stopMidStart?.timeoutMs).catch(() => undefined);
+  }
+
   private getOrCreateExecution(roomId: string): Execution {
     const existing = this.executions.get(roomId);
     if (existing) {
@@ -375,6 +403,9 @@ export class AgentRuntime {
       logger: this.logger,
     });
     this.executions.set(roomId, execution);
+    if (this.stopMidStart) {
+      this.stopExecutionMidStart(execution);
+    }
     const watcher = execution.waitUntilStopped()
       .catch(async (error: unknown) => {
         await this.failRuntime(error, {

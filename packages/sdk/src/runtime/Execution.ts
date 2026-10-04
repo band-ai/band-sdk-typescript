@@ -217,7 +217,8 @@ export class Execution {
     // stop() is single-flight, so the only remaining state here is "running".
     this.lifecycle.transition({ status: "stopping" }, "stop");
 
-    const graceful = await this.waitForIdle(timeoutMs);
+    // A zero budget closes the queue now, so the loop starts no turn after this call.
+    const graceful = timeoutMs === 0 ? this.isIdle() : await this.waitForIdle(timeoutMs);
 
     if (this.lifecycle.is("failed")) {
       throw this.lifecycle.state.error;
@@ -331,6 +332,10 @@ export class Execution {
   private async synchronizeWithNext(boundary: SyncBoundary): Promise<void> {
     while (this.isActive()) {
       const nextMessage = await this.link.getNextMessage(this.roomId);
+      // A forced stop can close the execution while the backlog read is in flight.
+      if (!this.isActive()) {
+        break;
+      }
       this.logger.debug("Sync scan read /messages/next", {
         roomId: this.roomId,
         messageId: nextMessage?.id ?? null,

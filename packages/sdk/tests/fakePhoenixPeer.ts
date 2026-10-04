@@ -1,5 +1,8 @@
 import type { AddressInfo } from "node:net";
+import { agentControlTopic } from "@band-ai/band-sdk-core";
 import { WebSocket as NodeWebSocket, WebSocketServer } from "ws";
+
+import { RecordLog } from "./testUtils";
 
 type JoinOutcome = "ok" | "error" | "pending";
 type PhoenixMessage = [string | null, string | null, string, string, unknown];
@@ -36,11 +39,14 @@ export class FakePhoenixPeer implements AsyncDisposable {
   private readonly joinOutcomeQueues = new Map<string, JoinOutcome[]>();
   private readonly pendingJoins = new Map<string, PendingJoin>();
   public readonly receivedEvents: Array<{ topic: string; event: string }> = [];
-  public connectionCount = 0;
+  /** Every topic a client joined, in order; await it to act once a join is in. */
+  public readonly joined = new RecordLog<string>();
+  /** The request URL of every connection, in order, with its query parameters. */
+  public readonly connectionUrls: string[] = [];
 
   private constructor(wss: WebSocketServer) {
     this.wss = wss;
-    this.wss.on("connection", (socket) => this.handleConnection(socket as ServerSocket));
+    this.wss.on("connection", (socket, request) => this.handleConnection(socket as ServerSocket, request.url ?? ""));
   }
 
   public static async start(): Promise<FakePhoenixPeer> {
@@ -98,6 +104,22 @@ export class FakePhoenixPeer implements AsyncDisposable {
     }
   }
 
+  public get connectionCount(): number {
+    return this.connectionUrls.length;
+  }
+
+  /** Once the agent has joined its control channel, hands the agent to another connection, as the platform does for a second socket by default. */
+  public async supersede(agentId: string): Promise<void> {
+    const topic = agentControlTopic(agentId);
+    await this.joined.next((joinedTopic) => joinedTopic === topic);
+    this.push(topic, "supersede", {
+      reason: "session.already_connected",
+      message: "superseded",
+      retryable: false,
+      correlation_id: null,
+    });
+  }
+
   public async stop(): Promise<void> {
     this.severAllConnections();
     await new Promise<void>((resolve, reject) => {
@@ -109,8 +131,8 @@ export class FakePhoenixPeer implements AsyncDisposable {
     await this.stop();
   }
 
-  private handleConnection(socket: ServerSocket): void {
-    this.connectionCount += 1;
+  private handleConnection(socket: ServerSocket, url: string): void {
+    this.connectionUrls.push(url);
     this.sockets.add(socket);
     socket.on("close", () => this.sockets.delete(socket));
     socket.on("message", (data) => {
@@ -125,6 +147,7 @@ export class FakePhoenixPeer implements AsyncDisposable {
     }
 
     if (event === "phx_join") {
+      this.joined.record(topic);
       const outcome = this.joinOutcomeQueues.get(topic)?.shift() ?? "ok";
       if (outcome === "pending") {
         this.pendingJoins.set(topic, { socket, joinRef, ref });
