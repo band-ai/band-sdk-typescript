@@ -3,8 +3,6 @@
  * Code's place and no LLM: what Band delivers is pushed, what the client calls
  * posts back, and the agent is held by one session at a time.
  */
-import { setTimeout as sleep } from "node:timers/promises";
-
 import { describe, expect, it } from "vitest";
 
 import { CHANNEL_CAPABILITY, EXIT_FAILED, EXIT_OK } from "../../src/channel";
@@ -17,7 +15,6 @@ import { PluginProcess } from "./support/pluginProcess";
 const CONFLICT_CODE = "connection_conflict";
 // The platform can briefly hold a crashed session's agent (INT-1673); relaunches stop well past that.
 const CRASH_RELEASE_WINDOW_MS = 30_000;
-const RELAUNCH_DELAY_MS = 2_000;
 
 async function agentInRoom(label: string): Promise<{ identity: AgentIdentity; room: Room }> {
   const identity = await Agents.provision("claude-code", label);
@@ -42,7 +39,6 @@ async function relaunchUntilServing(identity: AgentIdentity, room: Room): Promis
       if (!refused || Date.now() - crashedAt > CRASH_RELEASE_WINDOW_MS) {
         throw error;
       }
-      await sleep(RELAUNCH_DELAY_MS);
     }
   }
 }

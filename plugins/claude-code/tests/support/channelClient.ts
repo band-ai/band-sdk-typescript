@@ -6,14 +6,34 @@ import type { Readable, Writable } from "node:stream";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
 import type { ChannelPush } from "../../src/adapter";
 import { CHANNEL_METHOD } from "../../src/channel";
-import { RecordLog } from "../../../../packages/sdk/tests/testUtils";
+import { CallHolds, RecordLog, type HeldCall } from "../../../../packages/sdk/tests/testUtils";
+
+const INITIALIZED_METHOD = "notifications/initialized";
+
+// The SDK's stdio transport takes any stream pair, so it also serves as the client end.
+class ClientEnd extends StdioServerTransport {
+  public constructor(
+    fromPlugin: Readable,
+    toPlugin: Writable,
+    private readonly outgoing: CallHolds<[JSONRPCMessage]>,
+  ) {
+    super(fromPlugin, toPlugin);
+  }
+
+  public override async send(message: JSONRPCMessage): Promise<void> {
+    await this.outgoing.pass(message);
+    await super.send(message);
+  }
+}
 
 export class ChannelClient {
   public readonly client: Client;
   public readonly pushes = new RecordLog<ChannelPush>();
+  private readonly outgoing = new CallHolds<[JSONRPCMessage]>();
 
   public constructor(
     private readonly fromPlugin: Readable,
@@ -30,9 +50,16 @@ export class ChannelClient {
     };
   }
 
-  // The SDK's stdio transport takes any stream pair, so it also serves as the client end.
   public connect(): Promise<void> {
-    return this.client.connect(new StdioServerTransport(this.fromPlugin, this.toPlugin));
+    return this.client.connect(new ClientEnd(this.fromPlugin, this.toPlugin, this.outgoing));
+  }
+
+  /**
+   * Keeps Claude Code's `notifications/initialized` from the plugin until released: once it is
+   * sending, the plugin has answered `initialize` but Claude Code has not confirmed the session.
+   */
+  public holdInitialized(): HeldCall<[JSONRPCMessage]> {
+    return this.outgoing.hold((message) => "method" in message && message.method === INITIALIZED_METHOD);
   }
 
   /** Resolves with the push for `messageId` once Claude Code has it; rejects if the plugin exits first. */

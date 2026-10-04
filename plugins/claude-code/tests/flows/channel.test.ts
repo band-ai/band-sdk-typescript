@@ -3,8 +3,6 @@
  * except for the network: delivered messages become channel pushes, and
  * Claude's tool calls post back to the room they came from.
  */
-import { setTimeout as sleep } from "node:timers/promises";
-
 import { describe, expect, test } from "vitest";
 
 import { COMMAND_REFUSAL } from "../../src/adapter";
@@ -20,8 +18,6 @@ const ROOM = "room-1";
 const LATER_ROOM = "room-2";
 const PLATFORM_DOWN = new Error("platform unavailable");
 const MENTION = `@[[${AGENT_ID}]]`;
-// Longer than the in-memory plugin takes to act on what it was just handed.
-const SETTLE_MS = 100;
 
 interface Fixture {
   platform: BandPlatform;
@@ -103,11 +99,14 @@ describe("Band messages reach Claude Code", () => {
   it("holds a message left before Claude Code connected until it has", async ({ band }) => {
     const id = band.room.postBeforeConnect(USER, `${MENTION} are you there?`);
     await using session = new ClaudeCodeSession({ transport: band.platform.transport, restApi: band.platform.rest });
+    const initialized = session.holdInitialized();
+    const connecting = session.connect();
 
-    await sleep(SETTLE_MS);
+    await initialized.sending;
     expect(band.platform.rest.processing.entries).toEqual([]);
 
-    await session.connect();
+    initialized.release();
+    await connecting;
     expect((await session.pushOf(id)).content).toBe(`@${AGENT_HANDLE} are you there?`);
     expect(await band.room.outcome(id)).toBe("processed");
   });
@@ -204,15 +203,13 @@ describe("when Claude Code exits", () => {
     const id = await band.room.say(USER, `${MENTION} hi`);
     const held = band.room.holdProcessing(id);
     await held.sending;
-    await band.room.remove();
-    // The removal now waits on the held turn; let Claude Code's exit reach the plugin before the turn pushes.
-    await sleep(SETTLE_MS);
-    const exited = session.leave();
-    await sleep(SETTLE_MS);
+    // The removal unsubscribes, then waits on the held turn to tear the room down.
+    await Promise.all([band.room.left(), band.room.remove()]);
+    await session.departed();
 
     held.release();
 
-    expect(await exited).toBe(EXIT_OK);
+    expect(await session.exited).toBe(EXIT_OK);
     expect(band.platform.transport.isConnected()).toBe(false);
   });
 });

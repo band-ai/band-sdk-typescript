@@ -255,6 +255,8 @@ export class FakeTransport implements StreamingTransport {
   public readonly rejoinObservers = new Set<TopicRejoinObserver>();
   /** Every topic bound, in order; await it to act once a subscription is in place. */
   public readonly bound = new RecordLog<string>();
+  /** Every topic left, in order; await it to act once an unsubscribe has begun. */
+  public readonly left = new RecordLog<string>();
   public disconnectCount = 0;
   private readonly handlers = new Map<string, TopicHandlers>();
   private connected = false;
@@ -321,6 +323,7 @@ export class FakeTransport implements StreamingTransport {
 
   public async leave(topic: string): Promise<void> {
     this.leaveCalls.push(topic);
+    this.left.record(topic);
     const gate = this.leaveGates.get(topic);
     if (gate) {
       await gate;

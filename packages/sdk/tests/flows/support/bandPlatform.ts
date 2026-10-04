@@ -233,6 +233,11 @@ export class BandRoom {
     return this.platform.rest.posted.until(predicate);
   }
 
+  /** Resolves once the agent has begun leaving the room: it unsubscribes before tearing the room down. */
+  public async left(): Promise<void> {
+    await this.platform.transport.left.next((topic) => topic === chatRoomTopic(this.id));
+  }
+
   /** The platform removes the agent from the room. */
   public async remove(): Promise<void> {
     this.platform.rest.removeRoom(this.id);

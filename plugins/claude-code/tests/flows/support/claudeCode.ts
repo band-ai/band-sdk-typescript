@@ -2,8 +2,8 @@
  * Claude Code's side of a flow test: a real MCP client on the plugin's stdio,
  * as Claude Code connects to the server it spawns.
  */
+import { once } from "node:events";
 import { PassThrough } from "node:stream";
-import { setTimeout as sleep } from "node:timers/promises";
 
 import { NoopLogger, StderrLogger } from "@band-ai/sdk/core";
 
@@ -11,9 +11,6 @@ import type { ChannelPush } from "../../../src/adapter";
 import { runChannel, type RunChannelOptions } from "../../../src/channel";
 import { AGENT_API_KEY, AGENT_ID } from "../../../../../packages/sdk/tests/flows/support/bandPlatform";
 import { ChannelClient } from "../../support/channelClient";
-
-// A plugin that never exits fails the test that awaits it; teardown must not hang the suite on it too.
-const TEARDOWN_GRACE_MS = 2_000;
 
 export interface ToolReply {
   readonly text: string;
@@ -24,19 +21,19 @@ export class ClaudeCodeSession implements AsyncDisposable {
   /** The plugin's exit code. */
   public readonly exited: Promise<number>;
   private readonly channel: ChannelClient;
+  private readonly toPlugin = new PassThrough();
 
   /** Starts the plugin against a platform; Claude Code connects with `connect()`. */
   public constructor(link: RunChannelOptions["link"], credentials?: Partial<RunChannelOptions["credentials"]>) {
-    const toPlugin = new PassThrough();
     const fromPlugin = new PassThrough();
     this.exited = runChannel({
       credentials: { agentId: AGENT_ID, apiKey: AGENT_API_KEY, ...credentials },
       link,
-      stdin: toPlugin,
+      stdin: this.toPlugin,
       stdout: fromPlugin,
       logger: process.env.FLOW_DEBUG ? new StderrLogger() : new NoopLogger(),
     });
-    this.channel = new ChannelClient(fromPlugin, toPlugin, this.exited, "test");
+    this.channel = new ChannelClient(fromPlugin, this.toPlugin, this.exited, "test");
   }
 
   public static async connect(
@@ -50,6 +47,11 @@ export class ClaudeCodeSession implements AsyncDisposable {
 
   public connect(): Promise<void> {
     return this.channel.connect();
+  }
+
+  /** See {@link ChannelClient.holdInitialized}. */
+  public holdInitialized(): ReturnType<ChannelClient["holdInitialized"]> {
+    return this.channel.holdInitialized();
   }
 
   public get pushes(): ChannelClient["pushes"] {
@@ -75,13 +77,22 @@ export class ClaudeCodeSession implements AsyncDisposable {
     return this.channel.pushOf(messageId);
   }
 
+  /** Claude Code exits; resolves once the plugin has seen it go, before the plugin has finished exiting. */
+  public async departed(): Promise<void> {
+    // Listeners run in order, so the plugin's own stdin `end` listener has run by the time this one does.
+    const seen = once(this.toPlugin, "end");
+    this.channel.leave();
+    await seen;
+  }
+
   /** Claude Code exits; resolves with the plugin's exit code. */
   public async leave(): Promise<number> {
     this.channel.leave();
     return this.exited;
   }
 
+  /** Only ends Claude Code's side: a test that cares how the plugin exits awaits `leave()`. */
   public async [Symbol.asyncDispose](): Promise<void> {
-    await Promise.race([this.leave(), sleep(TEARDOWN_GRACE_MS)]);
+    this.channel.leave();
   }
 }
