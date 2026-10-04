@@ -100,8 +100,7 @@ export class ConsoleLogger implements Logger {
   }
 
   public error(message: string, context?: Record<string, unknown>): void {
-    const payload = context ? ` ${safeSerializeContext(context)}` : "";
-    process.stderr.write(`${message}${payload}\n`);
+    writeStderr(message, context);
   }
 
   private emit(
@@ -117,6 +116,30 @@ export class ConsoleLogger implements Logger {
     }
     fn(message, sanitizeValue(context));
   }
+}
+
+/** Writes every level to stderr, for a process whose stdout is a protocol stream, such as an MCP stdio server. */
+export class StderrLogger implements Logger {
+  public debug(message: string, context?: Record<string, unknown>): void {
+    writeStderr(`[debug] ${message}`, context);
+  }
+
+  public info(message: string, context?: Record<string, unknown>): void {
+    writeStderr(`[info] ${message}`, context);
+  }
+
+  public warn(message: string, context?: Record<string, unknown>): void {
+    writeStderr(`[warn] ${message}`, context);
+  }
+
+  public error(message: string, context?: Record<string, unknown>): void {
+    writeStderr(`[error] ${message}`, context);
+  }
+}
+
+function writeStderr(message: string, context?: Record<string, unknown>): void {
+  const payload = context ? ` ${safeSerializeContext(context)}` : "";
+  process.stderr.write(`${message}${payload}\n`);
 }
 
 function safeSerializeContext(context: Record<string, unknown>): string {

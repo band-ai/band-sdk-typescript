@@ -186,6 +186,33 @@ describe("BandMcpStdioServer lifecycle", () => {
     expect(stopped).toBe(true);
   });
 
+  test("resolves initialized once the client finishes its handshake", async () => {
+    const { server, connectClient } = inProcessServer();
+    await server.start();
+    let initialized = false;
+    void server.initialized.then(() => {
+      initialized = true;
+    });
+
+    await Promise.resolve();
+    expect(initialized).toBe(false);
+
+    const client = await connectClient();
+    await server.initialized;
+    expect(initialized).toBe(true);
+    await Promise.all([client.close(), server.stop()]);
+  });
+
+  test("rejects initialized when the server stops before the client initializes", async () => {
+    const { server } = inProcessServer();
+    await server.start();
+
+    const initialized = server.initialized;
+    await server.stop();
+
+    await expect(initialized).rejects.toThrow(NOT_RUNNING);
+  });
+
   test("settles a pending notify when the server stops", async () => {
     const { server } = inProcessServer();
     await server.start();

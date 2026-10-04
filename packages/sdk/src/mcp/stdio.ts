@@ -82,12 +82,12 @@ export class BandMcpStdioServer {
     if (!session) {
       throw notRunning();
     }
-    await Promise.race([
-      session.initialized.then(() => session.mcpServer.server.notification({ method, params })),
-      session.stopped.then(() => {
-        throw notRunning();
-      }),
-    ]);
+    await untilStopped(session, session.initialized.then(() => session.mcpServer.server.notification({ method, params })));
+  }
+
+  /** Resolves once the client has initialized; rejects if the server stops first. Read it after `await start()`. */
+  public get initialized(): Promise<void> {
+    return this.session ? untilStopped(this.session, this.session.initialized) : Promise.reject(notRunning());
   }
 
   /** Resolves once the server is not running: after stop(), or once the client went away. Read it after `await start()`. */
@@ -115,6 +115,15 @@ interface StdioSession {
 
 function notRunning(): Error {
   return new Error("BandMcpStdioServer is not running");
+}
+
+function untilStopped<T>(session: StdioSession, work: Promise<T>): Promise<T> {
+  return Promise.race([
+    work,
+    session.stopped.then((): never => {
+      throw notRunning();
+    }),
+  ]);
 }
 
 // The SDK's stdio transport ignores stdin end and stdout errors, so the session
