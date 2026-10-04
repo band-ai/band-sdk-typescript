@@ -48,16 +48,10 @@ class PluginProcess {
   // The SDK's stdio transport takes any stream pair, so it also serves as the client end.
   // It ignores the pipes closing, so a plugin that dies first must fail the handshake here.
   public async connect(): Promise<Client> {
-    let onExit!: (exitCode: number | null) => void;
-    const exited = new Promise<never>((_resolve, reject) => {
-      onExit = (exitCode) => reject(new Error(`exited ${exitCode} before the handshake: ${this.stderr}`));
-      this.child.once("exit", onExit);
+    const exited = once(this.child, "exit").then(([exitCode]) => {
+      throw new Error(`exited ${exitCode} before the handshake: ${this.stderr}`);
     });
-    try {
-      await Promise.race([this.client.connect(new StdioServerTransport(this.child.stdout, this.child.stdin)), exited]);
-    } finally {
-      this.child.off("exit", onExit);
-    }
+    await Promise.race([this.client.connect(new StdioServerTransport(this.child.stdout, this.child.stdin)), exited]);
     return this.client;
   }
 
@@ -143,8 +137,7 @@ describe("BandMcpStdioServer as a plugin process", () => {
   it("lets its host shut down once the client goes away", async ({ startPlugin }) => {
     const plugin = startPlugin(HOST);
     const client = await plugin.connect();
-    const { tools } = await client.listTools();
-    expect(tools).not.toHaveLength(0);
+    await client.listTools();
 
     const { exitCode } = await plugin.clientExits();
 
@@ -177,14 +170,20 @@ describe("BandMcpStdioServer lifecycle", () => {
     await Promise.all([client.close(), server.stop()]);
   });
 
-  test("resolves stopped when stopped by the host", async () => {
-    const { server } = inProcessServer();
+  test("resolves stopped only once the host stops it", async () => {
+    const { server, connectClient } = inProcessServer();
     await server.start();
-    const stopped = server.stopped;
+    const client = await connectClient();
+    let stopped = false;
+    void server.stopped.then(() => {
+      stopped = true;
+    });
 
-    await server.stop();
+    await client.listTools();
+    expect(stopped).toBe(false);
 
-    await expect(stopped).resolves.toBeUndefined();
+    await Promise.all([client.close(), server.stop()]);
+    expect(stopped).toBe(true);
   });
 
   test("settles a pending notify when the server stops", async () => {

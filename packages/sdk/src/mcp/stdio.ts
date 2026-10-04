@@ -90,7 +90,7 @@ export class BandMcpStdioServer {
     ]);
   }
 
-  /** Resolves once the server is not running: after stop(), or once the client went away. Read it after start(). */
+  /** Resolves once the server is not running: after stop(), or once the client went away. Read it after `await start()`. */
   public get stopped(): Promise<void> {
     return this.session?.stopped ?? Promise.resolve();
   }
