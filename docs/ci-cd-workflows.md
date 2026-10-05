@@ -26,7 +26,7 @@ back-merge to reconcile after a release.
 > `main`. Existing `dev` PR migration is outside this rollout; no release is ever
 > cut from `dev`.
 
-This repo is a **pnpm monorepo** publishing two packages. Its branch topology
+This repo is a **pnpm monorepo** publishing three packages. Its branch topology
 mirrors `band-ai/band-sdk-python`, while its release workflow remains tailored
 to this repository's independent multi-package release:
 
@@ -34,12 +34,14 @@ to this repository's independent multi-package release:
 |---|---|
 | `packages/sdk` | `@band-ai/sdk` |
 | `plugins/openclaw` | `@band-ai/openclaw-channel-band` |
+| `plugins/claude-code` | `@band-ai/claude-code-plugin` |
 
 `scripts/release-packages.mjs` is the one list of released packages (path,
 npm name, version files, packlist floor) that every release script and
 `release.yml` step reads. A new package needs an entry there plus its
-`release-please-config.json` and `.release-please-manifest.json` entries and a
-`recover-package` option in `release.yml`.
+`release-please-config.json` and `.release-please-manifest.json` entries, a
+`recover-package` option in `release.yml`, and in `ci.yml` a path filter that
+includes `*shared` plus its typecheck, lint and test steps.
 
 ## Branch Protection (GitHub Rulesets)
 
@@ -111,7 +113,7 @@ green on `main`" said nothing about `main`'s actual tree. Three details make the
 trunk run meaningful rather than decorative:
 
 - **Path filtering is skipped.** `dorny/paths-filter` runs only on pull
-  requests; on a push both package outputs are forced `true`. Trunk validation
+  requests; on a push every package output is forced `true`. Trunk validation
   exercises the whole tree, not the slice one merge happened to touch —
   otherwise `ci-status` could go green having skipped `lint` and `test`.
 - **Runs are not cancelled.** `cancel-in-progress` is on for pull requests only.
@@ -131,14 +133,19 @@ no write permission.
 - `changes` — `dorny/paths-filter` deciding which packages a PR touches. Any
   change to shared control paths (`.github/**`, `scripts/**`, `package.json`,
   `pnpm-workspace.yaml`, `pnpm-lock.yaml`, the release-please config/manifest,
-  `.release-hold`) selects **both** packages.
+  `.release-hold`) selects **every** package: they are listed once under the
+  `&shared` YAML anchor, and each package filter includes `*shared`. The `any`
+  output gates what every selected package shares.
 - `lint` — build, typecheck, and ESLint for each selected package.
 - `test` — checks release intent before Release Please can consume a version
   transition, then builds and runs Vitest for each selected package plus the
   release-hardening suite (`pnpm test:release-hardening`).
-- `packaging` — builds everything and verifies the published surface: the SDK's
-  ESM and CJS entrypoints both import with non-empty exports, and OpenClaw's
-  `dist` artifacts exist, are non-empty, and declare the expected exports.
+- `packaging` — builds everything and verifies the published surface: every
+  listed package's packlist meets its `contents` entry in
+  `scripts/release-packages.mjs`, the SDK's ESM and CJS entrypoints both import
+  with non-empty exports, OpenClaw's `dist` artifacts are non-empty and declare
+  the expected exports, and `claude plugin validate --strict` accepts the Claude
+  Code plugin.
 - `ci-status` — the aggregate gate described above.
 
 ### PR Title — `pr-title.yml`
@@ -245,7 +252,7 @@ with a well-meaning workflow edit and impossible to notice until a release.
 Deliberately not addressed yet, recorded so they aren't rediscovered:
 
 - **No tag protection ruleset.** Anyone with write access can create or move an
-  `sdk-v*` / `openclaw-channel-band-v*` tag. The Python SDK restricts its
+  `sdk-v*` / `openclaw-channel-band-v*` / `claude-code-plugin-v*` tag. The Python SDK restricts its
   `band-sdk-v*` namespace to the release App. Until administrators add equivalent
   protection, recovery is a trusted-maintainer operation: the approver must
   compare `release-commit` with the original release run before authorizing the

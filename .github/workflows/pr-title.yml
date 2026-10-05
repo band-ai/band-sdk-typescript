@@ -34,6 +34,7 @@ jobs:
           scopes: |
             sdk
             openclaw
+            claude-code
             agent
             api
             websocket

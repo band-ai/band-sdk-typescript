@@ -42,7 +42,7 @@ export type {
   WebSocketConflictPolicy,
   WebSocketDisconnectReason,
 } from "../platform/streaming/disconnectReason";
-export { ConsoleLogger, NoopLogger, type Logger } from "./logger";
+export { ConsoleLogger, NoopLogger, StderrLogger, type Logger } from "./logger";
 
 export {
   DeliveryFailedError,

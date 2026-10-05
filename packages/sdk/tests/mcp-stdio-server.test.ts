@@ -8,7 +8,7 @@ import { describe, expect, test } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { STDIO_DEFAULT_MAX_BUFFER_SIZE } from "@modelcontextprotocol/sdk/shared/stdio.js";
-import type { Notification } from "@modelcontextprotocol/sdk/types.js";
+import { LATEST_PROTOCOL_VERSION, type Notification } from "@modelcontextprotocol/sdk/types.js";
 
 import { BandMcpStdioServer } from "../src/mcp/stdio";
 import {
@@ -155,7 +155,7 @@ describe("BandMcpStdioServer lifecycle", () => {
       await client.connect(new StdioServerTransport(stdout, stdin));
       return client;
     };
-    return { server, stdin, connectClient };
+    return { server, stdin, stdout, connectClient };
   }
 
   test("keeps the default handshake and tools without the new options", async () => {
@@ -186,6 +186,35 @@ describe("BandMcpStdioServer lifecycle", () => {
     expect(stopped).toBe(true);
   });
 
+  test("resolves initialized on the client's initialized notification, not its initialize request", async () => {
+    const { server, stdin, stdout } = inProcessServer();
+    await server.start();
+    let initialized = false;
+    void server.initialized.then(() => {
+      initialized = true;
+    });
+    const send = (message: Record<string, unknown>) => stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
+
+    const initializeResult = once(stdout, "data");
+    send({ id: 1, method: "initialize", params: { protocolVersion: LATEST_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "test-client", version: "1.0.0" } } });
+    await initializeResult;
+    expect(initialized).toBe(false);
+
+    send({ method: "notifications/initialized" });
+    await server.initialized;
+    await server.stop();
+  });
+
+  test("rejects initialized when the server stops before the client initializes", async () => {
+    const { server } = inProcessServer();
+    await server.start();
+
+    const initialized = server.initialized;
+    await server.stop();
+
+    await expect(initialized).rejects.toThrow(NOT_RUNNING);
+  });
+
   test("settles a pending notify when the server stops", async () => {
     const { server } = inProcessServer();
     await server.start();
@@ -194,6 +223,25 @@ describe("BandMcpStdioServer lifecycle", () => {
     await server.stop();
 
     await expect(sent).rejects.toThrow(NOT_RUNNING);
+  });
+
+  test("restarting on the same pipe releases old sessions and tolerates late write errors", async () => {
+    const { server, stdout } = inProcessServer();
+    await server.start();
+    await server.stop();
+    const retainedListeners = stdout.listenerCount("error");
+
+    for (let restart = 0; restart < 3; restart++) {
+      await server.start();
+      const initialized = expect(server.initialized).rejects.toThrow(NOT_RUNNING);
+      const sent = expect(server.notify(PUSH_METHOD)).rejects.toThrow(NOT_RUNNING);
+      await server.stop();
+      await Promise.all([initialized, sent]);
+    }
+
+    expect(stdout.listenerCount("error")).toBe(retainedListeners);
+    // A write queued before teardown can fail after the session's listeners are released.
+    expect(() => stdout.emit("error", Object.assign(new Error("broken pipe"), { code: "EPIPE" }))).not.toThrow();
   });
 
   test("stops when the transport closes itself on an oversized line", async () => {

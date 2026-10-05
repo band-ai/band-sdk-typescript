@@ -19,14 +19,14 @@ const pkgRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const stage = join(pkgRoot, ".local-link");
 
 if (!existsSync(join(pkgRoot, "dist", "index.js"))) {
-  console.error("[stage-link] dist/index.js missing — run the build first (pnpm build).");
+  console.error("[stage-link] dist/index.js missing — run pnpm link:local to build and stage the plugin.");
   process.exit(1);
 }
 
 const wasmPath = join(pkgRoot, "dist", CORE_WASM_FILENAME);
 if (!existsSync(wasmPath) || statSync(wasmPath).size === 0) {
   console.error(
-    `[stage-link] dist/${CORE_WASM_FILENAME} missing or empty — run the build first (pnpm build).`,
+    `[stage-link] dist/${CORE_WASM_FILENAME} missing or empty — run pnpm link:local to build and stage the plugin.`,
   );
   process.exit(1);
 }

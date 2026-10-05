@@ -38,6 +38,22 @@ export const RELEASE_PACKAGES = [
       ],
     },
   },
+  {
+    key: "claude-code",
+    path: "plugins/claude-code",
+    name: "@band-ai/claude-code-plugin",
+    versionFiles: ["package.json", ".claude-plugin/plugin.json"],
+    contents: {
+      minFiles: 6,
+      required: [
+        "dist/server.js",
+        `dist/${CORE_WASM_FILENAME}`,
+        ".claude-plugin/plugin.json",
+        ".mcp.json",
+        "package.json",
+      ],
+    },
+  },
 ];
 
 export const STABLE_SEMANTIC_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;

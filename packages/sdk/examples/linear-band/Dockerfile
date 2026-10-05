@@ -16,6 +16,7 @@ WORKDIR /app
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY packages/sdk/package.json packages/sdk/
 COPY plugins/openclaw/package.json plugins/openclaw/
+COPY plugins/claude-code/package.json plugins/claude-code/
 
 RUN pnpm install --frozen-lockfile
 

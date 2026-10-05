@@ -3,7 +3,7 @@ import tseslint from "@typescript-eslint/eslint-plugin";
 const STRICT_TS_FILES = ["src/**/*.ts"];
 const RELAXED_TS_FILES = ["tests/**/*.ts", "examples/**/*.ts", "src/testing/**/*.ts"];
 
-const strictTypeCheckedRules = {
+export const strictTypeCheckedRules = {
   ...tseslint.configs["recommended-type-checked"].rules,
   "@typescript-eslint/no-unused-vars": [
     "warn",
@@ -33,7 +33,7 @@ const noRawNoopLoggerFallback = {
   ],
 };
 
-const relaxedRules = {
+export const relaxedRules = {
   ...tseslint.configs["recommended"].rules,
   "@typescript-eslint/no-unused-vars": [
     "warn",

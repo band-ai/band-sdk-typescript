@@ -6,6 +6,7 @@ import { Execution, PERMANENT_FAILURE_ERROR } from "../src/runtime/Execution";
 import { makeLoggerSpy } from "./testUtils";
 import type { ExecutionState } from "../src/runtime/ExecutionContext";
 import { RetryTracker } from "@band-ai/band-sdk-core";
+import { createDeferred } from "../src/core/deferred";
 
 interface BacklogMessage {
   id: string;
@@ -140,6 +141,24 @@ describe("Execution", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+  });
+
+  it("does not start a turn from a backlog read that returns after a forced stop", async () => {
+    const reading = createDeferred();
+    const response = createDeferred<BacklogMessage | null>();
+    const { execution, processed } = createExecution({
+      getNextMessage: async () => {
+        reading.resolve();
+        return await response.promise;
+      },
+    });
+    await reading.promise;
+
+    await execution.stop(0);
+    response.resolve(makeBacklogMessage("waiting"));
+    await execution.waitForIdle();
+
+    expect(processed).toEqual([]);
   });
 
   it("stops processing and surfaces handler failures", async () => {

@@ -19,14 +19,15 @@ cd band-sdk-typescript
 pnpm install
 ```
 
-This is a pnpm workspace with two published packages:
+This is a pnpm workspace with three published packages:
 
 | Path | Workspace name (use in `--filter`) | Published as |
 |---|---|---|
 | `packages/sdk` | `@band-ai/sdk` | `@band-ai/sdk` |
 | `plugins/openclaw` | `@band-ai/openclaw-channel-band` | `@band-ai/openclaw-channel-band` |
+| `plugins/claude-code` | `@band-ai/claude-code-plugin` | `@band-ai/claude-code-plugin` |
 
-> Both packages publish under their workspace name; no publish-time package
+> Every package publishes under its workspace name; no publish-time package
 > rename is applied. Use the workspace name for `pnpm --filter`.
 
 ## Development Workflow
@@ -57,8 +58,17 @@ This is a pnpm workspace with two published packages:
 
    ```bash
    pnpm -r lint
-   pnpm -r typecheck
-   pnpm -r test
+   pnpm typecheck
+   pnpm test
+   ```
+
+   The root test and typecheck commands build the SDK once before checking
+   the workspace. Plugin scripts operate on that build rather than rebuilding
+   shared output in parallel. For a plugin-only build, include its dependencies:
+
+   ```bash
+   pnpm --filter @band-ai/claude-code-plugin... build
+   pnpm --filter @band-ai/openclaw-channel-band... build
    ```
 
    If you touched anything under `.github/`, `scripts/`, or the release
@@ -156,11 +166,12 @@ hide an earlier version transition.
 
 ### Independent package releases
 
-`@band-ai/sdk` and `@band-ai/openclaw-channel-band` release independently.
-Release intent requires each selected package's manifest and package metadata to
-transition atomically; OpenClaw's plugin metadata is part of its own atomic
-transition. A release may contain neither package, either package, or both at
-unrelated stable versions.
+`@band-ai/sdk`, `@band-ai/openclaw-channel-band` and `@band-ai/claude-code-plugin`
+release independently. Release intent requires each selected package's manifest
+and package metadata to transition atomically; a plugin's manifest version is
+part of its own atomic transition. A release may contain any subset of the
+packages, at unrelated stable versions. A package new since the release baseline
+must have matching stable versions, and the release hold applies to adding it.
 
 ### Holding releases
 
@@ -175,7 +186,7 @@ If an npm publish fails, don't just re-run the failed `publish` job: the
 uploaded artifact is retained for only 1 day, so a re-run after that window
 fails at the download step with nothing to recover. Instead, manually run the
 Release workflow from `main`, select exactly one `recover-package` (a `key` in
-`scripts/release-packages.mjs`: `sdk` or `openclaw`), and set `release-commit` to the exact 40-character SHA carrying
+`scripts/release-packages.mjs`: `sdk`, `openclaw` or `claude-code`), and set `release-commit` to the exact 40-character SHA carrying
 that package's release tag. Recovery verifies the commit is reachable from
 `main`, checks out those exact bytes, confirms only the selected package's
 current metadata and tag, skips an exact version already present on npm, and

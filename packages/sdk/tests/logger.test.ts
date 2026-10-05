@@ -1,6 +1,13 @@
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { fileURLToPath } from "node:url";
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ConsoleLogger, NoopLogger, resolveLogger, type Logger } from "../src/core/logger";
+import { ConsoleLogger, NoopLogger, resolveLogger, StderrLogger, type Logger } from "../src/core/logger";
+import { TEARDOWN_DONE } from "./fixtures/stderrLoggerChild";
+
+const STDERR_LOGGER_CHILD = fileURLToPath(new URL("./fixtures/stderrLoggerChild.ts", import.meta.url));
 
 describe("ConsoleLogger", () => {
   afterEach(() => {
@@ -53,6 +60,44 @@ describe("ConsoleLogger", () => {
 
     expect(writeSpy).toHaveBeenCalledOnce();
     expect(String(writeSpy.mock.calls[0]?.[0])).toContain("[Circular]");
+  });
+});
+
+describe("StderrLogger", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("writes every level to stderr and nothing to stdout, redacting secrets", () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const logger = new StderrLogger();
+
+    logger.debug("d", { apiKey: "secret" });
+    logger.info("i");
+    logger.warn("w");
+    logger.error("e");
+
+    expect(stdout).not.toHaveBeenCalled();
+    const lines = stderr.mock.calls.map(([chunk]) => String(chunk));
+    expect(lines).toEqual(["[debug] d {\"apiKey\":\"[REDACTED]\"}\n", "[info] i\n", "[warn] w\n", "[error] e\n"]);
+  });
+
+  it("keeps a process alive through teardown after its host closed stderr", async () => {
+    const child = spawn(process.execPath, ["--import", "tsx", STDERR_LOGGER_CHILD]);
+    let stdout = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    const exited = once(child, "exit");
+
+    // The host exits: both of its pipe ends close.
+    child.stderr.destroy();
+    child.stdin.end();
+
+    const [exitCode] = (await exited) as [number | null];
+    expect(stdout).toContain(TEARDOWN_DONE);
+    expect(exitCode).toBe(0);
   });
 });
 
