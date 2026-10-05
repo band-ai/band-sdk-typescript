@@ -5,7 +5,7 @@ import { basename, join } from "node:path";
 import { CLAUDE_ENV, type Env } from "./config";
 
 /** One status file per Claude Code session, in the plugin's data directory. */
-export const SESSIONS_DIR = "sessions";
+const SESSIONS_DIR = "sessions";
 
 const STATUS_EXTENSION = ".json";
 const PARTIAL_EXTENSION = ".partial";

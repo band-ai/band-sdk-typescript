@@ -52,13 +52,18 @@ export function agentCredentials(name: string, env: Env): AgentCredentials {
   const saved = readSavedAgents(pluginDataDir(env));
   const agent = saved[name];
   if (!agent) {
-    throw new Error(`${unknownAgentMessage(name, Object.keys(saved))} Add it with ${AGENTS_COMMAND} add <agent_id> <api_key> ${name}`);
+    throw new Error(`${unknownAgentMessage(name, saved)} Add it with ${AGENTS_COMMAND} add <agent_id> <api_key> ${name}`);
   }
   return { agentId: agent.agentId, apiKey: agent.apiKey, ...(agent.wsUrl ? { wsUrl: agent.wsUrl } : {}) };
 }
 
-export function unknownAgentMessage(name: string, savedNames: readonly string[]): string {
-  return `No Band agent named "${name}". Agents: ${[DEFAULT_AGENT_NAME, ...savedNames].join(", ")}.`;
+/** Every agent a session can select: the default, then the saved ones. */
+export function agentNames(saved: Readonly<Record<string, SavedAgent>>): string[] {
+  return [DEFAULT_AGENT_NAME, ...Object.keys(saved)];
+}
+
+export function unknownAgentMessage(name: string, saved: Readonly<Record<string, SavedAgent>>): string {
+  return `No Band agent named "${name}". Agents: ${agentNames(saved).join(", ")}.`;
 }
 
 /** Fails naming the rule when `name` can't be a saved agent's name. */
@@ -68,7 +73,7 @@ export function assertAgentName(name: string): void {
   }
 }
 
-export function pluginDataDir(env: Env): string {
+function pluginDataDir(env: Env): string {
   const dir = env[CLAUDE_ENV.pluginData];
   if (!dir) {
     throw new Error(`${CLAUDE_ENV.pluginData} is not set: Claude Code sets it for the plugin.`);

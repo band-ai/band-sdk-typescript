@@ -4,7 +4,7 @@
  * plugin's real REST client runs end to end.
  */
 import { once } from "node:events";
-import { createServer, type Server } from "node:http";
+import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 
 const AGENT_ME_PATH = "/api/v1/agent/me";
@@ -23,13 +23,13 @@ export class BandRestPeer implements AsyncDisposable {
   public static async start(agents: readonly PeerAgent[]): Promise<BandRestPeer> {
     const server = createServer((request, response) => {
       const agent = agents.find((candidate) => candidate.apiKey === request.headers[API_KEY_HEADER]);
-      if (request.url !== AGENT_ME_PATH || !agent) {
-        response.writeHead(request.url === AGENT_ME_PATH ? 401 : 404, { "Content-Type": "application/json" });
-        response.end(JSON.stringify({ error: "unauthorized" }));
-        return;
+      if (request.url !== AGENT_ME_PATH) {
+        respond(response, 404, { error: "not_found" });
+      } else if (!agent) {
+        respond(response, 401, { error: "unauthorized" });
+      } else {
+        respond(response, 200, { data: { id: agent.id, name: agent.name, description: null, handle: agent.handle, owner_uuid: null } });
       }
-      response.writeHead(200, { "Content-Type": "application/json" });
-      response.end(JSON.stringify({ data: { id: agent.id, name: agent.name, description: null, handle: agent.handle, owner_uuid: null } }));
     });
     server.listen(0, "127.0.0.1");
     await once(server, "listening");
@@ -48,4 +48,9 @@ export class BandRestPeer implements AsyncDisposable {
     this.server.close();
     await once(this.server, "close");
   }
+}
+
+function respond(response: ServerResponse, status: number, body: unknown): void {
+  response.writeHead(status, { "Content-Type": "application/json" });
+  response.end(JSON.stringify(body));
 }
