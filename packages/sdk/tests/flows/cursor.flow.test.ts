@@ -19,7 +19,7 @@ import { ACP_SESSION_EVENT } from "../../src/converters/acp-client";
 import { BandPlatform, person, type BandRoom, type Outcome, type Posted } from "./support/bandPlatform";
 import { DEFAULT_CURSOR_ROOM, FakeCursorAgent, type CursorTurn } from "./support/fakeCursorAgent";
 import { makeLoggerSpy, MISSING_REPLY, tmpRoot, type ReportedFailure } from "../testUtils";
-import { CLOSING_TEXT, TOOL_REPLY, type TurnScript } from "../turnOutcomeContract";
+import { CLOSING_TEXT, contractRows, TOOL_REPLY, type TurnScript } from "../turnOutcomeContract";
 
 const OWNER = "owner";
 const TEAMMATE = "teammate";
@@ -550,13 +550,13 @@ describe("Cursor in a Band room", () => {
     ]);
   });
 
-  it.each<{ script: TurnScript; relayed: string[]; failures: ReportedFailure[]; outcome: Outcome }>([
-    { script: "decline", relayed: [], failures: [], outcome: "processed" },
-    { script: "toolReply", relayed: [], failures: [], outcome: "processed" },
-    { script: "act", relayed: [], failures: [], outcome: "processed" },
-    { script: "finalText", relayed: [CLOSING_TEXT], failures: [], outcome: "processed" },
-    { script: "nothing", relayed: [], failures: [MISSING_REPLY], outcome: "failed" },
-  ])("settles a `$script` turn as $outcome, relaying Cursor's text only when no Band tool answered", async ({ script, relayed, failures, outcome }) => {
+  it.each(contractRows<{ relayed: string[]; failures: ReportedFailure[]; outcome: Outcome }>({
+    decline: { relayed: [], failures: [], outcome: "processed" },
+    toolReply: { relayed: [], failures: [], outcome: "processed" },
+    act: { relayed: [], failures: [], outcome: "processed" },
+    finalText: { relayed: [CLOSING_TEXT], failures: [], outcome: "processed" },
+    nothing: { relayed: [], failures: [MISSING_REPLY], outcome: "failed" },
+  }))("settles a `$script` turn as $outcome, relaying Cursor's text only when no Band tool answered", async ({ script, relayed, failures, outcome }) => {
     await using session = await cursorRoom();
     const { room } = session;
     const { message } = await session.start(TURN_SCRIPTS[script]);

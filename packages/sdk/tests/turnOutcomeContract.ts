@@ -94,6 +94,14 @@ export const TURN_OUTCOME_EXEMPT: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * A flow test's contract rows, one per {@link TurnScript}: keyed by script, so
+ * a row can't be left out.
+ */
+export function contractRows<T>(expected: Record<TurnScript, T>): Array<T & { script: TurnScript }> {
+  return (Object.keys(expected) as TurnScript[]).map((script) => ({ ...expected[script], script }));
+}
+
+/**
  * The turn-outcome contract every judged adapter owes: band-sdk-core's rule
  * decides the turn, and its closing text is relayed only when the model
  * neither replied nor declined through a tool. `FakeTools.executeToolCall`

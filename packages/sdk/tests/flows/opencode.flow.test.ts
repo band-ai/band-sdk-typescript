@@ -18,7 +18,7 @@ import type { BandMcpServer } from "../../src/mcp/server";
 import { CallHolds, expectMcpServerStopped, MISSING_REPLY, type ReportedFailure } from "../testUtils";
 import { BandPlatform, person, type Outcome, type RecordingRestApi } from "./support/bandPlatform";
 import { FakeOpencodeServer, type OpencodeTurn } from "./support/fakeOpencodeServer";
-import { CLOSING_TEXT, TOOL_REPLY, type TurnScript } from "../turnOutcomeContract";
+import { CLOSING_TEXT, contractRows, TOOL_REPLY, type TurnScript } from "../turnOutcomeContract";
 
 const OWNER = "owner";
 const APPROVER = "approver";
@@ -986,20 +986,36 @@ describe("OpenCode in a Band room", () => {
       expect(room.failures).toEqual([]);
     });
 
-    it.each<{ script: TurnScript; posted: string[]; failures: ReportedFailure[]; outcome: Outcome }>([
-      { script: "decline", posted: [], failures: [], outcome: "processed" },
-      { script: "toolReply", posted: [TOOL_REPLY], failures: [], outcome: "processed" },
-      { script: "act", posted: [], failures: [], outcome: "processed" },
-      { script: "finalText", posted: [CLOSING_TEXT], failures: [], outcome: "processed" },
+    it.each(contractRows<{ posted: string[]; failures: ReportedFailure[]; outcome: Outcome }>({
+      decline: { posted: [], failures: [], outcome: "processed" },
+      toolReply: { posted: [TOOL_REPLY], failures: [], outcome: "processed" },
+      act: { posted: [], failures: [], outcome: "processed" },
+      finalText: { posted: [CLOSING_TEXT], failures: [], outcome: "processed" },
       // No filler stands in for the missing answer.
-      { script: "nothing", posted: [], failures: [MISSING_REPLY], outcome: "failed" },
-    ])("settles a `$script` turn as $outcome, relaying OpenCode's text only when no Band tool answered", async ({ script, posted, failures, outcome }) => {
+      nothing: { posted: [], failures: [MISSING_REPLY], outcome: "failed" },
+    }))("settles a `$script` turn as $outcome, relaying OpenCode's text only when no Band tool answered", async ({ script, posted, failures, outcome }) => {
       await using session = await opencodeRoom();
       const { room } = session;
       const message = await session.start(TURN_SCRIPTS[script]);
 
       expect(await room.outcome(message)).toBe(outcome);
       expect(room.messages.map((entry) => entry.content)).toEqual(posted);
+      expect(room.failures).toEqual(failures);
+    });
+
+    it.each([
+      { effect: "act" as const, outcome: "processed", failures: [] },
+      { effect: undefined, outcome: "failed", failures: [MISSING_REPLY] },
+    ])("settles a turn whose only call is a custom tool declaring $effect as $outcome", async ({ effect, outcome, failures }) => {
+      const fileTicket = { name: "file_ticket", schema: z.object({ title: z.string() }), handler: () => ({ id: "T-1" }), effect };
+      await using session = await opencodeRoom({}, { customTools: [fileTicket] });
+      const { room } = session;
+      const message = await session.start(async (turn) => {
+        await turn.callTool("file_ticket", { ...ROOM, title: "Broken build" });
+        turn.idle();
+      });
+
+      expect(await room.outcome(message)).toBe(outcome);
       expect(room.failures).toEqual(failures);
     });
 

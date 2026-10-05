@@ -1250,9 +1250,9 @@ describe("ACPClientAdapter", () => {
       { isSessionBootstrap: true, roomId: "room-coalesce" },
     )
 
-    // Four streamed text deltas collapse into two room messages; the two
-    // tool_call_update frames stay two separate events, not eight room posts.
-    expect(tools.messages).toEqual(["Hello world", "All done"])
+    // Four streamed text deltas collapse into two runs, relayed as one answer;
+    // the two tool_call_update frames stay two separate events.
+    expect(tools.messages).toEqual(["Hello world\n\nAll done"])
 
     const toolResultEvents = tools.events.filter((event) => event.messageType === "tool_result")
     expect(toolResultEvents).toEqual([
@@ -5223,7 +5223,7 @@ describe("ACPClientAdapter turn outcome", () => {
     turn: (script, tools) => judgedTurn(scriptedAgent(CONTRACT_TURNS[script]), tools),
   }])
 
-  it("relays the text on both sides of a tool call, in order", async () => {
+  it("relays the text on both sides of a tool call as one answer, in order", async () => {
     const tools = new FakeTools()
     await judgedTurn(scriptedAgent(async (agent) => {
       await agent.say("Let me check.")
@@ -5231,7 +5231,7 @@ describe("ACPClientAdapter turn outcome", () => {
       await agent.say("The notes say yes.")
     }), tools)
 
-    expect(tools.messages).toEqual(["Let me check.", "The notes say yes."])
+    expect(tools.messages).toEqual(["Let me check.\n\nThe notes say yes."])
     expect(failureEvents(tools)).toEqual([])
   })
 
@@ -5331,6 +5331,24 @@ describe("ACPClientAdapter turn outcome", () => {
       }, external), tools)
 
       expect(tools.messages).toEqual([CLOSING_TEXT])
+      expect(failureEvents(tools)).toEqual([])
+    })
+
+    it("records a Band reply that Cursor names only in a later update", async () => {
+      const tools = new FakeTools()
+      await judgedTurn(scriptedAgent(async (agent) => {
+        await agent.update({ sessionUpdate: "tool_call", toolCallId: "call-1", title: "MCP: tool", status: "pending", rawInput: {} })
+        await agent.update({
+          sessionUpdate: "tool_call_update",
+          toolCallId: "call-1",
+          title: `${MCP_SERVER_NAME}: ${SEND_MESSAGE_TOOL_NAME}`,
+          rawInput: { providerIdentifier: MCP_SERVER_NAME, toolName: SEND_MESSAGE_TOOL_NAME, args: TOOL_REPLY_ARGS },
+        })
+        await agent.update({ sessionUpdate: "tool_call_update", toolCallId: "call-1", status: "completed" })
+        await agent.say(CLOSING_TEXT)
+      }, external), tools)
+
+      expect(tools.messages).toEqual([])
       expect(failureEvents(tools)).toEqual([])
     })
   })

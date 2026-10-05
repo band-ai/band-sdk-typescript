@@ -8,6 +8,7 @@ import {
 } from "@band-ai/band-sdk-core";
 
 import type { MentionInput } from "../contracts/dtos";
+import { isBlankEventContent } from "../contracts/chatEvents";
 import { isFailedToolOutput, type AdapterToolsProtocol, type MessagingTools } from "../contracts/protocols";
 import { BAND_TOOL_EFFECTS, isBandToolName, SEND_MESSAGE_TOOL_NAME, TOOL_METHODS } from "../contracts/toolSchemas";
 import { deliverReply } from "./deliveryFailedError";
@@ -26,6 +27,9 @@ export class Turn {
   private readonly ledger = new TurnLedger();
   private readonly sent: string[] = [];
   private isDetached = false;
+
+  /** `judged`: whether a missing reply is reported, false for an exempt adapter or a synthetic turn. */
+  public constructor(public readonly judged = true) {}
 
   public record(effect: TurnEffect): void {
     this.ledger.record(effect);
@@ -91,9 +95,9 @@ function recordLanded(turn: Turn, toolName: BandToolName, content: unknown, resu
     turn.recordTool(toolName);
     return;
   }
-  const text = String(content ?? "").trim();
-  if (text.length > 0) {
-    turn.recordSend(text);
+  const text = String(content ?? "");
+  if (!isBlankEventContent(text)) {
+    turn.recordSend(text.trim());
   }
 }
 
@@ -103,8 +107,8 @@ function recordLanded(turn: Turn, toolName: BandToolName, content: unknown, resu
  * method such as `sendMessage`. `executeToolCall` dispatches to the real
  * methods, not these, so each call records once.
  */
-export function trackTurn<T extends AdapterToolsProtocol>(tools: T): TurnTools<T> {
-  const turn = new Turn();
+export function trackTurn<T extends AdapterToolsProtocol>(tools: T, judged = true): TurnTools<T> {
+  const turn = new Turn(judged);
   const overrides: Record<string, unknown> = { turn };
 
   for (const [toolName, methodName] of Object.entries(TOOL_METHODS)) {
@@ -144,7 +148,7 @@ export async function relayReply(
   text: string | null | undefined,
   mentions: MentionInput,
 ): Promise<boolean> {
-  if (tools.turn.replied || !text?.trim()) {
+  if (tools.turn.replied || !text || isBlankEventContent(text)) {
     return false;
   }
   await deliverReply(tools, text, mentions);
@@ -159,14 +163,14 @@ export function missingReplyFailure(): AgentFailure {
  * Judges a detached turn at its real end, reporting a missing reply. Its
  * delivery was already acked, so this only tells the room. A turn that isn't
  * detached is left alone: `SimpleAdapter.onEvent` judges it, and a report here
- * would mark it reported first.
+ * would mark it reported first. An unjudged turn is never reported.
  */
 export async function reportUnsettledTurn(
   tools: TurnTools<MessagingTools>,
   logger: Logger,
   logContext: Record<string, unknown>,
 ): Promise<void> {
-  if (tools.turn.detached && tools.turn.verdict() === "missing_reply") {
+  if (tools.turn.judged && tools.turn.detached && tools.turn.verdict() === "missing_reply") {
     await safeSendFailure(tools, missingReplyFailure(), logger, logContext);
   }
 }

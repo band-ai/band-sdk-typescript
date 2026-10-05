@@ -61,7 +61,7 @@ export abstract class SimpleAdapter<H, TTools = TurnTools>
   }
 
   public async onEvent(input: FrameworkAdapterInput): Promise<void> {
-    const tools = trackTurn(input.tools);
+    const tools = trackTurn(input.tools, this.judgesTurns && !isSyntheticTurn(input.message));
     const history = this.convertHistory(input.history);
     await this.onMessage(
       input.message,
@@ -74,12 +74,7 @@ export abstract class SimpleAdapter<H, TTools = TurnTools>
         roomId: input.roomId,
       },
     );
-    if (
-      this.judgesTurns
-      && !isSyntheticTurn(input.message)
-      && !tools.turn.detached
-      && tools.turn.verdict() === "missing_reply"
-    ) {
+    if (tools.turn.judged && !tools.turn.detached && tools.turn.verdict() === "missing_reply") {
       await reportTurnFailure(tools, missingReplyFailure());
     }
   }

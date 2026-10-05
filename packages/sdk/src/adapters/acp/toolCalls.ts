@@ -16,12 +16,12 @@ const MCP_INVOCATION_KEYS = [
 ] as const;
 
 /**
- * The name a `tool_call` chunk invoked: its MCP invocation spelled
- * `<server>-<tool>`, read from `raw_input`, or else its title, which some
- * runtimes use only as a display string.
+ * The name a tool call invoked: its MCP invocation spelled `<server>-<tool>`,
+ * read from its raw input, or else its title, which some runtimes use only as
+ * a display string.
  */
-export function acpToolCallName(chunk: CollectedChunk): string {
-  const input = asOptionalRecord(chunk.metadata.raw_input);
+export function acpToolCallName(rawInput: unknown, title: string): string {
+  const input = asOptionalRecord(rawInput);
   if (input) {
     const inputKeys = Object.keys(input);
     for (const keys of MCP_INVOCATION_KEYS) {
@@ -32,7 +32,23 @@ export function acpToolCallName(chunk: CollectedChunk): string {
       }
     }
   }
-  return chunk.content;
+  return title;
+}
+
+/**
+ * The Band tool a chunk names: a `tool_call`, or a `tool_result` that revises
+ * the call's title or input. Cursor opens an MCP call as "MCP: tool" and names
+ * it only in a later update.
+ */
+function namedBandTool(chunk: CollectedChunk): BandToolName | undefined {
+  if (chunk.chunkType === "tool_call") {
+    return resolveBandToolName(acpToolCallName(chunk.metadata.raw_input, chunk.content));
+  }
+  const { raw_input: rawInput, title } = chunk.metadata;
+  if (chunk.chunkType !== "tool_result" || (rawInput === undefined && typeof title !== "string")) {
+    return undefined;
+  }
+  return resolveBandToolName(acpToolCallName(rawInput, typeof title === "string" ? title : ""));
 }
 
 function toolCallId(chunk: CollectedChunk): string | undefined {
@@ -49,22 +65,13 @@ export function recordBandToolCalls(chunks: readonly CollectedChunk[], turn: Tur
   const calls = new Map<string, BandToolName>();
   for (const chunk of chunks) {
     const id = toolCallId(chunk);
-    if (chunk.chunkType === "tool_call") {
-      const tool = resolveBandToolName(acpToolCallName(chunk));
-      if (!tool) {
-        continue;
-      }
-      if (id) {
-        calls.set(id, tool);
-      }
-      if (chunk.metadata.status === COMPLETED) {
-        turn.recordTool(tool);
-      }
-    } else if (chunk.chunkType === "tool_result" && id && chunk.metadata.status === COMPLETED) {
-      const tool = calls.get(id);
-      if (tool) {
-        turn.recordTool(tool);
-      }
+    const named = namedBandTool(chunk);
+    if (named && id) {
+      calls.set(id, named);
+    }
+    const tool = chunk.chunkType === "tool_call" ? named : id && calls.get(id);
+    if (tool && chunk.metadata.status === COMPLETED) {
+      turn.recordTool(tool);
     }
   }
 }

@@ -42,7 +42,8 @@ core's effect table (`bandToolEffects()`):
 | `decline` | `band_no_reply` | yes, and suppresses the relay |
 
 A call that failed (a rejection, `{ ok: false }`, a `ToolExecutorError`) or a
-blank `band_send_message` records nothing. A thought or other event is
+blank `band_send_message` records nothing. Blank is the platform's rule: text
+with no letter, number, punctuation or symbol. A thought or other event is
 visible in the room, but it never answers the turn.
 
 ## Text the adapter writes itself
@@ -79,7 +80,8 @@ reply, and a handler that answers nothing on purpose calls
 ## Relaying the model's closing text
 
 Tool-loop adapters relay the model's final text when it never answered
-through a tool. Use `relayReply(tools, text, mentions)`: it posts `text`
+through a tool. ACP joins the text runs around its tool calls into that one
+answer. Use `relayReply(tools, text, mentions)`: it posts `text`
 unless the turn already replied or declined, and returns whether it posted.
 
 The base prompt still tells the model that plain text is never delivered, as
@@ -94,7 +96,9 @@ An adapter that releases a turn's request while the turn waits on the room
 `onEvent` then skips the judgement and the delivery is marked PROCESSED. At
 the turn's real end the adapter calls `reportUnsettledTurn(tools, logger)`,
 which posts the missing-reply failure when the verdict is `missing_reply`.
-A turn cancelled by room cleanup is not reported.
+Only a turn `onEvent` would have judged is reported, so a detached synthetic
+turn or an exempt adapter's turn never is. A turn cancelled by room cleanup is
+not reported.
 
 OpenCode ends a turn on a bare approval or question reject, before the model
 can answer. So the adapter sends every decided reject (a room's reject, an
@@ -111,7 +115,9 @@ stream instead: each `tool_call` naming a Band tool that reports `completed`,
 directly or through a `tool_result` with the same id. It reads the name from
 the MCP invocation in `raw_input` (codex-acp, Cursor) or the title, and
 accepts the `band-<tool>` spelling and band-mcp's legacy
-`create_agent_chat_message`. With the SDK's own backend on, the stream is not
+`create_agent_chat_message`. An update that carries a title or raw input
+renames the call: Cursor opens an MCP call as "MCP: tool" and names it only
+there. With the SDK's own backend on, the stream is not
 read, because the tools already record each call.
 
 ## Custom tools
@@ -121,9 +127,10 @@ completes a turn. Declare `act` for a tool with a real side effect (the
 Linear tools that change Linear do), or `reply` for one that posts the turn's
 answer itself.
 
+OpenCode registers its custom tools once for every room, so each takes a
+`room_id`, like the Band tools, and records its effect on that room's turn.
+
 Some tools can't declare one and always count as `observe`:
 
-- OpenCode's custom tools, which are registered once for every room, so no
-  turn is in scope when they run;
 - ClaudeSDK's `additionalMcpTools`, which are raw MCP registrations;
 - LangGraph's `additionalTools`, which are opaque to the SDK.

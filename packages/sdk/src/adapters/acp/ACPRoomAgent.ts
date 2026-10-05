@@ -24,7 +24,7 @@ import { ACP_SESSION_EVENT, type ACPClientSessionState } from "../../converters/
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { rethrowIfRecoverableTurnFailure, ValidationError } from "../../core/errors";
-import type { TurnTools } from "../../core/turn";
+import { relayReply, type TurnTools } from "../../core/turn";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { systemUpdateParts } from "../shared/conversationPrompt";
 import { asErrorMessage } from "../shared/coercion";
@@ -34,7 +34,6 @@ import { assertTurnTimeoutMs } from "../shared/turnTimeout";
 import { assertWithinSetTimeoutBound, MAX_SETTIMEOUT_DELAY_MS, withTimeout } from "../shared/withTimeout";
 import { abandon } from "../shared/abandon";
 import { combineTeardownErrors, isolateTeardown } from "../../core/teardown";
-import { deliverReply } from "../../core/deliveryFailedError";
 import { recordBandToolCalls } from "./toolCalls";
 import { FAILURE_CODE_TIMEOUT, agentFailure, reportTurnFailure } from "../../core/providerFailure";
 import {
@@ -1601,9 +1600,9 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     if (!this.enableMcpTools) {
       recordBandToolCalls(chunks, input.tools.turn)
     }
-    // Read once: the model's text around its tool calls is one answer, relayed
-    // whole unless it already answered (or declined) through a tool.
-    const relayText = !input.tools.turn.replied
+    // The model's text around its tool calls is one answer, relayed once after
+    // the events unless it already answered (or declined) through a tool.
+    const texts: string[] = []
     for (const chunk of chunks) {
       // A status-only ACP update carries its meaning in metadata and has
       // nothing to post.
@@ -1612,12 +1611,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
       }
 
       if (chunk.chunkType === "text") {
-        if (relayText) {
-          await deliverReply(input.tools, chunk.content, [{
-            id: input.senderId,
-            handle: input.senderHandle,
-          }])
-        }
+        texts.push(chunk.content)
         continue
       }
 
@@ -1631,6 +1625,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
         chunk.metadata,
       )
     }
+    await relayReply(input.tools, texts.join("\n\n"), [{ id: input.senderId, handle: input.senderHandle }])
   }
 }
 

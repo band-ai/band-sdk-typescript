@@ -18,15 +18,16 @@ import {
   TOOL_MODELS,
   resolveBandToolName,
 } from "../src/contracts/toolSchemas";
+import { SYNTHETIC_CONTACT_EVENTS_SENDER_ID, SYNTHETIC_SENDER_TYPE } from "../src/contracts/protocols";
 import { deliverReply } from "../src/core/deliveryFailedError";
 import { agentFailure } from "../src/core/providerFailure";
 import { SimpleAdapter } from "../src/core/simpleAdapter";
-import { relayReply, trackTurn, Turn } from "../src/core/turn";
+import { relayReply, reportUnsettledTurn, trackTurn, Turn, type TurnTools } from "../src/core/turn";
 import { buildSingleContextRegistrations, resolveSingleRoomTools } from "../src/mcp/registrations";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
 import { executeCustomTool, type CustomToolDef } from "../src/runtime/tools/customTools";
-import { FakeRestApi, FakeTools, makeRoster } from "./testUtils";
-import { TURN_OUTCOME_ADAPTERS, TURN_OUTCOME_EXEMPT } from "./turnOutcomeContract";
+import { FakeRestApi, FakeTools, makeLoggerSpy, makeMessage, makeRoster, MISSING_REPLY, reportedFailures } from "./testUtils";
+import { TURN_OUTCOME_ADAPTERS, TURN_OUTCOME_EXEMPT, turnInput } from "./turnOutcomeContract";
 
 const JANE = [{ id: "u1" }];
 
@@ -145,6 +146,36 @@ describe("trackTurn", () => {
   });
 });
 
+/** Detaches every turn, as OpenCode and Cursor do when they park one on a decision. */
+class Parking extends SimpleAdapter<unknown> {
+  protected readonly provider = "parking";
+  public parked: TurnTools | undefined;
+
+  public async onMessage(_message: unknown, tools: TurnTools): Promise<void> {
+    tools.turn.detach();
+    this.parked = tools;
+  }
+}
+
+describe("detached turns", () => {
+  async function reportAtRealEnd(message = makeMessage("Hello")): Promise<FakeTools> {
+    const tools = new FakeTools();
+    const adapter = new Parking();
+    await adapter.onEvent(turnInput(tools, message));
+    await reportUnsettledTurn(adapter.parked!, makeLoggerSpy(), { roomId: message.roomId });
+    return tools;
+  }
+
+  it("reports a judged turn that ends without a reply once, at its real end", async () => {
+    expect(reportedFailures((await reportAtRealEnd()).events)).toEqual([MISSING_REPLY]);
+  });
+
+  it("never reports a synthetic turn, which onEvent would not have judged", async () => {
+    const synthetic = { ...makeMessage("contact event"), senderType: SYNTHETIC_SENDER_TYPE, senderId: SYNTHETIC_CONTACT_EVENTS_SENDER_ID };
+    expect(reportedFailures((await reportAtRealEnd(synthetic)).events)).toEqual([]);
+  });
+});
+
 describe("relayReply", () => {
   it("relays the closing text of a turn that has not replied", async () => {
     const tools = trackTurn(new FakeTools());
@@ -165,10 +196,11 @@ describe("relayReply", () => {
     expect(tools.messages).toEqual([]);
   });
 
-  it("skips blank text", async () => {
+  // The platform's rule: a zero-width space alone is blank, though trim() keeps it.
+  it.each([["whitespace", "  "], ["a zero-width space", "\u200B"]])("skips %s, which the platform refuses as blank", async (_case, text) => {
     const tools = trackTurn(new FakeTools());
 
-    expect(await relayReply(tools, "  ", JANE)).toBe(false);
+    expect(await relayReply(tools, text, JANE)).toBe(false);
     expect(tools.turn.verdict()).toBe("missing_reply");
   });
 });
@@ -247,11 +279,11 @@ describe("out-of-process Band tool names", () => {
     ["codex-acp", { server: "band", tool: "band_send_message", arguments: { content: "Hi" } }],
     ["Cursor", { providerIdentifier: "band", toolName: "band_send_message", args: { content: "Hi" } }],
   ])("reads %s's MCP invocation from raw_input", (_runtime, rawInput) => {
-    expect(resolveBandToolName(acpToolCallName(toolCall({ raw_input: rawInput })))).toBe(SEND_MESSAGE_TOOL_NAME);
+    expect(resolveBandToolName(acpToolCallName(rawInput, "Calling a tool"))).toBe(SEND_MESSAGE_TOOL_NAME);
   });
 
   it("falls back to the title when raw_input is not an MCP invocation", () => {
-    expect(acpToolCallName(toolCall({ raw_input: { path: "notes.md" } }, "band-band_send_message"))).toBe("band-band_send_message");
+    expect(acpToolCallName({ path: "notes.md" }, "band-band_send_message")).toBe("band-band_send_message");
   });
 
   it("records a call that completes on its own tool_result", () => {
@@ -297,8 +329,8 @@ describe("turn-outcome registry", () => {
     expect(Object.keys(TURN_OUTCOME_ADAPTERS).filter((name) => !names.includes(name))).toEqual([]);
   });
 
-  // A flow test drives the room end to end instead, scripting every row through a `Record<TurnScript, …>`.
-  const RUNS_CONTRACT = /describeTurnOutcomeContract\(|Record<TurnScript,/;
+  // A flow test drives the room end to end instead, its rows from `contractRows`.
+  const RUNS_CONTRACT = /describeTurnOutcomeContract\(|contractRows[<(]/;
 
   it("runs the contract for every registered adapter: in a file that names it, or its parent's if it only configures that parent", () => {
     for (const [name, adapter] of simpleAdapters) {

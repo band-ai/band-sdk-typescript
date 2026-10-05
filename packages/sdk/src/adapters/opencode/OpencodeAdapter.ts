@@ -19,14 +19,14 @@ import {
   type BandMcpBackend,
 } from "../../mcp/backends";
 import type { McpToolRegistration } from "../../mcp/registrations";
-import { errorResult, successResult } from "../../mcp/registrations";
+import { errorResult, ROOM_ID_PROPERTY, successResult } from "../../mcp/registrations";
 import { MCP_SERVER_NAME } from "../../contracts/toolSchemas";
 import { abandon } from "../shared/abandon";
 import { senderAllowlist, type DecisionEntry, type DecisionRegistry, type Registration } from "../shared/decisions";
 import { replyToSender } from "../shared/replyToSender";
 import { roomContextLines } from "../shared/roomContext";
 import { runUntilReleased } from "../shared/runUntilReleased";
-import { asErrorMessage, asNestedMessage, asOptionalRecord, asString, toDisplayText, truncate } from "../shared/coercion";
+import { asErrorMessage, asNestedMessage, asNonEmptyString, asOptionalRecord, asString, toDisplayText, truncate } from "../shared/coercion";
 import { DeliveryFailedError } from "../../core/deliveryFailedError";
 import { relayReply, reportUnsettledTurn, type TurnTools } from "../../core/turn";
 import {
@@ -240,7 +240,15 @@ function withDefaults(config?: OpencodeAdapterConfig): Required<OpencodeAdapterC
   };
 }
 
-function buildCustomMcpRegistrations(customTools: CustomToolDef[]): McpToolRegistration[] {
+/**
+ * Custom tools for the shared MCP backend. They are registered once for every
+ * room, so each takes `room_id`, like the Band tools, to record its declared
+ * effect on that room's turn.
+ */
+function buildCustomMcpRegistrations(
+  customTools: CustomToolDef[],
+  toolsForRoom: (roomId: string) => TurnTools | undefined,
+): McpToolRegistration[] {
   return customTools.map((customTool) => {
     const schema = customToolToOpenAISchema(customTool);
     const functionSchema = asOptionalRecord(schema.function) ?? {};
@@ -255,13 +263,13 @@ function buildCustomMcpRegistrations(customTools: CustomToolDef[]): McpToolRegis
       description: typeof functionSchema.description === "string" ? functionSchema.description : "",
       inputSchema: {
         type: "object",
-        properties,
-        required,
+        properties: { ...properties, room_id: ROOM_ID_PROPERTY },
+        required: [...required, "room_id"],
       },
-      execute: async (args) => {
+      execute: async ({ room_id: roomId, ...toolArgs }) => {
         try {
-          // Built once and shared by every room, so no turn is in scope.
-          return successResult(await executeCustomTool(customTool, args));
+          const turn = toolsForRoom(asNonEmptyString(roomId) ?? "")?.turn;
+          return successResult(await executeCustomTool(customTool, toolArgs, turn));
         } catch (error) {
           return errorResult(error instanceof Error ? error.message : String(error));
         }
@@ -481,12 +489,18 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
     return this.connection.client;
   }
 
+  private toolsForRoom(roomId: string): TurnTools | undefined {
+    return this.rooms.get(roomId)?.tools;
+  }
+
   private startMcpBackend(): Promise<BandMcpBackend | null> {
     return this.mcpBackendFactory({
       kind: "http",
       enableMemoryTools: this.config.enableMemoryTools,
-      getToolsForRoom: (roomId) => this.rooms.get(roomId)?.tools ?? undefined,
-      additionalTools: this.customTools.length > 0 ? buildCustomMcpRegistrations(this.customTools) : undefined,
+      getToolsForRoom: (roomId) => this.toolsForRoom(roomId),
+      additionalTools: this.customTools.length > 0
+        ? buildCustomMcpRegistrations(this.customTools, (roomId) => this.toolsForRoom(roomId))
+        : undefined,
     }).catch((error: unknown) => {
       this.logger.warn("Failed to start OpenCode MCP backend", { error });
       return null;
@@ -1213,7 +1227,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
       "## Room Context",
       ...roomContextLines(roomId, message),
       "",
-      "When a Band tool needs the current room, pass the Current room_id above.",
+      "When a tool takes room_id, pass the Current room_id above.",
     ].join("\n");
   }
 

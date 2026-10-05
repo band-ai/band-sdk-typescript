@@ -39,6 +39,9 @@ export interface BuildRegistrationsOptions {
 
 type ToolResolver = (roomId: string) => AdapterToolsProtocol | undefined;
 
+/** The argument a room-scoped tool takes to name the room it runs in. */
+export const ROOM_ID_PROPERTY = { type: "string", description: "The room ID to execute this tool in" } as const;
+
 /**
  * Build MCP tool registrations with room-scoped tool resolution.
  * Each tool call requires a `room_id` argument to look up the correct tools instance.
@@ -123,7 +126,7 @@ function buildRegistrations(
     const required: string[] = [...model.required];
 
     if (opts.injectRoomId) {
-      properties.room_id = { type: "string", description: "The room ID to execute this tool in" };
+      properties.room_id = ROOM_ID_PROPERTY;
       required.push("room_id");
     }
 
