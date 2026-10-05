@@ -25,7 +25,7 @@ import { SimpleAdapter } from "../src/core/simpleAdapter";
 import { relayReply, reportUnsettledTurn, trackTurn, Turn, type TurnTools } from "../src/core/turn";
 import { buildSingleContextRegistrations, resolveSingleRoomTools } from "../src/mcp/registrations";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
-import { executeCustomTool, type CustomToolDef } from "../src/runtime/tools/customTools";
+import { buildCustomToolIndex, CustomToolDefinitionError, executeCustomTool, type CustomToolDef } from "../src/runtime/tools/customTools";
 import { FakeRestApi, FakeTools, makeLoggerSpy, makeMessage, makeRoster, MISSING_REPLY, reportedFailures } from "./testUtils";
 import { TURN_OUTCOME_ADAPTERS, TURN_OUTCOME_EXEMPT, turnInput } from "./turnOutcomeContract";
 
@@ -233,6 +233,16 @@ describe("custom tool effect", () => {
     await expect(executeCustomTool(failing, {}, turn)).rejects.toThrow("boom");
 
     expect(turn.verdict()).toBe("missing_reply");
+  });
+
+  // An untyped caller's typo: refused when indexed, and before the side effect when run.
+  it("refuses an effect core doesn't know, before its handler runs", async () => {
+    const handler = vi.fn(() => "filed");
+    const misspelled = { ...tool(), handler, effect: "acts" } as unknown as CustomToolDef;
+
+    expect(() => buildCustomToolIndex([misspelled])).toThrow(CustomToolDefinitionError);
+    await expect(executeCustomTool(misspelled, {}, new Turn())).rejects.toThrow(CustomToolDefinitionError);
+    expect(handler).not.toHaveBeenCalled();
   });
 });
 

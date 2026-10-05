@@ -1,9 +1,10 @@
-import type { TurnEffect } from "@band-ai/band-sdk-core";
+import { turnEffects, type TurnEffect } from "@band-ai/band-sdk-core";
 import { z } from "zod";
 
 import type { Turn } from "../../core/turn";
 
 const DEFAULT_CUSTOM_TOOL_EFFECT: TurnEffect = "observe";
+const TURN_EFFECTS: ReadonlySet<string> = new Set(turnEffects());
 
 export interface CustomToolDef {
   schema: z.ZodObject;
@@ -129,9 +130,24 @@ export function buildCustomToolIndex(tools: CustomToolDef[]): Map<string, Custom
     if (index.has(name)) {
       throw new CustomToolDefinitionError(`Duplicate custom tool name '${name}' is not allowed.`);
     }
+    customToolEffect(def);
     index.set(name, def);
   }
   return index;
+}
+
+/**
+ * `def`'s effect, checked against core's: an untyped caller's misspelled one
+ * fails here, before the handler's side effect, not after it.
+ */
+function customToolEffect(def: CustomToolDef): TurnEffect {
+  const effect = def.effect ?? DEFAULT_CUSTOM_TOOL_EFFECT;
+  if (!TURN_EFFECTS.has(effect)) {
+    throw new CustomToolDefinitionError(
+      `Custom tool '${getCustomToolName(def)}' declares effect '${String(effect)}'; expected one of: ${[...TURN_EFFECTS].join(", ")}.`,
+    );
+  }
+  return effect;
 }
 
 /** Runs `def`, recording its effect on `turn` when it succeeds; omit `turn` where none is in scope. */
@@ -141,6 +157,7 @@ export async function executeCustomTool(
   turn?: Turn,
 ): Promise<unknown> {
   const toolName = getCustomToolName(def);
+  const effect = customToolEffect(def);
   const result = def.schema.safeParse(arguments_);
 
   if (!result.success) {
@@ -150,7 +167,7 @@ export async function executeCustomTool(
 
   try {
     const output: unknown = await def.handler(result.data);
-    turn?.record(def.effect ?? DEFAULT_CUSTOM_TOOL_EFFECT);
+    turn?.record(effect);
     return output;
   } catch (error) {
     if (error instanceof CustomToolValidationError || error instanceof CustomToolExecutionError) {

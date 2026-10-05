@@ -102,14 +102,14 @@ function recordLanded(turn: Turn, toolName: BandToolName, content: unknown, resu
 }
 
 /**
- * `tools` with a fresh {@link Turn} that records every Band tool call that
- * lands, whichever way it is made: the model's `executeToolCall`, or a direct
- * method such as `sendMessage`. `executeToolCall` dispatches to the real
- * methods, not these, so each call records once.
+ * Wrappers for `tools`' Band tool methods that record each call that lands on
+ * `turn`, whichever way it is made: the model's `executeToolCall`, or a direct
+ * method such as `sendMessage`. They call the methods `tools` has now, and
+ * `executeToolCall` dispatches to the real methods, not these, so each call
+ * records once.
  */
-export function trackTurn<T extends AdapterToolsProtocol>(tools: T, judged = true): TurnTools<T> {
-  const turn = new Turn(judged);
-  const overrides: Record<string, unknown> = { turn };
+export function recordingOverrides<T extends AdapterToolsProtocol>(tools: T, turn: Turn): Partial<T> {
+  const overrides: Record<string, unknown> = {};
 
   for (const [toolName, methodName] of Object.entries(TOOL_METHODS)) {
     const method = methodName && (tools[methodName] as ToolMethod | undefined)?.bind(tools);
@@ -123,23 +123,31 @@ export function trackTurn<T extends AdapterToolsProtocol>(tools: T, judged = tru
     };
   }
 
+  const executeToolCall = tools.executeToolCall.bind(tools);
   overrides.executeToolCall = async (toolName: string, args: Record<string, unknown>) => {
-    const result = await tools.executeToolCall(toolName, args);
+    const result = await executeToolCall(toolName, args);
     if (isBandToolName(toolName)) {
       recordLanded(turn, toolName, args.content, result);
     }
     return result;
   };
 
+  const sendFailure = tools.sendFailure.bind(tools);
   overrides.sendFailure = async (failure: AgentFailure) => {
-    const result = await tools.sendFailure(failure);
+    const result = await sendFailure(failure);
     if (!isFailedToolOutput(result)) {
       turn.noteReported();
     }
     return result;
   };
 
-  return overrideTools(tools as TurnTools<T>, overrides as Partial<TurnTools<T>>);
+  return overrides as Partial<T>;
+}
+
+/** `tools` with a fresh {@link Turn} that records every Band tool call that lands, via {@link recordingOverrides}. */
+export function trackTurn<T extends AdapterToolsProtocol>(tools: T, judged = true): TurnTools<T> {
+  const turn = new Turn(judged);
+  return overrideTools(tools as TurnTools<T>, { ...recordingOverrides(tools, turn), turn } as Partial<TurnTools<T>>);
 }
 
 /** Relays the model's closing `text` as the reply, unless the turn already replied or declined. */

@@ -8,7 +8,7 @@ import type {
 } from "../contracts/protocols";
 import { DEFAULT_AGENT_TOOLS_CAPABILITIES, sendFailureViaEvent } from "../contracts/protocols";
 import { isBlankEventContent } from "../contracts/chatEvents";
-import { Turn } from "../core/turn";
+import { recordingOverrides, Turn } from "../core/turn";
 import type {
   AddContactArgs,
   ContactRecord,
@@ -71,7 +71,7 @@ export class FakeAgentTools
   public participantsAdded: CapturedParticipant[] = [];
   public participantsRemoved: string[] = [];
   public toolCalls: CapturedToolCall[] = [];
-  /** A turn outside `SimpleAdapter.onEvent`, which gives each turn its own; nothing records here. */
+  /** Records this fake's Band tool calls as production tools do, for an adapter tested without `onEvent`. */
   public readonly turn = new Turn();
 
   private messageCounter = 0;
@@ -84,6 +84,7 @@ export class FakeAgentTools
     this.errorFactory =
       options?.errorFactory ??
       ((method) => new Error(`FakeAgentTools configured failure for ${String(method)}`));
+    Object.assign(this, recordingOverrides(this, this.turn));
   }
 
   public async sendMessage(

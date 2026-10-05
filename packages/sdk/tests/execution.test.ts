@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { RecoverableTurnError } from "../src/core/errors";
 import type { PlatformEvent } from "../src/platform/events";
 import { Execution, PERMANENT_FAILURE_ERROR } from "../src/runtime/Execution";
+import { makeLoggerSpy } from "./testUtils";
 import type { ExecutionState } from "../src/runtime/ExecutionContext";
 import { RetryTracker } from "@band-ai/band-sdk-core";
 
@@ -407,6 +408,32 @@ describe("Execution crash recovery", () => {
     // fail-msg threw during sync but didn't crash; ok-msg and ws-1 succeeded
     expect(processed).toEqual(["ok-msg", "ws-1"]);
     await execution.stop();
+  });
+
+  it("logs a turn failure already reported to the room as a warning, not an error, on the sync path too", async () => {
+    const logger = makeLoggerSpy();
+    const execution = new Execution({
+      roomId: "room-1",
+      link: {
+        getNextMessage: async () => null,
+        getStaleProcessingMessages: async () => [makeBacklogMessage("silent")],
+        markFailed: async () => {},
+      } as never,
+      context: makeContext(2) as never,
+      logger,
+      onExecute: async () => {
+        throw new RecoverableTurnError("turn ended without a reply");
+      },
+    });
+
+    await execution.enqueue(makeEvent("ws-1"));
+    await execution.waitForIdle();
+    await execution.stop();
+
+    const turnFailed = { roomId: "room-1", error: "turn ended without a reply" };
+    expect(logger.warn).toHaveBeenCalledWith("Turn failed without stopping the room", { ...turnFailed, messageId: "silent" });
+    expect(logger.warn).toHaveBeenCalledWith("Turn failed without stopping the room", { ...turnFailed, eventType: "message_created" });
+    expect(logger.error).not.toHaveBeenCalled();
   });
 
   it("marks message permanently failed when retries exceeded during sync", async () => {

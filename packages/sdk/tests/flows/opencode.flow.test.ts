@@ -1030,6 +1030,36 @@ describe("OpenCode in a Band room", () => {
     });
 
     it.each([
+      { decision: "the room's reject", expires: false },
+      { decision: "expiry", expires: true },
+    ])("reports a turn whose model goes silent after $decision declines its question, once", async ({ expires }) => {
+      if (expires) {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      }
+      await using session = await opencodeRoom({ questionWaitTimeoutMs: SHORT_DEADLINE_MS });
+      const { room, server } = session;
+      const question = "que_silent";
+      const ended = createDeferred<void>();
+      const message = await session.start(async (turn) => {
+        await turn.askQuestion([{ question: "Proceed?" }], question).reply;
+        turn.idle();
+        ended.resolve();
+      });
+      await room.nextMessage((posted) => posted.content === formatQuestionPrompt([{ question: "Proceed?" }], question));
+      if (expires) {
+        await vi.advanceTimersByTimeAsync(SHORT_DEADLINE_MS);
+      } else {
+        await room.exchange(OWNER, `reject ${question}`);
+      }
+      await ended.promise;
+      await room.until(() => room.failures.length > 0);
+
+      expect(server.questionReplies()).toEqual([[question, DECLINED]]);
+      expect(room.failures).toEqual([MISSING_REPLY]);
+      expect(room.outcomes(message), "the request was already handed back").toEqual(["processed"]);
+    });
+
+    it.each([
       { ending: "answers after the decision", finish: TURN_SCRIPTS.finalText, posted: [CLOSING_TEXT], failures: [] },
       { ending: "ends with nothing", finish: TURN_SCRIPTS.nothing, posted: [], failures: [MISSING_REPLY] },
     ])("judges a turn handed back to the room for an approval when it really ends: one that $ending", async ({ finish, posted, failures }) => {

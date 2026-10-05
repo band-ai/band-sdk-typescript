@@ -28,7 +28,7 @@ export const REJECTED_PERMISSION_FEEDBACK =
  * answer, which hands the decision back to the model like a permission reject.
  */
 export const DECLINED_QUESTION_ANSWER =
-  "Declined. Do not ask again or try another way to get this answer; reply to the user instead.";
+  "This question was declined. Do not ask it again; continue and reply to the user without it.";
 
 export function declinedAnswers(questions: readonly unknown[]): string[][] {
   return questions.map(() => [DECLINED_QUESTION_ANSWER]);
