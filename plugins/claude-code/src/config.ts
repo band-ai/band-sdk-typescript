@@ -1,8 +1,10 @@
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { loadAgentConfigFromEnv, loadAgentConfigs, type AgentCredentials } from "@band-ai/sdk/config";
 import { dump as dumpYaml } from "js-yaml";
+
+import { writeFileAtomically } from "./files";
 
 /** An exact prefix: the user's own BAND_* and THENVOI_* variables never reach the plugin. */
 export const ENV_PREFIX = "BAND_CHANNEL_";
@@ -13,20 +15,25 @@ export const ENV_PREFIX = "BAND_CHANNEL_";
 export const AGENT_SELECT_ENV = "BAND_AGENT";
 /** The agent configured when the plugin was enabled, from its `userConfig`. */
 export const DEFAULT_AGENT_NAME = "default";
-/** The saved agents, keyed by name, in the plugin's data directory. */
-export const AGENTS_FILE = "agents.yaml";
 /** The skill that manages the agents. */
 export const AGENTS_COMMAND = "/band:agents";
-/** Where `/band:agents use` selects an agent for a project: the user's personal Claude Code settings for it. */
-export const PROJECT_SETTINGS_FILE = join(".claude", "settings.local.json");
+/** How messages tell the user to save an agent, and to pick one. */
+export const ADD_HINT = `${AGENTS_COMMAND} add <agent_id> <api_key>`;
+export const USE_HINT = `${AGENTS_COMMAND} use <name>`;
 
 /** What Claude Code sets for a plugin's MCP server. */
 export const CLAUDE_ENV = {
   /** Survives plugin updates; deleted on uninstall unless `--keep-data`. */
   pluginData: "CLAUDE_PLUGIN_DATA",
   projectDir: "CLAUDE_PROJECT_DIR",
+  /** Undocumented for MCP servers; set by Claude Code 2.1.289. */
   sessionId: "CLAUDE_CODE_SESSION_ID",
 } as const;
+
+/** The saved agents, keyed by name, in the plugin's data directory. */
+const AGENTS_FILE = "agents.yaml";
+/** Where `/band:agents use` selects an agent for a project: the user's personal Claude Code settings for it. */
+const PROJECT_SETTINGS_FILE = join(".claude", "settings.local.json");
 
 // Only owner-readable: the file holds API keys.
 const AGENTS_FILE_MODE = 0o600;
@@ -52,7 +59,7 @@ export function agentCredentials(name: string, env: Env): AgentCredentials {
   const saved = readSavedAgents(pluginDataDir(env));
   const agent = saved[name];
   if (!agent) {
-    throw new Error(`${unknownAgentMessage(name, saved)} Add it with ${AGENTS_COMMAND} add <agent_id> <api_key> ${name}`);
+    throw new Error(`${unknownAgentMessage(name, saved)} Add it with ${ADD_HINT} ${name}`);
   }
   return { agentId: agent.agentId, apiKey: agent.apiKey, ...(agent.wsUrl ? { wsUrl: agent.wsUrl } : {}) };
 }
@@ -64,6 +71,16 @@ export function agentNames(saved: Readonly<Record<string, SavedAgent>>): string[
 
 export function unknownAgentMessage(name: string, saved: Readonly<Record<string, SavedAgent>>): string {
   return `No Band agent named "${name}". Agents: ${agentNames(saved).join(", ")}.`;
+}
+
+/** A Band handle as people address it. */
+export function atHandle(handle: string): string {
+  return `@${handle}`;
+}
+
+/** The agent part of an `owner/agent` handle: what a saved agent is named unless the user names it. */
+export function nameFromHandle(handle: string): string | undefined {
+  return handle.split("/").pop();
 }
 
 /** Fails naming the rule when `name` can't be a saved agent's name. */
@@ -81,9 +98,17 @@ function pluginDataDir(env: Env): string {
   return dir;
 }
 
+export function agentsFilePath(dataDir: string): string {
+  return join(dataDir, AGENTS_FILE);
+}
+
+export function projectSettingsPath(projectDir: string): string {
+  return join(projectDir, PROJECT_SETTINGS_FILE);
+}
+
 /** The saved agents by name; none until the first is added. */
 export function readSavedAgents(dataDir: string): Record<string, SavedAgent> {
-  const path = join(dataDir, AGENTS_FILE);
+  const path = agentsFilePath(dataDir);
   if (!existsSync(path)) {
     return {};
   }
@@ -96,15 +121,12 @@ export function readSavedAgents(dataDir: string): Record<string, SavedAgent> {
 }
 
 export function writeSavedAgents(dataDir: string, agents: Readonly<Record<string, SavedAgent>>): void {
-  const path = join(dataDir, AGENTS_FILE);
   const sections = Object.fromEntries(
     Object.entries(agents).map(([name, agent]) => [
       name,
       { agent_id: agent.agentId, api_key: agent.apiKey, ...(agent.wsUrl ? { ws_url: agent.wsUrl } : {}), handle: agent.handle },
     ]),
   );
-  mkdirSync(dataDir, { recursive: true });
-  writeFileSync(path, dumpYaml(sections), { mode: AGENTS_FILE_MODE });
-  // The mode applies only when the file is created.
-  chmodSync(path, AGENTS_FILE_MODE);
+  // A session starting meanwhile reads the agents whole.
+  writeFileAtomically(agentsFilePath(dataDir), dumpYaml(sections), AGENTS_FILE_MODE);
 }

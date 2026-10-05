@@ -6,9 +6,9 @@ import { PlatformRuntime } from "@band-ai/sdk/runtime";
 import type { Readable, Writable } from "node:stream";
 
 import { ChannelAdapter } from "./adapter";
-import { AGENTS_COMMAND } from "./config";
+import { USE_HINT } from "./config";
 import { channelInstructions } from "./prompt";
-import type { SessionStatus, SessionStatusFile } from "./sessions";
+import { sessionLocation, type SessionStatus, type SessionStatusFile } from "./sessions";
 
 /** The experimental capability that makes Claude Code register the server as a channel. */
 export const CHANNEL_CAPABILITY = "claude/channel";
@@ -63,7 +63,7 @@ async function serveChannel({ agentName, credentials, status, link, stdin, stdou
   });
   await runtime.initialize();
   const identity = await runtime.link.rest.getAgentMe();
-  status?.record({ handle: identity.handle ?? null });
+  status?.record({ agentId: identity.id, handle: identity.handle ?? null });
 
   const adapter = new ChannelAdapter({ ownerUuid: identity.ownerUuid, push: (push) => server.notify(CHANNEL_METHOD, push) });
   const server: BandMcpStdioServer = new BandMcpStdioServer({
@@ -107,6 +107,6 @@ function isConnectionConflict(error: unknown): boolean {
 }
 
 function conflictMessage(agentName: string, holder: SessionStatus | undefined): string {
-  const where = holder?.projectDir ? ` (${holder.projectDir})` : "";
-  return `Band agent "${agentName}" is already connected from another session${where}. Pick another with ${AGENTS_COMMAND} use <name>.`;
+  const location = holder && sessionLocation(holder);
+  return `Band agent "${agentName}" is already connected from another session${location ? ` (${location})` : ""}. Pick another with ${USE_HINT}.`;
 }

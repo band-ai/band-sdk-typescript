@@ -94,4 +94,18 @@ describe("the Claude Code plugin on the live platform", () => {
     expect(status).toContain('This session: refused. Band agent "docs" is already connected from another session');
     expect(status).toContain("No agent is free");
   });
+
+  it("fails a session that selects an agent never saved, and says so in /band:agents", async () => {
+    using dirs = new ClaudeCodeDirs();
+    const main = await Agents.provision("claude-code", "unsaved");
+
+    const exit = await PluginProcess.exitOf(main, dirs.env("session-1", "missing"));
+
+    expect(exit.code).toBe(EXIT_FAILED);
+    // The log carries the error as JSON.
+    expect(exit.stderr).toContain(JSON.stringify('No Band agent named "missing"').slice(1, -1));
+    expect(await agentsCommand(...dirs.cliContext, "status", "session-1")).toContain(
+      'This session: not connected. No Band agent named "missing". Agents: default. Add it with /band:agents add <agent_id> <api_key> missing',
+    );
+  });
 });

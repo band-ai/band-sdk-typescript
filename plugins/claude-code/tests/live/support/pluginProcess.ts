@@ -69,6 +69,12 @@ export class PluginProcess implements AsyncDisposable {
     return plugin;
   }
 
+  /** Starts a plugin that fails before Claude Code's handshake, and resolves with how it exited. */
+  public static async exitOf(identity: AgentIdentity, sessionEnv: Readonly<Record<string, string>>): Promise<Exit> {
+    const { env } = await liveRun();
+    return releasedWithTest(new PluginProcess(identity, env.wsUrl, sessionEnv)).exited;
+  }
+
   public get client() {
     return this.channel.client;
   }

@@ -1,19 +1,12 @@
 /** Which agent a session connects as, and with which credentials. */
-import { test, describe, expect } from "vitest";
+import { describe, expect } from "vitest";
 
 import { agentCredentials, ENV_PREFIX, selectedAgentName, writeSavedAgents } from "../../src/config";
-import { ClaudeCodeDirs } from "../support/claudeCodeDirs";
+import { withDirs as it } from "../support/claudeCodeDirs";
 
 const SESSION = "session-1";
 const USER_CONFIG = { [`${ENV_PREFIX}AGENT_ID`]: "agent-main", [`${ENV_PREFIX}API_KEY`]: "key-main" };
 const DOCS = { agentId: "agent-docs", apiKey: "key-docs", wsUrl: "wss://staging.band.ai/api/v1/socket", handle: "alex/docs" };
-
-const it = test.extend<{ dirs: ClaudeCodeDirs }>({
-  dirs: async ({}, use) => {
-    using dirs = new ClaudeCodeDirs();
-    await use(dirs);
-  },
-});
 
 function credentialsFor(env: Record<string, string>) {
   return agentCredentials(selectedAgentName(env), env);

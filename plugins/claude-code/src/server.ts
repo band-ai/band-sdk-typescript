@@ -9,7 +9,7 @@ const logger = new StderrLogger();
 
 async function run(): Promise<number> {
   const agentName = selectedAgentName(process.env);
-  const status = SessionStatusFile.open(process.env, agentName);
+  const status = SessionStatusFile.open(process.env, agentName, logger);
   try {
     return await runChannel({ agentName, credentials: agentCredentials(agentName, process.env), status, logger });
   } catch (error) {

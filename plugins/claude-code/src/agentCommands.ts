@@ -1,6 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { parseArgs } from "node:util";
 
 import { BandLink } from "@band-ai/sdk";
@@ -8,21 +7,22 @@ import type { AgentCredentials } from "@band-ai/sdk/config";
 import type { AgentIdentity } from "@band-ai/sdk/rest";
 
 import {
+  ADD_HINT,
   AGENT_SELECT_ENV,
   agentNames,
   AGENTS_COMMAND,
   assertAgentName,
+  atHandle,
   DEFAULT_AGENT_NAME,
-  PROJECT_SETTINGS_FILE,
+  nameFromHandle,
+  projectSettingsPath,
   readSavedAgents,
   unknownAgentMessage,
+  USE_HINT,
   writeSavedAgents,
   type SavedAgent,
 } from "./config";
-import { ancestorPids, liveSessions, type SessionState, type SessionStatus } from "./sessions";
-
-/** A session in these states holds its agent. */
-const HOLDING_STATES: ReadonlySet<SessionState> = new Set(["connecting", "connected"]);
+import { agentHolders, ancestorPids, liveSessions, sessionLocation, type SessionStatus } from "./sessions";
 /** How Band answers credentials it doesn't accept. */
 const REJECTED_STATUS_CODES = new Set([401, 403]);
 const USAGE = `Usage: agents.js --data-dir <dir> --project-dir <dir> <command>
@@ -75,29 +75,30 @@ function status({ dataDir }: Context, currentSessionId: string): string {
   const saved = readSavedAgents(dataDir);
   const sessions = liveSessions(dataDir);
   const sessionId = thisSessionId(sessions, currentSessionId);
-  const names = agentNames(saved);
-  const holders = new Map<string, { sessionId: string; status: SessionStatus }>();
-  for (const [id, session] of sessions) {
-    if (HOLDING_STATES.has(session.state)) {
-      holders.set(session.agent, { sessionId: id, status: session });
-    }
-  }
-  // The default's handle is known only once a session has connected as it.
-  const handleOf = (name: string): string | null => saved[name]?.handle ?? holders.get(name)?.status.handle ?? null;
+  const holders = agentHolders(sessions);
+  // The default's ID and handle are known only from a session that connected as it.
+  const sessionAs = (name: string): SessionStatus | undefined =>
+    [...sessions.values()].find((session) => session.agent === name && session.agentId !== null);
+  const holderOf = (name: string) => {
+    const agentId = saved[name]?.agentId ?? sessionAs(name)?.agentId;
+    return agentId ? holders.get(agentId) : undefined;
+  };
+  const handleOf = (name: string): string | null => saved[name]?.handle ?? sessionAs(name)?.handle ?? null;
 
+  const names = agentNames(saved);
   const rows = names.map((name) => {
-    const holder = holders.get(name);
+    const holder = holderOf(name);
     const handle = handleOf(name);
     const use = !holder ? "free" : holder.sessionId === sessionId ? "← this session" : `in use (${where(holder.status)})`;
-    return [name, handle ? `@${handle}` : "", use];
+    return [name, handle ? atHandle(handle) : "", use];
   });
-  const free = names.filter((name) => !holders.has(name));
+  const free = names.filter((name) => !holderOf(name));
   return [thisSession(sessionId ? sessions.get(sessionId) : undefined, handleOf, free), "", "Agents:", ...table(rows)].join("\n");
 }
 
 /**
  * The status this session's server keeps. `/clear` and `/resume` give the session a new ID but keep its server,
- * which recorded the ID it started with, so the status of the Claude Code process running this command stands in.
+ * which recorded the ID it started with, so the latest status of the Claude Code process running this command stands in.
  */
 function thisSessionId(sessions: ReadonlyMap<string, SessionStatus>, sessionId: string): string | undefined {
   if (sessions.has(sessionId)) {
@@ -105,7 +106,7 @@ function thisSessionId(sessions: ReadonlyMap<string, SessionStatus>, sessionId: 
   }
   const ancestors = ancestorPids();
   const ours = [...sessions].filter(([, session]) => ancestors.has(session.pid));
-  return ours.length === 1 ? ours[0][0] : undefined;
+  return ours.sort(([, a], [, b]) => b.updatedAt - a.updatedAt)[0]?.[0];
 }
 
 function thisSession(mine: SessionStatus | undefined, handleOf: (name: string) => string | null, free: readonly string[]): string {
@@ -124,21 +125,18 @@ function thisSession(mine: SessionStatus | undefined, handleOf: (name: string) =
 
 /** An agent as the user knows it: its name, and its Band handle when known. */
 function labeled(name: string, handle: string | null | undefined): string {
-  return `"${name}"${handle ? ` (@${handle})` : ""}`;
+  return `"${name}"${handle ? ` (${atHandle(handle)})` : ""}`;
 }
 
 function nextStep(free: readonly string[]): string {
   return free.length > 0
     ? `Free: ${free.join(", ")}. Run ${AGENTS_COMMAND} use ${free[0]}, then start a new Claude Code session here.`
-    : `No agent is free: add one with ${AGENTS_COMMAND} add <agent_id> <api_key>.`;
+    : `No agent is free: add one with ${ADD_HINT}.`;
 }
 
-function where({ projectDir }: SessionStatus): string {
-  if (!projectDir) {
-    return "another session";
-  }
-  const home = homedir();
-  return `session in ${projectDir.startsWith(home) ? `~${projectDir.slice(home.length)}` : projectDir}`;
+function where(status: SessionStatus): string {
+  const location = sessionLocation(status);
+  return location ? `session in ${location}` : "another session";
 }
 
 function table(rows: readonly (readonly string[])[]): string[] {
@@ -148,19 +146,22 @@ function table(rows: readonly (readonly string[])[]): string[] {
 
 async function add({ dataDir }: Context, agentId: string, apiKey: string, name: string | undefined, wsUrl: string | undefined): Promise<string> {
   const saved = readSavedAgents(dataDir);
-  const savedAs = Object.keys(saved).find((savedName) => saved[savedName].agentId === agentId);
-  if (savedAs) {
-    throw new Error(`Agent ${agentId} is already saved as "${savedAs}".`);
+  // The default's ID is known only from a session connected as it.
+  const knownAs =
+    Object.keys(saved).find((savedName) => saved[savedName].agentId === agentId) ??
+    [...liveSessions(dataDir).values()].find((session) => session.agentId === agentId)?.agent;
+  if (knownAs) {
+    throw new Error(`Agent ${agentId} is already set up as "${knownAs}".`);
   }
   const credentials: AgentCredentials = { agentId, apiKey, ...(wsUrl ? { wsUrl } : {}) };
   const identity = await fetchIdentity(credentials);
   if (identity.id !== agentId) {
     throw new Error(`That API key belongs to agent ${identity.id}, not ${agentId}. Nothing was saved.`);
   }
-  const chosen = name ?? identity.handle?.split("/").pop() ?? identity.name;
+  const chosen = name ?? (identity.handle ? nameFromHandle(identity.handle) : undefined) ?? identity.name;
   assertAgentName(chosen);
   if (saved[chosen]) {
-    throw new Error(`An agent named "${chosen}" is already saved. Pick another name: ${AGENTS_COMMAND} add <agent_id> <api_key> <name>`);
+    throw new Error(`An agent named "${chosen}" is already saved. Pick another name: ${ADD_HINT} <name>`);
   }
   const agent: SavedAgent = { ...credentials, handle: identity.handle ?? null };
   writeSavedAgents(dataDir, { ...saved, [chosen]: agent });
@@ -180,7 +181,7 @@ async function fetchIdentity(credentials: AgentCredentials): Promise<AgentIdenti
 
 function use({ dataDir, projectDir }: Context, name: string): string {
   const saved = readSavedAgents(dataDir);
-  if (name !== DEFAULT_AGENT_NAME && !saved[name]) {
+  if (!agentNames(saved).includes(name)) {
     throw new Error(unknownAgentMessage(name, saved));
   }
   const settings = readProjectSettings(projectDir);
@@ -199,7 +200,7 @@ function remove({ dataDir, projectDir }: Context, name: string): string {
   }
   writeSavedAgents(dataDir, rest);
   const stillSelected = readProjectSettings(projectDir).env?.[AGENT_SELECT_ENV] === name
-    ? ` This project still selects it: pick another with ${AGENTS_COMMAND} use <name>.`
+    ? ` This project still selects it: pick another with ${USE_HINT}.`
     : "";
   return `✓ Removed "${name}".${stillSelected} Other projects that select it won't connect until they pick another.`;
 }
@@ -210,12 +211,12 @@ interface ProjectSettings {
 }
 
 function readProjectSettings(projectDir: string): ProjectSettings {
-  const path = join(projectDir, PROJECT_SETTINGS_FILE);
+  const path = projectSettingsPath(projectDir);
   return existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as ProjectSettings) : {};
 }
 
 function writeProjectSettings(projectDir: string, settings: ProjectSettings): void {
-  const path = join(projectDir, PROJECT_SETTINGS_FILE);
+  const path = projectSettingsPath(projectDir);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, `${JSON.stringify(settings, null, 2)}\n`);
 }

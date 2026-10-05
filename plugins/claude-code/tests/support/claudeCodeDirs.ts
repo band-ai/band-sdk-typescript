@@ -2,13 +2,16 @@
  * The directories Claude Code gives the plugin, fresh for each test: its data
  * directory and the project a session runs in.
  */
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+
+import { NoopLogger } from "@band-ai/sdk/core";
+import { test } from "vitest";
 
 import { runAgentsCommand } from "../../src/agentCommands";
-import { AGENT_SELECT_ENV, CLAUDE_ENV, PROJECT_SETTINGS_FILE } from "../../src/config";
-import { liveSessions, type SessionStatus } from "../../src/sessions";
+import { AGENT_SELECT_ENV, CLAUDE_ENV, projectSettingsPath } from "../../src/config";
+import { liveSessions, SessionStatusFile, statusPath, type SessionStatus } from "../../src/sessions";
 
 export class ClaudeCodeDirs implements Disposable {
   public readonly dataDir = mkdtempSync(join(tmpdir(), "band-plugin-data-"));
@@ -22,6 +25,33 @@ export class ClaudeCodeDirs implements Disposable {
       [CLAUDE_ENV.sessionId]: sessionId,
       ...(agent ? { [AGENT_SELECT_ENV]: agent } : {}),
     };
+  }
+
+  /** The status file a server in session `sessionId` keeps while connecting as `agent`. */
+  public openStatus(sessionId: string, agent: string): SessionStatusFile {
+    return SessionStatusFile.open(this.env(sessionId, agent), agent, new NoopLogger())!;
+  }
+
+  /**
+   * Writes the status a server would have left: by default, a running server in another live Claude Code process
+   * (this test's own, which isn't among its ancestors), connected as "docs" from this project. Returns the file's path.
+   */
+  public writeStatus(sessionId: string, overrides: Partial<SessionStatus> = {}): string {
+    const path = statusPath(this.dataDir, sessionId);
+    const status: SessionStatus = {
+      agent: "docs",
+      agentId: "agent-docs",
+      handle: null,
+      pid: process.pid,
+      serverPid: process.pid,
+      projectDir: this.projectDir,
+      state: "connected",
+      updatedAt: Date.now(),
+      ...overrides,
+    };
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify(status));
+    return path;
   }
 
   /** The arguments the skill passes before a command. */
@@ -39,7 +69,7 @@ export class ClaudeCodeDirs implements Disposable {
   }
 
   public projectSettings(): unknown {
-    return JSON.parse(readFileSync(join(this.projectDir, PROJECT_SETTINGS_FILE), "utf8"));
+    return JSON.parse(readFileSync(projectSettingsPath(this.projectDir), "utf8"));
   }
 
   public [Symbol.dispose](): void {
@@ -47,3 +77,11 @@ export class ClaudeCodeDirs implements Disposable {
     rmSync(this.projectDir, { recursive: true, force: true });
   }
 }
+
+/** A test with fresh Claude Code directories. */
+export const withDirs = test.extend<{ dirs: ClaudeCodeDirs }>({
+  dirs: async ({}, use) => {
+    using dirs = new ClaudeCodeDirs();
+    await use(dirs);
+  },
+});

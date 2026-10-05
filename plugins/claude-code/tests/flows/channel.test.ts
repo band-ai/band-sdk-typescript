@@ -5,7 +5,7 @@
  */
 import { describe, expect, test } from "vitest";
 
-import { COMMAND_REFUSAL } from "../../src/adapter";
+import { COMMAND_REFUSAL, SENDER_ROLE } from "../../src/adapter";
 import { CHANNEL_CAPABILITY, EXIT_OK } from "../../src/channel";
 import { agent, AGENT_HANDLE, AGENT_ID, BandPlatform, person, type BandRoom } from "../../../../packages/sdk/tests/flows/support/bandPlatform";
 import { ClaudeCodeSession } from "./support/claudeCode";
@@ -164,7 +164,9 @@ describe("Claude's Band tools", () => {
 describe("Claude Code's handshake", () => {
   it("advertises the server as a Claude Code channel, with the rules for its messages", async ({ session }) => {
     expect(session.capabilities?.experimental).toEqual({ [CHANNEL_CAPABILITY]: {} });
-    expect(session.instructions).toContain("Reply only through the Band tools");
+    const rules = session.instructions?.split("\n\n").slice(1).join("\n\n");
+    expect(rules).toContain('<channel source="plugin:band:band" room_id="…" message_id="…" sender_id="…"');
+    expect(rules).toContain(`sender_role="${SENDER_ROLE.owner}" is the agent's owner; sender_role="${SENDER_ROLE.participant}" is any other Band user or agent`);
   });
 
   it("tells Claude which Band agent it is", async ({ session }) => {
