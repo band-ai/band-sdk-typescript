@@ -10,7 +10,7 @@ import { acpToolCallName, recordBandToolCalls } from "../src/adapters/acp/toolCa
 import type { CollectedChunk } from "../src/adapters/acp/types";
 import { replyToSender } from "../src/adapters/shared/replyToSender";
 import type { AgentToolsRestApi } from "../src/client/rest/types";
-import type { AdapterToolsProtocol } from "../src/contracts/protocols";
+import { createToolExecutorError, type AdapterToolsProtocol } from "../src/contracts/protocols";
 import {
   ALL_TOOL_NAMES,
   NO_REPLY_TOOL_NAME,
@@ -240,6 +240,42 @@ describe("custom tool effect", () => {
     await executeCustomTool({ ...tool("reply"), handler: () => ({ ok: false, message: "upstream refused" }) }, {}, turn);
 
     expect(turn.verdict()).toBe("missing_reply");
+  });
+
+  it.each(["", 0, false, null, undefined])("credits a successful falsy result %j", async (output) => {
+    const turn = new Turn();
+    await executeCustomTool({ ...tool("act"), handler: () => output }, {}, turn);
+    expect(turn.verdict()).toBe("complete");
+    expect(turn.replied).toBe(false);
+  });
+
+  it.each([
+    "eRrOr: refused",
+    "ERROR EXECUTING lookup: refused",
+    createToolExecutorError({ errorType: "ToolExecutionError", toolName: "lookup", message: "refused" }),
+  ])("does not credit failed result %j or erase earlier credit", async (output) => {
+    const turn = new Turn();
+    const failing = { ...tool("reply"), handler: () => output };
+    await executeCustomTool(failing, {}, turn);
+    expect(turn.verdict()).toBe("missing_reply");
+    await executeCustomTool(tool("act"), {}, turn);
+    await executeCustomTool(failing, {}, turn);
+    expect(turn.verdict()).toBe("complete");
+    expect(turn.replied).toBe(false);
+  });
+
+  it("rejects invalid business arguments without calling the handler or crediting an effect", async () => {
+    const turn = new Turn();
+    const handler = vi.fn();
+    await expect(executeCustomTool({ ...tool("act"), schema: z.object({ title: z.string() }), handler }, {}, turn)).rejects.toThrow("title");
+    expect(handler).not.toHaveBeenCalled();
+    expect(turn.verdict()).toBe("missing_reply");
+  });
+
+  it("credits raw MCP-shaped values according to the existing business-result policy", async () => {
+    const turn = new Turn();
+    await executeCustomTool({ ...tool("act"), handler: () => ({ isError: true, content: [] }) }, {}, turn);
+    expect(turn.verdict()).toBe("complete");
   });
 
   // An untyped caller's typo: refused when indexed, and before the side effect when run.

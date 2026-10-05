@@ -12,10 +12,10 @@ import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
-import { UnsupportedFeatureError } from "../../core/errors";
+import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import { mcpToolNames, MCP_SERVER_NAME } from "../../contracts/toolSchemas";
+import { MCP_SERVER_NAME } from "../../contracts/toolSchemas";
 import { agentFailure, reportProviderTurnFailure, reportTurnFailure, safeSendFailure } from "../../core/providerFailure";
 import { relayReply, type TurnTools } from "../../core/turn";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
@@ -26,8 +26,8 @@ import {
   buildRoomScopedRegistrations,
   type McpToolRegistration,
 } from "../../mcp/registrations";
-import { buildZodShape } from "../../mcp/zod";
-import { z } from "zod";
+import { buildCustomMcpRegistrations } from "../../mcp/customTools";
+import { assertCustomToolNamesAvailable, buildCustomToolIndex, type CustomToolDef } from "../../runtime/tools/customTools";
 
 export type ClaudePermissionMode = NonNullable<Options["permissionMode"]>;
 
@@ -66,6 +66,7 @@ export interface ClaudeSDKAdapterOptions {
   enableMemoryTools?: boolean;
   enableMcpTools?: boolean;
   additionalMcpTools?: McpToolRegistration[];
+  customTools?: CustomToolDef[];
   cwd?: string;
   /** Host Claude Code settings to load; `[]` (the default) loads none, e.g. `["user", "project"]` opts back in. */
   settingSources?: SettingSource[];
@@ -95,66 +96,17 @@ interface BandMcpBridge {
   allowedTools: string[];
 }
 
-type BandMcpBridgeFactory = (input: {
-  enableMemoryTools: boolean;
-  getToolsForRoom: (roomId: string) => AdapterToolsProtocol | undefined;
-  additionalTools?: McpToolRegistration[];
-}) => BandMcpBridge;
-
-const bandMcpBridgeFactory = new LazyAsyncValue<BandMcpBridgeFactory>({
+const sdkMcpBridgeLoader = new LazyAsyncValue({
   load: async () => {
-    const module = await import("@anthropic-ai/claude-agent-sdk").catch((error: unknown) => {
+    const module = await import("../../mcp/sdkTools").catch((error: unknown) => {
       throw new UnsupportedFeatureError(
         `ClaudeSDKAdapter requires optional dependency "@anthropic-ai/claude-agent-sdk" when MCP tools are enabled. Install it with "pnpm add @anthropic-ai/claude-agent-sdk". (${error instanceof Error ? error.message : String(error)})`,
-      )
-    })
+      );
+    });
 
-    if (
-      typeof module.createSdkMcpServer !== "function"
-      || typeof module.tool !== "function"
-    ) {
-      throw new UnsupportedFeatureError(
-        'ClaudeSDKAdapter requires optional dependency "@anthropic-ai/claude-agent-sdk" when MCP tools are enabled. Install it with "pnpm add @anthropic-ai/claude-agent-sdk".',
-      )
-    }
-
-    const { createSdkMcpServer, tool: defineTool } = module
-
-    return (input) => {
-      const registrations = buildRoomScopedRegistrations(
-        input.getToolsForRoom,
-        {
-          enableMemoryTools: input.enableMemoryTools,
-          enableContactTools: true,
-          additionalTools: input.additionalTools,
-        },
-      )
-
-      const toolDefinitions = registrations.map((registration) => {
-        const shape = buildZodShape(
-          z,
-          registration.inputSchema.properties,
-          new Set(registration.inputSchema.required),
-        )
-
-        return defineTool(
-          registration.name,
-          registration.description,
-          shape,
-          registration.execute,
-        )
-      })
-
-      return {
-        serverConfig: createSdkMcpServer({
-          name: MCP_SERVER_NAME,
-          tools: toolDefinitions,
-        }),
-        allowedTools: mcpToolNames(new Set(registrations.map((registration) => registration.name))),
-      }
-    }
+    return module.createSdkMcpBridge;
   },
-})
+});
 
 export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> {
   protected readonly provider = "claude-sdk";
@@ -168,6 +120,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
   private readonly enableMemoryTools: boolean;
   private readonly enableMcpTools: boolean;
   private readonly additionalMcpTools: McpToolRegistration[];
+  private readonly customToolRegistrations: McpToolRegistration[];
   private readonly cwd?: string;
   private readonly settingSources: SettingSource[];
   private readonly queryFnOverride?: ClaudeSDKQuery;
@@ -190,6 +143,11 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     this.enableMemoryTools = options?.enableMemoryTools ?? false;
     this.enableMcpTools = options?.enableMcpTools ?? true;
     this.additionalMcpTools = options?.additionalMcpTools ?? [];
+    const customTools = [...buildCustomToolIndex(options?.customTools ?? []).values()];
+    if (customTools.length > 0 && !this.enableMcpTools) {
+      throw new ValidationError("ClaudeSDK customTools require `enableMcpTools: true`.");
+    }
+    this.customToolRegistrations = buildCustomMcpRegistrations(customTools, (roomId) => this.roomTools.get(roomId));
     this.cwd = options?.cwd;
     this.settingSources = options?.settingSources ?? [];
     this.queryFnOverride = options?.queryFn;
@@ -207,12 +165,17 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     });
 
     if (this.enableMcpTools) {
-      const createBandMcpBridge = await bandMcpBridgeFactory.get()
-      this.mcpBridge = createBandMcpBridge({
+      const createSdkMcpBridge = await sdkMcpBridgeLoader.get();
+      const registrations = buildRoomScopedRegistrations((roomId) => this.roomTools.get(roomId), {
         enableMemoryTools: this.enableMemoryTools,
-        getToolsForRoom: (roomId) => this.roomTools.get(roomId),
-        additionalTools: this.additionalMcpTools.length > 0 ? this.additionalMcpTools : undefined,
+        enableContactTools: true,
+        additionalTools: this.additionalMcpTools,
       });
+      assertCustomToolNamesAvailable(
+        this.customToolRegistrations.map((registration) => registration.name),
+        registrations.map((registration) => registration.name),
+      );
+      this.mcpBridge = createSdkMcpBridge(registrations, this.customToolRegistrations);
     }
   }
 
@@ -236,33 +199,37 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
-    let finalText = "";
-    let resultFailure: ClaudeResultFailure | null = null;
+    this.roomTools.set(context.roomId, tools);
     try {
-      const query = await this.startQuery(message, history, participantsMessage, contactsMessage, context, tools);
-      const consumed = await this.consumeQueryEvents(query, tools, context.roomId);
-      finalText = consumed.finalText;
-      resultFailure = consumed.resultFailure;
-    } catch (error) {
-      await reportProviderTurnFailure(tools, this.logger, this.provider, "Claude SDK adapter request failed", error, { roomId: context.roomId });
-    }
+      let finalText = "";
+      let resultFailure: ClaudeResultFailure | null = null;
+      try {
+        const query = await this.startQuery(message, history, participantsMessage, contactsMessage, context);
+        const consumed = await this.consumeQueryEvents(query, tools, context.roomId);
+        finalText = consumed.finalText;
+        resultFailure = consumed.resultFailure;
+      } catch (error) {
+        await reportProviderTurnFailure(tools, this.logger, this.provider, "Claude SDK adapter request failed", error, { roomId: context.roomId });
+      }
 
-    const mention = [{ id: message.senderId, handle: message.senderName ?? message.senderType }];
-    const replyText = finalText.trim();
-    if (resultFailure) {
-      const failure = agentFailure(this.provider, resultFailure.message, resultFailure.code, resultFailure.detail);
-      // Preceding assistant text is already decided output; posting it must
-      // not flip a non-success result into a successful turn.
+      const mention = [{ id: message.senderId, handle: message.senderName ?? message.senderType }];
+      const replyText = finalText.trim();
+      const failure = resultFailure
+        ? agentFailure(this.provider, resultFailure.message, resultFailure.code, resultFailure.detail)
+        : null;
       try {
         await relayReply(tools, replyText, mention);
       } catch (error) {
-        await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId });
+        if (failure) await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId });
         throw error;
       }
-      await reportTurnFailure(tools, failure, this.logger, { roomId: context.roomId });
+      // Posting preceding text must not turn a failed provider result into success.
+      if (failure) await reportTurnFailure(tools, failure, this.logger, { roomId: context.roomId });
+    } finally {
+      if (this.roomTools.get(context.roomId) === tools) {
+        this.roomTools.delete(context.roomId);
+      }
     }
-
-    await relayReply(tools, replyText, mention);
   }
 
   private async startQuery(
@@ -271,7 +238,6 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     participantsMessage: string | null,
     contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
-    tools: TurnTools,
   ): Promise<AsyncIterable<SDKMessage>> {
     const queryFn = this.queryFnOverride ?? (await loadClaudeQuery());
 
@@ -303,7 +269,6 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
         [MCP_SERVER_NAME]: this.mcpBridge.serverConfig,
       };
       options.allowedTools = this.mcpBridge.allowedTools;
-      this.roomTools.set(context.roomId, tools);
     }
 
     const roomToolHint = this.enableMcpTools

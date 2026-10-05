@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
+import type { CustomToolDef } from "../src/runtime/tools/customTools";
 
 import { LangGraphAdapter, type LangGraphAdapterOptions, type LangGraphGraph } from "../src/adapters/langgraph";
 import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
@@ -6,7 +8,7 @@ import { MEMORY_SECTION } from "../src/runtime/prompts";
 import { HistoryProvider } from "../src/runtime/types";
 import { FakeTools, makeMessage, expectTurnFailed, MISSING_REPLY, reportedFailures } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
-import { CLOSING_TEXT, describeTurnOutcomeContract, bandToolSchemas, turnInput, type TurnScript, NO_REPLY_ARGS, TOOL_REPLY_ARGS, ACT_TOOL, ACT_ARGS } from "./turnOutcomeContract";
+import { CLOSING_TEXT, describeCustomToolEffect, describeTurnOutcomeContract, bandToolSchemas, turnInput, type TurnScript, NO_REPLY_ARGS, TOOL_REPLY_ARGS, ACT_TOOL, ACT_ARGS } from "./turnOutcomeContract";
 
 const langGraphMocks = vi.hoisted(() => ({
   createReactAgent: vi.fn(),
@@ -635,5 +637,46 @@ describe("LangGraphAdapter", () => {
         detail: null,
       },
     });
+  });
+});
+
+for (const mode of ["built-in", "factory"] as const) {
+  describeCustomToolEffect(`LangGraphAdapter (${mode})`, async (def, tools) => {
+    langGraphMocks.tool.mockImplementation((run, fields) => ({ name: fields.name, run }));
+    const build = (wrappers: unknown[]): LangGraphGraph => ({
+      async invoke() {
+        const tool = (wrappers as Array<{ name: string; run: (args: Record<string, unknown>) => Promise<unknown> }>).find((candidate) => candidate.name === def.name);
+        if (!tool) throw new Error("portable tool not registered");
+        await tool.run({});
+        return { messages: [] };
+      },
+    });
+    langGraphMocks.createReactAgent.mockImplementation(({ tools }) => build(tools));
+    const adapter = new LangGraphAdapter({ customTools: [def], ...(mode === "factory" ? { graphFactory: build, graph: SILENT_GRAPH } : { llm: {} }) });
+    await adapter.onEvent(turnInput(tools));
+  });
+}
+
+describe("LangGraph portable configuration", () => {
+  const def: CustomToolDef = { name: "portable", schema: z.object({}), handler: vi.fn(), effect: "act" };
+  it.each([
+    [{ ...def, name: " " }],
+    [def, { ...def, name: " portable " }],
+    [{ ...def, effect: "bad" } as unknown as CustomToolDef],
+  ])("rejects invalid definitions before execution", (...customTools) => {
+    expect(() => new LangGraphAdapter({ llm: {}, customTools })).toThrow();
+    expect(def.handler).not.toHaveBeenCalled();
+  });
+  it("rejects nonempty portable tools on a static graph, and accepts an empty list", () => {
+    expect(() => new LangGraphAdapter({ graph: SILENT_GRAPH, customTools: [def] })).toThrow(/graphFactory/);
+    expect(() => new LangGraphAdapter({ graph: SILENT_GRAPH, customTools: [] })).not.toThrow();
+  });
+  it.each(["band_send_message", "native"])("rejects collision with %s before invoking a graph", async (name) => {
+    const graphFactory = vi.fn(() => SILENT_GRAPH);
+    const handler = vi.fn();
+    const adapter = new LangGraphAdapter({ graphFactory, additionalTools: [{ name: "native" }], customTools: [{ ...def, name, handler }] });
+    await expectTurnFailed(adapter.onEvent(turnInput(new FakeToolsWithSchemas())));
+    expect(graphFactory).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
   });
 });

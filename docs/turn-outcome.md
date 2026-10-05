@@ -15,8 +15,8 @@ marked FAILED. There is no nudge and no second attempt.
 `onMessage` returns, so every adapter built on `SimpleAdapter` is judged
 unless it opts out. `A2AAdapter`, `A2AGatewayAdapter`, `BandACPServerAdapter`
 and `ParlantAdapter` opt out, because they relay another agent's answer rather
-than owe one. A `LangGraphAdapter` with a static `graph` is also exempt,
-because it has no Band tools to answer with. Synthetic turns, such as contact
+than owe one. A `LangGraphAdapter` with only a static `graph` (no `graphFactory`) is also
+exempt, because it has no Band tools to answer with. Synthetic turns, such as contact
 events put to the hub room, are never judged.
 
 ## `band_no_reply`
@@ -122,15 +122,56 @@ read, because the tools already record each call.
 
 ## Custom tools
 
-A `CustomToolDef` may declare `effect`; the default is `observe`, which never
-completes a turn. Declare `act` for a tool with a real side effect (the
-Linear tools that change Linear do), or `reply` for one that posts the turn's
-answer itself.
+A `CustomToolDef` may declare `effect`; omitted means `observe`, which never
+completes a turn. `act` completes it after a successful side effect and still
+permits final-text relay. `reply` and `decline` complete it and suppress relay.
+Only successful calls record an effect: invalid arguments, thrown errors,
+`{ ok: false }`, typed executor errors and legacy error strings earn no credit.
+A later failed tool call does not erase earlier credit, but terminal provider
+or reply-delivery failures still fail the turn.
 
-OpenCode registers its custom tools once for every room, so each takes a
-`room_id`, like the Band tools, and records its effect on that room's turn.
+LangGraph and ClaudeSDK accept portable definitions through `customTools`:
 
-Some tools can't declare one and always count as `observe`:
+```ts
+import { ClaudeSDKAdapter, LangGraphAdapter, type CustomToolDef } from "@band-ai/sdk";
+import { z } from "zod";
 
-- ClaudeSDK's `additionalMcpTools`, which are raw MCP registrations;
-- LangGraph's `additionalTools`, which are opaque to the SDK.
+const customTools: CustomToolDef[] = [{
+  name: "create_ticket",
+  description: "Create a support ticket",
+  schema: z.object({ title: z.string() }),
+  handler: ({ title }) => createTicket(String(title)),
+  effect: "act",
+}];
+
+const langgraph = new LangGraphAdapter({ llm, customTools });
+const claude = new ClaudeSDKAdapter({ customTools });
+```
+
+LangGraph builds fresh wrappers for the built-in graph or `graphFactory` on
+each turn. A nonempty `customTools` list requires one of those paths; a static
+`graph` alone cannot receive tools. Claude requires MCP tools enabled. Both
+adapters reject invalid definitions and collisions with active Band/native
+tool names; empty lists preserve existing behavior.
+
+Claude and OpenCode register custom tools once, routing calls by the required
+`room_id` argument. That name is reserved: do not include it in the business
+schema. Routing removes it before the original schema validates the arguments.
+Claude binds tools for the active turn and clears them on every exit. A call
+already running retains its captured turn even during cleanup or replacement.
+The bridge trusts `room_id`, including another active room; it does not
+identify a call's originating query or distinguish a late call from an old
+query after a replacement starts.
+
+The existing JSON schema conversion publishes input schemas, so original Zod
+runtime transforms run once per execution. Claude's JSON-to-Zod bridge is an
+approximation; the original business schema validates before the handler.
+Claude portable tools preserve undeclared arguments so that original schema
+controls whether to retain, strip, or reject them.
+Published and runtime acceptance can differ, and schema generation may invoke
+dynamic default/catch callbacks separately from execution.
+
+Opaque Claude `additionalMcpTools` and LangGraph `additionalTools` gain no
+automatic custom-effect credit. Their calls may still count if they use the
+active turn's Band tools. Resolved failure values retain existing result
+serialization; effect credit is separate from an MCP transport error flag.

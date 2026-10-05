@@ -1,5 +1,5 @@
 import type { TurnEffect } from "@band-ai/band-sdk-core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { RestFacade } from "../src/client/rest/RestFacade";
@@ -166,7 +166,14 @@ export function describeCustomToolEffect(
   describe(`custom tool effect: ${adapter}`, () => {
     it("completes a turn whose only action is a custom tool declared `act`", async () => {
       const tools = new FakeTools();
-      await turn(sideEffectTool("act"), tools);
+      const nativeCall = vi.spyOn(tools, "executeToolCall");
+      const tool = sideEffectTool("act");
+      const handler = vi.fn(tool.handler);
+      await turn({ ...tool, handler }, tools);
+
+      expect(handler).toHaveBeenCalledOnce();
+      expect(tools.messages).toEqual([]);
+      expect(nativeCall).not.toHaveBeenCalled();
 
       expect(reportedFailures(tools.events)).toEqual([]);
     });

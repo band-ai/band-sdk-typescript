@@ -11,6 +11,14 @@ import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { takeLast } from "../shared/history";
 import { relayReply, type TurnTools } from "../../core/turn";
 
+import {
+  buildCustomToolIndex,
+  assertCustomToolNamesAvailable,
+  customToolToOpenAISchema,
+  executeCustomTool,
+  type CustomToolDef,
+} from "../../runtime/tools/customTools";
+
 type LangGraphRole = "system" | "user" | "assistant";
 type LangGraphTupleMessage = [LangGraphRole, string];
 
@@ -52,6 +60,7 @@ export interface LangGraphAdapterOptions {
   graph?: LangGraphGraph;
   graphFactory?: (tools: unknown[]) => LangGraphGraph | Promise<LangGraphGraph>;
   additionalTools?: unknown[];
+  customTools?: CustomToolDef[];
   systemPrompt?: string;
   customSection?: string;
   recursionLimit?: number;
@@ -69,6 +78,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
   private readonly graph?: LangGraphGraph;
   private readonly graphFactory?: (tools: unknown[]) => LangGraphGraph | Promise<LangGraphGraph>;
   private readonly additionalTools: unknown[];
+  private readonly customTools: CustomToolDef[];
   private readonly systemPromptOverride?: string;
   private readonly customSection: string;
   private readonly recursionLimit: number;
@@ -92,6 +102,10 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     this.graph = options.graph;
     this.graphFactory = options.graphFactory;
     this.additionalTools = options.additionalTools ?? [];
+    this.customTools = [...buildCustomToolIndex(options.customTools ?? []).values()];
+    if (this.customTools.length > 0 && !this.usesBandTools) {
+      throw new ValidationError("LangGraph customTools require `llm` or `graphFactory` to receive the tools.");
+    }
     this.systemPromptOverride = options.systemPrompt;
     this.customSection = options.customSection ?? "";
     this.recursionLimit = options.recursionLimit ?? 50;
@@ -129,15 +143,14 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       let langGraphTools = [...this.additionalTools];
       if (this.usesBandTools) {
         sdk = await this.sdkLoader.get();
-        langGraphTools = [
-          ...buildLangGraphTools({
-            sdk,
-            tools,
-            includeMemoryTools: this.includeMemoryTools,
-            logger: this.logger,
-          }),
-          ...this.additionalTools,
-        ];
+        langGraphTools = buildLangGraphTools({
+          sdk,
+          tools,
+          includeMemoryTools: this.includeMemoryTools,
+          logger: this.logger,
+          customTools: this.customTools,
+          additionalTools: this.additionalTools,
+        });
       }
 
       const graph = await this.resolveGraph(sdk, langGraphTools);
@@ -331,37 +344,34 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
 
 function buildLangGraphTools(input: {
   sdk: LangGraphSdk;
-  tools: AdapterToolsProtocol;
+  tools: TurnTools;
+  customTools: CustomToolDef[];
+  additionalTools: unknown[];
   includeMemoryTools: boolean;
   logger: Logger;
 }): unknown[] {
   const schemas = input.tools.getToolSchemas("openai", {
     includeMemory: input.includeMemoryTools,
   });
-  const wrappers: unknown[] = [];
-
-  for (const schema of schemas) {
+  const specs = schemas.flatMap((schema) => {
     const spec = toLangGraphToolSpec(schema);
-    if (!spec) {
-      continue;
-    }
-
-    wrappers.push(
-      input.sdk.tool(
-        async (args: Record<string, unknown>) => {
-          const result = await input.tools.executeToolCall(spec.name, args);
-          return stringifyToolResult(result, input.logger, spec.name);
-        },
-        {
-          name: spec.name,
-          description: spec.description,
-          schema: spec.schema,
-        },
-      ),
-    );
+    return spec ? [spec] : [];
+  });
+  const portable = input.customTools.map((def) => ({ def, spec: toLangGraphToolSpec(customToolToOpenAISchema(def))! }));
+  if (portable.length > 0) {
+    assertCustomToolNamesAvailable(portable.map(({ spec }) => spec.name), [
+      ...specs.map((spec) => spec.name),
+      ...input.additionalTools.map((tool) => asOptionalRecord(tool)?.name),
+    ]);
   }
+  const wrap = (spec: LangGraphToolLike, execute: (args: Record<string, unknown>) => Promise<unknown>) =>
+    input.sdk.tool(async (args) => stringifyToolResult(await execute(args), input.logger, spec.name), spec);
 
-  return wrappers;
+  return [
+    ...specs.map((spec) => wrap(spec, (args) => input.tools.executeToolCall(spec.name, args))),
+    ...portable.map(({ def, spec }) => wrap(spec, (args) => executeCustomTool(def, args, input.tools.turn))),
+    ...input.additionalTools,
+  ];
 }
 
 function toLangGraphToolSpec(schema: Record<string, unknown>): LangGraphToolLike | null {
