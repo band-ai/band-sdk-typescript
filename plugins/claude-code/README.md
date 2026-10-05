@@ -21,7 +21,7 @@ Claude Code asks for the plugin's one setting when you enable it: `ws_url`, Band
 
 Then, in a Claude Code session, run `/band:agents` and pick **Add a new agent**: paste the agent's ID and API key. Band checks them before they are saved, and the project connects as that agent. Run `/mcp` and reconnect the `band` server, or start a new session, to connect.
 
-`BAND_*` variables in your shell, and the legacy `THENVOI_*` ones, are never used, so a key can't be sent to a URL you didn't configure for the plugin.
+The SDK's credential and URL variables in your shell, such as `BAND_API_KEY` and the legacy `THENVOI_*` ones, are never used, so a key can't be sent to a URL you didn't configure for the plugin. The one variable read is `BAND_AGENT`, which picks a saved agent by name.
 
 ## Enable live messages
 
@@ -82,7 +82,7 @@ You can also just ask, for example "connect this project as my docs agent" or "w
 | Any slash command, when Band has no owner on record | Refused |
 | The agent's own messages, and events such as thoughts | Not pushed |
 | Every pushed or refused message | Marked processed on Band once it reaches Claude Code, whether or not Claude replies |
-| A second Claude Code session on the same agent | Refused with `connection_conflict`. The first session keeps the agent. See [Agents, projects and sessions](#agents-projects-and-sessions) |
+| A second Claude Code session on the same agent | Refused with `connection_conflict`. The first session keeps the agent |
 | Claude Code exits | The plugin disconnects and exits, so the next session can connect. Messages it hadn't started on wait for that session; one already being handed over is marked failed |
 
 Claude Code doesn't run a slash command that arrives over a channel, even the owner's: it reaches Claude as text.

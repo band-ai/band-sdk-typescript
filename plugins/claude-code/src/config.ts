@@ -8,7 +8,7 @@ import { writeFileAtomically } from "./files";
 
 /**
  * The plugin's Band WebSocket URL setting, for every agent, as `.mcp.json` passes it to the server. A name of the
- * plugin's own: the user's BAND_* and THENVOI_* variables never reach it.
+ * plugin's own, so the SDK's BAND_* and THENVOI_* credential variables never reach it.
  */
 export const WS_URL_ENV = "BAND_CHANNEL_WS_URL";
 /**
@@ -94,11 +94,6 @@ export function configuredWsUrl(setting: string | undefined): string | undefined
 
 export function unknownAgentMessage(name: string, saved: SavedAgents): string {
   return `No Band agent named "${name}". Saved: ${Object.keys(saved).join(", ") || "none"}.`;
-}
-
-/** A Band handle as people address it. */
-export function atHandle(handle: string): string {
-  return `@${handle}`;
 }
 
 /** The agent part of an `owner/agent` handle: what a saved agent is named unless the user names it. */

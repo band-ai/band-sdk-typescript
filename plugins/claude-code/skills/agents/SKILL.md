@@ -20,7 +20,7 @@ node ${CLAUDE_PLUGIN_ROOT}/dist/agents.js --data-dir "${CLAUDE_PLUGIN_DATA}" --p
 ```
 
 - No arguments:
-  1. With no agent saved, show the status above verbatim in a code block, then ask in plain text for the agent ID and API key from the agent's page on Band, and add it as in step 3.
+  1. With no agent saved, show the status above verbatim in a code block, then follow step 3.
   2. Otherwise ask with AskUserQuestion which agent this project should connect as. Put this session's state from the status's first line in the question, for example "This session is refused: int1676-alpha is in use in ~/repo/web. Which Band agent should this project connect as?". Offer up to three saved agents, free ones first, each labeled with its name and described with its handle and whether it is free, in use and where, or this session's; and last, "Add a new agent". A saved agent picked: run `use <name>`.
   3. "Add a new agent": ask in plain text for the agent ID and API key from the agent's page on Band, run `add <agent_id> <api_key>`, and when it succeeds run `use <name it was saved as>`.
 - Arguments given: run them as the command. A request in plain words maps to one command:

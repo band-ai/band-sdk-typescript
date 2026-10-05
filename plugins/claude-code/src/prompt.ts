@@ -1,11 +1,12 @@
 import type { AgentIdentity } from "@band-ai/sdk/rest";
+import { ensureHandlePrefix } from "@band-ai/sdk/runtime";
 
-import { AGENTS_COMMAND, atHandle } from "./config";
+import { AGENTS_COMMAND } from "./config";
 import { SENDER_ROLE } from "./adapter";
 
 /** What Claude Code hands Claude when the Band server connects; the first line answers "which Band agent are you?". */
 export function channelInstructions({ handle, name }: Pick<AgentIdentity, "handle" | "name">, agentName: string): string {
-  const identity = `You are connected to Band, a chat platform, as ${handle ? atHandle(handle) : name} (agent "${agentName}" in ${AGENTS_COMMAND}).`;
+  const identity = `You are connected to Band, a chat platform, as ${ensureHandlePrefix(handle) ?? name} (agent "${agentName}" in ${AGENTS_COMMAND}).`;
   return `${identity}\n\n${CHANNEL_RULES}`;
 }
 

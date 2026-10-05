@@ -8,7 +8,7 @@ import { dirname, join } from "node:path";
 import { NoopLogger } from "@band-ai/sdk/core";
 import { describe, expect } from "vitest";
 
-import { agentHolders, liveSessions, sessionLocation, SessionStatusFile, statusPath } from "../../src/sessions";
+import { liveSessions, sessionLocation, SessionStatusFile, statusPath } from "../../src/sessions";
 import { sessionStatus as status, withDirs as it, type ClaudeCodeDirs } from "../support/claudeCodeDirs";
 
 const READ_ONLY = 0o500;
@@ -105,22 +105,15 @@ describe("session status", () => {
 });
 
 describe("the session holding an agent", () => {
-  it("is the one connected, not one still connecting to the same agent", () => {
-    const sessions = [status({ sessionId: "session-connected", state: "connected" }), status({ sessionId: "session-connecting", state: "connecting" })];
-
-    expect(agentHolders(sessions).get("agent-docs")?.sessionId).toBe("session-connected");
-    expect(agentHolders([...sessions].reverse()).get("agent-docs")?.sessionId).toBe("session-connected");
-  });
-
   it("is found by Band agent, whatever name each session gave it", ({ dirs }) => {
-    dirs.writeStatus("session-default", { agent: "default", agentId: "agent-main", projectDir: "/repo/api" });
+    dirs.writeStatus("session-main", { agent: "main", agentId: "agent-main", projectDir: "/repo/api" });
     const refused = dirs.openStatus("session-docs", "docs");
 
-    expect(refused.holder("agent-main")).toMatchObject({ agent: "default", projectDir: "/repo/api" });
+    expect(refused.holder("agent-main")).toMatchObject({ agent: "main", projectDir: "/repo/api" });
   });
 
   it("is not named, rather than failing the refusal, when the other sessions can't be read", ({ dirs }) => {
-    dirs.writeStatus("session-default", { agent: "default", agentId: "agent-main" });
+    dirs.writeStatus("session-main", { agent: "main", agentId: "agent-main" });
     const refused = dirs.openStatus("session-docs", "docs");
     chmodSync(sessionsDir(dirs), UNLISTABLE);
     try {
@@ -132,10 +125,6 @@ describe("the session holding an agent", () => {
 });
 
 describe("where a session runs", () => {
-  it("is shown under ~ inside the home directory", () => {
-    expect(sessionLocation(status({ projectDir: join(homedir(), "repo", "api") }))).toBe(join("~", "repo", "api"));
-  });
-
   it("is shown whole when it only shares the home directory's name as a prefix", () => {
     const sibling = `${homedir()}x${join("/", "repo")}`;
 

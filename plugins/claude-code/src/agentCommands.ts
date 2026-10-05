@@ -4,12 +4,12 @@ import { parseArgs } from "node:util";
 import { BandLink } from "@band-ai/sdk";
 import type { AgentCredentials } from "@band-ai/sdk/config";
 import type { AgentIdentity } from "@band-ai/sdk/rest";
+import { ensureHandlePrefix } from "@band-ai/sdk/runtime";
 
 import {
   ADD_HINT,
   AGENT_SELECT_ENV,
   assertAgentName,
-  atHandle,
   configuredWsUrl,
   nameFromHandle,
   projectSettingsPath,
@@ -22,12 +22,10 @@ import {
   type SavedAgents,
 } from "./config";
 import { writeFileAtomically } from "./files";
-import { agentHolders, ancestorPids, liveSessions, sessionLocation, type SessionStatus } from "./sessions";
+import { agentHolders, liveSessions, sessionLocation, thisSession, type SessionStatus } from "./sessions";
 
 /** Claude Code starts the server again, with the project's settings as they are now, when it reconnects. */
-const SWITCH_HINT = "To switch this session, run /mcp and reconnect the band server; new sessions here connect as it.";
-/** An agent no session holds. */
-const FREE = "free";
+const RECONNECT = "reconnect the band server in /mcp";
 /** How Band answers credentials it doesn't accept. */
 const REJECTED_STATUS_CODES = new Set([401, 403]);
 const USAGE = `Usage: agents.js --data-dir <dir> --project-dir <dir> <command>
@@ -81,34 +79,19 @@ function status({ dataDir }: Context, currentSessionId: string): string {
   const sessions = liveSessions(dataDir);
   const mine = thisSession(sessions, currentSessionId);
   const holders = agentHolders(sessions);
-  const usage = ({ agentId }: SavedAgent): string => {
+  const inUse = ({ agentId }: SavedAgent): string | undefined => {
     const holder = holders.get(agentId);
     if (holder) {
       return holder === mine ? "← this session" : `in use (${where(holder)})`;
     }
     // Band refused it, so a session this machine doesn't know of holds it.
-    return mine?.state === "refused" && agentId === mine.agentId ? "in use elsewhere" : FREE;
+    return mine?.state === "refused" && agentId === mine.agentId ? "in use elsewhere" : undefined;
   };
 
-  const rows = Object.entries(saved).map(([name, agent]) => [name, agent.handle ? atHandle(agent.handle) : "", usage(agent)]);
-  const free = rows.filter(([, , use]) => use === FREE).map(([name]) => name);
+  const rows = Object.entries(saved).map(([name, agent]) => [name, ensureHandlePrefix(agent.handle) ?? "", inUse(agent) ?? "free"]);
+  const free = Object.keys(saved).filter((name) => !inUse(saved[name]));
   const agents = rows.length > 0 ? ["Agents:", ...table(rows)] : [`No agent saved yet: add one with ${ADD_HINT}.`];
   return [describeSession(mine, saved, free), "", ...agents].join("\n");
-}
-
-/**
- * The status this session's server keeps: the one with this session's ID, or of the Claude Code process running
- * this command when that isn't one. `/clear` and `/resume` give the session a new ID but keep the server, which
- * recorded the ID it started with; `claude --resume` in a second terminal shares the ID with another process.
- */
-function thisSession(sessions: readonly SessionStatus[], sessionId: string): SessionStatus | undefined {
-  const withId = sessions.filter((session) => session.sessionId === sessionId);
-  if (withId.length === 1) {
-    return withId[0];
-  }
-  const ancestors = ancestorPids();
-  const ours = (withId.length > 0 ? withId : sessions).filter((session) => ancestors.has(session.pid));
-  return ours.sort((a, b) => b.updatedAt - a.updatedAt)[0];
 }
 
 function describeSession(mine: SessionStatus | undefined, saved: SavedAgents, free: readonly string[]): string {
@@ -128,12 +111,13 @@ function describeSession(mine: SessionStatus | undefined, saved: SavedAgents, fr
 
 /** An agent as the user knows it: its name, and its Band handle when known. */
 function labeled(name: string, handle: string | null | undefined): string {
-  return `"${name}"${handle ? ` (${atHandle(handle)})` : ""}`;
+  const at = ensureHandlePrefix(handle);
+  return `"${name}"${at ? ` (${at})` : ""}`;
 }
 
 function nextStep(free: readonly string[]): string {
   return free.length > 0
-    ? `Free: ${free.join(", ")}. Run ${useCommand(free[0])}, then reconnect the band server in /mcp.`
+    ? `Free: ${free.join(", ")}. Run ${useCommand(free[0])}, then ${RECONNECT}.`
     : `No agent is free: add one with ${ADD_HINT}.`;
 }
 
@@ -186,7 +170,7 @@ function use({ dataDir, projectDir }: Context, name: string): string {
   }
   const settings = readProjectSettings(projectDir);
   writeProjectSettings(projectDir, { ...settings, env: { ...settings.env, [AGENT_SELECT_ENV]: name } });
-  return `✓ This project now connects as ${labeled(name, saved[name].handle)}. ${SWITCH_HINT}`;
+  return `✓ This project now connects as ${labeled(name, saved[name].handle)}. To switch this session, ${RECONNECT}; new sessions here connect as it.`;
 }
 
 function remove({ dataDir, projectDir }: Context, name: string): string {

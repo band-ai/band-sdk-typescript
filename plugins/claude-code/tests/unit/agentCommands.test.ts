@@ -19,12 +19,11 @@ import { withDirs, type ClaudeCodeDirs } from "../support/claudeCodeDirs";
 
 const DOCS: PeerAgent = { id: "agent-docs", apiKey: "key-docs", name: "Docs", handle: "alex/docs" };
 const SDK: PeerAgent = { id: "agent-sdk", apiKey: "key-sdk", name: "SDK", handle: "alex/sdk" };
+const MAIN: PeerAgent = { id: "agent-main", apiKey: "key-main", name: "Main", handle: "alex/main" };
 const UNHANDLED: PeerAgent = { id: "agent-plain", apiKey: "key-plain", name: "Plain", handle: null };
 /** Band answers its identity with a status the client doesn't retry. */
 const TROUBLED: PeerAgent = { id: "agent-troubled", apiKey: "key-troubled", name: "Troubled", handle: "alex/troubled", failure: 400 };
 const OWNER_ONLY = 0o600;
-
-const MAIN: PeerAgent = { id: "agent-main", apiKey: "key-main", name: "Main", handle: "alex/main" };
 /** How much earlier an older status was recorded. */
 const STALE_MS = 60_000;
 
@@ -148,7 +147,7 @@ describe("use", () => {
 
     const output = await dirs.agents("use", "docs");
 
-    expect(output).toBe('✓ This project now connects as "docs" (@alex/docs). To switch this session, run /mcp and reconnect the band server; new sessions here connect as it.');
+    expect(output).toBe('✓ This project now connects as "docs" (@alex/docs). To switch this session, reconnect the band server in /mcp; new sessions here connect as it.');
     expect(dirs.projectSettings()).toEqual({ permissions: { allow: ["Bash(ls)"] }, env: { DEBUG: "1", BAND_AGENT: "docs" } });
   });
 
@@ -187,7 +186,6 @@ describe("remove", () => {
   it("refuses a name that is only a property every object has", async ({ dirs }) => {
     await expect(dirs.agents("remove", "constructor")).rejects.toThrow('No Band agent named "constructor".');
   });
-
 });
 
 describe("status", () => {

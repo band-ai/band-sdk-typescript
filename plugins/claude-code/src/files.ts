@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 const PARTIAL_EXTENSION = ".partial";
@@ -10,9 +10,5 @@ export function writeFileAtomically(path: string, data: string, mode?: number): 
   const partial = `${path}.${randomUUID()}${PARTIAL_EXTENSION}`;
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(partial, data, { mode });
-  if (mode !== undefined) {
-    // The mode applies only when the file is created.
-    chmodSync(partial, mode);
-  }
   renameSync(partial, path);
 }

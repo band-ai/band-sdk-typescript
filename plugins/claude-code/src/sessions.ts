@@ -5,14 +5,14 @@ import { isAbsolute, join, relative, sep } from "node:path";
 
 import type { Logger } from "@band-ai/sdk/core";
 
-import { CLAUDE_ENV, type Env } from "./config";
+import { AGENTS_COMMAND, CLAUDE_ENV, type Env } from "./config";
 import { writeFileAtomically } from "./files";
 
 /** One status file per Band server, in the plugin's data directory. */
 const SESSIONS_DIR = "sessions";
 const STATUS_EXTENSION = ".json";
 
-export type SessionState = "connecting" | "connected" | "refused" | "failed";
+type SessionState = "connecting" | "connected" | "refused" | "failed";
 
 /** A session in these states holds its agent, for as long as its server runs. */
 const HOLDING_STATES: ReadonlySet<SessionState> = new Set(["connecting", "connected"]);
@@ -74,7 +74,7 @@ export class SessionStatusFile {
     const dataDir = env[CLAUDE_ENV.pluginData];
     const sessionId = env[CLAUDE_ENV.sessionId];
     if (dataDir && !sessionId) {
-      logger.warn(`${CLAUDE_ENV.sessionId} is not set, so /band:agents can't show this session`);
+      logger.warn(`${CLAUDE_ENV.sessionId} is not set, so ${AGENTS_COMMAND} can't show this session`);
     }
     return dataDir && sessionId ? new SessionStatusFile(dataDir, sessionId, agent, env[CLAUDE_ENV.projectDir] ?? null, logger) : undefined;
   }
@@ -112,7 +112,7 @@ export class SessionStatusFile {
     try {
       writeFileAtomically(this.path, JSON.stringify(this.status));
     } catch (error) {
-      this.logger.warn("Could not record the session's Band status for /band:agents", { error });
+      this.logger.warn(`Could not record the session's Band status for ${AGENTS_COMMAND}`, { error });
     }
   }
 }
@@ -131,9 +131,12 @@ export function liveSessions(dataDir: string): SessionStatus[] {
   for (const { name } of files) {
     const path = join(dir, name);
     const status = readStatus(path);
-    if (status && !isAlive(status.pid)) {
+    if (!status) {
+      continue;
+    }
+    if (!isAlive(status.pid)) {
       rmSync(path, { force: true });
-    } else if (status && isLive(status)) {
+    } else if (isLive(status)) {
       sessions.push(status);
     }
   }
@@ -149,6 +152,24 @@ export function agentHolders(sessions: readonly SessionStatus[]): Map<string, Se
     }
   }
   return holders;
+}
+
+/**
+ * The status this session's server keeps: the one with this session's ID, or of the Claude Code process running
+ * this command when that isn't one. `/clear` and `/resume` give the session a new ID but keep the server, which
+ * recorded the ID it started with; `claude --resume` in a second terminal shares the ID with another process.
+ */
+export function thisSession(sessions: readonly SessionStatus[], sessionId: string): SessionStatus | undefined {
+  const withId = sessions.filter((session) => session.sessionId === sessionId);
+  if (withId.length === 1) {
+    return withId[0];
+  }
+  const candidates = withId.length > 0 ? withId : sessions;
+  if (candidates.length === 0) {
+    return undefined;
+  }
+  const ancestors = ancestorPids();
+  return candidates.filter((session) => ancestors.has(session.pid)).sort((a, b) => b.updatedAt - a.updatedAt)[0];
 }
 
 /** Where a session runs, as the user reads it: its project, under `~` when in the home directory. */
@@ -194,7 +215,7 @@ function isAlive(pid: number): boolean {
 }
 
 /** This process's parent, its parent, and so on: Claude Code runs a command through a shell of its own. */
-export function ancestorPids(): Set<number> {
+function ancestorPids(): Set<number> {
   const pids = new Set<number>();
   for (let pid = process.ppid; pid > 1 && !pids.has(pid); pid = parentPid(pid)) {
     pids.add(pid);

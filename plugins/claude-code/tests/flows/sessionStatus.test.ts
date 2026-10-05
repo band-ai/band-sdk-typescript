@@ -83,7 +83,7 @@ describe("a session's status", () => {
     expect(await second.exited).toBe(EXIT_FAILED);
     expect(dirs.session("session-2")).toMatchObject({
       state: "refused",
-      error: `Band agent "main" is already connected from another session (${dirs.projectDir}). Pick another with /band:agents use <name>.`,
+      error: `Band agent "${AGENT_NAME}" is already connected from another session (${dirs.projectDir}). Pick another with /band:agents use <name>.`,
     });
     expect(dirs.session("session-1")).toMatchObject({ state: "connected" });
   });
@@ -103,7 +103,7 @@ describe("a session's status", () => {
 
     expect(await refused.exited).toBe(EXIT_FAILED);
     expect(dirs.session("session-2")?.error).toBe(
-      'Band agent "main" is already connected from another session. Pick another with /band:agents use <name>.',
+      `Band agent "${AGENT_NAME}" is already connected from another session. Pick another with /band:agents use <name>.`,
     );
   });
 });

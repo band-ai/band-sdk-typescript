@@ -164,9 +164,8 @@ describe("Claude's Band tools", () => {
 describe("Claude Code's handshake", () => {
   it("advertises the server as a Claude Code channel, with the rules for its messages", async ({ session }) => {
     expect(session.capabilities?.experimental).toEqual({ [CHANNEL_CAPABILITY]: {} });
-    const rules = session.instructions?.split("\n\n").slice(1).join("\n\n");
-    expect(rules).toContain('<channel source="plugin:band:band" room_id="…" message_id="…" sender_id="…"');
-    expect(rules).toContain(`sender_role="${SENDER_ROLE.owner}" is the agent's owner; sender_role="${SENDER_ROLE.participant}" is any other Band user or agent`);
+    expect(session.instructions).toContain('<channel source="plugin:band:band" room_id="…" message_id="…" sender_id="…"');
+    expect(session.instructions).toContain(`sender_role="${SENDER_ROLE.owner}" is the agent's owner; sender_role="${SENDER_ROLE.participant}" is any other Band user or agent`);
   });
 
   it("tells Claude which Band agent it is", async ({ session }) => {

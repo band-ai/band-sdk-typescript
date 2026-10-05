@@ -26,7 +26,7 @@ const STOP_WITHOUT_DRAINING_MS = 0;
 const CONNECTION_CONFLICT: Extract<WebSocketDisconnectReason, { source: "upgrade" }>["code"] = "connection_conflict";
 
 export interface RunChannelOptions {
-  /** What the plugin calls the agent: `default`, or the name it was saved under. */
+  /** The name the agent is saved under. */
   readonly agentName: string;
   readonly credentials: AgentCredentials;
   /** Where the session's state is kept for `/band:agents`; none outside Claude Code. */
