@@ -188,6 +188,8 @@ export class BandMcpSseServer {
 
         resolve()
       })
+      // Cancelled POST bodies can leave accepted sockets with no HTTP request.
+      server.closeAllConnections()
     })
   }
 
