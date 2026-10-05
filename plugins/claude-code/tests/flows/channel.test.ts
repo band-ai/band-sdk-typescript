@@ -3,14 +3,15 @@
  * except for the network: delivered messages become channel pushes, and
  * Claude's tool calls post back to the room they came from.
  */
-import { ROOM_TOOL_NAMES } from "@band-ai/sdk/runtime";
+import { NO_REPLY_TOOL_NAME } from "@band-ai/sdk/core";
 import { describe, expect, test } from "vitest";
 
 import { COMMAND_REFUSAL, SENDER_ROLE } from "../../src/adapter";
 import { CHANNEL_CAPABILITY, EXIT_OK } from "../../src/channel";
 import { FIND_ROOMS_TOOL_NAME, type FoundRoom } from "../../src/rooms";
 import { agent, AGENT_HANDLE, AGENT_ID, BandPlatform, person, type BandRoom } from "../../../../packages/sdk/tests/flows/support/bandPlatform";
-import { ClaudeCodeSession, type ToolReply } from "./support/claudeCode";
+import type { ToolReply } from "../support/channelClient";
+import { ClaudeCodeSession } from "./support/claudeCode";
 
 const OWNER = "owner-1";
 const USER = "user-1";
@@ -20,9 +21,15 @@ const PEER = { ...agent(PEER_AGENT), handle: PEER_HANDLE };
 const PEOPLE = [person(OWNER), person(USER), PEER];
 const ROOM = "room-1";
 const LATER_ROOM = "room-2";
+const BUSY_ROOM = "room-3";
 const PLATFORM_DOWN = new Error("platform unavailable");
 const MENTION = `@[[${AGENT_ID}]]`;
 const SEND_MESSAGE = "band_send_message";
+const CREATE_CHATROOM = "band_create_chatroom";
+const ADD_PARTICIPANT = "band_add_participant";
+const ROOM_ID = "room_id";
+/** The tools that act on a room, so take its id; every other tool takes none. */
+const ROOM_TOOLS = [ADD_PARTICIPANT, "band_get_participants", "band_lookup_peers", "band_remove_participant", "band_send_event", SEND_MESSAGE];
 
 interface Fixture {
   platform: BandPlatform;
@@ -168,12 +175,12 @@ describe("Claude's Band tools", () => {
     expectRefusedByBand(await session.callTool(SEND_MESSAGE, { room_id: "room-unseen", content: "hi", mentions: [USER] }));
   });
 
-  it("creates a room, adds another agent and works with it there, before Band's room_added has been handled", async ({ band, session }) => {
-    const created = await session.callTool("band_create_chatroom", {});
+  it("creates a room, adds another agent and works with it there", async ({ band, session }) => {
+    const created = await session.callTool(CREATE_CHATROOM, {});
     const roomId = created.text;
 
     expect(created.isError).toBe(false);
-    expect((await session.callTool("band_add_participant", { room_id: roomId, name: PEER_AGENT })).isError).toBe(false);
+    expect((await session.callTool(ADD_PARTICIPANT, { room_id: roomId, name: PEER_AGENT })).isError).toBe(false);
     expect((await session.callTool(SEND_MESSAGE, { room_id: roomId, content: "let's start", mentions: [PEER_AGENT] })).isError).toBe(false);
     expect(band.platform.rest.added.entries).toEqual([{ roomId, participantId: PEER_AGENT }]);
     expect(band.platform.created(roomId).messages).toEqual([expect.objectContaining({ content: "let's start", mentions: [PEER_AGENT] })]);
@@ -181,17 +188,17 @@ describe("Claude's Band tools", () => {
 
   it("takes a room_id on exactly the tools that act on a room", async ({ session }) => {
     const tools = await session.tools();
-    const takesRoom = tools.filter((tool) => tool.inputSchema.required?.includes("room_id")).map((tool) => tool.name);
+    const takingRoom = (has: (tool: (typeof tools)[number]) => boolean) => tools.filter(has).map((tool) => tool.name).sort();
 
-    expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["band_create_chatroom", "band_no_reply", FIND_ROOMS_TOOL_NAME]));
-    expect(takesRoom.sort()).toEqual(tools.map((tool) => tool.name).filter((name) => ROOM_TOOL_NAMES.has(name)).sort());
-    expect(tools.filter((tool) => "room_id" in (tool.inputSchema.properties ?? {})).map((tool) => tool.name).sort()).toEqual(takesRoom.sort());
+    expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([CREATE_CHATROOM, NO_REPLY_TOOL_NAME, FIND_ROOMS_TOOL_NAME]));
+    expect(takingRoom((tool) => tool.inputSchema.required?.includes(ROOM_ID) ?? false)).toEqual(ROOM_TOOLS);
+    expect(takingRoom((tool) => ROOM_ID in (tool.inputSchema.properties ?? {}))).toEqual(ROOM_TOOLS);
   });
 
   it("offers neither memory nor contact tools", async ({ session }) => {
     const names = await session.toolNames();
 
-    expect(names).toContain("band_send_message");
+    expect(names).toContain(SEND_MESSAGE);
     expect(names.filter((name) => /memor|contact/.test(name))).toEqual([]);
   });
 });
@@ -204,8 +211,8 @@ describe("band_find_rooms", () => {
   });
 
   it("finds a room it created by the added agent's handle, with or without its @", async ({ session }) => {
-    const roomId = (await session.callTool("band_create_chatroom", {})).text;
-    await session.callTool("band_add_participant", { room_id: roomId, name: PEER_AGENT });
+    const roomId = (await session.callTool(CREATE_CHATROOM, {})).text;
+    await session.callTool(ADD_PARTICIPANT, { room_id: roomId, name: PEER_AGENT });
 
     for (const handle of [PEER_HANDLE, `@${PEER_HANDLE.toUpperCase()}`]) {
       expect(await findRooms(session, [handle]), handle).toEqual([
@@ -215,8 +222,42 @@ describe("band_find_rooms", () => {
     }
   });
 
-  it("finds nothing for someone in none of the agent's rooms", async ({ session }) => {
-    expect(await findRooms(session, ["nobody"])).toEqual([]);
+  it("puts the more recently active of two rooms the same size first", async ({ band, session }) => {
+    const [quiet, active] = [await band.platform.room(LATER_ROOM, [PEER]), await band.platform.room(BUSY_ROOM, [PEER])];
+    await session.callTool(SEND_MESSAGE, { room_id: quiet.id, content: "hi", mentions: [PEER_AGENT] });
+
+    expect((await findRooms(session, [PEER_AGENT])).map((room) => room.room_id)).toEqual([quiet.id, active.id, ROOM]);
+    await session.callTool(SEND_MESSAGE, { room_id: active.id, content: "hi", mentions: [PEER_AGENT] });
+    expect((await findRooms(session, [PEER_AGENT])).map((room) => room.room_id)).toEqual([active.id, quiet.id, ROOM]);
+  });
+
+  it("finds nothing for someone in none of the agent's rooms, or for a blank name", async ({ session }) => {
+    for (const nobody of ["nobody", "", "  "]) {
+      expect(await findRooms(session, [nobody]), nobody).toEqual([]);
+    }
+  });
+
+  it("leaves out a room the agent is removed from while it looks, and still finds the rest", async ({ band, session }) => {
+    const later = await band.platform.room(LATER_ROOM, [PEER]);
+    const held = band.platform.rest.participantHolds.hold((roomId) => roomId === LATER_ROOM);
+    const found = findRooms(session, [PEER_AGENT]);
+    await held.sending;
+    await later.remove();
+    held.release();
+
+    expect((await found).map((room) => room.room_id)).toEqual([ROOM]);
+  });
+
+  it("no longer finds a room once the agent removes the participant from it", async ({ session }) => {
+    expect((await session.callTool("band_remove_participant", { room_id: ROOM, name: PEER_AGENT })).isError).toBe(false);
+
+    expect(await findRooms(session, [PEER_AGENT])).toEqual([]);
+  });
+
+  it("reports Band failing to list a room's participants as a tool error", async ({ band, session }) => {
+    band.platform.rest.participantHolds.hold((roomId) => roomId === ROOM, { error: PLATFORM_DOWN }).release();
+
+    expect(await session.callTool(FIND_ROOMS_TOOL_NAME, {})).toEqual({ isError: true, text: PLATFORM_DOWN.message });
   });
 
   it("lists every room the agent is in when given nobody", async ({ band, session }) => {

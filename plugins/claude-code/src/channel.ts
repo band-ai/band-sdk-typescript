@@ -76,7 +76,7 @@ async function serveChannel({ agentName, credentials, status, link, stdin, stdou
   const server: BandMcpStdioServer = new BandMcpStdioServer({
     tools: toolsFor,
     roomlessTools: toolsFor(NO_ROOM),
-    additionalTools: [findRoomsTool(runtime.link)],
+    additionalTools: [findRoomsTool(runtime.link, logger)],
     capabilities: { experimental: { [CHANNEL_CAPABILITY]: {} } },
     instructions: channelInstructions(identity, agentName),
     stdin,

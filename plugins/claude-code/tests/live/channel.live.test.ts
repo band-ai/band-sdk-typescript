@@ -15,6 +15,7 @@ import { liveRun, warnTeardown } from "../../../../packages/sdk/tests/baseline/t
 import { DELIVERY_STATUS, observeAgent } from "../../../../packages/sdk/tests/baseline/toolkit/observeDelivery";
 import { history, MESSAGE_TYPE, observeRoom, REPLY_WAIT } from "../../../../packages/sdk/tests/baseline/toolkit/observeMessages";
 import { Rooms, type Room } from "../../../../packages/sdk/tests/baseline/toolkit/rooms";
+import { callTool } from "../support/channelClient";
 import { ClaudeCodeDirs } from "../support/claudeCodeDirs";
 import { agentsCommand, PluginProcess } from "./support/pluginProcess";
 
@@ -35,11 +36,10 @@ function savedAs(identity: AgentIdentity, name = "main"): ClaudeCodeDirs {
 }
 
 /** Calls `name` as Claude would, and returns its text; a tool error fails the test. */
-async function callTool(plugin: PluginProcess, name: string, args: Record<string, unknown>): Promise<string> {
-  const result = await plugin.client.callTool({ name, arguments: args });
-  const [first] = result.content as Array<{ text: string }>;
-  expect(result.isError, first?.text).toBeFalsy();
-  return first?.text ?? "";
+async function callOk(plugin: PluginProcess, name: string, args: Record<string, unknown>): Promise<string> {
+  const reply = await callTool(plugin.client, name, args);
+  expect(reply.isError, reply.text).toBe(false);
+  return reply.text;
 }
 
 /** Deletes a room the agent created once the test ends, as the user, who must be in it. */
@@ -91,24 +91,24 @@ describe("the Claude Code plugin on the live platform", () => {
     using dirs = savedAs(identity);
     await using plugin = await PluginProcess.start(dirs.env("session-1"));
 
-    const roomId = await callTool(plugin, "band_create_chatroom", {});
+    const roomId = await callOk(plugin, "band_create_chatroom", {});
     deletedWithTest(roomId);
-    await callTool(plugin, "band_add_participant", { room_id: roomId, name: peer.name });
-    const peers = JSON.parse(await callTool(plugin, "band_lookup_peers", { room_id: roomId })) as { data: Array<{ name: string; type: string }> };
-    const owner = peers.data.find((candidate) => candidate.type === "User");
-    expect(owner, "the owner is among the agent's peers").toBeDefined();
-    await callTool(plugin, "band_add_participant", { room_id: roomId, name: owner!.name });
-    await callTool(plugin, "band_send_message", { room_id: roomId, content: "let's start", mentions: [peer.id] });
+    await callOk(plugin, "band_add_participant", { room_id: roomId, name: peer.name });
+    const [user] = (await Rooms.participantIds(room)).filter((id) => id !== identity.id);
+    const peers = JSON.parse(await callOk(plugin, "band_lookup_peers", { room_id: roomId })) as { data: Array<{ id: string; name: string }> };
+    const owner = peers.data.find((candidate) => candidate.id === user);
+    expect(owner, "the room's user, the agent's owner, is among its peers").toBeDefined();
+    await callOk(plugin, "band_add_participant", { room_id: roomId, name: owner!.name });
+    await callOk(plugin, "band_send_message", { room_id: roomId, content: "let's start", mentions: [peer.id] });
 
     const posted = (await history({ id: roomId }, MESSAGE_TYPE.Text)).filter((message) => message.senderId === identity.id);
     expect(posted).toEqual([expect.objectContaining({ mentionIds: [peer.id] })]);
     expect(posted[0]?.content.endsWith(" let's start")).toBe(true);
 
-    const found = JSON.parse(await callTool(plugin, FIND_ROOMS_TOOL_NAME, { participants: [peer.name] })) as FoundRoom[];
+    const found = JSON.parse(await callOk(plugin, FIND_ROOMS_TOOL_NAME, { participants: [peer.name] })) as FoundRoom[];
     expect(found.map((match) => match.room_id)).toEqual([roomId]);
 
-    const [user] = (await Rooms.participantIds(room)).filter((id) => id !== identity.id);
-    await callTool(plugin, "band_send_message", { room_id: room.id, content: "unprompted", mentions: [user] });
+    await callOk(plugin, "band_send_message", { room_id: room.id, content: "unprompted", mentions: [user] });
     // Nothing was posted in the room before, so wait on its observer's frames rather than for a reply.
     const unprompted = await room.messages.next((message) => message.sender_id === identity.id);
     expect(unprompted.content.endsWith(" unprompted")).toBe(true);

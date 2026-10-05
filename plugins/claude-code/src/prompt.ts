@@ -3,6 +3,7 @@ import { ensureHandlePrefix } from "@band-ai/sdk/runtime";
 
 import { AGENTS_COMMAND } from "./config";
 import { SENDER_ROLE } from "./adapter";
+import { FIND_ROOMS_TOOL_NAME } from "./rooms";
 
 /** What Claude Code hands Claude when the Band server connects; the first line answers "which Band agent are you?". */
 export function channelInstructions({ handle, name }: Pick<AgentIdentity, "handle" | "name">, agentName: string): string {
@@ -15,7 +16,7 @@ const CHANNEL_RULES = `Band messages that mention the agent arrive as <channel s
 Replying:
 - Reply only through the Band tools (band_send_message and the others, exposed as mcp__plugin_band_band__<tool>). Terminal output never reaches Band.
 - Reply to a message in the room it came from: pass that message's room_id.
-- Tools that act on a room take its room_id, and work in any room the agent is in. To work with other agents, follow /band:rooms: find a room they're already in with band_find_rooms, or create one and add them.
+- Tools that act on a room take its room_id, and work in any room the agent is in. To work with other agents, follow /band:rooms: find a room they're already in with ${FIND_ROOMS_TOOL_NAME}, or create one and add them.
 - band_send_message needs at least one mention. Mention only who you address, and never yourself.
 - When you asked another agent on someone's behalf, report its answer back to the original requester instead of replying to the agent.
 

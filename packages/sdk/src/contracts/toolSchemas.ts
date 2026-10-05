@@ -439,7 +439,7 @@ export const CONTACT_TOOL_NAMES = new Set<string>([
   "band_respond_contact_request",
 ]);
 
-/** The tools that act on a room, and so take its id. */
+/** The tools that act on a room, and so take its id; every other tool is roomless. */
 export const ROOM_TOOL_NAMES = new Set<string>([
   SEND_MESSAGE_TOOL_NAME,
   SEND_EVENT_TOOL_NAME,
@@ -447,7 +447,7 @@ export const ROOM_TOOL_NAMES = new Set<string>([
   "band_remove_participant",
   "band_get_participants",
   "band_lookup_peers",
-]);
+] satisfies ToolName[]);
 
 export const BASE_TOOL_NAMES = new Set<string>(
   [...ALL_TOOL_NAMES].filter((name) => !MEMORY_TOOL_NAMES.has(name)),

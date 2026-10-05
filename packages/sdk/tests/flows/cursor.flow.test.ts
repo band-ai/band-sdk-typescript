@@ -19,12 +19,13 @@ import { ACP_SESSION_EVENT } from "../../src/converters/acp-client";
 import { BandPlatform, person, type BandRoom, type Outcome, type Posted } from "./support/bandPlatform";
 import { DEFAULT_CURSOR_ROOM, FakeCursorAgent, type CursorTurn } from "./support/fakeCursorAgent";
 import { FAILURE_EVENT_TYPE } from "../../src/contracts/protocols";
-import { makeLoggerSpy, MISSING_REPLY, tmpRoot, type ReportedFailure } from "../testUtils";
+import { makeLoggerSpy, MISSING_REPLY, reportedFailures, tmpRoot, type ReportedFailure } from "../testUtils";
 import { ACT_TOOL, CLOSING_TEXT, contractRows, NO_REPLY_ARGS, TOOL_REPLY, type TurnScript } from "../turnOutcomeContract";
 
 const OWNER = "owner";
 const TEAMMATE = "teammate";
 const INTRUDER = "intruder";
+const RELEASED_TURN_FAILED = "cursor_acp.released_turn_failed";
 
 // Every decision prompt offers `/cursor <verb> <token> ...`; nothing else Cursor posts does.
 const DECISION_TOKEN = new RegExp(`\\${CURSOR_COMMAND} \\w+ ([^\\s\`]+)`);
@@ -617,9 +618,13 @@ describe("Cursor in a Band room", () => {
 
     await room.remove();
     // Logged once the cancelled turn has fully unwound, past the point it would report.
-    await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledWith("cursor_acp.released_turn_failed", expect.anything()));
-    expect(logger.warn.mock.calls.filter(([event]) => event === "cursor_acp.released_turn_failed")).toHaveLength(1);
-    expect(platform.rest.refused.entries).toEqual([{ roomId: room.id, call: "createChatEvent" }]);
+    await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledWith(RELEASED_TURN_FAILED, expect.anything()));
+    expect(logger.warn.mock.calls.filter(([event]) => event === RELEASED_TURN_FAILED)).toHaveLength(1);
+    const refused = platform.rest.refused.entries;
+    expect(refused.map(({ roomId, call }) => ({ roomId, call }))).toEqual([{ roomId: room.id, call: "createChatEvent" }]);
+    const reports = reportedFailures(refused.flatMap(({ attempt }) => attempt ?? []));
+    expect(reports).toHaveLength(1);
+    expect(reports).not.toContainEqual(MISSING_REPLY);
 
     // The runtime keeps serving the agent's other rooms.
     const otherRoom = await platform.room("room-2");
@@ -646,7 +651,7 @@ describe("Cursor in a Band room", () => {
     }, 1);
 
     await room.exchange(OWNER, `${CURSOR_COMMAND} answer ${token} mode=plan`);
-    await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledWith("cursor_acp.released_turn_failed", expect.anything()));
+    await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledWith(RELEASED_TURN_FAILED, expect.anything()));
 
     expect(room.failures).toEqual([]);
   });

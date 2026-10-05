@@ -10,12 +10,7 @@ import { NoopLogger, StderrLogger } from "@band-ai/sdk/core";
 import type { ChannelPush } from "../../../src/adapter";
 import { runChannel, type RunChannelOptions } from "../../../src/channel";
 import { AGENT_API_KEY, AGENT_ID } from "../../../../../packages/sdk/tests/flows/support/bandPlatform";
-import { ChannelClient } from "../../support/channelClient";
-
-export interface ToolReply {
-  readonly text: string;
-  readonly isError: boolean;
-}
+import { callTool, ChannelClient, type ToolReply } from "../../support/channelClient";
 
 /** The name the flow test agent is saved under. */
 export const AGENT_NAME = "main";
@@ -83,10 +78,8 @@ export class ClaudeCodeSession implements AsyncDisposable {
     return (await this.tools()).map((tool) => tool.name);
   }
 
-  public async callTool(name: string, args: Record<string, unknown>): Promise<ToolReply> {
-    const result = await this.channel.client.callTool({ name, arguments: args });
-    const [first] = result.content as Array<{ text: string }>;
-    return { text: first?.text ?? "", isError: result.isError === true };
+  public callTool(name: string, args: Record<string, unknown>): Promise<ToolReply> {
+    return callTool(this.channel.client, name, args);
   }
 
   /** Resolves with the push for `messageId` once Claude Code has it; rejects if the plugin exits first. */

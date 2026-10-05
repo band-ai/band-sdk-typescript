@@ -20,8 +20,7 @@ export const AGENT_ID = "agent-1";
 export const AGENT_API_KEY = "flow-test-key";
 export const AGENT_HANDLE = "owner/agent";
 
-// The agent is mentionable but never a room participant, so the participants
-// message a flow sees stays what its roster says.
+// The agent is in every one of its rooms, as Band lists it among a room's participants.
 const AGENT_PARTICIPANT: ParticipantRecord = { id: AGENT_ID, name: "Agent", type: "Agent", handle: AGENT_HANDLE };
 
 export interface Posted {
@@ -60,20 +59,28 @@ type EventBody = Parameters<RestApi["createChatEvent"]>[1];
 
 const now = () => new Date().toISOString();
 
-function roomPayload(roomId: string, status: "active" | "inactive") {
-  return { id: roomId, status, type: "direct", title: roomId, task_id: null, inserted_at: now(), updated_at: now() };
+function roomPayload(roomId: string, status: "active" | "inactive", updatedAt = now()) {
+  return { id: roomId, status, type: "direct", title: roomId, task_id: null, inserted_at: updatedAt, updated_at: updatedAt };
 }
 
 /** A room call Band refused, because the agent isn't in the room. */
 export interface Refused {
   readonly roomId: string;
   readonly call: keyof RestApi;
+  /** What a refused message or event would have posted. */
+  readonly attempt?: Posted;
 }
 
 /** What the agent added to a room. */
 export interface Added {
   readonly roomId: string;
   readonly participantId: string;
+}
+
+interface RoomState {
+  participants: ParticipantRecord[];
+  /** When anything was last said in the room, as Band's `updated_at` moves. */
+  updatedAt: string;
 }
 
 interface HistoryEntry {
@@ -84,7 +91,7 @@ interface HistoryEntry {
 /**
  * The platform's REST surface as the agent sees it: it records every post, keeps each room's history
  * and participants, lists the agent's rooms, serves the backlog left before the agent connected, and
- * settles each message's outcome. Like Band, it refuses room calls for a room the agent isn't in.
+ * settles each message's outcome. Like Band, it refuses message, event and participant calls for a room the agent isn't in.
  */
 export class RecordingRestApi extends FakeRestApi {
   public readonly posted = new RecordLog<Posted>();
@@ -95,13 +102,15 @@ export class RecordingRestApi extends FakeRestApi {
   public readonly processing = new RecordLog<string>();
   private readonly history: HistoryEntry[] = [];
   private readonly backlog: HistoryEntry[] = [];
-  /** Each of the agent's rooms, with who is in it besides the agent. */
-  private readonly rooms = new Map<string, ParticipantRecord[]>();
+  private readonly rooms = new Map<string, RoomState>();
+  private lastActivity = 0;
   /** Tells the agent about a room it created, as Band pushes `room_added` to its creator. */
   public onRoomCreated?: (roomId: string) => void;
   public readonly messageHolds = new CallHolds<[roomId: string, content: string]>();
   public readonly processingHolds = new CallHolds<[messageId: string]>();
   public readonly nextMessageHolds = new CallHolds<[roomId: string]>();
+  /** Holds a room's participant list in flight; with `error`, Band then refuses it. */
+  public readonly participantHolds = new CallHolds<[roomId: string]>();
   /** Holds `getAgentMe`, as a slow platform answers it. */
   public readonly agentMeHolds = new CallHolds<[]>();
 
@@ -116,7 +125,7 @@ export class RecordingRestApi extends FakeRestApi {
 
   /** Every room on one page. */
   public override async listChats(): Promise<PaginatedResponse> {
-    return { data: [...this.rooms.keys()].map((roomId) => roomPayload(roomId, "active")), metadata: { page: 1, totalPages: 1 } };
+    return { data: [...this.rooms].map(([roomId, room]) => roomPayload(roomId, "active", room.updatedAt)), metadata: { page: 1, totalPages: 1 } };
   }
 
   /** The oldest backlog message in the room not yet settled, as `/messages/next` serves it. */
@@ -128,7 +137,7 @@ export class RecordingRestApi extends FakeRestApi {
 
   /** Adds the agent to a room it shares with `participants`; the platform's participants by default. */
   public addRoom(roomId: string, participants: readonly ParticipantRecord[] = this.participants): void {
-    this.rooms.set(roomId, [...participants]);
+    this.rooms.set(roomId, { participants: [AGENT_PARTICIPANT, ...participants], updatedAt: this.activity() });
   }
 
   public removeRoom(roomId: string): void {
@@ -150,43 +159,50 @@ export class RecordingRestApi extends FakeRestApi {
   }
 
   public override async createChatMessage(roomId: string, message: MessageBody) {
-    this.assertMember(roomId, "createChatMessage");
+    const posted = { roomId, content: message.content, mentions: message.mentions?.map((mention) => mention.id) ?? [], messageType: "text" };
+    this.assertMember(roomId, "createChatMessage", posted);
     assertMentioned(message.mentions);
     await this.messageHolds.pass(roomId, message.content);
-    this.record({ roomId, content: message.content, mentions: message.mentions.map((mention) => mention.id), messageType: "text" });
+    this.record(posted);
     return { id: `posted-${this.posted.entries.length}` };
   }
 
   public override async createChatEvent(roomId: string, event: EventBody) {
-    this.assertMember(roomId, "createChatEvent");
-    this.record({ roomId, content: event.content, mentions: [], messageType: event.messageType, metadata: event.metadata });
+    const posted = { roomId, content: event.content, mentions: [], messageType: event.messageType, metadata: event.metadata };
+    this.assertMember(roomId, "createChatEvent", posted);
+    this.record(posted);
     return { id: `posted-${this.posted.entries.length}` };
   }
 
   public override async listChatParticipants(roomId: string) {
-    return [...this.assertMember(roomId, "listChatParticipants")];
+    await this.participantHolds.pass(roomId);
+    return [...this.assertMember(roomId, "listChatParticipants").participants];
   }
 
   public override async addChatParticipant(roomId: string, { participantId }: { participantId: string }) {
-    const inRoom = this.assertMember(roomId, "addChatParticipant");
+    const { participants } = this.assertMember(roomId, "addChatParticipant");
     const participant = this.participants.find(({ id }) => id === participantId);
-    if (participant && !inRoom.includes(participant)) {
-      inRoom.push(participant);
+    if (participant && !participants.some(({ id }) => id === participantId)) {
+      participants.push(participant);
     }
     this.added.record({ roomId, participantId });
     return {};
   }
 
   public override async removeChatParticipant(roomId: string, participantId: string) {
-    const inRoom = this.assertMember(roomId, "removeChatParticipant");
-    this.rooms.set(roomId, inRoom.filter(({ id }) => id !== participantId));
+    const room = this.assertMember(roomId, "removeChatParticipant");
+    room.participants = room.participants.filter(({ id }) => id !== participantId);
     return {};
   }
 
   /** Everyone the agent can add, leaving out who is already in `notInChat`, as Band's peer list does. */
   public override async listPeers({ notInChat }: { notInChat: string }): Promise<PaginatedResponse<PeerRecord>> {
-    const inRoom = this.rooms.get(notInChat) ?? [];
-    return { data: this.participants.filter((participant) => !inRoom.includes(participant)).map(({ id, name, type, handle }) => ({ id, name, type, handle })) };
+    const inRoom = this.rooms.get(notInChat)?.participants ?? [];
+    return {
+      data: this.participants
+        .filter((participant) => !inRoom.some(({ id }) => id === participant.id))
+        .map(({ id, name, type, handle }) => ({ id, name, type, handle })),
+    };
   }
 
   /** The room's conversation as the platform hands it to a fresh session: what people said and what the agent posted. */
@@ -196,6 +212,10 @@ export class RecordingRestApi extends FakeRestApi {
 
   public remember(roomId: string, item: PlatformChatMessage): void {
     this.history.push({ roomId, item });
+    const room = this.rooms.get(roomId);
+    if (room) {
+      room.updatedAt = this.activity();
+    }
   }
 
   public override async markMessageProcessing(_roomId: string, messageId: string) {
@@ -212,14 +232,20 @@ export class RecordingRestApi extends FakeRestApi {
     return this.settle(messageId, "failed");
   }
 
-  /** The room's participants; Band answers 404 for a room the agent isn't in, whether it left or never joined. */
-  private assertMember(roomId: string, call: keyof RestApi): ParticipantRecord[] {
-    const participants = this.rooms.get(roomId);
-    if (!participants) {
-      this.refused.record({ roomId, call });
+  /** The room; Band answers 404 for a room the agent isn't in, whether it left or never joined. */
+  private assertMember(roomId: string, call: keyof RestApi, attempt?: Posted): RoomState {
+    const room = this.rooms.get(roomId);
+    if (!room) {
+      this.refused.record({ roomId, call, attempt });
       throw new Band.NotFoundError({ error: { code: "not_found", message: "Resource not found", request_id: randomUUID() } });
     }
-    return participants;
+    return room;
+  }
+
+  /** A timestamp later than every earlier one, so rooms active one after another never tie. */
+  private activity(): string {
+    this.lastActivity = Math.max(Date.now(), this.lastActivity + 1);
+    return new Date(this.lastActivity).toISOString();
   }
 
   private isSettled(messageId: string): boolean {
