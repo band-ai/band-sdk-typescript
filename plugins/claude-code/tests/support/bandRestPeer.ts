@@ -15,6 +15,8 @@ export interface PeerAgent {
   readonly apiKey: string;
   readonly name: string;
   readonly handle: string | null;
+  /** The HTTP status Band answers this agent with instead of its identity, as when Band is in trouble. */
+  readonly failure?: number;
 }
 
 export class BandRestPeer implements AsyncDisposable {
@@ -27,6 +29,8 @@ export class BandRestPeer implements AsyncDisposable {
         respond(response, 404, { error: "not_found" });
       } else if (!agent) {
         respond(response, 401, { error: "unauthorized" });
+      } else if (agent.failure) {
+        respond(response, agent.failure, { error: "failed" });
       } else {
         respond(response, 200, { data: { id: agent.id, name: agent.name, description: null, handle: agent.handle, owner_uuid: null } });
       }

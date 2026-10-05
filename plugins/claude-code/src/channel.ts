@@ -93,9 +93,9 @@ async function serveChannel({ agentName, credentials, status, link, stdin, stdou
   }
 }
 
-function reportFailure(error: unknown, { agentName, status, logger }: RunChannelOptions): void {
+function reportFailure(error: unknown, { agentName, credentials, status, logger }: RunChannelOptions): void {
   if (isConnectionConflict(error)) {
-    const message = conflictMessage(agentName, status?.holder());
+    const message = conflictMessage(agentName, status?.holder(credentials.agentId));
     status?.record({ state: "refused", error: message });
     logger.error(message, { error });
     return;

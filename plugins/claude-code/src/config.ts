@@ -19,7 +19,12 @@ export const DEFAULT_AGENT_NAME = "default";
 export const AGENTS_COMMAND = "/band:agents";
 /** How messages tell the user to save an agent, and to pick one. */
 export const ADD_HINT = `${AGENTS_COMMAND} add <agent_id> <api_key>`;
-export const USE_HINT = `${AGENTS_COMMAND} use <name>`;
+export const USE_HINT = useCommand("<name>");
+
+/** The command that selects agent `name` for a project. */
+export function useCommand(name: string): string {
+  return `${AGENTS_COMMAND} use ${name}`;
+}
 
 /** What Claude Code sets for a plugin's MCP server. */
 export const CLAUDE_ENV = {
@@ -106,18 +111,17 @@ export function projectSettingsPath(projectDir: string): string {
   return join(projectDir, PROJECT_SETTINGS_FILE);
 }
 
-/** The saved agents by name; none until the first is added. */
+/** The saved agents by name; none until the first is added. Nothing inherited, so "constructor" is just a name. */
 export function readSavedAgents(dataDir: string): Record<string, SavedAgent> {
+  const saved = Object.create(null) as Record<string, SavedAgent>;
   const path = agentsFilePath(dataDir);
   if (!existsSync(path)) {
-    return {};
+    return saved;
   }
-  return Object.fromEntries(
-    Object.entries(loadAgentConfigs(path)).map(([name, { agentId, apiKey, wsUrl, handle }]) => [
-      name,
-      { agentId, apiKey, wsUrl, handle: typeof handle === "string" ? handle : null },
-    ]),
-  );
+  for (const [name, { agentId, apiKey, wsUrl, handle }] of Object.entries(loadAgentConfigs(path))) {
+    saved[name] = { agentId, apiKey, wsUrl, handle: typeof handle === "string" ? handle : null };
+  }
+  return saved;
 }
 
 export function writeSavedAgents(dataDir: string, agents: Readonly<Record<string, SavedAgent>>): void {

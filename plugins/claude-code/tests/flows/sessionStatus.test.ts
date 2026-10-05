@@ -49,8 +49,21 @@ describe("a session's status", () => {
 
     await identity.sending;
 
-    expect(await dirs.agents("status", "session-1")).toContain("default    ← this session");
-    identity.release();
+    try {
+      expect(await dirs.agents("status", "session-1")).toContain("default    ← this session");
+    } finally {
+      identity.release();
+    }
+  });
+
+  it("is failed, with why, when the platform can't say who the agent is", async () => {
+    using dirs = new ClaudeCodeDirs();
+    const platform = BandPlatform.host([person(USER)]);
+    platform.rest.agentMeHolds.hold(() => true, { error: new Error("Band is unavailable") }).release();
+    const session = new ClaudeCodeSession(platform.link, { status: dirs.openStatus("session-1", DEFAULT_AGENT_NAME) });
+
+    expect(await session.exited).toBe(EXIT_FAILED);
+    expect(dirs.session("session-1")).toMatchObject({ state: "failed", error: "Band is unavailable" });
   });
 
   it("is refused, naming where the agent is connected, while another session holds it", async () => {

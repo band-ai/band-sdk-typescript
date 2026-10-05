@@ -8,10 +8,12 @@ import { dirname, join } from "node:path";
 import { NoopLogger } from "@band-ai/sdk/core";
 import { describe, expect } from "vitest";
 
-import { agentHolders, liveSessions, sessionLocation, SessionStatusFile, statusPath, type SessionStatus } from "../../src/sessions";
-import { withDirs as it } from "../support/claudeCodeDirs";
+import { agentHolders, liveSessions, sessionLocation, SessionStatusFile, statusPath } from "../../src/sessions";
+import { sessionStatus as status, withDirs as it, type ClaudeCodeDirs } from "../support/claudeCodeDirs";
 
 const READ_ONLY = 0o500;
+/** Files can be added and removed, but not listed. */
+const UNLISTABLE = 0o300;
 const OWNER_ALL = 0o700;
 
 /** The pid of a process that has exited. */
@@ -21,19 +23,9 @@ async function exitedPid(): Promise<number> {
   return child.pid!;
 }
 
-/** A status as it is held in memory, for the functions that take one. */
-function status(overrides: Partial<SessionStatus>): SessionStatus {
-  return {
-    agent: "docs",
-    agentId: "agent-docs",
-    handle: null,
-    pid: process.ppid,
-    serverPid: process.pid,
-    projectDir: null,
-    state: "connected",
-    updatedAt: Date.now(),
-    ...overrides,
-  };
+/** The directory holding the status files. */
+function sessionsDir(dirs: ClaudeCodeDirs): string {
+  return dirname(statusPath(dirs.dataDir, status()));
 }
 
 describe("session status", () => {
@@ -62,61 +54,80 @@ describe("session status", () => {
   it("is dropped once its Claude Code process is gone", async ({ dirs }) => {
     const path = dirs.writeStatus("session-gone", { pid: await exitedPid(), state: "refused" });
 
-    expect(liveSessions(dirs.dataDir).has("session-gone")).toBe(false);
+    expect(dirs.session("session-gone")).toBeUndefined();
     expect(existsSync(path)).toBe(false);
   });
 
   it("no longer holds its agent once the server is gone, though Claude Code lives on", async ({ dirs }) => {
     const path = dirs.writeStatus("session-killed", { serverPid: await exitedPid(), state: "connected" });
 
-    expect(liveSessions(dirs.dataDir).has("session-killed")).toBe(false);
-    expect(existsSync(path)).toBe(false);
+    expect(dirs.session("session-killed")).toBeUndefined();
+    // The server may have replaced it with its refusal just before exiting: only a reader that read that would know.
+    expect(existsSync(path)).toBe(true);
   });
 
   it("keeps a refusal after its server exits, for as long as Claude Code runs", async ({ dirs }) => {
     dirs.writeStatus("session-refused", { serverPid: await exitedPid(), state: "refused" });
 
-    expect(liveSessions(dirs.dataDir).get("session-refused")).toMatchObject({ state: "refused" });
+    expect(dirs.session("session-refused")).toMatchObject({ state: "refused" });
   });
 
   it("ignores a file that isn't a status", ({ dirs }) => {
-    const path = statusPath(dirs.dataDir, "session-garbled");
+    const path = statusPath(dirs.dataDir, status({ sessionId: "session-garbled" }));
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, "{ not json");
 
-    expect(liveSessions(dirs.dataDir).has("session-garbled")).toBe(false);
+    expect(liveSessions(dirs.dataDir)).toEqual([]);
+  });
+
+  it("is kept apart from another server's in the same session, as claude --resume in a second terminal starts one", ({ dirs }) => {
+    dirs.writeStatus("session-1", { serverPid: process.ppid, state: "connected" });
+    const resumed = dirs.openStatus("session-1", "docs");
+
+    resumed.record({ state: "refused" });
+    expect(liveSessions(dirs.dataDir).map(({ state }) => state).sort()).toEqual(["connected", "refused"]);
+
+    resumed.remove();
+    expect(dirs.session("session-1")).toMatchObject({ serverPid: process.ppid, state: "connected" });
   });
 
   it("never fails the server when it can't be written", ({ dirs }) => {
-    chmodSync(dirs.dataDir, READ_ONLY);
+    const file = dirs.openStatus("session-1", "docs");
+    chmodSync(sessionsDir(dirs), READ_ONLY);
     try {
-      const file = dirs.openStatus("session-1", "docs");
-
       expect(() => file.record({ state: "connected" })).not.toThrow();
       expect(() => file.remove()).not.toThrow();
     } finally {
-      chmodSync(dirs.dataDir, OWNER_ALL);
+      chmodSync(sessionsDir(dirs), OWNER_ALL);
     }
+    expect(dirs.session("session-1")).toMatchObject({ state: "connecting" });
   });
 });
 
 describe("the session holding an agent", () => {
   it("is the one connected, not one still connecting to the same agent", () => {
-    const sessions = new Map([
-      ["session-connected", status({ state: "connected" })],
-      ["session-connecting", status({ state: "connecting" })],
-    ]);
+    const sessions = [status({ sessionId: "session-connected", state: "connected" }), status({ sessionId: "session-connecting", state: "connecting" })];
 
     expect(agentHolders(sessions).get("agent-docs")?.sessionId).toBe("session-connected");
-    expect(agentHolders(new Map([...sessions].reverse())).get("agent-docs")?.sessionId).toBe("session-connected");
+    expect(agentHolders([...sessions].reverse()).get("agent-docs")?.sessionId).toBe("session-connected");
   });
 
   it("is found by Band agent, whatever name each session gave it", ({ dirs }) => {
     dirs.writeStatus("session-default", { agent: "default", agentId: "agent-main", projectDir: "/repo/api" });
     const refused = dirs.openStatus("session-docs", "docs");
-    refused.record({ agentId: "agent-main" });
 
-    expect(refused.holder()).toMatchObject({ agent: "default", projectDir: "/repo/api" });
+    expect(refused.holder("agent-main")).toMatchObject({ agent: "default", projectDir: "/repo/api" });
+  });
+
+  it("is not named, rather than failing the refusal, when the other sessions can't be read", ({ dirs }) => {
+    dirs.writeStatus("session-default", { agent: "default", agentId: "agent-main" });
+    const refused = dirs.openStatus("session-docs", "docs");
+    chmodSync(sessionsDir(dirs), UNLISTABLE);
+    try {
+      expect(refused.holder("agent-main")).toBeUndefined();
+    } finally {
+      chmodSync(sessionsDir(dirs), OWNER_ALL);
+    }
   });
 });
 

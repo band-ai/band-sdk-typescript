@@ -41,6 +41,12 @@ describe("the agent a session connects as", () => {
     );
   });
 
+  it("fails for a name that is only a property every object has", ({ dirs }) => {
+    writeSavedAgents(dirs.dataDir, { docs: DOCS });
+
+    expect(() => credentialsFor(dirs.env(SESSION, "toString"))).toThrow('No Band agent named "toString".');
+  });
+
   it("fails the same way before any agent is saved", ({ dirs }) => {
     expect(() => credentialsFor(dirs.env(SESSION, "docs"))).toThrow('No Band agent named "docs". Agents: default.');
   });

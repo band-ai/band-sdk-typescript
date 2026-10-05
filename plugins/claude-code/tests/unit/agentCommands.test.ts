@@ -1,4 +1,5 @@
 /** `/band:agents`: saving agents checked against Band, choosing one per project, and what each session holds. */
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -20,6 +21,8 @@ import { withDirs, type ClaudeCodeDirs } from "../support/claudeCodeDirs";
 const DOCS: PeerAgent = { id: "agent-docs", apiKey: "key-docs", name: "Docs", handle: "alex/docs" };
 const SDK: PeerAgent = { id: "agent-sdk", apiKey: "key-sdk", name: "SDK", handle: "alex/sdk" };
 const UNHANDLED: PeerAgent = { id: "agent-plain", apiKey: "key-plain", name: "Plain", handle: null };
+/** Band answers its identity with a status the client doesn't retry. */
+const TROUBLED: PeerAgent = { id: "agent-troubled", apiKey: "key-troubled", name: "Troubled", handle: "alex/troubled", failure: 400 };
 const OWNER_ONLY = 0o600;
 
 const MAIN_ID = "agent-main";
@@ -28,7 +31,7 @@ const STALE_MS = 60_000;
 
 const it = withDirs.extend<{ band: BandRestPeer }>({
   band: async ({}, use) => {
-    await using band = await BandRestPeer.start([DOCS, SDK, UNHANDLED]);
+    await using band = await BandRestPeer.start([DOCS, SDK, UNHANDLED, TROUBLED]);
     await use(band);
   },
 });
@@ -38,6 +41,11 @@ function save(dirs: ClaudeCodeDirs, ...agents: PeerAgent[]): void {
     dirs.dataDir,
     Object.fromEntries(agents.map((agent) => [nameFromHandle(agent.handle!), { agentId: agent.id, apiKey: agent.apiKey, handle: agent.handle }])),
   );
+}
+
+/** The parent of this test's parent: an ancestor of the command only by walking up from its parent. */
+function grandparentPid(): number {
+  return Number(execFileSync("ps", ["-o", "ppid=", "-p", String(process.ppid)], { encoding: "utf8" }).trim());
 }
 
 /** A session in this project whose server reported `change` while connecting as `agent`. */
@@ -107,6 +115,29 @@ describe("add", () => {
     expect(output).toBe('✓ Saved "Plain". Use it in a project with /band:agents use Plain');
   });
 
+  it("keeps every agent saved by adds running at once", async ({ dirs, band }) => {
+    await Promise.all([dirs.agents("add", DOCS.id, DOCS.apiKey, "--ws-url", band.wsUrl), dirs.agents("add", SDK.id, SDK.apiKey, "--ws-url", band.wsUrl)]);
+
+    expect(Object.keys(readSavedAgents(dirs.dataDir)).sort()).toEqual(["docs", "sdk"]);
+  });
+
+  it("keeps an agent removed while Band was checking another", async ({ dirs, band }) => {
+    save(dirs, DOCS);
+    const adding = dirs.agents("add", SDK.id, SDK.apiKey, "--ws-url", band.wsUrl);
+
+    await dirs.agents("remove", "docs");
+    await adding;
+
+    expect(Object.keys(readSavedAgents(dirs.dataDir))).toEqual(["sdk"]);
+  });
+
+  it("saves nothing when Band fails otherwise", async ({ dirs, band }) => {
+    await expect(dirs.agents("add", TROUBLED.id, TROUBLED.apiKey, "--ws-url", band.wsUrl)).rejects.toThrow(
+      "Band couldn't check that agent, so nothing was saved: Status code: 400",
+    );
+    expect(existsSync(agentsFilePath(dirs.dataDir))).toBe(false);
+  });
+
   it("refuses a name already taken", async ({ dirs, band }) => {
     save(dirs, DOCS);
 
@@ -169,6 +200,10 @@ describe("remove", () => {
     await expect(dirs.agents("remove", "sdk")).rejects.toThrow('No Band agent named "sdk". Agents: default.');
   });
 
+  it("refuses a name that is only a property every object has", async ({ dirs }) => {
+    await expect(dirs.agents("remove", "constructor")).rejects.toThrow('No Band agent named "constructor".');
+  });
+
   it("keeps the default, which the plugin's settings own", async ({ dirs }) => {
     await expect(dirs.agents("remove", "default")).rejects.toThrow("change it in /plugin");
   });
@@ -210,6 +245,22 @@ describe("status", () => {
     );
   });
 
+  it("doesn't offer the agent this session was refused, though no session here holds it", async ({ dirs }) => {
+    save(dirs, DOCS);
+    sessionAs(dirs, "session-1", "docs", { agentId: DOCS.id, state: "refused", error: "Taken." });
+
+    expect(await dirs.agents("status", "session-1")).toBe(
+      [
+        "This session: refused. Taken.",
+        "Free: default. Run /band:agents use default, then start a new Claude Code session here.",
+        "",
+        "Agents:",
+        "  default              free",
+        "  docs     @alex/docs  in use elsewhere",
+      ].join("\n"),
+    );
+  });
+
   it("says no agent is free when every one is held", async ({ dirs }) => {
     save(dirs, DOCS);
     sessionAs(dirs, "session-1", "default", { agentId: MAIN_ID, state: "connected" });
@@ -245,6 +296,13 @@ describe("status", () => {
     expect(await dirs.agents("status", "session-z")).toContain(`docs     @alex/docs  in use (session in ${dirs.projectDir})`);
   });
 
+  it("shows a session that didn't say where it runs as another session", async ({ dirs }) => {
+    save(dirs, DOCS);
+    dirs.writeStatus("session-1", { agentId: DOCS.id, projectDir: null });
+
+    expect(await dirs.agents("status", "session-2")).toContain("docs     @alex/docs  in use (another session)");
+  });
+
   it("shows a session's project under ~ when it is in the home directory", async ({ dirs }) => {
     save(dirs, DOCS);
     dirs.writeStatus("session-1", { agentId: DOCS.id, projectDir: join(homedir(), "repo", "api") });
@@ -254,7 +312,7 @@ describe("status", () => {
 
   it("still knows this session once /clear gave it a new ID, by its Claude Code process", async ({ dirs }) => {
     save(dirs, DOCS);
-    sessionAs(dirs, "session-1", "docs", { agentId: DOCS.id, handle: DOCS.handle, state: "connected" });
+    dirs.writeStatus("session-1", { pid: grandparentPid(), handle: DOCS.handle });
 
     const output = await dirs.agents("status", "session-after-clear");
 
@@ -264,10 +322,18 @@ describe("status", () => {
 
   it("takes the latest server of this Claude Code process after /clear, over an earlier one's refusal", async ({ dirs }) => {
     save(dirs, DOCS);
-    dirs.writeStatus("session-1", { pid: process.ppid, state: "refused", error: "Taken.", updatedAt: Date.now() - STALE_MS });
-    dirs.writeStatus("session-2", { pid: process.ppid, handle: DOCS.handle, state: "connected" });
+    dirs.writeStatus("session-1", { pid: grandparentPid(), state: "refused", error: "Taken.", updatedAt: Date.now() - STALE_MS });
+    dirs.writeStatus("session-2", { pid: grandparentPid(), handle: DOCS.handle, state: "connected" });
 
     expect(await dirs.agents("status", "session-after-clear")).toContain('This session: connected as "docs" (@alex/docs).');
+  });
+
+  it("tells this terminal's session from another resumed with the same ID", async ({ dirs }) => {
+    save(dirs, DOCS);
+    dirs.writeStatus("session-1", { handle: DOCS.handle, state: "connected" });
+    dirs.writeStatus("session-1", { pid: process.ppid, serverPid: process.ppid, state: "refused", error: "Taken." });
+
+    expect(await dirs.agents("status", "session-1")).toContain("This session: refused. Taken.");
   });
 
   it("says when no Band server runs in this session", async ({ dirs }) => {
