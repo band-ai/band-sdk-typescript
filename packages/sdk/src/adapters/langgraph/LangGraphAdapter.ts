@@ -13,7 +13,7 @@ import { relayReply, type TurnTools } from "../../core/turn";
 
 import {
   buildCustomToolIndex,
-  CustomToolDefinitionError,
+  assertCustomToolNamesAvailable,
   customToolToOpenAISchema,
   executeCustomTool,
   type CustomToolDef,
@@ -143,17 +143,14 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       let langGraphTools = [...this.additionalTools];
       if (this.usesBandTools) {
         sdk = await this.sdkLoader.get();
-        langGraphTools = [
-          ...buildLangGraphTools({
-            sdk,
-            tools,
-            includeMemoryTools: this.includeMemoryTools,
-            logger: this.logger,
-            customTools: this.customTools,
-            additionalTools: this.additionalTools,
-          }),
-          ...this.additionalTools,
-        ];
+        langGraphTools = buildLangGraphTools({
+          sdk,
+          tools,
+          includeMemoryTools: this.includeMemoryTools,
+          logger: this.logger,
+          customTools: this.customTools,
+          additionalTools: this.additionalTools,
+        });
       }
 
       const graph = await this.resolveGraph(sdk, langGraphTools);
@@ -362,42 +359,19 @@ function buildLangGraphTools(input: {
   });
   const portable = input.customTools.map((def) => ({ def, spec: toLangGraphToolSpec(customToolToOpenAISchema(def))! }));
   if (portable.length > 0) {
-    const activeNames = new Set([
+    assertCustomToolNamesAvailable(portable.map(({ spec }) => spec.name), [
       ...specs.map((spec) => spec.name),
       ...input.additionalTools.map((tool) => asOptionalRecord(tool)?.name),
     ]);
-    for (const { spec } of portable) {
-      if (activeNames.has(spec.name)) {
-        throw new CustomToolDefinitionError(`Custom tool '${spec.name}' conflicts with an active tool.`);
-      }
-    }
   }
-  const wrappers: unknown[] = [];
+  const wrap = (spec: LangGraphToolLike, execute: (args: Record<string, unknown>) => Promise<unknown>) =>
+    input.sdk.tool(async (args) => stringifyToolResult(await execute(args), input.logger, spec.name), spec);
 
-  for (const spec of specs) {
-    wrappers.push(
-      input.sdk.tool(
-        async (args: Record<string, unknown>) => {
-          const result = await input.tools.executeToolCall(spec.name, args);
-          return stringifyToolResult(result, input.logger, spec.name);
-        },
-        {
-          name: spec.name,
-          description: spec.description,
-          schema: spec.schema,
-        },
-      ),
-    );
-  }
-
-  for (const { def, spec } of portable) {
-    wrappers.push(input.sdk.tool(async (args) => {
-      const result = await executeCustomTool(def, args, input.tools.turn);
-      return stringifyToolResult(result, input.logger, spec.name);
-    }, spec));
-  }
-
-  return wrappers;
+  return [
+    ...specs.map((spec) => wrap(spec, (args) => input.tools.executeToolCall(spec.name, args))),
+    ...portable.map(({ def, spec }) => wrap(spec, (args) => executeCustomTool(def, args, input.tools.turn))),
+    ...input.additionalTools,
+  ];
 }
 
 function toLangGraphToolSpec(schema: Record<string, unknown>): LangGraphToolLike | null {

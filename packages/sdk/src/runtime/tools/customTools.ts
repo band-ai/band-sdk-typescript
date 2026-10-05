@@ -137,6 +137,15 @@ export function buildCustomToolIndex(tools: CustomToolDef[]): Map<string, Custom
   return index;
 }
 
+export function assertCustomToolNamesAvailable(customNames: string[], activeNames: Iterable<unknown>): void {
+  const active = new Set(activeNames);
+  for (const name of customNames) {
+    if (active.has(name)) {
+      throw new CustomToolDefinitionError(`Custom tool '${name}' conflicts with an active tool.`);
+    }
+  }
+}
+
 /**
  * `def`'s effect, checked against core's: an untyped caller's misspelled one
  * fails here, before the handler's side effect, not after it.

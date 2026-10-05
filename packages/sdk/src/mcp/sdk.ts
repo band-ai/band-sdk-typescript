@@ -1,21 +1,14 @@
-import {
-  createSdkMcpServer,
-  tool,
-  type McpSdkServerConfigWithInstance,
-  type SdkMcpToolDefinition,
-} from "@anthropic-ai/claude-agent-sdk";
-import { z } from "zod";
+import type { McpSdkServerConfigWithInstance, SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 
 import type { AgentIdentity } from "../client/rest/types";
 import type { AdapterToolsProtocol } from "../contracts/protocols";
-import { mcpToolNames, MCP_SERVER_NAME } from "../contracts/toolSchemas";
 import {
   buildRoomScopedRegistrations,
   buildSingleContextRegistrations,
   resolveSingleRoomTools,
   type McpToolRegistration,
 } from "./registrations";
-import { buildZodShape } from "./zod";
+import { createSdkMcpBridge } from "./sdkTools";
 
 export interface CreateBandSdkMcpServerOptions {
   enableMemoryTools: boolean;
@@ -78,20 +71,12 @@ export function createBandSdkMcpServer(
     ? buildSingleContextRegistrations(resolveSingleRoomTools(options.getToolsForRoom), registrationOptions)
     : buildRoomScopedRegistrations(options.getToolsForRoom, registrationOptions);
 
-  const toolDefinitions = registrations.map(toSdkToolDefinition);
-  const toolNames = new Set(registrations.map((r) => r.name));
+  const bridge = createSdkMcpBridge(registrations);
   const contextCache = new Map<string, { value: GetSystemPromptContextResult; expiresAt: number; lastAccessedAt: number }>();
   const MAX_CONTEXT_CACHE_ENTRIES = 100;
 
-  const serverConfig = createSdkMcpServer({
-    name: MCP_SERVER_NAME,
-    tools: toolDefinitions,
-  });
-
   return {
-    serverConfig,
-    allowedTools: mcpToolNames(toolNames),
-    toolDefinitions,
+    ...bridge,
     getSystemPromptContext: async (roomId, contextOptions) => {
       const context = await getOrBuildSystemPromptContext(
         roomId,
@@ -343,20 +328,4 @@ function evictLeastRecentlyUsedContext(
 
 function normalizeHandle(handle: string | null | undefined): string | null {
   return typeof handle === "string" && handle.trim().length > 0 ? handle.trim() : null;
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- matches SDK's own SdkMcpToolDefinition<any> signature
-function toSdkToolDefinition(registration: McpToolRegistration): SdkMcpToolDefinition<any> {
-  const shape = buildZodShape(
-    z,
-    registration.inputSchema.properties,
-    new Set(registration.inputSchema.required),
-  );
-
-  return tool(
-    registration.name,
-    registration.description,
-    shape,
-    async (args: Record<string, unknown>) => registration.execute(args),
-  );
 }

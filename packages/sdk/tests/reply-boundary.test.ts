@@ -22,7 +22,7 @@ const ALLOWED: Record<string, { calls: number; why: string }> = {
   "adapters/GenericAdapter.ts": { calls: 1, why: "a handler's send is its reply" },
   "adapters/acp/ACPRoomAgent.ts": { calls: 1, why: "flushChunks relays the model's text" },
   "adapters/a2a/A2AAdapter.ts": { calls: 5, why: "relays the remote agent's answer; one is the A2A client's own sendMessage" },
-  "adapters/claude-sdk/ClaudeSDKAdapter.ts": { calls: 2, why: "relays the model's closing text, on success and alongside a result failure" },
+  "adapters/claude-sdk/ClaudeSDKAdapter.ts": { calls: 1, why: "relays the model's closing text, on success and alongside a result failure" },
   "adapters/codex/CodexRoomAgent.ts": { calls: 1, why: "relays the model's closing text" },
   "adapters/google-adk/GoogleADKAdapter.ts": { calls: 1, why: "relays the model's closing text" },
   "adapters/langgraph/LangGraphAdapter.ts": { calls: 1, why: "relays the model's closing text" },

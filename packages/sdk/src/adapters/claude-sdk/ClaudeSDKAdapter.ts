@@ -15,7 +15,7 @@ import { resolveLogger } from "../../core/logger";
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
-import { mcpToolNames, MCP_SERVER_NAME } from "../../contracts/toolSchemas";
+import { MCP_SERVER_NAME } from "../../contracts/toolSchemas";
 import { agentFailure, reportProviderTurnFailure, reportTurnFailure, safeSendFailure } from "../../core/providerFailure";
 import { relayReply, type TurnTools } from "../../core/turn";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
@@ -27,9 +27,7 @@ import {
   type McpToolRegistration,
 } from "../../mcp/registrations";
 import { buildCustomMcpRegistrations } from "../../mcp/customTools";
-import { buildCustomToolIndex, CustomToolDefinitionError, type CustomToolDef } from "../../runtime/tools/customTools";
-import { buildZodShape } from "../../mcp/zod";
-import { z } from "zod";
+import { assertCustomToolNamesAvailable, buildCustomToolIndex, type CustomToolDef } from "../../runtime/tools/customTools";
 
 export type ClaudePermissionMode = NonNullable<Options["permissionMode"]>;
 
@@ -107,22 +105,11 @@ type BandMcpBridgeFactory = (input: {
 
 const bandMcpBridgeFactory = new LazyAsyncValue<BandMcpBridgeFactory>({
   load: async () => {
-    const module = await import("@anthropic-ai/claude-agent-sdk").catch((error: unknown) => {
+    const module = await import("../../mcp/sdkTools").catch((error: unknown) => {
       throw new UnsupportedFeatureError(
         `ClaudeSDKAdapter requires optional dependency "@anthropic-ai/claude-agent-sdk" when MCP tools are enabled. Install it with "pnpm add @anthropic-ai/claude-agent-sdk". (${error instanceof Error ? error.message : String(error)})`,
       )
     })
-
-    if (
-      typeof module.createSdkMcpServer !== "function"
-      || typeof module.tool !== "function"
-    ) {
-      throw new UnsupportedFeatureError(
-        'ClaudeSDKAdapter requires optional dependency "@anthropic-ai/claude-agent-sdk" when MCP tools are enabled. Install it with "pnpm add @anthropic-ai/claude-agent-sdk".',
-      )
-    }
-
-    const { createSdkMcpServer, tool: defineTool } = module
 
     return (input) => {
       const registrations = buildRoomScopedRegistrations(
@@ -134,36 +121,8 @@ const bandMcpBridgeFactory = new LazyAsyncValue<BandMcpBridgeFactory>({
         },
       )
 
-      const activeNames = new Set(registrations.map((registration) => registration.name));
-      for (const registration of input.customTools) {
-        if (activeNames.has(registration.name)) {
-          throw new CustomToolDefinitionError(`Custom tool '${registration.name}' conflicts with an active tool.`);
-        }
-      }
-      registrations.push(...input.customTools);
-
-      const toolDefinitions = registrations.map((registration) => {
-        const shape = buildZodShape(
-          z,
-          registration.inputSchema.properties,
-          new Set(registration.inputSchema.required),
-        )
-
-        return defineTool(
-          registration.name,
-          registration.description,
-          shape,
-          registration.execute,
-        )
-      })
-
-      return {
-        serverConfig: createSdkMcpServer({
-          name: MCP_SERVER_NAME,
-          tools: toolDefinitions,
-        }),
-        allowedTools: mcpToolNames(new Set(registrations.map((registration) => registration.name))),
-      }
+      assertCustomToolNamesAvailable(input.customTools.map((registration) => registration.name), registrations.map((registration) => registration.name));
+      return module.createSdkMcpBridge([...registrations, ...input.customTools]);
     }
   },
 })
@@ -270,20 +229,17 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
 
       const mention = [{ id: message.senderId, handle: message.senderName ?? message.senderType }];
       const replyText = finalText.trim();
-      if (resultFailure) {
-        const failure = agentFailure(this.provider, resultFailure.message, resultFailure.code, resultFailure.detail);
-        // Preceding assistant text is already decided output; posting it must
-        // not flip a non-success result into a successful turn.
-        try {
-          await relayReply(tools, replyText, mention);
-        } catch (error) {
-          await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId });
-          throw error;
-        }
-        await reportTurnFailure(tools, failure, this.logger, { roomId: context.roomId });
+      const failure = resultFailure
+        ? agentFailure(this.provider, resultFailure.message, resultFailure.code, resultFailure.detail)
+        : null;
+      try {
+        await relayReply(tools, replyText, mention);
+      } catch (error) {
+        if (failure) await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId });
+        throw error;
       }
-
-      await relayReply(tools, replyText, mention);
+      // Posting preceding text must not turn a failed provider result into success.
+      if (failure) await reportTurnFailure(tools, failure, this.logger, { roomId: context.roomId });
     } finally {
       if (this.roomTools.get(context.roomId) === tools) {
         this.roomTools.delete(context.roomId);
