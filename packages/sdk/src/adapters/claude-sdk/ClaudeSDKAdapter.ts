@@ -96,36 +96,17 @@ interface BandMcpBridge {
   allowedTools: string[];
 }
 
-type BandMcpBridgeFactory = (input: {
-  enableMemoryTools: boolean;
-  getToolsForRoom: (roomId: string) => AdapterToolsProtocol | undefined;
-  additionalTools?: McpToolRegistration[];
-  customTools: McpToolRegistration[];
-}) => BandMcpBridge;
-
-const bandMcpBridgeFactory = new LazyAsyncValue<BandMcpBridgeFactory>({
+const sdkMcpBridgeLoader = new LazyAsyncValue({
   load: async () => {
     const module = await import("../../mcp/sdkTools").catch((error: unknown) => {
       throw new UnsupportedFeatureError(
         `ClaudeSDKAdapter requires optional dependency "@anthropic-ai/claude-agent-sdk" when MCP tools are enabled. Install it with "pnpm add @anthropic-ai/claude-agent-sdk". (${error instanceof Error ? error.message : String(error)})`,
-      )
-    })
+      );
+    });
 
-    return (input) => {
-      const registrations = buildRoomScopedRegistrations(
-        input.getToolsForRoom,
-        {
-          enableMemoryTools: input.enableMemoryTools,
-          enableContactTools: true,
-          additionalTools: input.additionalTools,
-        },
-      )
-
-      assertCustomToolNamesAvailable(input.customTools.map((registration) => registration.name), registrations.map((registration) => registration.name));
-      return module.createSdkMcpBridge(registrations, input.customTools);
-    }
+    return module.createSdkMcpBridge;
   },
-})
+});
 
 export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> {
   protected readonly provider = "claude-sdk";
@@ -184,13 +165,17 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     });
 
     if (this.enableMcpTools) {
-      const createBandMcpBridge = await bandMcpBridgeFactory.get()
-      this.mcpBridge = createBandMcpBridge({
+      const createSdkMcpBridge = await sdkMcpBridgeLoader.get();
+      const registrations = buildRoomScopedRegistrations((roomId) => this.roomTools.get(roomId), {
         enableMemoryTools: this.enableMemoryTools,
-        customTools: this.customToolRegistrations,
-        getToolsForRoom: (roomId) => this.roomTools.get(roomId),
-        additionalTools: this.additionalMcpTools.length > 0 ? this.additionalMcpTools : undefined,
+        enableContactTools: true,
+        additionalTools: this.additionalMcpTools,
       });
+      assertCustomToolNamesAvailable(
+        this.customToolRegistrations.map((registration) => registration.name),
+        registrations.map((registration) => registration.name),
+      );
+      this.mcpBridge = createSdkMcpBridge(registrations, this.customToolRegistrations);
     }
   }
 
