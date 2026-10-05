@@ -122,7 +122,7 @@ const bandMcpBridgeFactory = new LazyAsyncValue<BandMcpBridgeFactory>({
       )
 
       assertCustomToolNamesAvailable(input.customTools.map((registration) => registration.name), registrations.map((registration) => registration.name));
-      return module.createSdkMcpBridge([...registrations, ...input.customTools]);
+      return module.createSdkMcpBridge(registrations, input.customTools);
     }
   },
 })

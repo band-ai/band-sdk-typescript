@@ -726,6 +726,51 @@ describe("ClaudeSDKAdapter", () => {
       expect(transform).toHaveBeenCalledOnce();
     });
 
+    it.each([
+      { name: "loose", schema: z.looseObject({ title: z.string().describe("Marker title") }), expectedExtra: "important", titleSchema: { type: "string", description: "Marker title" } },
+      { name: "catchall", schema: z.object({ title: z.string() }).catchall(z.string().transform((text) => `${text}!`)), expectedExtra: "important!", titleSchema: { type: "string" } },
+    ])("preserves undeclared business arguments for a $name schema", async ({ schema, expectedExtra, titleSchema }) => {
+      const handler = vi.fn((args) => args);
+      const args = { title: "hello", extra: "important" };
+      const expected = { ...args, extra: expectedExtra };
+      const adapter = new ClaudeSDKAdapter({
+        customTools: [portable({ schema, handler })],
+        queryFn: async function* ({ options }) {
+          const client = await connectionTo(options?.mcpServers?.[MCP_SERVER_NAME] as McpSdkServerConfigWithInstance);
+          const advertised = await client.listTools();
+          expect(advertised.tools.find((entry) => entry.name === "write_marker")).toMatchObject({
+            inputSchema: { properties: { title: titleSchema }, required: ["title", "room_id"] },
+          });
+          const result = await callMcpTool(options, "write_marker", { room_id: ROOM_ID, ...args });
+          expect(result.isError).toBeUndefined();
+          expect(result.content).toEqual([{ type: "text", text: JSON.stringify(expected) }]);
+          yield success("") as never;
+        },
+      });
+      await adapter.onStarted("Parity Agent", "Parity test agent");
+      await adapter.onEvent(turnInput(new FakeTools(), SENDER));
+      expect(handler).toHaveBeenCalledExactlyOnceWith(expected);
+    });
+
+    it.each([
+      { name: "strict", schema: z.strictObject({ title: z.string() }), extra: "unexpected" },
+      { name: "catchall", schema: z.object({ title: z.string() }).catchall(z.string()), extra: 42 },
+    ])("rejects undeclared business arguments invalid for a $name schema", async ({ schema, extra }) => {
+      const handler = vi.fn();
+      const adapter = new ClaudeSDKAdapter({
+        customTools: [portable({ schema, handler })],
+        queryFn: async function* ({ options }) {
+          const result = await callMcpTool(options, "write_marker", { room_id: ROOM_ID, title: "hello", extra });
+          expect(result.isError).toBe(true);
+          expect(result.content).toEqual([expect.objectContaining({ text: expect.stringContaining("Invalid arguments for write_marker") })]);
+          yield success("") as never;
+        },
+      });
+      await adapter.onStarted("Parity Agent", "Parity test agent");
+      await expectTurnFailed(adapter.onEvent(turnInput(new FakeTools(), SENDER)));
+      expect(handler).not.toHaveBeenCalled();
+    });
+
     it.each([{ count: 1.5 }, { count: 2, payload: { extra: true } }])("enforces the original business schema after approximate MCP validation: %j", async (args) => {
       const handler = vi.fn();
       const adapter = new ClaudeSDKAdapter({ customTools: [portable({
@@ -915,7 +960,7 @@ describe("ClaudeSDKAdapter", () => {
         additionalMcpTools: [{ name: "native", description: "native", inputSchema: { type: "object", properties: {}, required: [] }, execute }],
         queryFn: async function* ({ options }) {
           expect(options?.allowedTools).toEqual(expect.arrayContaining(["mcp__band__native", "mcp__band__write_marker"]));
-          const result = await callMcpTool(options, "native", {});
+          const result = await callMcpTool(options, "native", { undeclared: "native input" });
           expect(result.content).toEqual([{ type: "text", text: "native result" }]);
           await callBandTool(options, "write_marker");
           yield success("") as never;
@@ -923,7 +968,7 @@ describe("ClaudeSDKAdapter", () => {
       });
       await adapter.onStarted("Parity Agent", "Parity test agent");
       await expectTurnFailed(adapter.onEvent(turnInput(new FakeTools(), SENDER)));
-      expect(execute).toHaveBeenCalledOnce();
+      expect(execute).toHaveBeenCalledExactlyOnceWith({});
     });
 
     it.each([false, true])("checks portable collisions only against active memory tools (enabled=%s)", async (enableMemoryTools) => {

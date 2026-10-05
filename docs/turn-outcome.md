@@ -166,6 +166,8 @@ query after a replacement starts.
 The existing JSON schema conversion publishes input schemas, so original Zod
 runtime transforms run once per execution. Claude's JSON-to-Zod bridge is an
 approximation; the original business schema validates before the handler.
+Claude portable tools preserve undeclared arguments so that original schema
+controls whether to retain, strip, or reject them.
 Published and runtime acceptance can differ, and schema generation may invoke
 dynamic default/catch callbacks separately from execution.
 
