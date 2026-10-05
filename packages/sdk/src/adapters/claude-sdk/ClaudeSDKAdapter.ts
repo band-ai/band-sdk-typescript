@@ -12,7 +12,7 @@ import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
-import { UnsupportedFeatureError } from "../../core/errors";
+import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { mcpToolNames, MCP_SERVER_NAME } from "../../contracts/toolSchemas";
@@ -26,6 +26,8 @@ import {
   buildRoomScopedRegistrations,
   type McpToolRegistration,
 } from "../../mcp/registrations";
+import { buildCustomMcpRegistrations } from "../../mcp/customTools";
+import { buildCustomToolIndex, CustomToolDefinitionError, type CustomToolDef } from "../../runtime/tools/customTools";
 import { buildZodShape } from "../../mcp/zod";
 import { z } from "zod";
 
@@ -66,6 +68,7 @@ export interface ClaudeSDKAdapterOptions {
   enableMemoryTools?: boolean;
   enableMcpTools?: boolean;
   additionalMcpTools?: McpToolRegistration[];
+  customTools?: CustomToolDef[];
   cwd?: string;
   /** Host Claude Code settings to load; `[]` (the default) loads none, e.g. `["user", "project"]` opts back in. */
   settingSources?: SettingSource[];
@@ -99,6 +102,7 @@ type BandMcpBridgeFactory = (input: {
   enableMemoryTools: boolean;
   getToolsForRoom: (roomId: string) => AdapterToolsProtocol | undefined;
   additionalTools?: McpToolRegistration[];
+  customTools: McpToolRegistration[];
 }) => BandMcpBridge;
 
 const bandMcpBridgeFactory = new LazyAsyncValue<BandMcpBridgeFactory>({
@@ -129,6 +133,14 @@ const bandMcpBridgeFactory = new LazyAsyncValue<BandMcpBridgeFactory>({
           additionalTools: input.additionalTools,
         },
       )
+
+      const activeNames = new Set(registrations.map((registration) => registration.name));
+      for (const registration of input.customTools) {
+        if (activeNames.has(registration.name)) {
+          throw new CustomToolDefinitionError(`Custom tool '${registration.name}' conflicts with an active tool.`);
+        }
+      }
+      registrations.push(...input.customTools);
 
       const toolDefinitions = registrations.map((registration) => {
         const shape = buildZodShape(
@@ -168,6 +180,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
   private readonly enableMemoryTools: boolean;
   private readonly enableMcpTools: boolean;
   private readonly additionalMcpTools: McpToolRegistration[];
+  private readonly customToolRegistrations: McpToolRegistration[];
   private readonly cwd?: string;
   private readonly settingSources: SettingSource[];
   private readonly queryFnOverride?: ClaudeSDKQuery;
@@ -190,6 +203,11 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     this.enableMemoryTools = options?.enableMemoryTools ?? false;
     this.enableMcpTools = options?.enableMcpTools ?? true;
     this.additionalMcpTools = options?.additionalMcpTools ?? [];
+    const customTools = [...buildCustomToolIndex(options?.customTools ?? []).values()];
+    if (customTools.length > 0 && !this.enableMcpTools) {
+      throw new ValidationError("ClaudeSDK customTools require `enableMcpTools: true`.");
+    }
+    this.customToolRegistrations = buildCustomMcpRegistrations(customTools, (roomId) => this.roomTools.get(roomId));
     this.cwd = options?.cwd;
     this.settingSources = options?.settingSources ?? [];
     this.queryFnOverride = options?.queryFn;
@@ -210,6 +228,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       const createBandMcpBridge = await bandMcpBridgeFactory.get()
       this.mcpBridge = createBandMcpBridge({
         enableMemoryTools: this.enableMemoryTools,
+        customTools: this.customToolRegistrations,
         getToolsForRoom: (roomId) => this.roomTools.get(roomId),
         additionalTools: this.additionalMcpTools.length > 0 ? this.additionalMcpTools : undefined,
       });
@@ -236,33 +255,40 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
-    let finalText = "";
-    let resultFailure: ClaudeResultFailure | null = null;
+    this.roomTools.set(context.roomId, tools);
     try {
-      const query = await this.startQuery(message, history, participantsMessage, contactsMessage, context, tools);
-      const consumed = await this.consumeQueryEvents(query, tools, context.roomId);
-      finalText = consumed.finalText;
-      resultFailure = consumed.resultFailure;
-    } catch (error) {
-      await reportProviderTurnFailure(tools, this.logger, this.provider, "Claude SDK adapter request failed", error, { roomId: context.roomId });
-    }
-
-    const mention = [{ id: message.senderId, handle: message.senderName ?? message.senderType }];
-    const replyText = finalText.trim();
-    if (resultFailure) {
-      const failure = agentFailure(this.provider, resultFailure.message, resultFailure.code, resultFailure.detail);
-      // Preceding assistant text is already decided output; posting it must
-      // not flip a non-success result into a successful turn.
+      let finalText = "";
+      let resultFailure: ClaudeResultFailure | null = null;
       try {
-        await relayReply(tools, replyText, mention);
+        const query = await this.startQuery(message, history, participantsMessage, contactsMessage, context);
+        const consumed = await this.consumeQueryEvents(query, tools, context.roomId);
+        finalText = consumed.finalText;
+        resultFailure = consumed.resultFailure;
       } catch (error) {
-        await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId });
-        throw error;
+        await reportProviderTurnFailure(tools, this.logger, this.provider, "Claude SDK adapter request failed", error, { roomId: context.roomId });
       }
-      await reportTurnFailure(tools, failure, this.logger, { roomId: context.roomId });
-    }
 
-    await relayReply(tools, replyText, mention);
+      const mention = [{ id: message.senderId, handle: message.senderName ?? message.senderType }];
+      const replyText = finalText.trim();
+      if (resultFailure) {
+        const failure = agentFailure(this.provider, resultFailure.message, resultFailure.code, resultFailure.detail);
+        // Preceding assistant text is already decided output; posting it must
+        // not flip a non-success result into a successful turn.
+        try {
+          await relayReply(tools, replyText, mention);
+        } catch (error) {
+          await safeSendFailure(tools, failure, this.logger, { roomId: context.roomId });
+          throw error;
+        }
+        await reportTurnFailure(tools, failure, this.logger, { roomId: context.roomId });
+      }
+
+      await relayReply(tools, replyText, mention);
+    } finally {
+      if (this.roomTools.get(context.roomId) === tools) {
+        this.roomTools.delete(context.roomId);
+      }
+    }
   }
 
   private async startQuery(
@@ -271,7 +297,6 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     participantsMessage: string | null,
     contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
-    tools: TurnTools,
   ): Promise<AsyncIterable<SDKMessage>> {
     const queryFn = this.queryFnOverride ?? (await loadClaudeQuery());
 
@@ -303,7 +328,6 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
         [MCP_SERVER_NAME]: this.mcpBridge.serverConfig,
       };
       options.allowedTools = this.mcpBridge.allowedTools;
-      this.roomTools.set(context.roomId, tools);
     }
 
     const roomToolHint = this.enableMcpTools

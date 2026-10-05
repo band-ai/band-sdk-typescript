@@ -2,6 +2,9 @@ import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { z } from "zod";
+import type { CustomToolDef } from "../src/runtime/tools/customTools";
+import { trackTurn, type TurnTools } from "../src/core/turn";
 
 import {
   ClaudeSDKAdapter,
@@ -18,7 +21,7 @@ import { describeDeliveryContract } from "./deliveryContract";
 import { MCP_SERVER_NAME, NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
 import type { AdapterToolsProtocol, FrameworkAdapterInput } from "../src/contracts/protocols";
 import { createDeferred } from "../src/core/deferred";
-import { CLOSING_TEXT, describeTurnOutcomeContract, turnInput, type TurnScript, NO_REPLY_ARGS, TOOL_REPLY_ARGS, ACT_TOOL, ACT_ARGS } from "./turnOutcomeContract";
+import { CLOSING_TEXT, describeCustomToolEffect, describeTurnOutcomeContract, turnInput, type TurnScript, NO_REPLY_ARGS, TOOL_REPLY_ARGS, ACT_TOOL, ACT_ARGS } from "./turnOutcomeContract";
 
 function streamFrom<T>(items: T[]): AsyncGenerator<T, void> {
   return (async function* generator(): AsyncGenerator<T, void> {
@@ -631,10 +634,22 @@ describe("ClaudeSDKAdapter", () => {
       return open;
     }
 
+    async function callMcpTool(options: ClaudeSDKQueryParams["options"], name: string, args: Record<string, unknown>) {
+      const client = await connectionTo(options?.mcpServers?.[MCP_SERVER_NAME] as McpSdkServerConfigWithInstance);
+      return client.callTool({ name, arguments: args });
+    }
+
+    function startMessage(adapter: ClaudeSDKAdapter, tools: TurnTools, roomId = ROOM_ID) {
+      return adapter.onMessage(makeMessage("hello", roomId), tools, new HistoryProvider([]), null, null, { roomId, isSessionBootstrap: false });
+    }
+
+    const portable = (overrides: Partial<CustomToolDef> = {}): CustomToolDef => ({
+      name: "write_marker", schema: z.object({}), handler: () => ({ ok: true }), effect: "act", ...overrides,
+    });
+
     /** Calls a Band tool on the MCP server the adapter started the query with, as Claude Code would. */
     async function callBandTool(options: ClaudeSDKQueryParams["options"], name: string, args: Record<string, unknown> = {}): Promise<void> {
-      const client = await connectionTo(options?.mcpServers?.[MCP_SERVER_NAME] as McpSdkServerConfigWithInstance);
-      const result = await client.callTool({ name, arguments: { room_id: ROOM_ID, ...args } });
+      const result = await callMcpTool(options, name, { room_id: ROOM_ID, ...args });
       expect(result.isError, `${name} failed`).toBeUndefined();
     }
 
@@ -674,6 +689,254 @@ describe("ClaudeSDKAdapter", () => {
         await adapter.onEvent(turnInput(tools, SENDER));
       },
     }]);
+
+    describeCustomToolEffect("ClaudeSDKAdapter (real MCP)", async (def, tools) => {
+      const adapter = new ClaudeSDKAdapter({
+        customTools: [def],
+        queryFn: async function* ({ options }) {
+          await callBandTool(options, def.name);
+          yield success("") as never;
+        },
+      });
+      await adapter.onStarted("Parity Agent", "Parity test agent");
+      await adapter.onEvent(turnInput(tools, SENDER));
+    });
+
+    it("strips routing before strict validation, and transforms business inputs once", async () => {
+      const transform = vi.fn((text: string) => `${text}!`);
+      const handler = vi.fn((args) => args);
+      const adapter = new ClaudeSDKAdapter({
+        customTools: [portable({ name: " write_marker ", schema: z.strictObject({
+          payload: z.strictObject({ text: z.string().transform(transform) }), count: z.number().default(2),
+        }), handler })],
+        queryFn: async function* ({ options }) {
+          expect(options?.allowedTools).toContain("mcp__band__write_marker");
+          const result = await callMcpTool(options, "write_marker", { room_id: ` ${ROOM_ID} `, payload: { text: "hello" } });
+          expect(result.isError).toBeUndefined();
+          expect(result.content).toEqual([{ type: "text", text: '{"payload":{"text":"hello!"},"count":2}' }]);
+          const invalid = await callMcpTool(options, "write_marker", { room_id: ROOM_ID, payload: { text: 5 } });
+          expect(invalid.isError).toBe(true);
+          yield success("") as never;
+        },
+      });
+      await adapter.onStarted("Parity Agent", "Parity test agent");
+      await adapter.onEvent(turnInput(new FakeTools(), SENDER));
+      expect(handler).toHaveBeenCalledOnce();
+      expect(handler).toHaveBeenCalledWith({ payload: { text: "hello!" }, count: 2 });
+      expect(transform).toHaveBeenCalledOnce();
+    });
+
+    it.each([{ count: 1.5 }, { count: 2, payload: { extra: true } }])("enforces the original business schema after approximate MCP validation: %j", async (args) => {
+      const handler = vi.fn();
+      const adapter = new ClaudeSDKAdapter({ customTools: [portable({
+        schema: z.object({ count: z.number().int(), payload: z.strictObject({}).optional() }), handler,
+      })], queryFn: async function* ({ options }) {
+        const result = await callMcpTool(options, "write_marker", { room_id: ROOM_ID, ...args });
+        expect(result.isError).toBe(true);
+        expect(result.content).toEqual([expect.objectContaining({ text: expect.stringContaining("Invalid arguments for write_marker") })]);
+        yield success("") as never;
+      } });
+      await adapter.onStarted("Parity Agent", "Parity test agent");
+      await expectTurnFailed(adapter.onEvent(turnInput(new FakeTools(), SENDER)));
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it.each(["act", "reply", "decline", "observe"] as const)("handles portable %s and final text", async (effect) => {
+      const tools = new FakeTools();
+      const adapter = new ClaudeSDKAdapter({ customTools: [portable({ effect })], queryFn: async function* ({ options }) {
+        await callBandTool(options, "write_marker");
+        yield* closing(CLOSING_TEXT);
+      } });
+      await adapter.onStarted("Parity Agent", "Parity test agent");
+      await adapter.onEvent(turnInput(tools, SENDER));
+      expect(tools.messages).toEqual(effect === "reply" || effect === "decline" ? [] : [CLOSING_TEXT]);
+    });
+
+    it.each([{ ok: false }, "Error: refused"])("serializes failed output %j without credit or transport error", async (output) => {
+      const adapter = new ClaudeSDKAdapter({ customTools: [portable({ handler: () => output })], queryFn: async function* ({ options }) {
+        const result = await callMcpTool(options, "write_marker", { room_id: ROOM_ID });
+        expect(result.isError).toBeUndefined();
+        expect(result.content).toEqual([{ type: "text", text: typeof output === "string" ? output : JSON.stringify(output) }]);
+        yield success("") as never;
+      } });
+      await adapter.onStarted("Parity Agent", "Parity test agent");
+      await expectTurnFailed(adapter.onEvent(turnInput(new FakeTools(), SENDER)));
+    });
+
+    it("reports a thrown handler in the MCP error channel without credit, then recovers", async () => {
+      let calls = 0;
+      const adapter = new ClaudeSDKAdapter({ customTools: [portable({ handler: async () => {
+        if (++calls === 1) throw new Error("write rejected");
+        return false;
+      } })], queryFn: async function* ({ options }) {
+        const result = await callMcpTool(options, "write_marker", { room_id: ROOM_ID });
+        expect(result.isError).toBe(calls === 1 ? true : undefined);
+        yield success("") as never;
+      } });
+      await adapter.onStarted("Parity Agent", "Parity test agent");
+      await expectTurnFailed(adapter.onEvent(turnInput(new FakeTools(), SENDER)));
+      await adapter.onEvent(turnInput(new FakeTools(), SENDER));
+      expect(calls).toBe(2);
+    });
+
+    it("routes only to active rooms and preserves the room-id trust boundary", async () => {
+      const bothStarted = createDeferred();
+      const release = createDeferred();
+      const handler = vi.fn(() => "done");
+      let queries = 0;
+      let options: ClaudeSDKQueryParams["options"];
+      const adapter = new ClaudeSDKAdapter({ customTools: [portable({ handler })], queryFn: async function* (params) {
+        options = params.options;
+        if (++queries === 2) bothStarted.resolve();
+        await release.promise;
+        yield success("") as never;
+      } });
+      await adapter.onStarted("Parity Agent", "Parity test agent");
+      const first = trackTurn(new FakeTools());
+      const second = trackTurn(new FakeTools());
+      const turns = [startMessage(adapter, first, "first"), startMessage(adapter, second, "second")];
+      await bothStarted.promise;
+      for (const room_id of [undefined, "", "  ", 4, "unknown"]) {
+        const result = await callMcpTool(options, "write_marker", room_id === undefined ? {} : { room_id });
+        expect(result.isError).toBe(true);
+      }
+      expect(handler).not.toHaveBeenCalled();
+      await callMcpTool(options, "write_marker", { room_id: " first " });
+      expect(first.turn.verdict()).toBe("complete");
+      expect(second.turn.verdict()).toBe("missing_reply");
+      await callMcpTool(options, "write_marker", { room_id: "second" });
+      release.resolve();
+      await Promise.all(turns);
+      expect((await callMcpTool(options, "write_marker", { room_id: "first" })).isError).toBe(true);
+      expect(handler).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps a pending handler's turn and lets an old finally leave the replacement binding intact", async () => {
+      const handlerStarted = createDeferred();
+      const releaseHandler = createDeferred();
+      const replacementStarted = createDeferred();
+      const releaseReplacement = createDeferred();
+      let queries = 0;
+      let options: ClaudeSDKQueryParams["options"];
+      const adapter = new ClaudeSDKAdapter({
+        customTools: [portable({ schema: z.object({ old: z.boolean() }), handler: async ({ old }) => {
+          if (old) { handlerStarted.resolve(); await releaseHandler.promise; }
+          return "done";
+        } })],
+        queryFn: async function* (params) {
+          options = params.options;
+          const old = ++queries === 1;
+          if (!old) { replacementStarted.resolve(); await releaseReplacement.promise; }
+          await callBandTool(params.options, "write_marker", { old });
+          yield success("") as never;
+        },
+      });
+      await adapter.onStarted("Parity Agent", "Parity test agent");
+      const first = trackTurn(new FakeTools());
+      const second = trackTurn(new FakeTools());
+      const pending = startMessage(adapter, first);
+      await handlerStarted.promise;
+      await adapter.onCleanup(ROOM_ID);
+      expect((await callMcpTool(options, "write_marker", { room_id: ROOM_ID, old: false })).isError).toBe(true);
+      const replacement = startMessage(adapter, second);
+      await replacementStarted.promise;
+      releaseHandler.resolve();
+      await pending;
+      expect(first.turn.verdict()).toBe("complete");
+      expect(second.turn.verdict()).toBe("missing_reply");
+      releaseReplacement.resolve();
+      await replacement;
+      expect(second.turn.verdict()).toBe("complete");
+      expect((await callMcpTool(options, "write_marker", { room_id: ROOM_ID, old: false })).isError).toBe(true);
+    });
+
+    it("does not reinstall a cleaned-up binding when query loading finishes", async () => {
+      const loading = createDeferred();
+      const releaseLoad = createDeferred();
+      const consuming = createDeferred();
+      const releaseStream = createDeferred();
+      let options: ClaudeSDKQueryParams["options"];
+      const handler = vi.fn();
+      const adapter = new ClaudeSDKAdapter({ customTools: [portable({ handler })], queryFn: async function* (params) {
+        options = params.options;
+        consuming.resolve();
+        await releaseStream.promise;
+        yield success("") as never;
+      } });
+      await adapter.onStarted("Parity Agent", "Parity test agent");
+      // Hold only the asynchronous loading boundary; the bridge and its calls remain real.
+      const loader = adapter as unknown as { startQuery: (...args: unknown[]) => Promise<AsyncIterable<unknown>> };
+      const original = loader.startQuery.bind(adapter);
+      vi.spyOn(loader, "startQuery").mockImplementationOnce(async (...args) => {
+        loading.resolve();
+        await releaseLoad.promise;
+        return original(...args);
+      });
+      const pending = startMessage(adapter, trackTurn(new FakeTools()));
+      await loading.promise;
+      await adapter.onCleanup(ROOM_ID);
+      releaseLoad.resolve();
+      await consuming.promise;
+      expect((await callMcpTool(options, "write_marker", { room_id: ROOM_ID })).isError).toBe(true);
+      expect(handler).not.toHaveBeenCalled();
+      releaseStream.resolve();
+      await pending;
+    });
+
+    it.each(["query", "stream", "result", "relay"] as const)("clears binding on %s failure and runs the next turn", async (exit) => {
+      let calls = 0;
+      let options: ClaudeSDKQueryParams["options"];
+      const adapter = new ClaudeSDKAdapter({ customTools: [portable()], queryFn: (params) => {
+        options = params.options;
+        const failing = ++calls === 1;
+        if (failing && exit === "query") throw new Error("query failed");
+        return (async function* () {
+          await callBandTool(params.options, "write_marker");
+          if (failing && exit === "stream") throw new Error("stream failed");
+          if (failing && exit === "result") yield { type: "result", subtype: "error_max_turns", errors: ["turn cap"], is_error: true } as never;
+          else yield success(failing && exit === "relay" ? "closing text" : "") as never;
+        })();
+      } });
+      await adapter.onStarted("Parity Agent", "Parity test agent");
+      const failingTools = new FakeTools(exit === "relay" ? { failOn: ["sendMessage"] } : undefined);
+      const first = adapter.onEvent(turnInput(failingTools, SENDER));
+      if (exit === "relay") await expect(first).rejects.toBeInstanceOf(DeliveryFailedError);
+      else await expectTurnFailed(first);
+      expect((await callMcpTool(options, "write_marker", { room_id: ROOM_ID })).isError).toBe(true);
+      await adapter.onEvent(turnInput(new FakeTools(), SENDER));
+      expect(calls).toBe(2);
+      expect((await callMcpTool(options, "write_marker", { room_id: ROOM_ID })).isError).toBe(true);
+    });
+
+    it("preserves raw MCP registrations without giving their successful calls portable effect credit", async () => {
+      const execute = vi.fn(async () => ({ content: [{ type: "text" as const, text: "native result" }] }));
+      const adapter = new ClaudeSDKAdapter({
+        customTools: [portable({ effect: "observe" })],
+        additionalMcpTools: [{ name: "native", description: "native", inputSchema: { type: "object", properties: {}, required: [] }, execute }],
+        queryFn: async function* ({ options }) {
+          expect(options?.allowedTools).toEqual(expect.arrayContaining(["mcp__band__native", "mcp__band__write_marker"]));
+          const result = await callMcpTool(options, "native", {});
+          expect(result.content).toEqual([{ type: "text", text: "native result" }]);
+          await callBandTool(options, "write_marker");
+          yield success("") as never;
+        },
+      });
+      await adapter.onStarted("Parity Agent", "Parity test agent");
+      await expectTurnFailed(adapter.onEvent(turnInput(new FakeTools(), SENDER)));
+      expect(execute).toHaveBeenCalledOnce();
+    });
+
+    it.each([false, true])("checks portable collisions only against active memory tools (enabled=%s)", async (enableMemoryTools) => {
+      const adapter = new ClaudeSDKAdapter({ enableMemoryTools, customTools: [portable({ name: "band_store_memory" })], queryFn: async function* ({ options }) {
+        await callBandTool(options, "band_store_memory");
+        yield success("") as never;
+      } });
+      if (enableMemoryTools) await expect(adapter.onStarted("Agent", "description")).rejects.toThrow(/conflicts/);
+      else {
+        await adapter.onStarted("Agent", "description");
+        await adapter.onEvent(turnInput(new FakeTools(), SENDER));
+      }
+    });
 
     it("keeps preceding text off the room on a failed result after a tool reply, and still reports the failure", async () => {
       const { tools, posted } = recordingRoomTools();
@@ -748,4 +1011,29 @@ describe("ClaudeSDKAdapter", () => {
       );
     },
   }]);
+});
+
+describe("Claude portable configuration", () => {
+  const def: CustomToolDef = { name: "portable", schema: z.object({}), handler: vi.fn(), effect: "act" };
+  it.each([
+    [{ ...def, name: " " }],
+    [def, { ...def, name: " portable " }],
+    [{ ...def, effect: "bad" } as unknown as CustomToolDef],
+    [{ ...def, schema: z.object({ room_id: z.string() }) }],
+  ])("rejects invalid definitions before execution", (...customTools) => {
+    expect(() => new ClaudeSDKAdapter({ customTools })).toThrow();
+    expect(def.handler).not.toHaveBeenCalled();
+  });
+  it("rejects portable tools with disabled MCP, but preserves empty/native-only options", () => {
+    expect(() => new ClaudeSDKAdapter({ customTools: [def], enableMcpTools: false })).toThrow(/enableMcpTools/);
+    expect(() => new ClaudeSDKAdapter({ customTools: [], enableMcpTools: false })).not.toThrow();
+  });
+  it.each(["band_send_message", "native"])("rejects portable collision with active %s", async (name) => {
+    const queryFn = vi.fn();
+    const adapter = new ClaudeSDKAdapter({ customTools: [{ ...def, name }], queryFn, additionalMcpTools: [{
+      name: "native", description: "native tool", inputSchema: { type: "object", properties: {}, required: [] }, execute: async () => ({ content: [] }),
+    }] });
+    await expect(adapter.onStarted("Agent", "description")).rejects.toThrow(/conflicts/);
+    expect(queryFn).not.toHaveBeenCalled();
+  });
 });

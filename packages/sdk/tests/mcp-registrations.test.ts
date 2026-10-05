@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
+import { buildCustomMcpRegistrations } from "../src/mcp/customTools";
+import { trackTurn } from "../src/core/turn";
 
 import {
   buildRoomScopedRegistrations,
@@ -199,5 +202,24 @@ describe("MCP registrations", () => {
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toBe("something went wrong");
     });
+  });
+});
+
+describe("shared portable MCP registrations", () => {
+  it.each([undefined, "", "  ", 4, "unknown"])("refuses routing context %j without running the business handler", async (room_id) => {
+    const tools = trackTurn(new FakeTools());
+    const handler = vi.fn();
+    const [registration] = buildCustomMcpRegistrations([{ name: "portable", schema: z.object({}), handler, effect: "act" }], (id) => id === "active" ? tools : undefined);
+    const result = await registration!.execute({ room_id });
+    expect(result.isError).toBe(true);
+    expect(handler).not.toHaveBeenCalled();
+    expect(tools.turn.verdict()).toBe("missing_reply");
+  });
+
+  it("retains OpenCode's registration-time validation behavior", () => {
+    const def = { name: "portable", schema: z.object({}), handler: () => "done" };
+    expect(buildCustomMcpRegistrations([def, def], () => undefined)).toHaveLength(2);
+    expect(() => buildCustomMcpRegistrations([{ ...def, effect: "bad" } as never], () => undefined)).not.toThrow();
+    expect(() => buildCustomMcpRegistrations([{ ...def, schema: z.object({ room_id: z.string() }) }], () => undefined)).toThrow(/routing/);
   });
 });

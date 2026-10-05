@@ -8,19 +8,13 @@ import { Deadline } from "../../core/deadline";
 import { createDeferred } from "../../core/deferred";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import type { PlatformMessage } from "../../runtime/types";
-import {
-  CustomToolDefinitionError,
-  executeCustomTool,
-  getCustomToolName,
-  customToolToOpenAISchema,
-  type CustomToolDef,
-} from "../../runtime/tools/customTools";
+import type { CustomToolDef } from "../../runtime/tools/customTools";
+import { buildCustomMcpRegistrations } from "../../mcp/customTools";
 import {
   createBandMcpBackend,
   type BandMcpBackend,
 } from "../../mcp/backends";
 import type { McpToolRegistration } from "../../mcp/registrations";
-import { errorResult, ROOM_ID_ARG, scopeToRoom, successResult } from "../../mcp/registrations";
 import { MCP_SERVER_NAME } from "../../contracts/toolSchemas";
 import { abandon } from "../shared/abandon";
 import { senderAllowlist, type DecisionEntry, type DecisionRegistry, type Registration } from "../shared/decisions";
@@ -241,46 +235,6 @@ function withDefaults(config?: OpencodeAdapterConfig): Required<OpencodeAdapterC
     mcpServerName: MCP_SERVER_NAME,
     ...config,
   };
-}
-
-/**
- * Custom tools for the shared MCP backend. They are registered once for every
- * room, so each is room-scoped like the Band tools, to record its declared
- * effect on that room's turn.
- */
-function buildCustomMcpRegistrations(
-  customTools: CustomToolDef[],
-  toolsForRoom: (roomId: string) => TurnTools | undefined,
-): McpToolRegistration[] {
-  return customTools.map((customTool) => {
-    const name = getCustomToolName(customTool);
-    const schema = customToolToOpenAISchema(customTool);
-    const functionSchema = asOptionalRecord(schema.function) ?? {};
-    const parameters = asOptionalRecord(functionSchema.parameters) ?? {};
-    const properties = asOptionalRecord(parameters.properties) ?? {};
-    if (Object.hasOwn(properties, ROOM_ID_ARG)) {
-      throw new CustomToolDefinitionError(`Custom tool '${name}' can't take '${ROOM_ID_ARG}': OpenCode passes the room through it.`);
-    }
-    const required = Array.isArray(parameters.required)
-      ? parameters.required.filter((value): value is string => typeof value === "string")
-      : [];
-
-    return scopeToRoom(
-      {
-        name,
-        description: typeof functionSchema.description === "string" ? functionSchema.description : "",
-        inputSchema: { type: "object", properties, required },
-      },
-      toolsForRoom,
-      async (tools, args) => {
-        try {
-          return successResult(await executeCustomTool(customTool, args, tools.turn));
-        } catch (error) {
-          return errorResult(error instanceof Error ? error.message : String(error));
-        }
-      },
-    );
-  });
 }
 
 export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnTools> {

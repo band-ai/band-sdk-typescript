@@ -11,6 +11,14 @@ import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { takeLast } from "../shared/history";
 import { relayReply, type TurnTools } from "../../core/turn";
 
+import {
+  buildCustomToolIndex,
+  CustomToolDefinitionError,
+  customToolToOpenAISchema,
+  executeCustomTool,
+  type CustomToolDef,
+} from "../../runtime/tools/customTools";
+
 type LangGraphRole = "system" | "user" | "assistant";
 type LangGraphTupleMessage = [LangGraphRole, string];
 
@@ -52,6 +60,7 @@ export interface LangGraphAdapterOptions {
   graph?: LangGraphGraph;
   graphFactory?: (tools: unknown[]) => LangGraphGraph | Promise<LangGraphGraph>;
   additionalTools?: unknown[];
+  customTools?: CustomToolDef[];
   systemPrompt?: string;
   customSection?: string;
   recursionLimit?: number;
@@ -69,6 +78,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
   private readonly graph?: LangGraphGraph;
   private readonly graphFactory?: (tools: unknown[]) => LangGraphGraph | Promise<LangGraphGraph>;
   private readonly additionalTools: unknown[];
+  private readonly customTools: CustomToolDef[];
   private readonly systemPromptOverride?: string;
   private readonly customSection: string;
   private readonly recursionLimit: number;
@@ -92,6 +102,10 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     this.graph = options.graph;
     this.graphFactory = options.graphFactory;
     this.additionalTools = options.additionalTools ?? [];
+    this.customTools = [...buildCustomToolIndex(options.customTools ?? []).values()];
+    if (this.customTools.length > 0 && !this.usesBandTools) {
+      throw new ValidationError("LangGraph customTools require `llm` or `graphFactory` to receive the tools.");
+    }
     this.systemPromptOverride = options.systemPrompt;
     this.customSection = options.customSection ?? "";
     this.recursionLimit = options.recursionLimit ?? 50;
@@ -135,6 +149,8 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
             tools,
             includeMemoryTools: this.includeMemoryTools,
             logger: this.logger,
+            customTools: this.customTools,
+            additionalTools: this.additionalTools,
           }),
           ...this.additionalTools,
         ];
@@ -331,21 +347,34 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
 
 function buildLangGraphTools(input: {
   sdk: LangGraphSdk;
-  tools: AdapterToolsProtocol;
+  tools: TurnTools;
+  customTools: CustomToolDef[];
+  additionalTools: unknown[];
   includeMemoryTools: boolean;
   logger: Logger;
 }): unknown[] {
   const schemas = input.tools.getToolSchemas("openai", {
     includeMemory: input.includeMemoryTools,
   });
+  const specs = schemas.flatMap((schema) => {
+    const spec = toLangGraphToolSpec(schema);
+    return spec ? [spec] : [];
+  });
+  const portable = input.customTools.map((def) => ({ def, spec: toLangGraphToolSpec(customToolToOpenAISchema(def))! }));
+  if (portable.length > 0) {
+    const activeNames = new Set([
+      ...specs.map((spec) => spec.name),
+      ...input.additionalTools.map((tool) => asOptionalRecord(tool)?.name),
+    ]);
+    for (const { spec } of portable) {
+      if (activeNames.has(spec.name)) {
+        throw new CustomToolDefinitionError(`Custom tool '${spec.name}' conflicts with an active tool.`);
+      }
+    }
+  }
   const wrappers: unknown[] = [];
 
-  for (const schema of schemas) {
-    const spec = toLangGraphToolSpec(schema);
-    if (!spec) {
-      continue;
-    }
-
+  for (const spec of specs) {
     wrappers.push(
       input.sdk.tool(
         async (args: Record<string, unknown>) => {
@@ -359,6 +388,13 @@ function buildLangGraphTools(input: {
         },
       ),
     );
+  }
+
+  for (const { def, spec } of portable) {
+    wrappers.push(input.sdk.tool(async (args) => {
+      const result = await executeCustomTool(def, args, input.tools.turn);
+      return stringifyToolResult(result, input.logger, spec.name);
+    }, spec));
   }
 
   return wrappers;
