@@ -5,7 +5,7 @@ import { LangGraphAdapter } from "../src/adapters/langgraph";
 import { createDeferred } from "../src/core/deferred";
 import { trackTurn } from "../src/core/turn";
 import type { CustomToolDef } from "../src/runtime/tools/customTools";
-import { expectTurnFailed, FakeTools, reportedFailures } from "./testUtils";
+import { expectTurnFailed, FakeTools, MISSING_REPLY, reportedFailures } from "./testUtils";
 import { CLOSING_TEXT, describeCustomToolEffect, turnInput } from "./turnOutcomeContract";
 
 interface InvokableTool {
@@ -69,10 +69,13 @@ describe("portable LangGraph tools", () => {
 
   it.each([{ ok: false }, "eRrOr: refused", "Error executing tool: refused"])("does not credit failed output %j", async (output) => {
     const tools = new FakeTools();
+    let result: unknown;
     const adapter = scriptedAdapter(definition({ handler: () => output }), async (tool) => {
-      expect(await tool.invoke({})).toBe(typeof output === "string" ? output : JSON.stringify(output));
+      result = await tool.invoke({});
     });
     await expectTurnFailed(adapter.onEvent(turnInput(tools)));
+    expect(result).toBe(typeof output === "string" ? output : JSON.stringify(output));
+    expect(reportedFailures(tools.events)).toEqual([MISSING_REPLY]);
   });
 
   it("keeps an earlier successful effect after a caught handler failure", async () => {

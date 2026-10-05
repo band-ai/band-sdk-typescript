@@ -16,7 +16,7 @@ import { HistoryProvider } from "../src/runtime/types";
 import { DeliveryFailedError } from "../src/core/deliveryFailedError";
 import { RestFacade } from "../src/client/rest/RestFacade";
 import { AgentTools } from "../src/runtime/tools/AgentTools";
-import { FakeRestApi, FakeTools, findFailureEvent, makeMessage, makeRoster, expectTurnFailed } from "./testUtils";
+import { FakeRestApi, FakeTools, findFailureEvent, makeMessage, makeRoster, expectTurnFailed, MISSING_REPLY, reportedFailures } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
 import { MCP_SERVER_NAME, NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
 import type { AdapterToolsProtocol, FrameworkAdapterInput } from "../src/contracts/protocols";
@@ -639,6 +639,8 @@ describe("ClaudeSDKAdapter", () => {
       return client.callTool({ name, arguments: args });
     }
 
+    type McpResult = Awaited<ReturnType<typeof callMcpTool>>;
+
     function startMessage(adapter: ClaudeSDKAdapter, tools: TurnTools, roomId = ROOM_ID) {
       return adapter.onMessage(makeMessage("hello", roomId), tools, new HistoryProvider([]), null, null, { roomId, isSessionBootstrap: false });
     }
@@ -757,32 +759,38 @@ describe("ClaudeSDKAdapter", () => {
       { name: "catchall", schema: z.object({ title: z.string() }).catchall(z.string()), extra: 42 },
     ])("rejects undeclared business arguments invalid for a $name schema", async ({ schema, extra }) => {
       const handler = vi.fn();
+      const tools = new FakeTools();
+      let result: McpResult | undefined;
       const adapter = new ClaudeSDKAdapter({
         customTools: [portable({ schema, handler })],
         queryFn: async function* ({ options }) {
-          const result = await callMcpTool(options, "write_marker", { room_id: ROOM_ID, title: "hello", extra });
-          expect(result.isError).toBe(true);
-          expect(result.content).toEqual([expect.objectContaining({ text: expect.stringContaining("Invalid arguments for write_marker") })]);
+          result = await callMcpTool(options, "write_marker", { room_id: ROOM_ID, title: "hello", extra });
           yield success("") as never;
         },
       });
       await adapter.onStarted("Parity Agent", "Parity test agent");
-      await expectTurnFailed(adapter.onEvent(turnInput(new FakeTools(), SENDER)));
+      await expectTurnFailed(adapter.onEvent(turnInput(tools, SENDER)));
+      expect(result?.isError).toBe(true);
+      expect(result?.content).toEqual([expect.objectContaining({ text: expect.stringContaining("Invalid arguments for write_marker") })]);
+      expect(reportedFailures(tools.events)).toEqual([MISSING_REPLY]);
       expect(handler).not.toHaveBeenCalled();
     });
 
     it.each([{ count: 1.5 }, { count: 2, payload: { extra: true } }])("enforces the original business schema after approximate MCP validation: %j", async (args) => {
       const handler = vi.fn();
+      const tools = new FakeTools();
+      let result: McpResult | undefined;
       const adapter = new ClaudeSDKAdapter({ customTools: [portable({
         schema: z.object({ count: z.number().int(), payload: z.strictObject({}).optional() }), handler,
       })], queryFn: async function* ({ options }) {
-        const result = await callMcpTool(options, "write_marker", { room_id: ROOM_ID, ...args });
-        expect(result.isError).toBe(true);
-        expect(result.content).toEqual([expect.objectContaining({ text: expect.stringContaining("Invalid arguments for write_marker") })]);
+        result = await callMcpTool(options, "write_marker", { room_id: ROOM_ID, ...args });
         yield success("") as never;
       } });
       await adapter.onStarted("Parity Agent", "Parity test agent");
-      await expectTurnFailed(adapter.onEvent(turnInput(new FakeTools(), SENDER)));
+      await expectTurnFailed(adapter.onEvent(turnInput(tools, SENDER)));
+      expect(result?.isError).toBe(true);
+      expect(result?.content).toEqual([expect.objectContaining({ text: expect.stringContaining("Invalid arguments for write_marker") })]);
+      expect(reportedFailures(tools.events)).toEqual([MISSING_REPLY]);
       expect(handler).not.toHaveBeenCalled();
     });
 
@@ -798,29 +806,38 @@ describe("ClaudeSDKAdapter", () => {
     });
 
     it.each([{ ok: false }, "Error: refused"])("serializes failed output %j without credit or transport error", async (output) => {
+      const tools = new FakeTools();
+      let result: McpResult | undefined;
       const adapter = new ClaudeSDKAdapter({ customTools: [portable({ handler: () => output })], queryFn: async function* ({ options }) {
-        const result = await callMcpTool(options, "write_marker", { room_id: ROOM_ID });
-        expect(result.isError).toBeUndefined();
-        expect(result.content).toEqual([{ type: "text", text: typeof output === "string" ? output : JSON.stringify(output) }]);
+        result = await callMcpTool(options, "write_marker", { room_id: ROOM_ID });
         yield success("") as never;
       } });
       await adapter.onStarted("Parity Agent", "Parity test agent");
-      await expectTurnFailed(adapter.onEvent(turnInput(new FakeTools(), SENDER)));
+      await expectTurnFailed(adapter.onEvent(turnInput(tools, SENDER)));
+      expect(result?.isError).toBeUndefined();
+      expect(result?.content).toEqual([{ type: "text", text: typeof output === "string" ? output : JSON.stringify(output) }]);
+      expect(reportedFailures(tools.events)).toEqual([MISSING_REPLY]);
     });
 
     it("reports a thrown handler in the MCP error channel without credit, then recovers", async () => {
       let calls = 0;
+      const tools = new FakeTools();
+      const results: McpResult[] = [];
       const adapter = new ClaudeSDKAdapter({ customTools: [portable({ handler: async () => {
         if (++calls === 1) throw new Error("write rejected");
         return false;
       } })], queryFn: async function* ({ options }) {
-        const result = await callMcpTool(options, "write_marker", { room_id: ROOM_ID });
-        expect(result.isError).toBe(calls === 1 ? true : undefined);
+        results.push(await callMcpTool(options, "write_marker", { room_id: ROOM_ID }));
         yield success("") as never;
       } });
       await adapter.onStarted("Parity Agent", "Parity test agent");
-      await expectTurnFailed(adapter.onEvent(turnInput(new FakeTools(), SENDER)));
+      await expectTurnFailed(adapter.onEvent(turnInput(tools, SENDER)));
+      expect(results[0]).toMatchObject({ isError: true, content: [{ type: "text", text: expect.stringContaining("write rejected") }] });
+      expect(reportedFailures(tools.events)).toEqual([MISSING_REPLY]);
       await adapter.onEvent(turnInput(new FakeTools(), SENDER));
+      expect(results).toHaveLength(2);
+      expect(results[1]?.isError).toBeUndefined();
+      expect(results[1]?.content).toEqual([{ type: "text", text: "false" }]);
       expect(calls).toBe(2);
     });
 
@@ -955,19 +972,22 @@ describe("ClaudeSDKAdapter", () => {
 
     it("preserves raw MCP registrations without giving their successful calls portable effect credit", async () => {
       const execute = vi.fn(async () => ({ content: [{ type: "text" as const, text: "native result" }] }));
+      const tools = new FakeTools();
+      let result: McpResult | undefined;
       const adapter = new ClaudeSDKAdapter({
         customTools: [portable({ effect: "observe" })],
         additionalMcpTools: [{ name: "native", description: "native", inputSchema: { type: "object", properties: {}, required: [] }, execute }],
         queryFn: async function* ({ options }) {
           expect(options?.allowedTools).toEqual(expect.arrayContaining(["mcp__band__native", "mcp__band__write_marker"]));
-          const result = await callMcpTool(options, "native", { undeclared: "native input" });
-          expect(result.content).toEqual([{ type: "text", text: "native result" }]);
+          result = await callMcpTool(options, "native", { undeclared: "native input" });
           await callBandTool(options, "write_marker");
           yield success("") as never;
         },
       });
       await adapter.onStarted("Parity Agent", "Parity test agent");
-      await expectTurnFailed(adapter.onEvent(turnInput(new FakeTools(), SENDER)));
+      await expectTurnFailed(adapter.onEvent(turnInput(tools, SENDER)));
+      expect(result?.content).toEqual([{ type: "text", text: "native result" }]);
+      expect(reportedFailures(tools.events)).toEqual([MISSING_REPLY]);
       expect(execute).toHaveBeenCalledExactlyOnceWith({});
     });
 
