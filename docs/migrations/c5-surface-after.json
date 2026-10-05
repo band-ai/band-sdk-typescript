@@ -63,6 +63,7 @@
         "isDirectExecution",
         "loadAgentConfig",
         "loadAgentConfigFromEnv",
+        "loadAgentConfigs",
         "parseSessionConfig",
         "relayReply",
         "reportTurnFailure",
@@ -210,6 +211,7 @@
         "isDirectExecution",
         "loadAgentConfig",
         "loadAgentConfigFromEnv",
+        "loadAgentConfigs",
         "parseSessionConfig",
         "relayReply",
         "reportTurnFailure",
@@ -417,14 +419,16 @@
     "./config": {
       "runtime": [
         "loadAgentConfig",
-        "loadAgentConfigFromEnv"
+        "loadAgentConfigFromEnv",
+        "loadAgentConfigs"
       ],
       "declarations": [
         "AgentConfigResult",
         "AgentCredentials",
         "LoadAgentConfigFromEnvOptions",
         "loadAgentConfig",
-        "loadAgentConfigFromEnv"
+        "loadAgentConfigFromEnv",
+        "loadAgentConfigs"
       ]
     },
     "./core": {

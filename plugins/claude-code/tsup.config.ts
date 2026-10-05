@@ -3,7 +3,7 @@ import { defineConfig } from "tsup";
 import { inlinedSdkBundleOptions } from "../../scripts/inlined-sdk-bundle.mjs";
 
 export default defineConfig({
-  entry: ["src/server.ts"],
+  entry: ["src/server.ts", "src/agents.ts"],
   format: ["esm"],
   target: "node22",
   outDir: "dist",

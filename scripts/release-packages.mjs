@@ -44,12 +44,14 @@ export const RELEASE_PACKAGES = [
     name: "@band-ai/claude-code-plugin",
     versionFiles: ["package.json", ".claude-plugin/plugin.json"],
     contents: {
-      minFiles: 6,
+      minFiles: 8,
       required: [
         "dist/server.js",
+        "dist/agents.js",
         `dist/${CORE_WASM_FILENAME}`,
         ".claude-plugin/plugin.json",
         ".mcp.json",
+        "skills/agents/SKILL.md",
         "package.json",
       ],
     },

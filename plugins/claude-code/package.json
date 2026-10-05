@@ -14,6 +14,7 @@
     "dist",
     ".claude-plugin",
     ".mcp.json",
+    "skills",
     "README.md"
   ],
   "scripts": {
@@ -30,6 +31,7 @@
     "@types/node": "^26.5.1",
     "@typescript-eslint/eslint-plugin": "^8.70.0",
     "eslint": "^10.10.0",
+    "js-yaml": "^5.4.2",
     "tsup": "^8.5.1",
     "typescript": "^5.8.2",
     "typescript-eslint": "^8.70.0",

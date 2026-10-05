@@ -1,12 +1,14 @@
 import type { PlatformRuntimeOptions } from "@band-ai/sdk";
 import type { AgentCredentials } from "@band-ai/sdk/config";
-import type { Logger } from "@band-ai/sdk/core";
+import { WebSocketDisconnectError, type Logger, type WebSocketDisconnectReason } from "@band-ai/sdk/core";
 import { BandMcpStdioServer } from "@band-ai/sdk/mcp";
 import { PlatformRuntime } from "@band-ai/sdk/runtime";
 import type { Readable, Writable } from "node:stream";
 
 import { ChannelAdapter } from "./adapter";
-import { CHANNEL_INSTRUCTIONS } from "./prompt";
+import { USE_HINT } from "./config";
+import { channelInstructions } from "./prompt";
+import { sessionLocation, type SessionStatus, type SessionStatusFile } from "./sessions";
 
 /** The experimental capability that makes Claude Code register the server as a channel. */
 export const CHANNEL_CAPABILITY = "claude/channel";
@@ -20,8 +22,15 @@ export const EXIT_FAILED = 1;
 // into a server that can't push it; what it didn't start waits on the platform for the next session.
 const STOP_WITHOUT_DRAINING_MS = 0;
 
+/** The platform's answer when another session already holds the agent. */
+const CONNECTION_CONFLICT: Extract<WebSocketDisconnectReason, { source: "upgrade" }>["code"] = "connection_conflict";
+
 export interface RunChannelOptions {
+  /** The name the agent is saved under. */
+  readonly agentName: string;
   readonly credentials: AgentCredentials;
+  /** Where the session's state is kept for `/band:agents`; none outside Claude Code. */
+  readonly status?: SessionStatusFile;
   /** Overrides for the runtime's own link, such as a test platform's transport and REST API. */
   readonly link?: PlatformRuntimeOptions["linkOptions"];
   readonly stdin?: Readable;
@@ -33,7 +42,20 @@ export interface RunChannelOptions {
  * Serves one Claude Code session as the Band agent until either side leaves,
  * and resolves with the process exit code.
  */
-export async function runChannel({ credentials, link, stdin, stdout, logger }: RunChannelOptions): Promise<number> {
+export async function runChannel(options: RunChannelOptions): Promise<number> {
+  try {
+    await serveChannel(options);
+    options.status?.remove();
+    return EXIT_OK;
+  } catch (error) {
+    reportFailure(error, options);
+    return EXIT_FAILED;
+  }
+}
+
+async function serveChannel({ agentName, credentials, status, link, stdin, stdout, logger }: RunChannelOptions): Promise<void> {
+  // Known before any network call, so the session shows as holding its agent from the start.
+  status?.record({ agentId: credentials.agentId });
   const runtime = new PlatformRuntime({
     ...credentials,
     logger,
@@ -42,33 +64,51 @@ export async function runChannel({ credentials, link, stdin, stdout, logger }: R
     agentConfig: { autoSubscribeExistingRooms: true },
   });
   await runtime.initialize();
-  const { ownerUuid } = await runtime.link.rest.getAgentMe();
+  const identity = await runtime.link.rest.getAgentMe();
+  status?.record({ handle: identity.handle ?? null });
 
-  const adapter = new ChannelAdapter({ ownerUuid, push: (push) => server.notify(CHANNEL_METHOD, push) });
+  const adapter = new ChannelAdapter({ ownerUuid: identity.ownerUuid, push: (push) => server.notify(CHANNEL_METHOD, push) });
   const server: BandMcpStdioServer = new BandMcpStdioServer({
     tools: (roomId) => adapter.toolsFor(roomId),
     capabilities: { experimental: { [CHANNEL_CAPABILITY]: {} } },
-    instructions: CHANNEL_INSTRUCTIONS,
+    instructions: channelInstructions(identity, agentName),
     stdin,
     stdout,
   });
 
   await server.start();
-  const serve = async (): Promise<number> => {
+  const serve = async (): Promise<void> => {
     // Messages waiting on the platform are pushed only once Claude Code can receive them.
     await server.initialized;
     await runtime.start(adapter);
+    status?.record({ state: "connected" });
     await runtime.runForever();
-    return EXIT_OK;
   };
   try {
     // Claude Code leaving settles first, whichever phase it interrupts.
-    return await Promise.race([server.stopped.then(() => EXIT_OK), serve()]);
-  } catch (error) {
-    logger.error("Band channel stopped", { error });
-    return EXIT_FAILED;
+    await Promise.race([server.stopped, serve()]);
   } finally {
     // stop() rethrows the error a superseded runtime failed with, which is already logged.
     await Promise.allSettled([runtime.stop(STOP_WITHOUT_DRAINING_MS), server.stop()]);
   }
+}
+
+function reportFailure(error: unknown, { agentName, credentials, status, logger }: RunChannelOptions): void {
+  if (isConnectionConflict(error)) {
+    const message = conflictMessage(agentName, status?.holder(credentials.agentId));
+    status?.record({ state: "refused", error: message });
+    logger.error(message, { error });
+    return;
+  }
+  status?.failed(error);
+  logger.error("Band channel stopped", { error });
+}
+
+function isConnectionConflict(error: unknown): boolean {
+  return error instanceof WebSocketDisconnectError && error.reason.source === "upgrade" && error.reason.code === CONNECTION_CONFLICT;
+}
+
+function conflictMessage(agentName: string, holder: SessionStatus | undefined): string {
+  const location = holder && sessionLocation(holder);
+  return `Band agent "${agentName}" is already connected from another session${location ? ` (${location})` : ""}. Pick another with ${USE_HINT}.`;
 }

@@ -3,7 +3,7 @@ import { writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { loadAgentConfig, loadAgentConfigFromEnv } from "../src/config/loader";
+import { loadAgentConfig, loadAgentConfigFromEnv, loadAgentConfigs } from "../src/config/loader";
 
 function tmpFile(content: string): string {
   const dir = join(tmpdir(), `thenvoi-test-${Date.now()}`);
@@ -269,5 +269,43 @@ api_key: "key"
     cleanup.push(path);
 
     expect(() => loadAgentConfig(undefined, path)).toThrow("must be non-empty strings");
+  });
+});
+
+describe("loadAgentConfigs", () => {
+  it("loads every keyed agent with its own fields", () => {
+    const path = tmpFile(`
+docs:
+  agent_id: "agent-docs"
+  api_key: "key-docs"
+  handle: "alex/docs"
+sdk:
+  agent_id: "agent-sdk"
+  api_key: "key-sdk"
+  ws_url: "wss://example.com"
+`);
+    cleanup.push(path);
+
+    expect(loadAgentConfigs(path)).toEqual({
+      docs: { agentId: "agent-docs", apiKey: "key-docs", handle: "alex/docs" },
+      sdk: { agentId: "agent-sdk", apiKey: "key-sdk", wsUrl: "wss://example.com" },
+    });
+  });
+
+  it("names the key of an invalid agent", () => {
+    const path = tmpFile(`
+docs:
+  agent_id: "agent-docs"
+  api_key: "key-docs"
+sdk:
+  agent_id: "agent-sdk"
+`);
+    cleanup.push(path);
+
+    expect(() => loadAgentConfigs(path)).toThrow(`${path} under key "sdk": api_key`);
+  });
+
+  it("throws for a missing file", () => {
+    expect(() => loadAgentConfigs("/nonexistent/agents.yaml")).toThrow("Config file not found: /nonexistent/agents.yaml");
   });
 });

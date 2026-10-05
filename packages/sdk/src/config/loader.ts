@@ -102,13 +102,7 @@ export interface LoadAgentConfigFromEnvOptions {
   prefix?: string;
 }
 
-/** Load agent credentials from a YAML config file (defaults to `./agent_config.yaml`). */
-export function loadAgentConfig(
-  agentKey?: string,
-  configPath?: string,
-): AgentConfigResult {
-  const filePath = configPath ?? DEFAULT_CONFIG_PATH;
-
+function readConfigObject(filePath: string): Record<string, unknown> {
   let raw: string;
   try {
     raw = readFileSync(filePath, "utf-8");
@@ -122,28 +116,38 @@ export function loadAgentConfig(
   if (!parsed || typeof parsed !== "object") {
     throw new ValidationError(`Invalid config file: ${filePath}. Expected a YAML object.`);
   }
+  return parsed as Record<string, unknown>;
+}
 
-  const config = parsed as Record<string, unknown>;
-
-  // Try keyed format: config[agentKey] is an object with agent_id, api_key
-  let section: Record<string, unknown>;
-  if (agentKey && agentKey in config) {
-    const keyed = config[agentKey];
-    if (!keyed || typeof keyed !== "object") {
-      throw new ValidationError(
-        `Config key "${agentKey}" in ${filePath} must be an object with agent_id and api_key.`,
-      );
-    }
-    section = normalizeKeys(keyed as Record<string, unknown>);
-  } else {
-    // Flat format: top-level agent_id, api_key
-    section = normalizeKeys(config);
+function keyedSection(config: Record<string, unknown>, agentKey: string, filePath: string): AgentConfigResult {
+  const keyed = config[agentKey];
+  if (!keyed || typeof keyed !== "object") {
+    throw new ValidationError(
+      `Config key "${agentKey}" in ${filePath} must be an object with agent_id and api_key.`,
+    );
   }
+  return toAgentConfigResult(normalizeKeys(keyed as Record<string, unknown>), `${filePath} under key "${agentKey}"`);
+}
 
-  const sourceLabel = agentKey && agentKey in config
-    ? `${filePath} under key "${agentKey}"`
-    : filePath;
-  return toAgentConfigResult(section, sourceLabel);
+/** Load agent credentials from a YAML config file (defaults to `./agent_config.yaml`). */
+export function loadAgentConfig(
+  agentKey?: string,
+  configPath?: string,
+): AgentConfigResult {
+  const filePath = configPath ?? DEFAULT_CONFIG_PATH;
+  const config = readConfigObject(filePath);
+
+  // Keyed format when the key is present; otherwise flat format with top-level agent_id, api_key.
+  if (agentKey && agentKey in config) {
+    return keyedSection(config, agentKey, filePath);
+  }
+  return toAgentConfigResult(normalizeKeys(config), filePath);
+}
+
+/** Load every agent of a keyed YAML config file, by key; an invalid section fails naming its key. */
+export function loadAgentConfigs(configPath: string): Record<string, AgentConfigResult> {
+  const config = readConfigObject(configPath);
+  return Object.fromEntries(Object.keys(config).map((agentKey) => [agentKey, keyedSection(config, agentKey, configPath)]));
 }
 
 /**

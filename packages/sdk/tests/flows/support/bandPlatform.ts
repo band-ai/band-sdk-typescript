@@ -45,6 +45,8 @@ export interface PostOptions {
 /** The agent's identity as `getAgentMe` reports it. */
 export interface AgentIdentityOptions {
   readonly ownerUuid?: string | null;
+  /** `AGENT_HANDLE` by default. */
+  readonly handle?: string | null;
 }
 
 interface Settled {
@@ -81,9 +83,16 @@ export class RecordingRestApi extends FakeRestApi {
   public readonly messageHolds = new CallHolds<[roomId: string, content: string]>();
   public readonly processingHolds = new CallHolds<[messageId: string]>();
   public readonly nextMessageHolds = new CallHolds<[roomId: string]>();
+  /** Holds `getAgentMe`, as a slow platform answers it. */
+  public readonly agentMeHolds = new CallHolds<[]>();
 
   public constructor(private readonly participants: readonly ParticipantRecord[], identity: AgentIdentityOptions = {}) {
-    super({}, { id: AGENT_ID, name: "Agent", description: "Flow test agent", ...identity });
+    super({}, { id: AGENT_ID, name: "Agent", description: "Flow test agent", handle: AGENT_HANDLE, ...identity });
+  }
+
+  public override async getAgentMe(options?: Parameters<RestApi["getAgentMe"]>[0]) {
+    await this.agentMeHolds.pass();
+    return super.getAgentMe(options);
   }
 
   /** Every room on one page. */

@@ -1,21 +1,23 @@
-import { loadAgentConfigFromEnv } from "@band-ai/sdk/config";
 import { StderrLogger } from "@band-ai/sdk/core";
 
 import { EXIT_FAILED, runChannel } from "./channel";
-
-/** An exact prefix: the user's own BAND_* and THENVOI_* variables never reach the plugin. */
-const ENV_PREFIX = "BAND_CHANNEL_";
+import { AGENT_SELECT_ENV, selectAgent, type SelectedAgent } from "./config";
+import { SessionStatusFile } from "./sessions";
 
 // stdout is the MCP pipe, so everything else goes to stderr.
 const logger = new StderrLogger();
 
 async function run(): Promise<number> {
+  let agent: SelectedAgent;
   try {
-    return await runChannel({ credentials: loadAgentConfigFromEnv({ prefix: ENV_PREFIX }), logger });
+    agent = selectAgent(process.env);
   } catch (error) {
-    logger.error("Band channel failed to start", { error });
+    SessionStatusFile.open(process.env, process.env[AGENT_SELECT_ENV] || null, logger)?.failed(error);
+    logger.error("Band channel has no agent to connect as", { error });
     return EXIT_FAILED;
   }
+  const status = SessionStatusFile.open(process.env, agent.name, logger);
+  return runChannel({ agentName: agent.name, credentials: agent.credentials, status, logger });
 }
 
 const exitCode = await run();

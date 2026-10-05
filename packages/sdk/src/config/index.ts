@@ -1,5 +1,6 @@
 export {
   loadAgentConfig,
+  loadAgentConfigs,
   loadAgentConfigFromEnv,
   type AgentConfigResult,
   type AgentCredentials,
