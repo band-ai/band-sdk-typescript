@@ -88,6 +88,12 @@ describe("add", () => {
     await expect(dirs.agents("add", DOCS.id, DOCS.apiKey, "--ws-url", band.wsUrl)).rejects.toThrow(`Agent ${DOCS.id} is already set up as "default".`);
   });
 
+  it("saves an agent again after it was removed, though a session still runs as it", async ({ dirs, band }) => {
+    dirs.writeStatus("session-1", { agent: "docs", agentId: DOCS.id });
+
+    expect(await dirs.agents("add", DOCS.id, DOCS.apiKey, "writer", "--ws-url", band.wsUrl)).toContain('✓ Saved "writer"');
+  });
+
   it("refuses a name that can't name an agent", async ({ dirs, band }) => {
     for (const name of ["default", "my agent", "alex/docs"]) {
       await expect(dirs.agents("add", DOCS.id, DOCS.apiKey, name, "--ws-url", band.wsUrl)).rejects.toThrow(`"${name}" can't name an agent`);

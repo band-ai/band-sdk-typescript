@@ -54,6 +54,8 @@ export async function runChannel(options: RunChannelOptions): Promise<number> {
 }
 
 async function serveChannel({ agentName, credentials, status, link, stdin, stdout, logger }: RunChannelOptions): Promise<void> {
+  // Known before any network call, so the session shows as holding its agent from the start.
+  status?.record({ agentId: credentials.agentId });
   const runtime = new PlatformRuntime({
     ...credentials,
     logger,
@@ -63,7 +65,7 @@ async function serveChannel({ agentName, credentials, status, link, stdin, stdou
   });
   await runtime.initialize();
   const identity = await runtime.link.rest.getAgentMe();
-  status?.record({ agentId: identity.id, handle: identity.handle ?? null });
+  status?.record({ handle: identity.handle ?? null });
 
   const adapter = new ChannelAdapter({ ownerUuid: identity.ownerUuid, push: (push) => server.notify(CHANNEL_METHOD, push) });
   const server: BandMcpStdioServer = new BandMcpStdioServer({

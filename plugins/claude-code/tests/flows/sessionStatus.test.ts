@@ -25,7 +25,12 @@ describe("a session's status", () => {
     const connecting = session.connect();
 
     await initialized.sending;
-    expect(dirs.session("session-1")).toMatchObject({ agent: DEFAULT_AGENT_NAME, handle: AGENT_HANDLE, projectDir: dirs.projectDir, state: "connecting" });
+    expect(dirs.session("session-1")).toMatchObject({
+      agent: DEFAULT_AGENT_NAME,
+      handle: AGENT_HANDLE,
+      projectDir: dirs.projectDir,
+      state: "connecting",
+    });
 
     initialized.release();
     await connecting;
@@ -34,6 +39,18 @@ describe("a session's status", () => {
 
     expect(await session.leave()).toBe(EXIT_OK);
     expect(dirs.session("session-1")).toBeUndefined();
+  });
+
+  it("holds its agent while the platform is still answering who the agent is", async () => {
+    using dirs = new ClaudeCodeDirs();
+    const platform = BandPlatform.host([person(USER)]);
+    const identity = platform.rest.agentMeHolds.hold(() => true);
+    await using _session = new ClaudeCodeSession(platform.link, { status: dirs.openStatus("session-1", DEFAULT_AGENT_NAME) });
+
+    await identity.sending;
+
+    expect(await dirs.agents("status", "session-1")).toContain("default    ← this session");
+    identity.release();
   });
 
   it("is refused, naming where the agent is connected, while another session holds it", async () => {

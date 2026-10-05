@@ -149,7 +149,7 @@ async function add({ dataDir }: Context, agentId: string, apiKey: string, name: 
   // The default's ID is known only from a session connected as it.
   const knownAs =
     Object.keys(saved).find((savedName) => saved[savedName].agentId === agentId) ??
-    [...liveSessions(dataDir).values()].find((session) => session.agentId === agentId)?.agent;
+    [...liveSessions(dataDir).values()].find((session) => session.agent === DEFAULT_AGENT_NAME && session.agentId === agentId)?.agent;
   if (knownAs) {
     throw new Error(`Agent ${agentId} is already set up as "${knownAs}".`);
   }
