@@ -258,8 +258,7 @@ describe("CodexAdapter", () => {
   }]);
 
   describeCustomToolEffect("CodexAdapter", async (tool, tools) => {
-    const [call, completed] = [scriptedToolCall(tool.name, {}), TURN_COMPLETED];
-    const client = new FakeCodexClient({ events: [call, completed] });
+    const client = new FakeCodexClient({ events: [scriptedToolCall(tool.name, {}), TURN_COMPLETED] });
     await new CodexAdapter({ config: { cwd: tmpRoot() }, customTools: [tool], factory: async () => client }).onEvent(turnInput(tools));
   });
 
@@ -1824,7 +1823,6 @@ describe("CodexAdapter", () => {
   });
 });
 
-/** The app-server events of one contract turn: the model's tool calls and closing message, then completion. */
 /** The app-server request in which the model calls `tool`. */
 function scriptedToolCall(tool: string, arguments_: Record<string, unknown>): CodexRpcEvent {
   return {
@@ -1841,6 +1839,7 @@ const TURN_COMPLETED: CodexRpcEvent = {
   params: { turn: { id: "turn-1", status: "completed", error: null } },
 };
 
+/** The app-server events of one contract turn: the model's tool calls and closing message, then completion. */
 function scriptedTurnEvents(script: TurnScript): CodexRpcEvent[] {
   const call = scriptedToolCall;
   const say = (text: string): CodexRpcEvent => ({

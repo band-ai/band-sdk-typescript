@@ -278,13 +278,17 @@ export class CursorRoomAgent extends ACPRoomAgent {
     message: PlatformMessage,
     tools: TurnTools,
     context: { isSessionBootstrap: boolean; roomId: string },
+    completed: boolean,
   ): Promise<void> {
     // Forgotten now, so a late Cursor ask finds no turn to attach to.
     if (this.turn?.messageId === message.id) {
       this.turn = null;
       this.cancelRoom(context.roomId, END_REASON.turnFinished);
     }
-    await reportUnsettledTurn(tools, this.decisionLogger, { roomId: context.roomId });
+    // A failed turn is about its failure, even one whose report didn't post.
+    if (completed) {
+      await reportUnsettledTurn(tools, this.decisionLogger, { roomId: context.roomId });
+    }
   }
 
   public override async onCleanup(roomId: string): Promise<void> {

@@ -391,6 +391,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
     let sessionId: string | undefined
     let generation = 0
     let releasePrompt: (() => void) | undefined
+    let completed = false
     try {
       const live = await this.ensureConnection()
       connection = live.connection
@@ -487,6 +488,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
           { roomId: context.roomId, sessionId },
         )
       }
+      completed = true
     } catch (error) {
       rethrowIfRecoverableTurnFailure(error)
       releasePrompt?.()
@@ -531,14 +533,16 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools
         },
       )
     } finally {
-      await this.onAcpTurnFinished(message, tools, context)
+      await this.onAcpTurnFinished(message, tools, context, completed)
     }
   }
 
+  /** Runs however the turn ended; `completed` is false when it failed, which already reported or raised. */
   protected async onAcpTurnFinished(
     _message: PlatformMessage,
     _tools: TurnTools,
     _context: { isSessionBootstrap: boolean; roomId: string },
+    _completed: boolean,
   ): Promise<void> {}
 
   protected async onAcpSessionReady(

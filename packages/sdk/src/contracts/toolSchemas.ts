@@ -391,6 +391,10 @@ export const TOOL_MODELS = {
 
 export type ToolName = keyof typeof TOOL_MODELS;
 
+// Every SDK tool is one of core's, so each records with core's effect; a
+// TS-only or misspelled name fails to compile here.
+const _everyToolIsCores: BandToolName = null as unknown as ToolName;
+
 export const ALL_TOOL_NAMES = new Set(Object.keys(TOOL_MODELS));
 
 /**

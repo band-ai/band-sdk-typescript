@@ -416,13 +416,16 @@ export class Execution {
     }
   }
 
-  // One turn's failure, already reported to the room (such as a missing
-  // reply): an ordinary outcome, so a warning with no stack.
+  // One turn's failure (a refused post, a provider failure, a missing reply):
+  // an ordinary outcome, so a warning with no stack, but with what tells the
+  // failures apart and why a post failed.
   private warnTurnFailed(error: RecoverableTurnError, context: Record<string, unknown>): void {
     this.logger.warn("Turn failed without stopping the room", {
       roomId: this.roomId,
       ...context,
       error: error.message,
+      name: error.name,
+      ...(error.cause === undefined ? {} : { cause: error.cause }),
     });
   }
 

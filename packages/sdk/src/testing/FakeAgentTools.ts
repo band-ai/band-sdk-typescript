@@ -71,8 +71,8 @@ export class FakeAgentTools
   public participantsAdded: CapturedParticipant[] = [];
   public participantsRemoved: string[] = [];
   public toolCalls: CapturedToolCall[] = [];
-  /** Records this fake's Band tool calls as production tools do, for an adapter tested without `onEvent`. */
-  public readonly turn = new Turn();
+  /** Records this fake's Band tool calls as production tools do, for an adapter tested without `onEvent`; `reset()` starts a new one. */
+  public turn = new Turn();
 
   private messageCounter = 0;
   private eventCounter = 0;
@@ -84,7 +84,7 @@ export class FakeAgentTools
     this.errorFactory =
       options?.errorFactory ??
       ((method) => new Error(`FakeAgentTools configured failure for ${String(method)}`));
-    Object.assign(this, recordingOverrides(this, this.turn));
+    Object.assign(this, recordingOverrides(this, () => this.turn));
   }
 
   public async sendMessage(
@@ -271,6 +271,7 @@ export class FakeAgentTools
     this.toolCalls.length = 0;
     this.messageCounter = 0;
     this.eventCounter = 0;
+    this.turn = new Turn();
   }
 
   private maybeFail(method: FakeToolMethod): void {

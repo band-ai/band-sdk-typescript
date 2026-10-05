@@ -74,7 +74,7 @@ export abstract class SimpleAdapter<H, TTools = TurnTools>
         roomId: input.roomId,
       },
     );
-    if (tools.turn.judged && !tools.turn.detached && tools.turn.verdict() === "missing_reply") {
+    if (!tools.turn.detached && tools.turn.unanswered) {
       await reportTurnFailure(tools, missingReplyFailure());
     }
   }

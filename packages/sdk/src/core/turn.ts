@@ -9,8 +9,8 @@ import {
 
 import type { MentionInput } from "../contracts/dtos";
 import { isBlankEventContent } from "../contracts/chatEvents";
-import { isFailedToolOutput, type AdapterToolsProtocol, type MessagingTools } from "../contracts/protocols";
-import { BAND_TOOL_EFFECTS, isBandToolName, SEND_MESSAGE_TOOL_NAME, TOOL_METHODS } from "../contracts/toolSchemas";
+import { isFailedToolOutput, type AdapterToolMethodName, type AdapterToolsProtocol, type MessagingTools } from "../contracts/protocols";
+import { BAND_TOOL_EFFECTS, isBandToolName, SEND_MESSAGE_TOOL_NAME, TOOL_METHODS, type ToolName } from "../contracts/toolSchemas";
 import { deliverReply } from "./deliveryFailedError";
 import type { Logger } from "./logger";
 import { overrideTools } from "./overrideTools";
@@ -58,6 +58,11 @@ export class Turn {
 
   public noteReported(): void {
     this.ledger.noteReported();
+  }
+
+  /** A judged turn that ended without completing, so its missing reply is reported. */
+  public get unanswered(): boolean {
+    return this.judged && this.verdict() === "missing_reply";
   }
 
   /** True once the turn replied or declined, so its closing text must not be relayed. */
@@ -108,17 +113,17 @@ function recordLanded(turn: Turn, toolName: BandToolName, content: unknown, resu
  * `executeToolCall` dispatches to the real methods, not these, so each call
  * records once.
  */
-export function recordingOverrides<T extends AdapterToolsProtocol>(tools: T, turn: Turn): Partial<T> {
+export function recordingOverrides<T extends AdapterToolsProtocol>(tools: T, turn: () => Turn): Partial<T> {
   const overrides: Record<string, unknown> = {};
 
-  for (const [toolName, methodName] of Object.entries(TOOL_METHODS)) {
+  for (const [toolName, methodName] of Object.entries(TOOL_METHODS) as [ToolName, AdapterToolMethodName | null][]) {
     const method = methodName && (tools[methodName] as ToolMethod | undefined)?.bind(tools);
-    if (!method || !isBandToolName(toolName)) {
+    if (!method) {
       continue;
     }
     overrides[methodName] = async (...args: unknown[]) => {
       const result = await method(...args);
-      recordLanded(turn, toolName, args[0], result);
+      recordLanded(turn(), toolName, args[0], result);
       return result;
     };
   }
@@ -127,7 +132,7 @@ export function recordingOverrides<T extends AdapterToolsProtocol>(tools: T, tur
   overrides.executeToolCall = async (toolName: string, args: Record<string, unknown>) => {
     const result = await executeToolCall(toolName, args);
     if (isBandToolName(toolName)) {
-      recordLanded(turn, toolName, args.content, result);
+      recordLanded(turn(), toolName, args.content, result);
     }
     return result;
   };
@@ -136,7 +141,7 @@ export function recordingOverrides<T extends AdapterToolsProtocol>(tools: T, tur
   overrides.sendFailure = async (failure: AgentFailure) => {
     const result = await sendFailure(failure);
     if (!isFailedToolOutput(result)) {
-      turn.noteReported();
+      turn().noteReported();
     }
     return result;
   };
@@ -147,7 +152,7 @@ export function recordingOverrides<T extends AdapterToolsProtocol>(tools: T, tur
 /** `tools` with a fresh {@link Turn} that records every Band tool call that lands, via {@link recordingOverrides}. */
 export function trackTurn<T extends AdapterToolsProtocol>(tools: T, judged = true): TurnTools<T> {
   const turn = new Turn(judged);
-  return overrideTools(tools as TurnTools<T>, { ...recordingOverrides(tools, turn), turn } as Partial<TurnTools<T>>);
+  return overrideTools(tools as TurnTools<T>, { ...recordingOverrides(tools, () => turn), turn } as Partial<TurnTools<T>>);
 }
 
 /** Relays the model's closing `text` as the reply, unless the turn already replied or declined. */
@@ -178,7 +183,7 @@ export async function reportUnsettledTurn(
   logger: Logger,
   logContext: Record<string, unknown>,
 ): Promise<void> {
-  if (tools.turn.judged && tools.turn.detached && tools.turn.verdict() === "missing_reply") {
+  if (tools.turn.detached && tools.turn.unanswered) {
     await safeSendFailure(tools, missingReplyFailure(), logger, logContext);
   }
 }

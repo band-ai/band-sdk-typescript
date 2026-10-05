@@ -1,6 +1,7 @@
 import { turnEffects, type TurnEffect } from "@band-ai/band-sdk-core";
 import { z } from "zod";
 
+import { isFailedToolOutput } from "../../contracts/protocols";
 import type { Turn } from "../../core/turn";
 
 const DEFAULT_CUSTOM_TOOL_EFFECT: TurnEffect = "observe";
@@ -150,7 +151,10 @@ function customToolEffect(def: CustomToolDef): TurnEffect {
   return effect;
 }
 
-/** Runs `def`, recording its effect on `turn` when it succeeds; omit `turn` where none is in scope. */
+/**
+ * Runs `def`, recording its effect on `turn` when it succeeds: it resolved, and
+ * not to a failure value, as for a Band tool. Omit `turn` where none is in scope.
+ */
 export async function executeCustomTool(
   def: CustomToolDef,
   arguments_: Record<string, unknown>,
@@ -167,7 +171,9 @@ export async function executeCustomTool(
 
   try {
     const output: unknown = await def.handler(result.data);
-    turn?.record(effect);
+    if (!isFailedToolOutput(output)) {
+      turn?.record(effect);
+    }
     return output;
   } catch (error) {
     if (error instanceof CustomToolValidationError || error instanceof CustomToolExecutionError) {

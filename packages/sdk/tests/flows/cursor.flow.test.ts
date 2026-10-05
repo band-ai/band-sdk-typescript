@@ -18,8 +18,9 @@ import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../../src/contracts/
 import { ACP_SESSION_EVENT } from "../../src/converters/acp-client";
 import { BandPlatform, person, type BandRoom, type Outcome, type Posted } from "./support/bandPlatform";
 import { DEFAULT_CURSOR_ROOM, FakeCursorAgent, type CursorTurn } from "./support/fakeCursorAgent";
+import { FAILURE_EVENT_TYPE } from "../../src/contracts/protocols";
 import { makeLoggerSpy, MISSING_REPLY, tmpRoot, type ReportedFailure } from "../testUtils";
-import { CLOSING_TEXT, contractRows, TOOL_REPLY, type TurnScript } from "../turnOutcomeContract";
+import { ACT_TOOL, CLOSING_TEXT, contractRows, NO_REPLY_ARGS, TOOL_REPLY, type TurnScript } from "../turnOutcomeContract";
 
 const OWNER = "owner";
 const TEAMMATE = "teammate";
@@ -69,14 +70,14 @@ const MODE = { questions: [{ id: "mode", options: [{ id: "plan" }] }] };
 // server of its own, so a tool reply posts nothing in the room through Band.
 const TURN_SCRIPTS: Record<TurnScript, (turn: CursorTurn) => Promise<void>> = {
   decline: async (turn) => {
-    await turn.callTool(NO_REPLY_TOOL_NAME, { reason: "Nothing to add." });
+    await turn.callTool(NO_REPLY_TOOL_NAME, NO_REPLY_ARGS);
     await turn.say(CLOSING_TEXT);
   },
   toolReply: async (turn) => {
     await turn.callTool(SEND_MESSAGE_TOOL_NAME, { content: TOOL_REPLY, mentions: [OWNER] });
     await turn.say(CLOSING_TEXT);
   },
-  act: (turn) => turn.callTool("band_add_participant", { name: TEAMMATE }),
+  act: (turn) => turn.callTool(ACT_TOOL, { name: TEAMMATE }),
   finalText: (turn) => turn.say(CLOSING_TEXT),
   nothing: async () => undefined,
 };
@@ -618,6 +619,31 @@ describe("Cursor in a Band room", () => {
     await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledWith("cursor_acp.released_turn_failed", expect.anything()));
     expect(room.failures).toHaveLength(1);
     expect(room.failures).not.toContainEqual(MISSING_REPLY);
+  });
+
+  // `reportTurnFailure` swallows a refused report, so the turn's verdict still reads missing_reply.
+  it("never reports a missing reply for a handed-back turn that failed, even when the platform refused its failure report", async () => {
+    const logger = makeLoggerSpy();
+    await using session = await cursorRoom({ logger });
+    const { room, platform } = session;
+    const createChatEvent = platform.rest.createChatEvent.bind(platform.rest);
+    let refused = false;
+    vi.spyOn(platform.rest, "createChatEvent").mockImplementation(async (roomId, event) => {
+      if (event.messageType === FAILURE_EVENT_TYPE && !refused) {
+        refused = true;
+        throw new Error("platform unavailable");
+      }
+      return createChatEvent(roomId, event);
+    });
+    const { tokens: [token] } = await session.start(async (turn) => {
+      await turn.ask(MODE);
+      throw new Error("model crashed");
+    }, 1);
+
+    await room.exchange(OWNER, `${CURSOR_COMMAND} answer ${token} mode=plan`);
+    await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledWith("cursor_acp.released_turn_failed", expect.anything()));
+
+    expect(room.failures).toEqual([]);
   });
 
   it.each([

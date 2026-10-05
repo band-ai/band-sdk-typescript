@@ -410,7 +410,7 @@ describe("Execution crash recovery", () => {
     await execution.stop();
   });
 
-  it("logs a turn failure already reported to the room as a warning, not an error, on the sync path too", async () => {
+  it("logs a turn's own failure as one warning with its name and cause, not an error, on the sync path too", async () => {
     const logger = makeLoggerSpy();
     const execution = new Execution({
       roomId: "room-1",
@@ -422,7 +422,7 @@ describe("Execution crash recovery", () => {
       context: makeContext(2) as never,
       logger,
       onExecute: async () => {
-        throw new RecoverableTurnError("turn ended without a reply");
+        throw new RecoverableTurnError("could not post the reply", new Error("HTTP 503"));
       },
     });
 
@@ -430,7 +430,7 @@ describe("Execution crash recovery", () => {
     await execution.waitForIdle();
     await execution.stop();
 
-    const turnFailed = { roomId: "room-1", error: "turn ended without a reply" };
+    const turnFailed = { roomId: "room-1", error: "could not post the reply", name: "RecoverableTurnError", cause: new Error("HTTP 503") };
     expect(logger.warn).toHaveBeenCalledWith("Turn failed without stopping the room", { ...turnFailed, messageId: "silent" });
     expect(logger.warn).toHaveBeenCalledWith("Turn failed without stopping the room", { ...turnFailed, eventType: "message_created" });
     expect(logger.error).not.toHaveBeenCalled();

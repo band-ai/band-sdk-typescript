@@ -9,6 +9,7 @@ import { createDeferred } from "../../core/deferred";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import type { PlatformMessage } from "../../runtime/types";
 import {
+  CustomToolDefinitionError,
   executeCustomTool,
   getCustomToolName,
   customToolToOpenAISchema,
@@ -19,14 +20,14 @@ import {
   type BandMcpBackend,
 } from "../../mcp/backends";
 import type { McpToolRegistration } from "../../mcp/registrations";
-import { errorResult, ROOM_ID_PROPERTY, successResult } from "../../mcp/registrations";
+import { errorResult, ROOM_ID_ARG, scopeToRoom, successResult } from "../../mcp/registrations";
 import { MCP_SERVER_NAME } from "../../contracts/toolSchemas";
 import { abandon } from "../shared/abandon";
 import { senderAllowlist, type DecisionEntry, type DecisionRegistry, type Registration } from "../shared/decisions";
 import { replyToSender } from "../shared/replyToSender";
 import { roomContextLines } from "../shared/roomContext";
 import { runUntilReleased } from "../shared/runUntilReleased";
-import { asErrorMessage, asNestedMessage, asNonEmptyString, asOptionalRecord, asString, toDisplayText, truncate } from "../shared/coercion";
+import { asErrorMessage, asNestedMessage, asOptionalRecord, asString, toDisplayText, truncate } from "../shared/coercion";
 import { DeliveryFailedError } from "../../core/deliveryFailedError";
 import { relayReply, reportUnsettledTurn, type TurnTools } from "../../core/turn";
 import {
@@ -187,6 +188,8 @@ interface RoomState {
   // The tools of the room's latest started turn; MCP calls resolve them, so a busy or control message must not replace them.
   tools: TurnTools;
   turn: OpencodeTurn | null;
+  // Held while a message sets up its turn, across the awaits before it claims `turn`, so a second message waits as busy.
+  starting: boolean;
   // The latest turn's requester; every room message mentions them, since the platform drops one that mentions nobody.
   requesterMentions: MentionInput;
   decisions: RoomDecisions;
@@ -242,7 +245,7 @@ function withDefaults(config?: OpencodeAdapterConfig): Required<OpencodeAdapterC
 
 /**
  * Custom tools for the shared MCP backend. They are registered once for every
- * room, so each takes `room_id`, like the Band tools, to record its declared
+ * room, so each is room-scoped like the Band tools, to record its declared
  * effect on that room's turn.
  */
 function buildCustomMcpRegistrations(
@@ -250,31 +253,33 @@ function buildCustomMcpRegistrations(
   toolsForRoom: (roomId: string) => TurnTools | undefined,
 ): McpToolRegistration[] {
   return customTools.map((customTool) => {
+    const name = getCustomToolName(customTool);
     const schema = customToolToOpenAISchema(customTool);
     const functionSchema = asOptionalRecord(schema.function) ?? {};
     const parameters = asOptionalRecord(functionSchema.parameters) ?? {};
     const properties = asOptionalRecord(parameters.properties) ?? {};
+    if (Object.hasOwn(properties, ROOM_ID_ARG)) {
+      throw new CustomToolDefinitionError(`Custom tool '${name}' can't take '${ROOM_ID_ARG}': OpenCode passes the room through it.`);
+    }
     const required = Array.isArray(parameters.required)
       ? parameters.required.filter((value): value is string => typeof value === "string")
       : [];
 
-    return {
-      name: getCustomToolName(customTool),
-      description: typeof functionSchema.description === "string" ? functionSchema.description : "",
-      inputSchema: {
-        type: "object",
-        properties: { ...properties, room_id: ROOM_ID_PROPERTY },
-        required: [...required, "room_id"],
+    return scopeToRoom(
+      {
+        name,
+        description: typeof functionSchema.description === "string" ? functionSchema.description : "",
+        inputSchema: { type: "object", properties, required },
       },
-      execute: async ({ room_id: roomId, ...toolArgs }) => {
+      toolsForRoom,
+      async (tools, args) => {
         try {
-          const turn = toolsForRoom(asNonEmptyString(roomId) ?? "")?.turn;
-          return successResult(await executeCustomTool(customTool, toolArgs, turn));
+          return successResult(await executeCustomTool(customTool, args, tools.turn));
         } catch (error) {
           return errorResult(error instanceof Error ? error.message : String(error));
         }
       },
-    };
+    );
   });
 }
 
@@ -282,7 +287,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
   protected readonly provider = "opencode";
 
   private readonly config: Required<OpencodeAdapterConfig>;
-  private readonly customTools: CustomToolDef[];
+  private readonly customToolRegistrations: McpToolRegistration[];
   private readonly clientFactory: (config: Required<OpencodeAdapterConfig>) => OpencodeClientLike;
   private readonly mcpBackendFactory: typeof createBandMcpBackend;
   private readonly logger: Logger;
@@ -297,7 +302,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
       historyConverter: options.historyConverter ?? new OpencodeHistoryConverter(),
     });
     this.config = withDefaults(options.config);
-    this.customTools = [...(options.customTools ?? [])];
+    this.customToolRegistrations = buildCustomMcpRegistrations(options.customTools ?? [], (roomId) => this.toolsForRoom(roomId));
     this.clientFactory = options.clientFactory ?? ((config) => (
       config.baseUrl
         ? new HttpOpencodeClient({
@@ -358,19 +363,28 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
       return;
     }
 
-    if (roomState.turn) {
+    if (roomState.turn || roomState.starting) {
       await tools.sendEvent(OPENCODE_DECISION_MESSAGES.turnInProgress(), "error");
       tools.turn.settle();
       return;
     }
 
+    roomState.starting = true;
     try {
-      const client = await this.ensureClientStarted();
-      const { sessionId, created, needsHistoryReplay } = await this.ensureSession(roomState, client, history);
-      if (this.config.enableTaskEvents && (roomState.persistedSessionId !== sessionId || context.isSessionBootstrap)) {
-        await this.emitSessionTaskEvent(roomState, tools, sessionId, created ? "created" : "resumed");
+      let setup: { client: OpencodeClientLike; sessionId: string; needsHistoryReplay: boolean };
+      try {
+        const client = await this.ensureClientStarted();
+        const { sessionId, created, needsHistoryReplay } = await this.ensureSession(roomState, client, history);
+        if (this.config.enableTaskEvents && (roomState.persistedSessionId !== sessionId || context.isSessionBootstrap)) {
+          await this.emitSessionTaskEvent(roomState, tools, sessionId, created ? "created" : "resumed");
+        }
+        setup = { client, sessionId, needsHistoryReplay };
+      } finally {
+        // Released with no await before `startTurn` claims `turn`.
+        roomState.starting = false;
       }
 
+      const { client, sessionId, needsHistoryReplay } = setup;
       await this.startTurn(roomState, tools, client, sessionId, message, participantsMessage, contactsMessage, history, needsHistoryReplay, context.roomId);
     } catch (error) {
       rethrowIfRecoverableTurnFailure(error);
@@ -460,6 +474,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
       decisions: new RoomDecisions(this.logger),
       persistedSessionId: null,
       forceFreshSession: false,
+      starting: false,
     };
     this.rooms.set(roomId, created);
     return created;
@@ -498,9 +513,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
       kind: "http",
       enableMemoryTools: this.config.enableMemoryTools,
       getToolsForRoom: (roomId) => this.toolsForRoom(roomId),
-      additionalTools: this.customTools.length > 0
-        ? buildCustomMcpRegistrations(this.customTools, (roomId) => this.toolsForRoom(roomId))
-        : undefined,
+      additionalTools: this.customToolRegistrations.length > 0 ? this.customToolRegistrations : undefined,
     }).catch((error: unknown) => {
       this.logger.warn("Failed to start OpenCode MCP backend", { error });
       return null;

@@ -235,6 +235,13 @@ describe("custom tool effect", () => {
     expect(turn.verdict()).toBe("missing_reply");
   });
 
+  it("records nothing for a custom tool that resolves to a failure value", async () => {
+    const turn = new Turn();
+    await executeCustomTool({ ...tool("reply"), handler: () => ({ ok: false, message: "upstream refused" }) }, {}, turn);
+
+    expect(turn.verdict()).toBe("missing_reply");
+  });
+
   // An untyped caller's typo: refused when indexed, and before the side effect when run.
   it("refuses an effect core doesn't know, before its handler runs", async () => {
     const handler = vi.fn(() => "filed");
