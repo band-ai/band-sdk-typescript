@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.4.0](https://github.com/band-ai/band-sdk-typescript/compare/openclaw-channel-band-v0.3.2...openclaw-channel-band-v0.4.0) (2026-10-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* **runtime:** a turn that does nothing is now reported with core's missing-reply text and marked FAILED in every judged adapter, including `SimpleAdapter` subclasses and `GenericAdapter` handlers. A custom adapter's own notices (prompts, busy or status text) should use `sendNotice` and `tools.turn.settle()`; a post through `sendMessage` / `deliverReply` counts as the turn's reply. A custom tool counts as `observe` unless it declares `effect`. ACP and OpenCode no longer post the model's closing text after it already replied, and OpenCode's filler is gone. `AdapterToolsProtocol` gains `sendNotice`. The base prompt teaches `band_no_reply`.
+
+### Features
+
+* add [@band-ai](https://github.com/band-ai) dual-publish support ([#22](https://github.com/band-ai/band-sdk-typescript/issues/22)) ([ada247f](https://github.com/band-ai/band-sdk-typescript/commit/ada247fb13d48385d787388b1cd57cbb7891a2df))
+* **claude-code:** add the Band Claude Code channel plugin (INT-1664) ([#305](https://github.com/band-ai/band-sdk-typescript/issues/305)) ([48a2a11](https://github.com/band-ai/band-sdk-typescript/commit/48a2a1161a1f76b10a5ceb1d45cf616a09a9a2f9))
+
+
+### Bug Fixes
+
+* **runtime:** judge every turn with core's turn-outcome rule and add band_no_reply (INT-1672) ([#306](https://github.com/band-ai/band-sdk-typescript/issues/306)) ([4c79610](https://github.com/band-ai/band-sdk-typescript/commit/4c79610715b4f48bfc4f072407dcbf6454d383a8))
+
 ## [0.3.2](https://github.com/band-ai/band-sdk-typescript/compare/openclaw-channel-band-v0.3.1...openclaw-channel-band-v0.3.2) (2026-09-27)
 
 
