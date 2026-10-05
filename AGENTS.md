@@ -268,6 +268,8 @@ Two MCP entry points:
 - `@band-ai/sdk/mcp`: generic MCP registrations + stdio/SSE/server backends. Use `createBandMcpBackend`, `buildRoomScopedRegistrations`, `buildSingleContextRegistrations`. No Claude-specific dependency required.
 - `@band-ai/sdk/mcp/claude`: bridge for the Claude Agent SDK. `createBandSdkMcpServer(options)` returns an in-process MCP server compatible with `@anthropic-ai/claude-agent-sdk`.
 
+Room-scoped registrations give every tool a required `room_id`. Passing `roomlessTools` registers the tools outside `ROOM_TOOL_NAMES` without `room_id`, running on that instance.
+
 Schema conversion uses Zod (`packages/sdk/src/mcp/zod.ts`). Tools exposed over MCP are prefixed with `mcp__band__`.
 
 ## Linear Integration

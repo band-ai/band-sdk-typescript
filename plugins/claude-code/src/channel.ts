@@ -1,13 +1,14 @@
-import type { PlatformRuntimeOptions } from "@band-ai/sdk";
+import type { BandLink, PlatformRuntimeOptions } from "@band-ai/sdk";
 import type { AgentCredentials } from "@band-ai/sdk/config";
-import { WebSocketDisconnectError, type Logger, type WebSocketDisconnectReason } from "@band-ai/sdk/core";
+import { WebSocketDisconnectError, type AdapterToolsProtocol, type Logger, type WebSocketDisconnectReason } from "@band-ai/sdk/core";
 import { BandMcpStdioServer } from "@band-ai/sdk/mcp";
-import { PlatformRuntime } from "@band-ai/sdk/runtime";
+import { AgentTools, PlatformRuntime } from "@band-ai/sdk/runtime";
 import type { Readable, Writable } from "node:stream";
 
 import { ChannelAdapter } from "./adapter";
 import { USE_HINT } from "./config";
 import { channelInstructions } from "./prompt";
+import { findRoomsTool } from "./rooms";
 import { sessionLocation, type SessionStatus, type SessionStatusFile } from "./sessions";
 
 /** The experimental capability that makes Claude Code register the server as a channel. */
@@ -21,6 +22,9 @@ export const EXIT_FAILED = 1;
 // Once the session ends, the runtime stops at the turn in flight rather than draining the backlog
 // into a server that can't push it; what it didn't start waits on the platform for the next session.
 const STOP_WITHOUT_DRAINING_MS = 0;
+
+// Roomless tools never act on a room (band_no_reply only logs it), as with Python's AgentTools(room_id="").
+const NO_ROOM = "";
 
 /** The platform's answer when another session already holds the agent. */
 const CONNECTION_CONFLICT: Extract<WebSocketDisconnectReason, { source: "upgrade" }>["code"] = "connection_conflict";
@@ -68,8 +72,11 @@ async function serveChannel({ agentName, credentials, status, link, stdin, stdou
   status?.record({ handle: identity.handle ?? null });
 
   const adapter = new ChannelAdapter({ ownerUuid: identity.ownerUuid, push: (push) => server.notify(CHANNEL_METHOD, push) });
+  const toolsFor = roomTools(runtime.link, logger);
   const server: BandMcpStdioServer = new BandMcpStdioServer({
-    tools: (roomId) => adapter.toolsFor(roomId),
+    tools: toolsFor,
+    roomlessTools: toolsFor(NO_ROOM),
+    additionalTools: [findRoomsTool(runtime.link, logger)],
     capabilities: { experimental: { [CHANNEL_CAPABILITY]: {} } },
     instructions: channelInstructions(identity, agentName),
     stdin,
@@ -91,6 +98,11 @@ async function serveChannel({ agentName, credentials, status, link, stdin, stdou
     // stop() rethrows the error a superseded runtime failed with, which is already logged.
     await Promise.allSettled([runtime.stop(STOP_WITHOUT_DRAINING_MS), server.stop()]);
   }
+}
+
+/** Tools for any room, built per call: Band itself refuses a room the agent isn't in. */
+function roomTools(link: BandLink, logger: Logger): (roomId: string) => AdapterToolsProtocol {
+  return (roomId) => new AgentTools({ roomId, rest: link.rest, capabilities: link.capabilities, logger }).getAdapterTools();
 }
 
 function reportFailure(error: unknown, { agentName, credentials, status, logger }: RunChannelOptions): void {

@@ -14,6 +14,19 @@ import { CallHolds, RecordLog, type HeldCall } from "../../../../packages/sdk/te
 
 const INITIALIZED_METHOD = "notifications/initialized";
 
+/** A tool call's text and whether it was an error, as Claude reads it. */
+export interface ToolReply {
+  readonly text: string;
+  readonly isError: boolean;
+}
+
+/** Calls `name` on the plugin's server as Claude Code would. */
+export async function callTool(client: Client, name: string, args: Record<string, unknown>): Promise<ToolReply> {
+  const result = await client.callTool({ name, arguments: args });
+  const [first] = result.content as Array<{ text: string }>;
+  return { text: first?.text ?? "", isError: result.isError === true };
+}
+
 // The SDK's stdio transport takes any stream pair, so it also serves as the client end.
 class ClientEnd extends StdioServerTransport {
   public constructor(
