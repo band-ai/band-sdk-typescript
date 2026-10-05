@@ -7,7 +7,6 @@ import { dirname, join } from "node:path";
 import { describe, expect } from "vitest";
 
 import {
-  agentCredentials,
   agentsFilePath,
   nameFromHandle,
   projectSettingsPath,
@@ -25,7 +24,7 @@ const UNHANDLED: PeerAgent = { id: "agent-plain", apiKey: "key-plain", name: "Pl
 const TROUBLED: PeerAgent = { id: "agent-troubled", apiKey: "key-troubled", name: "Troubled", handle: "alex/troubled", failure: 400 };
 const OWNER_ONLY = 0o600;
 
-const MAIN_ID = "agent-main";
+const MAIN: PeerAgent = { id: "agent-main", apiKey: "key-main", name: "Main", handle: "alex/main" };
 /** How much earlier an older status was recorded. */
 const STALE_MS = 60_000;
 
@@ -58,7 +57,7 @@ describe("add", () => {
     const output = await dirs.agents("add", DOCS.id, DOCS.apiKey, "--ws-url", band.wsUrl);
 
     expect(output).toBe('✓ Saved "docs" (@alex/docs). Use it in a project with /band:agents use docs');
-    expect(agentCredentials("docs", dirs.env("session-1"))).toEqual({ agentId: DOCS.id, apiKey: DOCS.apiKey, wsUrl: band.wsUrl });
+    expect(readSavedAgents(dirs.dataDir)).toEqual({ docs: { agentId: DOCS.id, apiKey: DOCS.apiKey, handle: DOCS.handle } });
     expect(statSync(agentsFilePath(dirs.dataDir)).mode & 0o777).toBe(OWNER_ONLY);
   });
 
@@ -90,12 +89,6 @@ describe("add", () => {
     expect(readFileSync(agentsFilePath(dirs.dataDir), "utf8")).toBe(before);
   });
 
-  it("refuses the default agent under another name, once a session has connected as it", async ({ dirs, band }) => {
-    sessionAs(dirs, "session-1", "default", { agentId: DOCS.id, state: "connected" });
-
-    await expect(dirs.agents("add", DOCS.id, DOCS.apiKey, "--ws-url", band.wsUrl)).rejects.toThrow(`Agent ${DOCS.id} is already set up as "default".`);
-  });
-
   it("saves an agent again after it was removed, though a session still runs as it", async ({ dirs, band }) => {
     dirs.writeStatus("session-1", { agent: "docs", agentId: DOCS.id });
 
@@ -103,7 +96,7 @@ describe("add", () => {
   });
 
   it("refuses a name that can't name an agent", async ({ dirs, band }) => {
-    for (const name of ["default", "my agent", "alex/docs"]) {
+    for (const name of ["my agent", "alex/docs"]) {
       await expect(dirs.agents("add", DOCS.id, DOCS.apiKey, name, "--ws-url", band.wsUrl)).rejects.toThrow(`"${name}" can't name an agent`);
     }
     expect(existsSync(agentsFilePath(dirs.dataDir))).toBe(false);
@@ -155,23 +148,14 @@ describe("use", () => {
 
     const output = await dirs.agents("use", "docs");
 
-    expect(output).toBe('✓ This project now connects as "docs" (@alex/docs). Start a new Claude Code session here to switch.');
+    expect(output).toBe('✓ This project now connects as "docs" (@alex/docs). To switch this session, run /mcp and reconnect the band server; new sessions here connect as it.');
     expect(dirs.projectSettings()).toEqual({ permissions: { allow: ["Bash(ls)"] }, env: { DEBUG: "1", BAND_AGENT: "docs" } });
-  });
-
-  it("selects the default explicitly, over a name the project's shared settings commit", async ({ dirs }) => {
-    save(dirs, DOCS);
-    await dirs.agents("use", "docs");
-
-    await dirs.agents("use", "default");
-
-    expect(dirs.projectSettings()).toEqual({ env: { BAND_AGENT: "default" } });
   });
 
   it("refuses an agent that isn't saved, naming those that are", async ({ dirs }) => {
     save(dirs, DOCS);
 
-    await expect(dirs.agents("use", "sdk")).rejects.toThrow('No Band agent named "sdk". Agents: default, docs.');
+    await expect(dirs.agents("use", "sdk")).rejects.toThrow('No Band agent named "sdk". Saved: docs.');
     expect(existsSync(projectSettingsPath(dirs.projectDir))).toBe(false);
   });
 });
@@ -197,32 +181,29 @@ describe("remove", () => {
   });
 
   it("refuses an agent that isn't saved", async ({ dirs }) => {
-    await expect(dirs.agents("remove", "sdk")).rejects.toThrow('No Band agent named "sdk". Agents: default.');
+    await expect(dirs.agents("remove", "sdk")).rejects.toThrow('No Band agent named "sdk". Saved: none.');
   });
 
   it("refuses a name that is only a property every object has", async ({ dirs }) => {
     await expect(dirs.agents("remove", "constructor")).rejects.toThrow('No Band agent named "constructor".');
   });
 
-  it("keeps the default, which the plugin's settings own", async ({ dirs }) => {
-    await expect(dirs.agents("remove", "default")).rejects.toThrow("change it in /plugin");
-  });
 });
 
 describe("status", () => {
   it("shows what this session is connected as and which agents other sessions hold", async ({ dirs }) => {
-    save(dirs, DOCS, SDK);
+    save(dirs, MAIN, DOCS, SDK);
     sessionAs(dirs, "session-1", "docs", { agentId: DOCS.id, handle: DOCS.handle, state: "connected" });
-    sessionAs(dirs, "session-2", "default", { agentId: MAIN_ID, handle: "alex/main", state: "connected" });
+    sessionAs(dirs, "session-2", "main", { agentId: MAIN.id, handle: MAIN.handle, state: "connected" });
 
     expect(await dirs.agents("status", "session-1")).toBe(
       [
         'This session: connected as "docs" (@alex/docs).',
         "",
         "Agents:",
-        `  default  @alex/main  in use (session in ${dirs.projectDir})`,
-        "  docs     @alex/docs  ← this session",
-        "  sdk      @alex/sdk   free",
+        `  main  @alex/main  in use (session in ${dirs.projectDir})`,
+        "  docs  @alex/docs  ← this session",
+        "  sdk   @alex/sdk   free",
       ].join("\n"),
     );
   });
@@ -235,35 +216,34 @@ describe("status", () => {
     expect(await dirs.agents("status", "session-2")).toBe(
       [
         'This session: refused. Band agent "docs" is already connected from another session.',
-        "Free: default, sdk. Run /band:agents use default, then start a new Claude Code session here.",
+        "Free: sdk. Run /band:agents use sdk, then reconnect the band server in /mcp.",
         "",
         "Agents:",
-        `  default              free`,
-        `  docs     @alex/docs  in use (session in ${dirs.projectDir})`,
-        "  sdk      @alex/sdk   free",
+        `  docs  @alex/docs  in use (session in ${dirs.projectDir})`,
+        "  sdk   @alex/sdk   free",
       ].join("\n"),
     );
   });
 
   it("doesn't offer the agent this session was refused, though no session here holds it", async ({ dirs }) => {
-    save(dirs, DOCS);
+    save(dirs, MAIN, DOCS);
     sessionAs(dirs, "session-1", "docs", { agentId: DOCS.id, state: "refused", error: "Taken." });
 
     expect(await dirs.agents("status", "session-1")).toBe(
       [
         "This session: refused. Taken.",
-        "Free: default. Run /band:agents use default, then start a new Claude Code session here.",
+        "Free: main. Run /band:agents use main, then reconnect the band server in /mcp.",
         "",
         "Agents:",
-        "  default              free",
-        "  docs     @alex/docs  in use elsewhere",
+        "  main  @alex/main  free",
+        "  docs  @alex/docs  in use elsewhere",
       ].join("\n"),
     );
   });
 
   it("says no agent is free when every one is held", async ({ dirs }) => {
-    save(dirs, DOCS);
-    sessionAs(dirs, "session-1", "default", { agentId: MAIN_ID, state: "connected" });
+    save(dirs, MAIN, DOCS);
+    sessionAs(dirs, "session-1", "main", { agentId: MAIN.id, state: "connected" });
     sessionAs(dirs, "session-2", "docs", { agentId: DOCS.id, state: "connected" });
     sessionAs(dirs, "session-3", "docs", { agentId: DOCS.id, state: "refused", error: "Taken." });
 
@@ -272,19 +252,26 @@ describe("status", () => {
     );
   });
 
-  it("shows a session still connecting, and one that failed with why", async ({ dirs }) => {
-    sessionAs(dirs, "session-1", "default", { agentId: MAIN_ID, handle: "alex/main" });
-    sessionAs(dirs, "session-2", "docs", { state: "failed", error: 'No Band agent named "docs". Agents: default.' });
+  it("shows a session still connecting, and one that found no agent to connect as", async ({ dirs }) => {
+    save(dirs, MAIN, DOCS);
+    sessionAs(dirs, "session-1", "main", { agentId: MAIN.id });
+    dirs.writeStatus("session-2", { agent: null, agentId: null, state: "failed", error: "Band agents main, docs are saved, and this project picks none." });
 
-    expect(await dirs.agents("status", "session-1")).toContain('This session: connecting as "default" (@alex/main).');
-    expect(await dirs.agents("status", "session-2")).toContain('This session: not connected. No Band agent named "docs". Agents: default.');
+    expect(await dirs.agents("status", "session-1")).toContain('This session: connecting as "main" (@alex/main).');
+    expect(await dirs.agents("status", "session-2")).toContain("This session: not connected. Band agents main, docs are saved, and this project picks none.");
+  });
+
+  it("says how to add the first agent", async ({ dirs }) => {
+    expect(await dirs.agents("status", "session-1")).toBe(
+      ["This session: no Band server is running in it.", "", "No agent saved yet: add one with /band:agents add <agent_id> <api_key>."].join("\n"),
+    );
   });
 
   it("shows an agent held under another name as in use", async ({ dirs }) => {
-    writeSavedAgents(dirs.dataDir, { docs: { agentId: MAIN_ID, apiKey: "key-main", handle: "alex/main" } });
-    dirs.writeStatus("session-1", { agent: "default", agentId: MAIN_ID });
+    writeSavedAgents(dirs.dataDir, { docs: { agentId: MAIN.id, apiKey: MAIN.apiKey, handle: MAIN.handle } });
+    dirs.writeStatus("session-1", { agent: "main", agentId: MAIN.id });
 
-    expect(await dirs.agents("status", "session-2")).toContain(`  docs     @alex/main  in use (session in ${dirs.projectDir})`);
+    expect(await dirs.agents("status", "session-2")).toContain(`  docs  @alex/main  in use (session in ${dirs.projectDir})`);
   });
 
   it("names the session connected to an agent, not one still connecting to it", async ({ dirs }) => {
@@ -292,15 +279,15 @@ describe("status", () => {
     sessionAs(dirs, "session-a", "docs", { agentId: DOCS.id, state: "connected" });
     sessionAs(dirs, "session-z", "docs", { agentId: DOCS.id, state: "connecting" });
 
-    expect(await dirs.agents("status", "session-a")).toContain("docs     @alex/docs  ← this session");
-    expect(await dirs.agents("status", "session-z")).toContain(`docs     @alex/docs  in use (session in ${dirs.projectDir})`);
+    expect(await dirs.agents("status", "session-a")).toContain("docs  @alex/docs  ← this session");
+    expect(await dirs.agents("status", "session-z")).toContain(`docs  @alex/docs  in use (session in ${dirs.projectDir})`);
   });
 
   it("shows a session that didn't say where it runs as another session", async ({ dirs }) => {
     save(dirs, DOCS);
     dirs.writeStatus("session-1", { agentId: DOCS.id, projectDir: null });
 
-    expect(await dirs.agents("status", "session-2")).toContain("docs     @alex/docs  in use (another session)");
+    expect(await dirs.agents("status", "session-2")).toContain("docs  @alex/docs  in use (another session)");
   });
 
   it("shows a session's project under ~ when it is in the home directory", async ({ dirs }) => {
@@ -317,7 +304,7 @@ describe("status", () => {
     const output = await dirs.agents("status", "session-after-clear");
 
     expect(output).toContain('This session: connected as "docs" (@alex/docs).');
-    expect(output).toContain("docs     @alex/docs  ← this session");
+    expect(output).toContain("docs  @alex/docs  ← this session");
   });
 
   it("takes the latest server of this Claude Code process after /clear, over an earlier one's refusal", async ({ dirs }) => {
@@ -334,9 +321,5 @@ describe("status", () => {
     dirs.writeStatus("session-1", { pid: process.ppid, serverPid: process.ppid, state: "refused", error: "Taken." });
 
     expect(await dirs.agents("status", "session-1")).toContain("This session: refused. Taken.");
-  });
-
-  it("says when no Band server runs in this session", async ({ dirs }) => {
-    expect(await dirs.agents("status", "session-1")).toBe(["This session: no Band server is running in it.", "", "Agents:", "  default    free"].join("\n"));
   });
 });

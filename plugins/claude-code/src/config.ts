@@ -1,20 +1,21 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-import { loadAgentConfigFromEnv, loadAgentConfigs, type AgentCredentials } from "@band-ai/sdk/config";
+import { loadAgentConfigs, type AgentCredentials } from "@band-ai/sdk/config";
 import { dump as dumpYaml } from "js-yaml";
 
 import { writeFileAtomically } from "./files";
 
-/** An exact prefix: the user's own BAND_* and THENVOI_* variables never reach the plugin. */
-export const ENV_PREFIX = "BAND_CHANNEL_";
+/**
+ * The plugin's Band WebSocket URL setting, for every agent, as `.mcp.json` passes it to the server. A name of the
+ * plugin's own: the user's BAND_* and THENVOI_* variables never reach it.
+ */
+export const WS_URL_ENV = "BAND_CHANNEL_WS_URL";
 /**
  * Names the saved agent a session connects as. Read from the server's own environment, never declared
  * in `.mcp.json`: Claude Code passes an unset `${VAR}` there through as literal text.
  */
 export const AGENT_SELECT_ENV = "BAND_AGENT";
-/** The agent configured when the plugin was enabled, from its `userConfig`. */
-export const DEFAULT_AGENT_NAME = "default";
 /** The skill that manages the agents. */
 export const AGENTS_COMMAND = "/band:agents";
 /** How messages tell the user to save an agent, and to pick one. */
@@ -40,42 +41,59 @@ const AGENTS_FILE = "agents.yaml";
 /** Where `/band:agents use` selects an agent for a project: the user's personal Claude Code settings for it. */
 const PROJECT_SETTINGS_FILE = join(".claude", "settings.local.json");
 
+/** How Claude Code passes a plugin setting left unset: as the literal `${user_config.<key>}`. */
+const UNSET_SETTING = /^\$\{user_config\.\w+\}$/;
 // Only owner-readable: the file holds API keys.
 const AGENTS_FILE_MODE = 0o600;
 const AGENT_NAME = /^[A-Za-z0-9_.-]+$/;
 
 export type Env = Readonly<Record<string, string | undefined>>;
 
-export interface SavedAgent extends AgentCredentials {
+export interface SavedAgent {
+  readonly agentId: string;
+  readonly apiKey: string;
   /** The agent's Band handle, as Band reported it when the agent was added. */
   readonly handle: string | null;
 }
 
-/** The agent this session connects as: the one `BAND_AGENT` names, or the default. */
-export function selectedAgentName(env: Env): string {
-  return env[AGENT_SELECT_ENV] || DEFAULT_AGENT_NAME;
+export type SavedAgents = Readonly<Record<string, SavedAgent>>;
+
+export interface SelectedAgent {
+  readonly name: string;
+  readonly credentials: AgentCredentials;
 }
 
-/** The credentials of the agent named `name`; fails naming the saved agents when there is none. */
-export function agentCredentials(name: string, env: Env): AgentCredentials {
-  if (name === DEFAULT_AGENT_NAME) {
-    return loadAgentConfigFromEnv({ env, prefix: ENV_PREFIX });
-  }
+/** The agent this session connects as: the saved one `BAND_AGENT` names, or the only one saved. */
+export function selectAgent(env: Env): SelectedAgent {
   const saved = readSavedAgents(pluginDataDir(env));
+  const name = env[AGENT_SELECT_ENV] || soleAgentName(saved);
   const agent = saved[name];
   if (!agent) {
     throw new Error(`${unknownAgentMessage(name, saved)} Add it with ${ADD_HINT} ${name}`);
   }
-  return { agentId: agent.agentId, apiKey: agent.apiKey, ...(agent.wsUrl ? { wsUrl: agent.wsUrl } : {}) };
+  const wsUrl = configuredWsUrl(env[WS_URL_ENV]);
+  return { name, credentials: { agentId: agent.agentId, apiKey: agent.apiKey, ...(wsUrl ? { wsUrl } : {}) } };
 }
 
-/** Every agent a session can select: the default, then the saved ones. */
-export function agentNames(saved: Readonly<Record<string, SavedAgent>>): string[] {
-  return [DEFAULT_AGENT_NAME, ...Object.keys(saved)];
+function soleAgentName(saved: SavedAgents): string {
+  const names = Object.keys(saved);
+  if (names.length === 1) {
+    return names[0];
+  }
+  throw new Error(
+    names.length === 0
+      ? `No Band agent is saved yet: add one with ${AGENTS_COMMAND}.`
+      : `Band agents ${names.join(", ")} are saved, and this project picks none: pick one with ${AGENTS_COMMAND}.`,
+  );
 }
 
-export function unknownAgentMessage(name: string, saved: Readonly<Record<string, SavedAgent>>): string {
-  return `No Band agent named "${name}". Agents: ${agentNames(saved).join(", ")}.`;
+/** The Band WebSocket URL the plugin is set to; none for app.band.ai, when the setting is empty or unset. */
+export function configuredWsUrl(setting: string | undefined): string | undefined {
+  return setting && !UNSET_SETTING.test(setting) ? setting : undefined;
+}
+
+export function unknownAgentMessage(name: string, saved: SavedAgents): string {
+  return `No Band agent named "${name}". Saved: ${Object.keys(saved).join(", ") || "none"}.`;
 }
 
 /** A Band handle as people address it. */
@@ -90,8 +108,8 @@ export function nameFromHandle(handle: string): string | undefined {
 
 /** Fails naming the rule when `name` can't be a saved agent's name. */
 export function assertAgentName(name: string): void {
-  if (name === DEFAULT_AGENT_NAME || !AGENT_NAME.test(name)) {
-    throw new Error(`"${name}" can't name an agent: use letters, digits, ".", "_" or "-", and not "${DEFAULT_AGENT_NAME}".`);
+  if (!AGENT_NAME.test(name)) {
+    throw new Error(`"${name}" can't name an agent: use letters, digits, ".", "_" or "-".`);
   }
 }
 
@@ -118,18 +136,15 @@ export function readSavedAgents(dataDir: string): Record<string, SavedAgent> {
   if (!existsSync(path)) {
     return saved;
   }
-  for (const [name, { agentId, apiKey, wsUrl, handle }] of Object.entries(loadAgentConfigs(path))) {
-    saved[name] = { agentId, apiKey, wsUrl, handle: typeof handle === "string" ? handle : null };
+  for (const [name, { agentId, apiKey, handle }] of Object.entries(loadAgentConfigs(path))) {
+    saved[name] = { agentId, apiKey, handle: typeof handle === "string" ? handle : null };
   }
   return saved;
 }
 
-export function writeSavedAgents(dataDir: string, agents: Readonly<Record<string, SavedAgent>>): void {
+export function writeSavedAgents(dataDir: string, agents: SavedAgents): void {
   const sections = Object.fromEntries(
-    Object.entries(agents).map(([name, agent]) => [
-      name,
-      { agent_id: agent.agentId, api_key: agent.apiKey, ...(agent.wsUrl ? { ws_url: agent.wsUrl } : {}), handle: agent.handle },
-    ]),
+    Object.entries(agents).map(([name, agent]) => [name, { agent_id: agent.agentId, api_key: agent.apiKey, handle: agent.handle }]),
   );
   // A session starting meanwhile reads the agents whole.
   writeFileAtomically(agentsFilePath(dataDir), dumpYaml(sections), AGENTS_FILE_MODE);

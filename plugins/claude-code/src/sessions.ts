@@ -21,8 +21,8 @@ const HOLDING_STATES: ReadonlySet<SessionState> = new Set(["connecting", "connec
 export interface SessionStatus {
   /** The Claude Code session the server started in. Not unique: `claude --resume` in a second terminal shares it. */
   readonly sessionId: string;
-  /** The agent's name, as `BAND_AGENT` selected it. */
-  readonly agent: string;
+  /** The agent's saved name; none when the server found no agent to connect as. */
+  readonly agent: string | null;
   /** The Band agent's ID, once the server has resolved it. */
   readonly agentId: string | null;
   readonly handle: string | null;
@@ -50,7 +50,7 @@ export class SessionStatusFile {
   private constructor(
     private readonly dataDir: string,
     sessionId: string,
-    agent: string,
+    agent: string | null,
     projectDir: string | null,
     private readonly logger: Logger,
   ) {
@@ -70,7 +70,7 @@ export class SessionStatusFile {
   }
 
   /** Records `agent` connecting for the session Claude Code started the server in; none outside Claude Code. */
-  public static open(env: Env, agent: string, logger: Logger): SessionStatusFile | undefined {
+  public static open(env: Env, agent: string | null, logger: Logger): SessionStatusFile | undefined {
     const dataDir = env[CLAUDE_ENV.pluginData];
     const sessionId = env[CLAUDE_ENV.sessionId];
     if (dataDir && !sessionId) {

@@ -8,10 +8,9 @@ import type { AgentIdentity } from "@band-ai/sdk/rest";
 import {
   ADD_HINT,
   AGENT_SELECT_ENV,
-  agentNames,
   assertAgentName,
   atHandle,
-  DEFAULT_AGENT_NAME,
+  configuredWsUrl,
   nameFromHandle,
   projectSettingsPath,
   readSavedAgents,
@@ -20,10 +19,13 @@ import {
   useCommand,
   writeSavedAgents,
   type SavedAgent,
+  type SavedAgents,
 } from "./config";
 import { writeFileAtomically } from "./files";
 import { agentHolders, ancestorPids, liveSessions, sessionLocation, type SessionStatus } from "./sessions";
 
+/** Claude Code starts the server again, with the project's settings as they are now, when it reconnects. */
+const SWITCH_HINT = "To switch this session, run /mcp and reconnect the band server; new sessions here connect as it.";
 /** An agent no session holds. */
 const FREE = "free";
 /** How Band answers credentials it doesn't accept. */
@@ -57,7 +59,7 @@ export async function runAgentsCommand(argv: readonly string[]): Promise<string>
     case "status":
       return status(context, required(args[0]));
     case "add":
-      return add(context, required(args[0]), required(args[1]), args[2], values["ws-url"]);
+      return add(context, required(args[0]), required(args[1]), args[2], configuredWsUrl(values["ws-url"]));
     case "use":
       return use(context, required(args[0]));
     case "remove":
@@ -79,13 +81,8 @@ function status({ dataDir }: Context, currentSessionId: string): string {
   const sessions = liveSessions(dataDir);
   const mine = thisSession(sessions, currentSessionId);
   const holders = agentHolders(sessions);
-  // The default's ID and handle are known only from a session that connected as it.
-  const sessionAs = (name: string): SessionStatus | undefined => sessions.find((session) => session.agent === name && session.agentId !== null);
-  const idOf = (name: string): string | undefined => saved[name]?.agentId ?? sessionAs(name)?.agentId ?? undefined;
-  const handleOf = (name: string): string | null => saved[name]?.handle ?? sessionAs(name)?.handle ?? null;
-  const usage = (name: string): string => {
-    const agentId = idOf(name);
-    const holder = agentId ? holders.get(agentId) : undefined;
+  const usage = ({ agentId }: SavedAgent): string => {
+    const holder = holders.get(agentId);
     if (holder) {
       return holder === mine ? "← this session" : `in use (${where(holder)})`;
     }
@@ -93,12 +90,10 @@ function status({ dataDir }: Context, currentSessionId: string): string {
     return mine?.state === "refused" && agentId === mine.agentId ? "in use elsewhere" : FREE;
   };
 
-  const rows = agentNames(saved).map((name) => {
-    const handle = handleOf(name);
-    return [name, handle ? atHandle(handle) : "", usage(name)];
-  });
+  const rows = Object.entries(saved).map(([name, agent]) => [name, agent.handle ? atHandle(agent.handle) : "", usage(agent)]);
   const free = rows.filter(([, , use]) => use === FREE).map(([name]) => name);
-  return [describeSession(mine, handleOf, free), "", "Agents:", ...table(rows)].join("\n");
+  const agents = rows.length > 0 ? ["Agents:", ...table(rows)] : [`No agent saved yet: add one with ${ADD_HINT}.`];
+  return [describeSession(mine, saved, free), "", ...agents].join("\n");
 }
 
 /**
@@ -116,13 +111,14 @@ function thisSession(sessions: readonly SessionStatus[], sessionId: string): Ses
   return ours.sort((a, b) => b.updatedAt - a.updatedAt)[0];
 }
 
-function describeSession(mine: SessionStatus | undefined, handleOf: (name: string) => string | null, free: readonly string[]): string {
+function describeSession(mine: SessionStatus | undefined, saved: SavedAgents, free: readonly string[]): string {
   switch (mine?.state) {
     case undefined:
       return "This session: no Band server is running in it.";
     case "connecting":
     case "connected":
-      return `This session: ${mine.state} as ${labeled(mine.agent, handleOf(mine.agent))}.`;
+      // A server holds an agent only once it has picked one.
+      return `This session: ${mine.state} as ${labeled(mine.agent!, mine.handle ?? saved[mine.agent!]?.handle)}.`;
     case "refused":
       return [`This session: refused. ${mine.error ?? ""}`, nextStep(free)].join("\n");
     case "failed":
@@ -137,7 +133,7 @@ function labeled(name: string, handle: string | null | undefined): string {
 
 function nextStep(free: readonly string[]): string {
   return free.length > 0
-    ? `Free: ${free.join(", ")}. Run ${useCommand(free[0])}, then start a new Claude Code session here.`
+    ? `Free: ${free.join(", ")}. Run ${useCommand(free[0])}, then reconnect the band server in /mcp.`
     : `No agent is free: add one with ${ADD_HINT}.`;
 }
 
@@ -152,8 +148,7 @@ function table(rows: readonly (readonly string[])[]): string[] {
 }
 
 async function add({ dataDir }: Context, agentId: string, apiKey: string, name: string | undefined, wsUrl: string | undefined): Promise<string> {
-  const credentials: AgentCredentials = { agentId, apiKey, ...(wsUrl ? { wsUrl } : {}) };
-  const identity = await fetchIdentity(credentials);
+  const identity = await fetchIdentity({ agentId, apiKey, ...(wsUrl ? { wsUrl } : {}) });
   if (identity.id !== agentId) {
     throw new Error(`That API key belongs to agent ${identity.id}, not ${agentId}. Nothing was saved.`);
   }
@@ -161,17 +156,14 @@ async function add({ dataDir }: Context, agentId: string, apiKey: string, name: 
   assertAgentName(chosen);
   // Read only now: another add or remove may have run while Band answered.
   const saved = readSavedAgents(dataDir);
-  // The default's ID is known only from a session connected as it.
-  const knownAs =
-    Object.keys(saved).find((savedName) => saved[savedName].agentId === agentId) ??
-    liveSessions(dataDir).find((session) => session.agent === DEFAULT_AGENT_NAME && session.agentId === agentId)?.agent;
+  const knownAs = Object.keys(saved).find((savedName) => saved[savedName].agentId === agentId);
   if (knownAs) {
     throw new Error(`Agent ${agentId} is already set up as "${knownAs}".`);
   }
   if (saved[chosen]) {
     throw new Error(`An agent named "${chosen}" is already saved. Pick another name: ${ADD_HINT} <name>`);
   }
-  const agent: SavedAgent = { ...credentials, handle: identity.handle ?? null };
+  const agent: SavedAgent = { agentId, apiKey, handle: identity.handle ?? null };
   writeSavedAgents(dataDir, { ...saved, [chosen]: agent });
   return `✓ Saved ${labeled(chosen, agent.handle)}. Use it in a project with ${useCommand(chosen)}`;
 }
@@ -189,19 +181,15 @@ async function fetchIdentity(credentials: AgentCredentials): Promise<AgentIdenti
 
 function use({ dataDir, projectDir }: Context, name: string): string {
   const saved = readSavedAgents(dataDir);
-  if (!agentNames(saved).includes(name)) {
+  if (!saved[name]) {
     throw new Error(unknownAgentMessage(name, saved));
   }
   const settings = readProjectSettings(projectDir);
-  // Set even for the default, so a name committed in the project's shared settings doesn't win.
   writeProjectSettings(projectDir, { ...settings, env: { ...settings.env, [AGENT_SELECT_ENV]: name } });
-  return `✓ This project now connects as ${labeled(name, saved[name]?.handle)}. Start a new Claude Code session here to switch.`;
+  return `✓ This project now connects as ${labeled(name, saved[name].handle)}. ${SWITCH_HINT}`;
 }
 
 function remove({ dataDir, projectDir }: Context, name: string): string {
-  if (name === DEFAULT_AGENT_NAME) {
-    throw new Error(`The "${DEFAULT_AGENT_NAME}" agent comes from the plugin's settings: change it in /plugin.`);
-  }
   const { [name]: removed, ...rest } = readSavedAgents(dataDir);
   if (!removed) {
     throw new Error(unknownAgentMessage(name, rest));

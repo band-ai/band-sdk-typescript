@@ -12,7 +12,6 @@ import { promisify } from "node:util";
 
 import type { ChannelPush } from "../../../src/adapter";
 import { ChannelClient } from "../../support/channelClient";
-import type { AgentIdentity } from "../../../../../packages/sdk/tests/baseline/toolkit/agents";
 import { liveRun, releasedWithTest } from "../../../../../packages/sdk/tests/baseline/toolkit/liveRun";
 
 const PLUGIN_ROOT = fileURLToPath(new URL("../../..", import.meta.url)).replace(/\/$/, "");
@@ -24,12 +23,12 @@ interface McpServerConfig {
   readonly env: Readonly<Record<string, string>>;
 }
 
-/** The plugin's one MCP server, with `${CLAUDE_PLUGIN_ROOT}` and `${user_config.*}` filled in as Claude Code does. */
+/** The plugin's one MCP server, with `${CLAUDE_PLUGIN_ROOT}` and `${user_config.*}` filled in as Claude Code does: an unset setting stays as written. */
 function declaredServer(userConfig: Readonly<Record<string, string>>): McpServerConfig {
   const { mcpServers } = JSON.parse(readFileSync(join(PLUGIN_ROOT, ".mcp.json"), "utf8")) as { mcpServers: Record<string, McpServerConfig> };
   const [server] = Object.values(mcpServers);
   const fill = (value: string): string =>
-    value.replaceAll("${CLAUDE_PLUGIN_ROOT}", PLUGIN_ROOT).replace(/\$\{user_config\.(\w+)\}/g, (_, key: string) => userConfig[key] ?? "");
+    value.replaceAll("${CLAUDE_PLUGIN_ROOT}", PLUGIN_ROOT).replace(/\$\{user_config\.(\w+)\}/g, (unset, key: string) => userConfig[key] ?? unset);
   return {
     command: server.command,
     args: server.args.map(fill),
@@ -48,8 +47,8 @@ export class PluginProcess implements AsyncDisposable {
   private readonly channel: ChannelClient;
   private stderr = "";
 
-  private constructor(identity: AgentIdentity, wsUrl: string | undefined, sessionEnv: Readonly<Record<string, string>>) {
-    const server = declaredServer({ agent_id: identity.id, api_key: identity.apiKey, ws_url: wsUrl ?? "" });
+  private constructor(wsUrl: string | undefined, sessionEnv: Readonly<Record<string, string>>) {
+    const server = declaredServer(wsUrl ? { ws_url: wsUrl } : {});
     this.child = spawn(server.command, server.args, { env: { PATH: process.env.PATH, ...server.env, ...sessionEnv } });
     this.child.stderr.on("data", (chunk: Buffer) => {
       this.stderr += chunk.toString();
@@ -59,20 +58,20 @@ export class PluginProcess implements AsyncDisposable {
   }
 
   /**
-   * Starts the plugin configured as `identity` and completes Claude Code's handshake with it;
-   * `sessionEnv` is what else the session gives the server, such as the agent `BAND_AGENT` selects.
+   * Starts the plugin, set to the live run's Band, and completes Claude Code's handshake with it;
+   * `sessionEnv` is what the session gives the server: its data directory and the agent `BAND_AGENT` selects.
    */
-  public static async start(identity: AgentIdentity, sessionEnv: Readonly<Record<string, string>> = {}): Promise<PluginProcess> {
+  public static async start(sessionEnv: Readonly<Record<string, string>>): Promise<PluginProcess> {
     const { env } = await liveRun();
-    const plugin = releasedWithTest(new PluginProcess(identity, env.wsUrl, sessionEnv));
+    const plugin = releasedWithTest(new PluginProcess(env.wsUrl, sessionEnv));
     await plugin.channel.connect();
     return plugin;
   }
 
   /** Starts a plugin that fails before Claude Code's handshake, and resolves with how it exited. */
-  public static async exitOf(identity: AgentIdentity, sessionEnv: Readonly<Record<string, string>>): Promise<Exit> {
+  public static async exitOf(sessionEnv: Readonly<Record<string, string>>): Promise<Exit> {
     const { env } = await liveRun();
-    return releasedWithTest(new PluginProcess(identity, env.wsUrl, sessionEnv)).exited;
+    return releasedWithTest(new PluginProcess(env.wsUrl, sessionEnv)).exited;
   }
 
   public get client() {

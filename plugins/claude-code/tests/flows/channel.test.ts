@@ -171,7 +171,7 @@ describe("Claude Code's handshake", () => {
 
   it("tells Claude which Band agent it is", async ({ session }) => {
     expect(session.instructions?.split("\n")[0]).toBe(
-      `You are connected to Band, a chat platform, as @${AGENT_HANDLE} (agent "default" in /band:agents).`,
+      `You are connected to Band, a chat platform, as @${AGENT_HANDLE} (agent "main" in /band:agents).`,
     );
   });
 

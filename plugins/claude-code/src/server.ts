@@ -1,22 +1,23 @@
 import { StderrLogger } from "@band-ai/sdk/core";
 
 import { EXIT_FAILED, runChannel } from "./channel";
-import { agentCredentials, selectedAgentName } from "./config";
+import { AGENT_SELECT_ENV, selectAgent, type SelectedAgent } from "./config";
 import { SessionStatusFile } from "./sessions";
 
 // stdout is the MCP pipe, so everything else goes to stderr.
 const logger = new StderrLogger();
 
 async function run(): Promise<number> {
-  const agentName = selectedAgentName(process.env);
-  const status = SessionStatusFile.open(process.env, agentName, logger);
+  let agent: SelectedAgent;
   try {
-    return await runChannel({ agentName, credentials: agentCredentials(agentName, process.env), status, logger });
+    agent = selectAgent(process.env);
   } catch (error) {
-    status?.failed(error);
-    logger.error("Band channel failed to start", { error });
+    SessionStatusFile.open(process.env, process.env[AGENT_SELECT_ENV] || null, logger)?.failed(error);
+    logger.error("Band channel has no agent to connect as", { error });
     return EXIT_FAILED;
   }
+  const status = SessionStatusFile.open(process.env, agent.name, logger);
+  return runChannel({ agentName: agent.name, credentials: agent.credentials, status, logger });
 }
 
 const exitCode = await run();
