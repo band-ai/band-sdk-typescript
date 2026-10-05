@@ -8,7 +8,7 @@ import { z } from "zod";
 
 import type { AgentIdentity } from "../client/rest/types";
 import type { AdapterToolsProtocol } from "../contracts/protocols";
-import { mcpToolNames, MCP_SERVER_NAME } from "../runtime/tools/schemas";
+import { mcpToolNames, MCP_SERVER_NAME } from "../contracts/toolSchemas";
 import {
   buildRoomScopedRegistrations,
   buildSingleContextRegistrations,

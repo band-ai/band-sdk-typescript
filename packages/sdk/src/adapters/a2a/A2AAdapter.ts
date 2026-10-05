@@ -114,6 +114,11 @@ export type A2AClientFactory = (input: {
 export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
   protected readonly provider = "a2a";
 
+  // The remote agent owns the answer, so a turn it leaves silent is not ours to report.
+  protected override get judgesTurns(): boolean {
+    return false;
+  }
+
   private readonly remoteUrl: string;
   private readonly authHeaders: Record<string, string>;
   private readonly streaming: boolean;
@@ -383,8 +388,7 @@ export class A2AAdapter extends SimpleAdapter<A2ASessionState, MessagingTools> {
       }
       // Reports and throws, like every other terminal provider failure in this
       // adapter: a remote task ending failed/canceled/rejected/auth-required is
-      // exactly that, and must fail the turn so PlatformRuntime retries it
-      // instead of marking it processed.
+      // exactly that, and must fail the turn instead of marking it processed.
       await reportTurnFailure(input.tools, agentFailure(this.provider, text, input.state), this.logger, { roomId: input.roomId });
     }
   }

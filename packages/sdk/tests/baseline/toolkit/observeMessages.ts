@@ -9,7 +9,7 @@ import { Band } from "@band-ai/rest-client";
 import { FAILURE_EVENT_TYPE } from "../../../src/contracts/protocols";
 import { parseToolCall } from "../../../src/converters/shared";
 import type { MessageCreatedPayload } from "../../../src/platform/events";
-import { MEMORY_TOOL_NAMES } from "../../../src/runtime/tools/schemas";
+import { MEMORY_TOOL_NAMES } from "../../../src/contracts/toolSchemas";
 import { LIVE_EVENT_TIMEOUT_MS } from "../../integration/support/liveHarness";
 import type { AgentIdentity } from "./agents";
 import { liveRun } from "./liveRun";

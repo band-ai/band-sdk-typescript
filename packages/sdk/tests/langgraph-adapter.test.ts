@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { LangGraphAdapter } from "../src/adapters/langgraph";
+import { LangGraphAdapter, type LangGraphAdapterOptions, type LangGraphGraph } from "../src/adapters/langgraph";
+import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
 import { MEMORY_SECTION } from "../src/runtime/prompts";
 import { HistoryProvider } from "../src/runtime/types";
-import { FakeTools, makeMessage, expectTurnFailed } from "./testUtils";
+import { FakeTools, makeMessage, expectTurnFailed, MISSING_REPLY, reportedFailures } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
+import { CLOSING_TEXT, describeTurnOutcomeContract, bandToolSchemas, turnInput, type TurnScript, NO_REPLY_ARGS, TOOL_REPLY_ARGS, ACT_TOOL, ACT_ARGS } from "./turnOutcomeContract";
 
 const langGraphMocks = vi.hoisted(() => ({
   createReactAgent: vi.fn(),
@@ -49,7 +51,84 @@ class FakeToolsWithSchemas extends FakeTools {
   }
 }
 
+type BandToolCall = (name: string, args: Record<string, unknown>) => Promise<unknown>;
+
+/** What the model does in one contract turn, through the Band tools the adapter built; returns its closing text. */
+const CONTRACT_TURNS: Record<TurnScript, (call: BandToolCall) => Promise<string | null>> = {
+  decline: async (call) => {
+    await call(NO_REPLY_TOOL_NAME, NO_REPLY_ARGS);
+    return CLOSING_TEXT;
+  },
+  toolReply: async (call) => {
+    await call(SEND_MESSAGE_TOOL_NAME, TOOL_REPLY_ARGS);
+    return CLOSING_TEXT;
+  },
+  act: async (call) => {
+    await call(ACT_TOOL, ACT_ARGS);
+    return null;
+  },
+  finalText: async () => CLOSING_TEXT,
+  nothing: async () => null,
+};
+
+/** Makes the next built-in react agent run `script`, calling the Band tools the adapter hands it. */
+function scriptReactAgent(script: TurnScript): void {
+  langGraphMocks.createReactAgent.mockReset();
+  langGraphMocks.tool.mockReset();
+  langGraphMocks.tool.mockImplementation((run, fields) => ({ name: fields.name, run }));
+  langGraphMocks.createReactAgent.mockImplementation(({ tools }: { tools: Array<{ name: string; run: (args: Record<string, unknown>) => Promise<unknown> }> }) => ({
+    async invoke() {
+      const call: BandToolCall = async (name, args) => {
+        const tool = tools.find((candidate) => candidate.name === name);
+        if (!tool) {
+          throw new Error(`${name} was not given to the graph`);
+        }
+        return tool.run(args);
+      };
+      const text = await CONTRACT_TURNS[script](call);
+      return { messages: text ? [["assistant", text]] : [] };
+    },
+  }));
+}
+
+/** A graph that answers nothing, so only the Band tools it is given decide whether it owes a reply. */
+const SILENT_GRAPH: LangGraphGraph = {
+  async invoke() {
+    return { messages: [] };
+  },
+};
+
 describe("LangGraphAdapter", () => {
+  describeTurnOutcomeContract([{
+    adapter: "LangGraphAdapter (built-in llm graph)",
+    turn: async (script, tools) => {
+      scriptReactAgent(script);
+      tools.getToolSchemas = bandToolSchemas;
+      const adapter = new LangGraphAdapter({ llm: { provider: "test-llm" } });
+      await adapter.onStarted("LangGraph Agent", "Graph-backed assistant");
+      await adapter.onEvent(turnInput(tools));
+    },
+  }]);
+
+  it.each<{ source: string; options: LangGraphAdapterOptions; judged: boolean }>([
+    { source: "a graphFactory graph, which gets Band tools", options: { graphFactory: () => SILENT_GRAPH }, judged: true },
+    { source: "a static graph, which has no Band tools to answer with", options: { graph: SILENT_GRAPH }, judged: false },
+  ])("judges a silent turn of $source: $judged", async ({ options, judged }) => {
+    const adapter = new LangGraphAdapter(options);
+    await adapter.onStarted("LangGraph Agent", "Graph-backed assistant");
+    const tools = new FakeTools();
+    const turn = adapter.onEvent(turnInput(tools));
+
+    if (judged) {
+      await expectTurnFailed(turn);
+      expect(reportedFailures(tools.events)).toEqual([MISSING_REPLY]);
+    } else {
+      await turn;
+      expect(tools.events).toEqual([]);
+    }
+    expect(tools.messages).toEqual([]);
+  });
+
   describeDeliveryContract([{
     path: "graph reply",
     turn: async (tools) => {
@@ -109,34 +188,6 @@ describe("LangGraphAdapter", () => {
     expect(typeof args.prompt).toBe("string");
     expect(args.prompt).toContain("LangGraph Agent");
     expect(tools.messages).toEqual(["SDK graph reply"]);
-  });
-
-  it.each([
-    { sendResult: { ok: true }, delivered: [] },
-    { sendResult: { ok: false, message: "unknown mention" }, delivered: ["Posted it."] },
-  ])("treats a band_send_message post as the reply, its final text as a fallback (send: $sendResult)", async ({ sendResult, delivered }) => {
-    langGraphMocks.createReactAgent.mockReset();
-    langGraphMocks.tool.mockReset();
-    langGraphMocks.tool.mockImplementation((_fn, fields) => ({ name: fields.name }));
-    langGraphMocks.createReactAgent.mockReturnValue({
-      async invoke() {
-        // The model calls the send tool the adapter built, then narrates it.
-        const [runSend] = langGraphMocks.tool.mock.calls[0] as [(args: Record<string, unknown>) => Promise<unknown>];
-        await runSend({ content: "Hello!" });
-        return { messages: [["assistant", "Posted it."]] };
-      },
-    });
-
-    const adapter = new LangGraphAdapter({ llm: { provider: "test-llm" } });
-    await adapter.onStarted("LangGraph Agent", "Graph-backed assistant");
-    const tools = new FakeToolsWithSchemas();
-    tools.executeToolCall = async () => sendResult;
-    await adapter.onMessage(makeMessage("hello"), tools, new HistoryProvider([]), null, null, {
-      isSessionBootstrap: true,
-      roomId: "room-posted",
-    });
-
-    expect(tools.messages).toEqual(delivered);
   });
 
   it("builds bootstrap messages and forwards final assistant text", async () => {

@@ -37,6 +37,7 @@ Adapters' upstream LLM SDKs are declared as **optional peer dependencies**. Inst
 ### Chat Tools
 - `band_send_message`: send a message to the chat room (requires at least one `@mention`)
 - `band_send_event`: send a non-message event (`thought`, `error`, `task`, etc.)
+- `band_no_reply`: end the turn deliberately without posting (optional `reason`, logged locally); see [docs/turn-outcome.md](docs/turn-outcome.md)
 - `band_add_participant`: add agent/user to room by name (use `band_lookup_peers` first)
 - `band_remove_participant`: remove participant from room
 - `band_get_participants`: list room participants
@@ -57,7 +58,7 @@ Adapters' upstream LLM SDKs are declared as **optional peer dependencies**. Inst
 - `band_supersede_memory`: soft-delete an outdated memory (keeps audit trail)
 - `band_archive_memory`: archive a memory (hide but preserve)
 
-Tool schemas live in `packages/sdk/src/runtime/tools/schemas.ts` (`TOOL_MODELS`). They are registered automatically on the adapter via `AgentTools` and exposed through MCP with the `mcp__band__` prefix (`MCP_TOOL_PREFIX`).
+Tool schemas live in `packages/sdk/src/contracts/toolSchemas.ts` (`TOOL_MODELS`). They are registered automatically on the adapter via `AgentTools` and exposed through MCP with the `mcp__band__` prefix (`MCP_TOOL_PREFIX`).
 
 ## REST Client API Pattern
 
@@ -294,7 +295,7 @@ packages/sdk/src/
 │   └── shared/        # conversationPrompt, history, coercion utilities; decisions (thin wrapper over band-sdk-core's DecisionRegistry: payloads, timers, waits)
 ├── client/rest/       # FernRestAdapter, RestFacade, pagination, REST types
 ├── config/            # YAML and env-var config loaders
-├── contracts/         # Protocols, DTOs, capabilities, chatEvents (CHAT_EVENT_TYPES)
+├── contracts/         # Protocols, DTOs, capabilities, chatEvents (CHAT_EVENT_TYPES), toolSchemas (TOOL_MODELS)
 ├── converters/        # History converters per framework
 ├── core/              # SimpleAdapter, Logger, errors, base classes
 ├── integrations/      # Deep integrations (currently: linear/)
@@ -303,7 +304,7 @@ packages/sdk/src/
 ├── platform/          # BandLink (WS+REST), PlatformEvent, Phoenix Channels transport, SubscriptionManager (internal)
 ├── rest/              # Subpath barrel for @band-ai/sdk/rest
 ├── runtime/           # PlatformRuntime, ExecutionContext, Execution, ContactEventHandler
-│   ├── tools/         # AgentTools, ContactToolsImpl, ContactCallbackTools, schemas
+│   ├── tools/         # AgentTools, ContactToolsImpl, ContactCallbackTools, customTools
 │   ├── preprocessing/ # DefaultPreprocessor
 │   ├── prompts/       # System-prompt building (base, memory, templates)
 │   └── rooms/         # AgentRuntime
@@ -455,6 +456,7 @@ When adding a new adapter, follow this workflow. Use the lowercase module name (
 
 - For `ToolCallingAdapter`: implement a `ToolCallingModel` that converts the platform `TOOL_MODELS` into the framework's tool-call format, executes the LLM call, and returns tool calls/results. Pass `options.signal` (aborted when the turn's `turnTimeoutMs` runs out) to the provider call, so an abandoned request is released.
 - For `SimpleAdapter`: implement `onMessage(message, tools)` directly. Use `tools.sendMessage`, `tools.sendEvent`, etc.
+- Every turn is judged by band-sdk-core's turn-outcome rule; read [docs/turn-outcome.md](docs/turn-outcome.md) before posting text the adapter writes itself or relaying the model's closing text. Register the adapter in `TURN_OUTCOME_ADAPTERS` (or `TURN_OUTCOME_EXEMPT`) in `packages/sdk/tests/turnOutcomeContract.ts`.
 - Honour `agent_name` and own-agent filtering when converting history.
 - Reuse helpers from `packages/sdk/src/adapters/shared/` (`conversationPrompt`, `history`, `coercion`, `lazyAsyncValue`).
 
@@ -485,7 +487,7 @@ pnpm --filter @band-ai/sdk test
 | History converter | `packages/sdk/src/converters/<framework>.ts` |
 | Adapter barrel | `packages/sdk/src/adapters/index.ts` |
 | Top-level barrel | `packages/sdk/src/index.ts` |
-| Tool schemas | `packages/sdk/src/runtime/tools/schemas.ts` |
+| Tool schemas | `packages/sdk/src/contracts/toolSchemas.ts` |
 | Tool calling base | `packages/sdk/src/adapters/tool-calling/` |
 | Test fakes | `packages/sdk/src/testing/FakeAgentTools.ts` |
 

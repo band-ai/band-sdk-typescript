@@ -8,7 +8,7 @@ import {
   type MemoryStoreScope,
   type MemorySystem,
 } from "../../contracts/memory";
-import { TOOL_MODELS } from "../tools/schemas";
+import { TOOL_MODELS } from "../../contracts/toolSchemas";
 
 const MEMORY_INTRO = `## Memory Tools
 

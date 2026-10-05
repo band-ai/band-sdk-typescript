@@ -13,7 +13,7 @@ import type { ParticipantRecord } from "../../../src/contracts/dtos";
 import type { PaginatedResponse, PlatformChatMessage, RestApi } from "../../../src/client/rest/types";
 import { BandLink } from "../../../src/platform/BandLink";
 import { PlatformRuntime } from "../../../src/runtime/PlatformRuntime";
-import { assertMentioned, CallHolds, FakeRestApi, FakeTransport, RecordLog, wireMention, type HeldCall } from "../../testUtils";
+import { assertMentioned, CallHolds, FakeRestApi, FakeTransport, RecordLog, reportedFailures, wireMention, type HeldCall, type ReportedFailure } from "../../testUtils";
 
 export const AGENT_ID = "agent-1";
 export const AGENT_API_KEY = "flow-test-key";
@@ -206,6 +206,11 @@ export class BandRoom {
     return this.posted.filter((posted) => posted.messageType === messageType);
   }
 
+  /** Every failure the agent reported here, in order; a plain error-typed notice carries no failure and is left out. */
+  public get failures(): ReportedFailure[] {
+    return reportedFailures(this.posted);
+  }
+
   /** Resolves once the agent has posted a message here that `matches`, and returns it. */
   public nextMessage(matches: (posted: Posted) => boolean): Promise<Posted> {
     return this.platform.rest.posted.next((posted) => posted.roomId === this.id && posted.messageType === "text" && matches(posted));
@@ -214,6 +219,11 @@ export class BandRoom {
   /** Resolves with how the runtime settled `messageId`. */
   public async outcome(messageId: string): Promise<Outcome> {
     return (await this.platform.rest.settled.next((settled) => settled.messageId === messageId)).outcome;
+  }
+
+  /** Every outcome the runtime has settled `messageId` with so far. */
+  public outcomes(messageId: string): Outcome[] {
+    return this.platform.rest.settled.entries.filter((settled) => settled.messageId === messageId).map((settled) => settled.outcome);
   }
 
   /** Resolves once the runtime starts handing `messageId` to the agent. */

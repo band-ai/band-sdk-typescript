@@ -47,6 +47,11 @@ export interface BandACPServerAdapterOptions {
 export class BandACPServerAdapter extends SimpleAdapter<ACPServerSessionState, MessagingTools> {
   protected readonly provider = "acp-server";
 
+  // A room message only feeds the editor's session; the bridge owes the room no reply.
+  protected override get judgesTurns(): boolean {
+    return false;
+  }
+
   private readonly bandRest: RestApi
   private readonly maxSessions: number
   private readonly responseTimeoutMs: number

@@ -1,14 +1,14 @@
 import { resolveLogger, type Logger } from "../core/logger";
 import type { ContactEvent, MessageEvent } from "../platform/events";
-import type { AdapterToolsProtocol } from "../contracts/protocols";
+import {
+  SYNTHETIC_CONTACT_EVENTS_SENDER_ID,
+  SYNTHETIC_CONTACT_EVENTS_SENDER_NAME,
+  SYNTHETIC_SENDER_TYPE,
+  type AdapterToolsProtocol,
+} from "../contracts/protocols";
 import type { AgentToolsRestApi, ChatMessagingRestApi, ChatRoomRestApi, ContactRestApi } from "../client/rest/types";
 import type { ContactEventConfig } from "./types";
 import { ContactCallbackTools } from "./tools/ContactCallbackTools";
-import {
-  SYNTHETIC_SENDER_TYPE,
-  SYNTHETIC_CONTACT_EVENTS_SENDER_ID,
-  SYNTHETIC_CONTACT_EVENTS_SENDER_NAME,
-} from "./types";
 
 const LRU_MAX_SIZE = 1000;
 

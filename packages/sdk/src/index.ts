@@ -146,8 +146,14 @@ export {
   RecoverableTurnError,
   DeliveryFailedError,
   deliverReply,
+  deliverNotice,
+  Turn,
+  relayReply,
+  type TurnTools,
+  type TurnEffect,
+  NO_REPLY_TOOL_NAME,
   ProviderTurnFailedError,
   agentFailure,
   reportTurnFailure,
 } from "./core";
-export { MCP_TOOL_PREFIX, MCP_SERVER_NAME, TOOL_MODELS } from "./runtime/tools/schemas";
+export { MCP_TOOL_PREFIX, MCP_SERVER_NAME, TOOL_MODELS } from "./contracts/toolSchemas";

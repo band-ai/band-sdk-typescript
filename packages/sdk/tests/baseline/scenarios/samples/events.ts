@@ -3,7 +3,7 @@
  * that drive it to emit exactly those.
  */
 import type { ChatEventType } from "../../../../src/contracts/chatEvents";
-import { SEND_EVENT_TOOL_NAME } from "../../../../src/runtime/tools/schemas";
+import { NO_REPLY_TOOL_NAME, SEND_EVENT_TOOL_NAME } from "../../../../src/contracts/toolSchemas";
 import { MESSAGE_TYPE } from "../../toolkit/observeMessages";
 
 /** The event types a request can drive; `tool_call` and `tool_result` are the adapter's own reports. */
@@ -16,14 +16,18 @@ export interface Emission {
   marker: string;
 }
 
-/** The request that has the agent send one event per emission, each carrying its marker, and do nothing else. */
+/**
+ * The request that has the agent send one event per emission, each carrying its marker, and post nothing.
+ * An event never answers a turn, so the request ends it with band_no_reply; a turn of events alone is a missing reply.
+ */
 export function emitEventsRequest(emissions: readonly Emission[]): string {
   const calls = emissions
     .map(({ type, marker }, index) => `(${index + 1}) message_type='${type}' with content that includes the exact token ${marker}, verbatim`)
     .join("; ");
   return (
     `Call the tool ${SEND_EVENT_TOOL_NAME} once for each of these: ${calls}. ` +
-    `Those tool calls are your ONLY action -- do not reply with a chat message and do not call any other tool. ` +
+    `Then end your turn by calling ${NO_REPLY_TOOL_NAME}. ` +
+    `Those tool calls are your ONLY actions -- do not reply with a chat message and do not call any other tool. ` +
     `A plain-text reply does not satisfy this; you must call ${SEND_EVENT_TOOL_NAME}.`
   );
 }

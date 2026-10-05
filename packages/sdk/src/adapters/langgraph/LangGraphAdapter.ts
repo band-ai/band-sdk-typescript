@@ -9,7 +9,7 @@ import { asErrorMessage, asOptionalRecord, asRecord } from "../shared/coercion";
 import { reportProviderTurnFailure } from "../../core/providerFailure";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { takeLast } from "../shared/history";
-import { deliverFallbackReply, trackPostedReply } from "../../runtime/tools/postedReply";
+import { relayReply, type TurnTools } from "../../core/turn";
 
 type LangGraphRole = "system" | "user" | "assistant";
 type LangGraphTupleMessage = [LangGraphRole, string];
@@ -61,7 +61,7 @@ export interface LangGraphAdapterOptions {
   logger?: Logger;
 }
 
-export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterToolsProtocol> {
+export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> {
   protected readonly provider = "langgraph";
 
   private readonly llm?: unknown;
@@ -117,23 +117,22 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
 
   public async onMessage(
     message: PlatformMessage,
-    tools: AdapterToolsProtocol,
+    tools: TurnTools,
     history: HistoryProvider,
     participantsMessage: string | null,
     contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<void> {
     let text: string | null = null;
-    const reply = trackPostedReply(tools);
     try {
       let sdk: LangGraphSdk | undefined;
       let langGraphTools = [...this.additionalTools];
-      if (!this.graph || this.graphFactory) {
+      if (this.usesBandTools) {
         sdk = await this.sdkLoader.get();
         langGraphTools = [
           ...buildLangGraphTools({
             sdk,
-            tools: reply.tools,
+            tools,
             includeMemoryTools: this.includeMemoryTools,
             logger: this.logger,
           }),
@@ -186,11 +185,20 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, AdapterTool
       await reportProviderTurnFailure(tools, this.logger, this.provider, "LangGraph adapter request failed", error, { roomId: context.roomId });
     }
 
-    await deliverFallbackReply(reply, text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
+    await relayReply(tools, text, [{ id: message.senderId, handle: message.senderName ?? message.senderType }]);
   }
 
   public async onCleanup(roomId: string): Promise<void> {
     this.bootstrappedRooms.delete(roomId);
+  }
+
+  /** The built-in createReactAgent or a `graphFactory` graph gets Band tools; a static `graph` has none to answer with. */
+  private get usesBandTools(): boolean {
+    return this.graph === undefined || this.graphFactory !== undefined;
+  }
+
+  protected override get judgesTurns(): boolean {
+    return this.usesBandTools;
   }
 
   /** A caller-supplied graph rather than the built-in createReactAgent. */

@@ -4,10 +4,10 @@ import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
+import { relayReply, type TurnTools } from "../../core/turn";
 import type { MetadataMap, ToolOperationResult } from "../../contracts/dtos";
 import { formatMessageForLlm } from "../../runtime/formatters";
 import { renderSystemPrompt, withMemoryGuidance } from "../../runtime/prompts";
-import { deliverFallbackReply, trackPostedReply } from "../../runtime/tools/postedReply";
 import type { PlatformMessage } from "../../runtime/types";
 import {
   customToolToOpenAISchema,
@@ -196,7 +196,7 @@ async function loadGoogleAdkSdk(): Promise<GoogleAdkSdkLike> {
   };
 }
 
-export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterToolsProtocol> {
+export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools> {
   protected readonly provider = "google-adk";
 
   private readonly model: string;
@@ -249,7 +249,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
 
   public async onMessage(
     message: PlatformMessage,
-    tools: AdapterToolsProtocol,
+    tools: TurnTools,
     history: GoogleADKMessages,
     participantsMessage: string | null,
     contactsMessage: string | null,
@@ -267,7 +267,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
 
   private async handleTurn(
     message: PlatformMessage,
-    tools: AdapterToolsProtocol,
+    tools: TurnTools,
     history: GoogleADKMessages,
     participantsMessage: string | null,
     contactsMessage: string | null,
@@ -291,12 +291,10 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
     );
 
     let finalResponseText = "";
-    const posted: string[] = [];
-    const reply = trackPostedReply(tools, (content) => posted.push(content));
     try {
       const sdk = await this.sdkLoader.get();
       const runner = sdk.createRunner({
-        agent: this.buildAgent(sdk, reply.tools),
+        agent: this.buildAgent(sdk, tools),
         appName: APP_NAME,
       });
       const sessionId = randomUUID();
@@ -323,14 +321,15 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
         }
       }
     } catch (error) {
-      this.rememberExchange(context.roomId, roomHistory, message, posted);
+      // The sends that landed before the failure belong in the next turn, or it answers them again.
+      this.rememberExchange(context.roomId, roomHistory, message, tools.turn.posted);
       await reportProviderTurnFailure(tools, this.logger, this.provider, "Google ADK adapter request failed", error, { roomId: context.roomId });
       return;
     }
 
-    const stored = this.rememberExchange(context.roomId, roomHistory, message, posted);
+    const stored = this.rememberExchange(context.roomId, roomHistory, message, tools.turn.posted);
     // Only text that was delivered belongs in the next turn.
-    if (await deliverFallbackReply(reply, finalResponseText, [{ id: message.senderId }])) {
+    if (await relayReply(tools, finalResponseText, [{ id: message.senderId }])) {
       this.rememberModelLine(context.roomId, stored, finalResponseText);
     }
   }
@@ -376,7 +375,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
 
   private buildAgent(
     sdk: GoogleAdkSdkLike,
-    tools: AdapterToolsProtocol,
+    tools: TurnTools,
   ): unknown {
     return sdk.createAgent({
       name: this.agentName || "band_agent",
@@ -388,7 +387,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
 
   private buildTools(
     sdk: GoogleAdkSdkLike,
-    tools: AdapterToolsProtocol,
+    tools: TurnTools,
   ): unknown[] {
     const toolSchemas = tools.getOpenAIToolSchemas({
       includeMemory: this.enableMemoryTools,
@@ -398,7 +397,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
       .filter((tool): tool is unknown => tool !== null);
 
     for (const customTool of this.customTools) {
-      adkTools.push(this.buildCustomTool(sdk, customTool));
+      adkTools.push(this.buildCustomTool(sdk, customTool, tools));
     }
 
     return adkTools;
@@ -420,8 +419,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
       description: typeof functionDef.description === "string" ? functionDef.description : "",
       parameters: asOptionalRecord(stripAdditionalProperties(functionDef.parameters)) ?? undefined,
       execute: async (input) => {
-        const args = asToolArgs(input);
-        return stringifyToolResult(await tools.executeToolCall(name, args));
+        return stringifyToolResult(await tools.executeToolCall(name, asToolArgs(input)));
       },
     });
   }
@@ -429,6 +427,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
   private buildCustomTool(
     sdk: GoogleAdkSdkLike,
     customTool: CustomToolDef,
+    tools: TurnTools,
   ): unknown {
     const schema = customToolToOpenAISchema(customTool);
     const functionDef = asOptionalRecord(schema.function) ?? {};
@@ -436,7 +435,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, AdapterTo
       name: String(functionDef.name ?? customTool.name),
       description: typeof functionDef.description === "string" ? functionDef.description : "",
       parameters: asOptionalRecord(stripAdditionalProperties(functionDef.parameters)) ?? undefined,
-      execute: async (input) => stringifyToolResult(await executeCustomTool(customTool, asToolArgs(input))),
+      execute: async (input) => stringifyToolResult(await executeCustomTool(customTool, asToolArgs(input), tools.turn)),
     });
   }
 

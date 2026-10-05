@@ -1,10 +1,23 @@
+import { turnEffects, type TurnEffect } from "@band-ai/band-sdk-core";
 import { z } from "zod";
+
+import { isFailedToolOutput } from "../../contracts/protocols";
+import type { Turn } from "../../core/turn";
+
+const DEFAULT_CUSTOM_TOOL_EFFECT: TurnEffect = "observe";
+const TURN_EFFECTS: ReadonlySet<string> = new Set(turnEffects());
 
 export interface CustomToolDef {
   schema: z.ZodObject;
   handler: (args: Record<string, unknown>) => unknown;
   name: string;
   description?: string;
+  /**
+   * What a successful call contributes to its turn (default `"observe"`, which
+   * never completes one). Declare `"act"` for a tool with a real side effect,
+   * or `"reply"` for one that posts the turn's answer itself.
+   */
+  effect?: TurnEffect;
 }
 
 export class CustomToolDefinitionError extends Error {
@@ -118,16 +131,37 @@ export function buildCustomToolIndex(tools: CustomToolDef[]): Map<string, Custom
     if (index.has(name)) {
       throw new CustomToolDefinitionError(`Duplicate custom tool name '${name}' is not allowed.`);
     }
+    customToolEffect(def);
     index.set(name, def);
   }
   return index;
 }
 
+/**
+ * `def`'s effect, checked against core's: an untyped caller's misspelled one
+ * fails here, before the handler's side effect, not after it.
+ */
+function customToolEffect(def: CustomToolDef): TurnEffect {
+  const effect = def.effect ?? DEFAULT_CUSTOM_TOOL_EFFECT;
+  if (!TURN_EFFECTS.has(effect)) {
+    throw new CustomToolDefinitionError(
+      `Custom tool '${getCustomToolName(def)}' declares effect '${String(effect)}'; expected one of: ${[...TURN_EFFECTS].join(", ")}.`,
+    );
+  }
+  return effect;
+}
+
+/**
+ * Runs `def`, recording its effect on `turn` when it succeeds: it resolved, and
+ * not to a failure value, as for a Band tool. Omit `turn` where none is in scope.
+ */
 export async function executeCustomTool(
   def: CustomToolDef,
   arguments_: Record<string, unknown>,
+  turn?: Turn,
 ): Promise<unknown> {
   const toolName = getCustomToolName(def);
+  const effect = customToolEffect(def);
   const result = def.schema.safeParse(arguments_);
 
   if (!result.success) {
@@ -136,9 +170,9 @@ export async function executeCustomTool(
   }
 
   try {
-    const output = def.handler(result.data);
-    if (output instanceof Promise) {
-      return await output;
+    const output: unknown = await def.handler(result.data);
+    if (!isFailedToolOutput(output)) {
+      turn?.record(effect);
     }
     return output;
   } catch (error) {

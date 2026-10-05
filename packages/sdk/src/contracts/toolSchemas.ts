@@ -1,4 +1,12 @@
-import { CHAT_EVENT_TYPES } from "../../contracts/chatEvents";
+import {
+  bandToolEffects,
+  noReplyTool,
+  type BandToolName,
+  type ToolSpec,
+  type TurnEffect,
+} from "@band-ai/band-sdk-core";
+
+import { CHAT_EVENT_TYPES } from "./chatEvents";
 import {
   MEMORY_LIST_SCOPES,
   MEMORY_SEGMENTS,
@@ -6,15 +14,36 @@ import {
   MEMORY_STORE_SCOPES,
   MEMORY_SYSTEMS,
   MEMORY_TYPES,
-} from "../../contracts/memory";
+} from "./memory";
+import type { ToolOperationResult } from "./dtos";
+import type { AdapterToolMethodName } from "./protocols";
+
+/** Canonical names for the tools with special adapter handling (reporting/reply delivery). */
+export const SEND_MESSAGE_TOOL_NAME = "band_send_message";
+export const SEND_EVENT_TOOL_NAME = "band_send_event";
+export const NO_REPLY_TOOL_NAME = "band_no_reply";
+
+/** `band_no_reply`'s result: it posts nothing, so there is nothing else to report. */
+export const NO_REPLY_RESULT: Readonly<ToolOperationResult> = Object.freeze({ status: "ok" });
+
+/** A core `ToolSpec` as a JSON-schema tool model; every core parameter is a string. */
+function toolModelFromSpec(spec: ToolSpec) {
+  return {
+    description: spec.description,
+    properties: Object.fromEntries(
+      spec.parameters.map((parameter) => [parameter.name, { type: "string", description: parameter.description }]),
+    ),
+    required: spec.parameters.filter((parameter) => parameter.required).map((parameter) => parameter.name),
+  };
+}
 
 export const TOOL_MODELS = {
   band_send_message: {
     description:
       "Send a message to the chat room. " +
       "Use this to respond to users or other agents. Messages require at least one @mention " +
-      "in the mentions array. You MUST use this tool to communicate — plain text responses " +
-      "won't reach users. When delegating, send the full task context in this message instead of assuming hidden state.",
+      "in the mentions array. When the latest message needs no answer from you, " +
+      `call ${NO_REPLY_TOOL_NAME} instead of sending one. When delegating, send the full task context in this message instead of assuming hidden state.`,
     properties: {
       content: {
         type: "string",
@@ -57,6 +86,7 @@ export const TOOL_MODELS = {
     },
     required: ["content", "message_type"],
   },
+  [NO_REPLY_TOOL_NAME]: toolModelFromSpec(noReplyTool()),
   band_add_participant: {
     description:
       "Add a participant (agent or user) to the chat room by name. " +
@@ -359,7 +389,39 @@ export const TOOL_MODELS = {
   },
 } as const;
 
+export type ToolName = keyof typeof TOOL_MODELS;
+
+// Every SDK tool is one of core's, so each records with core's effect; a
+// TS-only or misspelled name fails to compile here.
+const _everyToolIsCores: BandToolName = null as unknown as ToolName;
+
 export const ALL_TOOL_NAMES = new Set(Object.keys(TOOL_MODELS));
+
+/**
+ * The adapter method each tool's handler dispatches to (`null`: none), so a
+ * direct call such as `tools.sendMessage` counts toward the turn the same as
+ * the model's tool call. Typed over every tool, so a new tool cannot be left out.
+ */
+export const TOOL_METHODS: Record<ToolName, AdapterToolMethodName | null> = {
+  band_send_message: "sendMessage",
+  band_send_event: "sendEvent",
+  band_no_reply: null,
+  band_add_participant: "addParticipant",
+  band_remove_participant: "removeParticipant",
+  band_lookup_peers: "lookupPeers",
+  band_get_participants: "getParticipants",
+  band_create_chatroom: "createChatroom",
+  band_list_contacts: "listContacts",
+  band_add_contact: "addContact",
+  band_remove_contact: "removeContact",
+  band_list_contact_requests: "listContactRequests",
+  band_respond_contact_request: "respondContactRequest",
+  band_list_memories: "listMemories",
+  band_store_memory: "storeMemory",
+  band_get_memory: "getMemory",
+  band_supersede_memory: "supersedeMemory",
+  band_archive_memory: "archiveMemory",
+};
 
 export const MEMORY_TOOL_NAMES = new Set<string>([
   "band_list_memories",
@@ -390,18 +452,35 @@ export const MCP_TOOL_PREFIX = "mcp__band__";
 /** The single Band MCP server name; owns every server-name default and integration. */
 export const MCP_SERVER_NAME = "band";
 
-/** Canonical names for the tools with special adapter handling (reporting/reply delivery). */
-export const SEND_MESSAGE_TOOL_NAME = "band_send_message";
-
-/** The text a successful `band_send_message` posted, or undefined when this call did not. */
-export function postedSendContent(toolName: string, content: unknown, failed: boolean): string | undefined {
-  if (toolName !== SEND_MESSAGE_TOOL_NAME || failed) {
-    return undefined;
-  }
-  const text = String(content ?? "").trim();
-  return text.length > 0 ? text : undefined;
+/** How an out-of-process runtime spells an MCP tool: `<server>-<tool>`. */
+export function mcpToolSpelling(server: string, tool: string): string {
+  return `${server}-${tool}`;
 }
-export const SEND_EVENT_TOOL_NAME = "band_send_event";
+
+/** band-mcp's send-message name before it adopted `band_send_message`; older servers still report it. */
+export const LEGACY_SEND_MESSAGE_TOOL_NAME = "create_agent_chat_message";
+
+/** What each Band tool's successful call contributes to its turn, from band-sdk-core. */
+export const BAND_TOOL_EFFECTS: Readonly<Record<BandToolName, TurnEffect>> = bandToolEffects();
+
+export function isBandToolName(name: string): name is BandToolName {
+  return Object.hasOwn(BAND_TOOL_EFFECTS, name);
+}
+
+/**
+ * The Band tool behind a name an out-of-process runtime reported: the
+ * canonical name, our MCP server's `band-<tool>` spelling, or band-mcp's
+ * legacy send name. Anchored to {@link MCP_SERVER_NAME}, so another server's
+ * `other-band_send_message` is not ours.
+ */
+export function resolveBandToolName(name: string): BandToolName | undefined {
+  const prefix = mcpToolSpelling(MCP_SERVER_NAME, "");
+  const unprefixed = name.startsWith(prefix) ? name.slice(prefix.length) : name;
+  if (unprefixed === LEGACY_SEND_MESSAGE_TOOL_NAME) {
+    return SEND_MESSAGE_TOOL_NAME;
+  }
+  return isBandToolName(unprefixed) ? unprefixed : undefined;
+}
 
 export function mcpToolNames(names: Set<string>): string[] {
   return [...names].sort((a, b) => a.localeCompare(b)).map((name) => `${MCP_TOOL_PREFIX}${name}`);

@@ -1,11 +1,13 @@
-import type {
-  AdapterToolsProtocol,
-  FrameworkAdapter,
-  FrameworkAdapterInput,
-  HistoryConverter,
-  HistoryLike,
-  PlatformMessageLike,
+import {
+  isSyntheticTurn,
+  type FrameworkAdapter,
+  type FrameworkAdapterInput,
+  type HistoryConverter,
+  type HistoryLike,
+  type PlatformMessageLike,
 } from "../contracts/protocols";
+import { reportTurnFailure } from "./providerFailure";
+import { missingReplyFailure, trackTurn, type TurnTools } from "./turn";
 
 /**
  * Base class for framework adapters that process one message at a time.
@@ -13,10 +15,14 @@ import type {
  * Subclass this and implement {@link onMessage} to build a custom adapter.
  * Built-in adapters (OpenAI, Anthropic, Gemini, etc.) already extend this.
  *
+ * Each turn gets its own {@link TurnTools}. A turn that ends without
+ * replying, declining (`band_no_reply`), acting, settling or reporting is
+ * reported with band-sdk-core's missing-reply text and fails.
+ *
  * @typeParam H - Converted history format your adapter expects (e.g. OpenAI messages array).
- * @typeParam TTools - Tool interface exposed to the adapter (defaults to {@link AdapterToolsProtocol}).
+ * @typeParam TTools - Tool interface exposed to the adapter (defaults to {@link TurnTools}).
  */
-export abstract class SimpleAdapter<H, TTools = AdapterToolsProtocol>
+export abstract class SimpleAdapter<H, TTools = TurnTools>
   implements FrameworkAdapter
 {
   /** `AgentFailure.provider` identity for every failure this adapter reports. */
@@ -42,6 +48,11 @@ export abstract class SimpleAdapter<H, TTools = AdapterToolsProtocol>
     },
   ): Promise<void>;
 
+  /** False for an adapter whose turns owe no reply of their own, such as a bridge to another agent. */
+  protected get judgesTurns(): boolean {
+    return true;
+  }
+
   public async onCleanup(_roomId: string): Promise<void> {}
 
   public async onStarted(agentName: string, agentDescription: string): Promise<void> {
@@ -50,10 +61,11 @@ export abstract class SimpleAdapter<H, TTools = AdapterToolsProtocol>
   }
 
   public async onEvent(input: FrameworkAdapterInput): Promise<void> {
+    const tools = trackTurn(input.tools, this.judgesTurns && !isSyntheticTurn(input.message));
     const history = this.convertHistory(input.history);
     await this.onMessage(
       input.message,
-      input.tools as TTools,
+      tools as TTools,
       history,
       input.participantsMessage,
       input.contactsMessage,
@@ -62,6 +74,9 @@ export abstract class SimpleAdapter<H, TTools = AdapterToolsProtocol>
         roomId: input.roomId,
       },
     );
+    if (!tools.turn.detached && tools.turn.unanswered) {
+      await reportTurnFailure(tools, missingReplyFailure());
+    }
   }
 
   private convertHistory(provider: HistoryLike): H {

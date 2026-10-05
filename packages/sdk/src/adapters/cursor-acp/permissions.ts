@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
+import { MCP_SERVER_NAME } from "../../contracts/toolSchemas";
 
 /** Cursor's project permission file, read by the agent running in that directory. */
 export const CURSOR_PROJECT_CONFIG = join(".cursor", "cli.json");

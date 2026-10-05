@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import path from "node:path";
 
-import type { Client } from "@agentclientprotocol/sdk";
+import type { Client, SessionNotification } from "@agentclientprotocol/sdk";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { describe, expect, it, vi } from "vitest";
@@ -12,10 +12,12 @@ import {
   type ACPClientAdapterOptions,
 } from "../src/adapters/acp";
 import { BandACPClient } from "../src/adapters/acp/client";
+import { MCP_SERVER_NAME, NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
 import { DeliveryFailedError } from "../src/core/deliveryFailedError";
 import { BandMcpServer } from "../src/mcp/server";
-import { CallHolds, FakeTools, SHORT_TURN_TIMEOUT_MS, expectMcpServerStopped, expectTurnFailed, findFailureEvent, makeLoggerSpy, makeMessage, roomWorkspacePath, tmpRoot } from "./testUtils";
+import { CallHolds, FakeTools, SHORT_TURN_TIMEOUT_MS, expectMcpServerStopped, expectTurnFailed, failureEvents, findFailureEvent, makeLoggerSpy, makeMessage, roomWorkspacePath, tmpRoot, MISSING_REPLY, reportedFailures } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
+import { CLOSING_TEXT, TOOL_REPLY, describeTurnOutcomeContract, turnInput, type TurnScript, NO_REPLY_ARGS, TOOL_REPLY_ARGS, ACT_TOOL, ACT_ARGS } from "./turnOutcomeContract";
 
 function requireAcpClient(client: BandACPClient | null): BandACPClient {
   if (!client) {
@@ -1248,9 +1250,9 @@ describe("ACPClientAdapter", () => {
       { isSessionBootstrap: true, roomId: "room-coalesce" },
     )
 
-    // Four streamed text deltas collapse into two room messages; the two
-    // tool_call_update frames stay two separate events, not eight room posts.
-    expect(tools.messages).toEqual(["Hello world", "All done"])
+    // Four streamed text deltas collapse into two runs, relayed as one answer;
+    // the two tool_call_update frames stay two separate events.
+    expect(tools.messages).toEqual(["Hello world\n\nAll done"])
 
     const toolResultEvents = tools.events.filter((event) => event.messageType === "tool_result")
     expect(toolResultEvents).toEqual([
@@ -1260,7 +1262,7 @@ describe("ACPClientAdapter", () => {
       }),
       expect.objectContaining({
         content: "cleanup finished",
-        metadata: expect.objectContaining({ tool_call_id: "call-1", status: "completed" }),
+        metadata: { tool_call_id: "call-1" },
       }),
     ])
 
@@ -5119,6 +5121,238 @@ describe("ACPClientAdapter", () => {
     })
   })
 });
+
+/** What a scripted ACP agent does during one prompt. */
+interface AgentTurn {
+  /** Streams `text` as the agent's message. */
+  say(text: string): Promise<void>;
+  /** Streams one session update, such as a tool call the agent ran itself. */
+  update(update: SessionNotification["update"]): Promise<void>;
+  /** Calls a Band tool on the session's own Band MCP server, as the agent process does. */
+  callBand(name: string, args: Record<string, unknown>): Promise<void>;
+}
+
+interface BandMcpAccess {
+  url: string;
+  authorization: string;
+}
+
+async function callBandTool(access: BandMcpAccess | undefined, name: string, args: Record<string, unknown>): Promise<void> {
+  if (!access) {
+    throw new Error("The session was offered no Band MCP server")
+  }
+  const transport = new StreamableHTTPClientTransport(new URL(access.url), {
+    requestInit: { headers: { authorization: access.authorization } },
+  })
+  const client = new McpClient({ name: "scripted-agent", version: "1.0.0" })
+  await client.connect(transport)
+  try {
+    const result = await client.callTool({ name, arguments: args })
+    if (result.isError) {
+      throw new Error(`Band tool ${name} failed: ${JSON.stringify(result.content)}`)
+    }
+  } finally {
+    await transport.close()
+  }
+}
+
+/** An adapter on a fake ACP agent that runs `script` for every prompt. */
+function scriptedAgent(
+  script: (agent: AgentTurn) => Promise<void>,
+  options: Partial<ACPClientAdapterOptions> = {},
+): ACPClientAdapter {
+  let acpClient: Client | null = null
+  let band: BandMcpAccess | undefined
+  return new ACPClientAdapter({
+    cwd: tmpRoot(),
+    command: ["acp-agent"],
+    ...options,
+    connectionFactory: async (client) => {
+      acpClient = client
+      return buildMockConnection({
+        agentCapabilities: { mcpCapabilities: { http: true } },
+        loadSession: vi.fn(),
+        newSession: async (params?: { mcpServers: Array<{ name: string; url: string; headers: Array<{ value: string }> }> }) => {
+          const server = params?.mcpServers.find((entry) => entry.name === MCP_SERVER_NAME)
+          band = server && { url: server.url, authorization: server.headers[0]!.value }
+          return { sessionId: "session-1" }
+        },
+        prompt: async ({ sessionId }) => {
+          const update = async (next: SessionNotification["update"]) => {
+            await acpClient!.sessionUpdate({ sessionId, update: next })
+          }
+          await script({
+            update,
+            say: (text) => update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } }),
+            callBand: (name, args) => callBandTool(band, name, args),
+          })
+          return { stopReason: "end_turn" }
+        },
+      })
+    },
+  })
+}
+
+/** Runs one judged turn on `tools` through the adapter's `onEvent`, then stops the adapter. */
+async function judgedTurn(adapter: ACPClientAdapter, tools: FakeTools): Promise<void> {
+  await adapter.onStarted("Agent", "desc")
+  try {
+    await adapter.onEvent(turnInput(tools))
+  } finally {
+    await adapter.stop()
+  }
+}
+
+const CONTRACT_TURNS: Record<TurnScript, (agent: AgentTurn) => Promise<void>> = {
+  decline: async (agent) => {
+    await agent.callBand(NO_REPLY_TOOL_NAME, NO_REPLY_ARGS)
+    await agent.say(CLOSING_TEXT)
+  },
+  toolReply: async (agent) => {
+    await agent.callBand(SEND_MESSAGE_TOOL_NAME, TOOL_REPLY_ARGS)
+    await agent.say(CLOSING_TEXT)
+  },
+  act: (agent) => agent.callBand(ACT_TOOL, ACT_ARGS),
+  finalText: (agent) => agent.say(CLOSING_TEXT),
+  nothing: async () => undefined,
+}
+
+describe("ACPClientAdapter turn outcome", () => {
+  describeTurnOutcomeContract([{
+    adapter: "ACPClientAdapter (shared by Copilot, Kiro and Omp)",
+    turn: (script, tools) => judgedTurn(scriptedAgent(CONTRACT_TURNS[script]), tools),
+  }])
+
+  it("relays the text on both sides of a tool call as one answer, in order", async () => {
+    const tools = new FakeTools()
+    await judgedTurn(scriptedAgent(async (agent) => {
+      await agent.say("Let me check.")
+      await agent.update({ sessionUpdate: "tool_call", toolCallId: "call-1", title: "Read notes.md", status: "completed" })
+      await agent.say("The notes say yes.")
+    }), tools)
+
+    expect(tools.messages).toEqual(["Let me check.\n\nThe notes say yes."])
+    expect(failureEvents(tools)).toEqual([])
+  })
+
+  it("routes each turn's Band MCP calls to that turn's own tools", async () => {
+    const adapter = scriptedAgent((agent) => agent.callBand(SEND_MESSAGE_TOOL_NAME, TOOL_REPLY_ARGS))
+    const turns = [new FakeTools(), new FakeTools()]
+    const calls = turns.map((tools) => vi.spyOn(tools, "executeToolCall"))
+
+    await adapter.onStarted("Agent", "desc")
+    try {
+      // One process and backend serve both turns; the second's reply must land on its own turn.
+      for (const tools of turns) {
+        await adapter.onEvent(turnInput(tools))
+      }
+    } finally {
+      await adapter.stop()
+    }
+
+    expect(calls.map((call) => call.mock.calls.length)).toEqual([1, 1])
+    expect(turns.flatMap((tools) => failureEvents(tools))).toEqual([])
+  })
+
+  it("records nothing from the stream while its own Band backend serves the tools", async () => {
+    // The backend records every call that reaches it; a stream entry alone is no reply.
+    const tools = new FakeTools()
+    await expectTurnFailed(judgedTurn(scriptedAgent((agent) => agent.update({
+      sessionUpdate: "tool_call",
+      toolCallId: "call-1",
+      title: `${MCP_SERVER_NAME}-${SEND_MESSAGE_TOOL_NAME}`,
+      status: "completed",
+    })), tools))
+
+    expect(reportedFailures(tools.events)).toEqual([MISSING_REPLY])
+  })
+
+  describe("with Band tools served by another process (enableMcpTools: false)", () => {
+    const external = { enableMcpTools: false }
+
+    it.each<[string, SessionNotification["update"][]]>([
+      ["Copilot's prefixed title", [{
+        sessionUpdate: "tool_call",
+        toolCallId: "call-1",
+        title: `${MCP_SERVER_NAME}-${SEND_MESSAGE_TOOL_NAME}`,
+        status: "completed",
+      }]],
+      ["codex-acp's MCP invocation, completed by a later update", [{
+        sessionUpdate: "tool_call",
+        toolCallId: "call-1",
+        title: "Send a message",
+        status: "in_progress",
+        rawInput: { server: MCP_SERVER_NAME, tool: SEND_MESSAGE_TOOL_NAME, arguments: { content: TOOL_REPLY, mentions: ["@user"] } },
+      }, {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "call-1",
+        status: "completed",
+      }]],
+    ])("completes a turn that replied through %s, without relaying its closing text", async (_shape, updates) => {
+      const tools = new FakeTools()
+      await judgedTurn(scriptedAgent(async (agent) => {
+        for (const update of updates) {
+          await agent.update(update)
+        }
+        await agent.say(CLOSING_TEXT)
+      }, external), tools)
+
+      expect(failureEvents(tools)).toEqual([])
+      expect(tools.messages).toEqual([])
+    })
+
+    it("reports a turn whose only Band reply failed", async () => {
+      const tools = new FakeTools()
+      await expectTurnFailed(judgedTurn(scriptedAgent((agent) => agent.update({
+        sessionUpdate: "tool_call",
+        toolCallId: "call-1",
+        title: `${MCP_SERVER_NAME}-${SEND_MESSAGE_TOOL_NAME}`,
+        status: "failed",
+      }), external), tools))
+
+      expect(reportedFailures(tools.events)).toEqual([MISSING_REPLY])
+      expect(tools.messages).toEqual([])
+    })
+
+    it("relays the closing text when a failed Band reply carried a content-only progress update", async () => {
+      const tools = new FakeTools()
+      await judgedTurn(scriptedAgent(async (agent) => {
+        await agent.update({
+          sessionUpdate: "tool_call",
+          toolCallId: "call-1",
+          title: "Send a message",
+          status: "in_progress",
+          rawInput: { server: MCP_SERVER_NAME, tool: SEND_MESSAGE_TOOL_NAME, arguments: { content: TOOL_REPLY, mentions: ["@user"] } },
+        })
+        // A status-less update leaves the call's status as it was.
+        await agent.update({ sessionUpdate: "tool_call_update", toolCallId: "call-1", content: [{ type: "content", content: { type: "text", text: "sending..." } }] })
+        await agent.update({ sessionUpdate: "tool_call_update", toolCallId: "call-1", status: "failed" })
+        await agent.say(CLOSING_TEXT)
+      }, external), tools)
+
+      expect(tools.messages).toEqual([CLOSING_TEXT])
+      expect(failureEvents(tools)).toEqual([])
+    })
+
+    it("records a Band reply that Cursor names only in a later update", async () => {
+      const tools = new FakeTools()
+      await judgedTurn(scriptedAgent(async (agent) => {
+        await agent.update({ sessionUpdate: "tool_call", toolCallId: "call-1", title: "MCP: tool", status: "pending", rawInput: {} })
+        await agent.update({
+          sessionUpdate: "tool_call_update",
+          toolCallId: "call-1",
+          title: `${MCP_SERVER_NAME}: ${SEND_MESSAGE_TOOL_NAME}`,
+          rawInput: { providerIdentifier: MCP_SERVER_NAME, toolName: SEND_MESSAGE_TOOL_NAME, args: TOOL_REPLY_ARGS },
+        })
+        await agent.update({ sessionUpdate: "tool_call_update", toolCallId: "call-1", status: "completed" })
+        await agent.say(CLOSING_TEXT)
+      }, external), tools)
+
+      expect(tools.messages).toEqual([])
+      expect(failureEvents(tools)).toEqual([])
+    })
+  })
+})
 
 describe("ACPClientAdapter configuration", () => {
   it("rejects a missing or blank command when built", () => {

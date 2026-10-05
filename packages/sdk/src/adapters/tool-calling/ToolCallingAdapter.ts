@@ -11,7 +11,7 @@ import { resolveLogger } from "../../core/logger";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { formatHistoryForLlm } from "../../runtime/formatters";
 import { withMemoryGuidance } from "../../runtime/prompts";
-import { deliverFallbackReply, trackPostedReply } from "../../runtime/tools/postedReply";
+import { relayReply, type TurnTools } from "../../core/turn";
 import { asErrorMessage } from "../shared/coercion";
 import { createRoomTurnLock } from "../shared/roomTurnLock";
 import { assertTurnTimeoutMs } from "../shared/turnTimeout";
@@ -63,7 +63,7 @@ export interface ToolCallingAdapterOptions {
   logger?: Logger;
 }
 
-type ToolCallingTools = MessagingTools & ToolExecutor & ToolSchemaProvider;
+type ToolCallingTools = TurnTools<MessagingTools & ToolExecutor & ToolSchemaProvider>;
 
 export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCallingTools> {
   private readonly model: ToolCallingModel;
@@ -135,8 +135,6 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
     const conversation = this.conversationFor(context, history, message);
     conversation.push(this.userTurn(message));
     const toolRounds: ToolRound[] = [];
-    // A later provider failure throws out of this turn. Remember a post as it lands, or the next turn answers it again.
-    const reply = trackPostedReply(tools, (content) => conversation.push({ role: "assistant", content }));
     let text: string | undefined;
     try {
       const platformSchemas = tools.getToolSchemas(this.toolFormat, {
@@ -194,7 +192,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
             const customTool = findCustomToolInIndex(this.customToolIndex, call.name);
             if (customTool) {
               try {
-                output = await executeCustomTool(customTool, call.input);
+                output = await executeCustomTool(customTool, call.input, tools.turn);
               } catch (error) {
                 if (error instanceof CustomToolValidationError || error instanceof CustomToolExecutionError) {
                   output = {
@@ -213,7 +211,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
                 }
               }
             } else {
-              output = await reply.tools.executeToolCall(call.name, call.input);
+              output = await tools.executeToolCall(call.name, call.input);
             }
           }
           const isError = isFailedToolOutput(output);
@@ -260,11 +258,14 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
       } else {
         await reportProviderTurnFailure(tools, this.logger, this.provider, "Tool-calling adapter request failed", error, { messageId: message.id });
       }
+    } finally {
+      // What the turn posted belongs in the next turn even when it failed, or the next turn answers it again.
+      conversation.push(...tools.turn.posted.map((content) => ({ role: "assistant" as const, content })));
     }
 
     const mention = [{ id: message.senderId, handle: message.senderName ?? message.senderType }];
     // Only text that was actually delivered belongs in the next turn.
-    if (await deliverFallbackReply(reply, text, mention)) {
+    if (await relayReply(tools, text, mention)) {
       conversation.push({ role: "assistant", content: text });
     }
   }

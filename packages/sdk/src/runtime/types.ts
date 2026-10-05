@@ -104,9 +104,11 @@ export interface AgentInput extends Omit<FrameworkAdapterInput, "message" | "his
   history: HistoryProvider;
 }
 
-export const SYNTHETIC_SENDER_TYPE = "System";
-export const SYNTHETIC_CONTACT_EVENTS_SENDER_ID = "contact-events";
-export const SYNTHETIC_CONTACT_EVENTS_SENDER_NAME = "Contact Events";
+export {
+  SYNTHETIC_SENDER_TYPE,
+  SYNTHETIC_CONTACT_EVENTS_SENDER_ID,
+  SYNTHETIC_CONTACT_EVENTS_SENDER_NAME,
+} from "../contracts/protocols";
 
 export function ensureHandlePrefix(handle: string | null | undefined): string | null {
   if (!handle) {

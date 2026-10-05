@@ -8,7 +8,7 @@ import { join } from "node:path";
 
 import { expect } from "vitest";
 
-import type { TOOL_MODELS } from "../../../../src/runtime/tools/schemas";
+import type { TOOL_MODELS } from "../../../../src/contracts/toolSchemas";
 import { ADAPTER } from "../../toolkit/adapters";
 import type { AgentIdentity } from "../../toolkit/agents";
 import { assertReplied, assertReplyContains } from "../../toolkit/assertMessages";

@@ -1,5 +1,5 @@
 import type { AdapterToolsProtocol } from "../contracts/protocols";
-import { mcpToolNames } from "../runtime/tools/schemas";
+import { mcpToolNames } from "../contracts/toolSchemas";
 import type { McpToolRegistration } from "./registrations";
 import {
   buildRoomScopedRegistrations,
@@ -62,7 +62,7 @@ export async function createBandMcpBackend(
     };
   }
 
-  // Resolve tools once so non-SDK servers and registration building share the same instance.
+  // One resolution path, so non-SDK servers and registration building reach the same tools.
   const resolvedTools = options.multiRoom === false
     ? resolveSingleRoomTools(options.getToolsForRoom)
     : options.getToolsForRoom;

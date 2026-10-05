@@ -257,9 +257,13 @@ function toCollectedChunk(update: SessionUpdate): CollectedChunk | null {
       return {
         chunkType: "tool_result",
         content: extractToolOutput(update),
+        // ACP updates carry only changed fields: no status means the call's status didn't change.
+        // A title or input revises what the call invoked (Cursor names an MCP call only here).
         metadata: {
           tool_call_id: update.toolCallId,
-          status: update.status ?? "completed",
+          ...(update.status ? { status: update.status } : {}),
+          ...(update.title ? { title: update.title } : {}),
+          ...(update.rawInput !== undefined ? { raw_input: update.rawInput } : {}),
         },
         streamed: false,
       }

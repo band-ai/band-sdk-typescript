@@ -10,7 +10,7 @@ import type { AddressInfo } from "node:net";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
-import { MCP_SERVER_NAME } from "../../../src/runtime/tools/schemas";
+import { MCP_SERVER_NAME } from "../../../src/contracts/toolSchemas";
 import { CallHolds, RecordLog, type HeldCall } from "../../testUtils";
 
 /** Where the adapter registers its Band tools server, and where it deregisters it. */
@@ -173,6 +173,11 @@ export class FakeOpencodeServer implements AsyncDisposable {
   /** Each permission reply OpenCode received, as `[request id, reply]`. */
   public permissionReplies(): Array<[string, unknown]> {
     return this.requestsTo("POST", /^\/permission\//).map((request) => [askId(request), request.body.reply]);
+  }
+
+  /** The feedback each permission reply carried, as `[request id, message]`. */
+  public permissionFeedback(): Array<[string, unknown]> {
+    return this.requestsTo("POST", /^\/permission\//).map((request) => [askId(request), request.body.message]);
   }
 
   /** Each question reply OpenCode received, as `[request id, answers or "rejected"]`. */

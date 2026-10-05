@@ -1,19 +1,12 @@
 import type { LettaAdapter } from "../../src/adapters/letta/LettaAdapter";
-import type { AgentToolsProtocol } from "../../src/contracts/protocols";
-import { makeMessage } from "../testUtils";
+import { makeMessage, type FakeTools } from "../testUtils";
+import { turnInput } from "../turnOutcomeContract";
 
 export async function runLettaExampleRoomTurn(
   adapter: LettaAdapter,
-  tools: AgentToolsProtocol,
+  tools: FakeTools,
   roomId = "room-letta",
 ): Promise<void> {
   await adapter.onStarted("Example Agent", "Letta example");
-  await adapter.onMessage(
-    makeMessage("hello", roomId),
-    tools,
-    [],
-    null,
-    null,
-    { isSessionBootstrap: false, roomId },
-  );
+  await adapter.onEvent({ ...turnInput(tools, makeMessage("hello", roomId)), isSessionBootstrap: false });
 }

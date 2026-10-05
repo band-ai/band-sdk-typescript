@@ -24,7 +24,7 @@ import { ACP_SESSION_EVENT, type ACPClientSessionState } from "../../converters/
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { rethrowIfRecoverableTurnFailure, ValidationError } from "../../core/errors";
-import type { AdapterToolsProtocol } from "../../contracts/protocols";
+import { relayReply, type TurnTools } from "../../core/turn";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { systemUpdateParts } from "../shared/conversationPrompt";
 import { asErrorMessage } from "../shared/coercion";
@@ -34,7 +34,7 @@ import { assertTurnTimeoutMs } from "../shared/turnTimeout";
 import { assertWithinSetTimeoutBound, MAX_SETTIMEOUT_DELAY_MS, withTimeout } from "../shared/withTimeout";
 import { abandon } from "../shared/abandon";
 import { combineTeardownErrors, isolateTeardown } from "../../core/teardown";
-import { deliverReply } from "../../core/deliveryFailedError";
+import { recordBandToolCalls } from "./toolCalls";
 import { FAILURE_CODE_TIMEOUT, agentFailure, reportTurnFailure } from "../../core/providerFailure";
 import {
   AcpSessionConfigError,
@@ -47,7 +47,7 @@ import {
 import { isBlankEventContent } from "../../contracts/chatEvents";
 import type { PlatformMessage } from "../../runtime/types";
 import type { McpToolRegistration } from "../../mcp/registrations";
-import { MCP_SERVER_NAME } from "../../runtime/tools/schemas";
+import { MCP_SERVER_NAME } from "../../contracts/toolSchemas";
 import { createBandMcpBackend, type BandMcpBackend } from "../../mcp/backends";
 import {
   BandACPClient,
@@ -232,7 +232,7 @@ export interface ACPRoomAgentOptions extends Omit<ACPClientStdioOptions, "comman
   provider: string;
 }
 
-export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterToolsProtocol> {
+export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, TurnTools> {
   protected readonly provider: string
   private readonly roomId: string
   private readonly command: string[]
@@ -254,7 +254,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
   // replaced it. `null` only for a room rehydrated from persisted history.
   private readonly roomToSession = new Map<string, { sessionId: string; generation: number; client: BandACPClient | null }>()
   private readonly sessionToRoom = new Map<string, string>()
-  private readonly roomTools = new Map<string, AdapterToolsProtocol>()
+  private readonly roomTools = new Map<string, TurnTools>()
   // Rooms whose previous session could not be restored. Stays set until a
   // prompt on the replacement session is accepted, so a rejected prompt or
   // a dropped session still seeds the next one. Keyed by room, not by
@@ -346,7 +346,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
 
   public async onMessage(
     message: PlatformMessage,
-    tools: AdapterToolsProtocol,
+    tools: TurnTools,
     history: ACPClientSessionState,
     participantsMessage: string | null,
     contactsMessage: string | null,
@@ -355,8 +355,6 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
     if (context.isSessionBootstrap) {
       this.rehydrate(history)
     }
-
-    this.roomTools.set(context.roomId, tools)
 
     // `Execution.bootstrapMessage` runs outside its own room's serialized
     // `processLoop`, alongside the sync loop its constructor starts — so two
@@ -370,12 +368,17 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
     // `history` is this turn's own snapshot, closed over here. A later
     // `onMessage` for the same room must not be able to replace it while
     // this turn is still establishing a session.
-    await this.roomTurns.run(context.roomId, () => this.runTurn(message, tools, participantsMessage, contactsMessage, context, history))
+    // The room's tools are set inside the lock: Band MCP calls resolve them, so
+    // they must stay this turn's until it ends.
+    await this.roomTurns.run(context.roomId, () => {
+      this.roomTools.set(context.roomId, tools)
+      return this.runTurn(message, tools, participantsMessage, contactsMessage, context, history)
+    })
   }
 
   private async runTurn(
     message: PlatformMessage,
-    tools: AdapterToolsProtocol,
+    tools: TurnTools,
     participantsMessage: string | null,
     contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
@@ -388,6 +391,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
     let sessionId: string | undefined
     let generation = 0
     let releasePrompt: (() => void) | undefined
+    let completed = false
     try {
       const live = await this.ensureConnection()
       connection = live.connection
@@ -484,6 +488,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
           { roomId: context.roomId, sessionId },
         )
       }
+      completed = true
     } catch (error) {
       rethrowIfRecoverableTurnFailure(error)
       releasePrompt?.()
@@ -528,19 +533,21 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
         },
       )
     } finally {
-      await this.onAcpTurnFinished(message, tools, context)
+      await this.onAcpTurnFinished(message, tools, context, completed)
     }
   }
 
+  /** Runs however the turn ended; `completed` is false when it failed, which already reported or raised. */
   protected async onAcpTurnFinished(
     _message: PlatformMessage,
-    _tools: AdapterToolsProtocol,
+    _tools: TurnTools,
     _context: { isSessionBootstrap: boolean; roomId: string },
+    _completed: boolean,
   ): Promise<void> {}
 
   protected async onAcpSessionReady(
     _message: PlatformMessage,
-    _tools: AdapterToolsProtocol,
+    _tools: TurnTools,
     _context: { isSessionBootstrap: boolean; roomId: string },
     _sessionId: string,
   ): Promise<void> {}
@@ -1306,7 +1313,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
       "",
       "## Room Context",
       "You are connected to Band using Band MCP tools.",
-      "Use the Band tools for any visible room action. Plain text output is not posted back to the room.",
+      "Use the Band tools for any visible room action.",
       "",
       ...roomContextLines(roomId, message),
     ].join("\n")
@@ -1353,7 +1360,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
   }
 
   private async handlePermissionRequest(
-    tools: AdapterToolsProtocol,
+    tools: TurnTools,
     roomId: string,
     params: RequestPermissionRequest,
     connectionGeneration: number,
@@ -1586,12 +1593,21 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
 
   private async flushChunks(input: {
     client: BandACPClient;
-    tools: AdapterToolsProtocol;
+    tools: TurnTools;
     sessionId: string;
     senderId: string;
     senderHandle: string;
   }): Promise<void> {
-    for (const chunk of input.client.takeCollectedChunks(input.sessionId)) {
+    const chunks = input.client.takeCollectedChunks(input.sessionId)
+    // Band tools served by another process never reach this turn's tools, so
+    // the stream is their only record. With our own backend, the tools record.
+    if (!this.enableMcpTools) {
+      recordBandToolCalls(chunks, input.tools.turn)
+    }
+    // The model's text around its tool calls is one answer, relayed once after
+    // the events unless it already answered (or declined) through a tool.
+    const texts: string[] = []
+    for (const chunk of chunks) {
       // A status-only ACP update carries its meaning in metadata and has
       // nothing to post.
       if (isBlankEventContent(chunk.content)) {
@@ -1599,10 +1615,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
       }
 
       if (chunk.chunkType === "text") {
-        await deliverReply(input.tools, chunk.content, [{
-          id: input.senderId,
-          handle: input.senderHandle,
-        }])
+        texts.push(chunk.content)
         continue
       }
 
@@ -1616,6 +1629,7 @@ export class ACPRoomAgent extends SimpleAdapter<ACPClientSessionState, AdapterTo
         chunk.metadata,
       )
     }
+    await relayReply(input.tools, texts.join("\n\n"), [{ id: input.senderId, handle: input.senderHandle }])
   }
 }
 

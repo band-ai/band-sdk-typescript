@@ -8,6 +8,7 @@ import type {
 } from "../contracts/protocols";
 import { DEFAULT_AGENT_TOOLS_CAPABILITIES, sendFailureViaEvent } from "../contracts/protocols";
 import { isBlankEventContent } from "../contracts/chatEvents";
+import { recordingOverrides, Turn } from "../core/turn";
 import type {
   AddContactArgs,
   ContactRecord,
@@ -70,6 +71,8 @@ export class FakeAgentTools
   public participantsAdded: CapturedParticipant[] = [];
   public participantsRemoved: string[] = [];
   public toolCalls: CapturedToolCall[] = [];
+  /** Records this fake's Band tool calls as production tools do, for an adapter tested without `onEvent`; `reset()` starts a new one. */
+  public turn = new Turn();
 
   private messageCounter = 0;
   private eventCounter = 0;
@@ -81,6 +84,7 @@ export class FakeAgentTools
     this.errorFactory =
       options?.errorFactory ??
       ((method) => new Error(`FakeAgentTools configured failure for ${String(method)}`));
+    Object.assign(this, recordingOverrides(this, () => this.turn));
   }
 
   public async sendMessage(
@@ -88,6 +92,19 @@ export class FakeAgentTools
     mentions?: MentionInput,
   ): Promise<ToolOperationResult> {
     this.maybeFail("sendMessage");
+    return this.post(content, mentions);
+  }
+
+  /** Posts like `sendMessage`; tracked tools never count it as the turn's reply. */
+  public async sendNotice(
+    content: string,
+    mentions?: MentionInput,
+  ): Promise<ToolOperationResult> {
+    this.maybeFail("sendNotice");
+    return this.post(content, mentions);
+  }
+
+  private post(content: string, mentions?: MentionInput): ToolOperationResult {
     this.messagesSent.push({ content, mentions });
     const id = `msg-${this.messageCounter++}`;
     return { id, status: "sent" };
@@ -254,6 +271,7 @@ export class FakeAgentTools
     this.toolCalls.length = 0;
     this.messageCounter = 0;
     this.eventCounter = 0;
+    this.turn = new Turn();
   }
 
   private maybeFail(method: FakeToolMethod): void {

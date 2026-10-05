@@ -20,14 +20,28 @@ export class DeliveryFailedError extends RecoverableTurnError {
   }
 }
 
+async function delivered(post: () => Promise<ToolOperationResult>): Promise<ToolOperationResult> {
+  try {
+    return await post();
+  } catch (error) {
+    throw new DeliveryFailedError(error);
+  }
+}
+
+/** Posts the turn's reply; on a judged turn it counts as the reply. */
 export async function deliverReply(
   tools: MessagingTools,
   content: string,
   mentions: MentionInput,
 ): Promise<ToolOperationResult> {
-  try {
-    return await tools.sendMessage(content, mentions);
-  } catch (error) {
-    throw new DeliveryFailedError(error);
-  }
+  return delivered(() => tools.sendMessage(content, mentions));
+}
+
+/** Posts text the adapter writes itself; it never counts as the turn's reply. */
+export async function deliverNotice(
+  tools: MessagingTools,
+  content: string,
+  mentions: MentionInput,
+): Promise<ToolOperationResult> {
+  return delivered(() => tools.sendNotice(content, mentions));
 }

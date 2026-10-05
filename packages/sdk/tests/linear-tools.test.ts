@@ -7,6 +7,7 @@ import {
   type SessionRoomRecord,
   type SessionRoomStore,
 } from "../src/linear";
+import { Turn } from "../src/core/turn";
 import { customToolToOpenAISchema, executeCustomTool } from "../src/runtime/tools/customTools";
 
 const TEST_ISSUE_ID = "11111111-1111-4111-8111-111111111111";
@@ -185,6 +186,36 @@ describe("createLinearTools", () => {
     expect(names).not.toContain("linear_create_session_on_issue");
     expect(names).not.toContain("linear_create_session_on_comment");
     expect(names).not.toContain("linear_create_issue");
+  });
+
+  it("counts only the tools that change Linear as a turn's real work", () => {
+    const tools = createLinearTools({ client: makeMockClientWithSessionCreation() });
+    const acting = tools.filter((tool) => tool.effect === "act").map((tool) => tool.name).sort();
+
+    expect(acting).toEqual([
+      "linear_add_issue_comment",
+      "linear_ask_user",
+      "linear_create_issue",
+      "linear_create_session_on_comment",
+      "linear_create_session_on_issue",
+      "linear_post_response",
+      "linear_request_auth",
+      "linear_select",
+      "linear_update_issue",
+      "linear_update_plan",
+    ]);
+  });
+
+  it("completes a turn that posted its response to Linear, but not one that only posted a thought", async () => {
+    const tools = createLinearTools({ client: makeMockClient() });
+    const verdictAfter = async (name: string): Promise<string> => {
+      const turn = new Turn();
+      await executeCustomTool(tools.find((tool) => tool.name === name)!, { session_id: "sess-1", body: "Done" }, turn);
+      return turn.verdict();
+    };
+
+    expect(await verdictAfter("linear_post_response")).toBe("complete");
+    expect(await verdictAfter("linear_post_thought")).toBe("missing_reply");
   });
 
   it("each tool has a description", () => {

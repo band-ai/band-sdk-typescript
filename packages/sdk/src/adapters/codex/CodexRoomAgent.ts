@@ -3,7 +3,6 @@ import type { AgentFailure } from "@band-ai/band-sdk-core";
 
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import {
-  type AgentToolsProtocol,
   isStructuredToolFailure,
   isToolExecutorError,
   toLegacyToolExecutorErrorMessage,
@@ -15,8 +14,8 @@ import { resolveLogger } from "../../core/logger";
 import { rethrowIfRecoverableTurnFailure } from "../../core/errors";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt, withMemoryGuidance } from "../../runtime/prompts";
-import { SEND_MESSAGE_TOOL_NAME, SEND_EVENT_TOOL_NAME } from "../../runtime/tools/schemas";
-import { deliverFallbackReply, trackPostedReply, type PostedReplyTracker } from "../../runtime/tools/postedReply";
+import { SEND_MESSAGE_TOOL_NAME, SEND_EVENT_TOOL_NAME } from "../../contracts/toolSchemas";
+import { relayReply, type TurnTools } from "../../core/turn";
 import { abandon } from "../shared/abandon";
 import { withTimeout } from "../shared/withTimeout";
 import { systemUpdateParts } from "../shared/conversationPrompt";
@@ -31,7 +30,7 @@ import {
 } from "../../runtime/tools/customTools";
 import { asErrorMessage, asNonEmptyString, asOptionalRecord, asRecord, asString, toWireString } from "../shared/coercion";
 import { FAILURE_CODE_TIMEOUT, ProviderTurnFailedError, agentFailure, reportTurnFailure, safeSendFailure } from "../../core/providerFailure";
-import { deliverReply } from "../../core/deliveryFailedError";
+import { deliverNotice } from "../../core/deliveryFailedError";
 import { findLatestTaskMetadata, takeLast } from "../shared/history";
 import {
   CodexAppServerStdioClient,
@@ -155,7 +154,7 @@ export interface CodexRoomAgentOptions extends CodexAdapterOptions {
   config: CodexAdapterConfig & { cwd: string };
 }
 
-export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsProtocol> {
+export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
   protected readonly provider = "codex";
   private readonly roomId: string;
   private readonly cwd: string;
@@ -214,7 +213,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
 
   public async onMessage(
     message: PlatformMessage,
-    tools: AgentToolsProtocol,
+    tools: TurnTools,
     history: HistoryProvider,
     participantsMessage: string | null,
     contactsMessage: string | null,
@@ -241,6 +240,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
           args: command.args,
         });
         if (handled) {
+          tools.turn.settle();
           return;
         }
       }
@@ -285,12 +285,11 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
     });
 
     const turnId = turnStarted.turn.id;
-    const reply = trackPostedReply(tools);
     const { finalText, turnStatus, turnError, reportedFailureInLoop } = await this.runEventLoop(
       client,
       threadId,
       turnId,
-      reply.tools,
+      tools,
       config,
       context.roomId,
     );
@@ -304,7 +303,6 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
       turnStatus,
       turnError,
       finalText,
-      reply,
       reportedFailureInLoop,
       fallbackSendAgentText: config.fallbackSendAgentText ?? true,
     });
@@ -319,7 +317,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
 
   private async ensureClientAndThread(
     context: { isSessionBootstrap: boolean; roomId: string },
-    tools: AgentToolsProtocol,
+    tools: TurnTools,
     history: HistoryProvider,
     message: PlatformMessage,
     config: CodexAdapterConfig,
@@ -351,7 +349,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
   private async startTurn(
     client: CodexClientLike,
     turnParams: TurnStartParams,
-    tools: AgentToolsProtocol,
+    tools: TurnTools,
     roomId: string,
   ): Promise<TurnStartResponse> {
     const logContext = { roomId, threadId: turnParams.threadId };
@@ -375,7 +373,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
     client: CodexClientLike,
     threadId: string,
     turnId: string,
-    tools: AgentToolsProtocol,
+    tools: TurnTools,
     config: CodexAdapterConfig,
     roomId: string,
   ): Promise<{
@@ -722,7 +720,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
   private async getOrCreateThread(
     client: CodexClientLike,
     roomId: string,
-    tools: AgentToolsProtocol,
+    tools: TurnTools,
     history: HistoryProvider,
     isSessionBootstrap: boolean,
     allowHistoryThreadResume: boolean,
@@ -807,7 +805,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
   }
 
   private buildThreadStartParams(
-    tools: AgentToolsProtocol,
+    tools: TurnTools,
     config: CodexAdapterConfig,
   ) {
     return {
@@ -859,7 +857,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
     return Object.keys(overrides).length > 0 ? overrides : null;
   }
 
-  private buildDynamicTools(tools: AgentToolsProtocol): Array<{ name: string; description: string; inputSchema: unknown }> {
+  private buildDynamicTools(tools: TurnTools): Array<{ name: string; description: string; inputSchema: unknown }> {
     const specs: Array<{ name: string; description: string; inputSchema: unknown }> = [];
     const seen = new Set<string>();
     const schemas = [
@@ -954,7 +952,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
   }
 
   private async sendThreadMappingEvent(
-    tools: AgentToolsProtocol,
+    tools: TurnTools,
     roomId: string,
     threadId: string,
     status: "mapped" | "resumed",
@@ -974,7 +972,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
 
   private async handleServerRequest(input: {
     client: CodexClientLike;
-    tools: AgentToolsProtocol;
+    tools: TurnTools;
     roomId: string;
     event: CodexRpcEvent & { kind: "request" };
     enableExecutionReporting: boolean;
@@ -1005,7 +1003,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
         let output: unknown;
         if (customTool) {
           try {
-            output = await executeCustomTool(customTool, arguments_);
+            output = await executeCustomTool(customTool, arguments_, tools.turn);
           } catch (error) {
             output = normalizeCustomToolError(toolName, error);
           }
@@ -1079,7 +1077,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
   }
 
   private async emitItemCompletedEvents(
-    tools: AgentToolsProtocol,
+    tools: TurnTools,
     item: ThreadItem,
     options: {
       roomId: string;
@@ -1195,7 +1193,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
   }
 
   private async emitTurnOutcome(input: {
-    tools: AgentToolsProtocol;
+    tools: TurnTools;
     message: PlatformMessage;
     roomId: string;
     threadId: string;
@@ -1203,7 +1201,6 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
     turnStatus: TurnStatus;
     turnError: string;
     finalText: string;
-    reply: PostedReplyTracker;
     reportedFailureInLoop: boolean;
     fallbackSendAgentText: boolean;
   }): Promise<void> {
@@ -1211,7 +1208,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
 
     if (input.turnStatus === "completed") {
       if (input.fallbackSendAgentText) {
-        await deliverFallbackReply(input.reply, input.finalText.trim(), mention);
+        await relayReply(input.tools, input.finalText.trim(), mention);
       }
       return;
     }
@@ -1240,9 +1237,9 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
   // incident), reply with the mentioned, human-readable text alongside it —
   // `safeSendFailure` cannot throw, so the machine-readable record lands even
   // when the reply after it does not — then throw so PlatformRuntime marks
-  // the turn failed and retries it, instead of flipping it to "processed".
+  // the turn failed instead of "processed".
   private async reportAndDeliverTurnFailure(
-    tools: AgentToolsProtocol,
+    tools: TurnTools,
     failure: AgentFailure,
     roomId: string,
     replyText: string,
@@ -1252,7 +1249,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
     const failureReport = reportedFailureInLoop
       ? Promise.resolve()
       : safeSendFailure(tools, failure, this.logger, { roomId });
-    await Promise.all([failureReport, deliverReply(tools, replyText, mention)]);
+    await Promise.all([failureReport, deliverNotice(tools, replyText, mention)]);
     throw new ProviderTurnFailedError(failure);
   }
 
@@ -1273,7 +1270,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
   }
 
   private async handleLocalCommand(input: {
-    tools: AgentToolsProtocol;
+    tools: TurnTools;
     message: PlatformMessage;
     history: HistoryProvider;
     roomId: string;
@@ -1301,8 +1298,8 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
     }
   }
 
-  private async handleHelpCommand(tools: AgentToolsProtocol, mention: MentionInput): Promise<void> {
-    await deliverReply(
+  private async handleHelpCommand(tools: TurnTools, mention: MentionInput): Promise<void> {
+    await deliverNotice(
       tools,
       "Codex commands: `/status`, `/model`, `/models`, `/model list`, `/models list`, `/model <id>`, `/reasoning [low|medium|high|xhigh]`, `/help`.",
       mention,
@@ -1310,14 +1307,14 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
   }
 
   private async handleStatusCommand(
-    tools: AgentToolsProtocol,
+    tools: TurnTools,
     roomId: string,
     history: HistoryProvider,
     mention: MentionInput,
   ): Promise<void> {
     const roomConfig = this.getConfig(roomId);
     const mappedThreadId = this.roomThreadIds.get(roomId) ?? extractThreadIdFromHistory(history.raw);
-    await deliverReply(
+    await deliverNotice(
       tools,
       [
         "Codex status:",
@@ -1333,7 +1330,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
   }
 
   private async handleModelCommand(
-    tools: AgentToolsProtocol,
+    tools: TurnTools,
     roomId: string,
     args: string,
     mention: MentionInput,
@@ -1341,7 +1338,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
     const arg = args.trim();
     if (!arg) {
       const roomConfig = this.getConfig(roomId);
-      await deliverReply(
+      await deliverNotice(
         tools,
         `Current model: \`${roomConfig.model ?? "default"}\`. Use \`/model list\` or \`/model <id>\`.`,
         mention,
@@ -1357,7 +1354,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
     const overrides = this.roomConfigOverrides.get(roomId) ?? {};
     overrides.model = arg;
     this.roomConfigOverrides.set(roomId, overrides);
-    await deliverReply(
+    await deliverNotice(
       tools,
       `Model override set to \`${arg}\` for subsequent turns.`,
       mention,
@@ -1367,7 +1364,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
   // The one local command that reaches Codex, and local commands run before
   // onMessage's failure catch — so it reports its own, or a `/model list`
   // against a downed app server stops every room.
-  private async handleModelListCommand(tools: AgentToolsProtocol, roomId: string, mention: MentionInput): Promise<void> {
+  private async handleModelListCommand(tools: TurnTools, roomId: string, mention: MentionInput): Promise<void> {
     let response: unknown;
     let client: CodexClientLike | null = null;
     try {
@@ -1379,16 +1376,16 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
     }
     const result = parseModelListResponse(response);
     if (!result) {
-      await deliverReply(tools, "Received an invalid model list from Codex.", mention);
+      await deliverNotice(tools, "Received an invalid model list from Codex.", mention);
       return;
     }
     const visible = result.data.filter((entry) => !entry.hidden);
     if (visible.length === 0) {
-      await deliverReply(tools, "No visible models returned by Codex.", mention);
+      await deliverNotice(tools, "No visible models returned by Codex.", mention);
       return;
     }
 
-    await deliverReply(
+    await deliverNotice(
       tools,
       [
         "Available models:",
@@ -1399,7 +1396,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
   }
 
   private async handleReasoningCommand(
-    tools: AgentToolsProtocol,
+    tools: TurnTools,
     roomId: string,
     args: string,
     mention: MentionInput,
@@ -1407,7 +1404,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
     const effort = args.trim().toLowerCase();
     if (!effort) {
       const roomConfig = this.getConfig(roomId);
-      await deliverReply(
+      await deliverNotice(
         tools,
         `Current reasoning effort: \`${roomConfig.reasoningEffort ?? "default"}\`. Use \`/reasoning ${CODEX_REASONING_EFFORTS.join("|")}\`.`,
         mention,
@@ -1416,7 +1413,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
     }
 
     if (!(CODEX_REASONING_EFFORTS as readonly string[]).includes(effort)) {
-      await deliverReply(
+      await deliverNotice(
         tools,
         `Invalid reasoning effort \`${effort}\`. Valid values: ${CODEX_REASONING_EFFORTS.join(", ")}.`,
         mention,
@@ -1427,7 +1424,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
     const overrides = this.roomConfigOverrides.get(roomId) ?? {};
     overrides.reasoningEffort = effort as CodexReasoningEffort;
     this.roomConfigOverrides.set(roomId, overrides);
-    await deliverReply(
+    await deliverNotice(
       tools,
       `Reasoning effort set to \`${effort}\` for subsequent turns.`,
       mention,
@@ -1435,7 +1432,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, AgentToolsPro
   }
 
   private async safeSendEvent(
-    tools: AgentToolsProtocol,
+    tools: TurnTools,
     content: string,
     messageType: string,
     metadata?: Record<string, unknown>,

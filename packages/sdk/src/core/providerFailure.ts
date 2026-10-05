@@ -16,9 +16,8 @@ export const FAILURE_CODE_TIMEOUT = "timeout";
  * A provider failure that has already been reported to the room.
  *
  * Thrown, not returned, so the turn still *fails*: `PlatformRuntime` marks a
- * message failed only when `onEvent` throws, and the platform re-syncs failed
- * messages rather than processed ones. Returning here would flip a failed turn
- * to `processed` and drop its retry along with it.
+ * message failed only when `onEvent` throws. Returning here would mark a
+ * failed turn `processed`, as if it had been answered.
  *
  * `RecoverableTurnError` is what changes: the turn fails, the room and every
  * other room keep running. Reporting a provider error must not take the agent

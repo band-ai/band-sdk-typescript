@@ -1,9 +1,12 @@
+import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../../contracts/toolSchemas";
+
 const ENVIRONMENT_SECTION = `
 ## Environment
 
 Multi-participant chat. Messages show sender: [Name]: content.
 Messages prefixed with [System]: are platform updates (participant changes, contact updates, etc.) — not messages from users.
-Use \`band_send_message(content, mentions)\` to respond. Plain text output is not delivered.
+Use \`${SEND_MESSAGE_TOOL_NAME}(content, mentions)\` to respond — a \`${SEND_MESSAGE_TOOL_NAME}\` call is the only way anything you say reaches the room. Any text you produce outside such a call is never delivered, and that includes a final answer you compose after using other tools. So deliver your answer by calling \`${SEND_MESSAGE_TOOL_NAME}\`.
+When the latest message needs no answer from you (it was addressed to someone else, it is an FYI or an acknowledgement, or another participant already answered it), call \`${NO_REPLY_TOOL_NAME}\` instead to end the turn deliberately. End every turn with one of the two.
 Mentions use handles: @<username> for users, @<username>/<agent-name> for agents.`;
 
 const MULTI_AGENT_RULES_SECTION = `## CRITICAL: Delegate When You Cannot Help Directly

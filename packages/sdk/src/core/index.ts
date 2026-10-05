@@ -2,6 +2,8 @@ export { SimpleAdapter } from "./simpleAdapter";
 // `MessagingTools.sendFailure` is typed by this; a consumer implementing a
 // custom `MessagingTools`/adapter cannot import a transitive dependency.
 export { AgentFailure } from "@band-ai/band-sdk-core";
+// A custom tool's `effect` is typed by this.
+export type { TurnEffect } from "@band-ai/band-sdk-core";
 // The wire contract behind that required `sendFailure`. Without these, a
 // consumer implementing `MessagingTools` has to re-derive the event type, the
 // metadata key, and the blank-message fallback that keeps a failure from
@@ -45,7 +47,10 @@ export { ConsoleLogger, NoopLogger, StderrLogger, type Logger } from "./logger";
 export {
   DeliveryFailedError,
   deliverReply,
+  deliverNotice,
 } from "./deliveryFailedError";
+export { Turn, relayReply, type TurnTools } from "./turn";
+export { NO_REPLY_TOOL_NAME } from "../contracts/toolSchemas";
 export {
   ProviderTurnFailedError,
   agentFailure,

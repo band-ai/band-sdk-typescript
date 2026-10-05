@@ -3,6 +3,8 @@ import { AgentFailure } from "@band-ai/band-sdk-core";
 
 import { ContactCallbackTools } from "../src/runtime/tools/ContactCallbackTools";
 import { ContactToolsImpl } from "../src/runtime/tools/ContactToolsImpl";
+import { NO_REPLY_RESULT, NO_REPLY_TOOL_NAME } from "../src/contracts/toolSchemas";
+import { trackTurn } from "../src/core/turn";
 import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
 
 describe("ContactToolsImpl", () => {
@@ -177,6 +179,15 @@ describe("ContactCallbackTools", () => {
       );
       expect(tools.capabilities).toEqual({ peers: true, contacts: true, memory: true });
     });
+  });
+
+  it("declines a contact-hub turn through band_no_reply without posting anything", async () => {
+    const [createChatMessage, createChatEvent] = [vi.fn(), vi.fn()];
+    const tools = trackTurn(new ContactCallbackTools({ createChat: vi.fn(), createChatMessage, createChatEvent } as never, "room-1"));
+
+    expect(await tools.executeToolCall(NO_REPLY_TOOL_NAME, { reason: "FYI only" })).toEqual(NO_REPLY_RESULT);
+    expect(tools.turn.replied).toBe(true);
+    expect([createChatMessage, createChatEvent].flatMap((post) => post.mock.calls)).toEqual([]);
   });
 
   describe("sendMessage", () => {

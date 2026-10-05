@@ -405,6 +405,10 @@ export class Execution {
       await this.onExecute(this.context, event);
       this.retryTracker.markSuccess(messageId);
     } catch (error: unknown) {
+      if (error instanceof RecoverableTurnError) {
+        this.warnTurnFailed(error, { messageId });
+        return;
+      }
       const label = error instanceof Error ? error.message : String(error);
       this.logger.error("Sync message execution failed", {
         roomId: this.roomId,
@@ -415,6 +419,19 @@ export class Execution {
       this.inFlight -= 1;
       this.context.setState("idle");
     }
+  }
+
+  // One turn's failure (a refused post, a provider failure, a missing reply):
+  // an ordinary outcome, so a warning with no stack, but with what tells the
+  // failures apart and why a post failed.
+  private warnTurnFailed(error: RecoverableTurnError, context: Record<string, unknown>): void {
+    this.logger.warn("Turn failed without stopping the room", {
+      roomId: this.roomId,
+      ...context,
+      error: error.message,
+      name: error.name,
+      ...(error.cause === undefined ? {} : { cause: error.cause }),
+    });
   }
 
   private async executeEvent(event: PlatformEvent): Promise<void> {
@@ -430,11 +447,7 @@ export class Execution {
       // onFailure, the whole runtime — is the right answer to a broken
       // adapter and the wrong one to a single reply that would not post.
       if (error instanceof RecoverableTurnError) {
-        this.logger.warn("Turn failed without stopping the room", {
-          roomId: this.roomId,
-          eventType: event.type,
-          error,
-        });
+        this.warnTurnFailed(error, { eventType: event.type });
         return;
       }
 

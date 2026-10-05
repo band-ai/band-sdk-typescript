@@ -1,9 +1,43 @@
 import { describe, expect, it } from "vitest";
 import { AgentFailure } from "@band-ai/band-sdk-core";
 
+import { NO_REPLY_TOOL_NAME } from "../src/contracts/toolSchemas";
+import { relayReply } from "../src/core/turn";
 import { FakeAgentTools } from "../src/testing/FakeAgentTools";
+import { CLOSING_TEXT } from "./turnOutcomeContract";
 
 describe("FakeAgentTools", () => {
+  it("records its Band tool calls on its turn, as production tools do", async () => {
+    const replied = new FakeAgentTools();
+    await replied.sendMessage("Done.");
+    // The turn replied, so its closing text is not relayed as a second message.
+    expect(await relayReply(replied, CLOSING_TEXT, [])).toBe(false);
+    expect(replied.messagesSent.map((message) => message.content)).toEqual(["Done."]);
+
+    const declined = new FakeAgentTools();
+    await declined.executeToolCall(NO_REPLY_TOOL_NAME, { reason: "FYI" });
+    expect(declined.turn.verdict()).toBe("complete");
+
+    expect(new FakeAgentTools().turn.verdict()).toBe("missing_reply");
+  });
+
+  it("starts a new turn on reset, so a reused fake judges the next turn on its own", async () => {
+    const fake = new FakeAgentTools();
+    await fake.sendMessage("First turn's reply.");
+    fake.reset();
+
+    expect(await relayReply(fake, CLOSING_TEXT, [])).toBe(true);
+    expect(fake.messagesSent.map((message) => message.content)).toEqual([CLOSING_TEXT]);
+  });
+
+  it("never counts a notice as the turn's reply", async () => {
+    const fake = new FakeAgentTools();
+    await fake.sendNotice("Working on it.");
+
+    expect(fake.turn.verdict()).toBe("missing_reply");
+    expect(await relayReply(fake, CLOSING_TEXT, [])).toBe(true);
+  });
+
   it("tracks sent messages with counter-based IDs", async () => {
     const tools = new FakeAgentTools();
 

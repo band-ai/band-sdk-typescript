@@ -10,7 +10,7 @@ import { z } from "zod";
 
 import type { ListMemoriesArgs, MemoryRecord, StoreMemoryArgs } from "../../../../src/contracts/dtos";
 import { MEMORY_SEGMENT, MEMORY_STORE_SCOPE, MEMORY_SYSTEM, MEMORY_TYPE } from "../../../../src/contracts/memory";
-import { MEMORY_TOOL_NAMES, type TOOL_MODELS } from "../../../../src/runtime/tools/schemas";
+import { MEMORY_TOOL_NAMES, type TOOL_MODELS } from "../../../../src/contracts/toolSchemas";
 import type { AgentIdentity } from "../../toolkit/agents";
 import { toolCalls, type ToolCallEvent } from "../../toolkit/observeMessages";
 import type { PerAdapterOptions } from "../../toolkit/perAdapter";

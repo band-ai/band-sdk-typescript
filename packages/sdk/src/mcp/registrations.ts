@@ -1,4 +1,5 @@
 import type { AdapterToolsProtocol } from "../contracts/protocols";
+import { forwardTools } from "../core/overrideTools";
 import {
   isToolExecutorError,
   toLegacyToolExecutorErrorMessage,
@@ -9,7 +10,7 @@ import {
   MEMORY_TOOL_NAMES,
   TOOL_MODELS,
   getToolDescription,
-} from "../runtime/tools/schemas";
+} from "../contracts/toolSchemas";
 
 export interface McpToolRegistration {
   name: string;
@@ -38,6 +39,40 @@ export interface BuildRegistrationsOptions {
 
 type ToolResolver = (roomId: string) => AdapterToolsProtocol | undefined;
 
+/** The argument a room-scoped tool takes to name the room it runs in. */
+export const ROOM_ID_ARG = "room_id";
+const ROOM_ID_PROPERTY = { type: "string", description: "The room ID to execute this tool in" } as const;
+
+type McpToolSchema = Omit<McpToolRegistration, "execute">;
+
+/**
+ * `tool` scoped to a room: it takes a required {@link ROOM_ID_ARG}, and each
+ * call runs `execute` with that room's tools and its other arguments. A call
+ * naming no known room is refused without running anything.
+ */
+export function scopeToRoom<T>(
+  tool: McpToolSchema,
+  resolver: (roomId: string) => T | undefined,
+  execute: (tools: T, args: Record<string, unknown>) => Promise<McpToolResult>,
+): McpToolRegistration {
+  const { properties, required } = tool.inputSchema;
+  return {
+    ...tool,
+    inputSchema: { type: "object", properties: { ...properties, [ROOM_ID_ARG]: ROOM_ID_PROPERTY }, required: [...required, ROOM_ID_ARG] },
+    execute: async ({ [ROOM_ID_ARG]: roomIdArg, ...args }) => {
+      const roomId = asNonEmptyString(roomIdArg);
+      if (!roomId) {
+        return errorResult(`Missing required ${ROOM_ID_ARG}`);
+      }
+      const tools = resolver(roomId);
+      if (!tools) {
+        return errorResult(`No tool context found for ${ROOM_ID_ARG} ${roomId}`);
+      }
+      return execute(tools, args);
+    },
+  };
+}
+
 /**
  * Build MCP tool registrations with room-scoped tool resolution.
  * Each tool call requires a `room_id` argument to look up the correct tools instance.
@@ -46,22 +81,8 @@ export function buildRoomScopedRegistrations(
   resolver: ToolResolver,
   options: BuildRegistrationsOptions = {},
 ): McpToolRegistration[] {
-  const toolNames = resolveToolNames(options);
-  const registrations = buildRegistrations(toolNames, async (toolName, args) => {
-    const roomId = asNonEmptyString(args.room_id);
-    if (!roomId) {
-      return errorResult("Missing required room_id");
-    }
-
-    const tools = resolver(roomId);
-    if (!tools) {
-      return errorResult(`No tool context found for room_id ${roomId}`);
-    }
-
-    const toolArgs = { ...args };
-    delete toolArgs.room_id;
-    return executeToolCall(tools, toolName, toolArgs);
-  }, { injectRoomId: true });
+  const registrations = toolSchemas(resolveToolNames(options)).map((tool) =>
+    scopeToRoom(tool, resolver, (tools, args) => executeToolCall(tools, tool.name, args)));
 
   if (options.additionalTools) {
     registrations.push(...options.additionalTools);
@@ -77,10 +98,10 @@ export function buildSingleContextRegistrations(
   tools: AdapterToolsProtocol,
   options: BuildRegistrationsOptions = {},
 ): McpToolRegistration[] {
-  const toolNames = resolveToolNames(options);
-  const registrations = buildRegistrations(toolNames, (_toolName, args) => {
-    return executeToolCall(tools, _toolName, args);
-  }, { injectRoomId: false });
+  const registrations: McpToolRegistration[] = toolSchemas(resolveToolNames(options)).map((tool) => ({
+    ...tool,
+    execute: (args) => executeToolCall(tools, tool.name, args),
+  }));
 
   if (options.additionalTools) {
     registrations.push(...options.additionalTools);
@@ -105,40 +126,19 @@ function resolveToolNames(options: BuildRegistrationsOptions): Set<string> {
   return names;
 }
 
-function buildRegistrations(
-  toolNames: Set<string>,
-  executor: (toolName: string, args: Record<string, unknown>) => Promise<McpToolResult>,
-  opts: { injectRoomId: boolean },
-): McpToolRegistration[] {
-  const registrations: McpToolRegistration[] = [];
-
+function toolSchemas(toolNames: Set<string>): McpToolSchema[] {
+  const schemas: McpToolSchema[] = [];
   for (const toolName of toolNames) {
     const model = TOOL_MODELS[toolName as keyof typeof TOOL_MODELS];
-    if (!model) {
-      continue;
+    if (model) {
+      schemas.push({
+        name: toolName,
+        description: getToolDescription(toolName),
+        inputSchema: { type: "object", properties: { ...model.properties }, required: [...model.required] },
+      });
     }
-
-    const properties: Record<string, unknown> = { ...model.properties };
-    const required: string[] = [...model.required];
-
-    if (opts.injectRoomId) {
-      properties.room_id = { type: "string", description: "The room ID to execute this tool in" };
-      required.push("room_id");
-    }
-
-    registrations.push({
-      name: toolName,
-      description: getToolDescription(toolName),
-      inputSchema: {
-        type: "object",
-        properties,
-        required,
-      },
-      execute: (args) => executor(toolName, args),
-    });
   }
-
-  return registrations;
+  return schemas;
 }
 
 async function executeToolCall(
@@ -199,16 +199,20 @@ function serializeValue(value: unknown): string {
 }
 
 /**
- * Resolves the single tools instance for single-room mode. Calls `getToolsForRoom("")`
- * as the sentinel — callers in single-room mode must return their tools instance
- * regardless of the room ID argument.
+ * The tools for single-room mode, resolved through `getToolsForRoom("")` on
+ * every access rather than once: each turn brings its own tools, and a call
+ * must reach the turn in flight. Callers in single-room mode must return
+ * their current tools regardless of the room ID argument.
  */
 export function resolveSingleRoomTools(
   getToolsForRoom: (roomId: string) => AdapterToolsProtocol | undefined,
 ): AdapterToolsProtocol {
-  const tools = getToolsForRoom("");
-  if (!tools) {
-    throw new Error("Single-room mode requires getToolsForRoom(\"\") to return a tools instance");
-  }
-  return tools;
+  const current = (): AdapterToolsProtocol => {
+    const tools = getToolsForRoom("");
+    if (!tools) {
+      throw new Error("Single-room mode requires getToolsForRoom(\"\") to return a tools instance");
+    }
+    return tools;
+  };
+  return forwardTools(current);
 }

@@ -8,8 +8,10 @@ import type {
   LettaMessageCreateParams,
 } from "../src/adapters/letta/LettaAdapter";
 import { LettaHistoryConverter } from "../src/adapters/letta/types";
-import { FakeTools, failureEvents, findFailureEvent, makeMessage, expectTurnFailed } from "./testUtils";
+import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
+import { FakeTools, failureEvents, findFailureEvent, makeMessage, expectTurnFailed, MISSING_REPLY, reportedFailures } from "./testUtils";
 import { describeDeliveryContract } from "./deliveryContract";
+import { CLOSING_TEXT, describeTurnOutcomeContract, turnInput, type TurnScript, NO_REPLY_ARGS, TOOL_REPLY_ARGS, ACT_TOOL, ACT_ARGS } from "./turnOutcomeContract";
 
 // ---------------------------------------------------------------------------
 // Fake Letta client
@@ -104,11 +106,33 @@ function reasoningResponse(reasoning: string, content: string): LettaResponse {
   };
 }
 
+const END_TURN: LettaResponse = { messages: [], stop_reason: { stop_reason: "end_turn" } };
+
+/** Letta's responses for one contract turn; each tool call is a client-side approval the adapter runs. */
+const CONTRACT_RESPONSES: Record<TurnScript, LettaResponse[]> = {
+  decline: [approvalResponse(NO_REPLY_TOOL_NAME, NO_REPLY_ARGS), assistantResponse(CLOSING_TEXT)],
+  toolReply: [approvalResponse(SEND_MESSAGE_TOOL_NAME, TOOL_REPLY_ARGS), assistantResponse(CLOSING_TEXT)],
+  act: [approvalResponse(ACT_TOOL, ACT_ARGS), END_TURN],
+  finalText: [assistantResponse(CLOSING_TEXT)],
+  nothing: [END_TURN],
+};
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 describe("LettaAdapter", () => {
+  describeTurnOutcomeContract([{
+    adapter: "LettaAdapter",
+    turn: async (script, tools) => {
+      const client = new FakeLettaClient();
+      client.responseBatches.push(...CONTRACT_RESPONSES[script]);
+      const adapter = new LettaAdapter({ clientFactory: async () => client });
+      await adapter.onStarted("Agent", "An agent");
+      await adapter.onEvent(turnInput(tools));
+    },
+  }]);
+
   it("creates a per-room agent and forwards the assistant response", async () => {
     const client = new FakeLettaClient();
     client.responseBatches.push(assistantResponse("Hello from Letta!"));
@@ -289,31 +313,7 @@ describe("LettaAdapter", () => {
     expect(tools.messages).toEqual(["Done!"]);
   });
 
-  it.each([
-    { sendResult: { ok: true }, finalText: "I've posted my confirmation.", delivered: [] },
-    { sendResult: { ok: true }, finalText: null, delivered: [] },
-    { sendResult: { ok: false, message: "unknown mention" }, finalText: "Confirmed.", delivered: ["Confirmed."] },
-  ])("treats a band_send_message post as the reply, its final text as a fallback (send: $sendResult, final text: $finalText)", async ({ sendResult, finalText, delivered }) => {
-    const client = new FakeLettaClient();
-    client.responseBatches.push(
-      approvalResponse("band_send_message", { content: "Confirmed.", mentions: ["@user"] }),
-      finalText ? assistantResponse(finalText) : { messages: [], stop_reason: { stop_reason: "end_turn" } },
-    );
-    const adapter = new LettaAdapter({ clientFactory: async () => client });
-    await adapter.onStarted("Agent", "An agent");
-
-    const tools = new FakeTools();
-    tools.executeToolCall = async () => sendResult;
-    await adapter.onMessage(makeMessage("Remember this", "room-posted"), tools, [], null, null, {
-      isSessionBootstrap: false,
-      roomId: "room-posted",
-    });
-
-    expect(tools.messages).toEqual(delivered);
-    expect(failureEvents(tools)).toEqual([]);
-  });
-
-  it("respects maxToolRounds limit", async () => {
+  it("respects maxToolRounds limit, reporting the turn it cut off before a reply", async () => {
     const client = new FakeLettaClient();
     for (let i = 0; i < 20; i++) {
       client.responseBatches.push(
@@ -330,17 +330,9 @@ describe("LettaAdapter", () => {
     await adapter.onStarted("Agent", "An agent");
 
     const tools = new FakeTools();
-    await expectTurnFailed(
-      adapter.onMessage(
-        makeMessage("Loop", "room-limit"),
-        tools,
-        [],
-        null,
-        null,
-        { isSessionBootstrap: false, roomId: "room-limit" },
-      ),
-    );
+    await expectTurnFailed(adapter.onEvent(turnInput(tools, makeMessage("Loop", "room-limit"))));
 
+    expect(reportedFailures(tools.events)).toEqual([MISSING_REPLY]);
     const toolCalls = client.messageCreateCalls.filter((c) =>
       c.params.messages?.some((m) => "type" in m && m.type === "tool_return"),
     );
@@ -646,45 +638,6 @@ describe("LettaAdapter", () => {
 
     // History injection once + 2 actual messages = 3 API calls
     expect(client.messageCreateCalls).toHaveLength(3);
-  });
-
-  it("emits error event when Letta returns no assistant message", async () => {
-    const client = new FakeLettaClient();
-    client.responseBatches.push({
-      messages: [],
-      stop_reason: { stop_reason: "end_turn" },
-    });
-
-    const adapter = new LettaAdapter({
-      clientFactory: async () => client,
-    });
-
-    await adapter.onStarted("Agent", "An agent");
-
-    const tools = new FakeTools();
-    await expectTurnFailed(
-      adapter.onMessage(
-        makeMessage("Hi", "room-empty"),
-        tools,
-        [],
-        null,
-        null,
-        { isSessionBootstrap: false, roomId: "room-empty" },
-      ),
-    );
-
-    expect(tools.messages).toEqual([]);
-    const failureEvent = findFailureEvent(tools);
-    expect(failureEvent).toBeDefined();
-    expect(failureEvent?.metadata?.failure).toMatchObject({
-      provider: "letta",
-      message: "Letta did not return a response.",
-      code: null,
-    });
-    // The no-response branch throws from inside the same try its own catch
-    // guards — without rethrowIfRecoverableTurnFailure, the catch re-reports
-    // the identical failure a second time.
-    expect(failureEvents(tools)).toHaveLength(1);
   });
 
   it("reports, then fails the turn, on a client error", async () => {

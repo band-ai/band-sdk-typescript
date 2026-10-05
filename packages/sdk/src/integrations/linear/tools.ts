@@ -1,3 +1,4 @@
+import type { TurnEffect } from "@band-ai/band-sdk-core";
 import { z } from "zod";
 
 import type { Logger } from "../../core/logger";
@@ -17,6 +18,11 @@ import {
 } from "./activities";
 import { completeLinearSession } from "./bridge";
 import type { SessionRoomStore } from "./types";
+
+// A tool that changes Linear (asks the user, posts the response, edits an
+// issue) did real work, so a turn that only did that is complete. Reads and
+// session narration stay `observe`.
+const LINEAR_ACTION_EFFECT: TurnEffect = "act";
 
 const LOCALHOST_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
@@ -113,6 +119,7 @@ export function createLinearTools(options: CreateLinearToolsOptions): CustomTool
   if (enableElicitation) {
     tools.push({
       name: "linear_ask_user",
+      effect: LINEAR_ACTION_EFFECT,
       description: "Ask the Linear user a question. When options are provided, Linear renders them as a clickable picker (select signal); otherwise the user sees a free-text prompt.",
       schema: z.object({
         session_id: z.string().describe("The Linear agent session ID"),
@@ -138,6 +145,7 @@ export function createLinearTools(options: CreateLinearToolsOptions): CustomTool
 
     tools.push({
       name: "linear_select",
+      effect: LINEAR_ACTION_EFFECT,
       description:
         "Present the Linear user with a set of clickable options via a select elicitation. " +
         "Use this instead of linear_ask_user when the user should pick from a known list of choices.",
@@ -168,6 +176,7 @@ export function createLinearTools(options: CreateLinearToolsOptions): CustomTool
 
     tools.push({
       name: "linear_request_auth",
+      effect: LINEAR_ACTION_EFFECT,
       description: "Ask the Linear user to link an external account by presenting an authentication button. The user sees a 'Link account' UI that opens the provided URL.",
       schema: z.object({
         session_id: z.string().describe("The Linear agent session ID"),
@@ -196,6 +205,7 @@ export function createLinearTools(options: CreateLinearToolsOptions): CustomTool
   // than the postThought/postAction/postError functions that addSessionBodyTool expects.
   tools.push({
     name: "linear_post_response",
+    effect: LINEAR_ACTION_EFFECT,
     description: "Post the final response to the Linear agent session and mark the session completed when a store is available.",
     schema: sessionBodySchema,
     handler: async (args: Record<string, unknown>) => {
@@ -212,6 +222,7 @@ export function createLinearTools(options: CreateLinearToolsOptions): CustomTool
   tools.push(
     {
       name: "linear_update_plan",
+      effect: LINEAR_ACTION_EFFECT,
       description: "Update the structured plan for the Linear agent session. Renders as a native checklist in the Linear Agent Session UI with live status indicators.",
       schema: z.object({
         session_id: z.string().describe("The Linear agent session ID"),
@@ -338,6 +349,7 @@ function addIssueTools(input: {
     },
     {
       name: "linear_update_issue",
+      effect: LINEAR_ACTION_EFFECT,
       description: "Update a Linear issue (title/description/state/assignee/priority/etc.) from the session workflow.",
       schema: requiredIssueIdSchema.extend({
         title: z.string().optional().describe("New issue title"),
@@ -388,6 +400,7 @@ function addIssueTools(input: {
     },
     {
       name: "linear_add_issue_comment",
+      effect: LINEAR_ACTION_EFFECT,
       description: "Add a new comment to a Linear issue.",
       schema: requiredIssueIdSchema.extend({
         body: z.string().describe("Comment body (Markdown)"),
@@ -650,6 +663,7 @@ function addSessionCreationTools(input: {
   if (typeof createOnIssue === "function") {
     tools.push({
       name: "linear_create_session_on_issue",
+      effect: LINEAR_ACTION_EFFECT,
       description:
         "Create a new Linear agent session on an existing issue. Use this when the conversation produces work that should be tracked against a known Linear issue and no session exists yet.",
       schema: sessionCreationSchema,
@@ -670,6 +684,7 @@ function addSessionCreationTools(input: {
   if (typeof createOnComment === "function") {
     tools.push({
       name: "linear_create_session_on_comment",
+      effect: LINEAR_ACTION_EFFECT,
       description:
         "Create a new Linear agent session on a specific comment thread. Use this to attach agent work to an existing discussion on a Linear issue.",
       schema: sessionCreationBaseSchema.extend({
@@ -692,6 +707,7 @@ function addSessionCreationTools(input: {
   if (typeof createIssueFn === "function") {
     tools.push({
       name: "linear_create_issue",
+      effect: LINEAR_ACTION_EFFECT,
       description:
         "Create a new Linear issue from scratch. Use this when the Band conversation produces work that should be tracked as a new Linear issue. " +
         "After creating the issue, call linear_create_session_on_issue to attach an agent session. " +
