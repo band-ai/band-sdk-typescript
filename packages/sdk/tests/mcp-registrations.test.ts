@@ -5,8 +5,10 @@ import {
   buildSingleContextRegistrations,
   successResult,
   errorResult,
+  ROOM_ID_ARG,
   type McpToolRegistration,
 } from "../src/mcp/registrations";
+import { NO_REPLY_TOOL_NAME, ROOM_TOOL_NAMES, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
 import { FakeTools } from "./testUtils";
 
 describe("MCP registrations", () => {
@@ -116,6 +118,32 @@ describe("MCP registrations", () => {
       const result = await sendMessage.execute({ room_id: "unknown", content: "hello" });
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain("unknown");
+    });
+
+    it("with roomlessTools, takes room_id on room tools only, and runs the rest on roomlessTools", async () => {
+      const roomTools = new FakeTools();
+      const roomlessTools = new FakeTools();
+      roomTools.executeToolCall = vi.fn().mockResolvedValue({ ok: true });
+      roomlessTools.executeToolCall = vi.fn().mockResolvedValue({ id: "room-new" });
+      const resolver = vi.fn().mockReturnValue(roomTools);
+
+      const registrations = buildRoomScopedRegistrations(resolver, { roomlessTools, enableMemoryTools: true, enableContactTools: true });
+      const takesRoom = registrations.filter((reg) => ROOM_ID_ARG in reg.inputSchema.properties).map((reg) => reg.name);
+      expect(new Set(takesRoom)).toEqual(ROOM_TOOL_NAMES);
+      for (const reg of registrations.filter((reg) => ROOM_TOOL_NAMES.has(reg.name))) {
+        expect(reg.inputSchema.required).toContain(ROOM_ID_ARG);
+      }
+
+      const byName = (name: string) => registrations.find((reg) => reg.name === name)!;
+      expect((await byName("band_create_chatroom").execute({})).content[0].text).toBe(JSON.stringify({ id: "room-new" }));
+      await byName(NO_REPLY_TOOL_NAME).execute({});
+      expect(roomlessTools.executeToolCall).toHaveBeenCalledWith("band_create_chatroom", {});
+      expect(roomlessTools.executeToolCall).toHaveBeenCalledWith(NO_REPLY_TOOL_NAME, {});
+
+      await byName(SEND_MESSAGE_TOOL_NAME).execute({ [ROOM_ID_ARG]: "room-1", content: "hello" });
+      expect(resolver).toHaveBeenCalledWith("room-1");
+      expect(roomTools.executeToolCall).toHaveBeenCalledWith(SEND_MESSAGE_TOOL_NAME, { content: "hello" });
+      expect(roomlessTools.executeToolCall).toHaveBeenCalledTimes(2);
     });
   });
 

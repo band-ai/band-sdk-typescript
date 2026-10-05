@@ -18,6 +18,8 @@ export interface BandMcpStdioServerOptions {
   enableMemoryTools?: boolean;
   enableContactTools?: boolean;
   additionalTools?: McpToolRegistration[];
+  /** With a `tools` resolver, what the tools outside `ROOM_TOOL_NAMES` run on, registered without `room_id`. */
+  roomlessTools?: AdapterToolsProtocol;
   capabilities?: import("@modelcontextprotocol/sdk/types.js").ServerCapabilities;
   instructions?: string;
   stdin?: Readable;
@@ -36,6 +38,7 @@ export class BandMcpStdioServer {
       enableMemoryTools: options.enableMemoryTools,
       enableContactTools: options.enableContactTools,
       additionalTools: options.additionalTools,
+      roomlessTools: options.roomlessTools,
     };
 
     if (typeof options.tools === "function") {

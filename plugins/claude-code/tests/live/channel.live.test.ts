@@ -4,14 +4,16 @@
  * posts back, each agent is held by one session at a time, and each session
  * connects as the agent it selects.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 
 import { CHANNEL_CAPABILITY, EXIT_FAILED, EXIT_OK } from "../../src/channel";
 import { writeSavedAgents } from "../../src/config";
+import { FIND_ROOMS_TOOL_NAME, type FoundRoom } from "../../src/rooms";
+import { deleteRoomsBulk } from "../../../../packages/sdk/tests/integration/support/liveHarness";
 import { Agents, type AgentIdentity } from "../../../../packages/sdk/tests/baseline/toolkit/agents";
-import { liveRun } from "../../../../packages/sdk/tests/baseline/toolkit/liveRun";
+import { liveRun, warnTeardown } from "../../../../packages/sdk/tests/baseline/toolkit/liveRun";
 import { DELIVERY_STATUS, observeAgent } from "../../../../packages/sdk/tests/baseline/toolkit/observeDelivery";
-import { observeRoom, REPLY_WAIT } from "../../../../packages/sdk/tests/baseline/toolkit/observeMessages";
+import { history, MESSAGE_TYPE, observeRoom, REPLY_WAIT } from "../../../../packages/sdk/tests/baseline/toolkit/observeMessages";
 import { Rooms, type Room } from "../../../../packages/sdk/tests/baseline/toolkit/rooms";
 import { ClaudeCodeDirs } from "../support/claudeCodeDirs";
 import { agentsCommand, PluginProcess } from "./support/pluginProcess";
@@ -30,6 +32,22 @@ function savedAs(identity: AgentIdentity, name = "main"): ClaudeCodeDirs {
   const dirs = new ClaudeCodeDirs();
   writeSavedAgents(dirs.dataDir, { [name]: { agentId: identity.id, apiKey: identity.apiKey, handle: null } });
   return dirs;
+}
+
+/** Calls `name` as Claude would, and returns its text; a tool error fails the test. */
+async function callTool(plugin: PluginProcess, name: string, args: Record<string, unknown>): Promise<string> {
+  const result = await plugin.client.callTool({ name, arguments: args });
+  const [first] = result.content as Array<{ text: string }>;
+  expect(result.isError, first?.text).toBeFalsy();
+  return first?.text ?? "";
+}
+
+/** Deletes a room the agent created once the test ends, as the user, who must be in it. */
+function deletedWithTest(roomId: string): void {
+  onTestFinished(async () => {
+    const { env } = await liveRun();
+    await deleteRoomsBulk(env.restUrl, env.userApiKey, [roomId]).catch(warnTeardown(`delete room ${roomId}`));
+  });
 }
 
 /** Resolves once `plugin` is connected to Band: a mention posted now reaches it. */
@@ -65,6 +83,35 @@ describe("the Claude Code plugin on the live platform", () => {
     expect((await plugin.leave()).code).toBe(EXIT_OK);
     await using next = await PluginProcess.start(dirs.env("session-2"));
     await expectServing(next, room, identity, "still there?");
+  });
+
+  it("creates a room with another agent and works there, finds it again, and posts to a room no message came from", async () => {
+    const { identity, room } = await agentInRoom("rooms");
+    const peer = await Agents.provision("claude-code", "rooms-peer");
+    using dirs = savedAs(identity);
+    await using plugin = await PluginProcess.start(dirs.env("session-1"));
+
+    const roomId = await callTool(plugin, "band_create_chatroom", {});
+    deletedWithTest(roomId);
+    await callTool(plugin, "band_add_participant", { room_id: roomId, name: peer.name });
+    const peers = JSON.parse(await callTool(plugin, "band_lookup_peers", { room_id: roomId })) as { data: Array<{ name: string; type: string }> };
+    const owner = peers.data.find((candidate) => candidate.type === "User");
+    expect(owner, "the owner is among the agent's peers").toBeDefined();
+    await callTool(plugin, "band_add_participant", { room_id: roomId, name: owner!.name });
+    await callTool(plugin, "band_send_message", { room_id: roomId, content: "let's start", mentions: [peer.id] });
+
+    const posted = (await history({ id: roomId }, MESSAGE_TYPE.Text)).filter((message) => message.senderId === identity.id);
+    expect(posted).toEqual([expect.objectContaining({ mentionIds: [peer.id] })]);
+    expect(posted[0]?.content.endsWith(" let's start")).toBe(true);
+
+    const found = JSON.parse(await callTool(plugin, FIND_ROOMS_TOOL_NAME, { participants: [peer.name] })) as FoundRoom[];
+    expect(found.map((match) => match.room_id)).toEqual([roomId]);
+
+    const [user] = (await Rooms.participantIds(room)).filter((id) => id !== identity.id);
+    await callTool(plugin, "band_send_message", { room_id: room.id, content: "unprompted", mentions: [user] });
+    // Nothing was posted in the room before, so wait on its observer's frames rather than for a reply.
+    const unprompted = await room.messages.next((message) => message.sender_id === identity.id);
+    expect(unprompted.content.endsWith(" unprompted")).toBe(true);
   });
 
   it("refuses a second session while the first holds the agent", async () => {

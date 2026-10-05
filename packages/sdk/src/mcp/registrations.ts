@@ -8,6 +8,7 @@ import {
   BASE_TOOL_NAMES,
   CONTACT_TOOL_NAMES,
   MEMORY_TOOL_NAMES,
+  ROOM_TOOL_NAMES,
   TOOL_MODELS,
   getToolDescription,
 } from "../contracts/toolSchemas";
@@ -35,6 +36,11 @@ export interface BuildRegistrationsOptions {
   enableMemoryTools?: boolean;
   enableContactTools?: boolean;
   additionalTools?: McpToolRegistration[];
+  /**
+   * What room-scoped registrations run the tools outside `ROOM_TOOL_NAMES` on;
+   * with it, those tools register without `room_id`.
+   */
+  roomlessTools?: AdapterToolsProtocol;
 }
 
 type ToolResolver = (roomId: string) => AdapterToolsProtocol | undefined;
@@ -81,8 +87,11 @@ export function buildRoomScopedRegistrations(
   resolver: ToolResolver,
   options: BuildRegistrationsOptions = {},
 ): McpToolRegistration[] {
+  const { roomlessTools } = options;
   const registrations = toolSchemas(resolveToolNames(options)).map((tool) =>
-    scopeToRoom(tool, resolver, (tools, args) => executeToolCall(tools, tool.name, args)));
+    roomlessTools && !ROOM_TOOL_NAMES.has(tool.name)
+      ? bindTool(tool, roomlessTools)
+      : scopeToRoom(tool, resolver, (tools, args) => executeToolCall(tools, tool.name, args)));
 
   if (options.additionalTools) {
     registrations.push(...options.additionalTools);
@@ -98,16 +107,17 @@ export function buildSingleContextRegistrations(
   tools: AdapterToolsProtocol,
   options: BuildRegistrationsOptions = {},
 ): McpToolRegistration[] {
-  const registrations: McpToolRegistration[] = toolSchemas(resolveToolNames(options)).map((tool) => ({
-    ...tool,
-    execute: (args) => executeToolCall(tools, tool.name, args),
-  }));
+  const registrations = toolSchemas(resolveToolNames(options)).map((tool) => bindTool(tool, tools));
 
   if (options.additionalTools) {
     registrations.push(...options.additionalTools);
   }
 
   return registrations;
+}
+
+function bindTool(tool: McpToolSchema, tools: AdapterToolsProtocol): McpToolRegistration {
+  return { ...tool, execute: (args) => executeToolCall(tools, tool.name, args) };
 }
 
 function resolveToolNames(options: BuildRegistrationsOptions): Set<string> {

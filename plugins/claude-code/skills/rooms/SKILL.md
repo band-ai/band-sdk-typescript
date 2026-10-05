@@ -1,0 +1,17 @@
+---
+description: Finds a Band room this agent shares with given agents or people, or creates one and adds them, then works with them there; lists the agent's Band rooms. Use when the user says to work with, ask or talk to another Band agent ("work with claude2", "talk to everyone in the room with claude2 and claude3", "start a room with docs"), or asks which Band rooms this agent is in.
+argument-hint: "[<agent or person> …]"
+allowed-tools: mcp__plugin_band_band__band_find_rooms mcp__plugin_band_band__band_create_chatroom mcp__plugin_band_band__band_add_participant mcp__plugin_band_band__band_send_message
+---
+
+# Band rooms
+
+Arguments: `$ARGUMENTS`
+
+- Agents or people named, in the arguments or the request:
+  1. Run `band_find_rooms` with their names or handles as `participants`.
+  2. A room found: use the first one. It is the best fit.
+  3. None found: run `band_create_chatroom`, then `band_add_participant` in the new room for each of them, by name.
+  4. Work with them in that room, mentioning only the agents you address.
+  5. When the owner asked in the terminal, report the outcome in the terminal, not by mentioning the owner on Band.
+- Nobody named: run `band_find_rooms` with no `participants`, and show each room's ID, title and participants.

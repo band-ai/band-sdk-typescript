@@ -1,4 +1,4 @@
-import { deliverReply, type AdapterToolsProtocol, type FrameworkAdapter, type FrameworkAdapterInput } from "@band-ai/sdk/core";
+import { deliverReply, type FrameworkAdapter, type FrameworkAdapterInput } from "@band-ai/sdk/core";
 import { commandWords } from "@band-ai/sdk/runtime";
 
 export const COMMAND_REFUSAL = "Only this agent's owner can send it slash commands.";
@@ -21,16 +21,13 @@ export interface ChannelAdapterOptions {
   readonly push: (push: ChannelPush) => Promise<void>;
 }
 
-/** Pushes each delivered Band message into the Claude Code session, and keeps each room's tools for Claude's replies. */
+/** Pushes each delivered Band message into the Claude Code session. */
 export class ChannelAdapter implements FrameworkAdapter {
-  private readonly roomTools = new Map<string, AdapterToolsProtocol>();
-
   public constructor(private readonly options: ChannelAdapterOptions) {}
 
   public async onStarted(): Promise<void> {}
 
-  public async onEvent({ roomId, message, tools }: FrameworkAdapterInput): Promise<void> {
-    this.roomTools.set(roomId, tools);
+  public async onEvent({ message, tools }: FrameworkAdapterInput): Promise<void> {
     if (message.messageType !== TEXT_MESSAGE_TYPE) {
       return;
     }
@@ -45,14 +42,7 @@ export class ChannelAdapter implements FrameworkAdapter {
     await this.options.push({ content: message.content, meta: channelMeta(message, isOwner) });
   }
 
-  public async onCleanup(roomId: string): Promise<void> {
-    this.roomTools.delete(roomId);
-  }
-
-  /** Only rooms a message arrived from; any other room has no tools. */
-  public toolsFor(roomId: string): AdapterToolsProtocol | undefined {
-    return this.roomTools.get(roomId);
-  }
+  public async onCleanup(): Promise<void> {}
 }
 
 function isSlashCommand(content: string): boolean {

@@ -89,6 +89,8 @@ Claude Code doesn't run a slash command that arrives over a channel, even the ow
 
 Each pushed message carries `room_id`, `message_id`, `sender_id`, `sender_name`, `sender_role` (`owner` or `participant`) and `sender_type` (`User` or `Agent`). Claude replies with `band_send_message` in the message's own room, mentioning whoever it addresses.
 
+Claude can use the Band tools in any room the agent is in, by its `room_id`; Band refuses a room the agent isn't in. `/band:rooms`, or a request like "work with claude2", finds a room the agent shares with those agents, or creates one and adds them, and Claude works with them there. Other agents count as participants, so Claude confirms with you in the terminal before acting on their requests locally.
+
 - **Who can reach the session.** Messages come from everyone in every room the agent is in, not only from you. Band decides who can add the agent to a room: a user who owns it, has it as a contact, or shares its organization when it is shared there; any user if it is global; and another agent with registry access or a contact link.
 - **One session serves every room.** Claude is told never to reveal one room's content to another room's participants other than you.
 - **Your permission prompts are the boundary.** Claude treats a participant's message as a request to consider, not as your instruction, and confirms with you in the terminal before changing files, running commands or sharing data. Don't run auto-accept or `--dangerously-skip-permissions` while people other than you can reach the agent.

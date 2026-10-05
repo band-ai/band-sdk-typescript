@@ -3,21 +3,26 @@
  * except for the network: delivered messages become channel pushes, and
  * Claude's tool calls post back to the room they came from.
  */
+import { ROOM_TOOL_NAMES } from "@band-ai/sdk/runtime";
 import { describe, expect, test } from "vitest";
 
 import { COMMAND_REFUSAL, SENDER_ROLE } from "../../src/adapter";
 import { CHANNEL_CAPABILITY, EXIT_OK } from "../../src/channel";
+import { FIND_ROOMS_TOOL_NAME, type FoundRoom } from "../../src/rooms";
 import { agent, AGENT_HANDLE, AGENT_ID, BandPlatform, person, type BandRoom } from "../../../../packages/sdk/tests/flows/support/bandPlatform";
-import { ClaudeCodeSession } from "./support/claudeCode";
+import { ClaudeCodeSession, type ToolReply } from "./support/claudeCode";
 
 const OWNER = "owner-1";
 const USER = "user-1";
 const PEER_AGENT = "agent-2";
-const PEOPLE = [person(OWNER), person(USER), agent(PEER_AGENT)];
+const PEER_HANDLE = "owner/claude2";
+const PEER = { ...agent(PEER_AGENT), handle: PEER_HANDLE };
+const PEOPLE = [person(OWNER), person(USER), PEER];
 const ROOM = "room-1";
 const LATER_ROOM = "room-2";
 const PLATFORM_DOWN = new Error("platform unavailable");
 const MENTION = `@[[${AGENT_ID}]]`;
+const SEND_MESSAGE = "band_send_message";
 
 interface Fixture {
   platform: BandPlatform;
@@ -129,28 +134,58 @@ describe("Claude's Band tools", () => {
   it("posts to a room a message came from", async ({ band, session }) => {
     await session.pushOf(await band.room.say(USER, `${MENTION} ping`));
 
-    const reply = await session.callTool("band_send_message", { room_id: ROOM, content: "pong", mentions: [USER] });
+    const reply = await session.callTool(SEND_MESSAGE, { room_id: ROOM, content: "pong", mentions: [USER] });
 
     expect(reply.isError).toBe(false);
     expect(band.room.messages).toEqual([expect.objectContaining({ content: "pong", mentions: [USER] })]);
   });
 
-  it("refuses a room the agent was removed from", async ({ band, session }) => {
+  it("posts to a room the agent is in that no message came from", async ({ band, session }) => {
+    const reply = await session.callTool(SEND_MESSAGE, { room_id: ROOM, content: "hi", mentions: [USER] });
+
+    expect(reply.isError).toBe(false);
+    expect(band.room.messages).toEqual([expect.objectContaining({ content: "hi", mentions: [USER] })]);
+  });
+
+  it("posts to a room the agent was added to mid-session", async ({ band, session }) => {
+    const later = await band.platform.room(LATER_ROOM);
+
+    expect((await session.callTool(SEND_MESSAGE, { room_id: LATER_ROOM, content: "hi", mentions: [USER] })).isError).toBe(false);
+    expect(later.messages).toEqual([expect.objectContaining({ content: "hi", mentions: [USER] })]);
+  });
+
+  it("passes on Band's refusal of a room the agent was removed from", async ({ band, session }) => {
     await session.pushOf(await band.room.say(USER, `${MENTION} ping`));
     await band.room.remove();
     // Agent-level events are handled in order: once a room added afterwards serves, the removal is torn down.
     const later = await band.platform.room(LATER_ROOM);
     await session.pushOf(await later.say(USER, `${MENTION} still here`));
 
-    const reply = await session.callTool("band_send_message", { room_id: ROOM, content: "pong", mentions: [USER] });
-
-    expect(reply).toEqual({ isError: true, text: `No tool context found for room_id ${ROOM}` });
+    expectRefusedByBand(await session.callTool(SEND_MESSAGE, { room_id: ROOM, content: "pong", mentions: [USER] }));
   });
 
-  it("refuses a room no message came from", async ({ session }) => {
-    const reply = await session.callTool("band_send_message", { room_id: "room-unseen", content: "hi", mentions: [USER] });
+  it("passes on Band's refusal of a room the agent was never in", async ({ session }) => {
+    expectRefusedByBand(await session.callTool(SEND_MESSAGE, { room_id: "room-unseen", content: "hi", mentions: [USER] }));
+  });
 
-    expect(reply).toEqual({ isError: true, text: "No tool context found for room_id room-unseen" });
+  it("creates a room, adds another agent and works with it there, before Band's room_added has been handled", async ({ band, session }) => {
+    const created = await session.callTool("band_create_chatroom", {});
+    const roomId = created.text;
+
+    expect(created.isError).toBe(false);
+    expect((await session.callTool("band_add_participant", { room_id: roomId, name: PEER_AGENT })).isError).toBe(false);
+    expect((await session.callTool(SEND_MESSAGE, { room_id: roomId, content: "let's start", mentions: [PEER_AGENT] })).isError).toBe(false);
+    expect(band.platform.rest.added.entries).toEqual([{ roomId, participantId: PEER_AGENT }]);
+    expect(band.platform.created(roomId).messages).toEqual([expect.objectContaining({ content: "let's start", mentions: [PEER_AGENT] })]);
+  });
+
+  it("takes a room_id on exactly the tools that act on a room", async ({ session }) => {
+    const tools = await session.tools();
+    const takesRoom = tools.filter((tool) => tool.inputSchema.required?.includes("room_id")).map((tool) => tool.name);
+
+    expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["band_create_chatroom", "band_no_reply", FIND_ROOMS_TOOL_NAME]));
+    expect(takesRoom.sort()).toEqual(tools.map((tool) => tool.name).filter((name) => ROOM_TOOL_NAMES.has(name)).sort());
+    expect(tools.filter((tool) => "room_id" in (tool.inputSchema.properties ?? {})).map((tool) => tool.name).sort()).toEqual(takesRoom.sort());
   });
 
   it("offers neither memory nor contact tools", async ({ session }) => {
@@ -158,6 +193,36 @@ describe("Claude's Band tools", () => {
 
     expect(names).toContain("band_send_message");
     expect(names.filter((name) => /memor|contact/.test(name))).toEqual([]);
+  });
+});
+
+describe("band_find_rooms", () => {
+  it("puts the smaller of two rooms with the agent first", async ({ band, session }) => {
+    await band.platform.room(LATER_ROOM, [PEER]);
+
+    expect((await findRooms(session, [PEER_AGENT])).map((room) => room.room_id)).toEqual([LATER_ROOM, ROOM]);
+  });
+
+  it("finds a room it created by the added agent's handle, with or without its @", async ({ session }) => {
+    const roomId = (await session.callTool("band_create_chatroom", {})).text;
+    await session.callTool("band_add_participant", { room_id: roomId, name: PEER_AGENT });
+
+    for (const handle of [PEER_HANDLE, `@${PEER_HANDLE.toUpperCase()}`]) {
+      expect(await findRooms(session, [handle]), handle).toEqual([
+        { room_id: roomId, title: expect.any(String), participants: [{ name: PEER_AGENT, handle: PEER_HANDLE, type: "Agent" }] },
+        expect.objectContaining({ room_id: ROOM }),
+      ]);
+    }
+  });
+
+  it("finds nothing for someone in none of the agent's rooms", async ({ session }) => {
+    expect(await findRooms(session, ["nobody"])).toEqual([]);
+  });
+
+  it("lists every room the agent is in when given nobody", async ({ band, session }) => {
+    await band.platform.room(LATER_ROOM, [PEER]);
+
+    expect((await findRooms(session)).map((room) => room.room_id).sort()).toEqual([ROOM, LATER_ROOM]);
   });
 });
 
@@ -242,3 +307,16 @@ describe("when Claude Code exits", () => {
     expect(band.platform.transport.isConnected()).toBe(false);
   });
 });
+
+async function findRooms(session: ClaudeCodeSession, participants?: string[]): Promise<FoundRoom[]> {
+  const reply = await session.callTool(FIND_ROOMS_TOOL_NAME, participants ? { participants } : {});
+  expect(reply.isError).toBe(false);
+  return JSON.parse(reply.text) as FoundRoom[];
+}
+
+/** How a tool call reports Band's 404 for a room the agent isn't in. */
+function expectRefusedByBand(reply: ToolReply): void {
+  expect(reply.isError).toBe(true);
+  expect(reply.text.startsWith(`Error executing ${SEND_MESSAGE}: NotFoundError`), reply.text).toBe(true);
+  expect(reply.text).toContain("Status code: 404");
+}

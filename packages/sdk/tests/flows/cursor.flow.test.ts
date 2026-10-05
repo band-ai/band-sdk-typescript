@@ -606,19 +606,24 @@ describe("Cursor in a Band room", () => {
     expect(room.outcomes(message)).toEqual(["processed"]);
   });
 
-  // The cancel closes the ACP connection under the turn, whose own failure report completes it first.
-  it("reports a handed-back turn cancelled by the agent leaving the room once, by its own failure, not a missing reply", async () => {
+  // The cancel closes the ACP connection under the turn, whose own failure report completes it first; Band refuses
+  // that report, since the agent has left the room.
+  it("ends a handed-back turn cancelled by the agent leaving the room once, by its own failure, not a missing reply", async () => {
     const logger = makeLoggerSpy();
     await using session = await cursorRoom({ logger });
-    const { room } = session;
+    const { room, platform } = session;
     const { message } = await session.start((turn) => turn.ask(MODE), 1);
     expect(await room.outcome(message)).toBe("processed");
 
     await room.remove();
     // Logged once the cancelled turn has fully unwound, past the point it would report.
     await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledWith("cursor_acp.released_turn_failed", expect.anything()));
-    expect(room.failures).toHaveLength(1);
-    expect(room.failures).not.toContainEqual(MISSING_REPLY);
+    expect(logger.warn.mock.calls.filter(([event]) => event === "cursor_acp.released_turn_failed")).toHaveLength(1);
+    expect(platform.rest.refused.entries).toEqual([{ roomId: room.id, call: "createChatEvent" }]);
+
+    // The runtime keeps serving the agent's other rooms.
+    const otherRoom = await platform.room("room-2");
+    expect(await otherRoom.exchange(OWNER, CURSOR_COMMAND)).toEqual([SAYS.pendingList([])]);
   });
 
   // `reportTurnFailure` swallows a refused report, so the turn's verdict still reads missing_reply.
