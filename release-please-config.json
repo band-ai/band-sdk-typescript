@@ -4,15 +4,13 @@
   "packages": {
     "packages/sdk": {
       "package-name": "@band-ai/sdk",
-      "changelog-path": "CHANGELOG.md",
-      "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true
+      "release-as": "1.0.0",
+      "changelog-path": "CHANGELOG.md"
     },
     "plugins/openclaw": {
       "package-name": "@band-ai/openclaw-channel-band",
+      "release-as": "1.0.0",
       "changelog-path": "CHANGELOG.md",
-      "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
       "extra-files": [
         {
           "type": "json",
@@ -24,8 +22,6 @@
     "plugins/claude-code": {
       "package-name": "@band-ai/claude-code-plugin",
       "changelog-path": "CHANGELOG.md",
-      "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
       "initial-version": "0.1.0",
       "extra-files": [
         {
