@@ -13,9 +13,9 @@ feature branch ──(squash PR)──▶ main ──(merge release PR)──▶
 
 - `main` — the single trunk. Ordinary feature work is squash-merged here, and it is
   also the release branch.
-- There is no promotion hop. Release Please keeps a standing **release PR** per
-  package up to date on `main`; merging one is the deliberate "cut a release"
-  action for that package.
+- There is no promotion hop. Release Please keeps a standing **release PR** up to
+  date on `main`; merging that release PR is the deliberate "cut a release"
+  action.
 
 Because feature work and release commits live on the same branch, there is no
 back-merge to reconcile after a release.
@@ -175,7 +175,7 @@ installation permission. A separate minimal publish job receives `id-token:
 write`; it never installs dependencies or runs project build code.
 
 1. **Determine release mode** — if a `.release-hold` file exists at the repo
-   root, the run goes PR-only: Release Please still maintains the release PRs, but
+   root, the run goes PR-only: Release Please still maintains the release PR, but
    `skip-github-release` suppresses tagging. This is the brake to pull during a
    rename or a half-finished migration.
 2. **Verify release intent** (`scripts/assert-release-intent.mjs`) — ordinary
@@ -186,8 +186,8 @@ write`; it never installs dependencies or runs project build code.
    moved paths is compared with its old location. CI runs the same
    check so a held or inconsistent package release cannot merge once `ci-status`
    is required.
-3. **Release Please** opens/updates each package's release PR, or — when one
-   merges — tags that package's release.
+3. **Release Please** opens/updates the release PR, or — when a release PR merges
+   — tags the release and updates the changelogs and versions.
 4. **Resolve release state** (`scripts/resolve-release-state.mjs`) — writes the
    packages this run releases, in list order, to the `packages` output. Normal
    runs read Release Please's per-package outputs: each created flag is parsed

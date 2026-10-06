@@ -153,11 +153,11 @@ branch to promote to. Releases follow [Semantic Versioning](https://semver.org/)
 - **MINOR**: New backward-compatible features
 - **PATCH**: Bug fixes
 
-Every releasable merge to `main` updates a standing **release PR** for each
-package it touches (that package's version bump + changelog), maintained by
-Release Please; non-release commit types may produce no update. Nothing
-publishes until a maintainer merges a release PR. Merging one tags that package
-and triggers `release.yml`, which publishes it to npm with provenance.
+Every releasable merge to `main` updates a standing **release PR** (the version
+bumps + changelogs) that Release Please maintains; non-release commit types may
+produce no update. Nothing publishes until a maintainer merges that release PR.
+Merging it tags whichever package releases are ready and triggers `release.yml`,
+which publishes each selected package independently to npm with provenance.
 
 Merge release PRs with a merge commit or squash merge, never rebase merge, so
 the release remains easy to audit. The safety guard also compares the full PR or
@@ -176,8 +176,8 @@ must have matching stable versions, and the release hold applies to adding it.
 ### Holding releases
 
 Creating a `.release-hold` file at the repo root puts the pipeline in PR-only
-mode: Release Please keeps the release PRs current, but nothing is tagged or
-published. Use it while a rename or migration is mid-flight. **Do not merge a
+mode: Release Please keeps the release PR current, but nothing is tagged or
+published. Use it while a rename or migration is mid-flight. **Do not merge the
 release PR while the hold exists**: CI rejects any held version transition before
 merge, and the release workflow checks the same invariant before tag creation.
 Delete the hold in the reviewed release PR only when the migration is ready.
@@ -206,8 +206,8 @@ no separate hotfix or release branch to cherry-pick between:
    commit so Release Please scores a **PATCH** bump.
 2. Open a PR to `main`, get it reviewed and merged (squash) like normal — CI and
    branch protection still apply; don't bypass them.
-3. Release Please updates the affected package's release PR with its patch
-   bump. To ship
+3. Release Please updates the standing release PR with the affected package's
+   patch bump. To ship
    immediately, merge that release PR right away; `release.yml` then tags and
    publishes the patch. (Leaving it unmerged just means the fix ships with the
    next release.)
