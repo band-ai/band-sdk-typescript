@@ -2,6 +2,7 @@ import { expect } from "vitest";
 
 import { SEND_MESSAGE_TOOL_NAME } from "../../../src/contracts/toolSchemas";
 import { parseToolPayload } from "../../../src/converters/shared";
+import { resolveMentions } from "../../../src/runtime/formatters";
 import type { CapturedMessage, ToolCallEvent, ToolResultEvent } from "./observeMessages";
 
 /** A returned message ID proves delivery only when it identifies the actual room reply. */
@@ -20,7 +21,8 @@ export function assertToolReply(
     if (record.success !== true || record.error != null || typeof record.id !== "string" || !record.id) return [];
     const reply = replies.find((message) => message.id === record.id);
     return reply && reply.senderId === expected.senderId && reply.mentionIds.includes(expected.recipientId)
-      && typeof call.args.content === "string" && reply.content.includes(call.args.content)
+      && typeof call.args.content === "string"
+      && resolveMentions(reply.content, reply.metadata).includes(resolveMentions(call.args.content, reply.metadata))
       && call.args.content.toLowerCase().includes(expected.marker.toLowerCase()) ? [reply] : [];
   });
   expect(delivered, "successful send-tool results matching a stored reply to the intended recipient").toHaveLength(1);

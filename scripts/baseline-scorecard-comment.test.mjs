@@ -70,6 +70,15 @@ const evidence = () => {
   return { sdk, plugin: lane("plugin", [testCase("plugin passes")]), matrix: projectLiveRun(sdk) };
 };
 
+test("red reports sanitize the same evidence before rendering JSON and Markdown", () => {
+  const base = evidence();
+  base.matrix[0].scenario = "behavior.band_a_fixturesecret";
+  const { report, markdown } = assembleReport({ identity, evidence: base, metadata: metadata() });
+  assert.equal(report.verdict, "FAIL");
+  assert.ok(!JSON.stringify(report).includes("band_a_fixturesecret"));
+  assert.ok(!markdown.includes("band_a_fixturesecret"));
+});
+
 test("October 8 renders failed plugin tests before green SDK cells, and separates test counts", () => {
   const historicalRoster = new AdapterRegistry(registry.ids().map((id) => ({ ...registry.get(id), ...(id === "openai" ? { pending: "needs an OPENAI_API_KEY provisioned in CI" } : {}) })));
   const sdkTests = Array.from({ length: 147 }, (_, index) => testCase(index === 0 ? "anthropic + google-adk" : "anthropic", {

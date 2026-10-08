@@ -221,7 +221,7 @@ jobs:
         run: pnpm build
 
       - name: Verify isolated shipped Claude Code plugin
-        run: pnpm --filter @band-ai/sdk exec tsx ../../plugins/claude-code/tests/integration/plugin-bundle.ts
+        run: pnpm --fail-if-no-match --filter @band-ai/sdk exec tsx ../../plugins/claude-code/tests/integration/plugin-bundle.ts
 
       - name: Verify SDK ESM imports
         working-directory: packages/sdk

@@ -38,10 +38,10 @@ export function validateMetadata(metadata, identity) {
   return { problems, outcomes };
 }
 
-export function assembleReport({ evidence, metadata, identity, filter = "", roster = registry }) {
+export function assembleReport({ evidence, metadata, identity, filter = "", roster = registry, metadataError }) {
   const canonical = validateMetadata(metadata, identity);
   const validated = validateLiveEvidence(evidence, canonical.outcomes, (run) => projectLiveRun(run, roster));
-  const problems = [...canonical.problems, ...validated.problems];
+  const problems = [...(metadataError ? [metadataError] : []), ...canonical.problems, ...validated.problems];
   const exclusions = new Map();
   for (const row of validated.matrix ?? []) {
     if (!["na", "skip"].includes(row.outcome.status)) continue;
@@ -65,8 +65,8 @@ export function assembleReport({ evidence, metadata, identity, filter = "", rost
   if (counts.plugin?.filtered) coverageProblems.push(`Claude Code plugin: ${counts.plugin.filtered} filtered tests`);
   const executedPassed = problems.length === 0;
   const complete = executedPassed && coverageProblems.length === 0;
-  const report = { version: 1, identity, filter, verdict: complete ? "PASS" : "FAIL", executionVerdict: executedPassed ? "PASS" : "FAIL", acceptance: complete ? "COMPLETE" : "INCOMPLETE", problems, coverageProblems, counts, matrixCounts, groupedExclusions, lanes: validated.lanes, matrix: validated.matrix };
-  return { report: redactDiagnostics(report), markdown: renderReport(report) };
+  const report = redactDiagnostics({ version: 1, identity, filter, verdict: complete ? "PASS" : "FAIL", executionVerdict: executedPassed ? "PASS" : "FAIL", acceptance: complete ? "COMPLETE" : "INCOMPLETE", problems, coverageProblems, counts, matrixCounts, groupedExclusions, lanes: validated.lanes, matrix: validated.matrix });
+  return { report, markdown: renderReport(report) };
 }
 
 export function renderReport(report) {
@@ -134,11 +134,10 @@ async function main() {
     const pages = ghJson(`${endpoint}/jobs?per_page=100`, true);
     metadata = { run, jobs: pages.flatMap((page) => page.jobs) };
   } catch (error) { metadataError = redactDiagnosticText(error.message); }
-  const { report, markdown } = assembleReport({ evidence, metadata, identity, filter: process.env.FILTER });
-  if (metadataError) report.problems.unshift(metadataError);
+  const { report, markdown } = assembleReport({ evidence, metadata, identity, filter: process.env.FILTER, metadataError });
   await mkdir(directory, { recursive: true });
   await writeFile(resolve(directory, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
-  await writeFile(resolve(directory, "report.md"), metadataError ? renderReport(report) : markdown);
+  await writeFile(resolve(directory, "report.md"), markdown);
   if (report.verdict !== "PASS") process.exitCode = 1;
 }
 

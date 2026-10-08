@@ -24,6 +24,14 @@ describe("send-tool delivery proof", () => {
     expect(result({ success: true, id: "reply" })[0]?.output).toEqual({ success: true, id: "reply" });
   });
 
+  it("correlates content after the platform resolves inline handles to UUID mentions", () => {
+    const inlineCalls = calls.map((call) => ({ ...call, args: { ...call.args, content: "@user-handle pineapple" } }));
+    const normalizedReply = { ...reply, metadata: { mentions: [{ id: "user", handle: "user-handle" }] } };
+    assertToolReply(inlineCalls, result({ success: true, id: "reply" }), [normalizedReply], expected);
+    expect(() => assertToolReply(inlineCalls, result({ success: true, id: "reply" }),
+      [{ ...normalizedReply, content: "@[[user]] a different pineapple reply" }], expected)).toThrow("successful send-tool");
+  });
+
   it.each([undefined, {}, { id: "reply" }, { success: false, id: "reply" }, { success: true, id: "missing" },
     { ok: false, message: "cannot_mention_self" }, { error: "provider error" }])
     ("rejects absent, malformed, unmatched or failed results: %j", (output) => {

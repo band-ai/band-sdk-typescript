@@ -132,7 +132,7 @@ jobs:
         env:
           SDK_STEP_OUTCOME: ${{ steps.sdk.outcome }}
           PLUGIN_STEP_OUTCOME: ${{ steps.plugin.outcome }}
-        run: pnpm --filter @band-ai/sdk exec node --import tsx ../../.github/scripts/assemble-live-report.mjs --validate
+        run: pnpm --fail-if-no-match --filter @band-ai/sdk exec node --import tsx ../../.github/scripts/assemble-live-report.mjs --validate
 
       - name: Upload the scorecard
         if: ${{ !cancelled() }}
@@ -221,7 +221,7 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
-        run: pnpm --filter @band-ai/sdk exec node --import tsx ../../.github/scripts/assemble-live-report.mjs
+        run: pnpm --fail-if-no-match --filter @band-ai/sdk exec node --import tsx ../../.github/scripts/assemble-live-report.mjs
 
       - name: Ensure a report is available
         if: ${{ !cancelled() }}
