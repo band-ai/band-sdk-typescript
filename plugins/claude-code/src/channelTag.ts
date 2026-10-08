@@ -9,7 +9,7 @@ const CLOSE_BRACKETS = "\u003E\uFF1E\uFE65\u232A\u27E9\u3009\u203A\u02C3\u1433\u
 const INVISIBLE = String.raw`\p{Cf}\p{Cc}\p{Mn}\p{Me}\u115F\u1160\u3164\uFFA0`;
 const NAME_CHARS = String.raw`A-Za-z0-9_\-`;
 
-/** A not-yet-defused bracket opening or closing a `channel` lookalike; the gap and the name's first letter are disjoint, so matching stays linear. */
+/** The bracket of an undefused `channel` lookalike. The gap can't contain the name's first letter, so matching stays linear. */
 const TAG_LOOKALIKE = new RegExp(
   `[${OPEN_BRACKETS}](?!\\\\)(?=[^${NAME_CHARS}${OPEN_BRACKETS}${CLOSE_BRACKETS}]*${[...CHANNEL_TAG].join(`[${INVISIBLE}]*`)})`,
   "giu",
