@@ -23,7 +23,7 @@ import {
   registerTools,
 } from "./registrations";
 import { ToolsListedTransport } from "./toolsListedTransport";
-import { MCP_SERVER_NAME } from "../contracts/toolSchemas";
+import { MCP_SERVER_NAME, MCP_SERVER_VERSION } from "../contracts/toolSchemas";
 
 /** A host's resources under one URI template; a variable that may hold `/` needs the `{+name}` form. */
 export interface McpResourceSource {
@@ -67,7 +67,7 @@ export class BandMcpStdioServer {
     };
 
     if (!options.tools) {
-      this.registrations = options.additionalTools ?? [];
+      this.registrations = [...(options.additionalTools ?? [])];
     } else if (typeof options.tools === "function") {
       this.registrations = buildRoomScopedRegistrations(options.tools, regOptions);
     } else {
@@ -109,7 +109,7 @@ export class BandMcpStdioServer {
 
   /** Registers the batch, sending one `tools/list_changed`; a name already registered rejects the whole batch. */
   public addTools(registrations: McpToolRegistration[]): Promise<void> {
-    return this.whenRunning(async (session) => session.register(registrations));
+    return this.whenRunning((session) => session.register(registrations));
   }
 
   /**
@@ -144,7 +144,7 @@ export class BandMcpStdioServer {
 
   /** Resolves once the client has initialized; rejects if the server stops first. Read it after `await start()`. */
   public get initialized(): Promise<void> {
-    return this.whenRunning(async () => {});
+    return this.whenRunning(() => undefined);
   }
 
   /** Resolves once the server is not running: after stop(), or once the client went away. Read it after `await start()`. */
@@ -159,7 +159,7 @@ export class BandMcpStdioServer {
   }
 
   /** Runs `work` once the client has initialized; rejects before `start()`, after `stop()`, or if the server stops first. */
-  private async whenRunning<T>(work: (session: StdioSession) => Promise<T>): Promise<T> {
+  private async whenRunning<T>(work: (session: StdioSession) => T | Promise<T>): Promise<T> {
     const session = this.session;
     if (!session) {
       throw notRunning();
@@ -186,7 +186,7 @@ interface StdioSession {
   toolsListed: Promise<void>;
   register(registrations: McpToolRegistration[]): void;
   connect(): Promise<void>;
-  // MCP allows no server-initiated messages before the client's `notifications/initialized`.
+  // MCP allows no server requests before the client's `notifications/initialized`, so the gate waits for it.
   initialized: Promise<void>;
   stopped: Promise<void>;
   // Settles pending sends: the stdio transport never fails a write to a dead pipe.
@@ -275,7 +275,7 @@ function buildMcpServer(
   registrations: McpToolRegistration[],
 ): Pick<StdioSession, "mcpServer" | "tools" | "register"> {
   const mcpServer = new modules.McpServer(
-    { name: options.name ?? MCP_SERVER_NAME, version: "1.0.0" },
+    { name: options.name ?? MCP_SERVER_NAME, version: MCP_SERVER_VERSION },
     {
       capabilities: options.capabilities,
       instructions: options.instructions,

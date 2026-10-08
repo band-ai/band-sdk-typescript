@@ -461,6 +461,8 @@ export const MCP_TOOL_PREFIX = "mcp__band__";
 
 /** The single Band MCP server name; owns every server-name default and integration. */
 export const MCP_SERVER_NAME = "band";
+/** The version the Band MCP servers advertise to clients. */
+export const MCP_SERVER_VERSION = "1.0.0";
 
 /** How an out-of-process runtime spells an MCP tool: `<server>-<tool>`. */
 export function mcpToolSpelling(server: string, tool: string): string {

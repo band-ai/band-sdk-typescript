@@ -8,7 +8,7 @@ import {
   buildSingleContextRegistrations,
   registerTools,
 } from "./registrations";
-import { MCP_SERVER_NAME } from "../contracts/toolSchemas";
+import { MCP_SERVER_NAME, MCP_SERVER_VERSION } from "../contracts/toolSchemas";
 import { isAuthorizedRequest } from "./auth";
 
 export interface BandMcpSseServerOptions {
@@ -105,7 +105,7 @@ export class BandMcpSseServer {
       const transport = new SSEServerTransport("/messages", res)
       const mcpServer = new McpServer({
         name: this.options.name ?? MCP_SERVER_NAME,
-        version: "1.0.0",
+        version: MCP_SERVER_VERSION,
       })
       registerTools(mcpServer, z, this.registrations)
       await mcpServer.connect(transport)

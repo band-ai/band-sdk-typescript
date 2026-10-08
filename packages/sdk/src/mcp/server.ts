@@ -8,7 +8,7 @@ import {
   buildSingleContextRegistrations,
   registerTools,
 } from "./registrations";
-import { MCP_SERVER_NAME } from "../contracts/toolSchemas";
+import { MCP_SERVER_NAME, MCP_SERVER_VERSION } from "../contracts/toolSchemas";
 import { isAuthorizedRequest } from "./auth";
 
 export interface BandMcpServerOptions {
@@ -34,7 +34,6 @@ export interface BandMcpServerOptions {
 
 const PORT_RANGE_START = 50000;
 const PORT_RANGE_END = 60000;
-const MCP_SERVER_VERSION = "1.0.0";
 const SESSION_IDLE_TTL_MS = 15 * 60 * 1000;
 const SESSION_SWEEP_INTERVAL_MS = 60 * 1000;
 

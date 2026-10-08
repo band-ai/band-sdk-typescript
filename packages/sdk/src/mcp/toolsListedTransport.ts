@@ -1,6 +1,8 @@
 import type { Transport, TransportSendOptions } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage, ListToolsRequest, RequestId } from "@modelcontextprotocol/sdk/types.js";
 
+import { createDeferred } from "../core/deferred";
+
 const TOOLS_LIST: ListToolsRequest["method"] = "tools/list";
 
 /**
@@ -11,16 +13,13 @@ export class ToolsListedTransport implements Transport {
   public onclose?: () => void;
   public onerror?: (error: Error) => void;
   public onmessage?: Transport["onmessage"];
-  public readonly toolsListed: Promise<void>;
+  private readonly listed = createDeferred();
+  public readonly toolsListed = this.listed.promise;
   private readonly inner: Transport;
-  private resolveToolsListed!: () => void;
   private toolsListRequestId: RequestId | undefined;
 
   public constructor(inner: Transport) {
     this.inner = inner;
-    this.toolsListed = new Promise((resolve) => {
-      this.resolveToolsListed = resolve;
-    });
   }
 
   /** `Protocol.connect` sets this transport's handlers just before calling it. */
@@ -40,7 +39,7 @@ export class ToolsListedTransport implements Transport {
     await this.inner.send(message, options);
     // The server's own requests share the id range, so only a response (no `method`) counts.
     if (this.toolsListRequestId !== undefined && !("method" in message) && "id" in message && message.id === this.toolsListRequestId) {
-      this.resolveToolsListed();
+      this.listed.resolve();
     }
   }
 
