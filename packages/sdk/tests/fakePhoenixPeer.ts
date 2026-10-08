@@ -33,6 +33,7 @@ type ServerSocket = InstanceType<typeof NodeWebSocket> & {
   send(data: string): void;
   terminate(): void;
   pause(): void;
+  resume(): void;
 };
 
 /**
@@ -50,6 +51,8 @@ export class FakePhoenixPeer implements AsyncDisposable {
   public readonly receivedEvents: Array<{ topic: string; event: string }> = [];
   /** Every topic a client joined, in order; await it to act once a join is in. */
   public readonly joined = new RecordLog<string>();
+  public readonly left = new RecordLog<string>();
+  public readonly closed = new RecordLog<string | null>();
   /** The request URL of every connection, in order, with its query parameters. */
   public readonly connectionUrls: string[] = [];
 
@@ -103,6 +106,16 @@ export class FakePhoenixPeer implements AsyncDisposable {
     }
   }
 
+  public resumeReads(): void {
+    for (const socket of this.sockets.keys()) {
+      socket.resume();
+    }
+  }
+
+  public get activeConnectionCount(): number {
+    return this.sockets.size;
+  }
+
   public settleJoin(topic: string, outcome: Exclude<JoinOutcome, "pending">): void {
     const pending = this.pendingJoins.get(topic);
     if (!pending) {
@@ -154,7 +167,11 @@ export class FakePhoenixPeer implements AsyncDisposable {
   private handleConnection(socket: ServerSocket, url: string): void {
     this.connectionUrls.push(url);
     this.sockets.set(socket, connectionParams(url).get("agent_id"));
-    socket.on("close", () => this.sockets.delete(socket));
+    socket.on("close", () => {
+      const agentId = this.sockets.get(socket) ?? null;
+      this.sockets.delete(socket);
+      this.closed.record(agentId);
+    });
     socket.on("message", (data) => {
       this.handleMessage(socket, data.toString());
     });
@@ -179,6 +196,7 @@ export class FakePhoenixPeer implements AsyncDisposable {
 
     // phx_leave, heartbeat, and any other client push all just need an "ok"
     // reply so the caller's Push settles instead of timing out.
+    if (event === "phx_leave") this.left.record(topic);
     this.reply(socket, joinRef, ref, topic, "ok", {});
   }
 

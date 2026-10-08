@@ -27,6 +27,7 @@ import {
 } from "./registry";
 import { ResourceStack } from "./resourceStack";
 import { Rooms, type Room } from "./rooms";
+import { runWithProviderTrace } from "./providerDiagnostics";
 
 const DEFAULT_PROMPT =
   "You are a helpful assistant in a chat room. When someone messages you, reply to them directly and briefly.";
@@ -62,6 +63,7 @@ export interface PerAdapterOptions extends ScenarioOptions {
 }
 
 interface CastSetup {
+  scenario?: ScenarioId;
   prompt: string;
   build?: ScenarioBuilder;
 }
@@ -100,8 +102,10 @@ export async function runScenario(
   if (unmet.length > 0) {
     throw new Error(`cannot run: ${unmet.join("; ")}`);
   }
-  await using cast = await open(chosen, setup);
-  await body(cast);
+  await runWithProviderTrace(setup.scenario, async () => {
+    await using cast = await open(chosen, setup);
+    await body(cast);
+  });
 }
 
 /** Why `chosen` may not run here, or null when all may. A bespoke-only adapter sits out only fan-outs. */
@@ -114,6 +118,7 @@ function skipReason(chosen: RosterSpec[], fanOut: boolean): string | null {
 }
 
 function defineRun(
+  scenario: ScenarioId,
   title: string,
   chosen: RosterSpec[],
   body: (cast: Cast) => Promise<void>,
@@ -126,7 +131,7 @@ function defineRun(
       skip(reason);
     }
 
-    await runScenario(chosen, body, { prompt: options.prompt ?? DEFAULT_PROMPT, build: options.build });
+    await runScenario(chosen, body, { scenario, prompt: options.prompt ?? DEFAULT_PROMPT, build: options.build });
   });
 }
 
@@ -140,6 +145,7 @@ export function perAdapter(name: ScenarioId, body: (cell: ScenarioCell) => Promi
   describe(name, () => {
     for (const spec of chosen) {
       defineRun(
+        name,
         spec.id,
         [spec],
         ({ agents: [agent], room, cells: [cell] }) => body({ agent: agent!, room, cell: cell! }),
@@ -159,5 +165,5 @@ export function withAdapters(
 ): void {
   // In the order given: a cast's roles (e.g. who coordinates) follow it.
   const chosen = ids.map((id) => registry.get(id));
-  describe(name, () => defineRun(ids.join(CAST_SEPARATOR), chosen, body, options, false));
+  describe(name, () => defineRun(name, ids.join(CAST_SEPARATOR), chosen, body, options, false));
 }

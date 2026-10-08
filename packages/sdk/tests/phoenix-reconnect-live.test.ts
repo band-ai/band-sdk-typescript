@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { chatRoomTopic, roomParticipantsTopic } from "@band-ai/band-sdk-core";
+import { agentControlTopic, chatRoomTopic, roomParticipantsTopic } from "@band-ai/band-sdk-core";
 
 import { PhoenixChannelsTransport } from "../src/platform/streaming/PhoenixChannelsTransport";
 import { SubscriptionManager } from "../src/platform/SubscriptionManager";
@@ -7,6 +7,7 @@ import { BandLink } from "../src/platform/BandLink";
 import { AgentRuntime } from "../src/runtime/rooms/AgentRuntime";
 import type { PlatformEvent } from "../src/platform/events";
 import { NoopLogger } from "../src/core/logger";
+import { TransportError } from "../src/core/errors";
 import { FakePhoenixPeer } from "./fakePhoenixPeer";
 import { FakeRestApi } from "./testUtils";
 
@@ -561,9 +562,41 @@ describe("Phoenix reconnect (real wire)", () => {
       await agent.transport.connect();
 
       peer.stallReads();
-      await agent.transport.disconnect();
+      await expect(agent.transport.disconnect()).rejects.toBeInstanceOf(TransportError);
 
       await agent.expectNoReconnect();
     }, 10_000);
+
+    it("waits for the socket close before allowing the next session to claim its agent", async () => {
+      await using peer = await FakePhoenixPeer.start({ rejectConflicts: true });
+      const agentId = "agent-close-gate";
+      const options = { wsUrl: peer.url, apiKey: "test-key", agentId, conflictPolicy: "reject" as const };
+      const first = new PhoenixChannelsTransport(options);
+      const next = new PhoenixChannelsTransport(options);
+      try {
+        await first.connect();
+        await first.join(agentControlTopic(agentId), {});
+        await first.leave(agentControlTopic(agentId));
+        await peer.left.next((topic) => topic === agentControlTopic(agentId));
+        peer.stallReads();
+
+        let stopped = false;
+        const stopping = first.disconnect().then(() => { stopped = true; });
+        await vi.waitFor(() => expect(first.isConnected()).toBe(false));
+        expect(stopped).toBe(false);
+        expect(peer.activeConnectionCount).toBe(1);
+
+        peer.resumeReads();
+        await stopping;
+        await peer.closed.next((id) => id === agentId);
+        expect(peer.activeConnectionCount).toBe(0);
+        await next.connect();
+        expect(next.isConnected()).toBe(true);
+      } finally {
+        peer.resumeReads();
+        await first.disconnect().catch(() => undefined);
+        await next.disconnect().catch(() => undefined);
+      }
+    });
   });
 });

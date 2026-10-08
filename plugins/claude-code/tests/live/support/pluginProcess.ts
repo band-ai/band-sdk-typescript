@@ -3,15 +3,15 @@
  * child on real stdio pipes, and an MCP client standing in for Claude Code; and
  * the `/band:agents` command, as the skill runs it.
  */
-import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 
 import type { ChannelPush } from "../../../src/adapter";
 import { ChannelClient } from "../../support/channelClient";
+import { agentsCommandAt } from "../../support/agentsCommand";
 import { liveRun, releasedWithTest } from "../../../../../packages/sdk/tests/baseline/toolkit/liveRun";
 
 const PLUGIN_ROOT = fileURLToPath(new URL("../../..", import.meta.url)).replace(/\/$/, "");
@@ -97,6 +97,5 @@ export class PluginProcess implements AsyncDisposable {
 
 /** Runs the built `/band:agents` command; resolves with what it printed, rejecting when it fails. */
 export async function agentsCommand(...args: string[]): Promise<string> {
-  const { stdout } = await promisify(execFile)(process.execPath, [AGENTS_CLI, ...args]);
-  return stdout;
+  return agentsCommandAt(AGENTS_CLI, args);
 }

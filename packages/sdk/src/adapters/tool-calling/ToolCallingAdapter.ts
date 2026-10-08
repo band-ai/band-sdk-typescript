@@ -1,6 +1,7 @@
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import {
   isFailedToolOutput,
+  isSyntheticTurn,
   type MessagingTools,
   type ToolExecutor,
   type ToolSchemaProvider,
@@ -144,7 +145,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
       const schemas = [...platformSchemas, ...customSchemas];
 
       // Notices are for this turn only. The durable conversation keeps what was said in the room.
-      const messages = [...conversation, ...this.turnNotices(participantsMessage, contactsMessage)];
+      const messages = [...conversation, ...this.turnNotices(message, participantsMessage, contactsMessage)];
 
       let response = await this.complete(turn, {
         systemPrompt: this.systemPrompt,
@@ -304,10 +305,22 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
   }
 
   private turnNotices(
+    message: PlatformMessage,
     participantsMessage: string | null,
     contactsMessage: string | null,
   ): ToolModelMessage[] {
     const notices: ToolModelMessage[] = [];
+    if (!isSyntheticTurn(message)) {
+      notices.push({
+        role: "system",
+        content: `Current turn identity: ${JSON.stringify({
+          agentName: this.agentName,
+          senderName: message.senderName,
+          senderType: message.senderType,
+          senderId: message.senderId,
+        })}\nThe inbound message's delivery mention addresses you. Reply to its sender, not yourself; resolve the sender's exact handle from the current participants or band_get_participants.`,
+      });
+    }
     if (participantsMessage) {
       notices.push({ role: "system", content: participantsMessage });
     }

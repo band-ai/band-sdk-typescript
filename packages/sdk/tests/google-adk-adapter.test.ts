@@ -209,6 +209,7 @@ describe("GoogleADKAdapter", () => {
           name: "thenvoi_lookup_weather",
           output: "{\n  \"temperature\": \"12C\",\n  \"city\": \"Vancouver\"\n}",
           tool_call_id: "call-1",
+          is_error: false,
         }),
         messageType: "tool_result",
         metadata: undefined,

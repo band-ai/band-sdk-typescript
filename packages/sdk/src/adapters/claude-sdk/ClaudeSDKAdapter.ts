@@ -96,18 +96,6 @@ interface BandMcpBridge {
   allowedTools: string[];
 }
 
-const sdkMcpBridgeLoader = new LazyAsyncValue({
-  load: async () => {
-    const module = await import("../../mcp/sdkTools").catch((error: unknown) => {
-      throw new UnsupportedFeatureError(
-        `ClaudeSDKAdapter requires optional dependency "@anthropic-ai/claude-agent-sdk" when MCP tools are enabled. Install it with "pnpm add @anthropic-ai/claude-agent-sdk". (${error instanceof Error ? error.message : String(error)})`,
-      );
-    });
-
-    return module.createSdkMcpBridge;
-  },
-});
-
 export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> {
   protected readonly provider = "claude-sdk";
 
@@ -125,6 +113,16 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
   private readonly settingSources: SettingSource[];
   private readonly queryFnOverride?: ClaudeSDKQuery;
   private readonly logger: Logger;
+  private readonly sdkMcpBridgeLoader = new LazyAsyncValue({
+    load: async () => {
+      const module = await import("../../mcp/sdkTools").catch((error: unknown) => {
+        throw new UnsupportedFeatureError(
+          `ClaudeSDKAdapter requires optional dependency "@anthropic-ai/claude-agent-sdk" when MCP tools are enabled. Install it with "pnpm add @anthropic-ai/claude-agent-sdk". (${error instanceof Error ? error.message : String(error)})`,
+        );
+      });
+      return module.createSdkMcpBridge;
+    },
+  });
   private readonly sessionIds = new Map<string, string>();
   // One turn per room: its MCP calls resolve the room's tools, so a second turn would take over the first's.
   private readonly roomTurns = createRoomTurnLock();
@@ -165,7 +163,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     });
 
     if (this.enableMcpTools) {
-      const createSdkMcpBridge = await sdkMcpBridgeLoader.get();
+      const createSdkMcpBridge = await this.sdkMcpBridgeLoader.get();
       const registrations = buildRoomScopedRegistrations((roomId) => this.roomTools.get(roomId), {
         enableMemoryTools: this.enableMemoryTools,
         enableContactTools: true,

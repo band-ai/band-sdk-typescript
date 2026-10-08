@@ -99,7 +99,7 @@ export function merge(...scorecards: ScorecardRow[][]): ScorecardRow[] {
 }
 
 /** A pivot grid (scenario × adapter) plus the N/A and skip reasons. Failure details stay in the JSON. */
-export function toMarkdown(rows: ScorecardRow[]): string {
+export function toMarkdown(rows: ScorecardRow[], { reasons = true }: { reasons?: boolean } = {}): string {
   const scenarios = [...new Set(rows.map((row) => row.scenario))].sort();
   const adapters = [...new Set(rows.map((row) => row.adapter))].sort();
   const status = new Map(rows.map((row) => [cellKey(row.scenario, row.adapter), row.outcome.status]));
@@ -115,7 +115,7 @@ export function toMarkdown(rows: ScorecardRow[]): string {
   ];
 
   const reasoned = rows.filter((row) => REASONED.has(row.outcome.status)).sort(byCell);
-  if (reasoned.length > 0) {
+  if (reasons && reasoned.length > 0) {
     lines.push("", "**N/A and skip reasons**", "");
     for (const row of reasoned) {
       const { reason } = row.outcome as { reason: string };

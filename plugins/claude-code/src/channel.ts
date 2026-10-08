@@ -1,6 +1,6 @@
 import type { BandLink, PlatformRuntimeOptions } from "@band-ai/sdk";
 import type { AgentCredentials } from "@band-ai/sdk/config";
-import { WebSocketDisconnectError, type AdapterToolsProtocol, type Logger, type WebSocketDisconnectReason } from "@band-ai/sdk/core";
+import { DeliveryFailedError, WebSocketDisconnectError, type AdapterToolsProtocol, type Logger, type WebSocketDisconnectReason } from "@band-ai/sdk/core";
 import { BandMcpStdioServer } from "@band-ai/sdk/mcp";
 import { AgentTools, PlatformRuntime } from "@band-ai/sdk/runtime";
 import type { Readable, Writable } from "node:stream";
@@ -71,7 +71,16 @@ async function serveChannel({ agentName, credentials, status, link, stdin, stdou
   const identity = await runtime.link.rest.getAgentMe();
   status?.record({ handle: identity.handle ?? null });
 
-  const adapter = new ChannelAdapter({ ownerUuid: identity.ownerUuid, push: (push) => server.notify(CHANNEL_METHOD, push) });
+  const adapter = new ChannelAdapter({
+    ownerUuid: identity.ownerUuid,
+    push: async (push) => {
+      try {
+        await server.notify(CHANNEL_METHOD, push);
+      } catch (error) {
+        throw new DeliveryFailedError(error);
+      }
+    },
+  });
   const toolsFor = roomTools(runtime.link, logger);
   const server: BandMcpStdioServer = new BandMcpStdioServer({
     tools: toolsFor,
@@ -91,12 +100,19 @@ async function serveChannel({ agentName, credentials, status, link, stdin, stdou
     status?.record({ state: "connected" });
     await runtime.runForever();
   };
+  let servingFailed = false;
   try {
     // Claude Code leaving settles first, whichever phase it interrupts.
     await Promise.race([server.stopped, serve()]);
+  } catch (error) {
+    servingFailed = true;
+    throw error;
   } finally {
-    // stop() rethrows the error a superseded runtime failed with, which is already logged.
-    await Promise.allSettled([runtime.stop(STOP_WITHOUT_DRAINING_MS), server.stop()]);
+    const cleanup = await Promise.allSettled([runtime.stop(STOP_WITHOUT_DRAINING_MS), server.stop()]);
+    const errors = cleanup.flatMap((result): unknown[] => result.status === "rejected" ? [result.reason] : []);
+    if (!servingFailed && errors.length > 0) {
+      throw errors.length === 1 ? errors[0] : new AggregateError(errors, "Band channel cleanup failed");
+    }
   }
 }
 

@@ -14,5 +14,6 @@ export default defineConfig({
     include: ["tests/live/**/*.test.ts"],
     testTimeout: LIVE_TEST_TIMEOUT_MS,
     hookTimeout: LIVE_EVENT_TIMEOUT_MS,
+    reporters: ["default", ["../../packages/sdk/tests/support/liveRunReporter.ts", { lane: "plugin" }]],
   },
 });

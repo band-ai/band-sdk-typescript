@@ -32,6 +32,7 @@ import {
   type OpencodeAdapterConfig,
 } from "../../../src/adapters";
 import { AdapterRegistry, CAPABILITY, requires, type AdapterSpec, type BuildOptions } from "./registry";
+import { anthropicDiagnosticFactory, geminiDiagnosticFactory } from "./providerDiagnostics";
 
 const ANTHROPIC_MODEL = "claude-haiku-4-5";
 const GEMINI_MODEL = "gemini-2.5-flash";
@@ -157,6 +158,7 @@ const SPECS = {
     build: ({ prompt, customTools, memory, reportToolCalls }) =>
       new AnthropicAdapter({
         anthropicModel: ANTHROPIC_MODEL,
+        clientFactory: anthropicDiagnosticFactory(),
         systemPrompt: prompt,
         customTools,
         includeMemoryTools: memory,
@@ -208,6 +210,7 @@ const SPECS = {
     build: ({ prompt, customTools, memory, reportToolCalls }) =>
       new GeminiAdapter({
         geminiModel: GEMINI_MODEL,
+        clientFactory: geminiDiagnosticFactory(),
         apiKey: googleApiKey(),
         systemPrompt: prompt,
         customTools,
@@ -260,7 +263,6 @@ const SPECS = {
     id: "openai",
     requires: [requires.envVar(ENV.openaiKey), requires.peerPackage("openai")],
     supports: [CAPABILITY.customTools, CAPABILITY.memory],
-    pending: "needs an OPENAI_API_KEY provisioned in CI",
     build: ({ prompt, customTools, memory, reportToolCalls }) =>
       new OpenAIAdapter({
         openAIModel: OPENAI_MODEL,

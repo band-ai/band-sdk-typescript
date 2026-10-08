@@ -6,8 +6,8 @@
  */
 import { Band } from "@band-ai/rest-client";
 
-import { FAILURE_EVENT_TYPE } from "../../../src/contracts/protocols";
-import { parseToolCall } from "../../../src/converters/shared";
+import { FAILURE_EVENT_TYPE, isFailedToolOutput } from "../../../src/contracts/protocols";
+import { asOptionalString, parseToolCall, parseToolPayload } from "../../../src/converters/shared";
 import type { MessageCreatedPayload } from "../../../src/platform/events";
 import { MEMORY_TOOL_NAMES } from "../../../src/contracts/toolSchemas";
 import { LIVE_EVENT_TIMEOUT_MS } from "../../integration/support/liveHarness";
@@ -95,6 +95,39 @@ export interface ToolCallEvent {
   id: string;
   name: string;
   args: Record<string, unknown>;
+  toolCallId?: string;
+}
+
+export interface ToolResultEvent {
+  id: string;
+  name: string;
+  toolCallId: string;
+  output: unknown;
+  isError: boolean;
+}
+
+/** Keep structured results: String(object) destroys the evidence of successful delivery. */
+export function readToolResults(events: readonly CapturedMessage[]): ToolResultEvent[] {
+  return events.flatMap((event) => {
+    const payload = parseToolPayload(event.content);
+    const name = asOptionalString(payload?.name);
+    const toolCallId = asOptionalString(payload?.tool_call_id);
+    return name && toolCallId ? [{
+      id: event.id, name, toolCallId, output: payload?.output,
+      isError: payload?.is_error === true || isFailedToolOutput(payload?.output),
+    }] : [];
+  });
+}
+
+export function readToolCalls(events: readonly CapturedMessage[], { includeMemory = false }: ToolCallsOptions = {}): ToolCallEvent[] {
+  return events.flatMap((event) => {
+    const call = parseToolCall(event.content);
+    return call ? [{ id: event.id, ...call }] : [];
+  }).filter((call) => includeMemory || !MEMORY_TOOL_NAMES.has(call.name));
+}
+
+export async function toolResults(room: Room, sender: Pick<AgentIdentity, "id">): Promise<ToolResultEvent[]> {
+  return readToolResults(await eventsFrom(room, MESSAGE_TYPE.ToolResult, sender));
 }
 
 export interface ToolCallsOptions {
@@ -112,12 +145,7 @@ export async function toolCalls(
   { includeMemory = false }: ToolCallsOptions = {},
 ): Promise<ToolCallEvent[]> {
   const events = await eventsFrom(room, MESSAGE_TYPE.ToolCall, sender);
-  return events
-    .flatMap((event) => {
-      const call = parseToolCall(event.content);
-      return call ? [{ id: event.id, name: call.name, args: call.args }] : [];
-    })
-    .filter((call) => includeMemory || !MEMORY_TOOL_NAMES.has(call.name));
+  return readToolCalls(events, { includeMemory });
 }
 
 export interface ReplyWaitOptions {

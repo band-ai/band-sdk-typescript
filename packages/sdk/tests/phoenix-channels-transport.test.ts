@@ -169,6 +169,8 @@ const phoenixMock = vi.hoisted(() => {
     public connectCount = 0;
     // A close handshake that stalls: phoenix's close callback never fires.
     public closeStalls = false;
+    public conn: { readyState: number } | null = null;
+    private disconnectCallback?: () => void;
     // Bumped by disconnect(), so an open queued before it never fires, as a
     // real socket closed mid-handshake never opens.
     private connectGeneration = 0;
@@ -203,9 +205,11 @@ const phoenixMock = vi.hoisted(() => {
 
     public connect(): void {
       this.connectCount += 1;
+      this.conn = { readyState: 0 };
       const generation = this.connectGeneration;
       queueMicrotask(() => {
         if (generation === this.connectGeneration) {
+          this.conn!.readyState = 1;
           this.openHandler?.();
         }
       });
@@ -216,15 +220,27 @@ const phoenixMock = vi.hoisted(() => {
       this.openHandler?.();
     }
 
-    public disconnect(): void {
+    public disconnect(callback?: () => void): void {
       this.disconnectCount += 1;
       this.connectGeneration += 1;
+      this.disconnectCallback = callback;
+      if (this.conn) this.conn.readyState = 2;
       if (!this.closeStalls) {
-        this.closeHandler?.();
+        this.finishDisconnect();
       }
     }
 
+    /** Phoenix can finish its bounded polling before the raw socket reaches CLOSED. */
+    public finishDisconnect(readyState = 3): void {
+      if (this.conn) this.conn.readyState = readyState;
+      if (readyState === 3) this.closeHandler?.();
+      const callback = this.disconnectCallback;
+      this.disconnectCallback = undefined;
+      callback?.();
+    }
+
     public emitClose(event?: { code?: number; reason?: string }): void {
+      if (this.conn) this.conn.readyState = 3;
       this.closeHandler?.(event);
     }
 
@@ -643,6 +659,38 @@ describe("PhoenixChannelsTransport", () => {
     await transport.connect();
     await expect(transport.join("room:failed-leave", {})).resolves.toBeUndefined();
     expect(socket?.channels.has("room:failed-leave")).toBe(true);
+  });
+
+  it("waits for the raw socket to close before completing disconnect", async () => {
+    const transport = new PhoenixChannelsTransport({ wsUrl: "wss://example.test/socket", apiKey: "key-1" });
+    await transport.connect();
+    const socket = phoenixMock.FakeSocket.instances[0]!;
+    socket.closeStalls = true;
+    let stopped = false;
+    const stopping = transport.disconnect().then(() => { stopped = true; });
+    await vi.waitFor(() => expect(socket.disconnectCount).toBe(1));
+    expect(stopped).toBe(false);
+    socket.finishDisconnect();
+    await stopping;
+    expect(stopped).toBe(true);
+  });
+
+  it("reports incomplete socket closure and failed leaves together, while clearing channel ownership", async () => {
+    const transport = new PhoenixChannelsTransport({ wsUrl: "wss://example.test/socket", apiKey: "key-1" });
+    await transport.connect();
+    await transport.join("room:failed-close", {});
+    const socket = phoenixMock.FakeSocket.instances[0]!;
+    socket.channels.get("room:failed-close")!.leaveOutcome = "error";
+    socket.closeStalls = true;
+    const stopping = transport.disconnect();
+    const rejected = expect(stopping).rejects.toMatchObject({
+      errors: [expect.any(TransportError), expect.objectContaining({ message: "Phoenix socket close handshake did not finish" })],
+    });
+    await vi.waitFor(() => expect(socket.disconnectCount).toBe(1));
+    socket.finishDisconnect(2);
+    await rejected;
+    expect(socket.channels.has("room:failed-close")).toBe(false);
+    expect(transport.isConnected()).toBe(false);
   });
 
   it("does not report connected while mandatory agent_control join is pending", async () => {

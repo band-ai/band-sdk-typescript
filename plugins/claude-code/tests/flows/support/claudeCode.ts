@@ -20,6 +20,7 @@ export interface SessionOptions {
   readonly credentials?: Partial<RunChannelOptions["credentials"]>;
   readonly agentName?: string;
   readonly status?: RunChannelOptions["status"];
+  readonly logger?: RunChannelOptions["logger"];
 }
 
 export class ClaudeCodeSession implements AsyncDisposable {
@@ -29,7 +30,7 @@ export class ClaudeCodeSession implements AsyncDisposable {
   private readonly toPlugin = new PassThrough();
 
   /** Starts the plugin against a platform; Claude Code connects with `connect()`. */
-  public constructor(link: RunChannelOptions["link"], { credentials, agentName = AGENT_NAME, status }: SessionOptions = {}) {
+  public constructor(link: RunChannelOptions["link"], { credentials, agentName = AGENT_NAME, status, logger }: SessionOptions = {}) {
     const fromPlugin = new PassThrough();
     this.exited = runChannel({
       agentName,
@@ -38,7 +39,7 @@ export class ClaudeCodeSession implements AsyncDisposable {
       link,
       stdin: this.toPlugin,
       stdout: fromPlugin,
-      logger: process.env.FLOW_DEBUG ? new StderrLogger() : new NoopLogger(),
+      logger: logger ?? (process.env.FLOW_DEBUG ? new StderrLogger() : new NoopLogger()),
     });
     this.channel = new ChannelClient(fromPlugin, this.toPlugin, this.exited, "test");
   }

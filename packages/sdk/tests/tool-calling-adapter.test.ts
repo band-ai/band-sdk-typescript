@@ -210,6 +210,10 @@ const fakeMessage: PlatformMessage = {
   createdAt: new Date(),
 };
 
+function conversationLines(messages: Array<Record<string, unknown>>) {
+  return turnLines(messages).filter((message) => message.role !== "system");
+}
+
 describe("ToolCallingAdapter", () => {
   it("does not duplicate the current message when history already includes it", async () => {
     class SingleTurnModel implements ToolCallingModel {
@@ -263,7 +267,7 @@ describe("ToolCallingAdapter", () => {
 
     await adapter.onMessage(fromAnotherAgent, new FakeTools(), history, null, null, { isSessionBootstrap: true, roomId: "r1" });
 
-    expect(seen.map(({ role, content }) => ({ role, content }))).toEqual([
+    expect(conversationLines(seen)).toEqual([
       { role: "assistant", content: "earlier answer" },
       { role: "user", content: "[Jane]: thanks" },
       { role: "user", content: "[planner-agent]: hello" },
@@ -295,12 +299,12 @@ describe("ToolCallingAdapter", () => {
     await adapter.onMessage(mango, trackTurn(tools), inboundOnly(pineapple), null, null, room);
     await adapter.onMessage(kiwi, trackTurn(tools), inboundOnly(pineapple, mango), null, null, room);
 
-    expect(turnLines(seen[2]!)).toEqual([
+    expect(conversationLines(seen[2]!)).toEqual([
       { role: "user", content: "[Jane]: Reply with: pineapple" },
       { role: "assistant", content: "pineapple" },
       { role: "user", content: "[Jane]: Reply with: mango" },
     ]);
-    expect(turnLines(seen[3]!)).toEqual([
+    expect(conversationLines(seen[3]!)).toEqual([
       { role: "user", content: "[Jane]: Reply with: pineapple" },
       { role: "assistant", content: "pineapple" },
       { role: "user", content: "[Jane]: Reply with: mango" },
@@ -338,7 +342,7 @@ describe("ToolCallingAdapter", () => {
     await adapter.onMessage(fakeMessage, trackTurn(tools), inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "r1" });
     await adapter.onMessage(next, trackTurn(tools), inboundOnly(fakeMessage), null, null, { isSessionBootstrap: false, roomId: "r1" });
 
-    expect(turnLines(seen.at(-1)!)).toEqual([
+    expect(conversationLines(seen.at(-1)!)).toEqual([
       { role: "user", content: "[Jane]: hello" },
       { role: "assistant", content: "pineapple" },
       { role: "user", content: "[Jane]: Reply with: mango" },
@@ -365,7 +369,7 @@ describe("ToolCallingAdapter", () => {
     await expect(adapter.onMessage(fakeMessage, trackTurn(new FakeTools()), inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "r1" })).rejects.toThrow();
     await adapter.onMessage(next, trackTurn(new FakeTools()), inboundOnly(fakeMessage), null, null, { isSessionBootstrap: false, roomId: "r1" });
 
-    expect(turnLines(seen.at(-1)!)).toEqual([
+    expect(conversationLines(seen.at(-1)!)).toEqual([
       { role: "user", content: "[Jane]: hello" },
       { role: "assistant", content: "pineapple" },
       { role: "user", content: "[Jane]: Reply with: mango" },
@@ -393,7 +397,7 @@ describe("ToolCallingAdapter", () => {
     await expect(adapter.onMessage(fakeMessage, tools, inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "r1" })).rejects.toThrow();
     await adapter.onMessage(next, new FakeTools(), inboundOnly(fakeMessage), null, null, { isSessionBootstrap: false, roomId: "r1" });
 
-    expect(turnLines(seen.at(-1)!)).toEqual([
+    expect(conversationLines(seen.at(-1)!)).toEqual([
       { role: "user", content: "[Jane]: hello" },
       { role: "user", content: "[Jane]: next question" },
     ]);
@@ -421,7 +425,7 @@ describe("ToolCallingAdapter", () => {
     await adapter.onMessage(fakeMessage, trackTurn(new FakeTools()), inboundOnly(), null, null, { isSessionBootstrap: true, roomId: "r1" });
     await adapter.onMessage(next, trackTurn(new FakeTools()), inboundOnly(fakeMessage), null, null, { isSessionBootstrap: false, roomId: "r1" });
 
-    expect(turnLines(seen.at(-1)!)).toEqual([
+    expect(conversationLines(seen.at(-1)!)).toEqual([
       { role: "user", content: "[Jane]: hello" },
       { role: "assistant", content: "42" },
       { role: "user", content: "[Jane]: next question" },
@@ -442,7 +446,7 @@ describe("ToolCallingAdapter", () => {
     const model: ToolCallingModel = {
       complete: async (request) => {
         calls += 1;
-        const contents = (request.messages ?? []).map((message) => String(message.content));
+        const contents = conversationLines(request.messages ?? []).map((message) => String(message.content));
         if (calls === 1) {
           markStarted();
           await gate;
@@ -505,7 +509,7 @@ describe("ToolCallingAdapter", () => {
     const prompts: string[][] = [];
     const model: ToolCallingModel = {
       complete: async (request) => {
-        const contents = (request.messages ?? []).map((message) => String(message.content));
+        const contents = conversationLines(request.messages ?? []).map((message) => String(message.content));
         if (contents.some((content) => content.includes("room-a-ask")) && prompts.length === 0) {
           markStarted();
           await gate;
@@ -541,7 +545,7 @@ describe("ToolCallingAdapter", () => {
     const prompts: string[][] = [];
     const model: ToolCallingModel = {
       complete: async (request) => {
-        const contents = (request.messages ?? []).map((message) => String(message.content));
+        const contents = conversationLines(request.messages ?? []).map((message) => String(message.content));
         prompts.push(contents);
         if (prompts.length === 1) {
           firstStarted.resolve();
