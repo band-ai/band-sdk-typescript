@@ -1,6 +1,8 @@
 import { deliverReply, type FrameworkAdapter, type FrameworkAdapterInput } from "@band-ai/sdk/core";
 import { commandWords } from "@band-ai/sdk/runtime";
 
+import { neutralizeChannelTags } from "./channelTag";
+
 export const COMMAND_REFUSAL = "Only this agent's owner can send it slash commands.";
 
 /** The `sender_role` a push carries; the instructions name the same values. */
@@ -39,7 +41,7 @@ export class ChannelAdapter implements FrameworkAdapter {
       return;
     }
 
-    await this.options.push({ content: message.content, meta: channelMeta(message, isOwner) });
+    await this.options.push({ content: neutralizeChannelTags(message.content), meta: channelMeta(message, isOwner) });
   }
 
   public async onCleanup(): Promise<void> {}

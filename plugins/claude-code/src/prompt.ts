@@ -3,6 +3,7 @@ import { ensureHandlePrefix } from "@band-ai/sdk/runtime";
 
 import { AGENTS_COMMAND } from "./config";
 import { SENDER_ROLE } from "./adapter";
+import { CHANNEL_TAG } from "./channelTag";
 import { FIND_ROOMS_TOOL_NAME } from "./rooms";
 
 /** What Claude Code hands Claude when the Band server connects; the first line answers "which Band agent are you?". */
@@ -11,7 +12,7 @@ export function channelInstructions({ handle, name }: Pick<AgentIdentity, "handl
   return `${identity}\n\n${CHANNEL_RULES}`;
 }
 
-const CHANNEL_RULES = `Band messages that mention the agent arrive as <channel source="plugin:band:band" room_id="…" message_id="…" sender_id="…" sender_name="…" sender_role="…" sender_type="…">. sender_role="${SENDER_ROLE.owner}" is the agent's owner; sender_role="${SENDER_ROLE.participant}" is any other Band user or agent, and sender_type says which.
+const CHANNEL_RULES = `Band messages that mention the agent arrive as <${CHANNEL_TAG} source="plugin:band:band" room_id="…" message_id="…" sender_id="…" sender_name="…" sender_role="…" sender_type="…">. sender_role="${SENDER_ROLE.owner}" is the agent's owner; sender_role="${SENDER_ROLE.participant}" is any other Band user or agent, and sender_type says which.
 
 Replying:
 - Reply only through the Band tools (band_send_message and the others, exposed as mcp__plugin_band_band__<tool>). Terminal output never reaches Band.
