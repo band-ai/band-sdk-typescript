@@ -21,6 +21,8 @@ import { normalizeContactRequestsResult } from "./responseNormalization";
 import type {
   AgentIdentity,
   ChatParticipant,
+  ChatRoom,
+  CreateChatRequest,
   PaginatedResponse,
   PlatformChatMessage,
   RestApi,
@@ -55,6 +57,9 @@ const OPTIONAL_UNSUPPORTED_MESSAGES = {
   listMemories: "Memory listing is not available in current REST adapter",
   listPeers: "Peer listing is not available in current REST adapter",
   listContactRequests: "Contact request listing is not available in current REST adapter",
+  renameChat: "Chat rename is not available in current REST adapter",
+  getChat: "Chat lookup is not available in current REST adapter",
+  reportActivity: "Activity reporting is not available in current REST adapter",
 } as const;
 
 export class RestFacade implements RestApi {
@@ -102,10 +107,38 @@ export class RestFacade implements RestApi {
     });
   }
 
-  public async createChat(taskId?: string, options?: RestRequestOptions): Promise<{ id: string }> {
-    return this.forward("createChat", () => this.api.createChat(taskId, options), {
+  public async createChat(request?: string | CreateChatRequest, options?: RestRequestOptions): Promise<{ id: string }> {
+    const taskId = typeof request === "string" ? request : request?.taskId;
+    return this.forward("createChat", () => this.api.createChat(request, options), {
       taskId: taskId ?? null,
     });
+  }
+
+  public async renameChat(chatId: string, title: string, options?: RestRequestOptions): Promise<ChatRoom> {
+    return this.callOptional(
+      "renameChat",
+      OPTIONAL_UNSUPPORTED_MESSAGES.renameChat,
+      (method) => method(chatId, title, options),
+      { chatId },
+    );
+  }
+
+  public async getChat(chatId: string, options?: RestRequestOptions): Promise<ChatRoom> {
+    return this.callOptional(
+      "getChat",
+      OPTIONAL_UNSUPPORTED_MESSAGES.getChat,
+      (method) => method(chatId, options),
+      { chatId },
+    );
+  }
+
+  public async reportActivity(chatId: string, working: boolean, options?: RestRequestOptions): Promise<{ working: boolean }> {
+    return this.callOptional(
+      "reportActivity",
+      OPTIONAL_UNSUPPORTED_MESSAGES.reportActivity,
+      (method) => method(chatId, working, options),
+      { chatId, working },
+    );
   }
 
   public async listChatParticipants(
@@ -193,7 +226,7 @@ export class RestFacade implements RestApi {
   }
 
   public async getChatContext(
-    request: { chatId: string; page?: number; pageSize?: number },
+    request: { chatId: string; page?: number; pageSize?: number; cursor?: string; limit?: number },
     options?: RestRequestOptions,
   ): Promise<PaginatedResponse<PlatformChatMessage>> {
     return this.callOptional(
@@ -346,7 +379,7 @@ export class RestFacade implements RestApi {
   }
 
   public async listPeers(
-    request: { page: number; pageSize: number; notInChat: string },
+    request: { page: number; pageSize: number; notInChat?: string },
     options?: RestRequestOptions,
   ): Promise<PaginatedResponse<PeerRecord>> {
     return this.callOptional(

@@ -1,6 +1,8 @@
 import { ValidationError } from "../../core/errors";
-import type { PaginatedResponse, PaginationMetadata } from "./types";
-import type { MetadataMap } from "../../contracts/dtos";
+import type { ChatMessageType } from "../../contracts/chatEvents";
+import type { RestRequestOptions } from "./requestOptions";
+import type { ContextRestApi, PaginatedResponse, PaginationMetadata, PeerLookupRestApi, PlatformChatMessage } from "./types";
+import type { PeerRecord } from "../../contracts/dtos";
 
 interface FetchPageRequest {
   page: number;
@@ -27,7 +29,7 @@ export interface PaginationOptions {
   metadataValidation?: PaginationMetadataValidation;
 }
 
-interface FetchPaginatedOptions<T extends MetadataMap> extends PaginationOptions {
+interface FetchPaginatedOptions<T> extends PaginationOptions {
   fetchPage: (request: FetchPageRequest) => Promise<PaginatedResponse<T>>;
 }
 
@@ -104,7 +106,7 @@ function assertValidMetadataField(
   }
 }
 
-export async function fetchPaginated<T extends MetadataMap>(options: FetchPaginatedOptions<T>): Promise<T[]> {
+export async function fetchPaginated<T>(options: FetchPaginatedOptions<T>): Promise<T[]> {
   const pageSize = resolvePositiveInteger("pageSize", options.pageSize, DEFAULT_PAGE_SIZE);
   const maxPages = resolvePositiveInteger("maxPages", options.maxPages, DEFAULT_MAX_PAGES);
   const strategy = resolvePaginationStrategy(options.strategy);
@@ -167,6 +169,83 @@ export async function fetchPaginated<T extends MetadataMap>(options: FetchPagina
   }
 
   return allItems;
+}
+
+/** A cursor page request: the cursor the previous page handed back (none for the first) and the page size. */
+export interface CursorPageRequest {
+  cursor?: string;
+  limit: number;
+}
+
+export interface CursorTailOptions<T> {
+  /** How many of the last matching items to keep. */
+  keep: number;
+  /** Which items count; all of them when unset. */
+  where?: (item: T) => boolean;
+}
+
+/** The page size a cursor walk asks for. */
+export const CURSOR_PAGE_LIMIT = 100;
+/** The most pages one cursor walk reads before it stops with what it has. */
+export const MAX_CURSOR_PAGES = 100;
+
+/**
+ * The last `keep` items passing `where`, oldest first, from a forward cursor walk:
+ * it pages until `has_more` is false or no `next_cursor` comes back, or the page cap.
+ * Band serves `/context` oldest first, so the tail is the newest.
+ */
+export async function fetchCursorTail<T>(
+  fetchPage: (request: CursorPageRequest) => Promise<PaginatedResponse<T>>,
+  { keep, where }: CursorTailOptions<T>,
+): Promise<T[]> {
+  const tail: T[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_CURSOR_PAGES; page += 1) {
+    const { data, metadata } = await fetchPage({ cursor, limit: CURSOR_PAGE_LIMIT });
+    tail.push(...(where ? data.filter(where) : data));
+    tail.splice(0, Math.max(0, tail.length - keep));
+    cursor = typeof metadata?.next_cursor === "string" ? metadata.next_cursor : undefined;
+    if (metadata?.has_more !== true || !cursor) {
+      break;
+    }
+  }
+  return tail;
+}
+
+/** Every peer the agent can reach, all pages in one call; with `notInChat`, those not in that room. */
+export async function listAllPeers(
+  rest: Required<PeerLookupRestApi>,
+  { notInChat }: { notInChat?: string } = {},
+  options?: RestRequestOptions,
+): Promise<PeerRecord[]> {
+  return fetchPaginated({
+    fetchPage: ({ page, pageSize }) => rest.listPeers({ page, pageSize, notInChat }, options),
+  });
+}
+
+const TEXT_MESSAGE: ChatMessageType = "text";
+/** How many messages `getRecentMessages` returns by default, and at most. */
+export const DEFAULT_RECENT_MESSAGES = 20;
+export const MAX_RECENT_MESSAGES = 100;
+
+/**
+ * The newest `limit` text messages in a room, oldest first. Band's context holds the
+ * agent's own messages of every type plus the text messages that mention it.
+ */
+export async function getRecentMessages(
+  rest: Required<ContextRestApi>,
+  chatId: string,
+  limit = DEFAULT_RECENT_MESSAGES,
+  options?: RestRequestOptions,
+): Promise<PlatformChatMessage[]> {
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_RECENT_MESSAGES) {
+    throw new ValidationError(`limit must be an integer from 1 to ${MAX_RECENT_MESSAGES}`);
+  }
+
+  return fetchCursorTail((page) => rest.getChatContext({ chatId, ...page }, options), {
+    keep: limit,
+    where: (message) => message.message_type === TEXT_MESSAGE,
+  });
 }
 
 function resolveMetadataMode(

@@ -1,4 +1,5 @@
 import type { AgentToolsRestApi } from "../client/rest/types";
+import { fetchCursorTail } from "../client/rest/pagination";
 import { DEFAULT_REQUEST_OPTIONS } from "../client/rest/requestOptions";
 import type { AdapterToolsProtocol, AgentToolsCapabilities } from "../contracts/protocols";
 import type { MetadataMap, ParticipantRecord } from "../contracts/dtos";
@@ -282,43 +283,22 @@ export class ExecutionContext {
   }
 
   private async loadHydratedMessages(): Promise<MetadataMap[]> {
-    const messages: MetadataMap[] = [];
-    const pageSize = this.maxContextMessages;
-    const maxPages = 100;
-
-    for (let page = 1; page <= maxPages; page += 1) {
-      const response = await this.link.rest.getChatContext?.(
-        {
-          chatId: this.roomId,
-          page,
-          pageSize,
-        },
-        DEFAULT_REQUEST_OPTIONS,
-      );
-      const items = response?.data ?? [];
-      messages.push(...items.map((item) => ({
-        id: item.id,
-        room_id: this.roomId,
-        content: resolveMentions(item.content, item.metadata),
-        sender_id: item.sender_id,
-        sender_type: item.sender_type,
-        sender_name: item.sender_name ?? null,
-        message_type: item.message_type,
-        metadata: item.metadata ?? {},
-        created_at: item.inserted_at,
-        role: item.sender_type === "User" ? "user" : "assistant",
-      })));
-
-      const totalPages = response?.metadata?.totalPages;
-      if (typeof totalPages === "number" && totalPages > 0 && page >= totalPages) {
-        break;
-      }
-      if ((typeof totalPages !== "number" || totalPages <= 0) && items.length < pageSize) {
-        break;
-      }
-    }
-
-    return messages.slice(-this.maxContextMessages);
+    const items = await fetchCursorTail(
+      async (page) => (await this.link.rest.getChatContext?.({ chatId: this.roomId, ...page }, DEFAULT_REQUEST_OPTIONS)) ?? { data: [] },
+      { keep: this.maxContextMessages },
+    );
+    return items.map((item) => ({
+      id: item.id,
+      room_id: this.roomId,
+      content: resolveMentions(item.content, item.metadata),
+      sender_id: item.sender_id,
+      sender_type: item.sender_type,
+      sender_name: item.sender_name ?? null,
+      message_type: item.message_type,
+      metadata: item.metadata ?? {},
+      created_at: item.inserted_at,
+      role: item.sender_type === "User" ? "user" : "assistant",
+    }));
   }
 
   private updateCachedParticipants(): void {

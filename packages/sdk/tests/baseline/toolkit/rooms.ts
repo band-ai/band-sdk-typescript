@@ -6,6 +6,7 @@
  * that landed before it started. Released when its `await using` scope or its
  * test ends; release never throws.
  */
+import type { CreateChatRequest } from "../../../src/client/rest/types";
 import { DEFAULT_WS_URL } from "../../../src/platform/BandLink";
 import type { MessageCreatedPayload } from "../../../src/platform/events";
 import { roomTopics } from "../../../src/platform/roomTopics";
@@ -69,9 +70,28 @@ export class Room implements AsyncDisposable {
 
   public async [Symbol.asyncDispose](): Promise<void> {
     await this.observer.disconnect().catch(warnTeardown(`disconnect observer of room ${this.id}`));
-    const { env } = await liveRun();
-    await deleteRoomsBulk(env.restUrl, env.userApiKey, [this.id]).catch(warnTeardown(`delete room ${this.id}`));
+    await deleteRoom(this.id);
   }
+}
+
+async function deleteRoom(id: string): Promise<void> {
+  const { env } = await liveRun();
+  await deleteRoomsBulk(env.restUrl, env.userApiKey, [id]).catch(warnTeardown(`delete room ${id}`));
+}
+
+/** A room an agent created itself; deleted when its scope or its test ends, as `Room` is. */
+export class CreatedRoom implements AsyncDisposable {
+  public constructor(public readonly id: string) {}
+
+  public async [Symbol.asyncDispose](): Promise<void> {
+    await deleteRoom(this.id);
+  }
+}
+
+/** Creates a room as the agent `creator`, as an agent's own tool would. */
+async function createAs(creator: AgentIdentity, request?: CreateChatRequest): Promise<CreatedRoom> {
+  const { id } = await creator.rest.createChat(request);
+  return releasedWithTest(new CreatedRoom(id));
 }
 
 async function addParticipant(room: Room, participant: AgentIdentity): Promise<void> {
@@ -127,6 +147,7 @@ async function sendAsAgent(from: AgentIdentity, room: Room, recipient: AgentIden
 
 export const Rooms = {
   create: Room.create,
+  createAs,
   addParticipant,
   removeParticipant,
   participantIds,

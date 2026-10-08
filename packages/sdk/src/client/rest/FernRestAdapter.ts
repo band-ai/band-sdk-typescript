@@ -29,6 +29,8 @@ import type {
   RestApi,
   AgentIdentity,
   ChatParticipant,
+  ChatRoom,
+  CreateChatRequest,
   PaginatedResponse,
   PlatformChatMessage,
 } from "./types";
@@ -192,6 +194,24 @@ function normalizeMemoryRecord(response: unknown): MemoryRecord {
 function extractChatId(response: unknown): string | undefined {
   const payload = asMetadataMap(extractEnvelopeData(response));
   return typeof payload?.id === "string" ? payload.id : undefined;
+}
+
+function normalizeChatRoom(response: unknown): ChatRoom {
+  const payload = asMetadataMap(extractEnvelopeData(response));
+  const id = asString(payload?.id);
+  const insertedAt = asString(payload?.inserted_at);
+  const updatedAt = asString(payload?.updated_at);
+  if (!payload || !id || !insertedAt || !updatedAt) {
+    throw new UnsupportedFeatureError("Chat response did not include id and times");
+  }
+
+  return {
+    id,
+    title: asNullableString(payload.title),
+    task_id: asNullableString(payload.task_id),
+    inserted_at: insertedAt,
+    updated_at: updatedAt,
+  };
 }
 
 function isChatParticipant(value: unknown): value is ChatParticipant {
@@ -436,16 +456,18 @@ export class FernRestAdapter implements RestApi {
     return this.createChatMessage(chatId, event, options);
   }
 
-  public async createChat(taskId?: string, options?: RestRequestOptions): Promise<{ id: string }> {
+  public async createChat(request?: string | CreateChatRequest, options?: RestRequestOptions): Promise<{ id: string }> {
     const api = this.client.chatRooms?.createChat?.bind(this.client.chatRooms) ?? this.client.agentApiChats?.createAgentChat?.bind(this.client.agentApiChats);
     if (!api) {
       throw new UnsupportedFeatureError("Fern client missing chat creation endpoint");
     }
 
+    const { taskId, title }: CreateChatRequest = typeof request === "string" ? { taskId: request } : request ?? {};
     const response = await api(
       {
         chat: {
           task_id: taskId,
+          title,
         },
       },
       mergeOptions(options),
@@ -457,6 +479,34 @@ export class FernRestAdapter implements RestApi {
     }
 
     return { id: roomId };
+  }
+
+  public async renameChat(chatId: string, title: string, options?: RestRequestOptions): Promise<ChatRoom> {
+    const api = this.client.agentApiChats?.renameAgentChat?.bind(this.client.agentApiChats);
+    if (!api) {
+      throw new UnsupportedFeatureError("Fern client missing chat rename endpoint");
+    }
+
+    return normalizeChatRoom(await api(chatId, { chat: { title } }, mergeOptions(options)));
+  }
+
+  public async getChat(chatId: string, options?: RestRequestOptions): Promise<ChatRoom> {
+    const api = this.client.agentApiChats?.getAgentChat?.bind(this.client.agentApiChats);
+    if (!api) {
+      throw new UnsupportedFeatureError("Fern client missing chat get endpoint");
+    }
+
+    return normalizeChatRoom(await api(chatId, mergeOptions(options)));
+  }
+
+  public async reportActivity(chatId: string, working: boolean, options?: RestRequestOptions): Promise<{ working: boolean }> {
+    const api = this.client.agentApiActivity?.reportAgentChatActivity?.bind(this.client.agentApiActivity);
+    if (!api) {
+      throw new UnsupportedFeatureError("Fern client missing activity report endpoint");
+    }
+
+    const payload = asMetadataMap(extractEnvelopeData(await api(chatId, { working }, mergeOptions(options))));
+    return { working: payload?.working === true };
   }
 
   public async listChatParticipants(
@@ -586,7 +636,7 @@ export class FernRestAdapter implements RestApi {
   }
 
   public async listPeers(
-    request: { page: number; pageSize: number; notInChat: string },
+    request: { page: number; pageSize: number; notInChat?: string },
     options?: RestRequestOptions,
   ): Promise<{ data: PeerRecord[]; metadata?: MetadataMap }> {
     const api = this.client.agentPeers?.listAgentPeers?.bind(this.client.agentPeers) ?? this.client.agentApiPeers?.listAgentPeers?.bind(this.client.agentApiPeers);
@@ -835,13 +885,15 @@ export class FernRestAdapter implements RestApi {
   }
 
   public async getChatContext(
-    request: { chatId: string; page?: number; pageSize?: number },
+    request: { chatId: string; page?: number; pageSize?: number; cursor?: string; limit?: number },
     options?: RestRequestOptions,
   ): Promise<PaginatedResponse<PlatformChatMessage>> {
     const requestOptions = mergeOptions(options);
     const contextRequest = {
       page: request.page,
       page_size: request.pageSize,
+      cursor: request.cursor,
+      limit: request.limit,
     };
 
     const getChatContextApi = this.client.chatContext?.getChatContext?.bind(this.client.chatContext);

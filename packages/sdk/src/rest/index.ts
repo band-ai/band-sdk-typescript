@@ -2,12 +2,21 @@ export type {
   AgentIdentity,
   ChatMessageMention,
   ChatParticipant,
+  ChatRoom,
+  CreateChatRequest,
   FernBandClientLike,
   PaginatedResponse,
   PaginationMetadata,
   PlatformChatMessage,
   RestApi,
 } from "../client/rest/types";
-export { fetchPaginated, normalizePaginationMetadata } from "../client/rest/pagination";
+export {
+  fetchCursorTail,
+  fetchPaginated,
+  getRecentMessages,
+  listAllPeers,
+  normalizePaginationMetadata,
+} from "../client/rest/pagination";
+export type { CursorPageRequest, CursorTailOptions } from "../client/rest/pagination";
 export { DEFAULT_REQUEST_OPTIONS } from "../client/rest/requestOptions";
 export { FernRestAdapter, RestFacade } from "../client/rest/RestFacade";

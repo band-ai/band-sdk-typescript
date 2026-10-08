@@ -46,7 +46,8 @@ describe("BandClient conformance (0.0.143)", () => {
       "getAgentNextMessage",
     ]],
     ["agentApiEvents", ["createAgentChatEvent"]],
-    ["agentApiChats", ["createAgentChat", "listAgentChats"]],
+    ["agentApiChats", ["createAgentChat", "listAgentChats", "getAgentChat", "renameAgentChat"]],
+    ["agentApiActivity", ["reportAgentChatActivity"]],
     ["agentApiParticipants", [
       "listAgentChatParticipants",
       "addAgentChatParticipant",

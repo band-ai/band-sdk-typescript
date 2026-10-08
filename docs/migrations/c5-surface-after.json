@@ -658,13 +658,20 @@
         "DEFAULT_REQUEST_OPTIONS",
         "FernRestAdapter",
         "RestFacade",
+        "fetchCursorTail",
         "fetchPaginated",
+        "getRecentMessages",
+        "listAllPeers",
         "normalizePaginationMetadata"
       ],
       "declarations": [
         "AgentIdentity",
         "ChatMessageMention",
         "ChatParticipant",
+        "ChatRoom",
+        "CreateChatRequest",
+        "CursorPageRequest",
+        "CursorTailOptions",
         "DEFAULT_REQUEST_OPTIONS",
         "FernBandClientLike",
         "FernRestAdapter",
@@ -673,7 +680,10 @@
         "PlatformChatMessage",
         "RestApi",
         "RestFacade",
+        "fetchCursorTail",
         "fetchPaginated",
+        "getRecentMessages",
+        "listAllPeers",
         "normalizePaginationMetadata"
       ]
     },

@@ -46,6 +46,23 @@ export interface ChatParticipant {
   name: string;
   type: string;
   handle?: string | null;
+  /** What an agent says about itself; Band sends it on agent rows. */
+  description?: string | null;
+}
+
+/** A room as Band reports it. */
+export interface ChatRoom {
+  id: string;
+  title?: string | null;
+  task_id?: string | null;
+  inserted_at: string;
+  updated_at: string;
+}
+
+/** What a new room is created with; Band titles a room created without one. */
+export interface CreateChatRequest {
+  taskId?: string;
+  title?: string;
 }
 
 export interface ChatMessageMention {
@@ -98,7 +115,10 @@ export interface ChatMessagingRestApi {
 }
 
 export interface ChatRoomRestApi {
-  createChat(taskId?: string, options?: RestRequestOptions): Promise<{ id: string }>;
+  /** A string `request` is the task id. */
+  createChat(request?: string | CreateChatRequest, options?: RestRequestOptions): Promise<{ id: string }>;
+  renameChat?(_chatId: string, _title: string, _options?: RestRequestOptions): Promise<ChatRoom>;
+  getChat?(_chatId: string, _options?: RestRequestOptions): Promise<ChatRoom>;
 }
 
 export interface ParticipantRestApi {
@@ -139,7 +159,7 @@ export interface MessageLifecycleRestApi {
 
 export interface PeerLookupRestApi {
   listPeers?(
-    _request: { page: number; pageSize: number; notInChat: string },
+    _request: { page: number; pageSize: number; notInChat?: string },
     _options?: RestRequestOptions,
   ): Promise<PaginatedResponse<PeerRecord>>;
 }
@@ -199,7 +219,7 @@ export interface MemoryRestApi {
 
 export interface ContextRestApi {
   getChatContext?(
-    _request: { chatId: string; page?: number; pageSize?: number },
+    _request: { chatId: string; page?: number; pageSize?: number; cursor?: string; limit?: number },
     _options?: RestRequestOptions,
   ): Promise<PaginatedResponse<PlatformChatMessage>>;
 }
@@ -213,6 +233,15 @@ export interface MessageQueueRestApi {
     _request: { chatId: string },
     _options?: RestRequestOptions,
   ): Promise<PlatformChatMessage | null>;
+}
+
+export interface ActivityRestApi {
+  /** Reports whether the agent is working in the room; Band answers 404 while the room has no active execution. */
+  reportActivity?(
+    _chatId: string,
+    _working: boolean,
+    _options?: RestRequestOptions,
+  ): Promise<{ working: boolean }>;
 }
 
 export type AgentToolsRestApi =
@@ -229,7 +258,8 @@ export type BandLinkRestApi =
   & AgentProfileRestApi
   & MessageLifecycleRestApi
   & AgentToolsRestApi
-  & ChatListingRestApi;
+  & ChatListingRestApi
+  & ActivityRestApi;
 
 export interface RestApi extends BandLinkRestApi {}
 
@@ -461,7 +491,7 @@ export interface FernBandClientLike {
   };
   chatRooms?: {
     createChat(
-      request: { chat: { task_id?: string } },
+      request: { chat: { task_id?: string; title?: string } },
       options?: RestRequestOptions,
     ): Promise<unknown>;
     listChats?(
@@ -471,11 +501,27 @@ export interface FernBandClientLike {
   };
   agentApiChats?: {
     createAgentChat?(
-      request: { chat: { task_id?: string } },
+      request: { chat: { task_id?: string; title?: string } },
       options?: RestRequestOptions,
     ): Promise<unknown>;
     listAgentChats?(
       request?: { page?: number; page_size?: number },
+      options?: RestRequestOptions,
+    ): Promise<unknown>;
+    getAgentChat?(
+      id: string,
+      options?: RestRequestOptions,
+    ): Promise<unknown>;
+    renameAgentChat?(
+      id: string,
+      request: { chat: { title: string } },
+      options?: RestRequestOptions,
+    ): Promise<unknown>;
+  };
+  agentApiActivity?: {
+    reportAgentChatActivity?(
+      chatId: string,
+      request: { working: boolean },
       options?: RestRequestOptions,
     ): Promise<unknown>;
   };
@@ -499,7 +545,7 @@ export interface FernBandClientLike {
   chatContext?: {
     getChatContext?(
       chatId: string,
-      request?: { page?: number; page_size?: number },
+      request?: { page?: number; page_size?: number; cursor?: string; limit?: number },
       options?: RestRequestOptions,
     ): Promise<unknown>;
   };
@@ -522,7 +568,7 @@ export interface FernBandClientLike {
   agentApiContext?: {
     getAgentChatContext?(
       chatId: string,
-      request?: { page?: number; page_size?: number },
+      request?: { page?: number; page_size?: number; cursor?: string; limit?: number },
       options?: RestRequestOptions,
     ): Promise<unknown>;
   };
