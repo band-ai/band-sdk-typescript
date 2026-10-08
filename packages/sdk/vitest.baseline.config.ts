@@ -15,6 +15,6 @@ export default defineConfig({
     exclude: process.env.RUN_CODEX_ACP_E2E === FLAG_ON ? [] : [CODEX_ACP_SMOKE],
     testTimeout: LIVE_TEST_TIMEOUT_MS,
     hookTimeout: LIVE_EVENT_TIMEOUT_MS,
-    reporters: ["default", "./tests/baseline/toolkit/scorecardReporter.ts"],
+    reporters: ["default", "./tests/baseline/toolkit/scorecardReporter.ts", ["./tests/support/liveRunReporter.ts", { lane: "sdk" }]],
   },
 });

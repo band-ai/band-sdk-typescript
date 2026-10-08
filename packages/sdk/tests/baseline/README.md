@@ -20,6 +20,8 @@ Scope with vitest's own `-t` or a path, with no `--` (it breaks `-t` filtering).
 | --- | --- |
 | `BAND_API_KEY_USER` | The Band user key every run provisions and reaps its agents with. Required. |
 | `BAND_E2E_SCORECARD_JSON` | Writes the scorecard to this path, plus a `.md` grid beside it. |
+| `BAND_E2E_LIVE_REPORT_JSON` | Writes complete Vitest evidence for the selected live lane, including collection/hooks/unhandled errors and retry diagnostics. |
+| `BAND_BASELINE_PROVIDER_TRACE=1` | Buffers transmitted provider requests and responses for sanitized failure diagnostics. CI enables this. |
 | `BAND_E2E_INCLUDE_PENDING=1` | Fans `perAdapter` scenarios out to adapters marked `pending` too (they are omitted by default). |
 | `BAND_E2E_DEBUG_LOGS=1` | Prints the SDK's own logs from every running agent and each room's observer, each line stamped with wall-clock time and its source. Off by default: without it the SDK's logs are dropped. |
 | `RUN_CODEX_ACP_E2E=1` | Includes `adapters.codexAcpSmoke` in the baseline run (needs a local `codex-acp`); excluded from `vitest.baseline.config.ts` when unset. |
@@ -38,6 +40,22 @@ job posts the result as a comment on the tested commit that @mentions the integr
 roster lives in band-sdk-python's `.github/integrations-team.txt`), so each member gets an email.
 A manual `workflow_dispatch` takes a `filter` (the same vitest arguments) and reports only to its
 dispatcher: one sticky comment on the branch's PR, or a commit comment when there is none.
+
+The comment and job summary share one saved report assembled after the baseline job finishes.
+It leads with failures from both SDK and Claude Code plugin lanes, then actual test counts.
+The expandable SDK-only matrix counts cells separately: a shared test can contribute several
+adapter cells. Exclusions are grouped by adapter/reason and distinguish missing required
+coverage from scenario incompatibility. Passing executed tests do not certify a filtered run,
+retry recovery, or missing required coverage as a complete nightly.
+Incomplete nightly acceptance keeps the overall workflow red even when executed lanes passed.
+See [the coverage audit](coverage.md) for the remaining prerequisites and the
+separate Codex ACP opt-in scenario.
+
+Download `baseline-scorecard` for `sdk-live.json`, `plugin-live.json`, the SDK matrix and failure
+diagnostics; `baseline-report` contains the assembled `report.json` and `report.md`. Missing,
+malformed, interrupted or partial evidence fails integrity. A failure before test collection
+shows unknown counts and the failed workflow step. Run the offline reporter/rendering checks
+with `pnpm test:baseline-scorecard-comment` from the repository root.
 
 ## Layout
 

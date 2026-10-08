@@ -6,6 +6,10 @@
  * knows about the other.
  */
 import type { Reporter, SerializedError, TestModule, TestResult } from "vitest/node";
+import { TEST_STATE, type LiveRun } from "../../support/liveRunReport";
+import { redactDiagnosticText } from "../../support/redactDiagnostics";
+
+export { TEST_STATE } from "../../support/liveRunReport";
 
 import { ADAPTER_IDS, registry, type AdapterId } from "./adapters";
 import { CAST_SEPARATOR, CATEGORIES, scenarioIdFromModulePath, type AdapterRegistry, type ScenarioId } from "./registry";
@@ -51,14 +55,6 @@ export interface ReportedModule {
   children: { allTests(): Iterable<ReportedTest>; allSuites(): Iterable<ReportedSuite> };
 }
 
-/** vitest's test states, named once. */
-export const TEST_STATE = {
-  passed: "passed",
-  failed: "failed",
-  skipped: "skipped",
-  pending: "pending",
-} as const satisfies Record<string, TestResult["state"]>;
-
 /** Joins a file to what failed in it; the separator vitest itself uses in a test's `fullName`. */
 export const SOURCE_SEPARATOR = " > ";
 
@@ -80,7 +76,7 @@ export type ScorecardRoster = Pick<AdapterRegistry<AdapterId>, "get">;
 
 /** A failed outcome; `source` says where the errors came from when no test title does. */
 function failure(errors: ReadonlyArray<ReportedError> | undefined, durationMs: number, source?: string): ScorecardOutcome {
-  const messages = (errors ?? []).map((error) => error.message).join("\n");
+  const messages = (errors ?? []).map((error) => redactDiagnosticText(error.message)).join("\n");
   return { status: SCORECARD_STATUS.fail, error: source ? `${source}: ${messages}` : messages, durationMs };
 }
 
@@ -178,6 +174,33 @@ export function runRows(
     // Errors raised outside every test, which vitest still exits non-zero on.
     failureRows(GENERAL_SCENARIO, unhandledErrors),
   );
+}
+
+/** Reconstructs the reporter boundary so validation uses the identical cell projection. */
+export function projectLiveRun(run: LiveRun, roster: ScorecardRoster = registry): ScorecardRow[] {
+  const modules: ReportedModule[] = run.modules.map((module) => ({
+    relativeModuleId: module.file,
+    errors: () => module.errors,
+    children: {
+      allSuites: () => module.suites.map((suite) => ({ name: suite.name, fullName: suite.fullName, errors: () => suite.errors })),
+      allTests: () => module.tests.map((test): ReportedTest => ({
+        name: test.name,
+        fullName: test.fullName,
+        module: { relativeModuleId: module.file },
+        parent: test.parent,
+        result: () => {
+          switch (test.state) {
+            case TEST_STATE.passed: return { state: test.state, errors: test.errors };
+            case TEST_STATE.failed: return { state: test.state, errors: test.errors };
+            case TEST_STATE.pending: return { state: test.state, errors: undefined };
+            case TEST_STATE.skipped: return { state: test.state, errors: undefined, note: test.note };
+          }
+        },
+        diagnostic: () => ({ duration: test.durationMs }),
+      })),
+    },
+  }));
+  return runRows(modules, run.unhandledErrors, roster);
 }
 
 export default class ScorecardReporter implements Reporter {

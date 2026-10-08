@@ -345,6 +345,8 @@ describe("when Claude Code exits", () => {
     held.release();
 
     expect(await session.exited).toBe(EXIT_OK);
+    expect(await band.room.outcome(id)).toBe("failed");
+    expect(session.pushes.entries).toEqual([]);
     expect(band.platform.transport.isConnected()).toBe(false);
   });
 });

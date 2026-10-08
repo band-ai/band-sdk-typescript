@@ -21,10 +21,11 @@ declare module "phoenix" {
   }
 
   export class Socket {
+    conn: WebSocket | null;
     constructor(url: string, options?: SocketOptions);
     channel(topic: string, params?: Record<string, unknown>): Channel;
     connect(): void;
-    disconnect(): void;
+    disconnect(callback?: () => void, code?: number, reason?: string): void;
     onOpen(callback: () => void): number;
     onClose(callback: () => void): number;
     onError(callback: (event: unknown) => void): number;

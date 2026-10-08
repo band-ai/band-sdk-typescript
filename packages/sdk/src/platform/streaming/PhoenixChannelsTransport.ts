@@ -1,7 +1,7 @@
 import { Socket, type Channel, type SocketOptions } from "phoenix";
 import { TransportError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
-import { combineTeardownErrors } from "../../core/teardown";
+import { combineTeardownErrors, isolateTeardown } from "../../core/teardown";
 import { Serializer, SingleFlight } from "../../core/singleFlight";
 import { createDeferred, type Deferred } from "../../core/deferred";
 import { Epoch } from "../../core/epoch";
@@ -201,7 +201,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     this.epoch.bump();
     const failures = await this.registry.leaveAll();
 
-    this.stopSocket();
+    await isolateTeardown(failures, () => this.stopSocket());
     this.registry.forceTeardown();
 
     this.hasOpenedOnce = false;
@@ -214,7 +214,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     if (failures.length > 0) {
       // A lone failure is rethrown as-is rather than masked inside a
       // one-element AggregateError, matching the runtime teardown helpers.
-      throw combineTeardownErrors(failures, "Failed to leave one or more Phoenix topics during disconnect");
+      throw combineTeardownErrors(failures, "Failed to disconnect Phoenix transport");
     }
   }
 
@@ -347,7 +347,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     try {
       await this.subscribeAgentControl();
     } catch (error) {
-      this.stopSocket();
+      void this.stopSocket().catch((error: unknown) => this.logger.warn("Phoenix socket close failed", { error }));
       this.connectReject?.(
         error instanceof Error ? error : new TransportError(String(error)),
       );
@@ -411,7 +411,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     }
 
     this.suppressNextCloseReason = options.suppressCloseReason ?? false;
-    this.stopSocket();
+    void this.stopSocket().catch((error: unknown) => this.logger.warn("Phoenix socket close failed", { error }));
   }
 
   private async subscribeAgentControl(): Promise<void> {
@@ -472,16 +472,16 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       waiter.reject(error);
     }
     this.runForeverWaiters.clear();
-    this.stopSocket();
+    void this.stopSocket().catch((error: unknown) => this.logger.warn("Phoenix socket close failed", { error }));
   }
 
   /**
    * The single stop path. Clears `connected` itself because phoenix's close
    * callback may never fire after a stalled close.
    */
-  private stopSocket(): void {
+  private async stopSocket(): Promise<void> {
     this.connected = false;
-    this.socket.close();
+    await this.socket.close();
   }
 
   private async waitForConnection(timeoutMs = 10_000): Promise<void> {
@@ -544,6 +544,7 @@ function isErrorEvent(event: unknown): event is { error: unknown } {
  */
 class GatedSocket extends Socket {
   private opened = false;
+  private readonly closeFlight = new SingleFlight<void>();
 
   // Not `logger`: phoenix calls its own `this.logger` as a function.
   public constructor(
@@ -564,9 +565,21 @@ class GatedSocket extends Socket {
     super.connect();
   }
 
-  public close(): void {
+  public async close(): Promise<void> {
     this.opened = false;
-    super.disconnect();
+    await this.closeFlight.run(async () => {
+      const connection = this.conn;
+      await new Promise<void>((resolve, reject) => {
+        super.disconnect(() => {
+          // Phoenix's bounded close polling can finish while the wire is still open.
+          if (!connection || connection.readyState === WebSocket.CLOSED) {
+            resolve();
+          } else {
+            reject(new TransportError("Phoenix socket close handshake did not finish"));
+          }
+        });
+      });
+    });
   }
 
   public override connect(): void {

@@ -4,6 +4,7 @@ import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
+import { isFailedToolOutput } from "../../contracts/protocols";
 import { relayReply, type TurnTools } from "../../core/turn";
 import type { MetadataMap, ToolOperationResult } from "../../contracts/dtos";
 import { formatMessageForLlm } from "../../runtime/formatters";
@@ -145,6 +146,24 @@ function stringifyToolResult(result: unknown): string {
   }
 
   return JSON.stringify(result, null, 2);
+}
+
+function executionResult(response: unknown): { output: unknown; isError: boolean } {
+  const envelope = asOptionalRecord(response);
+  let output = response;
+  if (envelope && typeof envelope.result === "string" && Object.keys(envelope).length === 1) {
+    try {
+      output = JSON.parse(envelope.result) as unknown;
+    } catch {
+      // Keep an unparseable ADK envelope visible instead of inventing a result.
+    }
+  }
+  return {
+    output,
+    isError: Boolean(envelope && "error" in envelope)
+      || isFailedToolOutput(envelope?.result)
+      || isFailedToolOutput(output),
+  };
 }
 
 async function loadGoogleAdkSdk(): Promise<GoogleAdkSdkLike> {
@@ -491,10 +510,12 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
     }
 
     for (const functionResponse of sdk.getFunctionResponses(event)) {
+      const { output, isError } = executionResult(functionResponse.response);
       const result = await tools.sendEvent(JSON.stringify({
         name: functionResponse.name ?? "unknown",
-        output: String(functionResponse.response ?? ""),
+        output,
         tool_call_id: functionResponse.id ?? "",
+        is_error: isError,
       }), "tool_result");
       this.warnOnFailedSend(result, "Google ADK tool_result event send failed", { toolCallId: functionResponse.id ?? "" });
     }

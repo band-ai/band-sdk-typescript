@@ -24,6 +24,10 @@ import { Agents } from "../../toolkit/agents";
 import { assertToolFired } from "../../toolkit/assertMessages";
 import { liveRun } from "../../toolkit/liveRun";
 import { toolCalls } from "../../toolkit/observeMessages";
+import { scenarioEvidence } from "../../toolkit/scenarioEvidence";
+import { assertDeliveryStatus } from "../../toolkit/assertDelivery";
+import { DELIVERY_STATUS, observeAgent } from "../../toolkit/observeDelivery";
+import { Rooms } from "../../toolkit/rooms";
 import { perAdapter } from "../../toolkit/perAdapter";
 import { CATEGORY, scenarioId } from "../../toolkit/registry";
 import { uniqueMarker } from "../samples/markers";
@@ -83,15 +87,22 @@ perAdapter(
 perAdapter(
   memory("subjectScopeInferred"),
   async ({ agent, room }) => {
-    const marker = uniqueMarker("subjinfer");
-    const { env } = await liveRun();
-    const userId = (await env.userClient.humanApiProfile.getMyProfile()).data.id;
-    await takeTurn(room, agent, inferredSubjectRequest(marker));
-
-    const about = { scope: MEMORY_STORE_SCOPE.subject, subject_id: userId };
-    assertToolFired(await memoryCalls(room, agent), MEMORY_TOOL.store, { content: marker, ...about });
-    const stored = await storedMemories(agent, { scope: MEMORY_LIST_SCOPE.subject, subject_id: userId, content_query: marker });
-    expect(stored).toContainEqual(memoryLike(marker, about));
+    const evidence = scenarioEvidence(room, agent);
+    await evidence.run(async () => {
+      const marker = uniqueMarker("subjinfer");
+      const { env } = await liveRun();
+      const userId = (await env.userClient.humanApiProfile.getMyProfile()).data.id;
+      const sent = await Rooms.sendMention(room, agent, inferredSubjectRequest(marker));
+      const delivery = await observeAgent(agent, room).untilProcessed(sent);
+      evidence.record({ marker, userId, sent, delivery });
+      const { calls } = await evidence.read();
+      const about = { scope: MEMORY_STORE_SCOPE.subject, subject_id: userId };
+      const stored = await storedMemories(agent, { scope: MEMORY_LIST_SCOPE.subject, subject_id: userId, content_query: marker });
+      evidence.record({ marker, userId, sent, delivery, stored });
+      assertDeliveryStatus(delivery, DELIVERY_STATUS.processed);
+      assertToolFired(calls, MEMORY_TOOL.store, { content: marker, ...about });
+      expect(stored).toContainEqual(memoryLike(marker, about));
+    });
   },
   WITH_MEMORY_SECRETARY,
 );

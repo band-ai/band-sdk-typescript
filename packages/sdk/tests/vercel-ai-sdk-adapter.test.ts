@@ -117,6 +117,10 @@ describe("VercelAISDKAdapter", () => {
         content: "[User]: hello",
       },
       {
+        role: "system",
+        content: expect.stringContaining("Current turn identity:"),
+      },
+      {
         role: "assistant",
         content: [{
           type: "tool-call",

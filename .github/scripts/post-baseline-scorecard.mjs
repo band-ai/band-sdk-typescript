@@ -3,27 +3,48 @@
 // updated in place; any other run (the nightly on main, or a manual run with no
 // PR) comments on the tested commit.
 import { spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** Marks the one PR comment each run updates. */
 export const MARKER = "<!-- baseline-scorecard-report -->";
 
-const FULL_SUITE = "full suite";
+export function renderComment({ recipients, report }) {
+  return [MARKER, report.trimEnd(), "", `cc ${recipients}`].join("\n");
+}
 
-export function renderComment({ recipients, passed, runNumber, runUrl, filter, scorecard }) {
-  const verdict = passed ? "🟢 **Baseline: PASS**" : "🔴 **Baseline: FAIL**";
-  const details = scorecard
-    ? [scorecard, "Failure details are in the run's `baseline-scorecard` artifact."]
-    : ["_No scorecard was produced: the run failed before reporting. Open the run for its logs._"];
-  return [
-    MARKER,
-    `${verdict} · run [#${runNumber}](${runUrl}) · \`${filter || FULL_SUITE}\``,
+/** Builtin-only recovery when reporting dependencies or assembly failed before saving a body. */
+export async function ensureReport({ path, identity, outcomes = {} }) {
+  try {
+    if ((await readFile(path, "utf8")).trim()) return false;
+  } catch (error) { if (error.code !== "ENOENT") throw error; }
+  const failures = Object.entries(outcomes && typeof outcomes === "object" ? outcomes : {})
+    .filter(([, step]) => step?.outcome !== "success")
+    .map(([name, step]) => `Report step ${name.replaceAll("_", " ")}: ${step?.outcome ?? "unknown"}`);
+  const problems = ["Report assembly/setup failed before producing complete evidence.", ...failures];
+  const report = { version: 1, identity, verdict: "FAIL", executionVerdict: "UNKNOWN", acceptance: "INCOMPLETE", problems, counts: { sdk: null, plugin: null }, matrix: null };
+  const markdown = [
+    `🔴 **Baseline: FAIL** · run [#${identity.runNumber}](${identity.runUrl}) · attempt ${identity.attempt}`,
+    `Commit \`${identity.sha}\``,
+    "**Executed lanes: UNKNOWN** · **Nightly acceptance: INCOMPLETE**",
     "",
-    ...details,
+    "**Report assembly unavailable**",
     "",
-    `cc ${recipients}`,
+    ...problems.map((problem) => `- ${problem}`),
+    "",
+    "| lane | passed | failed | excluded | filtered | pending |",
+    "| --- | ---: | ---: | ---: | ---: | ---: |",
+    "| SDK baseline | unknown | unknown | unknown | unknown | unknown |",
+    "| Claude Code plugin | unknown | unknown | unknown | unknown | unknown |",
+    "",
+    `[Evidence and setup logs](${identity.runUrl}) — execution counts cannot be verified by this report.`,
+    "",
   ].join("\n");
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(join(dirname(path), "report.json"), `${JSON.stringify(report, null, 2)}\n`);
+  await writeFile(path, markdown);
+  return true;
 }
 
 /**
@@ -60,24 +81,24 @@ function ghApi(args) {
   return result.stdout;
 }
 
-async function readOptional(path) {
-  try {
-    return await readFile(path, "utf8");
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-  }
-}
-
 async function main() {
-  const { GITHUB_REPOSITORY, GITHUB_REF_NAME, GITHUB_SHA, GITHUB_RUN_NUMBER, GITHUB_RUN_ID, GITHUB_SERVER_URL, FILTER, PASSED, RECIPIENTS, SCORECARD_MD } =
+  const { GITHUB_REPOSITORY, GITHUB_REF_NAME, GITHUB_SHA, RECIPIENTS, REPORT_MD } =
     process.env;
+  if (process.argv.includes("--ensure")) {
+    let outcomes;
+    try { outcomes = JSON.parse(process.env.REPORT_STEP_OUTCOMES || "{}"); }
+    catch { outcomes = { setup_outcomes_unavailable: { outcome: "unknown" } }; }
+    const created = await ensureReport({
+      path: REPORT_MD,
+      identity: { runNumber: process.env.GITHUB_RUN_NUMBER, runUrl: `${process.env.GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`, attempt: process.env.GITHUB_RUN_ATTEMPT, sha: GITHUB_SHA },
+      outcomes,
+    });
+    if (created) process.exitCode = 1;
+    return;
+  }
   const body = renderComment({
     recipients: RECIPIENTS,
-    passed: PASSED === "true",
-    runNumber: GITHUB_RUN_NUMBER,
-    runUrl: `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}`,
-    filter: FILTER,
-    scorecard: await readOptional(SCORECARD_MD),
+    report: await readFile(REPORT_MD, "utf8"),
   });
   postScorecard({ repo: GITHUB_REPOSITORY, branch: GITHUB_REF_NAME, sha: GITHUB_SHA, body, api: ghApi });
 }

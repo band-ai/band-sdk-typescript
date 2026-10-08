@@ -35,7 +35,7 @@ jobs:
       cancel-in-progress: false
     env:
       BAND_E2E_SCORECARD_JSON: ${{ github.workspace }}/scorecard/scorecard.json
-      SCORECARD_MD: ${{ github.workspace }}/scorecard/scorecard.md
+      REPORT_DIR: ${{ github.workspace }}/scorecard
       FILTER: ${{ inputs.filter }}
     steps:
       - name: Checkout code
@@ -92,6 +92,7 @@ jobs:
       # e2e.yml uses (its E2E_BAND_API_KEY_USER secret) to provision and reap
       # its own test agents, so the value is shared across both repos.
       - name: Run the live baseline
+        id: sdk
         working-directory: packages/sdk
         env:
           BAND_API_KEY_USER: ${{ secrets.E2E_BAND_API_KEY_USER }}
@@ -100,6 +101,8 @@ jobs:
           GOOGLE_API_KEY: ${{ secrets.E2E_GOOGLE_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.E2E_ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.E2E_OPENAI_API_KEY }}
+          BAND_E2E_LIVE_REPORT_JSON: ${{ github.workspace }}/scorecard/sdk-live.json
+          BAND_BASELINE_PROVIDER_TRACE: "1"
           CURSOR_API_KEY: ${{ secrets.E2E_CURSOR_API_KEY }}
           COPILOT_PROVIDER_TYPE: anthropic
           COPILOT_PROVIDER_BASE_URL: https://api.anthropic.com
@@ -115,19 +118,29 @@ jobs:
       # The Claude Code plugin against the live platform, with an MCP client in
       # Claude Code's place; no LLM. Runs even when the baseline failed.
       - name: Run the Claude Code plugin live lane
+        id: plugin
         if: ${{ !cancelled() }}
         env:
           BAND_API_KEY_USER: ${{ secrets.E2E_BAND_API_KEY_USER }}
           BAND_REST_URL: ${{ secrets.E2E_BAND_REST_URL }}
           BAND_WS_URL: ${{ secrets.E2E_BAND_WS_URL }}
+          BAND_E2E_LIVE_REPORT_JSON: ${{ github.workspace }}/scorecard/plugin-live.json
         run: pnpm --fail-if-no-match --filter @band-ai/claude-code-plugin test:live
 
+      - name: Validate live evidence integrity
+        if: ${{ !cancelled() }}
+        env:
+          SDK_STEP_OUTCOME: ${{ steps.sdk.outcome }}
+          PLUGIN_STEP_OUTCOME: ${{ steps.plugin.outcome }}
+        run: pnpm --fail-if-no-match --filter @band-ai/sdk exec node --import tsx ../../.github/scripts/assemble-live-report.mjs --validate
+
       - name: Upload the scorecard
-        if: ${{ !cancelled() && hashFiles('scorecard/scorecard.json') != '' }}
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: baseline-scorecard
           path: scorecard/
+          if-no-files-found: warn
 
       # OMP logs its turns (provider errors included) to its own files, never to the test output.
       - name: Upload OMP logs
@@ -159,10 +172,6 @@ jobs:
           .github/scripts/setup-letta.sh stop
           .github/scripts/setup-parlant.sh stop
 
-      - name: Scorecard to the job summary
-        if: ${{ !cancelled() && hashFiles('scorecard/scorecard.md') != '' }}
-        run: cat "$SCORECARD_MD" >> "$GITHUB_STEP_SUMMARY"
-
   # Reports every finished run, red or green, as a comment that @mentions its
   # audience; GitHub emails each one. The nightly cc's the integrations roster,
   # a manual run only its dispatcher. A separate job so the write permissions
@@ -173,16 +182,31 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: write # commit comments 403 under `read` (github/docs#12723)
       pull-requests: write # the sticky scorecard comment on a manual run's PR
     env:
-      GH_TOKEN: ${{ github.token }}
-      SCORECARD_MD: scorecard/scorecard.md
-      PASSED: ${{ needs.baseline.result == 'success' }}
+      REPORT_MD: ${{ github.workspace }}/scorecard/report.md
+      REPORT_DIR: ${{ github.workspace }}/scorecard
       FILTER: ${{ inputs.filter }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+
+      - name: Install pnpm
+        id: install_pnpm
+        uses: pnpm/action-setup@v6.1.0
+
+      - name: Setup Node
+        id: setup_node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        id: install_dependencies
+        run: pnpm install --frozen-lockfile
 
       # Absent when the baseline died before the scorecard; the report says so.
       - name: Download the scorecard
@@ -192,12 +216,42 @@ jobs:
           name: baseline-scorecard
           path: scorecard
 
+      - name: Assemble the completed baseline report
+        id: assemble_report
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: pnpm --fail-if-no-match --filter @band-ai/sdk exec node --import tsx ../../.github/scripts/assemble-live-report.mjs
+
+      - name: Ensure a report is available
+        if: ${{ !cancelled() }}
+        env:
+          REPORT_STEP_OUTCOMES: ${{ toJSON(steps) }}
+        run: node .github/scripts/post-baseline-scorecard.mjs --ensure
+
+      - name: Report to the job summary
+        if: ${{ !cancelled() }}
+        run: cat "$REPORT_MD" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the completed report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: baseline-report
+          path: |
+            scorecard/report.json
+            scorecard/report.md
+
       - name: Read integrations mentions list
         id: mentions
-        if: ${{ github.event_name == 'schedule' }}
+        if: ${{ !cancelled() && github.event_name == 'schedule' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/read-integrations-mentions.sh
 
       - name: Post the baseline report
+        if: ${{ !cancelled() && (github.event_name != 'schedule' || steps.mentions.outcome == 'success') }}
         env:
+          GH_TOKEN: ${{ github.token }}
           RECIPIENTS: ${{ github.event_name == 'schedule' && steps.mentions.outputs.mentions || format('@{0}', github.triggering_actor) }}
         run: node .github/scripts/post-baseline-scorecard.mjs
