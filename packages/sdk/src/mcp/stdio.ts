@@ -1,5 +1,17 @@
 import type { Readable, Writable } from "node:stream";
 
+import type { RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { RequestOptions } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import type {
+  ElicitRequestFormParams,
+  ElicitRequestURLParams,
+  ElicitResult,
+  ReadResourceResult,
+  Resource,
+  ResourceListChangedNotification,
+  ToolListChangedNotification,
+} from "@modelcontextprotocol/sdk/types.js";
+
 import type { AdapterToolsProtocol } from "../contracts/protocols";
 import type {
   BuildRegistrationsOptions,
@@ -8,12 +20,24 @@ import type {
 import {
   buildRoomScopedRegistrations,
   buildSingleContextRegistrations,
+  registerTools,
 } from "./registrations";
-import { buildZodShape } from "./zod";
+import { ToolsListedTransport } from "./toolsListedTransport";
 import { MCP_SERVER_NAME } from "../contracts/toolSchemas";
 
+/** A host's resources under one URI template; a variable that may hold `/` needs the `{+name}` form. */
+export interface McpResourceSource {
+  name: string;
+  uriTemplate: string;
+  /** Called on every `resources/list`, so it always shows the host's current set. */
+  list(): Resource[] | Promise<Resource[]>;
+  /** Called for any URI matching the template, listed or not, so it throws for one it doesn't know. */
+  read(uri: URL): ReadResourceResult | Promise<ReadResourceResult>;
+}
+
 export interface BandMcpStdioServerOptions {
-  tools: AdapterToolsProtocol | ((roomId: string) => AdapterToolsProtocol | undefined);
+  /** Without it, the server lists only `additionalTools`. */
+  tools?: AdapterToolsProtocol | ((roomId: string) => AdapterToolsProtocol | undefined);
   name?: string;
   enableMemoryTools?: boolean;
   enableContactTools?: boolean;
@@ -22,6 +46,7 @@ export interface BandMcpStdioServerOptions {
   roomlessTools?: AdapterToolsProtocol;
   capabilities?: import("@modelcontextprotocol/sdk/types.js").ServerCapabilities;
   instructions?: string;
+  resources?: McpResourceSource;
   stdin?: Readable;
   stdout?: Writable;
 }
@@ -41,15 +66,18 @@ export class BandMcpStdioServer {
       roomlessTools: options.roomlessTools,
     };
 
-    if (typeof options.tools === "function") {
+    if (!options.tools) {
+      this.registrations = options.additionalTools ?? [];
+    } else if (typeof options.tools === "function") {
       this.registrations = buildRoomScopedRegistrations(options.tools, regOptions);
     } else {
       this.registrations = buildSingleContextRegistrations(options.tools, regOptions);
     }
   }
 
+  /** The running session's tools; before `start()`, the initial ones. */
   public get toolNames(): string[] {
-    return this.registrations.map((r) => r.name);
+    return this.session ? [...this.session.tools.keys()] : this.registrations.map((r) => r.name);
   }
 
   public async start(): Promise<void> {
@@ -57,35 +85,64 @@ export class BandMcpStdioServer {
       return;
     }
 
-    const { McpServer } = await import("@modelcontextprotocol/sdk/server/mcp.js");
-    const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
-    const { z } = await import("zod");
-
-    const mcpServer = new McpServer(
-      { name: this.options.name ?? MCP_SERVER_NAME, version: "1.0.0" },
-      { capabilities: this.options.capabilities, instructions: this.options.instructions },
-    );
-
-    registerTools(mcpServer, z, this.registrations);
-
+    const modules: McpModules = {
+      ...(await import("@modelcontextprotocol/sdk/server/mcp.js")),
+      ...(await import("@modelcontextprotocol/sdk/server/stdio.js")),
+      z: (await import("zod")).z,
+    };
     const stdin = this.options.stdin ?? process.stdin;
     const stdout = this.options.stdout ?? process.stdout;
-    const session = openSession(mcpServer, stdin, stdout, () => {
+    const session = openSession(modules, this.options, this.registrations, stdin, stdout, () => {
       if (this.session === session) {
         void this.stop();
       }
     });
     this.session = session;
-    await mcpServer.connect(new StdioServerTransport(stdin, stdout));
+    await session.connect();
   }
 
   /** Sends once the client has initialized; rejects if the server stops first. */
-  public async notify(method: string, params?: Record<string, unknown>): Promise<void> {
-    const session = this.session;
-    if (!session) {
-      throw notRunning();
+  public notify(method: string, params?: Record<string, unknown>): Promise<void> {
+    return this.whenRunning((session) => session.mcpServer.server.notification({ method, params }));
+  }
+
+  /** Registers the batch, sending one `tools/list_changed`; a name already listed or repeated rejects the whole batch. */
+  public addTools(registrations: McpToolRegistration[]): Promise<void> {
+    return this.whenRunning(async (session) => {
+      const names = registrations.map((reg) => reg.name);
+      const duplicate = names.find((name, index) => session.tools.has(name) || names.indexOf(name) !== index);
+      if (duplicate !== undefined) {
+        throw new Error(`Tool ${duplicate} is already registered`);
+      }
+      session.register(registrations);
+    });
+  }
+
+  /** Removes the named tools, sending one `tools/list_changed`; unknown names, and calls when not running, are ignored. */
+  public removeTools(names: string[]): void {
+    const tools = this.session?.tools;
+    for (const name of names) {
+      tools?.get(name)?.remove();
+      tools?.delete(name);
     }
-    await session.untilStopped(session.initialized.then(() => session.mcpServer.server.notification({ method, params })));
+  }
+
+  /** Tells the client the `resources` source's set changed. */
+  public resourcesChanged(): Promise<void> {
+    return this.whenRunning((session) => session.mcpServer.server.sendResourceListChanged());
+  }
+
+  /** Throws for a client without the elicitation mode; pass a `timeout`, since the default is 60 s. */
+  public elicitInput(
+    params: ElicitRequestFormParams | ElicitRequestURLParams,
+    options?: RequestOptions,
+  ): Promise<ElicitResult> {
+    return this.whenRunning((session) => session.mcpServer.server.elicitInput(params, options));
+  }
+
+  /** Resolves once the response to the client's first `tools/list` is sent; rejects if the server stops first. Read it after `await start()`. */
+  public get toolsListed(): Promise<void> {
+    return this.whenRunning((session) => session.toolsListed);
   }
 
   /** Resolves once the client has initialized; rejects if the server stops first. Read it after `await start()`. */
@@ -103,12 +160,37 @@ export class BandMcpStdioServer {
     this.session = null;
     await session?.close();
   }
+
+  /** Runs `work` once the client has initialized; rejects before `start()`, after `stop()`, or if the server stops first. */
+  private async whenRunning<T>(work: (session: StdioSession) => Promise<T>): Promise<T> {
+    const session = this.session;
+    if (!session) {
+      throw notRunning();
+    }
+    return session.untilStopped(session.initialized.then(() => work(session)));
+  }
 }
 
-type McpServerInstance = InstanceType<typeof import("@modelcontextprotocol/sdk/server/mcp.js").McpServer>;
+type McpModules = typeof import("@modelcontextprotocol/sdk/server/mcp.js")
+  & typeof import("@modelcontextprotocol/sdk/server/stdio.js")
+  & { z: typeof import("zod").z };
+
+type McpServerInstance = InstanceType<McpModules["McpServer"]>;
+
+// Each tool added or removed sends one; debouncing folds a batch into a single notification.
+const LIST_CHANGED_NOTIFICATIONS: Array<ToolListChangedNotification["method"] | ResourceListChangedNotification["method"]> = [
+  "notifications/tools/list_changed",
+  "notifications/resources/list_changed",
+];
+const PLACEHOLDER_TOOL = "band_placeholder";
 
 interface StdioSession {
   mcpServer: McpServerInstance;
+  /** The tools listed now, by name. */
+  tools: Map<string, RegisteredTool>;
+  toolsListed: Promise<void>;
+  register(registrations: McpToolRegistration[]): void;
+  connect(): Promise<void>;
   // MCP allows no server-initiated messages before the client's `notifications/initialized`.
   initialized: Promise<void>;
   stopped: Promise<void>;
@@ -126,11 +208,40 @@ function ignoreLateWriteError(): void {}
 // The SDK's stdio transport ignores stdin end and stdout errors, so the session
 // watches them itself; otherwise a send after the client exits crashes on EPIPE or hangs.
 function openSession(
-  mcpServer: McpServerInstance,
+  modules: McpModules,
+  options: BandMcpStdioServerOptions,
+  registrations: McpToolRegistration[],
   stdin: Readable,
   stdout: Writable,
   onClientGone: () => void,
 ): StdioSession {
+  const mcpServer = new modules.McpServer(
+    { name: options.name ?? MCP_SERVER_NAME, version: "1.0.0" },
+    {
+      capabilities: options.capabilities,
+      instructions: options.instructions,
+      debouncedNotificationMethods: LIST_CHANGED_NOTIFICATIONS,
+    },
+  );
+  const tools = new Map<string, RegisteredTool>();
+  const register = (batch: McpToolRegistration[]) => {
+    registerTools(mcpServer, modules.z, batch).forEach((tool, index) => tools.set(batch[index].name, tool));
+  };
+  register(registrations);
+  // The tools handlers and `tools.listChanged` come with the first tool and can't be added after connect.
+  if (tools.size === 0) {
+    mcpServer.registerTool(PLACEHOLDER_TOOL, {}, () => ({ content: [] })).remove();
+  }
+  const { resources } = options;
+  if (resources) {
+    // Empty metadata: the template's would be copied onto every listed resource.
+    const template = new modules.ResourceTemplate(resources.uriTemplate, {
+      list: async () => ({ resources: await resources.list() }),
+    });
+    mcpServer.registerResource(resources.name, template, {}, (uri) => resources.read(uri));
+  }
+  const transport = new ToolsListedTransport(new modules.StdioServerTransport(stdin, stdout));
+
   const initialized = new Promise<void>((resolve) => {
     mcpServer.server.oninitialized = resolve;
   });
@@ -159,6 +270,10 @@ function openSession(
 
   return {
     mcpServer,
+    tools,
+    toolsListed: transport.toolsListed,
+    register,
+    connect: () => mcpServer.connect(transport),
     initialized,
     stopped,
     untilStopped(work) {
@@ -180,24 +295,4 @@ function openSession(
       await mcpServer.close();
     },
   };
-}
-
-function registerTools(
-  mcpServer: InstanceType<typeof import("@modelcontextprotocol/sdk/server/mcp.js").McpServer>,
-  z: typeof import("zod").z,
-  registrations: McpToolRegistration[],
-): void {
-  for (const reg of registrations) {
-    const zodShape = buildZodShape(z, reg.inputSchema.properties, new Set(reg.inputSchema.required));
-
-    mcpServer.registerTool(
-      reg.name,
-      {
-        description: reg.description,
-        inputSchema: z.object(zodShape),
-      },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MCP SDK handler signature is complex; our McpToolResult is compatible
-      async (args: Record<string, unknown>): Promise<any> => reg.execute(args),
-    );
-  }
 }

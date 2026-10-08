@@ -28,4 +28,4 @@ export type { BandMcpServerOptions } from "./server";
 export { BandMcpSseServer } from "./sse";
 export type { BandMcpSseServerOptions } from "./sse";
 export { BandMcpStdioServer } from "./stdio";
-export type { BandMcpStdioServerOptions } from "./stdio";
+export type { BandMcpStdioServerOptions, McpResourceSource } from "./stdio";

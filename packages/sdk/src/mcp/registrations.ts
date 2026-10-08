@@ -1,3 +1,5 @@
+import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
+
 import type { AdapterToolsProtocol } from "../contracts/protocols";
 import { forwardTools } from "../core/overrideTools";
 import {
@@ -12,11 +14,14 @@ import {
   TOOL_MODELS,
   getToolDescription,
 } from "../contracts/toolSchemas";
+import { buildZodShape } from "./zod";
 
 export interface McpToolRegistration {
   name: string;
   description: string;
   inputSchema: McpToolInputSchema;
+  /** Passed to the client in `tools/list`, e.g. `anthropic/alwaysLoad`. */
+  _meta?: Record<string, unknown>;
   execute: (args: Record<string, unknown>) => Promise<McpToolResult>;
 }
 
@@ -50,6 +55,23 @@ export const ROOM_ID_ARG = "room_id";
 const ROOM_ID_PROPERTY = { type: "string", description: "The room ID to execute this tool in" } as const;
 
 type McpToolSchema = Omit<McpToolRegistration, "execute">;
+
+/** Registers each tool on `mcpServer`, which the servers load with a dynamic `import()` alongside `z`. */
+export function registerTools(
+  mcpServer: McpServer,
+  z: typeof import("zod").z,
+  registrations: McpToolRegistration[],
+): RegisteredTool[] {
+  return registrations.map((reg) => {
+    const zodShape = buildZodShape(z, reg.inputSchema.properties, new Set(reg.inputSchema.required));
+    return mcpServer.registerTool(
+      reg.name,
+      { description: reg.description, inputSchema: z.object(zodShape), _meta: reg._meta },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MCP SDK handler signature is complex; our McpToolResult is compatible
+      async (args: Record<string, unknown>): Promise<any> => reg.execute(args),
+    );
+  });
+}
 
 /**
  * `tool` scoped to a room: it takes a required {@link ROOM_ID_ARG}, and each
