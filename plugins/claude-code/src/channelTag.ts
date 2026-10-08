@@ -11,11 +11,12 @@ const NAME_CHARS = String.raw`A-Za-z0-9_\-`;
 /** What Claude Code puts after a tag's bracket to defuse it. */
 const DEFUSE_MARK = "\\";
 
-/** The bracket of an undefused `channel` lookalike. The gap can't contain the name's first letter, so matching stays linear. */
-const TAG_LOOKALIKE = new RegExp(
-  `[${OPEN_BRACKETS}](?!\\${DEFUSE_MARK})(?=[^${NAME_CHARS}${OPEN_BRACKETS}${CLOSE_BRACKETS}]*${[...CHANNEL_TAG].join(`[${INVISIBLE}]*`)})`,
-  "giu",
-);
+/** What may sit between a bracket and the name; it can't contain the name's first letter, so matching stays linear. */
+const GAP = `[^${NAME_CHARS}${OPEN_BRACKETS}${CLOSE_BRACKETS}]*`;
+/** The tag name, with invisible characters allowed between its letters. */
+const TAG_NAME = [...CHANNEL_TAG].join(`[${INVISIBLE}]*`);
+/** The bracket of an undefused `channel` lookalike. */
+const TAG_LOOKALIKE = new RegExp(`[${OPEN_BRACKETS}](?!\\${DEFUSE_MARK})(?=${GAP}${TAG_NAME})`, "giu");
 
 /**
  * Claude Code defuses only closing tags in a channel body, so a message could forge an opening one.

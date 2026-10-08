@@ -15,6 +15,8 @@ const COMPARISON = "a < b and channel";
 const OTHER_TAG = "<b>bold</b>";
 const NAME_BEFORE = "<a channel";
 const UNDERSCORE_BEFORE = "<_channel";
+const DIGIT_BEFORE = "<9channel";
+const HYPHEN_BEFORE = "<-channel";
 const CLOSED_BEFORE = "<div>channel";
 const PLAIN = "run the tests";
 
@@ -30,13 +32,18 @@ describe("neutralizeChannelTags", () => {
     ["a newline after the bracket", "<\nchannel", "<\\\nchannel"],
     ["two slashes", "<//channel", "<\\//channel"],
     ["slashes and a space", "</ /channel", "<\\/ /channel"],
+    ["a bracket before the tag", "<<channel", "<<\\channel"],
+    ["a bracket and a space before the tag", "< <channel", "< <\\channel"],
     ...INVISIBLES.map((char) => [`${codePoint(char)} in the name`, `<c${char}hannel`, `<\\c${char}hannel`]),
+    ["stacked invisibles in the name", "<c\u200B\u0301hannel", "<\\c\u200B\u0301hannel"],
     ["fullwidth brackets and slash", "＜／channel＞", "<\\／channel＞"],
     ["already defused tags", ALREADY_DEFUSED, ALREADY_DEFUSED],
     ["a comparison before the word", COMPARISON, COMPARISON],
     ["another tag", OTHER_TAG, OTHER_TAG],
     ["a name before the word", NAME_BEFORE, NAME_BEFORE],
     ["an underscore before the word", UNDERSCORE_BEFORE, UNDERSCORE_BEFORE],
+    ["a digit before the word", DIGIT_BEFORE, DIGIT_BEFORE],
+    ["a hyphen before the word", HYPHEN_BEFORE, HYPHEN_BEFORE],
     ["a closed tag before the word", CLOSED_BEFORE, CLOSED_BEFORE],
     ...CLOSE_BRACKETS.map((bracket) => [`the closing bracket ${codePoint(bracket)} before the word`, `<${bracket}channel`, `<${bracket}channel`]),
     ["plain text", PLAIN, PLAIN],
