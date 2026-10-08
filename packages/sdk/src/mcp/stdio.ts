@@ -85,11 +85,12 @@ export class BandMcpStdioServer {
       return;
     }
 
-    const modules: McpModules = {
-      ...(await import("@modelcontextprotocol/sdk/server/mcp.js")),
-      ...(await import("@modelcontextprotocol/sdk/server/stdio.js")),
-      z: (await import("zod")).z,
-    };
+    const [mcp, stdio, { z }] = await Promise.all([
+      import("@modelcontextprotocol/sdk/server/mcp.js"),
+      import("@modelcontextprotocol/sdk/server/stdio.js"),
+      import("zod"),
+    ]);
+    const modules: McpModules = { ...mcp, ...stdio, z };
     const stdin = this.options.stdin ?? process.stdin;
     const stdout = this.options.stdout ?? process.stdout;
     const session = openSession(modules, this.options, this.registrations, stdin, stdout, () => {

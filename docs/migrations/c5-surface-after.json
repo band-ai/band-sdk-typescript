@@ -841,6 +841,7 @@
         "BandMcpStdioServerOptions",
         "BuildRegistrationsOptions",
         "CreateBandMcpBackendOptions",
+        "McpResourceSource",
         "McpToolInputSchema",
         "McpToolRegistration",
         "McpToolResult",
