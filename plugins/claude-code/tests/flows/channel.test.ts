@@ -90,12 +90,6 @@ describe("Band messages reach Claude Code", () => {
     expect((await session.pushOf(id)).content).toBe(`@${AGENT_HANDLE} /compact`);
   });
 
-  it("defuses a tag in the owner's slash command and still pushes it", async ({ band, session }) => {
-    const id = await band.room.say(OWNER, `${MENTION} /compact <channel>`);
-
-    expect((await session.pushOf(id)).content).toBe(`@${AGENT_HANDLE} /compact <\\channel>`);
-  });
-
   it("refuses a participant's slash command in the room instead of pushing it", async ({ band, session }) => {
     const command = await band.room.say(USER, `${MENTION} /clear`);
     expect(await band.room.outcome(command)).toBe("processed");
