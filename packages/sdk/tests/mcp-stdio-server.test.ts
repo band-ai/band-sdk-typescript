@@ -93,7 +93,12 @@ class PluginProcess {
   }
 }
 
-const it = test.extend<{ startPlugin: (script: string, payloadBytes?: number) => PluginProcess }>({
+type InProcessOptions = Omit<BandMcpStdioServerOptions, "stdin" | "stdout">;
+
+const it = test.extend<{
+  startPlugin: (script: string, payloadBytes?: number) => PluginProcess;
+  connect: (options?: InProcessOptions, clientOptions?: ClientOptions) => Promise<{ server: BandMcpStdioServer; client: Client }>;
+}>({
   startPlugin: async ({}, use) => {
     const started: PluginProcess[] = [];
     await use((script, payloadBytes) => {
@@ -104,6 +109,18 @@ const it = test.extend<{ startPlugin: (script: string, payloadBytes?: number) =>
     for (const plugin of started) {
       plugin.kill();
     }
+  },
+  /** A started in-process server with a connected client, both closed when the test ends. */
+  connect: async ({}, use) => {
+    const open: Array<{ server: BandMcpStdioServer; client: Client }> = [];
+    await use(async (options, clientOptions) => {
+      const { server, connectClient } = inProcessServer(options);
+      await server.start();
+      const session = { server, client: await connectClient(clientOptions) };
+      open.push(session);
+      return session;
+    });
+    await Promise.all(open.flatMap(({ server, client }) => [client.close(), server.stop()]));
   },
 });
 
@@ -154,7 +171,7 @@ describe("BandMcpStdioServer as a plugin process", () => {
   });
 });
 
-function inProcessServer(options: Omit<BandMcpStdioServerOptions, "stdin" | "stdout"> = { tools: new FakeTools() }) {
+function inProcessServer(options: InProcessOptions = { tools: new FakeTools() }) {
   const stdin = new PassThrough();
   const stdout = new PassThrough();
   const server = new BandMcpStdioServer({ ...options, stdin, stdout });
@@ -287,7 +304,7 @@ function echoTool(name: string, _meta?: Record<string, unknown>): McpToolRegistr
     description: `Answers with ${name}`,
     inputSchema: { type: "object", properties: {}, required: [] },
     execute: async () => successResult(name),
-    ...(_meta && { _meta }),
+    _meta,
   };
 }
 
@@ -340,40 +357,29 @@ class AgentResources implements McpResourceSource {
 }
 
 describe("BandMcpStdioServer tools and resources", () => {
-  test("lists a tool's _meta as registered", async () => {
-    const { server, connectClient } = inProcessServer({ tools: new FakeTools(), additionalTools: [echoTool("reply", ALWAYS_LOAD)] });
-    await server.start();
-    const client = await connectClient();
+  it("lists a tool's _meta as registered", async ({ connect }) => {
+    const { client } = await connect({ tools: new FakeTools(), additionalTools: [echoTool("reply", ALWAYS_LOAD)] });
 
     const { tools } = await client.listTools();
 
     expect(tools.find((tool) => tool.name === "reply")?._meta).toEqual(ALWAYS_LOAD);
-    await Promise.all([client.close(), server.stop()]);
   });
 
-  test("without tools, lists only the additional tools", async () => {
-    const { server, connectClient } = inProcessServer({ additionalTools: [echoTool("reply"), echoTool("send")] });
-    await server.start();
-    const client = await connectClient();
+  it("without tools, lists only the additional tools", async ({ connect }) => {
+    const { client } = await connect({ additionalTools: [echoTool("reply"), echoTool("send")] });
 
     expect(await toolNamesListed(client)).toEqual(["reply", "send"]);
-    await Promise.all([client.close(), server.stop()]);
   });
 
-  test("with no tools at all, lists none and declares tools.listChanged", async () => {
-    const { server, connectClient } = inProcessServer({});
-    await server.start();
-    const client = await connectClient();
+  it("with no tools at all, lists none and declares tools.listChanged", async ({ connect }) => {
+    const { client } = await connect({});
 
     expect(client.getServerCapabilities()?.tools).toEqual({ listChanged: true });
     expect(await toolNamesListed(client)).toEqual([]);
-    await Promise.all([client.close(), server.stop()]);
   });
 
-  test("started empty, adds a batch of tools and removes them, one list_changed each", async () => {
-    const { server, connectClient } = inProcessServer({});
-    await server.start();
-    const client = await connectClient();
+  it("started empty, adds a batch of tools and removes them, one list_changed each", async ({ connect }) => {
+    const { server, client } = await connect({});
     const toolsChanged = listenFor(client, ToolListChangedNotificationSchema);
 
     const added = toolsChanged.next();
@@ -388,19 +394,15 @@ describe("BandMcpStdioServer tools and resources", () => {
     await removed;
     expect(await toolNamesListed(client)).toEqual([]);
     expect(toolsChanged.count).toBe(2);
-    await Promise.all([client.close(), server.stop()]);
   });
 
-  test("a batch holding a listed name registers none of it", async () => {
-    const { server, connectClient } = inProcessServer({ additionalTools: [echoTool("reply")] });
-    await server.start();
-    const client = await connectClient();
+  it("a batch holding a listed name registers none of it", async ({ connect }) => {
+    const { server, client } = await connect({ additionalTools: [echoTool("reply")] });
 
     await expect(server.addTools([echoTool("send"), echoTool("reply")])).rejects.toThrow("reply");
     await expect(server.addTools([echoTool("send"), echoTool("send")])).rejects.toThrow("send");
 
     expect(await toolNamesListed(client)).toEqual(["reply"]);
-    await Promise.all([client.close(), server.stop()]);
   });
 
   test("rejects addTools before start", async () => {
@@ -409,11 +411,9 @@ describe("BandMcpStdioServer tools and resources", () => {
     await expect(server.addTools([echoTool("reply")])).rejects.toThrow(NOT_RUNNING);
   });
 
-  test("lists the source's current resources, announces a change, and reads a handle with a slash", async () => {
+  it("lists the source's current resources, announces a change, and reads a handle with a slash", async ({ connect }) => {
     const agents = new AgentResources(["acme/qa"]);
-    const { server, connectClient } = inProcessServer({ resources: agents });
-    await server.start();
-    const client = await connectClient();
+    const { server, client } = await connect({ resources: agents });
     const resourcesChanged = listenFor(client, ResourceListChangedNotificationSchema);
 
     expect((await client.listResources()).resources.map((resource) => resource.uri)).toEqual(["band://agent/acme/qa"]);
@@ -426,13 +426,10 @@ describe("BandMcpStdioServer tools and resources", () => {
 
     const { contents } = await client.readResource({ uri: "band://agent/acme/qa" });
     expect(contents).toEqual([{ uri: "band://agent/acme/qa", text: "Agent acme/qa" }]);
-    await Promise.all([client.close(), server.stop()]);
   });
 
-  test("settles toolsListed after the client's first tools/list, then elicits an answer", async () => {
-    const { server, connectClient } = inProcessServer({});
-    await server.start();
-    const client = await connectClient(FORM_ELICITATION);
+  it("settles toolsListed after the client's first tools/list, then elicits an answer", async ({ connect }) => {
+    const { server, client } = await connect({}, FORM_ELICITATION);
     const asked: unknown[] = [];
     client.setRequestHandler(ElicitRequestSchema, async (request) => {
       asked.push(request.params);
@@ -452,17 +449,14 @@ describe("BandMcpStdioServer tools and resources", () => {
 
     expect(await server.elicitInput(AGENT_QUESTION)).toEqual(AGENT_ANSWER);
     expect(asked).toEqual([{ mode: "form", ...AGENT_QUESTION }]);
-    await Promise.all([client.close(), server.stop()]);
   });
 
-  test("rejects elicitInput for a client without form elicitation, and after stop", async () => {
-    const { server, connectClient } = inProcessServer({});
-    await server.start();
-    const client = await connectClient();
+  it("rejects elicitInput for a client without form elicitation, and after stop", async ({ connect }) => {
+    const { server } = await connect({});
 
     await expect(server.elicitInput(AGENT_QUESTION)).rejects.toThrow("form elicitation");
 
-    await Promise.all([client.close(), server.stop()]);
+    await server.stop();
     await expect(server.elicitInput(AGENT_QUESTION)).rejects.toThrow(NOT_RUNNING);
   });
 });

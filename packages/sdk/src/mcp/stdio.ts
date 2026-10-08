@@ -1,6 +1,6 @@
 import type { Readable, Writable } from "node:stream";
 
-import type { RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { RequestOptions } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type {
   ElicitRequestFormParams,
@@ -176,8 +176,6 @@ type McpModules = typeof import("@modelcontextprotocol/sdk/server/mcp.js")
   & typeof import("@modelcontextprotocol/sdk/server/stdio.js")
   & { z: typeof import("zod").z };
 
-type McpServerInstance = InstanceType<McpModules["McpServer"]>;
-
 // Each tool added or removed sends one; debouncing folds a batch into a single notification.
 const LIST_CHANGED_NOTIFICATIONS: Array<ToolListChangedNotification["method"] | ResourceListChangedNotification["method"]> = [
   "notifications/tools/list_changed",
@@ -186,7 +184,7 @@ const LIST_CHANGED_NOTIFICATIONS: Array<ToolListChangedNotification["method"] | 
 const PLACEHOLDER_TOOL = "band_placeholder";
 
 interface StdioSession {
-  mcpServer: McpServerInstance;
+  mcpServer: McpServer;
   /** The tools listed now, by name. */
   tools: Map<string, RegisteredTool>;
   toolsListed: Promise<void>;
