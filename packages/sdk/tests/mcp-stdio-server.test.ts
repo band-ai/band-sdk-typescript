@@ -356,6 +356,39 @@ class AgentResources implements McpResourceSource {
   }
 }
 
+// Above 0: the MCP SDK ignores a cancel for request id 0.
+const CANCELLED_LISTING = 1;
+const INITIALIZE = {
+  method: "initialize",
+  params: { protocolVersion: LATEST_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "test-client", version: "1.0.0" } },
+};
+
+/** JSON-RPC by hand over the in-process pair, for message orderings a `Client` can't produce. */
+function rawClient(stdin: PassThrough, stdout: PassThrough) {
+  const answered: unknown[] = [];
+  const waiting = new Map<unknown, () => void>();
+  let nextId = CANCELLED_LISTING + 1;
+  let buffered = "";
+  stdout.on("data", (chunk: Buffer) => {
+    const lines = (buffered + chunk.toString()).split("\n");
+    buffered = lines.pop() ?? "";
+    for (const line of lines) {
+      const { id } = JSON.parse(line) as { id?: unknown };
+      answered.push(id);
+      waiting.get(id)?.();
+    }
+  });
+  const send = (...messages: Array<Record<string, unknown>>) =>
+    stdin.write(messages.map((message) => `${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`).join(""));
+  const request = (message: Record<string, unknown>) => {
+    const id = nextId++;
+    const answer = new Promise<void>((resolve) => waiting.set(id, resolve));
+    send({ id, ...message });
+    return answer;
+  };
+  return { answered, send, request };
+}
+
 describe("BandMcpStdioServer tools and resources", () => {
   it("lists a tool's _meta as registered", async ({ connect }) => {
     const { client } = await connect({ tools: new FakeTools(), additionalTools: [echoTool("reply", ALWAYS_LOAD)] });
@@ -449,6 +482,26 @@ describe("BandMcpStdioServer tools and resources", () => {
 
     expect(await server.elicitInput(AGENT_QUESTION)).toEqual(AGENT_ANSWER);
     expect(asked).toEqual([{ mode: "form", ...AGENT_QUESTION }]);
+  });
+
+  test("settles toolsListed on the first tools/list answered when the client cancelled an earlier one", async () => {
+    const { server, stdin, stdout } = inProcessServer({});
+    await server.start();
+    const client = rawClient(stdin, stdout);
+    await client.request(INITIALIZE);
+    client.send({ method: "notifications/initialized" });
+    await server.initialized;
+
+    // One write, so the cancel lands before the server answers the first listing.
+    client.send(
+      { id: CANCELLED_LISTING, method: "tools/list" },
+      { method: "notifications/cancelled", params: { requestId: CANCELLED_LISTING } },
+    );
+    await client.request({ method: "tools/list" });
+
+    await server.toolsListed;
+    expect(client.answered).not.toContain(CANCELLED_LISTING);
+    await server.stop();
   });
 
   it("rejects elicitInput for a client without form elicitation, and after stop", async ({ connect }) => {

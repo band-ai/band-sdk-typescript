@@ -4,8 +4,8 @@ import type { JSONRPCMessage, ListToolsRequest, RequestId } from "@modelcontextp
 const TOOLS_LIST: ListToolsRequest["method"] = "tools/list";
 
 /**
- * Passes every message through and settles `toolsListed` once the response to the
- * client's first `tools/list` is sent; the MCP SDK has no hook for that moment.
+ * Passes every message through and settles `toolsListed` once a response to a
+ * client's `tools/list` is first sent; the MCP SDK has no hook for that moment.
  */
 export class ToolsListedTransport implements Transport {
   public onclose?: () => void;
@@ -14,7 +14,8 @@ export class ToolsListedTransport implements Transport {
   public readonly toolsListed: Promise<void>;
   private readonly inner: Transport;
   private resolveToolsListed!: () => void;
-  private toolsListRequestId: RequestId | undefined;
+  // Every pending one: a cancelled request gets no response.
+  private readonly toolsListRequestIds = new Set<RequestId>();
 
   public constructor(inner: Transport) {
     this.inner = inner;
@@ -26,8 +27,8 @@ export class ToolsListedTransport implements Transport {
   /** `Protocol.connect` sets this transport's handlers just before calling it. */
   public start(): Promise<void> {
     this.inner.onmessage = (message, extra) => {
-      if (this.toolsListRequestId === undefined && "method" in message && message.method === TOOLS_LIST && "id" in message) {
-        this.toolsListRequestId = message.id;
+      if ("method" in message && message.method === TOOLS_LIST && "id" in message) {
+        this.toolsListRequestIds.add(message.id);
       }
       this.onmessage?.(message, extra);
     };
@@ -39,7 +40,7 @@ export class ToolsListedTransport implements Transport {
   public async send(message: JSONRPCMessage, options?: TransportSendOptions): Promise<void> {
     await this.inner.send(message, options);
     // The server's own requests share the id range, so only a response (no `method`) counts.
-    if (this.toolsListRequestId !== undefined && !("method" in message) && "id" in message && message.id === this.toolsListRequestId) {
+    if (!("method" in message) && "id" in message && message.id !== undefined && this.toolsListRequestIds.delete(message.id)) {
       this.resolveToolsListed();
     }
   }

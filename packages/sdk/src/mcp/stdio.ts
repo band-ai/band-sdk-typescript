@@ -141,7 +141,7 @@ export class BandMcpStdioServer {
     return this.whenRunning((session) => session.mcpServer.server.elicitInput(params, options));
   }
 
-  /** Resolves once the response to the client's first `tools/list` is sent; rejects if the server stops first. Read it after `await start()`. */
+  /** Resolves once a response to a client `tools/list` is first sent; rejects if the server stops first. Read it after `await start()`. */
   public get toolsListed(): Promise<void> {
     return this.whenRunning((session) => session.toolsListed);
   }
