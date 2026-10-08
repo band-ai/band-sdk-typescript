@@ -6,9 +6,9 @@ import type {
 import {
   buildRoomScopedRegistrations,
   buildSingleContextRegistrations,
+  registerTools,
 } from "./registrations";
-import { buildZodShape } from "./zod";
-import { MCP_SERVER_NAME } from "../contracts/toolSchemas";
+import { MCP_SERVER_NAME, MCP_SERVER_VERSION } from "../contracts/toolSchemas";
 import { isAuthorizedRequest } from "./auth";
 
 export interface BandMcpSseServerOptions {
@@ -105,7 +105,7 @@ export class BandMcpSseServer {
       const transport = new SSEServerTransport("/messages", res)
       const mcpServer = new McpServer({
         name: this.options.name ?? MCP_SERVER_NAME,
-        version: "1.0.0",
+        version: MCP_SERVER_VERSION,
       })
       registerTools(mcpServer, z, this.registrations)
       await mcpServer.connect(transport)
@@ -219,30 +219,6 @@ export class BandMcpSseServer {
         void session.transport.close()
       }
     }
-  }
-}
-
-function registerTools(
-  mcpServer: InstanceType<typeof import("@modelcontextprotocol/sdk/server/mcp.js").McpServer>,
-  z: typeof import("zod").z,
-  registrations: McpToolRegistration[],
-): void {
-  for (const registration of registrations) {
-    const zodShape = buildZodShape(
-      z,
-      registration.inputSchema.properties,
-      new Set(registration.inputSchema.required),
-    )
-
-    mcpServer.registerTool(
-      registration.name,
-      {
-        description: registration.description,
-        inputSchema: z.object(zodShape),
-      },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MCP SDK handler signature is complex; our McpToolResult is compatible
-      async (args: Record<string, unknown>): Promise<any> => registration.execute(args),
-    )
   }
 }
 
