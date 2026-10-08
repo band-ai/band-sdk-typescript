@@ -1,4 +1,4 @@
-import { ValidationError } from "../../core/errors";
+import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import type { ChatMessageType } from "../../contracts/chatEvents";
 import type { RestRequestOptions } from "./requestOptions";
 import type { ContextRestApi, PaginatedResponse, PaginationMetadata, PeerLookupRestApi, PlatformChatMessage } from "./types";
@@ -214,12 +214,16 @@ export async function fetchCursorTail<T>(
 
 /** Every peer the agent can reach, all pages in one call; with `notInChat`, those not in that room. */
 export async function listAllPeers(
-  rest: Required<PeerLookupRestApi>,
+  rest: PeerLookupRestApi,
   { notInChat }: { notInChat?: string } = {},
   options?: RestRequestOptions,
 ): Promise<PeerRecord[]> {
+  const listPeers = rest.listPeers?.bind(rest);
+  if (!listPeers) {
+    throw new UnsupportedFeatureError("Peer listing is not available in current REST adapter");
+  }
   return fetchPaginated({
-    fetchPage: ({ page, pageSize }) => rest.listPeers({ page, pageSize, notInChat }, options),
+    fetchPage: ({ page, pageSize }) => listPeers({ page, pageSize, notInChat }, options),
   });
 }
 
@@ -233,7 +237,7 @@ export const MAX_RECENT_MESSAGES = 100;
  * agent's own messages of every type plus the text messages that mention it.
  */
 export async function getRecentMessages(
-  rest: Required<ContextRestApi>,
+  rest: ContextRestApi,
   chatId: string,
   limit = DEFAULT_RECENT_MESSAGES,
   options?: RestRequestOptions,
@@ -241,8 +245,12 @@ export async function getRecentMessages(
   if (!Number.isInteger(limit) || limit < 1 || limit > MAX_RECENT_MESSAGES) {
     throw new ValidationError(`limit must be an integer from 1 to ${MAX_RECENT_MESSAGES}`);
   }
+  const getChatContext = rest.getChatContext?.bind(rest);
+  if (!getChatContext) {
+    throw new UnsupportedFeatureError("Chat context is not available in current REST adapter");
+  }
 
-  return fetchCursorTail((page) => rest.getChatContext({ chatId, ...page }, options), {
+  return fetchCursorTail((page) => getChatContext({ chatId, ...page }, options), {
     keep: limit,
     where: (message) => message.message_type === TEXT_MESSAGE,
   });
