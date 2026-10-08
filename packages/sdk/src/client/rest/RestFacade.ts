@@ -28,6 +28,7 @@ import type {
   RestApi,
 } from "./types";
 import type { RestRequestOptions } from "./requestOptions";
+import { OPTIONAL_UNSUPPORTED_MESSAGES } from "./unsupportedMessages";
 
 export { FernRestAdapter } from "./FernRestAdapter";
 
@@ -41,26 +42,6 @@ type OptionalRestOperation = {
   [K in keyof RestApi]-?: undefined extends RestApi[K] ? K : never
 }[keyof RestApi];
 
-const OPTIONAL_UNSUPPORTED_MESSAGES = {
-  listChats: "Chat listing is not available in current REST adapter",
-  getChatContext: "Context hydration is not available in current REST adapter",
-  listMessages: "Message queue listing is not available in current REST adapter",
-  getNextMessage: "Message queue next-item lookup is not available in current REST adapter",
-  addContact: "Contact creation is not available in current REST adapter",
-  removeContact: "Contact removal is not available in current REST adapter",
-  respondContactRequest: "Contact request responses are not available in current REST adapter",
-  storeMemory: "Memory creation is not available in current REST adapter",
-  getMemory: "Memory lookup is not available in current REST adapter",
-  supersedeMemory: "Memory supersede is not available in current REST adapter",
-  archiveMemory: "Memory archive is not available in current REST adapter",
-  listContacts: "Contact listing is not available in current REST adapter",
-  listMemories: "Memory listing is not available in current REST adapter",
-  listPeers: "Peer listing is not available in current REST adapter",
-  listContactRequests: "Contact request listing is not available in current REST adapter",
-  renameChat: "Chat rename is not available in current REST adapter",
-  getChat: "Chat lookup is not available in current REST adapter",
-  reportActivity: "Activity reporting is not available in current REST adapter",
-} as const;
 
 export class RestFacade implements RestApi {
   private readonly api: RestApi;

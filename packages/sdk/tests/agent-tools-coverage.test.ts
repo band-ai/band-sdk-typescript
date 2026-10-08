@@ -160,6 +160,7 @@ describe("AgentTools coverage", () => {
       status: "added",
     });
     expect(rest.listPeers).toHaveBeenCalledTimes(2);
+    expect(rest.listPeers).toHaveBeenNthCalledWith(1, expect.objectContaining({ notInChat: "room-1" }), expect.anything());
     expect(rest.addChatParticipant).toHaveBeenCalledWith(
       "room-1",
       { participantId: "peer-2", role: "member" },

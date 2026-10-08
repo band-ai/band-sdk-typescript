@@ -2,7 +2,7 @@ import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { ParticipantRoster, type AgentFailure, type ParticipantFields } from "@band-ai/band-sdk-core";
 import { mentionLabel, toParticipantRecord, toParticipantRecordFromRest } from "../formatters";
-import type { AgentToolsRestApi, PeerLookupRestApi } from "../../client/rest/types";
+import type { AgentToolsRestApi } from "../../client/rest/types";
 import { listAllPeers } from "../../client/rest/pagination";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
 import { assertCapability } from "../../contracts/capabilities";
@@ -272,17 +272,6 @@ export class AgentTools implements AgentToolsProtocol {
   }
 
   public async lookupPeers(page = 1, pageSize = 50): Promise<PaginatedList<PeerRecord>> {
-    return this.peerLookup().listPeers(
-      {
-        page,
-        pageSize,
-        notInChat: this.roomId,
-      },
-      DEFAULT_REQUEST_OPTIONS,
-    );
-  }
-
-  private peerLookup(): Required<PeerLookupRestApi> {
     assertCapability(this.capabilities, "peers");
     if (!this.rest.listPeers) {
       throw new UnsupportedFeatureError(
@@ -290,7 +279,14 @@ export class AgentTools implements AgentToolsProtocol {
       );
     }
 
-    return { listPeers: this.rest.listPeers.bind(this.rest) };
+    return this.rest.listPeers(
+      {
+        page,
+        pageSize,
+        notInChat: this.roomId,
+      },
+      DEFAULT_REQUEST_OPTIONS,
+    );
   }
 
   public async getParticipants(): Promise<ParticipantRecord[]> {
@@ -703,7 +699,8 @@ export class AgentTools implements AgentToolsProtocol {
 
   private async lookupPeerByName(name: string): Promise<PeerRecord | null> {
     const target = name.trim().toLowerCase();
-    const peers = await listAllPeers(this.peerLookup(), { notInChat: this.roomId }, DEFAULT_REQUEST_OPTIONS);
+    assertCapability(this.capabilities, "peers");
+    const peers = await listAllPeers(this.rest, { notInChat: this.roomId }, DEFAULT_REQUEST_OPTIONS);
     return peers.find((peer) => String(peer.name ?? "").toLowerCase() === target) ?? null;
   }
 

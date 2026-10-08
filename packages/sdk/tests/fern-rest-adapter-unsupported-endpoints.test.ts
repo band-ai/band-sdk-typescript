@@ -16,6 +16,9 @@ describe("FernRestAdapter: unsupported-endpoint contract", () => {
   const cases: Array<[string, (adapter: FernRestAdapter) => Promise<unknown>]> = [
     ["createChatMessage", (adapter) => adapter.createChatMessage("room-1", { content: "hi" })],
     ["createChat", (adapter) => adapter.createChat()],
+    ["getChat", (adapter) => adapter.getChat("room-1")],
+    ["renameChat", (adapter) => adapter.renameChat("room-1", "Plans")],
+    ["reportActivity", (adapter) => adapter.reportActivity("room-1", true)],
     ["listChatParticipants", (adapter) => adapter.listChatParticipants("room-1")],
     [
       "addChatParticipant",

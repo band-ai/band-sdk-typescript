@@ -1,6 +1,7 @@
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import type { ChatMessageType } from "../../contracts/chatEvents";
 import type { RestRequestOptions } from "./requestOptions";
+import { OPTIONAL_UNSUPPORTED_MESSAGES } from "./unsupportedMessages";
 import type { ContextRestApi, PaginatedResponse, PaginationMetadata, PeerLookupRestApi, PlatformChatMessage } from "./types";
 import type { PeerRecord } from "../../contracts/dtos";
 
@@ -33,8 +34,10 @@ interface FetchPaginatedOptions<T> extends PaginationOptions {
   fetchPage: (request: FetchPageRequest) => Promise<PaginatedResponse<T>>;
 }
 
-const DEFAULT_PAGE_SIZE = 100;
-const DEFAULT_MAX_PAGES = 100;
+/** The page size a paged walk asks for. */
+export const DEFAULT_PAGE_SIZE = 100;
+/** The most pages one walk reads. */
+export const DEFAULT_MAX_PAGES = 100;
 type PaginationMetadataMode = "strict" | "lossy";
 const VALID_PAGINATION_STRATEGIES: ReadonlySet<PaginationStrategy> = new Set([
   "auto",
@@ -184,11 +187,6 @@ export interface CursorTailOptions<T> {
   where?: (item: T) => boolean;
 }
 
-/** The page size a cursor walk asks for. */
-export const CURSOR_PAGE_LIMIT = 100;
-/** The most pages one cursor walk reads before it stops with what it has. */
-export const MAX_CURSOR_PAGES = 100;
-
 /**
  * The last `keep` items passing `where`, oldest first, from a forward cursor walk:
  * it pages until `has_more` is false or no `next_cursor` comes back, or the page cap.
@@ -200,8 +198,8 @@ export async function fetchCursorTail<T>(
 ): Promise<T[]> {
   const tail: T[] = [];
   let cursor: string | undefined;
-  for (let page = 0; page < MAX_CURSOR_PAGES; page += 1) {
-    const { data, metadata } = await fetchPage({ cursor, limit: CURSOR_PAGE_LIMIT });
+  for (let page = 0; page < DEFAULT_MAX_PAGES; page += 1) {
+    const { data, metadata } = await fetchPage({ cursor, limit: DEFAULT_PAGE_SIZE });
     tail.push(...(where ? data.filter(where) : data));
     tail.splice(0, Math.max(0, tail.length - keep));
     cursor = typeof metadata?.next_cursor === "string" ? metadata.next_cursor : undefined;
@@ -220,7 +218,7 @@ export async function listAllPeers(
 ): Promise<PeerRecord[]> {
   const listPeers = rest.listPeers?.bind(rest);
   if (!listPeers) {
-    throw new UnsupportedFeatureError("Peer listing is not available in current REST adapter");
+    throw new UnsupportedFeatureError(OPTIONAL_UNSUPPORTED_MESSAGES.listPeers);
   }
   return fetchPaginated({
     fetchPage: ({ page, pageSize }) => listPeers({ page, pageSize, notInChat }, options),
@@ -247,7 +245,7 @@ export async function getRecentMessages(
   }
   const getChatContext = rest.getChatContext?.bind(rest);
   if (!getChatContext) {
-    throw new UnsupportedFeatureError("Chat context is not available in current REST adapter");
+    throw new UnsupportedFeatureError(OPTIONAL_UNSUPPORTED_MESSAGES.getChatContext);
   }
 
   return fetchCursorTail((page) => getChatContext({ chatId, ...page }, options), {

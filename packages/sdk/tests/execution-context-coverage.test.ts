@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { CURSOR_PAGE_LIMIT } from "../src/client/rest/pagination";
+import { DEFAULT_PAGE_SIZE } from "../src/client/rest/pagination";
 import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
 import { ExecutionContext } from "../src/runtime/ExecutionContext";
 import type { RestApi } from "../src/client/rest/types";
@@ -117,7 +117,7 @@ describe("ExecutionContext coverage", () => {
     expect(first.messages.map((entry) => entry.id)).toEqual(["m1", "m2"]);
     expect(first.participants).toEqual([{ id: "u1", name: "Jane", type: "User", handle: "@jane" }]);
     expect(getChatContext).toHaveBeenCalledWith(
-      { chatId: "room-1", limit: CURSOR_PAGE_LIMIT },
+      { chatId: "room-1", limit: DEFAULT_PAGE_SIZE },
       expect.anything(),
     );
     expect(cached).toBe(first);

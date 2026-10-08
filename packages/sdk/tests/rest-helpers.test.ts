@@ -1,12 +1,32 @@
 import { describe, expect, it } from "vitest";
 
 import type { BandLinkRestApi, PlatformChatMessage } from "../src/client/rest/types";
-import { UnsupportedFeatureError } from "../src/core/errors";
+import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
 import { getRecentMessages, listAllPeers } from "../src/rest";
 import { FakeRestApi } from "./testUtils";
 
+/** A room's context: `count` text messages, oldest first, served on one page. */
+class TextContextRest extends FakeRestApi {
+  public constructor(private readonly count: number) {
+    super();
+  }
+
+  public async getChatContext() {
+    return {
+      data: Array.from({ length: this.count }, (_, index): PlatformChatMessage => ({
+        id: `m${index + 1}`,
+        message_type: "text",
+        content: `message ${index + 1}`,
+        sender_id: "peer-1",
+        sender_type: "User",
+        inserted_at: "2026-10-08T00:00:00Z",
+      })),
+    };
+  }
+}
+
 describe("REST helpers on link.rest", () => {
-  it("accepts BandLinkRestApi and preserves the receiver across peer pages", async () => {
+  it("lists peers from link.rest whose listPeers reads its own state", async () => {
     class PeersRest extends FakeRestApi {
       private readonly peer = { id: "peer-1", name: "Ada", type: "User" as const };
 
@@ -19,7 +39,7 @@ describe("REST helpers on link.rest", () => {
     expect(await listAllPeers(rest)).toEqual([{ id: "peer-1", name: "Ada", type: "User" }]);
   });
 
-  it("accepts BandLinkRestApi and returns only the newest text context", async () => {
+  it("returns the newest text messages from link.rest, skipping other types", async () => {
     class ContextRest extends FakeRestApi {
       private readonly messages: PlatformChatMessage[] = [
         { id: "old", message_type: "text", content: "old" },
@@ -47,5 +67,15 @@ describe("REST helpers on link.rest", () => {
     const rest: BandLinkRestApi = new FakeRestApi();
 
     await expect(getRecentMessages(rest, "room-1")).rejects.toBeInstanceOf(UnsupportedFeatureError);
+  });
+
+  it("returns the newest 20 messages by default, oldest first", async () => {
+    const recent = await getRecentMessages(new TextContextRest(25), "room-1");
+
+    expect(recent.map(({ id }) => id)).toEqual(Array.from({ length: 20 }, (_, index) => `m${index + 6}`));
+  });
+
+  it.each([0, 101, 1.5])("refuses a limit of %s", async (limit) => {
+    await expect(getRecentMessages(new TextContextRest(1), "room-1", limit)).rejects.toBeInstanceOf(ValidationError);
   });
 });

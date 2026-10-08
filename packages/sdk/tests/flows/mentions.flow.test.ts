@@ -108,19 +108,22 @@ describe("Mentions in a Band room", () => {
 });
 
 const ADA: ParticipantRecord = { id: "user-ada", name: "Ada", type: "User", handle: "owner/ada" };
+const BOB: ParticipantRecord = { id: "user-bob", name: "Bob", type: "User", handle: "owner/bob" };
 const REPLY = "on it";
 
 describe("Mentions the agent sends", () => {
   it.each<{ name: string; mentions: MentionInput; posted: string[][] }>([
     { name: "one handle given twice, with and without @ and in another case, posts one mention", mentions: ["owner/ada", "@OWNER/Ada"], posted: [[ADA.id]] },
     { name: "an id plus the same participant's handle posts one", mentions: [ADA.id, "@owner/ada"], posted: [[ADA.id]] },
+    { name: "an id plus the same participant's display name posts one", mentions: [ADA.id, "ada"], posted: [[ADA.id]] },
+    { name: "two participants each named twice post once each, first-named first", mentions: ["@owner/bob", ADA.id, "Bob"], posted: [[BOB.id, ADA.id]] },
     { name: "two object-form entries for one participant post one", mentions: [{ id: ADA.id, handle: "owner/ada" }, { id: ADA.id }], posted: [[ADA.id]] },
     { name: "an unknown entry posts nothing", mentions: ["owner/ada", "@owner/nobody"], posted: [] },
   ])("$name", async ({ mentions, posted }) => {
     const replies = new GenericAdapter(async ({ tools }) => {
       await tools.sendMessage(REPLY, mentions);
     });
-    await using session = await BandPlatform.join(replies, [ADA]);
+    await using session = await BandPlatform.join(replies, [ADA, BOB]);
 
     await session.room.outcome(await session.room.say(ADA.id, `@[[${AGENT_ID}]] can you help`));
 

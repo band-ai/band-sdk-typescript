@@ -11,7 +11,7 @@ import { Band } from "@band-ai/rest-client";
 
 import type { FrameworkAdapter } from "../../../src/contracts/protocols";
 import type { ParticipantRecord, PeerRecord } from "../../../src/contracts/dtos";
-import { CURSOR_PAGE_LIMIT, type CursorPageRequest } from "../../../src/client/rest/pagination";
+import { DEFAULT_PAGE_SIZE, type CursorPageRequest } from "../../../src/client/rest/pagination";
 import type { ChatRoom, CreateChatRequest, PaginatedResponse, PlatformChatMessage, RestApi } from "../../../src/client/rest/types";
 import { BandLink } from "../../../src/platform/BandLink";
 import { PlatformRuntime } from "../../../src/runtime/PlatformRuntime";
@@ -231,7 +231,7 @@ export class RecordingRestApi extends FakeRestApi {
    * The room's conversation as the platform hands it to a fresh session, oldest first, a cursor page
    * at a time: what people said and what the agent posted.
    */
-  public async getChatContext({ chatId, cursor, limit = CURSOR_PAGE_LIMIT }: { chatId: string } & Partial<CursorPageRequest>): Promise<PaginatedResponse<PlatformChatMessage>> {
+  public async getChatContext({ chatId, cursor, limit = DEFAULT_PAGE_SIZE }: { chatId: string } & Partial<CursorPageRequest>): Promise<PaginatedResponse<PlatformChatMessage>> {
     const conversation = this.history.filter((entry) => entry.roomId === chatId).map((entry) => entry.item);
     const start = cursor === undefined ? 0 : Number(cursor);
     const end = start + limit;

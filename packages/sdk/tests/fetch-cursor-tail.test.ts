@@ -1,7 +1,7 @@
 /** Which items `fetchCursorTail` keeps from a scripted run of cursor pages, and where it stops walking. */
 import { describe, expect, it } from "vitest";
 
-import { CURSOR_PAGE_LIMIT, fetchCursorTail, MAX_CURSOR_PAGES, type CursorPageRequest } from "../src/client/rest/pagination";
+import { DEFAULT_MAX_PAGES, DEFAULT_PAGE_SIZE, fetchCursorTail, type CursorPageRequest } from "../src/client/rest/pagination";
 import type { PaginatedResponse } from "../src/client/rest/types";
 
 interface Item {
@@ -38,7 +38,7 @@ function scriptedFetcher(pages: ScriptedPage[]) {
 
 const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, index) => from + index);
 /** A run longer than the page cap, each page pointing at the next. */
-const ENDLESS = Array.from({ length: MAX_CURSOR_PAGES + 1 }, (_, index) => page([index + 1], `c${index + 1}`));
+const ENDLESS = Array.from({ length: DEFAULT_MAX_PAGES + 1 }, (_, index) => page([index + 1], `c${index + 1}`));
 
 describe("fetchCursorTail", () => {
   it.each([
@@ -68,8 +68,8 @@ describe("fetchCursorTail", () => {
       name: "the page cap ends the walk",
       pages: ENDLESS,
       keep: 2,
-      kept: [MAX_CURSOR_PAGES - 1, MAX_CURSOR_PAGES],
-      cursors: [undefined, ...range(1, MAX_CURSOR_PAGES - 1).map((index) => `c${index}`)],
+      kept: [DEFAULT_MAX_PAGES - 1, DEFAULT_MAX_PAGES],
+      cursors: [undefined, ...range(1, DEFAULT_MAX_PAGES - 1).map((index) => `c${index}`)],
     },
   ])("$name", async ({ pages, keep, where, kept, cursors }) => {
     const { fetchPage, requests } = scriptedFetcher(pages);
@@ -77,6 +77,6 @@ describe("fetchCursorTail", () => {
     const items = await fetchCursorTail(fetchPage, { keep, where });
 
     expect(items.map((item) => item.id)).toEqual(kept);
-    expect(requests).toEqual(cursors.map((cursor) => ({ cursor, limit: CURSOR_PAGE_LIMIT })));
+    expect(requests).toEqual(cursors.map((cursor) => ({ cursor, limit: DEFAULT_PAGE_SIZE })));
   });
 });
