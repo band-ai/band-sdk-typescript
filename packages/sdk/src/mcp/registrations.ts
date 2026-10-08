@@ -56,21 +56,33 @@ const ROOM_ID_PROPERTY = { type: "string", description: "The room ID to execute 
 
 type McpToolSchema = Omit<McpToolRegistration, "execute">;
 
-/** Registers each tool on `mcpServer`, which the servers load with a dynamic `import()` alongside `z`. */
+/**
+ * Registers each tool on `mcpServer`, which the servers load with a dynamic `import()` alongside `z`.
+ * All or none: if one throws, the ones before it are removed again.
+ */
 export function registerTools(
   mcpServer: McpServer,
   z: typeof import("zod").z,
   registrations: McpToolRegistration[],
-): RegisteredTool[] {
-  return registrations.map((reg) => {
-    const zodShape = buildZodShape(z, reg.inputSchema.properties, new Set(reg.inputSchema.required));
-    return mcpServer.registerTool(
-      reg.name,
-      { description: reg.description, inputSchema: z.object(zodShape), _meta: reg._meta },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MCP SDK handler signature is complex; our McpToolResult is compatible
-      async (args: Record<string, unknown>): Promise<any> => reg.execute(args),
-    );
-  });
+): Map<string, RegisteredTool> {
+  const registered = new Map<string, RegisteredTool>();
+  try {
+    for (const reg of registrations) {
+      const zodShape = buildZodShape(z, reg.inputSchema.properties, new Set(reg.inputSchema.required));
+      registered.set(reg.name, mcpServer.registerTool(
+        reg.name,
+        { description: reg.description, inputSchema: z.object(zodShape), _meta: reg._meta },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- MCP SDK handler signature is complex; our McpToolResult is compatible
+        async (args: Record<string, unknown>): Promise<any> => reg.execute(args),
+      ));
+    }
+  } catch (error) {
+    for (const tool of registered.values()) {
+      tool.remove();
+    }
+    throw error;
+  }
+  return registered;
 }
 
 /**

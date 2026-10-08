@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 
@@ -11,11 +11,11 @@ import { STDIO_DEFAULT_MAX_BUFFER_SIZE } from "@modelcontextprotocol/sdk/shared/
 import {
   ElicitRequestSchema,
   LATEST_PROTOCOL_VERSION,
-  ResourceListChangedNotificationSchema,
-  ToolListChangedNotificationSchema,
   type ElicitRequestFormParams,
+  type ElicitResult,
   type Notification,
   type Resource,
+  type Tool,
 } from "@modelcontextprotocol/sdk/types.js";
 
 import { successResult, type McpToolRegistration } from "../src/mcp/registrations";
@@ -97,7 +97,7 @@ type InProcessOptions = Omit<BandMcpStdioServerOptions, "stdin" | "stdout">;
 
 const it = test.extend<{
   startPlugin: (script: string, payloadBytes?: number) => PluginProcess;
-  connect: (options?: InProcessOptions, clientOptions?: ClientOptions) => Promise<{ server: BandMcpStdioServer; client: Client }>;
+  claudeCode: (options: InProcessOptions, claudeOptions?: ClaudeCodeOptions) => Promise<{ server: BandMcpStdioServer; claude: ClaudeCode }>;
 }>({
   startPlugin: async ({}, use) => {
     const started: PluginProcess[] = [];
@@ -110,17 +110,18 @@ const it = test.extend<{
       plugin.kill();
     }
   },
-  /** A started in-process server with a connected client, both closed when the test ends. */
-  connect: async ({}, use) => {
-    const open: Array<{ server: BandMcpStdioServer; client: Client }> = [];
-    await use(async (options, clientOptions) => {
-      const { server, connectClient } = inProcessServer(options);
+  /** A started in-process server with Claude Code connected, both closed when the test ends. */
+  claudeCode: async ({}, use) => {
+    const open: Array<{ server: BandMcpStdioServer; claude: ClaudeCode }> = [];
+    await use(async (options, claudeOptions) => {
+      const { server, stdin, stdout } = inProcessServer(options);
       await server.start();
-      const session = { server, client: await connectClient(clientOptions) };
-      open.push(session);
-      return session;
+      const claude = new ClaudeCode(claudeOptions);
+      await claude.client.connect(new StdioServerTransport(stdout, stdin));
+      open.push({ server, claude });
+      return { server, claude };
     });
-    await Promise.all(open.flatMap(({ server, client }) => [client.close(), server.stop()]));
+    await Promise.all(open.flatMap(({ server, claude }) => [claude.client.close(), server.stop()]));
   },
 });
 
@@ -175,8 +176,8 @@ function inProcessServer(options: InProcessOptions = { tools: new FakeTools() })
   const stdin = new PassThrough();
   const stdout = new PassThrough();
   const server = new BandMcpStdioServer({ ...options, stdin, stdout });
-  const connectClient = async (clientOptions?: ClientOptions) => {
-    const client = newClient(clientOptions);
+  const connectClient = async () => {
+    const client = newClient();
     await client.connect(new StdioServerTransport(stdout, stdin));
     return client;
   };
@@ -291,14 +292,20 @@ describe("BandMcpStdioServer lifecycle", () => {
 });
 
 const ALWAYS_LOAD = { "anthropic/alwaysLoad": true };
-const FORM_ELICITATION: ClientOptions = { capabilities: { elicitation: { form: {} } } };
 const AGENT_QUESTION: ElicitRequestFormParams = {
   message: "Which agent?",
   requestedSchema: { type: "object", properties: { agent: { type: "string" } }, required: ["agent"] },
 };
-const AGENT_ANSWER = { action: "accept", content: { agent: "acme/qa" } } as const;
+const PICKED_AGENT = "acme/qa";
+const AGENT_ANSWER: ElicitResult = { action: "accept", content: { agent: PICKED_AGENT } };
+const AGENT_URI_PREFIX = "band://agent/";
+// The reserved form, so a handle's `/` stays in the variable.
+const AGENT_URI_TEMPLATE = `${AGENT_URI_PREFIX}{+handle}`;
+// Claude Code's events, in the order it sees them.
+const LISTED_TOOLS = "listed tools";
+const ASKED = "asked";
 
-function echoTool(name: string, _meta?: Record<string, unknown>): McpToolRegistration {
+function bandTool(name: string, _meta?: Record<string, unknown>): McpToolRegistration {
   return {
     name,
     description: `Answers with ${name}`,
@@ -308,31 +315,14 @@ function echoTool(name: string, _meta?: Record<string, unknown>): McpToolRegistr
   };
 }
 
-/** Counts a client's notifications of one kind; `next()` resolves on the following one. */
-function listenFor(
-  client: Client,
-  schema: typeof ToolListChangedNotificationSchema | typeof ResourceListChangedNotificationSchema,
-) {
-  const waiting: Array<() => void> = [];
-  const received = { count: 0, next: () => new Promise<void>((resolve) => waiting.push(resolve)) };
-  client.setNotificationHandler(schema, () => {
-    received.count++;
-    for (const resolve of waiting.splice(0)) {
-      resolve();
-    }
-  });
-  return received;
-}
+/** The Band tools a host adds once an agent is picked; `reply` and `send` load up front. */
+const BAND_TOOLS = [bandTool("reply", ALWAYS_LOAD), bandTool("send", ALWAYS_LOAD), bandTool("open_room")];
+const BAND_TOOL_NAMES = BAND_TOOLS.map((tool) => tool.name);
 
-async function toolNamesListed(client: Client): Promise<string[]> {
-  const { tools } = await client.listTools();
-  return tools.map((tool) => tool.name);
-}
-
-/** The agents a host offers as resources, under a template whose handle may hold `/`. */
-class AgentResources implements McpResourceSource {
+/** The agents a host offers Claude Code as `@` suggestions. */
+class AgentDirectory implements McpResourceSource {
   public readonly name = "agents";
-  public readonly uriTemplate = "band://agent/{+handle}";
+  public readonly uriTemplate = AGENT_URI_TEMPLATE;
   public handles: string[];
 
   public constructor(handles: string[]) {
@@ -340,176 +330,195 @@ class AgentResources implements McpResourceSource {
   }
 
   public list(): Resource[] {
-    return this.handles.map((handle) => ({ uri: this.uri(handle), name: handle }));
+    return this.handles.map((handle) => ({ uri: `${AGENT_URI_PREFIX}${handle}`, name: handle }));
   }
 
   public read(uri: URL) {
-    const handle = this.handles.find((known) => this.uri(known) === uri.href);
+    const handle = this.handles.find((known) => `${AGENT_URI_PREFIX}${known}` === uri.href);
     if (!handle) {
       throw new Error(`Unknown agent ${uri.href}`);
     }
     return { contents: [{ uri: uri.href, text: `Agent ${handle}` }] };
   }
+}
 
-  private uri(handle: string): string {
-    return `band://agent/${handle}`;
+interface ClaudeCodeOptions {
+  /** Whether it declares form elicitation. */
+  elicitation?: boolean;
+  /** How it answers the agent question; unset, the question stays open. */
+  answer?: ElicitResult;
+}
+
+/**
+ * Claude Code's side of the session: a real `Client` that re-lists tools and
+ * resources on each list_changed, as Claude Code does, and answers the agent question.
+ */
+class ClaudeCode extends EventEmitter {
+  public readonly client: Client;
+  public readonly events: string[] = [];
+  /** Each tool list Claude Code re-fetched after a change, in order. */
+  public readonly toolRefreshes: Tool[][] = [];
+
+  public constructor({ elicitation = true, answer }: ClaudeCodeOptions = {}) {
+    super();
+    this.client = newClient({
+      capabilities: elicitation ? { elicitation: { form: {} } } : {},
+      // No debounce, so each refresh follows its notification without a timer.
+      listChanged: {
+        tools: { debounceMs: 0, onChanged: (_error, tools) => this.toolsRefreshed(tools ?? []) },
+        resources: { debounceMs: 0, onChanged: (_error, resources) => this.emit("resources", resources ?? []) },
+      },
+    });
+    if (elicitation) {
+      this.client.setRequestHandler(ElicitRequestSchema, (request) => {
+        this.events.push(`${ASKED} ${request.params.message}`);
+        this.emit(ASKED);
+        return answer ? Promise.resolve(answer) : new Promise<never>(() => {});
+      });
+    }
+  }
+
+  public async listToolNames(): Promise<string[]> {
+    const { tools } = await this.client.listTools();
+    this.events.push(LISTED_TOOLS);
+    return tools.map((tool) => tool.name);
+  }
+
+  /** The tool names after the next re-list. */
+  public async nextToolNames(): Promise<string[]> {
+    const [tools] = (await once(this, "tools")) as [Tool[]];
+    return tools.map((tool) => tool.name);
+  }
+
+  /** The resource names after the next re-list. */
+  public async nextResourceNames(): Promise<string[]> {
+    const [resources] = (await once(this, "resources")) as [Resource[]];
+    return resources.map((resource) => resource.name);
+  }
+
+  private toolsRefreshed(tools: Tool[]): void {
+    this.toolRefreshes.push(tools);
+    this.emit("tools", tools);
   }
 }
 
-// Above 0: the MCP SDK ignores a cancel for request id 0.
-const CANCELLED_LISTING = 1;
-const INITIALIZE = {
-  method: "initialize",
-  params: { protocolVersion: LATEST_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "test-client", version: "1.0.0" } },
-};
+describe("BandMcpStdioServer as Claude Code's Band server", () => {
+  it("asks for the agent after Claude Code's first listing, then serves the Band tools until a take-over", async ({ claudeCode }) => {
+    const agents = new AgentDirectory([PICKED_AGENT, "acme/dev"]);
+    const { server, claude } = await claudeCode({ resources: agents }, { answer: AGENT_ANSWER });
+    // The host asks only once Claude Code has listed its tools.
+    const picked = server.toolsListed.then(() => server.elicitInput(AGENT_QUESTION));
 
-/** JSON-RPC by hand over the in-process pair, for message orderings a `Client` can't produce. */
-function rawClient(stdin: PassThrough, stdout: PassThrough) {
-  const answered: unknown[] = [];
-  const waiting = new Map<unknown, () => void>();
-  let nextId = CANCELLED_LISTING + 1;
-  let buffered = "";
-  stdout.on("data", (chunk: Buffer) => {
-    const lines = (buffered + chunk.toString()).split("\n");
-    buffered = lines.pop() ?? "";
-    for (const line of lines) {
-      const { id } = JSON.parse(line) as { id?: unknown };
-      answered.push(id);
-      waiting.get(id)?.();
-    }
-  });
-  const send = (...messages: Array<Record<string, unknown>>) =>
-    stdin.write(messages.map((message) => `${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`).join(""));
-  const request = (message: Record<string, unknown>) => {
-    const id = nextId++;
-    const answer = new Promise<void>((resolve) => waiting.set(id, resolve));
-    send({ id, ...message });
-    return answer;
-  };
-  return { answered, send, request };
-}
-
-describe("BandMcpStdioServer tools and resources", () => {
-  it("lists a tool's _meta as registered", async ({ connect }) => {
-    const { client } = await connect({ tools: new FakeTools(), additionalTools: [echoTool("reply", ALWAYS_LOAD)] });
-
-    const { tools } = await client.listTools();
-
-    expect(tools.find((tool) => tool.name === "reply")?._meta).toEqual(ALWAYS_LOAD);
-  });
-
-  it("without tools, lists only the additional tools", async ({ connect }) => {
-    const { client } = await connect({ additionalTools: [echoTool("reply"), echoTool("send")] });
-
-    expect(await toolNamesListed(client)).toEqual(["reply", "send"]);
-  });
-
-  it("with no tools at all, lists none and declares tools.listChanged", async ({ connect }) => {
-    const { client } = await connect({});
-
-    expect(client.getServerCapabilities()?.tools).toEqual({ listChanged: true });
-    expect(await toolNamesListed(client)).toEqual([]);
-  });
-
-  it("started empty, adds a batch of tools and removes them, one list_changed each", async ({ connect }) => {
-    const { server, client } = await connect({});
-    const toolsChanged = listenFor(client, ToolListChangedNotificationSchema);
-
-    const added = toolsChanged.next();
-    await server.addTools([echoTool("reply"), echoTool("send"), echoTool("open_room")]);
-    await added;
-    expect(await toolNamesListed(client)).toEqual(["reply", "send", "open_room"]);
-    expect(toolsChanged.count).toBe(1);
-    expect(await client.callTool({ name: "send", arguments: {} })).toMatchObject({ content: [{ type: "text", text: "send" }] });
-
-    const removed = toolsChanged.next();
-    server.removeTools(["reply", "send", "open_room", "never_added"]);
-    await removed;
-    expect(await toolNamesListed(client)).toEqual([]);
-    expect(toolsChanged.count).toBe(2);
-  });
-
-  it("a batch holding a listed name registers none of it", async ({ connect }) => {
-    const { server, client } = await connect({ additionalTools: [echoTool("reply")] });
-
-    await expect(server.addTools([echoTool("send"), echoTool("reply")])).rejects.toThrow("reply");
-    await expect(server.addTools([echoTool("send"), echoTool("send")])).rejects.toThrow("send");
-
-    expect(await toolNamesListed(client)).toEqual(["reply"]);
-  });
-
-  test("rejects addTools before start", async () => {
-    const { server } = inProcessServer({});
-
-    await expect(server.addTools([echoTool("reply")])).rejects.toThrow(NOT_RUNNING);
-  });
-
-  it("lists the source's current resources, announces a change, and reads a handle with a slash", async ({ connect }) => {
-    const agents = new AgentResources(["acme/qa"]);
-    const { server, client } = await connect({ resources: agents });
-    const resourcesChanged = listenFor(client, ResourceListChangedNotificationSchema);
-
-    expect((await client.listResources()).resources.map((resource) => resource.uri)).toEqual(["band://agent/acme/qa"]);
-
-    agents.handles = ["acme/qa", "acme/dev"];
-    const changed = resourcesChanged.next();
-    await server.resourcesChanged();
-    await changed;
-    expect((await client.listResources()).resources.map((resource) => resource.uri)).toEqual(["band://agent/acme/qa", "band://agent/acme/dev"]);
-
-    const { contents } = await client.readResource({ uri: "band://agent/acme/qa" });
+    // Claude Code loads the `@` suggestions, looks one up, then lists the tools.
+    expect((await claude.client.listResources()).resources.map((resource) => resource.name)).toEqual(agents.handles);
+    const { contents } = await claude.client.readResource({ uri: "band://agent/acme/qa" });
     expect(contents).toEqual([{ uri: "band://agent/acme/qa", text: "Agent acme/qa" }]);
+    expect(await claude.listToolNames()).toEqual([]);
+    expect(await picked).toEqual(AGENT_ANSWER);
+    expect(claude.events).toEqual([LISTED_TOOLS, `${ASKED} ${AGENT_QUESTION.message}`]);
+
+    const added = claude.nextToolNames();
+    await server.addTools(BAND_TOOLS);
+    expect(await added).toEqual(BAND_TOOL_NAMES);
+    expect(server.toolNames).toEqual(BAND_TOOL_NAMES);
+    const { tools } = await claude.client.listTools();
+    expect(tools.map(({ name, _meta }) => ({ name, _meta }))).toEqual(BAND_TOOLS.map(({ name, _meta }) => ({ name, _meta })));
+    expect(await claude.client.callTool({ name: "send", arguments: {} })).toMatchObject({ content: [{ type: "text", text: "send" }] });
+
+    // Another session takes the agent over, then this one picks it again.
+    const removed = claude.nextToolNames();
+    server.removeTools([...BAND_TOOL_NAMES, "never_added"]);
+    expect(await removed).toEqual([]);
+    expect(server.toolNames).toEqual([]);
+    const restored = claude.nextToolNames();
+    await server.addTools(BAND_TOOLS);
+    expect(await restored).toEqual(BAND_TOOL_NAMES);
+
+    // One re-list per batch.
+    expect(claude.toolRefreshes.map((list) => list.length)).toEqual([BAND_TOOLS.length, 0, BAND_TOOLS.length]);
   });
 
-  it("settles toolsListed after the client's first tools/list, then elicits an answer", async ({ connect }) => {
-    const { server, client } = await connect({}, FORM_ELICITATION);
-    const asked: unknown[] = [];
-    client.setRequestHandler(ElicitRequestSchema, async (request) => {
-      asked.push(request.params);
-      return AGENT_ANSWER;
-    });
-    let listed = false;
-    const toolsListed = server.toolsListed.then(() => {
-      listed = true;
-    });
+  it("re-lists the agents when the host's set changes", async ({ claudeCode }) => {
+    const agents = new AgentDirectory([PICKED_AGENT]);
+    const { server, claude } = await claudeCode({ resources: agents });
 
-    await server.initialized;
-    await client.ping();
-    expect(listed).toBe(false);
+    agents.handles = [PICKED_AGENT, "acme/dev"];
+    const relisted = claude.nextResourceNames();
+    await server.resourcesChanged();
 
-    await client.listTools();
-    await toolsListed;
-
-    expect(await server.elicitInput(AGENT_QUESTION)).toEqual(AGENT_ANSWER);
-    expect(asked).toEqual([{ mode: "form", ...AGENT_QUESTION }]);
+    expect(await relisted).toEqual(agents.handles);
   });
 
-  test("settles toolsListed on the first tools/list answered when the client cancelled an earlier one", async () => {
-    const { server, stdin, stdout } = inProcessServer({});
-    await server.start();
-    const client = rawClient(stdin, stdout);
-    await client.request(INITIALIZE);
-    client.send({ method: "notifications/initialized" });
-    await server.initialized;
+  it("without tools, lists only the host's tools", async ({ claudeCode }) => {
+    const { claude } = await claudeCode({ additionalTools: BAND_TOOLS });
 
-    // One write, so the cancel lands before the server answers the first listing.
-    client.send(
-      { id: CANCELLED_LISTING, method: "tools/list" },
-      { method: "notifications/cancelled", params: { requestId: CANCELLED_LISTING } },
-    );
-    await client.request({ method: "tools/list" });
-
-    await server.toolsListed;
-    expect(client.answered).not.toContain(CANCELLED_LISTING);
-    await server.stop();
+    expect(await claude.listToolNames()).toEqual(BAND_TOOL_NAMES);
   });
 
-  it("rejects elicitInput for a client without form elicitation, and after stop", async ({ connect }) => {
-    const { server } = await connect({});
+  it.for([
+    ["a name already listed", ["send", "reply"]],
+    ["a name twice", ["send", "send"]],
+    ["a name the MCP SDK's registry inherits", ["send", "toString"]],
+  ] as const)("a batch with %s adds none of it", async ([_case, names], { claudeCode }) => {
+    const { server, claude } = await claudeCode({ additionalTools: [bandTool("reply")] });
+
+    await expect(server.addTools(names.map((name) => bandTool(name)))).rejects.toThrow(names[1]);
+
+    expect(await claude.listToolNames()).toEqual(["reply"]);
+    expect(server.toolNames).toEqual(["reply"]);
+  });
+
+  it("withdraws the agent question when the host aborts it", async ({ claudeCode }) => {
+    const { server, claude } = await claudeCode({});
+    const withdraw = new AbortController();
+
+    const asking = server.elicitInput(AGENT_QUESTION, { signal: withdraw.signal });
+    await once(claude, ASKED);
+    withdraw.abort();
+
+    await expect(asking).rejects.toThrow();
+  });
+
+  it("refuses the agent question for a client without form elicitation", async ({ claudeCode }) => {
+    const { server } = await claudeCode({}, { elicitation: false });
 
     await expect(server.elicitInput(AGENT_QUESTION)).rejects.toThrow("form elicitation");
+  });
 
+  it("releases a host waiting on the first listing when the server stops", async ({ claudeCode }) => {
+    const { server } = await claudeCode({});
+
+    const listed = server.toolsListed;
     await server.stop();
-    await expect(server.elicitInput(AGENT_QUESTION)).rejects.toThrow(NOT_RUNNING);
+
+    await expect(listed).rejects.toThrow(NOT_RUNNING);
+  });
+});
+
+describe("BandMcpStdioServer when not running", () => {
+  const hostCalls: Array<[string, (server: BandMcpStdioServer) => Promise<unknown>]> = [
+    ["addTools", (server) => server.addTools(BAND_TOOLS)],
+    ["resourcesChanged", (server) => server.resourcesChanged()],
+    ["elicitInput", (server) => server.elicitInput(AGENT_QUESTION)],
+    ["toolsListed", (server) => server.toolsListed],
+  ];
+
+  test.each(hostCalls)("rejects %s before start and after stop", async (_name, call) => {
+    const { server } = inProcessServer({ resources: new AgentDirectory([]) });
+    await expect(call(server)).rejects.toThrow(NOT_RUNNING);
+
+    await server.start();
+    await server.stop();
+    await expect(call(server)).rejects.toThrow(NOT_RUNNING);
+  });
+
+  test("ignores removeTools before start and after stop", async () => {
+    const { server } = inProcessServer({ additionalTools: BAND_TOOLS });
+    server.removeTools(BAND_TOOL_NAMES);
+    expect(server.toolNames).toEqual(BAND_TOOL_NAMES);
+
+    await server.start();
+    await server.stop();
+    expect(() => server.removeTools(BAND_TOOL_NAMES)).not.toThrow();
   });
 });

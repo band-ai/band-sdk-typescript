@@ -107,19 +107,15 @@ export class BandMcpStdioServer {
     return this.whenRunning((session) => session.mcpServer.server.notification({ method, params }));
   }
 
-  /** Registers the batch, sending one `tools/list_changed`; a name already listed or repeated rejects the whole batch. */
+  /** Registers the batch, sending one `tools/list_changed`; a name already registered rejects the whole batch. */
   public addTools(registrations: McpToolRegistration[]): Promise<void> {
-    return this.whenRunning(async (session) => {
-      const names = registrations.map((reg) => reg.name);
-      const duplicate = names.find((name, index) => session.tools.has(name) || names.indexOf(name) !== index);
-      if (duplicate !== undefined) {
-        throw new Error(`Tool ${duplicate} is already registered`);
-      }
-      session.register(registrations);
-    });
+    return this.whenRunning(async (session) => session.register(registrations));
   }
 
-  /** Removes the named tools, sending one `tools/list_changed`; unknown names, and calls when not running, are ignored. */
+  /**
+   * Removes the named tools, sending one `tools/list_changed`. It acts on the tools added so far,
+   * so await `addTools` first; unknown names, and calls when not running, are ignored.
+   */
   public removeTools(names: string[]): void {
     const tools = this.session?.tools;
     for (const name of names) {
@@ -141,14 +137,14 @@ export class BandMcpStdioServer {
     return this.whenRunning((session) => session.mcpServer.server.elicitInput(params, options));
   }
 
-  /** Resolves once a response to a client `tools/list` is first sent; rejects if the server stops first. Read it after `await start()`. */
+  /** Resolves once the response to the client's first `tools/list` is sent; rejects if the server stops first. Read it after `await start()`. */
   public get toolsListed(): Promise<void> {
     return this.whenRunning((session) => session.toolsListed);
   }
 
   /** Resolves once the client has initialized; rejects if the server stops first. Read it after `await start()`. */
   public get initialized(): Promise<void> {
-    return this.session ? this.session.untilStopped(this.session.initialized) : Promise.reject(notRunning());
+    return this.whenRunning(async () => {});
   }
 
   /** Resolves once the server is not running: after stop(), or once the client went away. Read it after `await start()`. */
@@ -214,31 +210,7 @@ function openSession(
   stdout: Writable,
   onClientGone: () => void,
 ): StdioSession {
-  const mcpServer = new modules.McpServer(
-    { name: options.name ?? MCP_SERVER_NAME, version: "1.0.0" },
-    {
-      capabilities: options.capabilities,
-      instructions: options.instructions,
-      debouncedNotificationMethods: LIST_CHANGED_NOTIFICATIONS,
-    },
-  );
-  const tools = new Map<string, RegisteredTool>();
-  const register = (batch: McpToolRegistration[]) => {
-    registerTools(mcpServer, modules.z, batch).forEach((tool, index) => tools.set(batch[index].name, tool));
-  };
-  register(registrations);
-  // The tools handlers and `tools.listChanged` come with the first tool and can't be added after connect.
-  if (tools.size === 0) {
-    mcpServer.registerTool(PLACEHOLDER_TOOL, {}, () => ({ content: [] })).remove();
-  }
-  const { resources } = options;
-  if (resources) {
-    // Empty metadata: the template's would be copied onto every listed resource.
-    const template = new modules.ResourceTemplate(resources.uriTemplate, {
-      list: async () => ({ resources: await resources.list() }),
-    });
-    mcpServer.registerResource(resources.name, template, {}, (uri) => resources.read(uri));
-  }
+  const { mcpServer, tools, register } = buildMcpServer(modules, options, registrations);
   const transport = new ToolsListedTransport(new modules.StdioServerTransport(stdin, stdout));
 
   const initialized = new Promise<void>((resolve) => {
@@ -294,4 +266,41 @@ function openSession(
       await mcpServer.close();
     },
   };
+}
+
+/** The session's MCP server: its tools, the placeholder that installs the tools handlers, and the resource template. */
+function buildMcpServer(
+  modules: McpModules,
+  options: BandMcpStdioServerOptions,
+  registrations: McpToolRegistration[],
+): Pick<StdioSession, "mcpServer" | "tools" | "register"> {
+  const mcpServer = new modules.McpServer(
+    { name: options.name ?? MCP_SERVER_NAME, version: "1.0.0" },
+    {
+      capabilities: options.capabilities,
+      instructions: options.instructions,
+      debouncedNotificationMethods: LIST_CHANGED_NOTIFICATIONS,
+    },
+  );
+  const tools = new Map<string, RegisteredTool>();
+  const register = (batch: McpToolRegistration[]) => {
+    for (const [name, tool] of registerTools(mcpServer, modules.z, batch)) {
+      tools.set(name, tool);
+    }
+  };
+  register(registrations);
+  // The tools handlers and `tools.listChanged` come with the first tool and can't be added after connect.
+  if (tools.size === 0) {
+    mcpServer.registerTool(PLACEHOLDER_TOOL, {}, () => ({ content: [] })).remove();
+  }
+  const { resources } = options;
+  if (resources) {
+    // Empty metadata: the template's would be copied onto every listed resource.
+    const template = new modules.ResourceTemplate(resources.uriTemplate, {
+      list: async () => ({ resources: await resources.list() }),
+    });
+    mcpServer.registerResource(resources.name, template, {}, (uri) => resources.read(uri));
+  }
+
+  return { mcpServer, tools, register };
 }
