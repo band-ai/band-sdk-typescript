@@ -2,7 +2,6 @@ import type { PlatformRuntimeOptions } from "@band-ai/sdk";
 import type { AgentCredentials } from "@band-ai/sdk/config";
 import { WebSocketDisconnectError, type Logger } from "@band-ai/sdk/core";
 import type { BandMcpStdioServer, McpToolRegistration } from "@band-ai/sdk/mcp";
-import type { AgentIdentity } from "@band-ai/sdk/rest";
 import { ensureHandlePrefix, PlatformRuntime } from "@band-ai/sdk/runtime";
 
 import { ChannelAdapter, type ChannelPush } from "./adapter";
@@ -10,7 +9,7 @@ import { agentCredentials, pluginDataDir, readSavedAgents, type Env, type SavedA
 import { MessageMemory } from "./messages";
 import { agentLabel, handleOf } from "./names";
 import { agentQuestion, pickedAgent } from "./question";
-import { CONNECTED_STATE, liveSessions, OFF_STATE, SESSION_TEXT, type SessionChange, type SessionStatusFile } from "./sessions";
+import { CONNECTED_STATE, OFF_STATE, sessionHints, SESSION_TEXT, type SessionChange, type SessionStatusFile } from "./sessions";
 import { bandErrorText, bandTools, CONNECT_TOOL, type ToolContext } from "./tools";
 import { WorkingIndicator } from "./working";
 
@@ -87,7 +86,7 @@ export class AgentSession {
     this.off(SESSION_TEXT.asking);
     let picked: string | undefined;
     try {
-      picked = pickedAgent(await this.options.server.elicitInput(agentQuestion(saved, liveSessions(dataDir)), { timeout: MAX_ELICIT_TIMEOUT_MS }));
+      picked = pickedAgent(await this.options.server.elicitInput(agentQuestion(saved, sessionHints(dataDir, this.options.logger)), { timeout: MAX_ELICIT_TIMEOUT_MS }));
     } catch (error) {
       // Stopping the server also fails a question still open.
       if (this.closed) {
@@ -117,7 +116,8 @@ export class AgentSession {
     let handle: string;
     let listed: readonly McpToolRegistration[] = [];
     try {
-      const identity = await identify(runtime);
+      await runtime.initialize();
+      const identity = await runtime.link.rest.getAgentMe();
       handle = ensureHandlePrefix(identity.handle) ?? name;
       const context: ToolContext = {
         link: runtime.link,
@@ -191,12 +191,6 @@ export class AgentSession {
     this.options.status?.record(change);
     return change.sentence;
   }
-}
-
-/** Who the agent is, once Band has checked its credentials over REST: a rejected key shows Band's reason. */
-async function identify(runtime: PlatformRuntime): Promise<AgentIdentity> {
-  await runtime.initialize();
-  return runtime.link.rest.getAgentMe();
 }
 
 /** Stops a runtime that already failed, whose stop may report that failure again. */

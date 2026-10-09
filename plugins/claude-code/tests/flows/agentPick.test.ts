@@ -2,6 +2,9 @@
  * How a session gets its Band agent, through the real server on a Band platform:
  * only with Band's channel, by the user's pick, the last pick winning on Band.
  */
+import { chmodSync } from "node:fs";
+import { dirname } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { EXIT_OK } from "../../src/channel";
@@ -24,6 +27,9 @@ const MESSAGE = `@[[${AGENT_ID}]] hello`;
 const DOCS = { agentId: "agent-docs", apiKey: "key-docs", handle: "owner/docs" };
 const BAND_TOOLS = Object.values(TOOL).sort();
 const CONNECTED = SESSION_TEXT.connected(`${AGENT_NAME} (@${AGENT_HANDLE})`);
+/** The registry can record status by path but cannot list other sessions. */
+const UNLISTABLE = 0o300;
+const OWNER_ALL = 0o700;
 
 /** Fresh directories with `agents` saved, as `/band:agents add` leaves them. */
 function savedDirs(agents: Parameters<ClaudeCodeDirs["save"]>[0]): ClaudeCodeDirs {
@@ -81,6 +87,22 @@ describe("with Band's channel", () => {
 
     expect(offered(await session.question())).toEqual([`${AGENT_NAME} (@${AGENT_HANDLE})`]);
     expect(await session.toolNames()).toEqual([CONNECT_TOOL]);
+  });
+
+  it("connects the picked agent when other sessions' status can't be listed", async () => {
+    using dirs = savedDirs({ [AGENT_NAME]: SAVED_AGENT });
+    const registry = dirname(dirs.writeStatus("another-session"));
+    chmodSync(registry, UNLISTABLE);
+    try {
+      await using session = await ClaudeCodeSession.connect(linkTo(await platformWithRoom()), { dirs, agent: null });
+      session.answer(pick(AGENT_NAME));
+
+      expect(await session.callTool(CONNECT_TOOL, {})).toEqual({ isError: false, text: CONNECTED });
+      expect(offered(await session.question())).toEqual([`${AGENT_NAME} (@${AGENT_HANDLE})`]);
+      expect((await session.connected()).sort()).toEqual(BAND_TOOLS);
+    } finally {
+      chmodSync(registry, OWNER_ALL);
+    }
   });
 
   it("asks nothing with no agent saved, and connect says how to add one", async () => {

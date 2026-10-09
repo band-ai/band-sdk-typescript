@@ -17,6 +17,7 @@ import {
 
 import type { ChannelPush } from "../../src/adapter";
 import { CHANNEL_METHOD } from "../../src/channel";
+import { TOOL } from "../../src/tools";
 import { CallHolds, RecordLog, type HeldCall } from "../../../../packages/sdk/tests/testUtils";
 
 const INITIALIZED_METHOD = "notifications/initialized";
@@ -114,6 +115,11 @@ export class ChannelClient {
   /** Resolves with the next question from the `from`th on; rejects if the plugin exits first. */
   public question(from = 0): Promise<ElicitRequestFormParams> {
     return this.unlessExited(this.questions.next(() => true, from), "a question");
+  }
+
+  /** Resolves with the Band tools once they are listed. */
+  public connected(): Promise<string[]> {
+    return this.toolNamesWhen((names) => names.includes(TOOL.reply));
   }
 
   /** The listed tool names once they match, now or after a later re-list; rejects if the plugin exits first. */

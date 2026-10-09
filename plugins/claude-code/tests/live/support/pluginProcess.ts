@@ -13,7 +13,6 @@ import { fileURLToPath } from "node:url";
 import type { ElicitRequestFormParams, ElicitResult } from "@modelcontextprotocol/sdk/types.js";
 
 import type { ChannelPush } from "../../../src/adapter";
-import { TOOL } from "../../../src/tools";
 import { ChannelClient } from "../../support/channelClient";
 import { agentsCommandAt } from "../../support/agentsCommand";
 import { liveRun, releasedWithTest } from "../../../../../packages/sdk/tests/baseline/toolkit/liveRun";
@@ -87,7 +86,7 @@ export class PluginProcess implements AsyncDisposable {
 
   /** Resolves with the Band tools once they are listed. */
   public connected(): Promise<string[]> {
-    return this.toolNamesWhen((names) => names.includes(TOOL.reply));
+    return this.channel.connected();
   }
 
   /** See {@link ChannelClient.toolNamesWhen}. */

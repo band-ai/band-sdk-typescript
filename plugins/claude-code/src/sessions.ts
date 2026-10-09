@@ -150,6 +150,16 @@ export function liveSessions(dataDir: string): SessionStatus[] {
   return sessions;
 }
 
+/** Holder labels enrich the picker; unavailable status must not prevent an agent choice. */
+export function sessionHints(dataDir: string, logger: Logger): SessionStatus[] {
+  try {
+    return liveSessions(dataDir);
+  } catch (error) {
+    logger.warn("Could not read the other sessions' Band status", { error });
+    return [];
+  }
+}
+
 /** The session holding each Band agent, by agent ID. */
 export function agentHolders(sessions: readonly SessionStatus[]): Map<string, SessionStatus> {
   const holders = new Map<string, SessionStatus>();

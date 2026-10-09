@@ -13,7 +13,6 @@ import type { ChannelPush } from "../../../src/adapter";
 import type { LinkFactory } from "../../../src/agentSession";
 import { runChannel, type RunChannelOptions } from "../../../src/channel";
 import { AGENT_SELECT_ENV } from "../../../src/config";
-import { TOOL } from "../../../src/tools";
 import { AGENT_API_KEY, AGENT_HANDLE, AGENT_ID, type BandPlatform } from "../../../../../packages/sdk/tests/flows/support/bandPlatform";
 import { callTool, ChannelClient, type ToolReply } from "../../support/channelClient";
 import { ClaudeCodeDirs } from "../../support/claudeCodeDirs";
@@ -102,7 +101,7 @@ export class ClaudeCodeSession implements AsyncDisposable {
 
   /** Resolves with the Band tools once they are listed. */
   public connected(): Promise<string[]> {
-    return this.toolNamesWhen((names) => names.includes(TOOL.reply));
+    return this.channel.connected();
   }
 
   /** See {@link ChannelClient.toolNamesWhen}. */
