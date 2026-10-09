@@ -21,8 +21,11 @@ export const AGENT_ID = "agent-1";
 export const AGENT_API_KEY = "flow-test-key";
 export const AGENT_HANDLE = "owner/agent";
 
+/** Someone on the platform; Band sends `description` on agent rows, of peers and participants alike. */
+export type PlatformParticipant = ParticipantRecord & { readonly description?: string | null };
+
 // The agent is in every one of its rooms, as Band lists it among a room's participants.
-const AGENT_PARTICIPANT: ParticipantRecord = { id: AGENT_ID, name: "Agent", type: "Agent", handle: AGENT_HANDLE };
+const AGENT_PARTICIPANT: PlatformParticipant = { id: AGENT_ID, name: "Agent", type: "Agent", handle: AGENT_HANDLE };
 
 export interface Posted {
   readonly roomId: string;
@@ -80,8 +83,10 @@ export interface Added {
 }
 
 interface RoomState {
-  participants: ParticipantRecord[];
+  participants: PlatformParticipant[];
   title?: string;
+  /** Whether the agent created the room, which makes it the owner. */
+  owned?: boolean;
   /** When anything was last said in the room, as Band's `updated_at` moves. */
   updatedAt: string;
 }
@@ -103,8 +108,14 @@ export class RecordingRestApi extends FakeRestApi {
   public readonly refused = new RecordLog<Refused>();
   /** Ids of messages the runtime has started handing to the agent. */
   public readonly processing = new RecordLog<string>();
-  /** Every working report the agent sent, in order. */
+  /** Every working report Band accepted, in order. */
   public readonly workingReports = new RecordLog<{ roomId: string; working: boolean }>();
+  /** Every working report Band refused, in order. */
+  public readonly refusedReports = new RecordLog<{ roomId: string; working: boolean }>();
+  /** Band refuses every working report, as it answers 404 while a room has no active execution. */
+  public refuseActivity = false;
+  /** Ids Band refuses to add to a room with 403, as for someone the agent has no approved contact with. */
+  public readonly unreachable = new Set<string>();
   private readonly history: HistoryEntry[] = [];
   private readonly backlog: HistoryEntry[] = [];
   private readonly rooms = new Map<string, RoomState>();
@@ -119,7 +130,7 @@ export class RecordingRestApi extends FakeRestApi {
   /** Holds `getAgentMe`, as a slow platform answers it. */
   public readonly agentMeHolds = new CallHolds<[]>();
 
-  public constructor(private readonly participants: readonly ParticipantRecord[], identity: AgentIdentityOptions = {}) {
+  public constructor(private readonly participants: readonly PlatformParticipant[], identity: AgentIdentityOptions = {}) {
     super({}, { id: AGENT_ID, name: "Agent", description: "Flow test agent", handle: AGENT_HANDLE, ...identity });
   }
 
@@ -138,14 +149,22 @@ export class RecordingRestApi extends FakeRestApi {
     return roomPayload(roomId, "active", room.updatedAt, room.title);
   }
 
+  /** Like Band, only the room's owner, the agent that created it, may rename it; anyone else gets 403. */
   public async renameChat(roomId: string, title: string): Promise<ChatRoom> {
     const room = this.assertMember(roomId, "renameChat");
+    if (!room.owned) {
+      throw new Band.ForbiddenError({ error: { code: "forbidden", message: "Forbidden", request_id: randomUUID() } });
+    }
     room.title = title;
     return roomPayload(roomId, "active", room.updatedAt, title);
   }
 
   public async reportActivity(roomId: string, working: boolean) {
     this.assertMember(roomId, "reportActivity");
+    if (this.refuseActivity) {
+      this.refusedReports.record({ roomId, working });
+      throw new Band.NotFoundError({ error: { code: "not_found", message: "No active execution", request_id: randomUUID() } });
+    }
     this.workingReports.record({ roomId, working });
     return { working };
   }
@@ -158,7 +177,7 @@ export class RecordingRestApi extends FakeRestApi {
   }
 
   /** Adds the agent to a room it shares with `participants`; the platform's participants by default. */
-  public addRoom(roomId: string, participants: readonly ParticipantRecord[] = this.participants, title?: string): void {
+  public addRoom(roomId: string, participants: readonly PlatformParticipant[] = this.participants, title?: string): void {
     this.rooms.set(roomId, { participants: [AGENT_PARTICIPANT, ...participants], title, updatedAt: this.activity() });
   }
 
@@ -176,6 +195,7 @@ export class RecordingRestApi extends FakeRestApi {
   public override async createChat(request?: string | CreateChatRequest) {
     const roomId = `created-${randomUUID()}`;
     this.addRoom(roomId, [], typeof request === "string" ? undefined : request?.title);
+    this.rooms.get(roomId)!.owned = true;
     this.onRoomCreated?.(roomId);
     return { id: roomId };
   }
@@ -202,10 +222,17 @@ export class RecordingRestApi extends FakeRestApi {
     return [...this.assertMember(roomId, "listChatParticipants").participants];
   }
 
+  /** Adds someone by id; like Band, 409 for who is already in the room and 403 for who the agent can't reach. */
   public override async addChatParticipant(roomId: string, { participantId }: { participantId: string }) {
     const { participants } = this.assertMember(roomId, "addChatParticipant");
+    if (participants.some(({ id }) => id === participantId)) {
+      throw new Band.ConflictError({ error: { code: "conflict", message: "Already a participant", request_id: randomUUID() } });
+    }
+    if (this.unreachable.has(participantId)) {
+      throw new Band.ForbiddenError({ error: { code: "forbidden", message: "Forbidden", request_id: randomUUID() } });
+    }
     const participant = this.participants.find(({ id }) => id === participantId);
-    if (participant && !participants.some(({ id }) => id === participantId)) {
+    if (participant) {
       participants.push(participant);
     }
     this.added.record({ roomId, participantId });
@@ -223,7 +250,7 @@ export class RecordingRestApi extends FakeRestApi {
     const inRoom = (notInChat && this.rooms.get(notInChat)?.participants) || [];
     const peers = this.participants
       .filter((participant) => !inRoom.some(({ id }) => id === participant.id))
-      .map(({ id, name, type, handle }) => ({ id, name, type, handle }));
+      .map(({ id, name, type, handle, description }) => ({ id, name, type, handle, description }));
     return { data: page === FIRST_PAGE ? peers : [], metadata: { page } };
   }
 
@@ -405,7 +432,7 @@ export class BandPlatform implements AsyncDisposable {
   private runtime?: PlatformRuntime;
   private readonly mentionable: readonly ParticipantRecord[];
 
-  private constructor(participants: readonly ParticipantRecord[], rest?: RecordingRestApi) {
+  private constructor(participants: readonly PlatformParticipant[], rest?: RecordingRestApi) {
     this.mentionable = [...participants, AGENT_PARTICIPANT];
     this.rest = rest ?? new RecordingRestApi(participants);
     this.link = { transport: this.transport, restApi: this.rest };
@@ -414,7 +441,7 @@ export class BandPlatform implements AsyncDisposable {
   }
 
   /** The platform alone, for a host that builds its own runtime on `transport` and `rest`. */
-  public static host(participants: readonly ParticipantRecord[], identity?: AgentIdentityOptions): BandPlatform {
+  public static host(participants: readonly PlatformParticipant[], identity?: AgentIdentityOptions): BandPlatform {
     return new BandPlatform(participants, new RecordingRestApi(participants, identity));
   }
 
@@ -445,7 +472,7 @@ export class BandPlatform implements AsyncDisposable {
    * Adds the agent to a room it shares with `participants`, the platform's by default:
    * a connected agent hears it, one not yet connected finds it in its room list.
    */
-  public async room(roomId: string, participants?: readonly ParticipantRecord[]): Promise<BandRoom> {
+  public async room(roomId: string, participants?: readonly PlatformParticipant[]): Promise<BandRoom> {
     this.rest.addRoom(roomId, participants);
     await this.announce(roomId);
     return new BandRoom(roomId, this);
@@ -498,6 +525,6 @@ export function person(id: string): ParticipantRecord {
   return { id, name: id, type: "User", handle: id };
 }
 
-export function agent(id: string): ParticipantRecord {
-  return { id, name: id, type: "Agent", handle: id };
+export function agent(id: string, description?: string): PlatformParticipant {
+  return { id, name: id, type: "Agent", handle: id, ...(description === undefined ? {} : { description }) };
 }

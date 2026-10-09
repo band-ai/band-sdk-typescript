@@ -1,0 +1,194 @@
+{
+  "tools": [
+    {
+      "name": "reply",
+      "description": "Posts on Band as @acme/claude. The only way to answer a Band message: terminal text never reaches Band. Pass the message_id from the <channel> tag; the reply goes to that message's room and mentions its sender. Answer each of several messages with its own reply. Add mentions only for others you address, a word or two of their handle or name each. For an id it doesn't know, list the room with fetch_messages, or use send with the tag's room_id.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "string",
+            "description": "The message_id of the Band message you answer."
+          },
+          "content": {
+            "type": "string",
+            "description": "The reply."
+          },
+          "mentions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Others in the room to mention besides the sender, by handle or name."
+          }
+        },
+        "required": [
+          "message_id",
+          "content"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
+    },
+    {
+      "name": "send",
+      "description": "Posts on Band as @acme/claude. Starts a conversation in a room by room_id, as in a room open_room gave you; to answer a Band message, use reply instead. Mention at least one participant you address, by a word or two of their handle or name, never yourself. Their answer arrives later as a <channel> message.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "room_id": {
+            "type": "string",
+            "description": "The room to post in."
+          },
+          "content": {
+            "type": "string",
+            "description": "The message."
+          },
+          "mentions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "At least one participant to mention, by handle or name."
+          }
+        },
+        "required": [
+          "room_id",
+          "content",
+          "mentions"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
+    },
+    {
+      "name": "open_room",
+      "description": "Opens a Band room with the given agents or people, to work with them: reuses the most recently active room whose participants, besides this agent, are exactly them, or creates one and invites them. Name each by a word or two of their handle, name or description (`qa` for \"the qa bot\"). Pass new: true only when the user asks for a new room. Then post there with send(room_id).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "participants": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Everyone the room is with, by handle, name or a word of their description."
+          },
+          "title": {
+            "type": "string",
+            "description": "The title of a room it creates; reused rooms keep theirs."
+          },
+          "new": {
+            "type": "boolean",
+            "description": "Create a new room even if one with them exists."
+          }
+        },
+        "required": [
+          "participants"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
+    },
+    {
+      "name": "invite",
+      "description": "Invites agents or people into a Band room this agent is in, each by a word or two of their handle, name or description. Reports each as added, already in room, or failed with Band's reason. Use it after open_room left someone out, or to bring someone in.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "room_id": {
+            "type": "string",
+            "description": "The room to invite them into."
+          },
+          "participants": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Who to invite, by handle, name or a word of their description."
+          }
+        },
+        "required": [
+          "room_id",
+          "participants"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
+    },
+    {
+      "name": "find_agents",
+      "description": "Lists the Band agents this agent can reach, one per line: handle, name and description. With query, only agents with every word in their handle, name or description; with room_id, marks those already in that room. Use it to see who can help, then open_room with their handles.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Words that must all appear in an agent's handle, name or description."
+          },
+          "room_id": {
+            "type": "string",
+            "description": "A room whose participants are marked (in room)."
+          }
+        },
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
+    },
+    {
+      "name": "find_rooms",
+      "description": "Find the Band rooms this agent is in that include every given agent or person, by name or handle; with no participants, list all of its rooms. Each room lists its participants besides this agent. The best fit comes first: fewest participants, then most recently active.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "participants": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Names or handles that must all be in the room."
+          }
+        },
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
+    },
+    {
+      "name": "rename_room",
+      "description": "Renames a Band room. Only the room's owner can, so it works in rooms this agent created.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "room_id": {
+            "type": "string",
+            "description": "The room to rename."
+          },
+          "title": {
+            "type": "string",
+            "description": "The new title."
+          }
+        },
+        "required": [
+          "room_id",
+          "title"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
+    },
+    {
+      "name": "fetch_messages",
+      "description": "Lists a room's newest messages this agent can see (its own and those mentioning it), oldest first, 20 by default and at most 100, each with its id. Use it to catch up on a room or to find a message to answer, then answer it with reply(message_id).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "room_id": {
+            "type": "string",
+            "description": "The room to read."
+          },
+          "limit": {
+            "type": "number",
+            "description": "How many messages, 1 to 100; 20 by default."
+          }
+        },
+        "required": [
+          "room_id"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
+    }
+  ]
+}

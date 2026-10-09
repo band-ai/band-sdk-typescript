@@ -2,8 +2,8 @@
  * Room CRUD, acting as the platform user: the user creates the room, adds the
  * agents under test, and mentions them — as a person would. From creation, a
  * user-authenticated observer records every message frame in the room —
- * replies and delivery-state updates alike — so a wait never misses a frame
- * that landed before it started. Released when its `await using` scope or its
+ * replies and delivery-state updates alike — and every working-indicator frame,
+ * so a wait never misses a frame that landed before it started. Released when its `await using` scope or its
  * test ends; release never throws.
  */
 import type { CreateChatRequest } from "../../../src/client/rest/types";
@@ -20,6 +20,16 @@ import { liveRun, releasedWithTest, warnTeardown } from "./liveRun";
 /** Leading characters of a room id that label its observer's logs, enough to tell rooms apart. */
 const ROOM_LABEL_ID_LENGTH = 8;
 
+/** Band's channel for a room's agent working indicator. */
+const ROOM_ACTIVITY_TOPIC_PREFIX = "room_activity:";
+export const ACTIVITY_EVENT = { started: "agent_activity_started", stopped: "agent_activity_stopped" } as const;
+
+/** One working-indicator frame: an agent started or stopped working in the room. */
+export interface ActivityFrame {
+  readonly event: (typeof ACTIVITY_EVENT)[keyof typeof ACTIVITY_EVENT];
+  readonly agentId: string;
+}
+
 /** A message the scenario posted, by id — what delivery waits key on. */
 export interface SentMessage {
   id: string;
@@ -30,6 +40,8 @@ export class Room implements AsyncDisposable {
   public readonly messages = new RecordLog<MessageCreatedPayload>();
   /** Every `message_updated` frame (per-recipient delivery state), in arrival order. */
   public readonly deliveryUpdates = new RecordLog<MessageCreatedPayload>();
+  /** Every working-indicator frame, in arrival order. */
+  public readonly activity = new RecordLog<ActivityFrame>();
   /** The last message the scenario posted — what a reply answers. */
   public lastSent: SentMessage | null = null;
 
@@ -65,6 +77,12 @@ export class Room implements AsyncDisposable {
     await this.observer.join(roomTopics(this.id).chat, {
       message_created: (payload) => this.messages.record(payload as MessageCreatedPayload),
       message_updated: (payload) => this.deliveryUpdates.record(payload as MessageCreatedPayload),
+    });
+    const recordActivity = (event: ActivityFrame["event"]) => (payload: unknown) =>
+      this.activity.record({ event, agentId: String((payload as { agent_id?: unknown }).agent_id) });
+    await this.observer.join(`${ROOM_ACTIVITY_TOPIC_PREFIX}${this.id}`, {
+      [ACTIVITY_EVENT.started]: recordActivity(ACTIVITY_EVENT.started),
+      [ACTIVITY_EVENT.stopped]: recordActivity(ACTIVITY_EVENT.stopped),
     });
   }
 

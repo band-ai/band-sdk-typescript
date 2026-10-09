@@ -1,7 +1,7 @@
 ---
-description: Finds a Band room this agent shares with given agents or people, or creates one and adds them, then works with them there; lists the agent's Band rooms. Use when the user says to work with, ask or talk to another Band agent ("work with claude2", "talk to everyone in the room with claude2 and claude3", "start a room with docs"), or asks which Band rooms this agent is in.
+description: Opens or reuses a Band room with given agents or people and asks them there; lists the agent's Band rooms. Use when the user says to work with, ask or talk to another Band agent ("ask claude2 to review this", "work with qa and docs", "start a new room with docs"), or asks which Band rooms this agent is in.
 argument-hint: "[<agent or person> …]"
-allowed-tools: mcp__plugin_band_band__band_find_rooms mcp__plugin_band_band__band_create_chatroom mcp__plugin_band_band__band_lookup_peers mcp__plugin_band_band__band_add_participant mcp__plugin_band_band__band_send_message
+allowed-tools: mcp__plugin_band_band__open_room mcp__plugin_band_band__send mcp__plugin_band_band__find_agents mcp__plugin_band_band__find_rooms
 ---
 
 # Band rooms
@@ -9,9 +9,8 @@ allowed-tools: mcp__plugin_band_band__band_find_rooms mcp__plugin_band_band__ban
 Arguments: `$ARGUMENTS`
 
 - Agents or people named, in the arguments or the request:
-  1. Run `band_find_rooms` with their names or handles as `participants`.
-  2. A room found: use the first one. It is the best fit.
-  3. None found: run `band_create_chatroom`. Then, for each of them, find their entry in `band_lookup_peers` for the new room, matching a handle as well as a name, and run `band_add_participant` in the new room with that entry's name. If an add fails, keep working in the room you created; don't create another.
-  4. Work with them in that room, mentioning only the agents you address.
-  5. When the owner asked in the terminal, report the outcome in the terminal, not by mentioning the owner on Band.
-- Nobody named: run `band_find_rooms` with no `participants`, and show each room's ID, title and participants.
+  1. Run `open_room` with a word or two of each one's handle or name as `participants`; pass `new: true` only when the user asks for a new room. Not sure who fits: run `find_agents` with a word from the request first.
+  2. It names candidates instead of a room: ask the user which one with AskUserQuestion, then run `open_room` again with that handle.
+  3. Run `send` in the room it opened, mentioning the ones you address.
+  4. Their answer arrives later as a `<channel>` message. Report it in the terminal, not by mentioning the owner on Band.
+- Nobody named: run `find_rooms` with no `participants`, and show each room's title and participants.

@@ -28,6 +28,10 @@ export class ClaudeCodeSession implements AsyncDisposable {
   public readonly exited: Promise<number>;
   private readonly channel: ChannelClient;
   private readonly toPlugin = new PassThrough();
+  private signalled!: () => void;
+  private readonly interrupted = new Promise<void>((resolve) => {
+    this.signalled = resolve;
+  });
 
   /** Starts the plugin against a platform; Claude Code connects with `connect()`. */
   public constructor(link: RunChannelOptions["link"], { credentials, agentName = AGENT_NAME, status, logger }: SessionOptions = {}) {
@@ -39,6 +43,7 @@ export class ClaudeCodeSession implements AsyncDisposable {
       link,
       stdin: this.toPlugin,
       stdout: fromPlugin,
+      interrupted: this.interrupted,
       logger: logger ?? (process.env.FLOW_DEBUG ? new StderrLogger() : new NoopLogger()),
     });
     this.channel = new ChannelClient(fromPlugin, this.toPlugin, this.exited, "test");
@@ -99,6 +104,12 @@ export class ClaudeCodeSession implements AsyncDisposable {
   /** Claude Code exits; resolves with the plugin's exit code. */
   public async leave(): Promise<number> {
     this.channel.leave();
+    return this.exited;
+  }
+
+  /** Claude Code stops the server with a signal, as it does on exit; resolves with the plugin's exit code. */
+  public async interrupt(): Promise<number> {
+    this.signalled();
     return this.exited;
   }
 

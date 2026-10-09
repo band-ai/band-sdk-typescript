@@ -1,15 +1,19 @@
-import type { BandLink, PlatformRuntimeOptions } from "@band-ai/sdk";
+import type { PlatformRuntimeOptions } from "@band-ai/sdk";
 import type { AgentCredentials } from "@band-ai/sdk/config";
-import { DeliveryFailedError, WebSocketDisconnectError, type AdapterToolsProtocol, type Logger, type WebSocketDisconnectReason } from "@band-ai/sdk/core";
+import { DeliveryFailedError, WebSocketDisconnectError, type Logger, type WebSocketDisconnectReason } from "@band-ai/sdk/core";
 import { BandMcpStdioServer } from "@band-ai/sdk/mcp";
-import { AgentTools, PlatformRuntime } from "@band-ai/sdk/runtime";
+import type { AgentIdentity } from "@band-ai/sdk/rest";
+import { PlatformRuntime } from "@band-ai/sdk/runtime";
 import type { Readable, Writable } from "node:stream";
 
 import { ChannelAdapter } from "./adapter";
 import { USE_HINT } from "./config";
-import { channelInstructions } from "./prompt";
-import { findRoomsTool } from "./rooms";
+import { MessageMemory } from "./messages";
+import { handleOf } from "./names";
+import { CHANNEL_INSTRUCTIONS } from "./prompt";
 import { sessionLocation, type SessionStatus, type SessionStatusFile } from "./sessions";
+import { bandTools, type ToolContext } from "./tools";
+import { WorkingIndicator } from "./working";
 
 /** The experimental capability that makes Claude Code register the server as a channel. */
 export const CHANNEL_CAPABILITY = "claude/channel";
@@ -23,8 +27,8 @@ export const EXIT_FAILED = 1;
 // into a server that can't push it; what it didn't start waits on the platform for the next session.
 const STOP_WITHOUT_DRAINING_MS = 0;
 
-// Roomless tools never act on a room (band_no_reply only logs it), as with Python's AgentTools(room_id="").
-const NO_ROOM = "";
+/** Stands in for `interrupted` outside a process that can be signalled. */
+const NEVER = new Promise<void>(() => undefined);
 
 /** The platform's answer when another session already holds the agent. */
 const CONNECTION_CONFLICT: Extract<WebSocketDisconnectReason, { source: "upgrade" }>["code"] = "connection_conflict";
@@ -39,6 +43,8 @@ export interface RunChannelOptions {
   readonly link?: PlatformRuntimeOptions["linkOptions"];
   readonly stdin?: Readable;
   readonly stdout?: Writable;
+  /** Settles when the process is told to stop (SIGINT or SIGTERM), as Claude Code stops its servers. */
+  readonly interrupted?: Promise<void>;
   readonly logger: Logger;
 }
 
@@ -57,7 +63,7 @@ export async function runChannel(options: RunChannelOptions): Promise<number> {
   }
 }
 
-async function serveChannel({ agentName, credentials, status, link, stdin, stdout, logger }: RunChannelOptions): Promise<void> {
+async function serveChannel({ credentials, status, link, stdin, stdout, interrupted = NEVER, logger }: RunChannelOptions): Promise<void> {
   // Known before any network call, so the session shows as holding its agent from the start.
   status?.record({ agentId: credentials.agentId });
   const runtime = new PlatformRuntime({
@@ -67,12 +73,25 @@ async function serveChannel({ agentName, credentials, status, link, stdin, stdou
     linkOptions: { conflictPolicy: "reject", ...link },
     agentConfig: { autoSubscribeExistingRooms: true },
   });
-  await runtime.initialize();
-  const identity = await runtime.link.rest.getAgentMe();
+  // Nothing is connected yet, so a stop before Band answers just ends the session.
+  const identity = await Promise.race([identify(runtime), interrupted.then(() => null)]);
+  if (!identity) {
+    return;
+  }
   status?.record({ handle: identity.handle ?? null });
+
+  const context: ToolContext = {
+    link: runtime.link,
+    self: { id: identity.id, handle: handleOf(identity) },
+    memory: new MessageMemory(),
+    working: new WorkingIndicator(runtime.link.rest, logger),
+    logger,
+  };
 
   const adapter = new ChannelAdapter({
     ownerUuid: identity.ownerUuid,
+    memory: context.memory,
+    working: context.working,
     push: async (push) => {
       try {
         await server.notify(CHANNEL_METHOD, push);
@@ -81,13 +100,10 @@ async function serveChannel({ agentName, credentials, status, link, stdin, stdou
       }
     },
   });
-  const toolsFor = roomTools(runtime.link, logger);
   const server: BandMcpStdioServer = new BandMcpStdioServer({
-    tools: toolsFor,
-    roomlessTools: toolsFor(NO_ROOM),
-    additionalTools: [findRoomsTool(runtime.link, logger)],
+    additionalTools: bandTools(context),
     capabilities: { experimental: { [CHANNEL_CAPABILITY]: {} } },
-    instructions: channelInstructions(identity, agentName),
+    instructions: CHANNEL_INSTRUCTIONS,
     stdin,
     stdout,
   });
@@ -102,13 +118,13 @@ async function serveChannel({ agentName, credentials, status, link, stdin, stdou
   };
   let servingFailed = false;
   try {
-    // Claude Code leaving settles first, whichever phase it interrupts.
-    await Promise.race([server.stopped, serve()]);
+    // Claude Code leaving, or stopping the process, settles first, whichever phase it interrupts.
+    await Promise.race([server.stopped, interrupted, serve()]);
   } catch (error) {
     servingFailed = true;
     throw error;
   } finally {
-    const cleanup = await Promise.allSettled([runtime.stop(STOP_WITHOUT_DRAINING_MS), server.stop()]);
+    const cleanup = await Promise.allSettled([context.working.stopAll(), runtime.stop(STOP_WITHOUT_DRAINING_MS), server.stop()]);
     const errors = cleanup.flatMap((result): unknown[] => result.status === "rejected" ? [result.reason] : []);
     if (!servingFailed && errors.length > 0) {
       throw errors.length === 1 ? errors[0] : new AggregateError(errors, "Band channel cleanup failed");
@@ -116,9 +132,10 @@ async function serveChannel({ agentName, credentials, status, link, stdin, stdou
   }
 }
 
-/** Tools for any room, built per call: Band itself refuses a room the agent isn't in. */
-function roomTools(link: BandLink, logger: Logger): (roomId: string) => AdapterToolsProtocol {
-  return (roomId) => new AgentTools({ roomId, rest: link.rest, capabilities: link.capabilities, logger }).getAdapterTools();
+/** Who the agent is, once the runtime has checked its credentials with Band. */
+async function identify(runtime: PlatformRuntime): Promise<AgentIdentity> {
+  await runtime.initialize();
+  return runtime.link.rest.getAgentMe();
 }
 
 function reportFailure(error: unknown, { agentName, credentials, status, logger }: RunChannelOptions): void {

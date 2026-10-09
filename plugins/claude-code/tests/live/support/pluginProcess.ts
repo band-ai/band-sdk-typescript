@@ -89,6 +89,12 @@ export class PluginProcess implements AsyncDisposable {
     return this.exited;
   }
 
+  /** Claude Code stops the server as it does on exit, with SIGINT first; resolves once the plugin has exited. */
+  public interrupt(): Promise<Exit> {
+    this.child.kill("SIGINT");
+    return this.exited;
+  }
+
   public async [Symbol.asyncDispose](): Promise<void> {
     this.child.kill("SIGKILL");
     await this.exited;
