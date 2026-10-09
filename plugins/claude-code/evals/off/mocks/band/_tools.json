@@ -1,0 +1,14 @@
+{
+  "tools": [
+    {
+      "name": "connect",
+      "description": "Connects this session to Band by showing the user the question that picks its Band agent; the user answers it. Use it whenever the user asks for something on Band while Band isn't connected, then carry on with the request.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
+    }
+  ]
+}

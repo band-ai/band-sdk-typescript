@@ -6,7 +6,7 @@
 import { test } from "vitest";
 
 import { agent, BandPlatform, person, type BandRoom, type PlatformParticipant } from "../../../../../packages/sdk/tests/flows/support/bandPlatform";
-import { ClaudeCodeSession } from "./claudeCode";
+import { ClaudeCodeSession, linkTo } from "./claudeCode";
 
 export const OWNER = "owner-1";
 export const USER = "user-1";
@@ -30,7 +30,7 @@ export const it = test.extend<{ band: Band; session: ClaudeCodeSession }>({
     await use({ platform, room: await platform.room(ROOM) });
   },
   session: async ({ band }, use) => {
-    await using session = await ClaudeCodeSession.connect(band.platform.link);
+    await using session = await ClaudeCodeSession.connect(linkTo(band.platform));
     await use(session);
   },
 });

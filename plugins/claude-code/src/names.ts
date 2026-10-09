@@ -30,6 +30,12 @@ export function handleOf({ handle, name }: Pick<Candidate, "handle" | "name">): 
   return ensureHandlePrefix(handle) ?? name;
 }
 
+/** A saved agent as the user knows it: its name, and its Band handle when known. */
+export function agentLabel(name: string, handle: string | null | undefined): string {
+  const at = ensureHandlePrefix(handle);
+  return at ? `${name} (${at})` : name;
+}
+
 /** An exact id or handle wins; otherwise every word of `entry` must appear in the handle, name or an agent's description. */
 export function resolveName(entry: string, candidates: readonly Candidate[]): Resolution {
   const exact = candidates.find(({ id, handle }) => id === entry.trim() || (handle && normalizeHandle(handle) === normalizeHandle(entry)));

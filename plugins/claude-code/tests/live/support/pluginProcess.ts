@@ -1,7 +1,8 @@
 /**
- * The built plugin as Claude Code runs it: the server `.mcp.json` declares, as a
- * child on real stdio pipes, and an MCP client standing in for Claude Code; and
- * the `/band:agents` command, as the skill runs it.
+ * The built plugin as Claude Code runs it: the server `.mcp.json` declares, on
+ * real stdio pipes, under a parent whose command line carries Band's channel
+ * flag or not, and an MCP client standing in for Claude Code; and the
+ * `/band:agents` command, as the skill runs it.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
@@ -9,13 +10,19 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import type { ElicitRequestFormParams, ElicitResult } from "@modelcontextprotocol/sdk/types.js";
+
 import type { ChannelPush } from "../../../src/adapter";
+import { TOOL } from "../../../src/tools";
 import { ChannelClient } from "../../support/channelClient";
 import { agentsCommandAt } from "../../support/agentsCommand";
 import { liveRun, releasedWithTest } from "../../../../../packages/sdk/tests/baseline/toolkit/liveRun";
 
 const PLUGIN_ROOT = fileURLToPath(new URL("../../..", import.meta.url)).replace(/\/$/, "");
 const AGENTS_CLI = join(PLUGIN_ROOT, "dist", "agents.js");
+const LAUNCHER = fileURLToPath(new URL("claudeLauncher.ts", import.meta.url));
+/** How the README starts a local build with Band's channel. */
+const LOCAL_CHANNEL = ["--channels", "plugin:band@inline"];
 
 interface McpServerConfig {
   readonly command: string;
@@ -47,9 +54,10 @@ export class PluginProcess implements AsyncDisposable {
   private readonly channel: ChannelClient;
   private stderr = "";
 
-  private constructor(wsUrl: string | undefined, sessionEnv: Readonly<Record<string, string>>) {
+  private constructor(wsUrl: string | undefined, sessionEnv: Readonly<Record<string, string>>, channel: boolean) {
     const server = declaredServer(wsUrl ? { ws_url: wsUrl } : {});
-    this.child = spawn(server.command, server.args, { env: { PATH: process.env.PATH, ...server.env, ...sessionEnv } });
+    const launch = [LAUNCHER, ...(channel ? LOCAL_CHANNEL : []), "--", server.command, ...server.args];
+    this.child = spawn(process.execPath, launch, { env: { PATH: process.env.PATH, ...server.env, ...sessionEnv } });
     this.child.stderr.on("data", (chunk: Buffer) => {
       this.stderr += chunk.toString();
     });
@@ -58,24 +66,43 @@ export class PluginProcess implements AsyncDisposable {
   }
 
   /**
-   * Starts the plugin, set to the live run's Band, and completes Claude Code's handshake with it;
-   * `sessionEnv` is what the session gives the server: its data directory and the agent `BAND_AGENT` selects.
+   * Starts the plugin, set to the live run's Band, with Band's channel unless `channel` is false, queues
+   * `answers` to the agent question, and completes Claude Code's handshake with it; `sessionEnv` is what the
+   * session gives the server: its data directory and the agent `BAND_AGENT` names, if any.
    */
-  public static async start(sessionEnv: Readonly<Record<string, string>>): Promise<PluginProcess> {
+  public static async start(
+    sessionEnv: Readonly<Record<string, string>>,
+    { channel = true, answers = [] }: { channel?: boolean; answers?: readonly ElicitResult[] } = {},
+  ): Promise<PluginProcess> {
     const { env } = await liveRun();
-    const plugin = releasedWithTest(new PluginProcess(env.wsUrl, sessionEnv));
+    const plugin = releasedWithTest(new PluginProcess(env.wsUrl, sessionEnv, channel));
+    answers.forEach((answer) => plugin.channel.answer(answer));
     await plugin.channel.connect();
     return plugin;
   }
 
-  /** Starts a plugin that fails before Claude Code's handshake, and resolves with how it exited. */
-  public static async exitOf(sessionEnv: Readonly<Record<string, string>>): Promise<Exit> {
-    const { env } = await liveRun();
-    return releasedWithTest(new PluginProcess(env.wsUrl, sessionEnv)).exited;
-  }
-
   public get client() {
     return this.channel.client;
+  }
+
+  /** Resolves with the Band tools once they are listed. */
+  public connected(): Promise<string[]> {
+    return this.toolNamesWhen((names) => names.includes(TOOL.reply));
+  }
+
+  /** See {@link ChannelClient.toolNamesWhen}. */
+  public toolNamesWhen(matches: (names: readonly string[]) => boolean): Promise<string[]> {
+    return this.channel.toolNamesWhen(matches);
+  }
+
+  /** Queues the user's answer to the next agent question. */
+  public answer(result: ElicitResult): void {
+    this.channel.answer(result);
+  }
+
+  /** Resolves with the next agent question from the `from`th on. */
+  public question(from?: number): Promise<ElicitRequestFormParams> {
+    return this.channel.question(from);
   }
 
   /** Resolves with the push for `messageId` once Claude Code has it; rejects if the plugin exits first. */
@@ -95,8 +122,9 @@ export class PluginProcess implements AsyncDisposable {
     return this.exited;
   }
 
+  /** Claude Code goes, and its end of the pipes with it, so the server exits however the test left it. */
   public async [Symbol.asyncDispose](): Promise<void> {
-    this.child.kill("SIGKILL");
+    this.channel.leave();
     await this.exited;
   }
 }

@@ -9,7 +9,7 @@ import { TOOL, ALWAYS_LOAD_META } from "../../src/tools";
 import { AGENT_HANDLE, AGENT_ID, BandPlatform } from "../../../../packages/sdk/tests/flows/support/bandPlatform";
 import type { ToolReply } from "../support/channelClient";
 import { it, OWNER, PEER, PEER_AGENT, PEER_HANDLE, PEOPLE, QA_MOBILE, QA_WEB, ROOM, USER } from "./support/band";
-import { ClaudeCodeSession } from "./support/claudeCode";
+import { ClaudeCodeSession, linkTo } from "./support/claudeCode";
 
 const MENTION = `@[[${AGENT_ID}]]`;
 const PEER_ROOM = "room-2";
@@ -60,7 +60,7 @@ describe("reply", () => {
   it("names the agent by its Band name when it has no handle", async () => {
     const platform = BandPlatform.host(PEOPLE, { ownerUuid: OWNER, handle: null });
     const room = await platform.room(ROOM);
-    await using session = await ClaudeCodeSession.connect(platform.link);
+    await using session = await ClaudeCodeSession.connect(linkTo(platform));
     const id = await room.say(USER, `${MENTION} ping`);
     await session.pushOf(id);
 
@@ -278,7 +278,7 @@ describe("fetch_messages", () => {
       await session.pushOf(await band.room.say(USER, `${MENTION} message ${n}`));
     }
     await session.leave();
-    await using next = await ClaudeCodeSession.connect(band.platform.link);
+    await using next = await ClaudeCodeSession.connect(linkTo(band.platform));
 
     const fetched = await next.callTool(TOOL.fetchMessages, { room_id: ROOM, limit: 20 });
 

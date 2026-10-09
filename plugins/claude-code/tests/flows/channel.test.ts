@@ -13,7 +13,7 @@ import { TOOL } from "../../src/tools";
 import { AGENT_HANDLE, AGENT_ID, BandPlatform } from "../../../../packages/sdk/tests/flows/support/bandPlatform";
 import type { ToolReply } from "../support/channelClient";
 import { it, OWNER, PEER, PEER_AGENT, PEER_HANDLE, PEOPLE, ROOM, USER } from "./support/band";
-import { ClaudeCodeSession } from "./support/claudeCode";
+import { ClaudeCodeSession, linkTo } from "./support/claudeCode";
 
 const LATER_ROOM = "room-2";
 const BUSY_ROOM = "room-3";
@@ -94,7 +94,7 @@ describe("Band messages reach Claude Code", () => {
 
   it("holds a message left before Claude Code connected until it has", async ({ band }) => {
     const id = band.room.postBeforeConnect(USER, `${MENTION} are you there?`);
-    await using session = new ClaudeCodeSession(band.platform.link);
+    await using session = new ClaudeCodeSession(linkTo(band.platform));
     const initialized = session.holdInitialized();
     const connecting = session.connect();
 
@@ -112,7 +112,7 @@ describe("with no owner on record", () => {
   it("refuses every slash command", async () => {
     const platform = BandPlatform.host(PEOPLE, { ownerUuid: null });
     const room = await platform.room(ROOM);
-    await using _session = await ClaudeCodeSession.connect(platform.link);
+    await using _session = await ClaudeCodeSession.connect(linkTo(platform));
 
     const id = await room.say(OWNER, `${MENTION} /compact`);
 
@@ -251,7 +251,7 @@ describe("when Claude Code exits", () => {
 
   it("exits 0 when it is stopped while Band has yet to say who the agent is", async ({ band }) => {
     const held = band.platform.rest.agentMeHolds.hold(() => true);
-    const session = new ClaudeCodeSession(band.platform.link);
+    const session = new ClaudeCodeSession(linkTo(band.platform));
     await held.sending;
 
     expect(await session.interrupt()).toBe(EXIT_OK);
@@ -267,7 +267,7 @@ describe("when Claude Code exits", () => {
   });
 
   it("exits 0 when it leaves before its handshake", async ({ band }) => {
-    const session = new ClaudeCodeSession(band.platform.link);
+    const session = new ClaudeCodeSession(linkTo(band.platform));
 
     expect(await session.leave()).toBe(EXIT_OK);
   });
@@ -275,13 +275,13 @@ describe("when Claude Code exits", () => {
   it("leaves a backlog message for the next session when its read returns after exit", async ({ band }) => {
     const waiting = band.room.postBeforeConnect(USER, `${MENTION} waiting`);
     const held = band.platform.rest.nextMessageHolds.hold((roomId) => roomId === ROOM);
-    const leaving = await ClaudeCodeSession.connect(band.platform.link);
+    const leaving = await ClaudeCodeSession.connect(linkTo(band.platform));
     await held.sending;
 
     expect(await leaving.leave()).toBe(EXIT_OK);
     held.release();
 
-    await using next = await ClaudeCodeSession.connect(band.platform.link);
+    await using next = await ClaudeCodeSession.connect(linkTo(band.platform));
     expect((await next.pushOf(waiting)).meta.message_id).toBe(waiting);
     expect(await band.room.outcome(waiting)).toBe("processed");
     expect(band.platform.rest.processing.entries).toEqual([waiting]);
@@ -292,7 +292,7 @@ describe("when Claude Code exits", () => {
     const inFlight = band.room.postBeforeConnect(USER, `${MENTION} two`);
     const waiting = band.room.postBeforeConnect(USER, `${MENTION} three`);
     const held = band.room.holdProcessing(inFlight);
-    const leaving = await ClaudeCodeSession.connect(band.platform.link);
+    const leaving = await ClaudeCodeSession.connect(linkTo(band.platform));
     await leaving.pushOf(first);
     await held.sending;
 
@@ -300,13 +300,13 @@ describe("when Claude Code exits", () => {
     held.release();
     expect(await band.room.outcome(inFlight)).toBe("failed");
 
-    await using next = await ClaudeCodeSession.connect(band.platform.link);
+    await using next = await ClaudeCodeSession.connect(linkTo(band.platform));
     expect((await next.pushOf(waiting)).meta.message_id).toBe(waiting);
     expect(await band.room.outcome(waiting)).toBe("processed");
   });
 
   it("exits when it leaves while a room it was removed from still has a turn in flight", async ({ band }) => {
-    const session = await ClaudeCodeSession.connect(band.platform.link);
+    const session = await ClaudeCodeSession.connect(linkTo(band.platform));
     const id = await band.room.say(USER, `${MENTION} hi`);
     const held = band.room.holdProcessing(id);
     await held.sending;
