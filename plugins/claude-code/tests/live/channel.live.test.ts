@@ -88,12 +88,13 @@ describe("the Claude Code plugin on the live platform", () => {
     expect(push.meta).toMatchObject({ room_id: room.id, message_id: sent.id, sender_role: "owner", sender_type: "User" });
     expect((await observeAgent(identity, room).untilProcessed(sent)).status).toBe(DELIVERY_STATUS.processed);
 
+    // Taken before the call: the stop can land before the tool's answer does.
+    const beforeReply = room.activity.entries.length;
     await callOk(plugin, TOOL.reply, { message_id: push.meta.message_id, content: "pong" });
-    const afterReply = room.activity.entries.length;
     // The platform stores the reply behind its mention token.
     const posted = await observeRoom(room).untilReplyMatching(identity, (message) => message.content.endsWith(" pong"));
     expect(posted.kind).toBe(REPLY_WAIT.reply);
-    await nextActivity(room, identity, ACTIVITY_EVENT.stopped, afterReply);
+    await nextActivity(room, identity, ACTIVITY_EVENT.stopped, beforeReply);
 
     expect((await plugin.leave()).code).toBe(EXIT_OK);
     await using next = await PluginProcess.start(dirs.env("session-2"));
@@ -136,6 +137,7 @@ describe("the Claude Code plugin on the live platform", () => {
     const plugin = await PluginProcess.start(dirs.env("session-1"));
     const sent = await Rooms.sendMention(room, identity, "working?");
     await plugin.pushOf(sent.id);
+    // From the push on: the plugin reports working only once it has pushed, while Band's own flash for the message lands earlier.
     await nextActivity(room, identity, ACTIVITY_EVENT.started, room.activity.entries.length);
 
     const beforeStop = room.activity.entries.length;

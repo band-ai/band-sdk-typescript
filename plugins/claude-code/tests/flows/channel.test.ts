@@ -249,6 +249,23 @@ describe("when Claude Code exits", () => {
     expect(band.platform.transport.isConnected()).toBe(false);
   });
 
+  it("exits 0 when it is stopped while Band has yet to say who the agent is", async ({ band }) => {
+    const held = band.platform.rest.agentMeHolds.hold(() => true);
+    const session = new ClaudeCodeSession(band.platform.link);
+    await held.sending;
+
+    expect(await session.interrupt()).toBe(EXIT_OK);
+    held.release();
+  });
+
+  it("clears the working indicator and exits 0 when it is stopped while serving", async ({ band, session }) => {
+    await session.pushOf(await band.room.say(USER, `${MENTION} working?`));
+    await band.platform.rest.workingReports.next((report) => report.working);
+
+    expect(await session.interrupt()).toBe(EXIT_OK);
+    expect(band.platform.rest.workingReports.entries.at(-1)).toEqual({ roomId: ROOM, working: false });
+  });
+
   it("exits 0 when it leaves before its handshake", async ({ band }) => {
     const session = new ClaudeCodeSession(band.platform.link);
 
