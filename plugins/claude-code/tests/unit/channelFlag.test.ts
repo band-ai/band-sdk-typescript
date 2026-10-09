@@ -27,11 +27,11 @@ const OFF = [
 
 describe("Band's channel", () => {
   it.each(ON)("is on for %s", (_, commandLine) => {
-    expect(bandChannelOn(commandLine, {})).toBe(true);
+    expect(bandChannelOn(commandLine.split(/\s+/), {})).toBe(true);
   });
 
   it.each(OFF)("is off for %s", (_, commandLine) => {
-    expect(bandChannelOn(commandLine, {})).toBe(false);
+    expect(bandChannelOn(commandLine.split(/\s+/), {})).toBe(false);
   });
 
   it("is on when Claude Code's command line can't be read", () => {
@@ -39,6 +39,15 @@ describe("Band's channel", () => {
   });
 
   it("is on when a shell prefix wraps the server, whose parent is then the wrapper", () => {
-    expect(bandChannelOn("/bin/sh -c node server.js", { CLAUDE_CODE_SHELL_PREFIX: "/usr/local/bin/wrap" })).toBe(true);
+    expect(bandChannelOn(["/bin/sh", "-c", "node server.js"], { CLAUDE_CODE_SHELL_PREFIX: "/usr/local/bin/wrap" })).toBe(true);
   });
+});
+
+it.each([
+  [["claude", "--system-prompt", "--channels", "plugin:band@band-ai"], false],
+  [["claude", "--dangerously-load-development-channels=plugin:band@band-ai", "--append-system-prompt", "-p"], true],
+  [["claude", "--tools", "--channels", "plugin:band@band-ai"], false],
+  [["claude", "--channels", "--print", "plugin:band@band-ai"], true],
+] as const)("respects required option values in %j", (args, expected) => {
+  expect(bandChannelOn(args, {})).toBe(expected);
 });

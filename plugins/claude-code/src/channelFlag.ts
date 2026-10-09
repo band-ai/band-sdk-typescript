@@ -25,37 +25,57 @@ export const LAUNCH_COMMANDS =
  * Whether Claude Code started this server's session with Band's channel. When in doubt, on: a command line
  * that can't be read, or one that belongs to a wrapper rather than Claude Code.
  */
-export function bandChannelOn(parentCommandLine: string | undefined, env: Env): boolean {
-  if (parentCommandLine === undefined || env[SHELL_PREFIX_ENV]) {
+export function bandChannelOn(parentArgs: readonly string[] | undefined, env: Env): boolean {
+  if (parentArgs === undefined || env[SHELL_PREFIX_ENV]) {
     return true;
   }
-  const args = optionArgs(parentCommandLine.split(/\s+/));
-  const options = args.some((arg) => PRINT_OPTIONS.includes(arg)) ? [CHANNELS_OPTION] : CHANNEL_OPTIONS;
-  return channelEntries(args, options).some((entry) => entry.startsWith(BAND_CHANNEL_ENTRY));
+  const enabled = enabledOptions(parentArgs);
+  return enabled.has(CHANNELS_OPTION) || (!PRINT_OPTIONS.some((option) => enabled.has(option)) && enabled.has(DEV_CHANNELS_OPTION));
 }
 
-/** Each entry of a channel option: the arguments after it up to the next option, or the one value of `--option=value`, as commander parses them. */
-function channelEntries(args: readonly string[], options: readonly string[]): string[] {
-  const entries: string[] = [];
-  let inOption = false;
-  for (const arg of args) {
-    if (arg.startsWith(OPTION_PREFIX)) {
-      const [option, value] = splitOption(arg);
-      const isChannelOption = options.includes(option);
-      if (isChannelOption && value !== undefined) {
-        entries.push(value);
+// Claude Code 2.1.295's required-value declarations, including aliases and hidden options.
+// Their first value consumes the next argv even when it looks like another option.
+const REQUIRED_VALUE_OPTIONS = new Set([
+  "--debug-file", "--output-format", "--json-schema", "--input-format", "--thinking", "--thinking-display",
+  "--max-thinking-tokens", "--max-turns", "--max-budget-usd", "--task-budget", "--permission-prompt-tool", "--permission-prompts",
+  "--system-prompt", "--system-prompt-file", "--append-system-prompt", "--append-system-prompt-file", "--system-prompt-snapshot",
+  "--append-subagent-system-prompt", "--append-subagent-system-prompt-file", "--plan-mode-instructions", "--permission-mode", "--inherit-permission-mode",
+  "--watch-artifact", "--watch-artifact-no-autoreact", "--prefill", "--deep-link-repo", "--deep-link-last-fetch", "--prefill-b64", "--deep-link-cwd-b64",
+  "--resume-session-at", "--resume-drops-turn", "--rewind-files", "--model", "--effort", "--agent", "--fallback-model", "--workload",
+  "--settings", "--client-data-url", "--managed-settings", "--project-config-root", "--session-id", "-n", "--name", "--agents", "--setting-sources",
+  "--plugin-dir", "--plugin-dir-no-mcp", "--plugin-url", "--advisor", "--autocompact", "--proactivity", "--messaging-socket-path",
+  "--agent-id", "--agent-name", "--team-name", "--agent-color", "--parent-session-id", "--teammate-mode", "--agent-type", "--sdk-url",
+  "--forward-home-settings", "--attach-serve", "--environment", "--pool", "--correlation-id", "--ref", "--on-branch", "--remote-control-session-name-prefix",
+  "--allowedTools", "--allowed-tools", "--tools", "--disallowedTools", "--disallowed-tools", "--mcp-config", "--betas", "--add-dir", "--file",
+]);
+
+/** Reads channel and print options while keeping values owned by their declaring option. */
+function enabledOptions(args: readonly string[]): Set<string> {
+  const enabled = new Set<string>();
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === END_OF_OPTIONS) {
+      break;
+    }
+    const [option, value] = splitOption(arg);
+    if (PRINT_OPTIONS.includes(option)) {
+      enabled.add(option);
+    } else if (CHANNEL_OPTIONS.includes(option)) {
+      // The = form takes one value; the variadic form consumes its first value unconditionally.
+      const entries = value === undefined ? [args[++index]] : [value];
+      if (value === undefined) {
+        while (index + 1 < args.length && !args[index + 1].startsWith(OPTION_PREFIX)) {
+          entries.push(args[++index]);
+        }
       }
-      inOption = isChannelOption && value === undefined;
-    } else if (inOption) {
-      entries.push(arg);
+      if (entries.some((entry) => entry?.startsWith(BAND_CHANNEL_ENTRY))) {
+        enabled.add(option);
+      }
+    } else if (value === undefined && REQUIRED_VALUE_OPTIONS.has(option)) {
+      index++;
     }
   }
-  return entries;
-}
-
-function optionArgs(args: readonly string[]): readonly string[] {
-  const end = args.indexOf(END_OF_OPTIONS);
-  return end < 0 ? args : args.slice(0, end);
+  return enabled;
 }
 
 function splitOption(arg: string): [string, string | undefined] {

@@ -74,7 +74,7 @@ export class ClaudeCodeSession implements AsyncDisposable {
     }
     const fromPlugin = new PassThrough();
     this.exited = runChannel({
-      parentCommandLine: commandLine,
+      parentArgs: commandLine.split(/\s+/),
       env: { ...this.dirs.env(sessionId), ...(agent ? { [AGENT_SELECT_ENV]: agent } : {}), ...env },
       link,
       stdin: this.toPlugin,

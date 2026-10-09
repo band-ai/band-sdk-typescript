@@ -11,6 +11,7 @@ export const ACTIVITY_REQUEST = { maxRetries: 0, timeoutInSeconds: 5 } as const;
 export class WorkingIndicator {
   private readonly chains = new Map<string, Promise<void>>();
   private readonly working = new Set<string>();
+  private closed = false;
 
   public constructor(
     private readonly rest: Pick<RestApi, "reportActivity">,
@@ -18,6 +19,9 @@ export class WorkingIndicator {
   ) {}
 
   public start(roomId: string): void {
+    if (this.closed) {
+      return;
+    }
     this.working.add(roomId);
     this.report(roomId, true);
   }
@@ -28,8 +32,9 @@ export class WorkingIndicator {
     }
   }
 
-  /** Turns off every room still working; resolves once all reports settle, and never rejects. */
+  /** Ends this connection's activity, including late pushes; resolves once all reports settle. */
   public async stopAll(): Promise<void> {
+    this.closed = true;
     for (const roomId of [...this.working]) {
       this.stop(roomId);
     }

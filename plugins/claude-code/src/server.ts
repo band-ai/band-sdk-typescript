@@ -1,7 +1,7 @@
 import { StderrLogger } from "@band-ai/sdk/core";
 
 import { runChannel } from "./channel";
-import { commandLine } from "./processes";
+import { processArgs } from "./processes";
 
 // stdout is the MCP pipe, so everything else goes to stderr.
 const logger = new StderrLogger();
@@ -16,6 +16,6 @@ const interrupted = new Promise<void>((resolve) => {
   }
 });
 
-const exitCode = await runChannel({ parentCommandLine: commandLine(process.ppid), env: process.env, interrupted, logger });
+const exitCode = await runChannel({ parentArgs: processArgs(process.ppid), env: process.env, interrupted, logger });
 // Exit rather than wait on stdio handles, once stderr (asynchronous on a macOS pipe) has flushed the last log line.
 process.stderr.write("", () => process.exit(exitCode));

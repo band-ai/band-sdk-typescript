@@ -22,7 +22,7 @@ const NEVER = new Promise<void>(() => undefined);
 
 export interface RunChannelOptions {
   /** The command line of the process that started the server: Claude Code's, saying whether Band's channel is on. */
-  readonly parentCommandLine: string | undefined;
+  readonly parentArgs: readonly string[] | undefined;
   /** The server's environment, as Claude Code sets it for the plugin. */
   readonly env: Env;
   /** Overrides for each connection's link, such as a test platform's transport and REST API. */
@@ -39,7 +39,7 @@ export interface RunChannelOptions {
  * Without Band's channel it lists nothing; with it, the agent the user picks.
  */
 export async function runChannel(options: RunChannelOptions): Promise<number> {
-  const channelOn = bandChannelOn(options.parentCommandLine, options.env);
+  const channelOn = bandChannelOn(options.parentArgs, options.env);
   const status = SessionStatusFile.open(options.env, channelOn ? SESSION_TEXT.notPicked : SESSION_TEXT.noChannel, options.logger);
   try {
     await (channelOn ? serveChannel(options, status) : serveOff(options));
