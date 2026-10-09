@@ -8,13 +8,14 @@ import { describe, expect, it, onTestFinished } from "vitest";
 
 import { CHANNEL_CAPABILITY, EXIT_FAILED, EXIT_OK } from "../../src/channel";
 import { writeSavedAgents } from "../../src/config";
-import { FIND_ROOMS_TOOL_NAME, type FoundRoom } from "../../src/rooms";
+import type { FoundRoom } from "../../src/rooms";
+import { TOOL } from "../../src/tools";
 import { deleteRoomsBulk } from "../../../../packages/sdk/tests/integration/support/liveHarness";
 import { Agents, type AgentIdentity } from "../../../../packages/sdk/tests/baseline/toolkit/agents";
 import { liveRun, warnTeardown } from "../../../../packages/sdk/tests/baseline/toolkit/liveRun";
 import { DELIVERY_STATUS, observeAgent } from "../../../../packages/sdk/tests/baseline/toolkit/observeDelivery";
 import { history, MESSAGE_TYPE, observeRoom, REPLY_WAIT } from "../../../../packages/sdk/tests/baseline/toolkit/observeMessages";
-import { Rooms, type Room } from "../../../../packages/sdk/tests/baseline/toolkit/rooms";
+import { ACTIVITY_EVENT, Rooms, type ActivityFrame, type Room } from "../../../../packages/sdk/tests/baseline/toolkit/rooms";
 import { callTool } from "../support/channelClient";
 import { ClaudeCodeDirs } from "../support/claudeCodeDirs";
 import { agentsCommand, PluginProcess } from "./support/pluginProcess";
@@ -50,6 +51,21 @@ function deletedWithTest(roomId: string): void {
   });
 }
 
+/**
+ * Resolves with the agent's next `event` frame after the first `from` in the room's activity log.
+ * Band flashes the indicator on every inbound message, so a wait starts from where its step happened.
+ */
+function nextActivity(room: Room, identity: AgentIdentity, event: ActivityFrame["event"], from: number): Promise<ActivityFrame> {
+  return room.activity.next((frame) => frame.agentId === identity.id && frame.event === event, from);
+}
+
+/** The room `open_room` reported. */
+function roomIdIn(text: string): string {
+  const roomId = /\(room_id ([^)]+)\)/.exec(text)?.[1];
+  expect(roomId, text).toBeDefined();
+  return roomId!;
+}
+
 /** Resolves once `plugin` is connected to Band: a mention posted now reaches it. */
 async function expectServing(plugin: PluginProcess, room: Room, identity: AgentIdentity, text: string): Promise<void> {
   const sent = await Rooms.sendMention(room, identity, text);
@@ -57,61 +73,75 @@ async function expectServing(plugin: PluginProcess, room: Room, identity: AgentI
 }
 
 describe("the Claude Code plugin on the live platform", () => {
-  it("pushes a mention, posts Claude's reply, and frees the agent when Claude Code exits", async () => {
+  it("pushes a mention, shows the agent working, replies by message id, and frees the agent when Claude Code exits", async () => {
     const { identity, room } = await agentInRoom("session");
     using dirs = savedAs(identity);
     const plugin = await PluginProcess.start(dirs.env("session-1"));
 
     expect(plugin.client.getServerCapabilities()?.experimental).toEqual({ [CHANNEL_CAPABILITY]: {} });
     const { tools } = await plugin.client.listTools();
-    expect(tools.find((tool) => tool.name === "band_send_message")?.inputSchema.required).toContain("room_id");
+    expect(tools.map((tool) => tool.name).sort()).toEqual(Object.values(TOOL).sort());
 
     const sent = await Rooms.sendMention(room, identity, "ping");
     const push = await plugin.pushOf(sent.id);
+    await nextActivity(room, identity, ACTIVITY_EVENT.started, room.activity.entries.length);
     expect(push.meta).toMatchObject({ room_id: room.id, message_id: sent.id, sender_role: "owner", sender_type: "User" });
     expect((await observeAgent(identity, room).untilProcessed(sent)).status).toBe(DELIVERY_STATUS.processed);
 
-    const reply = await plugin.client.callTool({
-      name: "band_send_message",
-      arguments: { room_id: push.meta.room_id, content: "pong", mentions: [push.meta.sender_id] },
-    });
-    expect(reply.isError).toBeFalsy();
+    await callOk(plugin, TOOL.reply, { message_id: push.meta.message_id, content: "pong" });
+    const afterReply = room.activity.entries.length;
     // The platform stores the reply behind its mention token.
     const posted = await observeRoom(room).untilReplyMatching(identity, (message) => message.content.endsWith(" pong"));
     expect(posted.kind).toBe(REPLY_WAIT.reply);
+    await nextActivity(room, identity, ACTIVITY_EVENT.stopped, afterReply);
 
     expect((await plugin.leave()).code).toBe(EXIT_OK);
     await using next = await PluginProcess.start(dirs.env("session-2"));
     await expectServing(next, room, identity, "still there?");
   });
 
-  it("creates a room with another agent and works there, finds it again, and posts to a room no message came from", async () => {
+  it("opens a room with another agent and the owner, reuses it, posts there, and posts to a room no message came from", async () => {
     const { identity, room } = await agentInRoom("rooms");
     const peer = await Agents.provision("claude-code", "rooms-peer");
     using dirs = savedAs(identity);
     await using plugin = await PluginProcess.start(dirs.env("session-1"));
+    const peerHandle = await peer.handle();
+    const [owner] = (await Rooms.participantIds(room)).filter((id) => id !== identity.id);
 
-    const roomId = await callOk(plugin, "band_create_chatroom", {});
+    const created = await callOk(plugin, TOOL.openRoom, { participants: [peerHandle, owner] });
+    const roomId = roomIdIn(created);
+    // The owner in the room lets the user delete it.
     deletedWithTest(roomId);
-    await callOk(plugin, "band_add_participant", { room_id: roomId, name: peer.name });
-    const [user] = (await Rooms.participantIds(room)).filter((id) => id !== identity.id);
-    const peers = JSON.parse(await callOk(plugin, "band_lookup_peers", { room_id: roomId })) as { data: Array<{ id: string; name: string }> };
-    const owner = peers.data.find((candidate) => candidate.id === user);
-    expect(owner, "the room's user, the agent's owner, is among its peers").toBeDefined();
-    await callOk(plugin, "band_add_participant", { room_id: roomId, name: owner!.name });
-    await callOk(plugin, "band_send_message", { room_id: roomId, content: "let's start", mentions: [peer.id] });
+    expect(created).toMatch(/^Created /);
+    expect(created).toContain(`@${peerHandle}: invited`);
+    expect(await callOk(plugin, TOOL.openRoom, { participants: [peerHandle, owner] })).toMatch(new RegExp(`^Reused '.*' \\(room_id ${roomId}\\)\\.$`));
 
+    await callOk(plugin, TOOL.send, { room_id: roomId, content: "let's start", mentions: [peerHandle] });
     const posted = (await history({ id: roomId }, MESSAGE_TYPE.Text)).filter((message) => message.senderId === identity.id);
     expect(posted).toEqual([expect.objectContaining({ mentionIds: [peer.id] })]);
     expect(posted[0]?.content.endsWith(" let's start")).toBe(true);
 
-    const found = JSON.parse(await callOk(plugin, FIND_ROOMS_TOOL_NAME, { participants: [peer.name] })) as FoundRoom[];
+    const found = JSON.parse(await callOk(plugin, TOOL.findRooms, { participants: [peer.name] })) as FoundRoom[];
     expect(found.map((match) => match.room_id)).toEqual([roomId]);
 
-    await callOk(plugin, "band_send_message", { room_id: room.id, content: "unprompted", mentions: [user] });
+    await callOk(plugin, TOOL.send, { room_id: room.id, content: "unprompted", mentions: [owner] });
     // Nothing was posted in the room before, so wait on its observer's frames rather than for a reply.
     const unprompted = await room.messages.next((message) => message.sender_id === identity.id);
     expect(unprompted.content.endsWith(" unprompted")).toBe(true);
+  });
+
+  it("clears the working indicator when Claude Code stops the server, and exits 0", async () => {
+    const { identity, room } = await agentInRoom("interrupt");
+    using dirs = savedAs(identity);
+    const plugin = await PluginProcess.start(dirs.env("session-1"));
+    const sent = await Rooms.sendMention(room, identity, "working?");
+    await plugin.pushOf(sent.id);
+    await nextActivity(room, identity, ACTIVITY_EVENT.started, room.activity.entries.length);
+
+    const beforeStop = room.activity.entries.length;
+    expect((await plugin.interrupt()).code).toBe(EXIT_OK);
+
+    await nextActivity(room, identity, ACTIVITY_EVENT.stopped, beforeStop);
   });
 
   it("refuses a second session while the first holds the agent", async () => {

@@ -2,6 +2,8 @@ import { deliverReply, type FrameworkAdapter, type FrameworkAdapterInput } from 
 import { commandWords } from "@band-ai/sdk/runtime";
 
 import { neutralizeChannelTags } from "./channelTag";
+import type { MessageMemory } from "./messages";
+import type { WorkingIndicator } from "./working";
 
 export const COMMAND_REFUSAL = "Only this agent's owner can send it slash commands.";
 
@@ -20,6 +22,10 @@ export type ChannelPush = {
 export interface ChannelAdapterOptions {
   /** The agent's owner; with none, every slash command is refused. */
   readonly ownerUuid?: string | null;
+  /** Where each pushed message is recorded, so `reply` needs only its id. */
+  readonly memory: MessageMemory;
+  /** Shows the agent working in a room once a message from it is pushed. */
+  readonly working: WorkingIndicator;
   readonly push: (push: ChannelPush) => Promise<void>;
 }
 
@@ -41,7 +47,9 @@ export class ChannelAdapter implements FrameworkAdapter {
       return;
     }
 
+    this.options.memory.remember(message.id, { roomId: message.roomId, senderId: message.senderId });
     await this.options.push({ content: neutralizeChannelTags(message.content), meta: channelMeta(message, isOwner) });
+    this.options.working.start(message.roomId);
   }
 
   public async onCleanup(): Promise<void> {}

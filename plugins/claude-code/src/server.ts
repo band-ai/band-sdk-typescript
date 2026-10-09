@@ -7,6 +7,16 @@ import { SessionStatusFile } from "./sessions";
 // stdout is the MCP pipe, so everything else goes to stderr.
 const logger = new StderrLogger();
 
+// Claude Code stops its servers with SIGINT, then SIGTERM: either ends the session cleanly instead of killing the process.
+const STOP_SIGNALS = ["SIGINT", "SIGTERM"] as const;
+const interrupted = new Promise<void>((resolve) => {
+  for (const signal of STOP_SIGNALS) {
+    process.once(signal, () => {
+      resolve();
+    });
+  }
+});
+
 async function run(): Promise<number> {
   let agent: SelectedAgent;
   try {
@@ -17,7 +27,7 @@ async function run(): Promise<number> {
     return EXIT_FAILED;
   }
   const status = SessionStatusFile.open(process.env, agent.name, logger);
-  return runChannel({ agentName: agent.name, credentials: agent.credentials, status, logger });
+  return runChannel({ agentName: agent.name, credentials: agent.credentials, status, interrupted, logger });
 }
 
 const exitCode = await run();
