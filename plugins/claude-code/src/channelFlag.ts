@@ -14,6 +14,8 @@ const BAND_PLUGIN = `${BAND_CHANNEL_ENTRY}band-ai`;
 /** Set when Claude Code runs servers through a wrapper, which is then the server's parent. */
 const SHELL_PREFIX_ENV = "CLAUDE_CODE_SHELL_PREFIX";
 const OPTION_PREFIX = "-";
+/** Ends the options: what follows is the prompt, even where it looks like an option. */
+const END_OF_OPTIONS = "--";
 
 /** How to start Claude Code with Band's channel on. */
 export const LAUNCH_COMMANDS =
@@ -27,7 +29,7 @@ export function bandChannelOn(parentCommandLine: string | undefined, env: Env): 
   if (parentCommandLine === undefined || env[SHELL_PREFIX_ENV]) {
     return true;
   }
-  const args = parentCommandLine.split(/\s+/);
+  const args = optionArgs(parentCommandLine.split(/\s+/));
   const options = args.some((arg) => PRINT_OPTIONS.includes(arg)) ? [CHANNELS_OPTION] : CHANNEL_OPTIONS;
   return channelEntries(args, options).some((entry) => entry.startsWith(BAND_CHANNEL_ENTRY));
 }
@@ -49,6 +51,11 @@ function channelEntries(args: readonly string[], options: readonly string[]): st
     }
   }
   return entries;
+}
+
+function optionArgs(args: readonly string[]): readonly string[] {
+  const end = args.indexOf(END_OF_OPTIONS);
+  return end < 0 ? args : args.slice(0, end);
 }
 
 function splitOption(arg: string): [string, string | undefined] {

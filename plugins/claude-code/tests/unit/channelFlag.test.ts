@@ -11,6 +11,7 @@ const ON = [
   ["Band after another channel", "claude --channels server:x plugin:band@band-ai"],
   ["Band among several, before a prompt", "claude --model opus --channels plugin:discord@x plugin:band@band-ai -- fix the tests"],
   ["the allowlisted option in a print session", "claude -p --channels plugin:band@band-ai"],
+  ["the development channels option before a prompt that mentions -p", "claude --dangerously-load-development-channels plugin:band@band-ai -- explain -p"],
 ] as const;
 
 const OFF = [
@@ -21,6 +22,7 @@ const OFF = [
   ["Band's entry after the option's = form, which takes one value", "claude --channels=plugin:discord@x plugin:band@band-ai"],
   ["the development channels option in a print session, which ignores it", "claude -p --dangerously-load-development-channels plugin:band@band-ai"],
   ["the same with --print", "claude --print --dangerously-load-development-channels plugin:band@band-ai"],
+  ["the option in a prompt after --", "claude -- Explain --channels plugin:band@band-ai"],
 ] as const;
 
 describe("Band's channel", () => {

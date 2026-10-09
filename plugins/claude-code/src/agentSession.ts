@@ -113,33 +113,41 @@ export class AgentSession {
       agentConfig: { autoSubscribeExistingRooms: true },
     });
     this.runtime = runtime;
-    let identity: AgentIdentity;
-    let context: ToolContext;
+    let sentence: string;
+    let handle: string;
+    let listed: readonly McpToolRegistration[] = [];
     try {
-      identity = await identify(runtime);
-      context = {
+      const identity = await identify(runtime);
+      handle = ensureHandlePrefix(identity.handle) ?? name;
+      const context: ToolContext = {
         link: runtime.link,
         self: { id: identity.id, handle: handleOf(identity) },
         memory: new MessageMemory(),
         working: new WorkingIndicator(runtime.link.rest, logger),
         logger,
       };
-      // Messages waiting on the platform are pushed only once Claude Code can receive them.
+      this.working = context.working;
+      // Nothing is listed or pushed until Claude Code can receive it.
       await server.initialized;
+      // Recorded first, so a client that sees the tools change finds the status already says why.
+      sentence = this.record({ state: CONNECTED_STATE, agent: name, agentId: identity.id, handle: identity.handle ?? null, sentence: SESSION_TEXT.connected(agentLabel(name, identity.handle)) });
+      // Listed before delivery starts, which pushes as each room is ready, so Claude can answer every message.
+      const tools = bandTools(context);
+      server.removeTools([CONNECT_TOOL]);
+      await server.addTools(tools);
+      listed = tools;
       await runtime.start(new ChannelAdapter({ ownerUuid: identity.ownerUuid, memory: context.memory, working: context.working, push: this.options.push }));
     } catch (error) {
-      return this.closed ? this.sentence : this.failed(runtime, name, error);
+      if (this.closed) {
+        return this.sentence;
+      }
+      logger.warn(`Band connection as ${name} failed`, { error });
+      return this.release(runtime, listed, SESSION_TEXT.connectFailed(name, bandErrorText(error)));
     }
     if (this.closed) {
       return this.sentence;
     }
-    this.working = context.working;
-    // Recorded first, so a client that sees the tools change finds the status already says why.
-    const sentence = this.record({ state: CONNECTED_STATE, agent: name, agentId: identity.id, handle: identity.handle ?? null, sentence: SESSION_TEXT.connected(agentLabel(name, identity.handle)) });
-    const tools = bandTools(context);
-    server.removeTools([CONNECT_TOOL]);
-    await server.addTools(tools);
-    this.serve(runtime, name, ensureHandlePrefix(identity.handle) ?? name, tools).catch((error: unknown) => {
+    this.serve(runtime, name, handle, listed).catch((error: unknown) => {
       logger.warn("Band couldn't list connect again after the connection ended", { error });
     });
     return sentence;
@@ -154,23 +162,24 @@ export class AgentSession {
         return;
       }
       this.options.logger.warn(`Band connection as ${name} ended`, { error });
-      await Promise.all([this.working?.stopAll(), stopQuietly(runtime, this.options.logger)]);
-      if (this.closed) {
-        return;
-      }
-      this.working = undefined;
-      this.runtime = undefined;
-      this.off(isTakenOver(error) ? SESSION_TEXT.takenOver(handle) : SESSION_TEXT.ended(name, bandErrorText(error)));
-      this.options.server.removeTools(tools.map((tool) => tool.name));
-      await this.options.server.addTools([this.options.connectTool]);
+      await this.release(runtime, tools, isTakenOver(error) ? SESSION_TEXT.takenOver(handle) : SESSION_TEXT.ended(name, bandErrorText(error)));
     }
   }
 
-  private async failed(runtime: PlatformRuntime, name: string, error: unknown): Promise<string> {
-    this.options.logger.warn(`Band connection as ${name} failed`, { error });
+  /** Ends a connection or a failed attempt at one: clears its working indicator, goes off, and lists `connect` in place of its tools. */
+  private async release(runtime: PlatformRuntime, tools: readonly McpToolRegistration[], sentence: string): Promise<string> {
+    await Promise.all([this.working?.stopAll(), stopQuietly(runtime, this.options.logger)]);
+    if (this.closed) {
+      return this.sentence;
+    }
+    this.working = undefined;
     this.runtime = undefined;
-    await stopQuietly(runtime, this.options.logger);
-    return this.off(SESSION_TEXT.connectFailed(name, bandErrorText(error)));
+    this.off(sentence);
+    if (tools.length > 0) {
+      this.options.server.removeTools(tools.map((tool) => tool.name));
+      await this.options.server.addTools([this.options.connectTool]);
+    }
+    return sentence;
   }
 
   private off(sentence: string): string {

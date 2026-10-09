@@ -19,6 +19,7 @@ import { AGENT_NAME, ClaudeCodeSession, linkTo, SAVED_AGENT } from "./support/cl
 
 const USER = "user-1";
 const ROOM = "room-1";
+const LATER_ROOM = "room-2";
 const MESSAGE = `@[[${AGENT_ID}]] hello`;
 const DOCS = { agentId: "agent-docs", apiKey: "key-docs", handle: "owner/docs" };
 const BAND_TOOLS = Object.values(TOOL).sort();
@@ -167,6 +168,41 @@ describe("BAND_AGENT", () => {
     expect(await connecting).toEqual({ isError: false, text: CONNECTED });
     expect(session.questions.entries).toEqual([]);
     expect((await session.toolNames()).sort()).toEqual(BAND_TOOLS);
+  });
+
+  it("lists the Band tools before it pushes a message left while another room is still joining", async () => {
+    const platform = BandPlatform.host([person(USER)]);
+    const room = await platform.room(ROOM);
+    const joining = (await platform.room(LATER_ROOM)).holdJoin();
+    const waiting = room.postBeforeConnect(USER, MESSAGE);
+    await using session = new ClaudeCodeSession(linkTo(platform));
+    await session.connect();
+
+    await session.pushOf(waiting);
+
+    try {
+      expect((await session.toolNames()).sort()).toEqual(BAND_TOOLS);
+    } finally {
+      joining();
+    }
+  });
+
+  it("clears the working indicator of a message pushed while another room is still joining when Claude Code leaves", async () => {
+    const platform = BandPlatform.host([person(USER)]);
+    const room = await platform.room(ROOM);
+    const joining = (await platform.room(LATER_ROOM)).holdJoin();
+    const waiting = room.postBeforeConnect(USER, MESSAGE);
+    const session = new ClaudeCodeSession(linkTo(platform));
+    await session.connect();
+    await session.pushOf(waiting);
+    await platform.rest.workingReports.next((report) => report.working);
+
+    // Claude Code leaves while the other room still holds the start up; stopping lets it finish.
+    await session.departed();
+    joining();
+
+    expect(await session.exited).toBe(EXIT_OK);
+    expect(platform.rest.workingReports.entries.at(-1)).toEqual({ roomId: ROOM, working: false });
   });
 
   it("stays off, keeping connect, when it names an agent that isn't saved", async () => {
