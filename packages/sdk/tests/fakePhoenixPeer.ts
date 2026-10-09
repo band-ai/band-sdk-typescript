@@ -15,7 +15,10 @@ export interface FakePhoenixPeerOptions {
 const CONFLICT_STATUS = 409;
 const CONFLICT_BODY = JSON.stringify({ error: { code: "connection_conflict", message: "Connection already exists for this agent." } });
 /** How long after an eviction the platform refuses another take-over of the same agent. */
-export const TAKEOVER_COOLDOWN_MS = 30_000;
+const TAKEOVER_COOLDOWN_MS = 30_000;
+/** Why the platform refuses a take-over within the cooldown. */
+export const TAKEOVER_COOLDOWN_MESSAGE = "Agent was just taken over; try again shortly.";
+const TAKEN_OVER_REASON = "session.already_connected";
 const COOLDOWN_STATUS = 429;
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
@@ -156,6 +159,12 @@ export class FakePhoenixPeer implements AsyncDisposable {
     this.evict(agentId);
   }
 
+  /** Once the agent has joined its control channel, ends its connections for `reason`, as the platform can for a cause other than a take-over. */
+  public async endConnections(agentId: string, reason: string, message: string): Promise<void> {
+    await this.joined.next((joinedTopic) => joinedTopic === agentControlTopic(agentId));
+    this.pushControl(agentId, reason, message);
+  }
+
   public async stop(): Promise<void> {
     this.severAllConnections();
     await new Promise<void>((resolve, reject) => {
@@ -172,7 +181,7 @@ export class FakePhoenixPeer implements AsyncDisposable {
     const remainingMs = (this.cooldownEnds.get(agentId) ?? 0) - Date.now();
     if (remainingMs > 0) {
       const retryAfter = Math.ceil(remainingMs / 1000);
-      const body = JSON.stringify({ error: { code: "too_many_requests", message: "Agent was just taken over; try again shortly.", retry_after: retryAfter } });
+      const body = JSON.stringify({ error: { code: "too_many_requests", message: TAKEOVER_COOLDOWN_MESSAGE, retry_after: retryAfter } });
       done(false, COOLDOWN_STATUS, body, { ...JSON_HEADERS, "Retry-After": String(retryAfter) });
       return;
     }
@@ -183,9 +192,14 @@ export class FakePhoenixPeer implements AsyncDisposable {
   /** Tells the agent's connections they lost it, and stamps the take-over cooldown. */
   private evict(agentId: string): void {
     this.cooldownEnds.set(agentId, Date.now() + TAKEOVER_COOLDOWN_MS);
+    this.pushControl(agentId, TAKEN_OVER_REASON, "superseded");
+  }
+
+  /** The platform's terminal `supersede` control event, to the agent's connections only. */
+  private pushControl(agentId: string, reason: string, text: string): void {
     const message: PhoenixMessage = [null, null, agentControlTopic(agentId), "supersede", {
-      reason: "session.already_connected",
-      message: "superseded",
+      reason,
+      message: text,
       retryable: false,
       correlation_id: null,
     }];

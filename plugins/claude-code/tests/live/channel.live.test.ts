@@ -10,6 +10,7 @@ import { CHANNEL_CAPABILITY, EXIT_OK } from "../../src/channel";
 import { AGENT_SELECT_ENV, writeSavedAgents } from "../../src/config";
 import { CHANNEL_OFF_INSTRUCTIONS } from "../../src/prompt";
 import type { FoundRoom } from "../../src/rooms";
+import { agentLabel } from "../../src/names";
 import { SESSION_TEXT } from "../../src/sessions";
 import { CONNECT_TOOL, TOOL } from "../../src/tools";
 import { deleteRoomsBulk } from "../../../../packages/sdk/tests/integration/support/liveHarness";
@@ -75,9 +76,9 @@ async function connectedAs(dirs: ClaudeCodeDirs, sessionId: string, agent = MAIN
   return plugin;
 }
 
-/** What `/band:agents status` says for session `sessionId`. */
-function statusOf(dirs: ClaudeCodeDirs, sessionId: string): Promise<string> {
-  return agentsCommand(...dirs.cliContext, "status", sessionId);
+/** What `/band:agents status` says for session `sessionId`, without the line end the command prints. */
+async function statusOf(dirs: ClaudeCodeDirs, sessionId: string): Promise<string> {
+  return (await agentsCommand(...dirs.cliContext, "status", sessionId)).trimEnd();
 }
 
 /** Resolves once `plugin` is connected to Band: a mention posted now reaches it. */
@@ -202,7 +203,7 @@ describe("the Claude Code plugin on the live platform", () => {
     expect(await statusOf(dirs, "session-1")).toBe(`off: ${SESSION_TEXT.notPicked}`);
 
     plugin.answer(pick(MAIN));
-    expect((await callOk(plugin, CONNECT_TOOL, {})).startsWith("Connected as main")).toBe(true);
+    expect(await callOk(plugin, CONNECT_TOOL, {})).toBe(SESSION_TEXT.connected(agentLabel(MAIN, await identity.handle())));
     await expectServing(plugin, room, identity, "picked");
   });
 

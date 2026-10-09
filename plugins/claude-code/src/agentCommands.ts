@@ -15,7 +15,7 @@ import {
   type SavedAgent,
 } from "./config";
 import { agentLabel } from "./names";
-import { JOIN_PHRASE, liveSessions, SESSION_TEXT, thisSession } from "./sessions";
+import { JOIN_PHRASE, liveSessions, OFF_STATE, SESSION_TEXT, thisSession } from "./sessions";
 
 /** How Band answers credentials it doesn't accept. */
 const REJECTED_STATUS_CODES = new Set([401, 403]);
@@ -58,7 +58,7 @@ function required(arg: string | undefined): string {
 /** This session's state and its one sentence; found by its Claude Code process when the ID doesn't tell. */
 function status(dataDir: string, sessionId: string | undefined): string {
   const mine = thisSession(liveSessions(dataDir), sessionId);
-  return mine ? `${mine.state}: ${mine.sentence}` : `off: ${SESSION_TEXT.noServer}`;
+  return mine ? `${mine.state}: ${mine.sentence}` : `${OFF_STATE}: ${SESSION_TEXT.noServer}`;
 }
 
 async function add(dataDir: string, agentId: string, apiKey: string, name: string | undefined, wsUrl: string | undefined): Promise<string> {

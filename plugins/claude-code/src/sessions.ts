@@ -16,7 +16,8 @@ const STATUS_EXTENSION = ".json";
 type SessionState = "connected" | "off";
 
 /** A connected session holds its agent, for as long as its server runs. */
-const HOLDING_STATE: SessionState = "connected";
+export const CONNECTED_STATE: SessionState = "connected";
+export const OFF_STATE: SessionState = "off";
 
 /** What the user says to have Claude connect the session, and to add an agent. */
 export const JOIN_PHRASE = "'join Band'";
@@ -82,7 +83,7 @@ export class SessionStatusFile {
       pid: process.ppid,
       serverPid: process.pid,
       projectDir,
-      state: "off",
+      state: OFF_STATE,
       sentence,
       updatedAt: Date.now(),
     };
@@ -153,7 +154,7 @@ export function liveSessions(dataDir: string): SessionStatus[] {
 export function agentHolders(sessions: readonly SessionStatus[]): Map<string, SessionStatus> {
   const holders = new Map<string, SessionStatus>();
   for (const status of sessions) {
-    if (status.agentId !== null && status.state === HOLDING_STATE) {
+    if (status.agentId !== null && status.state === CONNECTED_STATE) {
       holders.set(status.agentId, status);
     }
   }
@@ -213,7 +214,7 @@ function readStatus(path: string): SessionStatus | undefined {
 
 /** An off status stands while Claude Code runs; holding an agent, only while the server does too. */
 function isLive(status: SessionStatus): boolean {
-  return status.state !== HOLDING_STATE || isAlive(status.serverPid);
+  return status.state !== CONNECTED_STATE || isAlive(status.serverPid);
 }
 
 function isAlive(pid: number): boolean {

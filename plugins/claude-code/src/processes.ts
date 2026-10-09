@@ -12,7 +12,8 @@ export function parentPid(pid: number): number {
 /** The command line process `pid` was started with; none where `ps` can't tell. */
 export function commandLine(pid: number): string | undefined {
   try {
-    return execFileSync("ps", ["-o", "args=", "-p", String(pid)], { encoding: "utf8" }).trim() || undefined;
+    // -ww: Linux `ps` otherwise cuts the line to $COLUMNS, even into a pipe.
+    return execFileSync("ps", ["-ww", "-o", "args=", "-p", String(pid)], { encoding: "utf8" }).trim() || undefined;
   } catch {
     return undefined;
   }

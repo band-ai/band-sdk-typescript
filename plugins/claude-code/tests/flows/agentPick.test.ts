@@ -11,7 +11,7 @@ import { QUESTION_MESSAGE } from "../../src/question";
 import { SESSION_TEXT } from "../../src/sessions";
 import { CONNECT_TOOL, TOOL } from "../../src/tools";
 import { AGENT_API_KEY, AGENT_HANDLE, AGENT_ID, BandPlatform, person } from "../../../../packages/sdk/tests/flows/support/bandPlatform";
-import { FakePhoenixPeer } from "../../../../packages/sdk/tests/fakePhoenixPeer";
+import { FakePhoenixPeer, TAKEOVER_COOLDOWN_MESSAGE } from "../../../../packages/sdk/tests/fakePhoenixPeer";
 import { BandRestPeer } from "../support/bandRestPeer";
 import { CLOSED, pick } from "../support/channelClient";
 import { ClaudeCodeDirs } from "../support/claudeCodeDirs";
@@ -153,12 +153,46 @@ describe("BAND_AGENT", () => {
     expect(await session.status()).toBe(`connected: ${CONNECTED}`);
   });
 
+  it("makes connect wait on its attempt rather than start another", async () => {
+    const platform = await platformWithRoom();
+    const identity = platform.rest.agentMeHolds.hold(() => true);
+    await using session = new ClaudeCodeSession(linkTo(platform));
+    session.answer(pick(AGENT_NAME));
+    await session.connect();
+    await identity.sending;
+
+    const connecting = session.callTool(CONNECT_TOOL, {});
+    identity.release();
+
+    expect(await connecting).toEqual({ isError: false, text: CONNECTED });
+    expect(session.questions.entries).toEqual([]);
+    expect((await session.toolNames()).sort()).toEqual(BAND_TOOLS);
+  });
+
   it("stays off, keeping connect, when it names an agent that isn't saved", async () => {
     await using session = await ClaudeCodeSession.connect(linkTo(await platformWithRoom()), { agent: null, env: { [AGENT_SELECT_ENV]: "missing" } });
 
     expect(await session.toolNames()).toEqual([CONNECT_TOOL]);
     expect(await session.status()).toBe(`off: ${SESSION_TEXT.unsavedAgent("missing")}`);
     expect(session.questions.entries).toEqual([]);
+  });
+});
+
+describe("when Band ends the connection for another reason", () => {
+  it("goes back to connect with Band's reason, its working indicator cleared", async () => {
+    await using peer = await FakePhoenixPeer.start();
+    const platform = BandPlatform.host([person(USER)]);
+    const room = await platform.room(ROOM);
+    const waiting = room.postBeforeConnect(USER, MESSAGE);
+    await using session = await ClaudeCodeSession.connect(() => ({ restApi: platform.rest }), { env: { [WS_URL_ENV]: peer.url } });
+    await session.pushOf(waiting);
+    await platform.rest.workingReports.next((report) => report.working);
+
+    await peer.endConnections(AGENT_ID, "agent.revoked", "The agent's key was revoked");
+
+    expect(await session.toolNamesWhen((names) => names.includes(CONNECT_TOOL))).toEqual([CONNECT_TOOL]);
+    expect(await session.status()).toBe(`off: ${SESSION_TEXT.ended(AGENT_NAME, "The agent's key was revoked")}`);
+    expect(platform.rest.workingReports.entries.at(-1)).toEqual({ roomId: ROOM, working: false });
   });
 });
 
@@ -188,7 +222,7 @@ describe("when another session picks the same agent", () => {
 
     first.answer(pick(AGENT_NAME));
     const refused = await first.callTool(CONNECT_TOOL, {});
-    expect(refused.text).toMatch(new RegExp(`^Band is off: couldn't connect as ${AGENT_NAME}: Agent was just taken over; try again shortly\\.`));
+    expect(refused.text).toBe(SESSION_TEXT.connectFailed(AGENT_NAME, TAKEOVER_COOLDOWN_MESSAGE));
     expect(await second.status()).toBe(`connected: ${CONNECTED}`);
   });
 });

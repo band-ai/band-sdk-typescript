@@ -17,6 +17,7 @@ const OFF = [
   ["a print session", "claude -p hi"],
   ["only another plugin's channel", "claude --channels plugin:discord@x"],
   ["Band's entry after the option ended", "claude --channels plugin:other@x --model opus plugin:band@x"],
+  ["Band's entry after the option's = form, which takes one value", "claude --channels=plugin:discord@x plugin:band@band-ai"],
 ] as const;
 
 describe("Band's channel", () => {

@@ -10,7 +10,7 @@ import { agentCredentials, pluginDataDir, readSavedAgents, type Env, type SavedA
 import { MessageMemory } from "./messages";
 import { agentLabel, handleOf } from "./names";
 import { agentQuestion, pickedAgent } from "./question";
-import { liveSessions, SESSION_TEXT, type SessionChange, type SessionStatusFile } from "./sessions";
+import { CONNECTED_STATE, liveSessions, OFF_STATE, SESSION_TEXT, type SessionChange, type SessionStatusFile } from "./sessions";
 import { bandErrorText, bandTools, CONNECT_TOOL, type ToolContext } from "./tools";
 import { WorkingIndicator } from "./working";
 
@@ -42,7 +42,8 @@ export interface AgentSessionOptions {
 /** The agent this server is connected as, picked by the user; the last pick of an agent wins on Band. */
 export class AgentSession {
   private sentence: string = SESSION_TEXT.notPicked;
-  private asking?: Promise<string>;
+  /** The one attempt at an agent in flight, asked or named. */
+  private attempt?: Promise<string>;
   /** The connection, or the attempt at one. */
   private runtime?: PlatformRuntime;
   private working?: WorkingIndicator;
@@ -50,24 +51,31 @@ export class AgentSession {
 
   public constructor(private readonly options: AgentSessionOptions) {}
 
-  /** Asks the user which saved agent to connect as, once at a time; resolves with the session's sentence. */
+  /** Asks the user which saved agent to connect as; resolves with the session's sentence. */
   public ask(): Promise<string> {
-    this.asking ??= this.askOnce().finally(() => {
-      this.asking = undefined;
-    });
-    return this.asking;
+    return this.once(() => this.askOnce());
   }
 
   /** Connects as the saved agent `name`, as `BAND_AGENT` names it. */
   public connectAs(name: string): Promise<string> {
-    const agent = readSavedAgents(pluginDataDir(this.options.env))[name];
-    return agent ? this.connect(name, agent) : Promise.resolve(this.off(SESSION_TEXT.unsavedAgent(name)));
+    return this.once(async () => {
+      const agent = readSavedAgents(pluginDataDir(this.options.env))[name];
+      return agent ? this.connect(name, agent) : this.off(SESSION_TEXT.unsavedAgent(name));
+    });
   }
 
   /** Ends the connection, or the attempt at one. */
   public async close(): Promise<void> {
     this.closed = true;
     await Promise.all([this.working?.stopAll(), this.runtime?.stop(STOP_WITHOUT_DRAINING_MS)]);
+  }
+
+  /** Runs `attempt` unless one is in flight, which every caller then waits on instead. */
+  private once(attempt: () => Promise<string>): Promise<string> {
+    this.attempt ??= attempt().finally(() => {
+      this.attempt = undefined;
+    });
+    return this.attempt;
   }
 
   private async askOnce(): Promise<string> {
@@ -81,11 +89,17 @@ export class AgentSession {
     try {
       picked = pickedAgent(await this.options.server.elicitInput(agentQuestion(saved, liveSessions(dataDir)), { timeout: MAX_ELICIT_TIMEOUT_MS }));
     } catch (error) {
+      // Stopping the server also fails a question still open.
+      if (this.closed) {
+        return this.sentence;
+      }
       this.options.logger.debug("The agent question failed", { error });
       return this.off(SESSION_TEXT.noElicitation);
     }
-    const agent = picked === undefined ? undefined : saved[picked];
-    return agent ? this.connect(picked!, agent) : this.off(SESSION_TEXT.notPicked);
+    if (picked === undefined || !saved[picked]) {
+      return this.off(SESSION_TEXT.notPicked);
+    }
+    return this.connect(picked, saved[picked]);
   }
 
   /** A new runtime per attempt: a transport keeps its terminal error. */
@@ -116,13 +130,18 @@ export class AgentSession {
     } catch (error) {
       return this.closed ? this.sentence : this.failed(runtime, name, error);
     }
+    if (this.closed) {
+      return this.sentence;
+    }
     this.working = context.working;
     // Recorded first, so a client that sees the tools change finds the status already says why.
-    const sentence = this.record({ state: "connected", agent: name, agentId: identity.id, handle: identity.handle ?? null, sentence: SESSION_TEXT.connected(agentLabel(name, identity.handle)) });
+    const sentence = this.record({ state: CONNECTED_STATE, agent: name, agentId: identity.id, handle: identity.handle ?? null, sentence: SESSION_TEXT.connected(agentLabel(name, identity.handle)) });
     const tools = bandTools(context);
     server.removeTools([CONNECT_TOOL]);
     await server.addTools(tools);
-    void this.serve(runtime, name, ensureHandlePrefix(identity.handle) ?? name, tools);
+    this.serve(runtime, name, ensureHandlePrefix(identity.handle) ?? name, tools).catch((error: unknown) => {
+      logger.warn("Band couldn't list connect again after the connection ended", { error });
+    });
     return sentence;
   }
 
@@ -134,7 +153,11 @@ export class AgentSession {
       if (this.closed) {
         return;
       }
+      this.options.logger.warn(`Band connection as ${name} ended`, { error });
       await Promise.all([this.working?.stopAll(), stopQuietly(runtime, this.options.logger)]);
+      if (this.closed) {
+        return;
+      }
       this.working = undefined;
       this.runtime = undefined;
       this.off(isTakenOver(error) ? SESSION_TEXT.takenOver(handle) : SESSION_TEXT.ended(name, bandErrorText(error)));
@@ -144,13 +167,14 @@ export class AgentSession {
   }
 
   private async failed(runtime: PlatformRuntime, name: string, error: unknown): Promise<string> {
+    this.options.logger.warn(`Band connection as ${name} failed`, { error });
     this.runtime = undefined;
     await stopQuietly(runtime, this.options.logger);
     return this.off(SESSION_TEXT.connectFailed(name, bandErrorText(error)));
   }
 
   private off(sentence: string): string {
-    return this.record({ state: "off", sentence });
+    return this.record({ state: OFF_STATE, sentence });
   }
 
   private record(change: SessionChange): string {
