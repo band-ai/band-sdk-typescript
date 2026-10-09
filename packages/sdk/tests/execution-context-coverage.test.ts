@@ -1,10 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { DEFAULT_MAX_PAGES, DEFAULT_PAGE_SIZE } from "../src/client/rest/pagination";
 import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
 import { ExecutionContext } from "../src/runtime/ExecutionContext";
 import type { RestApi } from "../src/client/rest/types";
 import { DEFAULT_CONTEXT_CACHE_TTL_SECONDS } from "../src/runtime/types";
-import { FakeRestApi, makeMessage, wireMention } from "./testUtils";
+import { FakeRestApi, makeLoggerSpy, makeMessage, wireMention } from "./testUtils";
+
+const SECOND_PAGE = "cursor-2";
+
+/** A room whose context never ends: one message per page, each page pointing at the next. */
+class EndlessContextRest extends FakeRestApi {
+  public async getChatContext({ cursor }: { cursor?: string }) {
+    const page = Number(cursor ?? 0) + 1;
+    return {
+      data: [{ id: `m${page}`, content: `message ${page}`, sender_id: "u1", sender_type: "User", inserted_at: "2026-03-01T00:00:00.000Z", message_type: "text" }],
+      metadata: { has_more: true, next_cursor: String(page) },
+    };
+  }
+}
 
 function makeContext(restOverrides?: Partial<RestApi>, options?: {
   maxContextMessages?: number;
@@ -66,33 +80,32 @@ describe("ExecutionContext coverage", () => {
       { id: "u1", name: "Jane", type: "User", handle: "@jane" },
     ]);
     const getChatContext = vi.fn(
-      async (request: { chatId: string; page?: number; pageSize?: number }) => {
-        const page = request.page ?? 1;
-      if (page === 1) {
+      async (request: { chatId: string; cursor?: string; limit?: number }) => {
+        if (request.cursor === undefined) {
+          return {
+            data: [{
+              id: "m1",
+              content: "one",
+              sender_id: "u1",
+              sender_type: "User",
+              inserted_at: "2026-03-01T00:00:00.000Z",
+              message_type: "text",
+            }],
+            metadata: { has_more: true, next_cursor: SECOND_PAGE },
+          };
+        }
+
         return {
           data: [{
-            id: "m1",
-            content: "one",
-            sender_id: "u1",
-            sender_type: "User",
-            inserted_at: "2026-03-01T00:00:00.000Z",
+            id: "m2",
+            content: "two",
+            sender_id: "a1",
+            sender_type: "Agent",
+            inserted_at: "2026-03-01T00:01:00.000Z",
             message_type: "text",
           }],
-          metadata: { page: 1, pageSize: 1, totalPages: 2 },
+          metadata: { has_more: false },
         };
-      }
-
-      return {
-        data: [{
-          id: "m2",
-          content: "two",
-          sender_id: "a1",
-          sender_type: "Agent",
-          inserted_at: "2026-03-01T00:01:00.000Z",
-          message_type: "text",
-        }],
-        metadata: { page: 2, pageSize: 1, totalPages: 2 },
-      };
       },
     );
     const ctx = new ExecutionContext({
@@ -115,13 +128,31 @@ describe("ExecutionContext coverage", () => {
     expect(first.messages.map((entry) => entry.id)).toEqual(["m1", "m2"]);
     expect(first.participants).toEqual([{ id: "u1", name: "Jane", type: "User", handle: "@jane" }]);
     expect(getChatContext).toHaveBeenCalledWith(
-      expect.objectContaining({ chatId: "room-1", page: 1, pageSize: 3 }),
+      { chatId: "room-1", limit: DEFAULT_PAGE_SIZE },
       expect.anything(),
     );
     expect(cached).toBe(first);
     expect(refreshed).not.toBe(first);
     expect(listParticipants).toHaveBeenCalledTimes(2);
     expect(getChatContext).toHaveBeenCalledTimes(4);
+  });
+
+  it("warns and hydrates the last messages it read when the room's context outruns the page cap", async () => {
+    const logger = makeLoggerSpy();
+    const ctx = new ExecutionContext({
+      roomId: "room-1",
+      link: {
+        rest: new EndlessContextRest(),
+        capabilities: {},
+      },
+      maxContextMessages: 2,
+      logger,
+    });
+
+    const hydrated = await ctx.hydrateContext();
+
+    expect(hydrated.messages.map((entry) => entry.id)).toEqual([`m${DEFAULT_MAX_PAGES - 1}`, `m${DEFAULT_MAX_PAGES}`]);
+    expect(logger.warn).toHaveBeenCalledWith(expect.any(String), { roomId: "room-1" });
   });
 
   it("falls back to local context when hydrated context is unsupported", async () => {

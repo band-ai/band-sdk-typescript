@@ -3,6 +3,7 @@ import { resolveLogger, type Logger } from "../../core/logger";
 import { ParticipantRoster, type AgentFailure, type ParticipantFields } from "@band-ai/band-sdk-core";
 import { mentionLabel, toParticipantRecord, toParticipantRecordFromRest } from "../formatters";
 import type { AgentToolsRestApi } from "../../client/rest/types";
+import { listAllPeers } from "../../client/rest/pagination";
 import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
 import { assertCapability } from "../../contracts/capabilities";
 import { assertChatEventType, CHAT_EVENT_TYPES } from "../../contracts/chatEvents";
@@ -612,7 +613,13 @@ export class AgentTools implements AgentToolsProtocol {
     return this.rest.archiveMemory(normalizedMemoryId, DEFAULT_REQUEST_OPTIONS);
   }
 
+  // Band refuses a participant mentioned twice (422 `duplicate_mentions`), however each was named.
   private async resolveMentionsAgainstRoster(mentions: MentionInput): Promise<MentionReference[]> {
+    const resolved = await this.resolveEachMention(mentions);
+    return resolved.filter(({ id }, index) => resolved.findIndex((other) => other.id === id) === index);
+  }
+
+  private async resolveEachMention(mentions: MentionInput): Promise<MentionReference[]> {
     if (mentions.length === 0 || typeof mentions[0] !== "string") {
       return mentions.filter(
         (entry): entry is MentionReference => typeof entry === "object" && entry !== null && "id" in entry,
@@ -692,28 +699,9 @@ export class AgentTools implements AgentToolsProtocol {
 
   private async lookupPeerByName(name: string): Promise<PeerRecord | null> {
     const target = name.trim().toLowerCase();
-    const pageSize = 100;
-    const maxPages = 25;
-
-    for (let page = 1; page <= maxPages; page += 1) {
-      const peers = await this.lookupPeers(page, pageSize);
-      const items = peers.data ?? [];
-      const match = items.find((peer) => String(peer.name ?? "").toLowerCase() === target);
-      if (match) {
-        return match;
-      }
-
-      const totalPages = peers.metadata?.totalPages;
-      if (typeof totalPages === "number" && totalPages > 0 && page >= totalPages) {
-        break;
-      }
-
-      if ((typeof totalPages !== "number" || totalPages <= 0) && items.length < pageSize) {
-        break;
-      }
-    }
-
-    return null;
+    assertCapability(this.capabilities, "peers");
+    const peers = await listAllPeers(this.rest, { notInChat: this.roomId }, DEFAULT_REQUEST_OPTIONS);
+    return peers.find((peer) => String(peer.name ?? "").toLowerCase() === target) ?? null;
   }
 
   private normalizeMentionHandle(handle: string): string {

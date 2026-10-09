@@ -1,4 +1,5 @@
 import type { AgentToolsRestApi } from "../client/rest/types";
+import { fetchCursorTail } from "../client/rest/pagination";
 import { DEFAULT_REQUEST_OPTIONS } from "../client/rest/requestOptions";
 import type { AdapterToolsProtocol, AgentToolsCapabilities } from "../contracts/protocols";
 import type { MetadataMap, ParticipantRecord } from "../contracts/dtos";
@@ -37,6 +38,7 @@ export class ExecutionContext {
   public readonly roomId: string;
   public readonly link: ExecutionContextLink;
   private readonly maxContextMessages: number;
+  private readonly logger: Logger;
   private readonly enableContextCache: boolean;
   private readonly contextCacheTtlMs: number;
   private readonly enableContextHydration: boolean;
@@ -61,6 +63,7 @@ export class ExecutionContext {
     this.roomId = options.roomId;
     this.link = options.link;
     this.maxContextMessages = sessionConfig.maxContextMessages;
+    this.logger = resolveLogger(options.logger);
     this.enableContextCache = sessionConfig.enableContextCache;
     this.contextCacheTtlMs = sessionConfig.contextCacheTtlSeconds * 1000;
     this.enableContextHydration = sessionConfig.enableContextHydration;
@@ -70,7 +73,7 @@ export class ExecutionContext {
       rest: this.link.rest,
       roster: this.roster,
       capabilities: this.link.capabilities,
-      logger: resolveLogger(options.logger),
+      logger: this.logger,
     });
     this.adapterTools = this.tools.getAdapterTools();
   }
@@ -233,7 +236,8 @@ export class ExecutionContext {
   }
 
   public async hydrateContext(forceRefresh = false): Promise<ConversationContext> {
-    if (!this.enableContextHydration || !this.link.rest.getChatContext) {
+    const getChatContext = this.link.rest.getChatContext?.bind(this.link.rest);
+    if (!this.enableContextHydration || !getChatContext) {
       return this.buildLocalContext();
     }
 
@@ -243,7 +247,7 @@ export class ExecutionContext {
 
     try {
       const participants = await this.loadParticipants();
-      const messages = await this.loadHydratedMessages();
+      const messages = await this.loadHydratedMessages(getChatContext);
       const context: ConversationContext = {
         roomId: this.roomId,
         messages,
@@ -281,44 +285,30 @@ export class ExecutionContext {
     return this.roster.list().map(toParticipantRecord);
   }
 
-  private async loadHydratedMessages(): Promise<MetadataMap[]> {
-    const messages: MetadataMap[] = [];
-    const pageSize = this.maxContextMessages;
-    const maxPages = 100;
-
-    for (let page = 1; page <= maxPages; page += 1) {
-      const response = await this.link.rest.getChatContext?.(
-        {
-          chatId: this.roomId,
-          page,
-          pageSize,
-        },
-        DEFAULT_REQUEST_OPTIONS,
-      );
-      const items = response?.data ?? [];
-      messages.push(...items.map((item) => ({
-        id: item.id,
-        room_id: this.roomId,
-        content: resolveMentions(item.content, item.metadata),
-        sender_id: item.sender_id,
-        sender_type: item.sender_type,
-        sender_name: item.sender_name ?? null,
-        message_type: item.message_type,
-        metadata: item.metadata ?? {},
-        created_at: item.inserted_at,
-        role: item.sender_type === "User" ? "user" : "assistant",
-      })));
-
-      const totalPages = response?.metadata?.totalPages;
-      if (typeof totalPages === "number" && totalPages > 0 && page >= totalPages) {
-        break;
-      }
-      if ((typeof totalPages !== "number" || totalPages <= 0) && items.length < pageSize) {
-        break;
-      }
+  private async loadHydratedMessages(
+    getChatContext: NonNullable<AgentToolsRestApi["getChatContext"]>,
+  ): Promise<MetadataMap[]> {
+    const { items, truncated } = await fetchCursorTail(
+      (page) => getChatContext({ chatId: this.roomId, ...page }, DEFAULT_REQUEST_OPTIONS),
+      { keep: this.maxContextMessages },
+    );
+    if (truncated) {
+      this.logger.warn("Context paging stopped before the room's newest messages; hydrating from the last ones read", {
+        roomId: this.roomId,
+      });
     }
-
-    return messages.slice(-this.maxContextMessages);
+    return items.map((item) => ({
+      id: item.id,
+      room_id: this.roomId,
+      content: resolveMentions(item.content, item.metadata),
+      sender_id: item.sender_id,
+      sender_type: item.sender_type,
+      sender_name: item.sender_name ?? null,
+      message_type: item.message_type,
+      metadata: item.metadata ?? {},
+      created_at: item.inserted_at,
+      role: item.sender_type === "User" ? "user" : "assistant",
+    }));
   }
 
   private updateCachedParticipants(): void {

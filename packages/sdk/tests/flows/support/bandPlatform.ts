@@ -11,7 +11,8 @@ import { Band } from "@band-ai/rest-client";
 
 import type { FrameworkAdapter } from "../../../src/contracts/protocols";
 import type { ParticipantRecord, PeerRecord } from "../../../src/contracts/dtos";
-import type { PaginatedResponse, PlatformChatMessage, RestApi } from "../../../src/client/rest/types";
+import { DEFAULT_PAGE_SIZE, type CursorPageRequest } from "../../../src/client/rest/pagination";
+import type { ChatRoom, CreateChatRequest, PaginatedResponse, PlatformChatMessage, RestApi } from "../../../src/client/rest/types";
 import { BandLink } from "../../../src/platform/BandLink";
 import { PlatformRuntime } from "../../../src/runtime/PlatformRuntime";
 import { assertMentioned, CallHolds, FakeRestApi, FakeTransport, RecordLog, reportedFailures, wireMention, type HeldCall, type ReportedFailure } from "../../testUtils";
@@ -58,9 +59,10 @@ type MessageBody = Parameters<RestApi["createChatMessage"]>[1];
 type EventBody = Parameters<RestApi["createChatEvent"]>[1];
 
 const now = () => new Date().toISOString();
+const FIRST_PAGE = 1;
 
-function roomPayload(roomId: string, status: "active" | "inactive", updatedAt = now()) {
-  return { id: roomId, status, type: "direct", title: roomId, task_id: null, inserted_at: updatedAt, updated_at: updatedAt };
+function roomPayload(roomId: string, status: "active" | "inactive", updatedAt = now(), title = roomId) {
+  return { id: roomId, status, type: "direct", title, task_id: null, inserted_at: updatedAt, updated_at: updatedAt };
 }
 
 /** A room call Band refused, because the agent isn't in the room. */
@@ -79,6 +81,7 @@ export interface Added {
 
 interface RoomState {
   participants: ParticipantRecord[];
+  title?: string;
   /** When anything was last said in the room, as Band's `updated_at` moves. */
   updatedAt: string;
 }
@@ -100,6 +103,8 @@ export class RecordingRestApi extends FakeRestApi {
   public readonly refused = new RecordLog<Refused>();
   /** Ids of messages the runtime has started handing to the agent. */
   public readonly processing = new RecordLog<string>();
+  /** Every working report the agent sent, in order. */
+  public readonly workingReports = new RecordLog<{ roomId: string; working: boolean }>();
   private readonly history: HistoryEntry[] = [];
   private readonly backlog: HistoryEntry[] = [];
   private readonly rooms = new Map<string, RoomState>();
@@ -125,7 +130,24 @@ export class RecordingRestApi extends FakeRestApi {
 
   /** Every room on one page. */
   public override async listChats(): Promise<PaginatedResponse> {
-    return { data: [...this.rooms].map(([roomId, room]) => roomPayload(roomId, "active", room.updatedAt)), metadata: { page: 1, totalPages: 1 } };
+    return { data: [...this.rooms].map(([roomId, room]) => roomPayload(roomId, "active", room.updatedAt, room.title)), metadata: { page: 1, totalPages: 1 } };
+  }
+
+  public async getChat(roomId: string): Promise<ChatRoom> {
+    const room = this.assertMember(roomId, "getChat");
+    return roomPayload(roomId, "active", room.updatedAt, room.title);
+  }
+
+  public async renameChat(roomId: string, title: string): Promise<ChatRoom> {
+    const room = this.assertMember(roomId, "renameChat");
+    room.title = title;
+    return roomPayload(roomId, "active", room.updatedAt, title);
+  }
+
+  public async reportActivity(roomId: string, working: boolean) {
+    this.assertMember(roomId, "reportActivity");
+    this.workingReports.record({ roomId, working });
+    return { working };
   }
 
   /** The oldest backlog message in the room not yet settled, as `/messages/next` serves it. */
@@ -136,8 +158,8 @@ export class RecordingRestApi extends FakeRestApi {
   }
 
   /** Adds the agent to a room it shares with `participants`; the platform's participants by default. */
-  public addRoom(roomId: string, participants: readonly ParticipantRecord[] = this.participants): void {
-    this.rooms.set(roomId, { participants: [AGENT_PARTICIPANT, ...participants], updatedAt: this.activity() });
+  public addRoom(roomId: string, participants: readonly ParticipantRecord[] = this.participants, title?: string): void {
+    this.rooms.set(roomId, { participants: [AGENT_PARTICIPANT, ...participants], title, updatedAt: this.activity() });
   }
 
   public removeRoom(roomId: string): void {
@@ -151,9 +173,9 @@ export class RecordingRestApi extends FakeRestApi {
   }
 
   /** A room of the agent's own, holding only the agent until it adds someone. */
-  public override async createChat() {
+  public override async createChat(request?: string | CreateChatRequest) {
     const roomId = `created-${randomUUID()}`;
-    this.addRoom(roomId, []);
+    this.addRoom(roomId, [], typeof request === "string" ? undefined : request?.title);
     this.onRoomCreated?.(roomId);
     return { id: roomId };
   }
@@ -162,6 +184,7 @@ export class RecordingRestApi extends FakeRestApi {
     const posted = { roomId, content: message.content, mentions: message.mentions?.map((mention) => mention.id) ?? [], messageType: "text" };
     this.assertMember(roomId, "createChatMessage", posted);
     assertMentioned(message.mentions);
+    this.assertDistinctMentions(roomId, posted);
     await this.messageHolds.pass(roomId, message.content);
     this.record(posted);
     return { id: `posted-${this.posted.entries.length}` };
@@ -195,19 +218,25 @@ export class RecordingRestApi extends FakeRestApi {
     return {};
   }
 
-  /** Everyone the agent can add, leaving out who is already in `notInChat`, as Band's peer list does. */
-  public override async listPeers({ notInChat }: { notInChat: string }): Promise<PaginatedResponse<PeerRecord>> {
-    const inRoom = this.rooms.get(notInChat)?.participants ?? [];
-    return {
-      data: this.participants
-        .filter((participant) => !inRoom.some(({ id }) => id === participant.id))
-        .map(({ id, name, type, handle }) => ({ id, name, type, handle })),
-    };
+  /** Everyone the agent can add on the first page, then an empty one, leaving out who is already in `notInChat`, as Band's peer list does. */
+  public override async listPeers({ page, notInChat }: { page: number; notInChat?: string }): Promise<PaginatedResponse<PeerRecord>> {
+    const inRoom = (notInChat && this.rooms.get(notInChat)?.participants) || [];
+    const peers = this.participants
+      .filter((participant) => !inRoom.some(({ id }) => id === participant.id))
+      .map(({ id, name, type, handle }) => ({ id, name, type, handle }));
+    return { data: page === FIRST_PAGE ? peers : [], metadata: { page } };
   }
 
-  /** The room's conversation as the platform hands it to a fresh session: what people said and what the agent posted. */
-  public async getChatContext(request: { chatId: string }): Promise<PaginatedResponse<PlatformChatMessage>> {
-    return { data: this.history.filter((entry) => entry.roomId === request.chatId).map((entry) => entry.item) };
+  /**
+   * The room's conversation as the platform hands it to a fresh session, oldest first, a cursor page
+   * at a time: what people said and what the agent posted.
+   */
+  public async getChatContext({ chatId, cursor, limit = DEFAULT_PAGE_SIZE }: { chatId: string } & Partial<CursorPageRequest>): Promise<PaginatedResponse<PlatformChatMessage>> {
+    const conversation = this.history.filter((entry) => entry.roomId === chatId).map((entry) => entry.item);
+    const start = cursor === undefined ? 0 : Number(cursor);
+    const end = start + limit;
+    const hasMore = end < conversation.length;
+    return { data: conversation.slice(start, end), metadata: { has_more: hasMore, ...(hasMore ? { next_cursor: String(end) } : {}) } };
   }
 
   public remember(roomId: string, item: PlatformChatMessage): void {
@@ -240,6 +269,14 @@ export class RecordingRestApi extends FakeRestApi {
       throw new Band.NotFoundError({ error: { code: "not_found", message: "Resource not found", request_id: randomUUID() } });
     }
     return room;
+  }
+
+  /** Band refuses a message that names one participant twice with 422 `duplicate_mentions`. */
+  private assertDistinctMentions(roomId: string, posted: Posted): void {
+    if (new Set(posted.mentions).size !== posted.mentions.length) {
+      this.refused.record({ roomId, call: "createChatMessage", attempt: posted });
+      throw new Band.UnprocessableEntityError({ error: { code: "duplicate_mentions", message: "Duplicate mentions", request_id: randomUUID() } });
+    }
   }
 
   /** A timestamp later than every earlier one, so rooms active one after another never tie. */

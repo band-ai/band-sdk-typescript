@@ -83,6 +83,7 @@ describe("ExecutionContext", () => {
       listChatParticipants: async () => [],
       listPeers: async () => ({
         data: [{ id: "peer-weather", name: "Weather Agent", type: "Agent", handle: "weather-agent" }],
+        metadata: { page: 1, totalPages: 1 },
       }),
       addChatParticipant: async () => ({ ok: true }),
     });

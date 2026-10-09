@@ -160,6 +160,7 @@ describe("AgentTools coverage", () => {
       status: "added",
     });
     expect(rest.listPeers).toHaveBeenCalledTimes(2);
+    expect(rest.listPeers).toHaveBeenNthCalledWith(1, expect.objectContaining({ notInChat: "room-1" }), expect.anything());
     expect(rest.addChatParticipant).toHaveBeenCalledWith(
       "room-1",
       { participantId: "peer-2", role: "member" },
@@ -430,13 +431,14 @@ describe("AgentTools coverage", () => {
     rest.listChatParticipants.mockResolvedValue([
       { id: "user-1", name: "Jane Example", type: "User", handle: "@jane" },
       { id: "agent-1", name: "Planner", type: "Agent", handle: "@team/planner" },
+      { id: "user-2", name: "Bob Builder", type: "User", handle: "@bob" },
     ]);
     const tools = new AgentTools({
       roomId: "room-1",
       rest: createFacade(rest),
     });
 
-    await tools.sendMessage("hi", ["user-1", "@team/planner", "Jane Example"]);
+    await tools.sendMessage("hi", ["user-1", "@team/planner", "Bob Builder"]);
 
     expect(rest.createChatMessage).toHaveBeenCalledWith(
       "room-1",
@@ -445,7 +447,7 @@ describe("AgentTools coverage", () => {
         mentions: [
           { id: "user-1", handle: "@jane" },
           { id: "agent-1", handle: "@team/planner" },
-          { id: "user-1", handle: "@jane" },
+          { id: "user-2", handle: "@bob" },
         ],
       },
       undefined,

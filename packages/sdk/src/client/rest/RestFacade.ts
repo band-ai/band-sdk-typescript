@@ -21,11 +21,14 @@ import { normalizeContactRequestsResult } from "./responseNormalization";
 import type {
   AgentIdentity,
   ChatParticipant,
+  ChatRoom,
+  CreateChatRequest,
   PaginatedResponse,
   PlatformChatMessage,
   RestApi,
 } from "./types";
 import type { RestRequestOptions } from "./requestOptions";
+import { OPTIONAL_UNSUPPORTED_MESSAGES } from "./unsupportedMessages";
 
 export { FernRestAdapter } from "./FernRestAdapter";
 
@@ -39,23 +42,6 @@ type OptionalRestOperation = {
   [K in keyof RestApi]-?: undefined extends RestApi[K] ? K : never
 }[keyof RestApi];
 
-const OPTIONAL_UNSUPPORTED_MESSAGES = {
-  listChats: "Chat listing is not available in current REST adapter",
-  getChatContext: "Context hydration is not available in current REST adapter",
-  listMessages: "Message queue listing is not available in current REST adapter",
-  getNextMessage: "Message queue next-item lookup is not available in current REST adapter",
-  addContact: "Contact creation is not available in current REST adapter",
-  removeContact: "Contact removal is not available in current REST adapter",
-  respondContactRequest: "Contact request responses are not available in current REST adapter",
-  storeMemory: "Memory creation is not available in current REST adapter",
-  getMemory: "Memory lookup is not available in current REST adapter",
-  supersedeMemory: "Memory supersede is not available in current REST adapter",
-  archiveMemory: "Memory archive is not available in current REST adapter",
-  listContacts: "Contact listing is not available in current REST adapter",
-  listMemories: "Memory listing is not available in current REST adapter",
-  listPeers: "Peer listing is not available in current REST adapter",
-  listContactRequests: "Contact request listing is not available in current REST adapter",
-} as const;
 
 export class RestFacade implements RestApi {
   private readonly api: RestApi;
@@ -102,10 +88,38 @@ export class RestFacade implements RestApi {
     });
   }
 
-  public async createChat(taskId?: string, options?: RestRequestOptions): Promise<{ id: string }> {
-    return this.forward("createChat", () => this.api.createChat(taskId, options), {
+  public async createChat(request?: string | CreateChatRequest, options?: RestRequestOptions): Promise<{ id: string }> {
+    const taskId = typeof request === "string" ? request : request?.taskId;
+    return this.forward("createChat", () => this.api.createChat(request, options), {
       taskId: taskId ?? null,
     });
+  }
+
+  public async renameChat(chatId: string, title: string, options?: RestRequestOptions): Promise<ChatRoom> {
+    return this.callOptional(
+      "renameChat",
+      OPTIONAL_UNSUPPORTED_MESSAGES.renameChat,
+      (method) => method(chatId, title, options),
+      { chatId },
+    );
+  }
+
+  public async getChat(chatId: string, options?: RestRequestOptions): Promise<ChatRoom> {
+    return this.callOptional(
+      "getChat",
+      OPTIONAL_UNSUPPORTED_MESSAGES.getChat,
+      (method) => method(chatId, options),
+      { chatId },
+    );
+  }
+
+  public async reportActivity(chatId: string, working: boolean, options?: RestRequestOptions): Promise<{ working: boolean }> {
+    return this.callOptional(
+      "reportActivity",
+      OPTIONAL_UNSUPPORTED_MESSAGES.reportActivity,
+      (method) => method(chatId, working, options),
+      { chatId, working },
+    );
   }
 
   public async listChatParticipants(
@@ -193,7 +207,7 @@ export class RestFacade implements RestApi {
   }
 
   public async getChatContext(
-    request: { chatId: string; page?: number; pageSize?: number },
+    request: { chatId: string; page?: number; pageSize?: number; cursor?: string; limit?: number },
     options?: RestRequestOptions,
   ): Promise<PaginatedResponse<PlatformChatMessage>> {
     return this.callOptional(
@@ -346,7 +360,7 @@ export class RestFacade implements RestApi {
   }
 
   public async listPeers(
-    request: { page: number; pageSize: number; notInChat: string },
+    request: { page: number; pageSize: number; notInChat?: string },
     options?: RestRequestOptions,
   ): Promise<PaginatedResponse<PeerRecord>> {
     return this.callOptional(

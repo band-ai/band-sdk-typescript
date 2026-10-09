@@ -82,6 +82,32 @@ describe("FernRestAdapter coverage", () => {
     await expect(adapter.createChat()).rejects.toThrow("Chat create response did not include id");
   });
 
+  it("creates a titled room, refuses a room body without id and times, and reads the working state back", async () => {
+    const createAgentChat = vi.fn(async () => ({ data: { id: "room-9" } }));
+    const adapter = new FernRestAdapter({
+      agentApiChats: {
+        createAgentChat,
+        getAgentChat: async () => ({ data: { title: "Plans" } }),
+      },
+      agentApiActivity: {
+        reportAgentChatActivity: async () => ({ data: { working: false } }),
+      },
+    });
+
+    await expect(adapter.createChat({ title: "Plans" })).resolves.toEqual({ id: "room-9" });
+    expect(createAgentChat).toHaveBeenCalledWith({ chat: { task_id: undefined, title: "Plans" } }, expect.anything());
+    await expect(adapter.getChat("room-9")).rejects.toBeInstanceOf(UnsupportedFeatureError);
+    await expect(adapter.reportActivity("room-9", false)).resolves.toEqual({ working: false });
+  });
+
+  it("refuses an activity response without the working state rather than reporting idle", async () => {
+    const adapter = new FernRestAdapter({
+      agentApiActivity: { reportAgentChatActivity: async () => ({ data: {} }) },
+    });
+
+    await expect(adapter.reportActivity("room-9", true)).rejects.toBeInstanceOf(UnsupportedFeatureError);
+  });
+
   it("uses the modern chat and event namespaces when they exist", async () => {
     const createChatMessage = vi.fn(async () => ({ data: { ok: true, id: "msg-1" } }));
     const createAgentChatEvent = vi.fn(async () => ({ data: { ok: true, id: "evt-1" } }));
