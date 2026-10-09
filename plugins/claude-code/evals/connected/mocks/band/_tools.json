@@ -189,6 +189,209 @@
         ],
         "$schema": "http://json-schema.org/draft-07/schema#"
       }
+    },
+    {
+      "name": "get_board",
+      "description": "Read this room's goal (the team mission). Returns an empty default (goal_title null) when no goal has been set yet. Pass include=\"history\" to embed the goal's audit trail.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "include": {
+            "type": "string",
+            "description": "Set to 'history' to embed the goal-audit trail",
+            "enum": [
+              "history"
+            ]
+          },
+          "room_id": {
+            "type": "string",
+            "description": "The Band room whose board to use."
+          }
+        },
+        "required": [
+          "room_id"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
+    },
+    {
+      "name": "list_tasks",
+      "description": "List the shared tasks on this room's task board, ordered by number. Defaults to active tasks (the working board); use state to read cancelled/superseded/archived tasks or \"all\". Use this to see what work exists before creating a new task or picking one up.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "description": "Lifecycle filter (default: active)",
+            "enum": [
+              "active",
+              "cancelled",
+              "superseded",
+              "archived",
+              "all"
+            ]
+          },
+          "cursor": {
+            "type": "string",
+            "description": "Opaque pagination cursor from a previous response"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size (default 50, max 100)"
+          },
+          "room_id": {
+            "type": "string",
+            "description": "The Band room whose board to use."
+          }
+        },
+        "required": [
+          "room_id"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
+    },
+    {
+      "name": "set_board",
+      "description": "Set or update this room's goal (upsert) -- at least one field required. Send goal_title and/or goal_summary; only the fields you send are changed. Every change is recorded in the goal-audit trail.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "goal_title": {
+            "type": "string",
+            "description": "The room's mission title"
+          },
+          "goal_summary": {
+            "type": "string",
+            "description": "The mission paragraph"
+          },
+          "room_id": {
+            "type": "string",
+            "description": "The Band room whose board to use."
+          }
+        },
+        "required": [
+          "room_id"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
+    },
+    {
+      "name": "create_task",
+      "description": "Create a shared task on this room's task board. The server assigns the id and the board number (\"#N\"). Use supersedes_id when this task replaces an existing one -- the old task is preserved as an audit record and points at its replacement. You are NOT assigned automatically: report your own status on the task to join it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "subject": {
+            "type": "string",
+            "description": "What needs to be done"
+          },
+          "detail": {
+            "type": "string",
+            "description": "Longer description (optional)"
+          },
+          "supersedes_id": {
+            "type": "string",
+            "description": "UUID or board number of the active task this one replaces (optional)"
+          },
+          "room_id": {
+            "type": "string",
+            "description": "The Band room whose board to use."
+          }
+        },
+        "required": [
+          "subject",
+          "room_id"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
+    },
+    {
+      "name": "update_task",
+      "description": "Update a task -- one operation, all fields optional, at least one required. Send status to report YOUR OWN progress (your first status write joins you to the task -- no separate assign step). Send active_form to show what you are doing right now. Send comment to leave a note for the others. Send subject/detail to edit the task itself. Send state to cancel (\"cancelled\"), tidy away (\"archived\"), or restore an archived task (\"active\"). Several agents can work the same task; each has its own status and active_form.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Task UUID or board number"
+          },
+          "status": {
+            "type": "string",
+            "description": "YOUR work status on this task (first write joins you to it)",
+            "enum": [
+              "pending",
+              "in_progress",
+              "blocked",
+              "in_review",
+              "failed",
+              "completed"
+            ]
+          },
+          "active_form": {
+            "type": "string",
+            "description": "YOUR live 'doing X' sentence, shown on the board while you work"
+          },
+          "comment": {
+            "type": "string",
+            "description": "Append a note for the other participants (kept in the task history)"
+          },
+          "subject": {
+            "type": "string",
+            "description": "Edit the task subject"
+          },
+          "detail": {
+            "type": "string",
+            "description": "Edit the task detail"
+          },
+          "state": {
+            "type": "string",
+            "description": "Lifecycle: cancel, archive, or restore ('active' un-archives)",
+            "enum": [
+              "active",
+              "cancelled",
+              "archived"
+            ]
+          },
+          "room_id": {
+            "type": "string",
+            "description": "The Band room whose board to use."
+          }
+        },
+        "required": [
+          "id",
+          "room_id"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
+    },
+    {
+      "name": "get_task",
+      "description": "Read one task by UUID or board number. Works for any lifecycle state -- cancelled/superseded/archived tasks stay readable as audit records.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Task UUID or board number"
+          },
+          "include": {
+            "type": "string",
+            "description": "Set to 'history' to embed the recent event history",
+            "enum": [
+              "history"
+            ]
+          },
+          "room_id": {
+            "type": "string",
+            "description": "The Band room whose board to use."
+          }
+        },
+        "required": [
+          "id",
+          "room_id"
+        ],
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      }
     }
   ]
 }

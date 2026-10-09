@@ -10,7 +10,7 @@ import { FakeRestApi } from "./testUtils";
 describe("createBandSdkMcpServer", () => {
   function makeTools(calls: Array<{ name: string; args: Record<string, unknown> }>): AgentToolsProtocol {
     return {
-      capabilities: { peers: false, contacts: false, memory: false },
+      capabilities: { peers: false, contacts: false, memory: false, tasks: false },
       sendMessage: async () => ({ ok: true }),
       sendNotice: async () => ({ ok: true }),
       sendEvent: async () => ({ ok: true }),
@@ -131,7 +131,7 @@ describe("createBandSdkMcpServer", () => {
     }));
     const roomTools: AgentToolsProtocol & { rest: FakeRestApi } = {
       ...{
-        capabilities: { peers: false, contacts: false, memory: false },
+        capabilities: { peers: false, contacts: false, memory: false, tasks: false },
         sendMessage: async () => ({ ok: true }),
         sendNotice: async () => ({ ok: true }),
         sendEvent: async () => ({ ok: true }),
@@ -218,7 +218,7 @@ describe("createBandSdkMcpServer", () => {
   it("walks chat pages and surfaces REST resolution warnings", async () => {
     const roomTools: AgentToolsProtocol & { rest: FakeRestApi } = {
       ...{
-        capabilities: { peers: false, contacts: false, memory: false },
+        capabilities: { peers: false, contacts: false, memory: false, tasks: false },
         sendMessage: async () => ({ ok: true }),
         sendNotice: async () => ({ ok: true }),
         sendEvent: async () => ({ ok: true }),

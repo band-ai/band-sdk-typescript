@@ -12,6 +12,7 @@ import { CHANNEL_OFF_INSTRUCTIONS } from "../../src/prompt";
 import type { FoundRoom } from "../../src/rooms";
 import { agentLabel } from "../../src/names";
 import { SESSION_TEXT } from "../../src/sessions";
+import { BOARD_TOOL } from "../../src/board";
 import { CONNECT_TOOL, TOOL } from "../../src/tools";
 import { deleteRoomsBulk } from "../../../../packages/sdk/tests/integration/support/liveHarness";
 import { Agents, type AgentIdentity } from "../../../../packages/sdk/tests/baseline/toolkit/agents";
@@ -95,7 +96,7 @@ describe("the Claude Code plugin on the live platform", () => {
 
     expect(plugin.client.getServerCapabilities()?.experimental).toEqual({ [CHANNEL_CAPABILITY]: {} });
     const { tools } = await plugin.client.listTools();
-    expect(tools.map((tool) => tool.name).sort()).toEqual(Object.values(TOOL).sort());
+    expect(tools.map((tool) => tool.name).sort()).toEqual([...Object.values(TOOL), ...Object.keys(BOARD_TOOL)].sort());
 
     const sent = await Rooms.sendMention(room, identity, "ping");
     const push = await plugin.pushOf(sent.id);

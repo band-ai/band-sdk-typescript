@@ -1,6 +1,14 @@
 import { UnsupportedFeatureError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
 import type {
+  GetBoardArgs,
+  SetBoardArgs,
+  ListTasksArgs,
+  CreateTaskArgs,
+  UpdateTaskArgs,
+  WireBoard,
+  WireTask,
+  WireTaskPage,
   AddContactArgs,
   ContactRecord,
   ContactRequestsResult,
@@ -93,6 +101,60 @@ export class RestFacade implements RestApi {
     return this.forward("createChat", () => this.api.createChat(request, options), {
       taskId: taskId ?? null,
     });
+  }
+
+  public async getChatBoard(chatId: string, request?: GetBoardArgs, options?: RestRequestOptions): Promise<WireBoard> {
+    return this.callOptional(
+      "getChatBoard",
+      OPTIONAL_UNSUPPORTED_MESSAGES.getChatBoard,
+      (method) => method(chatId, request, options),
+      { chatId },
+    );
+  }
+
+  public async putChatBoard(chatId: string, request?: SetBoardArgs, options?: RestRequestOptions): Promise<WireBoard> {
+    return this.callOptional(
+      "putChatBoard",
+      OPTIONAL_UNSUPPORTED_MESSAGES.putChatBoard,
+      (method) => method(chatId, request, options),
+      { chatId },
+    );
+  }
+
+  public async listChatTasks(chatId: string, request?: ListTasksArgs, options?: RestRequestOptions): Promise<WireTaskPage> {
+    return this.callOptional(
+      "listChatTasks",
+      OPTIONAL_UNSUPPORTED_MESSAGES.listChatTasks,
+      (method) => method(chatId, request, options),
+      { chatId },
+    );
+  }
+
+  public async createChatTask(chatId: string, request: CreateTaskArgs, options?: RestRequestOptions): Promise<WireTask> {
+    return this.callOptional(
+      "createChatTask",
+      OPTIONAL_UNSUPPORTED_MESSAGES.createChatTask,
+      (method) => method(chatId, request, options),
+      { chatId },
+    );
+  }
+
+  public async getChatTask(chatId: string, id: string, request?: GetBoardArgs, options?: RestRequestOptions): Promise<WireTask> {
+    return this.callOptional(
+      "getChatTask",
+      OPTIONAL_UNSUPPORTED_MESSAGES.getChatTask,
+      (method) => method(chatId, id, request, options),
+      { chatId },
+    );
+  }
+
+  public async updateChatTask(chatId: string, id: string, request?: Omit<UpdateTaskArgs, "id">, options?: RestRequestOptions): Promise<WireTask> {
+    return this.callOptional(
+      "updateChatTask",
+      OPTIONAL_UNSUPPORTED_MESSAGES.updateChatTask,
+      (method) => method(chatId, id, request, options),
+      { chatId },
+    );
   }
 
   public async renameChat(chatId: string, title: string, options?: RestRequestOptions): Promise<ChatRoom> {

@@ -25,6 +25,7 @@ export type {
   ToolSchemaProvider,
   ContactTools,
   MemoryTools,
+  TaskTools,
   ToolExecutor,
   AdapterToolsProtocol,
   AgentToolsProtocol,
@@ -56,3 +57,5 @@ export {
   agentFailure,
   reportTurnFailure,
 } from "./providerFailure";
+
+export type { GetBoardArgs, SetBoardArgs, ListTasksArgs, CreateTaskArgs, GetTaskArgs, UpdateTaskArgs, WireBoard, WireTask, WireTaskPage, WireTaskActor, WireTaskAssignment, WireTaskEvent, WireBoardEvent } from "../contracts/dtos";

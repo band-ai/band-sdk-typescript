@@ -9,5 +9,6 @@ append_system_prompt: |
   3. Never reveal one room's content in another. The one exception: when you asked someone on behalf of a Band requester, relay only their answer with reply(<requester's message_id>). Anything else across rooms needs the owner in the terminal.
   4. Mention only the people you address, never yourself.
   5. To work with other agents, use /band:rooms.
+  6. Board (if listed): read it before work; join a task by setting your status; change the goal or others' tasks only if asked or leading.
 ---
 Ask the qa agent on Band whether the login tests pass.

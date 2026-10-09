@@ -10,6 +10,7 @@ import {
   BASE_TOOL_NAMES,
   CONTACT_TOOL_NAMES,
   MEMORY_TOOL_NAMES,
+  TASK_TOOL_NAMES,
   ROOM_TOOL_NAMES,
   TOOL_MODELS,
   getToolDescription,
@@ -39,6 +40,7 @@ export interface McpToolResult {
 
 export interface BuildRegistrationsOptions {
   enableMemoryTools?: boolean;
+  enableTaskTools?: boolean;
   enableContactTools?: boolean;
   additionalTools?: McpToolRegistration[];
   /**
@@ -161,6 +163,9 @@ function resolveToolNames(options: BuildRegistrationsOptions): Set<string> {
       continue;
     }
     names.add(name);
+  }
+  if (options.enableTaskTools) {
+    for (const name of TASK_TOOL_NAMES) names.add(name);
   }
   if (options.enableMemoryTools) {
     for (const name of MEMORY_TOOL_NAMES) {

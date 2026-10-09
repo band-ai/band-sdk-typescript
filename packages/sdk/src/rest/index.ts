@@ -9,6 +9,7 @@ export type {
   PaginationMetadata,
   PlatformChatMessage,
   RestApi,
+  ChatTaskRestApi,
 } from "../client/rest/types";
 export {
   fetchCursorTail,
@@ -20,3 +21,5 @@ export {
 export type { CursorPageRequest, CursorTail, CursorTailOptions } from "../client/rest/pagination";
 export { DEFAULT_REQUEST_OPTIONS } from "../client/rest/requestOptions";
 export { FernRestAdapter, RestFacade } from "../client/rest/RestFacade";
+
+export type { GetBoardArgs, SetBoardArgs, ListTasksArgs, CreateTaskArgs, GetTaskArgs, UpdateTaskArgs, WireBoard, WireTask, WireTaskPage } from "../contracts/dtos";

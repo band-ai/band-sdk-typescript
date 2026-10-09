@@ -1,6 +1,7 @@
 import { UnsupportedFeatureError } from "../../core/errors";
 import { asNullableString, asOptionalRecord, asString } from "../../adapters/shared/coercion";
 import type {
+  GetBoardArgs, SetBoardArgs, ListTasksArgs, CreateTaskArgs, UpdateTaskArgs, WireBoard, WireTask, WireTaskPage,
   AddContactArgs,
   ContactRecord,
   ContactRequestsResult,
@@ -85,6 +86,9 @@ function normalizeAgentIdentityRecord(
     description: normalizeOptionalStringField(record.description, "description", source),
     handle: normalizeOptionalStringField(record.handle, "handle", source),
     ownerUuid: normalizeOptionalStringField(record.owner_uuid, "ownerUuid", source),
+    ...(asOptionalRecord(record.feature_flags) ? { featureFlags: Object.fromEntries(
+      Object.entries(asOptionalRecord(record.feature_flags)!).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"),
+    ) } : {}),
   };
 }
 
@@ -479,6 +483,42 @@ export class FernRestAdapter implements RestApi {
     }
 
     return { id: roomId };
+  }
+
+  public async getChatBoard(chatId: string, request?: GetBoardArgs, options?: RestRequestOptions): Promise<WireBoard> {
+    const api = this.client.agentApiChatTasks?.getChatBoard?.bind(this.client.agentApiChatTasks);
+    if (!api) throw new UnsupportedFeatureError("Fern client missing getChatBoard endpoint");
+    return extractEnvelopeData(await api(chatId, request, mergeOptions(options))) as WireBoard;
+  }
+
+  public async putChatBoard(chatId: string, request?: SetBoardArgs, options?: RestRequestOptions): Promise<WireBoard> {
+    const api = this.client.agentApiChatTasks?.putChatBoard?.bind(this.client.agentApiChatTasks);
+    if (!api) throw new UnsupportedFeatureError("Fern client missing putChatBoard endpoint");
+    return extractEnvelopeData(await api(chatId, request, mergeOptions(options))) as WireBoard;
+  }
+
+  public async listChatTasks(chatId: string, request?: ListTasksArgs, options?: RestRequestOptions): Promise<WireTaskPage> {
+    const api = this.client.agentApiChatTasks?.listChatTasks?.bind(this.client.agentApiChatTasks);
+    if (!api) throw new UnsupportedFeatureError("Fern client missing listChatTasks endpoint");
+    return (await api(chatId, request, mergeOptions(options))) as WireTaskPage;
+  }
+
+  public async createChatTask(chatId: string, request: CreateTaskArgs, options?: RestRequestOptions): Promise<WireTask> {
+    const api = this.client.agentApiChatTasks?.createChatTask?.bind(this.client.agentApiChatTasks);
+    if (!api) throw new UnsupportedFeatureError("Fern client missing createChatTask endpoint");
+    return extractEnvelopeData(await api(chatId, request, mergeOptions(options))) as WireTask;
+  }
+
+  public async getChatTask(chatId: string, id: string, request?: GetBoardArgs, options?: RestRequestOptions): Promise<WireTask> {
+    const api = this.client.agentApiChatTasks?.getChatTask?.bind(this.client.agentApiChatTasks);
+    if (!api) throw new UnsupportedFeatureError("Fern client missing getChatTask endpoint");
+    return extractEnvelopeData(await api(chatId, id, request, mergeOptions(options))) as WireTask;
+  }
+
+  public async updateChatTask(chatId: string, id: string, request?: Omit<UpdateTaskArgs, "id">, options?: RestRequestOptions): Promise<WireTask> {
+    const api = this.client.agentApiChatTasks?.updateChatTask?.bind(this.client.agentApiChatTasks);
+    if (!api) throw new UnsupportedFeatureError("Fern client missing updateChatTask endpoint");
+    return extractEnvelopeData(await api(chatId, id, request, mergeOptions(options))) as WireTask;
   }
 
   public async renameChat(chatId: string, title: string, options?: RestRequestOptions): Promise<ChatRoom> {

@@ -1,3 +1,4 @@
+import type { TASK_ASSIGNMENT_STATUSES, TASK_INCLUDE, TASK_LIFECYCLE_STATES, TASK_LIST_STATES } from "./tasks";
 import type {
   MemoryScope,
   MemorySegment,
@@ -190,4 +191,94 @@ export interface ToolModelMessage {
 
 export interface ToolModelSchema {
   [key: string]: unknown;
+}
+
+export interface GetBoardArgs {
+  include?: (typeof TASK_INCLUDE)[number];
+}
+export interface SetBoardArgs {
+  goal_title?: string;
+  goal_summary?: string;
+}
+export interface ListTasksArgs {
+  state?: (typeof TASK_LIST_STATES)[number];
+  cursor?: string;
+  limit?: number;
+}
+export interface CreateTaskArgs {
+  subject: string;
+  detail?: string;
+  supersedes_id?: string;
+}
+export interface GetTaskArgs extends GetBoardArgs {
+  id: string;
+}
+export interface UpdateTaskArgs {
+  id: string;
+  status?: (typeof TASK_ASSIGNMENT_STATUSES)[number];
+  active_form?: string;
+  comment?: string;
+  subject?: string;
+  detail?: string;
+  state?: (typeof TASK_LIFECYCLE_STATES)[number];
+}
+export interface WireTaskActor {
+  id: string;
+  name: string;
+  type: "User" | "Agent";
+  handle?: string | null;
+}
+export interface WireTaskAssignment {
+  assignee: WireTaskActor;
+  status: NonNullable<UpdateTaskArgs["status"]>;
+  active_form: string | null;
+  linked_native_id: string | null;
+  updated_at: string;
+}
+export interface WireBoardEvent {
+  actor: WireTaskActor;
+  at: string;
+  event: "goal_set" | "goal_edited";
+  payload: MetadataMap;
+}
+export interface WireTaskEvent {
+  actor: WireTaskActor;
+  at: string;
+  event: "created" | "edited" | "status_changed" | "commented" | "dropped" | "cancelled" | "superseded" | "archived" | "unarchived";
+  payload: MetadataMap;
+}
+export interface WireBoard {
+  chat_room_id: string;
+  goal_title: string | null;
+  goal_summary: string | null;
+  created_by: WireTaskActor | null;
+  updated_by: WireTaskActor | null;
+  inserted_at: string | null;
+  updated_at: string | null;
+  history?: WireBoardEvent[];
+  history_truncated?: boolean;
+}
+export interface WireTask {
+  id: string;
+  number: number;
+  chat_room_id: string;
+  subject: string;
+  detail: string;
+  state: Exclude<NonNullable<ListTasksArgs["state"]>, "all">;
+  overall_status: NonNullable<UpdateTaskArgs["status"]>;
+  assignments: WireTaskAssignment[];
+  created_by: WireTaskActor;
+  superseded_by_id: string | null;
+  inserted_at: string;
+  updated_at: string;
+  history?: WireTaskEvent[];
+  history_truncated?: boolean;
+}
+export interface WireTaskPage {
+  data: WireTask[];
+  metadata: {
+    next_cursor: string | null;
+    has_more: boolean;
+    limit: number;
+  };
 }

@@ -68,3 +68,10 @@ describe("FernRestAdapter: malformed identity envelopes", () => {
     );
   });
 });
+
+describe("tenant feature flag identity", () => {
+  it("keeps boolean flags and treats malformed values as absent", async () => {
+    const adapter = new FernRestAdapter({ agentApiIdentity: { getAgentMe: async () => ({ data: { id: "a1", name: "Agent", feature_flags: { ff_room_tasks: true, ff_file_transfer: false, malformed: "true" } } }) } });
+    expect((await adapter.getAgentMe()).featureFlags).toEqual({ ff_room_tasks: true, ff_file_transfer: false });
+  });
+});

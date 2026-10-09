@@ -14,7 +14,7 @@ import type {
 } from "../client/rest/types";
 import { messageIdOf, type PlatformEvent, type SupportedSocketEvent } from "./events";
 import { UnsupportedFeatureError } from "../core/errors";
-import { assertCapability } from "../contracts/capabilities";
+import { assertCapability, pruneUnsupported } from "../contracts/capabilities";
 import type { MetadataMap } from "../contracts/dtos";
 import type { PlatformMessageLike as PlatformMessage } from "../contracts/protocols";
 import { PhoenixChannelsTransport } from "./streaming/PhoenixChannelsTransport";
@@ -105,7 +105,7 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   public readonly wsUrl: string;
   public readonly restUrl: string;
   public readonly rest: BandLinkRestApi;
-  public readonly capabilities: AgentToolsCapabilities;
+  private _capabilities: AgentToolsCapabilities;
 
   private readonly logger: Logger;
   private readonly transport: StreamingTransport;
@@ -119,13 +119,19 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
   private readonly disconnectFlight = new SingleFlight<void>();
   private readonly session = new Session();
 
+  public get capabilities(): AgentToolsCapabilities { return this._capabilities; }
+
+  public dropUnsupported(featureFlags?: Readonly<Record<string, boolean>>): void {
+    this._capabilities = pruneUnsupported(this._capabilities, featureFlags);
+  }
+
   public constructor(options: BandLinkOptions) {
     this.agentId = options.agentId;
     this.apiKey = options.apiKey;
     this.wsUrl = options.wsUrl ?? DEFAULT_WS_URL;
     this.restUrl = options.restUrl ?? deriveDefaultRestUrl(this.wsUrl);
     this.logger = resolveLogger(options.logger);
-    this.capabilities = {
+    this._capabilities = {
       ...DEFAULT_AGENT_TOOLS_CAPABILITIES,
       ...options.capabilities,
     };

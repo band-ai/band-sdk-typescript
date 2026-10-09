@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import { GenericAdapter, type GenericAdapterHandler } from "../src/adapters/GenericAdapter";
 import { FernRestAdapter, RestFacade } from "../src/client/rest/RestFacade";
 import { TransportError, ValidationError } from "../src/core/errors";
+import { AgentTools } from "../src/runtime/tools/AgentTools";
+import { TASK_TOOL_NAMES } from "../src/contracts/toolSchemas";
 import { PlatformRuntime } from "../src/runtime/PlatformRuntime";
 import { ExecutionContext } from "../src/runtime/ExecutionContext";
 import { HUB_ROOM_SYSTEM_PROMPT } from "../src/runtime/ContactEventHandler";
@@ -1188,3 +1190,29 @@ describe("PlatformRuntime turn outcome", () => {
   });
 });
 
+
+describe("PlatformRuntime task negotiation", () => {
+  it.each([true, false, undefined])("uses tenant flag %s with fetched and configured identities", async (flag) => {
+    for (const configured of [false, true]) {
+      const getAgentMe = vi.fn(async () => ({ id: "a1", name: "Fetched", description: "Remote", featureFlags: flag === undefined ? undefined : { ff_room_tasks: flag } }));
+      const link = new BandLink({ agentId: "a1", apiKey: "k", transport: new FakeTransport(), restApi: new FakeRestApi({ getAgentMe }), capabilities: { tasks: true } });
+      await using runtime = new PlatformRuntime({ agentId: "a1", apiKey: "k", link, ...(configured ? { identity: { name: "Configured", description: "Local" } } : {}) });
+      await runtime.start(new GenericAdapter(async () => {}));
+      const tools = new AgentTools({ roomId: "room-1", rest: link.rest, capabilities: link.capabilities });
+      const boardNames = tools.getToolSchemas("anthropic").map((schema) => schema.name).filter((name): name is string => typeof name === "string" && TASK_TOOL_NAMES.has(name));
+      expect(boardNames).toEqual(flag === true ? [...TASK_TOOL_NAMES] : []);
+      expect(getAgentMe).toHaveBeenCalledTimes(1);
+      expect(runtime.name).toBe(configured ? "Configured" : "Fetched");
+      expect(runtime.description).toBe(configured ? "Local" : "Remote");
+    }
+  });
+
+  it("keeps the configured identity's no-profile path when tasks are disabled", async () => {
+    const getAgentMe = vi.fn();
+    const link = new BandLink({ agentId: "a1", apiKey: "k", transport: new FakeTransport(), restApi: new FakeRestApi({ getAgentMe }) });
+    await using runtime = new PlatformRuntime({ agentId: "a1", apiKey: "k", link, identity: { name: "Configured" } });
+    await runtime.start(new GenericAdapter(async () => {}));
+    expect(getAgentMe).not.toHaveBeenCalled();
+    expect(link.capabilities.tasks).toBe(false);
+  });
+});

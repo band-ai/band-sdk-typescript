@@ -10,7 +10,7 @@ import { agentRoomsTopic, chatRoomTopic } from "@band-ai/band-sdk-core";
 import { Band } from "@band-ai/rest-client";
 
 import type { FrameworkAdapter } from "../../../src/contracts/protocols";
-import type { ParticipantRecord, PeerRecord } from "../../../src/contracts/dtos";
+import type { ParticipantRecord, PeerRecord, WireBoard, WireTask, WireTaskPage } from "../../../src/contracts/dtos";
 import { DEFAULT_PAGE_SIZE, type CursorPageRequest } from "../../../src/client/rest/pagination";
 import type { ChatRoom, CreateChatRequest, PaginatedResponse, PlatformChatMessage, RestApi } from "../../../src/client/rest/types";
 import { BandLink } from "../../../src/platform/BandLink";
@@ -49,6 +49,7 @@ export interface PostOptions {
 /** The agent's identity as `getAgentMe` reports it. */
 export interface AgentIdentityOptions {
   readonly ownerUuid?: string | null;
+  readonly featureFlags?: Readonly<Record<string, boolean>>;
   /** `AGENT_HANDLE` by default. */
   readonly handle?: string | null;
 }
@@ -82,7 +83,18 @@ export interface Added {
   readonly participantId: string;
 }
 
+export interface BoardCall {
+  readonly roomId: string;
+  readonly call: "getChatBoard" | "putChatBoard" | "listChatTasks" | "createChatTask" | "getChatTask" | "updateChatTask";
+  readonly args: unknown;
+  readonly id?: string;
+}
+
+const BOARD_ACTOR = { id: AGENT_ID, type: "Agent", name: "Agent", handle: AGENT_HANDLE } as const;
+
 interface RoomState {
+  board: WireBoard;
+  tasks: WireTask[];
   participants: PlatformParticipant[];
   title?: string;
   /** Whether the agent created the room, which makes it the owner. */
@@ -102,6 +114,7 @@ interface HistoryEntry {
  * settles each message's outcome. Like Band, it refuses message, event and participant calls for a room the agent isn't in.
  */
 export class RecordingRestApi extends FakeRestApi {
+  public readonly boardCalls = new RecordLog<BoardCall>();
   public readonly posted = new RecordLog<Posted>();
   public readonly settled = new RecordLog<Settled>();
   public readonly added = new RecordLog<Added>();
@@ -178,7 +191,72 @@ export class RecordingRestApi extends FakeRestApi {
 
   /** Adds the agent to a room it shares with `participants`; the platform's participants by default. */
   public addRoom(roomId: string, participants: readonly PlatformParticipant[] = this.participants, title?: string): void {
-    this.rooms.set(roomId, { participants: [AGENT_PARTICIPANT, ...participants], title, updatedAt: this.activity() });
+    this.rooms.set(roomId, {
+      participants: [AGENT_PARTICIPANT, ...participants], title, updatedAt: this.activity(), tasks: [],
+      board: { chat_room_id: roomId, goal_title: null, goal_summary: null, created_by: null, updated_by: null, inserted_at: null, updated_at: null },
+    });
+  }
+
+  public async getChatBoard(roomId: string, args: Parameters<NonNullable<RestApi["getChatBoard"]>>[1] = {}): Promise<WireBoard> {
+    const room = this.boardCall(roomId, "getChatBoard", args);
+    return { ...room.board, ...(args.include === "history" ? { history: [], history_truncated: false } : {}) };
+  }
+
+  public async putChatBoard(roomId: string, args: Parameters<NonNullable<RestApi["putChatBoard"]>>[1]): Promise<WireBoard> {
+    const room = this.boardCall(roomId, "putChatBoard", args);
+    room.board = { ...room.board, ...args, created_by: room.board.created_by ?? BOARD_ACTOR, updated_by: BOARD_ACTOR, inserted_at: room.board.inserted_at ?? now(), updated_at: now() };
+    return { ...room.board };
+  }
+
+  public async listChatTasks(roomId: string, args: Parameters<NonNullable<RestApi["listChatTasks"]>>[1] = {}): Promise<WireTaskPage> {
+    const room = this.boardCall(roomId, "listChatTasks", args);
+    return { data: room.tasks.map((task) => ({ ...task })), metadata: { next_cursor: null, has_more: false, limit: room.tasks.length } };
+  }
+
+  public async createChatTask(roomId: string, args: Parameters<NonNullable<RestApi["createChatTask"]>>[1]): Promise<WireTask> {
+    const room = this.boardCall(roomId, "createChatTask", args);
+    const task: WireTask = {
+      id: randomUUID(), chat_room_id: roomId, number: room.tasks.length + 1, subject: args.subject,
+      detail: args.detail ?? "", overall_status: "pending", state: "active", superseded_by_id: null,
+      assignments: [], created_by: BOARD_ACTOR, inserted_at: now(), updated_at: now(),
+    };
+    room.tasks.push(task);
+    return { ...task };
+  }
+
+  public async getChatTask(roomId: string, id: string, args: Parameters<NonNullable<RestApi["getChatTask"]>>[2] = {}): Promise<WireTask> {
+    const room = this.boardCall(roomId, "getChatTask", args, id);
+    const task = this.findTask(room, id);
+    return { ...task, ...(args.include === "history" ? { history: task.history ?? [], history_truncated: false } : {}) };
+  }
+
+  public async updateChatTask(roomId: string, id: string, args: Parameters<NonNullable<RestApi["updateChatTask"]>>[2]): Promise<WireTask> {
+    const room = this.boardCall(roomId, "updateChatTask", args, id);
+    const task = this.findTask(room, id);
+    const { status, active_form, comment, ...edits } = args ?? {};
+    Object.assign(task, edits, { updated_at: now() });
+    if (status !== undefined || active_form !== undefined) {
+      const assignment = task.assignments.find(({ assignee }) => assignee.id === AGENT_ID);
+      const updated = { assignee: BOARD_ACTOR, status: status ?? assignment?.status ?? "pending", active_form: active_form ?? assignment?.active_form ?? null, linked_native_id: null, updated_at: now() };
+      task.assignments = [...task.assignments.filter(({ assignee }) => assignee.id !== AGENT_ID), updated];
+    }
+    if (comment !== undefined) {
+      task.history = [...(task.history ?? []), { event: "commented", actor: BOARD_ACTOR, payload: { text: comment }, at: now() }];
+    }
+    return { ...task };
+  }
+
+  private boardCall(roomId: string, call: BoardCall["call"], args: unknown, id?: string): RoomState {
+    this.boardCalls.record({ roomId, call, args, ...(id === undefined ? {} : { id }) });
+    return this.assertMember(roomId, call);
+  }
+
+  private findTask(room: RoomState, id: string): WireTask {
+    const task = room.tasks.find((task) => task.id === id || String(task.number) === id);
+    if (!task) {
+      throw new Band.NotFoundError({ error: { code: "not_found", message: "Resource not found", request_id: randomUUID() } });
+    }
+    return task;
   }
 
   public removeRoom(roomId: string): void {

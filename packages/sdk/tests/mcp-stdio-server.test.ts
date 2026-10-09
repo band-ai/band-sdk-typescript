@@ -27,6 +27,10 @@ import {
   PUSH_INSTRUCTIONS,
   PUSH_METHOD,
 } from "./fixtures/stdioPushServer";
+import { AgentTools } from "../src/runtime/tools/AgentTools";
+import { PlatformRuntime } from "../src/runtime/PlatformRuntime";
+import { AGENT_API_KEY, AGENT_ID, BandPlatform } from "./flows/support/bandPlatform";
+import { TASK_TOOL_NAMES } from "../src/contracts/toolSchemas";
 import { FakeTools } from "./testUtils";
 
 const PUSH_SERVER = fileURLToPath(new URL("./fixtures/stdioPushServer.ts", import.meta.url));
@@ -575,5 +579,48 @@ describe("BandMcpStdioServer when not running", () => {
     await server.start();
     await server.stop();
     expect(() => server.removeTools(BAND_TOOL_NAMES)).not.toThrow();
+  });
+});
+
+describe("board tools over stdio", () => {
+  test.each([
+    { requested: true, flag: true },
+    { requested: false, flag: true },
+    { requested: true, flag: false },
+    { requested: true, flag: undefined },
+  ])("registration preserves negotiated capabilities: %j", async ({ requested, flag }) => {
+    const platform = BandPlatform.host([], { featureFlags: flag === undefined ? {} : { ff_room_tasks: flag } });
+    const rest = platform.rest;
+    const room = await rest.createChat();
+    await using runtime = new PlatformRuntime({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, linkOptions: { ...platform.link, capabilities: { tasks: requested } } });
+    await runtime.initialize();
+    const tools = new AgentTools({ roomId: room.id, rest, capabilities: runtime.link.capabilities });
+    const { server, connectClient } = inProcessServer({ tools: () => tools, enableTaskTools: true });
+    await server.start();
+    const client = await connectClient();
+    try {
+      const listed = await client.listTools();
+      for (const name of TASK_TOOL_NAMES) expect(listed.tools.find((entry) => entry.name === name)?.inputSchema.required).toContain("room_id");
+      const result = await client.callTool({ name: "band_create_task", arguments: { room_id: room.id, subject: "Ship board" } });
+      expect(result.isError === true).toBe(!(requested && flag));
+      if (!requested || !flag) {
+        expect(rest.boardCalls.entries).toEqual([]);
+        return;
+      }
+      async function call(name: string, args: Record<string, unknown> = {}) {
+        const response = await client.callTool({ name, arguments: { room_id: room.id, ...args } });
+        expect(response.isError).not.toBe(true);
+        const [content] = response.content as { type: string; text: string }[];
+        return JSON.parse(content.text);
+      }
+      expect(await call("band_set_board", { goal_title: "Ship" })).toMatchObject({ goal_title: "Ship" });
+      expect(await call("band_get_board")).toMatchObject({ goal_title: "Ship" });
+      const page = await call("band_list_tasks");
+      expect(page.data).toHaveLength(1);
+      expect(await call("band_get_task", { id: `#${page.data[0].number}` })).toMatchObject({ subject: "Ship board" });
+      expect(await call("band_update_task", { id: page.data[0].id, status: "in_progress" })).toMatchObject({ assignments: [expect.objectContaining({ status: "in_progress" })] });
+    } finally {
+      await Promise.all([client.close(), server.stop()]);
+    }
   });
 });

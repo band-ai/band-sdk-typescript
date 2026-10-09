@@ -187,15 +187,12 @@ export class PlatformRuntime implements AsyncDisposable {
       });
     }
 
-    if (this.configuredIdentity) {
-      this._agentName = this.configuredIdentity.name;
-      this._agentDescription = this.configuredIdentity.description ?? "";
-      return;
-    }
-
-    const me = await this.link.rest.getAgentMe();
-    this._agentName = me.name;
-    this._agentDescription = me.description ?? "";
+    const me = !this.configuredIdentity || this.link.capabilities.tasks
+      ? await this.link.rest.getAgentMe()
+      : undefined;
+    this.link.dropUnsupported(me?.featureFlags);
+    this._agentName = this.configuredIdentity?.name ?? me!.name;
+    this._agentDescription = (this.configuredIdentity ? this.configuredIdentity.description : me!.description) ?? "";
   }
 
   /**

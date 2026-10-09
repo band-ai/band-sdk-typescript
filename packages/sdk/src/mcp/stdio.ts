@@ -40,6 +40,7 @@ export interface BandMcpStdioServerOptions {
   tools?: AdapterToolsProtocol | ((roomId: string) => AdapterToolsProtocol | undefined);
   name?: string;
   enableMemoryTools?: boolean;
+  enableTaskTools?: boolean;
   enableContactTools?: boolean;
   additionalTools?: McpToolRegistration[];
   /** With a `tools` resolver, what the tools outside `ROOM_TOOL_NAMES` run on, registered without `room_id`. */
@@ -61,6 +62,7 @@ export class BandMcpStdioServer {
 
     const regOptions: BuildRegistrationsOptions = {
       enableMemoryTools: options.enableMemoryTools,
+      enableTaskTools: options.enableTaskTools,
       enableContactTools: options.enableContactTools,
       additionalTools: options.additionalTools,
       roomlessTools: options.roomlessTools,

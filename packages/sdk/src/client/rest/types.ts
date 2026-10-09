@@ -1,5 +1,6 @@
 import type { RestRequestOptions } from "./requestOptions";
 import type {
+  GetBoardArgs, SetBoardArgs, ListTasksArgs, CreateTaskArgs, UpdateTaskArgs, WireBoard, WireTask, WireTaskPage,
   AddContactArgs,
   ContactRecord,
   ContactRequestAction,
@@ -39,6 +40,7 @@ export interface AgentIdentity {
   description: string | null;
   handle?: string | null;
   ownerUuid?: string | null;
+  featureFlags?: Readonly<Record<string, boolean>>;
 }
 
 export interface ChatParticipant {
@@ -194,6 +196,15 @@ export interface ContactRestApi {
   ): Promise<ToolOperationResult>;
 }
 
+export interface ChatTaskRestApi {
+  getChatBoard?(chatId: string, request?: GetBoardArgs, options?: RestRequestOptions): Promise<WireBoard>;
+  putChatBoard?(chatId: string, request?: SetBoardArgs, options?: RestRequestOptions): Promise<WireBoard>;
+  listChatTasks?(chatId: string, request?: ListTasksArgs, options?: RestRequestOptions): Promise<WireTaskPage>;
+  createChatTask?(chatId: string, request: CreateTaskArgs, options?: RestRequestOptions): Promise<WireTask>;
+  getChatTask?(chatId: string, id: string, request?: GetBoardArgs, options?: RestRequestOptions): Promise<WireTask>;
+  updateChatTask?(chatId: string, id: string, request?: Omit<UpdateTaskArgs, "id">, options?: RestRequestOptions): Promise<WireTask>;
+}
+
 export interface MemoryRestApi {
   listMemories?(
     _request: ListMemoriesArgs,
@@ -251,6 +262,7 @@ export type AgentToolsRestApi =
   & PeerLookupRestApi
   & ContactRestApi
   & MemoryRestApi
+  & ChatTaskRestApi
   & ContextRestApi
   & MessageQueueRestApi;
 
@@ -275,6 +287,15 @@ export interface FernUserProfile {
 // Method syntax (not property-function syntax) is used intentionally so that
 // TypeScript checks parameter types bivariantly.
 export interface FernBandClientLike {
+  agentApiChatTasks?: {
+    getChatBoard?(chatId: string, request?: GetBoardArgs, options?: RestRequestOptions): Promise<unknown>;
+    putChatBoard?(chatId: string, request?: SetBoardArgs, options?: RestRequestOptions): Promise<unknown>;
+    listChatTasks?(chatId: string, request?: ListTasksArgs, options?: RestRequestOptions): Promise<unknown>;
+    createChatTask?(chatId: string, request: CreateTaskArgs, options?: RestRequestOptions): Promise<unknown>;
+    getChatTask?(chatId: string, id: string, request?: GetBoardArgs, options?: RestRequestOptions): Promise<unknown>;
+    updateChatTask?(chatId: string, id: string, request?: Omit<UpdateTaskArgs, "id">, options?: RestRequestOptions): Promise<unknown>;
+  };
+
   agentApiIdentity?: {
     getAgentMe(options?: RestRequestOptions): Promise<unknown>;
   };
