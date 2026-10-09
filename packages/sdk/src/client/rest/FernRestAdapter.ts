@@ -506,7 +506,10 @@ export class FernRestAdapter implements RestApi {
     }
 
     const payload = asMetadataMap(extractEnvelopeData(await api(chatId, { working }, mergeOptions(options))));
-    return { working: payload?.working === true };
+    if (typeof payload?.working !== "boolean") {
+      throw new UnsupportedFeatureError("Activity response did not include the working state");
+    }
+    return { working: payload.working };
   }
 
   public async listChatParticipants(

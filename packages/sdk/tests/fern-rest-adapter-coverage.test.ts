@@ -100,6 +100,14 @@ describe("FernRestAdapter coverage", () => {
     await expect(adapter.reportActivity("room-9", false)).resolves.toEqual({ working: false });
   });
 
+  it("refuses an activity response without the working state rather than reporting idle", async () => {
+    const adapter = new FernRestAdapter({
+      agentApiActivity: { reportAgentChatActivity: async () => ({ data: {} }) },
+    });
+
+    await expect(adapter.reportActivity("room-9", true)).rejects.toBeInstanceOf(UnsupportedFeatureError);
+  });
+
   it("uses the modern chat and event namespaces when they exist", async () => {
     const createChatMessage = vi.fn(async () => ({ data: { ok: true, id: "msg-1" } }));
     const createAgentChatEvent = vi.fn(async () => ({ data: { ok: true, id: "evt-1" } }));

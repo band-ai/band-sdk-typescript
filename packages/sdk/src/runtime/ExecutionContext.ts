@@ -234,7 +234,8 @@ export class ExecutionContext {
   }
 
   public async hydrateContext(forceRefresh = false): Promise<ConversationContext> {
-    if (!this.enableContextHydration || !this.link.rest.getChatContext) {
+    const getChatContext = this.link.rest.getChatContext?.bind(this.link.rest);
+    if (!this.enableContextHydration || !getChatContext) {
       return this.buildLocalContext();
     }
 
@@ -244,7 +245,7 @@ export class ExecutionContext {
 
     try {
       const participants = await this.loadParticipants();
-      const messages = await this.loadHydratedMessages();
+      const messages = await this.loadHydratedMessages(getChatContext);
       const context: ConversationContext = {
         roomId: this.roomId,
         messages,
@@ -282,9 +283,11 @@ export class ExecutionContext {
     return this.roster.list().map(toParticipantRecord);
   }
 
-  private async loadHydratedMessages(): Promise<MetadataMap[]> {
+  private async loadHydratedMessages(
+    getChatContext: NonNullable<AgentToolsRestApi["getChatContext"]>,
+  ): Promise<MetadataMap[]> {
     const items = await fetchCursorTail(
-      async (page) => (await this.link.rest.getChatContext?.({ chatId: this.roomId, ...page }, DEFAULT_REQUEST_OPTIONS)) ?? { data: [] },
+      (page) => getChatContext({ chatId: this.roomId, ...page }, DEFAULT_REQUEST_OPTIONS),
       { keep: this.maxContextMessages },
     );
     return items.map((item) => ({
