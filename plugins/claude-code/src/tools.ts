@@ -19,6 +19,9 @@ export const TOOL = {
   fetchMessages: "fetch_messages",
 } as const;
 
+/** The tool listed while no agent is connected; the Band tools replace it once one is. */
+export const CONNECT_TOOL = "connect";
+
 /** Loads a tool with the session rather than on demand; only the tools Claude answers with need it. */
 export const ALWAYS_LOAD_META = { "anthropic/alwaysLoad": true } as const;
 
@@ -47,6 +50,18 @@ export function bandTools(context: ToolContext): McpToolRegistration[] {
     renameRoomTool(context),
     fetchMessagesTool(context),
   ];
+}
+
+/** Shows the question that picks this session's agent, and answers with what came of it. */
+export function connectTool(connect: () => Promise<string>): McpToolRegistration {
+  return {
+    name: CONNECT_TOOL,
+    description:
+      "Connects this session to Band by showing the user the question that picks its Band agent; the user answers it. Use it whenever the user asks for something on Band while Band isn't connected, then carry on with the request.",
+    inputSchema: { type: "object", properties: {}, required: [] },
+    _meta: ALWAYS_LOAD_META,
+    execute: async () => successResult(await connect()),
+  };
 }
 
 /** Band's status and reason as Band gave them; any other error's message. */

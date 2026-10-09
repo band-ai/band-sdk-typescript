@@ -1,15 +1,23 @@
 /**
  * Claude Code's end of the plugin's stdio: a real MCP client that records every
- * channel push, shared by the in-process flow harness and the spawned live one.
+ * channel push and agent question, answers each question from a queue the test
+ * fills, and lists the tools on connecting as Claude Code does. Shared by the
+ * in-process flow harness and the spawned live one.
  */
 import type { Readable, Writable } from "node:stream";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
+import {
+  ElicitRequestSchema,
+  type ElicitRequestFormParams,
+  type ElicitResult,
+  type JSONRPCMessage,
+} from "@modelcontextprotocol/sdk/types.js";
 
 import type { ChannelPush } from "../../src/adapter";
 import { CHANNEL_METHOD } from "../../src/channel";
+import { TOOL } from "../../src/tools";
 import { CallHolds, RecordLog, type HeldCall } from "../../../../packages/sdk/tests/testUtils";
 
 const INITIALIZED_METHOD = "notifications/initialized";
@@ -43,9 +51,27 @@ class ClientEnd extends StdioServerTransport {
   }
 }
 
+/** A pick of the agent saved as `name`, as the user answers the question. */
+export function pick(name: string): ElicitResult {
+  return { action: "accept", content: { agent: name } };
+}
+
+/** The question closed, as with Esc: the same answer Claude Code gives a question it cancels. */
+export const CLOSED: ElicitResult = { action: "cancel" };
+
+export interface ChannelClientOptions {
+  /** Whether the client can show a form question, as Claude Code can and `claude -p` can't; true by default. */
+  readonly elicitation?: boolean;
+}
+
 export class ChannelClient {
   public readonly client: Client;
   public readonly pushes = new RecordLog<ChannelPush>();
+  /** Every agent question the plugin asked, in order. */
+  public readonly questions = new RecordLog<ElicitRequestFormParams>();
+  private readonly answers = new RecordLog<ElicitResult>();
+  /** The tool names Claude Code re-listed after each `tools/list_changed`, in order. */
+  private readonly toolRelists = new RecordLog<string[]>();
   private readonly outgoing = new CallHolds<[JSONRPCMessage]>();
 
   public constructor(
@@ -54,18 +80,53 @@ export class ChannelClient {
     /** Settles once the plugin has exited, with what it exited with. */
     private readonly exited: Promise<unknown>,
     version: string,
+    { elicitation = true }: ChannelClientOptions = {},
   ) {
-    this.client = new Client({ name: "claude-code", version });
+    this.client = new Client({ name: "claude-code", version }, {
+      capabilities: elicitation ? { elicitation: { form: {} } } : {},
+      // Re-lists on each change, as Claude Code does; no debounce, so each re-list follows its notification without a timer.
+      listChanged: { tools: { debounceMs: 0, onChanged: (_error, tools) => this.toolRelists.record((tools ?? []).map((tool) => tool.name)) } },
+    });
     this.client.fallbackNotificationHandler = async (notification) => {
       if (notification.method === CHANNEL_METHOD) {
         this.pushes.record(notification.params as unknown as ChannelPush);
       }
     };
+    if (elicitation) {
+      this.client.setRequestHandler(ElicitRequestSchema, async ({ params }) => {
+        const index = this.questions.entries.length;
+        this.questions.record(params as ElicitRequestFormParams);
+        return this.answers.next(() => true, index);
+      });
+    }
   }
 
-  /** Completes Claude Code's handshake; rejects if the plugin exits first. */
-  public connect(): Promise<void> {
-    return this.unlessExited(this.client.connect(new ClientEnd(this.fromPlugin, this.toPlugin, this.outgoing)), "the handshake");
+  /** Completes Claude Code's handshake and lists the tools, as Claude Code does; rejects if the plugin exits first. */
+  public async connect(): Promise<void> {
+    await this.unlessExited(this.client.connect(new ClientEnd(this.fromPlugin, this.toPlugin, this.outgoing)), "the handshake");
+    await this.client.listTools();
+  }
+
+  /** Queues the answer to the next question still unanswered. */
+  public answer(result: ElicitResult): void {
+    this.answers.record(result);
+  }
+
+  /** Resolves with the next question from the `from`th on; rejects if the plugin exits first. */
+  public question(from = 0): Promise<ElicitRequestFormParams> {
+    return this.unlessExited(this.questions.next(() => true, from), "a question");
+  }
+
+  /** Resolves with the Band tools once they are listed. */
+  public connected(): Promise<string[]> {
+    return this.toolNamesWhen((names) => names.includes(TOOL.reply));
+  }
+
+  /** The listed tool names once they match, now or after a later re-list; rejects if the plugin exits first. */
+  public async toolNamesWhen(matches: (names: readonly string[]) => boolean): Promise<string[]> {
+    const seen = this.toolRelists.entries.length;
+    const names = (await this.client.listTools()).tools.map((tool) => tool.name);
+    return matches(names) ? names : this.unlessExited(this.toolRelists.next(matches, seen), "the tools to change");
   }
 
   /**

@@ -2,7 +2,7 @@
  * The directories Claude Code gives the plugin, fresh for each test: its data
  * directory and the project a session runs in.
  */
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,9 +10,9 @@ import { NoopLogger } from "@band-ai/sdk/core";
 import { test } from "vitest";
 
 import { runAgentsCommand } from "../../src/agentCommands";
-import { AGENT_SELECT_ENV, CLAUDE_ENV, projectSettingsPath } from "../../src/config";
+import { AGENT_SELECT_ENV, CLAUDE_ENV, readSavedAgents, writeSavedAgents, type SavedAgent } from "../../src/config";
 import { writeFileAtomically } from "../../src/files";
-import { liveSessions, SessionStatusFile, statusPath, type SessionStatus } from "../../src/sessions";
+import { liveSessions, SESSION_TEXT, SessionStatusFile, statusPath, type SessionStatus } from "../../src/sessions";
 
 /**
  * A status as a server records it: by default, a running server in another live Claude Code process (this test's
@@ -28,6 +28,7 @@ export function sessionStatus(overrides: Partial<SessionStatus> = {}): SessionSt
     serverPid: process.pid,
     projectDir: null,
     state: "connected",
+    sentence: SESSION_TEXT.connected("docs"),
     updatedAt: Date.now(),
     ...overrides,
   };
@@ -47,9 +48,14 @@ export class ClaudeCodeDirs implements Disposable {
     };
   }
 
-  /** The status file a server in session `sessionId` keeps while connecting as `agent`. */
-  public openStatus(sessionId: string, agent: string): SessionStatusFile {
-    return SessionStatusFile.open(this.env(sessionId, agent), agent, new NoopLogger())!;
+  /** Saves `agents` alongside those already saved, as `/band:agents add` does. */
+  public save(agents: Readonly<Record<string, SavedAgent>>): void {
+    writeSavedAgents(this.dataDir, { ...readSavedAgents(this.dataDir), ...agents });
+  }
+
+  /** The status file a server in session `sessionId` keeps, off with `sentence` until it records more. */
+  public openStatus(sessionId: string, sentence: string = SESSION_TEXT.notPicked): SessionStatusFile {
+    return SessionStatusFile.open(this.env(sessionId), sentence, new NoopLogger())!;
   }
 
   /** Writes the status a server in session `sessionId` would have left, by default from this project. Returns the file's path. */
@@ -62,7 +68,7 @@ export class ClaudeCodeDirs implements Disposable {
 
   /** The arguments the skill passes before a command. */
   public get cliContext(): string[] {
-    return ["--data-dir", this.dataDir, "--project-dir", this.projectDir];
+    return ["--data-dir", this.dataDir];
   }
 
   /** Runs a `/band:agents` command as the skill does. */
@@ -72,10 +78,6 @@ export class ClaudeCodeDirs implements Disposable {
 
   public session(sessionId: string): SessionStatus | undefined {
     return liveSessions(this.dataDir).find((status) => status.sessionId === sessionId);
-  }
-
-  public projectSettings(): unknown {
-    return JSON.parse(readFileSync(projectSettingsPath(this.projectDir), "utf8"));
   }
 
   public [Symbol.dispose](): void {

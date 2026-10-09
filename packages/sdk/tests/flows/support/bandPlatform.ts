@@ -423,6 +423,13 @@ export class BandRoom {
   }
 }
 
+/** Band's REST API for a key it doesn't know: every identity check is refused with 401. */
+class RejectedKeyRestApi extends FakeRestApi {
+  public override async getAgentMe(): Promise<never> {
+    throw new Band.UnauthorizedError({ error: { code: "unauthorized", message: "Invalid API key", request_id: randomUUID() } });
+  }
+}
+
 /** One agent on a platform whose rooms hold `participants`. */
 export class BandPlatform implements AsyncDisposable {
   public readonly transport = new FakeTransport();
@@ -438,6 +445,11 @@ export class BandPlatform implements AsyncDisposable {
     this.link = { transport: this.transport, restApi: this.rest };
     // Not awaited: Band's push reaches the agent on its own schedule, after the create call returns.
     this.rest.onRoomCreated = (roomId) => void this.announce(roomId);
+  }
+
+  /** What a runtime connecting with `apiKey` reaches: this platform for the agent's key, Band's 401 for any other. */
+  public linkFor({ apiKey }: { readonly apiKey: string }): { readonly transport: FakeTransport; readonly restApi: FakeRestApi } {
+    return apiKey === AGENT_API_KEY ? this.link : { transport: this.transport, restApi: new RejectedKeyRestApi() };
   }
 
   /** The platform alone, for a host that builds its own runtime on `transport` and `rest`. */

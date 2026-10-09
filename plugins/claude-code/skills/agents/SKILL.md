@@ -1,32 +1,31 @@
 ---
-description: Picks the Band agent this project's Claude Code sessions connect as, offering the saved agents and adding a new one by its ID and API key; shows which agent this session and the others hold; removes a saved agent. Use when the user wants to set up Band, asks which Band agent this is, wants this project or session to connect as a different Band agent, wants to add or remove a Band agent, or Band refused the session.
-argument-hint: "[add <agent_id> <api_key> [name] | use <name> | remove <name>]"
-allowed-tools: Bash(node ${CLAUDE_PLUGIN_ROOT}/dist/agents.js *)
+description: Connects this Claude Code session to Band as a saved agent, adds a Band agent by its ID and API key, removes one, and says which Band agent this session is and what to do next.
+when_to_use: When the user says "join Band", "connect to Band", "connect to agents", "set up Band", "add a Band agent" or "which Band agent is this?", or otherwise wants this session on Band, wants to add or remove a Band agent, or asks why Band is off.
+argument-hint: "[add <agent_id> <api_key> [name] | remove <name> | status]"
+allowed-tools: Bash(node ${CLAUDE_PLUGIN_ROOT}/dist/agents.js *), mcp__plugin_band_band__connect
 model: sonnet
 ---
 
 # Band agents
 
-Each Claude Code session connects to Band as one saved agent, and Band lets one session at a time hold an agent. Status right now:
+Each Claude Code session started with Band's channel acts on Band as one saved agent, picked when the session starts or through the `connect` tool. Picking an agent another session holds moves it here. This session right now:
 
-!`node ${CLAUDE_PLUGIN_ROOT}/dist/agents.js --data-dir "${CLAUDE_PLUGIN_DATA}" --project-dir "${CLAUDE_PROJECT_DIR}" status "${CLAUDE_SESSION_ID}"`
+!`node ${CLAUDE_PLUGIN_ROOT}/dist/agents.js --data-dir "${CLAUDE_PLUGIN_DATA}" status "${CLAUDE_SESSION_ID}"`
 
 Arguments: `$ARGUMENTS`
 
 Run commands as below, with the command in place of `<command>`, and show their output exactly as it is:
 
 ```
-node ${CLAUDE_PLUGIN_ROOT}/dist/agents.js --data-dir "${CLAUDE_PLUGIN_DATA}" --project-dir "${CLAUDE_PROJECT_DIR}" --ws-url '${user_config.ws_url}' <command>
+node ${CLAUDE_PLUGIN_ROOT}/dist/agents.js --data-dir "${CLAUDE_PLUGIN_DATA}" --ws-url '${user_config.ws_url}' <command>
 ```
 
-- No arguments:
-  1. With no agent saved, show the status above verbatim in a code block, then follow step 3.
-  2. Otherwise ask with AskUserQuestion which agent this project should connect as. Put this session's state from the status's first line in the question, for example "This session is refused: int1676-alpha is in use in ~/repo/web. Which Band agent should this project connect as?". Offer up to three saved agents, free ones first, each labeled with its name and described with its handle and whether it is free, in use and where, or this session's; and last, "Add a new agent". A saved agent picked: run `use <name>`.
-  3. "Add a new agent": ask in plain text for the agent ID and API key from the agent's page on Band, run `add <agent_id> <api_key>`, and when it succeeds run `use <name it was saved as>`.
-- Arguments given: run them as the command. A request in plain words maps to one command:
-  - "connect this project as my docs agent", "switch to docs" → `use docs`
-  - "add a Band agent" with an agent ID and API key → `add <agent_id> <api_key>`, plus a name if the user gave one
-  - "forget the docs agent" → `remove docs`
-  - "which Band agent is this?" → no command: answer from the status above
+- No arguments, or a request in plain words to join or set up Band:
+  1. Say the status sentence above.
+  2. If it says no agent is saved, ask in plain text for the agent ID and API key from the agent's page on Band, run `add <agent_id> <api_key>`, then go on to step 3.
+  3. If the `connect` tool is available, call it: it shows the user the question that picks the agent. Otherwise give the sentence's next step, such as the restart command.
+- `add <agent_id> <api_key> [name]`, "add a Band agent", or an agent ID and API key given, whatever the status says: ask in plain text for whichever of the ID and key is missing, run `add <agent_id> <api_key>` (plus a name if the user gave one), then call `connect` if it is available; otherwise give the status sentence's next step.
+- `remove <name>`, or "forget the docs agent": first confirm with AskUserQuestion, then run `remove <name>`.
+- `status`, or "which Band agent is this?": say the status sentence above; no command.
 
 Never repeat an API key back to the user.

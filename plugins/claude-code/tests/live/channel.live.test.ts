@@ -1,26 +1,29 @@
 /**
- * The built plugin against the live platform, with an MCP client in Claude
- * Code's place and no LLM: what Band delivers is pushed, what the client calls
- * posts back, each agent is held by one session at a time, and each session
- * connects as the agent it selects.
+ * The built plugin against the live platform, under a parent whose command line
+ * carries Band's channel flag, with an MCP client in Claude Code's place and no
+ * LLM: what Band delivers is pushed, what the client calls posts back, each
+ * session connects as the agent the user picks, and the last pick of an agent wins.
  */
 import { describe, expect, it, onTestFinished } from "vitest";
 
-import { CHANNEL_CAPABILITY, EXIT_FAILED, EXIT_OK } from "../../src/channel";
-import { writeSavedAgents } from "../../src/config";
+import { CHANNEL_CAPABILITY, EXIT_OK } from "../../src/channel";
+import { AGENT_SELECT_ENV, writeSavedAgents } from "../../src/config";
+import { CHANNEL_OFF_INSTRUCTIONS } from "../../src/prompt";
 import type { FoundRoom } from "../../src/rooms";
-import { TOOL } from "../../src/tools";
+import { agentLabel } from "../../src/names";
+import { SESSION_TEXT } from "../../src/sessions";
+import { CONNECT_TOOL, TOOL } from "../../src/tools";
 import { deleteRoomsBulk } from "../../../../packages/sdk/tests/integration/support/liveHarness";
 import { Agents, type AgentIdentity } from "../../../../packages/sdk/tests/baseline/toolkit/agents";
 import { liveRun, warnTeardown } from "../../../../packages/sdk/tests/baseline/toolkit/liveRun";
 import { DELIVERY_STATUS, observeAgent } from "../../../../packages/sdk/tests/baseline/toolkit/observeDelivery";
 import { history, MESSAGE_TYPE, observeRoom, REPLY_WAIT } from "../../../../packages/sdk/tests/baseline/toolkit/observeMessages";
 import { ACTIVITY_EVENT, Rooms, type ActivityFrame, type Room } from "../../../../packages/sdk/tests/baseline/toolkit/rooms";
-import { callTool } from "../support/channelClient";
+import { callTool, CLOSED, pick } from "../support/channelClient";
 import { ClaudeCodeDirs } from "../support/claudeCodeDirs";
 import { agentsCommand, PluginProcess } from "./support/pluginProcess";
 
-const CONFLICT_CODE = "connection_conflict";
+const MAIN = "main";
 
 async function agentInRoom(label: string): Promise<{ identity: AgentIdentity; room: Room }> {
   const identity = await Agents.provision("claude-code", label);
@@ -30,7 +33,7 @@ async function agentInRoom(label: string): Promise<{ identity: AgentIdentity; ro
 }
 
 /** Directories in which `identity` is the one agent saved, as `/band:agents add` leaves them. */
-function savedAs(identity: AgentIdentity, name = "main"): ClaudeCodeDirs {
+function savedAs(identity: AgentIdentity, name = MAIN): ClaudeCodeDirs {
   const dirs = new ClaudeCodeDirs();
   writeSavedAgents(dirs.dataDir, { [name]: { agentId: identity.id, apiKey: identity.apiKey, handle: null } });
   return dirs;
@@ -66,6 +69,18 @@ function roomIdIn(text: string): string {
   return roomId!;
 }
 
+/** The plugin in session `sessionId`, connected without a question as the agent `BAND_AGENT` names. */
+async function connectedAs(dirs: ClaudeCodeDirs, sessionId: string, agent = MAIN): Promise<PluginProcess> {
+  const plugin = await PluginProcess.start({ ...dirs.env(sessionId), [AGENT_SELECT_ENV]: agent });
+  await plugin.connected();
+  return plugin;
+}
+
+/** What `/band:agents status` says for session `sessionId`, without the line end the command prints. */
+async function statusOf(dirs: ClaudeCodeDirs, sessionId: string): Promise<string> {
+  return (await agentsCommand(...dirs.cliContext, "status", sessionId)).trimEnd();
+}
+
 /** Resolves once `plugin` is connected to Band: a mention posted now reaches it. */
 async function expectServing(plugin: PluginProcess, room: Room, identity: AgentIdentity, text: string): Promise<void> {
   const sent = await Rooms.sendMention(room, identity, text);
@@ -76,7 +91,7 @@ describe("the Claude Code plugin on the live platform", () => {
   it("pushes a mention, shows the agent working, replies by message id, and frees the agent when Claude Code exits", async () => {
     const { identity, room } = await agentInRoom("session");
     using dirs = savedAs(identity);
-    const plugin = await PluginProcess.start(dirs.env("session-1"));
+    const plugin = await connectedAs(dirs, "session-1");
 
     expect(plugin.client.getServerCapabilities()?.experimental).toEqual({ [CHANNEL_CAPABILITY]: {} });
     const { tools } = await plugin.client.listTools();
@@ -97,7 +112,7 @@ describe("the Claude Code plugin on the live platform", () => {
     await nextActivity(room, identity, ACTIVITY_EVENT.stopped, beforeReply);
 
     expect((await plugin.leave()).code).toBe(EXIT_OK);
-    await using next = await PluginProcess.start(dirs.env("session-2"));
+    await using next = await connectedAs(dirs, "session-2");
     await expectServing(next, room, identity, "still there?");
   });
 
@@ -105,7 +120,7 @@ describe("the Claude Code plugin on the live platform", () => {
     const { identity, room } = await agentInRoom("rooms");
     const peer = await Agents.provision("claude-code", "rooms-peer");
     using dirs = savedAs(identity);
-    await using plugin = await PluginProcess.start(dirs.env("session-1"));
+    await using plugin = await connectedAs(dirs, "session-1");
     const peerHandle = await peer.handle();
     const [owner] = (await Rooms.participantIds(room)).filter((id) => id !== identity.id);
 
@@ -134,7 +149,7 @@ describe("the Claude Code plugin on the live platform", () => {
   it("clears the working indicator when Claude Code stops the server, and exits 0", async () => {
     const { identity, room } = await agentInRoom("interrupt");
     using dirs = savedAs(identity);
-    const plugin = await PluginProcess.start(dirs.env("session-1"));
+    const plugin = await connectedAs(dirs, "session-1");
     const sent = await Rooms.sendMention(room, identity, "working?");
     await plugin.pushOf(sent.id);
     // From the push on: the plugin reports working only once it has pushed, while Band's own flash for the message lands earlier.
@@ -146,54 +161,59 @@ describe("the Claude Code plugin on the live platform", () => {
     await nextActivity(room, identity, ACTIVITY_EVENT.stopped, beforeStop);
   });
 
-  it("refuses a second session while the first holds the agent", async () => {
-    const { identity, room } = await agentInRoom("conflict");
+  it("connects as the agent the user picks, and a second session's pick of it takes it over", async () => {
+    const { identity, room } = await agentInRoom("takeover");
     using dirs = savedAs(identity);
-    await using first = await PluginProcess.start(dirs.env("session-1"));
+    await using first = await PluginProcess.start(dirs.env("session-1"), { answers: [pick(MAIN)] });
+    await first.connected();
     await expectServing(first, room, identity, "first");
 
-    const second = await PluginProcess.start(dirs.env("session-2"));
-    const exit = await second.exited;
+    await using second = await PluginProcess.start(dirs.env("session-2"), { answers: [pick(MAIN)] });
+    await second.connected();
 
-    expect(exit.code).toBe(EXIT_FAILED);
-    expect(exit.stderr).toContain(CONFLICT_CODE);
-    await expectServing(first, room, identity, "first still");
+    expect(await first.toolNamesWhen((names) => names.includes(CONNECT_TOOL))).toEqual([CONNECT_TOOL]);
+    expect(await statusOf(dirs, "session-1")).toBe(`off: ${SESSION_TEXT.takenOver(`@${await identity.handle()}`)}`);
+    await expectServing(second, room, identity, "second");
   });
 
-  it("connects each session as the agent it selects, and tells a refused one that every agent is taken", async () => {
-    const { env } = await liveRun();
-    const { identity: main, room } = await agentInRoom("main");
-    using dirs = savedAs(main);
-    const docs = await Agents.provision("claude-code", "docs");
-    await Rooms.addParticipant(room, docs);
-    const added = await agentsCommand(...dirs.cliContext, "add", docs.id, docs.apiKey, "docs", ...(env.wsUrl ? ["--ws-url", env.wsUrl] : []));
-    expect(added).toContain(`Saved "docs" (@${await docs.handle()})`);
+  it("connects the next pick at once after the session holding the agent is killed", async () => {
+    const { identity, room } = await agentInRoom("killed");
+    using dirs = savedAs(identity);
+    const killed = await connectedAs(dirs, "session-1");
+    await expectServing(killed, room, identity, "before the crash");
 
-    await using first = await PluginProcess.start(dirs.env("session-1", "main"));
-    await using second = await PluginProcess.start(dirs.env("session-2", "docs"));
-    await expectServing(first, room, main, "main");
-    await expectServing(second, room, docs, "docs");
+    process.kill(dirs.session("session-1")!.serverPid, "SIGKILL");
+    await killed.exited;
 
-    const third = await PluginProcess.start(dirs.env("session-3", "docs"));
-    const exit = await third.exited;
-
-    expect(exit.code).toBe(EXIT_FAILED);
-    expect(exit.stderr).toContain('Band agent "docs" is already connected from another session');
-    const status = await agentsCommand(...dirs.cliContext, "status", "session-3");
-    expect(status).toContain('This session: refused. Band agent "docs" is already connected from another session');
-    expect(status).toContain("No agent is free");
+    await using next = await PluginProcess.start(dirs.env("session-2"), { answers: [pick(MAIN)] });
+    await next.connected();
+    await expectServing(next, room, identity, "after the crash");
   });
 
-  it("fails a session that selects an agent never saved, and says so in /band:agents", async () => {
-    using dirs = savedAs(await Agents.provision("claude-code", "unsaved"));
+  it("stays off when the question is closed, and connect asks again", async () => {
+    const { identity, room } = await agentInRoom("cancel");
+    using dirs = savedAs(identity);
+    await using plugin = await PluginProcess.start(dirs.env("session-1"));
+    await plugin.question();
+    // Called while the start question is open, connect waits on that same question.
+    const closing = callTool(plugin.client, CONNECT_TOOL, {});
+    plugin.answer(CLOSED);
 
-    const exit = await PluginProcess.exitOf(dirs.env("session-1", "missing"));
+    expect((await closing).text).toBe(SESSION_TEXT.notPicked);
+    expect(await statusOf(dirs, "session-1")).toBe(`off: ${SESSION_TEXT.notPicked}`);
 
-    expect(exit.code).toBe(EXIT_FAILED);
-    // The log carries the error as JSON.
-    expect(exit.stderr).toContain(JSON.stringify('No Band agent named "missing"').slice(1, -1));
-    expect(await agentsCommand(...dirs.cliContext, "status", "session-1")).toContain(
-      'This session: not connected. No Band agent named "missing". Saved: main. Add it with /band:agents add <agent_id> <api_key> missing',
-    );
+    plugin.answer(pick(MAIN));
+    expect(await callOk(plugin, CONNECT_TOOL, {})).toBe(SESSION_TEXT.connected(agentLabel(MAIN, await identity.handle())));
+    await expectServing(plugin, room, identity, "picked");
+  });
+
+  it("lists nothing and stays off without Band's channel, telling Claude how to restart", async () => {
+    using dirs = savedAs(await Agents.provision("claude-code", "no-flag"));
+    const plugin = await PluginProcess.start({ ...dirs.env("session-1"), [AGENT_SELECT_ENV]: MAIN }, { channel: false });
+
+    expect((await plugin.client.listTools()).tools).toEqual([]);
+    expect(plugin.client.getInstructions()).toBe(CHANNEL_OFF_INSTRUCTIONS);
+    expect(await statusOf(dirs, "session-1")).toBe(`off: ${SESSION_TEXT.noChannel}`);
+    expect((await plugin.leave()).code).toBe(EXIT_OK);
   });
 });

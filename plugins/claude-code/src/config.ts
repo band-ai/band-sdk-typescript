@@ -12,20 +12,14 @@ import { writeFileAtomically } from "./files";
  */
 export const WS_URL_ENV = "BAND_CHANNEL_WS_URL";
 /**
- * Names the saved agent a session connects as. Read from the server's own environment, never declared
- * in `.mcp.json`: Claude Code passes an unset `${VAR}` there through as literal text.
+ * Names the saved agent a session connects as without asking. Read from the server's own environment, never
+ * declared in `.mcp.json`: Claude Code passes an unset `${VAR}` there through as literal text.
  */
 export const AGENT_SELECT_ENV = "BAND_AGENT";
 /** The skill that manages the agents. */
 export const AGENTS_COMMAND = "/band:agents";
-/** How messages tell the user to save an agent, and to pick one. */
+/** How messages tell the user to save an agent. */
 export const ADD_HINT = `${AGENTS_COMMAND} add <agent_id> <api_key>`;
-export const USE_HINT = useCommand("<name>");
-
-/** The command that selects agent `name` for a project. */
-export function useCommand(name: string): string {
-  return `${AGENTS_COMMAND} use ${name}`;
-}
 
 /** What Claude Code sets for a plugin's MCP server. */
 export const CLAUDE_ENV = {
@@ -38,8 +32,6 @@ export const CLAUDE_ENV = {
 
 /** The saved agents, keyed by name, in the plugin's data directory. */
 const AGENTS_FILE = "agents.yaml";
-/** Where `/band:agents use` selects an agent for a project: the user's personal Claude Code settings for it. */
-const PROJECT_SETTINGS_FILE = join(".claude", "settings.local.json");
 
 /** How Claude Code passes a plugin setting left unset: as the literal `${user_config.<key>}`. */
 const UNSET_SETTING = /^\$\{user_config\.\w+\}$/;
@@ -58,33 +50,10 @@ export interface SavedAgent {
 
 export type SavedAgents = Readonly<Record<string, SavedAgent>>;
 
-export interface SelectedAgent {
-  readonly name: string;
-  readonly credentials: AgentCredentials;
-}
-
-/** The agent this session connects as: the saved one `BAND_AGENT` names, or the only one saved. */
-export function selectAgent(env: Env): SelectedAgent {
-  const saved = readSavedAgents(pluginDataDir(env));
-  const name = env[AGENT_SELECT_ENV] || soleAgentName(saved);
-  const agent = saved[name];
-  if (!agent) {
-    throw new Error(`${unknownAgentMessage(name, saved)} Add it with ${ADD_HINT} ${name}`);
-  }
+/** What a session connects to Band with as `agent`, on the Band the plugin is set to. */
+export function agentCredentials(agent: SavedAgent, env: Env): AgentCredentials {
   const wsUrl = configuredWsUrl(env[WS_URL_ENV]);
-  return { name, credentials: { agentId: agent.agentId, apiKey: agent.apiKey, ...(wsUrl ? { wsUrl } : {}) } };
-}
-
-function soleAgentName(saved: SavedAgents): string {
-  const names = Object.keys(saved);
-  if (names.length === 1) {
-    return names[0];
-  }
-  throw new Error(
-    names.length === 0
-      ? `No Band agent is saved yet: add one with ${AGENTS_COMMAND}.`
-      : `Band agents ${names.join(", ")} are saved, and this project picks none: pick one with ${AGENTS_COMMAND}.`,
-  );
+  return { agentId: agent.agentId, apiKey: agent.apiKey, ...(wsUrl ? { wsUrl } : {}) };
 }
 
 /** The Band WebSocket URL the plugin is set to; none for app.band.ai, when the setting is empty or unset. */
@@ -108,7 +77,7 @@ export function assertAgentName(name: string): void {
   }
 }
 
-function pluginDataDir(env: Env): string {
+export function pluginDataDir(env: Env): string {
   const dir = env[CLAUDE_ENV.pluginData];
   if (!dir) {
     throw new Error(`${CLAUDE_ENV.pluginData} is not set: Claude Code sets it for the plugin.`);
@@ -118,10 +87,6 @@ function pluginDataDir(env: Env): string {
 
 export function agentsFilePath(dataDir: string): string {
   return join(dataDir, AGENTS_FILE);
-}
-
-export function projectSettingsPath(projectDir: string): string {
-  return join(projectDir, PROJECT_SETTINGS_FILE);
 }
 
 /** The saved agents by name; none until the first is added. Nothing inherited, so "constructor" is just a name. */

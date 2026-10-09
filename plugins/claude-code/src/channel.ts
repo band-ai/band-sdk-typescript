@@ -1,19 +1,13 @@
-import type { PlatformRuntimeOptions } from "@band-ai/sdk";
-import type { AgentCredentials } from "@band-ai/sdk/config";
-import { DeliveryFailedError, WebSocketDisconnectError, type Logger, type WebSocketDisconnectReason } from "@band-ai/sdk/core";
+import { DeliveryFailedError, type Logger } from "@band-ai/sdk/core";
 import { BandMcpStdioServer } from "@band-ai/sdk/mcp";
-import type { AgentIdentity } from "@band-ai/sdk/rest";
-import { PlatformRuntime } from "@band-ai/sdk/runtime";
 import type { Readable, Writable } from "node:stream";
 
-import { ChannelAdapter } from "./adapter";
-import { USE_HINT } from "./config";
-import { MessageMemory } from "./messages";
-import { handleOf } from "./names";
-import { CHANNEL_INSTRUCTIONS } from "./prompt";
-import { sessionLocation, type SessionStatus, type SessionStatusFile } from "./sessions";
-import { bandTools, type ToolContext } from "./tools";
-import { WorkingIndicator } from "./working";
+import { AgentSession, type LinkFactory } from "./agentSession";
+import { bandChannelOn } from "./channelFlag";
+import { AGENT_SELECT_ENV, type Env } from "./config";
+import { CHANNEL_INSTRUCTIONS, CHANNEL_OFF_INSTRUCTIONS } from "./prompt";
+import { SESSION_TEXT, SessionStatusFile } from "./sessions";
+import { connectTool } from "./tools";
 
 /** The experimental capability that makes Claude Code register the server as a channel. */
 export const CHANNEL_CAPABILITY = "claude/channel";
@@ -23,24 +17,16 @@ export const CHANNEL_METHOD = "notifications/claude/channel";
 export const EXIT_OK = 0;
 export const EXIT_FAILED = 1;
 
-// Once the session ends, the runtime stops at the turn in flight rather than draining the backlog
-// into a server that can't push it; what it didn't start waits on the platform for the next session.
-const STOP_WITHOUT_DRAINING_MS = 0;
-
 /** Stands in for `interrupted` outside a process that can be signalled. */
 const NEVER = new Promise<void>(() => undefined);
 
-/** The platform's answer when another session already holds the agent. */
-const CONNECTION_CONFLICT: Extract<WebSocketDisconnectReason, { source: "upgrade" }>["code"] = "connection_conflict";
-
 export interface RunChannelOptions {
-  /** The name the agent is saved under. */
-  readonly agentName: string;
-  readonly credentials: AgentCredentials;
-  /** Where the session's state is kept for `/band:agents`; none outside Claude Code. */
-  readonly status?: SessionStatusFile;
-  /** Overrides for the runtime's own link, such as a test platform's transport and REST API. */
-  readonly link?: PlatformRuntimeOptions["linkOptions"];
+  /** The command line of the process that started the server: Claude Code's, saying whether Band's channel is on. */
+  readonly parentArgs: readonly string[] | undefined;
+  /** The server's environment, as Claude Code sets it for the plugin. */
+  readonly env: Env;
+  /** Overrides for each connection's link, such as a test platform's transport and REST API. */
+  readonly link?: LinkFactory;
   readonly stdin?: Readable;
   readonly stdout?: Writable;
   /** Settles when the process is told to stop (SIGINT or SIGTERM), as Claude Code stops its servers. */
@@ -49,49 +35,47 @@ export interface RunChannelOptions {
 }
 
 /**
- * Serves one Claude Code session as the Band agent until either side leaves,
- * and resolves with the process exit code.
+ * Serves one Claude Code session until either side leaves, and resolves with the process exit code.
+ * Without Band's channel it lists nothing; with it, the agent the user picks.
  */
 export async function runChannel(options: RunChannelOptions): Promise<number> {
+  const channelOn = bandChannelOn(options.parentArgs, options.env);
+  const status = SessionStatusFile.open(options.env, channelOn ? SESSION_TEXT.notPicked : SESSION_TEXT.noChannel, options.logger);
   try {
-    await serveChannel(options);
-    options.status?.remove();
+    await (channelOn ? serveChannel(options, status) : serveOff(options));
+    status?.remove();
     return EXIT_OK;
   } catch (error) {
-    reportFailure(error, options);
+    options.logger.error("Band channel stopped", { error });
     return EXIT_FAILED;
   }
 }
 
-async function serveChannel({ credentials, status, link, stdin, stdout, interrupted = NEVER, logger }: RunChannelOptions): Promise<void> {
-  // Known before any network call, so the session shows as holding its agent from the start.
-  status?.record({ agentId: credentials.agentId });
-  const runtime = new PlatformRuntime({
-    ...credentials,
-    logger,
-    // Without "reject" the platform hands the agent to the newest session and silently drops the one already serving it.
-    linkOptions: { conflictPolicy: "reject", ...link },
-    agentConfig: { autoSubscribeExistingRooms: true },
+/** No tools and no connection to Band: Claude only learns how to restart with the channel. */
+async function serveOff({ stdin, stdout, interrupted = NEVER }: RunChannelOptions): Promise<void> {
+  const server = new BandMcpStdioServer({ instructions: CHANNEL_OFF_INSTRUCTIONS, stdin, stdout });
+  await server.start();
+  await Promise.race([server.stopped, interrupted]);
+  await server.stop();
+}
+
+async function serveChannel({ env, link, stdin, stdout, interrupted = NEVER, logger }: RunChannelOptions, status: SessionStatusFile | undefined): Promise<void> {
+  // Listed from the start: Claude Code asks for the tools as soon as it connects.
+  const connect = connectTool(() => agentSession.ask());
+  const server: BandMcpStdioServer = new BandMcpStdioServer({
+    additionalTools: [connect],
+    capabilities: { experimental: { [CHANNEL_CAPABILITY]: {} } },
+    instructions: CHANNEL_INSTRUCTIONS,
+    stdin,
+    stdout,
   });
-  // Nothing is connected yet, so a stop before Band answers just ends the session.
-  const identity = await Promise.race([identify(runtime), interrupted.then(() => null)]);
-  if (!identity) {
-    return;
-  }
-  status?.record({ handle: identity.handle ?? null });
-
-  const context: ToolContext = {
-    link: runtime.link,
-    self: { id: identity.id, handle: handleOf(identity) },
-    memory: new MessageMemory(),
-    working: new WorkingIndicator(runtime.link.rest, logger),
+  const agentSession = new AgentSession({
+    server,
+    connectTool: connect,
+    env,
+    status,
+    link,
     logger,
-  };
-
-  const adapter = new ChannelAdapter({
-    ownerUuid: identity.ownerUuid,
-    memory: context.memory,
-    working: context.working,
     push: async (push) => {
       try {
         await server.notify(CHANNEL_METHOD, push);
@@ -100,60 +84,32 @@ async function serveChannel({ credentials, status, link, stdin, stdout, interrup
       }
     },
   });
-  const server: BandMcpStdioServer = new BandMcpStdioServer({
-    additionalTools: bandTools(context),
-    capabilities: { experimental: { [CHANNEL_CAPABILITY]: {} } },
-    instructions: CHANNEL_INSTRUCTIONS,
-    stdin,
-    stdout,
-  });
 
   await server.start();
-  const serve = async (): Promise<void> => {
-    // Messages waiting on the platform are pushed only once Claude Code can receive them.
-    await server.initialized;
-    await runtime.start(adapter);
-    status?.record({ state: "connected" });
-    await runtime.runForever();
-  };
-  let servingFailed = false;
   try {
-    // Claude Code leaving, or stopping the process, settles first, whichever phase it interrupts.
-    await Promise.race([server.stopped, interrupted, serve()]);
-  } catch (error) {
-    servingFailed = true;
-    throw error;
+    void start(server, agentSession, env[AGENT_SELECT_ENV]).catch((error: unknown) => {
+      logger.error("Band channel couldn't pick an agent", { error });
+    });
+    // Claude Code leaving, or stopping the process, ends the session.
+    await Promise.race([server.stopped, interrupted]);
   } finally {
-    const cleanup = await Promise.allSettled([context.working.stopAll(), runtime.stop(STOP_WITHOUT_DRAINING_MS), server.stop()]);
+    const cleanup = await Promise.allSettled([agentSession.close(), server.stop()]);
     const errors = cleanup.flatMap((result): unknown[] => result.status === "rejected" ? [result.reason] : []);
-    if (!servingFailed && errors.length > 0) {
+    if (errors.length > 0) {
       throw errors.length === 1 ? errors[0] : new AggregateError(errors, "Band channel cleanup failed");
     }
   }
 }
 
-/** Who the agent is, once the runtime has checked its credentials with Band. */
-async function identify(runtime: PlatformRuntime): Promise<AgentIdentity> {
-  await runtime.initialize();
-  return runtime.link.rest.getAgentMe();
-}
-
-function reportFailure(error: unknown, { agentName, credentials, status, logger }: RunChannelOptions): void {
-  if (isConnectionConflict(error)) {
-    const message = conflictMessage(agentName, status?.holder(credentials.agentId));
-    status?.record({ state: "refused", error: message });
-    logger.error(message, { error });
+/**
+ * Connects as the agent `BAND_AGENT` names, or asks once Claude Code has listed the tools. Claude Code cancels a
+ * question that arrives before it has processed the listings, so the `connect` tool stays as the sure way to it.
+ */
+async function start(server: BandMcpStdioServer, agentSession: AgentSession, selected: string | undefined): Promise<void> {
+  if (selected) {
+    await agentSession.connectAs(selected);
     return;
   }
-  status?.failed(error);
-  logger.error("Band channel stopped", { error });
-}
-
-function isConnectionConflict(error: unknown): boolean {
-  return error instanceof WebSocketDisconnectError && error.reason.source === "upgrade" && error.reason.code === CONNECTION_CONFLICT;
-}
-
-function conflictMessage(agentName: string, holder: SessionStatus | undefined): string {
-  const location = holder && sessionLocation(holder);
-  return `Band agent "${agentName}" is already connected from another session${location ? ` (${location})` : ""}. Pick another with ${USE_HINT}.`;
+  await server.toolsListed;
+  await agentSession.ask();
 }

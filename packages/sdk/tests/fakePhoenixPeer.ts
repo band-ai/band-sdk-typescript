@@ -14,6 +14,13 @@ export interface FakePhoenixPeerOptions {
 
 const CONFLICT_STATUS = 409;
 const CONFLICT_BODY = JSON.stringify({ error: { code: "connection_conflict", message: "Connection already exists for this agent." } });
+/** How long after an eviction the platform refuses another take-over of the same agent. */
+const TAKEOVER_COOLDOWN_MS = 30_000;
+/** Why the platform refuses a take-over within the cooldown. */
+export const TAKEOVER_COOLDOWN_MESSAGE = "Agent was just taken over; try again shortly.";
+const TAKEN_OVER_REASON = "session.already_connected";
+const COOLDOWN_STATUS = 429;
+const JSON_HEADERS = { "Content-Type": "application/json" };
 
 interface PendingJoin {
   socket: ServerSocket;
@@ -55,14 +62,24 @@ export class FakePhoenixPeer implements AsyncDisposable {
   public readonly closed = new RecordLog<string | null>();
   /** The request URL of every connection, in order, with its query parameters. */
   public readonly connectionUrls: string[] = [];
+  /** When each evicted agent may be taken over again, in ms since the epoch. */
+  private readonly cooldownEnds = new Map<string, number>();
 
   private constructor({ rejectConflicts = false }: FakePhoenixPeerOptions) {
     this.wss = new WebSocketServer({
       port: 0,
-      verifyClient: ({ req }, done) =>
-        rejectConflicts && this.conflicts(req.url ?? "")
-          ? done(false, CONFLICT_STATUS, CONFLICT_BODY, { "Content-Type": "application/json" })
-          : done(true),
+      verifyClient: ({ req }, done) => {
+        const params = connectionParams(req.url ?? "");
+        const agentId = params.get("agent_id");
+        const held = agentId !== null && [...this.sockets.values()].includes(agentId);
+        if (rejectConflicts && held && params.get("on_conflict") === "reject") {
+          done(false, CONFLICT_STATUS, CONFLICT_BODY, JSON_HEADERS);
+        } else if (held && params.get("on_conflict") === "supersede") {
+          this.takeOver(agentId, done);
+        } else {
+          done(true);
+        }
+      },
     });
     this.wss.on("connection", (socket, request) => this.handleConnection(socket as ServerSocket, request.url ?? ""));
   }
@@ -138,14 +155,14 @@ export class FakePhoenixPeer implements AsyncDisposable {
 
   /** Once the agent has joined its control channel, hands the agent to another connection, as the platform does for a second socket by default. */
   public async supersede(agentId: string): Promise<void> {
-    const topic = agentControlTopic(agentId);
-    await this.joined.next((joinedTopic) => joinedTopic === topic);
-    this.push(topic, "supersede", {
-      reason: "session.already_connected",
-      message: "superseded",
-      retryable: false,
-      correlation_id: null,
-    });
+    await this.joined.next((joinedTopic) => joinedTopic === agentControlTopic(agentId));
+    this.evict(agentId);
+  }
+
+  /** Once the agent has joined its control channel, ends its connections for `reason`, as the platform can for a cause other than a take-over. */
+  public async endConnections(agentId: string, reason: string, message: string): Promise<void> {
+    await this.joined.next((joinedTopic) => joinedTopic === agentControlTopic(agentId));
+    this.pushControl(agentId, reason, message);
   }
 
   public async stop(): Promise<void> {
@@ -159,9 +176,38 @@ export class FakePhoenixPeer implements AsyncDisposable {
     await this.stop();
   }
 
-  private conflicts(url: string): boolean {
-    const params = connectionParams(url);
-    return params.get("on_conflict") === "reject" && [...this.sockets.values()].includes(params.get("agent_id"));
+  /** As the platform answers an `on_conflict=supersede` connection for a held agent: evicts the holder, or refuses within the cooldown. */
+  private takeOver(agentId: string, done: (accept: boolean, status?: number, message?: string, headers?: Record<string, string>) => void): void {
+    const remainingMs = (this.cooldownEnds.get(agentId) ?? 0) - Date.now();
+    if (remainingMs > 0) {
+      const retryAfter = Math.ceil(remainingMs / 1000);
+      const body = JSON.stringify({ error: { code: "too_many_requests", message: TAKEOVER_COOLDOWN_MESSAGE, retry_after: retryAfter } });
+      done(false, COOLDOWN_STATUS, body, { ...JSON_HEADERS, "Retry-After": String(retryAfter) });
+      return;
+    }
+    this.evict(agentId);
+    done(true);
+  }
+
+  /** Tells the agent's connections they lost it, and stamps the take-over cooldown. */
+  private evict(agentId: string): void {
+    this.cooldownEnds.set(agentId, Date.now() + TAKEOVER_COOLDOWN_MS);
+    this.pushControl(agentId, TAKEN_OVER_REASON, "superseded");
+  }
+
+  /** The platform's terminal `supersede` control event, to the agent's connections only. */
+  private pushControl(agentId: string, reason: string, text: string): void {
+    const message: PhoenixMessage = [null, null, agentControlTopic(agentId), "supersede", {
+      reason,
+      message: text,
+      retryable: false,
+      correlation_id: null,
+    }];
+    for (const [socket, holder] of this.sockets) {
+      if (holder === agentId) {
+        socket.send(JSON.stringify(message));
+      }
+    }
   }
 
   private handleConnection(socket: ServerSocket, url: string): void {
