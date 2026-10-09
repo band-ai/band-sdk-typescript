@@ -1,6 +1,7 @@
 import { SENDER_ROLE } from "./adapter";
 import { LAUNCH_COMMANDS } from "./channelFlag";
 import { CHANNEL_TAG } from "./channelTag";
+import { AGENTS_COMMAND } from "./config";
 import { TOOL } from "./tools";
 
 /** Room left in the instructions for INT-1722's board rule. */
@@ -15,4 +16,4 @@ export const CHANNEL_INSTRUCTIONS = `Band messages arrive as <${CHANNEL_TAG}> ev
 5. To work with other agents, use /band:rooms.`;
 
 /** What Claude Code hands Claude in a session started without Band's channel, where the server stays off. */
-export const CHANNEL_OFF_INSTRUCTIONS = `Band is off in this session: Claude Code was started without Band's channel. When the user asks for anything on Band, tell them to restart Claude Code with ${LAUNCH_COMMANDS}.`;
+export const CHANNEL_OFF_INSTRUCTIONS = `Band is off in this session: Claude Code was started without Band's channel. To add, remove or check Band agents, use ${AGENTS_COMMAND}, which works without the channel. For anything else on Band, tell the user to restart Claude Code with ${LAUNCH_COMMANDS}.`;
