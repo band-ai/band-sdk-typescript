@@ -228,6 +228,11 @@ describe("rename_room", () => {
 });
 
 describe("invite", () => {
+  it("invites nobody and says so when given nobody", async ({ band, session }) => {
+    expect(await session.callTool(TOOL.invite, { room_id: ROOM, participants: [] })).toEqual({ isError: true, text: "Name at least one participant." });
+    expect(band.platform.rest.added.entries).toEqual([]);
+  });
+
   it("reports each participant as added, already in room, or failed", async ({ band, session }) => {
     const room = await band.platform.room(PEER_ROOM, [USER].map((id) => ({ id, name: id, type: "User", handle: id })));
     band.platform.rest.unreachable.add(QA_MOBILE.id);

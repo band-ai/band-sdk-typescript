@@ -5,7 +5,7 @@ import { AgentTools, replaceUuidMentions } from "@band-ai/sdk/runtime";
 import { handleOf, listCandidates, resolveAll, type Candidate } from "./names";
 import { ALWAYS_LOAD_META, requiredString, stringList, TOOL, toolResult, type ToolContext } from "./tools";
 
-/** How many messages `reply` remembers, the oldest dropped first. */
+/** How many messages `reply` remembers, the least recently seen dropped first. */
 export const REPLY_MEMORY_SIZE = 1000;
 
 /** How many messages `fetch_messages` lists by default, and at most. */
@@ -24,9 +24,11 @@ export class MessageMemory {
   private readonly messages = new Map<string, RememberedMessage>();
 
   public remember(messageId: string, message: RememberedMessage): void {
+    // Re-inserting moves a message seen again (as fetch_messages lists it) to the newest end.
+    this.messages.delete(messageId);
     this.messages.set(messageId, message);
     if (this.messages.size > REPLY_MEMORY_SIZE) {
-      // A Map iterates in insertion order, and ids are written once, so the first key is the oldest.
+      // A Map iterates in insertion order, so the first key is the least recently seen.
       this.messages.delete(this.messages.keys().next().value as string);
     }
   }

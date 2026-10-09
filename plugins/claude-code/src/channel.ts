@@ -3,12 +3,13 @@ import type { AgentCredentials } from "@band-ai/sdk/config";
 import { DeliveryFailedError, WebSocketDisconnectError, type Logger, type WebSocketDisconnectReason } from "@band-ai/sdk/core";
 import { BandMcpStdioServer } from "@band-ai/sdk/mcp";
 import type { AgentIdentity } from "@band-ai/sdk/rest";
-import { ensureHandlePrefix, PlatformRuntime } from "@band-ai/sdk/runtime";
+import { PlatformRuntime } from "@band-ai/sdk/runtime";
 import type { Readable, Writable } from "node:stream";
 
 import { ChannelAdapter } from "./adapter";
 import { USE_HINT } from "./config";
 import { MessageMemory } from "./messages";
+import { handleOf } from "./names";
 import { CHANNEL_INSTRUCTIONS } from "./prompt";
 import { sessionLocation, type SessionStatus, type SessionStatusFile } from "./sessions";
 import { bandTools, type ToolContext } from "./tools";
@@ -81,7 +82,7 @@ async function serveChannel({ credentials, status, link, stdin, stdout, interrup
 
   const context: ToolContext = {
     link: runtime.link,
-    self: { id: identity.id, handle: ensureHandlePrefix(identity.handle) ?? identity.name },
+    self: { id: identity.id, handle: handleOf(identity) },
     memory: new MessageMemory(),
     working: new WorkingIndicator(runtime.link.rest, logger),
     logger,

@@ -1,7 +1,8 @@
 import type { McpToolRegistration } from "@band-ai/sdk/mcp";
-import { listAllPeers, type ChatParticipant } from "@band-ai/sdk/rest";
+import type { ChatParticipant } from "@band-ai/sdk/rest";
 
 import { handleOf, normalizeHandle, resolveAll, type Candidate } from "./names";
+import { reachable } from "./peers";
 import { bandErrorText, bandStatus, requiredString, stringList, TOOL, toolResult, type ToolContext } from "./tools";
 
 /** Band's answer for a room the agent isn't in, as when it left after the room was listed. */
@@ -76,11 +77,7 @@ export function openRoomTool(context: ToolContext): McpToolRegistration {
       required: ["participants"],
     },
     execute: (args) => toolResult(TOOL.openRoom, context, async () => {
-      const entries = stringList(args.participants);
-      if (entries.length === 0) {
-        throw new Error("Name at least one participant.");
-      }
-      const wanted = uniqueById(resolveAll(entries, await reachable(context), REACHABLE));
+      const wanted = await resolveWanted(context, args.participants);
       const title = typeof args.title === "string" && args.title.trim() ? args.title : undefined;
       if (args.new === true) {
         return createRoom(context, wanted, title);
@@ -109,7 +106,7 @@ export function inviteTool(context: ToolContext): McpToolRegistration {
     },
     execute: (args) => toolResult(TOOL.invite, context, async () => {
       const roomId = requiredString(args, "room_id");
-      const wanted = uniqueById(resolveAll(stringList(args.participants), await reachable(context), REACHABLE));
+      const wanted = await resolveWanted(context, args.participants);
       const inRoom = new Set((await context.link.rest.listChatParticipants(roomId)).map(({ id }) => id));
       const lines = await Promise.all(wanted.map(async (candidate) => {
         if (inRoom.has(candidate.id)) {
@@ -198,10 +195,13 @@ async function addToRoom({ link }: ToolContext, roomId: string, { id }: Candidat
   }
 }
 
-/** Everyone Band lets this agent reach: its owner, its contacts and the agents it may use. */
-async function reachable({ link, self }: ToolContext): Promise<Candidate[]> {
-  return (await listAllPeers(link.rest)).flatMap(({ id, name, type, handle, description }) =>
-    id && id !== self.id ? [{ id, name: name ?? id, type: type ?? "", handle, description }] : []);
+/** Who a tool's `participants` names, once each among those the agent can reach. */
+async function resolveWanted(context: ToolContext, participants: unknown): Promise<Candidate[]> {
+  const entries = stringList(participants);
+  if (entries.length === 0) {
+    throw new Error("Name at least one participant.");
+  }
+  return uniqueById(resolveAll(entries, await reachable(context), REACHABLE));
 }
 
 function uniqueById(candidates: readonly Candidate[]): Candidate[] {

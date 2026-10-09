@@ -1,7 +1,7 @@
 import type { McpToolRegistration } from "@band-ai/sdk/mcp";
 import { listAllPeers } from "@band-ai/sdk/rest";
 
-import { AGENT_TYPE, handleOf, matchesWords } from "./names";
+import { AGENT_TYPE, handleOf, matchesWords, type Candidate } from "./names";
 import { TOOL, toolResult, type ToolContext } from "./tools";
 
 /** Lists the agents this one can reach, optionally only those matching a query, marking who is in a room. */
@@ -24,18 +24,22 @@ export function findAgentsTool(context: ToolContext): McpToolRegistration {
       const query = typeof args.query === "string" && args.query.trim() ? args.query : undefined;
       const roomId = typeof args.room_id === "string" && args.room_id ? args.room_id : undefined;
       const [peers, inRoom] = await Promise.all([
-        listAllPeers(rest),
+        reachable(context),
         roomId ? rest.listChatParticipants(roomId).then((participants) => new Set(participants.map(({ id }) => id))) : new Set<string>(),
       ]);
-      const agents = peers.flatMap(({ id, name, type, handle, description }) =>
-        id && type === AGENT_TYPE ? [{ id, name: name ?? id, type, handle, description }] : [])
-        .filter((agent) => query === undefined || matchesWords(agent, query));
+      const agents = peers.filter((peer) => peer.type === AGENT_TYPE && (query === undefined || matchesWords(peer, query)));
       if (agents.length === 0) {
         return query ? `No reachable agent matches "${query}".` : "No agents are reachable.";
       }
       return agents
-        .map((agent) => [handleOf(agent), agent.name, agent.description].filter(Boolean).join(" — ") + (inRoom.has(agent.id) ? " (in room)" : ""))
+        .map((agent) => [handleOf(agent), agent.handle ? agent.name : null, agent.description].filter(Boolean).join(" — ") + (inRoom.has(agent.id) ? " (in room)" : ""))
         .join("\n");
     }),
   };
+}
+
+/** Everyone Band lets this agent reach: its owner, its contacts and the agents it may use. */
+export async function reachable({ link, self }: Pick<ToolContext, "link" | "self">): Promise<Candidate[]> {
+  return (await listAllPeers(link.rest)).flatMap(({ id, name, type, handle, description }) =>
+    id && id !== self.id ? [{ id, name: name ?? id, type: type ?? "", handle, description }] : []);
 }
