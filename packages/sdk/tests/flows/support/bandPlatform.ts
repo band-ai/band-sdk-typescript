@@ -85,6 +85,8 @@ export interface Added {
 interface RoomState {
   participants: PlatformParticipant[];
   title?: string;
+  /** Whether the agent created the room, which makes it the owner. */
+  owned?: boolean;
   /** When anything was last said in the room, as Band's `updated_at` moves. */
   updatedAt: string;
 }
@@ -147,8 +149,12 @@ export class RecordingRestApi extends FakeRestApi {
     return roomPayload(roomId, "active", room.updatedAt, room.title);
   }
 
+  /** Like Band, only the room's owner, the agent that created it, may rename it; anyone else gets 403. */
   public async renameChat(roomId: string, title: string): Promise<ChatRoom> {
     const room = this.assertMember(roomId, "renameChat");
+    if (!room.owned) {
+      throw new Band.ForbiddenError({ error: { code: "forbidden", message: "Forbidden", request_id: randomUUID() } });
+    }
     room.title = title;
     return roomPayload(roomId, "active", room.updatedAt, title);
   }
@@ -189,6 +195,7 @@ export class RecordingRestApi extends FakeRestApi {
   public override async createChat(request?: string | CreateChatRequest) {
     const roomId = `created-${randomUUID()}`;
     this.addRoom(roomId, [], typeof request === "string" ? undefined : request?.title);
+    this.rooms.get(roomId)!.owned = true;
     this.onRoomCreated?.(roomId);
     return { id: roomId };
   }

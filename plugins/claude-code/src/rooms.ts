@@ -140,9 +140,11 @@ export function renameRoomTool(context: ToolContext): McpToolRegistration {
       if (!rest.renameChat) {
         throw new Error("Band's REST client can't rename a room");
       }
+      const roomId = requiredString(args, "room_id");
+      const title = requiredString(args, "title");
       try {
-        const room = await rest.renameChat(requiredString(args, "room_id"), requiredString(args, "title"));
-        return `Renamed to '${room.title ?? requiredString(args, "title")}'.`;
+        const room = await rest.renameChat(roomId, title);
+        return `Renamed to '${room.title ?? title}'.`;
       } catch (error) {
         throw bandStatus(error) === FORBIDDEN_STATUS ? new Error("Only the room's owner can rename it.") : error;
       }
