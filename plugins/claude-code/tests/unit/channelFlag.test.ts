@@ -10,6 +10,7 @@ const ON = [
   ["the README's local build", "claude --plugin-dir plugins/claude-code --dangerously-load-development-channels plugin:band@inline"],
   ["Band after another channel", "claude --channels server:x plugin:band@band-ai"],
   ["Band among several, before a prompt", "claude --model opus --channels plugin:discord@x plugin:band@band-ai -- fix the tests"],
+  ["the allowlisted option in a print session", "claude -p --channels plugin:band@band-ai"],
 ] as const;
 
 const OFF = [
@@ -18,6 +19,8 @@ const OFF = [
   ["only another plugin's channel", "claude --channels plugin:discord@x"],
   ["Band's entry after the option ended", "claude --channels plugin:other@x --model opus plugin:band@x"],
   ["Band's entry after the option's = form, which takes one value", "claude --channels=plugin:discord@x plugin:band@band-ai"],
+  ["the development channels option in a print session, which ignores it", "claude -p --dangerously-load-development-channels plugin:band@band-ai"],
+  ["the same with --print", "claude --print --dangerously-load-development-channels plugin:band@band-ai"],
 ] as const;
 
 describe("Band's channel", () => {

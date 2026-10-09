@@ -24,7 +24,7 @@ node ${CLAUDE_PLUGIN_ROOT}/dist/agents.js --data-dir "${CLAUDE_PLUGIN_DATA}" --w
   1. Say the status sentence above.
   2. If it says no agent is saved, ask in plain text for the agent ID and API key from the agent's page on Band, run `add <agent_id> <api_key>`, then go on to step 3.
   3. If the `connect` tool is available, call it: it shows the user the question that picks the agent. Otherwise give the sentence's next step, such as the restart command.
-- `add <agent_id> <api_key> [name]`, or "add a Band agent" with an ID and key: run it, then call `connect` if it is available.
+- `add <agent_id> <api_key> [name]`, "add a Band agent", or an agent ID and API key given, whatever the status says: ask in plain text for whichever of the ID and key is missing, run `add <agent_id> <api_key>` (plus a name if the user gave one), then call `connect` if it is available; otherwise give the status sentence's next step.
 - `remove <name>`, or "forget the docs agent": first confirm with AskUserQuestion, then run `remove <name>`.
 - `status`, or "which Band agent is this?": say the status sentence above; no command.
 

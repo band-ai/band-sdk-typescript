@@ -7,6 +7,8 @@ const CHANNELS_OPTION = "--channels";
 const DEV_CHANNELS_OPTION = "--dangerously-load-development-channels";
 /** The Claude Code options whose entries turn channels on. */
 const CHANNEL_OPTIONS = [CHANNELS_OPTION, DEV_CHANNELS_OPTION];
+/** Claude Code's non-interactive mode, which ignores development channels. */
+const PRINT_OPTIONS = ["-p", "--print"];
 /** Band's plugin as its marketplace publishes it. */
 const BAND_PLUGIN = `${BAND_CHANNEL_ENTRY}band-ai`;
 /** Set when Claude Code runs servers through a wrapper, which is then the server's parent. */
@@ -25,17 +27,19 @@ export function bandChannelOn(parentCommandLine: string | undefined, env: Env): 
   if (parentCommandLine === undefined || env[SHELL_PREFIX_ENV]) {
     return true;
   }
-  return channelEntries(parentCommandLine.split(/\s+/)).some((entry) => entry.startsWith(BAND_CHANNEL_ENTRY));
+  const args = parentCommandLine.split(/\s+/);
+  const options = args.some((arg) => PRINT_OPTIONS.includes(arg)) ? [CHANNELS_OPTION] : CHANNEL_OPTIONS;
+  return channelEntries(args, options).some((entry) => entry.startsWith(BAND_CHANNEL_ENTRY));
 }
 
 /** Each entry of a channel option: the arguments after it up to the next option, or the one value of `--option=value`, as commander parses them. */
-function channelEntries(args: readonly string[]): string[] {
+function channelEntries(args: readonly string[], options: readonly string[]): string[] {
   const entries: string[] = [];
   let inOption = false;
   for (const arg of args) {
     if (arg.startsWith(OPTION_PREFIX)) {
       const [option, value] = splitOption(arg);
-      const isChannelOption = CHANNEL_OPTIONS.includes(option);
+      const isChannelOption = options.includes(option);
       if (isChannelOption && value !== undefined) {
         entries.push(value);
       }
