@@ -671,6 +671,7 @@
         "ChatRoom",
         "CreateChatRequest",
         "CursorPageRequest",
+        "CursorTail",
         "CursorTailOptions",
         "DEFAULT_REQUEST_OPTIONS",
         "FernBandClientLike",

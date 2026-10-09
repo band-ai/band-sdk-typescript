@@ -38,6 +38,7 @@ export class ExecutionContext {
   public readonly roomId: string;
   public readonly link: ExecutionContextLink;
   private readonly maxContextMessages: number;
+  private readonly logger: Logger;
   private readonly enableContextCache: boolean;
   private readonly contextCacheTtlMs: number;
   private readonly enableContextHydration: boolean;
@@ -62,6 +63,7 @@ export class ExecutionContext {
     this.roomId = options.roomId;
     this.link = options.link;
     this.maxContextMessages = sessionConfig.maxContextMessages;
+    this.logger = resolveLogger(options.logger);
     this.enableContextCache = sessionConfig.enableContextCache;
     this.contextCacheTtlMs = sessionConfig.contextCacheTtlSeconds * 1000;
     this.enableContextHydration = sessionConfig.enableContextHydration;
@@ -71,7 +73,7 @@ export class ExecutionContext {
       rest: this.link.rest,
       roster: this.roster,
       capabilities: this.link.capabilities,
-      logger: resolveLogger(options.logger),
+      logger: this.logger,
     });
     this.adapterTools = this.tools.getAdapterTools();
   }
@@ -286,10 +288,15 @@ export class ExecutionContext {
   private async loadHydratedMessages(
     getChatContext: NonNullable<AgentToolsRestApi["getChatContext"]>,
   ): Promise<MetadataMap[]> {
-    const items = await fetchCursorTail(
+    const { items, truncated } = await fetchCursorTail(
       (page) => getChatContext({ chatId: this.roomId, ...page }, DEFAULT_REQUEST_OPTIONS),
       { keep: this.maxContextMessages },
     );
+    if (truncated) {
+      this.logger.warn("Context paging stopped before the room's newest messages; hydrating from the last ones read", {
+        roomId: this.roomId,
+      });
+    }
     return items.map((item) => ({
       id: item.id,
       room_id: this.roomId,

@@ -1,13 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { DEFAULT_PAGE_SIZE } from "../src/client/rest/pagination";
+import { DEFAULT_MAX_PAGES, DEFAULT_PAGE_SIZE } from "../src/client/rest/pagination";
 import { UnsupportedFeatureError, ValidationError } from "../src/core/errors";
 import { ExecutionContext } from "../src/runtime/ExecutionContext";
 import type { RestApi } from "../src/client/rest/types";
 import { DEFAULT_CONTEXT_CACHE_TTL_SECONDS } from "../src/runtime/types";
-import { FakeRestApi, makeMessage, wireMention } from "./testUtils";
+import { FakeRestApi, makeLoggerSpy, makeMessage, wireMention } from "./testUtils";
 
 const SECOND_PAGE = "cursor-2";
+
+/** A room whose context never ends: one message per page, each page pointing at the next. */
+class EndlessContextRest extends FakeRestApi {
+  public async getChatContext({ cursor }: { cursor?: string }) {
+    const page = Number(cursor ?? 0) + 1;
+    return {
+      data: [{ id: `m${page}`, content: `message ${page}`, sender_id: "u1", sender_type: "User", inserted_at: "2026-03-01T00:00:00.000Z", message_type: "text" }],
+      metadata: { has_more: true, next_cursor: String(page) },
+    };
+  }
+}
 
 function makeContext(restOverrides?: Partial<RestApi>, options?: {
   maxContextMessages?: number;
@@ -124,6 +135,24 @@ describe("ExecutionContext coverage", () => {
     expect(refreshed).not.toBe(first);
     expect(listParticipants).toHaveBeenCalledTimes(2);
     expect(getChatContext).toHaveBeenCalledTimes(4);
+  });
+
+  it("warns and hydrates the last messages it read when the room's context outruns the page cap", async () => {
+    const logger = makeLoggerSpy();
+    const ctx = new ExecutionContext({
+      roomId: "room-1",
+      link: {
+        rest: new EndlessContextRest(),
+        capabilities: {},
+      },
+      maxContextMessages: 2,
+      logger,
+    });
+
+    const hydrated = await ctx.hydrateContext();
+
+    expect(hydrated.messages.map((entry) => entry.id)).toEqual([`m${DEFAULT_MAX_PAGES - 1}`, `m${DEFAULT_MAX_PAGES}`]);
+    expect(logger.warn).toHaveBeenCalledWith(expect.any(String), { roomId: "room-1" });
   });
 
   it("falls back to local context when hydrated context is unsupported", async () => {

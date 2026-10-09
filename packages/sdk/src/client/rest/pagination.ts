@@ -187,27 +187,37 @@ export interface CursorTailOptions<T> {
   where?: (item: T) => boolean;
 }
 
+export interface CursorTail<T> {
+  /** The last items kept, oldest first. */
+  items: T[];
+  /** The walk stopped while Band still had more (the page cap, or `has_more` without a `next_cursor`), so `items` are not the newest. */
+  truncated: boolean;
+}
+
 /**
- * The last `keep` items passing `where`, oldest first, from a forward cursor walk:
- * it pages until `has_more` is false or no `next_cursor` comes back, or the page cap.
- * Band serves `/context` oldest first, so the tail is the newest.
+ * The last `keep` items passing `where` from a forward cursor walk: it pages until
+ * `has_more` is false or no `next_cursor` comes back, or the page cap.
+ * Band serves `/context` oldest first, so the tail is the newest unless `truncated`.
  */
 export async function fetchCursorTail<T>(
   fetchPage: (request: CursorPageRequest) => Promise<PaginatedResponse<T>>,
   { keep, where }: CursorTailOptions<T>,
-): Promise<T[]> {
-  const tail: T[] = [];
+): Promise<CursorTail<T>> {
+  const items: T[] = [];
   let cursor: string | undefined;
   for (let page = 0; page < DEFAULT_MAX_PAGES; page += 1) {
     const { data, metadata } = await fetchPage({ cursor, limit: DEFAULT_PAGE_SIZE });
-    tail.push(...(where ? data.filter(where) : data));
-    tail.splice(0, Math.max(0, tail.length - keep));
-    cursor = typeof metadata?.next_cursor === "string" ? metadata.next_cursor : undefined;
-    if (metadata?.has_more !== true || !cursor) {
+    items.push(...(where ? data.filter(where) : data));
+    items.splice(0, Math.max(0, items.length - keep));
+    if (metadata?.has_more !== true) {
+      return { items, truncated: false };
+    }
+    cursor = typeof metadata.next_cursor === "string" ? metadata.next_cursor : undefined;
+    if (!cursor) {
       break;
     }
   }
-  return tail;
+  return { items, truncated: true };
 }
 
 /** Every peer the agent can reach, all pages in one call; with `notInChat`, those not in that room. */
@@ -233,6 +243,7 @@ export const MAX_RECENT_MESSAGES = 100;
 /**
  * The newest `limit` text messages in a room, oldest first. Band's context holds the
  * agent's own messages of every type plus the text messages that mention it.
+ * Throws `ValidationError` when the walk is truncated, since its tail is then not the newest.
  */
 export async function getRecentMessages(
   rest: ContextRestApi,
@@ -248,10 +259,14 @@ export async function getRecentMessages(
     throw new UnsupportedFeatureError(OPTIONAL_UNSUPPORTED_MESSAGES.getChatContext);
   }
 
-  return fetchCursorTail((page) => getChatContext({ chatId, ...page }, options), {
+  const { items, truncated } = await fetchCursorTail((page) => getChatContext({ chatId, ...page }, options), {
     keep: limit,
     where: (message) => message.message_type === TEXT_MESSAGE,
   });
+  if (truncated) {
+    throw new ValidationError("Context paging stopped before the room's newest messages");
+  }
+  return items;
 }
 
 function resolveMetadataMode(

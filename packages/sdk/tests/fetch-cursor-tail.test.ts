@@ -1,4 +1,4 @@
-/** Which items `fetchCursorTail` keeps from a scripted run of cursor pages, and where it stops walking. */
+/** Which items `fetchCursorTail` keeps from a scripted run of cursor pages, where it stops walking, and whether it stopped short. */
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_MAX_PAGES, DEFAULT_PAGE_SIZE, fetchCursorTail, type CursorPageRequest } from "../src/client/rest/pagination";
@@ -47,6 +47,7 @@ describe("fetchCursorTail", () => {
       pages: [page(range(1, 4), "c1"), page(range(5, 8), "c2"), page(range(9, 10))],
       keep: 3,
       kept: [8, 9, 10],
+      truncated: false,
       cursors: [undefined, "c1", "c2"],
     },
     {
@@ -55,28 +56,31 @@ describe("fetchCursorTail", () => {
       keep: 3,
       where: (item: Item) => item.kind === "text",
       kept: [5, 7, 8],
+      truncated: false,
       cursors: [undefined, "c1"],
     },
     {
-      name: "a page with more to come but no cursor ends the walk",
+      name: "a page with more to come but no cursor ends the walk short",
       pages: [page(range(1, 2), "c1"), { ids: [3, 4], hasMore: true }, page([5])],
       keep: 10,
       kept: [1, 2, 3, 4],
+      truncated: true,
       cursors: [undefined, "c1"],
     },
     {
-      name: "the page cap ends the walk",
+      name: "the page cap ends the walk short",
       pages: ENDLESS,
       keep: 2,
       kept: [DEFAULT_MAX_PAGES - 1, DEFAULT_MAX_PAGES],
+      truncated: true,
       cursors: [undefined, ...range(1, DEFAULT_MAX_PAGES - 1).map((index) => `c${index}`)],
     },
-  ])("$name", async ({ pages, keep, where, kept, cursors }) => {
+  ])("$name", async ({ pages, keep, where, kept, truncated, cursors }) => {
     const { fetchPage, requests } = scriptedFetcher(pages);
 
-    const items = await fetchCursorTail(fetchPage, { keep, where });
+    const tail = await fetchCursorTail(fetchPage, { keep, where });
 
-    expect(items.map((item) => item.id)).toEqual(kept);
+    expect({ kept: tail.items.map((item) => item.id), truncated: tail.truncated }).toEqual({ kept, truncated });
     expect(requests).toEqual(cursors.map((cursor) => ({ cursor, limit: DEFAULT_PAGE_SIZE })));
   });
 });
