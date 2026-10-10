@@ -1,5 +1,5 @@
 import type { McpResourceSource } from "@band-ai/sdk/mcp";
-import { McpError, type Resource } from "@modelcontextprotocol/sdk/types.js";
+import { McpError, type ReadResourceResult, type Resource } from "@modelcontextprotocol/sdk/types.js";
 
 import { AGENT_TYPE, normalizeHandle, type Candidate } from "./names";
 
@@ -29,7 +29,7 @@ export class AgentResources implements McpResourceSource {
     return [...this.entries.values()].map(({ resource }) => resource);
   }
 
-  public read(uri: URL): ReturnType<McpResourceSource["read"]> {
+  public read(uri: URL): ReadResourceResult {
     const entry = this.entries.get(uri.href);
     if (!entry) {
       throw new McpError(RESOURCE_NOT_FOUND, "Unknown Band agent resource");
@@ -57,7 +57,10 @@ export class AgentResources implements McpResourceSource {
         || entry.resource.name !== previous.resource.name || entry.resource.description !== previous.resource.description
         || entry.resource.mimeType !== previous.resource.mimeType;
     });
+    if (!changed) {
+      return false;
+    }
     this.entries = new Map([...next].sort(([left], [right]) => left.localeCompare(right)));
-    return changed;
+    return true;
   }
 }

@@ -125,12 +125,14 @@ describe("the Claude Code plugin on the live platform", () => {
     await using plugin = await connectedAs(dirs, "session-1");
     const peerHandle = await peer.handle();
     const peerMetadata = await peer.rest.getAgentMe();
-    const rows = await plugin.resourcesWhen((resources) => resources.some((resource) => resource.uri === agentResourceUri(peerHandle)));
-    expect(rows.find((resource) => resource.uri === agentResourceUri(peerHandle))).toMatchObject({
-      name: `@${peerHandle}`, description: peerMetadata.description?.trim() ? peerMetadata.description : peerMetadata.name, mimeType: "text/plain",
+    const uri = agentResourceUri(peerHandle);
+    const description = peerMetadata.description?.trim() ? peerMetadata.description : null;
+    const rows = await plugin.resourcesWhen((resources) => resources.some((resource) => resource.uri === uri));
+    expect(rows.find((resource) => resource.uri === uri)).toMatchObject({
+      name: `@${peerHandle}`, description: description ?? peerMetadata.name, mimeType: "text/plain",
     });
-    const { contents } = await plugin.client.readResource({ uri: agentResourceUri(peerHandle) });
-    expect(JSON.parse((contents[0] as { text: string }).text)).toEqual({ handle: peerHandle, name: peerMetadata.name, description: peerMetadata.description?.trim() ? peerMetadata.description : null });
+    const { contents } = await plugin.client.readResource({ uri });
+    expect(JSON.parse((contents[0] as { text: string }).text)).toEqual({ handle: peerHandle, name: peerMetadata.name, description });
     expect((await plugin.client.listResourceTemplates()).resourceTemplates).toEqual([]);
     const [owner] = (await Rooms.participantIds(room)).filter((id) => id !== identity.id);
 
