@@ -18,4 +18,10 @@ export const OPTIONAL_UNSUPPORTED_MESSAGES = {
   renameChat: "Chat rename is not available in current REST adapter",
   getChat: "Chat lookup is not available in current REST adapter",
   reportActivity: "Activity reporting is not available in current REST adapter",
+  getChatBoard: "getChatBoard is not available in current REST adapter",
+  putChatBoard: "putChatBoard is not available in current REST adapter",
+  listChatTasks: "listChatTasks is not available in current REST adapter",
+  createChatTask: "createChatTask is not available in current REST adapter",
+  getChatTask: "getChatTask is not available in current REST adapter",
+  updateChatTask: "updateChatTask is not available in current REST adapter",
 } as const;

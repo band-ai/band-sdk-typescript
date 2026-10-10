@@ -22,20 +22,21 @@ describe("contracts/protocols", () => {
     const capabilities: AgentToolsCapabilities = {
       peers: true,
       contacts: false,
-      memory: false,
+      memory: false, tasks: false,
     };
 
     expectTypeOf(capabilities.peers).toEqualTypeOf<boolean>();
     expect(DEFAULT_AGENT_TOOLS_CAPABILITIES).toEqual({
       peers: true,
       contacts: true,
-      memory: true,
+      memory: true, tasks: false,
     });
-    expect(Object.values(DEFAULT_AGENT_TOOLS_CAPABILITIES)).toEqual([true, true, true]);
+    expect(Object.values(DEFAULT_AGENT_TOOLS_CAPABILITIES)).toEqual([true, true, true, false]);
     expect(Object.keys(DEFAULT_AGENT_TOOLS_CAPABILITIES)).toEqual([
       "peers",
       "contacts",
       "memory",
+      "tasks",
     ]);
   });
 

@@ -79,6 +79,7 @@ export class ContactCallbackTools implements AdapterToolsProtocol {
     this.capabilities = Object.freeze({
       peers: Boolean(rest.listPeers),
       contacts: hasContactMethods,
+      tasks: false,
       memory: Boolean(
         rest.listMemories
         || rest.storeMemory

@@ -1,7 +1,7 @@
 /**
  * C7 platform tool + MCP rename proofs (P-TOOL-01 .. P-TOOL-08).
  *
- * The canonical registry advertises exactly 18 `band_*` tools; MCP qualifies
+ * The canonical registry advertises exactly 24 `band_*` tools; MCP qualifies
  * them as `mcp__band__band_*`; one exported `MCP_SERVER_NAME = "band"` owns
  * server-name defaults. Names change only. Legacy `thenvoi_*` /
  * `mcp__thenvoi__*` are neither advertised nor accepted; a raw legacy name
@@ -19,6 +19,7 @@ import {
   ALL_TOOL_NAMES,
   CHAT_TOOL_NAMES,
   MEMORY_TOOL_NAMES,
+  TASK_TOOL_NAMES,
   CONTACT_TOOL_NAMES,
   BASE_TOOL_NAMES,
   MCP_TOOL_PREFIX,
@@ -52,30 +53,34 @@ const OPS = [
 const sortedKeys = (o: Record<string, unknown>): string[] => Object.keys(o).sort();
 const sorted = (s: Iterable<string>): string[] => [...s].sort();
 
-describe("P-TOOL-01: canonical registry is exactly 18 band_* tools", () => {
+describe("P-TOOL-01: canonical registry is exactly 24 band_* tools", () => {
   const keys = Object.keys(TOOL_MODELS);
 
-  it("has exactly 18 unique band_* keys and no legacy name", () => {
-    expect(keys).toHaveLength(18);
-    expect(new Set(keys).size).toBe(18);
+  it("has exactly 24 unique band_* keys and no legacy name", () => {
+    expect(keys).toHaveLength(24);
+    expect(new Set(keys).size).toBe(24);
     for (const k of keys) expect(k, `${k} must be band_*`).toMatch(/^band_/);
     for (const k of keys) expect(k).not.toMatch(/thenvoi/i);
-    expect(ALL_TOOL_NAMES.size).toBe(18);
+    expect(ALL_TOOL_NAMES.size).toBe(24);
     expect(sorted(ALL_TOOL_NAMES)).toEqual(keys.sort());
   });
 
-  it("keeps group memberships and counts (chat 8 / contact 5 / memory 5)", () => {
+  it("keeps group memberships and counts (chat 8 / contact 5 / memory 5 / task 6)", () => {
     expect(MEMORY_TOOL_NAMES.size).toBe(5);
+    expect(TASK_TOOL_NAMES.size).toBe(6);
     expect(CONTACT_TOOL_NAMES.size).toBe(5);
     expect(CHAT_TOOL_NAMES.size).toBe(8);
-    for (const set of [MEMORY_TOOL_NAMES, CONTACT_TOOL_NAMES, CHAT_TOOL_NAMES, BASE_TOOL_NAMES]) {
+    for (const set of [MEMORY_TOOL_NAMES, TASK_TOOL_NAMES, CONTACT_TOOL_NAMES, CHAT_TOOL_NAMES, BASE_TOOL_NAMES]) {
       for (const name of set) {
         expect(name).toMatch(/^band_/);
         expect(ALL_TOOL_NAMES.has(name), `${name} is a valid tool key`).toBe(true);
       }
     }
-    expect(CHAT_TOOL_NAMES.size + CONTACT_TOOL_NAMES.size + MEMORY_TOOL_NAMES.size).toBe(18);
-    for (const m of MEMORY_TOOL_NAMES) expect(CHAT_TOOL_NAMES.has(m)).toBe(false);
+    expect(CHAT_TOOL_NAMES.size + CONTACT_TOOL_NAMES.size + MEMORY_TOOL_NAMES.size + TASK_TOOL_NAMES.size).toBe(24);
+    for (const m of [...MEMORY_TOOL_NAMES, ...TASK_TOOL_NAMES]) {
+      expect(CHAT_TOOL_NAMES.has(m)).toBe(false);
+      expect(BASE_TOOL_NAMES.has(m)).toBe(false);
+    }
     for (const c of CONTACT_TOOL_NAMES) expect(CHAT_TOOL_NAMES.has(c)).toBe(false);
   });
 });
@@ -86,6 +91,7 @@ describe("P-TOOL-02: MCP registrations are the exact enabled canonical set", () 
     const regs = buildSingleContextRegistrations(new FakeAgentTools(), {
       enableMemoryTools: true,
       enableContactTools: true,
+      enableTaskTools: true,
     });
     const names = regs.map((r) => r.name);
     // Exact set (no missing, no extra) — not just formatting.
@@ -233,6 +239,12 @@ describe("P-TOOL-04: every canonical name reaches a handler; every legacy name i
     band_get_memory: { memory_id: "m1" },
     band_supersede_memory: { memory_id: "m1" },
     band_archive_memory: { memory_id: "m1" },
+    band_get_board: {},
+    band_set_board: { goal_title: "Ship the feature" },
+    band_list_tasks: {},
+    band_create_task: { subject: "Implement it" },
+    band_get_task: { id: "1" },
+    band_update_task: { id: "1", status: "in_progress" },
   };
 
   function makeTools(): AgentTools {
@@ -244,14 +256,14 @@ describe("P-TOOL-04: every canonical name reaches a handler; every legacy name i
       roomId: "room-1",
       rest: new RestFacade({ api }),
       roster: makeRoster([{ id: "u1", handle: "@jane", name: "Jane", type: "User" }]),
-      capabilities: { peers: true, contacts: true, memory: true },
+      capabilities: { peers: true, contacts: true, memory: true, tasks: true },
     });
   }
 
   const isNotFound = (r: unknown): boolean =>
     isToolExecutorError(r) && r.errorType === "ToolNotFoundError";
 
-  it("the fixture covers exactly the 18 TOOL_MODELS rows (row-deletion red-check)", () => {
+  it("the fixture covers exactly the 24 TOOL_MODELS rows (row-deletion red-check)", () => {
     expect(sortedKeys(VALID_ARGS)).toEqual(Object.keys(TOOL_MODELS).sort());
   });
 

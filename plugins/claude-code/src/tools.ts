@@ -2,6 +2,7 @@ import type { BandLink } from "@band-ai/sdk";
 import type { Logger } from "@band-ai/sdk/core";
 import { errorResult, successResult, type McpToolRegistration } from "@band-ai/sdk/mcp";
 
+import { boardTools } from "./board";
 import { fetchMessagesTool, replyTool, sendTool, type MessageMemory } from "./messages";
 import { findAgentsTool } from "./peers";
 import { findRoomsTool, inviteTool, openRoomTool, renameRoomTool } from "./rooms";
@@ -33,6 +34,7 @@ export interface ToolContext {
   readonly link: Pick<BandLink, "agentId" | "listAllChats" | "rest">;
   /** The agent; `handle` is its `@handle`, or its name when Band has none. */
   readonly self: { readonly id: string; readonly handle: string };
+  readonly board: boolean;
   readonly memory: MessageMemory;
   readonly working: WorkingIndicator;
   readonly logger: Logger;
@@ -49,6 +51,7 @@ export function bandTools(context: ToolContext): McpToolRegistration[] {
     findRoomsTool(context),
     renameRoomTool(context),
     fetchMessagesTool(context),
+    ...(context.board ? boardTools(context) : []),
   ];
 }
 
@@ -70,8 +73,11 @@ export function bandErrorText(error: unknown): string {
   if (status === undefined) {
     return error instanceof Error ? error.message : String(error);
   }
-  const reason = (error as { body?: { error?: { message?: unknown } } }).body?.error?.message;
-  return `Band refused it (${status}): ${typeof reason === "string" ? reason : (error as Error).message}`;
+  const refusal = (error as { body?: { error?: { message?: unknown; details?: Record<string, unknown> } } }).body?.error;
+  const reason = typeof refusal?.message === "string" ? refusal.message : (error as Error).message;
+  const details = Object.entries(refusal?.details ?? {}).map(([field, messages]) =>
+    `${field}: ${Array.isArray(messages) ? messages.join("; ") : String(messages)}`);
+  return `Band refused it (${status}): ${reason}${details.length ? ` (${details.join("; ")})` : ""}`;
 }
 
 /** The HTTP status of a Band refusal; none for any other error. */

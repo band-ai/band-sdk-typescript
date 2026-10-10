@@ -28,7 +28,7 @@ import type {
 } from "../src/contracts/dtos";
 
 class FakeTools implements AgentToolsProtocol {
-  public readonly capabilities = { peers: false, contacts: false, memory: false };
+  public readonly capabilities = { peers: false, contacts: false, memory: false, tasks: false };
   public readonly events: Array<Record<string, unknown>> = [];
   public readonly messages: string[] = [];
   public readonly turn = new Turn();
@@ -634,7 +634,7 @@ describe("ToolCallingAdapter", () => {
 
     it("does not duplicate memory guidance when the prompt already came from renderSystemPrompt", async () => {
       const model = new FakeModel();
-      const systemPrompt = renderSystemPrompt({ customSection: RAW_PROMPT, capabilities: { memory: true } });
+      const systemPrompt = renderSystemPrompt({ customSection: RAW_PROMPT, capabilities: { memory: true, tasks: false } });
       const adapter = new OpenAIAdapter({ model, systemPrompt, includeMemoryTools: true });
       await adapter.onMessage(fakeMessage, new FakeTools(), fakeHistory, null, null, { isSessionBootstrap: true, roomId: "r1" });
 

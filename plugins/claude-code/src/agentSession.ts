@@ -2,7 +2,7 @@ import type { PlatformRuntimeOptions } from "@band-ai/sdk";
 import type { AgentCredentials } from "@band-ai/sdk/config";
 import { WebSocketDisconnectError, type Logger } from "@band-ai/sdk/core";
 import type { BandMcpStdioServer, McpToolRegistration } from "@band-ai/sdk/mcp";
-import { ensureHandlePrefix, PlatformRuntime } from "@band-ai/sdk/runtime";
+import { ensureHandlePrefix, PlatformRuntime, supportsCapability } from "@band-ai/sdk/runtime";
 
 import { ChannelAdapter, type ChannelPush } from "./adapter";
 import { agentCredentials, pluginDataDir, readSavedAgents, type Env, type SavedAgent } from "./config";
@@ -108,7 +108,7 @@ export class AgentSession {
     const runtime = new PlatformRuntime({
       ...credentials,
       logger,
-      linkOptions: { conflictPolicy: "supersede", ...link?.(credentials) },
+      linkOptions: { ...link?.(credentials), conflictPolicy: "supersede", capabilities: { tasks: true } },
       agentConfig: { autoSubscribeExistingRooms: true },
     });
     this.runtime = runtime;
@@ -122,6 +122,7 @@ export class AgentSession {
       const context: ToolContext = {
         link: runtime.link,
         self: { id: identity.id, handle: handleOf(identity) },
+        board: supportsCapability(identity.featureFlags, "tasks"),
         memory: new MessageMemory(),
         working: new WorkingIndicator(runtime.link.rest, logger),
         logger,

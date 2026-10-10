@@ -6,6 +6,7 @@ import {
   type TurnEffect,
 } from "@band-ai/band-sdk-core";
 
+import { TASK_LIST_STATES, TASK_LIFECYCLE_STATES, TASK_ASSIGNMENT_STATUSES, TASK_INCLUDE } from "./tasks";
 import { CHAT_EVENT_TYPES } from "./chatEvents";
 import {
   MEMORY_LIST_SCOPES,
@@ -387,6 +388,60 @@ export const TOOL_MODELS = {
     },
     required: ["memory_id"],
   },
+  band_get_board: {
+    description: "Read this room's goal (the team mission). Returns an empty default (goal_title null) when no goal has been set yet. Pass include=\"history\" to embed the goal's audit trail.",
+    properties: {
+      include: { type: "string", description: "Set to 'history' to embed the goal-audit trail", enum: [...TASK_INCLUDE] },
+    },
+    required: [],
+  },
+  band_set_board: {
+    description: "Set or update this room's goal (upsert) -- at least one field required. Send goal_title and/or goal_summary; only the fields you send are changed. Every change is recorded in the goal-audit trail.",
+    properties: {
+      goal_title: { type: "string", description: "The room's mission title" },
+      goal_summary: { type: "string", description: "The mission paragraph" },
+    },
+    required: [],
+  },
+  band_list_tasks: {
+    description: "List the shared tasks on this room's task board, ordered by number. Defaults to active tasks (the working board); use state to read cancelled/superseded/archived tasks or \"all\". Use this to see what work exists before creating a new task or picking one up.",
+    properties: {
+      state: { type: "string", description: "Lifecycle filter (default: active)", enum: [...TASK_LIST_STATES] },
+      cursor: { type: "string", description: "Opaque pagination cursor from a previous response" },
+      limit: { type: "integer", description: "Page size (default 50, max 100)" },
+    },
+    required: [],
+  },
+  band_create_task: {
+    description: "Create a shared task on this room's task board. The server assigns the id and the board number (\"#N\"). Use supersedes_id when this task replaces an existing one -- the old task is preserved as an audit record and points at its replacement. You are NOT assigned automatically: report your own status on the task to join it.",
+    properties: {
+      subject: { type: "string", description: "What needs to be done" },
+      detail: { type: "string", description: "Longer description (optional)" },
+      supersedes_id: { type: "string", description: "UUID or board number of the active task this one replaces (optional)" },
+    },
+    required: ["subject"],
+  },
+  band_get_task: {
+    description: "Read one task by UUID or board number. Works for any lifecycle state -- cancelled/superseded/archived tasks stay readable as audit records.",
+    properties: {
+      id: { type: "string", description: "Task UUID or board number" },
+      include: { type: "string", description: "Set to 'history' to embed the recent event history", enum: [...TASK_INCLUDE] },
+    },
+    required: ["id"],
+  },
+  band_update_task: {
+    description: "Update a task -- one operation, all fields optional, at least one required. Send status to report YOUR OWN progress (your first status write joins you to the task -- no separate assign step). Send active_form to show what you are doing right now. Send comment to leave a note for the others. Send subject/detail to edit the task itself. Send state to cancel (\"cancelled\"), tidy away (\"archived\"), or restore an archived task (\"active\"). Several agents can work the same task; each has its own status and active_form.",
+    properties: {
+      id: { type: "string", description: "Task UUID or board number" },
+      status: { type: "string", description: "YOUR work status on this task (first write joins you to it)", enum: [...TASK_ASSIGNMENT_STATUSES] },
+      active_form: { type: "string", description: "YOUR live 'doing X' sentence, shown on the board while you work" },
+      comment: { type: "string", description: "Append a note for the other participants (kept in the task history)" },
+      subject: { type: "string", description: "Edit the task subject" },
+      detail: { type: "string", description: "Edit the task detail" },
+      state: { type: "string", description: "Lifecycle: cancel, archive, or restore ('active' un-archives)", enum: [...TASK_LIFECYCLE_STATES] },
+    },
+    required: ["id"],
+  },
 } as const;
 
 export type ToolName = keyof typeof TOOL_MODELS;
@@ -421,7 +476,24 @@ export const TOOL_METHODS: Record<ToolName, AdapterToolMethodName | null> = {
   band_get_memory: "getMemory",
   band_supersede_memory: "supersedeMemory",
   band_archive_memory: "archiveMemory",
+  band_get_board: "getBoard",
+  band_set_board: "setBoard",
+  band_list_tasks: "listTasks",
+  band_create_task: "createTask",
+  band_get_task: "getTask",
+  band_update_task: "updateTask",
 };
+
+const TASK_TOOLS = [
+  "band_get_board",
+  "band_set_board",
+  "band_list_tasks",
+  "band_create_task",
+  "band_get_task",
+  "band_update_task",
+] satisfies ToolName[];
+
+export const TASK_TOOL_NAMES = new Set<string>(TASK_TOOLS);
 
 export const MEMORY_TOOL_NAMES = new Set<string>([
   "band_list_memories",
@@ -441,6 +513,7 @@ export const CONTACT_TOOL_NAMES = new Set<string>([
 
 /** The tools that act on a room, and so take its id; every other tool is roomless. */
 export const ROOM_TOOL_NAMES = new Set<string>([
+  ...TASK_TOOLS,
   SEND_MESSAGE_TOOL_NAME,
   SEND_EVENT_TOOL_NAME,
   "band_add_participant",
@@ -450,7 +523,7 @@ export const ROOM_TOOL_NAMES = new Set<string>([
 ] satisfies ToolName[]);
 
 export const BASE_TOOL_NAMES = new Set<string>(
-  [...ALL_TOOL_NAMES].filter((name) => !MEMORY_TOOL_NAMES.has(name)),
+  [...ALL_TOOL_NAMES].filter((name) => !MEMORY_TOOL_NAMES.has(name) && !TASK_TOOL_NAMES.has(name)),
 );
 
 export const CHAT_TOOL_NAMES = new Set<string>(

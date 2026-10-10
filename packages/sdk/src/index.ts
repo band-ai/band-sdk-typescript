@@ -94,6 +94,7 @@ export type {
   ToolSchemaProvider,
   ContactTools,
   MemoryTools,
+  TaskTools,
   ToolExecutor,
 } from "./core";
 
@@ -158,3 +159,5 @@ export {
   reportTurnFailure,
 } from "./core";
 export { MCP_TOOL_PREFIX, MCP_SERVER_NAME, TOOL_MODELS } from "./contracts/toolSchemas";
+
+export type { GetBoardArgs, SetBoardArgs, ListTasksArgs, CreateTaskArgs, GetTaskArgs, UpdateTaskArgs, WireBoard, WireTask, WireTaskPage, WireTaskActor, WireTaskAssignment, WireTaskEvent, WireBoardEvent } from "./contracts/dtos";

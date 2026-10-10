@@ -130,7 +130,7 @@ describe("MCP registrations", () => {
       roomlessTools.executeToolCall = vi.fn().mockResolvedValue({ id: "room-new" });
       const resolver = vi.fn().mockReturnValue(roomTools);
 
-      const registrations = buildRoomScopedRegistrations(resolver, { roomlessTools, enableMemoryTools: true, enableContactTools: true });
+      const registrations = buildRoomScopedRegistrations(resolver, { roomlessTools, enableMemoryTools: true, enableContactTools: true, enableTaskTools: true });
       const takesRoom = registrations.filter((reg) => ROOM_ID_ARG in reg.inputSchema.properties).map((reg) => reg.name);
       expect(new Set(takesRoom)).toEqual(ROOM_TOOL_NAMES);
       for (const reg of registrations.filter((reg) => ROOM_TOOL_NAMES.has(reg.name))) {

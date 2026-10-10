@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { NoopLogger } from "@band-ai/sdk/core";
 
 import { MessageMemory } from "../../src/messages";
-import { BOARD_RULE_BUDGET, CHANNEL_INSTRUCTIONS } from "../../src/prompt";
+import { BOARD_RULE, BOARD_RULE_BUDGET, CHANNEL_INSTRUCTIONS } from "../../src/prompt";
 import { bandTools, CLAUDE_CODE_TEXT_LIMIT, type ToolContext } from "../../src/tools";
 import { WorkingIndicator } from "../../src/working";
 import { FakeRestApi } from "../../../../packages/sdk/tests/testUtils";
@@ -12,14 +12,16 @@ import { FakeRestApi } from "../../../../packages/sdk/tests/testUtils";
 const LONG_HANDLE = `@${"o".repeat(100)}/${"a".repeat(100)}`;
 
 describe("what Claude Code would cut", () => {
-  it(`keeps the instructions within ${CLAUDE_CODE_TEXT_LIMIT} characters, leaving ${BOARD_RULE_BUDGET} for the board rule`, () => {
-    expect(CHANNEL_INSTRUCTIONS.length).toBeLessThanOrEqual(CLAUDE_CODE_TEXT_LIMIT - BOARD_RULE_BUDGET);
+  it(`keeps the instructions within ${CLAUDE_CODE_TEXT_LIMIT} characters, with the board rule within ${BOARD_RULE_BUDGET}`, () => {
+    expect(BOARD_RULE.length).toBeLessThanOrEqual(BOARD_RULE_BUDGET);
+    expect(CHANNEL_INSTRUCTIONS.length).toBeLessThanOrEqual(CLAUDE_CODE_TEXT_LIMIT);
   });
 
   it(`keeps every tool description within ${CLAUDE_CODE_TEXT_LIMIT} characters`, () => {
     const rest = new FakeRestApi();
     const context: ToolContext = {
       link: { agentId: "agent-1", rest, listAllChats: async () => [] },
+      board: true,
       self: { id: "agent-1", handle: LONG_HANDLE },
       memory: new MessageMemory(),
       working: new WorkingIndicator({}, new NoopLogger()),

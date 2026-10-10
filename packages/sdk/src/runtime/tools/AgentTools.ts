@@ -8,6 +8,7 @@ import { DEFAULT_REQUEST_OPTIONS } from "../../client/rest/requestOptions";
 import { assertCapability } from "../../contracts/capabilities";
 import { assertChatEventType, CHAT_EVENT_TYPES } from "../../contracts/chatEvents";
 import type {
+  GetBoardArgs, SetBoardArgs, ListTasksArgs, CreateTaskArgs, GetTaskArgs, UpdateTaskArgs, WireBoard, WireTask, WireTaskPage,
   AddContactArgs,
   ContactRecord,
   ContactRequestsResult,
@@ -47,6 +48,7 @@ import {
 import {
   CHAT_TOOL_NAMES,
   MEMORY_TOOL_NAMES,
+  TASK_TOOL_NAMES,
   NO_REPLY_RESULT,
   NO_REPLY_TOOL_NAME,
   getToolDescription,
@@ -112,6 +114,13 @@ const ADAPTER_TOOL_METHODS: Record<AdapterToolMethodName, keyof AgentToolsCapabi
   getMemory: "memory",
   supersedeMemory: "memory",
   archiveMemory: "memory",
+  getBoard: "tasks",
+  setBoard: "tasks",
+  listTasks: "tasks",
+  createTask: "tasks",
+  getTask: "tasks",
+  updateTask: "tasks",
+
 };
 
 const CONTACT_REQUEST_ACTIONS: ReadonlySet<RespondContactRequestArgs["action"]> = new Set([
@@ -200,6 +209,50 @@ export class AgentTools implements AgentToolsProtocol {
 
   public async sendFailure(failure: AgentFailure): Promise<ToolOperationResult> {
     return sendFailureViaEvent(this.sendEvent.bind(this), failure);
+  }
+
+  public async getBoard(args: GetBoardArgs = {}): Promise<WireBoard> {
+    assertCapability(this.capabilities, "tasks");
+    const api = this.rest.getChatBoard?.bind(this.rest);
+    if (!api) throw new UnsupportedFeatureError("getChatBoard is not available in current REST adapter");
+    return api(this.roomId, args, DEFAULT_REQUEST_OPTIONS);
+  }
+
+  public async setBoard(args: SetBoardArgs): Promise<WireBoard> {
+    assertCapability(this.capabilities, "tasks");
+    const api = this.rest.putChatBoard?.bind(this.rest);
+    if (!api) throw new UnsupportedFeatureError("putChatBoard is not available in current REST adapter");
+    return api(this.roomId, args, DEFAULT_REQUEST_OPTIONS);
+  }
+
+  public async listTasks(args: ListTasksArgs = {}): Promise<WireTaskPage> {
+    assertCapability(this.capabilities, "tasks");
+    const api = this.rest.listChatTasks?.bind(this.rest);
+    if (!api) throw new UnsupportedFeatureError("listChatTasks is not available in current REST adapter");
+    return api(this.roomId, args, DEFAULT_REQUEST_OPTIONS);
+  }
+
+  public async createTask(args: CreateTaskArgs): Promise<WireTask> {
+    assertCapability(this.capabilities, "tasks");
+    const api = this.rest.createChatTask?.bind(this.rest);
+    if (!api) throw new UnsupportedFeatureError("createChatTask is not available in current REST adapter");
+    return api(this.roomId, { ...args, ...(args.supersedes_id !== undefined ? { supersedes_id: taskRef(args.supersedes_id) } : {}) }, DEFAULT_REQUEST_OPTIONS);
+  }
+
+  public async getTask(args: GetTaskArgs): Promise<WireTask> {
+    assertCapability(this.capabilities, "tasks");
+    const api = this.rest.getChatTask?.bind(this.rest);
+    if (!api) throw new UnsupportedFeatureError("getChatTask is not available in current REST adapter");
+    const { id, ...request } = args;
+    return api(this.roomId, taskRef(id), request, DEFAULT_REQUEST_OPTIONS);
+  }
+
+  public async updateTask(args: UpdateTaskArgs): Promise<WireTask> {
+    assertCapability(this.capabilities, "tasks");
+    const api = this.rest.updateChatTask?.bind(this.rest);
+    if (!api) throw new UnsupportedFeatureError("updateChatTask is not available in current REST adapter");
+    const { id, ...request } = args;
+    return api(this.roomId, taskRef(id), request, DEFAULT_REQUEST_OPTIONS);
   }
 
   public async createChatroom(taskId?: string): Promise<string> {
@@ -369,6 +422,7 @@ export class AgentTools implements AgentToolsProtocol {
 
     const tools = Object.entries(TOOL_MODELS)
       .filter(([name]) => {
+        if (TASK_TOOL_NAMES.has(name)) return this.capabilities.tasks;
         if (MEMORY_TOOL_NAMES.has(name)) {
           return includeMemory && this.capabilities.memory;
         }
@@ -734,6 +788,13 @@ export class AgentTools implements AgentToolsProtocol {
       ...this.buildMessagingToolHandlers(),
       ...this.buildContactToolHandlers(),
       ...this.buildMemoryToolHandlers(),
+      band_get_board: async (args) => this.getBoard(args),
+      band_set_board: async (args) => this.setBoard(args),
+      band_list_tasks: async (args) => this.listTasks(args),
+      band_create_task: async (args) => this.createTask(args as unknown as CreateTaskArgs),
+      band_get_task: async (args) => this.getTask(args as unknown as GetTaskArgs),
+      band_update_task: async (args) => this.updateTask(args as unknown as UpdateTaskArgs),
+
     };
   }
 
@@ -1159,4 +1220,11 @@ function validateToolArgs(toolName: string, args: Record<string, unknown>): Tool
   }
 
   return null;
+}
+
+const TASK_REF = /^[A-Za-z0-9_-]+$/;
+function taskRef(ref: string): string {
+  const normalized = ref.replace(/^#/, "");
+  if (!TASK_REF.test(normalized)) throw new ValidationError("ID must contain only ASCII letters, digits, underscores or hyphens");
+  return normalized;
 }

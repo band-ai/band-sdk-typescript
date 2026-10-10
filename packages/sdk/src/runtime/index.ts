@@ -49,6 +49,7 @@ export {
   MCP_SERVER_NAME,
   CHAT_TOOL_NAMES,
   MEMORY_TOOL_NAMES,
+  TASK_TOOL_NAMES,
   CONTACT_TOOL_NAMES,
   ROOM_TOOL_NAMES,
   ALL_TOOL_NAMES,
@@ -85,3 +86,5 @@ export {
 
 export { GracefulShutdown, runWithGracefulShutdown } from "./shutdown";
 export { DefaultPreprocessor } from "./preprocessing/DefaultPreprocessor";
+
+export { supportsCapability } from "../contracts/capabilities";

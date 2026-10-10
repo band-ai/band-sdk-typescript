@@ -1,5 +1,5 @@
 /**
- * Conformance guard: verifies the real @band-ai/rest-client@0.0.143 exports
+ * Conformance guard: verifies the real @band-ai/rest-client@0.0.146 exports
  * every resource and method the SDK consumes, without making network calls.
  *
  * This test catches a removed or renamed generated resource that typecheck
@@ -10,7 +10,7 @@
 import { describe, it, expect } from "vitest";
 import { Band, BandClient } from "@band-ai/rest-client";
 
-describe("BandClient conformance (0.0.143)", () => {
+describe("BandClient conformance (0.0.146)", () => {
   // Instantiate with a dummy key — no network call is made.
   const client = new BandClient({ apiKey: "test-conformance-key" });
 
@@ -22,6 +22,7 @@ describe("BandClient conformance (0.0.143)", () => {
    */
   const requiredResources: Array<[string, string[]]> = [
     ["agentApiIdentity", ["getAgentMe"]],
+    ["agentApiChatTasks", ["getChatBoard", "putChatBoard", "listChatTasks", "createChatTask", "getChatTask", "updateChatTask"]],
     ["agentApiPeers", ["listAgentPeers"]],
     ["agentApiContacts", [
       "listAgentContacts",

@@ -1,6 +1,7 @@
 import type { AgentFailure } from "@band-ai/band-sdk-core";
 import { isBlankEventContent, type ChatEventType } from "./chatEvents";
 import type {
+  GetBoardArgs, SetBoardArgs, ListTasksArgs, CreateTaskArgs, GetTaskArgs, UpdateTaskArgs, WireBoard, WireTask, WireTaskPage,
   AddContactArgs,
   ContactRequestsResult,
   ContactRecord,
@@ -162,6 +163,15 @@ export interface ContactTools {
   respondContactRequest(request: RespondContactRequestArgs): Promise<ToolOperationResult>;
 }
 
+export interface TaskTools {
+  getBoard(args?: GetBoardArgs): Promise<WireBoard>;
+  setBoard(args: SetBoardArgs): Promise<WireBoard>;
+  listTasks(args?: ListTasksArgs): Promise<WireTaskPage>;
+  createTask(args: CreateTaskArgs): Promise<WireTask>;
+  getTask(args: GetTaskArgs): Promise<WireTask>;
+  updateTask(args: UpdateTaskArgs): Promise<WireTask>;
+}
+
 export interface MemoryTools {
   listMemories(args?: ListMemoriesArgs): Promise<PaginatedList<MemoryRecord>>;
   storeMemory(args: StoreMemoryArgs): Promise<MemoryRecord>;
@@ -279,7 +289,8 @@ export interface AdapterToolsProtocol
     ToolExecutor,
     Partial<PeerLookupTools>,
     Partial<ContactTools>,
-    Partial<MemoryTools> {
+    Partial<MemoryTools>,
+    Partial<TaskTools> {
   /** Check capability flags to determine which optional tools are available. */
   readonly capabilities: Readonly<AgentToolsCapabilities>;
 }
@@ -292,12 +303,14 @@ export interface AgentToolsCapabilities {
   peers: boolean;
   contacts: boolean;
   memory: boolean;
+  tasks: boolean;
 }
 
 export const DEFAULT_AGENT_TOOLS_CAPABILITIES: AgentToolsCapabilities = {
   peers: true,
   contacts: true,
   memory: true,
+  tasks: false,
 };
 
 export interface FrameworkAdapterInput {

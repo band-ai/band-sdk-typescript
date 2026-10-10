@@ -169,7 +169,7 @@ describe("ContactCallbackTools", () => {
   describe("capabilities projection", () => {
     it("is false across the board with a bare rest adapter", () => {
       const tools = new ContactCallbackTools({ createChat: vi.fn() } as never, "room-1");
-      expect(tools.capabilities).toEqual({ peers: false, contacts: false, memory: false });
+      expect(tools.capabilities).toEqual({ peers: false, contacts: false, memory: false, tasks: false });
     });
 
     it("flips on peers/contacts/memory when the underlying methods exist", () => {
@@ -177,7 +177,7 @@ describe("ContactCallbackTools", () => {
         { createChat: vi.fn(), listPeers: vi.fn(), addContact: vi.fn(), listMemories: vi.fn() } as never,
         "room-1",
       );
-      expect(tools.capabilities).toEqual({ peers: true, contacts: true, memory: true });
+      expect(tools.capabilities).toEqual({ peers: true, contacts: true, memory: true, tasks: false });
     });
   });
 
