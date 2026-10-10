@@ -482,10 +482,18 @@ export const TOOL_METHODS: Record<ToolName, AdapterToolMethodName | null> = {
   band_create_task: "createTask",
   band_get_task: "getTask",
   band_update_task: "updateTask",
-
 };
 
-export const TASK_TOOL_NAMES = new Set<string>(["band_get_board", "band_set_board", "band_list_tasks", "band_create_task", "band_get_task", "band_update_task"] satisfies ToolName[]);
+const TASK_TOOLS = [
+  "band_get_board",
+  "band_set_board",
+  "band_list_tasks",
+  "band_create_task",
+  "band_get_task",
+  "band_update_task",
+] satisfies ToolName[];
+
+export const TASK_TOOL_NAMES = new Set<string>(TASK_TOOLS);
 
 export const MEMORY_TOOL_NAMES = new Set<string>([
   "band_list_memories",
@@ -505,7 +513,7 @@ export const CONTACT_TOOL_NAMES = new Set<string>([
 
 /** The tools that act on a room, and so take its id; every other tool is roomless. */
 export const ROOM_TOOL_NAMES = new Set<string>([
-  ...[...TASK_TOOL_NAMES] as ToolName[],
+  ...TASK_TOOLS,
   SEND_MESSAGE_TOOL_NAME,
   SEND_EVENT_TOOL_NAME,
   "band_add_participant",

@@ -80,15 +80,19 @@ function normalizeAgentIdentityRecord(
   record: MetadataMap,
   source: string,
 ): AgentIdentity {
+  const featureFlags = asOptionalRecord(record.feature_flags);
+
   return {
     id: requireNonEmptyStringField(record.id, "id", source),
     name: requireNonEmptyStringField(record.name, "name", source),
     description: normalizeOptionalStringField(record.description, "description", source),
     handle: normalizeOptionalStringField(record.handle, "handle", source),
     ownerUuid: normalizeOptionalStringField(record.owner_uuid, "ownerUuid", source),
-    ...(asOptionalRecord(record.feature_flags) ? { featureFlags: Object.fromEntries(
-      Object.entries(asOptionalRecord(record.feature_flags)!).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"),
-    ) } : {}),
+    ...(featureFlags ? {
+      featureFlags: Object.fromEntries(
+        Object.entries(featureFlags).filter((entry): entry is [string, boolean] => typeof entry[1] === "boolean"),
+      ),
+    } : {}),
   };
 }
 
