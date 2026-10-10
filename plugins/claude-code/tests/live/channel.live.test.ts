@@ -6,6 +6,7 @@
  */
 import { describe, expect, it, onTestFinished } from "vitest";
 
+import { agentResourceUri } from "../../src/agentResources";
 import { CHANNEL_CAPABILITY, EXIT_OK } from "../../src/channel";
 import { AGENT_SELECT_ENV, writeSavedAgents } from "../../src/config";
 import { CHANNEL_OFF_INSTRUCTIONS } from "../../src/prompt";
@@ -123,6 +124,14 @@ describe("the Claude Code plugin on the live platform", () => {
     using dirs = savedAs(identity);
     await using plugin = await connectedAs(dirs, "session-1");
     const peerHandle = await peer.handle();
+    const peerMetadata = await peer.rest.getAgentMe();
+    const rows = await plugin.resourcesWhen((resources) => resources.some((resource) => resource.uri === agentResourceUri(peerHandle)));
+    expect(rows.find((resource) => resource.uri === agentResourceUri(peerHandle))).toMatchObject({
+      name: `@${peerHandle}`, description: peerMetadata.description?.trim() ? peerMetadata.description : peerMetadata.name, mimeType: "text/plain",
+    });
+    const { contents } = await plugin.client.readResource({ uri: agentResourceUri(peerHandle) });
+    expect(JSON.parse((contents[0] as { text: string }).text)).toEqual({ handle: peerHandle, name: peerMetadata.name, description: peerMetadata.description?.trim() ? peerMetadata.description : null });
+    expect((await plugin.client.listResourceTemplates()).resourceTemplates).toEqual([]);
     const [owner] = (await Rooms.participantIds(room)).filter((id) => id !== identity.id);
 
     const created = await callOk(plugin, TOOL.openRoom, { participants: [peerHandle, owner] });

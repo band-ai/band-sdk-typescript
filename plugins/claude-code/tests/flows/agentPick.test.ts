@@ -60,6 +60,7 @@ describe("without Band's channel", () => {
     expect(await session.toolNames()).toEqual([]);
     expect(session.instructions).toBe(CHANNEL_OFF_INSTRUCTIONS);
     expect(session.capabilities?.experimental).toBeUndefined();
+    expect(session.capabilities?.resources).toBeUndefined();
     expect(await session.status()).toBe(`off: ${SESSION_TEXT.noChannel}`);
     expect(await session.leave()).toBe(EXIT_OK);
     expect(platform.transport.joinCalls).toEqual([]);
@@ -123,6 +124,8 @@ describe("with Band's channel", () => {
     session.answer(CLOSED);
 
     expect((await closing).text).toBe(SESSION_TEXT.notPicked);
+    expect((await session.client.listResources()).resources).toEqual([]);
+    expect((await session.client.listResourceTemplates()).resourceTemplates).toEqual([]);
     expect(await session.toolNames()).toEqual([CONNECT_TOOL]);
     expect(await session.status()).toBe(`off: ${SESSION_TEXT.notPicked}`);
 
@@ -141,6 +144,8 @@ describe("with Band's channel", () => {
 
     const sentence = SESSION_TEXT.connectFailed(AGENT_NAME, "Band refused it (401): Invalid API key");
     expect((await connecting).text).toBe(sentence);
+    expect((await session.client.listResources()).resources).toEqual([]);
+    expect((await session.client.listResourceTemplates()).resourceTemplates).toEqual([]);
     expect(await session.toolNames()).toEqual([CONNECT_TOOL]);
     expect(await session.status()).toBe(`off: ${sentence}`);
   });
@@ -257,7 +262,7 @@ describe("when Band ends the connection for another reason", () => {
 describe("when another session picks the same agent", () => {
   it("connects it, sends the first back to connect with its working indicator cleared, and Band refuses the first's pick back for a while", async () => {
     await using peer = await FakePhoenixPeer.start();
-    const platform = BandPlatform.host([person(USER)]);
+    const platform = BandPlatform.host([person(USER), { id: "qa", name: "QA", handle: "owner/qa", type: "Agent" }]);
     const room = await platform.room(ROOM);
     const waiting = room.postBeforeConnect(USER, MESSAGE);
     using dirs = savedDirs({ [AGENT_NAME]: SAVED_AGENT });
@@ -265,6 +270,7 @@ describe("when another session picks the same agent", () => {
     const link = () => ({ restApi: platform.rest });
     await using first = await ClaudeCodeSession.connect(link, { ...machine, sessionId: "session-1" });
     await first.pushOf(waiting);
+    await first.resourcesWhen((rows) => rows.some((row) => row.name === "@owner/qa"));
     await platform.rest.workingReports.next((report) => report.working);
 
     await using second = new ClaudeCodeSession(link, { ...machine, sessionId: "session-2", agent: null });
@@ -273,9 +279,12 @@ describe("when another session picks the same agent", () => {
 
     expect(offered(await second.question())).toEqual([`${AGENT_NAME} (@${AGENT_HANDLE}) — in use (session in ${dirs.projectDir}); picking takes it over`]);
     expect((await second.connected()).sort()).toEqual(BAND_TOOLS);
+    await second.resourcesWhen((rows) => rows.some((row) => row.name === "@owner/qa"));
     expect(await first.toolNamesWhen((names) => names.includes(CONNECT_TOOL))).toEqual([CONNECT_TOOL]);
     const takenOver = SESSION_TEXT.takenOver(`@${AGENT_HANDLE}`);
     expect(await first.status()).toBe(`off: ${takenOver}`);
+    expect((await first.client.listResources()).resources).toEqual([]);
+    expect((await first.client.listResourceTemplates()).resourceTemplates).toEqual([]);
     expect(platform.rest.workingReports.entries.at(-1)).toEqual({ roomId: ROOM, working: false });
 
     first.answer(pick(AGENT_NAME));

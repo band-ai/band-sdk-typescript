@@ -29,6 +29,8 @@ import { MCP_SERVER_NAME, MCP_SERVER_VERSION } from "../contracts/toolSchemas";
 export interface McpResourceSource {
   name: string;
   uriTemplate: string;
+  /** Whether discovery lists the generic template; defaults to true. */
+  exposeTemplate?: boolean;
   /** Called on every `resources/list`, so it always shows the host's current set. */
   list(): Resource[] | Promise<Resource[]>;
   /** Called for any URI matching the template, listed or not, so it throws for one it doesn't know. */
@@ -87,12 +89,13 @@ export class BandMcpStdioServer {
       return;
     }
 
-    const [mcp, stdio, { z }] = await Promise.all([
+    const [mcp, stdio, { ListResourceTemplatesRequestSchema }, { z }] = await Promise.all([
       import("@modelcontextprotocol/sdk/server/mcp.js"),
       import("@modelcontextprotocol/sdk/server/stdio.js"),
+      import("@modelcontextprotocol/sdk/types.js"),
       import("zod"),
     ]);
-    const modules: McpModules = { ...mcp, ...stdio, z };
+    const modules: McpModules = { ...mcp, ...stdio, ListResourceTemplatesRequestSchema, z };
     const stdin = this.options.stdin ?? process.stdin;
     const stdout = this.options.stdout ?? process.stdout;
     const session = openSession(modules, this.options, this.registrations, stdin, stdout, () => {
@@ -172,6 +175,7 @@ export class BandMcpStdioServer {
 
 type McpModules = typeof import("@modelcontextprotocol/sdk/server/mcp.js")
   & typeof import("@modelcontextprotocol/sdk/server/stdio.js")
+  & Pick<typeof import("@modelcontextprotocol/sdk/types.js"), "ListResourceTemplatesRequestSchema">
   & { z: typeof import("zod").z };
 
 // Each tool added or removed sends one; debouncing folds a batch into a single notification.
@@ -302,6 +306,9 @@ function buildMcpServer(
       list: async () => ({ resources: await resources.list() }),
     });
     mcpServer.registerResource(resources.name, template, {}, (uri) => resources.read(uri));
+    if (resources.exposeTemplate === false) {
+      mcpServer.server.setRequestHandler(modules.ListResourceTemplatesRequestSchema, () => ({ resourceTemplates: [] }));
+    }
   }
 
   return { mcpServer, tools, register };

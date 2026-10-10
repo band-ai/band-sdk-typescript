@@ -1,3 +1,4 @@
+import { AgentResources } from "../../src/agentResources";
 /** A real channel write can outlive the connection displaced while stdout is backpressured. */
 import { PassThrough } from "node:stream";
 
@@ -48,6 +49,7 @@ it("does not restart activity when a backpressured channel push finishes after t
   const status = dirs.openStatus("session");
   const session = new AgentSession({
     server,
+    resources: new AgentResources(),
     connectTool: connect,
     env: { ...dirs.env("session"), [WS_URL_ENV]: peer.url },
     status,

@@ -48,6 +48,8 @@ export interface PostOptions {
 
 /** The agent's identity as `getAgentMe` reports it. */
 export interface AgentIdentityOptions {
+  /** `AGENT_ID` by default; sessions may reconnect as a different identity. */
+  readonly id?: string;
   readonly ownerUuid?: string | null;
   readonly featureFlags?: Readonly<Record<string, boolean>>;
   /** `AGENT_HANDLE` by default. */
@@ -114,6 +116,8 @@ interface HistoryEntry {
  * settles each message's outcome. Like Band, it refuses message, event and participant calls for a room the agent isn't in.
  */
 export class RecordingRestApi extends FakeRestApi {
+  public readonly peerCalls = new RecordLog<number>();
+  public readonly peerHolds = new CallHolds<[page: number]>();
   public readonly boardCalls = new RecordLog<BoardCall>();
   public readonly posted = new RecordLog<Posted>();
   public readonly settled = new RecordLog<Settled>();
@@ -329,6 +333,8 @@ export class RecordingRestApi extends FakeRestApi {
     const peers = this.participants
       .filter((participant) => !inRoom.some(({ id }) => id === participant.id))
       .map(({ id, name, type, handle, description }) => ({ id, name, type, handle, description }));
+    this.peerCalls.record(page);
+    await this.peerHolds.pass(page);
     return { data: page === FIRST_PAGE ? peers : [], metadata: { page } };
   }
 

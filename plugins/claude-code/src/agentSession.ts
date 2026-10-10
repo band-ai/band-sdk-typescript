@@ -4,10 +4,12 @@ import { WebSocketDisconnectError, type Logger } from "@band-ai/sdk/core";
 import type { BandMcpStdioServer, McpToolRegistration } from "@band-ai/sdk/mcp";
 import { ensureHandlePrefix, PlatformRuntime, supportsCapability } from "@band-ai/sdk/runtime";
 
+import type { AgentResources } from "./agentResources";
 import { ChannelAdapter, type ChannelPush } from "./adapter";
 import { agentCredentials, pluginDataDir, readSavedAgents, type Env, type SavedAgent } from "./config";
 import { MessageMemory } from "./messages";
-import { agentLabel, handleOf } from "./names";
+import { agentLabel, handleOf, type Candidate } from "./names";
+import { reachable } from "./peers";
 import { agentQuestion, pickedAgent } from "./question";
 import { CONNECTED_STATE, OFF_STATE, sessionHints, SESSION_TEXT, type SessionChange, type SessionStatusFile } from "./sessions";
 import { bandErrorText, bandTools, CONNECT_TOOL, type ToolContext } from "./tools";
@@ -28,6 +30,7 @@ export type LinkFactory = (credentials: AgentCredentials) => PlatformRuntimeOpti
 
 export interface AgentSessionOptions {
   readonly server: BandMcpStdioServer;
+  readonly resources: AgentResources;
   /** Listed while no agent is connected. */
   readonly connectTool: McpToolRegistration;
   /** The server's environment: where the agents are saved, and the Band they connect to. */
@@ -47,6 +50,7 @@ export class AgentSession {
   private runtime?: PlatformRuntime;
   private working?: WorkingIndicator;
   private closed = false;
+  private latestFetch?: Promise<Candidate[]>;
 
   public constructor(private readonly options: AgentSessionOptions) {}
 
@@ -66,6 +70,7 @@ export class AgentSession {
   /** Ends the connection, or the attempt at one. */
   public async close(): Promise<void> {
     this.closed = true;
+    this.clearResources();
     await Promise.all([this.working?.stopAll(), this.runtime?.stop(STOP_WITHOUT_DRAINING_MS)]);
   }
 
@@ -112,14 +117,16 @@ export class AgentSession {
       agentConfig: { autoSubscribeExistingRooms: true },
     });
     this.runtime = runtime;
-    let sentence: string;
+    let refreshAgents!: () => Promise<Candidate[]>;
     let handle: string;
     let listed: readonly McpToolRegistration[] = [];
     try {
       await runtime.initialize();
       const identity = await runtime.link.rest.getAgentMe();
       handle = ensureHandlePrefix(identity.handle) ?? name;
+      refreshAgents = () => this.refreshAgents(runtime, context);
       const context: ToolContext = {
+        refreshAgents,
         link: runtime.link,
         self: { id: identity.id, handle: handleOf(identity) },
         board: supportsCapability(identity.featureFlags, "tasks"),
@@ -131,7 +138,7 @@ export class AgentSession {
       // Nothing is listed or pushed until Claude Code can receive it.
       await server.initialized;
       // Recorded first, so a client that sees the tools change finds the status already says why.
-      sentence = this.record({ state: CONNECTED_STATE, agent: name, agentId: identity.id, handle: identity.handle ?? null, sentence: SESSION_TEXT.connected(agentLabel(name, identity.handle)) });
+      this.record({ state: CONNECTED_STATE, agent: name, agentId: identity.id, handle: identity.handle ?? null, sentence: SESSION_TEXT.connected(agentLabel(name, identity.handle)) });
       // Listed before delivery starts, which pushes as each room is ready, so Claude can answer every message.
       const tools = bandTools(context);
       server.removeTools([CONNECT_TOOL]);
@@ -148,10 +155,51 @@ export class AgentSession {
     if (this.closed) {
       return this.sentence;
     }
-    this.serve(runtime, name, handle, listed).catch((error: unknown) => {
+    const ended = this.serve(runtime, name, handle, listed).catch((error: unknown) => {
       logger.warn("Band couldn't list connect again after the connection ended", { error });
     });
-    return sentence;
+    const initial = refreshAgents().catch((error: unknown) => {
+      logger.warn("Band couldn't load agent resources", { error });
+    });
+    await Promise.race([initial, ended]);
+    if (this.closed) {
+      return this.sentence;
+    }
+    if (this.runtime !== runtime || runtime.state.status !== "running") {
+      await ended;
+    }
+    return this.sentence;
+  }
+
+  private async refreshAgents(runtime: PlatformRuntime, context: ToolContext): Promise<Candidate[]> {
+    const fetch = reachable(context);
+    this.latestFetch = fetch;
+    try {
+      const peers = await fetch;
+      if (this.latestFetch === fetch && !this.closed && this.runtime === runtime && runtime.state.status === "running"
+        && this.options.resources.replace(peers)) {
+        await this.notifyResources();
+      }
+      return peers;
+    } finally {
+      if (this.latestFetch === fetch) {
+        this.latestFetch = undefined;
+      }
+    }
+  }
+
+  private clearResources(): void {
+    if (this.options.resources.replace([])) {
+      void this.notifyResources();
+    }
+  }
+
+  private async notifyResources(): Promise<void> {
+    try {
+      await this.options.server.resourcesChanged();
+    } catch (error) {
+      this.options.logger.warn("Band couldn't announce agent resources", { error });
+    }
   }
 
   /** Until the connection ends, which only `close()` does without an error. */
@@ -169,6 +217,10 @@ export class AgentSession {
 
   /** Ends a connection or a failed attempt at one: clears its working indicator, goes off, and lists `connect` in place of its tools. */
   private async release(runtime: PlatformRuntime, tools: readonly McpToolRegistration[], sentence: string): Promise<string> {
+    if (this.runtime !== runtime) {
+      return this.sentence;
+    }
+    this.clearResources();
     await Promise.all([this.working?.stopAll(), stopQuietly(runtime, this.options.logger)]);
     if (this.closed) {
       return this.sentence;

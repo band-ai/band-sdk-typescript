@@ -2,6 +2,7 @@ import { DeliveryFailedError, type Logger } from "@band-ai/sdk/core";
 import { BandMcpStdioServer } from "@band-ai/sdk/mcp";
 import type { Readable, Writable } from "node:stream";
 
+import { AgentResources } from "./agentResources";
 import { AgentSession, type LinkFactory } from "./agentSession";
 import { bandChannelOn } from "./channelFlag";
 import { AGENT_SELECT_ENV, type Env } from "./config";
@@ -61,9 +62,11 @@ async function serveOff({ stdin, stdout, interrupted = NEVER }: RunChannelOption
 
 async function serveChannel({ env, link, stdin, stdout, interrupted = NEVER, logger }: RunChannelOptions, status: SessionStatusFile | undefined): Promise<void> {
   // Listed from the start: Claude Code asks for the tools as soon as it connects.
+  const resources = new AgentResources();
   const connect = connectTool(() => agentSession.ask());
   const server: BandMcpStdioServer = new BandMcpStdioServer({
     additionalTools: [connect],
+    resources,
     capabilities: { experimental: { [CHANNEL_CAPABILITY]: {} } },
     instructions: CHANNEL_INSTRUCTIONS,
     stdin,
@@ -72,6 +75,7 @@ async function serveChannel({ env, link, stdin, stdout, interrupted = NEVER, log
   const agentSession = new AgentSession({
     server,
     connectTool: connect,
+    resources,
     env,
     status,
     link,

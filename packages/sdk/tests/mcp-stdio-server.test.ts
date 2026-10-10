@@ -346,6 +346,7 @@ const [REPLY, SEND] = BAND_TOOL_NAMES;
 class AgentDirectory implements McpResourceSource {
   public readonly name = "agents";
   public readonly uriTemplate = AGENT_URI_TEMPLATE;
+  public exposeTemplate?: boolean;
   public handles: string[];
 
   public constructor(handles: string[]) {
@@ -434,6 +435,7 @@ describe("BandMcpStdioServer as Claude Code's Band server", () => {
     // The host asks only once Claude Code has listed its tools.
     const picked = server.toolsListed.then(() => server.elicitInput(AGENT_QUESTION));
 
+    expect((await claude.client.listResourceTemplates()).resourceTemplates).toMatchObject([{ uriTemplate: AGENT_URI_TEMPLATE }]);
     // Claude Code loads the `@` suggestions, looks one up, then lists the tools.
     expect((await claude.client.listResources()).resources.map((resource) => resource.name)).toEqual(agents.handles);
     const { contents } = await claude.client.readResource({ uri: agentUri(PICKED_AGENT) });
@@ -462,6 +464,21 @@ describe("BandMcpStdioServer as Claude Code's Band server", () => {
 
     // Claude Code re-listed once per change.
     expect(claude.toolRelists).toEqual([BAND_TOOL_NAMES, [], BAND_TOOL_NAMES]);
+  });
+
+  it("hides template discovery while preserving slash reads and change notifications", async ({ serve }) => {
+    const agents = new AgentDirectory([PICKED_AGENT]);
+    agents.exposeTemplate = false;
+    const { server, connect } = await serve({ resources: agents });
+    const claude = await connect();
+    expect((await claude.client.listResourceTemplates()).resourceTemplates).toEqual([]);
+    expect((await claude.client.listResources()).resources).toEqual(agents.list());
+    expect((await claude.client.readResource({ uri: agentUri(PICKED_AGENT) })).contents).toEqual([{ uri: agentUri(PICKED_AGENT), text: agentText(PICKED_AGENT) }]);
+    const relisted = claude.nextResourceNames();
+    agents.handles = [OTHER_AGENT];
+    await server.resourcesChanged();
+    expect(await relisted).toEqual([OTHER_AGENT]);
+    await expect(claude.client.readResource({ uri: agentUri(PICKED_AGENT) })).rejects.toThrow(UNKNOWN_AGENT);
   });
 
   it("serves what the host did before Claude Code connected, once it has", async ({ serve }) => {
