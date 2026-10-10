@@ -107,7 +107,7 @@ Do not expect every Band tool to prompt on its first call: skills grant tools fo
 
 Claude supplies the storage directory as `CLAUDE_PLUGIN_DATA`. For local `band@inline` loading with the default Claude configuration, it resolves to `~/.claude/plugins/data/band-inline/` (a custom `CLAUDE_CONFIG_DIR` changes the configuration root). `agents.yaml` holds agent IDs and **plaintext API keys**, written with owner-only file permissions. `sessions/*.json` records session identity, process IDs, project directory, and status. Treat both the saved keys and any transcripts containing them as sensitive.
 
-To forget a local credential, use `/band:agents remove <saved-name>` and confirm. This does **not** revoke the key on Band or stop an already connected session; exit or switch that session separately. For a compromised key, use Band's [Regenerate API Key](https://docs.band.ai/integrations/mcp/remote-agents#create-your-agent-api-key) action and replace the saved credential. Do not delete credentials as part of a rebuild or clean.
+To forget a local credential, use `/band:agents remove <saved-name>` and confirm. This does **not** revoke the key on Band or stop an already connected session; exit or switch that session separately. For a compromised key, use Band's [Regenerate API Key](https://docs.band.ai/integrations/mcp/remote-agents#create-your-agent-api-key) action. Remove the saved name locally, add the same agent with the new key under that name, then reconnect through `/mcp` or restart Claude to use it. Adding alone cannot replace an existing saved agent. Do not delete credentials as part of a rebuild or clean.
 
 ## Troubleshooting
 
@@ -119,7 +119,7 @@ Start with `/band:agents status`, `/mcp`, and the channel startup notice. Status
 | Plugin missing or Band off without its channel | Absolute plugin path and `plugin:band@inline` suffix | Relaunch with all three flags from Get started. Without the channel, the server lists no Band tools and does not connect. |
 | No saved agent, no pick, or `BAND_AGENT` name not saved | `/band:agents status` | Add the existing external agent, say “join Band”, or correct the saved name. |
 | MCP connected but no channel delivery | Startup notice says skipped; organization channels policy | Ask an organization admin to enable channels. Do not bypass policy; tools can work and messages can be marked processed even when channel delivery is blocked. |
-| Credentials rejected or connection failed | Status reason; REST `401` indicates rejected credentials | Check agent ID/key and the configured endpoint. Add corrected credentials; do not confuse a platform refusal with a typo. |
+| Credentials rejected or connection failed | Status reason; REST `401` indicates rejected credentials | Check agent ID/key and the configured endpoint. For a saved agent, remove its saved name, add corrected credentials under that name, then reconnect or restart. Do not confuse a platform refusal with a typo. |
 | Another session took over, or Band refuses takeover | Status's backend reason | Use another saved agent or follow the reported cooldown before making another explicit pick. |
 | No incoming mention | Connected identity, room membership, actual mention selection, startup notice | Add the agent to the room and select it in Band's mention picker; check terminal permissions. |
 | Agent absent or invite refused | `find_agents` result and Band contact status | Approve the required contact on Band, then refresh the directory. |
