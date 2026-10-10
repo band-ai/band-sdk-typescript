@@ -94,6 +94,10 @@ export class PluginProcess implements AsyncDisposable {
     return this.channel.toolNamesWhen(matches);
   }
 
+  public resourcesWhen(matches: Parameters<ChannelClient["resourcesWhen"]>[0]) {
+    return this.channel.resourcesWhen(matches);
+  }
+
   /** Queues the user's answer to the next agent question. */
   public answer(result: ElicitResult): void {
     this.channel.answer(result);

@@ -148,6 +148,12 @@ export class ClaudeCodeSession implements AsyncDisposable {
     return (await this.tools()).map((tool) => tool.name);
   }
 
+  public get client() { return this.channel.client; }
+  public get resourceRelists(): ChannelClient["resourceRelists"] { return this.channel.resourceRelists; }
+  public resourcesWhen(matches: Parameters<ChannelClient["resourcesWhen"]>[0]) {
+    return this.channel.resourcesWhen(matches);
+  }
+
   public callTool(name: string, args: Record<string, unknown>): Promise<ToolReply> {
     return callTool(this.channel.client, name, args);
   }

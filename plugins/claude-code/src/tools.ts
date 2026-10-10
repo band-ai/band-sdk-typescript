@@ -4,6 +4,7 @@ import { errorResult, successResult, type McpToolRegistration } from "@band-ai/s
 
 import { boardTools } from "./board";
 import { fetchMessagesTool, replyTool, sendTool, type MessageMemory } from "./messages";
+import type { Candidate } from "./names";
 import { findAgentsTool } from "./peers";
 import { findRoomsTool, inviteTool, openRoomTool, renameRoomTool } from "./rooms";
 import type { WorkingIndicator } from "./working";
@@ -31,6 +32,7 @@ export const CLAUDE_CODE_TEXT_LIMIT = 2048;
 
 /** What every tool works with: the agent's link, who it is, and the session's state. */
 export interface ToolContext {
+  readonly refreshAgents?: () => Promise<Candidate[]>;
   readonly link: Pick<BandLink, "agentId" | "listAllChats" | "rest">;
   /** The agent; `handle` is its `@handle`, or its name when Band has none. */
   readonly self: { readonly id: string; readonly handle: string };

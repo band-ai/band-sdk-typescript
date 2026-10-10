@@ -24,7 +24,7 @@ export function findAgentsTool(context: ToolContext): McpToolRegistration {
       const query = typeof args.query === "string" && args.query.trim() ? args.query : undefined;
       const roomId = typeof args.room_id === "string" && args.room_id ? args.room_id : undefined;
       const [peers, inRoom] = await Promise.all([
-        reachable(context),
+        context.refreshAgents ? context.refreshAgents() : reachable(context),
         roomId ? rest.listChatParticipants(roomId).then((participants) => new Set(participants.map(({ id }) => id))) : new Set<string>(),
       ]);
       const agents = peers.filter((peer) => peer.type === AGENT_TYPE && (query === undefined || matchesWords(peer, query)));

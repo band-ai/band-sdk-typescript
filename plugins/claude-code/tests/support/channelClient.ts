@@ -13,6 +13,7 @@ import {
   type ElicitRequestFormParams,
   type ElicitResult,
   type JSONRPCMessage,
+  type Resource,
 } from "@modelcontextprotocol/sdk/types.js";
 
 import type { ChannelPush } from "../../src/adapter";
@@ -39,7 +40,7 @@ export async function callTool(client: Client, name: string, args: Record<string
 class ClientEnd extends StdioServerTransport {
   public constructor(
     fromPlugin: Readable,
-    toPlugin: Writable,
+    private readonly toPlugin: Writable,
     private readonly outgoing: CallHolds<[JSONRPCMessage]>,
   ) {
     super(fromPlugin, toPlugin);
@@ -47,6 +48,9 @@ class ClientEnd extends StdioServerTransport {
 
   public override async send(message: JSONRPCMessage): Promise<void> {
     await this.outgoing.pass(message);
+    if (this.toPlugin.writableEnded) {
+      throw new Error("Claude Code has left");
+    }
     await super.send(message);
   }
 }
@@ -72,6 +76,7 @@ export class ChannelClient {
   private readonly answers = new RecordLog<ElicitResult>();
   /** The tool names Claude Code re-listed after each `tools/list_changed`, in order. */
   private readonly toolRelists = new RecordLog<string[]>();
+  public readonly resourceRelists = new RecordLog<Resource[]>();
   private readonly outgoing = new CallHolds<[JSONRPCMessage]>();
 
   public constructor(
@@ -85,7 +90,10 @@ export class ChannelClient {
     this.client = new Client({ name: "claude-code", version }, {
       capabilities: elicitation ? { elicitation: { form: {} } } : {},
       // Re-lists on each change, as Claude Code does; no debounce, so each re-list follows its notification without a timer.
-      listChanged: { tools: { debounceMs: 0, onChanged: (_error, tools) => this.toolRelists.record((tools ?? []).map((tool) => tool.name)) } },
+      listChanged: {
+        resources: { debounceMs: 0, onChanged: (_error, resources) => this.resourceRelists.record(resources ?? []) },
+        tools: { debounceMs: 0, onChanged: (_error, tools) => this.toolRelists.record((tools ?? []).map((tool) => tool.name)) },
+      },
     });
     this.client.fallbackNotificationHandler = async (notification) => {
       if (notification.method === CHANNEL_METHOD) {
@@ -105,6 +113,9 @@ export class ChannelClient {
   public async connect(): Promise<void> {
     await this.unlessExited(this.client.connect(new ClientEnd(this.fromPlugin, this.toPlugin, this.outgoing)), "the handshake");
     await this.client.listTools();
+    if (this.client.getServerCapabilities()?.resources) {
+      this.resourceRelists.record((await this.client.listResources()).resources);
+    }
   }
 
   /** Queues the answer to the next question still unanswered. */
@@ -127,6 +138,12 @@ export class ChannelClient {
     const seen = this.toolRelists.entries.length;
     const names = (await this.client.listTools()).tools.map((tool) => tool.name);
     return matches(names) ? names : this.unlessExited(this.toolRelists.next(matches, seen), "the tools to change");
+  }
+
+  public async resourcesWhen(matches: (resources: readonly Resource[]) => boolean): Promise<Resource[]> {
+    const seen = this.resourceRelists.entries.length;
+    const resources = (await this.client.listResources()).resources;
+    return matches(resources) ? resources : this.unlessExited(this.resourceRelists.next(matches, seen), "the resources to change");
   }
 
   /**
