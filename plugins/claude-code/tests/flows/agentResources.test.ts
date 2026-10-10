@@ -41,10 +41,11 @@ describe("reachable agents through the real MCP protocol", () => {
     await using session = await ClaudeCodeSession.connect(linkTo(platform));
     await ready(session);
     expect(await listed(session)).toEqual([
-      { uri: agentResourceUri(escaped.handle), name: "@owner/docs %?#", description: "Docs", mimeType: "text/plain" },
-      { uri: agentResourceUri(QA.handle!), name: "@owner/qa", description: QA.description, mimeType: "text/plain" },
+      { uri: "band://agent/owner/docs%20%25%3F%23", name: "@owner/docs %?#", description: "Docs", mimeType: "text/plain" },
+      { uri: "band://agent/owner/qa", name: "@owner/qa", description: QA.description, mimeType: "text/plain" },
     ]);
-    expect(await metadata(session, escaped.handle)).toEqual({ handle: "owner/docs %?#", name: "Docs", description: null });
+    const { contents } = await session.client.readResource({ uri: "band://agent/owner/docs%20%25%3F%23" });
+    expect(JSON.parse((contents[0] as { text: string }).text)).toEqual({ handle: "owner/docs %?#", name: "Docs", description: null });
     expect(await metadata(session, QA.handle!)).toEqual({ handle: QA.handle, name: QA.name, description: QA.description });
     expect((await session.client.listResourceTemplates()).resourceTemplates).toEqual([]);
     await expect(metadata(session, "owner/unknown")).rejects.toThrow("Unknown Band agent resource");
