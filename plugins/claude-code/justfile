@@ -1,0 +1,41 @@
+set working-directory := "../.."
+
+plugin := justfile_directory()
+
+[private]
+default:
+    @just --justfile {{quote(justfile())}} --list
+
+# Install workspace dependencies and build the plugin with its dependencies.
+setup:
+    pnpm install --frozen-lockfile
+    pnpm --filter @band-ai/claude-code-plugin... build
+
+# Rebuild the plugin and its workspace dependencies.
+build:
+    pnpm --filter @band-ai/claude-code-plugin... build
+
+# Start interactive Claude in the caller's project.
+[no-cd]
+run:
+    exec claude --plugin-dir {{quote(plugin)}} --permission-mode manual --dangerously-load-development-channels plugin:band@inline
+
+# Validate the plugin manifest and components.
+validate:
+    claude plugin validate {{quote(plugin)}}
+
+# Build before running plugin unit tests.
+test: build
+    pnpm --filter @band-ai/claude-code-plugin test
+
+# Run the existing live suite (which builds first).
+test-live:
+    pnpm --filter @band-ai/claude-code-plugin test:live
+
+# Run model evals, keeping the report local.
+eval:
+    claude plugin eval {{quote(plugin)}} --trust-plugin --no-publish --allow-tools "Bash(node:*)"
+
+# Remove only the plugin's compiled output.
+clean:
+    pnpm --filter @band-ai/claude-code-plugin clean
