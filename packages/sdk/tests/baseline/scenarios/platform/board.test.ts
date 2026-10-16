@@ -11,7 +11,9 @@ import { Rooms } from "../../toolkit/rooms";
 const SCENARIO = scenarioId(CATEGORY.platform, "board");
 const NOT_FOUND = 404;
 const UNPROCESSABLE = 422;
-const OVERLONG_SUBJECT = "x".repeat(501);
+/** Band rejects a subject longer than this. Length is counted in characters. */
+const SUBJECT_MAX_LENGTH = 512;
+const OVERLONG_SUBJECT = "x".repeat(SUBJECT_MAX_LENGTH + 1);
 
 function validationError(field: string) {
   return { statusCode: UNPROCESSABLE, body: { error: { code: "validation_error", details: { [field]: expect.any(Array) } } } };
