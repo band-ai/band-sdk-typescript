@@ -80,7 +80,11 @@ test("red reports sanitize the same evidence before rendering JSON and Markdown"
 });
 
 test("October 8 renders failed plugin tests before green SDK cells, and separates test counts", () => {
-  const historicalRoster = new AdapterRegistry(registry.ids().map((id) => ({ ...registry.get(id), ...(id === "openai" ? { pending: "needs an OPENAI_API_KEY provisioned in CI" } : {}) })));
+  const historicalPending = {
+    openai: "needs an OPENAI_API_KEY provisioned in CI",
+    langgraph: "needs a LangChain chat-model package as a devDependency",
+  };
+  const historicalRoster = new AdapterRegistry(registry.ids().map((id) => ({ ...registry.get(id), ...(historicalPending[id] ? { pending: historicalPending[id] } : {}) })));
   const sdkTests = Array.from({ length: 147 }, (_, index) => testCase(index === 0 ? "anthropic + google-adk" : "anthropic", {
     id: `pass${index}`, fullName: `behavior.fixture${index} > anthropic`, parent: { type: "suite", name: `behavior.fixture${index}` },
   }));
