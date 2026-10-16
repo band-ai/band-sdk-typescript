@@ -1,4 +1,4 @@
-import { Agent, GeminiAdapter, loadAgentConfig, isDirectExecution } from "../../src/index";
+import { Agent, GeminiAdapter, DEFAULT_GEMINI_MODEL, loadAgentConfig, isDirectExecution } from "../../src/index";
 import type { ToolCallingModel } from "../../src/adapters/tool-calling";
 
 export interface GeminiExampleOptions {
@@ -14,7 +14,7 @@ export interface GeminiExampleOptions {
 export function buildGeminiExampleAdapter(options: GeminiExampleOptions = {}): GeminiAdapter {
   const modelOptions = options.toolCallingModel
     ? { model: options.toolCallingModel }
-    : { geminiModel: options.model ?? "gemini-3-flash-preview", apiKey: options.apiKey };
+    : { geminiModel: options.model ?? DEFAULT_GEMINI_MODEL, apiKey: options.apiKey };
 
   return new GeminiAdapter({
     ...modelOptions,

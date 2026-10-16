@@ -16,6 +16,7 @@ import {
   type CustomToolDef,
 } from "../../runtime/tools/customTools";
 import { asOptionalRecord } from "../shared/coercion";
+import { DEFAULT_GEMINI_MODEL } from "../shared/geminiModel";
 import { reportProviderTurnFailure } from "../../core/providerFailure";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { PREVIOUS_CONTEXT_HEADER } from "../shared/conversationPrompt";
@@ -238,7 +239,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
     const historyConverter = options.historyConverter ?? new GoogleADKHistoryConverter();
     super({ historyConverter });
 
-    this.model = options.model ?? "gemini-2.5-flash";
+    this.model = options.model ?? DEFAULT_GEMINI_MODEL;
     this.apiKey = options.apiKey;
     this.systemPromptOverride = options.systemPrompt;
     this.customSection = options.customSection ?? "";

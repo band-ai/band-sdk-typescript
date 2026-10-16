@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { HistoryProvider } from "../src/runtime";
 import { GeminiAdapter } from "../src/index";
-import { GeminiToolCallingModel } from "../src/adapters";
+import { GeminiToolCallingModel, DEFAULT_GEMINI_MODEL } from "../src/adapters";
 import { FAILURE_CODE_TIMEOUT } from "../src/core/providerFailure";
 import { FakeTools, SHORT_TURN_TIMEOUT_MS, expectTurnFailed, findFailureEvent, hangUntilAborted, makeMessage } from "./testUtils";
 
@@ -69,7 +69,7 @@ describe("GeminiAdapter", () => {
     ];
 
     const model = new GeminiToolCallingModel({
-      model: "gemini-3-flash-preview",
+      model: DEFAULT_GEMINI_MODEL,
       clientFactory: async () => ({
         models: {
           generateContent: async (params: Record<string, unknown>) => {
@@ -124,7 +124,7 @@ describe("GeminiAdapter", () => {
     expect(requests).toHaveLength(2);
 
     expect(requests[0]).toMatchObject({
-      model: "gemini-3-flash-preview",
+      model: DEFAULT_GEMINI_MODEL,
       config: {
         tools: [
           {
@@ -159,7 +159,7 @@ describe("GeminiAdapter", () => {
 
   it("routes a provider failure through sendFailure with provider: 'gemini', then fails the turn", async () => {
     const model = new GeminiToolCallingModel({
-      model: "gemini-3-flash-preview",
+      model: DEFAULT_GEMINI_MODEL,
       clientFactory: async () => ({
         models: {
           generateContent: async () => {
@@ -194,7 +194,7 @@ describe("GeminiAdapter", () => {
   it("aborts the provider request when the turn times out", async () => {
     const hung = hangUntilAborted();
     const model = new GeminiToolCallingModel({
-      model: "gemini-3-flash-preview",
+      model: DEFAULT_GEMINI_MODEL,
       clientFactory: async () => ({
         models: {
           generateContent: (params: Record<string, unknown>) =>

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ACPClientAdapter } from "../src/adapters/acp";
 import { OmpACPAdapter, DEFAULT_OMP_ACP_COMMAND } from "../src/adapters/omp-acp";
+import { DEFAULT_GEMINI_MODEL } from "../src/adapters/shared/geminiModel";
 import { FakeTools, findFailureEvent, makeMessage, tmpRoot } from "./testUtils";
 import { runAcpTurn } from "./helpers/acpTurn";
 
@@ -53,7 +54,7 @@ describe("OmpACPAdapter", () => {
     const adapter = new OmpACPAdapter({
       cwd: tmpRoot(),
       enableMcpTools: false,
-      command: ["omp", "acp", "--model", "google/gemini-2.5-flash"],
+      command: ["omp", "acp", "--model", `google/${DEFAULT_GEMINI_MODEL}`],
       connectionFactory: async (_client, options) => {
         command = options.command;
         return mockConnection();
@@ -61,7 +62,7 @@ describe("OmpACPAdapter", () => {
     });
 
     await runAcpTurn(adapter);
-    expect(command).toEqual(["omp", "acp", "--model", "google/gemini-2.5-flash"]);
+    expect(command).toEqual(["omp", "acp", "--model", `google/${DEFAULT_GEMINI_MODEL}`]);
     await adapter.stop();
   });
 

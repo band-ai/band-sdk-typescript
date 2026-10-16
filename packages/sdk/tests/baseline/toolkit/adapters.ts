@@ -16,6 +16,7 @@ import {
   CursorACPAdapter,
   DEFAULT_COPILOT_ACP_COMMAND,
   DEFAULT_CURSOR_ACP_COMMAND,
+  DEFAULT_GEMINI_MODEL,
   DEFAULT_KIRO_ACP_COMMAND,
   DEFAULT_OMP_ACP_COMMAND,
   GeminiAdapter,
@@ -35,7 +36,6 @@ import { AdapterRegistry, CAPABILITY, requires, type AdapterSpec, type BuildOpti
 import { anthropicDiagnosticFactory, geminiDiagnosticFactory } from "./providerDiagnostics";
 
 const ANTHROPIC_MODEL = "claude-haiku-4-5";
-const GEMINI_MODEL = "gemini-2.5-flash-lite";
 const OPENAI_MODEL = "gpt-5.2";
 
 const ENV = {
@@ -69,7 +69,7 @@ export function buildClaudeSdk({ prompt, workDir }: BuildOptions, options: Claud
 }
 
 /** OMP on the pinned Google model. */
-const OMP_COMMAND = [...DEFAULT_OMP_ACP_COMMAND, "--model", `google/${GEMINI_MODEL}`];
+const OMP_COMMAND = [...DEFAULT_OMP_ACP_COMMAND, "--model", `google/${DEFAULT_GEMINI_MODEL}`];
 
 /** OMP's state directory under the cell's working directory, where it also keeps its session transcripts. */
 export const OMP_STATE_DIR = ".omp-state";
@@ -209,7 +209,7 @@ const SPECS = {
     supports: [CAPABILITY.customTools, CAPABILITY.memory],
     build: ({ prompt, customTools, memory, reportToolCalls }) =>
       new GeminiAdapter({
-        geminiModel: GEMINI_MODEL,
+        geminiModel: DEFAULT_GEMINI_MODEL,
         clientFactory: geminiDiagnosticFactory(),
         apiKey: googleApiKey(),
         systemPrompt: prompt,
@@ -225,7 +225,7 @@ const SPECS = {
     supports: [CAPABILITY.customTools, CAPABILITY.memory],
     build: ({ prompt, customTools, memory, reportToolCalls }) =>
       new GoogleADKAdapter({
-        model: GEMINI_MODEL,
+        model: DEFAULT_GEMINI_MODEL,
         apiKey: googleApiKey(),
         systemPrompt: prompt,
         additionalTools: customTools,
