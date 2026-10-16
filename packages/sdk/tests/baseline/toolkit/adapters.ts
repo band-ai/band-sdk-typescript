@@ -35,7 +35,7 @@ import { AdapterRegistry, CAPABILITY, requires, type AdapterSpec, type BuildOpti
 import { anthropicDiagnosticFactory, geminiDiagnosticFactory } from "./providerDiagnostics";
 
 const ANTHROPIC_MODEL = "claude-haiku-4-5";
-const GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_MODEL = "gemini-2.5-flash-lite";
 const OPENAI_MODEL = "gpt-5.2";
 
 const ENV = {
