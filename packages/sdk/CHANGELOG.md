@@ -1,6 +1,31 @@
 # Changelog
 
 
+## [1.0.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.6.0...sdk-v1.0.0) (2026-10-16)
+
+
+### Features
+
+* **claude-code:** Band only with its channel; ask which agent at every start ([#320](https://github.com/band-ai/band-sdk-typescript/issues/320)) ([696702a](https://github.com/band-ai/band-sdk-typescript/commit/696702a8fd4481d94c7b8d5feb6342e01d092eff))
+* **claude-code:** reply-first Band toolkit with rules-only instructions ([#319](https://github.com/band-ai/band-sdk-typescript/issues/319)) ([968c01f](https://github.com/band-ai/band-sdk-typescript/commit/968c01f493c3ba56ede0e5e3aaf46146c92bb3ae))
+* **claude-code:** suggest reachable agents as MCP resources ([#322](https://github.com/band-ai/band-sdk-typescript/issues/322)) ([64dab84](https://github.com/band-ai/band-sdk-typescript/commit/64dab845a97611b5da2ac4c04ceeee00531d964a))
+* **sdk:** add room, peer, context and activity ops ([#318](https://github.com/band-ai/band-sdk-typescript/issues/318)) ([ee6843d](https://github.com/band-ai/band-sdk-typescript/commit/ee6843d6ad44abdc93397b3a506492b611c662d7))
+* **sdk:** MCP stdio server that starts empty and grows tools and resources ([#317](https://github.com/band-ai/band-sdk-typescript/issues/317)) ([4b1cd94](https://github.com/band-ai/band-sdk-typescript/commit/4b1cd943c8a93060f4285030484caa37aefc9f6a))
+* **sdk:** room board tools under core names, listed by the Claude Code plugin ([#321](https://github.com/band-ai/band-sdk-typescript/issues/321)) ([eeb3e7f](https://github.com/band-ai/band-sdk-typescript/commit/eeb3e7f301c8c29ff0c200741f9638025dbd6bca))
+
+
+### Bug Fixes
+
+* **adapters:** default Gemini models to gemini-2.5-flash-lite ([#338](https://github.com/band-ai/band-sdk-typescript/issues/338)) ([49c68b1](https://github.com/band-ai/band-sdk-typescript/commit/49c68b19ae5142140c33efab700ef708673422b2))
+* repair live baseline failures and report complete nightly results ([#315](https://github.com/band-ai/band-sdk-typescript/issues/315)) ([76cf5f4](https://github.com/band-ai/band-sdk-typescript/commit/76cf5f4c8d48ab6f620ffbb0b1c032de0dbfcec4))
+* **sdk:** enable LangGraph baseline and update Gemini default ([#340](https://github.com/band-ai/band-sdk-typescript/issues/340)) ([a1b4816](https://github.com/band-ai/band-sdk-typescript/commit/a1b4816c6fa2f992d1c92e707c0389a67d31e2f0))
+* **tests:** refuse task subjects longer than 512 characters ([#337](https://github.com/band-ai/band-sdk-typescript/issues/337)) ([ce91f08](https://github.com/band-ai/band-sdk-typescript/commit/ce91f08f8ad351f0a53f55c1ab3f6b67b121b0a9))
+
+
+### Miscellaneous Chores
+
+* **sdk:** release 1.0.0 ([#313](https://github.com/band-ai/band-sdk-typescript/issues/313)) ([5d7f491](https://github.com/band-ai/band-sdk-typescript/commit/5d7f491d7cf034346c6c23c430a53cadcd6a1f91))
+
 ## [0.6.0](https://github.com/band-ai/band-sdk-typescript/compare/sdk-v0.5.0...sdk-v0.6.0) (2026-10-05)
 
 
