@@ -1,10 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { HistoryProvider } from "../src/runtime";
 import { GeminiAdapter } from "../src/index";
 import { GeminiToolCallingModel, DEFAULT_GEMINI_MODEL } from "../src/adapters";
 import { FAILURE_CODE_TIMEOUT } from "../src/core/providerFailure";
 import { FakeTools, SHORT_TURN_TIMEOUT_MS, expectTurnFailed, findFailureEvent, hangUntilAborted, makeMessage } from "./testUtils";
+
+// An omitted model still loads part factories from the optional peer before generateContent.
+vi.mock("@google/genai", () => ({
+  createPartFromFunctionCall: (name: string, args: Record<string, unknown>) => ({
+    functionCall: { name, args },
+  }),
+  createPartFromFunctionResponse: (id: string, name: string, response: Record<string, unknown>) => ({
+    functionResponse: { id, name, response },
+  }),
+}));
 
 class GeminiTestTools extends FakeTools {
   public readonly executed: Array<{ name: string; input: Record<string, unknown> }> = [];
@@ -215,5 +225,28 @@ describe("GeminiAdapter", () => {
 
     expect(hung.signal?.aborted).toBe(true);
     expect(findFailureEvent(tools)?.metadata?.failure).toMatchObject({ provider: "gemini", code: FAILURE_CODE_TIMEOUT });
+  });
+
+  it("sends DEFAULT_GEMINI_MODEL when model and geminiModel are omitted", async () => {
+    const requests: Array<Record<string, unknown>> = [];
+    const adapter = new GeminiAdapter({
+      clientFactory: async () => ({
+        models: {
+          generateContent: async (params: Record<string, unknown>) => {
+            requests.push(params);
+            return { text: "ok" };
+          },
+        },
+      }),
+    });
+    const tools = new GeminiTestTools();
+
+    await adapter.onMessage(makeMessage("hello"), tools, history, null, null, {
+      isSessionBootstrap: true,
+      roomId: "room-1",
+    });
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ model: DEFAULT_GEMINI_MODEL });
   });
 });
