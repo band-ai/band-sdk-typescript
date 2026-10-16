@@ -99,7 +99,7 @@
     "@band-ai/rest-client": "0.0.146",
     "js-yaml": "^5.4.2",
     "phoenix": "^1.8.14",
-    "ws": "^8.21.3",
+    "ws": "^8.22.0",
     "zod": "^4.6.5"
   },
   "peerDependencies": {
