@@ -1,3 +1,4 @@
+import { DEFAULT_GEMINI_MODEL } from "../shared/geminiModel";
 import { ToolCallingAdapter, type ToolCallingAdapterOptions } from "../tool-calling";
 import type { ToolCallingModel } from "../tool-calling";
 import {
@@ -24,7 +25,7 @@ export class GeminiAdapter extends ToolCallingAdapter {
     } = options;
 
     const resolvedModel = model ?? new GeminiToolCallingModel({
-      model: geminiModel ?? "gemini-3-flash-preview",
+      model: geminiModel ?? DEFAULT_GEMINI_MODEL,
       apiKey,
       clientFactory,
     });

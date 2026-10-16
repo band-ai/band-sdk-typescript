@@ -58,7 +58,7 @@ export {
 export { VercelAISDKAdapter } from "./adapters/vercel-ai-sdk";
 export { OpenAIAdapter } from "./adapters/openai";
 export { AnthropicAdapter } from "./adapters/anthropic";
-export { GeminiAdapter } from "./adapters/gemini";
+export { GeminiAdapter, DEFAULT_GEMINI_MODEL } from "./adapters/gemini";
 export { GoogleADKAdapter } from "./adapters/google-adk";
 export { LangGraphAdapter } from "./adapters/langgraph";
 export { A2AAdapter } from "./adapters/a2a";

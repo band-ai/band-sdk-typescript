@@ -67,6 +67,7 @@ export {
 export {
   GeminiAdapter,
   GeminiToolCallingModel,
+  DEFAULT_GEMINI_MODEL,
   type GeminiAdapterOptions,
   type GeminiToolCallingModelOptions,
   type GeminiClientFactory,

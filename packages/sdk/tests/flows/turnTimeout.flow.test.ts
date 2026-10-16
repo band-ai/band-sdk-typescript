@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { GeminiToolCallingModel } from "../../src/adapters";
+import { GeminiToolCallingModel, DEFAULT_GEMINI_MODEL } from "../../src/adapters";
 import type { FrameworkAdapter } from "../../src/contracts/protocols";
 import { FAILURE_EVENT_TYPE } from "../../src/contracts/protocols";
 import { FAILURE_CODE_TIMEOUT } from "../../src/core/providerFailure";
@@ -55,7 +55,7 @@ const PROVIDERS: Array<{ provider: string; build: () => HangingProvider }> = [
     build: () => {
       const { hung, request } = hangsFirstRequest({ text: REPLY });
       const model = new GeminiToolCallingModel({
-        model: "gemini-3-flash-preview",
+        model: DEFAULT_GEMINI_MODEL,
         clientFactory: async () => ({
           models: { generateContent: (params: Record<string, unknown>) => request((params.config as { abortSignal?: AbortSignal }).abortSignal) },
         }),

@@ -125,11 +125,11 @@ await agent.run();
 ### Gemini
 
 ```ts
-import { Agent, GeminiAdapter, loadAgentConfig } from "@band-ai/sdk";
+import { Agent, GeminiAdapter, DEFAULT_GEMINI_MODEL, loadAgentConfig } from "@band-ai/sdk";
 
 const agent = Agent.create({
   adapter: new GeminiAdapter({
-    geminiModel: "gemini-3-flash-preview",
+    geminiModel: DEFAULT_GEMINI_MODEL,
     apiKey: process.env.GEMINI_API_KEY,
   }),
   config: loadAgentConfig("my_agent"),

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import { GoogleADKAdapter } from "../src/adapters";
+import { GoogleADKAdapter, DEFAULT_GEMINI_MODEL } from "../src/adapters";
 import { GoogleADKHistoryConverter } from "../src/converters";
 import { MEMORY_SECTION } from "../src/runtime/prompts";
 import { NO_REPLY_TOOL_NAME, SEND_MESSAGE_TOOL_NAME } from "../src/contracts/toolSchemas";
@@ -560,8 +560,8 @@ describe("GoogleADKAdapter", () => {
   });
 
   it.each([
-    { name: "binds the model to an explicit apiKey", apiKey: "explicit-key", model: { gemini: { model: "gemini-2.5-flash", apiKey: "explicit-key" } } },
-    { name: "leaves key lookup to ADK when apiKey is unset", apiKey: undefined, model: "gemini-2.5-flash" },
+    { name: "binds the model to an explicit apiKey", apiKey: "explicit-key", model: { gemini: { model: DEFAULT_GEMINI_MODEL, apiKey: "explicit-key" } } },
+    { name: "leaves key lookup to ADK when apiKey is unset", apiKey: undefined, model: DEFAULT_GEMINI_MODEL },
   ])("$name", async ({ apiKey, model }) => {
     const capture: GoogleAdkCapture = { createAgentCalls: [], createRunnerCalls: [], createSessionCalls: [] };
     const adapter = new GoogleADKAdapter({
