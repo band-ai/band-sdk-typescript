@@ -2,7 +2,8 @@ import { RuntimeStateError, UnsupportedFeatureError, ValidationError } from "../
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
 import { SimpleAdapter } from "../../core/simpleAdapter";
-import type { AdapterToolsProtocol } from "../../contracts/protocols";
+import { isFailedToolOutput, type AdapterToolsProtocol } from "../../contracts/protocols";
+import { parseToolPayload } from "../../converters/shared";
 import { renderSystemPrompt, withMemoryGuidance } from "../../runtime/prompts";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { asErrorMessage, asOptionalRecord, asRecord } from "../shared/coercion";
@@ -305,9 +306,15 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     for await (const event of stream) {
       const data = asOptionalRecord(event) ?? {};
       const eventType = String(data.event ?? "");
+      const details = asOptionalRecord(data.data) ?? {};
       if (eventType === "on_tool_start") {
+        // The run ID pairs both events; the model's call ID arrives only at tool end.
         await tools.sendEvent(
-          stringifyJsonWithFallback(data, this.logger, {
+          stringifyJsonWithFallback({
+            ...data,
+            tool_call_id: data.run_id,
+            args: streamToolArgs(details.input),
+          }, this.logger, {
             label: "LangGraph event",
             eventType,
           }),
@@ -315,8 +322,16 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
         );
       }
       if (eventType === "on_tool_end") {
+        const message = asOptionalRecord(details.output);
+        const output = typeof message?.tool_call_id === "string" ? message.content : details.output;
+        const parsedOutput = typeof output === "string" ? parseToolPayload(output) ?? output : output;
         await tools.sendEvent(
-          stringifyJsonWithFallback(data, this.logger, {
+          stringifyJsonWithFallback({
+            ...data,
+            tool_call_id: data.run_id,
+            output,
+            is_error: message?.status === "error" || isFailedToolOutput(parsedOutput),
+          }, this.logger, {
             label: "LangGraph event",
             eventType,
           }),
@@ -340,6 +355,14 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
 
     return lastAssistantText;
   }
+}
+
+function streamToolArgs(input: unknown): Record<string, unknown> {
+  const args = asOptionalRecord(input) ?? {};
+  // LangChain wraps JSON-schema tool arguments in a single JSON string field.
+  return Object.keys(args).length === 1 && typeof args.input === "string"
+    ? parseToolPayload(args.input) ?? args
+    : args;
 }
 
 function buildLangGraphTools(input: {

@@ -8,6 +8,9 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { MemorySaver } from "@langchain/langgraph";
+import { ChatOpenAI } from "@langchain/openai";
+
 import {
   AnthropicAdapter,
   ClaudeSDKAdapter,
@@ -22,6 +25,7 @@ import {
   GeminiAdapter,
   GoogleADKAdapter,
   KiroACPAdapter,
+  LangGraphAdapter,
   LettaAdapter,
   OmpACPAdapter,
   OpenAIAdapter,
@@ -242,10 +246,21 @@ const SPECS = {
   },
   langgraph: {
     id: "langgraph",
-    requires: [requires.peerPackage("@langchain/langgraph")],
-    supports: [],
-    pending: "needs a LangChain chat-model package as a devDependency",
-    build: unbuildable("no LangChain chat-model package is installed"),
+    requires: [
+      requires.envVar(ENV.openaiKey),
+      requires.peerPackage("@langchain/core"),
+      requires.peerPackage("@langchain/langgraph"),
+      requires.peerPackage("@langchain/openai"),
+    ],
+    supports: [CAPABILITY.customTools, CAPABILITY.memory],
+    build: ({ prompt, customTools, memory }) =>
+      new LangGraphAdapter({
+        llm: new ChatOpenAI({ model: OPENAI_MODEL }),
+        checkpointer: new MemorySaver(),
+        customSection: prompt,
+        customTools,
+        includeMemoryTools: memory,
+      }),
   },
   letta: {
     id: "letta",
