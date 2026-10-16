@@ -1,12 +1,18 @@
 /**
  * Cold-boot recall of a note posted while no adapter is running: the note is
  * only visible via platform `/context` rehydration on first boot.
+ *
+ * The boot drain has to finish before the recall is sent. A recall posted
+ * while that turn is still open becomes the first agent message after it, so
+ * the assertion would score the acknowledgement instead of the recall.
  */
 import { describe, it } from "vitest";
 
 import { specs } from "../../toolkit/adapters";
 import { Agents } from "../../toolkit/agents";
+import { assertDeliveryStatus } from "../../toolkit/assertDelivery";
 import { assertReplyContains } from "../../toolkit/assertMessages";
+import { DELIVERY_STATUS, observeAgent } from "../../toolkit/observeDelivery";
 import { observeRoom } from "../../toolkit/observeMessages";
 import { CATEGORY, scenarioId } from "../../toolkit/registry";
 import { Rooms } from "../../toolkit/rooms";
@@ -33,9 +39,13 @@ describe(SCENARIO, () => {
       await Rooms.addParticipant(room, identity);
 
       const note = uniqueMarker("note");
-      await Rooms.sendMention(room, identity, remember(note));
+      const stored = await Rooms.sendMention(room, identity, remember(note));
 
       await using _running = await cell.runAs(identity);
+      assertDeliveryStatus(
+        await observeAgent(identity, room).untilProcessed(stored, REHYDRATION_COLD_BOOT_WAIT_MS),
+        DELIVERY_STATUS.processed,
+      );
       const recall = await Rooms.sendMention(room, identity, RECALL);
       const reply = await observeRoom(room).untilReply(identity, { after: recall, timeoutMs: REHYDRATION_COLD_BOOT_WAIT_MS });
       assertReplyContains(reply, note);
