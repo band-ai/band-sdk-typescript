@@ -2,9 +2,9 @@
  * Cold-boot recall of a note posted while no adapter is running: the note is
  * only visible via platform `/context` rehydration on first boot.
  *
- * The boot drain has to finish before the recall is sent. A recall posted
- * while that turn is still open becomes the first agent message after it, so
- * the assertion would score the acknowledgement instead of the recall.
+ * The boot drain has to finish before the recall is sent. untilReply scores
+ * the first agent post after the recall id, and while the boot turn is open
+ * that post is the note acknowledgement.
  */
 import { describe, it } from "vitest";
 
