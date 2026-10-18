@@ -3,6 +3,11 @@ export interface TopicHandlers {
 }
 
 export interface JoinOptions {
+  /** Synchronous membership observations; automatic rejoins include a fresh reply. */
+  onJoined?: (reply: unknown) => void;
+  onUnavailable?: () => void;
+  /** Independent optional topics do not hold mandatory recovery or admission. */
+  blocksReconnect?: boolean;
   /**
    * Exempts this topic's event delivery from any reconnect-buffering window
    * a transport may hold events behind. Only a channel whose events must

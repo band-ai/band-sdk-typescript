@@ -53,10 +53,6 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private readonly registry: ChannelRegistry;
   private readonly reconnectObservers = new Set<ReconnectObserver>();
   private readonly topicRejoinObservers = new Set<TopicRejoinObserver>();
-  // Topics joined with `{ exemptFromBuffering: true }`, recorded here so
-  // `wrapHandler` can check by name on every delivered event rather than
-  // threading the flag through the channel/handler plumbing.
-  private readonly bufferingExemptTopics = new Set<string>();
   private readonly generationTracker = new ReconnectGenerationTracker(
     (snapshot) => this.notifyReconnectObservers(snapshot),
     (generation, pendingTopics) =>
@@ -114,7 +110,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
     }, this.logger);
 
     this.registry = new ChannelRegistry(this.socket, this.epoch, this.logger, {
-      wrapHandler: (topic, event, handler) => (payload) => {
+      wrapHandler: (topic, event, handler, options) => (payload) => {
         const reportError = (error: unknown): void => {
           this.logger.error("Unhandled topic handler error", { topic, event, error });
           this.onHandlerError?.(error);
@@ -127,7 +123,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
           }
         };
 
-        if (this.bufferingGeneration !== null && !this.bufferingExemptTopics.has(topic)) {
+        if (this.bufferingGeneration !== null && !options.exemptFromBuffering) {
           this.bufferedTopicEvents.push({ topic, deliver });
         } else {
           deliver();
@@ -198,6 +194,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   public async disconnect(): Promise<void> {
+    this.registry.notifyUnavailable();
     this.epoch.bump();
     const failures = await this.registry.leaveAll();
 
@@ -227,17 +224,13 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   public async join(topic: string, handlers: TopicHandlers, options?: JoinOptions): Promise<void> {
-    if (options?.exemptFromBuffering) {
-      this.bufferingExemptTopics.add(topic);
-    }
-
     const existing = this.registry.existingJoin(topic);
     if (existing) {
       return existing;
     }
 
     const epoch = this.epoch.current;
-    await this.reconnectBarrier?.promise;
+    if (options?.blocksReconnect !== false) await this.reconnectBarrier?.promise;
     if (this.epoch.isStale(epoch)) {
       this.logger.debug("Join superseded by transport disconnect/reconnect", { topic });
       throw supersededJoinError(topic);
@@ -248,7 +241,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       return resumed;
     }
 
-    return this.registry.join(topic, handlers);
+    return this.registry.join(topic, handlers, options);
   }
 
   public async leave(topic: string): Promise<void> {
@@ -439,6 +432,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   }
 
   private recordSocketClose(event?: { code?: number; reason?: string }): void {
+    this.registry.notifyUnavailable();
     this.connected = false;
     const suppressCloseReason = this.suppressNextCloseReason;
     this.suppressNextCloseReason = false;

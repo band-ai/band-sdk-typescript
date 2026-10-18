@@ -3,11 +3,12 @@ import { TransportError } from "../../core/errors";
 import type { Logger } from "../../core/logger";
 import { KeyedSingleFlight } from "../../core/singleFlight";
 import { Epoch } from "../../core/epoch";
-import type { TopicHandlers } from "./transport";
+import type { JoinOptions, TopicHandlers } from "./transport";
 
 interface TrackedChannel {
   channel: Channel;
   refs: Array<[string, number]>;
+  options: JoinOptions;
 }
 
 interface PendingJoin extends TrackedChannel {
@@ -40,6 +41,7 @@ export interface ChannelRegistryHooks {
     topic: string,
     event: string,
     handler: (payload: Record<string, unknown>) => Promise<void> | void,
+    options: JoinOptions,
   ): (payload: Record<string, unknown>) => void;
   /**
    * Called every time a topic's join Push settles — not just once: Phoenix
@@ -83,8 +85,30 @@ export class ChannelRegistry {
     private readonly hooks: ChannelRegistryHooks,
   ) {}
 
-  public topics(): IterableIterator<string> {
-    return this.channels.keys();
+  public *topics(): IterableIterator<string> {
+    for (const [topic, tracked] of this.channels) {
+      if (tracked.options.blocksReconnect !== false) yield topic;
+    }
+  }
+
+  public notifyUnavailable(): void {
+    for (const [topic, tracked] of [...this.channels, ...this.pendingChannels]) {
+      this.observe(topic, () => tracked.options.onUnavailable?.());
+    }
+  }
+
+  private owns(topic: string, channel: Channel): boolean {
+    return this.channels.get(topic)?.channel === channel || this.pendingChannels.get(topic)?.channel === channel;
+  }
+
+  private observe(topic: string, callback: () => void): void {
+    try {
+      void Promise.resolve(callback()).catch(() => {
+        this.logger.error("Topic lifecycle observer failed", { topic });
+      });
+    } catch {
+      this.logger.error("Topic lifecycle observer failed", { topic });
+    }
   }
 
   /**
@@ -114,21 +138,30 @@ export class ChannelRegistry {
    * Waits out a leave already in flight for the same topic before starting,
    * so the new join's channel is never raced by the old one's teardown.
    */
-  public async join(topic: string, handlers: TopicHandlers): Promise<void> {
+  public async join(topic: string, handlers: TopicHandlers, options: JoinOptions = {}): Promise<void> {
     const pendingLeave = this.leaveFlights.current(topic);
     if (pendingLeave) {
       await pendingLeave.catch(() => undefined);
     }
-    return this.joinFlights.run(topic, () => this.doJoin(topic, handlers));
+    return this.joinFlights.run(topic, () => this.doJoin(topic, handlers, options));
   }
 
-  private async doJoin(topic: string, handlers: TopicHandlers): Promise<void> {
+  private async doJoin(topic: string, handlers: TopicHandlers, options: JoinOptions): Promise<void> {
     const epoch = this.epoch.current;
     const channel = this.socket.channel(topic, {});
 
-    const refs: Array<[string, number]> = [];
+    const current = (): boolean => !this.epoch.isStale(epoch) && this.owns(topic, channel);
+    const unavailable = (): void => {
+      if (current()) this.observe(topic, () => options.onUnavailable?.());
+    };
+    const refs: Array<[string, number]> = [
+      ["phx_error", channel.on("phx_error", unavailable)],
+      ["phx_close", channel.on("phx_close", unavailable)],
+    ];
     for (const [event, handler] of Object.entries(handlers)) {
-      const ref = channel.on(event, this.hooks.wrapHandler(topic, event, handler));
+      const ref = channel.on(event, this.hooks.wrapHandler(topic, event, (payload) => {
+        if (current()) return handler(payload);
+      }, options));
       refs.push([event, ref]);
     }
 
@@ -139,17 +172,23 @@ export class ChannelRegistry {
     const joinPush = channel.join();
     try {
       await new Promise<void>((resolve, reject) => {
-        this.pendingChannels.set(topic, { channel, refs, reject });
+        this.pendingChannels.set(topic, { channel, refs, options, reject });
         joinPush
-          .receive("ok", () => {
+          .receive("ok", (reply: unknown) => {
+            if (!current()) return;
+            this.observe(topic, () => options.onJoined?.(reply));
             this.settleJoin(topic, "ok");
             resolve();
           })
           .receive("error", (error: unknown) => {
+            if (!current()) return;
+            unavailable();
             this.settleJoin(topic, "error");
             reject(new TransportError(`Failed to join topic ${topic}`, error));
           })
           .receive("timeout", () => {
+            if (!current()) return;
+            unavailable();
             this.settleJoin(topic, "timeout");
             reject(new TransportError(`Timeout joining topic ${topic}`));
           });
@@ -177,7 +216,7 @@ export class ChannelRegistry {
       throw supersededJoinError(topic);
     }
 
-    this.channels.set(topic, { channel, refs });
+    this.channels.set(topic, { channel, refs, options });
     this.logger.debug("Joined topic", { topic });
   }
 
@@ -226,6 +265,15 @@ export class ChannelRegistry {
       return pendingLeave;
     }
 
+    const pending = this.pendingChannels.get(topic);
+    if (pending) {
+      this.observe(topic, () => pending.options.onUnavailable?.());
+      this.pendingChannels.delete(topic);
+      this.abandonChannel(topic, pending);
+      await this.joinFlights.current(topic)?.catch(() => undefined);
+      this.hooks.onLeft(topic);
+      return;
+    }
     const tracked = this.channels.get(topic);
     if (!tracked) {
       return;
@@ -236,24 +284,36 @@ export class ChannelRegistry {
 
   private async doLeave(topic: string, tracked: TrackedChannel): Promise<void> {
     const { channel, refs } = tracked;
+    this.observe(topic, () => tracked.options.onUnavailable?.());
     for (const [event, ref] of refs) {
       channel.off(event, ref);
     }
 
-    await new Promise<void>((resolve, reject) => {
-      channel
-        .leave()
-        .receive("ok", () => resolve())
-        .receive("error", (error: unknown) =>
-          reject(new TransportError(`Failed to leave topic ${topic}`, error)),
-        )
-        .receive("timeout", () =>
-          reject(new TransportError(`Timeout leaving topic ${topic}`)),
-        );
-    });
-
-    this.channels.delete(topic);
-    this.hooks.onLeft(topic);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        channel
+          .leave()
+          .receive("ok", () => resolve())
+          .receive("error", (error: unknown) =>
+            reject(new TransportError(`Failed to leave topic ${topic}`, error)),
+          )
+          .receive("timeout", () =>
+            reject(new TransportError(`Timeout leaving topic ${topic}`)),
+          );
+      });
+    } finally {
+      if (tracked.options.blocksReconnect === false) {
+        removeSocketChannel(this.socket, channel);
+        if (this.channels.get(topic) === tracked) {
+          this.channels.delete(topic);
+          this.hooks.onLeft(topic);
+        }
+      }
+    }
+    if (this.channels.get(topic) === tracked) {
+      this.channels.delete(topic);
+      this.hooks.onLeft(topic);
+    }
     this.logger.debug("Left topic", { topic });
   }
 
