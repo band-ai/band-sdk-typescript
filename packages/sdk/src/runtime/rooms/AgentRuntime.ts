@@ -100,7 +100,8 @@ export class AgentRuntime {
       await this.onRoomJoined?.(roomId, payload);
     };
     this.presence.onRoomLeft = async (roomId) => {
-      await this.teardownExecution(roomId);
+      // Membership loss revokes admission even when the current handler cannot finish.
+      await this.teardownExecution(roomId, 0);
       await this.onRoomLeft?.(roomId);
     };
     this.presence.onRoomEvent = async (roomId, event) => {

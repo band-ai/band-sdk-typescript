@@ -232,6 +232,68 @@ describe("execution-owned working state", () => {
     } finally { await runtime.stop(0); }
   });
 
+  it("retires reporting on membership loss while an ordinary handler remains held", async () => {
+    vi.useFakeTimers();
+    const entered = createDeferred();
+    const release = createDeferred();
+    const cleaned = vi.fn();
+    class Adapter extends GenericAdapter {
+      public override async onCleanup(roomId: string): Promise<void> { cleaned(roomId); }
+    }
+    const f = await BandPlatform.join(new Adapter(async ({ tools }) => {
+      entered.resolve();
+      await release.promise;
+      tools.turn.settle();
+    }), [person("user")]);
+    const reports = vi.spyOn(f.platform.rest, "reportActivity");
+    try {
+      await f.room.say("user", `@[[${AGENT_ID}]] hold`);
+      await entered.promise;
+      await f.room.remove();
+      await f.room.left();
+      await vi.advanceTimersByTimeAsync(12000);
+      expect(reports.mock.calls.map((call) => call[1])).toEqual([true, false]);
+      expect(cleaned).toHaveBeenCalledExactlyOnceWith(f.room.id);
+    } finally {
+      release.resolve();
+      await f[Symbol.asyncDispose]();
+    }
+  });
+
+  it("fences suspended admission when membership is lost before the processing mark returns", async () => {
+    vi.useFakeTimers();
+    const platform = BandPlatform.host([person("user")]);
+    const joined = await platform.room(room);
+    const cleaned = vi.fn();
+    const handled = vi.fn(async ({ tools }) => { tools.turn.settle(); });
+    class Adapter extends GenericAdapter {
+      public override async onCleanup(roomId: string): Promise<void> { cleaned(roomId); }
+    }
+    const runtime = new PlatformRuntime({ agentId: AGENT_ID, apiKey: AGENT_API_KEY, linkOptions: platform.link,
+      agentConfig: { autoSubscribeExistingRooms: true },
+    });
+    await runtime.start(new Adapter(handled));
+    const processing = joined.holdProcessing("bootstrap");
+    const run = runtime.bootstrapRoomMessage(room, { ...message("bootstrap"), senderId: "user" });
+    try {
+      await processing.sending;
+      await joined.remove();
+      await joined.left();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(cleaned).toHaveBeenCalledExactlyOnceWith(room);
+      processing.release();
+      await run;
+      expect(handled).not.toHaveBeenCalled();
+      expect(platform.rest.workingReports.entries).toEqual([]);
+      expect(platform.rest.posted.entries).toEqual([]);
+      expect(joined.outcomes("bootstrap")).toEqual([]);
+    } finally {
+      processing.release();
+      await run;
+      await runtime.stop(0);
+    }
+  });
+
   it("finishes initial and final timeout budgets without failing adapter execution or delivery", async () => {
     vi.useFakeTimers();
     const log = new RecordLog<string>();
