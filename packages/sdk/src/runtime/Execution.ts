@@ -20,6 +20,7 @@ export const PERMANENT_FAILURE_ERROR = "Message permanently failed after max ret
 export type ExecutionHandler = (
   context: ExecutionContext,
   event: PlatformEvent,
+  admitted: () => boolean,
 ) => Promise<void>;
 
 interface ExecutionOptions {
@@ -208,6 +209,7 @@ export class Execution {
 
   private async runStop(timeoutMs?: number): Promise<boolean> {
     if (this.lifecycle.is("failed")) {
+      await this.context.closeWorkingState();
       throw this.lifecycle.state.error;
     }
     if (this.lifecycle.is("stopped")) {
@@ -221,6 +223,7 @@ export class Execution {
     const graceful = timeoutMs === 0 ? this.isIdle() : await this.waitForIdle(timeoutMs);
 
     if (this.lifecycle.is("failed")) {
+      await this.context.closeWorkingState();
       throw this.lifecycle.state.error;
     }
 
@@ -239,6 +242,7 @@ export class Execution {
     // waitUntilStopped()) report "stopped". Transitioning before the drain
     // completes let a concurrent getOrCreateExecution() observe "stopped" while
     // this Execution was still mid-teardown.
+    await this.context.closeWorkingState();
     this.lifecycle.transition({ status: "stopped", graceful }, graceful ? "stopped" : "stopped-forced");
 
     return graceful;
@@ -257,6 +261,8 @@ export class Execution {
     try {
       await this.processLoop();
     } catch (error) {
+      this.closed = true;
+      await this.context.closeWorkingState();
       this.markFailed(error, "process-loop-failed");
       throw error;
     }
@@ -402,7 +408,7 @@ export class Execution {
     this.context.setState("processing");
 
     try {
-      await this.onExecute(this.context, event);
+      await this.onExecute(this.context, event, () => !this.closed && this.isActive());
       this.retryTracker.markSuccess(messageId);
     } catch (error: unknown) {
       if (error instanceof RecoverableTurnError) {
@@ -439,7 +445,7 @@ export class Execution {
     this.context.setState("processing");
 
     try {
-      await this.onExecute(this.context, event);
+      await this.onExecute(this.context, event, () => !this.closed && this.isActive());
     } catch (error: unknown) {
       // Scoped to the turn that raised it: `PlatformRuntime` has already
       // marked the message failed, and the queue below is every *other*
@@ -460,6 +466,8 @@ export class Execution {
           error,
         });
       }
+      this.closed = true;
+      await this.context.closeWorkingState();
       this.markFailed(error, "execution-failed");
       this.eventQueue.splice(0, this.eventQueue.length);
       this.resolveEventWaiters(null);

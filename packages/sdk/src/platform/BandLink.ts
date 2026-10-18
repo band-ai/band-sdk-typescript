@@ -537,6 +537,11 @@ export class BandLink implements AsyncIterable<PlatformEvent> {
     return response.data.map((msg) => toPlatformMessage(roomId, msg));
   }
 
+  public async reportActivity(roomId: string, working: boolean, options?: RestRequestOptions): Promise<{ working: boolean }> {
+    if (!this.rest.reportActivity) throw new UnsupportedFeatureError("Activity reporting is not available in current REST adapter");
+    return await this.rest.reportActivity(roomId, working, options);
+  }
+
   public async listChats(
     request: { page: number; pageSize: number },
     requestOptions?: RestRequestOptions,

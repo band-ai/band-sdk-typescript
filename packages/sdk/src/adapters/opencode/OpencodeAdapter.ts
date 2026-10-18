@@ -1,3 +1,4 @@
+import { retainWorkingCycleUntil } from "../../runtime/workingState";
 import { AgentFailure, isAuthorizedSender } from "@band-ai/band-sdk-core";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { MentionInput } from "../../contracts/dtos";
@@ -391,7 +392,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
     // can't happen there, before this call was known to succeed.
     roomState.forceFreshSession = false;
 
-    await runUntilReleased(this.watchTurnCompletion(roomState, turn), turn.released, (error) => {
+    await runUntilReleased(retainWorkingCycleUntil(turn.tools, this.watchTurnCompletion(roomState, turn)), turn.released, (error) => {
       this.logger.error("OpenCode turn failed after the request returned", { error, roomId });
     });
   }

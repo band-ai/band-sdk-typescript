@@ -3,7 +3,7 @@ import type { ContactEvent, PlatformEvent } from "../../platform/events";
 import { RuntimeStateError } from "../../core/errors";
 import { resolveLogger, type Logger } from "../../core/logger";
 import type { MetadataMap, ParticipantRecord } from "../../contracts/dtos";
-import { Execution } from "../Execution";
+import { Execution, type ExecutionHandler } from "../Execution";
 import { ExecutionContext, type ExecutionContextOptions } from "../ExecutionContext";
 import type { RuntimeLifecycleState } from "../lifecycle";
 import {
@@ -21,7 +21,7 @@ import type { PlatformMessage } from "../types";
 interface AgentRuntimeOptions {
   link: BandLink;
   agentId: string;
-  onExecute: (context: ExecutionContext, event: PlatformEvent) => Promise<void>;
+  onExecute: ExecutionHandler;
   onSessionCleanup?: (roomId: string) => Promise<void>;
   onRoomJoined?: (roomId: string, payload: MetadataMap) => Promise<void> | void;
   onRoomLeft?: (roomId: string) => Promise<void> | void;
@@ -438,13 +438,9 @@ export class AgentRuntime {
     }
 
     const defaults: ExecutionContextOptions = {
+      ...this.sessionConfig,
       roomId,
       link: this.link,
-      maxContextMessages: this.sessionConfig.maxContextMessages,
-      maxMessageRetries: this.sessionConfig.maxMessageRetries,
-      enableContextCache: this.sessionConfig.enableContextCache,
-      contextCacheTtlSeconds: this.sessionConfig.contextCacheTtlSeconds,
-      enableContextHydration: this.sessionConfig.enableContextHydration,
       logger: this.logger,
     };
     const context = this.contextFactory

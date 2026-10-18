@@ -433,3 +433,45 @@ pnpm typecheck   # tsc --noEmit
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for which tests need that build and why.
+
+## Automatic working state
+
+The runtime reports a boolean working indicator for accepted messages in ordinary
+rooms, across every adapter. It refreshes after each settled report and clears on
+completion or teardown. Contact-hub rooms are excluded.
+
+```ts
+import { Agent, AnthropicAdapter, loadAgentConfig } from "@band-ai/sdk";
+
+const agent = Agent.create({
+  adapter: new AnthropicAdapter({ model: "claude-sonnet-4-6" }),
+  config: loadAgentConfig("my_agent"),
+  sessionConfig: {
+    enableWorkingState: true,
+    workingKeepAliveSeconds: 3,
+    workingRequestTimeoutSeconds: 2,
+    // maxWorkingStateSeconds: 60,
+  },
+});
+```
+
+These are the defaults, with no maximum duration. The same `sessionConfig` works
+with Anthropic, Claude SDK, Codex and other adapters. Set `enableWorkingState: false`
+to opt out independently of tool capabilities and chat narration
+(`enableExecutionReporting` / `emitExecutionEvents`). Disabling narration keeps the
+working indicator enabled; disabling working state preserves tools and narration.
+
+When enabled, cadence must be finite, positive and strictly below five seconds
+(half the platform's ten-second indicator TTL). Request timeout must be finite,
+positive and below cadence; an optional maximum duration must be finite and
+positive. Dormant numeric timing settings are ignored when disabled. At the cap,
+refreshes stop while adapter work continues; completion still attempts a final
+false. Each request has no retries and a separate whole-request cancellation budget.
+Shutdown may add the remaining request budget plus one final request budget
+(default at most approximately four seconds). Reporting failures do not fail the
+turn; failed final delivery relies on the platform TTL to clear the indicator.
+Custom REST transports must honor `abortSignal` through response-body completion.
+
+`SessionConfig` remains optional input; `ResolvedSessionConfig` now includes the
+three defaulted working-state fields and the optional duration cap. Callers that
+construct resolved configuration objects directly must include those defaults.

@@ -97,6 +97,7 @@ function makeContext(maxRetries = 1) {
     setState(state: ExecutionState) {
       states.push(state);
     },
+    closeWorkingState: async () => undefined,
     getRetryTracker() {
       return retryTracker;
     },

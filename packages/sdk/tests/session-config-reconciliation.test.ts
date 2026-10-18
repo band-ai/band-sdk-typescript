@@ -1,3 +1,9 @@
+import { PlatformRuntime } from "../src/runtime/PlatformRuntime";
+import { AgentRuntime } from "../src/runtime/rooms/AgentRuntime";
+import { ExecutionContext, type ExecutionContextOptions } from "../src/runtime/ExecutionContext";
+import { BandLink } from "../src/platform/BandLink";
+import { ValidationError } from "../src/core/errors";
+import { FakeRestApi, FakeTransport } from "./testUtils";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -192,5 +198,39 @@ describe("applySessionConfigSelections", () => {
         selectedValue: "on",
       },
     });
+  });
+});
+
+
+describe("runtime working-state session configuration", () => {
+  it.each([
+    { workingKeepAliveSeconds: 0 }, { workingKeepAliveSeconds: 5 },
+    { workingKeepAliveSeconds: Infinity }, { workingKeepAliveSeconds: NaN },
+    { workingRequestTimeoutSeconds: 0 }, { workingRequestTimeoutSeconds: 3 },
+    { workingRequestTimeoutSeconds: Infinity }, { workingRequestTimeoutSeconds: NaN },
+    { maxWorkingStateSeconds: 0 }, { maxWorkingStateSeconds: -1 },
+    { maxWorkingStateSeconds: Infinity }, { maxWorkingStateSeconds: NaN },
+  ])("rejects invalid enabled timing at construction: %o", (sessionConfig) => {
+    expect(() => new PlatformRuntime({ agentId: "agent", apiKey: "key", sessionConfig })).toThrow(ValidationError);
+  });
+
+  it("forwards defaults and fractional settings through the custom context factory", () => {
+    for (const sessionConfig of [undefined, { workingKeepAliveSeconds: 0.5, workingRequestTimeoutSeconds: 0.2, maxWorkingStateSeconds: 0.7 }]) {
+      let received: ExecutionContextOptions | undefined;
+      const runtime = new AgentRuntime({
+        agentId: "agent", link: new BandLink({ agentId: "agent", apiKey: "key", restApi: new FakeRestApi(), transport: new FakeTransport() }),
+        sessionConfig, onExecute: async () => {},
+        contextFactory: (_roomId, defaults) => { received = defaults; return new ExecutionContext(defaults); },
+      });
+      runtime.getOrCreateContext("room");
+      expect(received).toMatchObject({ enableWorkingState: true, workingKeepAliveSeconds: 3, workingRequestTimeoutSeconds: 2, ...sessionConfig });
+      expect(received?.maxWorkingStateSeconds).toBe(sessionConfig?.maxWorkingStateSeconds);
+    }
+  });
+
+  it("accepts dormant timing when disabled", () => {
+    expect(() => new PlatformRuntime({ agentId: "agent", apiKey: "key", sessionConfig: {
+      enableWorkingState: false, workingKeepAliveSeconds: NaN, workingRequestTimeoutSeconds: Infinity, maxWorkingStateSeconds: -1,
+    } })).not.toThrow();
   });
 });

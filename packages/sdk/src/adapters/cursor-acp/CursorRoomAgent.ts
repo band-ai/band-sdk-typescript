@@ -1,3 +1,4 @@
+import { retainWorkingCycleUntil } from "../../runtime/workingState";
 import type { PermissionOption } from "@agentclientprotocol/sdk";
 
 import { isAuthorizedSender } from "@band-ai/band-sdk-core";
@@ -249,8 +250,10 @@ export class CursorRoomAgent extends ACPRoomAgent {
     };
     const turn: CursorTurn = { messageId: message.id, roomId: context.roomId, tools, requesterId: message.senderId, releaseRoom };
     this.turn = turn;
-    const run = super.onMessage(message, tools, history, participantsMessage, contactsMessage, context)
-      .finally(() => this.forgetTurn(turn));
+    const run = retainWorkingCycleUntil(tools,
+      super.onMessage(message, tools, history, participantsMessage, contactsMessage, context)
+        .finally(() => this.forgetTurn(turn)),
+    );
     await runUntilReleased(run, released.promise, (error) => {
       this.decisionLogger.warn("cursor_acp.released_turn_failed", { roomId: turn.roomId, error: String(error) });
     });
