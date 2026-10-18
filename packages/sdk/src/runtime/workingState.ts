@@ -59,11 +59,7 @@ export class WorkingStateReporter {
       if (!this.period) {
         const period = this.period = {};
         this.startedAt = performance.now();
-        ready = this.enqueue(async () => {
-          if (!this.canRefresh(period)) return;
-          await this.send(true);
-          this.schedule(period);
-        });
+        ready = this.enqueue(() => this.refresh(period));
       } else {
         ready = this.tail;
       }
@@ -105,14 +101,16 @@ export class WorkingStateReporter {
       performance.now() - this.startedAt < this.config.maxWorkingStateSeconds * 1000);
   }
 
+  private async refresh(period: object): Promise<void> {
+    if (!this.canRefresh(period)) return;
+    await this.send(true);
+    this.schedule(period);
+  }
+
   private schedule(period: object): void {
     if (!this.canRefresh(period)) return;
     this.timer = setTimeout(() => {
-      void this.enqueue(async () => {
-        if (!this.canRefresh(period)) return;
-        await this.send(true);
-        this.schedule(period);
-      });
+      void this.enqueue(() => this.refresh(period));
     }, this.config.workingKeepAliveSeconds * 1000);
     this.timer.unref?.();
   }
