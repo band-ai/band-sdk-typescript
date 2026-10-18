@@ -19,9 +19,13 @@ function captureLogger() {
   return { records, logger: { debug: record, info: record, warn: record, error: record } };
 }
 
+function mixedCaseEncoding(value: string): string {
+  return encodeURIComponent(value).replaceAll("%2B", "%2b");
+}
+
 function containsCredential(value: unknown): boolean {
   const text = inspect(value, { depth: 20 });
-  return [KEY, LEGACY_KEY].some((key) => [key, encodeURI(key), encodeURIComponent(key), encodeURIComponent(key).replace("%2B", "%2b")].some((value) => text.includes(value)));
+  return [KEY, LEGACY_KEY].some((key) => [key, encodeURI(key), encodeURIComponent(key), mixedCaseEncoding(key)].some((value) => text.includes(value)));
 }
 
 describe("Phoenix credential safety at the wire and logger boundary", () => {
@@ -83,7 +87,7 @@ describe("Phoenix credential safety at the wire and logger boundary", () => {
       const body = JSON.stringify({ error: {
         code: "connection_conflict",
         message: `refused ${encodeURI(KEY)} ${PRIVATE_CONTENT}`,
-        request_id: encodeURIComponent(KEY).replace("%2B", "%2b"),
+        request_id: mixedCaseEncoding(KEY),
       } });
       socket.end(["HTTP/1.1 409 Conflict", "Content-Type: application/json", `Content-Length: ${Buffer.byteLength(body)}`, "", body].join("\r\n"));
     });
