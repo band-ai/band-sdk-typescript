@@ -21,6 +21,7 @@ declare module "phoenix" {
   }
 
   export class Socket {
+    endPoint: string;
     conn: WebSocket | null;
     constructor(url: string, options?: SocketOptions);
     channel(topic: string, params?: Record<string, unknown>): Channel;

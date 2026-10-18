@@ -1,6 +1,7 @@
 import { Socket, type Channel, type SocketOptions } from "phoenix";
 import { TransportError } from "../../core/errors";
-import { resolveLogger, type Logger } from "../../core/logger";
+import type { Logger } from "../../core/logger";
+import { CredentialDiagnostics, headerAuthEndpoint } from "./credentialDiagnostics";
 import { combineTeardownErrors, isolateTeardown } from "../../core/teardown";
 import { Serializer, SingleFlight } from "../../core/singleFlight";
 import { createDeferred, type Deferred } from "../../core/deferred";
@@ -84,20 +85,16 @@ export class PhoenixChannelsTransport implements StreamingTransport {
   private terminalDisconnectError: WebSocketDisconnectError | null = null;
   private runForeverWaiters = new Set<PendingRunForever>();
   private suppressNextCloseReason = false;
+  private readonly diagnostics: CredentialDiagnostics;
 
   public constructor(options: PhoenixChannelsTransportOptions) {
-    this.logger = resolveLogger(options.logger);
+    const { endpoint, credentials } = headerAuthEndpoint(options.wsUrl);
+    this.diagnostics = new CredentialDiagnostics([options.apiKey, ...credentials]);
+    this.logger = this.diagnostics.logger(options.logger);
     this.agentId = options.agentId;
     this.onTerminalDisconnect = options.onTerminalDisconnect;
 
-    // The phoenix JS library appends /websocket to the endpoint URL.
-    // Strip it if the user-provided URL already includes it.
-    let wsUrl = options.wsUrl;
-    if (wsUrl.endsWith("/websocket")) {
-      wsUrl = wsUrl.slice(0, -"/websocket".length);
-    }
-
-    this.socket = new GatedSocket(wsUrl, {
+    this.socket = new GatedSocket(endpoint, {
       params: {
         ...(options.agentId ? { agent_id: options.agentId } : {}),
         ...(options.conflictPolicy
@@ -157,8 +154,9 @@ export class PhoenixChannelsTransport implements StreamingTransport {
 
     this.socket.onError((event) => {
       const errorEvent = unwrapErrorEvent(event);
-      const upgradeReason = parseUpgradeDisconnectReason(errorEvent);
-      if (upgradeReason) {
+      const parsed = parseUpgradeDisconnectReason(errorEvent);
+      if (parsed) {
+        const upgradeReason = this.diagnostics.reason(parsed);
         if (upgradeReason.retryable) {
           this.lastDisconnectReason = upgradeReason;
           this.connectReject?.(new WebSocketDisconnectError(upgradeReason));
@@ -173,10 +171,10 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       }
 
       this.connectReject?.(
-        new TransportError("Phoenix socket connection failed", errorEvent),
+        new TransportError("Phoenix socket connection failed", this.diagnostics.value(errorEvent)),
       );
       this.stopReconnectIfNoChannels({ suppressCloseReason: true });
-      this.logger.warn("Phoenix socket error", { event });
+      this.logger.warn("Phoenix socket error", { error: errorEvent });
     });
   }
 
@@ -448,7 +446,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       !this.terminalDisconnectError &&
       !this.lastDisconnectReason
     ) {
-      this.lastDisconnectReason = genericCloseReason(event);
+      this.lastDisconnectReason = this.diagnostics.reason(genericCloseReason(event));
     }
 
     this.logger.info("Phoenix socket closed", {
@@ -463,6 +461,7 @@ export class PhoenixChannelsTransport implements StreamingTransport {
       return;
     }
 
+    reason = this.diagnostics.reason(reason);
     const error = new WebSocketDisconnectError(reason);
     this.lastDisconnectReason = reason;
     this.terminalDisconnectError = error;
@@ -548,11 +547,13 @@ class GatedSocket extends Socket {
 
   // Not `logger`: phoenix calls its own `this.logger` as a function.
   public constructor(
-    url: string,
+    endpoint: URL,
     options: SocketOptions,
     private readonly transportLogger: Logger,
   ) {
-    super(url, options);
+    super(`${endpoint.origin}${endpoint.pathname}`, options);
+    // Phoenix appends the transport suffix before it serializes connection params.
+    this.endPoint = `${endpoint.origin}${endpoint.pathname}/websocket${endpoint.search}`;
   }
 
   /** Whether the owner opened the socket, not whether the wire is up. */

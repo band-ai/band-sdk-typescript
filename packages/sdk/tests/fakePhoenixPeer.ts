@@ -62,6 +62,7 @@ export class FakePhoenixPeer implements AsyncDisposable {
   public readonly closed = new RecordLog<string | null>();
   /** The request URL of every connection, in order, with its query parameters. */
   public readonly connectionUrls: string[] = [];
+  public readonly connectionHeaders: Array<import("node:http").IncomingHttpHeaders> = [];
   /** When each evicted agent may be taken over again, in ms since the epoch. */
   private readonly cooldownEnds = new Map<string, number>();
 
@@ -69,6 +70,7 @@ export class FakePhoenixPeer implements AsyncDisposable {
     this.wss = new WebSocketServer({
       port: 0,
       verifyClient: ({ req }, done) => {
+        this.connectionHeaders.push({ ...req.headers });
         const params = connectionParams(req.url ?? "");
         const agentId = params.get("agent_id");
         const held = agentId !== null && [...this.sockets.values()].includes(agentId);
@@ -110,6 +112,12 @@ export class FakePhoenixPeer implements AsyncDisposable {
     }
     this.sockets.clear();
     this.pendingJoins.clear();
+  }
+
+  public closeConnections(code: number, reason: string): void {
+    for (const socket of this.sockets.keys()) {
+      socket.close(code, reason);
+    }
   }
 
   /**
