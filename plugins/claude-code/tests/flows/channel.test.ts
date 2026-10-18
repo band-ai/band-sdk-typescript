@@ -3,7 +3,9 @@
  * except for the network: delivered messages become channel pushes, and
  * Claude's tool calls post back to the room they came from.
  */
-import { describe, expect } from "vitest";
+import { describe, expect, vi } from "vitest";
+import { ExecutionContext } from "@band-ai/sdk/runtime";
+import { createDeferred } from "../../../../packages/sdk/src/core/deferred";
 
 import { COMMAND_REFUSAL, SENDER_ROLE } from "../../src/adapter";
 import { CHANNEL_CAPABILITY, EXIT_OK } from "../../src/channel";
@@ -287,7 +289,7 @@ describe("when Claude Code exits", () => {
     expect(band.platform.rest.processing.entries).toEqual([waiting]);
   });
 
-  it("stops at the turn in flight and leaves the rest of the backlog for the next session", async ({ band }) => {
+  it("leaves a message suspended in processing admission for the next session", async ({ band }) => {
     const first = band.room.postBeforeConnect(USER, `${MENTION} one`);
     const inFlight = band.room.postBeforeConnect(USER, `${MENTION} two`);
     const waiting = band.room.postBeforeConnect(USER, `${MENTION} three`);
@@ -298,9 +300,13 @@ describe("when Claude Code exits", () => {
 
     expect(await leaving.leave()).toBe(EXIT_OK);
     held.release();
-    expect(await band.room.outcome(inFlight)).toBe("failed");
+    expect(band.room.outcomes(inFlight)).toEqual([]);
+    expect(leaving.pushes.entries.map((push) => push.meta.message_id)).toEqual([first]);
 
     await using next = await ClaudeCodeSession.connect(linkTo(band.platform));
+    expect((await next.pushOf(inFlight)).meta.message_id).toBe(inFlight);
+    expect(await band.room.outcome(inFlight)).toBe("processed");
+    expect(band.room.outcomes(inFlight)).toEqual(["processed"]);
     expect((await next.pushOf(waiting)).meta.message_id).toBe(waiting);
     expect(await band.room.outcome(waiting)).toBe("processed");
   });
@@ -310,16 +316,26 @@ describe("when Claude Code exits", () => {
     const id = await band.room.say(USER, `${MENTION} hi`);
     const held = band.room.holdProcessing(id);
     await held.sending;
-    // The removal unsubscribes, then waits on the held turn to tear the room down.
-    await Promise.all([band.room.left(), band.room.remove()]);
-    await session.departed();
+    const finished = createDeferred();
+    const setState = ExecutionContext.prototype.setState;
+    const states = vi.spyOn(ExecutionContext.prototype, "setState").mockImplementation(function (this: ExecutionContext, state) {
+      setState.call(this, state);
+      if (this.roomId === ROOM && state === "idle") finished.resolve();
+    });
+    try {
+      await Promise.all([band.room.left(), band.room.remove()]);
+      await session.departed();
+      expect(await session.exited).toBe(EXIT_OK);
+      held.release();
+      await finished.promise;
 
-    held.release();
-
-    expect(await session.exited).toBe(EXIT_OK);
-    expect(await band.room.outcome(id)).toBe("failed");
-    expect(session.pushes.entries).toEqual([]);
-    expect(band.platform.transport.isConnected()).toBe(false);
+      expect(band.room.outcomes(id)).toEqual([]);
+      expect(session.pushes.entries).toEqual([]);
+      expect(band.platform.transport.isConnected()).toBe(false);
+    } finally {
+      held.release();
+      states.mockRestore();
+    }
   });
 });
 

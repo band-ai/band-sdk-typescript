@@ -115,6 +115,8 @@ export class AgentSession {
       logger,
       linkOptions: { ...link?.(credentials), conflictPolicy: "supersede", capabilities: { tasks: true } },
       agentConfig: { autoSubscribeExistingRooms: true },
+      // Channel delivery returns before Claude finishes; the plugin owns that longer working lifetime.
+      sessionConfig: { enableWorkingState: false },
     });
     this.runtime = runtime;
     let refreshAgents!: () => Promise<Candidate[]>;

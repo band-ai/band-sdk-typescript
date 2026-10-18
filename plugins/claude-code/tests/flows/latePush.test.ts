@@ -1,3 +1,4 @@
+import { createDeferred } from "../../../../packages/sdk/src/core/deferred";
 import { AgentResources } from "../../src/agentResources";
 /** A real channel write can outlive the connection displaced while stdout is backpressured. */
 import { PassThrough } from "node:stream";
@@ -47,6 +48,7 @@ it("does not restart activity when a backpressured channel push finishes after t
   const connect = connectTool(() => session.ask());
   const server = new ObservedServer({ stdin: input, stdout: output, additionalTools: [connect] });
   const status = dirs.openStatus("session");
+  const pushCompleted = createDeferred();
   const session = new AgentSession({
     server,
     resources: new AgentResources(),
@@ -55,7 +57,10 @@ it("does not restart activity when a backpressured channel push finishes after t
     status,
     link: () => ({ restApi: platform.rest }),
     logger: new NoopLogger(),
-    push: async (push) => server.notify(CHANNEL_METHOD, push),
+    push: async (push) => {
+      await server.notify(CHANNEL_METHOD, push);
+      pushCompleted.resolve();
+    },
   });
   try {
     await server.start();
@@ -69,8 +74,10 @@ it("does not restart activity when a backpressured channel push finishes after t
     expect(dirs.session("session")?.sentence).toBe(SESSION_TEXT.takenOver(`@${AGENT_HANDLE}`));
     held.release();
     await starting;
+    await pushCompleted.promise;
     expect(await client.toolNamesWhen((names) => names.includes(CONNECT_TOOL))).toEqual([CONNECT_TOOL]);
-    await room.outcome(waiting);
+    // The retired handler cannot terminal-mark a message after takeover.
+    expect(room.outcomes(waiting)).toEqual([]);
 
     expect(platform.rest.workingReports.entries).toEqual([]);
   } finally {
