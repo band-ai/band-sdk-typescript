@@ -6,6 +6,7 @@ import { Agents } from "../../toolkit/agents";
 import { CATEGORY, scenarioId } from "../../toolkit/registry";
 import { createDeferred } from "../../../../src/core/deferred";
 import { ACTIVITY_EVENT, Rooms } from "../../toolkit/rooms";
+import { recordSuccessfulWorkingReports } from "../../../support/workingReports";
 
 const SCENARIO = scenarioId(CATEGORY.platform, "workingReport");
 
@@ -24,15 +25,18 @@ describe(SCENARIO, () => {
       await release.promise;
       await tools.executeToolCall("band_no_reply", {});
     });
+    const reports = recordSuccessfulWorkingReports(identity.rest);
     await using _running = await Agents.runAs(identity, adapter);
     try {
       await Rooms.sendMention(room, identity, "Hold until released, then deliberately finish without a reply.");
       await entered.promise;
+      await reports.next((report) => report.roomId === room.id && report.working);
       await room.activity.next((frame) => frame.agentId === identity.id && frame.event === ACTIVITY_EVENT.started);
-      // The platform also emits a brief inbound-message presence pulse. Only a
-      // stop arriving after we release this held adapter can complete the check.
+      // Inbound-message presence also emits frames; require the runtime's successful reports separately.
       const releaseIndex = room.activity.entries.length;
+      const reportReleaseIndex = reports.entries.length;
       release.resolve();
+      await reports.next((report) => report.roomId === room.id && !report.working, reportReleaseIndex);
       const stopped = await room.activity.next(
         (frame) => frame.agentId === identity.id && frame.event === ACTIVITY_EVENT.stopped,
         releaseIndex,
