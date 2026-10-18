@@ -43,7 +43,7 @@ export class CredentialDiagnostics {
   public constructor(credentials: string[]) {
     this.secrets = [...new Set(credentials.filter(Boolean).flatMap((value) => {
       const encoded = encodeURIComponent(value);
-      return [value, encoded, new URLSearchParams({ value }).toString().slice(6)];
+      return [value, encoded, encodeURI(value), new URLSearchParams({ value }).toString().slice(6)];
     }))].sort((left, right) => right.length - left.length).map((value) => {
       const literal = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const pattern = literal.replace(/%[0-9A-F]{2}/gi, (escape) => escape.replace(/[a-f]/gi, (letter) => `[${letter.toLowerCase()}${letter.toUpperCase()}]`));

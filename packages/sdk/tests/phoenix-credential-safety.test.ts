@@ -8,7 +8,7 @@ import { PhoenixChannelsTransport } from "../src/platform/streaming/PhoenixChann
 import { createNodeWebSocketFactory } from "../src/platform/streaming/nodeWebSocketFactory";
 import { FakePhoenixPeer } from "./fakePhoenixPeer";
 
-const KEY = "synthetic-wire-key+/=credential";
+const KEY = "synthetic wire key+/=credential";
 const LEGACY_KEY = "synthetic-legacy-key+/=credential";
 
 function captureLogger() {
@@ -19,7 +19,7 @@ function captureLogger() {
 
 function containsCredential(value: unknown): boolean {
   const text = inspect(value, { depth: 20 });
-  return [KEY, LEGACY_KEY].some((key) => [key, encodeURIComponent(key), encodeURIComponent(key).replace("%2B", "%2b")].some((value) => text.includes(value)));
+  return [KEY, LEGACY_KEY].some((key) => [key, encodeURI(key), encodeURIComponent(key), encodeURIComponent(key).replace("%2B", "%2b")].some((value) => text.includes(value)));
 }
 
 describe("Phoenix credential safety at the wire and logger boundary", () => {
@@ -79,7 +79,7 @@ describe("Phoenix credential safety at the wire and logger boundary", () => {
       requests.push({ url: request.url ?? "", authenticated: request.headers["x-api-key"] === KEY });
       const body = JSON.stringify({ error: {
         code: "connection_conflict",
-        message: `refused ${KEY}`,
+        message: `refused ${encodeURI(KEY)}`,
         request_id: encodeURIComponent(KEY).replace("%2B", "%2b"),
       } });
       socket.end(["HTTP/1.1 409 Conflict", "Content-Type: application/json", `Content-Length: ${Buffer.byteLength(body)}`, "", body].join("\r\n"));
