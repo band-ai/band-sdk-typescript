@@ -11,6 +11,7 @@ import { reportProviderTurnFailure } from "../../core/providerFailure";
 import { LazyAsyncValue } from "../shared/lazyAsyncValue";
 import { takeLast } from "../shared/history";
 import { relayReply, type TurnTools } from "../../core/turn";
+import { reportToolActivity, endToolActivity } from "../../runtime/workingState";
 
 import {
   buildCustomToolIndex,
@@ -142,9 +143,10 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     try {
       let sdk: LangGraphSdk | undefined;
       let langGraphTools = [...this.additionalTools];
+      let observedNames = new Set<string>();
       if (this.usesBandTools) {
         sdk = await this.sdkLoader.get();
-        langGraphTools = buildLangGraphTools({
+        const built = buildLangGraphTools({
           sdk,
           tools,
           includeMemoryTools: this.includeMemoryTools,
@@ -152,6 +154,8 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
           customTools: this.customTools,
           additionalTools: this.additionalTools,
         });
+        langGraphTools = built.tools;
+        observedNames = built.observedNames;
       }
 
       const graph = await this.resolveGraph(sdk, langGraphTools);
@@ -187,8 +191,8 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
         recursion_limit: this.recursionLimit,
       };
 
-      if (this.emitExecutionEvents && graph.streamEvents) {
-        text = await this.forwardStreamEvents(graph, input, graphConfig, tools);
+      if (graph.streamEvents) {
+        text = await this.forwardStreamEvents(graph, input, graphConfig, tools, observedNames);
       } else if (!graph.invoke) {
         return;
       } else {
@@ -294,6 +298,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     input: Record<string, unknown>,
     config: Record<string, unknown>,
     tools: AdapterToolsProtocol,
+    observedNames: ReadonlySet<string>,
   ): Promise<string | null> {
     // version belongs on config (arg 2), not the optional third arg.
     const stream = graph.streamEvents?.(input, { ...config, version: "v2" });
@@ -302,12 +307,22 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     }
 
     let lastAssistantText: string | null = null;
+    const active = new Set<string>();
 
     for await (const event of stream) {
       const data = asOptionalRecord(event) ?? {};
       const eventType = String(data.event ?? "");
       const details = asOptionalRecord(data.data) ?? {};
-      if (eventType === "on_tool_start") {
+      const name = typeof data.name === "string" ? data.name : "";
+      const id = typeof data.run_id === "string" ? data.run_id : "";
+      if (eventType === "on_tool_start" && name && id && !observedNames.has(name) && !active.has(id)) {
+        active.add(id);
+        await reportToolActivity(tools, name);
+      }
+      if ((eventType === "on_tool_end" || eventType === "on_tool_error") && active.delete(id)) {
+        await endToolActivity(tools);
+      }
+      if (this.emitExecutionEvents && eventType === "on_tool_start") {
         // The run ID pairs both events; the model's call ID arrives only at tool end.
         await tools.sendEvent(
           stringifyJsonWithFallback({
@@ -321,7 +336,7 @@ export class LangGraphAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
           "tool_call",
         );
       }
-      if (eventType === "on_tool_end") {
+      if (this.emitExecutionEvents && eventType === "on_tool_end") {
         const message = asOptionalRecord(details.output);
         const output = typeof message?.tool_call_id === "string" ? message.content : details.output;
         const parsedOutput = typeof output === "string" ? parseToolPayload(output) ?? output : output;
@@ -372,7 +387,7 @@ function buildLangGraphTools(input: {
   additionalTools: unknown[];
   includeMemoryTools: boolean;
   logger: Logger;
-}): unknown[] {
+}): { tools: unknown[]; observedNames: Set<string> } {
   const schemas = input.tools.getToolSchemas("openai", {
     includeMemory: input.includeMemoryTools,
   });
@@ -390,11 +405,14 @@ function buildLangGraphTools(input: {
   const wrap = (spec: LangGraphToolLike, execute: (args: Record<string, unknown>) => Promise<unknown>) =>
     input.sdk.tool(async (args) => stringifyToolResult(await execute(args), input.logger, spec.name), spec);
 
-  return [
-    ...specs.map((spec) => wrap(spec, (args) => input.tools.executeToolCall(spec.name, args))),
-    ...portable.map(({ def, spec }) => wrap(spec, (args) => executeCustomTool(def, args, input.tools.turn))),
-    ...input.additionalTools,
-  ];
+  return {
+    tools: [
+      ...specs.map((spec) => wrap(spec, (args) => input.tools.executeToolCall(spec.name, args))),
+      ...portable.map(({ def, spec }) => wrap(spec, (args) => executeCustomTool(def, args, input.tools.turn, input.tools))),
+      ...input.additionalTools,
+    ],
+    observedNames: new Set([...specs, ...portable.map(({ spec }) => spec)].map(({ name }) => name)),
+  };
 }
 
 function toLangGraphToolSpec(schema: Record<string, unknown>): LangGraphToolLike | null {

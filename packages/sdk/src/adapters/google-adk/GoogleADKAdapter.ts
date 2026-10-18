@@ -6,6 +6,7 @@ import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import { isFailedToolOutput } from "../../contracts/protocols";
 import { relayReply, type TurnTools } from "../../core/turn";
+import { reportToolActivity, endToolActivity } from "../../runtime/workingState";
 import type { MetadataMap, ToolOperationResult } from "../../contracts/dtos";
 import { formatMessageForLlm } from "../../runtime/formatters";
 import { renderSystemPrompt, withMemoryGuidance } from "../../runtime/prompts";
@@ -313,8 +314,9 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
     let finalResponseText = "";
     try {
       const sdk = await this.sdkLoader.get();
+      const built = this.buildTools(sdk, tools);
       const runner = sdk.createRunner({
-        agent: this.buildAgent(sdk, tools),
+        agent: this.buildAgent(sdk, built.tools),
         appName: APP_NAME,
       });
       const sessionId = randomUUID();
@@ -324,6 +326,7 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
         sessionId,
       });
 
+      const nativeCalls = new Set<string>();
       for await (const event of runner.runAsync({
         userId: context.roomId,
         sessionId,
@@ -333,6 +336,15 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
         },
       })) {
         throwIfModelError(event);
+        for (const call of sdk.getFunctionCalls(event)) {
+          if (call.id && call.name && !built.observedNames.has(call.name) && !nativeCalls.has(call.id)) {
+            nativeCalls.add(call.id);
+            await reportToolActivity(tools, call.name);
+          }
+        }
+        for (const response of sdk.getFunctionResponses(event)) {
+          if (response.id && nativeCalls.delete(response.id)) await endToolActivity(tools);
+        }
         if (this.enableExecutionReporting) {
           await this.reportExecutionEvent(sdk, event, tools);
         }
@@ -395,68 +407,69 @@ export class GoogleADKAdapter extends SimpleAdapter<GoogleADKMessages, TurnTools
 
   private buildAgent(
     sdk: GoogleAdkSdkLike,
-    tools: TurnTools,
+    tools: unknown[],
   ): unknown {
     return sdk.createAgent({
       name: this.agentName || "band_agent",
       model: this.apiKey ? sdk.createModel({ model: this.model, apiKey: this.apiKey }) : this.model,
       instruction: this.systemPrompt,
-      tools: this.buildTools(sdk, tools),
+      tools,
     });
   }
 
   private buildTools(
     sdk: GoogleAdkSdkLike,
     tools: TurnTools,
-  ): unknown[] {
+  ): { tools: unknown[]; observedNames: Set<string> } {
     const toolSchemas = tools.getOpenAIToolSchemas({
       includeMemory: this.enableMemoryTools,
     });
     const adkTools = toolSchemas
       .map((schema) => this.buildPlatformTool(sdk, tools, schema))
-      .filter((tool): tool is unknown => tool !== null);
+      .filter((tool): tool is { name: string; tool: unknown } => tool !== null);
 
     for (const customTool of this.customTools) {
       adkTools.push(this.buildCustomTool(sdk, customTool, tools));
     }
 
-    return adkTools;
+    return { tools: adkTools.map(({ tool }) => tool), observedNames: new Set(adkTools.map(({ name }) => name)) };
   }
 
   private buildPlatformTool(
     sdk: GoogleAdkSdkLike,
     tools: AdapterToolsProtocol,
     schema: Record<string, unknown>,
-  ): unknown {
+  ): { name: string; tool: unknown } | null {
     const functionDef = asOptionalRecord(schema.function) ?? {};
     const name = functionDef?.name;
     if (typeof name !== "string" || name.length === 0) {
       return null;
     }
 
-    return sdk.createFunctionTool({
+    return { name, tool: sdk.createFunctionTool({
       name,
       description: typeof functionDef.description === "string" ? functionDef.description : "",
       parameters: asOptionalRecord(stripAdditionalProperties(functionDef.parameters)) ?? undefined,
       execute: async (input) => {
         return stringifyToolResult(await tools.executeToolCall(name, asToolArgs(input)));
       },
-    });
+    }) };
   }
 
   private buildCustomTool(
     sdk: GoogleAdkSdkLike,
     customTool: CustomToolDef,
     tools: TurnTools,
-  ): unknown {
+  ): { name: string; tool: unknown } {
     const schema = customToolToOpenAISchema(customTool);
     const functionDef = asOptionalRecord(schema.function) ?? {};
-    return sdk.createFunctionTool({
-      name: String(functionDef.name ?? customTool.name),
+    const name = String(functionDef.name ?? customTool.name);
+    return { name, tool: sdk.createFunctionTool({
+      name,
       description: typeof functionDef.description === "string" ? functionDef.description : "",
       parameters: asOptionalRecord(stripAdditionalProperties(functionDef.parameters)) ?? undefined,
-      execute: async (input) => stringifyToolResult(await executeCustomTool(customTool, asToolArgs(input), tools.turn)),
-    });
+      execute: async (input) => stringifyToolResult(await executeCustomTool(customTool, asToolArgs(input), tools.turn, tools)),
+    }) };
   }
 
   private buildPrompt(

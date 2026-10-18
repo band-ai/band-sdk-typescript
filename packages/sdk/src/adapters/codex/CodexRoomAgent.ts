@@ -2,6 +2,7 @@ import type { ModelReasoningEffort, WebSearchMode } from "@openai/codex-sdk";
 import type { AgentFailure } from "@band-ai/band-sdk-core";
 
 import { SimpleAdapter } from "../../core/simpleAdapter";
+import { reportToolActivity, endToolActivity, reportMemoryActivity } from "../../runtime/workingState";
 import {
   isStructuredToolFailure,
   isToolExecutorError,
@@ -386,6 +387,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
     let turnStatus: TurnStatus = "failed";
     let turnError = "";
     let reportedFailureInLoop = false;
+    const activityItems = new Set<string>();
 
     while (true) {
       let event: CodexRpcEvent;
@@ -473,6 +475,20 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
 
       const params = asOptionalRecord(event.params) ?? {};
 
+      if (event.method === "item/started") {
+        const item = parseThreadItem(params.item);
+        if (item && typeof item.id === "string" && !activityItems.has(item.id)) {
+          if (isToolLikeItem(item)) {
+            activityItems.add(item.id);
+            await reportToolActivity(tools, this.extractToolItem(item)[0]);
+          } else if (item.type === "contextCompaction") {
+            activityItems.add(item.id);
+            await reportMemoryActivity(tools, true);
+          }
+        }
+        continue;
+      }
+
       if (event.method === "error") {
         const error = asOptionalRecord(params.error) ?? {};
         const errorMessage = asNonEmptyString(error.message) ?? "Unknown Codex error";
@@ -502,6 +518,10 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
         const item = parseThreadItem(params.item);
         if (!item) {
           continue;
+        }
+        if (typeof item.id === "string" && activityItems.delete(item.id)) {
+          if (item.type === "contextCompaction") await reportMemoryActivity(tools, false);
+          else await endToolActivity(tools);
         }
 
         if (item.type === "agentMessage" && typeof item.text === "string" && item.text.trim()) {
@@ -1003,7 +1023,7 @@ export class CodexRoomAgent extends SimpleAdapter<HistoryProvider, TurnTools> {
         let output: unknown;
         if (customTool) {
           try {
-            output = await executeCustomTool(customTool, arguments_, tools.turn);
+            output = await executeCustomTool(customTool, arguments_, tools.turn, tools);
           } catch (error) {
             output = normalizeCustomToolError(toolName, error);
           }

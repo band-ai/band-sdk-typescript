@@ -481,8 +481,12 @@ contains arguments, output, commands or prompts, and chat narration is independe
 
 ToolCalling adapters and query-bound Claude MCP tools observe actual local
 execution. Uncorrelated shared OpenCode MCP requests remain at reasoning.
-Native provider events, compaction and human-decision detail are supplied by the
-dependent provider layers; opaque remote work remains reasoning.
+ADK and LangGraph streams report native tool starts and terminals independently
+of narration. Codex reports native items and compaction; Letta consumes native
+step streams while preserving create-only injected clients. LangGraph invoke-only
+graphs retain their existing fallback. Native Claude hooks and correlated
+ACP/OpenCode decisions are supplied by the dependent provider-lifetime layer;
+opaque remote work remains reasoning.
 
 Compatibility is automatic and owned by each REST client: an unauthenticated
 `GET <restUrl>/api/v1/health` reads `api_version` (the agent API release), so it

@@ -52,4 +52,18 @@ Working state is on by default through shared runtime
 keep-alive and two-second request budget. Use `Agent.create({ ..., sessionConfig:
 { enableWorkingState: false } })` to disable it. No provider-specific option or
 tool capability is needed. Execution reporting options control chat tool narration
-independently of this automatic boolean indicator.
+independently of this automatic indicator and its activity detail.
+
+```ts
+import { Agent, CodexAdapter, loadAgentConfig } from "@band-ai/sdk";
+
+const agent = Agent.create({
+  config: loadAgentConfig("my_agent"),
+  sessionConfig: { enableWorkingState: true },
+  adapter: new CodexAdapter({ config: { enableExecutionReporting: false } }),
+});
+```
+
+Ask Codex to run an allowed native command such as `pwd`. Its item start/completion
+events report `tool_call/exec` then reasoning on a compatible agent API. The command
+and its output stay out of activity; approval defaults are unchanged.

@@ -1,7 +1,10 @@
 import { realpathSync } from "node:fs";
 import path from "node:path";
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { createDeferred } from "../src/core/deferred";
+import { BandPlatform, person } from "./flows/support/bandPlatform";
+import { recordRuntimeActivity } from "./support/activityReports";
 import { z } from "zod";
 
 import { CodexAdapter } from "../src/adapters/codex";
@@ -171,6 +174,46 @@ function defaultRequestHandler(method: string, params: Record<string, unknown>):
 }
 
 describe("CodexAdapter", () => {
+  it.each(["completed", "failed"])("observes held native execution and %s completion without narration", async (status) => {
+    const release = createDeferred();
+    onTestFinished(() => release.resolve());
+    const reports = recordRuntimeActivity();
+    const item = { type: "commandExecution", id: "native", command: "private-command-marker", cwd: "/tmp", processId: null,
+      status: "inProgress", commandActions: [], aggregatedOutput: null, exitCode: null, durationMs: null };
+    const events: CodexRpcEvent[] = [
+      { kind: "notification", method: "item/started", params: { item } },
+      { kind: "notification", method: "item/completed", params: { item: { ...item, status, exitCode: status === "failed" ? 1 : 0 } } },
+      { kind: "notification", method: "item/started", params: { item: { type: "contextCompaction", id: "compact" } } },
+      { kind: "notification", method: "item/completed", params: { item: { type: "contextCompaction", id: "compact" } } },
+      { kind: "notification", method: "item/completed", params: { item: { type: "agentMessage", id: "answer", text: "Done." } } },
+      { kind: "notification", method: "turn/completed", params: { turn: { id: "turn-1", status: "completed", error: null } } },
+    ];
+    class HeldClient extends FakeCodexClient {
+      private reads = 0;
+      public override async recvEvent(): Promise<CodexRpcEvent> {
+        if (++this.reads === 2) await release.promise;
+        return super.recvEvent();
+      }
+    }
+    const client = new HeldClient({ events });
+    const adapter = new CodexAdapter({ factory: async () => client, config: { cwd: tmpRoot(), enableExecutionReporting: false } });
+    {
+      await using session = await BandPlatform.join(adapter, [person("owner")]);
+      const message = await session.room.say("owner", "run it");
+      await reports.next((entry) => entry.activity?.kind === "tool_call");
+      release.resolve();
+      expect(await session.room.outcome(message)).toBe("processed");
+      expect(session.room.messages.map(({ content }) => content)).toEqual(["Done."]);
+      expect(reports.entries.map(({ working, activity }) => working ? activity : false)).toEqual([
+        { kind: "reasoning" }, { kind: "tool_call", name: "exec" }, { kind: "reasoning" },
+        { kind: "memory" }, { kind: "reasoning" }, false,
+      ]);
+      expect([...session.room.events("tool_call"), ...session.room.events("tool_result")]).toEqual([]);
+      expect(JSON.stringify(reports.entries)).not.toContain("private-command-marker");
+    }
+    expect(client.closeCalls).toBe(1);
+  });
+
   it("a /model list against a downed app server reports a failure and fails only that turn", async () => {
     // `/model list` is the one local command that reaches Codex, and local
     // commands run before onMessage's failure catch — so a bare rejection here
