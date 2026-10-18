@@ -19,6 +19,7 @@ import type { BandMcpServer } from "../../src/mcp/server";
 import { CallHolds, expectMcpServerStopped, FakeTools, makeMessage, MISSING_REPLY, type ReportedFailure } from "../testUtils";
 import { BandPlatform, person, type Outcome, type RecordingRestApi } from "./support/bandPlatform";
 import { FakeOpencodeServer, type OpencodeTurn } from "./support/fakeOpencodeServer";
+import { recordRuntimeActivity } from "../support/activityReports";
 import { ACT_TOOL, CLOSING_TEXT, contractRows, NO_REPLY_ARGS, TOOL_REPLY, turnInput, type TurnScript } from "../turnOutcomeContract";
 
 const OWNER = "owner";
@@ -152,6 +153,23 @@ function observedClients(closeError?: Error) {
 describe("OpenCode in a Band room", () => {
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("suppresses uncorrelated shared MCP activity while preserving execution", async () => {
+    const reports = recordRuntimeActivity();
+    await using session = await opencodeRoom({ enableExecutionReporting: false });
+    const message = await session.start(async (turn) => {
+      const result = await turn.callTool("band_get_participants", ROOM);
+      expect(result.isError).toBeUndefined();
+      expect(result.text).toContain(OWNER);
+      turn.answer("Done.");
+    });
+    expect(await session.room.outcome(message)).toBe("processed");
+    await reports.next((entry) => !entry.working);
+    expect(reports.entries.map(({ working, activity }) => working ? activity : false)).toEqual([
+      { kind: "reasoning" }, false,
+    ]);
+    expect(session.room.messages.at(-1)?.content).toBe("Done.");
   });
 
   it("keeps working across a detached approval and its reply I/O until the provider terminates", async () => {

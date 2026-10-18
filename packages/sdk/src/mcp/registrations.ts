@@ -39,6 +39,8 @@ export interface McpToolResult {
 }
 
 export interface BuildRegistrationsOptions {
+  /** @internal Wraps execution without changing tool schemas or results. */
+  execute?: (work: () => Promise<McpToolResult>) => Promise<McpToolResult>;
   enableMemoryTools?: boolean;
   enableTaskTools?: boolean;
   enableContactTools?: boolean;
@@ -133,7 +135,7 @@ export function buildRoomScopedRegistrations(
     registrations.push(...options.additionalTools);
   }
 
-  return registrations;
+  return wrapExecution(registrations, options.execute);
 }
 
 /**
@@ -149,7 +151,13 @@ export function buildSingleContextRegistrations(
     registrations.push(...options.additionalTools);
   }
 
-  return registrations;
+  return wrapExecution(registrations, options.execute);
+}
+
+function wrapExecution(registrations: McpToolRegistration[], execute?: BuildRegistrationsOptions["execute"]): McpToolRegistration[] {
+  return execute ? registrations.map((registration) => ({
+    ...registration, execute: (args) => execute(() => registration.execute(args)),
+  })) : registrations;
 }
 
 function bindTool(tool: McpToolSchema, tools: AdapterToolsProtocol): McpToolRegistration {

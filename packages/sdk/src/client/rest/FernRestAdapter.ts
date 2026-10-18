@@ -21,6 +21,7 @@ import {
   DEFAULT_REQUEST_OPTIONS,
   MESSAGE_SEND_MAX_RETRIES,
   type RestRequestOptions,
+  type ReportActivityOptions,
 } from "./requestOptions";
 import { normalizePaginationMetadata } from "./pagination";
 import { normalizeContactRequestsResult } from "./responseNormalization";
@@ -543,13 +544,15 @@ export class FernRestAdapter implements RestApi {
     return normalizeChatRoom(await api(chatId, mergeOptions(options)));
   }
 
-  public async reportActivity(chatId: string, working: boolean, options?: RestRequestOptions): Promise<{ working: boolean }> {
+  public async reportActivity(chatId: string, working: boolean, options?: ReportActivityOptions): Promise<{ working: boolean }> {
     const api = this.client.agentApiActivity?.reportAgentChatActivity?.bind(this.client.agentApiActivity);
     if (!api) {
       throw new UnsupportedFeatureError("Fern client missing activity report endpoint");
     }
 
-    const payload = asMetadataMap(extractEnvelopeData(await api(chatId, { working }, mergeOptions(options))));
+    const { activity, ...requestOptions } = options ?? {};
+    const body = { working, ...(working && activity ? { activity } : {}) };
+    const payload = asMetadataMap(extractEnvelopeData(await api(chatId, body, mergeOptions(requestOptions))));
     if (typeof payload?.working !== "boolean") {
       throw new UnsupportedFeatureError("Activity response did not include the working state");
     }

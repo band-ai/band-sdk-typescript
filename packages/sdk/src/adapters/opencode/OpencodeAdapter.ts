@@ -1,4 +1,4 @@
-import { retainWorkingCycleUntil } from "../../runtime/workingState";
+import { retainWorkingCycleUntil, suppressToolActivity } from "../../runtime/workingState";
 import { AgentFailure, isAuthorizedSender } from "@band-ai/band-sdk-core";
 import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { MentionInput } from "../../contracts/dtos";
@@ -465,6 +465,7 @@ export class OpencodeAdapter extends SimpleAdapter<OpencodeSessionState, TurnToo
 
   private startMcpBackend(): Promise<BandMcpBackend | null> {
     return this.mcpBackendFactory({
+      execute: suppressToolActivity,
       kind: "http",
       enableMemoryTools: this.config.enableMemoryTools,
       getToolsForRoom: (roomId) => this.toolsForRoom(roomId),

@@ -21,6 +21,8 @@ describe("automatic working-report acceptance", () => {
     const release = createDeferred();
     const generated = buildFakeRestAdapter([
       { status: 200, body: { data: { working: true } } },
+      { status: 200, body: { data: { working: true } } },
+      { status: 200, body: { data: { working: true } } },
       { status: 200, body: { data: { working: false } } },
     ]);
     const reports = recordSuccessfulWorkingReports(generated.rest);
@@ -50,11 +52,13 @@ describe("automatic working-report acceptance", () => {
       );
       await run;
       expect(room.activity.entries.indexOf(stopped)).toBeGreaterThanOrEqual(releaseIndex);
-      expect(room.activity.entries.slice(0, releaseIndex)).toContainEqual({ agentId: "a1", event: ACTIVITY_EVENT.started });
+      expect(room.activity.entries.slice(0, releaseIndex)).toContainEqual(expect.objectContaining({ agentId: "a1", event: ACTIVITY_EVENT.started }));
       if (enabled) {
         expect(reports.entries.slice(0, reportReleaseIndex)).toContainEqual({ roomId: room.id, working: true });
         expect(reports.entries.slice(reportReleaseIndex)).toContainEqual({ roomId: room.id, working: false });
         expect(generated.calls.map(({ method, url }) => ({ method, url }))).toEqual([
+          { method: "POST", url: "http://fake-band.test/api/v1/agent/chats/room/activity" },
+          { method: "POST", url: "http://fake-band.test/api/v1/agent/chats/room/activity" },
           { method: "POST", url: "http://fake-band.test/api/v1/agent/chats/room/activity" },
           { method: "POST", url: "http://fake-band.test/api/v1/agent/chats/room/activity" },
         ]);

@@ -193,7 +193,7 @@ export class ToolCallingAdapter extends SimpleAdapter<HistoryProvider, ToolCalli
             const customTool = findCustomToolInIndex(this.customToolIndex, call.name);
             if (customTool) {
               try {
-                output = await executeCustomTool(customTool, call.input, tools.turn);
+                output = await executeCustomTool(customTool, call.input, tools.turn, tools);
               } catch (error) {
                 if (error instanceof CustomToolValidationError || error instanceof CustomToolExecutionError) {
                   output = {

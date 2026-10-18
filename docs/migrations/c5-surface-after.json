@@ -716,6 +716,7 @@
         "PaginatedResponse",
         "PaginationMetadata",
         "PlatformChatMessage",
+        "ReportActivityOptions",
         "RestApi",
         "RestFacade",
         "SetBoardArgs",

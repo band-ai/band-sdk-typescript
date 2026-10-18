@@ -1,5 +1,4 @@
 import type {
-  McpSdkServerConfigWithInstance,
   Options,
   SDKAssistantMessage,
   SDKMessage,
@@ -12,7 +11,7 @@ import { SimpleAdapter } from "../../core/simpleAdapter";
 import type { AdapterToolsProtocol } from "../../contracts/protocols";
 import type { Logger } from "../../core/logger";
 import { resolveLogger } from "../../core/logger";
-import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
+import { RuntimeStateError, UnsupportedFeatureError, ValidationError } from "../../core/errors";
 import type { HistoryProvider, PlatformMessage } from "../../runtime/types";
 import { renderSystemPrompt } from "../../runtime/prompts";
 import { MCP_SERVER_NAME } from "../../contracts/toolSchemas";
@@ -46,6 +45,7 @@ type ClaudeQueryOptions = Pick<
   | "disallowedTools"
   | "settingSources"
   | "settings"
+  | "abortController"
 >;
 
 export interface ClaudeSDKQueryParams {
@@ -91,11 +91,6 @@ export const ISOLATION_SETTINGS = {
   disableClaudeAiConnectors: true,
 } as const satisfies Settings;
 
-interface BandMcpBridge {
-  serverConfig: McpSdkServerConfigWithInstance;
-  allowedTools: string[];
-}
-
 export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> {
   protected readonly provider = "claude-sdk";
 
@@ -108,7 +103,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
   private readonly enableMemoryTools: boolean;
   private readonly enableMcpTools: boolean;
   private readonly additionalMcpTools: McpToolRegistration[];
-  private readonly customToolRegistrations: McpToolRegistration[];
+  private readonly customTools: CustomToolDef[];
   private readonly cwd?: string;
   private readonly settingSources: SettingSource[];
   private readonly queryFnOverride?: ClaudeSDKQuery;
@@ -124,10 +119,10 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     },
   });
   private readonly sessionIds = new Map<string, string>();
-  // One turn per room: its MCP calls resolve the room's tools, so a second turn would take over the first's.
+  // Provider sessions accept one query per room.
   private readonly roomTurns = createRoomTurnLock();
   private readonly roomTools = new Map<string, TurnTools>();
-  private mcpBridge: BandMcpBridge | null = null;
+  private readonly activeQueries = new Map<string, () => Promise<void>>();
   private systemPrompt = "";
 
   public constructor(options?: ClaudeSDKAdapterOptions) {
@@ -145,7 +140,8 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     if (customTools.length > 0 && !this.enableMcpTools) {
       throw new ValidationError("ClaudeSDK customTools require `enableMcpTools: true`.");
     }
-    this.customToolRegistrations = buildCustomMcpRegistrations(customTools, (roomId) => this.roomTools.get(roomId));
+    this.customTools = customTools;
+    buildCustomMcpRegistrations(customTools, () => undefined);
     this.cwd = options?.cwd;
     this.settingSources = options?.settingSources ?? [];
     this.queryFnOverride = options?.queryFn;
@@ -163,17 +159,11 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     });
 
     if (this.enableMcpTools) {
-      const createSdkMcpBridge = await this.sdkMcpBridgeLoader.get();
-      const registrations = buildRoomScopedRegistrations((roomId) => this.roomTools.get(roomId), {
-        enableMemoryTools: this.enableMemoryTools,
-        enableContactTools: true,
-        additionalTools: this.additionalMcpTools,
+      await this.sdkMcpBridgeLoader.get();
+      const registrations = buildRoomScopedRegistrations(() => undefined, {
+        enableMemoryTools: this.enableMemoryTools, enableContactTools: true, additionalTools: this.additionalMcpTools,
       });
-      assertCustomToolNamesAvailable(
-        this.customToolRegistrations.map((registration) => registration.name),
-        registrations.map((registration) => registration.name),
-      );
-      this.mcpBridge = createSdkMcpBridge(registrations, this.customToolRegistrations);
+      assertCustomToolNamesAvailable(this.customTools.map((tool) => tool.name), registrations.map((registration) => registration.name));
     }
   }
 
@@ -202,7 +192,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       let finalText = "";
       let resultFailure: ClaudeResultFailure | null = null;
       try {
-        const query = await this.startQuery(message, history, participantsMessage, contactsMessage, context);
+        const query = await this.startQuery(message, tools, history, participantsMessage, contactsMessage, context);
         const consumed = await this.consumeQueryEvents(query, tools, context.roomId);
         finalText = consumed.finalText;
         resultFailure = consumed.resultFailure;
@@ -224,22 +214,28 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       // Posting preceding text must not turn a failed provider result into success.
       if (failure) await reportTurnFailure(tools, failure, this.logger, { roomId: context.roomId });
     } finally {
-      if (this.roomTools.get(context.roomId) === tools) {
-        this.roomTools.delete(context.roomId);
-      }
+      if (this.roomTools.get(context.roomId) === tools) this.roomTools.delete(context.roomId);
     }
   }
 
   private async startQuery(
     message: PlatformMessage,
+    tools: TurnTools,
     history: HistoryProvider,
     participantsMessage: string | null,
     contactsMessage: string | null,
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<AsyncIterable<SDKMessage>> {
+    const checkOwner = (): void => {
+      if (this.roomTools.get(context.roomId) !== tools) throw new RuntimeStateError("Claude query was retired before admission");
+    };
+    checkOwner();
     const queryFn = this.queryFnOverride ?? (await loadClaudeQuery());
+    checkOwner();
 
+    const abortController = new AbortController();
     const options: ClaudeQueryOptions = {
+      abortController,
       model: this.model,
       permissionMode: this.permissionMode,
       systemPrompt: this.systemPrompt,
@@ -262,18 +258,39 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
       options.resume = existingSession;
     }
 
-    if (this.mcpBridge && this.enableMcpTools) {
-      options.mcpServers = {
-        [MCP_SERVER_NAME]: this.mcpBridge.serverConfig,
-      };
-      options.allowedTools = this.mcpBridge.allowedTools;
+    let live = true;
+    let bridge: ReturnType<typeof import("../../mcp/sdkTools").createSdkMcpBridge> | undefined;
+    if (this.enableMcpTools) {
+      const createBridge = await this.sdkMcpBridgeLoader.get();
+      checkOwner();
+      const resolve = (roomId: string): TurnTools | undefined => live && roomId === context.roomId && this.roomTools.get(roomId) === tools ? tools : undefined;
+      const registrations = buildRoomScopedRegistrations(resolve, {
+        enableMemoryTools: this.enableMemoryTools, enableContactTools: true,
+      });
+      const custom = buildCustomMcpRegistrations(this.customTools, resolve);
+      assertCustomToolNamesAvailable(custom.map((registration) => registration.name), [...registrations, ...this.additionalMcpTools].map((registration) => registration.name));
+      bridge = createBridge([...registrations, ...this.additionalMcpTools], custom);
+      options.mcpServers = { [MCP_SERVER_NAME]: bridge.serverConfig };
+      options.allowedTools = bridge.allowedTools;
     }
+    let closing: Promise<void> | undefined;
+    const close = (): Promise<void> => {
+      live = false;
+      abortController.abort();
+      if (this.activeQueries.get(context.roomId) === close) this.activeQueries.delete(context.roomId);
+      return closing ??= (async () => {
+        await bridge?.serverConfig.instance.close();
+      })();
+    };
+    this.activeQueries.set(context.roomId, close);
 
     const roomToolHint = this.enableMcpTools
       ? `\n\n[Tooling note]: For any mcp__band__* tool call, pass room_id="${context.roomId}".`
       : "";
 
-    return queryFn({
+    let query: AsyncIterable<SDKMessage>;
+    try {
+      query = queryFn({
       prompt: buildConversationPrompt({
         history,
         isSessionBootstrap: context.isSessionBootstrap,
@@ -284,7 +301,14 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
         maxHistoryMessages: 50,
       }) + roomToolHint,
       options,
-    });
+      });
+    } catch (error) {
+      await close();
+      throw error;
+    }
+    return (async function* () {
+      try { yield* query; } finally { await close(); }
+    })();
   }
 
   private async consumeQueryEvents(
@@ -334,9 +358,16 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
   }
 
   public async onCleanup(roomId: string): Promise<void> {
+    const closing = this.activeQueries.get(roomId)?.();
     this.sessionIds.delete(roomId);
     this.roomTurns.release(roomId);
     this.roomTools.delete(roomId);
+    await closing;
+  }
+
+  public async onRuntimeStop(): Promise<void> {
+    this.roomTools.clear();
+    await Promise.all([...this.activeQueries.values()].map((close) => close()));
   }
 
   private async reportSessionId(

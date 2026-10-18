@@ -436,7 +436,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for which tests need that build and why.
 
 ## Automatic working state
 
-The runtime reports a boolean working indicator for accepted messages in ordinary
+The runtime reports a working indicator for accepted messages in ordinary
 rooms, across every adapter. It refreshes after each settled report and clears on
 completion or teardown. Contact-hub rooms are excluded.
 
@@ -444,7 +444,7 @@ completion or teardown. Contact-hub rooms are excluded.
 import { Agent, AnthropicAdapter, loadAgentConfig } from "@band-ai/sdk";
 
 const agent = Agent.create({
-  adapter: new AnthropicAdapter({ model: "claude-sonnet-4-6" }),
+  adapter: new AnthropicAdapter({ anthropicModel: "claude-sonnet-4-6" }),
   config: loadAgentConfig("my_agent"),
   sessionConfig: {
     enableWorkingState: true,
@@ -473,6 +473,24 @@ Shutdown may add the remaining request budget plus one final request budget
 (default at most approximately four seconds). Reporting failures do not fail the
 turn; failed final delivery relies on the platform TTL to clear the indicator.
 Custom REST transports must honor `abortSignal` through response-body completion.
+
+On agent API 1.25.0 or later, the same reporter includes reasoning or the name
+of a scoped Band/custom tool while it executes. Changes send immediately;
+keep-alives repeat current detail. Final false carries no detail. Activity never
+contains arguments, output, commands or prompts, and chat narration is independent.
+
+ToolCalling adapters and query-bound Claude MCP tools observe actual local
+execution. Uncorrelated shared OpenCode MCP requests remain at reasoning.
+Native provider events, compaction and human-decision detail are supplied by the
+dependent provider layers; opaque remote work remains reasoning.
+
+Compatibility is automatic: one lazy, unauthenticated `/api/version` lookup uses
+`agent_version`; older, missing, malformed, prerelease or unreachable versions keep
+boolean reporting. The first reporting origin defines discovery process-wide.
+A detail-bearing 422 permanently disables detail process-wide and permits one
+boolean resend within the original request budget. Other failures do not downgrade.
+There is no second reporting switch. When injecting `restApi`, explicitly supply
+its matching `restUrl` to enable discovery; otherwise that link remains boolean-only.
 
 `SessionConfig` remains optional input; `ResolvedSessionConfig` now includes the
 three defaulted working-state fields and the optional duration cap. Callers that

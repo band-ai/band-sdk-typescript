@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
+import { createDeferred } from "../src/core/deferred";
+import { scopedActivity } from "./support/scopedActivity";
+import { suppressToolActivity } from "../src/runtime/workingState";
 import { AgentFailure } from "@band-ai/band-sdk-core";
 
 import { RestFacade } from "../src/client/rest/RestFacade";
@@ -209,6 +212,47 @@ class FakeRestApi implements RestApi {
 }
 
 describe("AgentTools", () => {
+  it("observes valid scoped execution through proxies, preserves effects, and suppresses shared MCP observations only", async () => {
+    const entered = createDeferred();
+    const release = createDeferred();
+    onTestFinished(() => release.resolve());
+    class HeldRest extends FakeRestApi {
+      public override async createChatMessage(...args: Parameters<FakeRestApi["createChatMessage"]>) {
+        entered.resolve();
+        await release.promise;
+        return await super.createChatMessage(...args);
+      }
+    }
+    const rest = new HeldRest();
+    await using scope = await scopedActivity(rest);
+    const pending = scope.tools.executeToolCall("band_send_message", { content: "sentinel", mentions: ["@jane"] });
+    await entered.promise;
+    expect(scope.reports.entries.at(-1)).toEqual({ kind: "tool_call", name: "band_send_message" });
+    release.resolve();
+    await pending;
+    expect(scope.reports.entries.at(-1)).toEqual({ kind: "reasoning" });
+    expect(scope.tools.turn.verdict()).toBe("complete");
+    const count = scope.reports.entries.length;
+    await suppressToolActivity(async () => {
+      await Promise.resolve();
+      await scope.tools.executeToolCall("band_send_message", { content: "second", mentions: ["@jane"] });
+    });
+    expect(scope.reports.entries).toHaveLength(count);
+    expect(rest.chatMessages.map((message) => message.content)).toEqual(["sentinel", "second"]);
+    expect(JSON.stringify(scope.reports.entries)).not.toContain("sentinel");
+  });
+
+  it("does not observe invalid, absent or capability-rejected calls, and retires a facade on context close", async () => {
+    await using scope = await scopedActivity(new FakeRestApi(), { memory: false });
+    for (const [name, args] of [["band_send_message", {}], ["missing", {}], ["band_list_memories", {}]] as const) {
+      expect(isToolExecutorError(await scope.tools.executeToolCall(name, args))).toBe(true);
+    }
+    expect(scope.reports.entries).toEqual([{ kind: "reasoning" }]);
+    await scope.context.closeWorkingState();
+    const count = scope.reports.entries.length;
+    await scope.tools.executeToolCall("band_no_reply", {});
+    expect(scope.reports.entries).toHaveLength(count);
+  });
   it("sends messages with resolved mentions", async () => {
     const tools = new AgentTools({
       roomId: "room-1",

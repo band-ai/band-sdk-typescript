@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WorkingStateReporter, bindWorkingCycle, retainWorkingCycleUntil } from "../src/runtime/workingState";
+import { WorkingStateReporter, bindWorkingCycle, retainWorkingCycleUntil, reportToolActivity, endToolActivity, setPermissionActivity, reportMemoryActivity } from "../src/runtime/workingState";
+import { overrideTools } from "../src/core/overrideTools";
+import { trackTurn } from "../src/core/turn";
 import { parseSessionConfig, WORKING_STATE_TTL_SECONDS } from "../src/runtime/types";
 import { createDeferred } from "../src/core/deferred";
 import { FakeAgentTools } from "../src/testing/FakeAgentTools";
@@ -7,6 +9,132 @@ import { FakeAgentTools } from "../src/testing/FakeAgentTools";
 describe("working state", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
+
+  it("publishes semantic changes once through nested tools proxies and repeats the current snapshot", async () => {
+    const sends: unknown[] = [];
+    const reporter = new WorkingStateReporter(async (working, options) => {
+      sends.push({ working, ...(options.activity ? { activity: options.activity } : {}) });
+    }, parseSessionConfig(), "room");
+    const lease = reporter.open();
+    await lease.ready;
+    const tools = trackTurn(overrideTools(bindWorkingCycle(new FakeAgentTools(), lease), {}));
+    await reportToolActivity(tools, "lookup");
+    await reportToolActivity(tools, "lookup");
+    await vi.advanceTimersByTimeAsync(3000);
+    await endToolActivity(tools);
+    await lease.end();
+    await reportToolActivity(tools, "late");
+    expect(sends).toEqual([
+      { working: true, activity: { kind: "reasoning" } },
+      { working: true, activity: { kind: "tool_call", name: "lookup" } },
+      { working: true, activity: { kind: "tool_call", name: "lookup" } },
+      { working: true, activity: { kind: "reasoning" } },
+      { working: false },
+    ]);
+  });
+
+  it("keeps permission across another scope and reselects live tool/memory when a scope retires", async () => {
+    const sends: unknown[] = [];
+    const reporter = new WorkingStateReporter(async (_working, options) => { sends.push(options.activity); }, parseSessionConfig(), "room");
+    const first = reporter.open();
+    await first.ready;
+    const a = bindWorkingCycle(new FakeAgentTools(), first);
+    await reportToolActivity(a, "first");
+    await setPermissionActivity(a, true);
+    const second = reporter.open();
+    await second.ready;
+    const b = bindWorkingCycle(new FakeAgentTools(), second);
+    await reportMemoryActivity(b, true);
+    await endToolActivity(a);
+    expect(sends.at(-1)).toEqual({ kind: "permission" });
+    await first.end();
+    expect(sends.at(-1)).toEqual({ kind: "memory" });
+    await reportMemoryActivity(b, false);
+    expect(sends.at(-1)).toEqual({ kind: "reasoning" });
+    await second.end();
+    expect(sends).not.toContain(false);
+  });
+
+  it.each(["permission", "tool_call", "memory"] as const)("retires %s without clearing an overlapping control cycle", async (kind) => {
+    const sends: unknown[] = [];
+    const reporter = new WorkingStateReporter(async (working, options) => { sends.push(working ? options.activity : false); }, parseSessionConfig(), "room");
+    const provider = reporter.open();
+    await provider.ready;
+    if (kind === "permission") await provider.permission(true);
+    else await provider.observe(kind === "tool_call" ? { kind, name: "native" } : { kind });
+    const control = reporter.open();
+    await control.ready;
+    expect(sends.at(-1)).toEqual(kind === "tool_call" ? { kind, name: "native" } : { kind });
+    await provider.end();
+    expect(sends.at(-1)).toEqual({ kind: "reasoning" });
+    expect(sends).not.toContain(false);
+    await provider.observe({ kind: "tool_call", name: "retired" });
+    await provider.permission(true);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(sends.at(-1)).toEqual({ kind: "reasoning" });
+    await control.end();
+    expect(sends.at(-1)).toBe(false);
+  });
+
+  it("reselects live scopes when a heartbeat was queued before retirement", async () => {
+    const sends: unknown[] = [];
+    const held = createDeferred();
+    const reporter = new WorkingStateReporter(async (working, options) => {
+      sends.push(working ? options.activity : false);
+      if (sends.length === 2) await held.promise;
+    }, parseSessionConfig(), "room");
+    const provider = reporter.open();
+    await provider.ready;
+    const control = reporter.open();
+    await control.ready;
+    await vi.advanceTimersByTimeAsync(2500);
+    const update = provider.observe({ kind: "tool_call", name: "retiring" });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(500);
+    const retired = provider.end();
+    held.resolve();
+    await Promise.all([update, retired]);
+    expect(sends).toEqual([{ kind: "reasoning" }, { kind: "tool_call", name: "retiring" }, { kind: "reasoning" }]);
+    await control.end();
+    expect(sends.at(-1)).toBe(false);
+  });
+
+  it("drops queued retired updates and cannot revive capped or closed reporting", async () => {
+    const held = createDeferred();
+    const sends: unknown[] = [];
+    const reporter = new WorkingStateReporter(async (working, options) => {
+      sends.push({ working, activity: options.activity });
+      if (sends.length === 1) await held.promise;
+    }, parseSessionConfig({ maxWorkingStateSeconds: 4 }), "room");
+    const first = reporter.open();
+    const stale = first.observe({ kind: "tool_call", name: "stale" });
+    const end = first.end();
+    held.resolve();
+    await Promise.all([first.ready, stale, end]);
+    expect(sends.map((s) => (s as { activity?: { name?: string } }).activity?.name)).not.toContain("stale");
+    const second = reporter.open();
+    await second.ready;
+    await vi.advanceTimersByTimeAsync(4000);
+    const count = sends.length;
+    await second.observe({ kind: "memory" });
+    expect(sends).toHaveLength(count);
+    await reporter.close();
+    await second.observe({ kind: "tool_call", name: "late" });
+    expect(sends.at(-1)).toEqual({ working: false, activity: undefined });
+  });
+
+  it.each([{ kind: "unknown" }, { kind: "tool_call", name: "" }, { kind: "tool_call", name: "x".repeat(1025) }, { kind: "memory", name: "private" }, { kind: "reasoning", args: "private" }])("ignores invalid observations without interrupting liveness: %j", async (activity) => {
+    const report = vi.fn().mockResolvedValue({});
+    const reporter = new WorkingStateReporter(report, parseSessionConfig(), "room");
+    const lease = reporter.open();
+    await lease.ready;
+    await lease.observe(activity);
+    await vi.advanceTimersByTimeAsync(3000);
+    await lease.end();
+    expect(report.mock.calls.map(([working, options]) => [working, options.activity])).toEqual([
+      [true, { kind: "reasoning" }], [true, { kind: "reasoning" }], [false, undefined],
+    ]);
+  });
 
   it("refreshes below the TTL budget and stops after the last overlapping lease", async () => {
     const sends: boolean[] = [];

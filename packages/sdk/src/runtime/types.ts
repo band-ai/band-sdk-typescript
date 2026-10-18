@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { ParticipantRecord } from "../contracts/dtos";
 import { ValidationError } from "../core/errors";
+import { DEFAULT_WORKING_REQUEST_TIMEOUT_SECONDS } from "../contracts/activity";
 import type {
   AdapterToolsProtocol,
   FrameworkAdapterInput,
@@ -28,7 +29,7 @@ const workingTiming = z.custom<number>((value) => typeof value === "number", "Ex
 export const sessionConfigSchema = z.object({
   enableWorkingState: z.boolean().default(true),
   workingKeepAliveSeconds: workingTiming.default(3),
-  workingRequestTimeoutSeconds: workingTiming.default(2),
+  workingRequestTimeoutSeconds: workingTiming.default(DEFAULT_WORKING_REQUEST_TIMEOUT_SECONDS),
   maxWorkingStateSeconds: workingTiming.optional(),
   enableContextCache: z.boolean().default(true),
   // Zero keeps a cache valid until it is explicitly refreshed or changed.

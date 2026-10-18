@@ -1,4 +1,5 @@
 import { UnsupportedFeatureError, ValidationError } from "../../core/errors";
+import { SCOPED_TOOL_EXECUTOR, reportToolActivity, endToolActivity } from "../workingState";
 import { resolveLogger, type Logger } from "../../core/logger";
 import { ParticipantRoster, type AgentFailure, type ParticipantFields } from "@band-ai/band-sdk-core";
 import { mentionLabel, toParticipantRecord, toParticipantRecordFromRest } from "../formatters";
@@ -358,6 +359,10 @@ export class AgentTools implements AgentToolsProtocol {
   }
 
   public async executeToolCall(toolName: string, arguments_: MetadataMap): Promise<unknown> {
+    return await this.executeScopedToolCall(undefined, toolName, arguments_);
+  }
+
+  private async executeScopedToolCall(tools: AdapterToolsProtocol | undefined, toolName: string, arguments_: MetadataMap): Promise<unknown> {
     const validationError = validateToolArgs(toolName, arguments_);
     if (validationError) {
       return validationError;
@@ -373,6 +378,10 @@ export class AgentTools implements AgentToolsProtocol {
       });
     }
 
+    const observed = tools && this.getToolSchemas("openai", { includeMemory: true }).some(
+      (schema) => (schema as { function?: { name?: unknown } }).function?.name === toolName,
+    );
+    if (observed) await reportToolActivity(tools, toolName);
     try {
       const result = await handler(arguments_);
       // sendEvent fails by resolving `{ok: false}` instead of throwing (it must
@@ -414,6 +423,8 @@ export class AgentTools implements AgentToolsProtocol {
         message,
         legacyMessage: `Error executing ${toolName}: ${message}`,
       });
+    } finally {
+      if (observed) await endToolActivity(tools);
     }
   }
 
@@ -775,7 +786,9 @@ export class AgentTools implements AgentToolsProtocol {
       (tools as Record<string, unknown>)[methodName] = this.bindAdapterToolMethod(methodName);
     }
 
-    return Object.freeze(tools) as AdapterToolsProtocol;
+    return Object.freeze({ ...tools,
+      [SCOPED_TOOL_EXECUTOR]: (scope: AdapterToolsProtocol, name: string, args: MetadataMap) => this.executeScopedToolCall(scope, name, args),
+    }) as AdapterToolsProtocol;
   }
 
   private bindAdapterToolMethod<K extends AdapterToolMethodName>(methodName: K): AdapterToolsProtocol[K] {

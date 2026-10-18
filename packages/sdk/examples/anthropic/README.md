@@ -93,4 +93,24 @@ Working state is on by default through shared runtime
 keep-alive and two-second request budget. Use `Agent.create({ ..., sessionConfig:
 { enableWorkingState: false } })` to disable it. No provider-specific option or
 tool capability is needed. Execution reporting options control chat tool narration
-independently of this automatic boolean indicator.
+independently of this automatic indicator and its activity detail.
+
+To observe a local tool without posting arguments into chat, configure a custom
+tool and keep narration off. For example, ask this adapter to call `lookup_status`:
+
+```ts
+import { z } from "zod";
+import { Agent, AnthropicAdapter, loadAgentConfig } from "@band-ai/sdk";
+
+const agent = Agent.create({
+  config: loadAgentConfig("my_agent"),
+  sessionConfig: { enableWorkingState: true },
+  adapter: new AnthropicAdapter({
+    enableExecutionReporting: false,
+    customTools: [{ name: "lookup_status", schema: z.object({ id: z.string() }), handler: async () => "ready" }],
+  }),
+});
+```
+
+On a compatible agent API, the indicator shows `tool_call/lookup_status` during
+execution and returns to reasoning afterward. Only the name is reported.

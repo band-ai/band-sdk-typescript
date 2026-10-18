@@ -7,6 +7,8 @@
  * test ends; release never throws.
  */
 import type { CreateChatRequest } from "../../../src/client/rest/types";
+import { z } from "zod";
+import type { Activity } from "../../../src/contracts/activity";
 import { DEFAULT_WS_URL } from "../../../src/platform/BandLink";
 import type { MessageCreatedPayload } from "../../../src/platform/events";
 import { roomTopics } from "../../../src/platform/roomTopics";
@@ -22,12 +24,16 @@ const ROOM_LABEL_ID_LENGTH = 8;
 
 /** Band's channel for a room's agent working indicator. */
 const ROOM_ACTIVITY_TOPIC_PREFIX = "room_activity:";
-export const ACTIVITY_EVENT = { started: "agent_activity_started", stopped: "agent_activity_stopped" } as const;
+export const ACTIVITY_EVENT = { started: "agent_activity_started", changed: "agent_activity_changed", stopped: "agent_activity_stopped" } as const;
+const activityFrameSchema = z.looseObject({ agent_id: z.string().min(1), execution_id: z.string().min(1), activity: z.unknown().optional() });
 
 /** One working-indicator frame: an agent started or stopped working in the room. */
 export interface ActivityFrame {
   readonly event: (typeof ACTIVITY_EVENT)[keyof typeof ACTIVITY_EVENT];
   readonly agentId: string;
+  readonly executionId: string;
+  readonly activity?: Activity;
+  readonly raw: Readonly<Record<string, unknown>>;
 }
 
 /** A message the scenario posted, by id — what delivery waits key on. */
@@ -42,6 +48,7 @@ export class Room implements AsyncDisposable {
   public readonly deliveryUpdates = new RecordLog<MessageCreatedPayload>();
   /** Every working-indicator frame, in arrival order. */
   public readonly activity = new RecordLog<ActivityFrame>();
+  public readonly activityByExecution = new Map<string, ActivityFrame>();
   /** The last message the scenario posted — what a reply answers. */
   public lastSent: SentMessage | null = null;
 
@@ -78,11 +85,21 @@ export class Room implements AsyncDisposable {
       message_created: (payload) => this.messages.record(payload as MessageCreatedPayload),
       message_updated: (payload) => this.deliveryUpdates.record(payload as MessageCreatedPayload),
     });
-    const recordActivity = (event: ActivityFrame["event"]) => (payload: unknown) =>
-      this.activity.record({ event, agentId: String((payload as { agent_id?: unknown }).agent_id) });
+    const recordActivity = (event: ActivityFrame["event"]) => (payload: unknown) => {
+      const parsed = activityFrameSchema.parse(payload);
+      const frame: ActivityFrame = {
+        event, agentId: parsed.agent_id, executionId: parsed.execution_id,
+        ...(event === ACTIVITY_EVENT.stopped ? {} : { activity: observedActivity(parsed.activity) }),
+        raw: structuredClone(parsed),
+      };
+      if (event === ACTIVITY_EVENT.stopped) this.activityByExecution.delete(frame.executionId);
+      else this.activityByExecution.set(frame.executionId, frame);
+      this.activity.record(frame);
+    };
     await this.observer.join(`${ROOM_ACTIVITY_TOPIC_PREFIX}${this.id}`, {
       [ACTIVITY_EVENT.started]: recordActivity(ACTIVITY_EVENT.started),
       [ACTIVITY_EVENT.stopped]: recordActivity(ACTIVITY_EVENT.stopped),
+      [ACTIVITY_EVENT.changed]: recordActivity(ACTIVITY_EVENT.changed),
     });
   }
 
@@ -90,6 +107,13 @@ export class Room implements AsyncDisposable {
     await this.observer.disconnect().catch(warnTeardown(`disconnect observer of room ${this.id}`));
     await deleteRoom(this.id);
   }
+}
+
+function observedActivity(value: unknown): Activity {
+  if (typeof value !== "object" || value === null || !("kind" in value)) return { kind: "reasoning" };
+  if (value.kind === "tool_call" && "name" in value && typeof value.name === "string") return { kind: "tool_call", name: value.name };
+  if (value.kind === "permission" || value.kind === "memory") return { kind: value.kind };
+  return { kind: "reasoning" };
 }
 
 async function deleteRoom(id: string): Promise<void> {

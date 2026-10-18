@@ -35,7 +35,7 @@ import type {
   PlatformChatMessage,
   RestApi,
 } from "./types";
-import type { RestRequestOptions } from "./requestOptions";
+import type { ReportActivityOptions, RestRequestOptions } from "./requestOptions";
 import { OPTIONAL_UNSUPPORTED_MESSAGES } from "./unsupportedMessages";
 
 export { FernRestAdapter } from "./FernRestAdapter";
@@ -175,7 +175,7 @@ export class RestFacade implements RestApi {
     );
   }
 
-  public async reportActivity(chatId: string, working: boolean, options?: RestRequestOptions): Promise<{ working: boolean }> {
+  public async reportActivity(chatId: string, working: boolean, options?: ReportActivityOptions): Promise<{ working: boolean }> {
     return this.callOptional(
       "reportActivity",
       OPTIONAL_UNSUPPORTED_MESSAGES.reportActivity,

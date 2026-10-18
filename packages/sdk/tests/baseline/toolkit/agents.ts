@@ -95,6 +95,7 @@ async function runAs(
     agentId: identity.id,
     apiKey: identity.apiKey,
     wsUrl: env.wsUrl,
+    restUrl: env.restUrl,
     logger: debugLogger(identity.name),
     linkOptions: { restApi: identity.rest, transport },
     agentConfig: { autoSubscribeExistingRooms: true },

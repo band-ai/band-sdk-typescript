@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
+import { scopedActivity } from "./support/scopedActivity";
+import { createDeferred } from "../src/core/deferred";
 import { z } from "zod";
 
 import {
@@ -15,6 +17,36 @@ import {
 } from "../src/runtime/tools/customTools";
 
 // -- Test fixtures --
+
+describe("scoped custom execution", () => {
+  it.each(["success", "failure", "throw"])("preserves %s and turn effects while observing actual execution", async (outcome) => {
+    const entered = createDeferred();
+    const release = createDeferred();
+    onTestFinished(() => release.resolve());
+    await using scope = await scopedActivity();
+    const output = outcome === "failure" ? { ok: false, message: "failure" } : { value: "private-output" };
+    const definition: CustomToolDef = {
+      name: "custom_lookup", schema: z.object({ query: z.string() }), effect: "act",
+      handler: async () => {
+        entered.resolve(); await release.promise;
+        if (outcome === "throw") throw new Error("original failure");
+        return output;
+      },
+    };
+    const run = executeCustomTool(definition, { query: "private-argument" }, scope.tools.turn, scope.tools);
+    const result = outcome === "throw" ? expect(run).rejects.toThrow("original failure") : expect(run).resolves.toBe(output);
+    await entered.promise;
+    expect(scope.reports.entries.at(-1)).toEqual({ kind: "tool_call", name: "custom_lookup" });
+    release.resolve();
+    await result;
+    expect(scope.reports.entries.at(-1)).toEqual({ kind: "reasoning" });
+    expect(scope.tools.turn.verdict()).toBe(outcome === "success" ? "complete" : "missing_reply");
+    expect(JSON.stringify(scope.reports.entries)).not.toContain("private-");
+    const count = scope.reports.entries.length;
+    await expect(executeCustomTool(definition, {}, scope.tools.turn, scope.tools)).rejects.toThrow("query");
+    expect(scope.reports.entries).toHaveLength(count);
+  });
+});
 
 const WeatherSchema = z.object({
   city: z.string().describe("City name"),
