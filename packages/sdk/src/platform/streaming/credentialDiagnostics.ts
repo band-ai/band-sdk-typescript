@@ -36,6 +36,25 @@ export function headerAuthEndpoint(address: string): { endpoint: URL; credential
   return { endpoint, credentials };
 }
 
+/** Only producer-owned connection facts may enter logs; peer text stays in user-facing errors. */
+function connectionLogContext(context?: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (!context) return undefined;
+  const facts: Record<string, unknown> = {};
+  for (const key of ["channels", "generation", "code", "status", "closeCode"] as const) {
+    const value = context[key];
+    if (typeof value === "number" && Number.isFinite(value)) facts[key] = value;
+  }
+  if (typeof context.retryable === "boolean") facts.retryable = context.retryable;
+  if (typeof context.outcome === "string" && ["ok", "error", "timeout"].includes(context.outcome)) facts.outcome = context.outcome;
+  for (const key of ["reason", "platformReason"] as const) {
+    const value = context[key];
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      facts[key] = connectionLogContext(value as Record<string, unknown>);
+    }
+  }
+  return facts;
+}
+
 /** Owns the credential policy before diagnostics cross into caller loggers or errors. */
 export class CredentialDiagnostics {
   private readonly secrets: RegExp[];
@@ -93,7 +112,7 @@ export class CredentialDiagnostics {
   public logger(logger?: Logger): Logger {
     if (!logger) return resolveLogger();
     const emit = (level: keyof Logger, message: string, context?: Record<string, unknown>): void => {
-      return logger[level](this.text(message), this.value(context) as Record<string, unknown> | undefined);
+      return logger[level](this.text(message), connectionLogContext(context));
     };
     return resolveLogger({
       debug: (message, context) => emit("debug", message, context),

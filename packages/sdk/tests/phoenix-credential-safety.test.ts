@@ -9,6 +9,8 @@ import { createNodeWebSocketFactory } from "../src/platform/streaming/nodeWebSoc
 import { FakePhoenixPeer } from "./fakePhoenixPeer";
 
 const KEY = "synthetic wire key+/=credential";
+const PRIVATE_VALUES = ["synthetic@example.invalid", "198.51.100.7", "private-user-content"];
+const PRIVATE_CONTENT = `${PRIVATE_VALUES.join(" ")} session=synthetic-cookie-value`;
 const LEGACY_KEY = "synthetic-legacy-key+/=credential";
 
 function captureLogger() {
@@ -42,6 +44,7 @@ describe("Phoenix credential safety at the wire and logger boundary", () => {
       expect(peer.connectionHeaders.map((headers) => headers["x-api-key"] === KEY)).toEqual([true, true]);
       expect(containsCredential(peer.connectionUrls)).toBe(false);
       expect(containsCredential(records)).toBe(false);
+      for (const value of PRIVATE_VALUES) expect(inspect(records, { depth: 20 })).not.toContain(value);
     } finally {
       await transport.disconnect();
     }
@@ -79,7 +82,7 @@ describe("Phoenix credential safety at the wire and logger boundary", () => {
       requests.push({ url: request.url ?? "", authenticated: request.headers["x-api-key"] === KEY });
       const body = JSON.stringify({ error: {
         code: "connection_conflict",
-        message: `refused ${encodeURI(KEY)}`,
+        message: `refused ${encodeURI(KEY)} ${PRIVATE_CONTENT}`,
         request_id: encodeURIComponent(KEY).replace("%2B", "%2b"),
       } });
       socket.end(["HTTP/1.1 409 Conflict", "Content-Type: application/json", `Content-Length: ${Buffer.byteLength(body)}`, "", body].join("\r\n"));
@@ -100,6 +103,8 @@ describe("Phoenix credential safety at the wire and logger boundary", () => {
       expect(requests[0]?.authenticated).toBe(true);
       expect(containsCredential(requests)).toBe(false);
       expect(containsCredential(records)).toBe(false);
+      for (const value of PRIVATE_VALUES) expect(inspect(records, { depth: 20 })).not.toContain(value);
+      expect(records).toContainEqual(["Phoenix socket upgrade failed", { reason: { status: 409, retryable: false } }]);
       expect(containsCredential(error)).toBe(false);
       expect(containsCredential(transport.getDisconnectReason())).toBe(false);
       expect(transport.getDisconnectReason()).toMatchObject({ status: 409, code: "connection_conflict" });
@@ -130,6 +135,7 @@ describe("Phoenix credential safety at the wire and logger boundary", () => {
       expect(containsCredential(terminal.mock.calls)).toBe(false);
       expect(containsCredential(transport.getDisconnectReason())).toBe(false);
       expect(containsCredential(records)).toBe(false);
+      for (const value of PRIVATE_VALUES) expect(inspect(records, { depth: 20 })).not.toContain(value);
     } finally {
       await transport.disconnect();
     }
@@ -141,9 +147,10 @@ describe("Phoenix credential safety at the wire and logger boundary", () => {
     const transport = new PhoenixChannelsTransport({ wsUrl: peer.url, apiKey: KEY, logger });
     try {
       await transport.connect();
-      peer.closeConnections(1008, KEY);
+      peer.closeConnections(1008, `${KEY} ${PRIVATE_CONTENT}`);
       await vi.waitFor(() => expect(transport.getDisconnectReason()).toMatchObject({ source: "websocket_close", closeCode: 1008 }));
       expect(containsCredential(records)).toBe(false);
+      for (const value of PRIVATE_VALUES) expect(inspect(records, { depth: 20 })).not.toContain(value);
       expect(containsCredential(transport.getDisconnectReason())).toBe(false);
     } finally {
       await transport.disconnect();

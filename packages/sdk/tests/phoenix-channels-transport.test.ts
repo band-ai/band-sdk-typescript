@@ -1620,7 +1620,7 @@ describe("PhoenixChannelsTransport", () => {
       await vi.waitFor(() =>
         expect(logger.error).toHaveBeenCalledWith(
           "Reconnect observer failed",
-          expect.objectContaining({ generation: 1, error: expect.objectContaining({ message: failure.message }) }),
+          { generation: 1 },
         ),
       );
 
