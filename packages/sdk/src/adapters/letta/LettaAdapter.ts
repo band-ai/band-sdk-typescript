@@ -733,8 +733,8 @@ export class LettaAdapter extends SimpleAdapter<
         client_tools: clientTools.length > 0 ? clientTools : undefined,
       },
       deadline,
-      signal,
       tools,
+      signal,
     );
 
     let rounds = 0;
@@ -769,8 +769,8 @@ export class LettaAdapter extends SimpleAdapter<
           client_tools: clientTools.length > 0 ? clientTools : undefined,
         },
         deadline,
-        signal,
         tools,
+        signal,
       );
 
       rounds += 1;
@@ -910,8 +910,8 @@ export class LettaAdapter extends SimpleAdapter<
     agentId: string,
     params: LettaMessageCreateParams,
     deadline: number,
+    tools: AdapterToolsProtocol,
     signal?: AbortSignal,
-    tools?: AdapterToolsProtocol,
   ): Promise<LettaResponse> {
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
@@ -920,7 +920,7 @@ export class LettaAdapter extends SimpleAdapter<
 
     return this.raceTimeout(
       async (s) => {
-        if (!client.agents.messages.createStream || !tools) return await client.agents.messages.create(agentId, params, { signal: s });
+        if (!client.agents.messages.createStream) return await client.agents.messages.create(agentId, params, { signal: s });
         const stream = await client.agents.messages.createStream(agentId, params, { signal: s });
         const messages: LettaResponseMessage[] = [];
         const active = new Set<string>();
