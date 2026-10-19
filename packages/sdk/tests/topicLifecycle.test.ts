@@ -67,8 +67,12 @@ describe("optional topic lifecycle on the Phoenix wire", () => {
       peer.settleRequest(activityRequest, "ok", { recovered: true });
       peer.push(optional, "changed", { changed: true });
       await activity.next((value) => (value as { changed?: boolean }).changed === true);
-      // An independent new join must also bypass the outstanding mandatory barrier.
-      await transport.join("optional:another", {}, { blocksReconnect: false });
+      // A new optional join must not wait for the outstanding mandatory recovery. Were it held behind
+      // it, Phoenix would first time those joins out and leave them, so no leave may precede it.
+      const another = transport.join("optional:another", {}, { blocksReconnect: false });
+      await peer.joins.next((request) => request.topic === "optional:another");
+      expect(peer.leaves.entries).toEqual([]);
+      await another;
     }
     for (const request of requests.slice(0, 2)) peer.settleRequest(request, "ok");
     await recovery.promise;
