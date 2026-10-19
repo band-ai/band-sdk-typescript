@@ -3,8 +3,9 @@ export interface TopicHandlers {
 }
 
 export interface JoinOptions {
-  /** Synchronous membership observations; automatic rejoins include a fresh reply. */
+  /** Called synchronously with the raw join reply, on the first join and on every automatic rejoin. */
   onJoined?: (reply: unknown) => void;
+  /** Called synchronously when the channel is lost, errored, closed or left. May repeat for one loss. */
   onUnavailable?: () => void;
   /** Independent optional topics do not hold mandatory recovery or admission. */
   blocksReconnect?: boolean;

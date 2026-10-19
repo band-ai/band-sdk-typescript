@@ -97,8 +97,12 @@ export class ChannelRegistry {
     }
   }
 
+  /** Whether `channel` is the pending or joined channel for `topic`, and not already on its way out. */
   private owns(topic: string, channel: Channel): boolean {
-    return this.channels.get(topic)?.channel === channel || this.pendingChannels.get(topic)?.channel === channel;
+    return (
+      this.pendingChannels.get(topic)?.channel === channel ||
+      (this.channels.get(topic)?.channel === channel && !this.leaveFlights.current(topic))
+    );
   }
 
   private observe(topic: string, callback: () => void): void {
@@ -266,13 +270,8 @@ export class ChannelRegistry {
     }
 
     const pending = this.pendingChannels.get(topic);
-    if (pending) {
-      this.observe(topic, () => pending.options.onUnavailable?.());
-      this.pendingChannels.delete(topic);
-      this.abandonChannel(topic, pending);
-      await this.joinFlights.current(topic)?.catch(() => undefined);
-      this.hooks.onLeft(topic);
-      return;
+    if (pending?.options.blocksReconnect === false) {
+      return this.leavePending(topic, pending);
     }
     const tracked = this.channels.get(topic);
     if (!tracked) {
@@ -282,9 +281,18 @@ export class ChannelRegistry {
     return this.leaveFlights.run(topic, () => this.doLeave(topic, tracked));
   }
 
+  /** Abandons an optional join still in flight; a mandatory one is left to settle, as it always was. */
+  private async leavePending(topic: string, pending: PendingJoin): Promise<void> {
+    this.observe(topic, () => pending.options.onUnavailable?.());
+    this.pendingChannels.delete(topic);
+    this.abandonChannel(topic, pending);
+    await this.joinFlights.current(topic)?.catch(() => undefined);
+    this.hooks.onLeft(topic);
+  }
+
   private async doLeave(topic: string, tracked: TrackedChannel): Promise<void> {
-    const { channel, refs } = tracked;
-    this.observe(topic, () => tracked.options.onUnavailable?.());
+    const { channel, refs, options } = tracked;
+    this.observe(topic, () => options.onUnavailable?.());
     for (const [event, ref] of refs) {
       channel.off(event, ref);
     }
@@ -301,20 +309,26 @@ export class ChannelRegistry {
             reject(new TransportError(`Timeout leaving topic ${topic}`)),
           );
       });
-    } finally {
-      if (tracked.options.blocksReconnect === false) {
+    } catch (error) {
+      // An optional channel is never left registered behind a failed leave,
+      // or a same-topic restart would mistake it for a usable join.
+      if (options.blocksReconnect === false) {
         removeSocketChannel(this.socket, channel);
-        if (this.channels.get(topic) === tracked) {
-          this.channels.delete(topic);
-          this.hooks.onLeft(topic);
-        }
+        this.forget(topic, tracked);
       }
+      throw error;
     }
+
+    this.forget(topic, tracked);
+    this.logger.debug("Left topic", { topic });
+  }
+
+  /** Drops `topic`'s entry, but only while it still identifies `tracked`. */
+  private forget(topic: string, tracked: TrackedChannel): void {
     if (this.channels.get(topic) === tracked) {
       this.channels.delete(topic);
       this.hooks.onLeft(topic);
     }
-    this.logger.debug("Left topic", { topic });
   }
 
   /**

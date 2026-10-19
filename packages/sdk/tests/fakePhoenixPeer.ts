@@ -4,7 +4,7 @@ import { WebSocket as NodeWebSocket, WebSocketServer } from "ws";
 
 import { RecordLog } from "./testUtils";
 
-type JoinOutcome = "ok" | "error" | "pending";
+type ReplyOutcome = "ok" | "error" | "pending";
 type PhoenixMessage = [string | null, string | null, string, string, unknown];
 
 export interface FakePhoenixPeerOptions {
@@ -22,17 +22,17 @@ const TAKEN_OVER_REASON = "session.already_connected";
 const COOLDOWN_STATUS = 429;
 const JSON_HEADERS = { "Content-Type": "application/json" };
 
+/** One `phx_join` or `phx_leave` push, identified by the connection that sent it and its own ref. */
 export interface PhoenixRequest {
+  readonly event: "phx_join" | "phx_leave";
   readonly connection: number;
   readonly topic: string;
   readonly joinRef: string | null;
   readonly ref: string | null;
 }
 
-interface PendingJoin extends PhoenixRequest {
+interface PendingRequest extends PhoenixRequest {
   socket: ServerSocket;
-  joinRef: string | null;
-  ref: string | null;
 }
 
 /**
@@ -61,10 +61,12 @@ export class FakePhoenixPeer implements AsyncDisposable {
   /** Each open connection, with the agent it is for. */
   private readonly sockets = new Map<ServerSocket, string | null>();
   private readonly connectionIds = new WeakMap<ServerSocket, number>();
-  private readonly joinOutcomeQueues = new Map<string, JoinOutcome[]>();
-  private readonly pendingJoins = new Map<string, PendingJoin>();
+  private readonly joinOutcomeQueues = new Map<string, ReplyOutcome[]>();
+  private readonly leaveOutcomeQueues = new Map<string, ReplyOutcome[]>();
+  private readonly pendingRequests = new Map<string, PendingRequest>();
   private readonly joinPayloads = new Map<string, unknown[]>();
   public readonly joins = new RecordLog<PhoenixRequest>();
+  public readonly leaves = new RecordLog<PhoenixRequest>();
   public readonly receivedEvents: Array<{ topic: string; event: string }> = [];
   /** Every topic a client joined, in order; await it to act once a join is in. */
   public readonly joined = new RecordLog<string>();
@@ -109,8 +111,17 @@ export class FakePhoenixPeer implements AsyncDisposable {
    * Queues this topic's next `phx_join` outcomes in order (one per rejoin
    * attempt); once the queue is empty, later joins default to "ok".
    */
-  public queueJoinOutcomes(topic: string, outcomes: JoinOutcome[]): void {
+  public queueJoinOutcomes(topic: string, outcomes: ReplyOutcome[]): void {
     this.joinOutcomeQueues.set(topic, [...outcomes]);
+  }
+
+  /**
+   * Queues this topic's next `phx_leave` outcomes in order; once the queue is
+   * empty, later leaves default to "ok". "pending" holds the reply until
+   * `settleRequest`.
+   */
+  public queueLeaveOutcomes(topic: string, outcomes: ReplyOutcome[]): void {
+    this.leaveOutcomeQueues.set(topic, [...outcomes]);
   }
 
   /** Forcibly drops every open connection, simulating a network failure. */
@@ -119,7 +130,7 @@ export class FakePhoenixPeer implements AsyncDisposable {
       socket.terminate();
     }
     this.sockets.clear();
-    this.pendingJoins.clear();
+    this.pendingRequests.clear();
   }
 
   /**
@@ -147,23 +158,23 @@ export class FakePhoenixPeer implements AsyncDisposable {
     this.joinPayloads.set(topic, [...payloads]);
   }
 
+  /** Answers one held request by its exact connection and ref; a request already answered, or lost with its connection, throws. */
   public settleRequest(request: PhoenixRequest, outcome: "ok" | "error", response: unknown = {}): void {
-    const key = `${request.connection}:${request.ref}`;
-    const pending = this.pendingJoins.get(key);
-    if (!pending || pending.connection !== request.connection || pending.ref !== request.ref) {
-      throw new Error("Join request is no longer pending");
+    const key = requestKey(request);
+    const pending = this.pendingRequests.get(key);
+    if (!pending) {
+      throw new Error(`${request.event} request is no longer pending`);
     }
-    this.pendingJoins.delete(key);
+    this.pendingRequests.delete(key);
     this.reply(pending.socket, pending.joinRef, pending.ref, request.topic, outcome, response);
   }
 
-  public settleJoin(topic: string, outcome: Exclude<JoinOutcome, "pending">, response: unknown = responseFor(outcome)): void {
-    const pending = [...this.pendingJoins.values()].reverse().find((request) => request.topic === topic);
+  public settleJoin(topic: string, outcome: Exclude<ReplyOutcome, "pending">, response: unknown = responseFor(outcome)): void {
+    const pending = [...this.pendingRequests.values()].reverse().find((request) => request.event === "phx_join" && request.topic === topic);
     if (!pending) {
       throw new Error(`No pending join for ${topic}`);
     }
-    this.pendingJoins.delete(`${pending.connection}:${pending.ref}`);
-    this.reply(pending.socket, pending.joinRef, pending.ref, topic, outcome, response);
+    this.settleRequest(pending, outcome, response);
   }
 
   public push(topic: string, event: string, payload: unknown): void {
@@ -254,23 +265,34 @@ export class FakePhoenixPeer implements AsyncDisposable {
       this.receivedEvents.push({ topic, event });
     }
 
-    if (event === "phx_join") {
-      const request = { connection: this.connectionIds.get(socket)!, topic, joinRef, ref };
-      this.joins.record(request);
-      this.joined.record(topic);
-      const outcome = this.joinOutcomeQueues.get(topic)?.shift() ?? "ok";
-      if (outcome === "pending") {
-        this.pendingJoins.set(`${request.connection}:${ref}`, { socket, ...request });
-        return;
+    if (event === "phx_join" || event === "phx_leave") {
+      const request: PhoenixRequest = { event, connection: this.connectionIds.get(socket)!, topic, joinRef, ref };
+      if (event === "phx_join") {
+        this.joins.record(request);
+        this.joined.record(topic);
+      } else {
+        this.leaves.record(request);
+        this.left.record(topic);
       }
-      this.reply(socket, joinRef, ref, topic, outcome, this.joinPayloads.get(topic)?.shift() ?? responseFor(outcome));
+      this.answer(socket, request);
       return;
     }
 
-    // phx_leave, heartbeat, and any other client push all just need an "ok"
-    // reply so the caller's Push settles instead of timing out.
-    if (event === "phx_leave") this.left.record(topic);
+    // Heartbeat and any other client push just need an "ok" reply so the
+    // caller's Push settles instead of timing out.
     this.reply(socket, joinRef, ref, topic, "ok", {});
+  }
+
+  /** Replies with the topic's next queued outcome for this kind of request, or holds it until `settleRequest`. */
+  private answer(socket: ServerSocket, request: PhoenixRequest): void {
+    const joining = request.event === "phx_join";
+    const outcome = (joining ? this.joinOutcomeQueues : this.leaveOutcomeQueues).get(request.topic)?.shift() ?? "ok";
+    if (outcome === "pending") {
+      this.pendingRequests.set(requestKey(request), { socket, ...request });
+      return;
+    }
+    const payload = joining ? this.joinPayloads.get(request.topic)?.shift() : undefined;
+    this.reply(socket, request.joinRef, request.ref, request.topic, outcome, payload ?? responseFor(outcome));
   }
 
   private reply(
@@ -278,7 +300,7 @@ export class FakePhoenixPeer implements AsyncDisposable {
     joinRef: string | null,
     ref: string | null,
     topic: string,
-    status: Exclude<JoinOutcome, "pending">,
+    status: Exclude<ReplyOutcome, "pending">,
     response: unknown,
   ): void {
     const message: PhoenixMessage = [joinRef, ref, topic, "phx_reply", { status, response }];
@@ -286,10 +308,14 @@ export class FakePhoenixPeer implements AsyncDisposable {
   }
 }
 
+function requestKey(request: PhoenixRequest): string {
+  return `${request.connection}:${request.ref}`;
+}
+
 function connectionParams(url: string): URLSearchParams {
   return new URL(url, "ws://peer").searchParams;
 }
 
-function responseFor(outcome: Exclude<JoinOutcome, "pending">): unknown {
+function responseFor(outcome: Exclude<ReplyOutcome, "pending">): unknown {
   return outcome === "ok" ? {} : { reason: "rejected" };
 }
