@@ -26,6 +26,7 @@ import {
   type McpToolRegistration,
 } from "../../mcp/registrations";
 import { buildCustomMcpRegistrations } from "../../mcp/customTools";
+import type { createSdkMcpBridge } from "../../mcp/sdkTools";
 import { assertCustomToolNamesAvailable, buildCustomToolIndex, type CustomToolDef } from "../../runtime/tools/customTools";
 
 export type ClaudePermissionMode = NonNullable<Options["permissionMode"]>;
@@ -244,9 +245,7 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
   }
 
   /** A bridge whose tools resolve only for the room's current turn, and only until it is retired. */
-  private async openBridge(roomId: string, tools: TurnTools, checkOwner: () => void) {
-    const createBridge = await this.sdkMcpBridgeLoader.get();
-    checkOwner();
+  private openBridge(createBridge: typeof createSdkMcpBridge, roomId: string, tools: TurnTools) {
     let live = true;
     const resolve = (id: string): TurnTools | undefined => live && id === roomId && this.ownsRoom(id, tools) ? tools : undefined;
     const { registrations, custom } = this.buildRegistrations(resolve);
@@ -309,19 +308,17 @@ export class ClaudeSDKAdapter extends SimpleAdapter<HistoryProvider, TurnTools> 
     context: { isSessionBootstrap: boolean; roomId: string },
   ): Promise<AsyncIterable<SDKMessage>> {
     const { roomId } = context;
-    const checkOwner = (): void => {
-      if (!this.ownsRoom(roomId, tools)) throw new RuntimeStateError("Claude query was retired before admission");
-    };
-    checkOwner();
     const queryFn = this.queryFnOverride ?? (await loadClaudeQuery());
-    checkOwner();
+    const createBridge = this.enableMcpTools ? await this.sdkMcpBridgeLoader.get() : undefined;
+    // No await may separate this check from registerQuery, or a reset could miss the query it must abort.
+    if (!this.ownsRoom(roomId, tools)) throw new RuntimeStateError("Claude query was retired before admission");
 
     const abortController = new AbortController();
     const options = this.queryOptions(
       abortController,
       this.sessionIds.get(roomId) ?? (context.isSessionBootstrap ? extractClaudeSessionId(history.raw) : null),
     );
-    const mcp = this.enableMcpTools ? await this.openBridge(roomId, tools, checkOwner) : undefined;
+    const mcp = createBridge && this.openBridge(createBridge, roomId, tools);
     if (mcp) {
       options.mcpServers = { [MCP_SERVER_NAME]: mcp.bridge.serverConfig };
       options.allowedTools = mcp.bridge.allowedTools;
