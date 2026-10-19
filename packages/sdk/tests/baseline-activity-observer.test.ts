@@ -7,9 +7,8 @@ describe("baseline activity observer", () => {
   it("normalizes starts, replaces changes and removes stopped executions while retaining raw extensions", async () => {
     const peer = await FakePhoenixPeer.start();
     const transport = new PhoenixChannelsTransport({ wsUrl: peer.url, apiKey: "observer" });
-    const room: Room = Reflect.construct(Room, ["room", transport]);
     try {
-      await Reflect.get(room, "observe").call(room);
+      const room = await Room.observing("room", transport);
       const send = async (event: typeof ACTIVITY_EVENT[keyof typeof ACTIVITY_EVENT], detail: Record<string, unknown> = {}) => {
         const from = room.activity.entries.length;
         peer.push("room_activity:room", event, { agent_id: "agent", execution_id: "execution", server_extension: "retained", ...detail });

@@ -15,8 +15,7 @@ describe("automatic working-report acceptance", () => {
     const peer = await FakePhoenixPeer.start();
     const observer = new PhoenixChannelsTransport({ wsUrl: peer.url, apiKey: "observer" });
     // Keep the real Room observer; only live provisioning and cleanup are replaced by this local peer.
-    const room: Room = Reflect.construct(Room, ["room", observer]);
-    await Reflect.get(room, "observe").call(room);
+    const room = await Room.observing("room", observer);
     const entered = createDeferred();
     const release = createDeferred();
     const generated = buildFakeRestAdapter([

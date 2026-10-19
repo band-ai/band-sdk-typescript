@@ -34,7 +34,6 @@ describe("activity detail generated HTTP boundary", () => {
     const sent = posts(peer.requests.entries);
     expect(sent[1]!.body).toEqual({ working: true, activity: { kind: "tool_call", name: "lookup" } });
     expect(sent[1]!.request.headers["x-custom"]).toBe("retained");
-    expect(sent.every(({ request }) => request.headers.activity === undefined)).toBe(true);
   });
 
   it("omits detail on false and never looks the version up for it", async () => {

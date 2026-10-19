@@ -13,8 +13,15 @@ import { uniqueMarker } from "../samples/markers";
 const SCENARIO = scenarioId(CATEGORY.platform, "activityDetail");
 const LOCAL_TOOL = "activity_lookup";
 
-async function observeCycle(cast: Cast, phases: ReturnType<typeof activityPhases>, tool: string, marker: string,
-  request: string, releaseTool: () => void, toolEntered: Promise<string>) {
+interface ActivityProbe {
+  phases: ReturnType<typeof activityPhases>;
+  tool: string;
+  marker: string;
+  toolEntered: Promise<string>;
+  releaseTool: () => void;
+}
+
+async function observeCycle(cast: Cast, { phases, tool, marker, toolEntered, releaseTool }: ActivityProbe, request: string) {
   const { agents: [agent], room } = cast;
   if (!agent) throw new Error("No activity test agent");
   const from = room.activity.entries.length;
@@ -39,19 +46,16 @@ async function observeCycle(cast: Cast, phases: ReturnType<typeof activityPhases
     (message.message_type === "tool_call" || message.message_type === "tool_result"))).toEqual([]);
 }
 
-let anthropic: { phases: ReturnType<typeof activityPhases>; marker: string; release: () => void; entered: Promise<string> };
+let anthropic: ActivityProbe;
 withAdapters([ADAPTER.anthropic], SCENARIO, async (cast) => {
-  const { phases, marker, release, entered } = anthropic;
-  try {
-    await observeCycle(cast, phases, LOCAL_TOOL, marker, `Call ${LOCAL_TOOL} with query="${marker}", then reply briefly.`, release, entered);
-  } finally { release(); phases.release(); }
+  await observeCycle(cast, anthropic, `Call ${LOCAL_TOOL} with query="${anthropic.marker}", then reply briefly.`);
 }, { build: (spec, options) => {
   const phases = activityPhases();
   const marker = uniqueMarker("activity-private");
   const release = createDeferred();
   const entered = createDeferred<string>();
   onTestFinished(() => release.resolve());
-  anthropic = { phases, marker, release: () => release.resolve(), entered: entered.promise };
+  anthropic = { phases, tool: LOCAL_TOOL, marker, toolEntered: entered.promise, releaseTool: () => release.resolve() };
   return phases.wrap(spec.build({ ...options, reportToolCalls: false, customTools: [{
     name: LOCAL_TOOL, schema: z.object({ query: z.string() }),
     handler: async ({ query }) => { entered.resolve(String(query)); await release.promise; return "lookup complete"; },

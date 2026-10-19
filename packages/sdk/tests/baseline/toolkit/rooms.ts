@@ -79,6 +79,13 @@ export class Room implements AsyncDisposable {
     return room;
   }
 
+  /** Observes a room that already exists through `observer`; the caller owns the observer and the room's cleanup. */
+  public static async observing(id: string, observer: PhoenixChannelsTransport): Promise<Room> {
+    const room = new Room(id, observer);
+    await room.observe();
+    return room;
+  }
+
   private async observe(): Promise<void> {
     await this.observer.connect();
     await this.observer.join(roomTopics(this.id).chat, {

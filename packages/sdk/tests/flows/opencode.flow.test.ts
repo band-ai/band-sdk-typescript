@@ -172,6 +172,25 @@ describe("OpenCode in a Band room", () => {
     expect(session.room.messages.at(-1)?.content).toBe("Done.");
   });
 
+  it("suppresses uncorrelated shared MCP activity for a custom tool too, preserving its execution", async () => {
+    const reports = recordRuntimeActivity();
+    const handler = vi.fn(() => ({ id: "T-1" }));
+    await using session = await opencodeRoom({ enableExecutionReporting: false }, {
+      customTools: [{ name: "file_ticket", schema: z.object({ title: z.string() }), handler, effect: "act" }],
+    });
+    const message = await session.start(async (turn) => {
+      const result = await turn.callTool("file_ticket", { ...ROOM, title: "Broken build" });
+      expect(result.isError).toBeUndefined();
+      turn.answer("Done.");
+    });
+    expect(await session.room.outcome(message)).toBe("processed");
+    await reports.next((entry) => !entry.working);
+    expect(handler).toHaveBeenCalledWith({ title: "Broken build" });
+    expect(reports.entries.map(({ working, activity }) => working ? activity : false)).toEqual([
+      { kind: "reasoning" }, false,
+    ]);
+  });
+
   it("keeps working across a detached approval and its reply I/O until the provider terminates", async () => {
     await using session = await opencodeRoom({ enableExecutionReporting: false });
     const { room, platform, server } = session;

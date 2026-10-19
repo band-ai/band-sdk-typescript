@@ -1083,7 +1083,19 @@ describe("ClaudeSDKAdapter", () => {
       expect(handler).not.toHaveBeenCalled();
     });
 
-    it.each(["query", "stream", "result", "relay"] as const)("clears binding on %s failure and runs the next turn", async (exit) => {
+    const staleCallRefused = async (options: ClaudeSDKQueryParams["options"]) =>
+      expect((await callMcpTool(options, "write_marker", { room_id: ROOM_ID })).isError).toBe(true);
+    const staleCallDisconnected = async (options: ClaudeSDKQueryParams["options"]) =>
+      await expect(callMcpTool(options, "write_marker", { room_id: ROOM_ID })).rejects.toThrow(TRANSPORT_CLOSED);
+    const turnFailed = expectTurnFailed;
+    const deliveryFailed = (turn: Promise<unknown>) => expect(turn).rejects.toBeInstanceOf(DeliveryFailedError);
+
+    it.each([
+      { exit: "query" as const, firstTurn: turnFailed, staleCall: staleCallRefused },
+      { exit: "stream" as const, firstTurn: turnFailed, staleCall: staleCallDisconnected },
+      { exit: "result" as const, firstTurn: turnFailed, staleCall: staleCallDisconnected },
+      { exit: "relay" as const, firstTurn: deliveryFailed, staleCall: staleCallDisconnected },
+    ])("clears binding on $exit failure and runs the next turn", async ({ exit, firstTurn, staleCall }) => {
       let calls = 0;
       let options: ClaudeSDKQueryParams["options"];
       const adapter = new ClaudeSDKAdapter({ customTools: [portable()], queryFn: (params) => {
@@ -1099,11 +1111,8 @@ describe("ClaudeSDKAdapter", () => {
       } });
       await adapter.onStarted("Parity Agent", "Parity test agent");
       const failingTools = new FakeTools(exit === "relay" ? { failOn: ["sendMessage"] } : undefined);
-      const first = adapter.onEvent(turnInput(failingTools, SENDER));
-      if (exit === "relay") await expect(first).rejects.toBeInstanceOf(DeliveryFailedError);
-      else await expectTurnFailed(first);
-      if (exit === "query") expect((await callMcpTool(options, "write_marker", { room_id: ROOM_ID })).isError).toBe(true);
-      else await expect(callMcpTool(options, "write_marker", { room_id: ROOM_ID })).rejects.toThrow(TRANSPORT_CLOSED);
+      await firstTurn(adapter.onEvent(turnInput(failingTools, SENDER)));
+      await staleCall(options);
       await adapter.onEvent(turnInput(new FakeTools(), SENDER));
       expect(calls).toBe(2);
       await expect(callMcpTool(options, "write_marker", { room_id: ROOM_ID })).rejects.toThrow(TRANSPORT_CLOSED);

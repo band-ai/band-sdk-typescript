@@ -1,5 +1,6 @@
 import { DEFAULT_WORKING_REQUEST_TIMEOUT_SECONDS } from "../../contracts/activity";
 import { resolveLogger, type Logger } from "../../core/logger";
+import { SingleFlight } from "../../core/singleFlight";
 
 /** First agent API release whose working report accepts `activity` (platform changelog 1.25.0). */
 const MIN_API_VERSION = [1, 25, 0] as const;
@@ -25,7 +26,7 @@ function isSupportedRelease(apiVersion: unknown): boolean {
  */
 export class ActivityCapability {
   private support: ActivityDetailSupport = "unknown";
-  private pending?: Promise<ActivityDetailSupport>;
+  private readonly lookups = new SingleFlight<ActivityDetailSupport>();
   private failing = false;
   private readonly healthUrl: URL;
   private readonly logger: Logger;
@@ -49,8 +50,7 @@ export class ActivityCapability {
   /** The current answer, or the one shared in-flight lookup that will settle it. */
   public lookup(timeoutSeconds = DEFAULT_WORKING_REQUEST_TIMEOUT_SECONDS): Promise<ActivityDetailSupport> {
     if (this.support !== "unknown") return Promise.resolve(this.support);
-    this.pending ??= this.fetchSupport(timeoutSeconds).finally(() => { this.pending = undefined; });
-    return this.pending;
+    return this.lookups.run(() => this.fetchSupport(timeoutSeconds));
   }
 
   private async fetchSupport(timeoutSeconds: number): Promise<ActivityDetailSupport> {
